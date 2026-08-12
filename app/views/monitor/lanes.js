@@ -23,6 +23,10 @@
  */
 import { html } from 'lit-html';
 import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
+import {
+  formatAttemptTuple,
+  formatContinuationLineage
+} from '../../utils/attempt-display.js';
 import { visibleLabels } from '../../utils/label-policy.js';
 import {
   formatRelativeTime,
@@ -105,7 +109,13 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   can_resume?: boolean,
  *   started_at?: number|null,
  *   last_event_at?: number|null,
+ *   runner?: string|null,
  *   model?: string|null,
+ *   effort?: string|null,
+ *   speed?: string|null,
+ *   resumed_from?: string|null,
+ *   continuation_mode?: 'session'|'fresh'|null,
+ *   continuation_mismatch?: any,
  *   queue_position?: number,
  *   queue_index?: number,
  *   queue_length?: number,
@@ -192,7 +202,7 @@ export function latestTerminalAttempt(attempts, bead_id) {
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @returns {Map<string, { attempt_id: string, run_state: 'running'|'paused'|'failed', started_at: number|null, last_event_at: number|null, model: string|null, usage: any, can_pause: boolean, can_resume: boolean }>}
+ * @returns {Map<string, { attempt_id: string, run_state: 'running'|'paused'|'failed', started_at: number|null, last_event_at: number|null, runner: string|null, model: string|null, effort: string|null, speed: string|null, resumed_from: string|null, continuation_mode: 'session'|'fresh'|null, usage: any, can_pause: boolean, can_resume: boolean }>}
  */
 export function activeByBead(attempts, done_at_by_bead) {
   const values = /** @type {any[]} */ (Object.values(attempts || {}));
@@ -260,7 +270,15 @@ export function activeByBead(attempts, done_at_by_bead) {
       started_at,
       last_event_at:
         typeof a.last_event_at === 'number' ? a.last_event_at : null,
+      runner: typeof a.runner === 'string' ? a.runner : null,
       model: typeof a.model === 'string' ? a.model : null,
+      effort: typeof a.effort === 'string' ? a.effort : null,
+      speed: typeof a.speed === 'string' ? a.speed : null,
+      resumed_from: typeof a.resumed_from === 'string' ? a.resumed_from : null,
+      continuation_mode:
+        a.continuation_mode === 'session' || a.continuation_mode === 'fresh'
+          ? a.continuation_mode
+          : null,
       usage: sumAttemptUsage(attempts, a.bead_id),
       can_pause: run_state === 'running' && has_session,
       can_resume:
@@ -386,6 +404,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
         .filter((/** @type {any} */ e) => e && typeof e.bead_id === 'string')
         .map((/** @type {any} */ e) => e.bead_id)
     );
+    /** @type {Map<string, any>} */
+    const merge_entries = new Map(
+      merge_queue
+        .filter((/** @type {any} */ e) => e && typeof e.bead_id === 'string')
+        .map((/** @type {any} */ e) => [e.bead_id, e])
+    );
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
     const done_lane = Array.isArray(workspace.done) ? workspace.done : [];
     /** @type {Map<string, number>} */
@@ -429,7 +453,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
         can_resume: live.can_resume,
         started_at: live.started_at,
         last_event_at: live.last_event_at,
+        runner: live.runner,
         model: live.model,
+        effort: live.effort,
+        speed: live.speed,
+        resumed_from: live.resumed_from,
+        continuation_mode: live.continuation_mode,
         usage: live.usage,
         discard: discardProjection(discard_operations, bead_id, {
           attempt_id: live.attempt_id
@@ -456,6 +485,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const pr = objectOf(observed.pr);
       const gate = observed.gate ? objectOf(observed.gate) : null;
       const queued = merge_queued.has(bead_id);
+      const continuation_action =
+        merge_entries.get(bead_id)?.continuation_action || null;
+      const continuation_required =
+        !!continuation_action && continuation_action.continuation === null;
       const active = merge_state.active === bead_id;
       const external = entry.external === true;
       const cleanup = cleanup_failed[bead_id] || null;
@@ -483,11 +516,13 @@ export function buildLanes(workspaces, workspaces_state, options) {
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
         external,
         usage: sumAttemptUsage(attempts, bead_id),
-        badges: cleanup
-          ? ['정리 실패']
-          : restarting
-            ? ['정리 중 · 재시작']
-            : [],
+        badges: continuation_required
+          ? ['이어하기 선택 필요']
+          : cleanup
+            ? ['정리 실패']
+            : restarting
+              ? ['정리 중 · 재시작']
+              : [],
         alert: !!cleanup,
         reason: cleanup
           ? '머지됨 · 정리 미완'
@@ -496,36 +531,41 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : 'PR 대기',
         // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
         // (Worker 탭 [취소]와 같은 규약).
-        merge_action: !queued,
+        merge_action: !queued || continuation_required,
         // 게이트가 열렸거나(enabled), 충돌 해소 세션을 띄우는 클릭이거나,
         // 머지된 뒤의 정리 재시도일 때만 누를 수 있다.
         merge_enabled:
           !discard_blocks_merge &&
-          (gate?.enabled === true ||
+          (continuation_required ||
+            gate?.enabled === true ||
             conflicting ||
             cleanup_retry ||
             external_cleanup),
-        merge_label:
-          external_cleanup || cleanup_retry
+        merge_label: continuation_required
+          ? '이어하기 선택'
+          : external_cleanup || cleanup_retry
             ? '정리'
             : conflicting && !cleanup_retry
               ? '충돌 해소 후 머지'
               : undefined,
-        merge_title: discard_blocks_merge
-          ? discard.error
-            ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
-            : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
-          : external_cleanup
-            ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
-            : cleanup_retry
-              ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-              : conflicting
-                ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                : gate?.enabled === true
-                  ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다`
-                  : `머지 불가: ${gate?.reason || '관측 대기'}`,
-        cancel_action: queued,
+        merge_title: continuation_required
+          ? '실행 provider가 변경되었습니다 — 이어갈 방식을 선택하세요'
+          : discard_blocks_merge
+            ? discard.error
+              ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
+              : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
+            : external_cleanup
+              ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+              : cleanup_retry
+                ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+                : conflicting
+                  ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+                  : gate?.enabled === true
+                    ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다`
+                    : `머지 불가: ${gate?.reason || '관측 대기'}`,
+        cancel_action: queued && !continuation_required,
         cancel_enabled: !active,
+        continuation_mismatch: continuation_action?.mismatch || null,
         discard,
         discard_action: discard.action,
         discard_enabled: discard.enabled,
@@ -921,7 +961,16 @@ export function monitorRunningTile(item, now) {
       ${badgeChips(item)}${heartbeatTemplate(item.last_event_at, now)}${idChip(
         item
       )}${repoChip(item)}
-      ${item.model ? html`<span class="mon-c__model">${item.model}</span>` : ''}
+      ${formatAttemptTuple(item)
+        ? html`<span class="mon-c__model">${formatAttemptTuple(item)}</span>`
+        : ''}
+      ${formatContinuationLineage(item)
+        ? html`<span
+            class="rtile__resumed"
+            title=${formatContinuationLineage(item)}
+            >↻</span
+          >`
+        : ''}
       ${elapsed ? html`<span class="mon-live__elapsed">${elapsed}</span>` : ''}
       ${usageChip(item)}${runningOps(item)}${discardReceiptTemplate(item)}
     </div>`;

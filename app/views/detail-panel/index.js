@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
@@ -49,7 +50,7 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @typedef {Object} DetailPanelOptions
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
- * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
+ * @property {{ get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
@@ -394,8 +395,11 @@ export function createDetailPanel(mount_element, options) {
         started_at: typeof a.started_at === 'number' ? a.started_at : null,
         runner: a.runner || null,
         model: a.model || null,
+        effort: a.effort || null,
+        speed: a.speed || null,
         session_id: a.session_id || null,
         resumed_from: a.resumed_from || null,
+        continuation_mode: a.continuation_mode || null,
         dismissed_at:
           typeof a.dismissed_at === 'number' ? a.dismissed_at : null,
         cause: typeof a.cause === 'string' ? a.cause : null,
@@ -491,12 +495,23 @@ export function createDetailPanel(mount_element, options) {
       const q = queueStore ? queueStore.get() : null;
       return q && typeof q.revision === 'number' ? q.revision : 0;
     };
-    let res = /** @type {any} */ (
-      await transport('worker-attempt-resume', {
-        attempt_id,
-        expected_revision: revision()
-      })
-    );
+    /** @param {Record<string, unknown>} extra */
+    const send = async (extra = {}) =>
+      /** @type {any} */ (
+        await transport('worker-attempt-resume', {
+          attempt_id,
+          expected_revision: revision(),
+          ...extra
+        })
+      );
+    /** @param {any} response */
+    const adopt = (response) => {
+      if (response?.queue && queueStore?.set) {
+        queueStore.set(response.queue);
+      }
+    };
+    let res = await send();
+    adopt(res);
     if (res && res.conflict) {
       // The conflict reply carries the authoritative queue; retry once against
       // its revision (the push may not have landed in the store yet).
@@ -510,7 +525,13 @@ export function createDetailPanel(mount_element, options) {
           expected_revision: fresh
         })
       );
+      adopt(res);
     }
+    res = await resolveContinuationMismatch(
+      res,
+      (continuation, decision_token) => send({ continuation, decision_token }),
+      { onResult: adopt, refresh: () => send() }
+    );
     if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
     }

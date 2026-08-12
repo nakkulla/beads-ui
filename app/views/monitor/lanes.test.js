@@ -750,6 +750,43 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.pr_wait[0].merge_label).toBe('충돌 해소 후 머지');
   });
 
+  test('projects a durable continuation decision as an action-required card', () => {
+    const mismatch = {
+      continuation_required: true,
+      prior_available: true,
+      prior: { runner: 'codex' },
+      current: { runner: 'claude' },
+      decision_token: { source_attempt_id: 'a1' }
+    };
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          merge_queue: [
+            {
+              bead_id: 'A-pr',
+              continuation_action: {
+                subject_bead_id: 'A-pr',
+                continuation: null,
+                decision_token: null,
+                mismatch
+              }
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0]).toMatchObject({
+      merge_action: true,
+      merge_enabled: true,
+      merge_label: '이어하기 선택',
+      continuation_mismatch: mismatch
+    });
+    expect(lanes.pr_wait[0].badges).toContain('이어하기 선택 필요');
+  });
+
   test('enables merge as a cleanup retry on a merged gate with a recorded failure', () => {
     const lanes = buildLanes(
       [

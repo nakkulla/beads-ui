@@ -331,6 +331,30 @@ describe('session-history token usage (UI-d7pw §2.2)', () => {
 });
 
 describe('session-history preset audit', () => {
+  test('renders the attempt tuple and session-continuation lineage', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'a1',
+          status: 'done',
+          runner: 'codex',
+          model: 'sol',
+          effort: 'xhigh',
+          speed: 'fast',
+          resumed_from: 'a0',
+          continuation_mode: 'session'
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__meta')?.textContent).toBe(
+      'codex · sol · xhigh · Fast'
+    );
+    expect(
+      host.querySelector('.detail-session__resumed')?.getAttribute('title')
+    ).toBe('session 이어받음 (from a0)');
+  });
+
   test('renders outer preset provenance without claiming a child execution model', () => {
     const host = mount(
       sessionHistoryTemplate([

@@ -6217,3 +6217,29 @@ html[data-theme='dark'] {
   color: var(--text-dim);
   font-size: var(--fs-caption);
 }
+.continuation-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-10);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 35%);
+}
+
+.continuation-dialog::backdrop {
+  background: rgb(0 0 0 / 48%);
+}
+
+.continuation-dialog h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1rem;
+}
+
+.continuation-dialog p {
+  margin: 0 0 1rem;
+  color: var(--text-muted);
+}
+
+.continuation-dialog button {
+  margin: 0.25rem 0.35rem 0 0;
+}

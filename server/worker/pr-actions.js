@@ -133,6 +133,7 @@ export const CLEANUP_STEPS = [
  * did to the local checkout, when a cleanup ran.
  * @property {string|null} [attempt_id] - The resolution attempt, when dispatched.
  * @property {string|null} [head_sha] - The sha the decision was taken on.
+ * @property {Record<string, unknown>|null} [continuation_mismatch]
  */
 
 /**
@@ -204,7 +205,7 @@ function authoritativeMergeSha(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
@@ -2472,26 +2473,50 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
-  async function dispatchResolution(bead_id, head_sha, resolution_wait = null) {
+  async function dispatchResolution(
+    bead_id,
+    head_sha,
+    resolution_wait = null,
+    continuation
+  ) {
     // Resolving is not merging: drop the progress BEFORE the session appears,
     // so the row goes back to its ordinary conflict state rather than showing a
     // merge that is not happening.
     clearStep(bead_id);
-    const r = resolution_wait
-      ? await deps.scheduler.resolveConflict(
-          workspace,
-          bead_id,
-          resolution_wait
-        )
-      : await deps.scheduler.resolveConflict(workspace, bead_id);
+    let r;
+    if (resolution_wait && continuation) {
+      r = await deps.scheduler.resolveConflict(
+        workspace,
+        bead_id,
+        resolution_wait,
+        continuation
+      );
+    } else if (resolution_wait) {
+      r = await deps.scheduler.resolveConflict(
+        workspace,
+        bead_id,
+        resolution_wait
+      );
+    } else if (continuation) {
+      r = await deps.scheduler.resolveConflict(
+        workspace,
+        bead_id,
+        null,
+        continuation
+      );
+    } else {
+      r = await deps.scheduler.resolveConflict(workspace, bead_id);
+    }
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
       action: 'conflict_resolution',
       reason: r.ok ? null : r.reason || 'resolution_refused',
       attempt_id: r.attempt_id || null,
+      continuation_mismatch: r.continuation_mismatch || null,
       head_sha
     };
   }
@@ -2506,33 +2531,55 @@ export function createPrActions(deps) {
    * @param {string} head_sha
    * @param {string} base_ref - The base branch this click OBSERVED on the PR.
    * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
   async function dispatchExternalResolution(
     bead_id,
     head_sha,
     base_ref,
-    resolution_wait = null
+    resolution_wait = null,
+    continuation
   ) {
     clearStep(bead_id);
-    const r = resolution_wait
-      ? await deps.scheduler.dispatchExternalConflict(
-          workspace,
-          bead_id,
-          base_ref,
-          resolution_wait
-        )
-      : await deps.scheduler.dispatchExternalConflict(
-          workspace,
-          bead_id,
-          base_ref
-        );
+    let r;
+    if (resolution_wait && continuation) {
+      r = await deps.scheduler.dispatchExternalConflict(
+        workspace,
+        bead_id,
+        base_ref,
+        resolution_wait,
+        continuation
+      );
+    } else if (resolution_wait) {
+      r = await deps.scheduler.dispatchExternalConflict(
+        workspace,
+        bead_id,
+        base_ref,
+        resolution_wait
+      );
+    } else if (continuation) {
+      r = await deps.scheduler.dispatchExternalConflict(
+        workspace,
+        bead_id,
+        base_ref,
+        null,
+        continuation
+      );
+    } else {
+      r = await deps.scheduler.dispatchExternalConflict(
+        workspace,
+        bead_id,
+        base_ref
+      );
+    }
     notifyChanged(workspace);
     return {
       ok: !!r.ok,
       action: 'conflict_resolution',
       reason: r.ok ? null : r.reason || 'resolution_refused',
       attempt_id: r.attempt_id || null,
+      continuation_mismatch: r.continuation_mismatch || null,
       head_sha
     };
   }
@@ -2545,9 +2592,15 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {{ head_sha: string, base_ref: string|null }} approved
    * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
-  async function dispatchConflict(bead_id, approved, resolution_wait = null) {
+  async function dispatchConflict(
+    bead_id,
+    approved,
+    resolution_wait = null,
+    continuation
+  ) {
     if (in_flight.has(bead_id)) {
       return refuse('action_in_flight');
     }
@@ -2573,13 +2626,15 @@ export function createPrActions(deps) {
           bead_id,
           latest.head_sha || '',
           latest.base_ref || '',
-          resolution_wait
+          resolution_wait,
+          continuation
         );
       }
       return dispatchResolution(
         bead_id,
         latest.head_sha || '',
-        resolution_wait
+        resolution_wait,
+        continuation
       );
     } finally {
       in_flight.delete(bead_id);

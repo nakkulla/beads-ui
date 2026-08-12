@@ -39,6 +39,7 @@
  *
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
  */
+import { createHash } from 'node:crypto';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { isWorkerSerial } from '../../app/utils/worker-serial.js';
 import { debug } from '../logging.js';
@@ -46,6 +47,7 @@ import { observeBaseDrift } from './base-drift.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import * as default_guard_hook from './guard-hook.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
+import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import * as default_usage_receipts from './usage-receipts.js';
 
@@ -71,6 +73,69 @@ export const PID_START_TOLERANCE_MS = 2000;
  * @type {number}
  */
 const CAUSE_DETAIL_COMMAND_MAX = 512;
+
+/**
+ * Serialize a decision-binding value without depending on object insertion
+ * order. Decision tokens cross a WebSocket boundary, so JSON.stringify() on
+ * caller-provided objects is not a stable identity check.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function canonicalContinuationJson(value) {
+  if (value === null) {
+    return 'null';
+  }
+  if (typeof value === 'string' || typeof value === 'boolean') {
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? JSON.stringify(value) : 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalContinuationJson).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    const record = /** @type {Record<string, unknown>} */ (value);
+    return `{${Object.keys(record)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalContinuationJson(record[key])}`
+      )
+      .join(',')}}`;
+  }
+  return 'null';
+}
+
+/** @param {unknown} value */
+function continuationDigest(value) {
+  return createHash('sha256')
+    .update(canonicalContinuationJson(value))
+    .digest('hex');
+}
+
+/**
+ * Require the exact small server-issued token shape. This is deliberately not
+ * a generic deep-equality helper: unknown keys and coerced values must never
+ * make a stale continuation look current.
+ *
+ * @param {unknown} supplied
+ * @param {Record<string, string|number|null>} expected
+ */
+function matchesDecisionToken(supplied, expected) {
+  if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) {
+    return false;
+  }
+  const actual = /** @type {Record<string, unknown>} */ (supplied);
+  const expected_keys = Object.keys(expected).sort();
+  if (
+    Object.keys(actual).sort().join('\u0000') !== expected_keys.join('\u0000')
+  ) {
+    return false;
+  }
+  return expected_keys.every((key) => actual[key] === expected[key]);
+}
 
 /**
  * Attempt statuses that mean the attempt is over. The lifecycle vocabulary is
@@ -291,12 +356,12 @@ function staleDispatchPrompt(bead_id, stale) {
  *   tick: (workspace: string) => Promise<void>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
- *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
- *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
- *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }>,
- *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
+ *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
@@ -819,18 +884,101 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Capture the exact metadata values an attempt temporarily overlays. A null
+   * value means the key was absent and must be unset during cleanup.
+   *
+   * @param {string} bead_id
+   * @param {string[]} keys
+   * @returns {Promise<{ ok: true, values: Record<string, string|null> }|{ ok: false }>}
+   */
+  async function captureExecRestoreValues(bead_id, keys) {
+    /** @type {Record<string, string|null>} */
+    const values = {};
+    for (const key of keys) {
+      try {
+        const value = await deps.bd.readMetadata(bead_id, key);
+        values[key] = typeof value === 'string' ? value : null;
+      } catch {
+        // An unreadable value is not evidence of absence. Continuing would
+        // later unset user metadata during cleanup, so the caller must refuse
+        // before prerecording, stamping, or spawning.
+        return { ok: false };
+      }
+    }
+    return { ok: true, values };
+  }
+
+  /**
+   * Restore a finished attempt's temporary overlay before resolving settings
+   * for a substitute launch. Unlike terminal best-effort cleanup, this path
+   * requires exact readback because the next resolver will treat the restored
+   * values as user-owned input.
+   *
+   * @param {string} bead_id
+   * @param {string|null} workflow_mode_prior
+   * @param {string[]|null|undefined} keys
+   * @param {Record<string, string|null>|null} restore_values
+   */
+  async function restoreAttemptOverlayForRelaunch(
+    bead_id,
+    workflow_mode_prior,
+    keys,
+    restore_values
+  ) {
+    try {
+      await revertWorkflowMode(bead_id, workflow_mode_prior);
+      const workflow_readback = await deps.bd.readMetadata(
+        bead_id,
+        'workflow_mode'
+      );
+      if (
+        (typeof workflow_mode_prior === 'string' &&
+          workflow_readback !== workflow_mode_prior) ||
+        (workflow_mode_prior === null && typeof workflow_readback === 'string')
+      ) {
+        return false;
+      }
+      for (const key of Array.isArray(keys) ? keys : []) {
+        const prior = restore_values?.[key] ?? null;
+        if (typeof prior === 'string') {
+          await deps.bd.setMetadata(bead_id, key, prior);
+        } else {
+          await deps.bd.unsetMetadata(bead_id, key);
+        }
+        const readback = await deps.bd.readMetadata(bead_id, key);
+        if (
+          (typeof prior === 'string' && readback !== prior) ||
+          (prior === null && typeof readback === 'string')
+        ) {
+          return false;
+        }
+      }
+    } catch (err) {
+      log(
+        'attempt overlay restore failed before relaunch for %s: %o',
+        bead_id,
+        err
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Persist a complete attempt before its first metadata write. A failed CAS or
    * persistence write means the launch has no durable cleanup/provenance record
    * and must stop before it can stamp or spawn.
    *
    * @param {string} workspace
    * @param {any} attempt
+   * @param {number} [expected_revision]
    */
-  function prerecordAttempt(workspace, attempt) {
+  function prerecordAttempt(workspace, attempt, expected_revision) {
     try {
       return (
         deps.store.appendAttempt(workspace, {
-          expected_revision: deps.store.snapshot(workspace).revision,
+          expected_revision:
+            expected_revision ?? deps.store.snapshot(workspace).revision,
           attempt
         }).ok === true
       );
@@ -845,15 +993,22 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {any} attempt
    * @param {{ queue_bead_id: string, wait_ms: number }} resolution_wait
+   * @param {number} [expected_revision]
    */
-  function prerecordResolutionAttempt(workspace, attempt, resolution_wait) {
+  function prerecordResolutionAttempt(
+    workspace,
+    attempt,
+    resolution_wait,
+    expected_revision
+  ) {
     if (typeof deps.store.appendResolutionAttempt !== 'function') {
       return false;
     }
     try {
       return (
         deps.store.appendResolutionAttempt(workspace, {
-          expected_revision: deps.store.snapshot(workspace).revision,
+          expected_revision:
+            expected_revision ?? deps.store.snapshot(workspace).revision,
           queue_bead_id: resolution_wait.queue_bead_id,
           subject_bead_id: attempt.bead_id,
           wait_ms: resolution_wait.wait_ms,
@@ -875,19 +1030,26 @@ export function createScheduler(deps) {
    * @param {any} attempt
    * @param {boolean} completion_resume
    * @param {{ queue_bead_id: string, wait_ms: number }|null} resolution_wait
+   * @param {number} [expected_revision]
    */
   function prerecordRelaunchAttempt(
     workspace,
     prior,
     attempt,
     completion_resume,
-    resolution_wait = null
+    resolution_wait = null,
+    expected_revision
   ) {
     if (resolution_wait) {
-      return prerecordResolutionAttempt(workspace, attempt, resolution_wait);
+      return prerecordResolutionAttempt(
+        workspace,
+        attempt,
+        resolution_wait,
+        expected_revision
+      );
     }
     if (!completion_resume) {
-      return prerecordAttempt(workspace, attempt);
+      return prerecordAttempt(workspace, attempt, expected_revision);
     }
     const completion_owned =
       prior.completion_root_id != null ||
@@ -895,7 +1057,7 @@ export function createScheduler(deps) {
       prior.completion_mode != null ||
       prior.completion_failure_key != null;
     if (!completion_owned) {
-      return prerecordAttempt(workspace, attempt);
+      return prerecordAttempt(workspace, attempt, expected_revision);
     }
     if (typeof deps.store.appendResumedCompletionAttempt !== 'function') {
       return false;
@@ -903,7 +1065,8 @@ export function createScheduler(deps) {
     try {
       return (
         deps.store.appendResumedCompletionAttempt(workspace, {
-          expected_revision: deps.store.snapshot(workspace).revision,
+          expected_revision:
+            expected_revision ?? deps.store.snapshot(workspace).revision,
           source_attempt_id: prior.attempt_id,
           attempt
         }).ok === true
@@ -1383,14 +1546,20 @@ export function createScheduler(deps) {
    *
    * @param {string} bead_id
    * @param {string[]|null|undefined} keys
+   * @param {Record<string, string|null>|null} [restore_values]
    */
-  async function revertExecStamps(bead_id, keys) {
+  async function revertExecStamps(bead_id, keys, restore_values = null) {
     if (!Array.isArray(keys)) {
       return;
     }
     for (const key of keys) {
       try {
-        await deps.bd.unsetMetadata(bead_id, key);
+        const prior = restore_values?.[key];
+        if (typeof prior === 'string') {
+          await deps.bd.setMetadata(bead_id, key, prior);
+        } else {
+          await deps.bd.unsetMetadata(bead_id, key);
+        }
       } catch (err) {
         log('exec stamp revert failed for %s %s: %o', bead_id, key, err);
       }
@@ -1438,6 +1607,19 @@ export function createScheduler(deps) {
   function execStampedKeysOf(workspace, attempt_id) {
     const a = deps.store.snapshot(workspace).attempts[attempt_id];
     return a && Array.isArray(a.exec_stamped_keys) ? a.exec_stamped_keys : null;
+  }
+
+  /**
+   * @param {string} workspace - Workspace path.
+   * @param {string} attempt_id - Attempt identifier.
+   */
+  function execRestoreValuesOf(workspace, attempt_id) {
+    const a = deps.store.snapshot(workspace).attempts[attempt_id];
+    return a &&
+      a.exec_restore_values &&
+      typeof a.exec_restore_values === 'object'
+      ? a.exec_restore_values
+      : null;
   }
 
   /**
@@ -1844,7 +2026,11 @@ export function createScheduler(deps) {
       log('workflow_mode revert failed for %s: %o', bead_id, err);
     }
     // Revert any exec-setting stamps this attempt wrote (best-effort).
-    await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
+    await revertExecStamps(
+      bead_id,
+      execStampedKeysOf(workspace, attempt_id),
+      execRestoreValuesOf(workspace, attempt_id)
+    );
     deps.store.setAutoAdvance(workspace, false);
     // STRICTLY after the halt: reopening the bead makes it dispatchable again,
     // so a tick raised by a sibling attempt finishing concurrently must already
@@ -2067,7 +2253,8 @@ export function createScheduler(deps) {
         }
         await revertExecStamps(
           bead_id,
-          execStampedKeysOf(workspace, attempt_id)
+          execStampedKeysOf(workspace, attempt_id),
+          execRestoreValuesOf(workspace, attempt_id)
         );
         deps.store.updateAttempt(workspace, {
           attempt_id,
@@ -2120,7 +2307,8 @@ export function createScheduler(deps) {
         // never blocks the lane move).
         await revertExecStamps(
           bead_id,
-          execStampedKeysOf(workspace, attempt_id)
+          execStampedKeysOf(workspace, attempt_id),
+          execRestoreValuesOf(workspace, attempt_id)
         );
         if (vr.already_finished) {
           // The PR was observed MERGED and bd already held the bead `closed`
@@ -2325,7 +2513,11 @@ export function createScheduler(deps) {
       await tick(workspace);
       return;
     }
-    await revertExecStamps(bead_id, execStampedKeysOf(workspace, attempt_id));
+    await revertExecStamps(
+      bead_id,
+      execStampedKeysOf(workspace, attempt_id),
+      execRestoreValuesOf(workspace, attempt_id)
+    );
     // The disposition writes `open` itself; this only covers a session that
     // claimed the bead `in_progress` and ended without giving it back.
     await releaseBeadClaim(bead_id);
@@ -2401,6 +2593,15 @@ export function createScheduler(deps) {
     record,
     verdict
   ) {
+    const restored = await restoreAttemptOverlayForRelaunch(
+      bead_id,
+      record.workflow_mode_prior ?? null,
+      record.exec_stamped_keys,
+      record.exec_restore_values ?? null
+    );
+    if (!restored) {
+      return false;
+    }
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
@@ -2409,7 +2610,7 @@ export function createScheduler(deps) {
         finished_at: now()
       }
     });
-    /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+    /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
     let relaunched;
     try {
       relaunched = await dispatchReviseFix(workspace, {
@@ -2428,6 +2629,44 @@ export function createScheduler(deps) {
       relaunched = { ok: false, reason: 'error' };
     }
     if (!relaunched.ok) {
+      if (relaunched.continuation_mismatch) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            continuation_action: {
+              mismatch: relaunched.continuation_mismatch,
+              continuation: null
+            }
+          }
+        });
+        const q = deps.store.snapshot(workspace);
+        const queue_bead_id = q.merge_queue?.find(
+          (/** @type {any} */ entry) => {
+            if (entry.bead_id === bead_id) {
+              return true;
+            }
+            return (
+              q.completion_intents?.[entry.bead_id]?.subject?.bead_id ===
+              bead_id
+            );
+          }
+        )?.bead_id;
+        if (queue_bead_id) {
+          const persisted = deps.store.requireMergeContinuation(workspace, {
+            bead_id: queue_bead_id,
+            subject_bead_id: bead_id,
+            mismatch: relaunched.continuation_mismatch
+          });
+          if (persisted.ok) {
+            releaseDisposition(bead_id);
+            notifyChanged(workspace);
+            return true;
+          }
+        }
+        releaseDisposition(bead_id);
+        notifyChanged(workspace);
+        return true;
+      }
       log(
         'disposition substitute launch refused for %s: %s',
         bead_id,
@@ -2705,7 +2944,8 @@ export function createScheduler(deps) {
           if (mode_reverted) {
             await revertExecStamps(
               bead_id,
-              execStampedKeysOf(workspace, attempt_id)
+              execStampedKeysOf(workspace, attempt_id),
+              execRestoreValuesOf(workspace, attempt_id)
             );
             deps.store.updateAttempt(workspace, {
               attempt_id,
@@ -2789,7 +3029,8 @@ export function createScheduler(deps) {
         if (mode_reverted) {
           await revertExecStamps(
             bead_id,
-            execStampedKeysOf(workspace, attempt_id)
+            execStampedKeysOf(workspace, attempt_id),
+            execRestoreValuesOf(workspace, attempt_id)
           );
           // A recovered normal completion must NOT stop the queue:
           // `auto_advance` is deliberately untouched on this branch.
@@ -3118,11 +3359,29 @@ export function createScheduler(deps) {
         return;
       }
 
-      // DURABLE pre-record before the FIRST metadata write. It carries the whole
-      // effective 12-key snapshot, separate from the subset the worker will
-      // stamp, so restart/reconcile and every relaunch have exact provenance.
+      // Capture exact pre-overlay values before the durable attempt record.
+      // Without this snapshot, terminal cleanup could erase user-owned values.
       const stamped_keys = exec.stamped_keys;
       const exec_values = execValuesFor(exec);
+      const restore_capture = await captureExecRestoreValues(
+        bead_id,
+        stamped_keys
+      );
+      if (!restore_capture.ok) {
+        reservation.release();
+        removeGuardHook(workspace, attempt_id);
+        try {
+          await deps.worktree.remove({ repo: snap.repo, bead_id });
+        } catch {
+          // The visible refusal remains the recovery evidence.
+        }
+        refuseDispatch(workspace, bead_id, 'exec_restore_capture_failed');
+        return;
+      }
+      const exec_restore_values = restore_capture.values;
+
+      // DURABLE pre-record before the FIRST metadata write. It carries the whole
+      // effective 12-key snapshot and exact cleanup provenance.
       if (
         !prerecordAttempt(workspace, {
           attempt_id,
@@ -3135,6 +3394,7 @@ export function createScheduler(deps) {
           exec_default_preset_revision: resolved_exec.preset_revision,
           exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
           exec_values,
+          exec_restore_values,
           spec_review_stale: !!adm.stale,
           worker_serial: isWorkerSerial(snap.labels),
           status: 'running',
@@ -3255,7 +3515,11 @@ export function createScheduler(deps) {
               attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
           }
         });
-        await revertExecStamps(bead_id, attempted_stamped_keys);
+        await revertExecStamps(
+          bead_id,
+          attempted_stamped_keys,
+          exec_restore_values
+        );
         deps.store.updateAttempt(workspace, {
           attempt_id,
           patch: {
@@ -3533,7 +3797,11 @@ export function createScheduler(deps) {
       // bounded SIGKILL escalation) before dropping the hook and ownership.
       removeGuardHook(workspace, attempt_id);
       usage_receipts.removeEmptyUsageReceiptInbox(workspace, attempt_id);
-      await revertExecStamps(bead_id, stamped_keys);
+      await revertExecStamps(
+        bead_id,
+        stamped_keys,
+        execRestoreValuesOf(workspace, attempt_id)
+      );
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: { status: 'failed', cause: spawn_failure, finished_at: now() }
@@ -3706,11 +3974,10 @@ export function createScheduler(deps) {
    * (spec §1, extended by worker-phase1 §1.2). Fail-closed with five refusal
    * reasons (admission-badge convention): `not_failed` · `no_session_id` ·
    * `worktree_missing` · `bead_running` · `already_resumed`
-   * (`runner_unavailable` is retired with the runner axis — claude is the only
-   * runner). A NEW attempt is minted carrying `resumed_from`, the PRIOR snapshot
-   * is inherited verbatim (no re-resolution of globals), workflow_mode + exec
-   * are re-stamped from the prior values, and the shared launch tail spawns the
-   * adapter's resume argv.
+   * A NEW attempt is minted carrying `resumed_from`. Its effective settings
+   * are resolved from the current Bead/default preset before any state change;
+   * same-runner auto resumes the provider session, while a runner mismatch
+   * requires an explicit token-bound decision.
    *
    * The breaker-reset branch (worker-phase1 §1.3) is gone with the breaker
    * itself (worker-phase2 §2): there is no repo-level block for a resume to
@@ -3718,9 +3985,10 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
-  async function resume(workspace, attempt_id) {
+  async function resume(workspace, attempt_id, continuation = {}) {
     const q = deps.store.snapshot(workspace);
     const prior = q.attempts ? q.attempts[attempt_id] : null;
 
@@ -3741,10 +4009,6 @@ export function createScheduler(deps) {
     }
     if (discardActive(q, { bead_id: prior.bead_id, attempt_id })) {
       return { ok: false, reason: 'discard_in_progress' };
-    }
-    // no_session_id: a pre-UI-azj6 attempt without a captured session id.
-    if (typeof prior.session_id !== 'string' || prior.session_id.length === 0) {
-      return { ok: false, reason: 'no_session_id' };
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
@@ -3795,7 +4059,10 @@ export function createScheduler(deps) {
     const result = await relaunchFromAttempt(workspace, prior, {
       prompt: resumePrompt(bead_id, prior.status ?? null),
       conflict_resolution: prior.conflict_resolution === true,
-      completion_resume: true
+      completion_resume: true,
+      continuation: continuation.continuation,
+      decision_token: continuation.decision_token,
+      bead_snapshot: snap
     });
     if (result.ok) {
       const cleared = deps.store.clearAdmission(workspace, bead_id);
@@ -3855,9 +4122,15 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
-   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
-  async function resolveConflict(workspace, bead_id, resolution_wait = null) {
+  async function resolveConflict(
+    workspace,
+    bead_id,
+    resolution_wait = null,
+    continuation = {}
+  ) {
     if (
       resolution_wait &&
       queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
@@ -3913,32 +4186,10 @@ export function createScheduler(deps) {
     return relaunchFromAttempt(workspace, source, {
       prompt: conflictPrompt(bead_id, target_base),
       conflict_resolution: true,
-      resolution_wait
+      resolution_wait,
+      continuation: continuation.continuation,
+      decision_token: continuation.decision_token
     });
-  }
-
-  /**
-   * The MOST RECENT attempt of `bead_id`, or null when the bead has none.
-   *
-   * The store's attempt map is insertion-ordered by launch, so the last match is
-   * the latest attempt — and it is the latest one that says which CLI (and which
-   * model) wrote the branch this bead's next session continues.
-   *
-   * @param {string} workspace
-   * @param {string} bead_id
-   * @returns {any}
-   */
-  function lastAttemptOf(workspace, bead_id) {
-    /** @type {any} */
-    let last = null;
-    const attempts = deps.store.snapshot(workspace).attempts || {};
-    for (const attempt of Object.values(attempts)) {
-      const a = /** @type {any} */ (attempt);
-      if (a && a.bead_id === bead_id) {
-        last = a;
-      }
-    }
-    return last;
   }
 
   /**
@@ -3994,6 +4245,28 @@ export function createScheduler(deps) {
   }
 
   /**
+   * The latest attempt minted by this external-conflict dispatcher. A generic
+   * historical attempt must not turn the first external resolution into a
+   * relaunch; only a prior external resolver establishes that lineage.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {any}
+   */
+  function lastExternalConflictAttemptOf(workspace, bead_id) {
+    /** @type {any} */
+    let last = null;
+    const attempts = deps.store.snapshot(workspace).attempts || {};
+    for (const attempt of Object.values(attempts)) {
+      const a = /** @type {any} */ (attempt);
+      if (a && a.bead_id === bead_id && a.external_conflict === true) {
+        last = a;
+      }
+    }
+    return last;
+  }
+
+  /**
    * Dispatch a conflict-resolution session for an EXTERNAL PR row (UI-w0hi §1):
    * a bead an ordinary session delivered a PR for, which the durable lanes and
    * the attempt registry never held.
@@ -4026,13 +4299,15 @@ export function createScheduler(deps) {
    * @param {string} [target_base] - The base branch the CLICK observed on the
    * PR (pr-actions §2); empty/absent falls back to `main`.
    * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchExternalConflict(
     workspace,
     bead_id,
     target_base,
-    resolution_wait = null
+    resolution_wait = null,
+    continuation = {}
   ) {
     if (
       resolution_wait &&
@@ -4077,7 +4352,24 @@ export function createScheduler(deps) {
       typeof target_base === 'string' && target_base.length > 0
         ? target_base
         : 'main';
-    const prior_attempt = lastAttemptOf(workspace, bead_id);
+    const prior_attempt = lastExternalConflictAttemptOf(workspace, bead_id);
+    // The first observed external conflict has no durable source session and
+    // remains a fresh dispatch. A later conflict is attempt-derived and must
+    // cross the same current-resolution / mismatch boundary as every other
+    // relaunch.
+    if (prior_attempt) {
+      return relaunchFromAttempt(workspace, prior_attempt, {
+        prompt: conflictPrompt(bead_id, base),
+        conflict_resolution: true,
+        external_conflict: true,
+        resolution_wait,
+        resume:
+          typeof prior_attempt.session_id === 'string' &&
+          prior_attempt.session_id.length > 0,
+        continuation: continuation.continuation,
+        decision_token: continuation.decision_token
+      });
+    }
     /** @type {string} */
     let runner_name;
     /** @type {string|null} */
@@ -4094,90 +4386,59 @@ export function createScheduler(deps) {
     let preset_id;
     /** @type {number|null} */
     let preset_revision;
-    if (prior_attempt) {
-      // A prior external attempt is one lineage: preset reads are forbidden so
-      // an update/delete cannot change either its metadata or its actual CLI.
-      exec_values =
-        prior_attempt.exec_values &&
-        typeof prior_attempt.exec_values === 'object'
-          ? /** @type {Record<string, string|null>} */ (
-              prior_attempt.exec_values
-            )
-          : null;
-      runner_name =
-        typeof prior_attempt.runner === 'string' && prior_attempt.runner.length
-          ? prior_attempt.runner
-          : 'claude';
-      launch_model =
-        typeof prior_attempt.model === 'string'
-          ? prior_attempt.model
-          : (exec_values?.orchestration_model ?? null);
-      launch_effort =
-        typeof prior_attempt.effort === 'string'
-          ? prior_attempt.effort
-          : (exec_values?.orchestration_effort ?? null);
-      launch_speed =
-        typeof prior_attempt.speed === 'string'
-          ? prior_attempt.speed
-          : 'default';
-      stamped_keys = Array.isArray(prior_attempt.exec_stamped_keys)
-        ? prior_attempt.exec_stamped_keys
-        : [];
-      preset_id = prior_attempt.exec_default_preset_id ?? null;
-      preset_revision = prior_attempt.exec_default_preset_revision ?? null;
-    } else {
-      const resolved_exec = resolveDispatchSettings(workspace, snap);
-      if (!resolved_exec.ok) {
-        return { ok: false, reason: resolved_exec.reason };
-      }
-      const exec = resolved_exec.exec;
-      if (exec.invalid_reason) {
-        return { ok: false, reason: exec.invalid_reason };
-      }
-      runner_name = exec.runner;
-      launch_model = exec.orchestration_model ?? null;
-      launch_effort = exec.orchestration_effort ?? null;
-      launch_speed = exec.orchestration_speed ?? 'default';
-      stamped_keys = exec.stamped_keys;
-      exec_values = execValuesFor(exec);
-      preset_id = resolved_exec.preset_id;
-      preset_revision = resolved_exec.preset_revision;
+    const resolved_exec = resolveDispatchSettings(workspace, snap);
+    if (!resolved_exec.ok) {
+      return { ok: false, reason: resolved_exec.reason };
     }
+    const exec = resolved_exec.exec;
+    if (exec.invalid_reason) {
+      return { ok: false, reason: exec.invalid_reason };
+    }
+    runner_name = exec.runner;
+    launch_model = exec.orchestration_model ?? null;
+    launch_effort = exec.orchestration_effort ?? null;
+    launch_speed = exec.orchestration_speed ?? 'default';
+    stamped_keys = exec.stamped_keys;
+    exec_values = execValuesFor(exec);
+    preset_id = resolved_exec.preset_id;
+    preset_revision = resolved_exec.preset_revision;
+    const restore_capture = await captureExecRestoreValues(
+      bead_id,
+      stamped_keys
+    );
+    if (!restore_capture.ok) {
+      return { ok: false, reason: 'exec_restore_capture_failed' };
+    }
+    const exec_restore_values = restore_capture.values;
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
-    let worker_serial = prior_attempt
-      ? prior_attempt.worker_serial === true
-      : isWorkerSerial(snap.labels);
+    let worker_serial = isWorkerSerial(snap.labels);
     const serial_launch = await preflightWorkerSerialLaunch(workspace, {
       bead_id,
       worker_serial,
-      serial_lineage_id: prior_attempt
-        ? serialLineageId(prior_attempt) || bead_id
-        : bead_id,
-      continuation: !!prior_attempt
+      serial_lineage_id: bead_id,
+      continuation: false
     });
     if (!serial_launch.ok) {
       return { ok: false, reason: serial_launch.reason };
     }
     const serial_lease = serial_launch.lease;
-    if (!prior_attempt) {
-      try {
-        snap = await deps.bd.snapshotBead(bead_id);
-      } catch {
-        serial_lease.release();
-        return { ok: false, reason: 'bd_snapshot_failed' };
-      }
-      worker_serial = isWorkerSerial(snap.labels);
-      const revalidated = serial_lease.revalidate({
-        bead_id,
-        worker_serial,
-        serial_lineage_id: bead_id,
-        continuation: false
-      });
-      if (!revalidated.ok) {
-        serial_lease.release();
-        return { ok: false, reason: revalidated.reason };
-      }
+    try {
+      snap = await deps.bd.snapshotBead(bead_id);
+    } catch {
+      serial_lease.release();
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    worker_serial = isWorkerSerial(snap.labels);
+    const revalidated = serial_lease.revalidate({
+      bead_id,
+      worker_serial,
+      serial_lineage_id: bead_id,
+      continuation: false
+    });
+    if (!revalidated.ok) {
+      serial_lease.release();
+      return { ok: false, reason: revalidated.reason };
     }
     try {
       // An external-PR resolution is a CONFLICT session (spec §2 적용 범위: every
@@ -4224,6 +4485,7 @@ export function createScheduler(deps) {
         exec_default_preset_revision: preset_revision,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values,
+        exec_restore_values,
         worker_serial,
         conflict_resolution: true,
         external_conflict: true,
@@ -4327,7 +4589,11 @@ export function createScheduler(deps) {
             attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
         }
       });
-      await revertExecStamps(bead_id, attempted_stamped_keys);
+      await revertExecStamps(
+        bead_id,
+        attempted_stamped_keys,
+        execRestoreValuesOf(workspace, attempt_id)
+      );
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
@@ -4383,11 +4649,9 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Shared relaunch tail for a manual resume AND a conflict-resolution dispatch:
-   * mint a child attempt inheriting the source snapshot verbatim, re-stamp
-   * workflow_mode + the exec keys from the PRIOR values, and hand off to the
-   * launch tail with the adapter's `--resume` argv. Every refusal here is a
-   * recorded FAILED child attempt with the stamps rolled back.
+   * Shared continuation resolver for every attempt-derived launch. It snapshots
+   * current settings and validates any cross-runner decision before the hook,
+   * claim, ancestor settlement, child record, metadata overlay, or spawn.
    *
    * `disposition` marks the child as a REVISE-disposition attempt (UI-hs11
    * §3.3), which changes three things: the record carries the kind (so the
@@ -4397,22 +4661,292 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} prior - The source attempt record (guards already passed).
-   * @param {{ prompt: string, conflict_resolution: boolean, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, completion_resume?: boolean, disposition?: string|null, disposition_receipt?: string|null, cwd?: string|null, resume?: boolean }} options
-   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+   * @param {any} [options]
+   * @returns {Promise<any>}
+   */
+  async function resolveContinuationForAttempt(workspace, prior, options = {}) {
+    const bead_id = prior.bead_id;
+    const recorded_prior_runner =
+      typeof prior.runner === 'string' && prior.runner.length > 0
+        ? prior.runner
+        : null;
+    const prior_exec_complete = !!(
+      prior.exec_values &&
+      typeof prior.exec_values === 'object' &&
+      EXEC_SETTING_KEYS.every(
+        (key) =>
+          Object.hasOwn(prior.exec_values, key) &&
+          (typeof prior.exec_values[key] === 'string' ||
+            prior.exec_values[key] === null)
+      )
+    );
+    const prior_runner_available =
+      recorded_prior_runner !== null && RUNNERS.includes(recorded_prior_runner);
+    let bead_snapshot = options.bead_snapshot;
+    if (!bead_snapshot) {
+      try {
+        bead_snapshot = await deps.bd.snapshotBead(bead_id);
+      } catch {
+        return { ok: false, reason: 'bd_snapshot_failed' };
+      }
+    }
+    const resolved = resolveDispatchSettings(workspace, bead_snapshot);
+    if (!resolved.ok) {
+      return { ok: false, reason: resolved.reason };
+    }
+    if (resolved.exec.invalid_reason) {
+      return { ok: false, reason: resolved.exec.invalid_reason };
+    }
+    const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
+    const requested_decision = options.continuation || 'auto';
+    if (
+      !['auto', 'prior_session', 'fresh_current'].includes(requested_decision)
+    ) {
+      return { ok: false, reason: 'bad_request' };
+    }
+    const current_exec_values = execValuesFor(resolved.exec);
+    const decision_token = {
+      source_attempt_id: prior.attempt_id,
+      source_attempt_digest: continuationDigest({
+        runner: prior_runner,
+        session_id: prior.session_id ?? null,
+        exec_values: prior.exec_values ?? null,
+        resumed_from: prior.resumed_from ?? null
+      }),
+      observed_queue_revision: deps.store.snapshot(workspace).revision,
+      preset_id: resolved.preset_id,
+      preset_revision: resolved.preset_revision,
+      effective_exec_digest: continuationDigest({
+        runner: resolved.exec.runner,
+        model: resolved.exec.orchestration_model ?? null,
+        effort: resolved.exec.orchestration_effort ?? null,
+        speed: resolved.exec.orchestration_speed ?? 'default',
+        exec_values: current_exec_values
+      })
+    };
+    const runner_mismatch = prior_runner !== resolved.exec.runner;
+    // A choice is meaningful only while the provider boundary still exists.
+    // Drift back to the prior runner discards the stale choice and follows the
+    // ordinary current-settings path without reopening a dialog.
+    const decision =
+      requested_decision !== 'auto' && !runner_mismatch
+        ? 'auto'
+        : requested_decision;
+    const mismatch = () => ({
+      reason: 'runner_mismatch',
+      continuation_required: true,
+      prior_available:
+        options.resume !== false &&
+        prior_exec_complete &&
+        prior_runner_available &&
+        typeof prior.session_id === 'string' &&
+        prior.session_id.length > 0,
+      prior: {
+        runner: recorded_prior_runner,
+        model: prior.model ?? null,
+        effort: prior.effort ?? null,
+        speed: prior.speed ?? 'default'
+      },
+      current: {
+        runner: resolved.exec.runner,
+        model: resolved.exec.orchestration_model ?? null,
+        effort: resolved.exec.orchestration_effort ?? null,
+        speed: resolved.exec.orchestration_speed ?? 'default'
+      },
+      decision_token
+    });
+    if (decision === 'auto' && runner_mismatch) {
+      return {
+        ok: false,
+        reason: 'runner_mismatch',
+        continuation_mismatch: mismatch()
+      };
+    }
+    if (
+      decision !== 'auto' &&
+      !matchesDecisionToken(options.decision_token, decision_token)
+    ) {
+      return {
+        ok: false,
+        reason: 'continuation_decision_stale',
+        continuation_mismatch: mismatch()
+      };
+    }
+    const use_prior = decision === 'prior_session';
+    if (
+      use_prior &&
+      (!prior_exec_complete ||
+        !prior_runner_available ||
+        options.resume === false ||
+        typeof prior.session_id !== 'string' ||
+        prior.session_id.length === 0)
+    ) {
+      return {
+        ok: false,
+        reason: 'prior_session_unavailable',
+        continuation_mismatch: mismatch()
+      };
+    }
+    if (
+      decision === 'auto' &&
+      options.resume !== false &&
+      (typeof prior.session_id !== 'string' || prior.session_id.length === 0)
+    ) {
+      return { ok: false, reason: 'no_session_id' };
+    }
+    const runner_name = use_prior
+      ? /** @type {string} */ (prior_runner)
+      : resolved.exec.runner;
+    const launch_model = use_prior
+      ? (prior.model ?? null)
+      : (resolved.exec.orchestration_model ?? null);
+    const launch_effort = use_prior
+      ? (prior.effort ?? null)
+      : (resolved.exec.orchestration_effort ?? null);
+    const launch_speed = use_prior
+      ? (prior.speed ?? 'default')
+      : (resolved.exec.orchestration_speed ?? 'default');
+    const exec_values = use_prior ? prior.exec_values : current_exec_values;
+    if (options.capture_restore === false) {
+      return {
+        ok: true,
+        bead_snapshot,
+        decision,
+        decision_token,
+        runner_mismatch
+      };
+    }
+    const candidate_stamped_keys = use_prior
+      ? EXEC_SETTING_KEYS
+      : resolved.exec.stamped_keys;
+    const restore_capture = await captureExecRestoreValues(
+      bead_id,
+      candidate_stamped_keys
+    );
+    if (!restore_capture.ok) {
+      return { ok: false, reason: 'exec_restore_capture_failed' };
+    }
+    const stamped_keys = use_prior
+      ? EXEC_SETTING_KEYS.filter(
+          (key) => restore_capture.values[key] !== exec_values[key]
+        )
+      : candidate_stamped_keys;
+    /** @type {Record<string, string|null>} */
+    const exec_restore_values = {};
+    for (const key of stamped_keys) {
+      exec_restore_values[key] = restore_capture.values[key];
+    }
+    return {
+      ok: true,
+      bead_snapshot,
+      decision,
+      runner_name,
+      launch_model,
+      launch_effort,
+      launch_speed,
+      exec_values,
+      exec_restore_values,
+      stamped_keys,
+      decision_token,
+      runner_mismatch,
+      preset_id: use_prior
+        ? (prior.exec_default_preset_id ?? null)
+        : resolved.preset_id,
+      preset_revision: use_prior
+        ? (prior.exec_default_preset_revision ?? null)
+        : resolved.preset_revision,
+      continuation_mode:
+        decision === 'fresh_current' || options.resume === false
+          ? 'fresh'
+          : 'session'
+    };
+  }
+
+  /**
+   * Re-read every token input after restore-value capture. This is the final
+   * async preflight before the guard hook, so a changed source, queue revision,
+   * Bead value, or preset cannot cross into a state-changing relaunch.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {any} options
+   * @param {any} continuation
+   */
+  async function revalidateContinuationForAttempt(
+    workspace,
+    prior,
+    options,
+    continuation
+  ) {
+    const live_prior =
+      deps.store.snapshot(workspace).attempts?.[prior.attempt_id];
+    if (!live_prior) {
+      return { ok: false, reason: 'continuation_source_stale' };
+    }
+    const latest = await resolveContinuationForAttempt(workspace, live_prior, {
+      ...options,
+      bead_snapshot: null,
+      capture_restore: false
+    });
+    if (!latest.ok) {
+      return latest;
+    }
+    if (
+      !matchesDecisionToken(continuation.decision_token, latest.decision_token)
+    ) {
+      return { ok: false, reason: 'continuation_settings_changed' };
+    }
+    return {
+      ok: true,
+      expected_revision: latest.decision_token.observed_queue_revision
+    };
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {any} options
    */
   async function relaunchFromAttempt(workspace, prior, options) {
+    const continuation = await resolveContinuationForAttempt(
+      workspace,
+      prior,
+      options
+    );
+    if (!continuation.ok) {
+      return continuation;
+    }
+    return relaunchResolvedAttempt(workspace, prior, options, continuation);
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {any} options
+   * @param {any} continuation
+   */
+  async function relaunchResolvedAttempt(
+    workspace,
+    prior,
+    options,
+    continuation
+  ) {
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
     const attempt_id = prior.attempt_id;
-    // Inherited verbatim like the rest of the snapshot below (§1.3), and for a
-    // sharper reason: the child RESUMES the ancestor's session id, which only
-    // the CLI that minted it can reopen. claude is the fallback for an attempt
-    // written before the field carried a value, not a default.
-    const runner_name =
-      typeof prior.runner === 'string' && prior.runner.length > 0
-        ? prior.runner
-        : 'claude';
-
+    const {
+      bead_snapshot,
+      runner_name,
+      launch_model,
+      launch_effort,
+      launch_speed,
+      exec_values,
+      exec_restore_values,
+      stamped_keys,
+      preset_id,
+      preset_revision,
+      continuation_mode
+    } = continuation;
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
@@ -4426,25 +4960,55 @@ export function createScheduler(deps) {
       return { ok: false, reason: serial_launch.reason };
     }
     const serial_lease = serial_launch.lease;
+    const revalidated = await revalidateContinuationForAttempt(
+      workspace,
+      prior,
+      options,
+      continuation
+    );
+    if (!revalidated.ok) {
+      serial_lease.release();
+      return revalidated;
+    }
+    continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
-      typeof prior.workflow_mode_prior === 'string'
-        ? prior.workflow_mode_prior
+      typeof bead_snapshot.workflow_mode === 'string'
+        ? bead_snapshot.workflow_mode
         : null;
-    const stamped_keys = Array.isArray(prior.exec_stamped_keys)
-      ? prior.exec_stamped_keys
-      : [];
-    const exec_values =
-      prior.exec_values && typeof prior.exec_values === 'object'
-        ? /** @type {Record<string, string|null>} */ (prior.exec_values)
-        : null;
-    const launch_speed =
-      typeof prior.speed === 'string' ? prior.speed : 'default';
+    const relaunch_attempt = {
+      attempt_id: new_attempt_id,
+      bead_id,
+      repo,
+      target_base,
+      base_oid: prior.base_oid ?? null,
+      runner: runner_name,
+      model: launch_model,
+      effort: launch_effort,
+      speed: launch_speed,
+      workflow_mode_prior: prior_wf,
+      exec_default_preset_id: preset_id,
+      exec_default_preset_revision: preset_revision,
+      exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
+      exec_values,
+      exec_restore_values,
+      worker_serial: prior.worker_serial === true,
+      resumed_from: attempt_id,
+      continuation_mode,
+      conflict_resolution: options.conflict_resolution,
+      external_conflict:
+        options.external_conflict === true || prior.external_conflict === true,
+      disposition: options.disposition ?? null,
+      disposition_receipt: options.disposition_receipt ?? null,
+      disposition_resume: options.disposition
+        ? continuation_mode === 'session'
+        : false,
+      disposition_prompt: options.disposition ? options.prompt : null,
+      started_at: options.resolution_wait ? now() : null,
+      status: 'running',
+      pid: null
+    };
+
     try {
-      // Same "before the first state change" rule as the queue dispatch (UI-8mvc
-      // §2): the resume/conflict relaunch installs the child attempt's hook while
-      // the ancestor is still intact and no claim has been taken, so a failure is
-      // a plain refusal. A DISPOSITION child gets no hook — publishing the base
-      // is its job.
       if (
         !options.disposition &&
         !installGuardHook({
@@ -4457,82 +5021,14 @@ export function createScheduler(deps) {
         serial_lease.release();
         return { ok: false, reason: 'guard_hook_install_failed' };
       }
-
-      // The ancestor is spent from here on: nothing can discard it any more, so
-      // its parked `done` promise must not outlive the relaunch — nor do its hook
-      // assets, which a restart-restored `paused` record would otherwise strand
-      // (its `onSessionDone` belongs to a process this one never spawned).
-      //
-      // Which makes THIS the last moment its push record exists (UI-1xcd §4,
-      // implementation review 2026-08-04): a restart-restored ancestor reaches no
-      // other observer, so removing the hook first deleted the only evidence of
-      // what it pushed. The settlement is skipped for an ancestor that already
-      // carries a `base_drift`, because re-observing a hook that is already gone
-      // would overwrite a real record with `push_log_absent`.
-      if (
-        prior.base_drift == null &&
-        (await settleBaseDrift(workspace, attempt_id))
-      ) {
-        // A relaunch on top of a landing would build further work on a violation.
-        // The evidence is durable now, so the assets can go.
-        removeGuardHook(workspace, attempt_id);
-        if (!options.disposition) {
-          removeGuardHook(workspace, new_attempt_id);
-        }
-        serial_lease.release();
-        notifyChanged(workspace);
-        return { ok: false, reason: 'base_landing_detected' };
-      }
-      paused_done.delete(attempt_id);
-      removeGuardHook(workspace, attempt_id);
-      claimed.add(bead_id);
-
-      // Mint the new attempt inheriting the PRIOR snapshot verbatim (§1.3): repo/
-      // target_base/base_oid/runner/model/effort/speed — never re-resolved from current
-      // globals. The retired merge-axis fields are NOT copied forward: history
-      // keeps them on the old record, new attempts stop writing them (§9).
       if (
         !prerecordRelaunchAttempt(
           workspace,
           prior,
-          {
-            attempt_id: new_attempt_id,
-            bead_id,
-            repo,
-            target_base,
-            base_oid: prior.base_oid ?? null,
-            runner: runner_name,
-            model: prior.model ?? null,
-            effort: prior.effort ?? null,
-            speed: launch_speed,
-            workflow_mode_prior: prior_wf,
-            exec_default_preset_id: prior.exec_default_preset_id ?? null,
-            exec_default_preset_revision:
-              prior.exec_default_preset_revision ?? null,
-            exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
-            exec_values,
-            worker_serial: prior.worker_serial === true,
-            resumed_from: attempt_id,
-            conflict_resolution: options.conflict_resolution,
-            // INHERITED, never re-derived (UI-w0hi §1): a child of an external
-            // resolution is still working an external bead, and losing the flag
-            // would send its successful termination down the ordinary arm — which
-            // injects the bead into the durable `pr_wait` lane the external overlay
-            // owns. The identifier has to survive every relaunch, not just a
-            // restart.
-            external_conflict: prior.external_conflict === true,
-            disposition: options.disposition ?? null,
-            disposition_receipt: options.disposition_receipt ?? null,
-            disposition_resume: options.disposition
-              ? options.resume !== false
-              : false,
-            disposition_prompt: options.disposition ? options.prompt : null,
-            started_at: options.resolution_wait ? now() : null,
-            status: 'running',
-            pid: null
-          },
+          relaunch_attempt,
           options.completion_resume === true,
-          options.resolution_wait ?? null
+          options.resolution_wait ?? null,
+          continuation.expected_revision
         )
       ) {
         serial_lease.release();
@@ -4545,16 +5041,37 @@ export function createScheduler(deps) {
     } finally {
       serial_lease.release();
     }
+    if (
+      prior.base_drift == null &&
+      (await settleBaseDrift(workspace, attempt_id))
+    ) {
+      deps.store.updateAttempt(workspace, {
+        attempt_id: new_attempt_id,
+        patch: {
+          status: 'failed',
+          cause: 'base_landing_detected',
+          finished_at: now()
+        }
+      });
+      removeGuardHook(workspace, attempt_id);
+      if (!options.disposition) {
+        removeGuardHook(workspace, new_attempt_id);
+      }
+      notifyChanged(workspace);
+      await reportCompletionSettlement(workspace, new_attempt_id, null);
+      return { ok: false, reason: 'base_landing_detected' };
+    }
+    paused_done.delete(attempt_id);
+    removeGuardHook(workspace, attempt_id);
+    claimed.add(bead_id);
 
-    // Re-stamp workflow_mode=fast_track from the PRIOR snapshot (set + readback).
     let mode_ok = false;
     try {
       await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-      const rb = await deps.bd.readMetadata(bead_id, 'workflow_mode');
-      mode_ok = rb === 'fast_track';
+      mode_ok =
+        (await deps.bd.readMetadata(bead_id, 'workflow_mode')) === 'fast_track';
     } catch (err) {
       log('resume workflow_mode set/readback failed for %s: %o', bead_id, err);
-      mode_ok = false;
     }
     if (!mode_ok) {
       deps.store.updateAttempt(workspace, {
@@ -4574,7 +5091,7 @@ export function createScheduler(deps) {
       try {
         await revertWorkflowMode(bead_id, prior_wf);
       } catch {
-        // Best-effort: bd may be down; the failed record already reflects it.
+        // The failed attempt remains the durable recovery evidence.
       }
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
@@ -4583,20 +5100,23 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
-    // Re-stamp the exec keys with the PRIOR values (set + confirming readback).
     let exec_ok = true;
     /** @type {string[]} */
     const attempted_stamped_keys = [];
     for (const key of stamped_keys) {
-      const value = exec_values?.[key];
-      if (typeof value !== 'string') {
-        continue;
-      }
+      const value = exec_values?.[key] ?? null;
       attempted_stamped_keys.push(key);
       try {
-        await deps.bd.setMetadata(bead_id, key, value);
-        const rb = await deps.bd.readMetadata(bead_id, key);
-        if (rb !== value) {
+        if (typeof value === 'string') {
+          await deps.bd.setMetadata(bead_id, key, value);
+        } else {
+          await deps.bd.unsetMetadata(bead_id, key);
+        }
+        const readback = await deps.bd.readMetadata(bead_id, key);
+        if (
+          (typeof value === 'string' && readback !== value) ||
+          (value === null && typeof readback === 'string')
+        ) {
           exec_ok = false;
           break;
         }
@@ -4614,7 +5134,11 @@ export function createScheduler(deps) {
             attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
         }
       });
-      await revertExecStamps(bead_id, attempted_stamped_keys);
+      await revertExecStamps(
+        bead_id,
+        attempted_stamped_keys,
+        exec_restore_values
+      );
       deps.store.updateAttempt(workspace, {
         attempt_id: new_attempt_id,
         patch: {
@@ -4632,7 +5156,7 @@ export function createScheduler(deps) {
       try {
         await revertWorkflowMode(bead_id, prior_wf);
       } catch {
-        // Best-effort: bd may be down; the failed record already reflects it.
+        // The failed attempt remains the durable recovery evidence.
       }
       removeGuardHook(workspace, new_attempt_id);
       claimed.delete(bead_id);
@@ -4641,16 +5165,11 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'exec_stamp_failed' };
     }
 
-    // Reuse the existing worktree — no worktree.add / admission re-check (§1.3).
-    // A disposition may override the cwd: its edits belong to the shared
-    // target_base checkout, not to this bead's branch worktree.
     const wt_path =
       options.cwd ||
       (typeof deps.worktree.pathFor === 'function'
         ? deps.worktree.pathFor(repo, bead_id)
         : '');
-    const resume_session_id =
-      options.resume === false ? null : prior.session_id;
     const launched = await launchSession({
       workspace,
       attempt_id: new_attempt_id,
@@ -4659,8 +5178,8 @@ export function createScheduler(deps) {
       target_base,
       base_oid: prior.base_oid ?? null,
       runner_name,
-      model: prior.model ?? null,
-      effort: prior.effort ?? null,
+      model: launch_model,
+      effort: launch_effort,
       speed: launch_speed,
       prior_wf,
       stamped_keys,
@@ -4670,18 +5189,15 @@ export function createScheduler(deps) {
         : options.conflict_resolution
           ? 'conflict'
           : 'resume',
-      spawnBead: {
-        id: bead_id,
-        prompt: options.prompt
-      },
-      resume_session_id,
+      spawnBead: { id: bead_id, prompt: options.prompt },
+      resume_session_id:
+        continuation_mode === 'session' ? prior.session_id : null,
       disposition: options.disposition ?? null
     });
     if (!launched.ok) {
       await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: launched.reason || 'spawn_failed' };
     }
-
     return { ok: true, attempt_id: new_attempt_id };
   }
 
@@ -4786,7 +5302,11 @@ export function createScheduler(deps) {
       remove_worktree
     } = input;
     if (Array.isArray(stamped_keys) && stamped_keys.length > 0) {
-      await revertExecStamps(bead_id, stamped_keys);
+      await revertExecStamps(
+        bead_id,
+        stamped_keys,
+        execRestoreValuesOf(workspace, attempt_id)
+      );
     }
     try {
       await revertWorkflowMode(bead_id, prior_wf);
@@ -4824,8 +5344,8 @@ export function createScheduler(deps) {
    * never spends or spawns again.
    *
    * @param {string} workspace
-   * @param {{ root_bead_id: string, op: any, log_path?: string|null }} input
-   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>}
+   * @param {{ root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
+   * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>}
    */
   async function dispatchCompletionRepair(workspace, input) {
     const { root_bead_id, op } = input;
@@ -4964,41 +5484,58 @@ export function createScheduler(deps) {
     let preset_id;
     /** @type {number|null} */
     let preset_revision;
+    /** @type {Record<string, string|null>} */
+    let exec_restore_values = {};
+    /** @type {'session'|'fresh'|null} */
+    let continuation_mode = null;
+    /** @type {number|undefined} */
+    let continuation_expected_revision;
+    /** @type {any|null} */
+    let continuation_source = null;
+    /** @type {any|null} */
+    let continuation_resolution = null;
+    /** @type {any|null} */
+    let continuation_options = null;
     if (mode === 'resume_root') {
-      const resume_source = lastSessionAttemptOf(workspace, bead_id) || source;
       const owned = await proveOwnedWorktree(repo, bead_id);
       if (!owned.ok) {
         return owned;
       }
+      const resume_source = lastSessionAttemptOf(workspace, bead_id);
+      if (!resume_source) {
+        return { ok: false, reason: 'no_session_id' };
+      }
+      continuation_options = {
+        continuation: input.continuation,
+        decision_token: input.decision_token
+      };
+      const continuation = await resolveContinuationForAttempt(
+        workspace,
+        resume_source,
+        continuation_options
+      );
+      if (!continuation.ok) {
+        return continuation;
+      }
+      continuation_source = resume_source;
+      continuation_resolution = continuation;
       wt_path = owned.path;
       resume_session_id =
-        typeof resume_source.session_id === 'string' &&
-        resume_source.session_id.length > 0
+        continuation.continuation_mode === 'session'
           ? resume_source.session_id
           : null;
       resumed_from = resume_source.attempt_id;
-      prior_wf = resume_source.workflow_mode_prior ?? null;
-      runner_name =
-        typeof resume_source.runner === 'string' &&
-        resume_source.runner.length > 0
-          ? resume_source.runner
-          : 'claude';
-      launch_model = resume_source.model ?? null;
-      launch_effort = resume_source.effort ?? null;
-      launch_speed =
-        typeof resume_source.speed === 'string'
-          ? resume_source.speed
-          : 'default';
-      stamped_keys = Array.isArray(resume_source.exec_stamped_keys)
-        ? resume_source.exec_stamped_keys
-        : [];
-      exec_values =
-        resume_source.exec_values &&
-        typeof resume_source.exec_values === 'object'
-          ? resume_source.exec_values
-          : null;
-      preset_id = resume_source.exec_default_preset_id ?? null;
-      preset_revision = resume_source.exec_default_preset_revision ?? null;
+      prior_wf = continuation.bead_snapshot.workflow_mode ?? null;
+      runner_name = continuation.runner_name;
+      launch_model = continuation.launch_model;
+      launch_effort = continuation.launch_effort;
+      launch_speed = continuation.launch_speed;
+      stamped_keys = continuation.stamped_keys;
+      exec_values = continuation.exec_values;
+      exec_restore_values = continuation.exec_restore_values;
+      preset_id = continuation.preset_id;
+      preset_revision = continuation.preset_revision;
+      continuation_mode = continuation.continuation_mode;
     } else {
       if (
         typeof deps.worktree.exists === 'function' &&
@@ -5030,6 +5567,16 @@ export function createScheduler(deps) {
       launch_speed = exec.orchestration_speed ?? 'default';
       stamped_keys = exec.stamped_keys;
       exec_values = execValuesFor(exec);
+      const restore_capture = await captureExecRestoreValues(
+        bead_id,
+        stamped_keys
+      );
+      if (!restore_capture.ok) {
+        return { ok: false, reason: 'exec_restore_capture_failed' };
+      }
+      for (const key of stamped_keys) {
+        exec_restore_values[key] = restore_capture.values[key];
+      }
       preset_id = resolved_exec.preset_id;
       preset_revision = resolved_exec.preset_revision;
       wt_path = '';
@@ -5046,6 +5593,19 @@ export function createScheduler(deps) {
       return { ok: false, reason: serial_launch.reason };
     }
     const serial_lease = serial_launch.lease;
+    if (continuation_source && continuation_resolution) {
+      const revalidated = await revalidateContinuationForAttempt(
+        workspace,
+        continuation_source,
+        continuation_options,
+        continuation_resolution
+      );
+      if (!revalidated.ok) {
+        serial_lease.release();
+        return revalidated;
+      }
+      continuation_expected_revision = revalidated.expected_revision;
+    }
     try {
       if (!installGuardHook({ workspace, attempt_id, repo, target_base })) {
         serial_lease.release();
@@ -5057,6 +5617,7 @@ export function createScheduler(deps) {
         prerecord = deps.store.beginRepairOp(workspace, {
           root_bead_id,
           op,
+          expected_revision: continuation_expected_revision,
           attempt: {
             attempt_id,
             bead_id,
@@ -5072,8 +5633,10 @@ export function createScheduler(deps) {
             exec_default_preset_revision: preset_revision,
             exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
             exec_values,
+            exec_restore_values,
             worker_serial: source.worker_serial === true,
             resumed_from,
+            continuation_mode,
             completion_root_id: root_bead_id,
             completion_op_id: op.op_id,
             completion_mode: mode,
@@ -5158,14 +5721,19 @@ export function createScheduler(deps) {
     /** @type {string[]} */
     const stamped = [];
     for (const key of stamped_keys) {
-      const value = exec_values?.[key];
-      if (typeof value !== 'string') {
-        continue;
-      }
+      const value = exec_values?.[key] ?? null;
+      stamped.push(key);
       try {
-        await deps.bd.setMetadata(bead_id, key, value);
-        stamped.push(key);
-        if ((await deps.bd.readMetadata(bead_id, key)) !== value) {
+        if (typeof value === 'string') {
+          await deps.bd.setMetadata(bead_id, key, value);
+        } else {
+          await deps.bd.unsetMetadata(bead_id, key);
+        }
+        const readback = await deps.bd.readMetadata(bead_id, key);
+        if (
+          (typeof value === 'string' && readback !== value) ||
+          (value === null && typeof readback === 'string')
+        ) {
           throw new Error('readback mismatch');
         }
       } catch {
@@ -5236,8 +5804,8 @@ export function createScheduler(deps) {
   /**
    * Dispatch the REVISE-disposition (finding acceptance) session for a parked
    * bead (UI-hs11 §3.3). It reuses the relaunch machinery — a child attempt
-   * carrying `resumed_from`, the prior snapshot inherited verbatim, the same
-   * re-stamped metadata — and differs in exactly three ways: the record carries
+   * carrying `resumed_from` and the selected current/prior execution snapshot
+   * — and differs in exactly three ways: the record carries
    * `disposition`, the session runs in the SHARED target_base checkout (its
    * edits land on the base, not on a bead branch), and the runner is told to
    * open no PR.
@@ -5251,7 +5819,7 @@ export function createScheduler(deps) {
    * Cap-exempt like every other human-click dispatch.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean }} input
+   * @param {{ bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
   async function dispatchReviseFix(workspace, input) {
@@ -5286,7 +5854,11 @@ export function createScheduler(deps) {
       typeof prior.session_id === 'string' && prior.session_id.length > 0;
     // `input.resume === false` is the substitute-session retry: the first
     // launch's `--resume` found no transcript, so this one starts fresh.
-    const resume = input.resume !== false && wt_present && has_session;
+    const resume =
+      input.resume !== false &&
+      input.continuation !== 'fresh_current' &&
+      wt_present &&
+      has_session;
     return relaunchFromAttempt(workspace, prior, {
       prompt,
       conflict_resolution: false,
@@ -5302,7 +5874,9 @@ export function createScheduler(deps) {
           ? deps.worktree.pathFor(repo, bead_id)
           : repo
         : repo,
-      resume
+      resume,
+      continuation: input.continuation,
+      decision_token: input.decision_token
     });
   }
 
@@ -5623,7 +6197,8 @@ export function createScheduler(deps) {
     }
     await revertExecStamps(
       entry.bead_id,
-      execStampedKeysOf(workspace, attempt_id)
+      execStampedKeysOf(workspace, attempt_id),
+      execRestoreValuesOf(workspace, attempt_id)
     );
   }
 

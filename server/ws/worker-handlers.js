@@ -1842,7 +1842,8 @@ export async function handleWorkerAttemptStop(ws, req) {
 }
 
 /**
- * Handle `worker-attempt-resume`. Payload: `{ attempt_id, expected_revision }`.
+ * Handle `worker-attempt-resume`. Payload:
+ * `{ attempt_id, expected_revision, continuation?, decision_token? }`.
  * Manually resumes (↻ / paused tile ▶) a paused, failed, or orphaned attempt in
  * its existing worktree (spec §1) under the SAME CAS revision contract as the
  * queue mutations: a stale `expected_revision` replies `conflict:true` with the
@@ -1861,6 +1862,43 @@ export async function handleWorkerAttemptResume(ws, req) {
     ws.send(
       JSON.stringify(
         makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  if (
+    p.continuation != null &&
+    p.continuation !== 'auto' &&
+    p.continuation !== 'prior_session' &&
+    p.continuation !== 'fresh_current'
+  ) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bad_request', 'invalid continuation'))
+    );
+    return;
+  }
+  if (
+    (p.continuation === 'prior_session' ||
+      p.continuation === 'fresh_current') &&
+    (!p.decision_token ||
+      typeof p.decision_token !== 'object' ||
+      Array.isArray(p.decision_token))
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'decision_token is required')
+      )
+    );
+    return;
+  }
+  if (
+    p.decision_token !== undefined &&
+    p.continuation !== 'prior_session' &&
+    p.continuation !== 'fresh_current'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'decision_token requires continuation')
       )
     );
     return;
@@ -1885,10 +1923,13 @@ export async function handleWorkerAttemptResume(ws, req) {
     );
     return;
   }
-  /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
-    result = await resumeWorkerAttempt(key, p.attempt_id);
+    result = await resumeWorkerAttempt(key, p.attempt_id, {
+      continuation: p.continuation,
+      decision_token: p.decision_token
+    });
   } catch (err) {
     log('worker-attempt-resume failed for %s/%s: %o', key, p.attempt_id, err);
     result = { ok: false, reason: 'error' };
@@ -1900,7 +1941,8 @@ export async function handleWorkerAttemptResume(ws, req) {
         resumed: !!result.ok,
         conflict: false,
         new_attempt_id: result.attempt_id || null,
-        reason: result.ok ? null : result.reason || null
+        reason: result.ok ? null : result.reason || null,
+        continuation_mismatch: result.continuation_mismatch || null
       })
     )
   );
@@ -1991,7 +2033,8 @@ function replyMergeQueue(ws, req, workspace_key, result, extra = {}) {
 }
 
 /**
- * Handle `worker-merge-queue-add`. Payload: `{ bead_id, expected_revision }`.
+ * Handle `worker-merge-queue-add`. Payload:
+ * `{ bead_id, expected_revision, continuation?, decision_token? }`.
  *
  * The [머지] click, which no longer merges (UI-5v7d §3): it puts the bead in the
  * sequential queue and the driver merges when its turn comes. Everything the old
@@ -2016,8 +2059,44 @@ export function handleWorkerMergeQueueAdd(ws, req) {
     );
     return;
   }
+  const has_continuation = p.continuation !== undefined;
+  if (
+    (has_continuation &&
+      p.continuation !== 'prior_session' &&
+      p.continuation !== 'fresh_current') ||
+    (has_continuation &&
+      (!p.decision_token ||
+        typeof p.decision_token !== 'object' ||
+        Array.isArray(p.decision_token))) ||
+    (!has_continuation && p.decision_token !== undefined)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'continuation requires prior_session|fresh_current and decision_token'
+        )
+      )
+    );
+    return;
+  }
   const key = mutationWorkspaceOf(ws, req);
   if (key === null) {
+    return;
+  }
+  if (has_continuation) {
+    const decided = queueStore().decideMergeContinuation(key, {
+      expected_revision: revisionOf(p),
+      bead_id: p.bead_id,
+      continuation: p.continuation,
+      decision_token: p.decision_token
+    });
+    replyMergeQueue(ws, req, key, decided, {
+      bead_id: p.bead_id,
+      queued: 0,
+      continuation_decided: decided.ok
+    });
     return;
   }
   // An EXTERNAL row is a wire-only synthesis (UI-7agi §2), so the store cannot
@@ -2423,7 +2502,7 @@ export async function handleWorkerDiscard(ws, req) {
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
- * @param {(workspace_key: string, bead_id: string) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, sha?: string }>} run
+ * @param {(workspace_key: string, bead_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, sha?: string, continuation_mismatch?: any }>} run
  */
 async function handleReviseDisposition(ws, req, run) {
   const p = /** @type {any} */ (req.payload || {});
@@ -2431,6 +2510,28 @@ async function handleReviseDisposition(ws, req, run) {
     ws.send(
       JSON.stringify(
         makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const has_continuation = p.continuation !== undefined;
+  if (
+    (has_continuation &&
+      p.continuation !== 'prior_session' &&
+      p.continuation !== 'fresh_current') ||
+    (has_continuation &&
+      (!p.decision_token ||
+        typeof p.decision_token !== 'object' ||
+        Array.isArray(p.decision_token))) ||
+    (!has_continuation && p.decision_token !== undefined)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'continuation requires prior_session|fresh_current and decision_token'
+        )
       )
     );
     return;
@@ -2455,10 +2556,15 @@ async function handleReviseDisposition(ws, req, run) {
     );
     return;
   }
-  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, sha?: string }} */
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, sha?: string, continuation_mismatch?: any }} */
   let result = { ok: false, reason: 'no_attachment' };
   try {
-    result = await run(key, p.bead_id);
+    result = has_continuation
+      ? await run(key, p.bead_id, {
+          continuation: p.continuation,
+          decision_token: p.decision_token
+        })
+      : await run(key, p.bead_id);
   } catch (err) {
     log('revise disposition failed for %s/%s: %o', key, p.bead_id, err);
     result = { ok: false, reason: 'error' };
@@ -2471,7 +2577,8 @@ async function handleReviseDisposition(ws, req, run) {
         conflict: false,
         reason: result.ok ? null : result.reason || null,
         attempt_id: result.attempt_id || null,
-        sha: result.sha || null
+        sha: result.sha || null,
+        continuation_mismatch: result.continuation_mismatch || null
       })
     )
   );
@@ -2479,7 +2586,8 @@ async function handleReviseDisposition(ws, req, run) {
 }
 
 /**
- * Handle `worker-revise-fix`. Payload: `{ bead_id, expected_revision }`.
+ * Handle `worker-revise-fix`. Payload:
+ * `{ bead_id, expected_revision, continuation?, decision_token? }`.
  *
  * [finding 수용·수정] (UI-hs11 §3.3): dispatch the disposition session that
  * applies the parked findings to the spec, publishes on the resolved

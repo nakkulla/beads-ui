@@ -44,6 +44,7 @@ import {
   cmpEffectiveRank
 } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { selectCurrentChild } from '../../utils/current-child.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
@@ -821,7 +822,7 @@ function completionView(completion) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -858,6 +859,9 @@ function prWaitRow(
   worker_serial = false
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
+  const continuation_required =
+    !!merge_queue?.continuation_action &&
+    merge_queue.continuation_action.continuation === null;
   const queue_active = !!merge_queue && merge_queue.active === true;
   const queue_failure = (merge_queue && merge_queue.failure) || null;
   const obs = observations[bead_id] || null;
@@ -918,6 +922,9 @@ function prWaitRow(
   }
   if (queue_failure) {
     badges.push(`일괄 머지 실패: ${mergeFailureText(queue_failure)}`);
+  }
+  if (continuation_required) {
+    badges.push('이어하기 선택 필요');
   }
   // 자동 모드가 켜져 있는데 이 행만 서 있는 이유 (UI-yk55 §3.4). 실패 뱃지는
   // 프로세스가 살아 있는 동안만 남지만 제외 기록은 durable하므로, 재시작 뒤에도
@@ -993,8 +1000,8 @@ function prWaitRow(
       !!(recovery && recovery.alert),
     // A queued row has nothing to click but [취소]: the merge is the driver's
     // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
-    merge_action: !queued,
-    cancel_action: queued,
+    merge_action: !queued || continuation_required,
+    cancel_action: queued && !continuation_required,
     cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
     cancel_title:
       recovery && recovery.lock_actions
@@ -1026,8 +1033,9 @@ function prWaitRow(
     // 해소만 하고 멈추는 것처럼 읽히던 라벨을 실제 동작에 맞춘다 (UI-yk55 §1):
     // 이 클릭이 띄우는 세션은 완료 후 자동으로 재머지된다 — 툴팁이 이미 그렇게
     // 말하고 있었고, 라벨만 어긋나 있었다.
-    merge_label:
-      cleanup_retry || external_cleanup
+    merge_label: continuation_required
+      ? '이어하기 선택'
+      : cleanup_retry || external_cleanup
         ? '정리'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
@@ -1036,27 +1044,29 @@ function prWaitRow(
       ? discard.error
         ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
         : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
-      : merge_step
-        ? `머지 진행 중 — ${merge_step.label}`
-        : external_cleanup
-          ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
-          : external_conflict_unresolvable
-            ? '워크트리 없음 — 세션에서 직접 해소하세요'
-            : conflict_session === 'running'
-              ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
-              : conflict_session === 'paused'
-                ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
-                : cleanup_retry
-                  ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
-                  : conflicting
-                    ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                    : enabled
-                      ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                      : gate && gate.tier === 'merged'
-                        ? // Already merged with no cleanup failure recorded: the cleanup
-                          // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                          '머지됨 — 머지 후 정리 진행 중'
-                        : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+      : continuation_required
+        ? '실행 provider가 변경되었습니다 — 이어갈 방식을 선택하세요'
+        : merge_step
+          ? `머지 진행 중 — ${merge_step.label}`
+          : external_cleanup
+            ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+            : external_conflict_unresolvable
+              ? '워크트리 없음 — 세션에서 직접 해소하세요'
+              : conflict_session === 'running'
+                ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+                : conflict_session === 'paused'
+                  ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+                  : cleanup_retry
+                    ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+                    : conflicting
+                      ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+                      : enabled
+                        ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                        : gate && gate.tier === 'merged'
+                          ? // Already merged with no cleanup failure recorded: the cleanup
+                            // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                            '머지됨 — 머지 후 정리 진행 중'
+                          : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -1452,12 +1462,16 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !attempt_id) {
       return;
     }
-    let res = /** @type {any} */ (
-      await transport('worker-attempt-resume', {
-        attempt_id,
-        expected_revision: currentRevision()
-      })
-    );
+    /** @param {Record<string, unknown>} extra */
+    const send = async (extra = {}) =>
+      /** @type {any} */ (
+        await transport('worker-attempt-resume', {
+          attempt_id,
+          expected_revision: currentRevision(),
+          ...extra
+        })
+      );
+    let res = await send();
     adopt(res);
     if (res && res.conflict) {
       res = /** @type {any} */ (
@@ -1468,6 +1482,14 @@ export function createWorkerView(mount_element, options = {}) {
       );
       adopt(res);
     }
+    res = await resolveContinuationMismatch(
+      res,
+      (continuation, decision_token) => send({ continuation, decision_token }),
+      {
+        onResult: adopt,
+        refresh: () => send()
+      }
+    );
     if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
     }
@@ -1515,9 +1537,10 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @param {string} type
    * @param {Record<string, unknown>} payload
+   * @param {boolean} [retry_conflict]
    * @returns {Promise<any>}
    */
-  async function sendMergeQueue(type, payload) {
+  async function sendMergeQueue(type, payload, retry_conflict = true) {
     if (!transport) {
       return null;
     }
@@ -1526,7 +1549,7 @@ export function createWorkerView(mount_element, options = {}) {
       await send(type, { ...payload, expected_revision: currentRevision() })
     );
     adopt(res);
-    if (res && res.conflict) {
+    if (res && res.conflict && retry_conflict) {
       res = /** @type {any} */ (
         await send(type, {
           ...payload,
@@ -1551,6 +1574,13 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !bead_id) {
       return;
     }
+    const action = currentQueue().merge_queue?.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    )?.continuation_action;
+    if (action?.mismatch && action.continuation === null) {
+      await decideQueuedContinuation(bead_id, action.mismatch);
+      return;
+    }
     merge_pending.add(bead_id);
     doRender();
     /** @type {any} */
@@ -1571,6 +1601,43 @@ export function createWorkerView(mount_element, options = {}) {
       'error',
       2400
     );
+  }
+
+  /**
+   * Complete a background resolver decision already persisted on the queue
+   * item.
+   *
+   * @param {string} bead_id
+   * @param {any} mismatch
+   */
+  async function decideQueuedContinuation(bead_id, mismatch) {
+    const result = await resolveContinuationMismatch(
+      { continuation_mismatch: mismatch },
+      (continuation, decision_token) =>
+        sendMergeQueue(
+          'worker-merge-queue-add',
+          {
+            bead_id,
+            continuation,
+            decision_token
+          },
+          false
+        )
+    );
+    const action = result?.queue?.merge_queue?.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    )?.continuation_action;
+    if (
+      result?.applied !== true &&
+      action?.continuation === null &&
+      action.mismatch
+    ) {
+      await decideQueuedContinuation(bead_id, action.mismatch);
+      return;
+    }
+    if (result && result.applied === false && !result.conflict) {
+      showToast('이어하기 선택이 최신 상태와 일치하지 않습니다', 'error', 2800);
+    }
   }
 
   /**
@@ -1715,12 +1782,16 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any} */
     let res;
     try {
-      res = /** @type {any} */ (
-        await transport(type, {
-          bead_id,
-          expected_revision: currentRevision()
-        })
-      );
+      /** @param {Record<string, unknown>} extra */
+      const send = async (extra = {}) =>
+        /** @type {any} */ (
+          await transport(type, {
+            bead_id,
+            expected_revision: currentRevision(),
+            ...extra
+          })
+        );
+      res = await send();
       adopt(res);
       if (res && res.conflict) {
         res = /** @type {any} */ (
@@ -1730,6 +1801,17 @@ export function createWorkerView(mount_element, options = {}) {
           })
         );
         adopt(res);
+      }
+      if (type === 'worker-revise-fix') {
+        res = await resolveContinuationMismatch(
+          res,
+          (continuation, decision_token) =>
+            send({ continuation, decision_token }),
+          {
+            onResult: adopt,
+            refresh: () => send()
+          }
+        );
       }
     } finally {
       revise_pending.delete(bead_id);
@@ -2381,6 +2463,8 @@ export function createWorkerView(mount_element, options = {}) {
           runner: a.runner || null,
           model: a.model || null,
           effort: a.effort || null,
+          speed: a.speed || null,
+          continuation_mode: a.continuation_mode || null,
           started_at: typeof a.started_at === 'number' ? a.started_at : null,
           resumed_from: a.resumed_from || null,
           paused: leaf_paused,
@@ -2423,6 +2507,8 @@ export function createWorkerView(mount_element, options = {}) {
             runner: a.runner || null,
             model: a.model || null,
             effort: a.effort || null,
+            speed: a.speed || null,
+            continuation_mode: a.continuation_mode || null,
             started_at: typeof a.started_at === 'number' ? a.started_at : null,
             resumed_from: a.resumed_from || null,
             failed: true,
@@ -2488,10 +2574,13 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_positions = new Map();
     /** @type {Map<string, import('../../data/worker-queue-store.js').ResolutionProjection|null|undefined>} */
     const merge_resolutions = new Map();
+    /** @type {Map<string, any>} */
+    const merge_continuations = new Map();
     merge_queue.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
       if (e && typeof e.bead_id === 'string') {
         merge_positions.set(e.bead_id, i + 1);
         merge_resolutions.set(e.bead_id, e.resolution);
+        merge_continuations.set(e.bead_id, e.continuation_action || null);
       }
     });
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
@@ -2669,7 +2758,8 @@ export function createWorkerView(mount_element, options = {}) {
               position: merge_positions.get(e.bead_id) || 0,
               active: merge_state.active === e.bead_id,
               failure: merge_failures[e.bead_id] || null,
-              resolution: merge_resolutions.get(e.bead_id)
+              resolution: merge_resolutions.get(e.bead_id),
+              continuation_action: merge_continuations.get(e.bead_id)
             },
             // Also overlay-only (UI-w0hi §3): a durable row has no field here and
             // must keep the pre-existing behaviour, so absence reads as present.

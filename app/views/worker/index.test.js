@@ -1258,6 +1258,56 @@ describe('views/worker', () => {
     });
   });
 
+  test('retries a runner mismatch only after the user selects a continuation', async () => {
+    const decision_token = { source_attempt_id: 'failed', digest: 'one' };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        resumed: false,
+        conflict: false,
+        reason: 'runner_mismatch',
+        continuation_mismatch: {
+          prior_available: true,
+          prior: { runner: 'codex', model: 'sol' },
+          current: { runner: 'claude', model: 'opus' },
+          decision_token
+        }
+      })
+      .mockResolvedValueOnce({ resumed: true, conflict: false });
+    const mount = mountAttemptTiles(
+      {
+        revision: 7,
+        attempts: {
+          failed: {
+            attempt_id: 'failed',
+            bead_id: 'FAILED',
+            status: 'failed',
+            session_id: 'sid-failed'
+          }
+        }
+      },
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
+    ).click();
+    await flush();
+    expect(transport).toHaveBeenCalledTimes(1);
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.continuation-dialog button')[1]
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenLastCalledWith('worker-attempt-resume', {
+      attempt_id: 'failed',
+      expected_revision: 7,
+      continuation: 'fresh_current',
+      decision_token
+    });
+  });
+
   test('sends the failed tile dismiss payload with the current revision', async () => {
     const transport = vi.fn().mockResolvedValue({});
     const mount = mountAttemptTiles(
@@ -8322,15 +8372,17 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
   /**
    * @param {any} queue
    */
-  function mountLane(queue) {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queue);
-    const transport = vi.fn(async () => ({
+  function mountLane(
+    queue,
+    transport = vi.fn(async () => ({
       applied: true,
       conflict: false,
       queued: 1
-    }));
+    }))
+  ) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
@@ -8592,6 +8644,86 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
         waiting.querySelector('.worker-mini__merge-cancel')
       ).disabled
     ).toBe(false);
+  });
+
+  test('reopens a background continuation dialog with the authoritative token', async () => {
+    const mismatch_one = {
+      prior_available: true,
+      prior: { runner: 'codex', model: 'sol' },
+      current: { runner: 'claude', model: 'opus' },
+      decision_token: { source_attempt_id: 'a1', digest: 'one' }
+    };
+    const mismatch_two = {
+      ...mismatch_one,
+      current: { runner: 'claude', model: 'opus', effort: 'high' },
+      decision_token: { source_attempt_id: 'a1', digest: 'two' }
+    };
+    const refreshed_queue = laneOf(['RD-1'], {
+      revision: 2,
+      merge_queue: [
+        {
+          bead_id: 'RD-1',
+          resolution_rounds: 0,
+          continuation_action: {
+            subject_bead_id: 'RD-1',
+            continuation: null,
+            decision_token: null,
+            mismatch: mismatch_two
+          }
+        }
+      ]
+    });
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: refreshed_queue
+      })
+      .mockResolvedValueOnce({ applied: true, conflict: false });
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        revision: 1,
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            resolution_rounds: 0,
+            continuation_action: {
+              subject_bead_id: 'RD-1',
+              continuation: null,
+              decision_token: null,
+              mismatch: mismatch_one
+            }
+          }
+        ]
+      }),
+      transport
+    );
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.continuation-dialog button')[1]
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelector('.continuation-dialog')?.textContent
+    ).toContain('high');
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.continuation-dialog button')[1]
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenLastCalledWith('worker-merge-queue-add', {
+      bead_id: 'RD-1',
+      continuation: 'fresh_current',
+      decision_token: mismatch_two.decision_token,
+      expected_revision: 2
+    });
   });
 
   test.each([

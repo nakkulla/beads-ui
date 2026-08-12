@@ -111,13 +111,21 @@
  * preset. Together they prove which mutable preset version the attempt pinned.
  * @property {Record<string, string|null>|null} exec_values - Effective resolved
  * values from the 12-key dispatch contract, kept independently from the worker
- * stamp subset so a manual session resume reuses the PRIOR snapshot rather than
- * re-resolving a changed/deleted preset. Null on legacy attempts.
+ * stamp subset so relaunch decisions can prove their exact current or explicit
+ * prior provenance. Null on legacy attempts.
  * @property {string|null} resumed_from - Prior attempt_id this attempt resumes
  * (manual session resume, spec §1); null for a first-launch attempt. The
  * `already_resumed` guard scans attempts for a child carrying this so a failed
  * attempt is resumed at most once — a scan-derived judgment that survives cold
  * reload.
+ * @property {'session'|'fresh'|null} continuation_mode - Whether this child
+ * reused the provider session or started a replacement session. Null keeps
+ * legacy history neutral.
+ * @property {Record<string, string|null>|null} exec_restore_values - Raw bead
+ * metadata observed immediately before this attempt overlaid exec stamps.
+ * @property {{ mismatch: Record<string, unknown>, continuation: null }|null} continuation_action -
+ * Durable action-required descriptor when a background relaunch cannot choose
+ * across runners. Null on ordinary attempts.
  * @property {boolean} conflict_resolution - Whether this attempt was dispatched
  * to RESOLVE a PR conflict (worker-phase2 §6). It is the single input that
  * relaxes the session-side base-into-branch `git merge` guard, so it is
@@ -324,6 +332,8 @@
  * deploy restart a merge can trigger.
  * @property {ResolutionWait|InvalidResolutionWait|null} resolution - Durable
  * binding between this queue item and one exact conflict-resolution attempt.
+ * @property {{ subject_bead_id: string, mismatch: Record<string, unknown>, continuation: 'prior_session'|'fresh_current'|null, decision_token: Record<string, unknown>|null }|null} [continuation_action]
+ * A cross-runner resolver decision that must survive restart.
  */
 /**
  * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
@@ -1049,6 +1059,9 @@ function normalizeMergeQueue(arr) {
       continue;
     }
     seen.add(raw.bead_id);
+    const continuation_action = normalizeContinuationAction(
+      raw.continuation_action
+    );
     out.push({
       bead_id: raw.bead_id,
       resolution_rounds:
@@ -1057,10 +1070,67 @@ function normalizeMergeQueue(arr) {
         raw.resolution_rounds > 0
           ? Math.floor(raw.resolution_rounds)
           : 0,
-      resolution: normalizeResolutionWait(raw.resolution)
+      resolution: normalizeResolutionWait(raw.resolution),
+      ...(continuation_action === null ? {} : { continuation_action })
     });
   }
   return out;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {MergeQueueEntry['continuation_action']}
+ */
+function normalizeContinuationAction(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.subject_bead_id !== 'string' ||
+    value.subject_bead_id.length === 0 ||
+    !isRecord(value.mismatch) ||
+    value.mismatch.continuation_required !== true ||
+    !isRecord(value.mismatch.decision_token)
+  ) {
+    return null;
+  }
+  const continuation =
+    value.continuation === 'prior_session' ||
+    value.continuation === 'fresh_current'
+      ? value.continuation
+      : null;
+  return {
+    subject_bead_id: value.subject_bead_id,
+    mismatch: clone(value.mismatch),
+    continuation,
+    decision_token:
+      continuation !== null && isRecord(value.decision_token)
+        ? clone(value.decision_token)
+        : null
+  };
+}
+
+/**
+ * @param {unknown} left
+ * @param {unknown} right
+ */
+function sameDecisionToken(left, right) {
+  if (!isRecord(left) || !isRecord(right)) {
+    return false;
+  }
+  const keys = [
+    'source_attempt_id',
+    'source_attempt_digest',
+    'observed_queue_revision',
+    'preset_id',
+    'preset_revision',
+    'effective_exec_digest'
+  ];
+  return (
+    Object.keys(left).sort().join('\u0000') ===
+      keys.slice().sort().join('\u0000') &&
+    Object.keys(right).sort().join('\u0000') ===
+      keys.slice().sort().join('\u0000') &&
+    keys.every((key) => left[key] === right[key])
+  );
 }
 
 /**
@@ -1374,6 +1444,20 @@ export function makeAttempt(fields) {
       !Array.isArray(fields.exec_values)
         ? fields.exec_values
         : null,
+    exec_restore_values:
+      fields.exec_restore_values &&
+      typeof fields.exec_restore_values === 'object' &&
+      !Array.isArray(fields.exec_restore_values)
+        ? fields.exec_restore_values
+        : null,
+    continuation_mode:
+      fields.continuation_mode === 'session' ||
+      fields.continuation_mode === 'fresh'
+        ? fields.continuation_mode
+        : null,
+    continuation_action: isRecord(fields.continuation_action)
+      ? clone(fields.continuation_action)
+      : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
     external_conflict: fields.external_conflict === true,
@@ -2629,7 +2713,8 @@ export function createQueueStore(options = {}) {
           attempt.repo !== source.repo ||
           attempt.target_base !== source.target_base ||
           attempt.base_oid !== source.base_oid ||
-          attempt.runner !== source.runner ||
+          (attempt.continuation_mode !== 'fresh' &&
+            attempt.runner !== source.runner) ||
           attempt.session_id != null ||
           attempt.pid != null ||
           attempt.status !== 'running' ||
@@ -3849,6 +3934,100 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Persist a cross-runner decision before the background driver releases its
+     * queue turn. The token is rebound to this write's resulting revision.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string, mismatch: Record<string, unknown> }} input
+     * @returns {QueueOpResult}
+     */
+    requireMergeContinuation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        if (
+          !entry ||
+          typeof input.subject_bead_id !== 'string' ||
+          input.subject_bead_id.length === 0 ||
+          !isRecord(input.mismatch) ||
+          input.mismatch.continuation_required !== true ||
+          !isRecord(input.mismatch.decision_token)
+        ) {
+          return false;
+        }
+        const mismatch = clone(input.mismatch);
+        const decision_token = /** @type {Record<string, unknown>} */ (
+          mismatch.decision_token
+        );
+        decision_token.observed_queue_revision = next.revision + 1;
+        entry.continuation_action = {
+          subject_bead_id: input.subject_bead_id,
+          mismatch,
+          continuation: null,
+          decision_token: null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * CAS-bind the user's decision to the exact durable mismatch descriptor.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, bead_id: string, continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }} input
+     * @returns {QueueOpResult}
+     */
+    decideMergeContinuation(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const action = entry?.continuation_action;
+        if (
+          !entry ||
+          !action ||
+          (input.continuation !== 'prior_session' &&
+            input.continuation !== 'fresh_current') ||
+          !sameDecisionToken(
+            input.decision_token,
+            action.mismatch.decision_token
+          )
+        ) {
+          return false;
+        }
+        const decision_token = clone(input.decision_token);
+        decision_token.observed_queue_revision = next.revision + 1;
+        action.continuation = input.continuation;
+        action.decision_token = decision_token;
+        return true;
+      });
+    },
+
+    /**
+     * Clear only the decision consumed by a successful resolver dispatch.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, subject_bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    clearMergeContinuation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        if (
+          !entry?.continuation_action ||
+          entry.continuation_action.subject_bead_id !== input.subject_bead_id
+        ) {
+          return false;
+        }
+        entry.continuation_action = null;
+        return true;
+      });
+    },
+
+    /**
      * Atomically create one root completion intent and place that public root
      * identity in the sequential merge queue. The current subject starts as
      * the root; later repair children change only the intent subject and never
@@ -3930,12 +4109,13 @@ export function createQueueStore(options = {}) {
      * budget slot or spawning a duplicate session.
      *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, op: CompletionOperation, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @param {{ root_bead_id: string, op: CompletionOperation, expected_revision?: number, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
      * @returns {QueueOpResult}
      */
     beginRepairOp(workspace, input) {
       const { root_bead_id, op, attempt } = input;
-      return applyUnconditional(workspace, (next) => {
+      /** @param {Queue} next */
+      const mutate = (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_op = normalizeCompletionOperation(op);
         const active_op = intent?.active_op;
@@ -3985,7 +4165,10 @@ export function createQueueStore(options = {}) {
           worker_serial: source?.worker_serial === true
         });
         return true;
-      });
+      };
+      return typeof input.expected_revision === 'number'
+        ? applyMutation(workspace, input.expected_revision, mutate)
+        : applyUnconditional(workspace, mutate);
     },
 
     /**
