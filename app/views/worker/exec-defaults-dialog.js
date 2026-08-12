@@ -1,5 +1,4 @@
 import { html, render } from 'lit-html';
-import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
   DEFAULT_LABELS,
@@ -29,12 +28,10 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * model does not accept) shows as its own selected `(비호환)` option, still
  * resettable to `(기본)`.
  *
- * Below the editing form the dialog also renders the read-only 「검증·배포 설정」
- * section (worker-deploy-hook §4): what the merge click verifies and deploys for
- * the current workspace, plus the last deploy's outcome. Its data rides the
- * queue snapshot's `workspace_info` decoration — no extra request or channel —
- * and it carries NO editing control: the commands live in `config.toml` only,
- * which is the security boundary.
+ * Below the editing form the dialog also renders read-only verification and
+ * external deployment declarations. Data rides the queue snapshot's
+ * `workspace_info` decoration with no extra request or channel. Verification
+ * may use config fallback; deployment comes only from the pinned repo declaration.
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  * @typedef {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} PresetStore
@@ -43,8 +40,7 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * @property {PresetStore} [presetStore]
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
  * @property {() => (string|undefined)} [getWorkspacePath] - Current workspace
- * path, used only to name the `[worker.deploy."<path>"]` section a user must
- * write when no deploy command is configured.
+ * path, used by the verify fallback hint.
  */
 
 /**
@@ -80,42 +76,6 @@ function formatCmd(cmd) {
     return '';
   }
   return cmd.filter((part) => typeof part === 'string').join(' ');
-}
-
-/**
- * The badge each deploy outcome renders as. An outcome outside the vocabulary
- * has no badge, so the row is dropped (fail-quiet contract consumption).
- *
- * @type {Record<string, { modifier: string, label: string }>}
- */
-const DEPLOY_OUTCOME_BADGES = {
-  deployed: { modifier: 'ok', label: '성공' },
-  // `launched` is an INTENT, never a confirmation — a self-restarting deploy
-  // kills the only process that could have observed its exit. The label says so
-  // rather than letting an unobserved run read as a success (UI-l53x §5).
-  launched: { modifier: 'launched', label: '발사됨 · 결과 미관측' },
-  failed: { modifier: 'fail', label: '실패' }
-};
-
-/**
- * How much of a preserved diagnostic string the dialog shows before eliding it —
- * the same value the worker banner uses (`running-grid.js`'s
- * `BANNER_DETAIL_MAX`). Deliberately duplicated rather than shared: the two are
- * separate modules with no existing common util, and one 160 is not worth a new
- * one (UI-l53x §5, 비범위).
- *
- * @type {number}
- */
-const DETAIL_MAX = 160;
-
-/**
- * Keep a diagnostic string to one dialog line.
- *
- * @param {string} text
- * @returns {string}
- */
-function truncateDetail(text) {
-  return text.length > DETAIL_MAX ? `${text.slice(0, DETAIL_MAX)}…` : text;
 }
 
 /**
@@ -810,9 +770,9 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
-   * The deploy row: what the merge click runs after a green verify. Unset, it
-   * names the config section a user has to write — the only place a deploy
-   * command can be defined.
+   * The deploy row: the pinned repository declaration the external deployment
+   * provider consumes after Worker verification. The Worker displays this
+   * command but never runs it.
    *
    * @param {any} deploy_cmd
    * @returns {import('lit-html').TemplateResult}
@@ -821,90 +781,23 @@ export function createExecDefaultsDialog(mount_element, options) {
     const cmd_text = deploy_cmd ? formatCmd(deploy_cmd.cmd) : '';
     const timeout_text = deploy_cmd ? formatTimeout(deploy_cmd.timeout_ms) : '';
     const note = timeout_text
-      ? `timeout ${timeout_text} · verify 통과 시에만 실행`
-      : 'verify 통과 시에만 실행';
-    const workspace_path =
-      (getWorkspacePath && getWorkspacePath()) || '<workspace 경로>';
+      ? `timeout ${timeout_text} · external deployer 실행`
+      : 'external deployer 실행';
     return html`<div class="exec-defaults__vd-group" data-vd="deploy">
       <div class="exec-defaults__vd-label">머지 후 배포 (deploy)</div>
       ${cmd_text
         ? html`<div class="exec-defaults__vd-line">
             <span class="exec-defaults__vd-cmd">${cmd_text}</span>
-            ${badge('config', 'config')}
-            ${deploy_cmd.detached === true ? badge('detached', 'detached') : ''}
+            ${badge('deployer', 'external')}
             <span class="exec-defaults__vd-meta">${note}</span>
           </div>`
         : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
             배포 없음 —
             <span class="exec-defaults__vd-cmd"
-              >[worker.deploy."${workspace_path}"]</span
+              >docs/agents/repo-ops.toml [deploy]</span
             >
-            섹션으로 정의
+            선언으로 정의
           </div>`}
-    </div>`;
-  }
-
-  /**
-   * The last-deploy row, or nothing at all when the workspace has never
-   * deployed (or recorded an outcome outside the vocabulary) — the row is
-   * omitted rather than rendered empty.
-   *
-   * `detail` and `log_path` are rendered when present and silently skipped when
-   * not (UI-l53x §5): they only exist for the failures that could produce them,
-   * and fail-quiet is what keeps every other record unchanged. Both are TEXT
-   * bindings — command output and error messages are untrusted input, so
-   * lit-html's escaping is what handles them.
-   *
-   * @param {any} last_deploy
-   * @returns {import('lit-html').TemplateResult|string}
-   */
-  function lastDeployGroup(last_deploy) {
-    if (!last_deploy || typeof last_deploy !== 'object') {
-      return '';
-    }
-    const spec = DEPLOY_OUTCOME_BADGES[String(last_deploy.outcome)];
-    if (!spec) {
-      return '';
-    }
-    const label =
-      last_deploy.outcome === 'failed' && last_deploy.reason
-        ? `${spec.label} · ${last_deploy.reason}`
-        : spec.label;
-    const meta = [
-      formatTimestampLocal(last_deploy.at),
-      typeof last_deploy.bead_id === 'string' ? last_deploy.bead_id : '',
-      typeof last_deploy.base_sha === 'string'
-        ? last_deploy.base_sha.slice(0, 7)
-        : ''
-    ]
-      .filter((part) => part.length > 0)
-      .join(' · ');
-    const detail =
-      typeof last_deploy.detail === 'string' && last_deploy.detail.length > 0
-        ? truncateDetail(last_deploy.detail)
-        : '';
-    const log_path =
-      typeof last_deploy.log_path === 'string' &&
-      last_deploy.log_path.length > 0
-        ? last_deploy.log_path
-        : '';
-    return html`<div class="exec-defaults__vd-group" data-vd="last-deploy">
-      <div class="exec-defaults__vd-label">마지막 배포</div>
-      <div class="exec-defaults__vd-line">
-        ${badge(spec.modifier, label)}
-        ${meta ? html`<span class="exec-defaults__vd-meta">${meta}</span>` : ''}
-      </div>
-      ${detail
-        ? html`<div class="exec-defaults__vd-line" data-vd-part="detail">
-            <code class="exec-defaults__vd-cmd">${detail}</code>
-          </div>`
-        : ''}
-      ${log_path
-        ? html`<div class="exec-defaults__vd-line" data-vd-part="log-path">
-            전체 로그:
-            <code class="exec-defaults__vd-cmd">${log_path}</code>
-          </div>`
-        : ''}
     </div>`;
   }
 
@@ -1024,11 +917,10 @@ export function createExecDefaultsDialog(mount_element, options) {
       <p class="exec-defaults__vd-title">
         검증·배포 설정
         <span class="exec-defaults__vd-ro"
-          >읽기 전용 — config.toml에서 정의</span
+          >읽기 전용 — repo 선언/config에서 정의</span
         >
       </p>
       ${verifyGroup(info.verify_cmd)} ${deployGroup(info.deploy_cmd)}
-      ${lastDeployGroup(info.last_deploy)}
     </section>`;
   }
 

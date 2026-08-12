@@ -261,6 +261,35 @@ describe('runShell', () => {
 
     expect(max_active).toBe(2);
   });
+
+  test('times out a command by terminating its process group before resolving', async () => {
+    const cp = /** @type {any} */ (new EventEmitter());
+    cp.pid = 12345;
+    cp.stdout = new PassThrough();
+    cp.stderr = new PassThrough();
+    cp.kill = vi.fn(() => {
+      cp.emit('close', null);
+    });
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw new Error('group already exited');
+    });
+    mockedSpawn.mockReturnValueOnce(cp);
+
+    try {
+      const result = await runShell('git', ['fetch'], {
+        cwd: '/repo-a',
+        timeout_ms: 1
+      });
+
+      expect(result.code).toBe(124);
+      if (process.platform !== 'win32') {
+        expect(kill).toHaveBeenCalledWith(-12345, 'SIGKILL');
+      }
+      expect(cp.kill).toHaveBeenCalledWith('SIGKILL');
+    } finally {
+      kill.mockRestore();
+    }
+  });
 });
 
 describe('stderrTail', () => {

@@ -28,9 +28,10 @@
  *
  * CLEANUP ORDER IS THE `pr-finish` SKILL CONTRACT'S, not this module's:
  *
- *   base 동기화 → repo-required post-merge 검증 → 배포(install) → linked Beads
- *   스윕 (child leaves-first, readback) → 워크트리·원격/로컬 브랜치 정리 →
- *   parent bd close → bead `done(merged)`
+ *   base 동기화 → repo-required post-merge 검증 → external deployment request
+ *   → provider success + merge-floor coverage observation → linked Beads 스윕
+ *   (child leaves-first, readback) → 워크트리·원격/로컬 브랜치 정리 → parent
+ *   bd close → bead `done(merged)`
  *
  * It is deliberately NOT an unconditional immediate `bd close`. A step that
  * fails STOPS the sequence, leaves the bead `resolved` in `pr_wait`, records a
@@ -39,25 +40,18 @@
  * the designed outcome: the merge already happened and cannot be undone, so
  * guessing at the remainder is strictly worse than reporting it.
  *
- * A MERGE IS NOT A DELIVERY (worker-deploy-hook): until something restarts the
- * shared service it keeps serving the pre-merge build, which is exactly how a
- * merged fix stayed invisible. The deploy step closes that gap, and everything
- * about it is fail-closed — it refuses without a resolvable verification, and
- * it re-checks the LOCAL checkout immediately before spawning rather than
- * trusting step 1's report of it.
+ * A MERGE IS NOT A DELIVERY: the Worker submits only an exact verified SHA to
+ * the external provider. Closure waits for provider success whose deployed SHA
+ * covers the row's immutable merge floor; the Worker never spawns deployment.
  *
  * @import { Queue } from './queue-store.js'
  * @import { PrDetail } from './gh.js'
  * @import { ResolvedVerifyCmd } from './verify-cmd.js'
  */
-import { spawn } from 'node:child_process';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
-import { createDeploymentReconciler } from './deployment-reconciler.js';
 import { evaluateMergeGate } from './merge-gate.js';
 import { resolvePrRef, rollupConclusion } from './pr-poller.js';
-import { selfRepoState } from './repo-ops.js';
-import { errorDetail, runVerifyCmd } from './verify-cmd.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -78,35 +72,20 @@ export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
  * the banner, and the tests all name the same sequence rather than three
  * private copies of it.
  *
- * Aligned with the contract's sweep order: install (= `deploy`) sits directly
- * after sync + verify, and the parent close comes AFTER the branch and worktree
- * cleanup, not before it (the old `parent_close → branch_cleanup` inversion).
+ * The external job handoff is `deployment_request`: provider execution and
+ * success observation are outside the merge slot. Parent close still comes
+ * after branch and worktree cleanup.
  *
  * @type {string[]}
  */
 export const CLEANUP_STEPS = [
   'base_sync',
   'post_merge_verify',
-  'deploy',
+  'deployment_request',
   'child_sweep',
   'branch_cleanup',
   'parent_close'
 ];
-
-/**
- * A workspace's resolved post-merge deploy command — the repo's own `[deploy]`
- * declaration first, the legacy `[worker.deploy."<abs>"]` config section second
- * (UI-kfl4). Declared only, never guessed: there is NO auto-detection, so an
- * `absent` resolution means "this repo has no deployment", never "we could not
- * guess one".
- *
- * @typedef {Object} ResolvedDeployCmd
- * @property {string[]} cmd - Deploy argv (spawned WITHOUT a shell).
- * @property {number} timeout_ms - Deadline for the synchronous mode.
- * @property {boolean} detached - Whether the command restarts the process
- * running this code, and therefore must be launched unattended AFTER the
- * cleanup is durably recorded.
- */
 
 /**
  * What step 1 of the cleanup actually did to the LOCAL checkout. `fast_forwarded`
@@ -123,7 +102,8 @@ export const CLEANUP_STEPS = [
  * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
  * resolution is a legitimate outcome that merged nothing, and
- * `cleanup_pending` is a landed merge whose durable Reconciler is backing off;
+ * `cleanup_pending` is a landed merge with an accepted external deployment
+ * request awaiting provider observation;
  * `merge_unconfirmed` is a merge COMMAND that succeeded without the PR being
  * observed merged (a merge queue accepted it, or the re-read failed).
  * @property {string|null} reason - Machine-readable cause for a refusal (or a
@@ -209,11 +189,7 @@ function authoritativeMergeSha(pr) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
- *   resolveDeploy?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').DeployResolution>,
- *   locks?: { deployLock: (repo: string) => Promise<() => void> },
- *   deploymentReconciler?: { reconcile: (input: { bead_id: string, target_base: string, merged_floor_sha: string, restart?: boolean }) => Promise<any> },
- *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
- *   spawnImpl?: typeof spawn,
+ *   deploymentJob?: { requestDeployment: (input: { repo: string, target_base: string, verified_sha: string }) => Promise<{ accepted: boolean, noop: boolean, target_base: string, target_sha: string, generation: number }>, deploymentStatus: (input: { repo: string }) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
  *   requeryDelayMs?: number,
@@ -233,6 +209,7 @@ export function createPrActions(deps) {
       ? deps.requeryDelayMs
       : DEFAULT_CLICK_REQUERY_DELAY_MS;
   const notifyChanged = deps.notifyChanged || (() => {});
+  const deploymentJob = deps.deploymentJob || null;
   const resolveVerify =
     deps.resolveVerify ||
     (() =>
@@ -241,18 +218,6 @@ export function createPrActions(deps) {
           state: 'absent'
         })
       ));
-  const resolveDeploy =
-    deps.resolveDeploy ||
-    (() =>
-      Promise.resolve(
-        /** @type {import('./repo-ops.js').DeployResolution} */ ({
-          state: 'absent'
-        })
-      ));
-  // Injectable so a fixture can stand in for "the repo this server runs from"
-  // without moving the process (UI-kfl4 §4.3).
-  const selfRepo = deps.selfRepoState || selfRepoState;
-  const spawnImpl = deps.spawnImpl || spawn;
   const runVerify =
     deps.runVerify ||
     (() =>
@@ -261,86 +226,6 @@ export function createPrActions(deps) {
         reason: 'verify_cmd_spawn_error',
         exit: null
       }));
-  const deploymentReconciler =
-    deps.deploymentReconciler ||
-    (deps.locks && deps.resolveBase && deps.resolveDeploy
-      ? createDeploymentReconciler({
-          workspace,
-          repo,
-          store: deps.store,
-          locks: deps.locks,
-          gitRun: deps.gitRun,
-          resolveBase: deps.resolveBase,
-          resolveDeploy,
-          prepareCandidate: async (input) => {
-            if (input.adapter === 'managed') {
-              return { ok: true, base_sync: null };
-            }
-            const synced = await syncBase(
-              input.target_base,
-              input.candidate_sha
-            );
-            if (!synced.ok) {
-              return synced;
-            }
-            if (synced.sha !== input.candidate_sha) {
-              return { ok: false, reason: 'base_sha_mismatch' };
-            }
-            return { ok: true, base_sync: synced.outcome };
-          },
-          verifyCandidate: (input) =>
-            postMergeVerify(input.bead_id, input.candidate_sha),
-          runWorkspaceAdapter: async (input) => {
-            const deployed = await runDeploy(
-              input.bead_id,
-              input.candidate_sha,
-              input.target_base
-            );
-            if (!deployed.ok) {
-              return { ...deployed, retryable: false };
-            }
-            return {
-              ok: true,
-              deployed: deployed.deployed,
-              pending: deployed.pending !== null,
-              pending_deploy: deployed.pending,
-              action_outcomes: [
-                {
-                  action:
-                    deployed.deployed === false
-                      ? 'workspace_no_deploy'
-                      : deployed.pending
-                        ? 'workspace_detached_launch'
-                        : 'workspace_deploy',
-                  outcome: 'success'
-                }
-              ]
-            };
-          },
-          spawnImpl,
-          now,
-          onStage: ({ bead_id, stage, adapter }) => {
-            const projected =
-              stage === 'queued'
-                ? 'reconcile_queued'
-                : stage === 'pinned'
-                  ? 'candidate_pinned'
-                  : stage === 'verifying'
-                    ? 'reconcile_verify'
-                    : stage === 'deploying'
-                      ? 'reconcile_deploy'
-                      : stage === 'restarting'
-                        ? 'reconcile_restart'
-                        : stage === 'readback'
-                          ? 'reconcile_readback'
-                          : null;
-            if (projected && adapter !== 'workspace') {
-              markStep(bead_id, projected);
-            }
-            notifyChanged(workspace);
-          }
-        })
-      : null);
 
   /**
    * Beads with an action in flight. A merge and its cleanup can take minutes
@@ -942,9 +827,9 @@ export function createPrActions(deps) {
    * divergence: a genuine failure (`base_ff_diverged`), never something to force.
    *
    * @param {string} target_base
-   * @param {string|null} [candidate_sha] - Already fetched candidate owned by
-   * the Reconciler. When present, update the checkout toward this exact commit
-   * instead of re-fetching a potentially newer base tip.
+   * @param {string|null} [candidate_sha] - Already fetched candidate. When
+   * present, update the checkout toward this exact commit instead of fetching
+   * a potentially newer base tip.
    * @returns {Promise<{ ok: true, sha: string, outcome: BaseSyncOutcome }|{ ok: false, reason: string }>}
    */
   async function syncBase(target_base, candidate_sha = null) {
@@ -1066,335 +951,6 @@ export function createPrActions(deps) {
             : 0
         };
   }
-
-  /**
-   * The deploy step's LAST-MOMENT check on the local checkout
-   * (worker-deploy-hook §2).
-   *
-   * Unlike the verification — which runs in its own detached worktree pinned to
-   * an exact sha — the deploy runs a command against the LOCAL base checkout,
-   * so what that checkout contains IS what gets deployed. Step 1's outcome is
-   * not enough evidence: `fetch_only:*` means the checkout was never moved, a
-   * local branch AHEAD of origin still fast-forwards cleanly, and minutes of
-   * verification sit between step 1 and here during which a human can check out
-   * anything at all.
-   *
-   * So all three facts are re-read immediately before the spawn: on the target
-   * base, clean, and HEAD exactly at the base commit that was verified. Any
-   * mismatch means the thing about to be deployed is not the thing that passed
-   * — the one outcome worse than not deploying.
-   *
-   * Read-only (`rev-parse` / `status`), so it deliberately does NOT take the
-   * topology lock: it mutates no ref, and holding the lock across the deploy
-   * spawn would block every other repo operation for the deploy's duration.
-   *
-   * @param {string} target_base
-   * @param {string} base_sha
-   * @returns {Promise<{ ok: true }|{ ok: false, reason: string }>}
-   */
-  async function revalidateBaseCheckout(target_base, base_sha) {
-    const branch = await deps.gitRun(['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: repo
-    });
-    if (branch.code !== 0 || branch.stdout.trim() !== target_base) {
-      return { ok: false, reason: 'checkout_not_on_base' };
-    }
-    const status = await deps.gitRun(['status', '--porcelain'], { cwd: repo });
-    if (status.code !== 0 || status.stdout.trim().length > 0) {
-      return { ok: false, reason: 'checkout_dirty' };
-    }
-    const head = await deps.gitRun(['rev-parse', 'HEAD'], { cwd: repo });
-    if (head.code !== 0 || head.stdout.trim() !== base_sha) {
-      return { ok: false, reason: 'head_not_base_sha' };
-    }
-    return { ok: true };
-  }
-
-  /**
-   * Map a {@link runVerifyCmd} outcome onto the deploy failure vocabulary. The
-   * RUNNER is shared (same shell-less argv spawn, same deadline handling); only
-   * the names differ, and they must differ — a `deploy_timeout` in the record
-   * has to be distinguishable from a verification that timed out.
-   *
-   * @param {string} reason
-   * @returns {string}
-   */
-  function deployReasonFor(reason) {
-    if (reason === 'verify_cmd_failed') {
-      return 'deploy_failed';
-    }
-    if (reason === 'verify_cmd_timeout') {
-      return 'deploy_timeout';
-    }
-    return 'deploy_spawn_error';
-  }
-
-  /**
-   * @param {'deployed'|'launched'|'failed'} outcome
-   * @param {string|null} reason
-   * @param {string} bead_id
-   * @param {string} base_sha
-   * @param {{ detail?: string, log_path?: string }} [extra] - The run's own
-   * diagnostics (UI-l53x §2/§4). The store drops any key that is not a non-empty
-   * string, so an absent diagnostic stays an ABSENT key rather than a null.
-   * @returns {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string }}
-   */
-  function deployRecord(outcome, reason, bead_id, base_sha, extra) {
-    return { outcome, reason, bead_id, base_sha, ...extra };
-  }
-
-  /**
-   * Step 3 — the repo's post-merge DEPLOYMENT (worker-deploy-hook §2).
-   *
-   * Ways this returns without spawning anything:
-   *
-   *   - no `[deploy]` declaration and no `[worker.deploy]` section → nothing to
-   *     run, which is a pass with the same meaning verify's "no command" has —
-   *     EXCEPT in this server's own repo, see `deploy_missing_for_self` below,
-   *   - an undecidable self-repo comparison → `deploy_self_check_failed`
-   *     (§4.3): the two defences below cannot be evaluated at all,
-   *   - an unreadable declaration → `deploy_config_invalid` (UI-kfl4 §4.2): a
-   *     broken declaration never falls through to the legacy config rung, or the
-   *     drift the ladder closes would simply hide again,
-   *   - a non-`detached` deploy of THIS server's own repo →
-   *     `deploy_not_detached_for_self` (§4.3-2). A synchronous
-   *     `bdui-shared restart` kills the process mid-cleanup and strands every
-   *     remaining step; refusing at the declaration error is what keeps a
-   *     mis-declared PR from doing it,
-   *   - NOTHING to deploy in this server's own repo → `deploy_missing_for_self`
-   *     (§4.3-3). Elsewhere an absent deploy honestly means "this repo has no
-   *     deployment"; here it means the merge closes without the restart that
-   *     makes it a delivery, so it is named and banner-visible instead of
-   *     silent,
-   *   - no RESOLVABLE verify command → `deploy_verify_missing`. "No verify = a
-   *     pass" is a MERGE-GATE semantics; a deployment is not allowed to inherit
-   *     it, or a deploy-only repo would ship code nothing ever checked,
-   *   - the local checkout is not the verified base → `deploy_base_not_synced`.
-   *
-   * `detached` does not spawn here either: it returns the resolved command as
-   * `pending` for {@link runCleanup} to launch after the whole cleanup is
-   * durably recorded. A `bdui-shared restart` deploy kills this process, and
-   * the remaining cleanup steps must not die with it.
-   *
-   * Every failure here preserves what it can (UI-l53x §2): the full command
-   * output goes to the workspace's own `deploy-logs/` directory, the tail and the
-   * log path ride the returned record into `cleanup_failed` + `last_deploy`, and
-   * the two refusals that return BEFORE the command runs now write a `failed`
-   * `last_deploy` of their own — `failed` already means "it ran and did not
-   * succeed, OR never started", and leaving a stale success record in place made
-   * `last_deploy` answer "is the running service the merged code?" with a yes it
-   * had no basis for. Only "this repo has no deployment" still writes nothing:
-   * having nothing to say is not the same as a refusal.
-   *
-   * @param {string} bead_id
-   * @param {string} base_sha
-   * @param {string} target_base
-   * @returns {Promise<{ ok: true, pending: ResolvedDeployCmd|null, deployed: boolean }|{ ok: false, reason: string, detail?: string, output_tail?: string, log_path?: string }>}
-   */
-  async function runDeploy(bead_id, base_sha, target_base) {
-    // Post-merge context, so both resolutions pin to the base commit the
-    // cleanup synced to (UI-kfl4 §4.1).
-    const resolution = await resolveDeploy({ sha: base_sha });
-    const self_state = selfRepo(repo);
-    if (self_state === 'unknown') {
-      // Both self-repo defences below hang off this answer, so an undecidable
-      // comparison refuses rather than assuming the safe-looking side.
-      log('deploy refused for %s: self-repo comparison undecidable', bead_id);
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord('failed', 'deploy_self_check_failed', bead_id, base_sha)
-      );
-      return { ok: false, reason: 'deploy_self_check_failed' };
-    }
-    const self = self_state === 'self';
-    if (resolution.state === 'invalid') {
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord('failed', 'deploy_config_invalid', bead_id, base_sha, {
-          detail: resolution.detail
-        })
-      );
-      return {
-        ok: false,
-        reason: 'deploy_config_invalid',
-        detail: resolution.detail
-      };
-    }
-    if (resolution.state === 'absent') {
-      if (!self) {
-        return { ok: true, pending: null, deployed: false };
-      }
-      log('deploy declaration missing for this server own repo %s', repo);
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord('failed', 'deploy_missing_for_self', bead_id, base_sha)
-      );
-      return { ok: false, reason: 'deploy_missing_for_self' };
-    }
-    const deploy = resolution.value;
-    if (self && !deploy.detached) {
-      // Applied to BOTH rungs on purpose: a config.toml entry that forgot
-      // `detached` is the same self-kill as a declaration that did.
-      log('deploy refused for %s: self repo deploy is not detached', bead_id);
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord(
-          'failed',
-          'deploy_not_detached_for_self',
-          bead_id,
-          base_sha,
-          { detail: resolution.source }
-        )
-      );
-      return { ok: false, reason: 'deploy_not_detached_for_self' };
-    }
-    if ((await resolveVerify({ sha: base_sha })).state !== 'resolved') {
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord('failed', 'deploy_verify_missing', bead_id, base_sha)
-      );
-      return { ok: false, reason: 'deploy_verify_missing' };
-    }
-    const revalidated = await revalidateBaseCheckout(target_base, base_sha);
-    if (!revalidated.ok) {
-      log(
-        'deploy refused for %s: local checkout %s (base %s)',
-        bead_id,
-        revalidated.reason,
-        base_sha
-      );
-      // The concrete guard — `checkout_not_on_base` / `checkout_dirty` /
-      // `head_not_base_sha` — used to live only in the debug log, which left the
-      // record saying "not synced" without saying HOW.
-      const detail = revalidated.reason;
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord('failed', 'deploy_base_not_synced', bead_id, base_sha, {
-          detail
-        })
-      );
-      return { ok: false, reason: 'deploy_base_not_synced', detail };
-    }
-    if (deploy.detached) {
-      return { ok: true, pending: deploy, deployed: true };
-    }
-
-    /**
-     * @type {{
-     *   ok: boolean,
-     *   reason: string,
-     *   detail?: string,
-     *   output_tail?: string,
-     *   log_path?: string
-     * }}
-     */
-    let r;
-    try {
-      r = await runVerifyCmd({
-        cwd: repo,
-        cmd: deploy.cmd,
-        timeout_ms: deploy.timeout_ms,
-        spawn_impl: spawnImpl,
-        // Keyed on `repo`, the same key `runVerifyAtSha` uses — `deps.repo` may
-        // differ from `deps.workspace` (attach.js resolves `options.repo ||
-        // workspace_root`), and the logs belong to the repo the command ran in.
-        log_context: {
-          kind: 'deploy',
-          workspace_root: repo,
-          bead_id,
-          sha: base_sha,
-          started_at_ms: Date.now()
-        }
-      });
-    } catch (err) {
-      // Near-unreachable: `runVerifyCmd` resolves its own spawn failures rather
-      // than throwing, so this only catches a throw from outside its try.
-      log('deploy threw for %s: %o', bead_id, err);
-      r = {
-        ok: false,
-        reason: 'verify_cmd_spawn_error',
-        detail: errorDetail(err)
-      };
-    }
-    if (r.ok) {
-      deps.store.recordLastDeploy(
-        workspace,
-        // A successful deploy's log is the comparison baseline for the next
-        // failure — the same reason verify keeps its passing runs.
-        deployRecord('deployed', null, bead_id, base_sha, {
-          log_path: r.log_path
-        })
-      );
-      return { ok: true, pending: null, deployed: true };
-    }
-    const reason = deployReasonFor(r.reason);
-    deps.store.recordLastDeploy(
-      workspace,
-      deployRecord('failed', reason, bead_id, base_sha, {
-        detail: r.detail,
-        log_path: r.log_path
-      })
-    );
-    return {
-      ok: false,
-      reason,
-      detail: r.detail,
-      output_tail: r.output_tail,
-      log_path: r.log_path
-    };
-  }
-
-  /**
-   * Fire a detached deploy and stop caring about its RESULT — no wait, `unref`
-   * so it cannot hold the event loop open. The result is UNKNOWABLE by design:
-   * the canonical case restarts this very server, so there is no survivor to
-   * observe the exit code. `launched` is therefore recorded as an INTENT before
-   * this runs, and the only thing that can still be learned here is that the
-   * spawn itself never happened.
-   *
-   * One listener IS attached: `error`. Node reports a pre-exec failure (ENOENT
-   * and friends) as an asynchronous `error` event, not a throw — unhandled it
-   * would crash this server while the record still says `launched`. That event
-   * is exactly the "spawn never happened" case, so it feeds the same
-   * `on_spawn_error` repair as a synchronous throw.
-   *
-   * OUTPUT is not preserved here and cannot be (UI-l53x §3): `stdio` is ignored
-   * because there is no survivor to read it. The one observable failure — the
-   * spawn itself — does carry its error text out, as the return value for a
-   * synchronous throw and as the callback's argument for the asynchronous event.
-   *
-   * @param {ResolvedDeployCmd} deploy
-   * @param {(detail?: string) => void} on_spawn_error - Overwrites the `launched`
-   * record; may fire asynchronously, but only ever for a process that never
-   * started.
-   * @returns {{ ok: boolean, detail?: string }} Whether the spawn call itself
-   * succeeded, with the thrown error's text when it did not.
-   */
-  function launchDetachedDeploy(deploy, on_spawn_error) {
-    try {
-      const child = spawnImpl(deploy.cmd[0], deploy.cmd.slice(1), {
-        cwd: repo,
-        shell: false,
-        stdio: 'ignore',
-        detached: true,
-        windowsHide: true
-      });
-      if (child && typeof child.once === 'function') {
-        child.once('error', (/** @type {unknown} */ err) => {
-          log('detached deploy spawn failed: %o', err);
-          on_spawn_error(errorDetail(err));
-        });
-      }
-      if (child && typeof child.unref === 'function') {
-        child.unref();
-      }
-      return { ok: true };
-    } catch (err) {
-      log('detached deploy spawn failed: %o', err);
-      return { ok: false, detail: errorDetail(err) };
-    }
-  }
-
   /**
    * Step 4 — the linked Beads sweep, LEAVES FIRST. Children are walked depth
    * first and closed from the deepest up, each with a confirming readback,
@@ -1582,10 +1138,9 @@ export function createPrActions(deps) {
    * into a failed one — the guard below keeps that true for an injected fake
    * that breaks the contract.
    *
-   * AWAITED by the caller (UI-vb0t §3.4): reading the bead title made the send
-   * asynchronous, and the deploy launched right after may restart this process.
-   * What is awaited is the child's SPAWN, not its exit — it is detached and
-   * unref'd, so it outlives the restart once it exists.
+   * AWAITED by the caller (UI-vb0t §3.4): reading the bead title makes the send
+   * asynchronous. Closure is not complete until the notifier has spawned its
+   * detached child; the child exit remains outside this action.
    *
    * @param {string} bead_id
    * @param {string|null} pr_url
@@ -1610,7 +1165,6 @@ export function createPrActions(deps) {
   async function cleanupMergeSha(q, bead_id, refs) {
     const candidates = [
       refs.merge_sha,
-      q.reconcile?.[bead_id]?.merged_floor_sha,
       q.completion_intents?.[bead_id]?.subject?.merged_sha,
       authoritativeMergeSha(deps.observations.get(workspace, bead_id)?.pr)
     ];
@@ -1638,18 +1192,431 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Persist the request boundary after a verified candidate is accepted by the
+   * provider.  This is intentionally before any closure work: a pending job
+   * releases the merge driver, while its terminal observation owns closure.
+   *
+   * @param {string} bead_id
+   * @param {string} target_base
+   * @param {string} merge_sha
+   * @param {string} verified_sha
+   * @param {string|null} [head_ref]
+   * @param {string|null} [pr_url]
+   */
+  async function requestDeployment(
+    bead_id,
+    target_base,
+    merge_sha,
+    verified_sha,
+    head_ref = null,
+    pr_url = null
+  ) {
+    if (!deploymentJob) {
+      return { ok: false, reason: 'deployment_job_unavailable' };
+    }
+    let accepted;
+    try {
+      accepted = await deploymentJob.requestDeployment({
+        repo,
+        target_base,
+        verified_sha
+      });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        reason: typeof code === 'string' ? code : 'deployment_request_failed'
+      };
+    }
+    const bound = deps.store.recordDeploymentRequest(workspace, {
+      bead_id,
+      merge_sha,
+      verified_target_sha: accepted.target_sha,
+      deployment_generation: accepted.generation,
+      target_base: accepted.target_base,
+      head_ref,
+      pr_url
+    });
+    if (!bound.ok) {
+      return { ok: false, reason: 'deployment_request_persist_failed' };
+    }
+    notifyChanged(workspace);
+    return { ok: true };
+  }
+
+  /**
+   * Execute only the closure half after an observed provider success covers
+   * this row's immutable merge floor.
+   *
+   * @param {string} bead_id
+   * @param {boolean} [resume_failure]
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
+   */
+  async function closeCoveredRow(bead_id, resume_failure = false) {
+    const q = deps.store.snapshot(workspace);
+    const row = q.pr_wait.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    );
+    if (!row) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'not_in_pr_wait',
+        base_sync: null
+      };
+    }
+    const prior_failure = q.cleanup_failed?.[bead_id];
+    const closure_steps = ['child_sweep', 'branch_cleanup', 'parent_close'];
+    if (
+      prior_failure &&
+      prior_failure.step !== 'deploy' &&
+      prior_failure.step !== 'deployment_request' &&
+      (!closure_steps.includes(prior_failure.step) || !resume_failure)
+    ) {
+      return {
+        ok: false,
+        step: prior_failure.step,
+        reason: prior_failure.reason,
+        base_sync: null
+      };
+    }
+    if (prior_failure) {
+      deps.store.clearCleanupFailure(workspace, bead_id);
+    }
+    const resume_index = prior_failure
+      ? closure_steps.indexOf(prior_failure.step)
+      : -1;
+    if (resume_index <= 0) {
+      markStep(bead_id, 'child_sweep');
+      const swept = await sweepChildren(bead_id);
+      if (!swept.ok) {
+        return failCleanup(bead_id, 'child_sweep', swept.reason, null);
+      }
+    }
+    if (resume_index <= 1) {
+      markStep(bead_id, 'branch_cleanup');
+      const branches = await cleanupBranches(bead_id, row.head_ref || null);
+      if (!branches.ok) {
+        return failCleanup(bead_id, 'branch_cleanup', branches.reason, null);
+      }
+    }
+    markStep(bead_id, 'parent_close');
+    const closed = await closeBead(bead_id);
+    if (!closed.ok) {
+      return failCleanup(
+        bead_id,
+        'parent_close',
+        'bd_close_failed',
+        null,
+        closed.wrote
+      );
+    }
+    if (external && typeof external.drop === 'function') {
+      try {
+        external.drop(workspace, bead_id);
+      } catch (err) {
+        log('external row drop failed for %s: %o', bead_id, err);
+      }
+    }
+    deps.store.moveToDone(workspace, { bead_id });
+    notifyChanged(workspace);
+    requestQueueTick();
+    await announceMerged(bead_id, row.pr_url || null);
+    return { ok: true, step: null, reason: null, base_sync: null };
+  }
+
+  /**
+   * @param {any} status
+   * @param {any} row
+   * @returns {Promise<{ ok: boolean, reason: string|null }>}
+   */
+  async function validateSucceededCoverage(status, row) {
+    if (!deploymentJob) {
+      return { ok: false, reason: 'deployment_job_unavailable' };
+    }
+    if (
+      typeof row.merge_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.merge_sha)
+    ) {
+      return { ok: false, reason: 'deployment_row_binding_invalid' };
+    }
+    try {
+      deploymentJob.validateRowBinding(status, {
+        verified_target_sha: row.verified_target_sha,
+        deployment_generation: row.deployment_generation
+      });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    if (status.state !== 'succeeded' || !status.deployed_sha) {
+      return { ok: false, reason: status.state };
+    }
+    const ancestry = await deps.gitRun(
+      ['merge-base', '--is-ancestor', row.merge_sha, status.deployed_sha],
+      { cwd: repo }
+    );
+    if (ancestry.code === 1) {
+      return { ok: false, reason: 'deployment_not_covering_merge' };
+    }
+    if (ancestry.code !== 0) {
+      return { ok: false, reason: 'deployment_ancestry_check_failed' };
+    }
+    return { ok: true, reason: null };
+  }
+
+  /**
+   * Adopt only the cutover residue the approved rollout names. GitHub supplies
+   * the immutable merge floor; the provider supplies the current binding. No
+   * deployment request or retired provider-file read occurs here.
+   *
+   * @param {string} bead_id
+   * @param {string} merge_sha
+   * @param {{ head_ref?: string|null, pr_url?: string|null }} refs
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function adoptLegacyDeployment(bead_id, merge_sha, refs) {
+    if (!deploymentJob) {
+      return { ok: false, step: null, reason: 'deployment_job_unavailable' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const expected = await expectedBaseFor(q, bead_id);
+    if (!expected.ok) {
+      return { ok: false, step: null, reason: expected.reason };
+    }
+    let status;
+    try {
+      status = await deploymentJob.deploymentStatus({ repo });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        step: null,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    if (
+      status.state === 'idle' ||
+      status.target_base === null ||
+      status.target_sha === null ||
+      status.generation === null
+    ) {
+      return { ok: false, step: null, reason: 'deployment_binding_missing' };
+    }
+    if (status.target_base !== expected.base) {
+      return { ok: false, step: null, reason: 'deployment_binding_mismatch' };
+    }
+    const target_ancestry = await deps.gitRun(
+      ['merge-base', '--is-ancestor', merge_sha, status.target_sha],
+      { cwd: repo }
+    );
+    if (target_ancestry.code === 1) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_not_covering_merge'
+      };
+    }
+    if (target_ancestry.code !== 0) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_ancestry_check_failed'
+      };
+    }
+    const bound = deps.store.recordDeploymentRequest(workspace, {
+      bead_id,
+      merge_sha,
+      verified_target_sha: status.target_sha,
+      deployment_generation: status.generation,
+      target_base: status.target_base,
+      head_ref: refs.head_ref || null,
+      pr_url: refs.pr_url || null
+    });
+    if (!bound.ok) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_request_persist_failed'
+      };
+    }
+    const recorded = deps.store.recordDeploymentObservation(workspace, status);
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_status_persist_failed'
+      };
+    }
+    notifyChanged(workspace);
+    if (status.state !== 'succeeded' || !status.deployed_sha) {
+      return {
+        ok: true,
+        pending: true,
+        step: null,
+        reason: status.state,
+        base_sync: null
+      };
+    }
+    return await closeCoveredRow(bead_id);
+  }
+
+  /**
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function resumeCoveredClosure(bead_id) {
+    if (!deploymentJob) {
+      return { ok: false, step: null, reason: 'deployment_job_unavailable' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const row = q.pr_wait.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    );
+    const current = q.deployment;
+    if (!row || !current) {
+      return { ok: false, step: null, reason: 'deployment_binding_missing' };
+    }
+    let status;
+    try {
+      status = await deploymentJob.deploymentStatus({ repo });
+      deploymentJob.validateCurrentBinding(status, {
+        target_base: current.target_base,
+        target_sha: current.target_sha,
+        generation: current.generation
+      });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        step: null,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    const coverage = await validateSucceededCoverage(status, row);
+    if (!coverage.ok) {
+      return { ok: false, step: null, reason: coverage.reason };
+    }
+    const recorded = deps.store.recordDeploymentObservation(workspace, status);
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        step: null,
+        reason: recorded.stale
+          ? 'deployment_status_stale'
+          : 'deployment_status_persist_failed'
+      };
+    }
+    return await closeCoveredRow(bead_id, true);
+  }
+
+  /**
+   * Observe one repo-level deployment without ever requesting or spawning it.
+   * Each covered row closes independently so one cleanup failure cannot retain
+   * another merged parent.
+   */
+  async function observeDeployment() {
+    if (!deploymentJob) {
+      return { ok: false, reason: 'deployment_job_unavailable' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const current = q.deployment;
+    let status;
+    try {
+      status = await deploymentJob.deploymentStatus({ repo });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    const fresh = deps.store.snapshot(workspace).deployment;
+    const binding_changed =
+      current?.target_base !== fresh?.target_base ||
+      current?.target_sha !== fresh?.target_sha ||
+      current?.generation !== fresh?.generation;
+    if (binding_changed) {
+      return { ok: true, reason: 'deployment_observation_raced' };
+    }
+    if (current?.target_base && current.target_sha && current.generation) {
+      try {
+        deploymentJob.validateCurrentBinding(status, {
+          target_base: current.target_base,
+          target_sha: current.target_sha,
+          generation: current.generation
+        });
+      } catch (err) {
+        const code = /** @type {{ code?: unknown }} */ (err).code;
+        return {
+          ok: false,
+          reason:
+            typeof code === 'string' ? code : 'deployment_binding_mismatch'
+        };
+      }
+    }
+    const recorded = deps.store.recordDeploymentObservation(workspace, status);
+    if (!recorded.ok) {
+      if (recorded.stale) {
+        return { ok: true, reason: 'deployment_status_stale' };
+      }
+      return { ok: false, reason: 'deployment_status_persist_failed' };
+    }
+    notifyChanged(workspace);
+    if (status.state !== 'succeeded' || !status.deployed_sha) {
+      return { ok: true, reason: status.state };
+    }
+    const rows = deps.store
+      .snapshot(workspace)
+      .pr_wait.filter(
+        (/** @type {any} */ row) =>
+          row.cleanup_cursor === 'deployment_observe' &&
+          typeof row.merge_sha === 'string'
+      );
+    for (const row of rows) {
+      const coverage = await validateSucceededCoverage(status, row);
+      if (!coverage.ok) {
+        if (coverage.reason === 'deployment_generation_stale') {
+          continue;
+        }
+        await failCleanup(
+          row.bead_id,
+          'deployment_request',
+          coverage.reason || 'deployment_status_failed',
+          null
+        );
+        continue;
+      }
+      if (in_flight.has(row.bead_id)) {
+        continue;
+      }
+      in_flight.add(row.bead_id);
+      try {
+        await closeCoveredRow(row.bead_id);
+      } finally {
+        in_flight.delete(row.bead_id);
+        clearStep(row.bead_id);
+      }
+    }
+    return { ok: true, reason: null };
+  }
+
+  /**
    * Run the whole cleanup in contract order. The SINGLE implementation both the
    * [머지] button and the poller's externally-observed MERGED go through — a
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null, restart_reconcile?: boolean }} [refs]
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
   async function runCleanup(bead_id, refs = {}) {
-    const q = deps.store.snapshot(workspace);
+    let q = deps.store.snapshot(workspace);
     if (discardActive(q, bead_id)) {
       return {
         ok: false,
@@ -1688,100 +1655,59 @@ export function createPrActions(deps) {
     // — and §6's "the row disappears on the next scan" is how it actually
     // leaves. The deploy record is workspace-level and stays either way: a
     // deploy that really ran is a real fact about this repo.
-    const durable = inPrWait(q, bead_id);
-
-    /** @type {BaseSyncOutcome|null} */
-    let base_sync = null;
-    /** @type {ResolvedDeployCmd|null} */
-    let pending_deploy = null;
-    /** @type {string|null} */
-    let deployed_sha = null;
-    if (deploymentReconciler) {
-      const prior_failure = q.cleanup_failed?.[bead_id];
-      if (
-        refs.restart_reconcile !== true &&
-        q.reconcile?.[bead_id]?.stage === 'failed' &&
-        prior_failure
-      ) {
+    let durable = inPrWait(q, bead_id);
+    if (deploymentJob && !durable && external?.get(workspace, bead_id)) {
+      const merge_sha = await cleanupMergeSha(q, bead_id, refs);
+      if (merge_sha === null) {
         return {
           ok: false,
-          step: prior_failure.step,
-          reason: prior_failure.reason,
+          step: 'base_sync',
+          reason: 'merge_sha_unobserved',
           base_sync: null
         };
       }
+      const promoted = deps.store.promoteMergedExternal(workspace, {
+        bead_id,
+        merge_sha,
+        head_ref:
+          refs.head_ref ||
+          deps.observations.get(workspace, bead_id)?.pr?.head_ref ||
+          null,
+        pr_url
+      });
+      if (!promoted.ok) {
+        return {
+          ok: false,
+          step: 'deployment_request',
+          reason: 'external_deployment_promote_failed',
+          base_sync: null
+        };
+      }
+      q = deps.store.snapshot(workspace);
+      durable = true;
+    }
+
+    /** @type {BaseSyncOutcome|null} */
+    let base_sync = null;
+    if (!deploymentJob || !durable) {
+      return failCleanup(
+        bead_id,
+        'deployment_request',
+        'deployment_job_unavailable',
+        null
+      );
+    }
+    {
       const merge_sha = await cleanupMergeSha(q, bead_id, refs);
       if (merge_sha === null) {
         return failCleanup(bead_id, 'base_sync', 'merge_sha_unobserved', null);
       }
-      markStep(bead_id, 'reconcile_queued');
-      const reconciled = await deploymentReconciler.reconcile({
-        bead_id,
-        target_base,
-        merged_floor_sha: merge_sha,
-        ...(refs.restart_reconcile === true ? { restart: true } : {})
-      });
-      base_sync = reconciled.base_sync || null;
-      if (!reconciled.ok) {
-        if (reconciled.pending === true) {
-          notifyChanged(workspace);
-          return {
-            ok: true,
-            pending: true,
-            step: null,
-            reason: reconciled.reason || 'reconcile_pending',
-            base_sync
-          };
-        }
-        const failed_step =
-          reconciled.step ||
-          (reconciled.stage === 'verifying'
-            ? 'post_merge_verify'
-            : reconciled.stage === 'deploying' ||
-                reconciled.stage === 'restarting' ||
-                reconciled.stage === 'readback'
-              ? 'deploy'
-              : 'base_sync');
-        return failCleanup(
-          bead_id,
-          failed_step,
-          reconciled.reason || 'reconcile_failed',
-          base_sync,
-          undefined,
-          reconciled.detail,
-          reconciled.output_tail,
-          reconciled.log_path,
-          {
-            ...(typeof reconciled.failure_code === 'string'
-              ? { failure_code: reconciled.failure_code }
-              : {}),
-            ...(typeof reconciled.retryable === 'boolean'
-              ? { retryable: reconciled.retryable }
-              : {}),
-            ...(Number.isInteger(reconciled.retry_count)
-              ? { retry_count: reconciled.retry_count }
-              : {})
-          }
-        );
-      }
-      deployed_sha = reconciled.candidate_sha;
-      if (reconciled.status === 'detached_pending') {
-        pending_deploy = reconciled.pending_deploy;
-      }
-    } else {
       markStep(bead_id, 'base_sync');
       const synced = await syncBase(target_base);
       if (!synced.ok) {
         return failCleanup(bead_id, 'base_sync', synced.reason, null);
       }
       base_sync = synced.outcome;
-      deployed_sha = synced.sha;
-      log(
-        'cleanup base sync for %s: %s (base %s)',
-        bead_id,
-        base_sync,
-        synced.sha
-      );
       markStep(bead_id, 'post_merge_verify');
       const verified = await postMergeVerify(bead_id, synced.sha);
       if (!verified.ok) {
@@ -1793,135 +1719,56 @@ export function createPrActions(deps) {
           undefined,
           verified.detail,
           verified.output_tail,
-          verified.log_path,
-          {
-            ...(Number.isInteger(verified.retry_count)
-              ? { retry_count: verified.retry_count }
-              : {})
-          }
+          verified.log_path
         );
       }
-      markStep(bead_id, 'deploy');
-      const deployed = await runDeploy(bead_id, synced.sha, target_base);
-      if (!deployed.ok) {
+      const covers_merge = await deps.gitRun(
+        ['merge-base', '--is-ancestor', merge_sha, synced.sha],
+        { cwd: repo }
+      );
+      if (covers_merge.code === 1) {
         return failCleanup(
           bead_id,
-          'deploy',
-          deployed.reason,
-          base_sync,
-          undefined,
-          deployed.detail,
-          deployed.output_tail,
-          deployed.log_path
+          'deployment_request',
+          'deployment_target_not_covering_merge',
+          base_sync
         );
       }
-      pending_deploy = deployed.pending;
-    }
-    markStep(bead_id, 'child_sweep');
-    const swept = await sweepChildren(bead_id);
-    if (!swept.ok) {
-      return failCleanup(bead_id, 'child_sweep', swept.reason, base_sync);
-    }
-    markStep(bead_id, 'branch_cleanup');
-    const branches = await cleanupBranches(bead_id, refs.head_ref || null);
-    if (!branches.ok) {
-      return failCleanup(bead_id, 'branch_cleanup', branches.reason, base_sync);
-    }
-    // The parent close is the last step that may need bd RESTORING —
-    // everything before it left the bead `resolved` untouched (§6).
-    markStep(bead_id, 'parent_close');
-    const closed = await closeBead(bead_id);
-    if (!closed.ok) {
-      return failCleanup(
-        bead_id,
-        'parent_close',
-        'bd_close_failed',
-        base_sync,
-        // A write that landed but could not be confirmed may have left bd
-        // `closed`; a write that never landed did not.
-        closed.wrote
-      );
-    }
-    // Retire the external row NOW rather than at the next bd scan (UI-wwby §1).
-    // Placed before the durable branch because the conclusion is the same for
-    // both: a bead whose cleanup succeeded is `closed`, so the next scan would
-    // drop it anyway. Closing that window is what stops a merged bead from
-    // being resurrected as an external merge candidate. Memory-only, and a
-    // failure changes nothing the scan would not fix, so it never breaks
-    // cleanup.
-    if (external && typeof external.drop === 'function') {
-      try {
-        external.drop(workspace, bead_id);
-      } catch (err) {
-        log('external row drop failed for %s: %o', bead_id, err);
-      }
-    }
-
-    if (!pending_deploy) {
-      if (durable) {
-        deps.store.moveToDone(workspace, { bead_id });
-      }
-      notifyChanged(workspace);
-      if (durable) {
-        requestQueueTick();
-      }
-      await announceMerged(bead_id, pr_url);
-      return { ok: true, step: null, reason: null, base_sync };
-    }
-
-    // THE TERMINAL LAUNCH (worker-deploy-hook §2). Everything durable is
-    // written FIRST, in one mutation, because the next line may kill this
-    // process: a `launched` record that only exists in memory when the server
-    // restarts itself is a record that never existed.
-    const launch_record = deployRecord(
-      'launched',
-      null,
-      bead_id,
-      deployed_sha || ''
-    );
-    if (durable) {
-      deps.store.moveToDoneWithDeploy(workspace, {
-        bead_id,
-        deploy: launch_record
-      });
-    } else {
-      deps.store.recordLastDeploy(workspace, launch_record);
-    }
-    notifyChanged(workspace);
-    if (durable) {
-      requestQueueTick();
-    }
-    // Announced BEFORE the launch, for the same reason the durable write is:
-    // the detached deploy may restart this process, and a notification that
-    // never got sent is a merge nobody heard about. AWAITED, so "before" means
-    // the child exists, not merely that the call was made (UI-vb0t §3.4).
-    await announceMerged(bead_id, pr_url);
-    // A spawn that never started — a synchronous throw or Node's asynchronous
-    // `error` event — means we are still alive, so the intent was wrong and can
-    // be corrected. The cleanup itself still succeeded — the bead really is
-    // done and its branches really are gone — so this surfaces as a failed
-    // DEPLOY record rather than a cleanup stop that would ask a human to redo
-    // finished work.
-    const record_spawn_failure = (/** @type {string|undefined} */ detail) => {
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord(
-          'failed',
-          'deploy_spawn_error',
+      if (covers_merge.code !== 0) {
+        return failCleanup(
           bead_id,
-          deployed_sha || '',
-          {
-            detail
-          }
-        )
+          'deployment_request',
+          'deployment_candidate_ancestry_check_failed',
+          base_sync
+        );
+      }
+      markStep(bead_id, 'deployment_request');
+      const requested = await requestDeployment(
+        bead_id,
+        target_base,
+        merge_sha,
+        synced.sha,
+        refs.head_ref ||
+          deps.observations.get(workspace, bead_id)?.pr?.head_ref ||
+          null,
+        pr_url
       );
-      notifyChanged(workspace);
-    };
-    const launched = launchDetachedDeploy(pending_deploy, record_spawn_failure);
-    if (!launched.ok) {
-      record_spawn_failure(launched.detail);
+      if (!requested.ok) {
+        return failCleanup(
+          bead_id,
+          'deployment_request',
+          requested.reason || 'deployment_request_failed',
+          base_sync
+        );
+      }
+      return {
+        ok: true,
+        pending: true,
+        step: null,
+        reason: null,
+        base_sync
+      };
     }
-    return { ok: true, step: null, reason: null, base_sync };
   }
 
   /** @param {{ base_ref?: string|null }} refs */
@@ -1944,51 +1791,6 @@ export function createPrActions(deps) {
   }
 
   /**
-   * @param {string} bead_id
-   * @param {string} base_sha
-   * @param {string} target_base
-   */
-  async function rollbackResolveDeploy(bead_id, base_sha, target_base) {
-    return runDeploy(bead_id, base_sha, target_base);
-  }
-
-  /**
-   * Launch a rollback's already-authorized detached deploy only after its
-   * coordinator has atomically finalized the rollback and recorded the launch
-   * intent. This function performs only the terminal spawn and may overwrite
-   * that intent when the spawn itself is known not to have happened.
-   *
-   * @param {string} bead_id
-   * @param {{ deploy: ResolvedDeployCmd, base_sha: string }|null} pending_deploy
-   */
-  function launchRollbackDeploy(bead_id, pending_deploy) {
-    if (!pending_deploy) {
-      return { ok: true };
-    }
-    const record_spawn_failure = (/** @type {string|undefined} */ detail) => {
-      deps.store.recordLastDeploy(
-        workspace,
-        deployRecord(
-          'failed',
-          'deploy_spawn_error',
-          bead_id,
-          pending_deploy.base_sha,
-          { detail }
-        )
-      );
-      notifyChanged(workspace);
-    };
-    const launched = launchDetachedDeploy(
-      pending_deploy.deploy,
-      record_spawn_failure
-    );
-    if (!launched.ok) {
-      record_spawn_failure(launched.detail);
-    }
-    return launched;
-  }
-
-  /**
    * Record a cleanup stop durably and hand the bead back to a human: it stays
    * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
    * NOTHING retries on its own.
@@ -2007,9 +1809,8 @@ export function createPrActions(deps) {
    * @param {boolean} [restore_bd] - Whether the parent close may have landed.
    * @param {string} [detail] - The step's own diagnostic text, when it has one
    * (UI-2o4z §3); the reason alone cannot always identify the failure.
-   * @param {string} [output_tail] - The failing command's own output tail, when
-   * the step ran one (UI-qult §1) — `post_merge_verify` and, since UI-l53x §2,
-   * the synchronous `deploy`.
+   * @param {string} [output_tail] - The failing verification command's output
+   * tail, when available (UI-qult §1).
    * @param {string} [log_path] - Absolute path to that command's FULL preserved
    * output (UI-0x54), when the run produced a complete log file. A cleanup
    * retry overwrites it with its own run's log.
@@ -2238,14 +2039,7 @@ export function createPrActions(deps) {
         }
         const c = q.cleanup_failed?.[bead_id]
           ? await retryCleanupLocked(bead_id, refs)
-          : await runCleanup(bead_id, {
-              ...refs,
-              ...(is_external &&
-              q.reconcile?.[bead_id]?.stage === 'failed' &&
-              !q.auto_merge_skips?.[bead_id]
-                ? { restart_reconcile: true }
-                : {})
-            });
+          : await runCleanup(bead_id, refs);
         return {
           ok: c.ok,
           action: c.pending ? 'cleanup_pending' : 'already_merged',
@@ -2459,7 +2253,9 @@ export function createPrActions(deps) {
     });
     return {
       ok: c.ok,
-      action: c.pending ? 'cleanup_pending' : action,
+      // An external desired request is the merge-driver handoff.  Pending or
+      // running deployment is deliberately not a serial merge-queue slot.
+      action: c.pending && !deploymentJob ? 'cleanup_pending' : action,
       reason: c.reason,
       cleanup_step: c.step,
       base_sync: c.base_sync,
@@ -2651,9 +2447,10 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string|null} [merge_sha]
+   * @param {{ head_ref?: string|null, pr_url?: string|null }} [refs]
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
    */
-  async function cleanupObservedMerge(bead_id, merge_sha = null) {
+  async function cleanupObservedMerge(bead_id, merge_sha = null, refs = {}) {
     if (in_flight.has(bead_id)) {
       return { ok: false, step: null, reason: 'action_in_flight' };
     }
@@ -2661,22 +2458,49 @@ export function createPrActions(deps) {
     if (discardActive(q, bead_id)) {
       return { ok: false, step: null, reason: 'discard_in_progress' };
     }
-    const reconcile = q.reconcile?.[bead_id];
     const external_resume =
       !inPrWait(q, bead_id) &&
       !!external?.get(workspace, bead_id) &&
-      reconcile &&
-      reconcile.stage !== 'complete' &&
-      reconcile.stage !== 'failed';
+      deploymentJob;
     if (!inPrWait(q, bead_id) && !external_resume) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
-    if (q.cleanup_failed && q.cleanup_failed[bead_id]) {
+    const row = q.pr_wait.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    );
+    if (row?.cleanup_cursor === 'deployment_observe') {
+      return {
+        ok: true,
+        pending: true,
+        step: null,
+        reason: 'deployment_observation_pending',
+        base_sync: null
+      };
+    }
+    const cleanup_failure = q.cleanup_failed?.[bead_id];
+    const legacy_deployment =
+      row?.deployment_generation == null &&
+      cleanup_failure?.step === 'deploy' &&
+      cleanup_failure?.reason === 'deploy_not_detached_for_self';
+    if (cleanup_failure && !legacy_deployment) {
       return { ok: false, step: null, reason: 'merged_cleanup_failed' };
+    }
+    if (
+      legacy_deployment &&
+      (typeof merge_sha !== 'string' || !/^[0-9a-f]{40}$/i.test(merge_sha))
+    ) {
+      return { ok: false, step: null, reason: 'merge_sha_unobserved' };
     }
     in_flight.add(bead_id);
     try {
-      return await runCleanup(bead_id, { merge_sha });
+      if (legacy_deployment) {
+        return await adoptLegacyDeployment(
+          bead_id,
+          String(merge_sha).toLowerCase(),
+          refs
+        );
+      }
+      return await runCleanup(bead_id, { ...refs, merge_sha });
     } finally {
       in_flight.delete(bead_id);
       clearStep(bead_id);
@@ -2684,44 +2508,21 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Resume every durable nonterminal deployment on server startup. The
-   * persisted target/floor pair is the authority: resolving either from the
-   * current checkout or GitHub could silently turn a crash recovery into a new
-   * deployment. `runCleanup` continues the remaining sweep only after the same
-   * Reconciler attempt proves its receipt.
+   * Observe persisted external deployment demand on startup.
    *
-   * @returns {Promise<{ bead_id: string, result: { ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null } }[]>}
+   * @returns {Promise<[]>}
    */
-  async function resumePersistedReconciles() {
-    const q = deps.store.snapshot(workspace);
-    const records = Object.values(q.reconcile || {}).filter(
-      (record) =>
-        record && record.stage !== 'complete' && record.stage !== 'failed'
-    );
-    /** @type {{ bead_id: string, result: any }[]} */
-    const results = [];
-    for (const record of records) {
-      const bead_id = record.bead_id;
-      if (in_flight.has(bead_id)) {
-        results.push({
-          bead_id,
-          result: { ok: false, step: null, reason: 'action_in_flight' }
-        });
-        continue;
-      }
-      in_flight.add(bead_id);
-      try {
-        const result = await runCleanup(bead_id, {
-          target_base: record.target_base,
-          merge_sha: record.merged_floor_sha
-        });
-        results.push({ bead_id, result });
-      } finally {
-        in_flight.delete(bead_id);
-        clearStep(bead_id);
-      }
+  async function resumeDeploymentObservation() {
+    const queue = deps.store.snapshot(workspace);
+    if (
+      queue.deployment !== null ||
+      queue.pr_wait.some(
+        (/** @type {any} */ row) => row.cleanup_cursor === 'deployment_observe'
+      )
+    ) {
+      await observeDeployment();
     }
-    return results;
+    return [];
   }
 
   /**
@@ -2739,13 +2540,18 @@ export function createPrActions(deps) {
     if (!inPrWait(q, bead_id)) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
-    if (!q.cleanup_failed?.[bead_id]) {
+    const cleanup_failure = q.cleanup_failed?.[bead_id];
+    if (!cleanup_failure) {
       return { ok: false, step: null, reason: 'cleanup_failed_missing' };
     }
-    return await runCleanup(bead_id, {
-      ...refs,
-      restart_reconcile: true
-    });
+    if (
+      ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
+        cleanup_failure.step
+      )
+    ) {
+      return await resumeCoveredClosure(bead_id);
+    }
+    return await runCleanup(bead_id, refs);
   }
 
   /**
@@ -2799,7 +2605,14 @@ export function createPrActions(deps) {
     }
     in_flight.add(root_bead_id);
     try {
-      return await runCleanup(root_bead_id, { restart_reconcile: true });
+      if (
+        ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
+          q.cleanup_failed?.[root_bead_id]?.step
+        )
+      ) {
+        return await resumeCoveredClosure(root_bead_id);
+      }
+      return await runCleanup(root_bead_id);
     } finally {
       in_flight.delete(root_bead_id);
       clearStep(root_bead_id);
@@ -2990,12 +2803,11 @@ export function createPrActions(deps) {
     discard,
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,
-    resumePersistedReconciles,
+    observeDeployment,
+    resumeDeploymentObservation,
     retryCleanup,
     rollbackBaseSync,
     rollbackVerify,
-    rollbackResolveDeploy,
-    launchRollbackDeploy,
     resumeCompletionCleanup,
     prState,
     completionGate

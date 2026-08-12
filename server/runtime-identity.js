@@ -3,11 +3,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runtimeMarkerPath } from './worker/deployment-paths.js';
-import {
-  readPrivateJsonFile,
-  writePrivateJsonAtomic
-} from './worker/managed-state.js';
 import { observeProcessIdentity } from './worker/process-controller.js';
 
 const RUNTIME_KEYS = [
@@ -154,35 +149,4 @@ export function createRuntimeIdentity(input) {
   return validateRuntimeIdentity(identity)
     ? { ok: true, identity }
     : { ok: false, reason: 'runtime_identity_invalid' };
-}
-
-/**
- * @param {{ marker_path?: string, identity: any }} input
- * @returns {{ ok: true }|{ ok: false, reason: string }}
- */
-export function writeRuntimeMarker(input) {
-  if (!validateRuntimeIdentity(input.identity)) {
-    return { ok: false, reason: 'runtime_identity_invalid' };
-  }
-  try {
-    writePrivateJsonAtomic(
-      input.marker_path || runtimeMarkerPath(),
-      input.identity
-    );
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: 'runtime_marker_write_failed' };
-  }
-}
-
-/**
- * @param {string} [marker_path]
- * @returns {{ ok: true, identity: any }|{ ok: false, reason: string }}
- */
-export function readRuntimeMarker(marker_path = runtimeMarkerPath()) {
-  const readback = readPrivateJsonFile(marker_path);
-  if (!readback.ok || !validateRuntimeIdentity(readback.value)) {
-    return { ok: false, reason: 'runtime_marker_invalid' };
-  }
-  return { ok: true, identity: readback.value };
 }

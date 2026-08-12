@@ -36,6 +36,12 @@ vi.mock('../db.js', () => ({
 
 /** @type {string} */
 let tmp_runtime_dir;
+/** @type {string} */
+let tmp_state_home;
+/** @type {string} */
+let tmp_config_home;
+/** @type {string} */
+let shared_sentinel;
 /** @type {Record<string, string | undefined>} */
 let prev_env;
 
@@ -43,12 +49,21 @@ beforeAll(() => {
   // Snapshot selected env vars to restore later
   prev_env = {
     BDUI_RUNTIME_DIR: process.env.BDUI_RUNTIME_DIR,
+    XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
     PORT: process.env.PORT,
     BDUI_CONFIG_PATH: process.env.BDUI_CONFIG_PATH
   };
 
   tmp_runtime_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-it-'));
+  tmp_state_home = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-it-state-'));
+  tmp_config_home = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-it-config-'));
+  const shared_root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-it-shared-'));
+  shared_sentinel = path.join(shared_root, 'sentinel');
+  fs.writeFileSync(shared_sentinel, 'shared-runtime-must-not-change');
   process.env.BDUI_RUNTIME_DIR = tmp_runtime_dir;
+  process.env.XDG_STATE_HOME = tmp_state_home;
+  process.env.XDG_CONFIG_HOME = tmp_config_home;
   // Use port 0 so OS assigns an ephemeral port; URL printing still occurs
   process.env.PORT = '0';
   // Point the spawned daemon at an isolated config (no auth; spec §8). The
@@ -76,6 +91,17 @@ afterAll(() => {
     process.env.BDUI_RUNTIME_DIR = prev_env.BDUI_RUNTIME_DIR;
   }
 
+  if (prev_env.XDG_STATE_HOME === undefined) {
+    delete process.env.XDG_STATE_HOME;
+  } else {
+    process.env.XDG_STATE_HOME = prev_env.XDG_STATE_HOME;
+  }
+  if (prev_env.XDG_CONFIG_HOME === undefined) {
+    delete process.env.XDG_CONFIG_HOME;
+  } else {
+    process.env.XDG_CONFIG_HOME = prev_env.XDG_CONFIG_HOME;
+  }
+
   if (prev_env.PORT === undefined) {
     delete process.env.PORT;
   } else {
@@ -90,6 +116,8 @@ afterAll(() => {
 
   try {
     fs.rmSync(tmp_runtime_dir, { recursive: true, force: true });
+    fs.rmSync(tmp_state_home, { recursive: true, force: true });
+    fs.rmSync(tmp_config_home, { recursive: true, force: true });
   } catch {
     // ignore
   }
@@ -155,6 +183,21 @@ describe('commands integration', () => {
     expect(typeof pid).toBe('number');
 
     // cleanup
+    await handleStop();
+  });
+
+  test('uses only the test-scoped runtime, state, config, and ephemeral port', async () => {
+    const code = await handleRestart();
+
+    expect(code).toBe(0);
+    expect(daemon.getRuntimeDir()).toBe(tmp_runtime_dir);
+    expect(process.env.XDG_STATE_HOME).toBe(tmp_state_home);
+    expect(process.env.XDG_CONFIG_HOME).toBe(tmp_config_home);
+    expect(process.env.PORT).toBe('0');
+    expect(fs.readFileSync(shared_sentinel, 'utf8')).toBe(
+      'shared-runtime-must-not-change'
+    );
+
     await handleStop();
   });
 });

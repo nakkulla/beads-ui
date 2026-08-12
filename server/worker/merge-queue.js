@@ -170,8 +170,6 @@ export function createMergeQueue(deps) {
   /** @type {string|null} */
   let halted_on_completion = null;
   /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
-  let halted_on_reconcile = null;
-  /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
   let halted_on_conflict = null;
   let prepared = false;
   /** @type {string|null} */
@@ -1261,9 +1259,8 @@ export function createMergeQueue(deps) {
       }
       const action = result ? result.action : null;
       if (action === 'cleanup_pending') {
-        halted = true;
-        halted_on_reconcile = { queue_bead_id: root_bead_id, subject_bead_id };
-        notify();
+        deps.store.dequeueMerge(workspace, root_bead_id);
+        void requestDrain();
         return;
       }
       if (
@@ -1450,12 +1447,8 @@ export function createMergeQueue(deps) {
       const action = result ? result.action : null;
 
       if (action === 'cleanup_pending') {
-        halted = true;
-        halted_on_reconcile = {
-          queue_bead_id: bead_id,
-          subject_bead_id: bead_id
-        };
-        notify();
+        deps.store.dequeueMerge(workspace, bead_id);
+        void requestDrain();
         return;
       }
 
@@ -1629,7 +1622,6 @@ export function createMergeQueue(deps) {
         halted = false;
         halted_on_head = null;
         halted_on_completion = null;
-        halted_on_reconcile = null;
         // A queue resumed after a restart can hold EXTERNAL rows, and those
         // exist only in the in-memory registry the ws overlay reads — empty
         // until something scans bd. Without this, a restored external head
@@ -1721,46 +1713,6 @@ export function createMergeQueue(deps) {
               intent.phase === 'merging'
             ) {
               halted_on_completion = null;
-              void requestDrain();
-            }
-          }
-          if (halted_on_reconcile) {
-            const pending = halted_on_reconcile;
-            const queue = snapshot();
-            const record = queue?.reconcile?.[pending.subject_bead_id];
-            if (record?.stage === 'failed') {
-              halted_on_reconcile = null;
-              const failure = queue?.cleanup_failed?.[pending.subject_bead_id];
-              const result = {
-                ok: false,
-                action: /** @type {const} */ ('already_merged'),
-                reason:
-                  failure?.reason ||
-                  record.terminal_failure?.reason ||
-                  'reconcile_failed',
-                cleanup_step:
-                  failure?.step || record.terminal_failure?.step || null
-              };
-              if (completionIntent(pending.queue_bead_id)) {
-                void handoffCompletion(
-                  pending.queue_bead_id,
-                  pending.subject_bead_id,
-                  result
-                );
-              } else {
-                failAndDequeue(
-                  pending.queue_bead_id,
-                  `정리 실패(${result.cleanup_step || '?'}): ${result.reason}`
-                );
-              }
-              return;
-            }
-            if (
-              !queuedEntry(pending.queue_bead_id) ||
-              !record ||
-              record.stage === 'complete'
-            ) {
-              halted_on_reconcile = null;
               void requestDrain();
             }
           }

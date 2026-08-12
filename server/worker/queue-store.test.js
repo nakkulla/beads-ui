@@ -233,6 +233,287 @@ describe('worker/queue-store', () => {
     expect(q.pr_wait_holds_slot).toBe(false);
   });
 
+  test('normalizes the current deployment observation and merged-row lineage', () => {
+    const merge_sha = 'a'.repeat(40);
+    const verified_target_sha = 'b'.repeat(40);
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        deployment: {
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha: verified_target_sha,
+          deployed_sha: verified_target_sha,
+          generation: 3,
+          error_code: null,
+          log_path: '/tmp/deploy.log'
+        },
+        pr_wait: [
+          {
+            bead_id: 'UI-deploy',
+            added_at: 1,
+            merge_sha,
+            verified_target_sha,
+            deployment_generation: 3,
+            cleanup_cursor: 'child_sweep'
+          }
+        ]
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.deployment).toMatchObject({
+      state: 'succeeded',
+      target_sha: verified_target_sha,
+      deployed_sha: verified_target_sha,
+      generation: 3
+    });
+    expect(q.pr_wait[0]).toMatchObject({
+      merge_sha,
+      verified_target_sha,
+      deployment_generation: 3,
+      cleanup_cursor: 'child_sweep'
+    });
+  });
+
+  test('records a validated repository deployment observation durably', () => {
+    const target_sha = 'c'.repeat(40);
+    const store = createQueueStore();
+
+    const result = store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 4,
+      error_code: null,
+      log_path: null
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      target_sha,
+      generation: 4
+    });
+  });
+
+  test('keeps a newer deployment observation when a stale status arrives', () => {
+    const store = createQueueStore();
+    const newer_sha = 'd'.repeat(40);
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha: newer_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+
+    const stale = store.recordDeploymentObservation(WS, {
+      state: 'succeeded',
+      target_base: 'main',
+      target_sha: 'c'.repeat(40),
+      deployed_sha: 'c'.repeat(40),
+      generation: 4,
+      error_code: null,
+      log_path: '/tmp/older.log'
+    });
+
+    expect(stale).toMatchObject({ ok: false, stale: true });
+    expect(store.snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      target_sha: newer_sha,
+      generation: 5
+    });
+  });
+
+  test('refuses a conflicting binding at the current deployment generation', () => {
+    const store = createQueueStore();
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha: 'd'.repeat(40),
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+
+    const mismatch = store.recordDeploymentObservation(WS, {
+      state: 'succeeded',
+      target_base: 'main',
+      target_sha: 'e'.repeat(40),
+      deployed_sha: 'e'.repeat(40),
+      generation: 5,
+      error_code: null,
+      log_path: '/tmp/conflict.log'
+    });
+
+    expect(mismatch).toMatchObject({ ok: false, binding_mismatch: true });
+    expect(store.snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      target_sha: 'd'.repeat(40),
+      generation: 5
+    });
+  });
+
+  test('advances one binding from pending through running to either terminal state', () => {
+    const store = createQueueStore();
+    const target_sha = 'd'.repeat(40);
+    const running = {
+      state: /** @type {const} */ ('running'),
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: '/tmp/running.log'
+    };
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+    expect(store.recordDeploymentObservation(WS, running).ok).toBe(true);
+    expect(
+      store.recordDeploymentObservation(WS, {
+        ...running,
+        state: 'succeeded',
+        deployed_sha: target_sha
+      }).ok
+    ).toBe(true);
+
+    const failed_store = createQueueStore();
+    const failed_ws = `${WS}-failed`;
+    failed_store.recordDeploymentObservation(failed_ws, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+    failed_store.recordDeploymentObservation(failed_ws, running);
+
+    expect(
+      failed_store.recordDeploymentObservation(failed_ws, {
+        ...running,
+        state: 'failed',
+        error_code: 'deploy_failed'
+      }).ok
+    ).toBe(true);
+  });
+
+  test('refuses a same-binding deployment state regression', () => {
+    const store = createQueueStore();
+    const target_sha = 'd'.repeat(40);
+    const running = {
+      state: /** @type {const} */ ('running'),
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: '/tmp/running.log'
+    };
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+    store.recordDeploymentObservation(WS, running);
+
+    const pending = store.recordDeploymentObservation(WS, {
+      ...running,
+      state: 'pending',
+      log_path: null
+    });
+    expect(pending).toMatchObject({ ok: false, regression: true });
+
+    store.recordDeploymentObservation(WS, {
+      ...running,
+      state: 'succeeded',
+      deployed_sha: target_sha
+    });
+    const terminal = store.recordDeploymentObservation(WS, {
+      ...running,
+      state: 'failed',
+      error_code: 'deploy_failed'
+    });
+
+    expect(terminal).toMatchObject({ ok: false, regression: true });
+    expect(store.snapshot(WS).deployment).toMatchObject({ state: 'succeeded' });
+  });
+
+  test('binds an accepted deployment generation to its durable merged row', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'deploy-row', bead_id: 'UI-deploy-row' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-deploy-row',
+      attempt_id: 'deploy-row',
+      patch: { status: 'done' }
+    });
+
+    const result = store.bindDeploymentRequest(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).pr_wait[0]).toMatchObject({
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8,
+      cleanup_cursor: 'deployment_observe'
+    });
+  });
+
+  test('preserves unknown legacy queue and row fields through a mutation', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        legacy_extension: { keep: true },
+        queue: [
+          {
+            bead_id: 'UI-legacy',
+            added_at: 1,
+            legacy_row_extension: 'keep'
+          }
+        ]
+      })
+    );
+    const store = createQueueStore();
+
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-new' });
+
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(persisted.legacy_extension).toEqual({ keep: true });
+    expect(persisted.queue[0].legacy_row_extension).toBe('keep');
+  });
+
   test('loads a legacy queue with no completion intents', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 4 }));
@@ -2491,52 +2772,6 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
     ).toBe('done');
   });
 
-  test('finalizes rollback and detached deploy intent in one durable mutation', () => {
-    const store = createQueueStore({ now: () => 100 });
-    store.createDiscardOperation(WS, {
-      expected_revision: 0,
-      operation: {
-        operation_id: 'discard-rollback',
-        bead_id: 'UI-1',
-        attempt_id: 'att-1',
-        source_snapshot: { repo: '/repo' }
-      }
-    });
-    store.advanceDiscardOperation(WS, {
-      operation_id: 'discard-rollback',
-      expected_phase: 'requested',
-      next_phase: 'rollback_finalized',
-      patch: { mode: 'merged_revert' }
-    });
-
-    const completed = store.completeDiscardOperation(WS, {
-      operation_id: 'discard-rollback',
-      expected_phase: 'rollback_finalized',
-      deploy: {
-        outcome: 'launched',
-        reason: null,
-        bead_id: 'UI-1',
-        base_sha: 'a'.repeat(40)
-      }
-    });
-
-    expect(completed.ok).toBe(true);
-    expect(completed.queue.discard_operations['discard-rollback'].phase).toBe(
-      'done'
-    );
-    expect(completed.queue.last_deploy).toMatchObject({
-      outcome: 'launched',
-      bead_id: 'UI-1',
-      base_sha: 'a'.repeat(40)
-    });
-    expect(createQueueStore().load(WS)).toMatchObject({
-      discard_operations: {
-        'discard-rollback': { phase: 'done' }
-      },
-      last_deploy: { outcome: 'launched', bead_id: 'UI-1' }
-    });
-  });
-
   test('exec provenance survives appendAttempt/updateAttempt and a reload', () => {
     const store = createQueueStore();
     let rev = store.place(WS, {
@@ -3487,6 +3722,31 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(q.done.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
+  test('preserves deployment coverage identity when the bead reaches done', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.bindDeploymentRequest(WS, {
+      bead_id: 'UI-1',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 4,
+      head_ref: 'UI-1',
+      pr_url: 'https://github.com/o/r/pull/41'
+    });
+
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+
+    expect(store.snapshot(WS).done[0]).toMatchObject({
+      bead_id: 'UI-1',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 4,
+      cleanup_cursor: 'deployment_observe',
+      head_ref: 'UI-1',
+      pr_url: 'https://github.com/o/r/pull/41'
+    });
+  });
+
   test('terminates the attempt and moves the bead in one revision (UI-b8n8)', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {
@@ -3632,492 +3892,6 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(createQueueStore().load(WS).attempts.a1.external_conflict).toBe(
       true
     );
-  });
-});
-
-describe('worker/queue-store — last_deploy record (worker-deploy-hook §3)', () => {
-  /**
-   * @param {any} store
-   */
-  function seedPrWait(store) {
-    store.appendAttempt(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      attempt: { attempt_id: 'a1', bead_id: 'UI-1' }
-    });
-    store.moveToPrWait(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'a1',
-      patch: { status: 'done' }
-    });
-  }
-
-  test('starts null on a fresh queue', () => {
-    const store = createQueueStore();
-
-    expect(store.snapshot(WS).last_deploy).toBeNull();
-  });
-
-  test('records a deploy result durably', () => {
-    const store = createQueueStore();
-
-    store.recordLastDeploy(WS, {
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1'
-    });
-
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1'
-    });
-  });
-
-  test('overwrites the previous record instead of accumulating', () => {
-    const store = createQueueStore();
-    store.recordLastDeploy(WS, {
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1'
-    });
-
-    store.recordLastDeploy(WS, {
-      outcome: 'failed',
-      reason: 'deploy_failed',
-      bead_id: 'UI-2',
-      base_sha: 'base-sha-2'
-    });
-
-    expect(store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_failed',
-      bead_id: 'UI-2'
-    });
-  });
-
-  test('rejects an unknown outcome without a write', () => {
-    const store = createQueueStore();
-    const before = store.snapshot(WS).revision;
-
-    const r = store.recordLastDeploy(WS, {
-      outcome: /** @type {any} */ ('exploded'),
-      reason: null,
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1'
-    });
-
-    expect(r.ok).toBe(false);
-    expect(store.snapshot(WS).revision).toBe(before);
-  });
-
-  test('moves the bead to done and records launched in ONE revision', () => {
-    const store = createQueueStore();
-    seedPrWait(store);
-    const before = store.snapshot(WS).revision;
-
-    const r = store.moveToDoneWithDeploy(WS, {
-      bead_id: 'UI-1',
-      deploy: {
-        outcome: 'launched',
-        reason: null,
-        bead_id: 'UI-1',
-        base_sha: 'base-sha-1'
-      }
-    });
-
-    expect(r.ok).toBe(true);
-    expect(r.queue.revision).toBe(before + 1);
-    expect(r.queue.done.map((e) => e.bead_id)).toEqual(['UI-1']);
-    expect(r.queue.pr_wait).toEqual([]);
-    expect(r.queue.last_deploy).toMatchObject({ outcome: 'launched' });
-  });
-
-  test('drops a cleanup failure in the same atomic move', () => {
-    const store = createQueueStore();
-    seedPrWait(store);
-    store.recordCleanupFailure(WS, {
-      bead_id: 'UI-1',
-      step: 'deploy',
-      reason: 'deploy_failed'
-    });
-
-    store.moveToDoneWithDeploy(WS, {
-      bead_id: 'UI-1',
-      deploy: {
-        outcome: 'launched',
-        reason: null,
-        bead_id: 'UI-1',
-        base_sha: 'base-sha-1'
-      }
-    });
-
-    expect(store.snapshot(WS).cleanup_failed['UI-1']).toBeUndefined();
-  });
-
-  test('a legacy queue.json without the key loads with a null record', () => {
-    const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
-    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    delete raw.last_deploy;
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-
-    expect(createQueueStore().load(WS).last_deploy).toBeNull();
-  });
-
-  test('a malformed persisted record loads as null', () => {
-    const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
-    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.last_deploy = { outcome: 'exploded' };
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-
-    expect(createQueueStore().load(WS).last_deploy).toBeNull();
-  });
-
-  test('carries the deploy detail and log path through a reload (UI-l53x §4)', () => {
-    const store = createQueueStore();
-
-    store.recordLastDeploy(WS, {
-      outcome: 'failed',
-      reason: 'deploy_spawn_error',
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1',
-      detail: 'spawn EACCES',
-      log_path: '/state/bdui/ws/deploy-logs/deploy-UI-1-abc1234-9.log'
-    });
-
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      detail: 'spawn EACCES',
-      log_path: '/state/bdui/ws/deploy-logs/deploy-UI-1-abc1234-9.log'
-    });
-  });
-
-  test('leaves detail and log_path as ABSENT keys when the record has none', () => {
-    const store = createQueueStore();
-
-    store.recordLastDeploy(WS, {
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1'
-    });
-
-    const record = createQueueStore().load(WS).last_deploy;
-    expect(Object.hasOwn(/** @type {object} */ (record), 'detail')).toBe(false);
-    expect(Object.hasOwn(/** @type {object} */ (record), 'log_path')).toBe(
-      false
-    );
-  });
-
-  test('drops an EMPTY detail or log_path rather than storing a blank key', () => {
-    const store = createQueueStore();
-
-    store.recordLastDeploy(WS, {
-      outcome: 'failed',
-      reason: 'deploy_failed',
-      bead_id: 'UI-1',
-      base_sha: 'base-sha-1',
-      detail: '',
-      log_path: ''
-    });
-
-    const record = createQueueStore().load(WS).last_deploy;
-    expect(Object.hasOwn(/** @type {object} */ (record), 'detail')).toBe(false);
-    expect(Object.hasOwn(/** @type {object} */ (record), 'log_path')).toBe(
-      false
-    );
-  });
-
-  test('a legacy record WITHOUT the new keys still loads intact', () => {
-    const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
-    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.last_deploy = {
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-old',
-      base_sha: 'older-sha',
-      at: 5
-    };
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-
-    expect(createQueueStore().load(WS).last_deploy).toEqual({
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-old',
-      base_sha: 'older-sha',
-      at: 5
-    });
-  });
-});
-
-describe('worker/queue-store deployment reconcile state', () => {
-  const FLOOR = 'a'.repeat(40);
-  const CANDIDATE = 'b'.repeat(40);
-
-  test('normalizes a legacy queue without reconcile records', () => {
-    const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
-    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    delete raw.reconcile;
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-
-    expect(createQueueStore().load(WS).reconcile).toEqual({});
-  });
-
-  test('persists an enqueued reconcile attempt across store recreation', () => {
-    const store = createQueueStore();
-
-    const result = store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-
-    expect(result.ok).toBe(true);
-    expect(createQueueStore().load(WS).reconcile['UI-1']).toMatchObject({
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR,
-      candidate_sha: null,
-      adapter: null,
-      stage: 'queued',
-      retry_count: 0,
-      retry_at: null,
-      terminal_failure: null
-    });
-  });
-
-  test('advances only the bound bead and attempt', () => {
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-
-    const rejected = store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-other',
-      stage: 'pinned',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-    const applied = store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'pinned',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-
-    expect(rejected.ok).toBe(false);
-    expect(applied.ok).toBe(true);
-    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
-      stage: 'pinned',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-  });
-
-  test('does not replace a pinned candidate or adapter', () => {
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-    store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'pinned',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-
-    const result = store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'verifying',
-      candidate_sha: 'd'.repeat(40),
-      adapter: 'workspace'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
-      stage: 'pinned',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-  });
-
-  test('does not advance a terminal reconcile record', () => {
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-    store.failReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      reason: 'verify_failed'
-    });
-
-    const result = store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'queued'
-    });
-
-    expect(result.ok).toBe(false);
-    expect(store.snapshot(WS).reconcile['UI-1'].stage).toBe('failed');
-  });
-
-  test('persists a terminal reconcile step across store recreation', () => {
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-    store.failReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      reason: 'verify_failed',
-      detail: 'suite red',
-      step: 'post_merge_verify'
-    });
-
-    const terminal_failure =
-      createQueueStore().snapshot(WS).reconcile['UI-1'].terminal_failure;
-
-    expect(terminal_failure).toMatchObject({
-      reason: 'verify_failed',
-      detail: 'suite red',
-      step: 'post_merge_verify'
-    });
-  });
-
-  test('persists restart progress and managed failure ownership evidence', () => {
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-    store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'restarting',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-    store.failReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      reason: 'deploy_failed',
-      detail: 'install_failed',
-      step: 'deploy',
-      failure_code: 'adapter_regression',
-      retryable: false
-    });
-
-    expect(createQueueStore().load(WS).reconcile['UI-1']).toMatchObject({
-      stage: 'failed',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed',
-      terminal_failure: {
-        reason: 'deploy_failed',
-        detail: 'install_failed',
-        step: 'deploy',
-        failure_code: 'adapter_regression',
-        retryable: false
-      }
-    });
-  });
-
-  test('completes with a receipt binding and mirrors it into last_deploy', () => {
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-    store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'readback',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-
-    const result = store.completeReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      receipt_path: '/state/private/deploy-1.json',
-      receipt_digest: 'c'.repeat(64)
-    });
-
-    expect(result.ok).toBe(true);
-    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
-      stage: 'complete',
-      receipt_path: '/state/private/deploy-1.json',
-      receipt_digest: 'c'.repeat(64)
-    });
-    expect(store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'deployed',
-      bead_id: 'UI-1',
-      base_sha: CANDIDATE,
-      adapter: 'managed',
-      attempt_id: 'deploy-1',
-      merged_floor_sha: FLOOR,
-      receipt_path: '/state/private/deploy-1.json',
-      receipt_digest: 'c'.repeat(64)
-    });
-  });
-
-  test('records bounded retry evidence without changing the candidate', () => {
-    const store = createQueueStore({ now: () => 1234 });
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: FLOOR
-    });
-    store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      stage: 'pinned',
-      candidate_sha: CANDIDATE,
-      adapter: 'managed'
-    });
-
-    const result = store.retryReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      reason: 'fetch_failed',
-      retry_at: 4321
-    });
-
-    expect(result.ok).toBe(true);
-    expect(store.snapshot(WS).reconcile['UI-1']).toMatchObject({
-      candidate_sha: CANDIDATE,
-      retry_count: 1,
-      retry_at: 4321,
-      last_retryable_reason: 'fetch_failed'
-    });
   });
 });
 

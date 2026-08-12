@@ -229,6 +229,33 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
+  test('wires repository-aware git ancestry into the default deployment job', async () => {
+    const runtime = createWorkerRuntime();
+    const gitRun = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      gitRun,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const merge_sha = 'a'.repeat(40);
+    const deployed_sha = 'b'.repeat(40);
+
+    const covered = await /** @type {any} */ (att.deploymentJob).covers(
+      WS,
+      deployed_sha,
+      merge_sha
+    );
+
+    expect(covered).toBe(true);
+    expect(gitRun).toHaveBeenCalledWith(
+      ['merge-base', '--is-ancestor', merge_sha, deployed_sha],
+      { cwd: WS }
+    );
+  });
+
   test('wires the completion action driver into the default coordinator', async () => {
     const runtime = createWorkerRuntime();
     const completionActionDriver = {
@@ -424,68 +451,6 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(gh.prChecks).not.toHaveBeenCalled();
   });
 
-  test('initWorkerRuntime observes a persisted reconcile without subscribers', async () => {
-    const runtime = createWorkerRuntime();
-    const prDetail = vi.fn(async () => ({
-      state: 'ok',
-      data: {
-        number: 1,
-        url: 'https://github.com/o/r/pull/1',
-        state: 'OPEN',
-        mergeable: 'MERGEABLE',
-        merge_state_status: 'CLEAN',
-        head_ref: 'UI-1',
-        head_sha: 'b'.repeat(40),
-        base_ref: 'main',
-        merge_sha: null,
-        merged_sha: null
-      }
-    }));
-    const att = createWorkerAttachment(WS, {
-      runtime,
-      gh: /** @type {any} */ ({
-        prDetail,
-        prChecks: vi.fn(async () => ({ state: 'empty' })),
-        checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
-      }),
-      bd: fakeBd(),
-      worktree: fakeWorktree,
-      verify: okVerify,
-      resolveBase: okBase('main'),
-      spawn_impl: makeFixtureSpawn({ lines: [] })
-    });
-    runtime.queueStore.appendAttempt(WS, {
-      expected_revision: runtime.queueStore.snapshot(WS).revision,
-      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
-    });
-    runtime.queueStore.moveToPrWait(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'att-1',
-      patch: {
-        status: 'done',
-        repo: WS,
-        target_base: 'main',
-        verify_result: {
-          ok: true,
-          pr_url: 'https://github.com/o/r/pull/1',
-          pr_number: 1
-        }
-      }
-    });
-    runtime.queueStore.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: 'a'.repeat(40)
-    });
-    __registerWorkerAttachmentForTest(WS, att);
-
-    initWorkerRuntime({ workspaces: [WS] });
-    await waitFor(() => prDetail.mock.calls.length > 0);
-
-    expect(prDetail).toHaveBeenCalledWith(path.resolve(WS), 1);
-  });
-
   test('toggle→tick dispatches via the real runner with the PR-submit preamble injected (fake spawn)', async () => {
     const runtime = createWorkerRuntime();
     const spawn_impl = makeFixtureSpawn({
@@ -673,7 +638,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     vi.spyOn(att.scheduler, 'recoverControls').mockImplementation(async () => {
       order.push('control');
     });
-    vi.spyOn(att.prActions, 'resumePersistedReconciles').mockImplementation(
+    vi.spyOn(att.prActions, 'resumeDeploymentObservation').mockImplementation(
       async () => {
         order.push('deploy-resume');
         return [];
@@ -1419,6 +1384,87 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
     expect(results[0]).toBe(results[1]);
   });
 
+  test('clears a failed in-flight resolution so a later force call retries', async () => {
+    let fetch_calls = 0;
+    const att = attach({
+      bd: fakeBd(),
+      gitRun: async (/** @type {string[]} */ args) => {
+        if (args[0] === 'fetch') {
+          fetch_calls += 1;
+          return {
+            code: fetch_calls <= 3 ? 128 : 0,
+            stdout: '',
+            stderr: 'network unreachable'
+          };
+        }
+        if (args[0] === 'remote') {
+          return { code: 0, stdout: 'origin\n', stderr: '' };
+        }
+        if (args[0] === 'config') {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          return { code: 0, stdout: 'f'.repeat(40), stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+    });
+
+    const first = await att.resolveBase({ force: true });
+    const second = await att.resolveBase({ force: true });
+
+    expect(first).toMatchObject({ ok: false, step: 'fetch' });
+    expect(second).toMatchObject({ ok: true });
+    expect(fetch_calls).toBe(4);
+  });
+
+  test('resolves different repositories independently while one fetch is in flight', async () => {
+    const other_workspace = path.join(tmp_state, 'other-workspace');
+    let release_first = () => {};
+    const first_gate = new Promise((resolve) => {
+      release_first = () => resolve(undefined);
+    });
+    /** @type {string[]} */
+    const fetched = [];
+    const gitRun = async (
+      /** @type {string[]} */ args,
+      /** @type {any} */ options
+    ) => {
+      if (args[0] === 'fetch') {
+        fetched.push(String(options?.cwd));
+        if (options?.cwd === WS) {
+          await first_gate;
+        }
+      }
+      if (args[0] === 'remote') {
+        return { code: 0, stdout: 'origin\n', stderr: '' };
+      }
+      if (args[0] === 'config') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: 'f'.repeat(40), stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const first = attach({ bd: fakeBd(), gitRun });
+    const second = createWorkerAttachment(other_workspace, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      gitRun
+    });
+
+    const blocked = first.resolveBase({ force: true });
+    const independent = second.resolveBase({ force: true });
+    await expect(independent).resolves.toMatchObject({ ok: true });
+    expect(fetched).toContain(other_workspace);
+    release_first();
+    await expect(blocked).resolves.toMatchObject({ ok: true });
+  });
+
   test('refuses admission with the failing step when the base is unresolved', async () => {
     const att = attach({
       bd: fakeBd(),
@@ -1951,6 +1997,26 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
         stderr: ''
       }),
       resolveBase: okBase('main', 'b'.repeat(40)),
+      deploymentJob: {
+        requestDeployment: async (input) => ({
+          accepted: true,
+          noop: true,
+          target_base: input.target_base,
+          target_sha: 'b'.repeat(40),
+          generation: 1
+        }),
+        deploymentStatus: async () => ({
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha: 'b'.repeat(40),
+          deployed_sha: 'b'.repeat(40),
+          generation: 1,
+          error_code: null,
+          log_path: '/tmp/deploy.log'
+        }),
+        validateCurrentBinding: () => {},
+        validateRowBinding: () => {}
+      },
       gh: /** @type {any} */ ({
         checkAvailability: async () => ({ state: 'ok', data: true })
       })
@@ -1973,8 +2039,10 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     // about the registry is stubbed, so a missing `drop` in `attach.js` leaves
     // the row behind for the next enroller pass to trip over.
     const r = await att.prActions.cleanupObservedMerge('X1', 'a'.repeat(40));
+    const observed = await att.prActions.observeDeployment();
 
     expect(r).toMatchObject({ ok: true, reason: null });
+    expect(observed).toEqual({ ok: true, reason: null });
     expect(runtime.externalPrs.list(WS)).toEqual([]);
   });
 });

@@ -335,6 +335,43 @@ function prActionsWorktree(runtime) {
 }
 
 /**
+ * Provider fake that accepts the verified target and reports it deployed.
+ */
+function createSuccessfulDeploymentJob() {
+  /** @type {{ target_base: string, target_sha: string, generation: number }|null} */
+  let binding = null;
+  return {
+    requestDeployment: async (/** @type {any} */ input) => {
+      binding = {
+        target_base: input.target_base,
+        target_sha: input.verified_sha,
+        generation: 1
+      };
+      return {
+        accepted: true,
+        noop: false,
+        ...binding,
+        error_code: null
+      };
+    },
+    deploymentStatus: async () => {
+      if (binding === null) {
+        throw new Error('deployment request missing');
+      }
+      return {
+        state: 'succeeded',
+        ...binding,
+        deployed_sha: binding.target_sha,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      };
+    },
+    validateCurrentBinding() {},
+    validateRowBinding() {}
+  };
+}
+
+/**
  * @param {any} store
  * @param {string[]} ids
  */
@@ -461,6 +498,8 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     // command has actually landed it — the cleanup keys off THAT, not off the
     // command's exit status (§6).
     let pr_state = 'OPEN';
+    /** @type {string|null} */
+    let merged_sha = null;
     const pr_actions = createPrActions({
       workspace: WS,
       repo: repo_dir,
@@ -482,7 +521,8 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
             // (worker-base-scope-alignment §5) reads it.
             base_ref: 'main',
             head_ref: 'M1',
-            head_sha: HEAD_SHA
+            head_sha: HEAD_SHA,
+            merged_sha
           }
         }),
         // A repo with no CI and no verify_cmd — §5's third tier, where the
@@ -497,6 +537,10 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
           // The squash lands on the base for real, so the cleanup's base sync
           // reads a base that actually moved.
           await gitRun(['push', '-q', 'origin', 'main'], { cwd: repo_dir });
+          const merged = await gitRun(['rev-parse', 'origin/main'], {
+            cwd: repo_dir
+          });
+          merged_sha = merged.stdout.trim();
           pr_state = 'MERGED';
           return { state: 'ok', data: { merged: true } };
         },
@@ -540,13 +584,16 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         tick: async () => {}
       },
       resolveVerify: async () => ({ state: 'absent' }),
+      deploymentJob: createSuccessfulDeploymentJob(),
       requeryDelayMs: 0,
       sleep: async () => {}
     });
 
     const result = await pr_actions.merge('M1');
+    const deployment_result = await pr_actions.observeDeployment();
 
     expect(result).toMatchObject({ ok: true, action: 'merged', reason: null });
+    expect(deployment_result).toEqual({ ok: true, reason: null });
     // The merge was pinned to the sha the click-time gate approved.
     expect(gh_calls).toEqual([['mergeSquash', 1, HEAD_SHA]]);
     // The click's own observation is what the next badge render reads, and it
@@ -592,6 +639,10 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     );
 
     let pr_state = 'OPEN';
+    const merged = await gitRun(['rev-parse', 'origin/main'], {
+      cwd: repo_dir
+    });
+    const merged_sha = merged.stdout.trim();
     const pr_actions = createPrActions({
       workspace: WS,
       repo: repo_dir,
@@ -613,7 +664,8 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
             // (worker-base-scope-alignment §5) reads it.
             base_ref: 'main',
             head_ref: 'M2',
-            head_sha: 'b'.repeat(40)
+            head_sha: 'b'.repeat(40),
+            merged_sha: pr_state === 'MERGED' ? merged_sha : null
           }
         }),
         prChecks: async () => ({ state: 'empty' }),
@@ -651,14 +703,16 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         tick: async () => {}
       },
       resolveVerify: async () => ({ state: 'absent' }),
+      deploymentJob: createSuccessfulDeploymentJob(),
       requeryDelayMs: 0,
       sleep: async () => {}
     });
 
     const result = await pr_actions.merge('M2');
+    const deployment_result = await pr_actions.observeDeployment();
 
-    expect(result.ok).toBe(false);
-    expect(result.cleanup_step).toBe('child_sweep');
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+    expect(deployment_result).toEqual({ ok: true, reason: null });
     const snap = runtime.queueStore.snapshot(WS);
     // Returned to the human: still in pr_wait, still `resolved`, banner record
     // written, nothing retried.

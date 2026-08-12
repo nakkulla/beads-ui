@@ -227,7 +227,8 @@ export function runShell(bin, args, options = {}) {
     cwd: options.cwd || process.cwd(),
     env: options.env || process.env,
     shell: false,
-    windowsHide: true
+    windowsHide: true,
+    detached: process.platform !== 'win32'
   };
 
   return new Promise((resolve) => {
@@ -253,9 +254,11 @@ export function runShell(bin, args, options = {}) {
 
     /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timer;
+    let timed_out = false;
     if (options.timeout_ms && options.timeout_ms > 0) {
       timer = setTimeout(() => {
-        child.kill('SIGKILL');
+        timed_out = true;
+        terminateProcessGroup(child);
       }, options.timeout_ms);
       timer.unref?.();
     }
@@ -265,13 +268,15 @@ export function runShell(bin, args, options = {}) {
      * @param {number | string | null} code
      */
     const finish = (code) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       if (timer) {
         clearTimeout(timer);
       }
       resolve({
-        code: Number(code || 0),
+        code: timed_out ? 124 : Number(code ?? 1),
         stdout: out_chunks.join(''),
         stderr: err_chunks.join('')
       });
@@ -285,6 +290,28 @@ export function runShell(bin, args, options = {}) {
       finish(code);
     });
   });
+}
+
+/**
+ * Kill a spawned command and every child it created. A timed-out `git fetch`
+ * may otherwise leave its transport child alive after the direct child exits.
+ *
+ * @param {import('node:child_process').ChildProcess} child
+ */
+function terminateProcessGroup(child) {
+  if (process.platform !== 'win32' && typeof child.pid === 'number') {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+      return;
+    } catch {
+      // Fall through to the direct child.
+    }
+  }
+  try {
+    child.kill('SIGKILL');
+  } catch {
+    // Completion remains owned by the child close/error event.
+  }
 }
 
 /**

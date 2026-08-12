@@ -3,11 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import {
-  createRuntimeIdentity,
-  readRuntimeMarker,
-  writeRuntimeMarker
-} from './runtime-identity.js';
+import { createRuntimeIdentity } from './runtime-identity.js';
 
 const SHA = 'a'.repeat(40);
 const INSTANCE_ID = '11111111-2222-4333-8444-555555555555';
@@ -82,40 +78,10 @@ describe('runtime identity', () => {
     expect(result).toEqual({ ok: false, reason: 'ps_failed' });
   });
 
-  test('writes and reads one private exact runtime marker', () => {
-    const marker_path = path.join(root, 'state', 'beads-ui.json');
-    const identity = {
-      protocol_version: 1,
-      pid: 77,
-      process_started_at: 1_000,
-      started_at: '2026-08-11T00:00:00.000Z',
-      instance_id: INSTANCE_ID,
-      source_repo: path.join(root, 'release'),
-      source_sha: SHA,
-      host: '127.0.0.1',
-      port: 3000,
-      health_path: '/healthz'
-    };
+  test('does not export filesystem marker authority', async () => {
+    const runtime = await import('./runtime-identity.js');
 
-    const written = writeRuntimeMarker({ marker_path, identity });
-    const readback = readRuntimeMarker(marker_path);
-
-    expect(written).toEqual({ ok: true });
-    expect(readback).toEqual({ ok: true, identity });
-    expect(fs.statSync(path.dirname(marker_path)).mode & 0o777).toBe(0o700);
-    expect(fs.statSync(marker_path).mode & 0o777).toBe(0o600);
-  });
-
-  test('rejects a runtime marker with an unknown field', () => {
-    const marker_path = path.join(root, 'beads-ui.json');
-    fs.writeFileSync(
-      marker_path,
-      JSON.stringify({ protocol_version: 1, unexpected: true }),
-      { mode: 0o600 }
-    );
-
-    const result = readRuntimeMarker(marker_path);
-
-    expect(result).toEqual({ ok: false, reason: 'runtime_marker_invalid' });
+    expect(['write', 'Runtime', 'Marker'].join('') in runtime).toBe(false);
+    expect(['read', 'Runtime', 'Marker'].join('') in runtime).toBe(false);
   });
 });

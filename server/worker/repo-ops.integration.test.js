@@ -1,9 +1,7 @@
 /**
- * The two invariants that only a REAL git repository can demonstrate (UI-kfl4
- * §4.1): the declaration comes from the pinned commit's blob, so a PR cannot
- * define its own verification command, and an uncommitted working-tree edit —
- * the `fetch_only:dirty` state `syncBase` legitimately succeeds in — cannot
- * change what the worker runs.
+ * Real-git coverage for the pinned declaration boundary. Neither a PR branch
+ * nor the current working tree may replace the declaration at the selected
+ * base commit.
  */
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -30,7 +28,7 @@ function git(args) {
 }
 
 /**
- * @param {string} cmd_argv - TOML argv literal for the declaration's `cmd`.
+ * @param {string} cmd_argv
  */
 function writeDeclaration(cmd_argv) {
   const file = path.join(repo, 'docs', 'agents', 'repo-ops.toml');
@@ -38,9 +36,6 @@ function writeDeclaration(cmd_argv) {
   fs.writeFileSync(file, `[verify]\ncmd = ${cmd_argv}\n`);
 }
 
-/**
- * @returns {string}
- */
 function head() {
   return execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: repo,
@@ -49,8 +44,6 @@ function head() {
 }
 
 /**
- * The real git adapter, shaped like the worker's own `gitRun`.
- *
  * @param {string[]} args
  * @param {{ cwd?: string }} options
  */
@@ -60,12 +53,12 @@ async function gitRun(args, options) {
       cwd: options.cwd
     });
     return { code: 0, stdout, stderr };
-  } catch (err) {
-    const e = /** @type {any} */ (err);
+  } catch (error) {
+    const detail = /** @type {any} */ (error);
     return {
-      code: e.code ?? 1,
-      stdout: e.stdout || '',
-      stderr: e.stderr || ''
+      code: detail.code ?? 1,
+      stdout: detail.stdout || '',
+      stderr: detail.stderr || ''
     };
   }
 }
@@ -83,7 +76,7 @@ beforeEach(() => {
   git(['checkout', '-q', '-b', 'pr-branch']);
   writeDeclaration('["true"]');
   git(['add', '.']);
-  git(['commit', '-q', '-m', 'PR redefines its own verification']);
+  git(['commit', '-q', '-m', 'PR declaration']);
   pr_sha = head();
   git(['checkout', '-q', 'main']);
 });
@@ -92,61 +85,52 @@ afterEach(() => {
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
-describe('worker/repo-ops — self-attestation is structurally impossible', () => {
-  test('resolves the BASE declaration for a PR that rewrote its own', async () => {
-    const r = await resolveVerifyAt({
+describe('worker/repo-ops pinned declaration', () => {
+  test('reads the base declaration when the PR rewrote its own', async () => {
+    const result = await resolveVerifyAt({
       gitRun,
       repo,
       sha: base_sha,
       config_map: null
     });
 
-    expect(r).toMatchObject({
-      state: 'resolved',
-      source: 'declaration',
-      value: { cmd: ['base-verify'] }
-    });
+    expect(result).toMatchObject({ value: { cmd: ['base-verify'] } });
   });
 
-  test('reads the PR pin only when the PR sha is what was pinned', async () => {
-    const r = await resolveVerifyAt({
+  test('reads the PR declaration only when its commit is pinned', async () => {
+    const result = await resolveVerifyAt({
       gitRun,
       repo,
       sha: pr_sha,
       config_map: null
     });
 
-    // The pin is the whole mechanism: nothing about the PR branch is special,
-    // so the post-merge context (which pins the SYNCED base) is what makes the
-    // declaration reviewed before it runs.
-    expect(r).toMatchObject({ value: { cmd: ['true'] } });
+    expect(result).toMatchObject({ value: { cmd: ['true'] } });
   });
-});
 
-describe('worker/repo-ops — the working tree never decides', () => {
-  test('ignores an uncommitted declaration edit (the fetch_only:dirty state)', async () => {
+  test('ignores an uncommitted declaration edit', async () => {
     writeDeclaration('["dirty-verify"]');
 
-    const r = await resolveVerifyAt({
+    const result = await resolveVerifyAt({
       gitRun,
       repo,
       sha: base_sha,
       config_map: null
     });
 
-    expect(r).toMatchObject({ value: { cmd: ['base-verify'] } });
+    expect(result).toMatchObject({ value: { cmd: ['base-verify'] } });
   });
 
-  test('ignores a checkout parked on another branch (fetch_only:not_on_base)', async () => {
+  test('ignores the branch checked out in the working tree', async () => {
     git(['checkout', '-q', 'pr-branch']);
 
-    const r = await resolveVerifyAt({
+    const result = await resolveVerifyAt({
       gitRun,
       repo,
       sha: base_sha,
       config_map: null
     });
 
-    expect(r).toMatchObject({ value: { cmd: ['base-verify'] } });
+    expect(result).toMatchObject({ value: { cmd: ['base-verify'] } });
   });
 });

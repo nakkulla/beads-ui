@@ -325,6 +325,99 @@ describe('worker/verify-cmd — pre-merge run pinned to a PR head sha (§5)', ()
     expect(r.ok).toBe(true);
   });
 
+  test('runs each detached verify with isolated state, runtime, config, and port', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    /** @type {any} */
+    let spawn_options;
+    const spawn_impl = /** @type {any} */ (
+      (
+        /** @type {string} */ _bin,
+        /** @type {string[]} */ _args,
+        /** @type {any} */ options
+      ) => {
+        spawn_options = options;
+        const child = /** @type {any} */ (new EventEmitter());
+        child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
+        child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
+        child.kill = () => {};
+        queueMicrotask(() => child.emit('close', 0));
+        return child;
+      }
+    );
+    const original_state = process.env.XDG_STATE_HOME;
+    const original_runtime = process.env.BDUI_RUNTIME_DIR;
+    const original_config = process.env.BDUI_CONFIG_PATH;
+    process.env.XDG_STATE_HOME = '/shared/state';
+    process.env.BDUI_RUNTIME_DIR = '/shared/runtime';
+    process.env.BDUI_CONFIG_PATH = '/shared/config.toml';
+
+    try {
+      const result = await runVerifyAtSha({
+        repo: '/repo',
+        bead_id: 'UI-isolated',
+        sha: SHA,
+        cmd: ['true'],
+        timeout_ms: 10_000,
+        worktree,
+        git,
+        spawn_impl
+      });
+
+      expect(result.ok).toBe(true);
+      expect(spawn_options.env.XDG_STATE_HOME).not.toBe('/shared/state');
+      expect(spawn_options.env.BDUI_RUNTIME_DIR).not.toBe('/shared/runtime');
+      expect(spawn_options.env.BDUI_CONFIG_PATH).not.toBe(
+        '/shared/config.toml'
+      );
+      expect(spawn_options.env.XDG_CONFIG_HOME).toContain('bdui-verify-');
+      expect(spawn_options.env.PORT).toBe('0');
+    } finally {
+      if (original_state === undefined) delete process.env.XDG_STATE_HOME;
+      else process.env.XDG_STATE_HOME = original_state;
+      if (original_runtime === undefined) delete process.env.BDUI_RUNTIME_DIR;
+      else process.env.BDUI_RUNTIME_DIR = original_runtime;
+      if (original_config === undefined) delete process.env.BDUI_CONFIG_PATH;
+      else process.env.BDUI_CONFIG_PATH = original_config;
+    }
+  });
+
+  test('removes a partial isolation root when config setup fails', async () => {
+    const { git } = fakeGit({ present: true });
+    const worktree = fakeWorktree();
+    const isolated_root = path.join(tmp_state, 'partial-isolation');
+    const isolation_fs = {
+      mkdtempSync: vi.fn(() => isolated_root),
+      mkdirSync: vi.fn(() => {
+        throw new Error('config directory denied');
+      }),
+      writeFileSync: vi.fn(),
+      rmSync: vi.fn()
+    };
+
+    const result = await runVerifyAtSha({
+      repo: '/repo',
+      bead_id: 'UI-isolation-failure',
+      sha: SHA,
+      cmd: ['true'],
+      timeout_ms: 10_000,
+      worktree,
+      git,
+      isolation_fs
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'verify_cmd_spawn_error',
+      detail: 'verify_isolation_unavailable'
+    });
+    expect(isolation_fs.rmSync).toHaveBeenCalledWith(isolated_root, {
+      recursive: true,
+      force: true
+    });
+    expect(worktree.removeDetached).toHaveBeenCalledOnce();
+  });
+
   test('retries one command failure and returns the successful final attempt', async () => {
     const { git } = fakeGit({ present: true });
     const worktree = fakeWorktree();

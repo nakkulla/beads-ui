@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, rollbackResolveDeploy?: any, launchRollbackDeploy?: (bead_id: string, pending_deploy: any) => any, gitRun?: any }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -249,9 +249,6 @@ function setup(options = {}) {
       options.rollbackBaseSync ||
       vi.fn(async () => ({ ok: true, sha: 'base-sha' })),
     rollbackVerify: options.rollbackVerify || vi.fn(async () => ({ ok: true })),
-    rollbackResolveDeploy:
-      options.rollbackResolveDeploy || vi.fn(async () => ({ ok: true })),
-    launchRollbackDeploy: options.launchRollbackDeploy,
     makeOperationId: () => 'discard-1',
     now: () => 300,
     notifyChanged: vi.fn()
@@ -270,90 +267,6 @@ function setup(options = {}) {
 }
 
 describe('worker discard coordinator unmerged lifecycle', () => {
-  test('finalizes a merged revert after restart without ordinary merge cleanup', async () => {
-    /** @type {any} */
-    let launch_snapshot = null;
-    /** @type {ReturnType<typeof setup>} */
-    let env;
-    const launchRollbackDeploy = vi.fn(() => {
-      launch_snapshot = env.store.snapshot(workspace);
-      return { ok: true };
-    });
-    env = setup({
-      prState: 'MERGED',
-      rollbackResolveDeploy: vi.fn(async () => ({
-        ok: true,
-        pending: { cmd: ['restart'] }
-      })),
-      launchRollbackDeploy
-    });
-    const created = env.store.createDiscardOperation(workspace, {
-      expected_revision: env.store.snapshot(workspace).revision,
-      operation: {
-        operation_id: 'discard-rollback',
-        bead_id: 'UI-1',
-        attempt_id: 'att-1',
-        source_snapshot: {
-          repo: '/repo',
-          worktree: '/repo/.worktrees/UI-1',
-          branch: 'UI-1',
-          source_head: HEAD_SHA,
-          local_branch_sha: HEAD_SHA,
-          remote_branch_sha: HEAD_SHA,
-          pr: { number: 304, url: 'https://github.com/acme/repo/pull/304' }
-        }
-      }
-    });
-    expect(created.ok).toBe(true);
-    const advanced = env.store.advanceDiscardOperation(workspace, {
-      operation_id: 'discard-rollback',
-      expected_phase: 'requested',
-      next_phase: 'revert_pr_wait',
-      patch: {
-        mode: 'merged_revert',
-        original_pr: { base_ref: 'main' },
-        revert_pr: {
-          number: 304,
-          url: 'https://github.com/acme/repo/pull/304',
-          head_ref: 'revert-UI-1-op',
-          branch: 'revert-UI-1-op',
-          head_sha: HEAD_SHA,
-          target_base: 'main'
-        }
-      }
-    });
-    expect(advanced.ok).toBe(true);
-    env.gh.prDetail.mockResolvedValue({
-      state: 'ok',
-      data: {
-        number: 304,
-        url: 'https://github.com/acme/repo/pull/304',
-        state: 'MERGED',
-        head_ref: 'revert-UI-1-op',
-        base_ref: 'main',
-        head_sha: HEAD_SHA,
-        merged_sha: MERGED_SHA
-      }
-    });
-
-    await env.coordinator.recover();
-
-    expect(
-      env.store.snapshot(workspace).discard_operations['discard-rollback']
-    ).toMatchObject({ phase: 'done', mode: 'merged_revert' });
-    expect(env.store.snapshot(workspace).pr_wait).toEqual([]);
-    expect(launchRollbackDeploy).toHaveBeenCalledWith(
-      'UI-1',
-      expect.objectContaining({ base_sha: 'base-sha' })
-    );
-    expect(launch_snapshot).toMatchObject({
-      discard_operations: {
-        'discard-rollback': { phase: 'done' }
-      },
-      last_deploy: { outcome: 'launched', bead_id: 'UI-1' }
-    });
-  });
-
   test('persists a closed revert PR state before recording the failure', async () => {
     const env = setup({ prState: 'CLOSED' });
     env.store.createDiscardOperation(workspace, {
@@ -1377,28 +1290,6 @@ describe('worker discard coordinator unmerged lifecycle', () => {
       reason: 'attempt_settling'
     });
     expect(env.store.snapshot(workspace).discard_operations).toEqual({});
-    expect(env.archive.create).not.toHaveBeenCalled();
-  });
-
-  test('refuses cleanup discard after the same bead launched a detached deploy', async () => {
-    const env = setup();
-    env.store.recordLastDeploy(workspace, {
-      outcome: 'launched',
-      reason: null,
-      bead_id: 'UI-1',
-      base_sha: HEAD_SHA
-    });
-
-    const result = await env.coordinator.discard({
-      bead_id: 'UI-1',
-      expected_revision: env.store.snapshot(workspace).revision
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      conflict: false,
-      reason: 'deploy_outcome_unknown'
-    });
     expect(env.archive.create).not.toHaveBeenCalled();
   });
 

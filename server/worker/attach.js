@@ -46,20 +46,17 @@ import {
   createCompletionIntentCoordinator
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
+import { createDeploymentJob } from './deployment-job.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
-import { createPrPoller } from './pr-poller.js';
+import { createPrPoller, hasDeploymentObservationDemand } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
-import {
-  peekVerifyResolution,
-  resolveDeployAt,
-  resolveVerifyAt
-} from './repo-ops.js';
+import { peekVerifyResolution, resolveVerifyAt } from './repo-ops.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
@@ -375,6 +372,7 @@ export function defaultProbePid(pid) {
  *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
+ *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -675,18 +673,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions
           ? prActions.rollbackVerify(bead_id, base_sha)
           : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
-      rollbackResolveDeploy: (
-        /** @type {string} */ bead_id,
-        /** @type {string} */ base_sha,
-        /** @type {string} */ target_base
-      ) =>
-        prActions
-          ? prActions.rollbackResolveDeploy(bead_id, base_sha, target_base)
-          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
-      launchRollbackDeploy: (
-        /** @type {string} */ bead_id,
-        /** @type {any} */ pending_deploy
-      ) => prActions?.launchRollbackDeploy(bead_id, pending_deploy),
       external: {
         get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
           runtime.externalPrs.get(ws_key, bead_id)
@@ -784,31 +770,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       });
     } catch (err) {
       log('verify resolution failed for %s: %o', repo, err);
-      return {
-        state: 'invalid',
-        source: 'declaration',
-        detail: 'resolver_threw'
-      };
-    }
-  };
-
-  /**
-   * The workspace's post-merge deploy command, on the same two-rung ladder and
-   * the same pin contract as {@link resolveVerify}.
-   *
-   * @param {OpsPin} [pin]
-   * @returns {Promise<import('./repo-ops.js').DeployResolution>}
-   */
-  const resolveDeploy = async (pin = {}) => {
-    try {
-      return await resolveDeployAt({
-        gitRun,
-        repo,
-        sha: pin.sha || (await premergePin(pin.force === true)),
-        config_map: getConfig().worker_deploy
-      });
-    } catch (err) {
-      log('deploy resolution failed for %s: %o', repo, err);
       return {
         state: 'invalid',
         source: 'declaration',
@@ -944,6 +905,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // observation cache, worktree manager and scheduler the poller and dispatch
   // use, so a click can never act on a different view of the world than the
   // badges it followed.
+  const deploymentJob =
+    options.deploymentJob ||
+    createDeploymentJob({
+      isAncestor: async (repo_dir, ancestor, descendant) => {
+        const result = await gitRun(
+          ['merge-base', '--is-ancestor', ancestor, descendant],
+          { cwd: repo_dir }
+        );
+        return result.code === 0;
+      }
+    });
   prActions = createPrActions({
     workspace: keyFor(workspace_root),
     repo,
@@ -971,8 +943,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     resolveVerify,
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
-    resolveDeploy,
-    locks: runtime.locks,
+    deploymentJob,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
     // The SAME notifier the scheduler pushes attempt transitions through, so
     // the merge that closes a bead lands in the same channel as its start and
@@ -1117,7 +1088,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but started by `initWorkerRuntime`. Its default subscriber count
-  // is 0, while durable auto-merge/merge-queue/reconcile demand can still wake
+  // is 0, while durable auto-merge/merge-queue/deployment demand can still wake
   // it after restart.
   const prPoller = createPrPoller({
     workspace: keyFor(workspace_root),
@@ -1132,8 +1103,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     gitRun,
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
-    onMerged: (bead_id, merge_sha) =>
-      prActions.cleanupObservedMerge(bead_id, merge_sha),
+    onMerged: (bead_id, merge_sha, refs) =>
+      prActions.cleanupObservedMerge(bead_id, merge_sha, refs),
+    onDeployment: () => prActions.observeDeployment(),
     onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
@@ -1166,6 +1138,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
     worktree,
     admission,
+    deploymentJob,
     repo,
     resolveBase,
     workspace: workspace_root
@@ -1291,7 +1264,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     return;
   }
   try {
-    await att.prActions.resumePersistedReconciles();
+    await att.prActions.resumeDeploymentObservation();
   } catch (err) {
     log('startup deployment recovery failed for %s: %o', key, err);
     return;
@@ -1317,11 +1290,9 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   try {
     att.autoMerge.start();
     const queue = att.runtime.queueStore.snapshot(key);
-    const reconcile_pending = Object.values(queue.reconcile || {}).some(
-      (record) =>
-        record && record.stage !== 'complete' && record.stage !== 'failed'
-    );
-    if (queue.auto_merge === true || reconcile_pending) {
+    const deployment_pending =
+      queue.deployment !== null || hasDeploymentObservationDemand(queue);
+    if (queue.auto_merge === true || deployment_pending) {
       Promise.resolve(att.prPoller.tick()).catch((err) => {
         log('worker boot PR observation failed for %s: %o', key, err);
       });
@@ -1343,7 +1314,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
  *
  * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
  * caller supplies the live worker-queue subscriber count for a workspace. The
- * poller also honors durable auto-merge/merge-queue/reconcile demand; omitting
+ * poller also honors durable auto-merge/merge-queue/deployment demand; omitting
  * the provider stays silent only when none of those internal consumers exist.
  *
  * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
@@ -1537,6 +1508,72 @@ export async function resumeWorkerAttempt(
     return { ok: false, reason: 'no_attachment' };
   }
   return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
+}
+
+/**
+ * Retry exactly the current failed repo-level deployment. The provider client
+ * validates the returned +1 binding; the queue-store write then compares the
+ * same durable failed observation again so an overlapping status update cannot
+ * be overwritten by a stale retry response.
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<{ ok: boolean, reason?: string, queue?: import('./queue-store.js').Queue, stale?: boolean }>}
+ */
+export async function retryWorkerDeployment(workspace_root) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.deploymentJob || !att.deploymentJob.retryDeployment) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  const current = att.runtime.queueStore.snapshot(key).deployment;
+  const target_sha = current?.target_sha;
+  const generation = current?.generation;
+  if (
+    !current ||
+    current.state !== 'failed' ||
+    typeof current.target_base !== 'string' ||
+    typeof target_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(target_sha) ||
+    typeof generation !== 'number' ||
+    !Number.isInteger(generation) ||
+    generation <= 0
+  ) {
+    return { ok: false, reason: 'deployment_not_retryable' };
+  }
+  const current_binding = {
+    target_base: current.target_base,
+    target_sha,
+    generation
+  };
+  let retried;
+  try {
+    retried = await att.deploymentJob.retryDeployment({
+      repo: att.repo,
+      current_binding
+    });
+  } catch (err) {
+    const code = /** @type {{ code?: unknown }} */ (err).code;
+    return {
+      ok: false,
+      reason: typeof code === 'string' ? code : 'deployment_retry_failed'
+    };
+  }
+  const recorded = att.runtime.queueStore.recordDeploymentRetry(
+    key,
+    current_binding,
+    retried
+  );
+  if (!recorded.ok) {
+    return {
+      ok: false,
+      reason: recorded.stale
+        ? 'deployment_retry_stale'
+        : 'deployment_retry_persist_failed',
+      stale: recorded.stale === true
+    };
+  }
+  emitQueueChanged(key);
+  return { ok: true, queue: recorded.queue };
 }
 
 /**
@@ -1763,18 +1800,13 @@ export function __setUnattachedAdmissionCheckForTest(reader) {
 
 /**
  * Test hook: drop all registered attachments, stopping their PR pollers and
- * reconcile timers so no armed timer or queue-changed hook outlives the test
+ * timers so no armed timer or queue-changed hook outlives the test
  * that built it.
  */
 export function __resetWorkerAttachmentsForTest() {
   for (const att of ATTACHMENTS.values()) {
     try {
       att.prPoller?.stop();
-    } catch {
-      /* ignore */
-    }
-    try {
-      att.reconciler?.stop();
     } catch {
       /* ignore */
     }

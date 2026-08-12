@@ -21,7 +21,7 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
 ]);
 
 /**
- * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, rollbackResolveDeploy?: (bead_id: string, base_sha: string, target_base: string) => Promise<any>, launchRollbackDeploy?: (bead_id: string, pending_deploy: any) => any, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void }} deps
+ * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void }} deps
  */
 export function createDiscardCoordinator(deps) {
   const now = deps.now || (() => Date.now());
@@ -1135,35 +1135,8 @@ export function createDiscardCoordinator(deps) {
         `rollback_verify_failed:${verified?.reason || 'unknown'}`
       );
     }
-    return advance(operation, 'rollback_deploy_resolved', {
-      receipts: { rollback_verified: { at: now(), base_sha } }
-    });
-  }
-
-  /** @param {any} operation */
-  async function rollbackResolveDeploy(operation) {
-    if (typeof deps.rollbackResolveDeploy !== 'function') {
-      return fail(operation, 'rollback_deploy_unwired');
-    }
-    const base_sha = operation.receipts?.rollback_base_sync?.base_sha;
-    const deployed = await deps.rollbackResolveDeploy(
-      operation.bead_id,
-      base_sha,
-      operation.original_pr?.base_ref
-    );
-    if (!deployed?.ok) {
-      return fail(
-        operation,
-        `rollback_deploy_failed:${deployed?.reason || 'unknown'}`
-      );
-    }
     return advance(operation, 'rollback_source_cleanup', {
-      receipts: {
-        rollback_deploy_resolved: { at: now(), base_sha },
-        rollback_deploy: deployed.pending
-          ? { deploy: deployed.pending, base_sha }
-          : null
-      }
+      receipts: { rollback_verified: { at: now(), base_sha } }
     });
   }
 
@@ -1601,13 +1574,6 @@ export function createDiscardCoordinator(deps) {
         }
         continue;
       }
-      if (operation.phase === 'rollback_deploy_resolved') {
-        const result = await rollbackResolveDeploy(operation);
-        if (!result || result.ok === false) {
-          return result || fail(operation, 'rollback_deploy_phase_failed');
-        }
-        continue;
-      }
       if (operation.phase === 'rollback_source_cleanup') {
         const result = await rollbackRemoveSourceWorktree(operation);
         if (!result || result.ok === false) {
@@ -1692,43 +1658,16 @@ export function createDiscardCoordinator(deps) {
         continue;
       }
       if (operation.phase === 'rollback_finalized') {
-        const pending_deploy = operation.receipts?.rollback_deploy || null;
-        if (
-          pending_deploy !== null &&
-          typeof deps.launchRollbackDeploy !== 'function'
-        ) {
-          return fail(operation, 'rollback_deploy_launch_unwired');
-        }
         await deps.scheduler.tick(deps.workspace);
         const completed = deps.store.completeDiscardOperation(deps.workspace, {
           operation_id,
-          expected_phase: operation.phase,
-          ...(pending_deploy
-            ? {
-                deploy: {
-                  outcome: 'launched',
-                  reason: null,
-                  bead_id: operation.bead_id,
-                  base_sha: pending_deploy.base_sha
-                }
-              }
-            : {})
+          expected_phase: operation.phase
         });
         if (!completed.ok) {
           return fail(operation, 'rollback_finalize_persist_failed');
         }
         notifyChanged(deps.workspace);
-        if (typeof deps.launchRollbackDeploy === 'function') {
-          try {
-            deps.launchRollbackDeploy(operation.bead_id, pending_deploy);
-          } catch {
-            // The operation is already durably complete. A terminal launch
-            // exception is observable only through the deploy record seam.
-          }
-        }
-        // A detached deploy can restart this very process. It is therefore the
-        // terminal action: no scheduler work may run after its launch.
-        return { ok: true, operation_id, launched_deploy: true };
+        return { ok: true, operation_id };
       }
       if (operation.phase === 'requested') {
         const result = await archive(operation);
@@ -1840,13 +1779,6 @@ export function createDiscardCoordinator(deps) {
     }
     if (deps.actionInFlight?.(input.bead_id)) {
       return { ok: false, conflict: false, reason: 'action_in_flight' };
-    }
-    if (
-      snapshot.last_deploy?.bead_id === input.bead_id &&
-      (snapshot.last_deploy.outcome === 'launched' ||
-        snapshot.last_deploy.outcome === 'unknown')
-    ) {
-      return { ok: false, conflict: false, reason: 'deploy_outcome_unknown' };
     }
     let captured;
     try {

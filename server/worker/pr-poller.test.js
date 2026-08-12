@@ -78,6 +78,7 @@ function queueOf(input = {}) {
  *   resolveVerify?: any,
  *   runVerify?: any,
  *   onMerged?: any,
+ *   onDeployment?: any,
  *   onDiscardObservation?: any,
  *   external?: any
  * }} [input]
@@ -104,6 +105,7 @@ function makePoller(input = {}) {
     resolveVerify: input.resolveVerify ?? (async () => ({ state: 'absent' })),
     runVerify: input.runVerify,
     onMerged: input.onMerged,
+    onDeployment: input.onDeployment,
     onDiscardObservation: input.onDiscardObservation,
     external: input.external,
     notifyChanged,
@@ -186,6 +188,95 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).toHaveBeenCalled();
   });
 
+  test('observes pending deployment without a subscriber or a PR read', async () => {
+    const onDeployment = vi.fn(async () => {});
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf(),
+        pr_wait: [
+          {
+            bead_id: 'UI-1',
+            added_at: 1,
+            cleanup_cursor: 'deployment_observe'
+          }
+        ],
+        reconcile: {
+          'UI-complete': { stage: 'complete' },
+          'UI-failed': { stage: 'failed' }
+        }
+      },
+      onDeployment
+    });
+
+    await poller.tick();
+
+    expect(onDeployment).toHaveBeenCalledOnce();
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
+  test('observes cold legacy deployment residue without a subscriber', async () => {
+    const onMerged = vi.fn(async () => {});
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf(),
+        cleanup_failed: {
+          'UI-1': {
+            step: 'deploy',
+            reason: 'deploy_not_detached_for_self'
+          }
+        }
+      },
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledOnce();
+    expect(onMerged).toHaveBeenCalledWith(
+      'UI-1',
+      SHA,
+      expect.objectContaining({ pr_url: PR_URL })
+    );
+  });
+
+  test('serializes overlapping status-only deployment ticks and releases guard', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const blocked = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const onDeployment = vi.fn(async () => await blocked);
+    const { poller } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf(),
+        pr_wait: [
+          {
+            bead_id: 'UI-1',
+            added_at: 1,
+            cleanup_cursor: 'deployment_observe'
+          }
+        ]
+      },
+      onDeployment
+    });
+
+    const first = poller.tick();
+    await Promise.resolve();
+    await poller.tick();
+    release();
+    await first;
+    await poller.tick();
+
+    expect(onDeployment).toHaveBeenCalledTimes(2);
+  });
+
   test('observes a human-merged revert without a browser subscriber', async () => {
     const onDiscardObservation = vi.fn(async () => {});
     const queue = queueOf({
@@ -211,24 +302,6 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
 
     expect(prDetail).toHaveBeenCalledWith('/repo', 404);
     expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
-  });
-
-  test('observes a nonterminal deployment reconcile without a subscriber', async () => {
-    const { poller, prDetail } = makePoller({
-      subscribers: 0,
-      queue: {
-        ...queueOf(),
-        auto_merge: false,
-        merge_queue: [],
-        reconcile: {
-          'UI-1': { bead_id: 'UI-1', stage: 'deploying' }
-        }
-      }
-    });
-
-    await poller.tick();
-
-    expect(prDetail).toHaveBeenCalled();
   });
 
   test('keeps a merge-queue member observed after its row leaves the lane', async () => {
@@ -349,29 +422,6 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
     expect(store_snapshot.pr_wait).toEqual([{ bead_id: 'UI-1', added_at: 1 }]);
     expect(store_snapshot.done).toEqual([]);
     expect(prChecks).not.toHaveBeenCalled();
-  });
-
-  test('resumes a user-started external reconcile after restart', async () => {
-    const onMerged = vi.fn(async () => {});
-    const { poller } = makePoller({
-      subscribers: 0,
-      queue: {
-        ...queueOf({ pr_wait: [] }),
-        reconcile: {
-          'UI-X': { bead_id: 'UI-X', stage: 'deploying' }
-        }
-      },
-      external: externalOf([{ bead_id: 'UI-X' }]),
-      detail: {
-        state: 'ok',
-        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
-      },
-      onMerged
-    });
-
-    await poller.tick();
-
-    expect(onMerged).toHaveBeenCalledWith('UI-X', NEW_SHA);
   });
 
   test('keeps a CLOSED-unmerged bead in pr_wait with its state recorded', async () => {
@@ -900,7 +950,11 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
 
     await poller.tick();
 
-    expect(onMerged).toHaveBeenCalledWith('UI-1', NEW_SHA);
+    expect(onMerged).toHaveBeenCalledWith(
+      'UI-1',
+      NEW_SHA,
+      expect.objectContaining({ head_ref: 'UI-1', pr_url: PR_URL })
+    );
   });
 
   test('keeps the previous rows when the scan throws', async () => {

@@ -1,13 +1,6 @@
-import {
-  createRuntimeIdentity,
-  writeRuntimeMarker
-} from './runtime-identity.js';
+import { createRuntimeIdentity } from './runtime-identity.js';
 
 /**
- * Stop accepting traffic when a bound process cannot publish its identity.
- * Leaving the socket open would prevent `process.exitCode` from ever taking
- * effect and expose a server whose deployment can never be proven.
- *
  * @param {{ close?: () => any }} server
  * @param {{ ok: false, reason: string }} failure
  */
@@ -15,15 +8,17 @@ function closeOnFailure(server, failure) {
   try {
     server.close?.();
   } catch {
-    // The original identity failure remains the actionable evidence.
+    // The original identity failure is the actionable evidence.
   }
   return failure;
 }
 
 /**
- * Publish the live process identity for the socket that has already bound.
+ * Compute the live process identity for the socket that has already bound.
+ * Identity is served in-process by `/healthz`; no filesystem marker is an
+ * authority for a running server.
  *
- * @param {{ server: { address: () => any, close?: () => any }, createIdentity?: typeof createRuntimeIdentity, writeMarker?: typeof writeRuntimeMarker }} input
+ * @param {{ server: { address: () => any, close?: () => any }, createIdentity?: typeof createRuntimeIdentity }} input
  * @returns {{ ok: true, identity: any }|{ ok: false, reason: string }}
  */
 export function publishRuntimeIdentity(input) {
@@ -55,11 +50,6 @@ export function publishRuntimeIdentity(input) {
   });
   if (!created.ok) {
     return closeOnFailure(input.server, created);
-  }
-  const writeMarker = input.writeMarker || writeRuntimeMarker;
-  const written = writeMarker({ identity: created.identity });
-  if (!written.ok) {
-    return closeOnFailure(input.server, written);
   }
   return created;
 }

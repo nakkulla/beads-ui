@@ -9,6 +9,7 @@ import {
   __resetWorkerAttachmentsForTest,
   __setUnattachedAdmissionCheckForTest
 } from './worker/attach.js';
+import { resetRepoOpsCache, resolveDeployAt } from './worker/repo-ops.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
   __resetRegistriesForTest,
@@ -100,6 +101,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  resetRepoOpsCache();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
   // Seed DEFAULT_WORKSPACE so bare sockets resolve a deterministic workspace.
   attachWsServer(createServer(), { path: '/ws' });
@@ -109,6 +111,7 @@ afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  resetRepoOpsCache();
   __resetWorkerAttachmentsForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
@@ -2330,116 +2333,413 @@ describe('ws worker-attempt-dismiss (UI-dcw7)', () => {
   });
 });
 
-describe('ws worker-queue workspace_info deploy surface (worker-deploy-hook §3)', () => {
-  const WS_D = { root_dir: '/tmp/wq-ws-D', db_path: '/tmp/wq-ws-D/.beads/db' };
-  /** @type {string[]} */
-  const config_dirs = [];
+describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
+  const WS_DEPLOY = {
+    root_dir: '/tmp/wq-deployment',
+    db_path: '/tmp/wq-deployment/.beads/db'
+  };
+  const TARGET_SHA = 'a'.repeat(40);
 
-  /**
-   * @param {string} content
-   * @returns {string}
-   */
-  function writeConfig(content) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wsq-config-'));
-    config_dirs.push(dir);
-    const file_path = path.join(dir, 'config.toml');
-    fs.writeFileSync(file_path, content);
-    return file_path;
-  }
+  test('keeps retired deployment state off the public snapshot', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      last_deploy: { outcome: 'launched' },
+      reconcile: { 'UI-old': { stage: 'complete' } }
+    });
 
-  afterEach(() => {
-    delete process.env.BDUI_CONFIG_PATH;
-    for (const dir of config_dirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
+    expect(snapshot).not.toHaveProperty('last_deploy');
+    expect(snapshot).not.toHaveProperty('reconcile');
   });
 
-  test('exposes the configured deploy command', async () => {
-    process.env.BDUI_CONFIG_PATH = writeConfig(`
-[worker.deploy."${WS_D.root_dir}"]
-cmd = ["bdui-shared", "restart"]
-timeout_ms = 120000
-detached = true
-`);
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+  test('projects the pinned external deploy declaration without adapter fields', async () => {
+    await resolveDeployAt({
+      repo: WS_DEPLOY.root_dir,
+      sha: TARGET_SHA,
+      gitRun: vi.fn(async (args) =>
+        args[0] === 'rev-parse'
+          ? { code: 0, stdout: `${TARGET_SHA}\n`, stderr: '' }
+          : {
+              code: 0,
+              stdout:
+                '[deploy]\ncmd = ["scripts/deploy-self.js"]\ntimeout_ms = 600000\n',
+              stderr: ''
+            }
+      )
+    });
 
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {}
+    });
 
-    expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toEqual({
-      cmd: ['bdui-shared', 'restart'],
-      timeout_ms: 120000,
-      detached: true,
-      adapter: 'workspace'
+    expect(/** @type {any} */ (snapshot.workspace_info).deploy_cmd).toEqual({
+      cmd: ['scripts/deploy-self.js'],
+      timeout_ms: 600000
     });
   });
 
-  test('reports a null deploy_cmd for a workspace with no section', async () => {
-    process.env.BDUI_CONFIG_PATH = writeConfig('workspaces = ["/repo-a"]\n');
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
-
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toBeNull();
-  });
-
-  test('exposes the queue last_deploy record', async () => {
-    getWorkerRuntime().queueStore.recordLastDeploy(WS_D.root_dir, {
-      outcome: 'launched',
-      reason: null,
-      bead_id: 'UI-9',
-      base_sha: 'base-sha-9'
-    });
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
-
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    expect(
-      queueSnapshots(sock).at(-1).workspace_info.last_deploy
-    ).toMatchObject({
-      outcome: 'launched',
-      bead_id: 'UI-9',
-      base_sha: 'base-sha-9'
-    });
-  });
-
-  test('reports a null last_deploy when nothing has been deployed', async () => {
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
-
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    expect(queueSnapshots(sock).at(-1).workspace_info.last_deploy).toBeNull();
-  });
-
-  test('projects durable deployment reconcile progress', async () => {
+  test('projects only a valid repo deployment and its merged PR coverage', async () => {
     const store = getWorkerRuntime().queueStore;
-    store.enqueueReconcile(WS_D.root_dir, {
-      bead_id: 'UI-9',
-      attempt_id: 'deploy-9',
-      target_base: 'main',
-      merged_floor_sha: 'a'.repeat(40)
+    const revision = store.snapshot(WS_DEPLOY.root_dir).revision;
+    store.appendAttempt(WS_DEPLOY.root_dir, {
+      expected_revision: revision,
+      attempt: { attempt_id: 'att-UI-1', bead_id: 'UI-1' }
     });
-    store.advanceReconcile(WS_D.root_dir, {
-      bead_id: 'UI-9',
-      attempt_id: 'deploy-9',
-      candidate_sha: 'b'.repeat(40),
-      adapter: 'managed',
-      stage: 'verifying'
+    store.moveToPrWait(WS_DEPLOY.root_dir, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.bindDeploymentRequest(WS_DEPLOY.root_dir, {
+      bead_id: 'UI-1',
+      merge_sha: 'b'.repeat(40),
+      verified_target_sha: TARGET_SHA,
+      deployment_generation: 4,
+      pr_url: 'https://github.com/o/r/pull/41'
+    });
+    store.recordDeploymentObservation(WS_DEPLOY.root_dir, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      deployed_sha: null,
+      generation: 4,
+      error_code: 'healthcheck_failed',
+      log_path: '/tmp/deploy.log'
     });
     const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_DEPLOY });
 
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'deployment-snapshot', 'subscribe-worker-queue', {
+      id: 'wq'
+    });
 
-    expect(
-      queueSnapshots(sock).at(-1).deployment_reconcile['UI-9']
-    ).toMatchObject({
-      adapter: 'managed',
-      stage: 'verifying',
-      candidate_sha: 'b'.repeat(40)
+    const snapshot = queueSnapshots(sock).at(-1);
+    expect(snapshot.deployment).toEqual({
+      state: 'failed',
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      deployed_sha: null,
+      generation: 4,
+      error_code: 'healthcheck_failed',
+      log_path: '/tmp/deploy.log',
+      covered_pr_numbers: [41]
+    });
+    expect(snapshot.deployment_coverage).toEqual({ 'UI-1': 'failed' });
+
+    const malformed = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      deployment: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'healthcheck_failed',
+        log_path: null
+      }
+    });
+    expect(malformed.deployment).toBeNull();
+    expect(malformed.deployment_coverage).toEqual({});
+  });
+
+  test('withholds a lower-generation row that failed its ancestry check from succeeded coverage', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [
+        {
+          bead_id: 'UI-not-covered',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: 'c'.repeat(40),
+          deployment_generation: 3,
+          cleanup_cursor: 'deployment_observe',
+          pr_url: 'https://github.com/o/r/pull/42'
+        }
+      ],
+      done: [],
+      attempts: {},
+      cleanup_failed: {
+        'UI-not-covered': {
+          step: 'deployment_request',
+          reason: 'deployment_not_covering_merge'
+        }
+      },
+      deployment: {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: TARGET_SHA,
+        generation: 4,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
+      []
+    );
+    expect(snapshot.deployment_coverage).toEqual({});
+  });
+
+  test('projects an exact same-generation binding as succeeded coverage', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [
+        {
+          bead_id: 'UI-exact',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: TARGET_SHA,
+          deployment_generation: 4,
+          cleanup_cursor: 'deployment_observe',
+          pr_url: 'https://github.com/o/r/pull/43'
+        }
+      ],
+      done: [],
+      attempts: {},
+      deployment: {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: TARGET_SHA,
+        generation: 4,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
+      [43]
+    );
+    expect(snapshot.deployment_coverage).toEqual({ 'UI-exact': 'succeeded' });
+  });
+
+  test('projects a lower-generation row after durable post-ancestry cleanup begins', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [
+        {
+          bead_id: 'UI-covered',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: 'c'.repeat(40),
+          deployment_generation: 3,
+          cleanup_cursor: 'deployment_observe',
+          pr_url: 'https://github.com/o/r/pull/44'
+        }
+      ],
+      done: [],
+      attempts: {},
+      cleanup_failed: {
+        'UI-covered': {
+          step: 'child_sweep',
+          reason: 'child_close_failed'
+        }
+      },
+      deployment: {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: TARGET_SHA,
+        generation: 4,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
+      [44]
+    );
+    expect(snapshot.deployment_coverage).toEqual({
+      'UI-covered': 'succeeded'
+    });
+  });
+
+  test('keeps a covered PR number after closure moves its binding to done', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [
+        {
+          bead_id: 'UI-closed',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: 'c'.repeat(40),
+          deployment_generation: 3,
+          cleanup_cursor: 'deployment_observe',
+          pr_url: 'https://github.com/o/r/pull/45'
+        }
+      ],
+      attempts: {},
+      deployment: {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: TARGET_SHA,
+        generation: 4,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
+      [45]
+    );
+    expect(snapshot.deployment_coverage).toEqual({});
+  });
+
+  test('retries only the current failed desired binding and persists pending', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.recordDeploymentObservation(WS_DEPLOY.root_dir, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      deployed_sha: null,
+      generation: 4,
+      error_code: 'healthcheck_failed',
+      log_path: '/tmp/deploy.log'
+    });
+    const retryDeployment = vi.fn(async () => ({
+      accepted: true,
+      noop: false,
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      generation: 5,
+      error_code: null
+    }));
+    __registerWorkerAttachmentForTest(
+      WS_DEPLOY.root_dir,
+      /** @type {any} */ ({
+        runtime: getWorkerRuntime(),
+        repo: WS_DEPLOY.root_dir,
+        deploymentJob: { retryDeployment }
+      })
+    );
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...WS_DEPLOY });
+
+    await send(sock, 'deployment-retry', 'worker-deployment-retry');
+
+    expect(retryDeployment).toHaveBeenCalledWith({
+      repo: WS_DEPLOY.root_dir,
+      current_binding: {
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        generation: 4
+      }
+    });
+    expect(replyFor(sock, 'deployment-retry').payload).toMatchObject({
+      applied: true
+    });
+    expect(store.snapshot(WS_DEPLOY.root_dir).deployment).toMatchObject({
+      state: 'pending',
+      target_sha: TARGET_SHA,
+      generation: 5
+    });
+  });
+
+  test('does not call the provider for a non-failed deployment state', async () => {
+    const workspace = '/tmp/wq-deployment-pending';
+    const store = getWorkerRuntime().queueStore;
+    store.recordDeploymentObservation(workspace, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      deployed_sha: null,
+      generation: 1,
+      error_code: null,
+      log_path: null
+    });
+    const retryDeployment = vi.fn();
+    __registerWorkerAttachmentForTest(
+      workspace,
+      /** @type {any} */ ({
+        runtime: getWorkerRuntime(),
+        repo: workspace,
+        deploymentJob: { retryDeployment }
+      })
+    );
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), {
+      root_dir: workspace,
+      db_path: `${workspace}/.beads/db`
+    });
+
+    await send(sock, 'deployment-not-failed', 'worker-deployment-retry');
+
+    expect(retryDeployment).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'deployment-not-failed').payload).toMatchObject({
+      applied: false,
+      reason: 'deployment_not_retryable'
+    });
+  });
+
+  test('does not persist a retry after the durable binding changes', async () => {
+    const workspace = '/tmp/wq-deployment-stale';
+    const store = getWorkerRuntime().queueStore;
+    store.recordDeploymentObservation(workspace, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      deployed_sha: null,
+      generation: 4,
+      error_code: 'healthcheck_failed',
+      log_path: '/tmp/deploy.log'
+    });
+    const retryDeployment = vi.fn(async () => {
+      store.recordDeploymentObservation(workspace, {
+        state: 'failed',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 5,
+        error_code: 'healthcheck_failed',
+        log_path: '/tmp/deploy-new.log'
+      });
+      return {
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        generation: 5,
+        error_code: null
+      };
+    });
+    __registerWorkerAttachmentForTest(
+      workspace,
+      /** @type {any} */ ({
+        runtime: getWorkerRuntime(),
+        repo: workspace,
+        deploymentJob: { retryDeployment }
+      })
+    );
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), {
+      root_dir: workspace,
+      db_path: `${workspace}/.beads/db`
+    });
+
+    await send(sock, 'deployment-stale', 'worker-deployment-retry');
+
+    expect(replyFor(sock, 'deployment-stale').payload).toMatchObject({
+      applied: false,
+      reason: 'deployment_retry_stale'
+    });
+    expect(store.snapshot(workspace).deployment).toMatchObject({
+      state: 'failed',
+      generation: 5,
+      log_path: '/tmp/deploy-new.log'
     });
   });
 });

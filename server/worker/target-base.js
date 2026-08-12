@@ -46,6 +46,7 @@ export const UNDECLARED_BASE = 'main';
 
 /** @type {readonly number[]} */
 const FETCH_RETRY_DELAYS_MS = Object.freeze([100, 300]);
+const FETCH_ATTEMPT_TIMEOUT_MS = 30_000;
 
 /**
  * @typedef {'ref_lock'|'network'|'auth'|'missing_ref'|'unknown'} FetchFailureCategory
@@ -247,7 +248,7 @@ function wellFormedBranch(base) {
  *
  * @param {{
  *   repo: string,
- *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   fs?: typeof import('node:fs'),
  *   delay?: (ms: number) => Promise<void>
  * }} input
@@ -265,7 +266,11 @@ export async function resolveTargetBase(input) {
   /**
    * @param {string[]} args
    */
-  const git = (args) => input.gitRun(args, { cwd: repo });
+  const git = (args) =>
+    input.gitRun(args, {
+      cwd: repo,
+      ...(args[0] === 'fetch' ? { timeout_ms: FETCH_ATTEMPT_TIMEOUT_MS } : {})
+    });
 
   // Step 1 — the target repo's own declaration.
   const declaration = readDeclaration(repo, fs);

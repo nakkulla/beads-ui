@@ -15,17 +15,14 @@ const IDENTITY = {
 };
 
 describe('runtime startup', () => {
-  test('publishes the exact bound address before returning the identity', () => {
+  test('computes the exact bound address before returning the identity', () => {
     const createIdentity = vi.fn(() => ({
       ok: /** @type {true} */ (true),
       identity: IDENTITY
     }));
-    const writeMarker = vi.fn(() => ({ ok: /** @type {true} */ (true) }));
-
     const result = publishRuntimeIdentity({
       server: { address: () => ({ address: '127.0.0.1', port: 3000 }) },
-      createIdentity,
-      writeMarker
+      createIdentity
     });
 
     expect(result).toEqual({ ok: true, identity: IDENTITY });
@@ -33,39 +30,30 @@ describe('runtime startup', () => {
       host: '127.0.0.1',
       port: 3000
     });
-    expect(writeMarker).toHaveBeenCalledWith({ identity: IDENTITY });
   });
 
-  test('fails closed when the marker cannot be published', () => {
+  test('does not close a bound server because no marker is written', () => {
     const close = vi.fn();
-    const writeMarker = vi.fn(() => ({
-      ok: /** @type {false} */ (false),
-      reason: 'runtime_marker_write_failed'
-    }));
 
     const result = publishRuntimeIdentity({
       server: {
         address: () => ({ address: '127.0.0.1', port: 3000 }),
         close
       },
-      createIdentity: () => ({ ok: true, identity: IDENTITY }),
-      writeMarker
+      createIdentity: () => ({ ok: true, identity: IDENTITY })
     });
 
-    expect(result).toEqual({
-      ok: false,
-      reason: 'runtime_marker_write_failed'
-    });
-    expect(close).toHaveBeenCalledOnce();
+    expect(result).toEqual({ ok: true, identity: IDENTITY });
+    expect(close).not.toHaveBeenCalled();
   });
 
-  test('rejects an unavailable bound socket address', () => {
+  test('closes an unavailable bound socket address', () => {
     const createIdentity = vi.fn();
+    const close = vi.fn();
 
     const result = publishRuntimeIdentity({
-      server: { address: () => null },
-      createIdentity,
-      writeMarker: vi.fn()
+      server: { address: () => null, close },
+      createIdentity
     });
 
     expect(result).toEqual({
@@ -73,5 +61,21 @@ describe('runtime startup', () => {
       reason: 'runtime_address_unavailable'
     });
     expect(createIdentity).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  test('closes when process identity cannot be computed', () => {
+    const close = vi.fn();
+
+    const result = publishRuntimeIdentity({
+      server: { address: () => ({ address: '127.0.0.1', port: 3000 }), close },
+      createIdentity: () => ({
+        ok: false,
+        reason: 'runtime_source_unavailable'
+      })
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'runtime_source_unavailable' });
+    expect(close).toHaveBeenCalledOnce();
   });
 });
