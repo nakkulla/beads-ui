@@ -6,10 +6,9 @@
  * 있는 이슈" was invisible there. This cache is what puts those candidates on
  * the wire.
  *
- * Cached PER WORKSPACE, not per bead (unlike `title-cache.js`): one
- * `bd list --status open --limit 1000 --json` answers the whole repo AND carries
- * `metadata`, so every 판정 조건 below is decidable from that single response and
- * there is no per-bead `bd show` to make.
+ * Cached PER WORKSPACE, not per bead (unlike `title-cache.js`): one shared
+ * workspace snapshot carries every row and its metadata, so every 판정 condition
+ * below is decidable without a separate `bd list --status open` process.
  *
  * The read is SYNCHRONOUS, exactly like the title cache, because the snapshot
  * assembly is synchronous. A miss is therefore not an error and not a wait: it
@@ -30,7 +29,6 @@ import {
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
-import { runBdJson } from '../bd.js';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
 import {
@@ -38,6 +36,7 @@ import {
   parsePlanReceipt,
   parsePlanReviewReceipt
 } from '../workflow-enrich.js';
+import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
 
 const log = debug('worker:runnable-cache');
@@ -192,6 +191,9 @@ function qualify(row) {
   if (bead_id.length === 0) {
     return null;
   }
+  if (row.status !== 'open') {
+    return null;
+  }
   if (isWorkerIneligible(row.labels)) {
     return null;
   }
@@ -238,14 +240,15 @@ function qualify(row) {
  * fill queue.
  *
  * Everything the cache depends on is injectable so the unit stays a pure test:
- * `now` for the TTL clock, `runJson` for the `bd` round trip, and
+ * `now` for the TTL clock, `requestSnapshot` for the shared generation, and
  * `subscriberCount` for the "nobody is watching" gate.
  *
  * @param {{
  *   now?: () => number,
  *   positive_ttl_ms?: number,
  *   negative_ttl_ms?: number,
- *   runJson?: typeof runBdJson,
+ *   runJson?: (args: string[], options?: { cwd?: string }) => Promise<{ code: number, stdoutJson?: unknown }>,
+ *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[] } }>,
  *   subscriberCount?: () => number
  * }} [options]
  */
@@ -259,9 +262,12 @@ export function createRunnableCache(options = {}) {
     typeof options.negative_ttl_ms === 'number'
       ? options.negative_ttl_ms
       : NEGATIVE_TTL_MS;
-  const runJson =
-    options.runJson ||
-    ((args, opts) => runBdJson(args, /** @type {any} */ (opts)));
+  const requestSnapshot =
+    typeof options.requestSnapshot === 'function'
+      ? options.requestSnapshot
+      : options.runJson
+        ? null
+        : requestWorkspaceSnapshot;
 
   /**
    * How many clients are watching the monitor. The LIVE wiring replaces this
@@ -313,14 +319,23 @@ export function createRunnableCache(options = {}) {
    * @returns {Promise<RunnableItem[]|null>}
    */
   async function fetchRunnable(workspace) {
-    const r = await runJson(
-      ['list', '--status', 'open', '--limit', '1000', '--json'],
-      { cwd: workspace }
-    );
-    if (!r || r.code !== 0) {
-      return null;
+    let rows;
+    if (requestSnapshot) {
+      const result = await requestSnapshot(workspace, 'monitor-runnable');
+      if (!result.ok || result.stale || !Array.isArray(result.snapshot?.all)) {
+        return null;
+      }
+      rows = result.snapshot.all;
+    } else {
+      const result = await options.runJson?.(
+        ['list', '--status', 'open', '--limit', '1000', '--json'],
+        { cwd: workspace }
+      );
+      if (!result || result.code !== 0) {
+        return null;
+      }
+      rows = result.stdoutJson;
     }
-    const rows = r.stdoutJson;
     if (!Array.isArray(rows)) {
       return null;
     }

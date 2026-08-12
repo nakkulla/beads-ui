@@ -81,7 +81,7 @@ if (
 const watch_root = startup_workspace_root || config.root_dir;
 const db_watcher = watchDb(watch_root, () => {
   log('db change detected → schedule refresh');
-  scheduleListRefresh();
+  scheduleListRefresh('watcher', watch_root);
 });
 
 const { wss, scheduleListRefresh } = attachWsServer(server, {
@@ -100,7 +100,7 @@ const { wss, scheduleListRefresh } = attachWsServer(server, {
 createPoller({
   intervalSeconds: config.poll_interval_seconds,
   getClientCount: () => wss.clients.size,
-  onTick: scheduleListRefresh
+  onTick: () => scheduleListRefresh('poll')
 }).start();
 
 watchRegistry(

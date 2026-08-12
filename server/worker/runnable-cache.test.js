@@ -83,6 +83,20 @@ beforeEach(() => {
 });
 
 describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
+  test('projects open runnable candidates from a shared workspace snapshot', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: { all: [row()] }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(requestSnapshot).toHaveBeenCalledWith(WS_A, 'monitor-runnable');
+    expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
+  });
+
   test('lists an open bead whose spec review is pinned', async () => {
     const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
 

@@ -5,6 +5,11 @@ import {
   mapSubscriptionToBdArgs
 } from './list-adapters.js';
 import { enrichIssuesWorkflow } from './workflow-enrich.js';
+import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
+import {
+  __resetWorkspaceSnapshotRuntimeForTest,
+  __setWorkspaceSnapshotCoordinatorFactoryForTest
+} from './workspace-snapshot-runtime.js';
 
 vi.mock('./bd.js', () => ({ runBdJson: vi.fn() }));
 vi.mock('./workflow-enrich.js', () => ({
@@ -14,6 +19,7 @@ vi.mock('./workflow-enrich.js', () => ({
 describe('list adapters for subscription types', () => {
   beforeEach(() => {
     /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    __resetWorkspaceSnapshotRuntimeForTest();
   });
 
   test('mapSubscriptionToBdArgs returns args for all-issues', () => {
@@ -260,7 +266,414 @@ describe('list adapters for subscription types', () => {
       expect(res.error.message).toMatch(/Unknown subscription type/);
     }
   });
+
+  test('projects concurrent list specs from one workspace snapshot generation', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [
+              {
+                id: 'OPEN-1',
+                status: 'open',
+                dependencies: [
+                  { type: 'discovered-from', depends_on_id: 'ROOT-1' }
+                ]
+              },
+              {
+                id: 'BLOCKED-1',
+                status: 'blocked',
+                metadata: { blocked_reason: 'external wait' },
+                dependencies: []
+              },
+              {
+                id: 'CLOSED-1',
+                status: 'closed',
+                closed_at: '2026-08-03T00:00:00.000Z',
+                dependencies: []
+              }
+            ]
+          };
+        }
+        if (args[0] === 'ready') {
+          return {
+            code: 0,
+            stdoutJson: {
+              ready: [{ id: 'OPEN-1' }],
+              blocked: [
+                {
+                  id: 'OPEN-1',
+                  blocked_by: [{ id: 'UPSTREAM-1' }]
+                }
+              ]
+            }
+          };
+        }
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      }
+    );
+
+    const options = { cwd: '/workspace-a', workspace_snapshot: true };
+    const [all, ready, blocked] = await Promise.all([
+      fetchListForSubscription({ type: 'all-issues' }, options),
+      fetchListForSubscription({ type: 'ready-issues' }, options),
+      fetchListForSubscription({ type: 'blocked-issues' }, options)
+    ]);
+
+    expect(snapshotCommandCalls(/** @type {any} */ (runBdJson))).toHaveLength(
+      2
+    );
+    expect(all.ok && all.items.map((item) => item.id)).toEqual([
+      'OPEN-1',
+      'BLOCKED-1'
+    ]);
+    expect(all.ok && all.items[0].from_id).toBe('ROOT-1');
+    expect(ready.ok && ready.items.map((item) => item.id)).toEqual(['OPEN-1']);
+    expect(blocked.ok && blocked.items).toEqual([
+      expect.objectContaining({
+        id: 'BLOCKED-1',
+        blocked_info: {
+          external: true,
+          reason: 'external wait',
+          blockers: []
+        }
+      }),
+      expect.objectContaining({
+        id: 'OPEN-1',
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['UPSTREAM-1']
+        }
+      })
+    ]);
+  });
+
+  test('preserves normalized projection parity across all snapshot list specs', async () => {
+    const since = Date.parse('2026-08-03T00:00:00.000Z');
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [
+              { id: 'OPEN-1', status: 'open', dependencies: [] },
+              {
+                id: 'BLOCKED-1',
+                status: 'blocked',
+                metadata: { blocked_reason: 'external wait' },
+                dependencies: []
+              },
+              { id: 'RUNNING-1', status: 'in_progress', dependencies: [] },
+              { id: 'RESOLVED-1', status: 'resolved', dependencies: [] },
+              { id: 'DEFERRED-1', status: 'deferred', dependencies: [] },
+              {
+                id: 'CLOSED-OLD',
+                status: 'closed',
+                closed_at: '2026-08-02T23:59:59.000Z',
+                dependencies: []
+              },
+              {
+                id: 'CLOSED-BOUNDARY',
+                status: 'closed',
+                closed_at: '2026-08-03T00:00:00.000Z',
+                dependencies: []
+              },
+              {
+                id: 'CLOSED-NEW',
+                status: 'closed',
+                closed_at: '2026-08-04T00:00:00.000Z',
+                dependencies: []
+              }
+            ]
+          };
+        }
+        if (args[0] === 'ready') {
+          return {
+            code: 0,
+            stdoutJson: {
+              ready: [
+                {
+                  id: 'OPEN-1',
+                  updated_at: '2026-08-03T00:00:01.000Z',
+                  created_at: '2026-08-01T00:00:00.000Z',
+                  ready_extra: true
+                }
+              ],
+              blocked: [
+                {
+                  id: 'OPEN-1',
+                  updated_at: '2026-08-03T00:00:02.000Z',
+                  created_at: '2026-08-01T00:00:00.000Z',
+                  blocked_by: [{ id: 'EXTERNAL-1' }],
+                  blocked_extra: true
+                }
+              ]
+            }
+          };
+        }
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      }
+    );
+
+    const options = { cwd: '/workspace-parity', workspace_snapshot: true };
+    const [all, ready, blocked, running, resolved, deferred, closed] =
+      await Promise.all([
+        fetchListForSubscription({ type: 'all-issues' }, options),
+        fetchListForSubscription({ type: 'ready-issues' }, options),
+        fetchListForSubscription({ type: 'blocked-issues' }, options),
+        fetchListForSubscription({ type: 'in-progress-issues' }, options),
+        fetchListForSubscription({ type: 'resolved-issues' }, options),
+        fetchListForSubscription({ type: 'deferred-issues' }, options),
+        fetchListForSubscription(
+          { type: 'closed-issues', params: { since } },
+          options
+        )
+      ]);
+
+    expect(snapshotCommandCalls(/** @type {any} */ (runBdJson))).toHaveLength(
+      2
+    );
+    expect(all.ok && all.items.map((item) => item.id)).toEqual([
+      'OPEN-1',
+      'BLOCKED-1',
+      'RUNNING-1',
+      'RESOLVED-1',
+      'DEFERRED-1'
+    ]);
+    expect(ready.ok && ready.items[0]).toMatchObject({
+      id: 'OPEN-1',
+      ready_extra: true
+    });
+    expect(typeof (ready.ok && ready.items[0].created_at)).toBe('number');
+    expect(typeof (ready.ok && ready.items[0].updated_at)).toBe('number');
+    expect(blocked.ok && blocked.items).toEqual([
+      expect.objectContaining({
+        id: 'BLOCKED-1',
+        blocked_info: {
+          external: true,
+          reason: 'external wait',
+          blockers: []
+        }
+      }),
+      expect.objectContaining({
+        id: 'OPEN-1',
+        blocked_extra: true,
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['EXTERNAL-1']
+        }
+      })
+    ]);
+    expect(typeof (blocked.ok && blocked.items[1].created_at)).toBe('number');
+    expect(typeof (blocked.ok && blocked.items[1].updated_at)).toBe('number');
+    expect(running.ok && running.items.map((item) => item.id)).toEqual([
+      'RUNNING-1'
+    ]);
+    expect(resolved.ok && resolved.items.map((item) => item.id)).toEqual([
+      'RESOLVED-1'
+    ]);
+    expect(deferred.ok && deferred.items.map((item) => item.id)).toEqual([
+      'DEFERRED-1'
+    ]);
+    expect(closed.ok && closed.items.map((item) => item.id)).toEqual([
+      'CLOSED-BOUNDARY',
+      'CLOSED-NEW'
+    ]);
+  });
+
+  test('uses one legacy dependency fallback generation with provenance parity', async () => {
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson: /** @type {typeof runBdJson} */ (runBdJson),
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+    __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [{ id: 'FOLLOWUP-1', status: 'open' }]
+          };
+        }
+        if (args[0] === 'ready') {
+          return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+        }
+        if (args[0] === 'dep') {
+          return {
+            code: 0,
+            stdoutJson: [
+              {
+                issue_id: 'FOLLOWUP-1',
+                depends_on_id: 'ROOT-1',
+                type: 'discovered-from'
+              }
+            ]
+          };
+        }
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      }
+    );
+
+    const result = await fetchListForSubscription(
+      { type: 'all-issues' },
+      { cwd: '/workspace-legacy', workspace_snapshot: true }
+    );
+
+    expect(runBdJson).toHaveBeenCalledTimes(3);
+    expect(result.ok && result.items).toEqual([
+      expect.objectContaining({ id: 'FOLLOWUP-1', from_id: 'ROOT-1' })
+    ]);
+  });
+
+  test('omits malformed embedded provenance ids without fabricating a value', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [
+              {
+                id: 'FOLLOWUP-1',
+                status: 'open',
+                dependencies: [
+                  {
+                    type: 'discovered-from',
+                    depends_on_id: { id: 'ROOT-1' }
+                  }
+                ]
+              }
+            ]
+          };
+        }
+        return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+      }
+    );
+
+    const result = await fetchListForSubscription(
+      { type: 'all-issues' },
+      { cwd: '/workspace-embedded-malformed', workspace_snapshot: true }
+    );
+
+    expect(result.ok && 'from_id' in result.items[0]).toBe(false);
+  });
+
+  test('restores legacy subscription caps after snapshot projection', async () => {
+    const rows = [
+      ...Array.from({ length: 51 }, (_, index) => ({
+        id: `ALL-${index + 1}`,
+        status: 'open'
+      })),
+      ...Array.from({ length: 51 }, (_, index) => ({
+        id: `RUN-${index + 1}`,
+        status: 'in_progress'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `READY-${index + 1}`,
+        status: 'open'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `STORED-${index + 1}`,
+        status: 'blocked'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `RESOLVED-${index + 1}`,
+        status: 'resolved'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `DEFERRED-${index + 1}`,
+        status: 'deferred'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `CLOSED-${index + 1}`,
+        status: 'closed',
+        closed_at: '2026-08-03T00:00:00.000Z'
+      }))
+    ];
+    const ready = Array.from({ length: 1001 }, (_, index) => ({
+      id: `READY-${index + 1}`
+    }));
+    const blocked = Array.from({ length: 1001 }, (_, index) => ({
+      id: `READY-${index + 1}`,
+      blocked_by: []
+    }));
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
+        if (args[0] === 'list') {
+          return { code: 0, stdoutJson: rows };
+        }
+        return { code: 0, stdoutJson: { ready, blocked } };
+      }
+    );
+    const options = { cwd: '/workspace-caps', workspace_snapshot: true };
+    const [
+      all,
+      running,
+      ready_result,
+      blocked_result,
+      resolved,
+      deferred,
+      closed
+    ] = await Promise.all([
+      fetchListForSubscription({ type: 'all-issues' }, options),
+      fetchListForSubscription({ type: 'in-progress-issues' }, options),
+      fetchListForSubscription({ type: 'ready-issues' }, options),
+      fetchListForSubscription({ type: 'blocked-issues' }, options),
+      fetchListForSubscription({ type: 'resolved-issues' }, options),
+      fetchListForSubscription({ type: 'deferred-issues' }, options),
+      fetchListForSubscription({ type: 'closed-issues' }, options)
+    ]);
+
+    expect(all.ok && all.items.map((item) => item.id)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `ALL-${index + 1}`)
+    );
+    expect(running.ok && running.items).toHaveLength(50);
+    expect(ready_result.ok && ready_result.items).toHaveLength(1000);
+    expect(blocked_result.ok && blocked_result.items).toHaveLength(2000);
+    expect(blocked_result.ok && blocked_result.items[0].id).toBe('STORED-1');
+    expect(blocked_result.ok && blocked_result.items[1000].id).toBe('READY-1');
+    expect(resolved.ok && resolved.items).toHaveLength(1000);
+    expect(deferred.ok && deferred.items).toHaveLength(1000);
+    expect(closed.ok && closed.items).toHaveLength(1001);
+  });
 });
+
+/**
+ * @returns {{ code: number, stdoutJson: { version: string, commit: string } }}
+ */
+function supportedVersion() {
+  return {
+    code: 0,
+    stdoutJson: {
+      version: '1.2.0-fork.1',
+      commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
+    }
+  };
+}
+
+/**
+ * @param {{ mock: { calls: Array<[string[]]> } }} runner
+ */
+function snapshotCommandCalls(runner) {
+  return runner.mock.calls.filter(([args]) => args[0] !== 'version');
+}
 
 describe('blocked-issues blocked_info derivation', () => {
   beforeEach(() => {
@@ -573,6 +986,24 @@ describe('from_id provenance derivation', () => {
     const res = await fetchListForSubscription({ type: 'all-issues' });
 
     expect(res.ok && res.items[0].from_id).toBe('A-0');
+  });
+
+  test('ignores malformed non-string provenance ids', async () => {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
+      code: 0,
+      stdoutJson: [
+        {
+          issue_id: 'A-1',
+          depends_on_id: { id: 'A-0' },
+          type: 'discovered-from'
+        },
+        { issue_id: 7, depends_on_id: 'A-0', type: 'discovered-from' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items.some((item) => 'from_id' in item)).toBe(false);
   });
 
   test('leaves issues untouched when the dep list call fails', async () => {

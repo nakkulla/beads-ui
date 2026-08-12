@@ -25,7 +25,8 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  * @param {{
  *   run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>,
- *   cwd?: string
+ *   cwd?: string,
+ *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, fresh?: boolean, snapshot?: { generation?: number, all?: unknown[] } }>
  * }} [deps]
  * @returns {{
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
@@ -38,7 +39,7 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency: string }) => Promise<void>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
- *   scanBeads: () => Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }>
+ *   scanBeads: () => Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
  * }}
  */
 export function createBdMetadata(deps = {}) {
@@ -46,6 +47,8 @@ export function createBdMetadata(deps = {}) {
   const runJson = deps.runJson || ((args, options) => runBdJson(args, options));
   const cwd = deps.cwd;
   const opts = cwd ? { cwd } : undefined;
+  const requestSnapshot =
+    typeof deps.requestSnapshot === 'function' ? deps.requestSnapshot : null;
 
   return {
     /**
@@ -397,9 +400,28 @@ export function createBdMetadata(deps = {}) {
      * silently empty the lane every time bd is unavailable. The sweep depends on
      * the same throw — an unread status must move nothing.
      *
-     * @returns {Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }>}
+     * @returns {Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>}
      */
     async scanBeads() {
+      if (requestSnapshot) {
+        const snapshot_result = await requestSnapshot(
+          cwd || '',
+          'worker-external'
+        );
+        if (!snapshot_result || !snapshot_result.ok || snapshot_result.stale) {
+          throw new Error('workspace snapshot is unavailable');
+        }
+        const snapshot = snapshot_result.snapshot;
+        if (!snapshot || !Array.isArray(snapshot.all)) {
+          throw new Error('workspace snapshot returned a non-array payload');
+        }
+        return {
+          ...scanRows(snapshot.all),
+          generation:
+            typeof snapshot.generation === 'number' ? snapshot.generation : 0,
+          fresh: snapshot_result.fresh !== false
+        };
+      }
       const r = await runJson(
         ['list', '--json', '--all', '--limit', '0'],
         opts
@@ -413,35 +435,46 @@ export function createBdMetadata(deps = {}) {
       if (!Array.isArray(rows)) {
         throw new Error('bd list --all returned a non-array payload');
       }
-      /** @type {{ bead_id: string, pr_url: string }[]} */
-      const pr_rows = [];
-      /** @type {Record<string, string>} */
-      const statuses = {};
-      for (const raw of rows) {
-        if (!raw || typeof raw !== 'object') {
-          continue;
-        }
-        const row = /** @type {Record<string, unknown>} */ (raw);
-        if (typeof row.id !== 'string' || row.id.length === 0) {
-          continue;
-        }
-        if (typeof row.status === 'string' && row.status.length > 0) {
-          statuses[row.id] = row.status;
-        }
-        if (row.status !== 'resolved') {
-          continue;
-        }
-        const md = row.metadata;
-        const pr_url =
-          md && typeof md === 'object'
-            ? /** @type {Record<string, unknown>} */ (md).pr_url
-            : undefined;
-        if (typeof pr_url !== 'string' || pr_url.length === 0) {
-          continue;
-        }
-        pr_rows.push({ bead_id: row.id, pr_url });
-      }
-      return { pr_rows, statuses };
+      return scanRows(rows);
     }
   };
+}
+
+/**
+ * Project external PR rows and the closed-sweep status map from one successful
+ * whole-workspace generation.
+ *
+ * @param {unknown[]} rows
+ * @returns {{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string> }}
+ */
+function scanRows(rows) {
+  /** @type {{ bead_id: string, pr_url: string }[]} */
+  const pr_rows = [];
+  /** @type {Record<string, string>} */
+  const statuses = {};
+  for (const raw of rows) {
+    if (!raw || typeof raw !== 'object') {
+      continue;
+    }
+    const row = /** @type {Record<string, unknown>} */ (raw);
+    if (typeof row.id !== 'string' || row.id.length === 0) {
+      continue;
+    }
+    if (typeof row.status === 'string' && row.status.length > 0) {
+      statuses[row.id] = row.status;
+    }
+    if (row.status !== 'resolved') {
+      continue;
+    }
+    const md = row.metadata;
+    const pr_url =
+      md && typeof md === 'object'
+        ? /** @type {Record<string, unknown>} */ (md).pr_url
+        : undefined;
+    if (typeof pr_url !== 'string' || pr_url.length === 0) {
+      continue;
+    }
+    pr_rows.push({ bead_id: row.id, pr_url });
+  }
+  return { pr_rows, statuses };
 }
