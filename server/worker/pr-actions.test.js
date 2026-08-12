@@ -139,6 +139,7 @@ function seedStore(options = {}) {
  *   deployOutput?: string[],
  *   repo?: string,
  *   gitFail?: (args: string[]) => boolean,
+ *   gitResult?: (args: string[]) => number|null,
  *   gitBranch?: string,
  *   gitStatus?: string,
  *   gitHead?: string,
@@ -158,6 +159,7 @@ function seedStore(options = {}) {
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   deploymentReconciler?: { reconcile: (input: any) => Promise<any> },
+ *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, validateCurrentBinding?: (status: any, current_binding: any) => void, validateRowBinding?: (status: any, row_binding: any) => void },
  *   locks?: ReturnType<typeof createLockManager>,
  *   noNotify?: boolean
  * }} [options]
@@ -341,6 +343,10 @@ function makeActions(options = {}) {
   const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
     git_argv.push(args);
     calls.push(`git:${args.slice(0, 2).join(' ')}`);
+    const forced_code = options.gitResult?.(args);
+    if (typeof forced_code === 'number' && forced_code !== 0) {
+      return { code: forced_code, stdout: '', stderr: 'boom' };
+    }
     if (options.gitFail && options.gitFail(args)) {
       return { code: 1, stdout: '', stderr: 'boom' };
     }
@@ -556,6 +562,15 @@ function makeActions(options = {}) {
           }
         : { state: /** @type {const} */ ('absent') }),
     deploymentReconciler: options.deploymentReconciler,
+    deploymentJob: options.deploymentJob
+      ? {
+          ...options.deploymentJob,
+          validateCurrentBinding:
+            options.deploymentJob.validateCurrentBinding || (() => {}),
+          validateRowBinding:
+            options.deploymentJob.validateRowBinding || (() => {})
+        }
+      : undefined,
     locks: options.locks,
     selfRepoState: options.selfRepoState || (() => 'other'),
     spawnImpl: /** @type {any} */ (spawnImpl),
@@ -1044,6 +1059,686 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
 });
 
 describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
+  test('releases merge completion after an accepted request and closes only after covered success', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: merge_sha })
+      }
+    });
+
+    const merged = await h.actions.merge(BEAD);
+
+    expect(merged).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.store.snapshot(WS).pr_wait[0]).toMatchObject({
+      merge_sha,
+      verified_target_sha: target_sha,
+      deployment_generation: 7,
+      cleanup_cursor: 'deployment_observe'
+    });
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).pr_wait).toEqual([]);
+    expect(h.calls).toContain('bd:setStatus:UI-1:closed');
+  });
+
+  test('records non-covering success without closing the parent', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    let ancestry_checks = 0;
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      gitFail: (args) => {
+        if (args[0] !== 'merge-base') {
+          return false;
+        }
+        ancestry_checks += 1;
+        return ancestry_checks === 2;
+      },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: merge_sha })
+      }
+    });
+
+    await h.actions.merge(BEAD);
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'deployment_request',
+      reason: 'deployment_not_covering_merge'
+    });
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+
+  test('keeps legacy deploy-stage residue only until covered provider success', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      selfRepoState: () => 'self',
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: merge_sha })
+      }
+    });
+
+    await h.actions.merge(BEAD);
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'deploy',
+      reason: 'deploy_not_detached_for_self'
+    });
+
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+  });
+
+  test('continues covered-row closure after another covered row cleanup fails', async () => {
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({
+      deploymentJob,
+      children: { [BEAD]: [{ id: 'UI-1.1', status: 'open' }] },
+      bdFail: (method, id) => method === 'setStatus' && id === 'UI-1.1'
+    });
+    h.store.appendAttempt(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'UI-2-attempt', bead_id: 'UI-2' }
+    });
+    h.store.moveToPrWait(WS, {
+      bead_id: 'UI-2',
+      attempt_id: 'UI-2-attempt',
+      patch: { status: 'done' }
+    });
+    for (const bead_id of [BEAD, 'UI-2']) {
+      h.store.bindDeploymentRequest(WS, {
+        bead_id,
+        merge_sha: bead_id === BEAD ? 'a'.repeat(40) : 'b'.repeat(40),
+        verified_target_sha: target_sha,
+        deployment_generation: 7
+      });
+    }
+    h.store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 7,
+      error_code: null,
+      log_path: null
+    });
+
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'child_sweep'
+    });
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: 'UI-2' })])
+    );
+  });
+
+  test('rejects a same-generation row binding mismatch before coverage', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    const mismatch = Object.assign(new Error('corrupt'), {
+      code: 'deployment_binding_mismatch'
+    });
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      })),
+      validateRowBinding: vi.fn(() => {
+        throw mismatch;
+      })
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: merge_sha })
+      }
+    });
+
+    await h.actions.merge(BEAD);
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      reason: 'deployment_binding_mismatch'
+    });
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+
+  test('keeps a stale row generation open without recording coverage failure', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    const stale = Object.assign(new Error('stale'), {
+      code: 'deployment_generation_stale'
+    });
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      })),
+      validateRowBinding: vi.fn(() => {
+        throw stale;
+      })
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: merge_sha })
+      }
+    });
+
+    await h.actions.merge(BEAD);
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('defers a stale status pass after an overlapping newer request', async () => {
+    const target_sha = 'd'.repeat(40);
+    const newer_sha = 'f'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => {
+        h.store.appendAttempt(WS, {
+          expected_revision: h.store.snapshot(WS).revision,
+          attempt: { attempt_id: 'newer-request', bead_id: 'UI-2' }
+        });
+        h.store.moveToPrWait(WS, {
+          bead_id: 'UI-2',
+          attempt_id: 'newer-request',
+          patch: { status: 'done' }
+        });
+        h.store.recordDeploymentRequest(WS, {
+          bead_id: 'UI-2',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: newer_sha,
+          deployment_generation: 8,
+          target_base: 'main'
+        });
+        return {
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: target_sha,
+          generation: 7,
+          error_code: null,
+          log_path: '/tmp/older.log'
+        };
+      })
+    };
+    const h = makeActions({ deploymentJob });
+    h.store.bindDeploymentRequest(WS, {
+      bead_id: BEAD,
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: target_sha,
+      deployment_generation: 7
+    });
+    h.store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 7,
+      error_code: null,
+      log_path: null
+    });
+
+    const result = await h.actions.observeDeployment();
+
+    expect(result).toMatchObject({
+      ok: true,
+      reason: 'deployment_observation_raced'
+    });
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      target_sha: newer_sha,
+      generation: 8
+    });
+    expect(h.store.snapshot(WS).pr_wait).toHaveLength(2);
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+
+  test.each([
+    [
+      'higher generation',
+      {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha: 'f'.repeat(40),
+        deployed_sha: 'f'.repeat(40),
+        generation: 8,
+        error_code: null,
+        log_path: '/tmp/higher.log'
+      }
+    ],
+    [
+      'idle status',
+      {
+        state: 'idle',
+        target_base: null,
+        target_sha: null,
+        deployed_sha: null,
+        generation: null,
+        error_code: null,
+        log_path: null
+      }
+    ],
+    [
+      'lower generation',
+      {
+        state: 'pending',
+        target_base: 'main',
+        target_sha: 'd'.repeat(40),
+        deployed_sha: null,
+        generation: 6,
+        error_code: null,
+        log_path: null
+      }
+    ]
+  ])(
+    'fails closed for a provider-only %s binding mismatch',
+    async (_, status) => {
+      const current_sha = 'd'.repeat(40);
+      const mismatch = Object.assign(new Error('binding mismatch'), {
+        code: 'deployment_binding_mismatch'
+      });
+      const deploymentJob = {
+        requestDeployment: vi.fn(),
+        deploymentStatus: vi.fn(async () => status),
+        validateCurrentBinding: vi.fn(() => {
+          throw mismatch;
+        })
+      };
+      const h = makeActions({ deploymentJob });
+      h.store.bindDeploymentRequest(WS, {
+        bead_id: BEAD,
+        merge_sha: 'a'.repeat(40),
+        verified_target_sha: current_sha,
+        deployment_generation: 7
+      });
+      h.store.recordDeploymentObservation(WS, {
+        state: 'pending',
+        target_base: 'main',
+        target_sha: current_sha,
+        deployed_sha: null,
+        generation: 7,
+        error_code: null,
+        log_path: null
+      });
+
+      const result = await h.actions.observeDeployment();
+
+      expect(result).toMatchObject({
+        ok: false,
+        reason: 'deployment_binding_mismatch'
+      });
+      expect(deploymentJob.validateCurrentBinding).toHaveBeenCalledWith(
+        status,
+        expect.objectContaining({ generation: 7, target_sha: current_sha })
+      );
+      expect(h.store.snapshot(WS).deployment).toMatchObject({
+        state: 'pending',
+        target_sha: current_sha,
+        generation: 7
+      });
+      expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+    }
+  );
+
+  test('records ancestry command failures separately from non-covering status', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    let ancestry_checks = 0;
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      gitResult: (args) => {
+        if (args[0] !== 'merge-base') {
+          return null;
+        }
+        ancestry_checks += 1;
+        return ancestry_checks === 2 ? 2 : 0;
+      },
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: merge_sha })
+      }
+    });
+
+    await h.actions.merge(BEAD);
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      reason: 'deployment_ancestry_check_failed'
+    });
+  });
+
+  test('does not submit a request when candidate ancestry check errors', async () => {
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn()
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      gitResult: (args) => (args[0] === 'merge-base' ? 2 : null),
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: 'e'.repeat(40) })
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'deployment_candidate_ancestry_check_failed'
+    });
+    expect(deploymentJob.requestDeployment).not.toHaveBeenCalled();
+  });
+
+  test('does not return accepted request success when its durable write fails', async () => {
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({
+      verify: VERIFY_CFG,
+      deploymentJob,
+      afterMerge: {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: 'e'.repeat(40) })
+      }
+    });
+    h.store.recordDeploymentRequest = () => ({ ok: false });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'deployment_request_persist_failed'
+    });
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+  });
+
+  test('backfills legacy deploy residue from status without replaying request', async () => {
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({ deploymentJob });
+    h.store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'legacy-deploy',
+      target_base: 'main',
+      merged_floor_sha: 'e'.repeat(40)
+    });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'deploy',
+      reason: 'deploy_not_detached_for_self'
+    });
+
+    await h.actions.observeDeployment();
+
+    expect(deploymentJob.requestDeployment).not.toHaveBeenCalled();
+    expect(deploymentJob.deploymentStatus).toHaveBeenCalledWith({ repo: REPO });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+  });
+
+  test('keeps a non-deploy legacy cleanup failure after covered status', async () => {
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({ deploymentJob });
+    h.store.enqueueReconcile(WS, {
+      bead_id: BEAD,
+      attempt_id: 'legacy-cleanup',
+      target_base: 'main',
+      merged_floor_sha: 'e'.repeat(40)
+    });
+    h.store.recordCleanupFailure(WS, {
+      bead_id: BEAD,
+      step: 'child_sweep',
+      reason: 'child_failed'
+    });
+
+    const before = h.store.snapshot(WS).pr_wait[0];
+
+    await h.actions.observeDeployment();
+
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'child_sweep',
+      reason: 'child_failed'
+    });
+    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
+    expect(h.store.snapshot(WS).pr_wait[0]).toMatchObject({
+      merge_sha: before.merge_sha,
+      verified_target_sha: before.verified_target_sha,
+      deployment_generation: before.deployment_generation,
+      cleanup_cursor: before.cleanup_cursor
+    });
+  });
+
+  test('promotes an external merged row into the external job handoff', async () => {
+    const target_sha = 'd'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(async () => ({
+        accepted: true,
+        noop: false,
+        target_base: 'main',
+        target_sha,
+        generation: 7
+      })),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const h = makeActions({
+      deploymentJob,
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      }
+    });
+    h.store.removeFromPrWait(WS, { bead_id: BEAD });
+
+    const result = await h.actions.cleanupObservedMerge(BEAD, 'e'.repeat(40), {
+      head_ref: 'external-head',
+      pr_url: 'https://github.com/o/r/pull/304'
+    });
+
+    expect(result).toMatchObject({ ok: true, pending: true });
+    expect(deploymentJob.requestDeployment).toHaveBeenCalledOnce();
+    expect(h.store.snapshot(WS).pr_wait[0]).toMatchObject({
+      bead_id: BEAD,
+      cleanup_cursor: 'deployment_observe'
+    });
+    await h.actions.observeDeployment();
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+    expect(h.external_drop).toHaveBeenCalledWith(WS, BEAD);
+    expect(h.git_argv).toContainEqual(['branch', '-D', 'external-head']);
+  });
+
   test('runs base sync → verification → deploy → child sweep → branch cleanup → parent close → done', async () => {
     const h = makeActions({
       verify: VERIFY_CFG,
@@ -1819,7 +2514,7 @@ describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', 
     expect(CLEANUP_STEPS).toEqual([
       'base_sync',
       'post_merge_verify',
-      'deploy',
+      'deployment_request',
       'child_sweep',
       'branch_cleanup',
       'parent_close'

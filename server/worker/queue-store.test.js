@@ -300,6 +300,196 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('keeps a newer deployment observation when a stale status arrives', () => {
+    const store = createQueueStore();
+    const newer_sha = 'd'.repeat(40);
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha: newer_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+
+    const stale = store.recordDeploymentObservation(WS, {
+      state: 'succeeded',
+      target_base: 'main',
+      target_sha: 'c'.repeat(40),
+      deployed_sha: 'c'.repeat(40),
+      generation: 4,
+      error_code: null,
+      log_path: '/tmp/older.log'
+    });
+
+    expect(stale).toMatchObject({ ok: false, stale: true });
+    expect(store.snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      target_sha: newer_sha,
+      generation: 5
+    });
+  });
+
+  test('refuses a conflicting binding at the current deployment generation', () => {
+    const store = createQueueStore();
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha: 'd'.repeat(40),
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+
+    const mismatch = store.recordDeploymentObservation(WS, {
+      state: 'succeeded',
+      target_base: 'main',
+      target_sha: 'e'.repeat(40),
+      deployed_sha: 'e'.repeat(40),
+      generation: 5,
+      error_code: null,
+      log_path: '/tmp/conflict.log'
+    });
+
+    expect(mismatch).toMatchObject({ ok: false, binding_mismatch: true });
+    expect(store.snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      target_sha: 'd'.repeat(40),
+      generation: 5
+    });
+  });
+
+  test('advances one binding from pending through running to either terminal state', () => {
+    const store = createQueueStore();
+    const target_sha = 'd'.repeat(40);
+    const running = {
+      state: /** @type {const} */ ('running'),
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: '/tmp/running.log'
+    };
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+    expect(store.recordDeploymentObservation(WS, running).ok).toBe(true);
+    expect(
+      store.recordDeploymentObservation(WS, {
+        ...running,
+        state: 'succeeded',
+        deployed_sha: target_sha
+      }).ok
+    ).toBe(true);
+
+    const failed_store = createQueueStore();
+    const failed_ws = `${WS}-failed`;
+    failed_store.recordDeploymentObservation(failed_ws, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+    failed_store.recordDeploymentObservation(failed_ws, running);
+
+    expect(
+      failed_store.recordDeploymentObservation(failed_ws, {
+        ...running,
+        state: 'failed',
+        error_code: 'deploy_failed'
+      }).ok
+    ).toBe(true);
+  });
+
+  test('refuses a same-binding deployment state regression', () => {
+    const store = createQueueStore();
+    const target_sha = 'd'.repeat(40);
+    const running = {
+      state: /** @type {const} */ ('running'),
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: '/tmp/running.log'
+    };
+
+    store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 5,
+      error_code: null,
+      log_path: null
+    });
+    store.recordDeploymentObservation(WS, running);
+
+    const pending = store.recordDeploymentObservation(WS, {
+      ...running,
+      state: 'pending',
+      log_path: null
+    });
+    expect(pending).toMatchObject({ ok: false, regression: true });
+
+    store.recordDeploymentObservation(WS, {
+      ...running,
+      state: 'succeeded',
+      deployed_sha: target_sha
+    });
+    const terminal = store.recordDeploymentObservation(WS, {
+      ...running,
+      state: 'failed',
+      error_code: 'deploy_failed'
+    });
+
+    expect(terminal).toMatchObject({ ok: false, regression: true });
+    expect(store.snapshot(WS).deployment).toMatchObject({ state: 'succeeded' });
+  });
+
+  test('binds an accepted deployment generation to its durable merged row', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'deploy-row', bead_id: 'UI-deploy-row' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-deploy-row',
+      attempt_id: 'deploy-row',
+      patch: { status: 'done' }
+    });
+
+    const result = store.bindDeploymentRequest(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).pr_wait[0]).toMatchObject({
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8,
+      cleanup_cursor: 'deployment_observe'
+    });
+  });
+
   test('preserves unknown legacy queue and row fields through a mutation', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(

@@ -46,6 +46,7 @@ import {
   createCompletionIntentCoordinator
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
+import { createDeploymentJob } from './deployment-job.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
@@ -375,6 +376,7 @@ export function defaultProbePid(pid) {
  *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
+ *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -944,6 +946,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // observation cache, worktree manager and scheduler the poller and dispatch
   // use, so a click can never act on a different view of the world than the
   // badges it followed.
+  const deploymentJob = options.deploymentJob || createDeploymentJob();
   prActions = createPrActions({
     workspace: keyFor(workspace_root),
     repo,
@@ -971,6 +974,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     resolveVerify,
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
+    deploymentJob,
     resolveDeploy,
     locks: runtime.locks,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
@@ -1132,8 +1136,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     gitRun,
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
-    onMerged: (bead_id, merge_sha) =>
-      prActions.cleanupObservedMerge(bead_id, merge_sha),
+    onMerged: (bead_id, merge_sha, refs) =>
+      prActions.cleanupObservedMerge(bead_id, merge_sha, refs),
+    onDeployment: () => prActions.observeDeployment(),
     onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:

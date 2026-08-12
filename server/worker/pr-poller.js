@@ -184,7 +184,8 @@ export function rollupConclusion(checks) {
  *   worktree?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
- *   onMerged?: (bead_id: string, merge_sha: string) => Promise<unknown>,
+ *   onMerged?: (bead_id: string, merge_sha: string, refs?: { head_ref: string|null, pr_url: string|null }) => Promise<unknown>,
+ *   onDeployment?: () => Promise<unknown>,
  *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
@@ -263,6 +264,10 @@ export function createPrPoller(deps) {
       return (
         q.auto_merge === true ||
         (Array.isArray(q.merge_queue) && q.merge_queue.length > 0) ||
+        (Array.isArray(q.pr_wait) &&
+          q.pr_wait.some(
+            (row) => row?.cleanup_cursor === 'deployment_observe'
+          )) ||
         Object.values(q.discard_operations || {}).some(
           (operation) =>
             /** @type {any} */ (operation)?.phase === 'revert_pr_wait'
@@ -408,7 +413,12 @@ export function createPrPoller(deps) {
           });
           return { verify: null };
         }
-        return { verify: cleanupMerged(bead_id, merge_sha) };
+        return {
+          verify: cleanupMerged(bead_id, merge_sha, {
+            head_ref: pr.head_ref || null,
+            pr_url: pr.url || null
+          })
+        };
       }
       return { verify: null };
     }
@@ -484,15 +494,16 @@ export function createPrPoller(deps) {
    *
    * @param {string} bead_id
    * @param {string} merge_sha
+   * @param {{ head_ref?: string|null, pr_url?: string|null }} [refs]
    * @returns {Promise<void>}
    */
-  async function cleanupMerged(bead_id, merge_sha) {
+  async function cleanupMerged(bead_id, merge_sha, refs = {}) {
     if (cleaning.has(bead_id)) {
       return;
     }
     cleaning.add(bead_id);
     try {
-      await /** @type {any} */ (deps.onMerged)(bead_id, merge_sha);
+      await /** @type {any} */ (deps.onMerged)(bead_id, merge_sha, refs);
       notifyChanged(workspace);
     } catch (err) {
       log('post-merge cleanup failed for %s: %o', bead_id, err);
@@ -585,117 +596,150 @@ export function createPrPoller(deps) {
     if (observing) {
       return;
     }
-    // The external registry is re-derived from bd on the SAME cadence, inside
-    // the same subscriber gate, so an idle server scans nothing (UI-7agi §1).
-    // A failed scan keeps the previous rows rather than emptying the lane.
-    if (external) {
-      try {
-        await external.refresh();
-      } catch (err) {
-        log('external PR scan failed for %s: %o', workspace, err);
-      }
-    }
     observing = true;
-    /** @type {Promise<void>[]} */
-    const pending = [];
     try {
-      const queue = deps.store.snapshot(workspace);
-      const durable = Array.isArray(queue.pr_wait) ? [...queue.pr_wait] : [];
-      for (const operation of Object.values(queue.discard_operations || {})) {
-        const record = /** @type {any} */ (operation);
-        if (
-          record?.phase === 'revert_pr_wait' &&
-          typeof record.bead_id === 'string' &&
-          !durable.some((entry) => entry.bead_id === record.bead_id)
-        ) {
-          durable.push({
-            bead_id: record.bead_id,
-            added_at: record.requested_at
-          });
-        }
-      }
-      const durable_ids = new Set(durable.map((e) => e.bead_id));
-      /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
-      const external_rows = new Map();
-      if (external) {
-        for (const row of external.list()) {
-          // A bead the worker itself put in `pr_wait` is a WORKER row: the
-          // durable attempt is the better record, so the overlay yields.
-          if (!durable_ids.has(row.bead_id)) {
-            external_rows.set(row.bead_id, row);
-          }
-        }
-      }
-      const entries = [
-        ...durable,
-        ...[...external_rows.values()].map((row) => ({
-          bead_id: row.bead_id,
-          added_at: row.added_at
-        }))
-      ];
-      const lane_ids = entries.map((e) => e.bead_id);
-      // A MERGE QUEUE member keeps its observation even after it drops out of
-      // the lane (UI-yk55 §3.2). An external row vanishes from the overlay with
-      // no lane mutation behind it, and the driver still has to dispose of the
-      // item — which it can only do by reading the head SHA this cache holds.
-      // Pruning it there would leave the driver unable to record an exclusion,
-      // so it would hold the item and halt, blocking every item behind it.
-      const queued_ids = Array.isArray(queue.merge_queue)
-        ? queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)
-        : [];
-      // Whether anything was being observed BEFORE this pass pruned. It decides
-      // the empty-lane fanout below.
-      const had_observations =
-        Object.keys(deps.observations.snapshot(workspace)).length > 0;
-      deps.observations.prune(workspace, [...lane_ids, ...queued_ids]);
-      // The activity cache describes the same lane, so it is pruned with it —
-      // a bead that merged or was discarded must not keep a stale badge.
-      if (activity) {
-        activity.prune(workspace, lane_ids);
-      }
-      if (entries.length === 0) {
-        // The lane just emptied. For a durable row the queue mutation that
-        // emptied it already fanned out; a registry-only row has NO other
-        // emitter (implementation review 2026-07-28), so without this the
-        // client would keep rendering a row whose bead is gone — and every
-        // later pass returns here too, so it would never self-correct. Gated on
-        // there having been something to drop, which makes it fire once.
-        if (had_observations) {
-          notifyChanged(workspace);
-        }
-        return;
-      }
-      for (const entry of entries) {
-        // `확인중` covers exactly the gh round-trip for this bead (UI-raqh §3);
-        // its own `finally` is the only thing that clears it, so an overlapping
-        // local verification's badge is never touched.
-        markActivity('beginChecking', entry.bead_id);
+      const initial_queue = deps.store.snapshot(workspace);
+      const deployment_pending = Array.isArray(initial_queue.pr_wait)
+        ? initial_queue.pr_wait.some(
+            (row) => row?.cleanup_cursor === 'deployment_observe'
+          )
+        : false;
+      if (deployment_pending && typeof deps.onDeployment === 'function') {
         try {
-          const r = await observeBead(
-            queue,
-            entry.bead_id,
-            external_rows.get(entry.bead_id) || null
-          );
-          if (r.verify) {
-            pending.push(r.verify);
-          }
+          await deps.onDeployment();
         } catch (err) {
-          log('observation failed for %s: %o', entry.bead_id, err);
-          // Record the failure so EVERY lane member ends the pass with an
-          // entry: the queue-changed hook re-ticks while a bead is unobserved,
-          // and a silently skipped bead would make that hook self-trigger.
-          deps.observations.record(workspace, entry.bead_id, {
-            error: 'observation_error'
-          });
-        } finally {
-          markActivity('endChecking', entry.bead_id);
+          log('deployment observation failed for %s: %o', workspace, err);
+        }
+        // A deployment observer has no dependency on browser tabs or GitHub PR
+        // reads.  With no other durable demand, return after status-only work.
+        if (
+          deps.getSubscriberCount() === 0 &&
+          initial_queue.auto_merge !== true &&
+          (!Array.isArray(initial_queue.merge_queue) ||
+            initial_queue.merge_queue.length === 0) &&
+          Object.values(initial_queue.discard_operations || {}).length === 0 &&
+          !Object.values(initial_queue.reconcile || {}).some(
+            (record) =>
+              record && record.stage !== 'complete' && record.stage !== 'failed'
+          )
+        ) {
+          return;
         }
       }
-      notifyChanged(workspace);
+      // The external registry is re-derived from bd on the SAME cadence, inside
+      // the same subscriber gate, so an idle server scans nothing (UI-7agi §1).
+      // A failed scan keeps the previous rows rather than emptying the lane.
+      if (external) {
+        try {
+          await external.refresh();
+        } catch (err) {
+          log('external PR scan failed for %s: %o', workspace, err);
+        }
+      }
+      /** @type {Promise<void>[]} */
+      const pending = [];
+      try {
+        const queue = deps.store.snapshot(workspace);
+        const durable = Array.isArray(queue.pr_wait) ? [...queue.pr_wait] : [];
+        for (const operation of Object.values(queue.discard_operations || {})) {
+          const record = /** @type {any} */ (operation);
+          if (
+            record?.phase === 'revert_pr_wait' &&
+            typeof record.bead_id === 'string' &&
+            !durable.some((entry) => entry.bead_id === record.bead_id)
+          ) {
+            durable.push({
+              bead_id: record.bead_id,
+              added_at: record.requested_at
+            });
+          }
+        }
+        const durable_ids = new Set(durable.map((e) => e.bead_id));
+        /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
+        const external_rows = new Map();
+        if (external) {
+          for (const row of external.list()) {
+            // A bead the worker itself put in `pr_wait` is a WORKER row: the
+            // durable attempt is the better record, so the overlay yields.
+            if (!durable_ids.has(row.bead_id)) {
+              external_rows.set(row.bead_id, row);
+            }
+          }
+        }
+        const entries = [
+          ...durable,
+          ...[...external_rows.values()].map((row) => ({
+            bead_id: row.bead_id,
+            added_at: row.added_at
+          }))
+        ];
+        const lane_ids = entries.map((e) => e.bead_id);
+        // A MERGE QUEUE member keeps its observation even after it drops out of
+        // the lane (UI-yk55 §3.2). An external row vanishes from the overlay with
+        // no lane mutation behind it, and the driver still has to dispose of the
+        // item — which it can only do by reading the head SHA this cache holds.
+        // Pruning it there would leave the driver unable to record an exclusion,
+        // so it would hold the item and halt, blocking every item behind it.
+        const queued_ids = Array.isArray(queue.merge_queue)
+          ? queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)
+          : [];
+        // Whether anything was being observed BEFORE this pass pruned. It decides
+        // the empty-lane fanout below.
+        const had_observations =
+          Object.keys(deps.observations.snapshot(workspace)).length > 0;
+        deps.observations.prune(workspace, [...lane_ids, ...queued_ids]);
+        // The activity cache describes the same lane, so it is pruned with it —
+        // a bead that merged or was discarded must not keep a stale badge.
+        if (activity) {
+          activity.prune(workspace, lane_ids);
+        }
+        if (entries.length === 0) {
+          // The lane just emptied. For a durable row the queue mutation that
+          // emptied it already fanned out; a registry-only row has NO other
+          // emitter (implementation review 2026-07-28), so without this the
+          // client would keep rendering a row whose bead is gone — and every
+          // later pass returns here too, so it would never self-correct. Gated on
+          // there having been something to drop, which makes it fire once.
+          if (had_observations) {
+            notifyChanged(workspace);
+          }
+          return;
+        }
+        for (const entry of entries) {
+          // `확인중` covers exactly the gh round-trip for this bead (UI-raqh §3);
+          // its own `finally` is the only thing that clears it, so an overlapping
+          // local verification's badge is never touched.
+          markActivity('beginChecking', entry.bead_id);
+          try {
+            const r = await observeBead(
+              queue,
+              entry.bead_id,
+              external_rows.get(entry.bead_id) || null
+            );
+            if (r.verify) {
+              pending.push(r.verify);
+            }
+          } catch (err) {
+            log('observation failed for %s: %o', entry.bead_id, err);
+            // Record the failure so EVERY lane member ends the pass with an
+            // entry: the queue-changed hook re-ticks while a bead is unobserved,
+            // and a silently skipped bead would make that hook self-trigger.
+            deps.observations.record(workspace, entry.bead_id, {
+              error: 'observation_error'
+            });
+          } finally {
+            markActivity('endChecking', entry.bead_id);
+          }
+        }
+        notifyChanged(workspace);
+      } finally {
+        // The outer guard spans deployment status too; do not release it between
+        // status observation and the PR pass.
+      }
+      await Promise.all(pending);
     } finally {
       observing = false;
     }
-    await Promise.all(pending);
   }
 
   const poller = createPoller({

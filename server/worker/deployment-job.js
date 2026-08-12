@@ -265,6 +265,62 @@ function requireExactBinding(actual, expected, code) {
 }
 
 /**
+ * @param {{ state: string, target_base: string|null, target_sha: string|null, generation: number|null }} status
+ * @param {{ target_base: string, target_sha: string, generation: number }} current_binding
+ */
+function validateCurrentBinding(status, current_binding) {
+  const expected = bindingFrom(current_binding, 'deployment_binding_mismatch');
+  if (status.state === 'idle') {
+    throw new DeploymentJobError(
+      'deployment_binding_mismatch',
+      'provider lost the current desired binding'
+    );
+  }
+  requireExactBinding(
+    bindingFrom(status, 'deployment_binding_mismatch'),
+    expected,
+    'deployment_binding_mismatch'
+  );
+}
+
+/**
+ * @param {{ state: string, target_base: string|null, target_sha: string|null, generation: number|null }} status
+ * @param {{ verified_target_sha: string, deployment_generation: number }} row_binding
+ */
+function validateRowBinding(status, row_binding) {
+  if (
+    !isSha(row_binding.verified_target_sha) ||
+    !isGeneration(row_binding.deployment_generation)
+  ) {
+    throw new DeploymentJobError(
+      'deployment_row_binding_invalid',
+      'row deployment binding is invalid'
+    );
+  }
+  if (status.state === 'idle' || status.generation === null) {
+    throw new DeploymentJobError(
+      'deployment_generation_stale',
+      'provider has no current generation for the row'
+    );
+  }
+  if (status.generation < row_binding.deployment_generation) {
+    throw new DeploymentJobError(
+      'deployment_generation_stale',
+      'provider generation regressed below the row'
+    );
+  }
+  if (
+    status.generation === row_binding.deployment_generation &&
+    status.target_sha !== row_binding.verified_target_sha.toLowerCase()
+  ) {
+    throw new DeploymentJobError(
+      'deployment_binding_mismatch',
+      'row target SHA disagrees at the same generation'
+    );
+  }
+}
+
+/**
  * @param {string} repo
  * @param {string[]} args
  * @param {SpawnImpl} spawn_impl
@@ -435,54 +491,10 @@ export function createDeploymentJob(options = {}) {
       );
     }
     if (input.current_binding) {
-      const expected = bindingFrom(
-        input.current_binding,
-        'deployment_binding_mismatch'
-      );
-      if (result.state === 'idle') {
-        throw new DeploymentJobError(
-          'deployment_binding_mismatch',
-          'provider lost the current desired binding'
-        );
-      }
-      requireExactBinding(
-        bindingFrom(result, 'deployment_binding_mismatch'),
-        expected,
-        'deployment_binding_mismatch'
-      );
+      validateCurrentBinding(result, input.current_binding);
     }
     if (input.row_binding) {
-      const row = input.row_binding;
-      if (
-        !isSha(row.verified_target_sha) ||
-        !isGeneration(row.deployment_generation)
-      ) {
-        throw new DeploymentJobError(
-          'deployment_row_binding_invalid',
-          'row deployment binding is invalid'
-        );
-      }
-      if (result.state === 'idle' || result.generation === null) {
-        throw new DeploymentJobError(
-          'deployment_generation_stale',
-          'provider has no current generation for the row'
-        );
-      }
-      if (result.generation < row.deployment_generation) {
-        throw new DeploymentJobError(
-          'deployment_generation_stale',
-          'provider generation regressed below the row'
-        );
-      }
-      if (
-        result.generation === row.deployment_generation &&
-        result.target_sha !== row.verified_target_sha.toLowerCase()
-      ) {
-        throw new DeploymentJobError(
-          'deployment_binding_mismatch',
-          'row target SHA disagrees at the same generation'
-        );
-      }
+      validateRowBinding(result, input.row_binding);
     }
     return result;
   }
@@ -521,7 +533,14 @@ export function createDeploymentJob(options = {}) {
     return result;
   }
 
-  return { requestDeployment, deploymentStatus, retryDeployment, covers };
+  return {
+    requestDeployment,
+    deploymentStatus,
+    retryDeployment,
+    validateCurrentBinding,
+    validateRowBinding,
+    covers
+  };
 }
 
 export { DeploymentJobError };

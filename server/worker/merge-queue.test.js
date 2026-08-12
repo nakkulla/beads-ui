@@ -168,6 +168,42 @@ describe('worker/merge-queue — sequencing', () => {
     expect(mq.state().failures['UI-1']).toContain('정리 실패');
   });
 
+  test('releases the merge slot after a durable deployment request while rows await execution', async () => {
+    const store = seed(['UI-1', 'UI-2']);
+    /** @type {string[]} */
+    const requests = [];
+    const mq = driver(store, {
+      merge: async (/** @type {string} */ bead_id) => {
+        requests.push(bead_id);
+        store.bindDeploymentRequest(WS, {
+          bead_id,
+          merge_sha: bead_id === 'UI-1' ? 'a'.repeat(40) : 'b'.repeat(40),
+          verified_target_sha:
+            bead_id === 'UI-1' ? 'c'.repeat(40) : 'd'.repeat(40),
+          deployment_generation: bead_id === 'UI-1' ? 1 : 2
+        });
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+
+    await mq.kick();
+
+    expect(requests).toEqual(['UI-1', 'UI-2']);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).pr_wait).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bead_id: 'UI-1',
+          cleanup_cursor: 'deployment_observe'
+        }),
+        expect.objectContaining({
+          bead_id: 'UI-2',
+          cleanup_cursor: 'deployment_observe'
+        })
+      ])
+    );
+  });
+
   test('keeps a retryable cleanup at the queue head without failure or skip', async () => {
     const store = seed(['UI-1']);
     const mq = driver(store, {

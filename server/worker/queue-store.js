@@ -24,6 +24,8 @@
  * @property {string|null} [verified_target_sha] - Verified target SHA submitted to the provider.
  * @property {number|null} [deployment_generation] - Provider generation bound to this row.
  * @property {string|null} [cleanup_cursor] - Next post-deployment cleanup step.
+ * @property {string|null} [head_ref] - Branch identity retained for deferred cleanup.
+ * @property {string|null} [pr_url] - PR URL retained for deferred notification.
  */
 /**
  * Per-attempt record container (spec §5.2). Phase 9 persists the shape; Phase 10
@@ -484,6 +486,9 @@
  * @typedef {Object} QueueOpResult
  * @property {boolean} ok - True when the mutation was applied.
  * @property {boolean} conflict - True when rejected by a revision mismatch.
+ * @property {boolean} [stale] - True when an older deployment observation was refused.
+ * @property {boolean} [binding_mismatch] - True when one generation names two bindings.
+ * @property {boolean} [regression] - True when an observation reverses deployment progress.
  * @property {Queue} queue - Current snapshot (new on success, unchanged else).
  * @property {string} [reason] - Why a non-conflict rejection happened, for the
  * ops that distinguish causes; absent when there is nothing to distinguish.
@@ -1234,6 +1239,14 @@ function normalizeEntry(entry) {
       typeof entry.cleanup_cursor === 'string' &&
       entry.cleanup_cursor.length > 0
         ? entry.cleanup_cursor
+        : null,
+    head_ref:
+      typeof entry.head_ref === 'string' && entry.head_ref.length > 0
+        ? entry.head_ref
+        : null,
+    pr_url:
+      typeof entry.pr_url === 'string' && entry.pr_url.length > 0
+        ? entry.pr_url
         : null
   };
 }
@@ -1250,7 +1263,9 @@ function makeQueueEntry(bead_id, added_at) {
     merge_sha: null,
     verified_target_sha: null,
     deployment_generation: null,
-    cleanup_cursor: null
+    cleanup_cursor: null,
+    head_ref: null,
+    pr_url: null
   };
 }
 
@@ -1884,6 +1899,26 @@ function normalizeDeploymentObservation(value) {
     error_code: value.error_code,
     log_path: value.log_path
   };
+}
+
+/**
+ * @param {DeploymentObservation} current
+ * @param {DeploymentObservation} observation
+ */
+function deploymentStateRegresses(current, observation) {
+  if (
+    current.generation === null ||
+    observation.generation === null ||
+    current.generation !== observation.generation ||
+    current.target_base !== observation.target_base ||
+    current.target_sha !== observation.target_sha
+  ) {
+    return false;
+  }
+  if (current.state === 'succeeded' || current.state === 'failed') {
+    return observation.state !== current.state;
+  }
+  return current.state === 'running' && observation.state === 'pending';
 }
 
 /**
@@ -3739,12 +3774,163 @@ export function createQueueStore(options = {}) {
      * @returns {QueueOpResult}
      */
     recordDeploymentObservation(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
+      /** @type {'stale'|'binding_mismatch'|'regression'|null} */
+      let rejected = null;
+      const result = applyUnconditional(workspace, (next) => {
         const observation = normalizeDeploymentObservation(input);
         if (!observation) {
           return false;
         }
+        const current = next.deployment;
+        if (current?.generation !== null && current?.generation !== undefined) {
+          if (
+            observation.generation === null ||
+            observation.generation < current.generation
+          ) {
+            rejected = 'stale';
+            return false;
+          }
+          if (
+            observation.generation === current.generation &&
+            (observation.target_base !== current.target_base ||
+              observation.target_sha !== current.target_sha)
+          ) {
+            rejected = 'binding_mismatch';
+            return false;
+          }
+          if (deploymentStateRegresses(current, observation)) {
+            rejected = 'regression';
+            return false;
+          }
+        }
         next.deployment = observation;
+        return true;
+      });
+      return rejected === null ? result : { ...result, [rejected]: true };
+    },
+
+    /**
+     * Bind one merged PR row to the accepted external desired generation.  The
+     * binding is the merge driver's completion receipt: execution status is
+     * observed later and never occupies the merge slot.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, merge_sha: string, verified_target_sha: string, deployment_generation: number, head_ref?: string|null, pr_url?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    bindDeploymentRequest(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof input?.bead_id !== 'string' ||
+          !isSha(input.merge_sha) ||
+          !isSha(input.verified_target_sha) ||
+          !Number.isInteger(input.deployment_generation) ||
+          input.deployment_generation <= 0
+        ) {
+          return false;
+        }
+        const entry = next.pr_wait.find((row) => row.bead_id === input.bead_id);
+        if (!entry) {
+          return false;
+        }
+        entry.merge_sha = input.merge_sha.toLowerCase();
+        entry.verified_target_sha = input.verified_target_sha.toLowerCase();
+        entry.deployment_generation = input.deployment_generation;
+        entry.cleanup_cursor = 'deployment_observe';
+        if (typeof input.head_ref === 'string' && input.head_ref.length > 0) {
+          entry.head_ref = input.head_ref;
+        }
+        if (typeof input.pr_url === 'string' && input.pr_url.length > 0) {
+          entry.pr_url = input.pr_url;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Atomically record the accepted desired binding and its repo observation.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, merge_sha: string, verified_target_sha: string, deployment_generation: number, target_base: string, head_ref?: string|null, pr_url?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    recordDeploymentRequest(workspace, input) {
+      /** @type {boolean} */
+      let binding_mismatch = false;
+      const result = applyUnconditional(workspace, (next) => {
+        if (
+          typeof input?.bead_id !== 'string' ||
+          typeof input.target_base !== 'string' ||
+          input.target_base.length === 0 ||
+          !isSha(input.merge_sha) ||
+          !isSha(input.verified_target_sha) ||
+          !Number.isInteger(input.deployment_generation) ||
+          input.deployment_generation <= 0
+        ) {
+          return false;
+        }
+        const entry = next.pr_wait.find((row) => row.bead_id === input.bead_id);
+        if (!entry) {
+          return false;
+        }
+        const current = next.deployment;
+        if (
+          current?.generation !== null &&
+          current?.generation !== undefined &&
+          input.deployment_generation === current.generation &&
+          (input.target_base !== current.target_base ||
+            input.verified_target_sha.toLowerCase() !== current.target_sha)
+        ) {
+          binding_mismatch = true;
+          return false;
+        }
+        entry.merge_sha = input.merge_sha.toLowerCase();
+        entry.verified_target_sha = input.verified_target_sha.toLowerCase();
+        entry.deployment_generation = input.deployment_generation;
+        entry.cleanup_cursor = 'deployment_observe';
+        entry.head_ref = input.head_ref || null;
+        entry.pr_url = input.pr_url || null;
+        if (
+          current?.generation === null ||
+          current?.generation === undefined ||
+          input.deployment_generation > current.generation
+        ) {
+          next.deployment = {
+            state: 'pending',
+            target_base: input.target_base,
+            target_sha: input.verified_target_sha.toLowerCase(),
+            deployed_sha: null,
+            generation: input.deployment_generation,
+            error_code: null,
+            log_path: null
+          };
+        }
+        return true;
+      });
+      return binding_mismatch ? { ...result, binding_mismatch: true } : result;
+    },
+
+    /**
+     * Promote a directly merged external PR into the durable observation lane.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, merge_sha: string, head_ref?: string|null, pr_url?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    promoteMergedExternal(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        if (
+          typeof input?.bead_id !== 'string' ||
+          !isSha(input.merge_sha) ||
+          next.pr_wait.some((row) => row.bead_id === input.bead_id)
+        ) {
+          return false;
+        }
+        const entry = makeQueueEntry(input.bead_id, now());
+        entry.merge_sha = input.merge_sha.toLowerCase();
+        entry.head_ref = input.head_ref || null;
+        entry.pr_url = input.pr_url || null;
+        next.pr_wait.push(entry);
         return true;
       });
     },
