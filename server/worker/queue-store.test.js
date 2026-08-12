@@ -233,6 +233,97 @@ describe('worker/queue-store', () => {
     expect(q.pr_wait_holds_slot).toBe(false);
   });
 
+  test('normalizes the current deployment observation and merged-row lineage', () => {
+    const merge_sha = 'a'.repeat(40);
+    const verified_target_sha = 'b'.repeat(40);
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        deployment: {
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha: verified_target_sha,
+          deployed_sha: verified_target_sha,
+          generation: 3,
+          error_code: null,
+          log_path: '/tmp/deploy.log'
+        },
+        pr_wait: [
+          {
+            bead_id: 'UI-deploy',
+            added_at: 1,
+            merge_sha,
+            verified_target_sha,
+            deployment_generation: 3,
+            cleanup_cursor: 'child_sweep'
+          }
+        ]
+      })
+    );
+
+    const q = createQueueStore().snapshot(WS);
+
+    expect(q.deployment).toMatchObject({
+      state: 'succeeded',
+      target_sha: verified_target_sha,
+      deployed_sha: verified_target_sha,
+      generation: 3
+    });
+    expect(q.pr_wait[0]).toMatchObject({
+      merge_sha,
+      verified_target_sha,
+      deployment_generation: 3,
+      cleanup_cursor: 'child_sweep'
+    });
+  });
+
+  test('records a validated repository deployment observation durably', () => {
+    const target_sha = 'c'.repeat(40);
+    const store = createQueueStore();
+
+    const result = store.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 4,
+      error_code: null,
+      log_path: null
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createQueueStore().snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      target_sha,
+      generation: 4
+    });
+  });
+
+  test('preserves unknown legacy queue and row fields through a mutation', () => {
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        legacy_extension: { keep: true },
+        queue: [
+          {
+            bead_id: 'UI-legacy',
+            added_at: 1,
+            legacy_row_extension: 'keep'
+          }
+        ]
+      })
+    );
+    const store = createQueueStore();
+
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-new' });
+
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(persisted.legacy_extension).toEqual({ keep: true });
+    expect(persisted.queue[0].legacy_row_extension).toBe('keep');
+  });
+
   test('loads a legacy queue with no completion intents', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 4 }));

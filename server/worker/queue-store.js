@@ -20,6 +20,10 @@
  * @typedef {Object} QueueEntry
  * @property {string} bead_id - The bead placed in this lane.
  * @property {number} added_at - Epoch ms the bead entered this lane.
+ * @property {string|null} [merge_sha] - Observed merge commit for deployment coverage.
+ * @property {string|null} [verified_target_sha] - Verified target SHA submitted to the provider.
+ * @property {number|null} [deployment_generation] - Provider generation bound to this row.
+ * @property {string|null} [cleanup_cursor] - Next post-deployment cleanup step.
  */
 /**
  * Per-attempt record container (spec §5.2). Phase 9 persists the shape; Phase 10
@@ -300,11 +304,23 @@
  * empty map; every non-done operation fences its bead from other drivers.
  * @property {Record<string, DeploymentReconcile>} reconcile - Durable
  * deployment reconciliation state keyed by parent Bead.
+ * @property {DeploymentObservation|null} deployment - The current external
+ * deployment-provider observation. It is repo-level, not a PR-row result.
  * @property {LastDeploy|null} last_deploy - The workspace's most recent
  * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
  * time — the question it answers is "is the running service the merged code?",
  * which only the latest deploy can answer. Null on a workspace that has never
  * deployed (no `[worker.deploy]` section, or none run yet).
+ */
+/**
+ * @typedef {Object} DeploymentObservation
+ * @property {'idle'|'pending'|'running'|'succeeded'|'failed'} state
+ * @property {string|null} target_base
+ * @property {string|null} target_sha
+ * @property {string|null} deployed_sha
+ * @property {number|null} generation
+ * @property {string|null} error_code
+ * @property {string|null} log_path
  */
 /**
  * @typedef {Object} DiscardOperation
@@ -910,6 +926,50 @@ function normalizeSlots(value) {
 const DEPLOY_OUTCOMES = ['deployed', 'launched', 'failed'];
 
 /** @type {string[]} */
+const DEPLOYMENT_JOB_STATES = [
+  'idle',
+  'pending',
+  'running',
+  'succeeded',
+  'failed'
+];
+
+/**
+ * Queue properties this module actively normalizes. Any other top-level field
+ * is historical opaque data and must round-trip instead of being deleted by an
+ * unrelated queue mutation.
+ */
+const KNOWN_QUEUE_FIELDS = new Set([
+  'revision',
+  'auto_advance',
+  'pr_wait_holds_slot',
+  'default_exec_preset_id',
+  'exec_defaults',
+  'slots',
+  'queue',
+  'serial',
+  'parallel',
+  'pr_wait',
+  'done',
+  'attempts',
+  'admission',
+  'cleanup_failed',
+  'merge_queue',
+  'auto_merge',
+  'auto_merge_skips',
+  'completion_intents',
+  'discard_operations',
+  'reconcile',
+  'deployment',
+  'last_deploy',
+  'merge_policy',
+  'drift_policy',
+  'worker_runner',
+  'review_model',
+  'ship_failure'
+]);
+
+/** @type {string[]} */
 const RECONCILE_STAGES = [
   'queued',
   'pinned',
@@ -944,6 +1004,7 @@ function emptyQueue() {
     completion_intents: {},
     discard_operations: {},
     reconcile: {},
+    deployment: null,
     last_deploy: null
   };
 }
@@ -1154,8 +1215,42 @@ function normalizeEntry(entry) {
     return null;
   }
   return {
+    ...entry,
     bead_id: entry.bead_id,
-    added_at: typeof entry.added_at === 'number' ? entry.added_at : 0
+    added_at: typeof entry.added_at === 'number' ? entry.added_at : 0,
+    merge_sha: isSha(entry.merge_sha)
+      ? String(entry.merge_sha).toLowerCase()
+      : null,
+    verified_target_sha: isSha(entry.verified_target_sha)
+      ? String(entry.verified_target_sha).toLowerCase()
+      : null,
+    deployment_generation:
+      typeof entry.deployment_generation === 'number' &&
+      Number.isInteger(entry.deployment_generation) &&
+      entry.deployment_generation > 0
+        ? entry.deployment_generation
+        : null,
+    cleanup_cursor:
+      typeof entry.cleanup_cursor === 'string' &&
+      entry.cleanup_cursor.length > 0
+        ? entry.cleanup_cursor
+        : null
+  };
+}
+
+/**
+ * @param {string} bead_id
+ * @param {number} added_at
+ * @returns {QueueEntry}
+ */
+function makeQueueEntry(bead_id, added_at) {
+  return {
+    bead_id,
+    added_at,
+    merge_sha: null,
+    verified_target_sha: null,
+    deployment_generation: null,
+    cleanup_cursor: null
   };
 }
 
@@ -1525,9 +1620,15 @@ function migrateLegacyStopped(value) {
  * @returns {Queue}
  */
 function normalizeQueue(raw) {
+  /** @type {Queue & Record<string, unknown>} */
   const q = emptyQueue();
   if (!isRecord(raw)) {
     return q;
+  }
+  for (const [key, value] of Object.entries(raw)) {
+    if (!KNOWN_QUEUE_FIELDS.has(key)) {
+      q[key] = value;
+    }
   }
   q.revision =
     typeof raw.revision === 'number' && Number.isFinite(raw.revision)
@@ -1671,6 +1772,7 @@ function normalizeQueue(raw) {
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
   q.reconcile = normalizeReconcile(raw.reconcile);
+  q.deployment = normalizeDeploymentObservation(raw.deployment);
   // A queue.json written before the deploy hook simply has no key → null, which
   // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
   // record carrying an outcome outside the vocabulary is dropped the same way:
@@ -1678,6 +1780,110 @@ function normalizeQueue(raw) {
   q.last_deploy = normalizeLastDeploy(raw.last_deploy);
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {DeploymentObservation|null}
+ */
+function normalizeDeploymentObservation(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.state !== 'string' ||
+    !DEPLOYMENT_JOB_STATES.includes(value.state)
+  ) {
+    return null;
+  }
+  const unbound =
+    value.target_base === null &&
+    value.target_sha === null &&
+    value.deployed_sha === null &&
+    value.generation === null &&
+    value.error_code === null &&
+    value.log_path === null;
+  if (value.state === 'idle') {
+    return unbound
+      ? {
+          state: 'idle',
+          target_base: null,
+          target_sha: null,
+          deployed_sha: null,
+          generation: null,
+          error_code: null,
+          log_path: null
+        }
+      : null;
+  }
+  if (
+    value.state === 'failed' &&
+    value.target_base === null &&
+    value.target_sha === null &&
+    value.deployed_sha === null &&
+    value.generation === null
+  ) {
+    return typeof value.error_code === 'string' &&
+      value.error_code.length > 0 &&
+      value.log_path === null
+      ? {
+          state: 'failed',
+          target_base: null,
+          target_sha: null,
+          deployed_sha: null,
+          generation: null,
+          error_code: value.error_code,
+          log_path: null
+        }
+      : null;
+  }
+  if (
+    typeof value.target_base !== 'string' ||
+    value.target_base.length === 0 ||
+    !isSha(value.target_sha) ||
+    !Number.isInteger(value.generation) ||
+    Number(value.generation) <= 0 ||
+    (value.deployed_sha !== null && !isSha(value.deployed_sha)) ||
+    (value.error_code !== null &&
+      (typeof value.error_code !== 'string' ||
+        value.error_code.length === 0)) ||
+    (value.log_path !== null &&
+      (typeof value.log_path !== 'string' || value.log_path.length === 0))
+  ) {
+    return null;
+  }
+  const target_sha = String(value.target_sha).toLowerCase();
+  const deployed_sha =
+    typeof value.deployed_sha === 'string'
+      ? value.deployed_sha.toLowerCase()
+      : null;
+  const valid_state =
+    (value.state === 'pending' &&
+      deployed_sha === null &&
+      value.error_code === null &&
+      value.log_path === null) ||
+    (value.state === 'running' &&
+      deployed_sha === null &&
+      value.error_code === null &&
+      typeof value.log_path === 'string') ||
+    (value.state === 'succeeded' &&
+      deployed_sha === target_sha &&
+      value.error_code === null &&
+      typeof value.log_path === 'string') ||
+    (value.state === 'failed' &&
+      deployed_sha === null &&
+      typeof value.error_code === 'string' &&
+      typeof value.log_path === 'string');
+  if (!valid_state) {
+    return null;
+  }
+  return {
+    state: /** @type {DeploymentObservation['state']} */ (value.state),
+    target_base: value.target_base,
+    target_sha,
+    deployed_sha,
+    generation: Number(value.generation),
+    error_code: value.error_code,
+    log_path: value.log_path
+  };
 }
 
 /**
@@ -2515,10 +2721,11 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         const arr = next.queue;
-        arr.splice(clampIndex(index ?? arr.length, arr.length), 0, {
-          bead_id,
-          added_at: now()
-        });
+        arr.splice(
+          clampIndex(index ?? arr.length, arr.length),
+          0,
+          makeQueueEntry(bead_id, now())
+        );
         return true;
       });
     },
@@ -3399,7 +3606,7 @@ export function createQueueStore(options = {}) {
           // session finished must not overtake the queue.
           next.merge_queue.splice(queued_at, 0, queued);
         }
-        next.pr_wait.push({ bead_id, added_at: now() });
+        next.pr_wait.push(makeQueueEntry(bead_id, now()));
         return true;
       });
       consumeTerminalReceipts(result, prepared.files);
@@ -3457,7 +3664,7 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         delete next.cleanup_failed[bead_id];
-        next.done.push({ bead_id, added_at: now() });
+        next.done.push(makeQueueEntry(bead_id, now()));
         completeIntentForDone(next, bead_id);
         return true;
       });
@@ -3524,6 +3731,25 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Persist the one current external deployment observation for a repository.
+     * Row-level merge coverage is stored on QueueEntry and remains independent.
+     *
+     * @param {string} workspace
+     * @param {DeploymentObservation} input
+     * @returns {QueueOpResult}
+     */
+    recordDeploymentObservation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const observation = normalizeDeploymentObservation(input);
+        if (!observation) {
+          return false;
+        }
+        next.deployment = observation;
+        return true;
+      });
+    },
+
+    /**
      * The DETACHED deploy's atomic hand-off: finish the cleanup (`moveToDone`)
      * and record the launch intent in ONE persist (worker-deploy-hook §2).
      *
@@ -3546,7 +3772,7 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         delete next.cleanup_failed[bead_id];
-        next.done.push({ bead_id, added_at: now() });
+        next.done.push(makeQueueEntry(bead_id, now()));
         next.last_deploy = record;
         completeIntentForDone(next, bead_id);
         return true;
