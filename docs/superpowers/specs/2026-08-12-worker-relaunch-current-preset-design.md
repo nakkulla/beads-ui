@@ -176,6 +176,23 @@ Lineage tooltip은 `continuation_mode`에 따라 구분한다.
 - Background relaunch mismatch는 merge/disposition을 성공처럼 표시하지 않으며, action-required 상태가 restart 후에도 남는다.
 - Existing `already_resumed`, `bead_running`, `worktree_missing`, base landing, guard hook, admission, CAS 규칙은 유지한다.
 
+## PR Delivery와 managed deploy
+
+Frontend source 변경은 같은 implementation PR에 `app/main.bundle.js`와 `app/main.bundle.js.map`을 포함한다. `implementation` gate와 pre-handoff verification이 끝나면 이 session은 PR Delivery에서 멈추며, merge와 post-merge runtime 적용은 기존 beads-ui finish lane이 소유한다.
+
+`docs/agents/repo-ops.toml`의 `[deploy]`는 `adapter="managed"`, `cmd=["scripts/managed-self-deploy.js"]`로 선언돼 있다. 이 declaration이 exact verified candidate release에서 dependency install, attempt-bound journal, atomic runtime pointer cutover, restart handoff, process source/SHA/health readback을 운반하므로 이 Bead에는 required no-PR residue가 없고 `worker-ineligible`을 붙이지 않는다.
+
+Apply order와 interruption recovery는 기존 managed Adapter protocol을 그대로 사용한다.
+
+1. pinned candidate와 release containment, clean tracked state를 검증한다.
+2. candidate lockfile 기준 runtime dependency를 설치하고 marker를 readback한다.
+3. restart effect 전에 attempt-bound journal을 durable하게 기록한다.
+4. runtime pointer를 exact candidate로 atomic cutover한다.
+5. helper가 restart identity/effect를 선기록한 뒤 `bdui-shared restart`를 실행한다.
+6. 새 process의 source path, HEAD, PID/start identity, port, HTTP health가 candidate와 일치할 때만 terminal receipt를 기록한다.
+
+중단 시 journal stage와 exact runtime identity로 이어받고, restart effect가 ambiguous하면 두 번째 restart를 추측 실행하지 않고 terminal evidence로 멈춘다. 이 spec은 managed Adapter나 deploy declaration 자체를 변경하지 않으며 기존 coverage를 소비한다.
+
 ## 수용 기준
 
 - 이슈에 `sol/xhigh/Standard` preset을 적용한 뒤 이전 `sol/ultra/Fast` Codex attempt를 이어하면 같은 worktree와 session ID를 사용하면서 새 argv와 child snapshot은 `sol/xhigh/default`다.
@@ -188,6 +205,7 @@ Lineage tooltip은 `continuation_mode`에 따라 구분한다.
 - Child attempt는 실제 tuple, current preset provenance/stamps, `resumed_from`, `continuation_mode`를 restart 후에도 보존한다.
 - 진행·실패·일시정지 카드와 세션 이력이 effort를 표시하고 Fast attempt에만 `Fast`를 추가한다.
 - Legacy attempt의 누락 field는 빈 separator나 잘못된 session-continuation 단정을 만들지 않는다.
+- Implementation PR이 source와 generated frontend bundle을 함께 운반하고, merged candidate는 선언된 managed deploy의 ordered readback을 통과해야 close할 수 있다.
 
 ## 비-목표
 
@@ -213,5 +231,6 @@ Lineage tooltip은 `continuation_mode`에 따라 구분한다.
 7. **Mismatch UI seam**: 직접 action의 mismatch dialog 세 선택, background action-required card의 재진입, CAS retry 시 decision 유지와 새 mismatch 갱신을 검증한다. 같은-runner 변경에는 dialog가 없어야 한다.
 8. **Tuple UI seam**: running/paused/failed tile과 session history가 `runner · model · effort`를 표시하고 `speed=fast`일 때만 `Fast`를 덧붙인다. Legacy null/default/unknown에는 빈 separator나 Fast label이 없다.
 9. **Regression seam**: `already_resumed`, admission, base-drift, guard-hook rollback, discard, merge queue ordering, disposition completion, attempt usage/session drawer가 기존 동작을 유지한다.
+10. **Deploy continuity seam**: implementation은 기존 managed `[deploy]` declaration을 변경하지 않으며, finish 시 candidate install → journal → pointer → restart handoff → exact runtime readback 순서와 terminal receipt가 이 변경에도 계속 적용된다.
 
 Pre-handoff verification은 `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`, `npm run build`를 수행한다. Frontend source 변경으로 생성되는 `app/main.bundle.js`와 source map을 implementation commit에 포함한다.
