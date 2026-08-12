@@ -116,6 +116,7 @@ persisted reconcile을 무기한 `await`한 뒤 saga를 시작하는 순서를 �
   deadline_at,
   retry_count,
   last_heartbeat_at,
+  resume_phase,
   recovery_attempt_id,
   confirmation
 }
@@ -124,6 +125,13 @@ persisted reconcile을 무기한 `await`한 뒤 saga를 시작하는 순서를 �
 `binding`에서 해당하지 않는 값은 `null`이다. unknown field를 버려 새 budget/op를
 만드는 fail-open migration은 금지한다. malformed/contradictory binding은 자동
 session이 진단하되 mutation 전 `awaiting_confirmation`으로 수렴한다.
+
+`resume_phase`는 effect가 `recovering` 또는 `awaiting_confirmation`으로 전환되기 직전의
+fine phase다. transition과 같은 durable mutation에서 기록하고, phase enum과 effect
+`kind`의 허용 mapping을 normalize에서 검증한다. projection은 recovery 중에도 이 값을
+사용해 원래 사용자 단계를 표시하고, successful consume은 exact `resume_phase`로
+복귀한다. 값이 없거나 kind와 모순되는 legacy record는 phase를 추측하지 않고 legacy
+`needs_human`으로 보존한다.
 
 외부 effect의 exactly-once는 물리적 호출 횟수가 아니라 authoritative readback 기준의
 logical exactly-once다. timeout/crash 뒤에는 먼저 readback하고 `already_applied`이면
@@ -156,9 +164,9 @@ lineage가 없으면 새 session이나 authority를 발명하지 않고 terminal
 보존한다. `cancelled`는 사용자 취소에만 사용한다.
 
 `awaiting_confirmation`은 terminal discard가 아니다. 동일 `op_id`, failure key,
-recovery attempt/session, worktree, preset provenance를 보존한다. 사용자가 세션을
-resume해 필요한 판단이나 외부 준비를 마치면 coordinator가 authoritative readback 후
-원래 phase로 돌아간다.
+`resume_phase`, recovery attempt/session, worktree, preset provenance를 보존한다.
+사용자가 세션을 resume해 판단하거나 외부 준비를 마치면 아래 confirmation journal과
+authoritative readback을 거쳐 exact `resume_phase`로 돌아간다.
 
 ## 7. deadline과 deterministic retry
 
@@ -252,9 +260,42 @@ session은 자동으로 시작해 진단하지만 다음 mutation 직전에 멈�
 - source-of-truth/ownership 충돌
 
 durable confirmation에는 category, 요청 action, exact bounded target, sanitized evidence,
-session/attempt ID, created time만 기록한다. secret이나 실행용 credential은 기록하지
-않는다. UI는 `세션 이어하기`를 제공하고, 승인 또는 사용자의 외부 해결 뒤 같은
-session/op에서 계속한다.
+않는다. confirmation은 다음 identity와 상태를 가진다.
+
+```js
+{
+  state: 'pending' | 'approved' | 'consumed',
+  op_id,
+  failure_key,
+  resume_phase,
+  action,
+  category,
+  target_digest,
+  proposal_digest,
+  recovery_attempt_id,
+  session_id,
+  requested_revision,
+  decision: null | 'execute_confirmed_adapter' | 'external_resolution_ready',
+  approved_at,
+  consumed_at
+}
+```
+
+`pending` 생성은 active op identity와 같은 mutation에 묶인다. UI의 `세션 이어하기`는
+진단 session만 열고 승인으로 간주하지 않는다. session에서 판단을 마친 뒤 사용자는
+exact action/category/bounded target을 보여주는 별도 `승인하고 계속` 또는
+`외부 해결 확인` action을 수행한다. server는 queue revision, op/failure key,
+`resume_phase`, proposal/target digest, recovery attempt/session을 CAS로 다시 비교한 뒤에만
+`approved`를 기록한다. 하나라도 drift하면 effect 0회로 stale proposal을 거부하고 새
+진단/readback을 요구한다.
+
+`execute_confirmed_adapter`는 coordinator-owned confirmation adapter만 실행한다.
+recovery session이 민감 shell mutation을 직접 수행하지 않는다. 이 adapter가 지원하지
+않는 credential·권한·외부 action은 사용자가 session의 안내에 따라 외부에서 준비하고
+`external_resolution_ready`를 선택한다. 두 decision 모두 effect 호출 전후 authoritative
+readback을 수행한다. crash가 `approved` 뒤 발생하면 먼저 readback해 applied를 adopt하거나
+not-applied만 exact adapter로 실행하며, unknown이면 다시 실행하지 않는다. 성공 readback과
+`consumed`, confirmation audit, exact `resume_phase` 복귀는 duplicate 없이 정산한다.
 
 ## 9. recovery audit와 Done badge
 
@@ -315,6 +356,7 @@ primary 상태는 `진행 중`, `자동 복구 중`, `확인 필요`, `완료` �
 [확인 필요 · 권한]
 Worker 소유 범위를 넘는 권한 변경이 필요해 자동 실행 전에 멈췄어요
 [세션 이어하기]
+[승인하고 계속 또는 외부 해결 확인]
 ```
 
 repair child는 별도 root card로 중복 표시하지 않는다. linked repair PR은 root card의
@@ -414,6 +456,8 @@ evidence와 operation을 `awaiting_confirmation` 또는 legacy `needs_human`에 
 2. effect prerecord/run/settle/consume 각 crash point에서 duplicate merge, restart, close,
    Done이 없다.
 3. 같은 failure key의 recovery attempt/session과 budget이 restart 후 정확히 한 번 유지된다.
+4. recovery/confirmation 전환과 restart 뒤 `resume_phase`가 보존되고 projection과 consume이
+   같은 원래 phase로 복귀한다.
 
 ### RED-GREEN seam 3 — UI-lbqw continuation integration
 
@@ -421,8 +465,7 @@ evidence와 operation을 `awaiting_confirmation` 또는 legacy `needs_human`에 
 2. same provider는 같은 worktree/session + current tuple이다.
 3. provider mismatch background recovery는 prompt 없이 같은 worktree의 current-preset
    fresh session을 한 번 만든다.
-4. manual resume mismatch dialog와 prior attempt immutability는 유지된다.
-5. invalid/unavailable current preset은 spawn/metadata mutation 없이 confirmation에 멈춘다.
+4. invalid/unavailable current preset은 spawn/metadata mutation 없이 confirmation에 멈춘다.
 
 ### RED-GREEN seam 4 — 민감 자동복구와 audit
 
@@ -435,6 +478,8 @@ evidence와 operation을 `awaiting_confirmation` 또는 legacy `needs_human`에 
 5. restart 후 Done 카드 badge가 유지되고 Bead label/metadata write가 0회다.
 6. agent self-report만으로 민감 action 성공이나 audit가 생성되지 않고, structured
    disposition의 identity/target drift는 effect 0회로 거부된다.
+7. confirmation `pending → approved → consumed` identity와 CAS drift, 승인 후 crash의
+   adopt/not-applied/unknown readback이 duplicate 민감 effect 없이 수렴한다.
 
 ### RED-GREEN seam 5 — UI projection
 
@@ -465,6 +510,7 @@ evidence와 operation을 `awaiting_confirmation` 또는 legacy `needs_human`에 
 - `npm run build`
 - generated `app/main.bundle.js`와 map 포함
 - local full worker flow fixture
+- UI-lbqw manual provider-mismatch dialog와 prior attempt immutability 유지
 - UI-f17c PR merge 후 pinned managed deploy
 - merged checkout의 process path, listening port, HTTP response readback
 - 실제 `dotfiles-3vb8`이 `completed`/Done으로 수렴하고 stale root/merge/reconcile badge가
