@@ -197,6 +197,11 @@ caller는 한 inflight resolution을 공유하지만 다른 repo resolution은 �
 7. 새 Worker가 provider status를 관측해 current PR과 `UI-lb58`을 close하는지 확인한다.
 8. managed active writer/reader와 declaration이 0개임을 확인해 `dotfiles-j8e6`을 unblock한다.
 
+이 최초 bootstrap은 current PR과 target declaration만으로 old Worker가 운반할 수 없는 required
+no-PR residue다. 따라서 `UI-lb58`은 spec gate에서 `worker-ineligible`을 기록하고, controller
+bootstrap·live external status·Bead Closure까지 확인한 뒤에만 그 lifecycle을 끝낸다. 정상
+desired-state path로 전환된 후의 후속 Bead에는 이 예외를 전파하지 않는다.
+
 ## Test scope
 
 RED-GREEN seam은 `Deployment Job` Interface, merge-floor coverage, fetch timeout과 verify isolation이다.
