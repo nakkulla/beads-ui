@@ -299,7 +299,7 @@ function projectReadyIssues(snapshot) {
     const id = String(ready_item.id ?? '');
     const stored = snapshot.id_index.get(id);
     if (stored) {
-      items.push({ ...stored, ...ready_item });
+      items.push(mergeSnapshotIssue(stored, ready_item));
     }
   }
   return items;
@@ -317,7 +317,7 @@ function projectBlockedIssues(snapshot) {
     const id = String(blocked_item.id ?? '');
     const stored = snapshot.id_index.get(id);
     if (stored) {
-      dependency_items.push({ ...stored, ...blocked_item });
+      dependency_items.push(mergeSnapshotIssue(stored, blocked_item));
     }
   }
   return attachBlockedInfo(
@@ -330,6 +330,18 @@ function projectBlockedIssues(snapshot) {
     /** @type {any} */ (stored_items),
     /** @type {any} */ (dependency_items)
   );
+}
+
+/**
+ * Keep explain-only fields while restoring the normalized timestamp contract of
+ * list adapter rows after an explain payload overrides a raw snapshot field.
+ *
+ * @param {NormalizedIssue} stored
+ * @param {Record<string, unknown>} explained
+ * @returns {NormalizedIssue}
+ */
+function mergeSnapshotIssue(stored, explained) {
+  return normalizeIssueList([{ ...stored, ...explained }])[0] || stored;
 }
 
 /**
