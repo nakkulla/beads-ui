@@ -178,4 +178,49 @@ describe('closed-issues subscription period lifecycle', () => {
     // No since filter for 'all'.
     expect(payload.params).toBeUndefined();
   });
+
+  test('Worker range change re-subscribes its own closed store', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/worker';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    const initial_idx = lastIndexOfSub(
+      client._sent(),
+      'subscribe-list',
+      'tab:worker:closed'
+    );
+    expect(initial_idx).toBeGreaterThanOrEqual(0);
+    expect(client._sent()[initial_idx][1].params).toEqual({
+      since: closedRangeSince('today')
+    });
+
+    client._reset();
+    const select = /** @type {HTMLSelectElement} */ (
+      document.querySelector('#worker-pane-done .worker-done-range')
+    );
+    select.value = '7d';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    const sent = client._sent();
+    const unsub_idx = lastIndexOfSub(
+      sent,
+      'unsubscribe-list',
+      'tab:worker:closed'
+    );
+    const resub_idx = lastIndexOfSub(
+      sent,
+      'subscribe-list',
+      'tab:worker:closed'
+    );
+    expect(unsub_idx).toBeGreaterThanOrEqual(0);
+    expect(resub_idx).toBeGreaterThan(unsub_idx);
+    expect(sent[resub_idx][1].params.since).toBeGreaterThanOrEqual(
+      Date.now() - 7 * DAY_MS - 50
+    );
+  });
 });

@@ -105,8 +105,13 @@ const BOARD_SUBS = [
 const WORKER_SUBS = [
   ['tab:worker:ready', 'ready-issues'],
   ['tab:worker:blocked', 'blocked-issues'],
-  ['tab:worker:in-progress', 'in-progress-issues']
+  ['tab:worker:in-progress', 'in-progress-issues'],
+  ['tab:worker:closed', 'closed-issues']
 ];
+
+/** Worker-owned client id for session-completed closed issues. */
+const WORKER_CLOSED_CLIENT_ID = 'tab:worker:closed';
+const WORKER_DONE_RANGE_KEY = 'bdui.worker.done-range';
 
 /**
  * Client id of the monitor tab's aggregated pipeline subscription (UI-nprg).
@@ -530,6 +535,17 @@ export function bootstrap(root_element) {
       // ignore storage errors
     }
 
+    /** @type {import('./data/closed-range.js').ClosedRange} */
+    let worker_done_range = DEFAULT_CLOSED_RANGE;
+    try {
+      const raw = window.localStorage.getItem(WORKER_DONE_RANGE_KEY);
+      if (isClosedRange(raw)) {
+        worker_done_range = raw;
+      }
+    } catch {
+      // ignore storage errors
+    }
+
     /**
      * The current Closed subscription spec: a `closed-issues` list filtered by
      * `params.since` for the selected range ('all' drops the filter).
@@ -538,6 +554,16 @@ export function bootstrap(root_element) {
      */
     function closedSpec() {
       const since = closedRangeSince(closed_range);
+      return since === undefined
+        ? { type: 'closed-issues' }
+        : { type: 'closed-issues', params: { since } };
+    }
+
+    /**
+     * @returns {{ type: string, params?: { since: number } }}
+     */
+    function workerClosedSpec() {
+      const since = closedRangeSince(worker_done_range);
       return since === undefined
         ? { type: 'closed-issues' }
         : { type: 'closed-issues', params: { since } };
@@ -638,6 +664,41 @@ export function bootstrap(root_element) {
       }
     }
 
+    /**
+     * Keep the Worker session-completion source aligned with the completed-lane
+     * range. Its client id is deliberately distinct from Board Closed.
+     *
+     * @param {string} range
+     */
+    async function setWorkerDoneRange(range) {
+      if (!isClosedRange(range) || range === worker_done_range) {
+        return;
+      }
+      worker_done_range = range;
+      const unsub = worker_unsubs.get(WORKER_CLOSED_CLIENT_ID);
+      if (!unsub) {
+        return;
+      }
+      worker_unsubs.delete(WORKER_CLOSED_CLIENT_ID);
+      await unsub().catch(() => {});
+      const spec = workerClosedSpec();
+      try {
+        sub_issue_stores.register(WORKER_CLOSED_CLIENT_ID, spec);
+      } catch (err) {
+        log('register %s store failed: %o', WORKER_CLOSED_CLIENT_ID, err);
+      }
+      try {
+        const new_unsub = await subscriptions.subscribeList(
+          WORKER_CLOSED_CLIENT_ID,
+          spec
+        );
+        worker_unsubs.set(WORKER_CLOSED_CLIENT_ID, new_unsub);
+      } catch (err) {
+        log('re-subscribe %s failed: %o', WORKER_CLOSED_CLIENT_ID, err);
+        showFatalFromError(err, 'worker');
+      }
+    }
+
     function clearBoardSubscriptions() {
       sub_generation.board += 1;
       for (const [client_id] of BOARD_SUBS) {
@@ -675,8 +736,10 @@ export function bootstrap(root_element) {
         ) {
           continue;
         }
+        const spec =
+          client_id === WORKER_CLOSED_CLIENT_ID ? workerClosedSpec() : { type };
         try {
-          sub_issue_stores.register(client_id, { type });
+          sub_issue_stores.register(client_id, spec);
         } catch (err) {
           log('register %s store failed: %o', client_id, err);
         }
@@ -684,7 +747,7 @@ export function bootstrap(root_element) {
         const generation = sub_generation.worker;
         let released = false;
         void subscriptions
-          .subscribeList(client_id, { type })
+          .subscribeList(client_id, spec)
           .then((unsub) => {
             released = !keepOrRelease(
               worker_unsubs,
@@ -1382,7 +1445,11 @@ export function bootstrap(root_element) {
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
-      getWorkspacePath: () => store.getState().workspace.current?.path
+      getWorkspacePath: () => store.getState().workspace.current?.path,
+      doneRange: worker_done_range,
+      onDoneRangeChange: (range) => {
+        void setWorkerDoneRange(range);
+      }
     });
 
     // Monitor tab (third tab): the worker pipeline of EVERY visible workspace as

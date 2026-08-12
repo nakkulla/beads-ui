@@ -406,6 +406,44 @@ describe('subscription lifecycle after a reconnect', () => {
     expect(subscribedListIds(client)).toContain('tab:board:in-progress');
   });
 
+  test('restores the Worker closed subscription after reconnect', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/worker';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:worker:closed');
+
+    client._clearSent();
+    client._emitConn('reconnecting');
+    client._emitConn('open');
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:worker:closed');
+  });
+
+  test('restores the Worker closed subscription after a workspace event', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/worker';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    client._clearSent();
+    client._trigger('workspace-changed', {
+      root_dir: '/tmp/worker-next',
+      db_path: '/tmp/worker-next/.beads/ui.db'
+    });
+    await flush();
+
+    expect(subscribedListIds(client)).toContain('tab:worker:closed');
+  });
+
   // 구독 요청이 도는 중에 탭을 떠나면 그 결과는 이미 주인이 없다. 저장해 버리면
   // 재진입이 "구독 있음"으로 착각해 영구히 건너뛴다.
   test('re-subscribes after leaving and re-entering a tab mid-request', async () => {
@@ -458,6 +496,7 @@ describe('worker tab direct entry (UI-53es §2)', () => {
     await Promise.resolve();
 
     expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
+    expect(subscribedListIds(client)).toContain('tab:worker:closed');
 
     client._trigger('snapshot', {
       type: 'snapshot',

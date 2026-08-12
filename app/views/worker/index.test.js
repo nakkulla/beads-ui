@@ -9102,14 +9102,18 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
    * @param {any} q
    * @returns {HTMLElement}
    */
-  function renderDone(q) {
+  function renderDone(
+    q,
+    stores = createTestIssueStores(),
+    transport = vi.fn()
+  ) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(q);
     createWorkerView(mount, {
-      issueStores: createTestIssueStores(),
+      issueStores: stores,
       queueStore,
-      transport: vi.fn()
+      transport
     });
     return mount;
   }
@@ -9226,6 +9230,239 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
     expect(window.localStorage.getItem('bdui.worker.candidate_sort')).toBe(
       null
     );
+  });
+
+  test('renders a session report once with its closed completion time', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'SESSION-1',
+        title: '대화형 세션 완료',
+        status: 'closed',
+        created_at: now - 20_000,
+        updated_at: now - 1_000,
+        closed_at: now - 4_000,
+        comment_count: 1
+      }
+    ]);
+    const transport = vi.fn().mockResolvedValue([
+      {
+        id: 'comment-1',
+        text: [
+          '## 🤖 작업 보고서',
+          '> session · sid session-1 · 2026-08-12T00:00:00Z',
+          '',
+          '**결론** — 완료'
+        ].join('\n')
+      }
+    ]);
+
+    const mount = renderDone(queueOf(), stores, transport);
+    await flush();
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="SESSION-1"]')
+    );
+    expect(row.textContent).toContain('세션 작업');
+    expect(row.querySelector('.worker-mini__done-at')?.textContent).toContain(
+      '완료'
+    );
+    expect(row.querySelector('.worker-usage')).toBe(null);
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('excludes worker, plain, and malformed closed comments', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'WORKER-REPORT',
+        title: 'worker report',
+        status: 'closed',
+        updated_at: now,
+        closed_at: now,
+        comment_count: 1
+      },
+      {
+        id: 'PLAIN',
+        title: 'plain comment',
+        status: 'closed',
+        updated_at: now,
+        closed_at: now,
+        comment_count: 1
+      },
+      {
+        id: 'MALFORMED',
+        title: 'malformed report',
+        status: 'closed',
+        updated_at: now,
+        closed_at: now,
+        comment_count: 1
+      }
+    ]);
+    const transport = vi.fn((/** @type {string} */ _type, payload) => {
+      const id = /** @type {any} */ (payload).id;
+      if (id === 'WORKER-REPORT') {
+        return Promise.resolve([
+          {
+            text: [
+              '## 🤖 작업 보고서',
+              '> worker · attempt attempt-1 · 2026-08-12T00:00:00Z'
+            ].join('\n')
+          }
+        ]);
+      }
+      if (id === 'MALFORMED') {
+        return Promise.resolve([
+          {
+            text: '## 🤖 작업 보고서\n> session · sid broken timestamp'
+          }
+        ]);
+      }
+      return Promise.resolve([{ text: '사람이 남긴 일반 댓글' }]);
+    });
+
+    const mount = renderDone(queueOf(), stores, transport);
+    await flush();
+
+    expect(doneIds(mount)).toEqual([]);
+  });
+
+  test('keeps the worker done row when a session report duplicates its bead', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'DUPLICATE',
+        title: 'closed title must not replace worker title',
+        status: 'closed',
+        updated_at: now,
+        closed_at: now,
+        comment_count: 1
+      }
+    ]);
+    const transport = vi.fn().mockResolvedValue([
+      {
+        text: [
+          '## 🤖 작업 보고서',
+          '> session · sid session-1 · 2026-08-12T00:00:00Z'
+        ].join('\n')
+      }
+    ]);
+
+    const mount = renderDone(
+      queueOf({
+        done: [{ bead_id: 'DUPLICATE', added_at: now - 1_000 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'DUPLICATE',
+            status: 'done',
+            usage: { input_tokens: 100, output_tokens: 50 }
+          }
+        }
+      }),
+      stores,
+      transport
+    );
+    await flush();
+
+    expect(doneIds(mount)).toEqual(['DUPLICATE']);
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="DUPLICATE"]')?.textContent
+    ).not.toContain('세션 작업');
+    expect(transport).not.toHaveBeenCalled();
+    expect(
+      mount.querySelector('.worker-kpi__chip--tokens')?.textContent
+    ).toContain('150');
+  });
+
+  test('retries a failed session comment request after the next closed snapshot', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    const issue = {
+      id: 'RETRY-SESSION',
+      title: '다시 조회하는 세션',
+      status: 'closed',
+      updated_at: now,
+      closed_at: now,
+      comment_count: 1
+    };
+    seed(stores, 'tab:worker:closed', [issue]);
+    const transport = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('temporary bd failure'))
+      .mockResolvedValueOnce([
+        {
+          text: [
+            '## 🤖 작업 보고서',
+            '> session · sid retry-1 · 2026-08-12T00:00:00Z'
+          ].join('\n')
+        }
+      ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queueOf());
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport
+    });
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(doneIds(mount)).toEqual([]);
+
+    queueStore.set(queueOf({ revision: 2 }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+
+    stores.getStore('tab:worker:closed').applyPush({
+      type: 'snapshot',
+      id: 'tab:worker:closed',
+      revision: 2,
+      issues: [issue]
+    });
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(doneIds(mount)).toEqual(['RETRY-SESSION']);
+  });
+
+  test('orders worker and session completion rows by their shared completion time', async () => {
+    const now = Date.now();
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:closed', [
+      {
+        id: 'SESSION-NEWER',
+        title: '더 최근 세션',
+        status: 'closed',
+        updated_at: now,
+        closed_at: now - 1_000,
+        comment_count: 1
+      }
+    ]);
+    const transport = vi.fn().mockResolvedValue([
+      {
+        text: [
+          '## 🤖 작업 보고서',
+          '> session · sid newer-1 · 2026-08-12T00:00:00Z'
+        ].join('\n')
+      }
+    ]);
+
+    const mount = renderDone(
+      queueOf({
+        done: [{ bead_id: 'WORKER-OLDER', added_at: now - 5_000 }]
+      }),
+      stores,
+      transport
+    );
+    await flush();
+
+    expect(doneIds(mount)).toEqual(['SESSION-NEWER', 'WORKER-OLDER']);
   });
 });
 

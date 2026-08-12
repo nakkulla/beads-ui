@@ -47,6 +47,7 @@ import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { selectCurrentChild } from '../../utils/current-child.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
+import { parseReport } from '../../utils/report-marker.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
@@ -80,6 +81,7 @@ const BLOCKED_KEY = 'tab:worker:blocked';
  * and a child is an in_progress issue like any other.
  */
 const IN_PROGRESS_KEY = 'tab:worker:in-progress';
+const CLOSED_KEY = 'tab:worker:closed';
 
 /**
  * Lower bound on the concurrency cap, mirroring the server's `MIN_SLOTS`
@@ -1074,7 +1076,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, execPresetStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined) }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, execPresetStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
  * @returns {{ load: () => void, openExecDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1086,7 +1088,9 @@ export function createWorkerView(mount_element, options = {}) {
     sessionLogStore,
     uiOrderStore,
     gotoIssue,
-    getWorkspacePath
+    getWorkspacePath,
+    doneRange,
+    onDoneRangeChange
   } = options;
   // The shared ui-order store feeds list-selectors so an order-only push
   // re-renders the candidate lane, and drives the same effective-rank sort the
@@ -1124,7 +1128,16 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @type {import('../../data/closed-range.js').ClosedRange}
    */
-  let done_range = loadDoneRange();
+  let done_range = isClosedRange(doneRange) ? doneRange : loadDoneRange();
+  /**
+   * Session-report presence keyed by workspace + immutable closed-issue
+   * snapshot identity. A failed request stays failed until the issue store emits
+   * again, so queue-only renders cannot retry-loop while the next closed issue
+   * snapshot can re-arm the request.
+   *
+   * @type {Map<string, 'pending'|'session'|'not-session'|'failed'>}
+   */
+  const session_report_cache = new Map();
   /**
    * The current range's display label, used by the lane header and the two
    * toolbar KPIs so all three name the same period (§3.4/§3.5).
@@ -1913,6 +1926,9 @@ export function createWorkerView(mount_element, options = {}) {
     const blocked = selectors
       ? selectors.selectBoardColumn(BLOCKED_KEY, 'blocked')
       : [];
+    const closed = selectors
+      ? selectors.selectBoardColumn(CLOSED_KEY, 'closed')
+      : [];
     // 실행 타일의 현재 단계 줄이 읽는 자식 집합 (UI-53es §2). 후보 레인에는
     // 쓰이지 않는다 — in_progress bead는 후보가 아니다.
     const in_progress = selectors
@@ -2658,6 +2674,79 @@ export function createWorkerView(mount_element, options = {}) {
           (b.added_at || 0) - (a.added_at || 0)
       );
     const done_rows = toRows(done_entries, 'done');
+    /** @type {Set<string>} */
+    const worker_done_ids = new Set(
+      (Array.isArray(q.done) ? q.done : [])
+        .map((/** @type {any} */ entry) => entry?.bead_id)
+        .filter((/** @type {any} */ bead_id) => typeof bead_id === 'string')
+    );
+    /** @type {any[]} */
+    const session_done_rows = [];
+    const workspace = getWorkspacePath?.() || '';
+    for (const issue of closed) {
+      const closed_at = coerceTimestampMs(issue.closed_at);
+      if (
+        typeof issue.id !== 'string' ||
+        worker_done_ids.has(issue.id) ||
+        closed_at === null ||
+        (done_since !== undefined && closed_at < done_since) ||
+        typeof issue.comment_count !== 'number' ||
+        issue.comment_count <= 0
+      ) {
+        continue;
+      }
+      const identity = `${workspace}\u0000${issue.id}\u0000${String(
+        issue.updated_at
+      )}\u0000${issue.comment_count}`;
+      const cached = session_report_cache.get(identity);
+      if (cached === undefined && transport) {
+        session_report_cache.set(identity, 'pending');
+        void Promise.resolve(transport('get-comments', { id: issue.id }))
+          .then((comments) => {
+            const has_session_report =
+              Array.isArray(comments) &&
+              comments.some(
+                (/** @type {any} */ comment) =>
+                  parseReport(
+                    typeof comment?.text === 'string' ? comment.text : ''
+                  )?.lane === 'session'
+              );
+            session_report_cache.set(
+              identity,
+              has_session_report ? 'session' : 'not-session'
+            );
+            doRender();
+          })
+          .catch(() => {
+            session_report_cache.set(identity, 'failed');
+            doRender();
+          });
+      }
+      if (cached === 'session') {
+        session_done_rows.push({
+          id: issue.id,
+          title: issue.title || issue.id,
+          reason: '',
+          draggable: false,
+          done: true,
+          lane: 'done',
+          selectable: false,
+          selected: false,
+          worker_serial: false,
+          badges: ['세션 작업'],
+          alert: false,
+          usage: null,
+          done_at: closed_at,
+          created_at: issue.created_at,
+          updated_at: issue.updated_at
+        });
+      }
+    }
+    done_rows.push(...session_done_rows);
+    done_rows.sort(
+      (/** @type {any} */ a, /** @type {any} */ b) =>
+        (b.done_at || 0) - (a.done_at || 0)
+    );
     // 툴바 토큰 KPI (UI-58y2 데스크톱 §툴바): 완료 레인의 행이 이미 들고 있는
     // usage를 합산할 뿐이라 새 데이터 소스가 없다. 행의 usage가 bead의 전체
     // attempt 합계이므로(UI-d7pw §1) 이 KPI는 "선택된 기간에 완료된 이슈들이
@@ -3573,14 +3662,15 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Adopt a new 완료 lane period (UI-d7pw §3.2). Purely local — every entry the
-   * filter reads is already in the client snapshot, so no request is sent.
+   * Adopt a new 완료 lane period (UI-d7pw §3.2). Persist the choice and notify
+   * bootstrap so the session-completion subscription follows the same range.
    *
    * @param {string} next
    */
   function setDoneRange(next) {
     done_range = isClosedRange(next) ? next : DEFAULT_CLOSED_RANGE;
     saveDoneRange(done_range);
+    onDoneRangeChange?.(done_range);
     doRender();
   }
 
@@ -4036,7 +4126,16 @@ export function createWorkerView(mount_element, options = {}) {
   watchHeaderOffset();
 
   if (selectors) {
-    unsubscribers.push(selectors.subscribe(doRender));
+    unsubscribers.push(
+      selectors.subscribe(() => {
+        for (const [identity, state] of session_report_cache) {
+          if (state === 'failed') {
+            session_report_cache.delete(identity);
+          }
+        }
+        doRender();
+      })
+    );
   }
   if (queueStore) {
     unsubscribers.push(
