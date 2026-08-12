@@ -490,6 +490,85 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('records a request binding and matching status in one revision', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'deploy-row', bead_id: 'UI-deploy-row' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-deploy-row',
+      attempt_id: 'deploy-row',
+      patch: { status: 'done' }
+    });
+    const before = store.snapshot(WS).revision;
+
+    const result = store.recordDeploymentBinding(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8,
+      target_base: 'main',
+      status: {
+        state: 'pending',
+        target_base: 'main',
+        target_sha: 'b'.repeat(40),
+        deployed_sha: null,
+        generation: 8,
+        error_code: null,
+        log_path: null
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(before + 1);
+    expect(result.queue.pr_wait[0]).toMatchObject({
+      deployment_generation: 8,
+      cleanup_cursor: 'deployment_observe'
+    });
+    expect(result.queue.deployment).toMatchObject({
+      state: 'pending',
+      generation: 8
+    });
+  });
+
+  test('refuses a mismatched status without binding the cleanup row', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'deploy-row', bead_id: 'UI-deploy-row' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-deploy-row',
+      attempt_id: 'deploy-row',
+      patch: { status: 'done' }
+    });
+
+    const result = store.recordDeploymentBinding(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8,
+      target_base: 'main',
+      status: {
+        state: 'pending',
+        target_base: 'main',
+        target_sha: 'c'.repeat(40),
+        deployed_sha: null,
+        generation: 8,
+        error_code: null,
+        log_path: null
+      }
+    });
+
+    expect(result).toMatchObject({ ok: false, binding_mismatch: true });
+    expect(store.snapshot(WS).pr_wait[0]).toMatchObject({
+      deployment_generation: null,
+      cleanup_cursor: null
+    });
+    expect(store.snapshot(WS).deployment).toBeNull();
+  });
+
   test('preserves unknown legacy queue and row fields through a mutation', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(

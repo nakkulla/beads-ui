@@ -3436,6 +3436,73 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Atomically record one exact request binding with its authoritative status
+     * readback. A row cannot become cleanup-eligible without both facts.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, merge_sha: string, verified_target_sha: string, deployment_generation: number, target_base: string, status: DeploymentObservation, head_ref?: string|null, pr_url?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    recordDeploymentBinding(workspace, input) {
+      /** @type {'stale'|'binding_mismatch'|'regression'|null} */
+      let rejected = null;
+      const result = applyUnconditional(workspace, (next) => {
+        const observation = normalizeDeploymentObservation(input?.status);
+        if (
+          typeof input?.bead_id !== 'string' ||
+          !isSha(input.merge_sha) ||
+          !isSha(input.verified_target_sha) ||
+          !Number.isInteger(input.deployment_generation) ||
+          input.deployment_generation <= 0
+        ) {
+          return false;
+        }
+        if (
+          !observation ||
+          observation.state === 'idle' ||
+          observation.target_base !== input.target_base ||
+          observation.target_sha !== input.verified_target_sha.toLowerCase() ||
+          observation.generation !== input.deployment_generation
+        ) {
+          rejected = 'binding_mismatch';
+          return false;
+        }
+        const entry = next.pr_wait.find((row) => row.bead_id === input.bead_id);
+        if (!entry) {
+          return false;
+        }
+        const current = next.deployment;
+        if (current?.generation !== null && current?.generation !== undefined) {
+          if (observation.generation < current.generation) {
+            rejected = 'stale';
+            return false;
+          }
+          if (
+            observation.generation === current.generation &&
+            (observation.target_base !== current.target_base ||
+              observation.target_sha !== current.target_sha)
+          ) {
+            rejected = 'binding_mismatch';
+            return false;
+          }
+          if (deploymentStateRegresses(current, observation)) {
+            rejected = 'regression';
+            return false;
+          }
+        }
+        entry.merge_sha = input.merge_sha.toLowerCase();
+        entry.verified_target_sha = input.verified_target_sha.toLowerCase();
+        entry.deployment_generation = input.deployment_generation;
+        entry.cleanup_cursor = 'deployment_observe';
+        entry.head_ref = input.head_ref || null;
+        entry.pr_url = input.pr_url || null;
+        next.deployment = observation;
+        return true;
+      });
+      return rejected === null ? result : { ...result, [rejected]: true };
+    },
+
+    /**
      * Promote a directly merged external PR into the durable observation lane.
      *
      * @param {string} workspace

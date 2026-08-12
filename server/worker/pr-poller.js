@@ -583,11 +583,7 @@ export function createPrPoller(deps) {
     observing = true;
     try {
       const initial_queue = deps.store.snapshot(workspace);
-      const deployment_pending = Array.isArray(initial_queue.pr_wait)
-        ? initial_queue.pr_wait.some(
-            (row) => row?.cleanup_cursor === 'deployment_observe'
-          )
-        : false;
+      const deployment_pending = hasDeploymentObservationDemand(initial_queue);
       if (deployment_pending && typeof deps.onDeployment === 'function') {
         try {
           await deps.onDeployment();
@@ -794,6 +790,12 @@ export function createPrPoller(deps) {
  * @param {Record<string, any>} queue
  */
 export function hasDeploymentObservationDemand(queue) {
+  if (
+    queue?.deployment?.state === 'pending' ||
+    queue?.deployment?.state === 'running'
+  ) {
+    return true;
+  }
   if (!Array.isArray(queue.pr_wait)) {
     return false;
   }
