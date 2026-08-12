@@ -1,10 +1,4 @@
-import { runBdJson } from './bd.js';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
-
-const SUPPORTED_DEPENDENCY_IDENTITY = {
-  version: '1.2.0-fork.1',
-  commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
-};
 
 /** @type {Map<string, ReturnType<typeof createWorkspaceSnapshotCoordinator>>} */
 const COORDINATORS = new Map();
@@ -61,9 +55,7 @@ function coordinatorFor(root_dir) {
   let coordinator = COORDINATORS.get(key);
   if (!coordinator) {
     coordinator = coordinatorFactory({
-      cwd: root_dir || undefined,
-      resolveDependencyMode: () =>
-        resolveLiveDependencyMode(root_dir || undefined)
+      cwd: root_dir || undefined
     });
     COORDINATORS.set(key, coordinator);
   }
@@ -75,39 +67,4 @@ function coordinatorFor(root_dir) {
  */
 function workspaceKey(root_dir) {
   return String(root_dir || '');
-}
-
-/**
- * Resolve the capability from the exact immutable CLI build attested by the
- * runner-boundary test. Unknown and failed identities deliberately retain the
- * compatibility fallback instead of inferring support from list rows.
- *
- * @param {string | undefined} cwd
- * @returns {Promise<'embedded-dependencies'|'legacy-dependency-fallback'>}
- */
-async function resolveLiveDependencyMode(cwd) {
-  try {
-    const result = await runBdJson(['version', '--json'], { cwd });
-    if (result.code === 0 && isSupportedDependencyIdentity(result.stdoutJson)) {
-      return 'embedded-dependencies';
-    }
-  } catch {
-    // A failed capability probe must preserve provenance through the fallback.
-  }
-  return 'legacy-dependency-fallback';
-}
-
-/**
- * @param {unknown} value
- */
-function isSupportedDependencyIdentity(value) {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    /** @type {Record<string, unknown>} */ (value).version ===
-      SUPPORTED_DEPENDENCY_IDENTITY.version &&
-    /** @type {Record<string, unknown>} */ (value).commit ===
-      SUPPORTED_DEPENDENCY_IDENTITY.commit
-  );
 }

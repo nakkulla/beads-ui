@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { runBdJson } from './bd.js';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
@@ -26,7 +25,7 @@ function successfulGeneration(all, explain = {}) {
  * @param {Array<unknown>} responses
  */
 function createRunner(responses) {
-  return /** @type {typeof runBdJson} */ (
+  return /** @type {typeof import('./bd.js').runBdJson} */ (
     vi.fn(async () => {
       const response = responses.shift();
       if (response instanceof Error) {
@@ -592,19 +591,11 @@ describe('workspace snapshot coordinator', () => {
     expect(runBdJson).toHaveBeenCalledTimes(2);
   });
 
-  test('probes installed bd for an embedded discovered-from edge', async () => {
-    const version = await runBdJson(['version', '--json']);
+  test('uses embedded dependencies for a discovered-from edge from the live bd boundary', async () => {
     const coordinator = createWorkspaceSnapshotCoordinator();
 
     const result = await coordinator.request('cold-subscribe');
 
-    expect(version).toMatchObject({
-      code: 0,
-      stdoutJson: {
-        version: '1.2.0-fork.1',
-        commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
-      }
-    });
     expect(result).toMatchObject({ ok: true, fresh: true });
     if (result.ok) {
       expect(result.snapshot.command_mode).toBe('embedded-dependencies');
