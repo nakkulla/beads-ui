@@ -773,7 +773,7 @@ describe('scheduler completion repair dispatch', () => {
     expect(result).toEqual({ ok: true, attempt_id: 'repair-attempt-1' });
     expect(env.runner.settingsFor('B1')).toMatchObject({
       resume_session_id: 'session-latest',
-      speed: 'fast',
+      speed: 'default',
       completion_repair: { mode: 'resume_root' }
     });
     expect(env.store.snapshot(WS).attempts['repair-attempt-1']).toMatchObject({
@@ -807,11 +807,8 @@ describe('scheduler completion repair dispatch', () => {
       op
     });
 
-    expect(result.ok).toBe(true);
-    expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
-    expect(env.runner.settingsFor('B1').completion_repair.mode).toBe(
-      'resume_root'
-    );
+    expect(result).toEqual({ ok: false, reason: 'no_session_id' });
+    expect(env.runner.settingsFor('B1')).toBeUndefined();
   });
 
   test('resumes the latest attempt that actually captured a session id', async () => {
@@ -1177,17 +1174,64 @@ describe('scheduler completion repair dispatch', () => {
       }
     });
 
-    expect(result.ok).toBe(true);
-    expect(env.runner.settingsFor(repair_bead_id)).toMatchObject({
-      resume_session_id: 'session-repair',
-      completion_repair: { mode: 'resume_root' }
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'runner_mismatch',
+      continuation_mismatch: {
+        prior: { runner: 'codex' },
+        current: { runner: 'claude' }
+      }
     });
+    expect(env.runner.settingsFor(repair_bead_id)).toBeUndefined();
     expect(
       env.store.snapshot(WS).attempts['repair-attempt-subject']
-    ).toMatchObject({
-      bead_id: repair_bead_id,
-      resumed_from: 'att-repair-subject'
+    ).toBeUndefined();
+  });
+
+  test('does not substitute a root transcript for a repair subject', async () => {
+    const repair_bead_id = 'B1-rcccccccc';
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
+        return { code: 0, stdout: `${repair_bead_id}\n`, stderr: '' };
+      }
+      return { code: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' };
     });
+    const env = setup({
+      config: { B1: {}, [repair_bead_id]: {} },
+      gitRun,
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    env.store.setCompletionSubject(WS, {
+      root_bead_id: 'B1',
+      phase: 'gating',
+      subject: {
+        role: 'repair',
+        bead_id: repair_bead_id,
+        pr_url: 'https://github.com/o/r/pull/2',
+        head_sha: 'd'.repeat(40),
+        base_sha: COMPLETION_FAILURE.base_sha,
+        merged_sha: null
+      }
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'repair-subject-without-session',
+        kind: 'resume_root',
+        failure_key: {
+          ...COMPLETION_FAILURE,
+          subject_sha: 'd'.repeat(40)
+        },
+        attempt_id: 'repair-attempt-without-session',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'no_session_id' });
+    expect(env.runner.spawnOrder).toEqual([]);
   });
 
   test('rejects adoption when the pinned failure identity changed', async () => {
@@ -1735,7 +1779,10 @@ describe('scheduler stop (■ tile)', () => {
   });
 
   test('stop returns false for an unknown attempt', async () => {
-    const env = setup({ config: {}, slots: 1 });
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1
+    });
     expect(await env.scheduler.stop(WS, 'nope')).toBe(false);
   });
 
@@ -3436,7 +3483,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(env.store.snapshot(WS).auto_advance).toBe(true);
   });
 
-  test('a set-succeeds-but-readback-throws stamp unsets the durable stamped_keys (not just the confirmed ones)', async () => {
+  test('refuses before a metadata overlay when restore capture cannot read a key', async () => {
     // worker_runner set+readback OK; orchestration_model's SET succeeds but its
     // confirming READBACK throws → the key is NOT in the confirmed list, yet the
     // durable exec_stamped_keys must still drive the cleanup so the metadata
@@ -3462,29 +3509,11 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
-    const a = /** @type {any} */ (
-      Object.values(env.store.snapshot(WS).attempts).find(
-        (/** @type {any} */ x) => x.bead_id === 'S1'
-      )
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
+      'exec_restore_capture_failed'
     );
-    expect(a.status).toBe('failed');
-    expect(a.cause).toBe('exec_stamp_failed');
-
-    // The set-but-unreadable key WAS written to bd metadata …
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
-      true
-    );
-    // … and it is unset in cleanup even though its confirming readback failed.
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
-    ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
-      false
-    );
-    // workflow_mode is reverted too; the dispatch failed in isolation.
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
-      true
-    );
+    expect(env.bd.calls).toEqual([]);
     expect(env.store.snapshot(WS).auto_advance).toBe(true);
   });
 
@@ -3733,7 +3762,7 @@ describe('scheduler resume (spec §1)', () => {
   });
 
   test('a codex ancestor resumes onto codex', async () => {
-    const env = setup({ config: {}, slots: 1 });
+    const env = setup({ config: { B1: { model: 'sol' } }, slots: 1 });
     seedAttempt(env.store, 'r2', resumablePrior({ runner: 'codex' }));
     const res = await env.scheduler.resume(WS, 'r2');
     expect(res.ok).toBe(true);
@@ -3744,7 +3773,7 @@ describe('scheduler resume (spec §1)', () => {
     );
   });
 
-  test('inherits the PRIOR snapshot verbatim even after globals change; no worktree.add; resumed_from set', async () => {
+  test('uses the current tuple after globals change; no worktree.add; resumed_from set', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedAttempt(
       env.store,
@@ -3758,10 +3787,11 @@ describe('scheduler resume (spec §1)', () => {
     expect(res.ok).toBe(true);
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    // Prior model/effort/speed inherited — NOT re-resolved from new globals.
-    expect(child.model).toBe('sonnet');
+    // Relaunch tuple comes from the current resolution, while history stays
+    // immutable on the source attempt.
+    expect(child.model).toBe('opus');
     expect(child.effort).toBe('high');
-    expect(child.speed).toBe('fast');
+    expect(child.speed).toBe('default');
     expect(child.base_oid).toBe('base-B1');
     expect(child.resumed_from).toBe('anc');
     expect(child).toMatchObject({
@@ -3774,12 +3804,139 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.worktree.add).not.toHaveBeenCalled();
     // The resume argv carries the prior session id.
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
-    expect(env.runner.settingsFor('B1').speed).toBe('fast');
+    expect(env.runner.settingsFor('B1').speed).toBe('default');
   });
 
-  test('uses Standard for a legacy prior attempt that recorded no speed', async () => {
-    const env = setup({ config: {}, slots: 1 });
-    seedAttempt(env.store, 'legacy', resumablePrior());
+  test('requires an explicit cross-runner decision before any state change', async () => {
+    const config = { B1: { model: 'sol', effort: 'xhigh' } };
+    const env = setup({ config, slots: 1 });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'opus';
+    exec_values.orchestration_effort = 'high';
+    seedAttempt(
+      env.store,
+      'cross-runner',
+      resumablePrior({ exec_values, speed: 'fast' })
+    );
+    const before = env.store.snapshot(WS);
+
+    const mismatch = await env.scheduler.resume(WS, 'cross-runner');
+
+    expect(mismatch).toMatchObject({
+      ok: false,
+      reason: 'runner_mismatch',
+      continuation_mismatch: {
+        prior_available: true,
+        prior: { runner: 'claude', speed: 'fast' },
+        current: { runner: 'codex', model: 'sol', effort: 'xhigh' }
+      }
+    });
+    expect(env.store.snapshot(WS)).toEqual(before);
+    expect(env.bd.calls).toEqual([]);
+    expect(env.runner.spawnOrder).toEqual([]);
+
+    const resumed = await env.scheduler.resume(WS, 'cross-runner', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(resumed.ok).toBe(true);
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      model: 'sol',
+      effort: 'xhigh'
+    });
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)]
+    ).toMatchObject({
+      runner: 'codex',
+      continuation_mode: 'fresh',
+      resumed_from: 'cross-runner'
+    });
+  });
+
+  test('refreshes the mismatch when bead metadata drifts without a queue write', async () => {
+    const config = { B1: { model: 'sol', effort: 'high' } };
+    const env = setup({ config, slots: 1 });
+    seedAttempt(env.store, 'drift', resumablePrior());
+    const mismatch = await env.scheduler.resume(WS, 'drift');
+    config.B1.effort = 'xhigh';
+
+    const stale = await env.scheduler.resume(WS, 'drift', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(stale).toMatchObject({
+      ok: false,
+      reason: 'continuation_decision_stale',
+      continuation_mismatch: {
+        current: { runner: 'codex', effort: 'xhigh' }
+      }
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('restores current bead metadata after an explicit prior-session run', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1
+    });
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'opus';
+    exec_values.orchestration_effort = 'high';
+    exec_values.orchestration_speed = 'fast';
+    seedAttempt(
+      env.store,
+      'prior-choice',
+      resumablePrior({ exec_values, speed: 'fast' })
+    );
+    await env.bd.setMetadata('B1', 'orchestration_model', 'sol');
+    await env.bd.setMetadata('B1', 'orchestration_effort', 'xhigh');
+    const mismatch = await env.scheduler.resume(WS, 'prior-choice');
+
+    const resumed = await env.scheduler.resume(WS, 'prior-choice', {
+      continuation: 'prior_session',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(resumed.ok).toBe(true);
+    const child = env.store.snapshot(WS).attempts[String(resumed.attempt_id)];
+    expect(child).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      speed: 'fast',
+      continuation_mode: 'session',
+      exec_restore_values: {
+        orchestration_model: 'sol',
+        orchestration_effort: 'xhigh'
+      }
+    });
+
+    env.runner.finish('B1', { success: true });
+    await flush();
+    await flush();
+
+    const model_calls = env.bd.calls.filter(
+      (call) =>
+        call.method === 'setMetadata' && call.key === 'orchestration_model'
+    );
+    expect(model_calls.at(-1)?.value).toBe('sol');
+  });
+
+  test('uses current Fast speed for a legacy prior attempt with no speed', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1
+    });
+    seedAttempt(env.store, 'legacy', resumablePrior({ runner: 'codex' }));
     seedExecDefaults(env.store, {
       orchestration_model: 'sol',
       orchestration_speed: 'fast'
@@ -3788,11 +3945,11 @@ describe('scheduler resume (spec §1)', () => {
     const res = await env.scheduler.resume(WS, 'legacy');
 
     expect(res.ok).toBe(true);
-    expect(env.runner.settingsFor('B1').speed).toBe('default');
+    expect(env.runner.settingsFor('B1').speed).toBe('fast');
     expect(
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)]
         .speed
-    ).toBe('default');
+    ).toBe('fast');
   });
 
   test('resumed_from survives cold reload', async () => {
@@ -3837,8 +3994,9 @@ describe('scheduler resume (spec §1)', () => {
     expect(child.merge_sha).toBe(null);
   });
 
-  test('re-stamps workflow_mode + exec from the PRIOR values', async () => {
-    const env = setup({ config: {}, slots: 1 });
+  test('re-stamps workflow_mode + exec from the current resolution', async () => {
+    const env = setup({ config: { B1: { model: null } }, slots: 1 });
+    seedExecDefaults(env.store, { orchestration_model: 'sol' });
     seedAttempt(
       env.store,
       'anc',
@@ -3847,12 +4005,13 @@ describe('scheduler resume (spec §1)', () => {
         exec_default_preset_id: 'preset-1',
         exec_default_preset_revision: 7,
         exec_stamped_keys: ['orchestration_model'],
-        exec_values: { orchestration_model: 'opus' }
+        exec_values: { orchestration_model: 'opus' },
+        runner: 'codex'
       })
     );
     const res = await env.scheduler.resume(WS, 'anc');
     expect(res.ok).toBe(true);
-    // fast_track re-stamped, and the exec key re-stamped with the PRIOR value.
+    // fast_track re-stamped, and the exec key comes from today's resolution.
     expect(
       env.bd.calls.some(
         (c) =>
@@ -3868,16 +4027,16 @@ describe('scheduler resume (spec §1)', () => {
           c.method === 'setMetadata' &&
           c.bead_id === 'B1' &&
           c.key === 'orchestration_model' &&
-          c.value === 'opus'
+          c.value === 'sol'
       )
     ).toBe(true);
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
     expect(child.exec_stamped_keys).toEqual(['orchestration_model']);
     expect(child).toMatchObject({
-      exec_default_preset_id: 'preset-1',
-      exec_default_preset_revision: 7,
-      exec_values: { orchestration_model: 'opus' }
+      exec_default_preset_id: null,
+      exec_default_preset_revision: null,
+      exec_values: { orchestration_model: 'sol' }
     });
   });
 });
@@ -3923,7 +4082,7 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(res.ok).toBe(true);
     // `--resume <session_id>` argv branch + the bead's own worktree, not a new one.
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-orig');
-    expect(env.runner.settingsFor('B1').speed).toBe('fast');
+    expect(env.runner.settingsFor('B1').speed).toBe('default');
     expect(env.worktree.add).not.toHaveBeenCalled();
   });
 
@@ -4196,7 +4355,7 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
-  test('inherits prior external provenance without resolving a changed preset', async () => {
+  test('re-resolves a repeated external conflict before launch', async () => {
     const resolveForDispatch = vi.fn(() => ({
       ok: false,
       reason: 'default_exec_preset_missing'
@@ -4224,26 +4383,44 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       'main'
     );
 
-    expect(result.ok).toBe(true);
-    expect(resolveForDispatch).not.toHaveBeenCalled();
-    expect(env.runner.factoryNames).toEqual(['codex']);
-    expect(env.runner.settingsFor('X1')).toMatchObject({
-      model: 'sol',
-      effort: 'high',
-      speed: 'fast'
+    expect(result).toEqual({
+      ok: false,
+      reason: 'default_exec_preset_missing'
     });
+    expect(resolveForDispatch).toHaveBeenCalledOnce();
+    expect(env.runner.factoryNames).toEqual([]);
+  });
+
+  test('starts a fresh current session for a repeated legacy external attempt', async () => {
+    const env = extEnv({ bead: { model: 'sonnet', effort: 'high' } });
+    seedRunningAttempt(env.store, {
+      status: 'done',
+      repo: '/repo',
+      target_base: 'main',
+      runner: 'claude',
+      model: 'opus',
+      session_id: null,
+      external_conflict: true,
+      finished_at: 50
+    });
+
+    const result = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main'
+    );
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('X1')).toMatchObject({ model: 'sonnet' });
+    expect(env.runner.settingsFor('X1')).not.toHaveProperty(
+      'resume_session_id'
+    );
     expect(
       env.store.snapshot(WS).attempts[/** @type {string} */ (result.attempt_id)]
     ).toMatchObject({
-      exec_default_preset_id: 'preset-7',
-      exec_default_preset_revision: 7,
-      exec_stamped_keys: ['spec_review_model'],
-      exec_values: {
-        orchestration_model: 'sol',
-        orchestration_effort: 'high',
-        spec_review_model: 'codex'
-      },
-      speed: 'fast'
+      resumed_from: 'prev-1',
+      continuation_mode: 'fresh',
+      external_conflict: true
     });
   });
 
@@ -4435,6 +4612,58 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(a.speed).toBe('fast');
     expect(env.runner.settingsFor('X1').model).toBe('sol');
     expect(env.runner.settingsFor('X1').speed).toBe('fast');
+  });
+
+  test('restores metadata that appeared after the external bead snapshot', async () => {
+    const env = extEnv({
+      bead: { model: null },
+      defaults: { orchestration_model: 'sol' }
+    });
+    env.bd.calls.push({
+      method: 'setMetadata',
+      bead_id: 'X1',
+      key: 'orchestration_model',
+      value: 'user-late'
+    });
+
+    const result = await env.scheduler.dispatchExternalConflict(
+      WS,
+      'X1',
+      'main'
+    );
+    env.runner.finish('X1', { success: true });
+    await flush();
+    await flush();
+
+    expect(
+      env.store.snapshot(WS).attempts[/** @type {string} */ (result.attempt_id)]
+        .exec_restore_values
+    ).toEqual({ orchestration_model: 'user-late' });
+    expect(
+      env.bd.calls.filter(
+        (call) =>
+          call.method === 'setMetadata' && call.key === 'orchestration_model'
+      )
+    ).toEqual([
+      {
+        method: 'setMetadata',
+        bead_id: 'X1',
+        key: 'orchestration_model',
+        value: 'user-late'
+      },
+      {
+        method: 'setMetadata',
+        bead_id: 'X1',
+        key: 'orchestration_model',
+        value: 'sol'
+      },
+      {
+        method: 'setMetadata',
+        bead_id: 'X1',
+        key: 'orchestration_model',
+        value: 'user-late'
+      }
+    ]);
   });
 
   test('restores every written stamp when one exec key fails to stamp', async () => {
@@ -4675,7 +4904,7 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
 
     expect(res.ok).toBe(true);
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-park');
-    expect(env.runner.settingsFor('B1').speed).toBe('fast');
+    expect(env.runner.settingsFor('B1').speed).toBe('default');
     expect(env.runner.cwdFor('B1')).toBe('/wt/B1');
     expect(env.worktree.add).not.toHaveBeenCalled();
   });
@@ -4694,8 +4923,8 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
     expect(child.resumed_from).toBe('p1');
     expect(child.disposition).toBe('revise_fix');
-    expect(child.speed).toBe('fast');
-    expect(env.runner.settingsFor('B1').speed).toBe('fast');
+    expect(child.speed).toBe('default');
+    expect(env.runner.settingsFor('B1').speed).toBe('default');
     expect(child.conflict_resolution).toBe(false);
     expect(child.completion_root_id).toBe(null);
   });
@@ -4977,12 +5206,14 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
 
   test('retries a failed resume ONCE as a fresh substitute session', async () => {
     const release = vi.fn();
+    const config = { B1: {} };
     const env = setup({
-      config: {},
+      config,
       slots: 1,
       disposition: { complete: vi.fn(), release }
     });
     const child = await dispatchDisposition(env);
+    config.B1 = { model: 'sonnet', effort: 'high' };
 
     env.runner.finish('B1', { success: false, reason: 'no_result' });
     await flush();
@@ -4995,8 +5226,15 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     expect(substitute).toMatchObject({
       disposition: 'revise_fix',
       disposition_resume: false,
-      status: 'running'
+      status: 'running',
+      model: 'sonnet',
+      effort: 'high',
+      continuation_mode: 'fresh'
     });
+    expect(env.runner.cwdFor('B1')).toBe('/repo');
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty(
+      'resume_session_id'
+    );
     // The disposition is still in flight, so its guard must NOT have been
     // handed back yet.
     expect(release).not.toHaveBeenCalled();
@@ -10545,13 +10783,13 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     await flush();
   });
 
-  test('continues an external conflict on the prior attempt runner', async () => {
+  test('uses the current runner for a source-less external conflict', async () => {
     const env = extRunnerEnv({ model: 'opus' });
     seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
 
     await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
-    expect(env.runner.factoryNames).toEqual(['codex']);
+    expect(env.runner.factoryNames).toEqual(['claude']);
     await flush();
   });
 
@@ -10575,9 +10813,7 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     await flush();
   });
 
-  // Impl review 2026-08-10 finding 2: the trio is inherited TOGETHER — a prior
-  // codex attempt must never be relaunched with today's claude model.
-  test('inherits the prior attempt model and effort with its runner', async () => {
+  test('uses the current model and effort for a source-less external conflict', async () => {
     const env = extRunnerEnv({ model: 'opus', effort: 'low' });
     seedSettledAttempt(env.store, 'prev-1', {
       runner: 'codex',
@@ -10587,27 +10823,27 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
 
     const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
-    expect(env.runner.factoryNames).toEqual(['codex']);
-    expect(env.runner.settingsFor('X1').model).toBe('sol');
-    expect(env.runner.settingsFor('X1').effort).toBe('high');
+    expect(env.runner.factoryNames).toEqual(['claude']);
+    expect(env.runner.settingsFor('X1').model).toBe('opus');
+    expect(env.runner.settingsFor('X1').effort).toBe('low');
     const a =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(a.model).toBe('sol');
-    expect(a.effort).toBe('high');
+    expect(a.model).toBe('opus');
+    expect(a.effort).toBe('low');
     await flush();
   });
 
-  test('leaves the model unset when the inherited prior attempt recorded none', async () => {
+  test('uses the current model when the source-less external record has none', async () => {
     const env = extRunnerEnv({ model: 'opus' });
     seedSettledAttempt(env.store, 'prev-1', { runner: 'codex' });
 
     await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
-    expect(env.runner.settingsFor('X1').model).toBe(undefined);
+    expect(env.runner.settingsFor('X1').model).toBe('opus');
     await flush();
   });
 
-  test('inherits no current preset stamps when the prior attempt has none', async () => {
+  test('uses current preset stamps when the external conflict has no source session', async () => {
     const env = extRunnerEnv({ model: null, effort: null });
     seedSettledAttempt(env.store, 'prev-1', {
       runner: 'codex',
@@ -10629,13 +10865,19 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
 
     const a =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(a.exec_stamped_keys).toBe(null);
-    expect(a.model).toBe('sol');
+    expect(a.exec_stamped_keys).toEqual([
+      'orchestration_model',
+      'spec_review_model'
+    ]);
+    expect(a.model).toBe('sonnet');
     await flush();
   });
 
-  test('inherits the prior runner on a conflict relaunch', async () => {
-    const env = setup({ config: { B1: {} }, slots: 1 });
+  test('uses the current runner on a conflict relaunch', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1
+    });
     const rev = env.store.snapshot(WS).revision;
     env.store.appendAttempt(WS, {
       expected_revision: rev,
@@ -10660,8 +10902,8 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     await flush();
   });
 
-  // Characterization: a legacy attempt written before the runner field carried
-  // a value still relaunches, and claude is the only honest guess for it.
+  // A legacy attempt without a runner adopts the current resolved runner for
+  // auto; only explicit prior_session is unavailable.
   test('falls back to claude when the prior attempt recorded no runner', async () => {
     const env = setup({ config: { B1: {} }, slots: 1 });
     const rev = env.store.snapshot(WS).revision;

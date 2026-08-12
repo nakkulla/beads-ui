@@ -566,6 +566,71 @@ describe('ws worker-queue channel', () => {
     expect(refused.payload.reason).toBe('no_session_id');
   });
 
+  test('worker-attempt-resume preserves a structured runner mismatch', async () => {
+    const continuation_mismatch = {
+      prior_available: true,
+      prior: { runner: 'codex' },
+      current: { runner: 'claude' },
+      decision_token: { source_attempt_id: 'att-1' }
+    };
+    const resume = vi.fn(async () => ({
+      ok: false,
+      reason: 'runner_mismatch',
+      continuation_mismatch
+    }));
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), resume }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'r1').payload).toMatchObject({
+      resumed: false,
+      reason: 'runner_mismatch',
+      continuation_mismatch
+    });
+  });
+
+  test('worker-attempt-resume forwards a token-bound continuation decision', async () => {
+    const decision_token = { source_attempt_id: 'att-1' };
+    const resume = vi.fn(async () => ({ ok: true, attempt_id: 'att-2' }));
+    __registerWorkerAttachmentForTest(process.cwd(), {
+      // @ts-expect-error minimal fake attachment
+      scheduler: { tick: vi.fn(), stop: vi.fn(), resume }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0,
+      continuation: 'fresh_current',
+      decision_token
+    });
+
+    expect(resume).toHaveBeenCalledWith(process.cwd(), 'att-1', {
+      continuation: 'fresh_current',
+      decision_token
+    });
+    expect(replyFor(sock, 'r1').payload.new_attempt_id).toBe('att-2');
+  });
+
+  test('worker-attempt-resume rejects a decision without its token', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0,
+      continuation: 'fresh_current'
+    });
+
+    expect(replyFor(sock, 'r1').error.code).toBe('bad_request');
+  });
+
   test('every worker ws route the server switches on is a client-sendable MESSAGE_TYPE', () => {
     // The client transport drops any type missing from MESSAGE_TYPES before it
     // reaches the socket, so a server-only route is silently dead in the browser.
@@ -1142,6 +1207,46 @@ describe('ws worker REVISE disposition (UI-hs11 §3.2)', () => {
     });
   });
 
+  test('worker-revise-fix preserves and forwards a continuation decision', async () => {
+    const decision_token = { source_attempt_id: 'a1' };
+    const continuation_mismatch = {
+      prior_available: true,
+      prior: { runner: 'codex' },
+      current: { runner: 'claude' },
+      decision_token
+    };
+    const fix = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        reason: 'runner_mismatch',
+        continuation_mismatch
+      })
+      .mockResolvedValueOnce({ ok: true, attempt_id: 'a2' });
+    registerDisposition({ fix });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+    await send(sock, 'r2', 'worker-revise-fix', {
+      bead_id: 'UI-1',
+      expected_revision: 0,
+      continuation: 'fresh_current',
+      decision_token
+    });
+
+    expect(replyFor(sock, 'r1').payload.continuation_mismatch).toEqual(
+      continuation_mismatch
+    );
+    expect(fix).toHaveBeenLastCalledWith('UI-1', {
+      continuation: 'fresh_current',
+      decision_token
+    });
+    expect(replyFor(sock, 'r2').payload.attempt_id).toBe('a2');
+  });
+
   test('worker-revise-approve reaches the action and reports the new receipt sha', async () => {
     const approve = vi.fn(async () => ({ ok: true, sha: 'f'.repeat(40) }));
     registerDisposition({ approve });
@@ -1376,6 +1481,61 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     expect(replyFor(sock, 'm1').payload.conflict).toBe(true);
     expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
     expect(kick).not.toHaveBeenCalled();
+  });
+
+  test('persists a token-bound background continuation decision', async () => {
+    parkInPrWait('UI-1');
+    const kick = registerDriver();
+    const store = getWorkerRuntime().queueStore;
+    store.enqueueMerge('', {
+      expected_revision: store.snapshot('').revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    const token = {
+      source_attempt_id: 'att-UI-1',
+      source_attempt_digest: 'source',
+      observed_queue_revision: store.snapshot('').revision,
+      preset_id: 'p1',
+      preset_revision: 1,
+      effective_exec_digest: 'exec'
+    };
+    store.requireMergeContinuation('', {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      mismatch: {
+        continuation_required: true,
+        prior_available: true,
+        prior: { runner: 'codex' },
+        current: { runner: 'claude' },
+        decision_token: token
+      }
+    });
+    const action = /** @type {any} */ (
+      store.snapshot('').merge_queue[0].continuation_action
+    );
+    const sock = fakeSocket();
+
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision,
+      continuation: 'fresh_current',
+      decision_token: action.mismatch.decision_token
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: true,
+      conflict: false,
+      continuation_decided: true
+    });
+    expect(store.snapshot('').merge_queue[0].continuation_action).toMatchObject(
+      {
+        continuation: 'fresh_current',
+        decision_token: {
+          observed_queue_revision: store.snapshot('').revision
+        }
+      }
+    );
+    expect(kick).toHaveBeenCalled();
   });
 
   test('queuing the same bead twice is a no-op, not a second place in line', async () => {

@@ -1137,6 +1137,51 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
+  test('persists a runner mismatch instead of dequeuing or guessing', async () => {
+    const store = seed(['UI-1']);
+    const dispatchConflict = vi.fn(async () => ({
+      ok: false,
+      action: 'conflict_resolution',
+      reason: 'runner_mismatch',
+      continuation_mismatch: {
+        continuation_required: true,
+        prior: { runner: 'codex' },
+        current: { runner: 'claude' },
+        decision_token: {
+          source_attempt_id: 'att-UI-1',
+          source_attempt_digest: 'source',
+          observed_queue_revision: store.snapshot(WS).revision,
+          preset_id: 'p1',
+          preset_revision: 1,
+          effective_exec_digest: 'exec'
+        }
+      }
+    }));
+    const mq = driver(store, {
+      probeMergeability: async () => ({
+        ok: true,
+        kind: 'dirty',
+        reason: null,
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main',
+        external: false
+      }),
+      dispatchConflict
+    });
+
+    await mq.kick();
+
+    expect(dispatchConflict).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      bead_id: 'UI-1',
+      continuation_action: {
+        subject_bead_id: 'UI-1',
+        continuation: null,
+        mismatch: { continuation_required: true }
+      }
+    });
+  });
+
   test('a boot resume waits for a running session instead of re-calling merge', async () => {
     const store = seed(['UI-1']);
     store.toggleAutoMerge(WS, {

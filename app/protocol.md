@@ -158,14 +158,16 @@ Nothing merges without a human `[머지]` click.
   attempt while preserving its resumable state. Reply
   `{ attempt_id, paused, phase, reason }` exposes the durable control phase
   (`done` when the pause has settled).
-- `worker-attempt-resume` payload: `{ attempt_id, expected_revision }` — ▶ on a
+- `worker-attempt-resume` payload:
+  `{ attempt_id, expected_revision, continuation?, decision_token? }` — ▶ on a
   paused/failed/orphaned attempt; cap-exempt (human-originated).
 - `worker-attempt-dismiss` payload: `{ attempt_id, expected_revision }` — the
   failure banner's ✕: stamps `dismissed_at` on a `failed`/`orphaned` attempt so
   it stops reading as an unhandled failure. Reply
   `{ attempt_id, dismissed, conflict, reason, queue }`; `reason` is
   `attempt_not_found` / `not_dismissable` / `already_dismissed`.
-- `worker-merge-queue-add` payload: `{ bead_id, expected_revision }` — the
+- `worker-merge-queue-add` payload:
+  `{ bead_id, expected_revision, continuation?, decision_token? }` — the
   `[머지]` click (UI-5v7d §3). It QUEUES rather than merges: the durable
   `merge_queue` is FIFO and one server-side driver merges its head, so two
   clicks never merge at once. Everything the direct click used to derive stays
@@ -173,7 +175,9 @@ Nothing merges without a human `[머지]` click.
   against the observed head SHA, BEHIND update-branch, DIRTY resolution dispatch
   — so the snapshot badges remain ADVISORY. Reply:
   `{ bead_id, applied, conflict, queued, queue }`; queuing a bead that is
-  already queued is a no-op (`applied:false`).
+  already queued is a no-op (`applied:false`). A durable cross-runner
+  `continuation_action` reuses this message to bind `prior_session` or
+  `fresh_current` to the server-issued token before the driver resumes.
 - `worker-merge-queue-add-all` payload: `{ expected_revision }` — the lane
   header's `[일괄 머지]`: the SERVER picks every currently mergeable `pr_wait`
   row (the same disjuncts the row's `merge_enabled` uses, external rows
@@ -189,12 +193,17 @@ Nothing merges without a human `[머지]` click.
   merge is already running against GitHub. Reply
   `{ bead_id, applied, conflict, reason, queue }`.
 - The `worker-queue-snapshot` carries the queue as `merge_queue`
-  (`[{ bead_id, resolution_rounds, resolution? }]`, durable order). The optional
-  `resolution` projection is the exact durable wait record (`attempt_id`,
-  `subject_bead_id`, `deadline_at`, `state`, `yielded_at`, `settled_at`); older
-  snapshots may omit it. A non-persisted `merge_queue_state` =
-  `{ active, failures }` says which item the driver is on and why each skipped
-  one failed.
+  (`[{ bead_id, resolution_rounds, resolution?, continuation_action? }]`,
+  durable order). The optional `resolution` projection is the exact durable wait
+  record (`attempt_id`, `subject_bead_id`, `deadline_at`, `state`, `yielded_at`,
+  `settled_at`); older snapshots may omit it. A non-persisted
+  `merge_queue_state` = `{ active, failures }` says which item the driver is on
+  and why each skipped one failed.
+- `worker-revise-fix` accepts the same optional
+  `{ continuation, decision_token }` pair as attempt resume.
+- Attempt-derived replies may carry `continuation_mismatch` with prior/current
+  execution tuples, `prior_available`, and a decision token. The client never
+  computes a tuple or reuses a stale token after a CAS conflict.
 - `worker-discard` payload:
   `{ bead_id, attempt_id?, operation_id?, expected_revision }` — creates or
   reuses one durable, restart-safe discard operation. It validates the latest

@@ -997,8 +997,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       dispatchConflict: (
         /** @type {string} */ bead_id,
         /** @type {{ head_sha: string, base_ref: string|null }} */ approved,
-        /** @type {{ queue_bead_id: string, wait_ms: number }} */ resolution_wait
-      ) => prActions.dispatchConflict(bead_id, approved, resolution_wait),
+        /** @type {{ queue_bead_id: string, wait_ms: number }} */ resolution_wait,
+        /** @type {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} */ continuation
+      ) =>
+        prActions.dispatchConflict(
+          bead_id,
+          approved,
+          resolution_wait,
+          continuation
+        ),
       observePr: (/** @type {string} */ bead_id) => prActions.prState(bead_id),
       // The head an auto-merge exclusion is pinned to (UI-yk55 §3.3). A cache
       // read only — `observePr` returns `{state, error}` and cannot serve it.
@@ -1517,14 +1524,19 @@ export async function pauseWorkerAttempt(workspace_root, attempt_id) {
  *
  * @param {string} workspace_root
  * @param {string} attempt_id
- * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+ * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
  */
-export async function resumeWorkerAttempt(workspace_root, attempt_id) {
+export async function resumeWorkerAttempt(
+  workspace_root,
+  attempt_id,
+  continuation
+) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att) {
     return { ok: false, reason: 'no_attachment' };
   }
-  return att.scheduler.resume(keyFor(workspace_root), attempt_id);
+  return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
 }
 
 /**
@@ -1693,14 +1705,21 @@ export async function discardWorkerBead(workspace_root, input) {
  *
  * @param {string} workspace_root
  * @param {string} bead_id
- * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+ * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
  */
-export async function reviseFixWorkerBead(workspace_root, bead_id) {
+export async function reviseFixWorkerBead(
+  workspace_root,
+  bead_id,
+  continuation = {}
+) {
   const att = ATTACHMENTS.get(keyFor(workspace_root));
   if (!att || !att.reviseDisposition) {
     return { ok: false, reason: 'no_attachment' };
   }
-  return att.reviseDisposition.fix(bead_id);
+  return continuation.continuation !== undefined
+    ? att.reviseDisposition.fix(bead_id, continuation)
+    : att.reviseDisposition.fix(bead_id);
 }
 
 /**

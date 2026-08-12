@@ -102,7 +102,7 @@ export function dispositionNotes(input) {
  *     updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>
  *   },
  *   parked: ReturnType<typeof import('./revise-parked.js').createReviseParkedStore>,
- *   scheduler: { dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt: string|null }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string }> },
+ *   scheduler: { dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }> },
  *   locks: ReturnType<typeof import('./locks.js').createLockManager>,
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   notifyChanged?: (workspace: string) => void,
@@ -338,9 +338,10 @@ export function createReviseDisposition(deps) {
      * Dispatch the repair session behind [finding 수용·수정] (§3.3).
      *
      * @param {string} bead_id
-     * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
+     * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+     * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
      */
-    async fix(bead_id) {
+    async fix(bead_id, continuation = {}) {
       if (in_flight.has(bead_id)) {
         return refuse('action_in_flight');
       }
@@ -377,13 +378,15 @@ export function createReviseDisposition(deps) {
           entry.receipt = observation.receipt;
           entry.target_base = observation.target_base;
         }
-        /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+        /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
         let dispatched;
         try {
           dispatched = await deps.scheduler.dispatchReviseFix(workspace, {
             bead_id,
             attempt_id: observation.attempt_id,
             prior_receipt: observation.receipt,
+            continuation: continuation.continuation,
+            decision_token: continuation.decision_token,
             prompt: reviseFixPrompt({
               bead_id,
               receipt: observation.receipt,
@@ -397,6 +400,9 @@ export function createReviseDisposition(deps) {
         }
         if (!dispatched.ok) {
           releaseInFlight(bead_id);
+          if (dispatched.continuation_mismatch) {
+            return dispatched;
+          }
           return refuse(dispatched.reason || 'dispatch_failed');
         }
         // The park is over as an observation the moment a session owns it.

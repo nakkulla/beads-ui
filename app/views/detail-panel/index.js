@@ -1,5 +1,6 @@
 import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
+import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
@@ -394,8 +395,11 @@ export function createDetailPanel(mount_element, options) {
         started_at: typeof a.started_at === 'number' ? a.started_at : null,
         runner: a.runner || null,
         model: a.model || null,
+        effort: a.effort || null,
+        speed: a.speed || null,
         session_id: a.session_id || null,
         resumed_from: a.resumed_from || null,
+        continuation_mode: a.continuation_mode || null,
         dismissed_at:
           typeof a.dismissed_at === 'number' ? a.dismissed_at : null,
         cause: typeof a.cause === 'string' ? a.cause : null,
@@ -491,12 +495,16 @@ export function createDetailPanel(mount_element, options) {
       const q = queueStore ? queueStore.get() : null;
       return q && typeof q.revision === 'number' ? q.revision : 0;
     };
-    let res = /** @type {any} */ (
-      await transport('worker-attempt-resume', {
-        attempt_id,
-        expected_revision: revision()
-      })
-    );
+    /** @param {Record<string, unknown>} extra */
+    const send = async (extra = {}) =>
+      /** @type {any} */ (
+        await transport('worker-attempt-resume', {
+          attempt_id,
+          expected_revision: revision(),
+          ...extra
+        })
+      );
+    let res = await send();
     if (res && res.conflict) {
       // The conflict reply carries the authoritative queue; retry once against
       // its revision (the push may not have landed in the store yet).
@@ -511,6 +519,10 @@ export function createDetailPanel(mount_element, options) {
         })
       );
     }
+    res = await resolveContinuationMismatch(
+      res,
+      (continuation, decision_token) => send({ continuation, decision_token })
+    );
     if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
     }

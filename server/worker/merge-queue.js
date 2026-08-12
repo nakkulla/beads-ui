@@ -101,7 +101,7 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, external: boolean }>,
- *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number }) => Promise<MergeClickResult>,
+ *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
@@ -275,6 +275,83 @@ export function createMergeQueue(deps) {
     const q = snapshot();
     const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
     return lane.find((/** @type {any} */ e) => e.bead_id === bead_id) || null;
+  }
+
+  /**
+   * Persist and halt on a decision that cannot be made by the background
+   * driver.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {any} mismatch
+   */
+  function requireContinuation(queue_bead_id, subject_bead_id, mismatch) {
+    let ok = false;
+    try {
+      ok = deps.store.requireMergeContinuation(workspace, {
+        bead_id: queue_bead_id,
+        subject_bead_id,
+        mismatch
+      }).ok;
+    } catch (err) {
+      log(
+        'merge queue continuation persist failed for %s: %o',
+        queue_bead_id,
+        err
+      );
+    }
+    halted = true;
+    notify();
+    return ok;
+  }
+
+  /**
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   */
+  function continuationInput(queue_bead_id, subject_bead_id) {
+    const action = queuedEntry(queue_bead_id)?.continuation_action;
+    if (
+      !action ||
+      action.subject_bead_id !== subject_bead_id ||
+      (action.continuation !== 'prior_session' &&
+        action.continuation !== 'fresh_current') ||
+      !action.decision_token
+    ) {
+      return undefined;
+    }
+    return {
+      continuation: action.continuation,
+      decision_token: action.decision_token
+    };
+  }
+
+  /**
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   */
+  function continuationRequired(queue_bead_id, subject_bead_id) {
+    const action = queuedEntry(queue_bead_id)?.continuation_action;
+    return (
+      action?.subject_bead_id === subject_bead_id &&
+      action.continuation === null
+    );
+  }
+
+  /**
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   */
+  function clearContinuation(queue_bead_id, subject_bead_id) {
+    if (!queuedEntry(queue_bead_id)?.continuation_action) {
+      return true;
+    }
+    const result = deps.store.clearMergeContinuation(workspace, {
+      bead_id: queue_bead_id,
+      subject_bead_id
+    });
+    notify();
+    return result.ok;
   }
 
   /**
@@ -1068,7 +1145,8 @@ export function createMergeQueue(deps) {
         {
           queue_bead_id,
           wait_ms: resolution_wait_ms
-        }
+        },
+        continuationInput(queue_bead_id, subject_bead_id)
       );
     } catch (err) {
       log(
@@ -1150,6 +1228,11 @@ export function createMergeQueue(deps) {
     let unconfirmed_deadline = null;
 
     while (!stopped && !halted && queuedEntry(root_bead_id)) {
+      if (continuationRequired(root_bead_id, subject_bead_id)) {
+        halted = true;
+        notify();
+        return;
+      }
       const resolution = await prepareResolution(root_bead_id, subject_bead_id);
       if (
         resolution.kind === 'yielded' ||
@@ -1166,6 +1249,14 @@ export function createMergeQueue(deps) {
         resolution.kind === 'ready' ? resolution.attempt_id || null : null
       );
       if (!result) {
+        return;
+      }
+      if (result.continuation_mismatch) {
+        requireContinuation(
+          root_bead_id,
+          subject_bead_id,
+          result.continuation_mismatch
+        );
         return;
       }
       const action = result ? result.action : null;
@@ -1206,6 +1297,10 @@ export function createMergeQueue(deps) {
             action: 'refused',
             reason: 'resolution_attempt_missing'
           });
+          return;
+        }
+        if (!clearContinuation(root_bead_id, subject_bead_id)) {
+          halted = true;
           return;
         }
         const entry = queuedEntry(root_bead_id);
@@ -1325,6 +1420,11 @@ export function createMergeQueue(deps) {
       if (!queuedEntry(bead_id)) {
         return;
       }
+      if (continuationRequired(bead_id, bead_id)) {
+        halted = true;
+        notify();
+        return;
+      }
       const resolution = await prepareResolution(bead_id, bead_id);
       if (
         resolution.kind === 'yielded' ||
@@ -1341,6 +1441,10 @@ export function createMergeQueue(deps) {
         resolution.kind === 'ready' ? resolution.attempt_id || null : null
       );
       if (!result) {
+        return;
+      }
+      if (result.continuation_mismatch) {
+        requireContinuation(bead_id, bead_id, result.continuation_mismatch);
         return;
       }
       const action = result ? result.action : null;
@@ -1396,6 +1500,10 @@ export function createMergeQueue(deps) {
           result.attempt_id.length === 0
         ) {
           failAndDequeue(bead_id, 'resolution_attempt_missing');
+          return;
+        }
+        if (!clearContinuation(bead_id, bead_id)) {
+          halted = true;
           return;
         }
         const entry = queuedEntry(bead_id);

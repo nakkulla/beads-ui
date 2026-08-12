@@ -78,6 +78,35 @@ describe('worker failed running tile template', () => {
     expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('중단됨');
   });
 
+  test('renders effort, Fast, and fresh-session lineage from the attempt', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-3',
+          attempt_id: 'attempt-3',
+          title: 'continued work',
+          runner: 'codex',
+          model: 'sol',
+          effort: 'ultra',
+          speed: 'fast',
+          started_at: null,
+          resumed_from: 'attempt-2',
+          continuation_mode: 'fresh'
+        }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__runner')?.textContent).toBe(
+      'codex · sol · ultra · Fast'
+    );
+    expect(mount.querySelector('.rtile__resumed')?.getAttribute('title')).toBe(
+      '새 session으로 이어받음 (from attempt-2)'
+    );
+  });
+
   test('keeps cleanup failure evidence without rendering AI diagnosis controls', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

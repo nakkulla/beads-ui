@@ -13,6 +13,10 @@
  */
 import { html } from 'lit-html';
 import {
+  formatAttemptTuple,
+  formatContinuationLineage
+} from '../../utils/attempt-display.js';
+import {
   formatUsageTotalWithCost,
   providerUsageBadges,
   usageTooltip
@@ -26,8 +30,11 @@ import { discardReceiptTemplate, timesMeta } from './lanes.js';
  * @property {string} title
  * @property {string|null} runner
  * @property {string|null} model
+ * @property {string|null} [effort]
+ * @property {string|null} [speed]
  * @property {number|null} started_at
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
+ * @property {'session'|'fresh'|null} [continuation_mode]
  * @property {boolean} [paused] - Leaf paused attempt: shows ▶ instead of ⏸ and
  * has no live elapsed clock (worker-phase1 §1.1/§2.1).
  * @property {boolean} [failed] - Unhandled failed/orphaned attempt. Failed
@@ -288,7 +295,8 @@ function runningTile(tile, now, selected_attempt = null) {
       : typeof tile.started_at === 'number'
         ? formatElapsed(now - tile.started_at)
         : '—';
-  const meta = [tile.runner, tile.model].filter(Boolean).join(' · ');
+  const meta = formatAttemptTuple(tile);
+  const lineage = formatContinuationLineage(tile);
   const provider_badges = providerUsageBadges(tile.usage);
   const usage_label = formatUsageTotalWithCost(tile.usage);
   // Same badge style the lane rows use — a resolution session is a different
@@ -324,12 +332,8 @@ function runningTile(tile, now, selected_attempt = null) {
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${tile.resumed_from
-        ? html`<span
-            class="rtile__resumed"
-            title=${`이어받은 세션 (from ${tile.resumed_from})`}
-            >↻</span
-          >`
+      ${lineage
+        ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
         : ''}
       <span class="rtile__elapsed">${elapsed}</span>
       ${failed

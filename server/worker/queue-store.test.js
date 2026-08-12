@@ -4388,6 +4388,52 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
     ]);
   });
 
+  test('round-trips a required continuation and CAS-binds its decision', () => {
+    const store = storeWithPrWait(['UI-1']);
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+    const token = {
+      source_attempt_id: 'att-UI-1',
+      source_attempt_digest: 'source',
+      observed_queue_revision: store.snapshot(WS).revision,
+      preset_id: 'p1',
+      preset_revision: 2,
+      effective_exec_digest: 'exec'
+    };
+
+    store.requireMergeContinuation(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      mismatch: {
+        continuation_required: true,
+        prior: { runner: 'codex' },
+        current: { runner: 'claude' },
+        decision_token: token
+      }
+    });
+    const reloaded = createQueueStore();
+    const action = reloaded.snapshot(WS).merge_queue[0].continuation_action;
+    const decided = reloaded.decideMergeContinuation(WS, {
+      expected_revision: reloaded.snapshot(WS).revision,
+      bead_id: 'UI-1',
+      continuation: 'fresh_current',
+      decision_token: /** @type {Record<string, unknown>} */ (
+        action?.mismatch.decision_token
+      )
+    });
+
+    expect(decided.ok).toBe(true);
+    expect(
+      createQueueStore().snapshot(WS).merge_queue[0].continuation_action
+    ).toMatchObject({
+      subject_bead_id: 'UI-1',
+      continuation: 'fresh_current',
+      decision_token: { observed_queue_revision: decided.queue.revision }
+    });
+  });
+
   test('rejects a bead that is not in pr_wait', () => {
     const store = createQueueStore();
 

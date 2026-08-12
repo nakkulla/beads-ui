@@ -1,5 +1,9 @@
 import { html } from 'lit-html';
 import {
+  formatAttemptTuple,
+  formatContinuationLineage
+} from '../../utils/attempt-display.js';
+import {
   formatUsageTotal,
   projectAttemptUsage,
   providerUsageBadges
@@ -229,8 +233,11 @@ function usageDetail(usage, provider) {
  * @property {number|null} [started_at]
  * @property {string|null} [runner]
  * @property {string|null} [model]
+ * @property {string|null} [effort]
+ * @property {string|null} [speed]
  * @property {string|null} [session_id] - Runner session id (short display).
  * @property {string|null} [resumed_from] - Prior attempt this one resumes (§1).
+ * @property {'session'|'fresh'|null} [continuation_mode]
  * @property {number|null} [dismissed_at] - Epoch ms the attempt was dismissed (closed as handled), if any.
  * @property {string|null} [cause] - Why a failed/orphaned attempt ended
  * (UI-qult §4); absent on records written before the field existed.
@@ -466,16 +473,14 @@ export function sessionHistoryTemplate(
               >${STATUS_GLYPH[a.status || ''] || '·'}</span
             >
             <span class="detail-session__id">${a.attempt_id}</span>
-            ${a.resumed_from
+            ${formatContinuationLineage(a)
               ? html`<span
                   class="detail-session__resumed"
-                  title=${`이어받은 세션 (from ${a.resumed_from})`}
+                  title=${formatContinuationLineage(a)}
                   >↻</span
                 >`
               : ''}
-            <span class="detail-session__meta"
-              >${[a.runner, a.model].filter(Boolean).join(' · ')}</span
-            >
+            <span class="detail-session__meta">${formatAttemptTuple(a)}</span>
             ${outer_badges.length > 0
               ? html`<span class="detail-session__role">orchestrator</span>`
               : ''}

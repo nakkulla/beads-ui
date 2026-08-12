@@ -1070,6 +1070,20 @@ export function createCompletionActionDriver(deps) {
         failure_key,
         current.repair_sessions_used + 1
       );
+      const queue = deps.store.snapshot(deps.workspace);
+      const continuation_action = queue.merge_queue?.find(
+        (/** @type {any} */ entry) => entry.bead_id === root_bead_id
+      )?.continuation_action;
+      const continuation =
+        continuation_action?.subject_bead_id === current.subject.bead_id &&
+        (continuation_action.continuation === 'prior_session' ||
+          continuation_action.continuation === 'fresh_current') &&
+        continuation_action.decision_token
+          ? {
+              continuation: continuation_action.continuation,
+              decision_token: continuation_action.decision_token
+            }
+          : {};
       const result = await deps.scheduler.dispatchCompletionRepair(
         deps.workspace,
         {
@@ -1082,9 +1096,28 @@ export function createCompletionActionDriver(deps) {
             repair_bead_id: null,
             status: 'prepared'
           },
-          log_path: fact.evidence?.log_path ?? null
+          log_path: fact.evidence?.log_path ?? null,
+          ...continuation
         }
       );
+      if (result.continuation_mismatch) {
+        const persisted = deps.store.requireMergeContinuation(deps.workspace, {
+          bead_id: root_bead_id,
+          subject_bead_id: current.subject.bead_id,
+          mismatch: result.continuation_mismatch
+        });
+        if (!persisted.ok) {
+          terminalize(
+            root_bead_id,
+            'continuation_persist_failed',
+            'repair_dispatch',
+            failure_key,
+            fact.evidence
+          );
+        }
+        notify();
+        return;
+      }
       if (!result.ok) {
         terminalize(
           root_bead_id,
@@ -1093,6 +1126,12 @@ export function createCompletionActionDriver(deps) {
           failure_key,
           fact.evidence
         );
+      } else if (continuation_action) {
+        deps.store.clearMergeContinuation(deps.workspace, {
+          bead_id: root_bead_id,
+          subject_bead_id: current.subject.bead_id
+        });
+        notify();
       }
       return;
     }

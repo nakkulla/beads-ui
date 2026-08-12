@@ -20,6 +20,7 @@ import {
   closedRangeSince,
   isClosedRange
 } from '../../data/closed-range.js';
+import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createExecDefaultsDialog } from '../worker/exec-defaults-dialog.js';
@@ -341,9 +342,16 @@ export function createMonitorView(mount_element, options) {
    * @param {Record<string, unknown>} payload
    * @param {string} root_dir
    * @param {number} revision
+   * @param {boolean} [retry_conflict]
    * @returns {Promise<any>}
    */
-  async function sendCas(type, payload, root_dir, revision) {
+  async function sendCas(
+    type,
+    payload,
+    root_dir,
+    revision,
+    retry_conflict = true
+  ) {
     if (!transport || !root_dir) {
       return null;
     }
@@ -352,7 +360,10 @@ export function createMonitorView(mount_element, options) {
       root_dir,
       expected_revision: revision
     });
-    if (res && res.conflict) {
+    if (res && res.conflict && retry_conflict) {
+      if (res.queue) {
+        exec_adopted.set(root_dir, res.queue);
+      }
       const fresh =
         res.queue && typeof res.queue.revision === 'number'
           ? res.queue.revision
@@ -367,6 +378,88 @@ export function createMonitorView(mount_element, options) {
       exec_adopted.set(root_dir, res.queue);
     }
     return res;
+  }
+
+  /**
+   * @param {string} root_dir
+   * @param {string} bead_id
+   */
+  function queuedContinuation(root_dir, bead_id) {
+    const adopted = exec_adopted.get(root_dir);
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    const workspace = (Array.isArray(workspaces) ? workspaces : []).find(
+      (item) => item?.root_dir === root_dir
+    );
+    const queue = adopted || workspace;
+    return queue?.merge_queue?.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    )?.continuation_action;
+  }
+
+  /**
+   * @param {string} type
+   * @param {Record<string, unknown>} payload
+   * @param {string} root_dir
+   * @param {number} revision
+   */
+  async function sendContinuationAction(type, payload, root_dir, revision) {
+    const initial = await sendCas(type, payload, root_dir, revision);
+    const current_revision =
+      exec_adopted.get(root_dir)?.revision ??
+      initial?.queue?.revision ??
+      revision;
+    return resolveContinuationMismatch(
+      initial,
+      (continuation, decision_token) =>
+        sendCas(
+          type,
+          { ...payload, continuation, decision_token },
+          root_dir,
+          current_revision,
+          false
+        )
+    );
+  }
+
+  /**
+   * @param {string} root_dir
+   * @param {string} bead_id
+   * @param {number} revision
+   * @param {any} mismatch
+   */
+  async function decideQueuedContinuation(
+    root_dir,
+    bead_id,
+    revision,
+    mismatch
+  ) {
+    const result = await resolveContinuationMismatch(
+      { continuation_mismatch: mismatch },
+      (continuation, decision_token) =>
+        sendCas(
+          'worker-merge-queue-add',
+          { bead_id, continuation, decision_token },
+          root_dir,
+          revision,
+          false
+        )
+    );
+    const action = result?.queue?.merge_queue?.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    )?.continuation_action;
+    if (
+      result?.applied !== true &&
+      action?.continuation === null &&
+      action.mismatch
+    ) {
+      await decideQueuedContinuation(
+        root_dir,
+        bead_id,
+        result.queue.revision,
+        action.mismatch
+      );
+    }
   }
 
   /**
@@ -853,7 +946,12 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('mon-op--resume')) {
-      void sendCas('worker-attempt-resume', { attempt_id }, root_dir, revision);
+      void sendContinuationAction(
+        'worker-attempt-resume',
+        { attempt_id },
+        root_dir,
+        revision
+      );
       return;
     }
     if (cls.contains('mon-op--dismiss')) {
@@ -866,7 +964,17 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-mini__merge')) {
-      void sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+      const action = queuedContinuation(root_dir, bead_id);
+      if (action?.mismatch && action.continuation === null) {
+        void decideQueuedContinuation(
+          root_dir,
+          bead_id,
+          revision,
+          action.mismatch
+        );
+      } else {
+        void sendCas('worker-merge-queue-add', { bead_id }, root_dir, revision);
+      }
       return;
     }
     if (cls.contains('worker-mini__merge-cancel')) {
@@ -898,7 +1006,12 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-mini__revise-fix')) {
-      void sendCas('worker-revise-fix', { bead_id }, root_dir, revision);
+      void sendContinuationAction(
+        'worker-revise-fix',
+        { bead_id },
+        root_dir,
+        revision
+      );
       return;
     }
     if (cls.contains('worker-mini__revise-approve')) {
