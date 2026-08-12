@@ -1,612 +1,485 @@
-# completion intent 단일 상태기계 — 배포·정리·Parent close 자동 완주
+# UI-f17c: PR부터 배포·정리까지 자동 완주하는 단일 completion saga 설계
 
-- Bead: `UI-f17c`
 - 날짜: 2026-08-12
+- 저장소: `beads-ui`
 - route: `full_plan`
-- 상태: 설계 승인됨 (사용자, 대화 중)
-- 선행 작업: `UI-x9tu` / PR #114, `UI-ckgr` / PR #122
+- 선행 구현: `UI-lbqw`
+- 대체 범위: 이 경로에 있던 기존 UI-f17c 설계 전체
 
-## 배경
+## 1. 배경
 
-`UI-x9tu`는 `auto_merge`를 durable completion intent로 확장해 PR gate,
-ownership probe, same-Bead repair, linked repair PR, merge와 post-merge cleanup
-replay를 연결했다. `UI-ckgr`는 활성 `[AI 정리]` 표면을 제거하고, beads-ui
-self deploy를 exact candidate release, restart journal, runtime identity와 receipt
-readback에 결합했다.
+Worker는 PR 생성, merge gate, GitHub merge, target-base 동기화, candidate
+materialization, 검증, 배포, runtime readback, child/branch 정리, Bead close를 여러
+owner에 나누어 실행한다. 각 owner에는 개별 durable record가 있지만 사용자가 시작한
+“이 PR을 완료한다”는 의도를 끝까지 소유하는 단일 권한이 약하다.
 
-두 구현은 각각의 경계에서는 안전하지만 end-to-end authority가 나뉘어 있다.
+실제 `dotfiles-3vb8`은 PR #378이 이미 merged이고 merge SHA도 관측됐지만 root
+completion은 `merging`, active operation은 `merge_subject:prepared`, deployment
+reconcile은 `pinned`에 남아 있다. managed adapter의 `timeout_ms`는 뒤쪽 adapter
+command에만 적용되고 `materializeRelease()`의 `git fetch`에는 timeout이 전달되지
+않아 child process가 수 시간 동안 끝나지 않았다. 실패 record가 만들어지지 않으니
+bounded retry, recovery session, 사람 확인 중 어느 경로도 시작하지 못했다.
 
-- `completion-intent.js`는 repair와 merge 전후의 상위 lineage를 소유한다.
-- `deployment-reconciler.js`는 candidate materialization부터 managed receipt까지
-  소유한다.
-- `pr-actions.js`는 verify, deploy 호출 뒤 child sweep, branch cleanup, Parent
-  close와 Done 전환을 순서대로 수행한다.
-- `merge-queue.js`, `scheduler.js`, startup reconciliation이 각자의 durable
-  record를 보고 일부 구간을 재개한다.
+UI는 이 하나의 사실을 `머지됨`, `root 머지 중`, `배포 후보 고정`, `PR 대기`처럼
+서로 경쟁하는 badge로 표시한다. 사용자는 현재 단계, 실제 정지 지점, 자동 조치,
+남은 일을 한눈에 알 수 없다.
 
-이 분산된 authority 때문에 개별 effect는 성공했는데 다음 owner가 이어받기 전
-process가 종료되면 root operation이 영구 정지할 수 있다. 현재 코드에서 확인된
-대표 경계는 다음과 같다.
+이 설계는 `UI-f17c`를 전면 재정의한다. PR이 제출된 뒤부터 완료될 때까지 root
+completion saga 하나가 다음 effect를 결정하고, 모든 유한 실패는 결정적 재시도 또는
+자동 recovery session으로 이어진다. 새 credential·광범위 권한·판정 불가능한 외부
+effect만 실제 mutation 직전에 확인을 요구한다.
 
-1. repair dispatch의 guard/claim effect가 `beginRepairOp` durable prerecord보다
-   먼저 일어날 수 있다.
-2. `waiting_repair_pr` 재관측에서 이미 `MERGED`인 repair PR이 `OPEN` 경로로
-   덮일 수 있다.
-3. managed receipt를 `complete`로 기록한 뒤 child sweep, branch cleanup,
-   Parent close, Done 전환 전에 종료되면 startup이 complete reconcile을 건너뛴다.
-4. Parent close가 성공한 뒤 최종 queue persist가 실패하면 closed Bead와 남은
-   `pr_wait`/intent가 모순되며, 재실행 시 duplicate close 가능성이 있다.
-5. 수동 discard가 queue lane만 제거하면 durable intent가 고아로 남을 수 있다.
-6. 현재 integration fixture는 Reconciler 또는 coordinator를 따로 검증하며,
-   실제 startup attachment부터 runtime receipt와 Parent close까지 한 번에
-   관통하지 않는다.
+## 2. 목표
 
-이 스펙은 새 복구 supervisor를 추가하지 않는다. root completion intent 하나를
-PR 대기부터 runtime 검증, cleanup tail과 Parent close까지의 유일한 orchestration
-authority로 확장한다.
+1. PR 제출 이후 merge, post-merge verify/deploy/readback, child/branch cleanup,
+   Bead close, Done 진입까지 root completion saga 하나가 연속 소유한다.
+2. 모든 blocking subprocess와 외부 control operation이 유한한 deadline 또는
+   authoritative readback을 가진다.
+3. retryable transient failure는 같은 effect identity로 bounded retry하고, 유한 실패가
+   되면 current preset의 recovery session을 자동으로 시작하거나 재개한다.
+4. 같은 provider recovery는 기존 provider session을 현재 tuple로 이어가고, provider가
+   다르면 같은 owned worktree에 current-preset fresh session을 자동 생성한다.
+5. recovery session이 credential/permission/ambiguous external effect를 안전하게 자동
+   해결하면 bounded audit를 Done 카드에 보존한다.
+6. UI는 primary 상태 하나, 사용자 진행 경로 하나, 세부 evidence 한 곳만 표시한다.
+7. 현재 멈춘 `dotfiles-3vb8`을 새 runtime 시작 후 중복 merge/restart 없이 adopt하고
+   끝까지 완주한다.
 
-## 사용자 결정
+## 3. 비목표
 
-1. **단일 orchestration 상태기계**를 사용한다. merge, scheduler, deploy,
-   cleanup 구현은 기존 owner에 남기되 다음 phase 결정 권한은 root intent만 가진다.
-2. 활성 root에서 사용자가 `[폐기]`를 실행하면 전체 completion intent를
-   취소한다. queue entry만 지우거나 자동으로 재큐하지 않는다.
-3. 활성 AI cleanup diagnosis session, UI, WS action, scheduler dispatch는
-   되살리지 않는다. legacy diagnosis record는 read compatibility와 bounded
-   migration 입력으로만 사용한다.
+- credential 생성·회전·폐기 또는 secret 값 표시·복사·저장
+- `sudo`, `chown`, 광범위 recursive permission 변경
+- authoritative readback 없는 외부 effect의 추측성 반복
+- cross-provider transcript 또는 session ID 변환
+- Bead workflow label/metadata에 completion recovery audit 추가
+- `auto_advance`를 자동 completion 스위치로 재해석
+- `docs/agents/repo-ops.toml`의 verify/deploy declaration schema 변경
+- 진행 중인 `UI-lbqw` worktree나 구현을 UI-f17c에서 병합·대체
 
-## 목표
+## 4. 선행 조건과 issue 경계
 
-1. `auto_merge=true`인 worker-owned root가 `pr_wait`부터 gate/repair, merge,
-   post-merge verify, managed deploy, restart/readback, cleanup과 Parent close까지
-   같은 durable intent로 완주한다.
-2. 수동 `[정리]`도 별도 임시 경로가 아니라 `manual` authorization을 가진 같은
-   intent를 생성하거나 재개한다.
-3. session, repair Bead, repair PR, merge, restart, receipt, Parent close effect를
-   한 root lineage와 budget에 결합한다.
-4. process가 어느 handoff에서 종료돼도 authoritative readback으로 같은 operation을
-   채택하거나 fail closed하며 duplicate effect와 budget reset이 없다.
-5. exact candidate와 live runtime identity가 증명되기 전에는 deploy success,
-   cleanup completion, Parent close를 기록하지 않는다.
-6. 자동 수리가 안전하지 않은 실패는 원인을 추측하거나 새 repair session을
-   만들지 않고 구체적 evidence와 함께 `needs_human`으로 종료한다.
-7. Worker UI는 실제 root progress를 `running`, `recovering`, `paused`,
-   `completed`, `cancelled`, `needs_human`으로 일관되게 표시한다.
+`UI-lbqw`는 먼저 자체 구현, PR, merge, post-merge deploy를 완료한다. `UI-f17c`
+implementation worktree는 그 landed `main` SHA에서만 만든다.
 
-## 비목표
+UI-f17c는 UI-lbqw의 current-preset continuation resolver와 attempt provenance를
+호출한다. resolver의 내부 구현이나 preset precedence를 복제하지 않는다. plan의 첫
+implementation 단계는 landed SHA에서 다음 semantic contract를 readback한다.
 
-- GitHub merge, git worktree, Beads, managed Adapter 구현을 coordinator 안에
-  복제하는 것.
-- credentials, permission, external service, 전역 개발 환경을 자동 수정하는 것.
-- agent가 base에 직접 push하거나 `gh pr merge`를 호출하는 것.
-- managed pointer rollback, release GC, shared checkout stash/reset/clean을
-  자동화하는 것.
-- repair session 총 2회 cap 또는 conflict-resolution 별도 cap을 늘리는 것.
-- 새 Beads metadata key나 workflow label/status vocabulary를 정의하는 것.
-- 물리적 exactly-once를 약속하는 것. 외부 시스템과 `queue.json`은 하나의
-  transaction이 아니므로 at-least-once 실행과 logical exactly-once 소비를 쓴다.
+```text
+source attempt + current Bead/workspace preset + continuation policy
+  -> immutable effective exec tuple/provenance
+  -> same provider: prior session resume
+  -> provider mismatch: current-preset fresh session
+```
 
-## 핵심 불변식
+함수명·파일 이동만 생겼으면 plan의 seam 경로를 갱신한다. precedence, rollback,
+session lineage 의미가 달라졌으면 구현 전에 plan을 다시 검토한다.
 
-1. **root authority 단일화**: end-to-end phase와 다음 effect 선택은
-   `completion_intents[root_bead_id]`만 결정한다.
-2. **effect 구현 단일화**: 모든 PR merge는 기존 merge driver, 모든 cleanup은
-   기존 `pr-actions` primitive, managed restart는 기존 Adapter journal을 쓴다.
-3. **action-before-effect**: session spawn, Bead create, merge handoff, cleanup
-   replay, deploy, close 전에 root `active_op`를 durable하게 기록한다.
-4. **bound evidence**: 결과는 root, subject, target base, head/merge/candidate SHA,
-   attempt와 receipt digest가 모두 일치할 때만 소비한다.
-5. **red 우회 금지**: verify/CI/runtime health가 red 또는 unbound인 상태에서
-   merge, deploy success, cleanup completion으로 넘어가지 않는다.
-6. **root queue 직렬화**: repair session/PR과 post-merge recovery 동안 root가
-   같은 merge queue turn을 유지한다.
-7. **lineage budget**: root와 모든 repair descendant가 code-repair session
-   총 2회를 공유하며 restart, head/base 변경, cancel 재개로 초기화되지 않는다.
-8. **readback idempotency**: 외부 effect 뒤 queue persist 전에 crash해도 Bead,
-   PR, process, receipt와 filesystem readback으로 이미 한 effect를 다시 쓰지 않는다.
-9. **취소 우선**: `cancel_pending` 이후 새 repair, merge, deploy, close effect를
-   시작하지 않는다. 이미 commit된 irreversible effect는 readback만 끝낸다.
-10. **진단 비활성**: legacy diagnosis evidence 소비는 새 diagnosis attempt,
-    resume, retry budget을 만들지 않는다.
+기존 `UI-f17c` Bead ID와 spec 경로는 유지한다. 이 문서의 게시 SHA가 이전
+`spec_review`, `impl_entry`, plan lineage를 모두 대체한다.
 
-## 1. 단일 orchestration 상태
+## 5. 단일 authority
 
-### 1.1 Root record
+### 5.1 소유권
 
-`queue.json.completion_intents`의 기존 record를 schema v2로 확장한다.
+`completion_intents[root_bead_id]`만 다음 phase와 effect를 결정한다.
+
+- `queue.reconcile`: candidate/deploy 하위 effect journal과 evidence
+- managed journal/receipt/runtime pointer: deploy effect readback
+- scheduler attempt: recovery session execution record
+- merge queue: root 순서와 merge mutual exclusion
+- PR observation: GitHub authoritative fact cache
+
+위 record는 스스로 다음 작업을 시작하는 authority가 아니다. startup과 live path 모두
+completion coordinator가 같은 reducer를 거쳐 하위 adapter를 호출한다. startup에서
+persisted reconcile을 무기한 `await`한 뒤 saga를 시작하는 순서를 금지한다. saga를 먼저
+복원하고, runnable effect를 coordinator가 schedule한다.
+
+### 5.2 effect journal
+
+모든 state-changing effect는 실행 전에 root intent에 prerecord한다.
 
 ```js
-completion_intents[root_bead_id] = {
-  schema_version: 2,
-  authorization: {
-    kind: 'auto', // 'auto' | 'manual'
-    granted_at: 1786500000000,
-    cancel_requested_at: null
+{
+  op_id,
+  kind,
+  status: 'prepared' | 'running' | 'settling' | 'observed' | 'consumed',
+  binding: {
+    root_bead_id,
+    subject_bead_id,
+    subject_sha,
+    base_sha,
+    candidate_sha,
+    attempt_id
   },
-  target_base: 'main',
-  phase: 'gating',
-  subject: {
-    role: 'root', // 'root' | 'repair'
-    bead_id: 'UI-abcd',
-    pr_url: 'https://github.com/.../pull/123',
-    head_sha: '<40-hex>',
-    base_sha: '<40-hex>',
-    merged_sha: null
-  },
-  subject_stack: [],
-  repair_sessions_used: 0,
-  repair_bead_ids: [],
-  active_op: null,
-  deploy_evidence: null,
-  terminal: null
+  started_at,
+  deadline_at,
+  retry_count,
+  last_heartbeat_at,
+  recovery_attempt_id,
+  confirmation
 }
 ```
 
-`authorization.kind='auto'`는 worker-owned root의 `auto_merge=true`에서,
-`manual`은 사용자의 merged `[정리]` action에서 온다. authorization은 effect
-허용의 출처일 뿐 Beads workflow gate나 GitHub merge 권한을 새로 만들지 않는다.
+`binding`에서 해당하지 않는 값은 `null`이다. unknown field를 버려 새 budget/op를
+만드는 fail-open migration은 금지한다. malformed/contradictory binding은 자동
+session이 진단하되 mutation 전 `awaiting_confirmation`으로 수렴한다.
 
-### 1.2 Phase vocabulary
+외부 effect의 exactly-once는 물리적 호출 횟수가 아니라 authoritative readback 기준의
+logical exactly-once다. timeout/crash 뒤에는 먼저 readback하고 `already_applied`이면
+adopt, `not_applied`이면 같은 `op_id`로 retry, `unknown`이면 confirmation을 요구한다.
 
-phase는 다음 값으로 제한한다.
+## 6. lifecycle
 
-- `gating`: current subject의 authoritative PR/gate/ownership 관측
-- `repairing`: same-Bead 또는 linked repair session 준비·실행·정산
-- `waiting_repair_pr`: linked repair PR의 exact OPEN/MERGED 상태 대기
-- `merging`: 기존 merge driver가 current subject를 처리 중
-- `post_merge_verify`: landed root의 base sync와 repository verify
-- `deploying`: candidate materialization과 managed Adapter 실행
-- `restarting`: durable restart handoff effect 정산
-- `runtime_readback`: marker, live `/healthz`, receipt exact binding 검증
-- `child_sweep`: plan-anchored execution child close/readback
-- `branch_cleanup`: owned head worktree/branch cleanup/readback
-- `parent_close`: Parent close와 status readback
-- `paused`: auto authorization OFF로 새 operation을 시작하지 않음
-- `cancel_pending`: 새 effect를 막고 이미 commit된 effect를 readback 중
-- `cancelled`: 사용자 취소 terminal
-- `needs_human`: 자동화 불가 terminal
-- `completed`: runtime, cleanup, Parent close, Done이 모두 확정된 terminal
+fine phase는 durable하게 유지하고 UI용 primary state/progress를 server에서 함께
+projection한다.
 
-기존 `cleaning`은 load 시 evidence에 따라 `post_merge_verify`, `deploying`,
-`restarting`, `runtime_readback` 또는 tail phase로 정규화한다. 근거가 부족하면
-임의로 처음부터 재실행하지 않고 `needs_human:intent_state_ambiguous`로 둔다.
+| fine phase | primary state | 사용자 단계 |
+| --- | --- | --- |
+| `gating`, `waiting_pr` | `running` | PR 제출 |
+| `merging` | `running` | PR 머지 |
+| `materializing` | `running` | 배포 준비 |
+| `verifying`, `deploying`, `runtime_readback` | `running` | 검증·배포 |
+| `child_sweep`, `branch_cleanup`, `parent_close` | `running` | 정리 완료 |
+| `recovering`, `waiting_repair_pr` | `recovering` | 원래 단계 유지 |
+| `awaiting_confirmation` | `needs_human` | 원래 단계 유지 |
+| `needs_human` | `needs_human` | 원래 단계 유지 |
+| `paused` | `paused` | 원래 단계 유지 |
+| `completed` | `completed` | 정리 완료 |
+| `cancelled` | `cancelled` | 중단 |
 
-### 1.3 Active operation
+기존 schema의 `gating`, `repairing`, `cleaning`은 startup normalize에서 확정 가능한
+세부 phase로 변환한다. evidence가 부족하면 phase를 추측하지 않고 recovery
+classification으로 보낸다. 기존 `needs_human`에 exact recovery attempt/session과
+resumable operation이 결합돼 있으면 `awaiting_confirmation`으로 채택한다. 그런
+lineage가 없으면 새 session이나 authority를 발명하지 않고 terminal `needs_human`을
+보존한다. `cancelled`는 사용자 취소에만 사용한다.
 
-모든 외부 effect는 하나의 `active_op` 형식을 사용한다.
+`awaiting_confirmation`은 terminal discard가 아니다. 동일 `op_id`, failure key,
+recovery attempt/session, worktree, preset provenance를 보존한다. 사용자가 세션을
+resume해 필요한 판단이나 외부 준비를 마치면 coordinator가 authoritative readback 후
+원래 phase로 돌아간다.
+
+## 7. deadline과 deterministic retry
+
+deadline은 실행 promise 경주만 종료해서는 안 된다. child/process tree를 terminate하고
+close/error settlement까지 관측한 뒤 `timed_out` outcome을 durable하게 기록해야 한다.
+
+| effect | deadline source | retry |
+| --- | --- | --- |
+| candidate materialization 전체 | Worker internal bounded policy | 기존 reconcile backoff 3회 안에서 같은 attempt |
+| Git/GitHub/Beads control operation | Worker internal bounded policy | commit 전 또는 readback `not_applied`일 때만 |
+| verify command | pinned `[verify].timeout_ms` | 기존 verify policy |
+| deploy adapter | pinned `[deploy].timeout_ms` | adapter result/readback policy |
+| runtime restart | managed journal identity + runtime readback deadline | 추측성 두 번째 restart 금지 |
+| recovery session spawn | scheduler spawn/attempt monitor deadline | 동일 prerecord attempt adopt 또는 finite failure |
+
+materialization의 `init`, remote 설정, fetch, checkout, readback 모두 deadline이 있는
+`gitRun`을 사용한다. fetch timeout은 `materialize_timeout`으로 분류하고 기존 reconcile
+retry budget과 backoff를 소비한다. budget 소진 뒤에도 saga loop는 반환해야 하며 바로
+recovery classification을 시작한다.
+
+내부 deadline 숫자는 repo declaration의 verify/deploy timeout 의미를 바꾸지 않는다.
+사용자 설정 없이 모든 workspace에 적용하고 UI evidence에서 deadline source와 retry
+count를 보여준다.
+
+## 8. recovery session policy
+
+### 8.1 공통 launch
+
+유한 실패마다 stable failure key를 만들고 그 key에 recovery lineage를 하나만 허용한다.
+session prerecord와 budget 소비를 한 durable mutation으로 처리한다. crash/restart는 같은
+attempt/session을 adopt하며 duplicate session이나 새 budget을 만들지 않는다.
+
+background automatic recovery는 UI-lbqw resolver를 다음처럼 호출한다.
+
+- same provider: current effective model/effort/speed로 prior session resume
+- provider mismatch: `resume_session_id=null`, 같은 owned worktree, current preset과
+  provenance로 fresh session
+- current preset invalid/unavailable: state mutation이나 fallback 없이
+  `awaiting_confirmation:current_preset_unavailable`
+
+수동 `이어하기`의 provider mismatch dialog는 UI-lbqw 동작을 유지한다. completion
+background path만 `fresh_current`를 자동 선택한다. prior attempt snapshot은 불변이고 새
+attempt가 `resumed_from`, continuation mode, actual tuple/provenance를 기록한다.
+
+### 8.2 자동 허용 범위
+
+recovery session은 다음을 자동 제안할 수 있다. issue-owned worktree 안의 code/config
+수정은 session이 기존 runner 경계에서 수행한다. credential/permission/external effect는
+session이 직접 shell mutation을 실행하지 않고 structured disposition을 durable하게
+제출한다.
 
 ```js
-active_op = {
-  op_id: '<stable-id>',
-  kind: 'dispatch_repair',
-  status: 'prepared', // prepared | dispatched | observed | consumed
-  failure_key: {
-    stage: 'post_merge_verify',
-    reason: 'verify_cmd_failed',
-    subject_sha: '<40-hex>',
-    base_sha: '<40-hex>',
-    result_digest: '<sha256>'
-  },
-  attempt_id: '<preallocated-id>',
-  effect_identity: null,
-  result: null
+{
+  failure_key,
+  action:
+    'retry_original_effect' |
+    'repair_worker_owned_mode' |
+    'adopt_external_effect' |
+    'request_confirmation',
+  category,
+  target_digest,
+  expected_readback_digest,
+  sanitized_evidence
 }
 ```
 
-`kind`은 최소한 다음 effect를 표현한다.
-
-- `probe_ownership`
-- `resume_root`
-- `create_repair`
-- `dispatch_repair`
-- `merge_subject`
-- `retry_cleanup`
-- `verify_merged_base`
-- `reconcile_deploy`
-- `sweep_children`
-- `cleanup_branch`
-- `close_parent`
-- `finish_completion`
-- `cancel_completion`
-
-각 effect의 identity는 kind별 validator가 검사한다. unknown kind, phase와 맞지
-않는 kind, invalid SHA/attempt/status는 새 effect를 실행하지 않고 fail closed한다.
-
-## 2. Owner와 adapter 경계
-
-상태기계는 orchestration을 단일화하지만 effect owner를 흡수하지 않는다.
-
-| 책임 | effect adapter | coordinator가 받는 결과 |
-|---|---|---|
-| PR/CI 관측 | `pr-poller.js`, `gh.js` | PR state, bound head/base/merge SHA, CI evidence |
-| ownership probe | 기존 completion repair probe | pinned base/head verdict와 digest |
-| session dispatch/resume | `scheduler.js` | prerecord된 attempt의 running/terminal readback |
-| repair Bead | 기존 bd adapter | deterministic ID, description/dependency identity |
-| PR merge | `merge-queue.js` → `pr-actions.merge()` | merged/refused/conflict, merge SHA |
-| base sync/verify | `pr-actions` primitive | pinned base SHA, verify result/log |
-| candidate deploy | `DeploymentReconciler` | attempt/candidate/receipt 또는 finite failure |
-| physical restart | managed Adapter/helper | journal stage와 exact process identity |
-| child/Parent close | `pr-actions` Beads primitive | pre-read status, write 여부, status readback |
-| branch cleanup | 기존 cleanup primitive | absence/ownership/readback evidence |
-
-adapter는 end-to-end terminal을 직접 정하지 않는다. 자기 effect의 결과를 root
-coordinator에 전달하고, coordinator가 bound evidence를 소비해 다음 phase를 한
-mutation으로 기록한다.
-
-## 3. Authoritative data flow
-
-### 3.1 Intake
-
-Auto intake는 worker-owned `pr_wait` root의 candidate 판정, root merge queue
-placement, v2 intent 생성까지 한 store mutation으로 기록한다. linked repair child는
-`repair_bead_ids` membership 때문에 새 root intent를 얻지 않는다.
-
-수동 `[정리]`는 merged PR과 Bead identity를 클릭 시점에 다시 읽은 뒤 `manual`
-intent를 생성하거나 기존 intent를 재개한다. 이미 terminal인 intent는 같은 receipt와
-Parent status를 확인한 evidenced no-op만 허용한다.
-
-### 3.2 Gate와 ownership
-
-Gate 결과는 `OPEN`, `MERGED`, `CLOSED`, `missing/error`를 먼저 분리한 뒤
-mergeability와 verify/CI를 판정한다.
-
-- green root/repair subject → `merge_subject`
-- conflict → 기존 conflict-resolution; repair budget 불변
-- PR verify red + pinned base green → same-Bead resume
-- PR/base red → deterministic linked repair
-- repair PR `OPEN` → repair subject로 전환
-- repair PR `MERGED` → merge를 재호출하지 않고 merge SHA를 채택해 cleanup/readback
-- missing/stale SHA/PR → 남은 budget과 previous observation을 대조하고,
-  ownership을 증명하지 못하면 `needs_human:repair_pr_unobservable`
-
-repair dispatch는 다음 순서를 지킨다.
-
-1. attempt ID preallocate
-2. op, budget 증가, attempt prerecord를 한 store mutation으로 기록
-3. guard 설치와 claim
-4. spawn/resume
-5. process/session/PR/head readback
-6. exact result consume
-
-guard/claim 또는 spawn ambiguity 뒤 prerecord가 없던 상태로 돌아가 새 budget을
-만드는 경로는 허용하지 않는다.
-
-### 3.3 Merge와 post-merge verify
-
-모든 merge는 root queue head를 유지한 채 기존 merge driver만 호출한다. GitHub에서
-이미 merge된 사실이 관측되면 merge command를 반복하지 않고 exact merge SHA를
-채택한다.
-
-landed root는 `post_merge_verify`로 이동한다. 기존 repository declaration에서
-base sync와 verify를 실행하고, verify red에서는 deploy를 시작하지 않는다.
-
-- built-in flake retry에서 green → failure record 없이 계속
-- 최종 red이며 code/config regression이 증명됨 → linked repair
-- legacy diagnosis의 bound `flake`/`environment` verdict → diagnosis record를
-  수정하지 않고 digest-bound `retry_cleanup` op를 정확히 한 번 실행
-- credentials, permission, external service, timeout/spawn ambiguity,
-  ownership undecidable → `needs_human`
-
-새 AI diagnosis attempt나 free-form verdict writer는 없다. 새 failure는 finite reason,
-failure code와 pinned evidence만 사용한다.
-
-### 3.4 Managed deploy와 receipt
-
-`reconcile_deploy` op는 merged floor와 candidate SHA를 먼저 기록한다.
-DeploymentReconciler와 Adapter의 existing journal은 physical restart effect의
-하부 fence로 유지한다.
-
-managed receipt success는 다음 네 action을 모두 포함해야 한다. 기존
-`queue.reconcile` record는 이 provider effect의 하부 journal/evidence로 남지만,
-그 record만으로 end-to-end phase나 cleanup terminal을 결정하지 않는다.
-
-1. `dependency_install`
-2. `pointer_cutover`
-3. `restart_handoff`
-4. `runtime_identity_readback`
-
-각 action은 protocol, repo, attempt, merged floor, candidate SHA와 release realpath에
-결합된다. 최종 runtime action은 marker와 live `/healthz`의 protocol, PID, OS start,
-instance, source realpath/SHA, host, port, health를 exact candidate와 비교한다.
-nonempty success 배열이나 stdout 문구만으로 receipt를 승인하지 않는다.
-
-restart pre-commit failure만 같은 attempt의 bounded provider retry를 허용한다.
-post-commit effect는 exact runtime identity로 receipt-only recovery하거나,
-증명할 수 없으면 `needs_human:restart_effect_ambiguous`다. 새 restart를 추측하지
-않는다.
-
-### 3.5 Cleanup tail과 completion
-
-receipt consume 뒤 다음 tail도 root phase로 durable하게 진행한다.
-
-1. `child_sweep`
-2. `branch_cleanup`
-3. `parent_close`
-4. `finish_completion`
-
-각 단계는 op prerecord → effect → authoritative readback → consume 순서다.
-
-- child/Parent close 전에 현재 status를 읽는다.
-- 이미 `closed`이면 close write를 생략하고 readback을 evidence로 채택한다.
-- branch/worktree가 이미 없으면 absence와 ownership을 확인한 evidenced no-op이다.
-- Parent close 뒤 `finish_completion`은 Done, intent `completed`, tail completion을
-  가능한 한 같은 store mutation으로 기록한다.
-- 최종 persist가 실패하면 `close_parent` 또는 `finish_completion` op를 남겨
-  startup이 Parent `closed` readback 뒤 queue mutation만 재시도한다.
-
-`receipt complete`와 `tail complete`는 같은 의미가 아니다. startup과 poller는
-receipt가 complete여도 terminal intent 또는 tail completion이 없으면 남은 tail을
-재개한다.
-
-## 4. 취소와 pause
-
-### 4.1 Auto OFF
-
-`auto_merge` OFF는 새 repair/session/merge operation 시작을 멈춘다. 실행 중 effect는
-kill하지 않고 결과를 기록한 뒤 `paused`로 둔다. 이미 landed된 root의 현재
-idempotent readback은 끝낼 수 있지만 새 code repair나 deploy effect는 ON까지
-시작하지 않는다. ON 시 pinned evidence를 다시 gate하며 budget을 초기화하지 않는다.
-
-### 4.2 수동 폐기
-
-활성 root의 `[폐기]`는 전체 intent 취소다.
-
-1. `cancel_completion` op와 `cancel_requested_at`을 먼저 기록한다.
-2. 새 session, merge, deploy, close effect를 차단한다.
-3. 아직 commit되지 않은 prepared effect는 fenced cancellation로 정산한다.
-4. 이미 merge/restart가 commit됐으면 rollback하지 않고 PR/runtime readback만 한다.
-5. owned temporary execution state는 기존 discard primitive로 정리한다.
-6. `cancelled` terminal과 evidence를 기록하고 queue에서 제거한다.
-
-취소는 Bead 성공이나 `closed` 증거가 아니다. Bead status 변경은 기존 discard
-계약이 소유하며 coordinator가 임의로 completion status로 승격하지 않는다.
-
-## 5. Restart와 migration reconciliation
-
-startup과 queue change마다 모든 nonterminal root intent를 검사한다. merge queue에
-있는 첫 항목만 보는 것으로 끝내지 않고, lane과 intent가 어긋난 고아 record도
-정산한다.
-
-| durable state | authoritative readback | 처리 |
-|---|---|---|
-| prepared session op | 같은 attempt 존재 | dispatched로 채택 |
-| prepared repair create | deterministic Bead identity 일치 | 기존 Bead 채택 |
-| waiting repair PR | PR OPEN | repair subject 전환 |
-| waiting repair PR | PR MERGED | merge SHA 채택, merge command 생략 |
-| merging | PR MERGED | post-merge phase로 전환 |
-| deploy journal pre-commit | restart 0회 증명 | 같은 attempt provider retry |
-| deploy journal post-commit | exact live runtime | receipt-only recovery |
-| receipt complete, tail incomplete | Parent/child/branch 상태 | 남은 tail 재개 |
-| Parent closed, finish op 남음 | closed readback | queue/Done mutation만 재시도 |
-| root queue entry 없음, cancel evidence 있음 | owned effects settled | cancelled |
-| root queue entry 없음, cancel evidence 없음 | 복구 authority 불명 | needs_human |
-| 어떤 상태든 SHA/attempt binding 불일치 | stale/contradictory | needs_human |
-
-legacy v1 intent/reconcile은 다음 순서로 읽는다.
-
-1. Parent `closed` 또는 root Done이 확인되면 `completed`로 채택한다.
-2. exact managed receipt와 Parent `resolved`가 있으면 완료되지 않은 tail로 채택하고
-   child/branch/Parent readback부터 재개한다.
-3. nonterminal reconcile은 같은 attempt와 candidate binding으로 phase를 복원한다.
-4. legacy diagnosis verdict는 current cleanup failure와 source attempt에
-   unambiguously join될 때만 digest-bound retry operation의 입력으로 읽는다.
-   attempt/failure binding이 없거나 둘 이상이면 소비하지 않는다.
-5. identity, receipt, Parent status가 부족하거나 서로 모순되면
-   `needs_human:legacy_tail_ambiguous`다.
-
-unknown field를 삭제해 fresh budget이나 새 operation을 만드는 fail-open migration은
-금지한다.
-
-## 6. Failure policy
-
-| stage/evidence | disposition |
-|---|---|
-| conflict | 기존 conflict-resolution, repair budget 불변 |
-| PR verify/CI red, base green | same-Bead repair |
-| base 또는 post-merge code/config regression | linked repair Bead/PR |
-| bound `adapter_regression`, non-retryable | linked repair |
-| legacy bound `flake`/`environment` verdict | 같은 failure digest의 cleanup replay 1회 |
-| retryable pointer/helper pre-commit failure | 같은 deploy attempt의 bounded retry |
-| runtime/marker/receipt mismatch | needs_human |
-| credentials/auth/permission/external service | needs_human |
-| unknown/malformed/unbound failure or receipt | needs_human |
-| repair session 총 2회 소진 | needs_human |
-| manual cancel | cancelled |
-
-terminal record는 `reason`, `stage`, failure/effect key, subject, used budget,
-evidence/log path, exact SHA/attempt, timestamp를 유지한다.
-
-## 7. Worker와 UI projection
-
-fine-grained phase는 유지하고 client에 coarse state를 함께 투영한다.
-
-| coarse state | phase |
-|---|---|
-| `running` | `gating`, `merging`, `post_merge_verify` |
-| `recovering` | `repairing`, `waiting_repair_pr`, `deploying`, `restarting`, `runtime_readback`, `child_sweep`, `branch_cleanup`, `parent_close` |
-| `paused` | `paused` |
-| `completed` | `completed` |
-| `cancelled` | `cancel_pending`, `cancelled` |
-| `needs_human` | `needs_human` |
-
-root card 하나에 phase, repair budget, current subject/repair PR, deploy attempt,
-candidate SHA, retry count와 terminal evidence를 표시한다. repair child는 독립 root
-card로 중복 표시하지 않는다.
-
-active `running`/`recovering` 상태에서는 generic cleanup banner의 “사람이
-마무리해야 함”과 “자동 재시도 없음” 문구를 표시하지 않는다. durable retry count가
-0이면 재시도했다고 말하지 않는다. `needs_human`일 때만 사람이 확인할 action과
-구체적 evidence를 표시한다.
-
-`[AI 정리]`, diagnosis spinner/result/action, diagnosis WS/scheduler dispatch는
-추가하지 않는다. legacy diagnosis fields와 historical evidence chip은 read-only로
-남길 수 있지만 completion 성공이나 active 해결 surface로 투영하지 않는다.
-
-## 8. Test scope
-
-### RED-GREEN seam 1 — schema, reducer, classifier purity
-
-1. v2 phase/op/authorization/terminal schema valid/invalid normalization
-2. v1 `cleaning`/reconcile/diagnosis migration과 fail-closed ambiguity
-3. intake의 root queue + intent single mutation
-4. `beginRepairOp`의 budget + attempt + op single mutation
-5. cancel prerecord와 orphan intent terminal reconciliation
-6. classifier와 `observe()` 호출 전후 queue deep snapshot와 revision 불변
-7. `completed` reducer action의 실제 consume 경로
-
-### RED-GREEN seam 2 — repair journal과 PR observation
-
-1. prerecord 뒤/spawn 전 crash
-2. spawn 뒤/attempt adoption 전 crash
-3. repair Bead create 뒤/identity consume 전 crash
-4. repair PR OPEN 뒤/subject 전환 전 crash
-5. repair PR MERGED 관측에서 merge command 0회, cleanup/readback 1회
-6. missing/stale PR과 head/base drift의 retry 또는 needs_human 수렴
-7. guard/claim이 prerecord보다 먼저 발생하지 않음
-
-### RED-GREEN seam 3 — managed receipt와 restart
-
-1. 네 required action 누락, duplicate, unknown, unbound receipt 거부
-2. exact install/pointer/restart/runtime action과 digest 승인
-3. helper spawn 전, prerecord 전, commit 전 crash의 restart 0회
-4. commit 뒤/receipt rename 전 crash의 receipt-only recovery 또는 ambiguity
-5. marker/live PID/start/instance/source/path/SHA/host/port mismatch 거부
-6. 같은 attempt에서 restart와 receipt consume의 추가 호출 0회
-
-### RED-GREEN seam 4 — cleanup tail
-
-1. receipt complete 직후 old process 종료
-2. child sweep effect 전/후 종료
-3. branch cleanup effect 전/후 종료
-4. Parent close effect 전/후 종료
-5. Parent close 뒤 final queue persist 실패
-6. closed pre-read가 duplicate close write를 막음
-7. restart를 두 번 반복해도 Done, close, budget reset 중복 없음
-8. external merged manual intent도 non-persistent registry와 무관하게 tail 재개
-
-### RED-GREEN seam 5 — UI와 WS
-
-1. 모든 phase의 coarse state mapping
-2. root-only projection과 repair child suppression
-3. active recovery와 cleanup failure가 함께 있을 때 coordinator progress 우선
-4. retry count 0/N 문구 정합
-5. malformed intent의 visible `needs_human`
-6. legacy diagnosis read-only와 active action/transport 0건
-7. cancel pending/terminal button lock과 evidence
-
-### Integrated startup/crash fixture
-
-fixture는 reducer나 Reconciler를 직접 호출하는 데서 끝나지 않는다. real git
-repository와 fake runner/GitHub/Beads/project manager를 사용하고 실제
-`startWorkerAttachment`, `createPrActions`, merge queue, managed Adapter를 통과한다.
-
-다음 end-to-end 경로를 검증한다.
-
-1. PR-owned red → same-Bead repair → 새 head green → merge/deploy/close
-2. base-owned red → linked repair PR → root re-gate → completion
-3. post-merge regression → linked repair PR → cleanup 전체 replay → completion
-4. legacy flake/environment verdict → 같은 failure/attempt cleanup replay 정확히 1회
-5. 두 repair 모두 red → budget 2 유지 + `needs_human`
-6. manual cleanup → managed deploy → tail completion
-7. manual discard → cancel → restart 뒤 비재생성
-
-각 crash window는 duplicate session, repair Bead, PR merge, restart, receipt,
-Parent close, Done이 없고 root budget이 초기화되지 않음을 호출 횟수와 durable
-readback으로 검증한다.
-
-### Regression coverage
-
-- existing conflict-resolution cap과 queue serialization
-- existing PR-only/base ownership probe
-- existing managed Adapter journal/restart integration
-- legacy diagnosis round-trip와 orphan retirement
-- legacy workspace deploy guards
-- ordinary non-auto/manual merge path
-- board/monitor/worker existing card behavior
-
-### Verification bundle
-
-- focused coordinator/store/scheduler/merge/pr-actions/reconciler/WS/UI tests
-- real-git + fake runner/GitHub/Beads/project manager startup fixture
+coordinator는 source attempt, failure key, current op/binding, allowlisted action, exact target
+ownership을 검사한 뒤 좁은 effect adapter만 실행한다. agent가 임의 command를
+성공했다고 self-report한 것은 audit 또는 completion evidence가 아니다. 성공은
+coordinator-owned authoritative readback으로만 확정한다.
+
+1. issue-owned worktree의 code/config 수정, 검증, commit, PR 생성
+2. 이미 존재하고 유효함을 tool/readback이 증명한 credential의 재사용
+3. exact Worker-owned path이며 owner와 expected mode가 증명된 파일/디렉터리의 좁은
+   mode 복구
+4. authoritative readback으로 외부 effect가 적용됐음을 adopt하거나 적용되지 않았음을
+   증명한 뒤 같은 effect를 retry
+5. Worker-owned incomplete release의 recoverable quarantine과 재materialization
+
+credential 값, raw auth output, secret-bearing config container는 prompt, log, queue,
+audit, UI에 저장하지 않는다. credential probe는 key path/type/status만 사용한다.
+
+### 8.3 confirmation hard stop
+
+session은 자동으로 시작해 진단하지만 다음 mutation 직전에 멈춘다.
+
+- credential 발급·회전·폐기 또는 새로운 auth authority 획득
+- `sudo`, `chown`, Worker ownership이 증명되지 않은 path, broad recursive permission
+- authoritative readback으로 결과를 판정할 수 없는 외부 effect 반복
+- user data 삭제, remote history 변경, scope 밖 외부 시스템 mutation
+- source-of-truth/ownership 충돌
+
+durable confirmation에는 category, 요청 action, exact bounded target, sanitized evidence,
+session/attempt ID, created time만 기록한다. secret이나 실행용 credential은 기록하지
+않는다. UI는 `세션 이어하기`를 제공하고, 승인 또는 사용자의 외부 해결 뒤 같은
+session/op에서 계속한다.
+
+## 9. recovery audit와 Done badge
+
+root completion intent는 bounded `recovery_audit`를 가진다. 최대 16개 event를 오래된
+순서로 보존하고 초과분은 category별 count/digest summary로 접는다.
+
+```js
+{
+  category:
+    'credential_reuse' |
+    'worker_owned_permission_repair' |
+    'ambiguous_effect_reconciled',
+  resolution: 'reused' | 'repaired' | 'adopted' | 'retried',
+  effect_digest,
+  readback_digest,
+  attempt_id,
+  at
+}
+```
+
+event는 자동 action과 후속 readback이 모두 성공한 뒤 append한다. diagnosis만 했거나
+사람이 실제 mutation을 수행한 경우에는 자동 해결 badge를 만들지 않는다. completion
+`completed` 전환과 final audit seal, Done lane 진입은 crash-safe 순서로 수행하고
+restart 후 중복 event/badge를 만들지 않는다.
+
+UI projection은 category를 다음 badge로 접는다.
+
+- `자동복구 · 자격증명 재사용`
+- `자동복구 · 권한 복구`
+- `자동복구 · 외부 결과 확인`
+
+audit SoT은 Worker-owned `queue.json` completion record다. Bead label/metadata/notes에는
+audit를 쓰지 않는다. Done 기간 필터가 행을 숨기기 전까지 restart 후에도 badge와
+sanitized tooltip을 유지한다.
+
+## 10. UI
+
+사용자가 선택한 card 방향은 “primary 상태 하나 + 진행 경로”다.
+
+```text
+[자동 복구 중]
+배포 준비가 멈춰 자동으로 복구하고 있어요
+
+PR 제출 → PR 머지 → 배포 준비 → 검증·배포 → 정리 완료
+                    ^ 현재
+
+최근 조치: git fetch timeout · process 종료 · retry 1/3
+```
+
+primary 상태는 `진행 중`, `자동 복구 중`, `확인 필요`, `완료` 중 하나다. `머지됨`,
+`root 머지 중`, `candidate_pinned`, `정리 중`을 독립 top-level badge로 동시에 표시하지
+않는다. machine phase, SHA, op/attempt ID, retry/deadline, log path는 expandable evidence
+또는 tooltip에 둔다.
+
+`awaiting_confirmation`이면 category와 필요한 판단을 주 문장으로 표시한다.
+
+```text
+[확인 필요 · 권한]
+Worker 소유 범위를 넘는 권한 변경이 필요해 자동 실행 전에 멈췄어요
+[세션 이어하기]
+```
+
+repair child는 별도 root card로 중복 표시하지 않는다. linked repair PR은 root card의
+evidence/link로만 표시한다. 완료 뒤에는 active recovery 문구를 지우고 recovery audit
+badge만 Done 카드에 남긴다.
+
+## 11. 현재 설정의 의미
+
+자동 completion의 사용자-facing switch는 `auto_merge`다.
+
+- 현재 `beads-ui`: `auto_merge=true`, `auto_advance=false`, slots 2,
+  `pr_wait_holds_slot=false`, default preset `sol/ultra/Fast`
+- 현재 `dotfiles`: `auto_merge=true`, `auto_advance=false`, slots 10,
+  `pr_wait_holds_slot=false`, default preset `sol/xhigh/Standard`
+
+설정 해석은 다음과 같다.
+
+- `auto_merge=true`: PR 이후 root completion saga가 자동으로 계속된다.
+- `auto_merge=false`: 다음 safe checkpoint에서 pause하고 재활성화 시 같은 intent를
+  재개한다.
+- `auto_advance`: 후보를 최초 실행으로 자동 dispatch할지 결정할 뿐 PR 이후 completion과
+  무관하다. 현재처럼 `false`여도 된다.
+- workspace default preset: 해당 workspace recovery session의 runner/model/effort/speed를
+  결정한다.
+- `slots`: recovery session도 일반 attempt처럼 slot을 사용한다.
+- `pr_wait_holds_slot=false`: PR 대기 자체는 slot을 점유하지 않는다. completion root와
+  merge queue ordering은 별도로 유지된다.
+- pinned `[verify]/[deploy].timeout_ms`: verify/deploy command timeout이다. materialization과
+  control-plane deadline은 Worker internal policy라 별도 설정이 필요 없다.
+
+legacy `~/.config/bdui/config.toml`의 per-workspace verify/deploy section은 pinned repo
+declaration이 없을 때만 fallback이다. beads-ui의 SoT은 pinned
+`docs/agents/repo-ops.toml`이며 현재 `[verify] npm run all`, `[deploy]
+scripts/managed-self-deploy.js`, 각 600000ms다.
+
+## 12. `dotfiles-3vb8` migration
+
+새 runtime startup은 다음 순서로 기존 durable state를 처리한다.
+
+1. GitHub readback으로 PR #378 merged와 merge SHA `e3b3b224...`를 확인하고 prepared
+   root merge op를 adopt한다.
+2. pinned deployment reconcile attempt와 candidate/floor binding을 root effect에
+   연결하고 attempt ID와 retry count를 보존한다.
+3. managed receipt, failure journal, runtime pointer/process identity를 먼저 검사한다.
+4. post-commit evidence가 있으면 release를 건드리지 않고 adopt/readback한다.
+5. 현재처럼 `HEAD`가 없고 post-commit evidence도 없는 exact Worker-owned partial
+   release는 삭제하지 않고 같은 filesystem의 quarantine 경로로 atomic rename한다.
+6. 같은 reconcile attempt를 deadline이 있는 새 release materialization으로 재개한다.
+7. retry가 성공하면 verify/deploy/readback/cleanup/close/Done까지 이어간다.
+8. finite failure면 current-preset recovery session을 자동 시작한다. confirmation 경계가
+   아니면 사용자의 추가 클릭을 기다리지 않는다.
+
+quarantine은 candidate/repo/attempt binding과 timestamp를 이름 또는 receipt에 남긴다.
+활성 runtime pointer, successful receipt, 다른 attempt가 참조하는 release는 quarantine
+대상이 아니다.
+
+## 13. 오류 수렴표
+
+| 관측 | 처리 |
+| --- | --- |
+| materialization timeout, commit 전 증명 | process tree 종료, 같은 op bounded retry |
+| transient network/lock, commit 전 증명 | 같은 op bounded retry |
+| code/config regression | 자동 recovery session, same-Bead 또는 linked repair PR |
+| same-provider prior session | current tuple로 resume |
+| provider mismatch | 같은 worktree에 current-preset fresh session |
+| existing valid credential | 값 노출 없이 reuse, readback 뒤 audit |
+| exact Worker-owned mode drift | 좁은 repair, readback 뒤 audit |
+| external effect already applied | adopt, readback digest audit |
+| external effect not applied | 같은 op retry, 성공 뒤 audit |
+| credential acquisition/rotation | 진단 후 awaiting confirmation |
+| broad/unknown permission | 진단 후 awaiting confirmation |
+| external effect outcome unknown | 반복 없이 awaiting confirmation |
+| invalid current preset | mutation 없이 awaiting confirmation |
+| malformed/contradictory durable binding | 진단 후 mutation 전 awaiting confirmation |
+| user cancel | durable cancelled |
+
+repair budget 소진만으로 조용히 버리지 않는다. 같은 failure key에 기존 recovery
+session이 있으면 새 budget을 만들지 않고 그 session을 diagnostic continuation으로
+resume한다. 안전하게 재개할 session lineage가 없으면 새 authority를 발명하지 않고
+evidence와 operation을 `awaiting_confirmation` 또는 legacy `needs_human`에 보존한다.
+
+## 14. Test scope
+
+### RED-GREEN seam 1 — effect deadline과 settlement
+
+1. 영원히 resolve되지 않는 materialization `git fetch`가 deadline 뒤 child/process tree를
+   종료하고 `materialize_timeout`을 기록한다.
+2. timeout promise가 coordinator loop를 막지 않고 기존 reconcile backoff/attempt를
+   보존한다.
+3. control-plane timeout 뒤 authoritative readback이 applied/not-applied/unknown으로 각각
+   adopt/retry/confirmation에 수렴한다.
+
+### RED-GREEN seam 2 — single authority와 restart
+
+1. startup이 root completion coordinator를 복원한 뒤 persisted reconcile을 effect로
+   schedule하며 unresolved child promise가 다른 intent를 막지 않는다.
+2. effect prerecord/run/settle/consume 각 crash point에서 duplicate merge, restart, close,
+   Done이 없다.
+3. 같은 failure key의 recovery attempt/session과 budget이 restart 후 정확히 한 번 유지된다.
+
+### RED-GREEN seam 3 — UI-lbqw continuation integration
+
+1. landed resolver를 completion recovery의 모든 relaunch caller가 우회하지 않는다.
+2. same provider는 같은 worktree/session + current tuple이다.
+3. provider mismatch background recovery는 prompt 없이 같은 worktree의 current-preset
+   fresh session을 한 번 만든다.
+4. manual resume mismatch dialog와 prior attempt immutability는 유지된다.
+5. invalid/unavailable current preset은 spawn/metadata mutation 없이 confirmation에 멈춘다.
+
+### RED-GREEN seam 4 — 민감 자동복구와 audit
+
+1. existing valid credential reuse는 secret을 queue/log/UI에 남기지 않고 readback 뒤
+   `credential_reuse` audit를 만든다.
+2. exact Worker-owned permission repair만 허용하고 broad path, `sudo`, `chown`은 effect
+   0회로 confirmation에 멈춘다.
+3. ambiguous external effect 세 readback이 adopt/retry/confirmation으로 정확히 나뉜다.
+4. audit append/final seal/Done 전환 사이 crash 후 event와 badge가 중복되지 않는다.
+5. restart 후 Done 카드 badge가 유지되고 Bead label/metadata write가 0회다.
+6. agent self-report만으로 민감 action 성공이나 audit가 생성되지 않고, structured
+   disposition의 identity/target drift는 effect 0회로 거부된다.
+
+### RED-GREEN seam 5 — UI projection
+
+1. 모든 fine phase가 primary 상태 하나와 다섯 단계 progress에 정확히 매핑된다.
+2. `머지됨`, `root 머지 중`, `candidate_pinned`가 top-level badge로 중복되지 않는다.
+3. active recovery, confirmation, completed audit가 서로 배타적인 주 문구를 가진다.
+4. unknown optional field는 fail-quiet하되 malformed durable intent는 visible confirmation
+   evidence를 만든다.
+5. Worker와 Monitor가 같은 projection/label을 사용한다.
+
+### RED-GREEN seam 6 — `dotfiles-3vb8` startup fixture
+
+현재 queue snapshot과 partial release shape를 fixture로 고정한다.
+
+1. merged PR readback과 prepared merge op adopt
+2. pinned reconcile attempt/retry budget 보존
+3. post-commit evidence 없음 + `HEAD` 없음 release만 atomic quarantine
+4. deadline 있는 rematerialization
+5. verify/deploy/runtime readback/cleanup/close/Done 완주
+6. restart를 중간마다 주입해 duplicate effect 0회
+
+### Regression과 완료 검증
+
 - `npm run tsc`
 - `npm test`
 - `npm run lint`
 - `npm run prettier:write`
 - `npm run build`
-- `npm run all`
-- `git diff --check`
+- generated `app/main.bundle.js`와 map 포함
+- local full worker flow fixture
+- UI-f17c PR merge 후 pinned managed deploy
+- merged checkout의 process path, listening port, HTTP response readback
+- 실제 `dotfiles-3vb8`이 `completed`/Done으로 수렴하고 stale root/merge/reconcile badge가
+  사라졌는지 확인
 
-## 9. 구현 경계
+## 15. 완료 조건
 
-`full_plan`은 다음 semantic phase로 나눈다.
-
-1. **State authority**: v2 schema, migration, reducer, cancel/orphan reconciliation
-2. **Repair continuity**: action-before-effect dispatch와 repair PR state 분기
-3. **Post-merge continuity**: verify, managed receipt, cleanup tail의 root phase 편입
-4. **Projection**: coarse state, banner precedence, legacy diagnosis purity
-5. **Crash E2E와 rollout**: actual startup fixture, generated bundle, live readback
-
-phase 1이 뒤 phase의 canonical state를 먼저 제공한다. state machine과 queue/reconciler
-transition을 동시에 수정하는 phase는 병렬 writable unit으로 나누지 않는다.
-
-## 10. Rollout과 live verification
-
-한 PR에서 v2 reader/writer와 모든 active consumer를 함께 전환한다. queue load는
-v1 dual-read를 지원하지만 active write는 v2만 만든다. dotfiles workflow 계약과
-External/beads는 수정하지 않는다.
-
-PR merge 뒤 managed Adapter가 exact candidate release를 준비하고 pointer cutover와
-`bdui-shared restart`를 handoff한다. 완료 선언 전 다음을 모두 readback한다.
-
-1. runtime pointer target과 process module realpath
-2. candidate/source SHA
-3. marker와 `/healthz.runtime`의 protocol, PID, OS start, instance, host, port
-4. listening socket과 HTTP 200
-5. managed receipt path/digest/attempt/floor
-6. root intent `completed`, Parent/children `closed`, Done projection
-7. shared checkout HEAD와 porcelain 불변
-8. restart/receipt/close/Done 중복 0
-
-runtime identity나 receipt가 불일치하면 journal, pointer, process manager log와
-queue evidence를 보존하고 명시 승인 없는 rollback을 하지 않는다.
-
-## 11. Acceptance criteria
-
-1. auto root와 manual cleanup이 PR 대기부터 runtime 검증, tail, Parent close까지
-   같은 v2 completion intent로 진행한다.
-2. conflict, PR-owned red, base/post-merge regression, bound adapter regression이
-   각각 기존 bounded resolver/repair 경로를 사용하고 모든 merge는 기존 driver만
-   수행한다.
-3. exact managed candidate와 live runtime identity에 결합된 four-action receipt 전에는
-   deploy success나 cleanup completion이 기록되지 않는다.
-4. session, Bead, repair PR, merge, restart, receipt, close, Done crash boundary에서
-   duplicate effect와 budget reset이 없다.
-5. receipt complete 뒤 어떤 cleanup tail 단계에서 종료돼도 startup이 같은 root
-   operation을 재개해 Parent close와 Done까지 끝낸다.
-6. pointer/runtime/permission/external/malformed/ambiguous state는 repair session을
-   추측 생성하지 않고 exact terminal evidence를 남긴다.
-7. classifier와 observation은 queue/legacy diagnosis를 mutate하지 않으며 effect는
-   coordinator action 단계에서만 발생한다.
-8. legacy flake/environment verdict는 같은 digest/attempt에서 정확히 한 번 cleanup을
-   replay하고, regression은 linked repair PR merge 뒤 root cleanup으로 복귀한다.
-9. Worker는 진행 중 root를 `running`/`recovering`/`paused`로, terminal을
-   `completed`/`cancelled`/`needs_human`으로 정확히 표시한다.
-10. 수동 discard는 root intent 전체를 cancel하고 restart 뒤 재큐·재실행되지 않는다.
-11. actual startup/crash E2E와 repository-required verification, generated bundle,
-    live managed runtime readback이 모두 통과한다.
-
-## 관련 문서와 코드
-
-- `docs/superpowers/specs/2026-08-11-self-healing-auto-merge-completion-intent-design.md`
-- `docs/superpowers/specs/2026-08-11-managed-self-deploy-cleanup-recovery-design.md`
-- `docs/superpowers/plans/2026-08-11-ui-x9tu-self-healing-auto-merge.md`
-- `docs/superpowers/plans/2026-08-11-managed-self-deploy-cleanup-recovery.md`
-- `server/worker/completion-intent.js`
-- `server/worker/queue-store.js`
-- `server/worker/merge-queue.js`
-- `server/worker/scheduler.js`
-- `server/worker/pr-actions.js`
-- `server/worker/deployment-reconciler.js`
-- `scripts/managed-self-deploy.js`
-- `server/ws/worker-handlers.js`
-- `server/e2e/worker-flow.test.js`
+1. UI-lbqw가 먼저 merge·deploy되고 UI-f17c가 그 landed resolver를 사용한다.
+2. PR 제출 뒤 confirmation hard stop이 아니면 사용자 click 없이 root completion이
+   Done까지 진행한다.
+3. 모든 blocking effect가 deadline/readback 중 하나를 가지며 무기한 promise가 없다.
+4. 모든 finite failure가 bounded retry 또는 automatic recovery session으로 이어진다.
+5. 민감 자동복구 성공은 secret 없는 durable audit와 Done badge로 남는다.
+6. 확인이 필요한 경우 동일 session/op에서 resume 후 flow가 계속된다.
+7. UI는 primary 상태 하나와 다섯 단계 progress를 표시한다.
+8. 현재 `dotfiles-3vb8`이 새 startup migration으로 완주한다.
+9. Bead workflow label/metadata contract를 변경하지 않는다.
+10. merge 후 managed deploy와 실제 shared runtime readback을 통과한다.
