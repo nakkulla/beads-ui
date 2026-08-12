@@ -8,6 +8,53 @@ import { createHash } from 'node:crypto';
 const REPAIR_SUFFIX_LENGTH = 8;
 
 /**
+ * Stable source-less recovery identity. Unlike completion repair this is not a
+ * child of a user Bead: the exact provider failure owns it.
+ *
+ * @param {string} repo
+ * @param {number} generation
+ * @param {Record<string, unknown>} failure_key
+ */
+export function repoRecoveryIdentity(repo, generation, failure_key) {
+  if (
+    typeof repo !== 'string' ||
+    repo.length === 0 ||
+    !Number.isInteger(generation) ||
+    generation <= 0 ||
+    !failure_key ||
+    typeof failure_key !== 'object'
+  ) {
+    throw new Error('repo_recovery_identity_invalid');
+  }
+  const canonical = JSON.stringify(
+    Object.keys(failure_key)
+      .sort()
+      .map((key) => [key, failure_key[key]])
+  );
+  const digest = createHash('sha256')
+    .update(`${repo}\u0000${generation}\u0000${canonical}`)
+    .digest('hex');
+  return { identity: digest, bead_id: `recovery-${digest.slice(0, 12)}` };
+}
+
+/**
+ * @param {Record<string, any>} issue
+ * @param {{ bead_id: string, title: string, marker: string }} expected
+ */
+function matchesRepoRecoveryIssue(issue, expected) {
+  const description =
+    typeof issue.description === 'string' ? issue.description : '';
+  return (
+    issue.id === expected.bead_id &&
+    issue.title === expected.title &&
+    issue.issue_type === 'bug' &&
+    issue.priority === 1 &&
+    description.includes(expected.marker) &&
+    description.includes('provenance: no-source')
+  );
+}
+
+/**
  * @param {string} root_bead_id
  * @param {string} op_id
  */
@@ -63,7 +110,7 @@ function matchesIdentity(issue, expected) {
  * @param {{
  *   bd: {
  *     findIssue?: (bead_id: string) => Promise<Record<string, any>|null>,
- *     createIssue?: (input: { id: string, title: string, description: string, type: string, priority: number, dependency: string }) => Promise<void>
+ *     createIssue?: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>
  *   },
  *   repo: string,
  *   gh?: { commitChecks: (repo: string, sha: string) => Promise<any> },
@@ -73,6 +120,67 @@ function matchesIdentity(issue, expected) {
  */
 export function createCompletionRepairService(deps) {
   return {
+    /**
+     * Create or adopt the one recovery Bead for one exact repo failure. The
+     * mandatory readback makes a crash after `bd create` safe to replay.
+     *
+     * @param {{ repo: string, generation: number, failure_key: Record<string, unknown> }} input
+     */
+    async ensureRepoRecoveryBead(input) {
+      const identity = repoRecoveryIdentity(
+        input.repo,
+        input.generation,
+        input.failure_key
+      );
+      const title = `${input.repo} 배포 실패 자동복구`;
+      const marker = `repo-deployment:${input.repo}@generation:${input.generation}`;
+      const findIssue = deps.bd.findIssue;
+      const createIssue = deps.bd.createIssue;
+      if (
+        typeof findIssue !== 'function' ||
+        typeof createIssue !== 'function'
+      ) {
+        throw new Error('repo_recovery_bead_adapter_missing');
+      }
+      const existing = await findIssue(identity.bead_id);
+      if (existing) {
+        if (
+          !matchesRepoRecoveryIssue(existing, { ...identity, title, marker })
+        ) {
+          throw new Error('repo_recovery_bead_identity_conflict');
+        }
+        return { ...identity, created: false };
+      }
+      let created = true;
+      try {
+        await createIssue({
+          id: identity.bead_id,
+          title,
+          description: [
+            marker,
+            'provenance: no-source',
+            `recovery_identity=${identity.identity}`
+          ].join('\n'),
+          type: 'bug',
+          priority: 1
+        });
+      } catch {
+        created = false;
+      }
+      const confirmed = await findIssue(identity.bead_id);
+      if (
+        !confirmed ||
+        !matchesRepoRecoveryIssue(confirmed, { ...identity, title, marker })
+      ) {
+        throw new Error(
+          confirmed
+            ? 'repo_recovery_bead_identity_conflict'
+            : 'repo_recovery_bead_readback_failed'
+        );
+      }
+      return { ...identity, created };
+    },
+
     /**
      * Idempotently create or adopt the child whose id is derived from the
      * root failure. A concurrent creator and a crash after `bd create` both

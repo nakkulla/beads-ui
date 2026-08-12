@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   createCompletionRepairService,
-  repairBeadIdentity
+  repairBeadIdentity,
+  repoRecoveryIdentity
 } from './completion-repair.js';
 
 const ROOT = 'UI-root';
@@ -25,6 +26,50 @@ function failureKey(overrides = {}) {
 }
 
 describe('worker/completion-repair deterministic Bead lineage', () => {
+  test('creates and readbacks one source-less repo recovery Bead', async () => {
+    const issues = new Map();
+    const failure_key = {
+      repo: REPO,
+      target_base: 'main',
+      target_sha: HEAD_SHA,
+      generation: 7,
+      error_code: 'deploy_failed',
+      log_digest: DIGEST
+    };
+    const identity = repoRecoveryIdentity(REPO, 7, failure_key);
+    const bd = {
+      findIssue: vi.fn(async (id) => issues.get(id) || null),
+      createIssue: vi.fn(async (input) => {
+        issues.set(input.id, {
+          id: input.id,
+          title: input.title,
+          issue_type: input.type,
+          priority: input.priority,
+          description: input.description
+        });
+      })
+    };
+    const service = createCompletionRepairService({ bd, repo: REPO });
+
+    const first = await service.ensureRepoRecoveryBead({
+      repo: REPO,
+      generation: 7,
+      failure_key
+    });
+    const second = await service.ensureRepoRecoveryBead({
+      repo: REPO,
+      generation: 7,
+      failure_key
+    });
+
+    expect(first).toEqual({ ...identity, created: true });
+    expect(second).toEqual({ ...identity, created: false });
+    expect(bd.createIssue).toHaveBeenCalledOnce();
+    expect(bd.createIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'bug', priority: 1 })
+    );
+  });
+
   test('derives the bounded Bead id and branch from the operation id', () => {
     expect(repairBeadIdentity(ROOT, 'create-child')).toEqual({
       bead_id: 'UI-root-rdcfdab23',

@@ -29,6 +29,7 @@ import {
   createCompletionIntentCoordinator,
   decideCompletionAction
 } from '../worker/completion-intent.js';
+import { repoRecoveryIdentity } from '../worker/completion-repair.js';
 import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { createMergeQueue } from '../worker/merge-queue.js';
 import { createPrActions } from '../worker/pr-actions.js';
@@ -336,33 +337,54 @@ function prActionsWorktree(runtime) {
 
 /**
  * Provider fake that accepts the verified target and reports it deployed.
+ * Optional first-call fault models a process loss after the provider applied
+ * the request but before Worker could read back and bind it.
+ *
+ * @param {{ crashAfterFirstRequest?: boolean, initialBinding?: { target_base: string, target_sha: string, generation: number }, initialState?: 'failed'|'succeeded' }} [options]
  */
-function createSuccessfulDeploymentJob() {
+function createSuccessfulDeploymentJob(options = {}) {
   /** @type {{ target_base: string, target_sha: string, generation: number }|null} */
-  let binding = null;
+  let binding = options.initialBinding ?? null;
+  let state = options.initialState ?? (binding ? 'failed' : 'succeeded');
+  const stats = { request_calls: 0, applied_requests: 0 };
+  let fail_next_status = false;
   return {
+    stats,
     requestDeployment: async (/** @type {any} */ input) => {
-      binding = {
-        target_base: input.target_base,
-        target_sha: input.verified_sha,
-        generation: 1
-      };
+      stats.request_calls += 1;
+      if (binding === null || binding.target_sha !== input.verified_sha) {
+        stats.applied_requests += 1;
+        binding = {
+          target_base: input.target_base,
+          target_sha: input.verified_sha,
+          generation: (binding?.generation ?? 0) + 1
+        };
+        state = 'succeeded';
+      }
+      if (options.crashAfterFirstRequest && stats.request_calls === 1) {
+        fail_next_status = true;
+        throw new Error('process lost after provider request');
+      }
       return {
         accepted: true,
-        noop: false,
+        noop: stats.request_calls > 1,
         ...binding,
         error_code: null
       };
     },
     deploymentStatus: async () => {
+      if (fail_next_status) {
+        fail_next_status = false;
+        throw new Error('process lost before provider readback');
+      }
       if (binding === null) {
         throw new Error('deployment request missing');
       }
       return {
-        state: 'succeeded',
+        state,
         ...binding,
-        deployed_sha: binding.target_sha,
-        error_code: null,
+        deployed_sha: state === 'succeeded' ? binding.target_sha : null,
+        error_code: state === 'failed' ? 'deploy_failed' : null,
         log_path: '/tmp/deploy.log'
       };
     },
@@ -472,7 +494,7 @@ describe('worker e2e — full success flow', () => {
 });
 
 describe('worker e2e — the human [머지] click carries the bead to done', () => {
-  test('dispatch → PR observed → pr_wait → [머지] → pr-finish cleanup → done', async () => {
+  test('adopts a request crash through the real merge cleanup without another provider effect', async () => {
     const HEAD_SHA = 'a'.repeat(40);
     const { runtime, scheduler, bd_record } = buildSystem({
       fixture: 'claude-success.jsonl',
@@ -491,6 +513,50 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     expect(bd_record.status).toBe('resolved');
     expect(runtime.queueStore.snapshot(WS).done).toEqual([]);
 
+    const failed_sha = 'd'.repeat(40);
+    const failure_key = {
+      repo: repo_dir,
+      target_base: 'main',
+      target_sha: failed_sha,
+      generation: 3,
+      error_code: 'deploy_failed',
+      log_digest: 'e'.repeat(64)
+    };
+    const recovery_identity = repoRecoveryIdentity(
+      repo_dir,
+      failure_key.generation,
+      failure_key
+    ).identity;
+    runtime.queueStore.recordDeploymentObservation(WS, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha: failed_sha,
+      deployed_sha: null,
+      generation: 3,
+      error_code: 'deploy_failed',
+      log_path: '/tmp/deploy.log',
+      automatic_retry_count: 2,
+      retry_budget_binding: {
+        target_base: 'main',
+        target_sha: failed_sha,
+        generation: 3
+      },
+      failure_key,
+      recovery: {
+        identity: recovery_identity,
+        failure_key,
+        phase: 'repair_pr_open',
+        prepared_at: 1,
+        bead_id: 'M1',
+        attempt_id: null,
+        outcome: 'repair_pr_open',
+        confirmation_reason: null,
+        evidence_kind: 'repair_pr',
+        evidence_digest: 'f'.repeat(64),
+        retry_operation: null
+      }
+    });
+
     /** @type {Array<[string, number, string|null]>} */
     const gh_calls = [];
     const observations = createPrObservationStore();
@@ -500,6 +566,15 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     let pr_state = 'OPEN';
     /** @type {string|null} */
     let merged_sha = null;
+    const deployment_job = createSuccessfulDeploymentJob({
+      crashAfterFirstRequest: true,
+      initialBinding: {
+        target_base: 'main',
+        target_sha: failed_sha,
+        generation: 3
+      },
+      initialState: 'failed'
+    });
     const pr_actions = createPrActions({
       workspace: WS,
       repo: repo_dir,
@@ -584,28 +659,51 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         tick: async () => {}
       },
       resolveVerify: async () => ({ state: 'absent' }),
-      deploymentJob: createSuccessfulDeploymentJob(),
+      deploymentJob: deployment_job,
       requeryDelayMs: 0,
       sleep: async () => {}
     });
 
+    const interrupted = await pr_actions.merge('M1');
     const result = await pr_actions.merge('M1');
     const deployment_result = await pr_actions.observeDeployment();
 
-    expect(result).toMatchObject({ ok: true, action: 'merged', reason: null });
-    expect(deployment_result).toEqual({ ok: true, reason: null });
+    expect(interrupted).toMatchObject({
+      ok: false,
+      action: 'merged',
+      cleanup_step: 'deployment_request',
+      reason: 'deployment_request_unknown'
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'already_merged',
+      reason: null
+    });
+    expect(deployment_result).toEqual({ ok: true, reason: 'succeeded' });
+    expect(deployment_job.stats).toEqual({
+      request_calls: 2,
+      applied_requests: 1
+    });
+    expect(runtime.queueStore.snapshot(WS).deployment).toMatchObject({
+      state: 'succeeded',
+      generation: 4,
+      recovery: {
+        identity: recovery_identity,
+        phase: 'completed',
+        outcome: 'repair_pr_open'
+      }
+    });
     // The merge was pinned to the sha the click-time gate approved.
     expect(gh_calls).toEqual([['mergeSquash', 1, HEAD_SHA]]);
-    // The click's own observation is what the next badge render reads, and it
-    // resolves to the tier that enabled the button.
+    // The retry click re-observes the already-merged PR before resuming cleanup.
     expect(
       evaluateMergeGate(observations.get(WS, 'M1'), {
         verify_cmd_state: 'absent'
       })
     ).toMatchObject({
-      enabled: true,
-      tier: 'none',
-      gate_badge: '검증 신호 없음'
+      enabled: false,
+      tier: 'merged',
+      gate_badge: '머지됨'
     });
 
     // pr_wait → done in the cleanup's final mutation, with the contract's close
@@ -711,8 +809,12 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     const result = await pr_actions.merge('M2');
     const deployment_result = await pr_actions.observeDeployment();
 
-    expect(result).toMatchObject({ ok: true, action: 'merged' });
-    expect(deployment_result).toEqual({ ok: true, reason: null });
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'merged',
+      cleanup_step: 'child_sweep'
+    });
+    expect(deployment_result).toEqual({ ok: true, reason: 'succeeded' });
     const snap = runtime.queueStore.snapshot(WS);
     // Returned to the human: still in pr_wait, still `resolved`, banner record
     // written, nothing retried.

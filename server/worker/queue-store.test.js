@@ -300,6 +300,241 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('persists a recovery-prepared notification with its transition revision', () => {
+    const target_sha = 'c'.repeat(40);
+    const identity = 'a'.repeat(64);
+    const failure_key = {
+      repo: WS,
+      target_base: 'main',
+      target_sha,
+      generation: 4,
+      error_code: 'deploy_failed',
+      log_digest: 'd'.repeat(64)
+    };
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 8,
+        deployment: {
+          state: 'failed',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: null,
+          generation: 4,
+          error_code: 'deploy_failed',
+          log_path: '/tmp/deploy.log',
+          automatic_retry_count: 2,
+          retry_budget_binding: {
+            target_base: 'main',
+            target_sha,
+            generation: 4
+          },
+          next_retry_at: null,
+          failure_key,
+          retry_operation: {
+            phase: 'recovery_ready',
+            failure_key,
+            automatic_retry_count: 2,
+            next_retry_at: 1,
+            called_at: null,
+            retry_binding: null
+          },
+          recovery: null
+        }
+      })
+    );
+    const store = createQueueStore();
+
+    const prepared = store.prerecordDeploymentRecovery(WS, failure_key, {
+      identity,
+      prepared_at: 2
+    });
+
+    expect(prepared.ok).toBe(true);
+    expect(prepared.queue.deployment?.notifications).toEqual([
+      {
+        kind: 'recovery_prepared',
+        identity,
+        revision: 9,
+        key: `recovery_prepared:${identity}:9`
+      }
+    ]);
+    expect(createQueueStore().snapshot(WS).deployment?.notifications).toEqual(
+      prepared.queue.deployment?.notifications
+    );
+
+    const confirmation = store.requireDeploymentRecoveryConfirmation(
+      WS,
+      failure_key,
+      'provider_state_ambiguous',
+      identity
+    );
+
+    expect(confirmation.queue.deployment?.notifications).toEqual([
+      {
+        kind: 'recovery_prepared',
+        identity,
+        revision: 9,
+        key: `recovery_prepared:${identity}:9`
+      },
+      {
+        kind: 'awaiting_confirmation',
+        identity,
+        revision: 10,
+        key: `awaiting_confirmation:${identity}:10`
+      }
+    ]);
+    expect(createQueueStore().snapshot(WS).deployment?.notifications).toEqual(
+      confirmation.queue.deployment?.notifications
+    );
+  });
+
+  test('keeps the last valid notifications when malformed tail rows exist', () => {
+    const target_sha = 'c'.repeat(40);
+    const identity = 'a'.repeat(64);
+    const notifications = [1, 2, 3].map((revision) => ({
+      kind: 'recovery_prepared',
+      identity,
+      revision,
+      key: `recovery_prepared:${identity}:${revision}`
+    }));
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 9,
+        deployment: {
+          state: 'failed',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: null,
+          generation: 4,
+          error_code: 'deploy_failed',
+          log_path: '/tmp/deploy.log',
+          notifications: [...notifications, null, { key: 'malformed' }]
+        }
+      })
+    );
+
+    const snapshot = createQueueStore().snapshot(WS);
+
+    expect(snapshot.deployment?.notifications).toEqual(notifications);
+  });
+
+  test('persists a deployment-succeeded notification for a completed recovery', () => {
+    const target_sha = 'c'.repeat(40);
+    const identity = 'a'.repeat(64);
+    const failure_key = {
+      repo: WS,
+      target_base: 'main',
+      target_sha,
+      generation: 4,
+      error_code: 'deploy_failed',
+      log_digest: 'd'.repeat(64)
+    };
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 11,
+        deployment: {
+          state: 'pending',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: null,
+          generation: 5,
+          error_code: null,
+          log_path: null,
+          recovery: {
+            identity,
+            failure_key,
+            phase: 'completed',
+            prepared_at: 2,
+            bead_id: null,
+            attempt_id: null,
+            outcome: 'retry_same',
+            confirmation_reason: null,
+            evidence_kind: null,
+            evidence_digest: null,
+            retry_operation: null
+          }
+        }
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.recordDeploymentObservation(
+      WS,
+      {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 5,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      },
+      { higher_binding_validated: true }
+    );
+
+    expect(result.queue.deployment?.notifications).toEqual([
+      {
+        kind: 'deployment_succeeded',
+        identity,
+        revision: 12,
+        key: `deployment_succeeded:${identity}:12`
+      }
+    ]);
+    expect(createQueueStore().snapshot(WS).deployment?.notifications).toEqual(
+      result.queue.deployment?.notifications
+    );
+  });
+
+  test('preserves a deployment retry budget and unknown fields through a status refresh', () => {
+    const store = createQueueStore();
+    const target_sha = 'c'.repeat(40);
+    const failure_key = {
+      repo: '/repo',
+      target_base: 'main',
+      target_sha,
+      generation: 4,
+      error_code: 'deploy_failed',
+      log_digest: 'd'.repeat(64)
+    };
+    store.recordDeploymentObservation(
+      WS,
+      /** @type {any} */ ({
+        state: 'failed',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'deploy_failed',
+        log_path: '/tmp/deploy.log',
+        legacy_provider_note: { preserved: true }
+      })
+    );
+    store.scheduleDeploymentRetry(WS, failure_key, 31_000);
+
+    store.recordDeploymentObservation(WS, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 4,
+      error_code: 'deploy_failed',
+      log_path: '/tmp/deploy.log'
+    });
+
+    expect(store.snapshot(WS).deployment).toMatchObject({
+      automatic_retry_count: 0,
+      next_retry_at: 31_000,
+      retry_operation: { phase: 'scheduled' },
+      legacy_provider_note: { preserved: true }
+    });
+  });
+
   test('keeps a newer deployment observation when a stale status arrives', () => {
     const store = createQueueStore();
     const newer_sha = 'd'.repeat(40);
@@ -488,6 +723,182 @@ describe('worker/queue-store', () => {
       deployment_generation: 8,
       cleanup_cursor: 'deployment_observe'
     });
+  });
+
+  test('records a request binding and matching status in one revision', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'deploy-row', bead_id: 'UI-deploy-row' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-deploy-row',
+      attempt_id: 'deploy-row',
+      patch: { status: 'done' }
+    });
+    const before = store.snapshot(WS).revision;
+
+    const result = store.recordDeploymentBinding(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8,
+      target_base: 'main',
+      status: {
+        state: 'pending',
+        target_base: 'main',
+        target_sha: 'b'.repeat(40),
+        deployed_sha: null,
+        generation: 8,
+        error_code: null,
+        log_path: null
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(before + 1);
+    expect(result.queue.pr_wait[0]).toMatchObject({
+      deployment_generation: 8,
+      cleanup_cursor: 'deployment_observe'
+    });
+    expect(result.queue.deployment).toMatchObject({
+      state: 'pending',
+      generation: 8
+    });
+  });
+
+  test('preserves worker-owned saga fields when another row records the same binding', () => {
+    const target_sha = 'b'.repeat(40);
+    const identity = 'c'.repeat(64);
+    const failure_key = {
+      repo: WS,
+      target_base: 'main',
+      target_sha,
+      generation: 8,
+      error_code: 'deploy_failed',
+      log_digest: 'd'.repeat(64)
+    };
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 4,
+        pr_wait: [{ bead_id: 'UI-deploy-row', added_at: 1 }],
+        deployment: {
+          state: 'failed',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: null,
+          generation: 8,
+          error_code: 'deploy_failed',
+          log_path: '/tmp/deploy.log',
+          automatic_retry_count: 2,
+          retry_budget_binding: {
+            target_base: 'main',
+            target_sha,
+            generation: 8
+          },
+          next_retry_at: 99,
+          failure_key,
+          retry_operation: {
+            phase: 'recovery_ready',
+            failure_key,
+            automatic_retry_count: 2,
+            next_retry_at: 99,
+            called_at: null,
+            retry_binding: null
+          },
+          recovery: {
+            identity,
+            failure_key,
+            phase: 'awaiting_confirmation',
+            prepared_at: 10,
+            bead_id: 'UI-recovery',
+            attempt_id: 'recovery-attempt',
+            outcome: 'awaiting_confirmation',
+            confirmation_reason: 'operator_confirmation_required',
+            evidence_kind: 'confirmation',
+            evidence_digest: 'e'.repeat(64),
+            retry_operation: null
+          },
+          notifications: [
+            {
+              kind: 'awaiting_confirmation',
+              identity,
+              revision: 4,
+              key: `awaiting_confirmation:${identity}:4`
+            }
+          ]
+        }
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.recordDeploymentBinding(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: target_sha,
+      deployment_generation: 8,
+      target_base: 'main',
+      status: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: null,
+        generation: 8,
+        error_code: 'deploy_failed',
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.deployment).toMatchObject({
+      automatic_retry_count: 2,
+      retry_operation: { phase: 'recovery_ready' },
+      recovery: {
+        identity,
+        phase: 'awaiting_confirmation',
+        attempt_id: 'recovery-attempt'
+      },
+      notifications: [{ key: `awaiting_confirmation:${identity}:4` }]
+    });
+  });
+
+  test('refuses a mismatched status without binding the cleanup row', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'deploy-row', bead_id: 'UI-deploy-row' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-deploy-row',
+      attempt_id: 'deploy-row',
+      patch: { status: 'done' }
+    });
+
+    const result = store.recordDeploymentBinding(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 8,
+      target_base: 'main',
+      status: {
+        state: 'pending',
+        target_base: 'main',
+        target_sha: 'c'.repeat(40),
+        deployed_sha: null,
+        generation: 8,
+        error_code: null,
+        log_path: null
+      }
+    });
+
+    expect(result).toMatchObject({ ok: false, binding_mismatch: true });
+    expect(store.snapshot(WS).pr_wait[0]).toMatchObject({
+      deployment_generation: null,
+      cleanup_cursor: null
+    });
+    expect(store.snapshot(WS).deployment).toBeNull();
   });
 
   test('preserves unknown legacy queue and row fields through a mutation', () => {

@@ -47,6 +47,7 @@ import {
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDeploymentJob } from './deployment-job.js';
+import { createDeploymentRecovery } from './deployment-recovery.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
@@ -373,6 +374,7 @@ export function defaultProbePid(pid) {
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
+ *   deploymentRecovery?: { poll: () => Promise<any>, tick: () => Promise<any>, retryNow?: () => Promise<any>, consumeOutcome?: (input: any) => Promise<any> },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -611,6 +613,58 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return completionIntent
         ? completionIntent.attemptSettled(input)
         : Promise.resolve();
+    },
+    onDeploymentRecoveryAttemptSettled(input) {
+      if (!deploymentRecovery) {
+        return Promise.resolve({
+          ok: false,
+          reason: 'deployment_recovery_unwired'
+        });
+      }
+      if (input.session_success === false) {
+        const attempt = input.attempt;
+        const failure_key = attempt.deployment_recovery_failure_key;
+        if (
+          failure_key &&
+          typeof attempt.deployment_recovery_identity === 'string'
+        ) {
+          runtime.queueStore.requireDeploymentRecoveryConfirmation(
+            keyFor(workspace_root),
+            failure_key,
+            'recovery_session_failed',
+            attempt.deployment_recovery_identity
+          );
+          emitQueueChanged(keyFor(workspace_root));
+        }
+        return Promise.resolve({
+          ok: false,
+          reason: 'recovery_session_failed'
+        });
+      }
+      if (!input.outcome) {
+        const attempt = input.attempt;
+        const failure_key = attempt.deployment_recovery_failure_key;
+        if (
+          failure_key &&
+          typeof attempt.deployment_recovery_identity === 'string'
+        ) {
+          runtime.queueStore.requireDeploymentRecoveryConfirmation(
+            keyFor(workspace_root),
+            failure_key,
+            input.parse_reason || 'recovery_outcome_malformed',
+            attempt.deployment_recovery_identity
+          );
+          emitQueueChanged(keyFor(workspace_root));
+        }
+        return Promise.resolve({
+          ok: false,
+          reason: input.parse_reason || 'recovery_outcome_malformed'
+        });
+      }
+      return deploymentRecovery.consumeOutcome({
+        ...input.outcome,
+        pr_verified: input.pr_verified
+      });
     },
     probePid,
     ...(processController ? { processController } : {}),
@@ -951,6 +1005,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notify
   });
 
+  /** @type {any} */
+  let deploymentRecovery = options.deploymentRecovery || null;
+
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -1056,6 +1113,23 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         runVerifyAtSha({ ...input, worktree, git: gitRun })
     });
 
+  deploymentRecovery =
+    deploymentRecovery ||
+    createDeploymentRecovery({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      deploymentJob: /** @type {any} */ (deploymentJob),
+      recoveryService: completionRepair,
+      dispatchRecovery: (input) =>
+        scheduler.dispatchRepoRecovery(keyFor(workspace_root), {
+          identity: input.identity,
+          bead_id: input.bead_id,
+          failure_key: input.failure_key
+        }),
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
+
   const resolvedCompletionActionDriver =
     options.completionActionDriver ||
     createCompletionActionDriver({
@@ -1105,7 +1179,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id, merge_sha, refs) =>
       prActions.cleanupObservedMerge(bead_id, merge_sha, refs),
-    onDeployment: () => prActions.observeDeployment(),
+    onDeployment: async () => {
+      const observed = await prActions.observeDeployment();
+      await deploymentRecovery.poll();
+      await deploymentRecovery.tick();
+      return observed;
+    },
     onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
@@ -1139,6 +1218,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     admission,
     deploymentJob,
+    deploymentRecovery,
     repo,
     resolveBase,
     workspace: workspace_root
@@ -1511,6 +1591,24 @@ export async function resumeWorkerAttempt(
 }
 
 /**
+ * Continue one existing repo deployment recovery lineage. The scheduler owns
+ * recovery identity, worktree, and continuation-token validation; this adapter
+ * only resolves the live workspace attachment.
+ *
+ * @param {string} workspace_root
+ * @param {{ identity: string, attempt_id: string, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
+ */
+export async function continueWorkerDeploymentRecovery(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.continueRepoRecovery(key, input);
+}
+
+/**
  * Retry exactly the current failed repo-level deployment. The provider client
  * validates the returned +1 binding; the queue-store write then compares the
  * same durable failed observation again so an overlapping status update cannot
@@ -1522,35 +1620,11 @@ export async function resumeWorkerAttempt(
 export async function retryWorkerDeployment(workspace_root) {
   const key = keyFor(workspace_root);
   const att = ATTACHMENTS.get(key);
-  if (!att || !att.deploymentJob || !att.deploymentJob.retryDeployment) {
+  if (!att || typeof att.deploymentRecovery?.retryNow !== 'function') {
     return { ok: false, reason: 'no_attachment' };
   }
-  const current = att.runtime.queueStore.snapshot(key).deployment;
-  const target_sha = current?.target_sha;
-  const generation = current?.generation;
-  if (
-    !current ||
-    current.state !== 'failed' ||
-    typeof current.target_base !== 'string' ||
-    typeof target_sha !== 'string' ||
-    !/^[0-9a-f]{40}$/i.test(target_sha) ||
-    typeof generation !== 'number' ||
-    !Number.isInteger(generation) ||
-    generation <= 0
-  ) {
-    return { ok: false, reason: 'deployment_not_retryable' };
-  }
-  const current_binding = {
-    target_base: current.target_base,
-    target_sha,
-    generation
-  };
-  let retried;
   try {
-    retried = await att.deploymentJob.retryDeployment({
-      repo: att.repo,
-      current_binding
-    });
+    return await att.deploymentRecovery.retryNow();
   } catch (err) {
     const code = /** @type {{ code?: unknown }} */ (err).code;
     return {
@@ -1558,22 +1632,6 @@ export async function retryWorkerDeployment(workspace_root) {
       reason: typeof code === 'string' ? code : 'deployment_retry_failed'
     };
   }
-  const recorded = att.runtime.queueStore.recordDeploymentRetry(
-    key,
-    current_binding,
-    retried
-  );
-  if (!recorded.ok) {
-    return {
-      ok: false,
-      reason: recorded.stale
-        ? 'deployment_retry_stale'
-        : 'deployment_retry_persist_failed',
-      stale: recorded.stale === true
-    };
-  }
-  emitQueueChanged(key);
-  return { ok: true, queue: recorded.queue };
 }
 
 /**

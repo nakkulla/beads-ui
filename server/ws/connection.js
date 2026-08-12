@@ -78,6 +78,7 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerDeploymentRecoveryContinue,
   handleWorkerDeploymentRetry,
   handleWorkerDiscard,
   handleWorkerMergeAutoToggle,
@@ -504,6 +505,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-deployment-retry':
       await handleWorkerDeploymentRetry(ws, req);
+      return;
+    case 'worker-deployment-recovery-continue':
+      await handleWorkerDeploymentRecoveryContinue(ws, req);
       return;
     case 'worker-queue-set-pr-wait-hold':
       handleWorkerQueueSetPrWaitHold(ws, req);

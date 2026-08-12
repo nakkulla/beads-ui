@@ -2871,10 +2871,7 @@ html[data-theme='dark'] {
 }
 
 .worker-deployment-strip {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-6);
+  display: block;
   padding: var(--sp-6) var(--sp-10);
   border: 1px solid var(--border-chip);
   border-left: 3px solid var(--stage-merge-on);
@@ -2884,24 +2881,59 @@ html[data-theme='dark'] {
   font-size: var(--fs-body-sm);
 }
 
-.worker-deployment-strip--failed {
-  border-color: var(--border-danger);
-  border-left-color: var(--accent-danger);
-}
-
 .worker-deployment-strip__sha,
-.worker-deployment-strip__prs,
-.worker-deployment-strip__error {
+.worker-deployment-strip__recovery code {
   font-family: var(--font-mono);
   font-size: var(--fs-chip);
 }
 
-.worker-deployment-strip__error {
-  color: var(--accent-danger);
+.worker-deployment-strip__summary,
+.worker-deployment-strip__detail,
+.worker-deployment-strip__recovery {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-6);
 }
 
+.worker-deployment-strip__summary {
+  cursor: pointer;
+  list-style: none;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.worker-deployment-strip__summary::-webkit-details-marker {
+  display: none;
+}
+
+.worker-deployment-strip__dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--stage-merge-on);
+}
+
+.worker-deployment-strip__repo {
+  color: var(--text-primary);
+}
+
+.worker-deployment-strip__description {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worker-deployment-strip__count,
 .worker-deployment-strip__log,
-.worker-deployment-retry {
+.worker-deployment-retry,
+.worker-deployment-session,
+.worker-deployment-continue {
+  flex: 0 0 auto;
   padding: 1px var(--sp-6);
   border: 1px solid var(--border-chip);
   border-radius: var(--r-6);
@@ -2910,8 +2942,55 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
-.worker-deployment-retry {
+.worker-deployment-retry,
+.worker-deployment-session,
+.worker-deployment-continue {
   cursor: pointer;
+}
+
+.worker-deployment-strip__caret {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-body);
+  line-height: 1;
+  transition: transform 140ms ease;
+}
+
+.worker-deployment-strip[open] .worker-deployment-strip__caret {
+  transform: rotate(90deg);
+}
+
+.worker-deployment-strip[data-deployment-state='확인 필요']
+  .worker-deployment-strip__dot {
+  background: var(--accent-danger);
+}
+
+.worker-deployment-strip[data-deployment-state='배포 완료']
+  .worker-deployment-strip__dot {
+  background: var(--accent-success);
+}
+
+.worker-deployment-strip__detail {
+  margin-top: var(--sp-8);
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--border-chip);
+}
+
+.worker-deployment-strip__timeline {
+  display: flex;
+  flex: 1 1 16rem;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+}
+
+.worker-deployment-strip__timeline li::before {
+  content: '· ';
+  color: var(--text-dim);
 }
 
 .worker-banner {

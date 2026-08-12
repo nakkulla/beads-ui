@@ -30,6 +30,7 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
+  continueWorkerDeploymentRecovery,
   discardWorkerBead,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
@@ -993,7 +994,10 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     runner_catalog = null;
   }
-  const deployment = projectDeployment({ ...overlaid, pr_wait: queue.pr_wait });
+  const deployment = projectDeployment(
+    { ...overlaid, pr_wait: queue.pr_wait },
+    workspace_key
+  );
   return {
     ...queue,
     runner_catalog,
@@ -1045,9 +1049,10 @@ export function decorateQueue(workspace_key, raw_queue) {
  * The browser never receives malformed durable state as a partial success.
  *
  * @param {Record<string, any>} queue
+ * @param {string} workspace_key
  * @returns {{ observation: Record<string, any>|null, coverage: Record<string, 'pending'|'running'|'succeeded'|'failed'> }}
  */
-function projectDeployment(queue) {
+function projectDeployment(queue, workspace_key) {
   const source = queue.deployment;
   if (!source || typeof source !== 'object' || Array.isArray(source)) {
     return { observation: null, coverage: {} };
@@ -1095,8 +1100,8 @@ function projectDeployment(queue) {
   }
   /** @type {Record<string, 'pending'|'running'|'succeeded'|'failed'>} */
   const coverage = {};
-  /** @type {number[]} */
-  const covered_pr_numbers = [];
+  /** @type {Set<string>} */
+  const included_bead_ids = new Set();
   const cleanup_failed =
     queue.cleanup_failed &&
     typeof queue.cleanup_failed === 'object' &&
@@ -1148,48 +1153,278 @@ function projectDeployment(queue) {
       continue;
     }
     coverage[row.bead_id] = state;
-    const match = /\/pull\/(\d+)$/.exec(String(row.pr_url || ''));
-    if (match) {
-      covered_pr_numbers.push(Number(match[1]));
-    }
+    included_bead_ids.add(row.bead_id);
   }
-  if (state === 'succeeded') {
-    for (const row of Array.isArray(queue.done) ? queue.done : []) {
-      if (
-        !row ||
-        row.cleanup_cursor !== 'deployment_observe' ||
-        typeof row.merge_sha !== 'string' ||
-        !/^[0-9a-f]{40}$/i.test(row.merge_sha) ||
-        typeof row.verified_target_sha !== 'string' ||
-        !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
-        !Number.isInteger(row.deployment_generation) ||
-        row.deployment_generation <= 0 ||
-        row.deployment_generation > source.generation ||
-        (row.deployment_generation === source.generation &&
-          row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
-      ) {
-        continue;
-      }
-      const match = /\/pull\/(\d+)$/.exec(String(row.pr_url || ''));
-      if (match && !covered_pr_numbers.includes(Number(match[1]))) {
-        covered_pr_numbers.push(Number(match[1]));
-      }
+  for (const row of Array.isArray(queue.done) ? queue.done : []) {
+    if (
+      !row ||
+      typeof row.bead_id !== 'string' ||
+      row.cleanup_cursor !== 'deployment_observe' ||
+      typeof row.merge_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.merge_sha) ||
+      typeof row.verified_target_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
+      !Number.isInteger(row.deployment_generation) ||
+      row.deployment_generation <= 0 ||
+      row.deployment_generation > source.generation ||
+      (row.deployment_generation === source.generation &&
+        row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
+    ) {
+      continue;
     }
+    included_bead_ids.add(row.bead_id);
   }
+  const recovery = projectDeploymentRecovery(source.recovery, queue.attempts);
+  const presentation = deploymentPresentation(source);
   return {
     observation: {
-      state,
-      target_base: source.target_base,
-      target_sha: target_sha.toLowerCase(),
-      deployed_sha:
-        typeof deployed_sha === 'string' ? deployed_sha.toLowerCase() : null,
-      generation: source.generation,
-      error_code,
-      log_path,
-      covered_pr_numbers
+      state: presentation.state,
+      repo: publicRepoName(source.recovery?.failure_key?.repo || workspace_key),
+      desired_sha: target_sha.slice(0, 8).toLowerCase(),
+      description: presentation.description,
+      included_merge_count: included_bead_ids.size,
+      timeline: deploymentTimeline(source, queue.attempts),
+      recovery,
+      // Provider-owned log paths never cross the websocket boundary. The client
+      // can disclose that a sanitized log reference exists, but cannot open a
+      // local path or receive the provider output.
+      log: has_log_path
+        ? { label: '배포 로그', reference: 'deployment-log' }
+        : null,
+      actions: deploymentActions(source, queue.attempts),
+      notifications: deploymentNotifications(source.notifications)
     },
     coverage
   };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function publicRepoName(value) {
+  const raw = typeof value === 'string' ? value : '';
+  const leaf = raw.split(/[\\/]/).filter(Boolean).at(-1) || 'repo';
+  return /^[a-zA-Z0-9._-]{1,80}$/.test(leaf) ? leaf : 'repo';
+}
+
+/**
+ * @param {any} source
+ * @returns {{ state: string, description: string }}
+ */
+function deploymentPresentation(source) {
+  const recovery_phase = source?.recovery?.phase;
+  if (source.state === 'succeeded') {
+    return {
+      state: '배포 완료',
+      description: '현재 desired SHA가 배포되었습니다'
+    };
+  }
+  if (
+    recovery_phase === 'awaiting_confirmation' ||
+    recovery_phase === 'unrecoverable' ||
+    (source.state === 'failed' && !source.retry_operation)
+  ) {
+    return { state: '확인 필요', description: '사용자 확인이 필요합니다' };
+  }
+  if (recovery_phase || source.retry_operation?.phase === 'recovery_ready') {
+    return { state: '복구 중', description: '복구 세션을 진행하고 있습니다' };
+  }
+  if (
+    source.automatic_retry_count > 0 ||
+    ['scheduled', 'calling', 'returned'].includes(source.retry_operation?.phase)
+  ) {
+    const current = source.retry_operation
+      ? Math.min(2, source.automatic_retry_count + 1)
+      : Math.min(2, source.automatic_retry_count);
+    return {
+      state: `재시도 ${current}/2`,
+      description: '자동 재시도를 기다리고 있습니다'
+    };
+  }
+  if (source.state === 'running') {
+    return {
+      state: '배포 중',
+      description: '외부 배포 상태를 확인하고 있습니다'
+    };
+  }
+  return { state: '배포 대기', description: '배포 요청을 기다리고 있습니다' };
+}
+
+/**
+ * @param {any} recovery
+ * @param {any} attempts
+ * @returns {Record<string, string>|null}
+ */
+function projectDeploymentRecovery(recovery, attempts) {
+  if (!recovery || typeof recovery !== 'object') {
+    return null;
+  }
+  const attempt =
+    recovery.attempt_id && attempts && typeof attempts === 'object'
+      ? attempts[recovery.attempt_id]
+      : null;
+  /** @type {Record<string, string>} */
+  const projected = {};
+  for (const [key, value] of [
+    ['bead_id', recovery.bead_id],
+    ['attempt_id', recovery.attempt_id],
+    ['session_id', attempt?.session_id],
+    ['runner', attempt?.runner],
+    ['model', attempt?.model],
+    ['effort', attempt?.effort]
+  ]) {
+    if (typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,160}$/.test(value)) {
+      projected[key] = value;
+    }
+  }
+  const confirmation_reason = recovery.confirmation_reason;
+  if (
+    typeof confirmation_reason === 'string' &&
+    /^[a-z0-9][a-z0-9_.:-]{0,199}$/.test(confirmation_reason)
+  ) {
+    projected.confirmation_reason = confirmation_reason;
+    projected.recent_update = confirmation_reason;
+  } else {
+    const recent_update = [recovery.outcome, recovery.phase].find(
+      (value) =>
+        typeof value === 'string' && /^[a-z0-9][a-z0-9_.:-]{0,199}$/.test(value)
+    );
+    if (typeof recent_update === 'string') {
+      projected.recent_update = recent_update;
+    }
+  }
+  return Object.keys(projected).length > 0 ? projected : null;
+}
+
+/**
+ * @param {any} source
+ * @param {any} attempts
+ * @returns {Array<{ kind: string, at: number|null }>}
+ */
+function deploymentTimeline(source, attempts) {
+  /** @type {Array<{ kind: string, at: number|null }>} */
+  const timeline = [];
+  /**
+   * @param {string} kind
+   * @param {number|null} [at]
+   */
+  const add = (kind, at = null) => {
+    if (timeline.length < 5) {
+      timeline.push({ kind, at: Number.isFinite(at) ? at : null });
+    }
+  };
+  if (source.automatic_retry_count > 0 || source.retry_operation?.phase) {
+    add(
+      'automatic_retry',
+      source.retry_operation?.called_at ?? source.next_retry_at
+    );
+  }
+  const recovery = source.recovery;
+  if (recovery) {
+    add('recovery_prepared', recovery.prepared_at);
+    const attempt = recovery.attempt_id
+      ? attempts?.[recovery.attempt_id]
+      : null;
+    if (recovery.attempt_id) {
+      add('recovery_session', attempt?.started_at ?? null);
+    }
+    if (recovery.phase === 'awaiting_confirmation') {
+      add('confirmation_required');
+    }
+  }
+  if (source.state === 'succeeded') {
+    add('deployment_succeeded');
+  } else if (source.state === 'running') {
+    add('provider_attempt');
+  } else if (source.state === 'pending') {
+    add('deployment_requested');
+  }
+  return timeline;
+}
+
+/**
+ * @param {any} source
+ * @param {any} attempts
+ * @returns {Array<Record<string, string>>}
+ */
+function deploymentActions(source, attempts) {
+  /** @type {Array<Record<string, string>>} */
+  const actions = [];
+  const attempt_id = source.recovery?.attempt_id;
+  const attempt =
+    typeof attempt_id === 'string' && attempts && typeof attempts === 'object'
+      ? attempts[attempt_id]
+      : null;
+  if (attempt && typeof attempt.session_id === 'string') {
+    actions.push({ kind: 'view_session', label: '세션 보기', attempt_id });
+  }
+  if (
+    attempt &&
+    ['failed', 'orphaned', 'paused'].includes(String(attempt.status))
+  ) {
+    actions.push({
+      kind: 'continue_recovery',
+      label: '복구 이어가기',
+      attempt_id
+    });
+  }
+  if (
+    source.state === 'failed' &&
+    !source.retry_operation &&
+    !source.recovery
+  ) {
+    actions.push({ kind: 'retry', label: '지금 재시도' });
+  }
+  return actions;
+}
+
+/**
+ * Browser-local delivery never writes these durable transition records back to
+ * the queue. Unknown records are omitted rather than reconstructed.
+ *
+ * @param {unknown} value
+ * @returns {Array<{ key: string, text: string, variant: 'info'|'warning'|'success' }>}
+ */
+function deploymentNotifications(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {Record<string, { text: string, variant: 'info'|'warning'|'success' }>} */
+  const messages = {
+    recovery_prepared: { text: '배포 복구를 준비했습니다', variant: 'warning' },
+    awaiting_confirmation: {
+      text: '배포 복구에 확인이 필요합니다',
+      variant: 'warning'
+    },
+    deployment_succeeded: { text: '배포가 완료되었습니다', variant: 'success' }
+  };
+  return value
+    .flatMap((raw) => {
+      const key_match =
+        raw && typeof raw === 'object' && typeof raw.key === 'string'
+          ? /^(recovery_prepared|awaiting_confirmation|deployment_succeeded):([a-f0-9]{64}):([1-9][0-9]*)$/i.exec(
+              raw.key
+            )
+          : null;
+      if (
+        !raw ||
+        typeof raw !== 'object' ||
+        typeof raw.key !== 'string' ||
+        typeof raw.kind !== 'string' ||
+        typeof raw.identity !== 'string' ||
+        !Number.isInteger(raw.revision) ||
+        !messages[raw.kind] ||
+        !key_match ||
+        key_match[1] !== raw.kind ||
+        key_match[2].toLowerCase() !== raw.identity.toLowerCase() ||
+        Number(key_match[3]) !== raw.revision
+      ) {
+        return [];
+      }
+      return [{ key: raw.key, ...messages[raw.kind] }];
+    })
+    .slice(-3);
 }
 
 /**
@@ -1883,6 +2118,136 @@ export async function handleWorkerDeploymentRetry(ws, req) {
   );
   if (result.ok) {
     fanout(key, queue);
+  }
+}
+
+/**
+ * Continue the exact recovery attempt currently bound to the repository
+ * deployment row. Payload:
+ * `{ attempt_id, expected_revision, continuation?, decision_token? }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerDeploymentRecoveryContinue(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
+      )
+    );
+    return;
+  }
+  if (
+    p.continuation != null &&
+    p.continuation !== 'auto' &&
+    p.continuation !== 'prior_session' &&
+    p.continuation !== 'fresh_current'
+  ) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bad_request', 'invalid continuation'))
+    );
+    return;
+  }
+  if (
+    (p.continuation === 'prior_session' ||
+      p.continuation === 'fresh_current') &&
+    (!p.decision_token ||
+      typeof p.decision_token !== 'object' ||
+      Array.isArray(p.decision_token))
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'decision_token is required')
+      )
+    );
+    return;
+  }
+  if (
+    p.decision_token !== undefined &&
+    p.continuation !== 'prior_session' &&
+    p.continuation !== 'fresh_current'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'decision_token requires continuation')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          attempt_id: p.attempt_id,
+          resumed: false,
+          conflict: true,
+          new_attempt_id: null,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  const recovery = current.deployment?.recovery;
+  if (
+    !recovery ||
+    typeof recovery.identity !== 'string' ||
+    recovery.attempt_id !== p.attempt_id
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          attempt_id: p.attempt_id,
+          resumed: false,
+          conflict: false,
+          new_attempt_id: null,
+          reason: 'recovery_attempt_unowned',
+          continuation_mismatch: null
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
+  let result;
+  try {
+    result = await continueWorkerDeploymentRecovery(key, {
+      identity: recovery.identity,
+      attempt_id: p.attempt_id,
+      continuation: p.continuation,
+      decision_token: p.decision_token
+    });
+  } catch (err) {
+    log(
+      'worker-deployment-recovery-continue failed for %s/%s: %o',
+      key,
+      p.attempt_id,
+      err
+    );
+    result = { ok: false, reason: 'error' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        attempt_id: p.attempt_id,
+        resumed: !!result.ok,
+        conflict: false,
+        new_attempt_id: result.attempt_id || null,
+        reason: result.ok ? null : result.reason || null,
+        continuation_mismatch: result.continuation_mismatch || null
+      })
+    )
+  );
+  if (result.ok) {
+    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
   }
 }
 

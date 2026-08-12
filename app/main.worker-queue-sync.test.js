@@ -207,6 +207,29 @@ describe('worker-queue snapshot workspace guard', () => {
 
     expect(waitingRowCount()).toBe(1);
   });
+
+  test('shows a deployment notification key once across repeated snapshots', async () => {
+    CLIENT = makeClient({ current: '/repo-a' });
+    bootstrap(setupShell());
+    await settle();
+
+    const snapshot = queueSnapshotFor('/repo-a');
+    /** @type {any} */ (snapshot.queue).deployment = {
+      notifications: [
+        {
+          key: `recovery_prepared:${'a'.repeat(64)}:7`,
+          text: '배포 복구를 준비했습니다',
+          variant: 'warning'
+        }
+      ]
+    };
+
+    CLIENT.trigger('worker-queue-snapshot', snapshot);
+    CLIENT.trigger('worker-queue-snapshot', snapshot);
+    await settle();
+
+    expect(document.querySelectorAll('.toast')).toHaveLength(1);
+  });
 });
 
 describe('worker-queue resubscribe after reconnect', () => {

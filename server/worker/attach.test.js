@@ -9,6 +9,7 @@ import {
   createLiveBd,
   createWorkerAttachment,
   initWorkerRuntime,
+  retryWorkerDeployment,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
@@ -227,6 +228,100 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('runs recovery poll then tick after a deployment observation', async () => {
+    const runtime = createWorkerRuntime();
+    const recovery = {
+      poll: vi.fn(async () => {}),
+      tick: vi.fn(async () => {})
+    };
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      retryDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'pending',
+        target_base: 'main',
+        target_sha: 'a'.repeat(40),
+        deployed_sha: null,
+        generation: 1,
+        error_code: null,
+        log_path: null
+      })),
+      validateCurrentBinding: () => {},
+      validateRowBinding: () => {}
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      deploymentJob,
+      deploymentRecovery: recovery,
+      getSubscriberCount: () => 0
+    });
+    runtime.queueStore.recordDeploymentObservation(WS, {
+      state: 'pending',
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      deployed_sha: null,
+      generation: 1,
+      error_code: null,
+      log_path: null
+    });
+
+    await att.prPoller.tick();
+
+    expect(recovery.poll).toHaveBeenCalledOnce();
+    expect(recovery.tick).toHaveBeenCalledOnce();
+  });
+
+  test('fences manual deployment retry while an automatic journal is active', async () => {
+    const runtime = createWorkerRuntime();
+    const store = runtime.queueStore;
+    const retryNow = vi.fn(async () => ({
+      ok: false,
+      reason: 'automatic_retry_in_progress'
+    }));
+    store.recordDeploymentObservation(WS, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      deployed_sha: null,
+      generation: 1,
+      error_code: 'deploy_failed',
+      log_path: '/tmp/deploy.log'
+    });
+    store.scheduleDeploymentRetry(
+      WS,
+      {
+        repo: WS,
+        target_base: 'main',
+        target_sha: 'a'.repeat(40),
+        generation: 1,
+        error_code: 'deploy_failed',
+        log_digest: 'a'.repeat(64)
+      },
+      31_000
+    );
+    const before = store.snapshot(WS).deployment;
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        runtime,
+        repo: WS,
+        deploymentRecovery: { retryNow }
+      })
+    );
+
+    const result = await retryWorkerDeployment(WS);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'automatic_retry_in_progress'
+    });
+    expect(retryNow).toHaveBeenCalledOnce();
+    expect(store.snapshot(WS).deployment).toEqual(before);
   });
 
   test('wires repository-aware git ancestry into the default deployment job', async () => {
@@ -2042,7 +2137,7 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     const observed = await att.prActions.observeDeployment();
 
     expect(r).toMatchObject({ ok: true, reason: null });
-    expect(observed).toEqual({ ok: true, reason: null });
+    expect(observed).toEqual({ ok: true, reason: 'succeeded' });
     expect(runtime.externalPrs.list(WS)).toEqual([]);
   });
 });

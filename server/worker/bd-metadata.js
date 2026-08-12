@@ -37,7 +37,7 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   readIssue: (bead_id: string) => Promise<Record<string, any>>,
  *   findIssue: (bead_id: string) => Promise<Record<string, any>|null>,
  *   deleteIssues: (bead_ids: string[]) => Promise<void>,
- *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency: string }) => Promise<void>,
+ *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
  *   scanBeads: () => Promise<{ pr_rows: { bead_id: string, pr_url: string }[], statuses: Record<string, string>, generation?: number, fresh?: boolean }>
@@ -265,28 +265,27 @@ export function createBdMetadata(deps = {}) {
      * with {@link findIssue}; a collision therefore becomes an adoptable
      * readback instead of a second identity.
      *
-     * @param {{ id: string, title: string, description: string, type: string, priority: number, dependency: string }} input
+     * @param {{ id: string, title: string, description: string, type: string, priority: number, dependency?: string }} input
      */
     async createIssue(input) {
-      const r = await run(
-        [
-          'create',
-          '--id',
-          input.id,
-          '--title',
-          input.title,
-          '--description',
-          input.description,
-          '--type',
-          input.type,
-          '--priority',
-          String(input.priority),
-          '--deps',
-          input.dependency,
-          '--json'
-        ],
-        opts
-      );
+      const args = [
+        'create',
+        '--id',
+        input.id,
+        '--title',
+        input.title,
+        '--description',
+        input.description,
+        '--type',
+        input.type,
+        '--priority',
+        String(input.priority)
+      ];
+      if (typeof input.dependency === 'string' && input.dependency.length > 0) {
+        args.push('--deps', input.dependency);
+      }
+      args.push('--json');
+      const r = await run(args, opts);
       if (r.code !== 0) {
         throw new Error(
           `bd create ${input.id} failed (${r.code}): ${(r.stderr || '').trim()}`
