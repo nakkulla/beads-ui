@@ -61,29 +61,64 @@ UI는 `dependents` 배열에서 `dependency_type === "blocks"`인 항목만 선�
   영역은 빈 상태로 표시한다.
 - 잘못된 dependent 항목은 ID를 정규화할 수 없으면 제외한다.
 
+### PR Delivery와 managed 배포
+
+현재 PR이 source·tests와 `npm run build`가 생성한 `app/main.bundle.js` 및
+`app/main.bundle.js.map`을 함께 전달한다. 머지 전에는 구현 worktree에서
+`npm run prettier:write`, `npm run all`, `npm run build`를 순서대로 실행하고 생성물을
+포함한 최종 diff를 검증한다.
+
+머지 뒤 shared runtime 적용은 `docs/agents/repo-ops.toml`의 `[deploy]`가 선언한
+`scripts/managed-self-deploy.js`가 소유한다. finishing 경로는 exact merged candidate를
+고정한 뒤 다음 순서를 수행한다.
+
+1. candidate identity와 tracked-clean 상태를 확인하고 production dependency를 설치한 뒤
+   install marker·lockfile·candidate SHA를 read back한다.
+2. runtime pointer를 exact candidate release로 atomic cutover하고 pointer target을 read
+   back한다.
+3. durable journal에 restart handoff를 기록하고 fenced helper로 shared service를
+   재시작한다.
+4. runtime marker와 health endpoint를 읽어 source path·source SHA·host·port·HTTP health가
+   exact candidate와 일치하는지 확인한다.
+5. install, pointer cutover, restart handoff, runtime identity readback을 담은 terminal
+   deployment receipt를 쓰고 다시 검증한다.
+
+중간 실패는 완료로 처리하지 않는다. managed journal과 receipt를 기반으로 같은 candidate를
+재개하며, pointer나 Bead 상태를 수동으로 전진시키지 않는다. 현재 PR과 이 managed deploy가
+모든 필수 작업을 운반하므로 별도 no-PR residue는 없고 `worker-ineligible` 라벨은 없어야
+한다.
+
 ## Test scope
 
-이 스펙이 승인하는 테스트 seam은 다음과 같다.
+이 스펙이 승인하는 실제 RED seam은 다음과 같다. 각 테스트는 현 구현에서 실패하고 변경
+뒤 통과해야 한다.
 
 1. `server/list-adapters.test.js`
    - `issue-detail`이 `bd show <id> --include-dependents --json`으로 매핑된다.
-   - 반환된 `dependents`가 정규화 뒤에도 보존된다.
 2. `server/subscriptions.test.js`
    - 같은 `updated_at`에서 후행 blocks 항목의 ID·type·status·title이 바뀌면 upsert가
      발생한다.
+3. `app/views/detail-panel/index.test.js`
+   - `blocks`와 비-`blocks` 후행 항목이 섞인 입력에서 `blocks` ID 칩만 정확히 표시한다.
+   - 빈 상태가 `후행 이슈 없음`을 표시한다.
+   - 칩 클릭이 해당 이슈 ID로 `onNavigate`를 호출한다.
+
+다음은 이미 성립하는 데이터 경로와 기존 동작을 보호하는 regression/continuity 검증이며
+RED 증거로 세지 않는다.
+
+1. `server/list-adapters.test.js`
+   - 반환된 `dependents`가 정규화 뒤에도 보존된다.
+2. `server/subscriptions.test.js`
    - `dependents`가 없는 일반 목록은 기존 timestamp 비교 결과를 유지한다.
 3. `server/ws.list-subscriptions.test.js`
    - 상세 snapshot이 `dependents`를 client payload로 전달한다.
 4. `app/views/detail-panel/index.test.js`
-   - `blocks` 후행 항목만 ID 칩으로 표시한다.
-   - 다른 역방향 관계는 표시하지 않는다.
-   - 빈 상태가 `후행 이슈 없음`을 표시한다.
-   - 칩 클릭이 해당 이슈 ID로 `onNavigate`를 호출한다.
    - 기존 선행 의존성 렌더 테스트가 그대로 통과한다.
 
-구현 후 `npm run lint`, `npm run tsc`, `npm test`, `npm run prettier:write`,
-`npm run build`를 실행하고 생성된 `app/main.bundle.js`와
-`app/main.bundle.js.map`을 포함한다.
+구현 후 위 seam 검증과 함께 `npm run prettier:write`, `npm run all`, `npm run build`를
+실행하고 생성된 `app/main.bundle.js`와 `app/main.bundle.js.map`을 포함한다. 머지 후에는
+위 managed deploy 순서와 terminal receipt의 candidate source path·SHA·host·port·HTTP
+health readback을 완료 증거로 삼는다.
 
 ## 수용 기준
 
@@ -94,6 +129,8 @@ UI는 `dependents` 배열에서 `dependency_type === "blocks"`인 항목만 선�
 - 후행 이슈가 없으면 상세에 `후행 이슈 없음`이 보인다.
 - edge나 후행 이슈의 표시 필드가 바뀌면 열린 상세가 최신 목록으로 갱신된다.
 - Board/Worker 카드 markup과 동작에는 후행 이슈 관련 변경이 없다.
+- exact merged candidate의 managed deployment receipt가 install·pointer cutover·restart 및
+  live runtime identity/health 일치를 증명한다.
 
 ## 비범위
 
