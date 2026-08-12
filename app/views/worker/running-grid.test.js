@@ -139,3 +139,38 @@ describe('worker failed running tile template', () => {
     expect(banner.textContent).not.toContain('historical diagnosis');
   });
 });
+
+describe('repo deployment strip template (UI-lb58 Phase 4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('renders one failed retry strip with covered PRs and a log link', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      bannersTemplate({
+        deployment: {
+          state: 'failed',
+          target_sha: 'a'.repeat(40),
+          covered_pr_numbers: [12, 15],
+          error_code: 'healthcheck_failed',
+          log_path: '/tmp/deploy.log'
+        }
+      }),
+      mount
+    );
+
+    const strip = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-deployment-strip')
+    );
+    expect(strip.textContent).toContain('배포 실패');
+    expect(strip.textContent).toContain('aaaaaaaa');
+    expect(strip.textContent).toContain('#12, #15');
+    expect(strip.textContent).toContain('healthcheck_failed');
+    expect(strip.querySelector('.worker-deployment-retry')).not.toBeNull();
+    expect(strip.querySelector('a')?.getAttribute('href')).toBe(
+      'file:///tmp/deploy.log'
+    );
+  });
+});

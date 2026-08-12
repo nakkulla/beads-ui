@@ -376,7 +376,7 @@ export function defaultProbePid(pid) {
  *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
- *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void },
+ *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -1171,6 +1171,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
     worktree,
     admission,
+    deploymentJob,
     repo,
     resolveBase,
     workspace: workspace_root
@@ -1542,6 +1543,72 @@ export async function resumeWorkerAttempt(
     return { ok: false, reason: 'no_attachment' };
   }
   return att.scheduler.resume(keyFor(workspace_root), attempt_id, continuation);
+}
+
+/**
+ * Retry exactly the current failed repo-level deployment. The provider client
+ * validates the returned +1 binding; the queue-store write then compares the
+ * same durable failed observation again so an overlapping status update cannot
+ * be overwritten by a stale retry response.
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<{ ok: boolean, reason?: string, queue?: import('./queue-store.js').Queue, stale?: boolean }>}
+ */
+export async function retryWorkerDeployment(workspace_root) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.deploymentJob || !att.deploymentJob.retryDeployment) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  const current = att.runtime.queueStore.snapshot(key).deployment;
+  const target_sha = current?.target_sha;
+  const generation = current?.generation;
+  if (
+    !current ||
+    current.state !== 'failed' ||
+    typeof current.target_base !== 'string' ||
+    typeof target_sha !== 'string' ||
+    !/^[0-9a-f]{40}$/i.test(target_sha) ||
+    typeof generation !== 'number' ||
+    !Number.isInteger(generation) ||
+    generation <= 0
+  ) {
+    return { ok: false, reason: 'deployment_not_retryable' };
+  }
+  const current_binding = {
+    target_base: current.target_base,
+    target_sha,
+    generation
+  };
+  let retried;
+  try {
+    retried = await att.deploymentJob.retryDeployment({
+      repo: att.repo,
+      current_binding
+    });
+  } catch (err) {
+    const code = /** @type {{ code?: unknown }} */ (err).code;
+    return {
+      ok: false,
+      reason: typeof code === 'string' ? code : 'deployment_retry_failed'
+    };
+  }
+  const recorded = att.runtime.queueStore.recordDeploymentRetry(
+    key,
+    current_binding,
+    retried
+  );
+  if (!recorded.ok) {
+    return {
+      ok: false,
+      reason: recorded.stale
+        ? 'deployment_retry_stale'
+        : 'deployment_retry_persist_failed',
+      stale: recorded.stale === true
+    };
+  }
+  emitQueueChanged(key);
+  return { ok: true, queue: recorded.queue };
 }
 
 /**

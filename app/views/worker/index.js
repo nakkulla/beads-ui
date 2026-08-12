@@ -530,18 +530,22 @@ export function activityBadge(gate_badge, activity) {
 const MERGE_STEPS = [
   { step: 'merging', label: '머지 중', index: 1 },
   { step: 'base_sync', label: 'base 동기화', index: 2 },
-  { step: 'reconcile_queued', label: '정리 준비', index: 2 },
-  { step: 'candidate_pinned', label: '배포 후보 고정', index: 3 },
-  { step: 'post_merge_verify', label: '머지 후 검증', index: 4 },
-  { step: 'reconcile_verify', label: '정리 중 · 검증', index: 4 },
-  { step: 'deploy', label: '배포', index: 5 },
-  { step: 'reconcile_deploy', label: '정리 중 · 배포', index: 5 },
-  { step: 'reconcile_restart', label: '정리 중 · 재시작', index: 6 },
-  { step: 'reconcile_readback', label: '정리 중 · readback', index: 6 },
-  { step: 'child_sweep', label: '자식 정리', index: 7 },
-  { step: 'branch_cleanup', label: '브랜치 정리', index: 8 },
-  { step: 'parent_close', label: '부모 close', index: 9 }
+  { step: 'post_merge_verify', label: '머지 후 검증', index: 3 },
+  { step: 'child_sweep', label: '자식 정리', index: 4 },
+  { step: 'branch_cleanup', label: '브랜치 정리', index: 5 },
+  { step: 'parent_close', label: '부모 close', index: 6 }
 ];
+
+/** @type {Set<string>} */
+const RETIRED_MANAGED_MERGE_STEPS = new Set([
+  'deploy',
+  'reconcile_queued',
+  'candidate_pinned',
+  'reconcile_verify',
+  'reconcile_deploy',
+  'reconcile_restart',
+  'reconcile_readback'
+]);
 
 /**
  * Project a merge step onto what the row draws: its Korean label, its position
@@ -559,7 +563,10 @@ export function mergeStepView(step) {
   if (typeof step !== 'string' || step.length === 0) {
     return null;
   }
-  const total = 9;
+  if (RETIRED_MANAGED_MERGE_STEPS.has(step)) {
+    return null;
+  }
+  const total = 6;
   const found = MERGE_STEPS.find((s) => s.step === step);
   if (!found) {
     return { label: step, index: 0, total, percent: 0 };
@@ -570,40 +577,6 @@ export function mergeStepView(step) {
     total,
     percent: Math.round((found.index / total) * 100)
   };
-}
-
-/**
- * @param {Record<string, any>|null|undefined} record
- * @returns {{ activity: null, merge_progress: { step: string, started_at: number } }|null}
- */
-function reconcileActivity(record) {
-  if (!record || (record.adapter !== 'managed' && record.stage !== 'queued')) {
-    return null;
-  }
-  const step =
-    record.stage === 'queued'
-      ? 'reconcile_queued'
-      : record.stage === 'pinned'
-        ? 'candidate_pinned'
-        : record.stage === 'verifying'
-          ? 'reconcile_verify'
-          : record.stage === 'deploying'
-            ? 'reconcile_deploy'
-            : record.stage === 'restarting'
-              ? 'reconcile_restart'
-              : record.stage === 'readback'
-                ? 'reconcile_readback'
-                : null;
-  return step
-    ? {
-        activity: null,
-        merge_progress: {
-          step,
-          started_at:
-            typeof record.updated_at === 'number' ? record.updated_at : 0
-        }
-      }
-    : null;
 }
 
 /**
@@ -841,6 +814,8 @@ function completionView(completion) {
  * @param {Record<string, any>} [discard_operations] - UI-safe durable discard projection.
  * the durable journal itself never reaches the client (UI-x9tu §10).
  * @param {boolean} [worker_serial] - Durable attempt execution mode.
+ * @param {'pending'|'running'|'succeeded'|'failed'|null} [deployment_coverage]
+ * @param {string|null} [deployment_target_sha]
  * @returns {any}
  */
 function prWaitRow(
@@ -858,7 +833,9 @@ function prWaitRow(
   base_exception = null,
   completion = null,
   discard_operations = {},
-  worker_serial = false
+  worker_serial = false,
+  deployment_coverage = null,
+  deployment_target_sha = null
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -944,7 +921,13 @@ function prWaitRow(
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
-  const cleanup_retry = !!cleanup_failed && !!gate && gate.tier === 'merged';
+  const cleanup_retry =
+    !!cleanup_failed &&
+    ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
+      cleanup_failed.step
+    ) &&
+    !!gate &&
+    gate.tier === 'merged';
   // An external MERGED row is never auto-cleaned (UI-7agi §1), so the button IS
   // the cleanup trigger — with or without a recorded failure.
   const external_cleanup = external && !!gate && gate.tier === 'merged';
@@ -962,10 +945,25 @@ function prWaitRow(
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
+  const deployment_reason =
+    deployment_coverage === 'pending' || deployment_coverage === 'failed'
+      ? '머지됨 · 배포 대기'
+      : deployment_coverage === 'running' &&
+          typeof deployment_target_sha === 'string'
+        ? `머지됨 · ${deployment_target_sha.slice(0, 8)} 배포에 포함됨`
+        : deployment_coverage === 'succeeded'
+          ? '머지됨 · 배포 완료'
+          : null;
+  const deployment_cleanup_failure =
+    !!cleanup_failed &&
+    ['deployment_request', 'deploy'].includes(cleanup_failed.step);
+  const deployment_action_blocked =
+    deployment_reason !== null || deployment_cleanup_failure;
   return {
     id: bead_id,
     title,
-    reason: cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기',
+    reason:
+      deployment_reason || (cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기'),
     draggable: false,
     done: true,
     lane: 'pr_wait',
@@ -1002,7 +1000,9 @@ function prWaitRow(
       !!(recovery && recovery.alert),
     // A queued row has nothing to click but [취소]: the merge is the driver's
     // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
-    merge_action: !queued || continuation_required,
+    merge_action: deployment_action_blocked
+      ? false
+      : !queued || continuation_required,
     cancel_action: queued && !continuation_required,
     cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
     cancel_title:
@@ -1028,6 +1028,7 @@ function prWaitRow(
       !discard_blocks_merge &&
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
+      !deployment_action_blocked &&
       (enabled || conflicting || cleanup_retry || external_cleanup),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
@@ -1916,7 +1917,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }> }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, deployment: any }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2054,8 +2055,6 @@ export function createWorkerView(mount_element, options = {}) {
     // server that does not send it simply renders the settled badges.
     /** @type {Record<string, any>} */
     const pr_activity = q.pr_activity || {};
-    /** @type {Record<string, any>} */
-    const reconcile = q.deployment_reconcile || q.reconcile || {};
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
@@ -2067,15 +2066,7 @@ export function createWorkerView(mount_element, options = {}) {
         step: rec && rec.step ? rec.step : '',
         reason: rec && rec.reason ? rec.reason : '',
         // Fail-quiet: a record written before the field existed has none.
-        detail:
-          reconcile[bead_id]?.adapter === 'managed' &&
-          (rec?.detail === 'checkout_dirty' ||
-            rec?.detail === 'checkout_not_on_base' ||
-            rec?.detail === 'head_not_base_sha')
-            ? null
-            : rec && typeof rec.detail === 'string'
-              ? rec.detail
-              : null,
+        detail: rec && typeof rec.detail === 'string' ? rec.detail : null,
         output_tail:
           rec && typeof rec.output_tail === 'string' && rec.output_tail
             ? rec.output_tail
@@ -2602,6 +2593,16 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
     /** @type {Record<string, string>} */
     const merge_failures = merge_state.failures || {};
+    const deployment_coverage =
+      q.deployment_coverage &&
+      typeof q.deployment_coverage === 'object' &&
+      !Array.isArray(q.deployment_coverage)
+        ? q.deployment_coverage
+        : {};
+    const deployment_target_sha =
+      q.deployment && typeof q.deployment.target_sha === 'string'
+        ? q.deployment.target_sha
+        : null;
     // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵으로
     // 읽고 뱃지를 생략한다 (fail-quiet).
     /** @type {Record<string, { head_sha: string, reason: string, at: number }>} */
@@ -2835,8 +2836,7 @@ export function createWorkerView(mount_element, options = {}) {
             sumAttemptUsage(q.attempts || {}, e.bead_id),
             // The server's own progress wins; the local pending only covers the
             // window before the first snapshot carrying it arrives.
-            reconcileActivity(reconcile[e.bead_id]) ||
-              pr_activity[e.bead_id] ||
+            pr_activity[e.bead_id] ||
               (merge_pending.has(e.bead_id)
                 ? { activity: null, merge_progress: { step: 'merging' } }
                 : null),
@@ -2869,7 +2869,9 @@ export function createWorkerView(mount_element, options = {}) {
               ? q.discard_operations
               : {},
             attempt_by_id.get(last_attempt_by_bead.get(e.bead_id) || '')
-              ?.worker_serial === true
+              ?.worker_serial === true,
+            deployment_coverage[e.bead_id] || null,
+            deployment_target_sha
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
@@ -2887,7 +2889,8 @@ export function createWorkerView(mount_element, options = {}) {
       declared_base,
       done: done_rows,
       token_total,
-      cleanup_failures
+      cleanup_failures,
+      deployment: q.deployment || null
     };
   }
 
@@ -2970,7 +2973,8 @@ export function createWorkerView(mount_element, options = {}) {
       </button>`;
     const banners = bannersTemplate({
       failure: m.failure,
-      cleanupFailures: m.cleanup_failures
+      cleanupFailures: m.cleanup_failures,
+      deployment: m.deployment
     });
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
@@ -3841,6 +3845,14 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (target?.closest?.('.worker-exec-defaults-btn')) {
       exec_defaults_dialog.open();
+      return;
+    }
+    if (target?.closest?.('.worker-deployment-retry')) {
+      if (transport) {
+        void Promise.resolve(transport('worker-deployment-retry', {})).then(
+          adopt
+        );
+      }
       return;
     }
     // The failure banner's ↻ resumes the newest eligible failed attempt (§1).

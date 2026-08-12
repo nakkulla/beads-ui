@@ -78,6 +78,7 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerDeploymentRetry,
   handleWorkerDiscard,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
@@ -500,6 +501,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
+      return;
+    case 'worker-deployment-retry':
+      await handleWorkerDeploymentRetry(ws, req);
       return;
     case 'worker-queue-set-pr-wait-hold':
       handleWorkerQueueSetPrWaitHold(ws, req);

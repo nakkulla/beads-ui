@@ -173,6 +173,71 @@ function logPathLine(log_path) {
 }
 
 /**
+ * @param {any} deployment
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+function deploymentStripTemplate(deployment) {
+  if (!deployment || typeof deployment !== 'object') {
+    return '';
+  }
+  /** @type {Record<string, string>} */
+  const labels = {
+    pending: '배포 대기',
+    running: '배포 중',
+    succeeded: '배포 완료',
+    failed: '배포 실패'
+  };
+  const label = labels[deployment.state];
+  const target_sha =
+    typeof deployment.target_sha === 'string' &&
+    /^[0-9a-f]{40}$/i.test(deployment.target_sha)
+      ? deployment.target_sha.slice(0, 8)
+      : null;
+  if (!label || !target_sha) {
+    return '';
+  }
+  const prs = Array.isArray(deployment.covered_pr_numbers)
+    ? deployment.covered_pr_numbers.filter(Number.isInteger)
+    : [];
+  const failed = deployment.state === 'failed';
+  const log_path =
+    typeof deployment.log_path === 'string' ? deployment.log_path : null;
+  return html`<section
+    class="worker-deployment-strip${failed
+      ? ' worker-deployment-strip--failed'
+      : ''}"
+    aria-label="레포 배포 상태"
+  >
+    <span class="worker-deployment-strip__sha">${target_sha}</span>
+    <b>${label}</b>
+    ${prs.length > 0
+      ? html`<span class="worker-deployment-strip__prs"
+          >${prs
+            .map((/** @type {number} */ number) => `#${number}`)
+            .join(', ')}</span
+        >`
+      : ''}
+    ${failed && typeof deployment.error_code === 'string'
+      ? html`<span class="worker-deployment-strip__error"
+          >${deployment.error_code}</span
+        >`
+      : ''}
+    ${log_path
+      ? html`<a
+          href=${`file://${log_path}`}
+          class="worker-deployment-strip__log"
+          >로그</a
+        >`
+      : ''}
+    ${failed
+      ? html`<button type="button" class="worker-deployment-retry">
+          배포 재시도
+        </button>`
+      : ''}
+  </section>`;
+}
+
+/**
  * Format an elapsed duration (ms) as `MmSSs` / `SSs`. Exported so the monitor
  * tab writes a running attempt's elapsed the same way this tile does (UI-53es
  * §1) — the same fact must not read differently on two tabs.
@@ -193,7 +258,7 @@ export function formatElapsed(ms) {
 /**
  * Banners area above the running grid.
  *
- * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
+ * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[], deployment?: any }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
@@ -201,6 +266,7 @@ export function bannersTemplate(state) {
     ? state.cleanupFailures
     : [];
   return html`<div class="worker-banners">
+    ${deploymentStripTemplate(state.deployment)}
     ${state.failure
       ? html`<div class="worker-banner worker-banner--failure" role="alert">
           ⛔ ${state.failure.repo || 'repo'} 세션 실패 —

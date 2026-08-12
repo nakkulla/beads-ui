@@ -795,7 +795,7 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
           pr_observations: {
             'A-pr': { gate: { enabled: false, tier: 'merged' } }
           },
-          cleanup_failed: { 'A-pr': { step: 'verify', reason: 'x' } }
+          cleanup_failed: { 'A-pr': { step: 'child_sweep', reason: 'x' } }
         })
       ],
       []
@@ -806,7 +806,7 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.pr_wait[0].badges).toContain('정리 실패');
   });
 
-  test('shows durable managed restart progress on a PR-wait row', () => {
+  test('omits retired managed restart progress on a PR-wait row', () => {
     const lanes = buildLanes(
       [
         workspace({
@@ -823,8 +823,8 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
       []
     );
 
-    expect(lanes.pr_wait[0].badges).toContain('정리 중 · 재시작');
-    expect(lanes.pr_wait[0].reason).toBe('정리 중 · 재시작');
+    expect(lanes.pr_wait[0].badges).not.toContain('정리 중 · 재시작');
+    expect(lanes.pr_wait[0].reason).toBe('PR 대기');
     expect(lanes.pr_wait[0].alert).toBe(false);
   });
 

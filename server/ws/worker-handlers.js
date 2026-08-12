@@ -37,6 +37,7 @@ import {
   pauseWorkerAttempt,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
+  retryWorkerDeployment,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   tickWorkerQueue,
@@ -888,10 +889,8 @@ function completionStatusFor(workspace_key, queue) {
  *   - `runner_catalog`: the resolved runner/model catalog (UI-jrb3 §7) the
  *     exec-setting selectors render from, so the client never keeps its own copy
  *     of a table `config.toml` can extend,
- *   - the configured `deploy_cmd` and the workspace's `last_deploy` record
- *     (worker-deploy-hook §3), so the ⚙ dialog can show what the merge click
- *     will run and what the last one did. Read-only on the wire: the commands
- *     are defined in `config.toml` only, which is the security boundary.
+ *   - the configured `deploy_cmd`, which stays read-only: repository deployment
+ *     desired state is projected separately and never inferred from a command.
  *
  * Exported since UI-nprg: the monitor's cross-workspace aggregation builds its
  * per-workspace payload with THIS function rather than a second assembly path,
@@ -909,6 +908,9 @@ export function decorateQueue(workspace_key, raw_queue) {
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
   delete public_queue.completion_intents;
+  delete public_queue.deployment;
+  delete public_queue.last_deploy;
+  delete public_queue.reconcile;
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );
@@ -963,9 +965,6 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     deploy_cmd = null;
   }
-  // Absent on a legacy queue.json — the contract-consumer rule is fail-quiet,
-  // so it travels as null and the renderer omits the row.
-  const last_deploy = queue.last_deploy || null;
   /** @type {number|null} */
   let slots = null;
   try {
@@ -997,6 +996,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     runner_catalog = null;
   }
+  const deployment = projectDeployment({ ...overlaid, pr_wait: queue.pr_wait });
   return {
     ...queue,
     runner_catalog,
@@ -1006,7 +1006,9 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),
-    workspace_info: { verify_cmd, deploy_cmd, last_deploy, slots },
+    workspace_info: { verify_cmd, deploy_cmd, slots },
+    deployment: deployment.observation,
+    deployment_coverage: deployment.coverage,
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
     pr_observations: prObservationsFor(
@@ -1017,10 +1019,6 @@ export function decorateQueue(workspace_key, raw_queue) {
     // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
     // observation/verification activity and merge progress. Also non-persisted.
     pr_activity: prActivityFor(workspace_key, queue),
-    // Durable Deployment Reconciler projection. Kept as an explicit wire key
-    // even though `...queue` also carries the raw state, so clients do not have
-    // to infer which queue field owns post-merge progress.
-    deployment_reconcile: queue.reconcile || {},
     // Titles for the queue/pr_wait/done beads (UI-12k6) — non-persisted and
     // partial (cache hits only); the client falls back to the id without it.
     bead_titles: beadTitlesFor(workspace_key, queue),
@@ -1042,6 +1040,135 @@ export function decorateQueue(workspace_key, raw_queue) {
       active: null,
       failures: {}
     }
+  };
+}
+
+/**
+ * Project only a complete, internally consistent repo deployment observation.
+ * The browser never receives malformed durable state as a partial success.
+ *
+ * @param {Record<string, any>} queue
+ * @returns {{ observation: Record<string, any>|null, coverage: Record<string, 'pending'|'running'|'succeeded'|'failed'> }}
+ */
+function projectDeployment(queue) {
+  const source = queue.deployment;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return { observation: null, coverage: {} };
+  }
+  const state = source.state;
+  const target_sha = source.target_sha;
+  const valid_binding =
+    typeof source.target_base === 'string' &&
+    source.target_base.length > 0 &&
+    typeof target_sha === 'string' &&
+    /^[0-9a-f]{40}$/i.test(target_sha) &&
+    Number.isInteger(source.generation) &&
+    source.generation > 0;
+  if (
+    !valid_binding ||
+    !['pending', 'running', 'succeeded', 'failed'].includes(state)
+  ) {
+    return { observation: null, coverage: {} };
+  }
+  const deployed_sha = source.deployed_sha;
+  const error_code = source.error_code;
+  const log_path = source.log_path;
+  const has_log_path = typeof log_path === 'string' && log_path.length > 0;
+  const valid_state =
+    (state === 'pending' &&
+      deployed_sha === null &&
+      error_code === null &&
+      log_path === null) ||
+    (state === 'running' &&
+      deployed_sha === null &&
+      error_code === null &&
+      has_log_path) ||
+    (state === 'succeeded' &&
+      typeof deployed_sha === 'string' &&
+      deployed_sha.toLowerCase() === target_sha.toLowerCase() &&
+      error_code === null &&
+      has_log_path) ||
+    (state === 'failed' &&
+      deployed_sha === null &&
+      typeof error_code === 'string' &&
+      error_code.length > 0 &&
+      has_log_path);
+  if (!valid_state) {
+    return { observation: null, coverage: {} };
+  }
+  /** @type {Record<string, 'pending'|'running'|'succeeded'|'failed'>} */
+  const coverage = {};
+  /** @type {number[]} */
+  const covered_pr_numbers = [];
+  const cleanup_failed =
+    queue.cleanup_failed &&
+    typeof queue.cleanup_failed === 'object' &&
+    !Array.isArray(queue.cleanup_failed)
+      ? queue.cleanup_failed
+      : {};
+  for (const row of Array.isArray(queue.pr_wait) ? queue.pr_wait : []) {
+    if (
+      !row ||
+      typeof row.bead_id !== 'string' ||
+      typeof row.verified_target_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
+      !Number.isInteger(row.deployment_generation) ||
+      row.deployment_generation <= 0 ||
+      row.deployment_generation > source.generation ||
+      (row.deployment_generation === source.generation &&
+        row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
+    ) {
+      continue;
+    }
+    const cleanup_failure = cleanup_failed[row.bead_id];
+    const deployment_failure =
+      cleanup_failure &&
+      typeof cleanup_failure === 'object' &&
+      (['deployment_request', 'deploy'].includes(cleanup_failure.step) ||
+        (typeof cleanup_failure.reason === 'string' &&
+          cleanup_failure.reason.startsWith('deployment_')));
+    const same_generation_binding =
+      row.deployment_generation === source.generation &&
+      row.verified_target_sha.toLowerCase() === target_sha.toLowerCase();
+    const lower_generation_ancestry_proven =
+      row.deployment_generation < source.generation &&
+      cleanup_failure &&
+      typeof cleanup_failure === 'object' &&
+      ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
+        cleanup_failure.step
+      );
+    // A lower-generation request tells us only that the provider accepted a
+    // desired target. The Phase 2 ancestry check is the authority for whether
+    // that target covers the immutable merge floor. Its only durable evidence
+    // while the row remains in pr_wait is a later cleanup failure; a completed
+    // cleanup removes the row. Never turn a deployment-request failure into a
+    // success merely because a newer repo deployment succeeded.
+    if (
+      state === 'succeeded' &&
+      (deployment_failure ||
+        (!same_generation_binding && !lower_generation_ancestry_proven))
+    ) {
+      continue;
+    }
+    coverage[row.bead_id] = state;
+    const match = /\/pull\/(\d+)$/.exec(String(row.pr_url || ''));
+    if (match) {
+      covered_pr_numbers.push(Number(match[1]));
+    }
+  }
+  return {
+    observation: {
+      state,
+      target_base: source.target_base,
+      target_sha: target_sha.toLowerCase(),
+      deployed_sha:
+        typeof deployed_sha === 'string' ? deployed_sha.toLowerCase() : null,
+      generation: source.generation,
+      error_code,
+      log_path,
+      covered_pr_numbers
+    },
+    coverage
   };
 }
 
@@ -1708,6 +1835,35 @@ export function handleWorkerQueueSetSlots(ws, req) {
     slots: p.slots
   });
   replyMutation(ws, req, key, result);
+}
+
+/**
+ * Retry the repository's current failed deployment desired state. The handler
+ * carries no PR identity or revision: retry belongs to the one repo-level
+ * binding, and the store rechecks that binding after the provider returns.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerDeploymentRetry(ws, req) {
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const result = await retryWorkerDeployment(key);
+  const queue = result.queue || queueStore().snapshot(key);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        applied: result.ok,
+        reason: result.ok ? null : result.reason || 'deployment_retry_failed',
+        queue: decorateQueue(key, queue)
+      })
+    )
+  );
+  if (result.ok) {
+    fanout(key, queue);
+  }
 }
 
 /**

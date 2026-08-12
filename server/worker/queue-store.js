@@ -3810,6 +3810,48 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Atomically replace the current failed desired binding with the next
+     * provider-validated retry generation. PR rows deliberately stay untouched:
+     * they remain bound to the generation that accepted their merge floor.
+     *
+     * @param {string} workspace
+     * @param {{ target_base: string, target_sha: string, generation: number }} current_binding
+     * @param {{ target_base: string, target_sha: string, generation: number }} retry_binding
+     * @returns {QueueOpResult & { stale?: boolean }}
+     */
+    recordDeploymentRetry(workspace, current_binding, retry_binding) {
+      /** @type {boolean} */
+      let stale = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const current = next.deployment;
+        if (
+          !current ||
+          current.state !== 'failed' ||
+          current.target_base !== current_binding?.target_base ||
+          current.target_sha !== current_binding?.target_sha ||
+          current.generation !== current_binding?.generation ||
+          retry_binding?.target_base !== current_binding?.target_base ||
+          retry_binding?.target_sha !== current_binding?.target_sha ||
+          retry_binding?.generation !== current_binding?.generation + 1
+        ) {
+          stale = true;
+          return false;
+        }
+        next.deployment = {
+          state: 'pending',
+          target_base: current_binding.target_base,
+          target_sha: current_binding.target_sha,
+          deployed_sha: null,
+          generation: retry_binding.generation,
+          error_code: null,
+          log_path: null
+        };
+        return true;
+      });
+      return stale ? { ...result, stale: true } : result;
+    },
+
+    /**
      * Bind one merged PR row to the accepted external desired generation.  The
      * binding is the merge driver's completion receipt: execution status is
      * observed later and never occupies the merge slot.
