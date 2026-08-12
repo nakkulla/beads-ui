@@ -85,6 +85,41 @@ describe('workspace snapshot coordinator', () => {
     ).toEqual([ALL_ARGS, READY_ARGS]);
   });
 
+  test('joins concurrent watcher consumers without creating mutation evidence', async () => {
+    /** @type {Array<(value: unknown) => void>} */
+    const resolvers = [];
+    const runBdJson = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson: /** @type {typeof runBdJson} */ (runBdJson)
+    });
+
+    const first = coordinator.request('watcher');
+    const second = coordinator.request('watcher');
+    const third = coordinator.request('watcher');
+
+    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(first).toBe(second);
+    expect(first).toBe(third);
+
+    resolvers[0]({ code: 0, stdoutJson: [{ id: 'A', dependencies: [] }] });
+    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+
+    await first;
+    await Promise.resolve();
+
+    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(coordinator.getState()).toMatchObject({
+      generation: 1,
+      mutation_epoch: 0,
+      pending_mutation: false
+    });
+  });
+
   test('runs one trailing generation for a mutation burst', async () => {
     const runBdJson = createRunner([
       ...successfulGeneration([{ id: 'A', dependencies: [] }]),

@@ -164,6 +164,27 @@ function collectActiveListSubscriptions() {
 }
 
 /**
+ * Record one watcher mutation signal for each affected workspace before its
+ * active specs join the shared refresh generation.
+ *
+ * @param {string | undefined} root_dir
+ */
+function signalWatcherMutation(root_dir) {
+  if (root_dir !== undefined) {
+    signalWorkspaceSnapshotMutation(root_dir);
+    return;
+  }
+  /** @type {Set<string>} */
+  const root_dirs = new Set();
+  for (const pair of collectActiveListSubscriptions()) {
+    root_dirs.add(pair.root_dir);
+  }
+  for (const active_root_dir of root_dirs) {
+    signalWorkspaceSnapshotMutation(active_root_dir);
+  }
+}
+
+/**
  * Run refresh for all active (workspace, spec) pairs and publish deltas.
  */
 async function refreshAllActiveListSubscriptions(cause = 'poll') {
@@ -182,8 +203,11 @@ async function refreshAllActiveListSubscriptions(cause = 'poll') {
 
 /**
  * Schedule a coalesced refresh of all active list subscriptions.
+ *
+ * @param {string} [cause]
+ * @param {string} [root_dir]
  */
-export function scheduleListRefresh(cause = 'watcher') {
+export function scheduleListRefresh(cause = 'watcher', root_dir = undefined) {
   // Suppress watcher-driven refreshes during an active mutation gate; resolve gate once
   if (MUTATION_GATE) {
     try {
@@ -192,6 +216,9 @@ export function scheduleListRefresh(cause = 'watcher') {
       // ignore
     }
     return;
+  }
+  if (cause === 'watcher') {
+    signalWatcherMutation(root_dir);
   }
   if (REFRESH_TIMER) {
     clearTimeout(REFRESH_TIMER);

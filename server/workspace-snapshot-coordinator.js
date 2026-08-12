@@ -64,9 +64,6 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
    * @returns {Promise<SnapshotResult>}
    */
   function request(cause = 'background-subscribe') {
-    if (isMutationCause(cause)) {
-      markMutation();
-    }
     if (state.in_flight !== null) {
       return state.in_flight;
     }
@@ -382,13 +379,6 @@ function positiveNumber(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? value
     : fallback;
-}
-
-/**
- * @param {string} cause
- */
-function isMutationCause(cause) {
-  return cause === 'mutation' || cause === 'watcher';
 }
 
 /**
