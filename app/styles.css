@@ -2838,19 +2838,9 @@ html[data-theme='dark'] {
   color: var(--chip-route);
 }
 
-.exec-defaults__vd-badge--detached {
-  border-color: var(--border-warn);
-  color: var(--accent-warn);
-}
-
-.exec-defaults__vd-badge--ok {
-  border-color: var(--border-tile-run);
-  color: var(--accent-success);
-}
-
-.exec-defaults__vd-badge--launched {
-  border-color: var(--border-warn);
-  color: var(--accent-warn);
+.exec-defaults__vd-badge--deployer {
+  border-color: var(--border-route);
+  color: var(--chip-route);
 }
 
 .exec-defaults__vd-badge--fail {

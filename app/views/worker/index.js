@@ -536,17 +536,6 @@ const MERGE_STEPS = [
   { step: 'parent_close', label: '부모 close', index: 6 }
 ];
 
-/** @type {Set<string>} */
-const RETIRED_MANAGED_MERGE_STEPS = new Set([
-  'deploy',
-  'reconcile_queued',
-  'candidate_pinned',
-  'reconcile_verify',
-  'reconcile_deploy',
-  'reconcile_restart',
-  'reconcile_readback'
-]);
-
 /**
  * Project a merge step onto what the row draws: its Korean label, its position
  * in the sequence, and how far along the bar is.
@@ -561,9 +550,6 @@ const RETIRED_MANAGED_MERGE_STEPS = new Set([
  */
 export function mergeStepView(step) {
   if (typeof step !== 'string' || step.length === 0) {
-    return null;
-  }
-  if (RETIRED_MANAGED_MERGE_STEPS.has(step)) {
     return null;
   }
   const total = 6;

@@ -3,11 +3,19 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runtimePointerPath } from '../server/worker/deployment-paths.js';
 
 const SHA_RE = /^[0-9a-f]{40}$/;
 const HEALTH_ATTEMPTS = 50;
 const HEALTH_POLL_MS = 100;
+
+/**
+ * @param {NodeJS.ProcessEnv|Record<string, string|undefined>} env
+ */
+function defaultRuntimePointerPath(env) {
+  const state_home =
+    env.XDG_STATE_HOME || path.join(env.HOME || '', '.local', 'state');
+  return path.join(state_home, 'bdui', 'runtime', 'current');
+}
 
 /**
  * @param {number} ms
@@ -96,7 +104,7 @@ export async function deploySelf(input = {}) {
     return { ok: false, reason: 'build_failed' };
   }
   const pointer_path = path.resolve(
-    String(env.BDUI_DEPLOY_RUNTIME_CURRENT || runtimePointerPath())
+    String(env.BDUI_DEPLOY_RUNTIME_CURRENT || defaultRuntimePointerPath(env))
   );
   const pointer_parent = path.dirname(pointer_path);
   const temporary_pointer = path.join(

@@ -28,12 +28,10 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * model does not accept) shows as its own selected `(비호환)` option, still
  * resettable to `(기본)`.
  *
- * Below the editing form the dialog also renders the read-only 「검증·배포 설정」
- * section (worker-deploy-hook §4): what the merge click verifies and deploys for
- * the current workspace. Its data rides the queue snapshot's `workspace_info`
- * decoration — no extra request or channel — and it carries NO editing
- * control: the commands live in `config.toml` only, which is the security
- * boundary.
+ * Below the editing form the dialog also renders read-only verification and
+ * external deployment declarations. Data rides the queue snapshot's
+ * `workspace_info` decoration with no extra request or channel. Verification
+ * may use config fallback; deployment comes only from the pinned repo declaration.
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  * @typedef {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} PresetStore
@@ -42,8 +40,7 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * @property {PresetStore} [presetStore]
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
  * @property {() => (string|undefined)} [getWorkspacePath] - Current workspace
- * path, used only to name the `[worker.deploy."<path>"]` section a user must
- * write when no deploy command is configured.
+ * path, used by the verify fallback hint.
  */
 
 /**
@@ -773,9 +770,9 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
-   * The deploy row: what the merge click runs after a green verify. Unset, it
-   * names the config section a user has to write — the only place a deploy
-   * command can be defined.
+   * The deploy row: the pinned repository declaration the external deployment
+   * provider consumes after Worker verification. The Worker displays this
+   * command but never runs it.
    *
    * @param {any} deploy_cmd
    * @returns {import('lit-html').TemplateResult}
@@ -784,25 +781,22 @@ export function createExecDefaultsDialog(mount_element, options) {
     const cmd_text = deploy_cmd ? formatCmd(deploy_cmd.cmd) : '';
     const timeout_text = deploy_cmd ? formatTimeout(deploy_cmd.timeout_ms) : '';
     const note = timeout_text
-      ? `timeout ${timeout_text} · verify 통과 시에만 실행`
-      : 'verify 통과 시에만 실행';
-    const workspace_path =
-      (getWorkspacePath && getWorkspacePath()) || '<workspace 경로>';
+      ? `timeout ${timeout_text} · external deployer 실행`
+      : 'external deployer 실행';
     return html`<div class="exec-defaults__vd-group" data-vd="deploy">
       <div class="exec-defaults__vd-label">머지 후 배포 (deploy)</div>
       ${cmd_text
         ? html`<div class="exec-defaults__vd-line">
             <span class="exec-defaults__vd-cmd">${cmd_text}</span>
-            ${badge('config', 'config')}
-            ${deploy_cmd.detached === true ? badge('detached', 'detached') : ''}
+            ${badge('deployer', 'external')}
             <span class="exec-defaults__vd-meta">${note}</span>
           </div>`
         : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
             배포 없음 —
             <span class="exec-defaults__vd-cmd"
-              >[worker.deploy."${workspace_path}"]</span
+              >docs/agents/repo-ops.toml [deploy]</span
             >
-            섹션으로 정의
+            선언으로 정의
           </div>`}
     </div>`;
   }
@@ -923,7 +917,7 @@ export function createExecDefaultsDialog(mount_element, options) {
       <p class="exec-defaults__vd-title">
         검증·배포 설정
         <span class="exec-defaults__vd-ro"
-          >읽기 전용 — config.toml에서 정의</span
+          >읽기 전용 — repo 선언/config에서 정의</span
         >
       </p>
       ${verifyGroup(info.verify_cmd)} ${deployGroup(info.deploy_cmd)}

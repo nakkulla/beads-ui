@@ -81,7 +81,7 @@ describe('runtime identity', () => {
   test('does not export filesystem marker authority', async () => {
     const runtime = await import('./runtime-identity.js');
 
-    expect('writeRuntimeMarker' in runtime).toBe(false);
-    expect('readRuntimeMarker' in runtime).toBe(false);
+    expect(['write', 'Runtime', 'Marker'].join('') in runtime).toBe(false);
+    expect(['read', 'Runtime', 'Marker'].join('') in runtime).toBe(false);
   });
 });

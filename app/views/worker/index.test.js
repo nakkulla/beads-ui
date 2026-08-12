@@ -2456,6 +2456,15 @@ describe('views/worker', () => {
     );
   }
 
+  /**
+   * @param {HTMLElement} dialog
+   * @param {string} name
+   * @returns {HTMLElement|null}
+   */
+  function vdGroup(dialog, name) {
+    return dialog.querySelector(`.exec-defaults__vd-group[data-vd="${name}"]`);
+  }
+
   test('the ⚙ button carries aria-haspopup and opens the global exec-defaults dialog', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     createWorkerView(mount, {
@@ -2570,8 +2579,7 @@ describe('views/worker', () => {
   });
 
   /**
-   * Open the ⚙ dialog over a queue snapshot carrying the given
-   * `workspace_info` (worker-deploy-hook §3/§4 read-only decoration).
+   * Open the ⚙ dialog over a queue snapshot carrying the given workspace info.
    *
    * @param {HTMLElement} mount
    * @param {any} workspace_info
@@ -2590,22 +2598,12 @@ describe('views/worker', () => {
     return openExecDefaults(mount);
   }
 
-  /**
-   * @param {HTMLElement} dialog
-   * @param {string} name - `verify` | `deploy` | `last-deploy`
-   * @returns {HTMLElement|null}
-   */
-  function vdGroup(dialog, name) {
-    return dialog.querySelector(`.exec-defaults__vd-group[data-vd="${name}"]`);
-  }
-
-  test('renders the verify row with its command, config badge and timeout', () => {
+  test('renders the verify command and timeout', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
       verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
       deploy_cmd: null,
-      last_deploy: null,
       slots: 2
     });
 
@@ -2613,116 +2611,61 @@ describe('views/worker', () => {
     expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
       'npm run all'
     );
-    expect(
-      group.querySelector('.exec-defaults__vd-badge--config')?.textContent
-    ).toBe('config');
     expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
       'timeout 10분'
     );
   });
 
-  test('an unconfigured verify names the config section for the current workspace', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: null,
-      deploy_cmd: null,
-      last_deploy: null,
-      slots: 2
-    });
-
-    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
-    expect(group.textContent).toContain('검증 없음');
-    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
-      '[worker.verify."/Users/me/GitHub/other-repo"]'
-    );
-  });
-
-  test('renders the deploy row with a detached badge and the verify-gated note', () => {
+  test('renders the external deploy declaration without a detached adapter badge', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
       verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
       deploy_cmd: {
-        cmd: ['bdui-shared', 'restart'],
-        timeout_ms: 600000,
-        detached: true
+        cmd: ['scripts/deploy-self.js'],
+        timeout_ms: 600000
       },
-      last_deploy: null,
       slots: 2
     });
 
     const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
     expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
-      'bdui-shared restart'
+      'scripts/deploy-self.js'
     );
     expect(
-      group.querySelector('.exec-defaults__vd-badge--config')?.textContent
-    ).toBe('config');
-    expect(
-      group.querySelector('.exec-defaults__vd-badge--detached')?.textContent
-    ).toBe('detached');
+      group.querySelector('.exec-defaults__vd-badge--deployer')?.textContent
+    ).toBe('external');
     expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
-      'timeout 10분 · verify 통과 시에만 실행'
+      'timeout 10분 · external deployer 실행'
     );
+    expect(
+      group.querySelector('.exec-defaults__vd-badge--detached')
+    ).toBeNull();
   });
 
-  test('renders no detached badge for a synchronous deploy command', () => {
+  test('names the repository declaration when deploy is absent', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
       verify_cmd: null,
-      deploy_cmd: {
-        cmd: ['bash', 'scripts/install.sh'],
-        timeout_ms: 900000,
-        detached: false
-      },
-      last_deploy: null,
-      slots: 2
-    });
-
-    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
-    expect(
-      group.querySelector('.exec-defaults__vd-badge--detached')
-    ).toBeNull();
-    expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
-      'timeout 15분 · verify 통과 시에만 실행'
-    );
-  });
-
-  test('an unconfigured deploy names the config section for the current workspace', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: { cmd: ['npm', 'test'], timeout_ms: 600000 },
       deploy_cmd: null,
-      last_deploy: null,
       slots: 2
     });
 
     const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
     expect(group.textContent).toContain('배포 없음');
     expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
-      '[worker.deploy."/Users/me/GitHub/other-repo"]'
+      'docs/agents/repo-ops.toml [deploy]'
     );
   });
 
-  test('renders the verify/deploy section as read-only — no editable control in it', () => {
+  test('keeps the verify and deploy section read-only', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
+      verify_cmd: { cmd: ['npm', 'test'], timeout_ms: 600000 },
       deploy_cmd: {
-        cmd: ['bdui-shared', 'restart'],
-        timeout_ms: 600000,
-        detached: true
-      },
-      last_deploy: {
-        outcome: 'deployed',
-        reason: null,
-        bead_id: 'UI-3onr',
-        base_sha: '9c21b44ffff',
-        at: Date.UTC(2026, 6, 27, 4, 10)
+        cmd: ['scripts/deploy-self.js'],
+        timeout_ms: 600000
       },
       slots: 2
     });
@@ -2730,7 +2673,6 @@ describe('views/worker', () => {
     const section = /** @type {HTMLElement} */ (
       dialog.querySelector('.exec-defaults__vd')
     );
-    expect(section).not.toBeNull();
     expect(section.textContent).toContain('읽기 전용');
     expect(
       section.querySelectorAll('input, select, textarea, button').length
@@ -4612,42 +4554,6 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     expect(banner.textContent).toContain("could not lock ref 'refs/heads/x'");
   });
 
-  test('keeps cleanup detail independent of retired managed state', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          reconcile: {
-            'RD-1': {
-              bead_id: 'RD-1',
-              adapter: 'managed',
-              stage: 'failed'
-            }
-          },
-          cleanup_failed: {
-            'RD-1': {
-              step: 'deploy',
-              reason: 'deploy_base_not_synced',
-              at: 1,
-              detail: 'checkout_dirty'
-            }
-          }
-        }
-      )
-    );
-
-    expect(
-      mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
-        ?.textContent
-    ).toContain('checkout_dirty');
-  });
-
   test('omits the cleanup detail line on a record without one', () => {
     const { mount } = mountWith(
       queueWithGate(
@@ -6213,17 +6119,6 @@ describe('merge progress — projection (UI-raqh §4)', () => {
     ]);
   });
 
-  test('hides retired managed reconcile stages', () => {
-    expect(
-      [
-        'reconcile_verify',
-        'reconcile_deploy',
-        'reconcile_restart',
-        'reconcile_readback'
-      ].map((step) => mergeStepView(step)?.label)
-    ).toEqual([undefined, undefined, undefined, undefined]);
-  });
-
   test('returns null when no merge is running', () => {
     expect(mergeStepView(null)).toBe(null);
   });
@@ -6312,21 +6207,6 @@ describe('merge progress — view (UI-raqh §4)', () => {
     );
     expect(row.classList.contains('worker-mini--merging')).toBe(true);
     expect(row.getAttribute('style')).toContain('--progress: 50%');
-  });
-
-  test('omits retired managed progress from durable reconcile state', () => {
-    const mount = mountRow(null, undefined, {
-      reconcile: {
-        'RD-1': {
-          bead_id: 'RD-1',
-          adapter: 'managed',
-          stage: 'verifying',
-          updated_at: 10
-        }
-      }
-    });
-
-    expect(mount.querySelector('.merge-step')).toBeNull();
   });
 
   test('disables both actions while merging', () => {

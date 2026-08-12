@@ -9,6 +9,7 @@ import {
   __resetWorkerAttachmentsForTest,
   __setUnattachedAdmissionCheckForTest
 } from './worker/attach.js';
+import { resetRepoOpsCache, resolveDeployAt } from './worker/repo-ops.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
   __resetRegistriesForTest,
@@ -100,6 +101,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  resetRepoOpsCache();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
   // Seed DEFAULT_WORKSPACE so bare sockets resolve a deterministic workspace.
   attachWsServer(createServer(), { path: '/ws' });
@@ -109,6 +111,7 @@ afterEach(() => {
   delete process.env.XDG_STATE_HOME;
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
+  resetRepoOpsCache();
   __resetWorkerAttachmentsForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
@@ -2330,80 +2333,57 @@ describe('ws worker-attempt-dismiss (UI-dcw7)', () => {
   });
 });
 
-describe('ws worker-queue workspace_info deploy surface (worker-deploy-hook §3)', () => {
-  const WS_D = { root_dir: '/tmp/wq-ws-D', db_path: '/tmp/wq-ws-D/.beads/db' };
-  /** @type {string[]} */
-  const config_dirs = [];
-
-  /**
-   * @param {string} content
-   * @returns {string}
-   */
-  function writeConfig(content) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wsq-config-'));
-    config_dirs.push(dir);
-    const file_path = path.join(dir, 'config.toml');
-    fs.writeFileSync(file_path, content);
-    return file_path;
-  }
-
-  afterEach(() => {
-    delete process.env.BDUI_CONFIG_PATH;
-    for (const dir of config_dirs.splice(0)) {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  test('exposes the configured deploy command', async () => {
-    process.env.BDUI_CONFIG_PATH = writeConfig(`
-[worker.deploy."${WS_D.root_dir}"]
-cmd = ["bdui-shared", "restart"]
-timeout_ms = 120000
-detached = true
-`);
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
-
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toEqual({
-      cmd: ['bdui-shared', 'restart'],
-      timeout_ms: 120000,
-      detached: true,
-      adapter: 'workspace'
-    });
-  });
-
-  test('reports a null deploy_cmd for a workspace with no section', async () => {
-    process.env.BDUI_CONFIG_PATH = writeConfig('workspaces = ["/repo-a"]\n');
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
-
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    expect(queueSnapshots(sock).at(-1).workspace_info.deploy_cmd).toBeNull();
-  });
-
-  test('keeps legacy last_deploy and managed reconcile internals off the wire', async () => {
-    const sock = fakeSocket();
-    setConnWorkspace(/** @type {any} */ (sock), { ...WS_D });
-
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-
-    const snapshot = queueSnapshots(sock).at(-1);
-    expect(snapshot.workspace_info).not.toHaveProperty('last_deploy');
-    expect(snapshot).not.toHaveProperty('deployment_reconcile');
-    expect(snapshot).not.toHaveProperty('last_deploy');
-    expect(snapshot).not.toHaveProperty('reconcile');
-  });
-});
-
 describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
   const WS_DEPLOY = {
     root_dir: '/tmp/wq-deployment',
     db_path: '/tmp/wq-deployment/.beads/db'
   };
   const TARGET_SHA = 'a'.repeat(40);
+
+  test('keeps retired deployment state off the public snapshot', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      last_deploy: { outcome: 'launched' },
+      reconcile: { 'UI-old': { stage: 'complete' } }
+    });
+
+    expect(snapshot).not.toHaveProperty('last_deploy');
+    expect(snapshot).not.toHaveProperty('reconcile');
+  });
+
+  test('projects the pinned external deploy declaration without adapter fields', async () => {
+    await resolveDeployAt({
+      repo: WS_DEPLOY.root_dir,
+      sha: TARGET_SHA,
+      gitRun: vi.fn(async (args) =>
+        args[0] === 'rev-parse'
+          ? { code: 0, stdout: `${TARGET_SHA}\n`, stderr: '' }
+          : {
+              code: 0,
+              stdout:
+                '[deploy]\ncmd = ["scripts/deploy-self.js"]\ntimeout_ms = 600000\n',
+              stderr: ''
+            }
+      )
+    });
+
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {}
+    });
+
+    expect(/** @type {any} */ (snapshot.workspace_info).deploy_cmd).toEqual({
+      cmd: ['scripts/deploy-self.js'],
+      timeout_ms: 600000
+    });
+  });
 
   test('projects only a valid repo deployment and its merged PR coverage', async () => {
     const store = getWorkerRuntime().queueStore;

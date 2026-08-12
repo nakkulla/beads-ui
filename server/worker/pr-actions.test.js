@@ -15,22 +15,20 @@
  *     click-time re-read, and that the poller cannot publish a discard's own
  *     close as an abandonment.
  */
-import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
-import { createLockManager } from './locks.js';
-import { CLEANUP_STEPS, createPrActions } from './pr-actions.js';
+import { createPrActions } from './pr-actions.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller } from './pr-poller.js';
 import { createQueueStore } from './queue-store.js';
-import { deployLogDir } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-p5';
 const REPO = '/tmp/example-workspace/project-p5';
 const BEAD = 'UI-1';
+const BASE_SHA = 'd'.repeat(40);
 
 /** @type {string} */
 let tmp_state;
@@ -130,13 +128,8 @@ function seedStore(options = {}) {
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number }|null,
  *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }>,
- *   deploy?: { cmd: string[], timeout_ms: number, detached: boolean }|null,
  *   verifyResolution?: import('./repo-ops.js').VerifyResolution,
  *   verifyResolutions?: Array<import('./repo-ops.js').VerifyResolution>,
- *   deployResolution?: import('./repo-ops.js').DeployResolution,
- *   selfRepoState?: (repo: string) => 'self'|'other'|'unknown',
- *   deploySpawn?: 'ok'|'fail'|'hang'|'error'|'throw',
- *   deployOutput?: string[],
  *   repo?: string,
  *   gitFail?: (args: string[]) => boolean,
  *   gitResult?: (args: string[]) => number|null,
@@ -158,9 +151,7 @@ function seedStore(options = {}) {
  *   bdPrUrl?: string|null,
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
- *   deploymentReconciler?: { reconcile: (input: any) => Promise<any> },
  *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, validateCurrentBinding?: (status: any, current_binding: any) => void, validateRowBinding?: (status: any, row_binding: any) => void },
- *   locks?: ReturnType<typeof createLockManager>,
  *   noNotify?: boolean
  * }} [options]
  */
@@ -183,7 +174,10 @@ function makeActions(options = {}) {
   let merge_issued = false;
   const after_merge = Object.hasOwn(options, 'afterMerge')
     ? options.afterMerge
-    : { state: 'ok', data: prOf({ state: 'MERGED' }) };
+    : {
+        state: 'ok',
+        data: prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })
+      };
   const gh = {
     prDetail: vi.fn(async () => {
       calls.push(`gh:prDetail`);
@@ -331,12 +325,11 @@ function makeActions(options = {}) {
     )
   };
 
-  // The LOCAL checkout the deploy re-validation reads: which branch it is on,
-  // whether it is clean, and what HEAD points at. The defaults reproduce the
-  // pre-deploy harness (a `feature` checkout), so existing cases are untouched.
+  // The local checkout cleanup reads: which branch it is on, whether it is
+  // clean, and what HEAD points at.
   const git_branch = options.gitBranch ?? 'feature';
   const git_status = options.gitStatus ?? '';
-  const git_head = options.gitHead ?? 'base-sha-1';
+  const git_head = options.gitHead ?? BASE_SHA;
 
   /** @type {string[][]} */
   const git_argv = [];
@@ -356,7 +349,7 @@ function makeActions(options = {}) {
       return { code: 1, stdout: '', stderr: 'used by worktree' };
     }
     if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
-      return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
+      return { code: 0, stdout: `${BASE_SHA}\n`, stderr: '' };
     }
     if (args.join(' ') === 'remote get-url origin') {
       return {
@@ -427,57 +420,28 @@ function makeActions(options = {}) {
     return { ...r, exit: r.ok ? 0 : 1 };
   });
 
-  // The deploy process, faked at the spawn boundary — nothing here ever starts
-  // a real process, in either the synchronous or the detached mode. The child
-  // carries real stdout/stderr emitters so the synchronous mode's tail + log
-  // capture (UI-l53x §2) runs against scripted output.
-  const deploy_spawn_mode = options.deploySpawn || 'ok';
-  const deploy_output = options.deployOutput || [];
-  const spawnImpl = vi.fn(
-    (
-      /** @type {string} */ cmd,
-      /** @type {string[]} */ _args,
-      /** @type {any} */ spawn_options
-    ) => {
-      calls.push(
-        `spawn:${cmd}:${spawn_options && spawn_options.detached === true ? 'detached' : 'sync'}`
-      );
-      if (deploy_spawn_mode === 'throw') {
-        throw new Error('spawn ENOENT');
-      }
-      const child = /** @type {any} */ (new EventEmitter());
-      child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} });
-      child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
-      child.kill = () => {
-        child.emit('close', null);
+  let default_target_sha = 'c'.repeat(40);
+  const deploymentJob = options.deploymentJob ?? {
+    requestDeployment: vi.fn(async (/** @type {any} */ input) => {
+      default_target_sha = input.verified_sha;
+      return {
+        accepted: true,
+        noop: false,
+        target_base: input.target_base,
+        target_sha: input.verified_sha,
+        generation: 1
       };
-      child.unref = () => {
-        calls.push('spawn:unref');
-      };
-      const emitOutput = () => {
-        for (const chunk of deploy_output) {
-          child.stdout.emit('data', chunk);
-        }
-      };
-      if (deploy_spawn_mode === 'ok') {
-        setTimeout(() => {
-          emitOutput();
-          child.emit('close', 0);
-        }, 0);
-      } else if (deploy_spawn_mode === 'fail') {
-        setTimeout(() => {
-          emitOutput();
-          child.emit('close', 1);
-        }, 0);
-      } else if (deploy_spawn_mode === 'error') {
-        setTimeout(() => child.emit('error', new Error('nope')), 0);
-      } else {
-        // 'hang' prints but never ends — the deadline is what ends it.
-        setTimeout(emitOutput, 0);
-      }
-      return child;
-    }
-  );
+    }),
+    deploymentStatus: vi.fn(async () => ({
+      state: 'succeeded',
+      target_base: 'main',
+      target_sha: default_target_sha,
+      deployed_sha: default_target_sha,
+      generation: 1,
+      error_code: null,
+      log_path: '/tmp/deploy.log'
+    }))
+  };
 
   const actions = createPrActions({
     workspace: WS,
@@ -531,9 +495,9 @@ function makeActions(options = {}) {
         base_oid: 'a'.repeat(40),
         local_only: false
       })),
-    // The two-rung resolvers (UI-kfl4). `verify`/`deploy` stay the shorthand
-    // for "this repo resolves THIS command"; `verifyResolution` /
-    // `deployResolution` are what the three-state tests override with.
+    // The verify resolver's two-rung contract (UI-kfl4). `verify` is shorthand
+    // for "this repo resolves THIS command"; `verifyResolution` drives the
+    // three-state tests.
     resolveVerify: async () =>
       // `verifyResolutions` walks one entry per resolution call and holds on the
       // last — how a base that advanced between the click gate and the cleanup
@@ -552,28 +516,12 @@ function makeActions(options = {}) {
           }
         : { state: /** @type {const} */ ('absent') }),
     runVerify,
-    resolveDeploy: async () =>
-      options.deployResolution ??
-      (options.deploy
-        ? {
-            state: /** @type {const} */ ('resolved'),
-            source: /** @type {const} */ ('config'),
-            value: options.deploy
-          }
-        : { state: /** @type {const} */ ('absent') }),
-    deploymentReconciler: options.deploymentReconciler,
-    deploymentJob: options.deploymentJob
-      ? {
-          ...options.deploymentJob,
-          validateCurrentBinding:
-            options.deploymentJob.validateCurrentBinding || (() => {}),
-          validateRowBinding:
-            options.deploymentJob.validateRowBinding || (() => {})
-        }
-      : undefined,
-    locks: options.locks,
-    selfRepoState: options.selfRepoState || (() => 'other'),
-    spawnImpl: /** @type {any} */ (spawnImpl),
+    deploymentJob: {
+      ...deploymentJob,
+      validateCurrentBinding:
+        deploymentJob.validateCurrentBinding || (() => {}),
+      validateRowBinding: deploymentJob.validateRowBinding || (() => {})
+    },
     requeryDelayMs: 0,
     sleep: async () => {},
     now: () => 1000,
@@ -598,42 +546,37 @@ function makeActions(options = {}) {
     external_drop,
     scheduler,
     runVerify,
-    spawnImpl,
     notify,
     merge_notices
   };
 }
 
-/** A configured, synchronous deploy command. */
-const DEPLOY_SYNC = {
-  cmd: ['bdui-shared', 'restart'],
-  timeout_ms: 1000,
-  detached: false
-};
+/**
+ * Observe the default successful provider result after a merge request.
+ *
+ * @param {ReturnType<typeof makeActions>} env
+ */
+async function observeSucceededDeployment(env) {
+  const result = await env.actions.observeDeployment();
 
-/** The same command in detached (terminal-launch) mode. */
-const DEPLOY_DETACHED = {
-  cmd: ['bdui-shared', 'restart'],
-  timeout_ms: 1000,
-  detached: true
-};
+  expect(result).toEqual({ ok: true, reason: null });
+}
 
-/** A verify command, which the deploy step REQUIRES to be resolvable. */
+/** One declared verify command for post-merge verification tests. */
 const VERIFY_CFG = {
   cmd: ['npm', 'test'],
   timeout_ms: 1000
 };
 
 /**
- * The harness options that put the local checkout in the state the deploy
- * re-validation demands: on the target base, clean, HEAD == the synced base sha.
+ * Harness options that put the local checkout on a clean target-base SHA.
  *
  * @type {{ gitBranch: string, gitStatus: string, gitHead: string }}
  */
 const ON_BASE = {
   gitBranch: 'main',
   gitStatus: '',
-  gitHead: 'base-sha-1'
+  gitHead: BASE_SHA
 };
 
 describe('merge click — the three branches (worker-phase2 §6)', () => {
@@ -879,6 +822,7 @@ describe('merge click — a zero exit is not a merge (§6)', () => {
     const h = makeActions();
 
     const r = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     expect(r).toMatchObject({ ok: true, action: 'merged' });
     expect(
@@ -1179,7 +1123,6 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     const h = makeActions({
       verify: VERIFY_CFG,
       deploymentJob,
-      selfRepoState: () => 'self',
       afterMerge: {
         state: 'ok',
         data: prOf({ state: 'MERGED', merged_sha: merge_sha })
@@ -1606,87 +1549,6 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
   });
 
-  test('backfills legacy deploy residue from status without replaying request', async () => {
-    const target_sha = 'd'.repeat(40);
-    const deploymentJob = {
-      requestDeployment: vi.fn(),
-      deploymentStatus: vi.fn(async () => ({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha,
-        deployed_sha: target_sha,
-        generation: 7,
-        error_code: null,
-        log_path: '/tmp/deploy.log'
-      }))
-    };
-    const h = makeActions({ deploymentJob });
-    h.store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'legacy-deploy',
-      target_base: 'main',
-      merged_floor_sha: 'e'.repeat(40)
-    });
-    h.store.recordCleanupFailure(WS, {
-      bead_id: BEAD,
-      step: 'deploy',
-      reason: 'deploy_not_detached_for_self'
-    });
-
-    await h.actions.observeDeployment();
-
-    expect(deploymentJob.requestDeployment).not.toHaveBeenCalled();
-    expect(deploymentJob.deploymentStatus).toHaveBeenCalledWith({ repo: REPO });
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
-    expect(h.store.snapshot(WS).done).toEqual(
-      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
-    );
-  });
-
-  test('keeps a non-deploy legacy cleanup failure after covered status', async () => {
-    const target_sha = 'd'.repeat(40);
-    const deploymentJob = {
-      requestDeployment: vi.fn(),
-      deploymentStatus: vi.fn(async () => ({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha,
-        deployed_sha: target_sha,
-        generation: 7,
-        error_code: null,
-        log_path: '/tmp/deploy.log'
-      }))
-    };
-    const h = makeActions({ deploymentJob });
-    h.store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'legacy-cleanup',
-      target_base: 'main',
-      merged_floor_sha: 'e'.repeat(40)
-    });
-    h.store.recordCleanupFailure(WS, {
-      bead_id: BEAD,
-      step: 'child_sweep',
-      reason: 'child_failed'
-    });
-
-    const before = h.store.snapshot(WS).pr_wait[0];
-
-    await h.actions.observeDeployment();
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'child_sweep',
-      reason: 'child_failed'
-    });
-    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
-    expect(h.store.snapshot(WS).pr_wait[0]).toMatchObject({
-      merge_sha: before.merge_sha,
-      verified_target_sha: before.verified_target_sha,
-      deployment_generation: before.deployment_generation,
-      cleanup_cursor: before.cleanup_cursor
-    });
-  });
-
   test('promotes an external merged row into the external job handoff', async () => {
     const target_sha = 'd'.repeat(40);
     const deploymentJob = {
@@ -1737,57 +1599,6 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     );
     expect(h.external_drop).toHaveBeenCalledWith(WS, BEAD);
     expect(h.git_argv).toContainEqual(['branch', '-D', 'external-head']);
-  });
-
-  test('runs base sync → verification → deploy → child sweep → branch cleanup → parent close → done', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      ...ON_BASE,
-      children: {
-        [BEAD]: [{ id: 'UI-1.1', status: 'open' }],
-        'UI-1.1': [{ id: 'UI-1.1.1', status: 'open' }]
-      }
-    });
-
-    await h.actions.merge(BEAD);
-
-    // The SEQUENCE, not the end state: every step appears exactly once and in
-    // the contract's order, with the deepest child closed before its parent and
-    // the parent bead closed LAST (the contract's sweep order — install right
-    // after verify, branch/worktree cleanup before the parent close).
-    const ordered = h.calls.filter(
-      (c) =>
-        c === 'gh:mergeSquash' ||
-        c === 'git:fetch --no-tags' ||
-        c === 'verify:run' ||
-        c.startsWith('spawn:bdui-shared') ||
-        c.startsWith('bd:setStatus') ||
-        c === 'wt:removeByBranch' ||
-        c === 'git:branch -D' ||
-        c === 'git:push origin'
-    );
-    expect(ordered).toEqual([
-      // The click-time gate verification precedes the merge; the post-merge one
-      // follows the base sync. Same command, different moments — and the
-      // ordering between them is the whole point.
-      'verify:run',
-      'gh:mergeSquash',
-      'git:fetch --no-tags',
-      'verify:run',
-      'spawn:bdui-shared:sync',
-      'bd:setStatus:UI-1.1.1:closed',
-      'bd:setStatus:UI-1.1:closed',
-      'wt:removeByBranch',
-      'git:branch -D',
-      'git:push origin',
-      'bd:setStatus:UI-1:closed'
-    ]);
-    expect(
-      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
-    expect(h.store.snapshot(WS).pr_wait).toEqual([]);
-    expect(h.scheduler.tick).toHaveBeenCalledWith(WS);
   });
 
   test('stops mid-sequence on a failed post-merge verification, leaving a durable record and no bd close', async () => {
@@ -1872,6 +1683,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
 
     const r = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     expect(r).toMatchObject({ ok: true, action: 'merged' });
     expect(h.bd.updateFields).toHaveBeenCalledTimes(1);
@@ -1912,44 +1724,6 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
       step: 'post_merge_verify',
       reason: 'verify_cmd_failed'
     });
-  });
-
-  test('skips detached deploy when a manual cleanup retry stays red', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      verifyResults: [
-        {
-          ok: false,
-          reason: 'verify_cmd_failed',
-          attempts: [
-            { reason: 'verify_cmd_failed', log_path: '/logs/first.log' },
-            { reason: 'verify_cmd_failed', log_path: '/logs/retry.log' }
-          ]
-        }
-      ]
-    });
-    h.store.recordCleanupFailure(WS, {
-      bead_id: BEAD,
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-
-    const result = await h.actions.retryCleanup(BEAD);
-
-    expect(result).toMatchObject({
-      ok: false,
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-    expect(h.runVerify).toHaveBeenCalledWith(
-      expect.objectContaining({ retry_flaky: true })
-    );
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-    expect(h.calls).not.toContain('spawn:bdui-shared:detached');
   });
 
   test('refuses a cleanup retry while an active discard owns the bead', async () => {
@@ -2021,6 +1795,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
 
     const result = await h.actions.resumeCompletionCleanup(BEAD);
+    await observeSucceededDeployment(h);
 
     expect(result).toMatchObject({ ok: true, step: null, reason: null });
     const queue = h.store.snapshot(WS);
@@ -2033,343 +1808,6 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
     expect(h.worktree.removeByBranch).toHaveBeenCalledTimes(1);
     expect(h.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
-  });
-
-  test('stops a completion cleanup replay before detached deploy when verify stays red', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
-    });
-    h.store.enqueueCompletionIntent(WS, {
-      root_bead_id: BEAD,
-      source_attempt_id: 'a1',
-      target_base: 'main',
-      subject: {
-        role: 'root',
-        bead_id: BEAD,
-        pr_url: 'https://github.com/o/r/pull/304',
-        head_sha: 'a'.repeat(40),
-        base_sha: 'b'.repeat(40),
-        merged_sha: 'b'.repeat(40)
-      }
-    });
-    h.store.setCompletionSubject(WS, {
-      root_bead_id: BEAD,
-      phase: 'cleaning',
-      subject: h.store.snapshot(WS).completion_intents[BEAD].subject
-    });
-    h.store.prepareCompletionOp(WS, {
-      root_bead_id: BEAD,
-      phase: 'cleaning',
-      op: {
-        op_id: 'cleanup-1',
-        kind: 'retry_cleanup',
-        failure_key: {
-          stage: 'post_merge_verify',
-          reason: 'verify_cmd_failed',
-          subject_sha: 'b'.repeat(40),
-          base_sha: 'b'.repeat(40),
-          result_digest: 'c'.repeat(64)
-        },
-        attempt_id: null,
-        repair_bead_id: null,
-        status: 'prepared'
-      }
-    });
-
-    const result = await h.actions.resumeCompletionCleanup(BEAD);
-
-    expect(result).toMatchObject({
-      ok: false,
-      step: 'post_merge_verify',
-      reason: 'verify_cmd_failed'
-    });
-    expect(h.calls).not.toContain('spawn:bdui-shared:detached');
-  });
-
-  test('refuses the click outright on an unreadable verify declaration (UI-kfl4 §4.2)', async () => {
-    const h = makeActions({
-      verifyResolution: {
-        state: 'invalid',
-        source: 'declaration',
-        detail: 'verify:cmd_not_a_nonempty_argv_array'
-      }
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    // The gate goes undecidable rather than dropping to the no-signal tier, so
-    // nothing merges and no cleanup starts.
-    expect(r).toMatchObject({
-      ok: false,
-      action: 'refused',
-      reason: 'verify_config_invalid'
-    });
-    expect(h.calls).not.toContain('gh:mergeSquash');
-  });
-
-  test('fails post_merge_verify when the declaration breaks after the gate passed', async () => {
-    const h = makeActions({
-      // 1st resolution = the click-time gate (a valid declaration), from the
-      // 2nd on = the cleanup, pinned to a base that advanced onto a broken one.
-      verifyResolutions: [
-        { state: 'resolved', source: 'declaration', value: VERIFY_CFG },
-        {
-          state: 'invalid',
-          source: 'declaration',
-          detail: 'verify:cmd_not_a_nonempty_argv_array'
-        }
-      ]
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    // "We could not tell what to run" must never be recorded as "there was
-    // nothing to check", which is the passing branch right next to it.
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'post_merge_verify',
-      reason: 'verify_config_invalid'
-    });
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'post_merge_verify',
-      reason: 'verify_config_invalid'
-    });
-  });
-
-  test('survives a restart: the cleanup failure is reloaded from queue.json', async () => {
-    const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000
-      },
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        { ok: false, reason: 'verify_cmd_failed' }
-      ]
-    });
-    await h.actions.merge(BEAD);
-
-    h.store.__clearCacheForTest();
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'post_merge_verify'
-    });
-  });
-
-  test('records the verify detail and keeps it across a restart (UI-2o4z §3)', async () => {
-    const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000
-      },
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        {
-          ok: false,
-          reason: 'verify_worktree_failed',
-          detail: "fatal: could not lock ref 'refs/heads/x'"
-        }
-      ]
-    });
-
-    await h.actions.merge(BEAD);
-    h.store.__clearCacheForTest();
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'post_merge_verify',
-      reason: 'verify_worktree_failed',
-      detail: "fatal: could not lock ref 'refs/heads/x'"
-    });
-  });
-
-  test('records the verify command output tail on a post-merge failure (UI-qult §1)', async () => {
-    const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000
-      },
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        {
-          ok: false,
-          reason: 'verify_cmd_failed',
-          output_tail: 'FAIL test/x.test.js\nrg: command not found'
-        }
-      ]
-    });
-
-    await h.actions.merge(BEAD);
-    h.store.__clearCacheForTest();
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD].output_tail).toBe(
-      'FAIL test/x.test.js\nrg: command not found'
-    );
-  });
-
-  test('records the full verify log path on a post-merge failure (UI-0x54)', async () => {
-    const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000
-      },
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        {
-          ok: false,
-          reason: 'verify_cmd_failed',
-          log_path: '/state/bdui/ws-abc/verify-logs/verify-UI-1-abc1234-17.log'
-        }
-      ]
-    });
-
-    await h.actions.merge(BEAD);
-    h.store.__clearCacheForTest();
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD].log_path).toBe(
-      '/state/bdui/ws-abc/verify-logs/verify-UI-1-abc1234-17.log'
-    );
-  });
-
-  test('leaves the log path absent when the verification wrote no log', async () => {
-    const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000
-      },
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        { ok: false, reason: 'verify_cmd_failed' }
-      ]
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD].log_path).toBeUndefined();
-  });
-
-  test('leaves the output tail absent when the verification reports none', async () => {
-    const h = makeActions({
-      verify: {
-        cmd: ['npm', 'test'],
-        timeout_ms: 1000
-      },
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        { ok: false, reason: 'verify_cmd_failed' }
-      ]
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(
-      h.store.snapshot(WS).cleanup_failed[BEAD].output_tail
-    ).toBeUndefined();
-  });
-
-  test('leaves detail null when the failing step reports none', async () => {
-    const h = makeActions({ gitFail: (args) => args[0] === 'fetch' });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD].detail).toBeNull();
-  });
-
-  test('stops on an unreadable child list rather than closing the parent', async () => {
-    const h = makeActions();
-    h.bd.listChildren.mockImplementation(async () => {
-      throw new Error('bd down');
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: false, cleanup_step: 'child_sweep' });
-    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
-  });
-
-  test('records base_ff_diverged instead of forcing a diverged base branch', async () => {
-    const h = makeActions();
-    h.gitRun.mockImplementation(async (/** @type {string[]} */ args) => {
-      h.calls.push(`git:${args.slice(0, 2).join(' ')}`);
-      if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
-        return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
-      }
-      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
-        return { code: 0, stdout: 'main\n', stderr: '' };
-      }
-      if (args[0] === 'status') {
-        return { code: 0, stdout: '', stderr: '' };
-      }
-      if (args[0] === 'merge') {
-        return { code: 1, stdout: '', stderr: 'not a fast-forward' };
-      }
-      return { code: 0, stdout: '', stderr: '' };
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'base_sync',
-      reason: 'base_ff_diverged'
-    });
-  });
-
-  test('leaves a dirty base checkout alone instead of fast-forwarding it, and says so', async () => {
-    const h = makeActions();
-    h.gitRun.mockImplementation(async (/** @type {string[]} */ args) => {
-      h.calls.push(`git:${args.slice(0, 2).join(' ')}`);
-      if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
-        return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
-      }
-      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
-        return { code: 0, stdout: 'main\n', stderr: '' };
-      }
-      if (args[0] === 'status') {
-        return { code: 0, stdout: ' M app/x.js\n', stderr: '' };
-      }
-      return { code: 0, stdout: '', stderr: '' };
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r.ok).toBe(true);
-    expect(h.calls).not.toContain('git:merge --ff-only');
-    // Reported apart from a real fast-forward: the user's checkout was NOT
-    // moved, which is a different fact about their repo than "it was".
-    expect(r.base_sync).toBe('fetch_only:dirty');
-  });
-
-  test('reports a fast-forward distinctly when the base checkout is clean', async () => {
-    const h = makeActions();
-    h.gitRun.mockImplementation(async (/** @type {string[]} */ args) => {
-      h.calls.push(`git:${args.slice(0, 2).join(' ')}`);
-      if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
-        return { code: 0, stdout: 'base-sha-1\n', stderr: '' };
-      }
-      if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
-        return { code: 0, stdout: 'main\n', stderr: '' };
-      }
-      if (args[0] === 'ls-remote') {
-        return { code: 0, stdout: '', stderr: '' };
-      }
-      return { code: 0, stdout: '', stderr: '' };
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, base_sync: 'fast_forwarded' });
-    expect(h.calls).toContain('git:merge --ff-only');
-  });
-
-  test('reports fetch_only when the checkout sits on another branch', async () => {
-    // The default git fake answers `--abbrev-ref HEAD` with `feature`.
-    const h = makeActions();
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, base_sync: 'fetch_only:not_on_base' });
   });
 });
 
@@ -2392,11 +1830,12 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       }
     );
 
-    const r = await h.actions.merge(BEAD);
+    const requested = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'branch_cleanup',
+    expect(requested).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
       reason: 'local_branch_delete_failed'
     });
     // Nothing closed the parent, so there is nothing to restore — `resolved`
@@ -2418,11 +1857,12 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
       throw new Error('bd down');
     });
 
-    const r = await h.actions.merge(BEAD);
+    const requested = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'parent_close',
+    expect(requested).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'parent_close',
       reason: 'bd_close_failed'
     });
     expect(h.calls).toContain('bd:setStatus:UI-1:resolved');
@@ -2457,6 +1897,7 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
     });
 
     const r = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     expect(r).toMatchObject({ ok: true, reason: null });
     expect(h.worktree.removeByBranch).toHaveBeenCalledWith({
@@ -2475,11 +1916,12 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
       }
     });
 
-    const r = await h.actions.merge(BEAD);
+    const requested = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'branch_cleanup',
+    expect(requested).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
       reason: 'worktree_remove_failed'
     });
     // A failed observation is never read as "already gone": nothing downstream
@@ -2497,11 +1939,12 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
       }
     });
 
-    const r = await h.actions.merge(BEAD);
+    const requested = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'branch_cleanup',
+    expect(requested).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'branch_cleanup',
       reason: 'worktree_remove_failed'
     });
     expect(h.calls).not.toContain('git:branch -D');
@@ -2509,797 +1952,12 @@ describe('post-merge cleanup — the worktree is FOUND, not named (UI-u7hh)', ()
   });
 });
 
-describe('post-merge cleanup — the deploy step (worker-deploy-hook §2/§3)', () => {
-  test('fixes the contract-aligned six-step order', () => {
-    expect(CLEANUP_STEPS).toEqual([
-      'base_sync',
-      'post_merge_verify',
-      'deployment_request',
-      'child_sweep',
-      'branch_cleanup',
-      'parent_close'
-    ]);
-  });
-
-  test('passes straight through when the repo configures no deploy command', async () => {
-    const h = makeActions({ verify: VERIFY_CFG, ...ON_BASE });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, reason: null });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-    expect(h.store.snapshot(WS).last_deploy).toBeNull();
-  });
-
-  test('records `deployed` when the synchronous command exits zero', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      deploySpawn: 'ok',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r.ok).toBe(true);
-    // Spawned WITHOUT a shell, from the repo root, not detached.
-    expect(h.spawnImpl).toHaveBeenCalledWith(
-      'bdui-shared',
-      ['restart'],
-      expect.objectContaining({ cwd: REPO, shell: false })
-    );
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'deployed',
-      reason: null,
-      bead_id: BEAD,
-      base_sha: 'base-sha-1'
-    });
-  });
-
-  test('stops the cleanup at `deploy` when the command exits non-zero', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      deploySpawn: 'fail',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_failed'
-    });
-    const q = h.store.snapshot(WS);
-    expect(q.cleanup_failed[BEAD]).toMatchObject({
-      step: 'deploy',
-      reason: 'deploy_failed',
-      bd_restore: null
-    });
-    expect(q.last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_failed'
-    });
-    // The steps after deploy never ran.
-    expect(h.worktree.removeByBranch).not.toHaveBeenCalled();
-    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
-  });
-
-  test('records deploy_timeout when the command outlives its deadline', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: {
-        cmd: ['bdui-shared', 'restart'],
-        timeout_ms: 5,
-        detached: false
-      },
-      deploySpawn: 'hang',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      cleanup_step: 'deploy',
-      reason: 'deploy_timeout'
-    });
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_timeout'
-    });
-  });
-
-  test('records deploy_spawn_error when the process never starts', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      deploySpawn: 'throw',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      cleanup_step: 'deploy',
-      reason: 'deploy_spawn_error'
-    });
-  });
-
-  test('refuses a non-detached deploy of this server own repo (UI-kfl4 §4.3-2)', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      selfRepoState: () => 'self',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_not_detached_for_self'
-    });
-    // A synchronous restart would kill this process mid-cleanup, so nothing is
-    // allowed to spawn.
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_not_detached_for_self'
-    });
-  });
-
-  test('still allows a DETACHED deploy of this server own repo', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      selfRepoState: () => 'self',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, reason: null });
-  });
-
-  test('names the lost restart when this server own repo declares no deploy (UI-kfl4 §4.3-3)', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      selfRepoState: () => 'self',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    // Elsewhere an absent deploy is an honest pass; here it means the merge
-    // closes without the restart that makes it a delivery.
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_missing_for_self'
-    });
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_missing_for_self'
-    });
-  });
-
-  test('refuses to deploy when the self-repo comparison cannot be made', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      selfRepoState: () => 'unknown',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    // Guessing `other` here would disarm both self-repo defences at once.
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_self_check_failed'
-    });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-  });
-
-  test('keeps an absent deploy a pass in any OTHER repo', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      selfRepoState: () => 'other',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, reason: null });
-    expect(h.store.snapshot(WS).last_deploy).toBeNull();
-  });
-
-  test('stops on an unreadable deploy declaration instead of falling back (UI-kfl4 §4.2)', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deployResolution: {
-        state: 'invalid',
-        source: 'declaration',
-        detail: 'deploy:cmd_not_a_nonempty_argv_array'
-      },
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_config_invalid'
-    });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_config_invalid',
-      detail: 'deploy:cmd_not_a_nonempty_argv_array'
-    });
-  });
-
-  test('refuses to deploy a repo with no resolvable verify command', async () => {
-    const h = makeActions({ verify: null, deploy: DEPLOY_SYNC, ...ON_BASE });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_verify_missing'
-    });
-    // Fail CLOSED: nothing was spawned on an unverified base.
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-  });
-
-  test('refuses to deploy when the checkout sits on another branch', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      gitBranch: 'feature',
-      gitStatus: '',
-      gitHead: 'base-sha-1'
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      cleanup_step: 'deploy',
-      reason: 'deploy_base_not_synced'
-    });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-  });
-
-  test('refuses to deploy from a dirty checkout', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      gitBranch: 'main',
-      gitStatus: ' M app/x.js\n',
-      gitHead: 'base-sha-1'
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      cleanup_step: 'deploy',
-      reason: 'deploy_base_not_synced'
-    });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-  });
-
-  test('refuses to deploy when local HEAD drifted from the synced base sha', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      // A clean checkout ON the base whose HEAD is AHEAD of origin: `--ff-only`
-      // still succeeds, so base_sync alone cannot catch this.
-      gitBranch: 'main',
-      gitStatus: '',
-      gitHead: 'local-ahead-sha'
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      cleanup_step: 'deploy',
-      reason: 'deploy_base_not_synced'
-    });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-  });
-
-  test('never reaches deploy when the post-merge verification failed', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      ...ON_BASE,
-      verifyResults: [
-        { ok: true, reason: 'ok' },
-        { ok: false, reason: 'verify_cmd_failed' }
-      ]
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ cleanup_step: 'post_merge_verify' });
-    expect(h.spawnImpl).not.toHaveBeenCalled();
-    expect(h.store.snapshot(WS).last_deploy).toBeNull();
-  });
-
-  test('launches a detached deploy only AFTER the durable record is written', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      ...ON_BASE
-    });
-    const moveToDoneWithDeploy = h.store.moveToDoneWithDeploy.bind(h.store);
-    h.store.moveToDoneWithDeploy = (
-      /** @type {string} */ ws,
-      /** @type {any} */ input
-    ) => {
-      const result = moveToDoneWithDeploy(ws, input);
-      h.calls.push('store:moveToDoneWithDeploy');
-      return result;
-    };
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r.ok).toBe(true);
-    // The whole cleanup finishes, the durable record lands, and ONLY THEN is
-    // the self-restarting command launched — it may kill this very server.
-    const ordered = h.calls.filter(
-      (c) =>
-        c === 'bd:setStatus:UI-1:closed' ||
-        c === 'store:moveToDoneWithDeploy' ||
-        c.startsWith('spawn:')
-    );
-    expect(ordered).toEqual([
-      'bd:setStatus:UI-1:closed',
-      'store:moveToDoneWithDeploy',
-      'spawn:bdui-shared:detached',
-      'spawn:unref'
-    ]);
-    // Durable, not just in-memory: a restart mid-launch still sees the intent.
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      outcome: 'launched',
-      reason: null,
-      bead_id: BEAD,
-      base_sha: 'base-sha-1'
-    });
-    expect(
-      h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual([BEAD]);
-    expect(h.scheduler.tick).toHaveBeenCalledWith(WS);
-  });
-
-  test('spawns a rollback deploy without rewriting its durable coordinator intent', () => {
-    const h = makeActions({ ...ON_BASE });
-    h.store.recordLastDeploy(WS, {
-      outcome: 'launched',
-      reason: null,
-      bead_id: BEAD,
-      base_sha: 'a'.repeat(40)
-    });
-    const recordLastDeploy = h.store.recordLastDeploy.bind(h.store);
-    h.store.recordLastDeploy = (
-      /** @type {string} */ ws,
-      /** @type {any} */ record
-    ) => {
-      h.calls.push(`store:deploy:${record.outcome}`);
-      return recordLastDeploy(ws, record);
-    };
-
-    const result = h.actions.launchRollbackDeploy(BEAD, {
-      deploy: DEPLOY_DETACHED,
-      base_sha: 'a'.repeat(40)
-    });
-
-    expect(result.ok).toBe(true);
-    expect(
-      h.calls.filter(
-        (call) => call.startsWith('store:deploy:') || call.startsWith('spawn:')
-      )
-    ).toEqual(['spawn:bdui-shared:detached', 'spawn:unref']);
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'launched'
-    });
-  });
-
-  test('spawns the detached deploy with detached + stdio ignore', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      ...ON_BASE
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.spawnImpl).toHaveBeenCalledWith(
-      'bdui-shared',
-      ['restart'],
-      expect.objectContaining({
-        cwd: REPO,
-        shell: false,
-        detached: true,
-        stdio: 'ignore'
-      })
-    );
-  });
-
-  test('overwrites `launched` with a failure when the detached spawn throws', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      deploySpawn: 'throw',
-      ...ON_BASE
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_spawn_error',
-      bead_id: BEAD
-    });
-  });
-
-  test('overwrites `launched` when the detached spawn emits an async error event', async () => {
-    // Node reports ENOENT-style pre-exec failures as an `error` EVENT, not a
-    // throw — unhandled it would crash the server with `launched` left durable.
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      deploySpawn: 'error',
-      ...ON_BASE
-    });
-
-    const r = await h.actions.merge(BEAD);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(r.ok).toBe(true);
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_spawn_error',
-      bead_id: BEAD
-    });
-  });
-});
-
-describe('post-merge cleanup — the deploy failure keeps its output (UI-l53x)', () => {
-  /**
-   * The synchronous deploy options, with the checkout in the state the
-   * re-validation demands so the command actually runs.
-   *
-   * @param {Record<string, any>} [over]
-   */
-  function syncDeploy(over = {}) {
-    return {
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      ...ON_BASE,
-      ...over
-    };
-  }
-
-  test('records the deploy output tail and log path on cleanup_failed', async () => {
-    const h = makeActions(
-      syncDeploy({
-        deploySpawn: 'fail',
-        deployOutput: ['render failed: codex config.toml\n']
-      })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const c = h.store.snapshot(WS).cleanup_failed[BEAD];
-    expect(c).toMatchObject({
-      step: 'deploy',
-      reason: 'deploy_failed',
-      output_tail: 'render failed: codex config.toml'
-    });
-    expect(String(c.log_path).startsWith(deployLogDir(REPO))).toBe(true);
-  });
-
-  test('preserves the whole deploy output in the log file, tail cap included', async () => {
-    const h = makeActions(
-      syncDeploy({
-        deploySpawn: 'fail',
-        deployOutput: ['FIRST: the real cause\n', `${'x'.repeat(40000)}\n`]
-      })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const c = h.store.snapshot(WS).cleanup_failed[BEAD];
-    expect(c.output_tail).not.toContain('FIRST: the real cause');
-    expect(fs.readFileSync(String(c.log_path), 'utf8')).toContain(
-      'FIRST: the real cause'
-    );
-  });
-
-  test('records the tail and log path for a deploy that timed out too', async () => {
-    const h = makeActions(
-      syncDeploy({
-        deploy: {
-          cmd: ['bdui-shared', 'restart'],
-          timeout_ms: 5,
-          detached: false
-        },
-        deploySpawn: 'hang',
-        deployOutput: ['step 2/4 installing…\n']
-      })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const c = h.store.snapshot(WS).cleanup_failed[BEAD];
-    expect(c).toMatchObject({
-      reason: 'deploy_timeout',
-      output_tail: 'step 2/4 installing…'
-    });
-    expect(c.log_path).toBeTruthy();
-  });
-
-  test('records the log path on a SUCCESSFUL last_deploy — the next failure needs a baseline', async () => {
-    const h = makeActions(
-      syncDeploy({ deploySpawn: 'ok', deployOutput: ['restarted\n'] })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const d = h.store.snapshot(WS).last_deploy;
-    expect(d.outcome).toBe('deployed');
-    expect(fs.readFileSync(String(d.log_path), 'utf8')).toBe('restarted\n');
-  });
-
-  test('records the log path on a FAILED last_deploy', async () => {
-    const h = makeActions(
-      syncDeploy({ deploySpawn: 'fail', deployOutput: ['boom\n'] })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const d = h.store.snapshot(WS).last_deploy;
-    expect(d).toMatchObject({ outcome: 'failed', reason: 'deploy_failed' });
-    expect(fs.readFileSync(String(d.log_path), 'utf8')).toBe('boom\n');
-  });
-
-  test('keys the deploy log on `repo`, not on `workspace`', async () => {
-    const other_repo = '/tmp/example-workspace/other-repo-p5';
-    const h = makeActions(
-      syncDeploy({ repo: other_repo, deploySpawn: 'fail' })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const log_path = String(h.store.snapshot(WS).last_deploy.log_path);
-    expect(log_path.startsWith(deployLogDir(other_repo))).toBe(true);
-    expect(log_path.startsWith(deployLogDir(WS))).toBe(false);
-  });
-
-  test.each([
-    ['checkout_not_on_base', { gitBranch: 'feature' }],
-    ['checkout_dirty', { gitStatus: ' M app/main.js\n' }],
-    ['head_not_base_sha', { gitHead: 'some-other-sha' }]
-  ])(
-    'names the %s guard as the base_not_synced detail',
-    async (reason, over) => {
-      const h = makeActions(syncDeploy(over));
-
-      await h.actions.merge(BEAD);
-
-      expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-        reason: 'deploy_base_not_synced',
-        detail: reason
-      });
-      expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-        outcome: 'failed',
-        reason: 'deploy_base_not_synced',
-        detail: reason
-      });
-    }
-  );
-
-  test('preserves a SYNCHRONOUS deploy spawn throw as detail, with no log file', async () => {
-    const h = makeActions(syncDeploy({ deploySpawn: 'throw' }));
-
-    await h.actions.merge(BEAD);
-
-    const q = h.store.snapshot(WS);
-    expect(q.cleanup_failed[BEAD]).toMatchObject({
-      reason: 'deploy_spawn_error',
-      detail: 'spawn ENOENT'
-    });
-    expect(q.cleanup_failed[BEAD].log_path).toBeUndefined();
-    expect(q.last_deploy).toMatchObject({
-      reason: 'deploy_spawn_error',
-      detail: 'spawn ENOENT'
-    });
-    expect(q.last_deploy.log_path).toBeUndefined();
-  });
-
-  test('preserves an ASYNCHRONOUS deploy error event as detail, with the empty log it opened', async () => {
-    const h = makeActions(syncDeploy({ deploySpawn: 'error' }));
-
-    await h.actions.merge(BEAD);
-
-    const q = h.store.snapshot(WS);
-    expect(q.cleanup_failed[BEAD]).toMatchObject({
-      reason: 'deploy_spawn_error',
-      detail: 'nope'
-    });
-    // The log was already open when the event fired, so the path is a real —
-    // empty — file. The reason already says nothing ran.
-    expect(fs.readFileSync(String(q.last_deploy.log_path), 'utf8')).toBe('');
-  });
-
-  test('adds no detail when the deploy argv itself is unusable', async () => {
-    const h = makeActions(
-      syncDeploy({ deploy: { cmd: [], timeout_ms: 1000, detached: false } })
-    );
-
-    await h.actions.merge(BEAD);
-
-    const q = h.store.snapshot(WS);
-    expect(q.cleanup_failed[BEAD]).toMatchObject({
-      reason: 'deploy_spawn_error'
-    });
-    expect(q.cleanup_failed[BEAD].detail).toBeNull();
-    expect(q.last_deploy.detail).toBeUndefined();
-  });
-
-  test('preserves a DETACHED deploy spawn throw as detail', async () => {
-    const h = makeActions(
-      syncDeploy({ deploy: DEPLOY_DETACHED, deploySpawn: 'throw' })
-    );
-
-    await h.actions.merge(BEAD);
-
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_spawn_error',
-      detail: 'spawn ENOENT'
-    });
-  });
-
-  test("preserves a DETACHED deploy's asynchronous error event as detail", async () => {
-    const h = makeActions(
-      syncDeploy({ deploy: DEPLOY_DETACHED, deploySpawn: 'error' })
-    );
-
-    await h.actions.merge(BEAD);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(createQueueStore().load(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_spawn_error',
-      detail: 'nope'
-    });
-  });
-});
-
-describe('post-merge cleanup — a REFUSED deploy still records last_deploy (UI-l53x §2)', () => {
-  /**
-   * A prior success, so a test can prove the refusal OVERWRITES it rather than
-   * leaving `last_deploy` answering "is the running service the merged code?"
-   * with a stale yes.
-   *
-   * @param {any} store
-   */
-  function seedSuccess(store) {
-    store.recordLastDeploy(WS, {
-      outcome: 'deployed',
-      reason: null,
-      bead_id: 'UI-old',
-      base_sha: 'older-sha'
-    });
-  }
-
-  test('deploy_verify_missing overwrites the previous success record', async () => {
-    const store = seedStore();
-    seedSuccess(store);
-    const h = makeActions({
-      store,
-      verify: null,
-      deploy: DEPLOY_SYNC,
-      ...ON_BASE
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_verify_missing',
-      bead_id: BEAD
-    });
-  });
-
-  test('deploy_base_not_synced overwrites the previous success record', async () => {
-    const store = seedStore();
-    seedSuccess(store);
-    const h = makeActions({
-      store,
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_SYNC,
-      ...ON_BASE,
-      gitBranch: 'feature'
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'failed',
-      reason: 'deploy_base_not_synced',
-      bead_id: BEAD
-    });
-  });
-
-  test('an unconfigured deploy still records nothing — silence is not a refusal', async () => {
-    const store = seedStore();
-    seedSuccess(store);
-    const h = makeActions({ store, verify: VERIFY_CFG, deploy: null });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'deployed',
-      bead_id: 'UI-old'
-    });
-  });
-
-  test.each([
-    ['deploy_verify_missing', { verify: null, deploy: DEPLOY_SYNC }],
-    [
-      'deploy_base_not_synced',
-      { verify: VERIFY_CFG, deploy: DEPLOY_SYNC, gitBranch: 'feature' }
-    ]
-  ])(
-    'an EXTERNAL row records %s in last_deploy only — cleanup_failed is lane state',
-    async (reason, over) => {
-      const external_bead = 'UI-ext-deploy';
-      const store = createQueueStore();
-      seedSuccess(store);
-      const h = makeActions({
-        store,
-        external: {
-          [external_bead]: {
-            bead_id: external_bead,
-            pr_url: 'https://github.com/o/r/pull/777',
-            pr_number: 777,
-            added_at: 1
-          }
-        },
-        bdStatus: { [external_bead]: 'resolved' },
-        bdPrUrl: 'https://github.com/o/r/pull/777',
-        ...ON_BASE,
-        ...over
-      });
-
-      await h.actions.merge(external_bead);
-
-      const q = h.store.snapshot(WS);
-      expect(q.cleanup_failed).toEqual({});
-      // With no lane membership this record is the ONLY durable trace the
-      // refusal leaves anywhere.
-      expect(q.last_deploy).toMatchObject({
-        outcome: 'failed',
-        reason,
-        bead_id: external_bead
-      });
-    }
-  );
-});
-
 describe('post-merge cleanup — ref operations hold the topology lock (§8)', () => {
   test('runs the base sync under the lock, and the branch deletes under a lock taken after the worktree removal', async () => {
     const h = makeActions();
 
     await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     const ordered = h.calls.filter(
       (c) =>
@@ -3329,349 +1987,6 @@ describe('post-merge cleanup — ref operations hold the topology lock (§8)', (
   });
 });
 
-describe('post-merge cleanup — Deployment Reconciler integration (UI-16ep)', () => {
-  test('resumes persisted nonterminal reconciles with the same durable binding', async () => {
-    const floor = 'c'.repeat(40);
-    const store = seedStore();
-    store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-1',
-      target_base: 'release',
-      merged_floor_sha: floor
-    });
-    const reconcile = vi.fn(async () => ({
-      ok: true,
-      status: 'complete',
-      candidate_sha: 'd'.repeat(40),
-      base_sync: null
-    }));
-    const resolveBase = vi.fn(async () => {
-      throw new Error('startup resume must use the durable target base');
-    });
-    const h = makeActions({
-      store,
-      resolveBase,
-      deploymentReconciler: { reconcile }
-    });
-
-    const results = await h.actions.resumePersistedReconciles();
-
-    expect(results).toEqual([
-      expect.objectContaining({
-        bead_id: BEAD,
-        result: expect.objectContaining({ ok: true })
-      })
-    ]);
-    expect(resolveBase).not.toHaveBeenCalled();
-    expect(reconcile).toHaveBeenCalledWith({
-      bead_id: BEAD,
-      target_base: 'release',
-      merged_floor_sha: floor
-    });
-  });
-
-  test('closes once after startup recovery consumes the durable reconcile', async () => {
-    const floor = 'c'.repeat(40);
-    const candidate = 'd'.repeat(40);
-    const store = seedStore();
-    store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: floor
-    });
-    const reconcile = vi.fn(async () => {
-      store.advanceReconcile(WS, {
-        bead_id: BEAD,
-        attempt_id: 'deploy-1',
-        stage: 'pinned',
-        candidate_sha: candidate,
-        adapter: 'managed'
-      });
-      store.completeReconcile(WS, {
-        bead_id: BEAD,
-        attempt_id: 'deploy-1',
-        receipt_path: '/state/deploy-1.json',
-        receipt_digest: 'e'.repeat(64)
-      });
-      return {
-        ok: true,
-        status: 'complete',
-        candidate_sha: candidate,
-        base_sync: null
-      };
-    });
-    const h = makeActions({
-      store,
-      deploymentReconciler: { reconcile }
-    });
-
-    const first = await h.actions.resumePersistedReconciles();
-    const second = await h.actions.resumePersistedReconciles();
-
-    expect(first).toEqual([
-      expect.objectContaining({
-        bead_id: BEAD,
-        result: expect.objectContaining({ ok: true })
-      })
-    ]);
-    expect(second).toEqual([]);
-    expect(reconcile).toHaveBeenCalledOnce();
-    expect(
-      h.calls.filter((call) => call === `bd:setStatus:${BEAD}:closed`)
-    ).toHaveLength(1);
-  });
-
-  test('keeps the workspace adapter on the candidate pinned before checkout sync', async () => {
-    const merge_sha = 'c'.repeat(40);
-    const candidate_sha = 'a'.repeat(40);
-    const h = makeActions({
-      locks: createLockManager(),
-      afterMerge: {
-        state: 'ok',
-        data: prOf({ state: 'MERGED', merge_sha })
-      },
-      gitBranch: 'main',
-      gitStatus: ' M user-file\n',
-      gitHead: 'f'.repeat(40)
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({ ok: true, reason: null });
-    expect(h.git_argv).not.toContainEqual([
-      'fetch',
-      '--no-tags',
-      'origin',
-      'main'
-    ]);
-    expect(h.store.snapshot(WS).reconcile[BEAD]).toMatchObject({
-      stage: 'complete',
-      candidate_sha,
-      adapter: 'workspace'
-    });
-  });
-
-  test('passes the authoritative merge SHA and ignores a dirty shared checkout for managed cleanup', async () => {
-    const merge_sha = 'c'.repeat(40);
-    const reconcile = vi.fn(async () => ({
-      ok: true,
-      status: 'complete',
-      candidate_sha: 'd'.repeat(40),
-      base_sync: null
-    }));
-    const h = makeActions({
-      deploymentReconciler: { reconcile },
-      afterMerge: {
-        state: 'ok',
-        data: prOf({ state: 'MERGED', merge_sha })
-      },
-      gitStatus: ' M user-file\n'
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({ ok: true, reason: null });
-    expect(reconcile).toHaveBeenCalledWith({
-      bead_id: BEAD,
-      target_base: 'main',
-      merged_floor_sha: merge_sha
-    });
-    expect(h.calls).not.toContain('git:fetch --no-tags');
-    expect(h.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
-  });
-
-  test('leaves a retryable reconcile in pr_wait without a cleanup failure', async () => {
-    const merge_sha = 'c'.repeat(40);
-    const h = makeActions({
-      deploymentReconciler: {
-        reconcile: vi.fn(async () => ({
-          ok: false,
-          pending: true,
-          reason: 'materialize_failed',
-          retry_at: 2000
-        }))
-      },
-      afterMerge: {
-        state: 'ok',
-        data: prOf({ state: 'MERGED', merge_sha })
-      }
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({
-      ok: true,
-      action: 'cleanup_pending',
-      reason: 'materialize_failed',
-      cleanup_step: null
-    });
-    expect(h.store.snapshot(WS).cleanup_failed).toEqual({});
-    expect(h.bd.setStatus).not.toHaveBeenCalledWith(BEAD, 'closed');
-    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
-  });
-
-  test('preserves verify diagnostics from a terminal reconcile failure', async () => {
-    const merge_sha = 'c'.repeat(40);
-    const h = makeActions({
-      deploymentReconciler: {
-        reconcile: vi.fn(async () => ({
-          ok: false,
-          pending: false,
-          reason: 'verify_cmd_failed',
-          step: 'post_merge_verify',
-          detail: 'suite red',
-          output_tail: 'failed assertion',
-          log_path: '/state/verify.log',
-          retry_count: 1,
-          base_sync: 'fetch_only:dirty'
-        }))
-      },
-      afterMerge: {
-        state: 'ok',
-        data: prOf({ state: 'MERGED', merge_sha })
-      }
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({
-      ok: false,
-      cleanup_step: 'post_merge_verify',
-      base_sync: 'fetch_only:dirty'
-    });
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      detail: 'suite red',
-      output_tail: 'failed assertion',
-      log_path: '/state/verify.log',
-      retry_count: 1
-    });
-  });
-
-  test('preserves managed failure ownership in cleanup evidence', async () => {
-    const merge_sha = 'c'.repeat(40);
-    const h = makeActions({
-      deploymentReconciler: {
-        reconcile: vi.fn(async () => ({
-          ok: false,
-          pending: false,
-          reason: 'deploy_failed',
-          step: 'deploy',
-          stage: 'restarting',
-          detail: 'install_failed',
-          failure_code: 'adapter_regression',
-          retryable: false,
-          retry_count: 0,
-          base_sync: null
-        }))
-      },
-      afterMerge: {
-        state: 'ok',
-        data: prOf({ state: 'MERGED', merge_sha })
-      }
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({
-      ok: false,
-      cleanup_step: 'deploy',
-      reason: 'deploy_failed'
-    });
-    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'deploy',
-      reason: 'deploy_failed',
-      detail: 'install_failed',
-      failure_code: 'adapter_regression',
-      retryable: false,
-      retry_count: 0
-    });
-  });
-
-  test('starts a new reconcile attempt for a manual cleanup retry', async () => {
-    const floor = 'c'.repeat(40);
-    const store = seedStore();
-    store.recordCleanupFailure(WS, {
-      bead_id: BEAD,
-      step: 'deploy',
-      reason: 'adapter_failed'
-    });
-    store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-old',
-      target_base: 'main',
-      merged_floor_sha: floor
-    });
-    store.failReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-old',
-      reason: 'adapter_failed'
-    });
-    const reconcile = vi.fn(async () => ({
-      ok: true,
-      status: 'complete',
-      candidate_sha: 'd'.repeat(40),
-      base_sync: null
-    }));
-    const h = makeActions({
-      store,
-      deploymentReconciler: { reconcile }
-    });
-
-    const result = await h.actions.retryCleanup(BEAD);
-
-    expect(result).toMatchObject({ ok: true, reason: null });
-    expect(reconcile).toHaveBeenCalledWith({
-      bead_id: BEAD,
-      target_base: 'main',
-      merged_floor_sha: floor,
-      restart: true
-    });
-  });
-
-  test('routes a merged cleanup click through retry cleanup semantics', async () => {
-    const floor = 'c'.repeat(40);
-    const store = seedStore();
-    store.recordCleanupFailure(WS, {
-      bead_id: BEAD,
-      step: 'deploy',
-      reason: 'adapter_failed'
-    });
-    store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-old',
-      target_base: 'main',
-      merged_floor_sha: floor
-    });
-    store.failReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-old',
-      reason: 'adapter_failed'
-    });
-    const reconcile = vi.fn(async () => ({
-      ok: true,
-      status: 'complete',
-      candidate_sha: 'd'.repeat(40),
-      base_sync: null
-    }));
-    const h = makeActions({
-      store,
-      details: [prOf({ state: 'MERGED', merge_sha: floor })],
-      deploymentReconciler: { reconcile }
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({ ok: true, action: 'already_merged' });
-    expect(reconcile).toHaveBeenCalledWith({
-      bead_id: BEAD,
-      target_base: 'main',
-      merged_floor_sha: floor,
-      restart: true
-    });
-  });
-});
-
 describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6)', () => {
   test('refuses observed cleanup while an active discard owns the bead', async () => {
     const h = makeActions();
@@ -3694,92 +2009,6 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     expect(h.calls).toEqual([]);
   });
 
-  test('resumes a nonterminal external reconcile without a durable pr_wait row', async () => {
-    const floor = 'c'.repeat(40);
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: floor
-    });
-    const reconcile = vi.fn(async () => ({
-      ok: true,
-      status: 'complete',
-      candidate_sha: 'd'.repeat(40),
-      base_sync: null
-    }));
-    const h = makeActions({
-      store,
-      deploymentReconciler: { reconcile },
-      external: {
-        [BEAD]: {
-          bead_id: BEAD,
-          pr_url: 'https://github.com/o/r/pull/304',
-          pr_number: 304,
-          added_at: 1
-        }
-      }
-    });
-
-    const result = await h.actions.cleanupObservedMerge(BEAD, floor);
-
-    expect(result).toMatchObject({ ok: true, reason: null });
-    expect(reconcile).toHaveBeenCalledWith({
-      bead_id: BEAD,
-      target_base: 'main',
-      merged_floor_sha: floor
-    });
-  });
-
-  test('starts a fresh external attempt only after a new cleanup click', async () => {
-    const floor = 'c'.repeat(40);
-    const store = createQueueStore();
-    store.enqueueReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-old',
-      target_base: 'main',
-      merged_floor_sha: floor
-    });
-    store.failReconcile(WS, {
-      bead_id: BEAD,
-      attempt_id: 'deploy-old',
-      reason: 'adapter_failed',
-      step: 'deploy'
-    });
-    const reconcile = vi.fn(async () => ({
-      ok: true,
-      status: 'complete',
-      candidate_sha: 'd'.repeat(40),
-      base_sync: null
-    }));
-    const h = makeActions({
-      store,
-      details: [prOf({ state: 'MERGED', merge_sha: floor })],
-      deploymentReconciler: { reconcile },
-      bdStatus: { [BEAD]: 'resolved' },
-      bdPrUrl: 'https://github.com/o/r/pull/304',
-      external: {
-        [BEAD]: {
-          bead_id: BEAD,
-          pr_url: 'https://github.com/o/r/pull/304',
-          pr_number: 304,
-          added_at: 1
-        }
-      }
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({ ok: true, action: 'already_merged' });
-    expect(reconcile).toHaveBeenCalledWith({
-      bead_id: BEAD,
-      target_base: 'main',
-      merged_floor_sha: floor,
-      restart: true
-    });
-  });
-
   test('runs the identical cleanup path when a human merged on github.com', async () => {
     const merge_sha = 'c'.repeat(40);
     const h = makeActions({
@@ -3798,6 +2027,7 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     });
 
     await poller.tick();
+    await observeSucceededDeployment(h);
 
     // No merge was performed by us — the cleanup ran off the OBSERVATION.
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
@@ -3836,6 +2066,7 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
     const h = makeActions();
 
     await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     expect(h.external_drop).toHaveBeenCalledWith(WS, BEAD);
   });
@@ -3852,6 +2083,7 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
     });
 
     await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     // The registry is the stale surface: retiring it only AFTER the bead lands
     // in `done` is the window this bug came through, so the drop is read
@@ -3878,11 +2110,14 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
     });
 
     await h.actions.merge('UI-ext2');
+    await observeSucceededDeployment(h);
 
-    // An external row never enters `done` (its path is non-durable), so the
-    // registry drop is the ONLY record that it is finished.
+    // Promotion makes the provider handoff durable before request submission;
+    // covered success retires the registry row and lands the promoted row.
     expect(h.external_drop).toHaveBeenCalledWith(WS, 'UI-ext2');
-    expect(h.store.snapshot(WS).done).toEqual([]);
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: 'UI-ext2' })])
+    );
   });
 
   test('does not drop the row when the cleanup fails before it', async () => {
@@ -3893,9 +2128,13 @@ describe('post-merge cleanup — retiring the external row (UI-wwby §1)', () =>
       bdFail: (/** @type {string} */ method) => method === 'setStatus'
     });
 
-    const r = await h.actions.merge(BEAD);
+    const requested = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
-    expect(r).toMatchObject({ ok: false, cleanup_step: 'parent_close' });
+    expect(requested).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'parent_close'
+    });
     expect(h.external_drop).not.toHaveBeenCalled();
   });
 });
@@ -4095,7 +2334,7 @@ describe('[폐기] — the order-sensitive discard transition (discard spec §1)
 });
 
 describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
-  test('walks the six cleanup steps in contract order on a clean merge', async () => {
+  test('walks request then covered closure steps in contract order', async () => {
     const env = makeActions();
 
     await env.actions.merge(BEAD);
@@ -4104,7 +2343,18 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
       'merging',
       'base_sync',
       'post_merge_verify',
-      'deploy',
+      'deployment_request',
+      '(cleared)'
+    ]);
+
+    await observeSucceededDeployment(env);
+
+    expect(env.steps).toEqual([
+      'merging',
+      'base_sync',
+      'post_merge_verify',
+      'deployment_request',
+      '(cleared)',
       'child_sweep',
       'branch_cleanup',
       'parent_close',
@@ -4159,10 +2409,14 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
   test('reports progress for an externally observed merge too', async () => {
     const env = makeActions({ details: [prOf({ state: 'MERGED' })] });
 
-    await env.actions.cleanupObservedMerge(BEAD);
+    await env.actions.cleanupObservedMerge(BEAD, 'c'.repeat(40));
 
     expect(env.steps[0]).toBe('base_sync');
     expect(env.steps[env.steps.length - 1]).toBe('(cleared)');
+
+    await observeSucceededDeployment(env);
+
+    expect(env.steps).toContain('parent_close');
   });
 });
 
@@ -4264,12 +2518,14 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
 
   test('runs cleanup only for an external MERGED row, never a second merge', async () => {
     const env = makeActions(
-      externalOptions({ details: [prOf({ state: 'MERGED' })] })
+      externalOptions({
+        details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+      })
     );
 
     const r = await env.actions.merge(EXTERNAL_BEAD);
 
-    expect(r.action).toBe('already_merged');
+    expect(r.action).toBe('cleanup_pending');
     expect(env.gh.mergeSquash).not.toHaveBeenCalled();
     expect(env.calls).toContain('git:fetch --no-tags');
   });
@@ -4413,7 +2669,13 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     const env = makeActions(
       externalOptions({
         declaredBase: 'develop',
-        details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
+        details: [
+          prOf({
+            state: 'MERGED',
+            base_ref: 'develop',
+            merged_sha: 'c'.repeat(40)
+          })
+        ]
       })
     );
 
@@ -4502,7 +2764,13 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     const env = makeActions(
       externalOptions({
         declaredBase: 'develop',
-        details: [prOf({ state: 'MERGED', base_ref: 'develop' })]
+        details: [
+          prOf({
+            state: 'MERGED',
+            base_ref: 'develop',
+            merged_sha: 'c'.repeat(40)
+          })
+        ]
       })
     );
     // A resolution session ran against the base the CLICK saw back then, and it
@@ -4538,11 +2806,18 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
   test('deletes the head branch gh names when it differs from the bead id', async () => {
     const env = makeActions(
       externalOptions({
-        details: [prOf({ state: 'MERGED', head_ref: 'feature/from-session' })]
+        details: [
+          prOf({
+            state: 'MERGED',
+            head_ref: 'feature/from-session',
+            merged_sha: 'c'.repeat(40)
+          })
+        ]
       })
     );
 
     await env.actions.merge(EXTERNAL_BEAD);
+    await observeSucceededDeployment(env);
 
     expect(env.git_argv).toContainEqual([
       'branch',
@@ -4572,7 +2847,7 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
   });
 });
 
-describe('worker/pr-actions — external rows write no durable lane state (impl review 2026-07-28)', () => {
+describe('worker/pr-actions — external rows acquire a durable deployment handoff', () => {
   const EXTERNAL_BEAD = 'UI-ext';
   const EXTERNAL_URL = 'https://github.com/o/r/pull/777';
 
@@ -4596,25 +2871,29 @@ describe('worker/pr-actions — external rows write no durable lane state (impl 
     };
   }
 
-  test('a completed external cleanup does not push the bead into done', async () => {
+  test('a covered external cleanup moves the promoted row into done', async () => {
     const env = makeActions(externalOptions());
 
     await env.actions.merge(EXTERNAL_BEAD);
+    await observeSucceededDeployment(env);
 
-    expect(env.store.snapshot(WS).done).toEqual([]);
+    expect(
+      env.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual([EXTERNAL_BEAD]);
   });
 
   test('a completed WORKER cleanup still pushes the bead into done', async () => {
     const env = makeActions();
 
     await env.actions.merge(BEAD);
+    await observeSucceededDeployment(env);
 
     expect(
       env.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
   });
 
-  test('a failed external cleanup records no durable cleanup_failed', async () => {
+  test('a failed external handoff records durable cleanup_failed', async () => {
     const env = makeActions(
       externalOptions({
         gitFail: (/** @type {string[]} */ args) => args[0] === 'fetch'
@@ -4624,7 +2903,10 @@ describe('worker/pr-actions — external rows write no durable lane state (impl 
     const r = await env.actions.merge(EXTERNAL_BEAD);
 
     expect(r.ok).toBe(false);
-    expect(env.store.snapshot(WS).cleanup_failed).toEqual({});
+    expect(env.store.snapshot(WS).cleanup_failed[EXTERNAL_BEAD]).toMatchObject({
+      step: 'base_sync',
+      reason: 'base_fetch_failed'
+    });
   });
 
   test('a failed WORKER cleanup still records cleanup_failed', async () => {
@@ -4637,24 +2919,6 @@ describe('worker/pr-actions — external rows write no durable lane state (impl 
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
       step: 'base_sync'
     });
-  });
-
-  test('a detached deploy for an external row still records the launch durably', async () => {
-    const env = makeActions(
-      externalOptions({
-        verify: VERIFY_CFG,
-        deploy: DEPLOY_DETACHED,
-        ...ON_BASE
-      })
-    );
-
-    await env.actions.merge(EXTERNAL_BEAD);
-
-    expect(env.store.snapshot(WS).last_deploy).toMatchObject({
-      outcome: 'launched',
-      bead_id: EXTERNAL_BEAD
-    });
-    expect(env.store.snapshot(WS).done).toEqual([]);
   });
 
   test('reads status and pr_url in ONE bd show so they cannot disagree', async () => {
@@ -4706,6 +2970,7 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
     const h = makeActions({ verify: VERIFY_CFG, ...ON_BASE });
 
     const r = await h.actions.merge(BEAD);
+    await observeSucceededDeployment(h);
 
     expect(r.ok).toBe(true);
     expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
@@ -4716,48 +2981,11 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
     });
   });
 
-  test('announces the merge BEFORE the detached deploy launch', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      deploySpawn: 'ok',
-      ...ON_BASE
-    });
-
-    await h.actions.merge(BEAD);
-
-    expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
-    // The launch may restart this process, so an announcement after it is one
-    // that may never be sent.
-    const announced_at = h.calls.indexOf('notify:mergeCompleted');
-    const launched_at = h.calls.indexOf('spawn:bdui-shared:detached');
-    expect(announced_at).toBeGreaterThanOrEqual(0);
-    expect(launched_at).toBeGreaterThan(announced_at);
-  });
-
-  test('waits for the merge send to finish before launching the deploy', async () => {
-    const h = makeActions({
-      verify: VERIFY_CFG,
-      deploy: DEPLOY_DETACHED,
-      deploySpawn: 'ok',
-      ...ON_BASE
-    });
-
-    await h.actions.merge(BEAD);
-
-    // Calling the notifier first is not enough: an asynchronous send that has
-    // not spawned yet when the deploy restarts this process is a merge nobody
-    // hears about (UI-vb0t §3.4).
-    const spawned_at = h.calls.indexOf('notify:spawned');
-    const launched_at = h.calls.indexOf('spawn:bdui-shared:detached');
-    expect(spawned_at).toBeGreaterThanOrEqual(0);
-    expect(launched_at).toBeGreaterThan(spawned_at);
-  });
-
   test('announces the externally-observed merge through the same hook', async () => {
     const h = makeActions({ details: [prOf({ state: 'MERGED' })] });
 
-    const r = await h.actions.cleanupObservedMerge(BEAD);
+    const r = await h.actions.cleanupObservedMerge(BEAD, 'c'.repeat(40));
+    await observeSucceededDeployment(h);
 
     expect(r.ok).toBe(true);
     expect(h.notify.mergeCompleted).toHaveBeenCalledTimes(1);
@@ -4789,6 +3017,7 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
     });
 
     await h.actions.merge(EXT_BEAD);
+    await observeSucceededDeployment(h);
 
     expect(h.merge_notices[0]).toEqual({
       bead_id: EXT_BEAD,

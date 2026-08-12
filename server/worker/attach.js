@@ -56,11 +56,7 @@ import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
-import {
-  peekVerifyResolution,
-  resolveDeployAt,
-  resolveVerifyAt
-} from './repo-ops.js';
+import { peekVerifyResolution, resolveVerifyAt } from './repo-ops.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
@@ -677,18 +673,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions
           ? prActions.rollbackVerify(bead_id, base_sha)
           : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
-      rollbackResolveDeploy: (
-        /** @type {string} */ bead_id,
-        /** @type {string} */ base_sha,
-        /** @type {string} */ target_base
-      ) =>
-        prActions
-          ? prActions.rollbackResolveDeploy(bead_id, base_sha, target_base)
-          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
-      launchRollbackDeploy: (
-        /** @type {string} */ bead_id,
-        /** @type {any} */ pending_deploy
-      ) => prActions?.launchRollbackDeploy(bead_id, pending_deploy),
       external: {
         get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
           runtime.externalPrs.get(ws_key, bead_id)
@@ -786,31 +770,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       });
     } catch (err) {
       log('verify resolution failed for %s: %o', repo, err);
-      return {
-        state: 'invalid',
-        source: 'declaration',
-        detail: 'resolver_threw'
-      };
-    }
-  };
-
-  /**
-   * The workspace's post-merge deploy command, on the same two-rung ladder and
-   * the same pin contract as {@link resolveVerify}.
-   *
-   * @param {OpsPin} [pin]
-   * @returns {Promise<import('./repo-ops.js').DeployResolution>}
-   */
-  const resolveDeploy = async (pin = {}) => {
-    try {
-      return await resolveDeployAt({
-        gitRun,
-        repo,
-        sha: pin.sha || (await premergePin(pin.force === true)),
-        config_map: getConfig().worker_deploy
-      });
-    } catch (err) {
-      log('deploy resolution failed for %s: %o', repo, err);
       return {
         state: 'invalid',
         source: 'declaration',
@@ -975,8 +934,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
     deploymentJob,
-    resolveDeploy,
-    locks: runtime.locks,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
     // The SAME notifier the scheduler pushes attempt transitions through, so
     // the merge that closes a bead lands in the same channel as its start and
@@ -1121,7 +1078,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but started by `initWorkerRuntime`. Its default subscriber count
-  // is 0, while durable auto-merge/merge-queue/reconcile demand can still wake
+  // is 0, while durable auto-merge/merge-queue/deployment demand can still wake
   // it after restart.
   const prPoller = createPrPoller({
     workspace: keyFor(workspace_root),
@@ -1297,7 +1254,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     return;
   }
   try {
-    await att.prActions.resumePersistedReconciles();
+    await att.prActions.resumeDeploymentObservation();
   } catch (err) {
     log('startup deployment recovery failed for %s: %o', key, err);
     return;
@@ -1323,11 +1280,10 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   try {
     att.autoMerge.start();
     const queue = att.runtime.queueStore.snapshot(key);
-    const reconcile_pending = Object.values(queue.reconcile || {}).some(
-      (record) =>
-        record && record.stage !== 'complete' && record.stage !== 'failed'
-    );
-    if (queue.auto_merge === true || reconcile_pending) {
+    const deployment_pending =
+      queue.deployment !== null ||
+      queue.pr_wait.some((row) => row.cleanup_cursor === 'deployment_observe');
+    if (queue.auto_merge === true || deployment_pending) {
       Promise.resolve(att.prPoller.tick()).catch((err) => {
         log('worker boot PR observation failed for %s: %o', key, err);
       });
@@ -1349,7 +1305,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
  *
  * `getSubscriberCount` is what turns the PR poller on (worker-phase2 §4): the
  * caller supplies the live worker-queue subscriber count for a workspace. The
- * poller also honors durable auto-merge/merge-queue/reconcile demand; omitting
+ * poller also honors durable auto-merge/merge-queue/deployment demand; omitting
  * the provider stays silent only when none of those internal consumers exist.
  *
  * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
@@ -1835,18 +1791,13 @@ export function __setUnattachedAdmissionCheckForTest(reader) {
 
 /**
  * Test hook: drop all registered attachments, stopping their PR pollers and
- * reconcile timers so no armed timer or queue-changed hook outlives the test
+ * timers so no armed timer or queue-changed hook outlives the test
  * that built it.
  */
 export function __resetWorkerAttachmentsForTest() {
   for (const att of ATTACHMENTS.values()) {
     try {
       att.prPoller?.stop();
-    } catch {
-      /* ignore */
-    }
-    try {
-      att.reconciler?.stop();
     } catch {
       /* ignore */
     }

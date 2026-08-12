@@ -204,7 +204,7 @@ describe('worker/merge-queue — sequencing', () => {
     );
   });
 
-  test('keeps a retryable cleanup at the queue head without failure or skip', async () => {
+  test('releases an accepted deployment request from the queue head', async () => {
     const store = seed(['UI-1']);
     const mq = driver(store, {
       merge: async () => ({
@@ -216,62 +216,9 @@ describe('worker/merge-queue — sequencing', () => {
 
     await mq.kick();
 
-    expect(store.snapshot(WS).merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
-    ]);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
     expect(store.snapshot(WS).auto_merge_skips).toEqual({});
     expect(mq.state().failures).toEqual({});
-  });
-
-  test('terminalizes a previously pending cleanup without relaunching merge', async () => {
-    const store = seed(['UI-1']);
-    store.enqueueReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      target_base: 'main',
-      merged_floor_sha: 'a'.repeat(40)
-    });
-    store.advanceReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      candidate_sha: 'b'.repeat(40),
-      adapter: 'managed',
-      stage: 'deploying'
-    });
-    const merge = vi.fn(async () => ({
-      ok: true,
-      action: 'cleanup_pending',
-      reason: 'adapter_spawn_error'
-    }));
-    /** @type {{ current: ((workspace: string) => void)|null }} */
-    const changed = { current: null };
-    const mq = driver(store, {
-      merge,
-      subscribeQueueChanged: (
-        /** @type {(workspace: string) => void} */ fn
-      ) => {
-        changed.current = fn;
-        return () => {};
-      }
-    });
-    mq.start();
-    await vi.waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(mq.state().active).toBe(null));
-    store.failReconcile(WS, {
-      bead_id: 'UI-1',
-      attempt_id: 'deploy-1',
-      reason: 'adapter_failed',
-      step: 'deploy'
-    });
-
-    changed.current?.(WS);
-    await vi.waitFor(() => expect(store.snapshot(WS).merge_queue).toEqual([]));
-
-    expect(merge).toHaveBeenCalledTimes(1);
-    expect(store.snapshot(WS).auto_merge_skips['UI-1']).toMatchObject({
-      reason: '정리 실패(deploy): adapter_failed'
-    });
-    mq.stop();
   });
 
   test('skips a refused item and continues with the next', async () => {

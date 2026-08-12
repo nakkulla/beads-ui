@@ -304,15 +304,8 @@
  * @property {Record<string, DiscardOperation>} discard_operations - Durable
  * discard sagas keyed by operation id. A missing legacy field normalizes to an
  * empty map; every non-done operation fences its bead from other drivers.
- * @property {Record<string, DeploymentReconcile>} reconcile - Durable
- * deployment reconciliation state keyed by parent Bead.
  * @property {DeploymentObservation|null} deployment - The current external
  * deployment-provider observation. It is repo-level, not a PR-row result.
- * @property {LastDeploy|null} last_deploy - The workspace's most recent
- * post-merge deployment (worker-deploy-hook §3). ONE record, overwritten each
- * time — the question it answers is "is the running service the merged code?",
- * which only the latest deploy can answer. Null on a workspace that has never
- * deployed (no `[worker.deploy]` section, or none run yet).
  */
 /**
  * @typedef {Object} DeploymentObservation
@@ -386,53 +379,6 @@
  * @property {number} at - Epoch ms of the disposition.
  */
 /**
- * @typedef {Object} LastDeploy
- * @property {'deployed'|'launched'|'failed'} outcome - `deployed` = the
- * synchronous command exited 0; `launched` = a DETACHED command was started
- * after the cleanup was durably recorded — an intent, NOT a confirmation (a
- * self-restarting deploy kills the observer, so nothing can confirm it);
- * `failed` = it ran and did not succeed, or never started.
- * @property {string|null} reason - The failure vocabulary
- * (`deploy_failed` / `deploy_timeout` / `deploy_spawn_error` /
- * `deploy_verify_missing` / `deploy_base_not_synced`); null on a success.
- * @property {string} bead_id - The merge whose cleanup ran this deploy.
- * @property {string} base_sha - The base commit that was deployed.
- * @property {number} at - Epoch ms of the record.
- * @property {string} [detail] - The failure's own diagnostic text (UI-l53x §4):
- * the guard behind `deploy_base_not_synced`, or the spawn error behind
- * `deploy_spawn_error`. ABSENT — not null — on a record that has none, the same
- * rule `cleanup_failed.output_tail`/`log_path` follow. The 512-char cap lives on
- * the producer (`errorDetail`), not here.
- * @property {string} [log_path] - Absolute path to the deploy command's FULL
- * preserved output (UI-l53x §1). Present only for a SYNCHRONOUS deploy that
- * reached the runner and whose log file completed; a detached deploy has no
- * observable output at all, and a pre-run refusal never opened a file.
- * @property {'workspace'|'managed'} [adapter]
- * @property {string} [attempt_id]
- * @property {string} [merged_floor_sha]
- * @property {string} [receipt_path]
- * @property {string} [receipt_digest]
- */
-/**
- * @typedef {Object} DeploymentReconcile
- * @property {string} bead_id
- * @property {string} attempt_id
- * @property {string} target_base
- * @property {string} merged_floor_sha
- * @property {string|null} candidate_sha
- * @property {'workspace'|'managed'|null} adapter
- * @property {'queued'|'pinned'|'verifying'|'deploying'|'restarting'|'readback'|'complete'|'failed'} stage
- * @property {string|null} receipt_path
- * @property {string|null} receipt_digest
- * @property {string|null} receipt_attempt_id
- * @property {string|null} receipt_floor_sha
- * @property {number} retry_count
- * @property {number|null} retry_at
- * @property {string|null} last_retryable_reason
- * @property {{ reason: string, detail: string|null, step: string|null, failure_code: string|null, retryable: boolean|null, at: number }|null} terminal_failure
- * @property {number} updated_at
- */
-/**
  * @typedef {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} CompletionPhase
  */
 /**
@@ -496,7 +442,6 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { execSettingEnums } from './exec-enums.js';
-import { validateManagedFailure } from './managed-failure.js';
 import { queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -928,8 +873,6 @@ function normalizeSlots(value) {
  *
  * @type {string[]}
  */
-const DEPLOY_OUTCOMES = ['deployed', 'launched', 'failed'];
-
 /** @type {string[]} */
 const DEPLOYMENT_JOB_STATES = [
   'idle',
@@ -964,27 +907,13 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'auto_merge_skips',
   'completion_intents',
   'discard_operations',
-  'reconcile',
   'deployment',
-  'last_deploy',
   'merge_policy',
   'drift_policy',
   'worker_runner',
   'review_model',
   'ship_failure'
 ]);
-
-/** @type {string[]} */
-const RECONCILE_STAGES = [
-  'queued',
-  'pinned',
-  'verifying',
-  'deploying',
-  'restarting',
-  'readback',
-  'complete',
-  'failed'
-];
 
 /**
  * @returns {Queue}
@@ -1008,9 +937,7 @@ function emptyQueue() {
     auto_merge_skips: {},
     completion_intents: {},
     discard_operations: {},
-    reconcile: {},
-    deployment: null,
-    last_deploy: null
+    deployment: null
   };
 }
 
@@ -1737,10 +1664,7 @@ function normalizeQueue(raw) {
         if (typeof value.log_path === 'string') {
           q.cleanup_failed[bead_id].log_path = value.log_path;
         }
-        if (
-          typeof value.failure_code === 'string' &&
-          validateManagedFailure(value).ok
-        ) {
+        if (typeof value.failure_code === 'string') {
           q.cleanup_failed[bead_id].failure_code = value.failure_code;
         }
         if (typeof value.retryable === 'boolean') {
@@ -1786,13 +1710,7 @@ function normalizeQueue(raw) {
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
-  q.reconcile = normalizeReconcile(raw.reconcile);
   q.deployment = normalizeDeploymentObservation(raw.deployment);
-  // A queue.json written before the deploy hook simply has no key → null, which
-  // reads as "this workspace has never deployed" (worker-deploy-hook §3). A
-  // record carrying an outcome outside the vocabulary is dropped the same way:
-  // an unrenderable record and no record mean the same thing to the reader.
-  q.last_deploy = normalizeLastDeploy(raw.last_deploy);
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
 }
@@ -1919,173 +1837,6 @@ function deploymentStateRegresses(current, observation) {
     return observation.state !== current.state;
   }
   return current.state === 'running' && observation.state === 'pending';
-}
-
-/**
- * @param {unknown} value
- * @returns {LastDeploy|null}
- */
-function normalizeLastDeploy(value) {
-  if (
-    !isRecord(value) ||
-    typeof value.outcome !== 'string' ||
-    !DEPLOY_OUTCOMES.includes(value.outcome)
-  ) {
-    return null;
-  }
-  /** @type {LastDeploy} */
-  const record = {
-    outcome: /** @type {'deployed'|'launched'|'failed'} */ (value.outcome),
-    reason: typeof value.reason === 'string' ? value.reason : null,
-    bead_id: typeof value.bead_id === 'string' ? value.bead_id : '',
-    base_sha: typeof value.base_sha === 'string' ? value.base_sha : '',
-    at: typeof value.at === 'number' ? value.at : 0
-  };
-  // Carried only when there is something to carry, so an older `queue.json` and
-  // a record with no diagnostics both load as an ABSENT key.
-  if (typeof value.detail === 'string' && value.detail.length > 0) {
-    record.detail = value.detail;
-  }
-  if (typeof value.log_path === 'string' && value.log_path.length > 0) {
-    record.log_path = value.log_path;
-  }
-  if (value.adapter === 'workspace' || value.adapter === 'managed') {
-    record.adapter = value.adapter;
-  }
-  if (typeof value.attempt_id === 'string' && value.attempt_id.length > 0) {
-    record.attempt_id = value.attempt_id;
-  }
-  if (/^[0-9a-f]{40}$/i.test(String(value.merged_floor_sha || ''))) {
-    record.merged_floor_sha = String(value.merged_floor_sha).toLowerCase();
-  }
-  if (typeof value.receipt_path === 'string' && value.receipt_path.length > 0) {
-    record.receipt_path = value.receipt_path;
-  }
-  if (/^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))) {
-    record.receipt_digest = String(value.receipt_digest).toLowerCase();
-  }
-  return record;
-}
-
-/**
- * @param {unknown} raw
- * @returns {Record<string, DeploymentReconcile>}
- */
-function normalizeReconcile(raw) {
-  /** @type {Record<string, DeploymentReconcile>} */
-  const out = {};
-  if (!isRecord(raw)) {
-    return out;
-  }
-  for (const [bead_id, value] of Object.entries(raw)) {
-    if (
-      !isRecord(value) ||
-      value.bead_id !== bead_id ||
-      typeof value.attempt_id !== 'string' ||
-      value.attempt_id.length === 0 ||
-      typeof value.target_base !== 'string' ||
-      value.target_base.length === 0 ||
-      !/^[0-9a-f]{40}$/i.test(String(value.merged_floor_sha || '')) ||
-      !RECONCILE_STAGES.includes(String(value.stage || ''))
-    ) {
-      continue;
-    }
-    out[bead_id] = {
-      bead_id,
-      attempt_id: value.attempt_id,
-      target_base: value.target_base,
-      merged_floor_sha: String(value.merged_floor_sha).toLowerCase(),
-      candidate_sha: /^[0-9a-f]{40}$/i.test(String(value.candidate_sha || ''))
-        ? String(value.candidate_sha).toLowerCase()
-        : null,
-      adapter:
-        value.adapter === 'workspace' || value.adapter === 'managed'
-          ? value.adapter
-          : null,
-      stage: /** @type {DeploymentReconcile['stage']} */ (value.stage),
-      receipt_path:
-        typeof value.receipt_path === 'string' && value.receipt_path.length > 0
-          ? value.receipt_path
-          : null,
-      receipt_digest: /^[0-9a-f]{64}$/i.test(String(value.receipt_digest || ''))
-        ? String(value.receipt_digest).toLowerCase()
-        : null,
-      receipt_attempt_id:
-        typeof value.receipt_attempt_id === 'string' &&
-        value.receipt_attempt_id.length > 0
-          ? value.receipt_attempt_id
-          : null,
-      receipt_floor_sha: /^[0-9a-f]{40}$/i.test(
-        String(value.receipt_floor_sha || '')
-      )
-        ? String(value.receipt_floor_sha).toLowerCase()
-        : null,
-      retry_count:
-        typeof value.retry_count === 'number' &&
-        Number.isInteger(value.retry_count) &&
-        value.retry_count >= 0
-          ? value.retry_count
-          : 0,
-      retry_at:
-        typeof value.retry_at === 'number' && Number.isFinite(value.retry_at)
-          ? value.retry_at
-          : null,
-      last_retryable_reason:
-        typeof value.last_retryable_reason === 'string' &&
-        value.last_retryable_reason.length > 0
-          ? value.last_retryable_reason
-          : null,
-      terminal_failure:
-        isRecord(value.terminal_failure) &&
-        typeof value.terminal_failure.reason === 'string'
-          ? {
-              reason: value.terminal_failure.reason,
-              detail:
-                typeof value.terminal_failure.detail === 'string'
-                  ? value.terminal_failure.detail
-                  : null,
-              step:
-                typeof value.terminal_failure.step === 'string'
-                  ? value.terminal_failure.step
-                  : null,
-              failure_code:
-                typeof value.terminal_failure.failure_code === 'string' &&
-                validateManagedFailure(value.terminal_failure).ok
-                  ? value.terminal_failure.failure_code
-                  : null,
-              retryable:
-                typeof value.terminal_failure.retryable === 'boolean'
-                  ? value.terminal_failure.retryable
-                  : null,
-              at:
-                typeof value.terminal_failure.at === 'number'
-                  ? value.terminal_failure.at
-                  : 0
-            }
-          : null,
-      updated_at:
-        typeof value.updated_at === 'number' &&
-        Number.isFinite(value.updated_at)
-          ? value.updated_at
-          : 0
-    };
-  }
-  return out;
-}
-
-/**
- * Build a {@link LastDeploy} from a caller's input, or null when the input is
- * not a recordable outcome (which the mutations turn into a refused write).
- *
- * @param {unknown} input
- * @param {number} at
- * @returns {LastDeploy|null}
- */
-function buildLastDeploy(input, at) {
-  if (!isRecord(input)) {
-    return null;
-  }
-  return normalizeLastDeploy({ ...input, at });
 }
 
 /**
@@ -2484,254 +2235,6 @@ export function createQueueStore(options = {}) {
      */
     snapshot(workspace) {
       return clone(ensureLoaded(workspace));
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, target_base: string, merged_floor_sha: string }} input
-     * @returns {QueueOpResult}
-     */
-    enqueueReconcile(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const { bead_id, attempt_id, target_base, merged_floor_sha } = input;
-        if (
-          typeof bead_id !== 'string' ||
-          bead_id.length === 0 ||
-          typeof attempt_id !== 'string' ||
-          attempt_id.length === 0 ||
-          typeof target_base !== 'string' ||
-          target_base.length === 0 ||
-          !/^[0-9a-f]{40}$/i.test(String(merged_floor_sha || ''))
-        ) {
-          return false;
-        }
-        const current = next.reconcile[bead_id];
-        if (
-          current &&
-          current.stage !== 'complete' &&
-          current.stage !== 'failed'
-        ) {
-          return false;
-        }
-        next.reconcile[bead_id] = {
-          bead_id,
-          attempt_id,
-          target_base,
-          merged_floor_sha: merged_floor_sha.toLowerCase(),
-          candidate_sha: null,
-          adapter: null,
-          stage: 'queued',
-          receipt_path: null,
-          receipt_digest: null,
-          receipt_attempt_id: null,
-          receipt_floor_sha: null,
-          retry_count: 0,
-          retry_at: null,
-          last_retryable_reason: null,
-          terminal_failure: null,
-          updated_at: now()
-        };
-        return true;
-      });
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, stage: 'queued'|'pinned'|'verifying'|'deploying'|'restarting'|'readback', candidate_sha?: string, adapter?: 'workspace'|'managed' }} input
-     * @returns {QueueOpResult}
-     */
-    advanceReconcile(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const current = next.reconcile[input.bead_id];
-        if (
-          !current ||
-          current.attempt_id !== input.attempt_id ||
-          current.stage === 'complete' ||
-          current.stage === 'failed' ||
-          !RECONCILE_STAGES.includes(input.stage)
-        ) {
-          return false;
-        }
-        if (
-          input.candidate_sha !== undefined &&
-          !/^[0-9a-f]{40}$/i.test(input.candidate_sha)
-        ) {
-          return false;
-        }
-        if (
-          current.candidate_sha !== null &&
-          input.candidate_sha !== undefined &&
-          current.candidate_sha !== input.candidate_sha.toLowerCase()
-        ) {
-          return false;
-        }
-        if (
-          current.adapter !== null &&
-          input.adapter !== undefined &&
-          current.adapter !== input.adapter
-        ) {
-          return false;
-        }
-        if (
-          input.adapter !== undefined &&
-          input.adapter !== 'workspace' &&
-          input.adapter !== 'managed'
-        ) {
-          return false;
-        }
-        current.stage = input.stage;
-        if (input.candidate_sha !== undefined) {
-          current.candidate_sha = input.candidate_sha.toLowerCase();
-        }
-        if (input.adapter !== undefined) {
-          current.adapter = input.adapter;
-        }
-        current.retry_at = null;
-        current.updated_at = now();
-        return true;
-      });
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, reason: string, retry_at: number }} input
-     * @returns {QueueOpResult}
-     */
-    retryReconcile(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const current = next.reconcile[input.bead_id];
-        if (
-          !current ||
-          current.attempt_id !== input.attempt_id ||
-          current.stage === 'complete' ||
-          current.stage === 'failed' ||
-          typeof input.reason !== 'string' ||
-          input.reason.length === 0 ||
-          typeof input.retry_at !== 'number' ||
-          !Number.isFinite(input.retry_at)
-        ) {
-          return false;
-        }
-        current.retry_count += 1;
-        current.retry_at = input.retry_at;
-        current.last_retryable_reason = input.reason;
-        current.updated_at = now();
-        return true;
-      });
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, receipt_path: string, receipt_digest: string, receipt_attempt_id?: string, receipt_floor_sha?: string, mirror_last_deploy?: boolean }} input
-     * @returns {QueueOpResult}
-     */
-    completeReconcile(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const current = next.reconcile[input.bead_id];
-        if (
-          !current ||
-          current.attempt_id !== input.attempt_id ||
-          current.stage === 'complete' ||
-          current.stage === 'failed' ||
-          current.candidate_sha === null ||
-          current.adapter === null ||
-          typeof input.receipt_path !== 'string' ||
-          input.receipt_path.length === 0 ||
-          !/^[0-9a-f]{64}$/i.test(String(input.receipt_digest || ''))
-        ) {
-          return false;
-        }
-        if (
-          input.receipt_floor_sha !== undefined &&
-          !/^[0-9a-f]{40}$/i.test(input.receipt_floor_sha)
-        ) {
-          return false;
-        }
-        if (
-          input.receipt_attempt_id !== undefined &&
-          (typeof input.receipt_attempt_id !== 'string' ||
-            input.receipt_attempt_id.length === 0)
-        ) {
-          return false;
-        }
-        const prior = next.last_deploy;
-        const record =
-          input.mirror_last_deploy === false
-            ? null
-            : buildLastDeploy(
-                {
-                  outcome: 'deployed',
-                  reason: null,
-                  bead_id: current.bead_id,
-                  base_sha: current.candidate_sha,
-                  adapter: current.adapter,
-                  attempt_id: current.attempt_id,
-                  merged_floor_sha: current.merged_floor_sha,
-                  receipt_path: input.receipt_path,
-                  receipt_digest: input.receipt_digest,
-                  ...(prior?.bead_id === current.bead_id &&
-                  prior.base_sha === current.candidate_sha
-                    ? { detail: prior.detail, log_path: prior.log_path }
-                    : {})
-                },
-                now()
-              );
-        if (input.mirror_last_deploy !== false && !record) {
-          return false;
-        }
-        current.stage = 'complete';
-        current.receipt_path = input.receipt_path;
-        current.receipt_digest = input.receipt_digest.toLowerCase();
-        current.receipt_attempt_id =
-          input.receipt_attempt_id || current.attempt_id;
-        current.receipt_floor_sha = (
-          input.receipt_floor_sha || current.merged_floor_sha
-        ).toLowerCase();
-        current.retry_at = null;
-        current.terminal_failure = null;
-        current.updated_at = now();
-        if (record) {
-          next.last_deploy = record;
-        }
-        return true;
-      });
-    },
-
-    /**
-     * @param {string} workspace
-     * @param {{ bead_id: string, attempt_id: string, reason: string, detail?: string|null, step?: string|null, failure_code?: string, retryable?: boolean }} input
-     * @returns {QueueOpResult}
-     */
-    failReconcile(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const current = next.reconcile[input.bead_id];
-        if (
-          !current ||
-          current.attempt_id !== input.attempt_id ||
-          current.stage === 'complete' ||
-          current.stage === 'failed' ||
-          typeof input.reason !== 'string' ||
-          input.reason.length === 0 ||
-          (input.failure_code !== undefined &&
-            !validateManagedFailure(input).ok)
-        ) {
-          return false;
-        }
-        current.stage = 'failed';
-        current.retry_at = null;
-        current.terminal_failure = {
-          reason: input.reason,
-          detail: typeof input.detail === 'string' ? input.detail : null,
-          step: typeof input.step === 'string' ? input.step : null,
-          failure_code:
-            typeof input.failure_code === 'string' ? input.failure_code : null,
-          retryable:
-            typeof input.retryable === 'boolean' ? input.retryable : null,
-          at: now()
-        };
-        current.updated_at = now();
-        return true;
-      });
     },
 
     /**
@@ -3504,7 +3007,7 @@ export function createQueueStore(options = {}) {
      * fence on the same final write.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, expected_phase: string, deploy?: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string } }} input
+     * @param {{ operation_id: string, expected_phase: string }} input
      * @returns {QueueOpResult}
      */
     completeDiscardOperation(workspace, input) {
@@ -3521,13 +3024,6 @@ export function createQueueStore(options = {}) {
           reason = 'phase_mismatch';
           return false;
         }
-        const deploy = Object.hasOwn(input, 'deploy')
-          ? buildLastDeploy(input.deploy, now())
-          : null;
-        if (Object.hasOwn(input, 'deploy') && deploy === null) {
-          reason = 'deploy_invalid';
-          return false;
-        }
         removeFromLanes(next, current.bead_id);
         delete next.admission[current.bead_id];
         delete next.cleanup_failed[current.bead_id];
@@ -3536,9 +3032,6 @@ export function createQueueStore(options = {}) {
           phase: 'done',
           last_error: null
         };
-        if (deploy !== null) {
-          next.last_deploy = deploy;
-        }
         return true;
       });
       return reason === null ? result : { ...result, reason };
@@ -3740,27 +3233,6 @@ export function createQueueStore(options = {}) {
             delete next.completion_intents[bead_id];
           }
         }
-        return true;
-      });
-    },
-
-    /**
-     * Record the workspace's most recent post-merge deployment, overwriting the
-     * previous one (worker-deploy-hook §3). Scheduler-owned (no CAS). An
-     * outcome outside {@link DEPLOY_OUTCOMES} is refused WITHOUT a write, so a
-     * caller bug cannot replace a real record with an unrenderable one.
-     *
-     * @param {string} workspace
-     * @param {{ outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string }} input
-     * @returns {QueueOpResult}
-     */
-    recordLastDeploy(workspace, input) {
-      return applyUnconditional(workspace, (next) => {
-        const record = buildLastDeploy(input, now());
-        if (!record) {
-          return false;
-        }
-        next.last_deploy = record;
         return true;
       });
     },
@@ -3978,36 +3450,6 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * The DETACHED deploy's atomic hand-off: finish the cleanup (`moveToDone`)
-     * and record the launch intent in ONE persist (worker-deploy-hook §2).
-     *
-     * Splitting these would be the whole failure mode the terminal-launch
-     * exception exists to avoid: a self-restarting deploy kills this server, so
-     * anything not durable BEFORE the spawn may never be written at all. One
-     * mutation means a restart either sees "cleanup done + deploy launched" or
-     * neither — never a bead in `done` whose deploy left no trace.
-     *
-     * @param {string} workspace
-     * @param {{ bead_id: string, deploy: { outcome: 'deployed'|'launched'|'failed', reason: string|null, bead_id: string, base_sha: string, detail?: string, log_path?: string } }} input
-     * @returns {QueueOpResult}
-     */
-    moveToDoneWithDeploy(workspace, input) {
-      const { bead_id, deploy } = input;
-      return applyUnconditional(workspace, (next) => {
-        const record = buildLastDeploy(deploy, now());
-        if (typeof bead_id !== 'string' || bead_id.length === 0 || !record) {
-          return false;
-        }
-        removeFromLanes(next, bead_id);
-        delete next.cleanup_failed[bead_id];
-        next.done.push(makeQueueEntry(bead_id, now()));
-        next.last_deploy = record;
-        completeIntentForDone(next, bead_id);
-        return true;
-      });
-    },
-
-    /**
      * REMOVE a bead from `pr_wait` in ONE persist — the lane half of [폐기]
      * (`2026-07-27-worker-discard-button.md` §1). It lands in no lane at all:
      * the bead is `open` again and the candidate lane is synthesized as
@@ -4085,7 +3527,8 @@ export function createQueueStore(options = {}) {
           bead_id.length === 0 ||
           typeof reason !== 'string' ||
           reason.length === 0 ||
-          (failure_code !== undefined && !validateManagedFailure(input).ok) ||
+          (failure_code !== undefined &&
+            (typeof failure_code !== 'string' || failure_code.length === 0)) ||
           (retry_count !== undefined &&
             (!Number.isInteger(retry_count) || Number(retry_count) < 0))
         ) {

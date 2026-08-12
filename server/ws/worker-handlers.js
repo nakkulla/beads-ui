@@ -937,10 +937,10 @@ export function decorateQueue(workspace_key, raw_queue) {
       : [],
     completion_status: completion.statuses
   };
-  // Both commands come off the SAME two-rung ladder the worker executes
-  // (UI-kfl4), read through its synchronous projection because this decoration
-  // runs on every snapshot push and cannot await a git spawn. Display only —
-  // no merge, verification or deploy is decided here.
+  // Read through the pinned declaration resolver's synchronous projection
+  // because this decoration runs on every snapshot push and cannot await git.
+  // Verify may still use its config fallback; deploy is declaration-only and
+  // displayed for the external provider, never executed by this Worker.
   /** @type {import('../worker/repo-ops.js').VerifyResolution} */
   let verify_resolution = { state: 'absent' };
   try {
@@ -953,13 +953,10 @@ export function decorateQueue(workspace_key, raw_queue) {
   }
   const verify_cmd =
     verify_resolution.state === 'resolved' ? verify_resolution.value : null;
-  /** @type {{ cmd: string[], timeout_ms: number, detached: boolean } | null} */
+  /** @type {{ cmd: string[], timeout_ms: number } | null} */
   let deploy_cmd = null;
   try {
-    const deploy_resolution = peekDeployResolution(
-      workspace_key,
-      getConfig().worker_deploy
-    );
+    const deploy_resolution = peekDeployResolution(workspace_key);
     deploy_cmd =
       deploy_resolution.state === 'resolved' ? deploy_resolution.value : null;
   } catch {

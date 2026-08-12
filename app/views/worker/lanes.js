@@ -438,7 +438,7 @@ export function miniRow(item) {
       // irreversible and minutes long, so the row itself becomes the gauge —
       // side rail, bottom progress line, step name and n/total. No spinner: the
       // stage counter says more than a spinner can. The total comes from the
-      // projection because managed reconcile adds pin/readback stages.
+      // current merge-progress projection.
       html`<span class="merge-step"
         >${merging.label}<span class="merge-step__n"
           >${merging.index}/${merging.total}</span

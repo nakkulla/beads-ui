@@ -13,7 +13,7 @@
  *
  * Cost discipline (spec §4):
  *   - it runs ONLY while the workspace has worker-queue subscribers, durable
- *     `auto_merge`/merge-queue demand, or a nonterminal deployment reconcile,
+ *     `auto_merge`/merge-queue demand, or a pending deployment observation,
  *   - it makes ZERO `gh` calls when `pr_wait` is empty.
  * Both gates are checked before any query, so an idle server is silent. The
  * demand gate is inherited by reusing {@link createPoller}.
@@ -249,8 +249,8 @@ export function createPrPoller(deps) {
    * The `auto_merge` flag cannot stand in for it: a manual [머지] click fills
    * the queue with the toggle off.
    *
-   * A nonterminal deployment reconcile is also durable demand: its retry or
-   * restart resume enters through the same MERGED observation callback. With
+   * A pending deployment observation is also durable demand: status polling
+   * resumes after restart without replaying a deployment effect. With
    * none of these present the old rule stands: no subscribers, no `gh` traffic.
    *
    * @returns {boolean}
@@ -271,10 +271,6 @@ export function createPrPoller(deps) {
         Object.values(q.discard_operations || {}).some(
           (operation) =>
             /** @type {any} */ (operation)?.phase === 'revert_pr_wait'
-        ) ||
-        Object.values(q.reconcile || {}).some(
-          (record) =>
-            record && record.stage !== 'complete' && record.stage !== 'failed'
         )
       );
     } catch {
@@ -392,18 +388,9 @@ export function createPrPoller(deps) {
     // bead simply stays where it is awaiting a human decision (§4).
     if (pr.state !== 'OPEN') {
       deps.observations.record(workspace, bead_id, { error: null, pr });
-      // An EXTERNAL row normally records MERGED and stops (UI-7agi §1). Once a
-      // user click has durably started a Reconciler, however, its nonterminal
-      // record is authority to resume bounded retry after restart; that is not
-      // a new deployment decision.
-      const reconcile = queue.reconcile?.[bead_id];
-      const reconcile_resume =
-        reconcile &&
-        reconcile.stage !== 'complete' &&
-        reconcile.stage !== 'failed';
       if (
         pr.state === 'MERGED' &&
-        (!external_row || reconcile_resume) &&
+        !external_row &&
         typeof deps.onMerged === 'function'
       ) {
         const merge_sha = pr.merge_sha || pr.merged_sha;
@@ -617,11 +604,7 @@ export function createPrPoller(deps) {
           initial_queue.auto_merge !== true &&
           (!Array.isArray(initial_queue.merge_queue) ||
             initial_queue.merge_queue.length === 0) &&
-          Object.values(initial_queue.discard_operations || {}).length === 0 &&
-          !Object.values(initial_queue.reconcile || {}).some(
-            (record) =>
-              record && record.stage !== 'complete' && record.stage !== 'failed'
-          )
+          Object.values(initial_queue.discard_operations || {}).length === 0
         ) {
           return;
         }

@@ -145,85 +145,13 @@ function normalizeWorkerVerify(parsed) {
 }
 
 /**
- * Normalize the `[worker.deploy."<absolute workspace path>"]` sections
- * (worker-deploy-hook §1) into `{ <resolved path>: { cmd, timeout_ms, detached } }`.
- *
- * The command is the repo's POST-MERGE deployment, run as step 3 of the merge
- * cleanup — right after the post-merge verification, exactly where the pr-finish
- * contract puts `install`. It exists because a merge is not a delivery: the
- * shared service keeps serving the pre-merge build until something restarts it.
- *
- * Deliberately symmetric with `[worker.verify]` but with NO auto-detection:
- * guessing a deploy command would run an arbitrary side-effecting process
- * against a live service. A workspace with no section simply has no deployment,
- * and the cleanup's deploy step passes through:
- *
- *   [worker.deploy."/Users/me/GitHub/beads-ui"]
- *   cmd = ["bdui-shared", "restart"]   # required: non-empty argv (NO shell)
- *   timeout_ms = 600000                # optional, default 600000
- *   detached = true                    # optional, default false
- *
- * `detached = true` is for a SELF-RESTARTING deploy (this server's own
- * `bdui-shared restart`): the process is launched unattended after the cleanup
- * has been durably recorded, because waiting on a command that kills the waiter
- * would strand the remaining steps.
- *
- * The command MUST be re-run safe (idempotent): a cleanup that stopped part-way
- * is retried by re-clicking [머지], which always replays the sequence from step
- * 1 — so an already-successful deploy can run again.
- *
- * Sections with a non-absolute key or an invalid `cmd` are ignored.
- *
- * @param {any} parsed
- * @returns {Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>}
- */
-function normalizeWorkerDeploy(parsed) {
-  /** @type {Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>} */
-  const out = {};
-  const section = parsed?.worker?.deploy;
-  if (!section || typeof section !== 'object' || Array.isArray(section)) {
-    return out;
-  }
-  for (const [key, value] of Object.entries(section)) {
-    const workspace = normalizeWorkspacePath(key);
-    if (!workspace || !value || typeof value !== 'object') {
-      continue;
-    }
-    const raw_cmd = /** @type {any} */ (value).cmd;
-    const cmd =
-      Array.isArray(raw_cmd) &&
-      raw_cmd.length > 0 &&
-      raw_cmd.every((a) => typeof a === 'string' && a.length > 0)
-        ? raw_cmd.slice()
-        : null;
-    if (!cmd) {
-      log('worker.deploy %s ignored: cmd must be a non-empty argv array', key);
-      continue;
-    }
-    const raw_timeout = /** @type {any} */ (value).timeout_ms;
-    const timeout_ms =
-      typeof raw_timeout === 'number' &&
-      Number.isFinite(raw_timeout) &&
-      raw_timeout > 0
-        ? Math.floor(raw_timeout)
-        : DEFAULT_VERIFY_TIMEOUT_MS;
-    out[workspace] = {
-      cmd,
-      timeout_ms,
-      detached: /** @type {any} */ (value).detached === true
-    };
-  }
-  return out;
-}
-
-/**
  * Normalize the `[worker.notify]` section (UI-2yoq) into
  * `{ enabled, cmd }`.
  *
  * Worker attempt lifecycle pushes are a MACHINE-level concern, not a per-repo
  * one — a single operator watches every workspace's queue from one Discord
  * channel — so this is one global section instead of the workspace-keyed map
- * `[worker.verify]`/`[worker.deploy]` use:
+ * `[worker.verify]` uses:
  *
  *   [worker.notify]
  *   enabled = true
@@ -308,7 +236,6 @@ function normalizePollIntervalSeconds(value) {
  *   },
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
- *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
  *   worker_notify: { enabled: boolean, cmd: string[] },
  *   runner_overrides: Record<string, unknown>
  * }}
@@ -346,7 +273,6 @@ function readRuntimeConfig(config_path) {
         parsed?.poll_interval_seconds
       ),
       worker_verify: normalizeWorkerVerify(parsed),
-      worker_deploy: normalizeWorkerDeploy(parsed),
       worker_notify: normalizeWorkerNotify(parsed),
       runner_overrides: readRunnerOverrides(parsed)
     };
@@ -369,7 +295,6 @@ function readRuntimeConfig(config_path) {
       },
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
       worker_verify: {},
-      worker_deploy: {},
       worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() },
       runner_overrides: {}
     };
@@ -401,7 +326,6 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *   },
  *   poll_interval_seconds: number,
  *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
- *   worker_deploy: Record<string, { cmd: string[], timeout_ms: number, detached: boolean }>,
  *   worker_notify: { enabled: boolean, cmd: string[] },
  *   runner_overrides: Record<string, unknown>
  * }}
