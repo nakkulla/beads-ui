@@ -64,7 +64,8 @@ Worker 안의 `Deployment Job` Module Interface는 다음 의미만 가진다.
 
 ```text
 requestDeployment(repo, target_base, verified_sha)
-deploymentStatus(repo) -> pending | running | succeeded | failed
+deploymentStatus(repo) -> { state, target_base, target_sha, deployed_sha,
+                            generation, error_code, log_path }
 covers(deployed_sha, merge_sha) -> boolean
 retryDeployment(repo)
 ```
@@ -74,6 +75,18 @@ ancestry coverage를 이 Module을 통해서만 사용한다. 실제 provider se
 `repo-deployctl request|status|retry --json`이며 Worker는 provider state file을 직접 읽거나 쓰지
 않는다. release, deploy command, restart와 health Implementation은 external deployer 및 repo
 command 뒤에 있다.
+
+`requestDeployment`와 `retryDeployment`는
+`{accepted, noop, target_base, target_sha, generation, error_code}`를 반환한다. status는
+`idle|pending|running|succeeded|failed` 중 하나이며 idle에서는 binding field가 null이다. Module은
+모든 response의 repo/base/SHA/generation을 durable merged-floor record와 대조하고 wrong binding,
+malformed response와 status regression을 fail closed한다. `covers`와 UI/Closure는 이 검증을 통과한
+`succeeded`의 `deployed_sha`만 사용한다.
+
+Module은 repo의 current desired binding과 PR별 merged-floor record를 구분한다. provider status는
+current desired의 base/SHA/generation과 정확히 일치해야 한다. row에 기록된 generation보다 낮으면
+stale로 무시하고, 같으면서 SHA가 다르면 corruption이다. 더 높은 valid generation의 succeeded SHA는
+row target과 같을 필요 없이 ancestry로 그 row의 merge floor를 cover할 수 있다.
 
 기존 `workspace|managed` Adapter seam은 제거한다. active automatic path는 external deployment
 job 하나이고, repo마다 달라지는 구체적 동작은 exact candidate `[deploy].cmd` 한 개가 담당한다.
@@ -99,8 +112,15 @@ Worker observation
 
 request가 아직 실행되기 전에 `D+1`이 오면 provider의 새 generation이 D를 대체하고 한 번만 배포한다.
 D가 이미 running이면 D를 끝낸 뒤 D+1을 한 번 배포한다. Worker는 deployment status를 기다리는
-동안 execution slot을 점유하지 않는다. server restart 뒤에는 desired/status를 다시 읽기만 하며
-deploy effect를 재생하지 않는다.
+동안 execution slot을 점유하지 않는다. merge driver의 완료 경계는 deployment success가 아니라
+verified SHA와 accepted/no-op generation을 durable merged-floor record에 기록한 시점이다. 따라서 첫
+deployment가 pending/running이어도 다음 merge가 candidate를 만들고 newer desired를 요청할 수 있다.
+
+각 merged row는 `merge_sha`, `verified_target_sha`, `deployment_generation`, cleanup cursor를 보존한다.
+repo-level pending/running job 자체가 browser subscriber와 execution slot에 독립적인 poller demand다.
+server 또는 self restart 뒤에도 Worker는 이 demand로 external status를 계속 관측하되 deploy effect는
+재생하지 않는다. succeeded SHA가 여러 floor를 cover하면 각 row를 독립적으로 child sweep, branch
+cleanup, Parent close하며 한 row 실패가 다른 covered row sweep을 막지 않는다.
 
 ### Repo-owned self deployment command
 
@@ -178,6 +198,8 @@ caller는 한 inflight resolution을 공유하지만 다른 repo resolution은 �
 - pending/running: failure banner 없이 repo-level progress만 표시한다.
 - deploy failed: merge는 유지하고 Parent는 `pr_wait/resolved`, 상단 retry를 제공한다.
 - stale status: generation/SHA가 current desired와 다르면 terminal success로 사용하지 않는다.
+- wrong repo/base/SHA/generation response: provider corruption으로 fail closed하고 coverage·UI·Closure에
+  사용하지 않는다.
 - deployed SHA가 merge floor를 포함하지 않음: close하지 않고 `deployment_not_covering_merge`로 표시한다.
 - fetch timeout: bounded retry 뒤 target-base failure로 terminalize하며 다른 repo를 막지 않는다.
 
@@ -187,14 +209,22 @@ caller는 한 inflight resolution을 공유하지만 다른 repo resolution은 �
 2. cutover 전 nonterminal managed reconcile 0개와 shared runtime health를 확인한다.
 3. desired-state Module, UI, self deploy command, simplified `[deploy]`, fetch timeout과 verify
    isolation을 한 PR에 land한다.
-4. old Worker가 PR을 merge하고 exact candidate D의 post-merge verify를 마친 뒤, simplified
-   declaration을 해석하지 못해 남긴 cleanup failure를 merge/verify evidence와 함께 보존한다.
-5. controller가 installed provider의
-   `repo-deployctl request --repo <beads-ui> --base <base> --verified-sha D --json`을 한 번 실행한다.
-   이 bootstrap은 deploy effect가 아니라 이미 검증된 desired SHA 제출이며, current service를
-   내리지 않는다.
+4. old Worker가 PR을 merge하고 exact candidate D의 post-merge verify를 마친 뒤, adapter가 없는
+   declaration을 legacy `workspace`로 해석하고 self repo non-detached guard에서 남긴
+   `deploy_not_detached_for_self`/`cleanup_failed` terminal residue를 merge floor, D, verify evidence와
+   함께 fail-closed readback한다.
+5. bootstrap은 먼저
+   `repo-deployctl status --repo <beads-ui> --json`으로 current desired를 읽는다. D가 이미 desired면
+   request를 반복하지 않고 binding/generation을 사용한다. desired가 없을 때만
+   `repo-deployctl request --repo <beads-ui> --base <base> --verified-sha D --json`을 실행하며, 응답의
+   accepted/noop, target SHA/base와 generation을 즉시 status로 재확인한다. interruption 뒤에도 같은
+   status-first 절차를 반복하므로 generation을 불필요하게 올리거나 D를 되돌리지 않는다. 이
+   bootstrap은 deploy effect가 아니라 이미 검증된 desired SHA 제출이며 current service를 내리지
+   않는다.
 6. external deployer가 candidate command를 실행하고 새 server `/healthz` exact SHA를 확인한다.
-7. 새 Worker가 provider status를 관측해 current PR과 `UI-lb58`을 close하는지 확인한다.
+7. 새 Worker가 provider success가 authoritative merge floor를 cover함을 관측하면 기존 deploy-stage의
+   `deploy_not_detached_for_self`/`cleanup_failed`만 지우고 child/branch/parent cleanup을 재개한다.
+   deploy 외 cleanup failure는 보존한다. current PR과 `UI-lb58`의 close를 확인한다.
 8. managed active writer/reader와 declaration이 0개임을 확인해 `dotfiles-j8e6`을 unblock한다.
 
 이 최초 bootstrap은 current PR과 target declaration만으로 old Worker가 운반할 수 없는 required
@@ -204,30 +234,42 @@ desired-state path로 전환된 후의 후속 Bead에는 이 예외를 전파하
 
 ## Test scope
 
-RED-GREEN seam은 `Deployment Job` Interface, merge-floor coverage, fetch timeout과 verify isolation이다.
+RED-GREEN seam과 실행 target은 다음으로 고정한다.
 
-- provider control CLI request/status/retry parsing, pending derivation, stale/malformed response rejection
-- latest desired coalescing, running deploy 뒤 one follow-up deployment
-- one deployed SHA가 여러 merge floor/Parent close를 cover
-- unrelated/newer non-ancestor status가 close하지 않음
-- Worker restart는 desired/status observation만 resume하고 deploy spawn 없음
-- repo-level retry는 generation을 증가시키며 PR별 retry action 없음
-- exact self deploy install/pointer/restart/health success와 idempotent same-SHA replay
-- global runtime marker file writer/reader가 active code에서 없음
-- verify command env가 isolated XDG/runtime/config root를 사용하고 shared path 무변경
-- hung git fetch timeout, child cleanup, bounded retry, `base_inflight` clear
-- managed modules/protocol/stages/UI strings의 active reference scan
+- `server/worker/deployment-job.test.js`: request/status/retry 구조체 parsing, pending derivation,
+  wrong-repo/base/generation/SHA와 malformed response rejection, retry binding
+- `server/worker/pr-actions.test.js`: one deployed SHA의 여러 merge floor/Parent close, non-ancestor
+  no-close, covered row independent sweep, legacy `deploy_not_detached_for_self` fixture handoff
+- `server/worker/merge-queue.test.js`: 첫 job pending/running 중 두 번째 merge request와 durable request가
+  merge-driver slot을 해제하는 경계
+- `server/worker/pr-poller.test.js`: subscriber 없는 restart 뒤 repo-level demand가 success를 관측해
+  cleanup/close하며 deploy spawn은 하지 않는 lifecycle
+- `app/views/worker/index.test.js`, `app/views/worker/running-grid.test.js`: repo-level status/retry,
+  실패 reason/log, PR별 deploy action 부재
+- `scripts/deploy-self.test.js`: exact install/pointer/restart/health success와 idempotent same-SHA replay
+- `server/runtime-startup.test.js`, `server/runtime-identity.test.js`: global runtime marker writer/reader가
+  active code에서 없음
+- `server/worker/verify-cmd.test.js`, `server/cli/commands.integration.test.js`: isolated
+  XDG/runtime/config root와 shared path 무변경
+- `server/worker/target-base.test.js`, `server/worker/attach.test.js`: hung git fetch timeout,
+  process-group cleanup, bounded retry와 `base_inflight` clear
+- removed managed module/protocol/stage/UI identifier의 active-source scan regression
 - focused Worker/UI tests, `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`, `npm run build`, `npm run all`
+
+focused RED/GREEN 명령은
+`npm test -- server/worker/deployment-job.test.js server/worker/pr-actions.test.js server/worker/merge-queue.test.js server/worker/pr-poller.test.js server/worker/target-base.test.js server/worker/attach.test.js server/worker/verify-cmd.test.js server/cli/commands.integration.test.js scripts/deploy-self.test.js app/views/worker/index.test.js app/views/worker/running-grid.test.js`다.
 
 ## Acceptance criteria
 
 1. 정상 전환 뒤 `[머지]` 한 번으로 deployment request가 자동 제출되지만 effect는 external deployer만 수행한다.
 2. repo 상단 deployment 상태와 실패 시 retry 하나만 있으며 PR별 deploy button은 없다.
 3. latest deployed SHA가 포함하는 모든 merge floor가 한 번에 cleanup/close된다.
-4. Worker restart와 beads-ui self restart가 deploy execution을 중단하거나 재생하지 않는다.
-5. managed Reconciler/helper/journal/receipt/failure/runtime-marker active surface가 제거된다.
-6. `UI-yjc2` marker 오염 경로가 사라지고 verify state isolation test가 통과한다.
-7. `UI-9f54` hung fetch가 bounded timeout 뒤 종료되어 shared inflight를 해제한다.
-8. live process path, port, HTTP 200, `/healthz.runtime.source_sha`, external status와 Bead Closure가 exact candidate에 정합한다.
-9. 최초 breaking cutover는 old Worker의 verified candidate D를 installed `repo-deployctl`로 한 번만
+4. deployment pending 중 후속 merge가 진행되고, subscriber 없는 restart 뒤에도 poller가 terminal
+   status를 관측한다.
+5. Worker restart와 beads-ui self restart가 deploy execution을 중단하거나 재생하지 않는다.
+6. managed Reconciler/helper/journal/receipt/failure/runtime-marker active surface가 제거된다.
+7. `UI-yjc2` marker 오염 경로가 사라지고 verify state isolation test가 통과한다.
+8. `UI-9f54` hung fetch가 bounded timeout 뒤 종료되어 shared inflight를 해제한다.
+9. live process path, port, HTTP 200, `/healthz.runtime.source_sha`, external status와 Bead Closure가 exact candidate에 정합한다.
+10. 최초 breaking cutover는 old Worker의 verified candidate D를 status-first로 중복 없이
    bootstrap하며 runtime outage나 managed declaration 잔재를 남기지 않는다.
