@@ -1,10 +1,12 @@
 import { runBdJson as defaultRunBdJson } from './bd.js';
 import { normalizeIssueList } from './list-adapters.js';
+import { debug } from './logging.js';
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_RETRY_MAX_MS = 30000;
+const log = debug('workspace-snapshot');
 
 /**
  * @typedef {{ id: string, updated_at: number, closed_at: number | null } & Record<string, unknown>} NormalizedIssue
@@ -22,10 +24,28 @@ const DEFAULT_RETRY_MAX_MS = 30000;
  */
 
 /**
+ * @typedef {Object} WorkspaceSnapshotTelemetry
+ * @property {string} event
+ * @property {string} workspace
+ * @property {string} cause
+ * @property {number} generation
+ * @property {boolean} join
+ * @property {boolean} trailing
+ * @property {number} retry_attempt
+ * @property {number} backoff_ms
+ * @property {number} command_duration_ms
+ * @property {number | null} command_exit
+ * @property {number} projection_count
+ * @property {number | null} command_count
+ * @property {'embedded-dependencies'|'legacy-dependency-fallback'|null} command_mode
+ * @property {'all'|'ready'|'dependencies'|null} command_stage
+ */
+
+/**
  * Build a per-workspace raw snapshot coordinator. This module owns generation
  * atomicity only; projection and WebSocket publication remain consumers.
  *
- * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout }} [options]
+ * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
  */
 export function createWorkspaceSnapshotCoordinator(options = {}) {
   const cwd = options.cwd;
@@ -33,6 +53,8 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
   const now = options.now || (() => Date.now());
   const set_timeout = options.setTimeout || globalThis.setTimeout;
   const clear_timeout = options.clearTimeout || globalThis.clearTimeout;
+  const telemetry = options.telemetry || logTelemetry;
+  const workspace = cwd || process.cwd();
   const retry_base_ms = positiveNumber(
     options.retry_base_ms,
     DEFAULT_RETRY_BASE_MS
@@ -42,12 +64,13 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     DEFAULT_RETRY_MAX_MS
   );
 
-  /** @type {{ generation: number, snapshot: WorkspaceSnapshot | null, in_flight: Promise<SnapshotResult> | null, pending_mutation: boolean, request_epoch: number, mutation_epoch: number, last_success_at: number | null, last_failure_at: number | null, retry_attempt: number, next_retry_at: number, retry_timer: ReturnType<typeof setTimeout> | null }} */
+  /** @type {{ generation: number, snapshot: WorkspaceSnapshot | null, in_flight: Promise<SnapshotResult> | null, pending_mutation: boolean, projection_count: number, request_epoch: number, mutation_epoch: number, last_success_at: number | null, last_failure_at: number | null, retry_attempt: number, next_retry_at: number, retry_timer: ReturnType<typeof setTimeout> | null }} */
   const state = {
     generation: 0,
     snapshot: null,
     in_flight: null,
     pending_mutation: false,
+    projection_count: 0,
     request_epoch: 0,
     mutation_epoch: 0,
     last_success_at: null,
@@ -65,10 +88,22 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
    */
   function request(cause = 'background-subscribe') {
     if (state.in_flight !== null) {
+      state.projection_count += 1;
+      emitTelemetry('generation-join', {
+        cause,
+        generation: state.generation + 1,
+        join: true,
+        trailing: state.pending_mutation
+      });
       return state.in_flight;
     }
 
     if (now() < state.next_retry_at) {
+      emitTelemetry('generation-backoff', {
+        cause,
+        generation: state.generation,
+        trailing: state.pending_mutation
+      });
       return Promise.resolve(backoffResult(state.snapshot));
     }
 
@@ -84,6 +119,11 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
    */
   function signalMutation() {
     markMutation();
+    emitTelemetry('mutation-signal', {
+      cause: 'mutation',
+      generation: state.generation,
+      trailing: true
+    });
   }
 
   /**
@@ -134,7 +174,24 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     const request_epoch = state.request_epoch + 1;
     state.request_epoch = request_epoch;
     const mutation_epoch = state.mutation_epoch;
-    const work = runGeneration(cause, request_epoch, mutation_epoch);
+    const generation = state.generation + 1;
+    const trailing = cause === 'mutation-trailing';
+    const retry_attempt = state.retry_attempt;
+    state.projection_count = 1;
+    emitTelemetry('generation-start', {
+      cause,
+      generation,
+      trailing,
+      retry_attempt
+    });
+    const work = runGeneration(
+      cause,
+      request_epoch,
+      mutation_epoch,
+      generation,
+      trailing,
+      retry_attempt
+    );
     state.in_flight = work;
 
     void work.then((result) => {
@@ -159,28 +216,68 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
    * @param {string} cause
    * @param {number} request_epoch
    * @param {number} mutation_epoch
+   * @param {number} generation
+   * @param {boolean} trailing
+   * @param {number} retry_attempt
    * @returns {Promise<SnapshotResult>}
    */
-  async function runGeneration(cause, request_epoch, mutation_epoch) {
+  async function runGeneration(
+    cause,
+    request_epoch,
+    mutation_epoch,
+    generation,
+    trailing,
+    retry_attempt
+  ) {
+    const generation_started_at = now();
     try {
       const [all_result, ready_result] = await Promise.all([
-        runBdJson(ALL_ARGS, { cwd }),
-        runBdJson(READY_ARGS, { cwd })
+        runCommand('all', ALL_ARGS, cause, generation, trailing, retry_attempt),
+        runCommand(
+          'ready',
+          READY_ARGS,
+          cause,
+          generation,
+          trailing,
+          retry_attempt
+        )
       ]);
       const all_error = commandError('all', all_result);
       if (all_error !== null) {
-        return recordFailure(all_error);
+        return recordFailure(all_error, {
+          cause,
+          generation,
+          trailing,
+          retry_attempt,
+          command_duration_ms: elapsedSince(generation_started_at),
+          command_exit: commandExit(all_result)
+        });
       }
       const ready_error = commandError('ready', ready_result);
       if (ready_error !== null) {
-        return recordFailure(ready_error);
+        return recordFailure(ready_error, {
+          cause,
+          generation,
+          trailing,
+          retry_attempt,
+          command_duration_ms: elapsedSince(generation_started_at),
+          command_exit: commandExit(ready_result)
+        });
       }
 
       const raw_all = all_result.stdoutJson;
       const raw_ready = ready_result.stdoutJson;
       if (!Array.isArray(raw_all)) {
         return recordFailure(
-          snapshotError('validation', 'bd list returned a non-array payload')
+          snapshotError('validation', 'bd list returned a non-array payload'),
+          {
+            cause,
+            generation,
+            trailing,
+            retry_attempt,
+            command_duration_ms: elapsedSince(generation_started_at),
+            command_exit: 0
+          }
         );
       }
       const ready_explain = normalizeReadyExplain(raw_ready);
@@ -189,7 +286,15 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
           snapshotError(
             'validation',
             'bd ready --explain returned an invalid payload'
-          )
+          ),
+          {
+            cause,
+            generation,
+            trailing,
+            retry_attempt,
+            command_duration_ms: elapsedSince(generation_started_at),
+            command_exit: 0
+          }
         );
       }
 
@@ -198,30 +303,56 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       const id_index = new Map(all.map((issue) => [issue.id, issue]));
       const validation_error = validateExplainSubjects(ready_explain, id_index);
       if (validation_error !== null) {
-        return recordFailure(validation_error);
+        return recordFailure(validation_error, {
+          cause,
+          generation,
+          trailing,
+          retry_attempt,
+          command_duration_ms: elapsedSince(generation_started_at),
+          command_exit: 0
+        });
       }
 
       const embedded_dependencies = raw_all.some(hasDependenciesProperty);
       /** @type {Record<string, unknown>[]} */
       let dependency_edges = [];
       if (!embedded_dependencies && all.length > 0) {
-        const dependency_result = await runBdJson(
+        const dependency_result = await runCommand(
+          'dependencies',
           ['dep', 'list', ...all.map((issue) => issue.id), '--json'],
-          { cwd }
+          cause,
+          generation,
+          trailing,
+          retry_attempt
         );
         const dependency_error = commandError(
           'dependencies',
           dependency_result
         );
         if (dependency_error !== null) {
-          return recordFailure(dependency_error);
+          return recordFailure(dependency_error, {
+            cause,
+            generation,
+            trailing,
+            retry_attempt,
+            command_duration_ms: elapsedSince(generation_started_at),
+            command_exit: commandExit(dependency_result)
+          });
         }
         if (!Array.isArray(dependency_result.stdoutJson)) {
           return recordFailure(
             snapshotError(
               'validation',
               'bd dep list returned a non-array payload'
-            )
+            ),
+            {
+              cause,
+              generation,
+              trailing,
+              retry_attempt,
+              command_duration_ms: elapsedSince(generation_started_at),
+              command_exit: 0
+            }
           );
         }
         dependency_edges = dependency_result.stdoutJson.filter(isRecord);
@@ -253,6 +384,17 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       state.next_retry_at = 0;
       cancelRetryTimer();
 
+      emitTelemetry('generation-complete', {
+        cause,
+        generation: snapshot.generation,
+        trailing,
+        retry_attempt,
+        command_duration_ms: elapsedSince(generation_started_at),
+        command_exit: 0,
+        command_count: snapshot.command_count,
+        command_mode: snapshot.command_mode
+      });
+
       return {
         ok: true,
         snapshot,
@@ -265,16 +407,25 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         snapshotError(
           'command',
           error instanceof Error ? error.message : 'bd invocation failed'
-        )
+        ),
+        {
+          cause,
+          generation,
+          trailing,
+          retry_attempt,
+          command_duration_ms: elapsedSince(generation_started_at),
+          command_exit: null
+        }
       );
     }
   }
 
   /**
    * @param {SnapshotError} error
+   * @param {{ cause: string, generation: number, trailing: boolean, retry_attempt: number, command_duration_ms: number, command_exit: number | null }} detail
    * @returns {SnapshotResult}
    */
-  function recordFailure(error) {
+  function recordFailure(error, detail) {
     state.last_failure_at = now();
     state.retry_attempt += 1;
     const delay = Math.min(
@@ -282,6 +433,11 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       retry_max_ms
     );
     state.next_retry_at = now() + delay;
+    emitTelemetry('generation-failure', {
+      ...detail,
+      retry_attempt: state.retry_attempt,
+      backoff_ms: delay
+    });
     if (state.snapshot === null) {
       return { ok: false, error, stale: false, fresh: false };
     }
@@ -303,6 +459,90 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     if (state.in_flight === null) {
       schedulePendingMutationRetry();
     }
+  }
+
+  /**
+   * Run one named `bd` command and emit only its safe timing and exit data.
+   *
+   * @param {'all'|'ready'|'dependencies'} command_stage
+   * @param {string[]} args
+   * @param {string} cause
+   * @param {number} generation
+   * @param {boolean} trailing
+   * @param {number} retry_attempt
+   */
+  async function runCommand(
+    command_stage,
+    args,
+    cause,
+    generation,
+    trailing,
+    retry_attempt
+  ) {
+    const command_started_at = now();
+    try {
+      const result = await runBdJson(args, { cwd });
+      emitTelemetry('command-complete', {
+        cause,
+        generation,
+        trailing,
+        retry_attempt,
+        command_stage,
+        command_duration_ms: elapsedSince(command_started_at),
+        command_exit: commandExit(result)
+      });
+      return result;
+    } catch (error) {
+      emitTelemetry('command-complete', {
+        cause,
+        generation,
+        trailing,
+        retry_attempt,
+        command_stage,
+        command_duration_ms: elapsedSince(command_started_at),
+        command_exit: null
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Emit an allowlisted telemetry record. Snapshot rows, command arguments,
+   * command output, and error messages deliberately never enter this record.
+   *
+   * @param {string} event
+   * @param {Partial<WorkspaceSnapshotTelemetry>} [detail]
+   */
+  function emitTelemetry(event, detail = {}) {
+    /** @type {WorkspaceSnapshotTelemetry} */
+    const record = {
+      event,
+      workspace,
+      cause: detail.cause || 'background-subscribe',
+      generation: detail.generation ?? state.generation,
+      join: detail.join || false,
+      trailing: detail.trailing || false,
+      retry_attempt: detail.retry_attempt ?? state.retry_attempt,
+      backoff_ms: detail.backoff_ms ?? Math.max(0, state.next_retry_at - now()),
+      command_duration_ms: detail.command_duration_ms ?? 0,
+      command_exit: detail.command_exit ?? null,
+      projection_count: detail.projection_count ?? state.projection_count,
+      command_count: detail.command_count ?? null,
+      command_mode: detail.command_mode ?? null,
+      command_stage: detail.command_stage ?? null
+    };
+    try {
+      telemetry(record);
+    } catch {
+      // Debug telemetry must never change the snapshot delivery path.
+    }
+  }
+
+  /**
+   * @param {number} started_at
+   */
+  function elapsedSince(started_at) {
+    return Math.max(0, now() - started_at);
   }
 
   /**
@@ -361,6 +601,13 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
   }
 
   return { request, signalMutation, getSnapshot, getState, waitForIdle };
+}
+
+/**
+ * @param {WorkspaceSnapshotTelemetry} event
+ */
+function logTelemetry(event) {
+  log('workspace snapshot telemetry %o', event);
 }
 
 /**
@@ -435,6 +682,16 @@ function commandError(stage, result) {
     );
   }
   return null;
+}
+
+/**
+ * @param {unknown} result
+ * @returns {number | null}
+ */
+function commandExit(result) {
+  return isRecord(result) && typeof result.code === 'number'
+    ? result.code
+    : null;
 }
 
 /**

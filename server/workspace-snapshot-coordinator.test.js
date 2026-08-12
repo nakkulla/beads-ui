@@ -85,6 +85,61 @@ describe('workspace snapshot coordinator', () => {
     ).toEqual([ALL_ARGS, READY_ARGS]);
   });
 
+  test('emits safe telemetry for a joined two-command generation', async () => {
+    const telemetry = vi.fn();
+    const secret_body = 'issue body must never reach telemetry';
+    const secret_metadata = 'Bearer credential must never reach telemetry';
+    const runBdJson = createRunner(
+      successfulGeneration([
+        {
+          id: 'A',
+          body: secret_body,
+          dependencies: [],
+          metadata: { authorization: secret_metadata }
+        }
+      ])
+    );
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      cwd: '/workspace/telemetry',
+      runBdJson,
+      telemetry
+    });
+
+    const first = coordinator.request('cold-subscribe');
+    const second = coordinator.request('poll');
+
+    await first;
+
+    expect(second).toBe(first);
+    expect(telemetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'generation-complete',
+        workspace: '/workspace/telemetry',
+        cause: 'cold-subscribe',
+        generation: 1,
+        join: false,
+        trailing: false,
+        retry_attempt: 0,
+        backoff_ms: 0,
+        command_duration_ms: expect.any(Number),
+        command_exit: 0,
+        projection_count: 2,
+        command_count: 2,
+        command_mode: 'embedded-dependencies'
+      })
+    );
+    expect(telemetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'generation-join',
+        cause: 'poll',
+        join: true,
+        projection_count: 2
+      })
+    );
+    expect(JSON.stringify(telemetry.mock.calls)).not.toContain(secret_body);
+    expect(JSON.stringify(telemetry.mock.calls)).not.toContain(secret_metadata);
+  });
+
   test('joins concurrent watcher consumers without creating mutation evidence', async () => {
     /** @type {Array<(value: unknown) => void>} */
     const resolvers = [];
@@ -121,11 +176,15 @@ describe('workspace snapshot coordinator', () => {
   });
 
   test('runs one trailing generation for a mutation burst', async () => {
+    const telemetry = vi.fn();
     const runBdJson = createRunner([
       ...successfulGeneration([{ id: 'A', dependencies: [] }]),
       ...successfulGeneration([{ id: 'A', dependencies: [] }])
     ]);
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson,
+      telemetry
+    });
 
     const first = coordinator.request('cold-subscribe');
     coordinator.signalMutation();
@@ -135,6 +194,16 @@ describe('workspace snapshot coordinator', () => {
 
     expect(runBdJson).toHaveBeenCalledTimes(4);
     expect(coordinator.getSnapshot()?.generation).toBe(2);
+    expect(telemetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'generation-complete',
+        cause: 'mutation-trailing',
+        generation: 2,
+        trailing: true,
+        command_count: 2,
+        command_mode: 'embedded-dependencies'
+      })
+    );
   });
 
   test('keeps workspace generations independent', async () => {
@@ -194,6 +263,7 @@ describe('workspace snapshot coordinator', () => {
 
   test('keeps a warm snapshot during retry backoff and retries one mutation at the deadline', async () => {
     let now = 0;
+    const telemetry = vi.fn();
     const runBdJson = createRunner([
       ...successfulGeneration([{ id: 'A', dependencies: [] }]),
       { code: 2, stderr: 'list failed' },
@@ -203,7 +273,8 @@ describe('workspace snapshot coordinator', () => {
     const coordinator = createWorkspaceSnapshotCoordinator({
       runBdJson,
       now: () => now,
-      retry_base_ms: 100
+      retry_base_ms: 100,
+      telemetry
     });
 
     await coordinator.request('cold-subscribe');
@@ -223,6 +294,22 @@ describe('workspace snapshot coordinator', () => {
       'B'
     ]);
     expect(coordinator.getState().retry_attempt).toBe(0);
+    expect(telemetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'generation-failure',
+        retry_attempt: 1,
+        backoff_ms: 100,
+        command_exit: 2
+      })
+    );
+    expect(telemetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: 'generation-backoff',
+        cause: 'poll',
+        retry_attempt: 1,
+        backoff_ms: 100
+      })
+    );
   });
 
   test('defers an in-flight mutation after a failed generation until retry deadline', async () => {
