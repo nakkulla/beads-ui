@@ -36,8 +36,8 @@ state, schema migration, canonical contract, deploy surface 충돌을 놓치기 
 2. serial 필요성, 순서만 필요한 관계, 강한 근거 부재, 불확실을 근거와 함께 구분한다.
 3. 분석 비용은 명시적 버튼 클릭 때만 발생시키고 동일 snapshot은 cache한다.
 4. analyzer가 Bead, label, queue, git worktree, repository file을 변경할 수 없게 한다.
-5. 사용자가 승인한 high-confidence serial 권장만 현재 generic `label-add` 경로로
-   순차 적용한다.
+5. 사용자가 승인한 high-confidence serial 권장만 snapshot-bound server apply 경계에서
+   재검증한 뒤 현재 generic label writer/readback core로 순차 적용한다.
 
 ## 비목표
 
@@ -69,8 +69,9 @@ state, schema migration, canonical contract, deploy surface 충돌을 놓치기 
   도달하지 않으면 spec만 분석하고 해당 이슈의 누락 근거를 `uncertain`에 반영한다.
 - `server/worker/runner-catalog.js`의 active runner/model/effort vocabulary는 설정 UI에
   재사용한다. 실제 implementation runner의 write-capable argv는 재사용하지 않는다.
-- label 적용은 `server/ws/mutation-handlers.js`의 `label-add`와 `bd show --json`
-  readback을 그대로 사용한다.
+- label 적용의 실제 writer와 `bd show --json` readback은
+  `server/ws/mutation-handlers.js`의 generic label mutation core를 재사용한다. 분석 적용
+  요청은 이 core 앞에 snapshot/lane precondition을 두는 별도 server handler가 소유한다.
 - `UI-nrut`가 구현한 live `worker-serial` projection과 scheduler tick을 그대로 사용한다.
 
 ## Architecture
@@ -150,7 +151,9 @@ $XDG_STATE_HOME/bdui/parallel-analysis-settings.json
 }
 ```
 
-- `runner_catalog`의 exact model과 그 model의 effort만 저장할 수 있다.
+- `runner_catalog`와 analyzer capability probe가 모두 허용하는 exact model과 그 model의
+  effort만 저장할 수 있다. implementation runner로 사용 가능하다는 사실만으로 analyzer
+  호환으로 간주하지 않는다.
 - initial state는 unconfigured다. 설정 전 버튼은 `분석 모델 설정 필요`를 표시하고
   process를 띄우지 않는다.
 - model이 catalog에서 사라지거나 effort가 비호환이면 fail-visible하게 설정 오류를
@@ -161,21 +164,30 @@ $XDG_STATE_HOME/bdui/parallel-analysis-settings.json
 ### 4. Read-only analyzer adapter
 
 새 `parallel-analysis-runner.js`는 implementation `createRunner()`와 별도다. 선택한
-provider process 하나만 실행한다.
+provider transport 하나만 실행하며, collector가 만든 manifest와 artifact content
+전체를 stdin/request body로 전달한다. analyzer는 파일을 찾아 읽지 않는다.
 
-- Codex: `CODEX_SILENT=1`, hooks disabled, ephemeral transcript, OS read-only sandbox,
-  bounded cwd를 사용한다. 기존 `--dangerously-bypass-approvals-and-sandbox` 경로는
-  금지한다.
-- Claude: built-in tools를 `Read,Glob,Grep`로 축소하고, strict MCP, repository-local
-  settings/hooks 차단, bundle cwd를 사용한다. Bash/Edit/Write/Web/MCP는 허용하지 않는다.
-- 두 adapter 모두 network를 사용할 수 없어야 한다.
+- 공통 capability는 `tool_free_structured_output`이다. model request에 filesystem,
+  shell, web/network, MCP를 포함한 어떤 tool도 등록하지 않으며 result schema만 건넨다.
+- Claude CLI adapter를 사용할 때는 `--print`, `--tools ""`, `--safe-mode`,
+  `--strict-mcp-config`, `--setting-sources user`, `--no-session-persistence`, JSON schema를
+  고정한다. repository-local settings/hooks와 session artifact를 만들지 않는다.
+- Codex는 tool declaration이 비어 있는 analyzer 전용 structured-completion transport만
+  허용한다. 일반 `codex exec --sandbox read-only`는 write만 막고 filesystem read를
+  bundle로 제한하지 못하므로 이 capability를 충족하지 않으며 사용하지 않는다.
+- provider transport가 tool-free 요청을 지원하지 않거나 capability probe에 실패하면
+  해당 runner/model은 analyzer catalog에서 제외하고 fail-visible하게 표시한다. 다른
+  provider로 자동 fallback하지 않는다.
+- provider API 통신은 transport process만 수행할 수 있다. model에 노출된 network tool은
+  없으며 입력 payload에도 credential/config path나 값은 포함하지 않는다.
 - process group 단위 cancel과 300초 timeout을 지원한다.
 - analyzer의 stdout은 strict JSON result channel로만 소비한다. stderr와 raw model
   transcript는 cache에 저장하지 않고 capped diagnostic code만 남긴다.
 
 spec/plan과 source content는 untrusted data다. system prompt는 문서 안의 명령을 따르지
-말고 분석 근거로만 취급하도록 고정한다. model 자기보고로 read-only나 성공을 판정하지
-않고 argv, sandbox, filesystem diff, exit status, schema validation으로 검증한다.
+말고 분석 근거로만 취급하도록 고정한다. model 자기보고로 격리나 성공을 판정하지 않고
+capability probe, exact argv/request shape, process 종료 뒤 repository/config/session artifact
+diff, exit status, schema validation으로 검증한다.
 
 ### 5. Result schema and evidence validation
 
@@ -233,7 +245,9 @@ serial 근거를 찾지 못했다는 뜻이다.
 server validator는 다음을 모두 확인한다.
 
 - top-level/result enum과 field shape
-- 모든 Bead ID가 pinned target set에 포함됨
+- `issues`가 pinned target ID 각각을 정확히 한 번 포함하고, 길이와 집합이 target set과
+  완전히 일치함
+- duplicate `bead_id`와 target 누락·추가가 없음
 - `conflicts_with`와 ordering endpoint가 target set에 포함됨
 - evidence path가 bundle manifest에 포함됨
 - Markdown heading 또는 source line locator가 pinned content에 존재함
@@ -285,6 +299,7 @@ analysis state는 queue snapshot에 끼워 넣지 않고 별도 subscription/sto
 - `worker-parallel-analysis-start { force?: boolean }`
 - `worker-parallel-analysis-cancel { job_id }`
 - `worker-parallel-analysis-settings-update { expected_revision, runner, model, effort }`
+- `worker-parallel-analysis-apply { snapshot_digest, bead_ids }`
 
 snapshot은 `idle|running|succeeded|failed|canceled` phase, cache freshness, progress summary,
 settings compatibility, result 또는 terminal reason을 전달한다. raw prompts, artifact
@@ -314,10 +329,24 @@ dialog는 다음을 제공한다.
 - 이미 closed/ineligible가 된 Bead
 - live label truth가 unknown
 
-`권장 라벨 적용`은 선택한 ID를 안정적인 Bead ID 순서로 정렬해 기존 `label-add`를
-한 번에 하나씩 호출한다. exact `worker-serial`이 이미 있으면 no-op이다. 각 성공은
-existing `bd show --json` readback과 label cache refresh를 거친다. 부분 실패는 나머지
-항목을 계속 시도하고 실패 ID만 선택 상태에 남긴다.
+`권장 라벨 적용`은 선택한 ID를 안정적인 Bead ID 순서로 정렬해
+`worker-parallel-analysis-apply` 한 번으로 server에 보낸다. server는 요청 digest가
+마지막 성공 result와 일치하고 요청 ID가 그 result의 `serial_recommended + high` 정확한
+부분집합인지 먼저 확인한다. 이어 각 mutation 직전에 현재 Bead를 authoritative하게
+다시 읽고 다음 precondition을 모두 검사한다.
+
+- 현재 artifact identity와 analysis target membership이 snapshot과 동일함
+- closed, `worker-ineligible`, phase child가 아니며 spec authority conflict가 없음
+- running/paused/pr_wait/done lineage가 아니고 current lane이 적용 가능함
+- exact `worker-serial` label truth를 읽을 수 있음
+
+통과한 항목만 기존 generic label writer/readback core를 한 번에 하나씩 호출한다. exact
+`worker-serial`이 이미 있으면 no-op 성공이다. precondition 실패는 `stale` 또는
+`active_lineage`로 기록하고 writer를 호출하지 않는다. 각 성공은 existing
+`bd show --json` readback과 label cache refresh를 거친다. 부분 실패는 나머지 항목을
+계속 시도하고 실패 ID만 선택 상태에 남긴다. 이 server-bound 검사는 dialog를 연 뒤
+queue나 attempt가 변하는 TOCTOU race에서도 active lineage의 attempt snapshot을
+retroactive하게 바꾸지 않는 authority다.
 
 analyzer는 기존 human `worker-serial`을 제거하지 않는다. `ordering_only`는 UI 제안만
 표시하고 queue reorder나 `blocks` dependency를 자동 작성하지 않는다. ordering graph에
@@ -341,7 +370,11 @@ cycle이 있으면 serial findings는 유지하되 cycle에 포함된 ordering s
 - analyzer는 exact pinned blobs로 만든 sanitized bundle만 입력으로 받는다.
 - live repository, untracked file, config directory, backup, credential-bearing path는
   bundle에 포함하지 않는다.
-- model에게 Beads writer, git writer, shell writer, network, MCP를 제공하지 않는다.
+- model request에는 Beads/git/filesystem/shell/network/MCP tool을 하나도 제공하지 않는다.
+- generic read-only coding session은 filesystem read 경계를 만족하지 않으므로 analyzer로
+  재사용하지 않는다. tool-free capability가 없는 provider는 실행 전에 거부한다.
+- Claude adapter는 session persistence를 끄며, 종료 뒤 config/session 경로에 새 artifact가
+  없는지 fixture에서 실측한다.
 - artifact text의 prompt injection은 data로만 취급한다.
 - model stdout은 untrusted input이며 strict schema/evidence validation 전에는 UI result나
   label action source가 아니다.
@@ -354,10 +387,11 @@ cycle이 있으면 serial findings는 유지하되 cycle에 포함된 ordering s
 | A — target snapshot | runnable candidates와 active lane root의 union, phase child/ineligible/conflicting spec 제외가 한 경계에 없음 | canonical qualification 재사용, stable target/digest, direct dependency snapshot | admission 완화, quick_fix 포함 |
 | B — artifact bundle | dirty worktree·absolute/secret path·directory expansion이 분석 입력으로 섞일 수 있음 | pinned blob reader, safe path/size/count caps, omission manifest, temp cleanup | repository 전체 archive, untracked file |
 | C — settings/cache | analyzer 설정과 result freshness의 durable owner가 없음 | CAS settings, per-workspace atomic cache, exact identity hit/invalidation, incompatible no-fallback | Bead metadata hint writer |
-| D — read-only runners | 기존 runner는 write-capable bypass argv를 사용함 | provider별 analyzer argv, no writer/network/MCP/hooks, timeout/cancel process-group 검증 | implementation runner 의미 변경 |
-| E — schema/evidence | malformed JSON·unknown ID·fabricated evidence가 표시될 수 있음 | strict versioned validator, pinned locator validation, strong verdict invariant | free-form prose parser |
+| D — read-only runners | 기존 runner는 write-capable이거나 read-only여도 live repo/config를 읽을 수 있음 | stdin-only bundle, tool-free capability probe, Claude no-persistence, repository/config escape·session artifact 차단 실측, timeout/cancel process-group 검증 | implementation runner 의미 변경 |
+| E — schema/evidence | malformed JSON·target 누락·duplicate/unknown ID·fabricated evidence가 표시될 수 있음 | target ID exact-set/once-only invariant, strict versioned validator, pinned locator validation, strong verdict invariant | free-form prose parser |
 | F — job lifecycle | duplicate click/restart/failure가 중복 process나 cache 유실을 만들 수 있음 | workspace single-flight join, last-good preservation, orphan idle settlement | persistent/resumed LLM session |
-| G — UI/apply | 분석 phase/result/settings와 live applicability UI가 없음 | separate store/dialog, grouped result, stale/active disable, sequential generic label add/readback, partial failure retention | auto remove/reorder/dependency write |
+| G — UI/apply | client overlay 확인 뒤 generic writer를 부르면 active-lineage 전환 race가 생김 | separate store/dialog, snapshot-bound apply request, per-item authoritative identity/lane 재검증, sequential generic writer/readback, partial failure retention | auto remove/reorder/dependency write |
+| H — disposable workspace E2E | settings/cache/reanalysis/cancel/dialog/apply가 post-merge 수동 확인에만 남음 | registered disposable workspace와 fake tool-free runner로 settings 저장, cache hit, forced reanalysis, cancel, dialog grouping, apply precondition/readback을 PR 안에서 자동 검증 | shared service나 실제 provider 과금 호출 |
 
 이미 green인 assertion이나 snapshot-only golden은 RED를 대신하지 않는다. 각 seam은
 focused unit/integration test를 먼저 추가하고 구현 후 green으로 닫는다.
@@ -389,21 +423,33 @@ npm run build
 git diff --check
 ```
 
-runner isolation은 argv assertion만으로 끝내지 않는다. sandbox fixture에서 write,
-network, MCP, repository escape를 시도하는 fake task를 실행해 실제 차단과 repository
-무변경을 확인한다.
+runner isolation은 argv assertion만으로 끝내지 않는다. adapter fixture에서 tool
+registration을 요구하거나 bundle 밖 repository/config/credential path 접근을 요청하는
+payload를 실행해 tool-free 거부를 확인한다. Claude fixture는 session persistence 차단을
+확인한다. 전후 filesystem inventory로 repository/config/session artifact 무변경을
+실측한다.
+
+pre-handoff repository verification에는 registered disposable workspace E2E를 포함한다.
+fake tool-free runner와 fixture Beads adapter를 사용해 settings 저장, cache hit, forced
+reanalysis, cancel, result dialog grouping, snapshot drift 중 apply 거부, 성공 label
+apply/readback을 모두 현재 PR에서 자동 검증한다. shared service나 실제 provider 호출은
+이 테스트의 전제 조건이 아니다.
 
 ## Post-merge 적용과 runtime 검증
 
 이 저장소의 `docs/agents/repo-ops.toml` `[deploy]` managed adapter가 install, pointer
 cutover, restart handoff, runtime readback을 소유한다. PR merge 뒤 merged checkout 기준으로
-frontend bundle이 최신인지 확인하고 managed deploy receipt를 읽은 뒤 다음을 검증한다.
+frontend bundle이 최신인지 확인하고 managed deploy receipt를 읽은 뒤 다음 runtime
+readback만 검증한다.
 
 1. shared process가 merged release path에서 실행 중이다.
 2. configured shared port가 listening 중이다.
 3. basic HTTP response가 성공한다.
-4. Worker 탭에서 analyzer settings, cache hit, forced reanalysis, cancel, result dialog,
-   label apply readback이 실제 server와 동작한다.
+
+settings/cache/reanalysis/cancel/dialog/apply의 기능 검증은 위 disposable workspace E2E가
+PR 안에서 소유한다. post-merge interactive 작업이나 no-PR residue는 완료 조건이 아니다.
+이 unit은 현재 repository의 한 PR에서 종료되고 managed `[deploy]` adapter가 배포와
+readback을 운반하므로 `worker-ineligible` label이 필요하지 않다.
 
 ## 예상 구현 범위
 
@@ -434,9 +480,10 @@ read-only adapter 분리, Bead metadata 비사용, hot-path LLM 부재, user-con
    판정된다.
 4. strong evidence가 검증된 high-confidence 항목만 serial 권장으로 표시된다.
 5. 사용자 승인 전에는 Bead/label/queue/dependency/repository state가 변하지 않는다.
-6. 승인된 항목만 existing generic label add/readback으로 수렴하고 기존 label은 자동
-   제거되지 않는다.
+6. 승인된 항목만 server의 digest/identity/lane 재검증을 통과한 뒤 existing generic
+   label writer/readback으로 수렴하고 기존 label은 자동 제거되지 않는다.
 7. cancel, timeout, invalid output, prompt injection, partial failure가 queue 진행을
    막거나 last-good cache를 손상하지 않는다.
-8. full repository verification, frontend build, managed deploy, process path·port·HTTP와
-   실제 Worker UI readback이 모두 통과한다.
+8. disposable workspace E2E와 full repository verification, frontend build, managed
+   deploy, process path·port·HTTP readback이 모두 통과하며 post-merge 수동 기능 확인이
+   남지 않는다.
