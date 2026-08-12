@@ -67,15 +67,17 @@ timeout_ms = 120000
 
 ### Seam A — command order와 failure propagation
 
-- RED: verifier contract가 `tsc → build → bundle diff` 순서, 첫 실패 중단, exit code 전달을 요구한다.
+- Target: 새 `scripts/verify-post-merge.test.js`가 exported verifier에 injectable command runner를 넣어 검사한다.
+- RED: target module과 package entry가 현재 없으므로 focused test가 module resolution에서 실패하며, 구현 전에는 `tsc → build → bundle diff` 순서와 첫 실패 중단을 제공하는 owner가 없다.
 - GREEN: injectable command runner를 가진 최소 script가 순서와 실패 의미를 만족한다.
 
 ### Seam B — declaration wiring
 
-- RED: contract test가 post-merge `[verify]`의 `npm run all`과 긴 timeout을 거부한다.
+- Target: `scripts/verify-post-merge.test.js`가 `package.json`과 `docs/agents/repo-ops.toml` wiring을 검사한다.
+- RED: 현재 package entry가 없고 `[verify]`가 `npm run all`과 600초 timeout을 가리키므로 실패한다.
 - GREEN: declaration은 `npm run verify:post-merge`와 120초 timeout을 가리킨다.
 
-### Seam C — repository artifact
+### GREEN acceptance — repository artifact
 
 - GREEN: repository root에서 `npm run verify:post-merge`가 성공하고 build 뒤 bundle/map diff가 없다.
 
@@ -83,5 +85,5 @@ timeout_ms = 120000
 
 - 전용 verifier contract와 repository-root 실행이 green이다.
 - `[verify]`는 full Vitest/lint/format을 호출하지 않는다.
-- `npm run all`, `preversion`, Vitest inventory에는 이 Bead의 diff가 없다.
+- `npm run all`, `preversion`, Vitest config와 기존 test에는 삭제·완화 diff가 없고 새 focused verifier test만 추가된다.
 - `UI-lb58`가 `UI-vobi`를 dependency로 가지며 새 declaration 보존 조건을 충족한다.
