@@ -1681,6 +1681,91 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
   });
 
+  test('resumes closure for a durable lower-generation row after the provider advances', async () => {
+    const accepted_sha = 'd'.repeat(40);
+    const current_sha = 'f'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'running',
+        target_base: 'main',
+        target_sha: current_sha,
+        deployed_sha: null,
+        generation: 8,
+        error_code: null,
+        log_path: '/tmp/current.log'
+      })),
+      validateCurrentBinding: vi.fn()
+    };
+    const h = makeActions({ deploymentJob });
+    h.store.bindDeploymentRequest(WS, {
+      bead_id: BEAD,
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: accepted_sha,
+      deployment_generation: 7
+    });
+    h.store.recordDeploymentObservation(WS, {
+      state: 'running',
+      target_base: 'main',
+      target_sha: current_sha,
+      deployed_sha: null,
+      generation: 8,
+      error_code: null,
+      log_path: '/tmp/current.log'
+    });
+
+    const result = await h.actions.observeDeployment();
+
+    expect(result).toEqual({ ok: true, reason: 'running' });
+    expect(h.calls).toContain('bd:setStatus:UI-1:closed');
+    expect(h.store.snapshot(WS).pr_wait).toEqual([]);
+    expect(h.store.snapshot(WS).done).toHaveLength(1);
+  });
+
+  test('keeps a lower-generation row open when the current desired SHA does not cover it', async () => {
+    const accepted_sha = 'd'.repeat(40);
+    const current_sha = 'f'.repeat(40);
+    const deploymentJob = {
+      requestDeployment: vi.fn(),
+      deploymentStatus: vi.fn(async () => ({
+        state: 'running',
+        target_base: 'main',
+        target_sha: current_sha,
+        deployed_sha: null,
+        generation: 8,
+        error_code: null,
+        log_path: '/tmp/current.log'
+      })),
+      validateCurrentBinding: vi.fn()
+    };
+    const h = makeActions({
+      deploymentJob,
+      gitResult: (args) => (args[0] === 'merge-base' ? 1 : null)
+    });
+    h.store.bindDeploymentRequest(WS, {
+      bead_id: BEAD,
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: accepted_sha,
+      deployment_generation: 7
+    });
+    h.store.recordDeploymentObservation(WS, {
+      state: 'running',
+      target_base: 'main',
+      target_sha: current_sha,
+      deployed_sha: null,
+      generation: 8,
+      error_code: null,
+      log_path: '/tmp/current.log'
+    });
+
+    const result = await h.actions.observeDeployment();
+
+    expect(result).toEqual({ ok: true, reason: 'running' });
+    expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
+    expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
+    expect(h.store.snapshot(WS).done).toEqual([]);
+  });
+
   test.each([
     [
       'higher generation',

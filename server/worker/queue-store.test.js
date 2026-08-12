@@ -464,15 +464,19 @@ describe('worker/queue-store', () => {
     );
     const store = createQueueStore();
 
-    const result = store.recordDeploymentObservation(WS, {
-      state: 'succeeded',
-      target_base: 'main',
-      target_sha,
-      deployed_sha: target_sha,
-      generation: 5,
-      error_code: null,
-      log_path: '/tmp/deploy.log'
-    });
+    const result = store.recordDeploymentObservation(
+      WS,
+      {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 5,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      },
+      { higher_binding_validated: true }
+    );
 
     expect(result.queue.deployment?.notifications).toEqual([
       {
@@ -760,6 +764,103 @@ describe('worker/queue-store', () => {
     expect(result.queue.deployment).toMatchObject({
       state: 'pending',
       generation: 8
+    });
+  });
+
+  test('preserves worker-owned saga fields when another row records the same binding', () => {
+    const target_sha = 'b'.repeat(40);
+    const identity = 'c'.repeat(64);
+    const failure_key = {
+      repo: WS,
+      target_base: 'main',
+      target_sha,
+      generation: 8,
+      error_code: 'deploy_failed',
+      log_digest: 'd'.repeat(64)
+    };
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 4,
+        pr_wait: [{ bead_id: 'UI-deploy-row', added_at: 1 }],
+        deployment: {
+          state: 'failed',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: null,
+          generation: 8,
+          error_code: 'deploy_failed',
+          log_path: '/tmp/deploy.log',
+          automatic_retry_count: 2,
+          retry_budget_binding: {
+            target_base: 'main',
+            target_sha,
+            generation: 8
+          },
+          next_retry_at: 99,
+          failure_key,
+          retry_operation: {
+            phase: 'recovery_ready',
+            failure_key,
+            automatic_retry_count: 2,
+            next_retry_at: 99,
+            called_at: null,
+            retry_binding: null
+          },
+          recovery: {
+            identity,
+            failure_key,
+            phase: 'awaiting_confirmation',
+            prepared_at: 10,
+            bead_id: 'UI-recovery',
+            attempt_id: 'recovery-attempt',
+            outcome: 'awaiting_confirmation',
+            confirmation_reason: 'operator_confirmation_required',
+            evidence_kind: 'confirmation',
+            evidence_digest: 'e'.repeat(64),
+            retry_operation: null
+          },
+          notifications: [
+            {
+              kind: 'awaiting_confirmation',
+              identity,
+              revision: 4,
+              key: `awaiting_confirmation:${identity}:4`
+            }
+          ]
+        }
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.recordDeploymentBinding(WS, {
+      bead_id: 'UI-deploy-row',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: target_sha,
+      deployment_generation: 8,
+      target_base: 'main',
+      status: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: null,
+        generation: 8,
+        error_code: 'deploy_failed',
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.deployment).toMatchObject({
+      automatic_retry_count: 2,
+      retry_operation: { phase: 'recovery_ready' },
+      recovery: {
+        identity,
+        phase: 'awaiting_confirmation',
+        attempt_id: 'recovery-attempt'
+      },
+      notifications: [{ key: `awaiting_confirmation:${identity}:4` }]
     });
   });
 

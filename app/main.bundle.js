@@ -1384,10 +1384,18 @@ ${B.output}`),M.join(`
             ${r.runner||r.model||r.effort?l`<span
                   >${[r.runner,r.model,r.effort].filter(Boolean).join(" \xB7 ")}</span
                 >`:""}
+            ${r.recent_update?l`<span class="worker-deployment-strip__update"
+                  >${r.recent_update}</span
+                >`:""}
+            ${r.confirmation_reason?l`<details class="worker-deployment-strip__confirmation">
+                  <summary>확인 내용 보기</summary>
+                  <code>${r.confirmation_reason}</code>
+                </details>`:""}
           </div>`:""}
-      ${e.log?l`<span class="worker-deployment-strip__log"
-            >배포 로그 참조 있음</span
-          >`:""}
+      ${e.log?l`<details class="worker-deployment-strip__log">
+            <summary>배포 로그 보기</summary>
+            <code>${e.log.reference}</code>
+          </details>`:""}
       ${n.some(a=>a?.kind==="retry")?l`<button type="button" class="worker-deployment-retry">
             지금 재시도
           </button>`:""}

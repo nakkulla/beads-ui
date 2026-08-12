@@ -126,12 +126,24 @@ export function deploymentDisclosureTemplate(deployment) {
                     .join(' · ')}</span
                 >`
               : ''}
+            ${recovery.recent_update
+              ? html`<span class="worker-deployment-strip__update"
+                  >${recovery.recent_update}</span
+                >`
+              : ''}
+            ${recovery.confirmation_reason
+              ? html`<details class="worker-deployment-strip__confirmation">
+                  <summary>확인 내용 보기</summary>
+                  <code>${recovery.confirmation_reason}</code>
+                </details>`
+              : ''}
           </div>`
         : ''}
       ${deployment.log
-        ? html`<span class="worker-deployment-strip__log"
-            >배포 로그 참조 있음</span
-          >`
+        ? html`<details class="worker-deployment-strip__log">
+            <summary>배포 로그 보기</summary>
+            <code>${deployment.log.reference}</code>
+          </details>`
         : ''}
       ${actions.some(
         (/** @type {{ kind?: unknown }} */ action) => action?.kind === 'retry'

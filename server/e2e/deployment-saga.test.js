@@ -5,13 +5,19 @@
  * queue with the public deployment-recovery coordinator and repeatedly
  * reloads the queue at each external-effect boundary to model a process crash.
  */
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { repoRecoveryIdentity } from '../worker/completion-repair.js';
+import {
+  createCompletionRepairService,
+  repoRecoveryIdentity
+} from '../worker/completion-repair.js';
 import { createDeploymentRecovery } from '../worker/deployment-recovery.js';
+import { resolveExecSettings } from '../worker/policy.js';
 import { createQueueStore } from '../worker/queue-store.js';
+import { createScheduler } from '../worker/scheduler.js';
 
 const REPO = '/tmp/deployment-saga/repo';
 const SHA = 'a'.repeat(40);
@@ -78,7 +84,8 @@ function recoveryAfterRestart(fixture, now) {
           );
           return binding;
         }),
-        deploymentStatus: vi.fn(async () => fixture.status)
+        deploymentStatus: vi.fn(async () => fixture.status),
+        covers: vi.fn(async () => true)
       },
       recoveryService: {
         ensureRepoRecoveryBead: vi.fn(
@@ -100,6 +107,186 @@ function recoveryAfterRestart(fixture, now) {
       })
     })
   };
+}
+
+/**
+ * Build the real recovery scheduler around process-local fakes. Attempts and
+ * recovery ownership still persist through the production queue store.
+ *
+ * @param {ReturnType<typeof createQueueStore>} store
+ * @param {{ issues: Map<string, any>, metadata: Map<string, string>, sessions: string[] }} fixture
+ */
+function recoverySchedulerAfterRestart(store, fixture) {
+  const bd = {
+    async findIssue(/** @type {string} */ bead_id) {
+      return fixture.issues.get(bead_id) ?? null;
+    },
+    async createIssue(/** @type {any} */ input) {
+      fixture.issues.set(input.id, {
+        id: input.id,
+        title: input.title,
+        description: input.description,
+        issue_type: input.type,
+        priority: input.priority
+      });
+    },
+    async snapshotBead(/** @type {string} */ bead_id) {
+      return {
+        ready: true,
+        blocked: false,
+        repo: REPO,
+        target_base: 'main',
+        model: 'opus',
+        effort: 'high',
+        workflow_mode: fixture.metadata.get(`${bead_id}:workflow_mode`) ?? null,
+        route: 'full_plan',
+        status: 'open',
+        labels: [],
+        deps: []
+      };
+    },
+    async setMetadata(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ key,
+      /** @type {string} */ value
+    ) {
+      fixture.metadata.set(`${bead_id}:${key}`, value);
+    },
+    async unsetMetadata(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ key
+    ) {
+      fixture.metadata.delete(`${bead_id}:${key}`);
+    },
+    async readMetadata(
+      /** @type {string} */ bead_id,
+      /** @type {string} */ key
+    ) {
+      return fixture.metadata.get(`${bead_id}:${key}`) ?? null;
+    },
+    async setStatus() {},
+    async readStatus() {
+      return 'open';
+    }
+  };
+  const scheduler = createScheduler({
+    store,
+    bd,
+    execPresetCoordinator: /** @type {any} */ ({
+      resolveForDispatch(/** @type {string} */ ws, /** @type {any} */ bead) {
+        return {
+          ok: true,
+          preset_id: null,
+          preset_revision: null,
+          settings: {},
+          exec: resolveExecSettings({
+            bead,
+            defaults: store.snapshot(ws).exec_defaults
+          })
+        };
+      }
+    }),
+    resolveBase: async () => ({
+      ok: true,
+      base: 'main',
+      declared: false,
+      remote: 'origin',
+      remote_ref: 'refs/remotes/origin/main',
+      base_oid: 'c'.repeat(40),
+      local_only: false
+    }),
+    worktree: {
+      removeIfDiscardable: async () => ({
+        ok: true,
+        removed: false,
+        reason: null
+      }),
+      add: async (/** @type {any} */ input) => ({
+        path: path.join(workspace, '.wt', input.bead_id),
+        branch: input.bead_id,
+        base_oid: 'c'.repeat(40)
+      }),
+      remove: async () => ({ code: 0 }),
+      pathFor: (/** @type {string} */ _repo, /** @type {string} */ bead_id) =>
+        path.join(workspace, '.wt', bead_id),
+      exists: () => true
+    },
+    makeRunner: () => ({
+      name: 'claude',
+      spawn(/** @type {any} */ bead) {
+        fixture.sessions.push(bead.id);
+        return {
+          pid: 9000 + fixture.sessions.length,
+          process_identity: {
+            pid: 9000 + fixture.sessions.length,
+            pgid: 9000 + fixture.sessions.length,
+            started_at: 1000
+          },
+          events: new EventEmitter(),
+          done: new Promise(() => {}),
+          kill() {},
+          prompts: { system_prompt: null, task_prompt: null }
+        };
+      }
+    }),
+    verify: {
+      verifyPrSubmitted: async () => ({
+        ok: false,
+        reason: 'not_used',
+        pr_url: null
+      })
+    },
+    sessionLog: { attach() {} },
+    guardHook: {
+      install: () => ({ ok: true }),
+      remove: () => true,
+      envFor: () => ({}),
+      readPushLog: () => ({ ok: true, entries: [] })
+    },
+    now: () => 1000
+  });
+  return {
+    scheduler,
+    recoveryService: createCompletionRepairService({ bd, repo: REPO })
+  };
+}
+
+/**
+ * Seed an exhausted exact failure through the durable retry store boundary.
+ *
+ * @param {ReturnType<typeof createQueueStore>} store
+ */
+function seedRecoveryReady(store) {
+  const failure_key = {
+    repo: REPO,
+    target_base: 'main',
+    target_sha: SHA,
+    generation: 3,
+    error_code: 'deploy_failed',
+    log_digest: 'f'.repeat(64)
+  };
+  store.recordDeploymentObservation(workspace, deploymentStatus(1, 'failed'));
+  for (let generation = 1; generation < 3; generation += 1) {
+    const key = { ...failure_key, generation };
+    store.scheduleDeploymentRetry(workspace, key, 1000);
+    store.prerecordDeploymentRetry(workspace, key, 1000);
+    store.recordDeploymentRetryReturned(workspace, key, {
+      target_base: 'main',
+      target_sha: SHA,
+      generation: generation + 1
+    });
+    store.settleDeploymentRetry(
+      workspace,
+      key,
+      deploymentStatus(generation + 1, 'pending')
+    );
+    store.recordDeploymentObservation(
+      workspace,
+      deploymentStatus(generation + 1, 'failed')
+    );
+  }
+  store.scheduleDeploymentRetry(workspace, failure_key, 1000);
+  return failure_key;
 }
 
 describe('repo deployment saga e2e', () => {
@@ -243,6 +430,114 @@ describe('repo deployment saga e2e', () => {
       new Set(deployment.notifications.map((notification) => notification.key))
         .size
     ).toBe(deployment.notifications.length);
+  });
+
+  test('adopts recovery Bead and real scheduler spawn crashes without duplicate effects', async () => {
+    const store = createQueueStore();
+    const failure_key = seedRecoveryReady(store);
+    const fixture = {
+      status: deploymentStatus(3, 'failed'),
+      issues: new Map(),
+      metadata: new Map(),
+      sessions: /** @type {string[]} */ ([])
+    };
+    let runtime = recoverySchedulerAfterRestart(store, fixture);
+    const crash_after_bead_readback = {
+      async ensureRepoRecoveryBead(/** @type {any} */ input) {
+        await runtime.recoveryService.ensureRepoRecoveryBead(input);
+        throw new Error('crash after bead readback');
+      }
+    };
+    let recovery = createDeploymentRecovery({
+      workspace,
+      repo: REPO,
+      store,
+      deploymentJob: {
+        retryDeployment: vi.fn(),
+        deploymentStatus: vi.fn(async () => fixture.status),
+        covers: vi.fn(async () => true)
+      },
+      recoveryService: crash_after_bead_readback,
+      dispatchRecovery: (input) =>
+        runtime.scheduler.dispatchRepoRecovery(workspace, input),
+      now: () => 1000
+    });
+
+    const bead_crash = await recovery.tick();
+
+    expect(bead_crash).toMatchObject({
+      ok: false,
+      reason: 'deployment_recovery_bead_failed'
+    });
+    expect(fixture.issues.size).toBe(1);
+    expect(store.snapshot(workspace).deployment?.recovery?.bead_id).toBeNull();
+
+    runtime = recoverySchedulerAfterRestart(store, fixture);
+    recovery = createDeploymentRecovery({
+      workspace,
+      repo: REPO,
+      store,
+      deploymentJob: {
+        retryDeployment: vi.fn(),
+        deploymentStatus: vi.fn(async () => fixture.status),
+        covers: vi.fn(async () => true)
+      },
+      recoveryService: runtime.recoveryService,
+      dispatchRecovery: async (input) => {
+        await runtime.scheduler.dispatchRepoRecovery(workspace, input);
+        throw new Error('crash after session spawn');
+      },
+      now: () => 1000
+    });
+
+    const spawn_crash = await recovery.tick();
+
+    expect(spawn_crash).toMatchObject({
+      ok: false,
+      reason: 'deployment_recovery_spawn_failed'
+    });
+    expect(fixture.issues.size).toBe(1);
+    expect(fixture.sessions).toHaveLength(1);
+    expect(store.snapshot(workspace).deployment?.recovery).toMatchObject({
+      bead_id: expect.any(String),
+      attempt_id: null
+    });
+
+    runtime = recoverySchedulerAfterRestart(store, fixture);
+    recovery = createDeploymentRecovery({
+      workspace,
+      repo: REPO,
+      store,
+      deploymentJob: {
+        retryDeployment: vi.fn(),
+        deploymentStatus: vi.fn(async () => fixture.status),
+        covers: vi.fn(async () => true)
+      },
+      recoveryService: runtime.recoveryService,
+      dispatchRecovery: (input) =>
+        runtime.scheduler.dispatchRepoRecovery(workspace, input),
+      now: () => 1000
+    });
+
+    const adopted = await recovery.tick();
+
+    expect(adopted).toMatchObject({
+      ok: true,
+      reason: 'deployment_recovery_spawned'
+    });
+    expect(fixture.issues.size).toBe(1);
+    expect(fixture.sessions).toHaveLength(1);
+    expect(store.snapshot(workspace).deployment?.recovery).toMatchObject({
+      bead_id: expect.any(String),
+      attempt_id: expect.any(String)
+    });
+    expect(
+      Object.values(store.snapshot(workspace).attempts).filter(
+        (attempt) =>
+          attempt.deployment_recovery_failure_key?.generation ===
+          failure_key.generation
+      )
+    ).toHaveLength(1);
   });
 
   test('keeps a recovery PR disposition through a descendant desired success after restart', async () => {

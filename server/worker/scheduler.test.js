@@ -733,6 +733,24 @@ describe('scheduler repo deployment recovery', () => {
     expect(env.runner.settingsFor('recovery-abc').resume_session_id).toBe(
       'recovery-session'
     );
+    expect(env.store.snapshot(WS).deployment?.recovery?.attempt_id).toBe(
+      resumed.attempt_id
+    );
+
+    env.runner
+      .eventsFor('recovery-abc')
+      .emit('session_id', 'recovery-session-2');
+    await flush();
+    await env.scheduler.pause(WS, String(resumed.attempt_id));
+    const resumed_again = await env.scheduler.continueRepoRecovery(WS, {
+      identity,
+      attempt_id: String(resumed.attempt_id)
+    });
+
+    expect(resumed_again.ok).toBe(true);
+    expect(env.store.snapshot(WS).deployment?.recovery?.attempt_id).toBe(
+      resumed_again.attempt_id
+    );
   });
 
   test('settles retry_same without a PR observation after coordinator validation', async () => {

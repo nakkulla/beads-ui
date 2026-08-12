@@ -374,7 +374,7 @@ export function defaultProbePid(pid) {
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
- *   deploymentRecovery?: { poll: () => Promise<any>, tick: () => Promise<any> },
+ *   deploymentRecovery?: { poll: () => Promise<any>, tick: () => Promise<any>, retryNow?: () => Promise<any>, consumeOutcome?: (input: any) => Promise<any> },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -1620,41 +1620,11 @@ export async function continueWorkerDeploymentRecovery(workspace_root, input) {
 export async function retryWorkerDeployment(workspace_root) {
   const key = keyFor(workspace_root);
   const att = ATTACHMENTS.get(key);
-  if (!att || !att.deploymentJob || !att.deploymentJob.retryDeployment) {
+  if (!att || typeof att.deploymentRecovery?.retryNow !== 'function') {
     return { ok: false, reason: 'no_attachment' };
   }
-  const current = att.runtime.queueStore.snapshot(key).deployment;
-  const target_sha = current?.target_sha;
-  const generation = current?.generation;
-  if (
-    !current ||
-    current.state !== 'failed' ||
-    typeof current.target_base !== 'string' ||
-    typeof target_sha !== 'string' ||
-    !/^[0-9a-f]{40}$/i.test(target_sha) ||
-    typeof generation !== 'number' ||
-    !Number.isInteger(generation) ||
-    generation <= 0
-  ) {
-    return { ok: false, reason: 'deployment_not_retryable' };
-  }
-  if (current.recovery) {
-    return { ok: false, reason: 'deployment_recovery_active' };
-  }
-  if (current.retry_operation) {
-    return { ok: false, reason: 'automatic_retry_in_progress' };
-  }
-  const current_binding = {
-    target_base: current.target_base,
-    target_sha,
-    generation
-  };
-  let retried;
   try {
-    retried = await att.deploymentJob.retryDeployment({
-      repo: att.repo,
-      current_binding
-    });
+    return await att.deploymentRecovery.retryNow();
   } catch (err) {
     const code = /** @type {{ code?: unknown }} */ (err).code;
     return {
@@ -1662,22 +1632,6 @@ export async function retryWorkerDeployment(workspace_root) {
       reason: typeof code === 'string' ? code : 'deployment_retry_failed'
     };
   }
-  const recorded = att.runtime.queueStore.recordDeploymentRetry(
-    key,
-    current_binding,
-    retried
-  );
-  if (!recorded.ok) {
-    return {
-      ok: false,
-      reason: recorded.stale
-        ? 'deployment_retry_stale'
-        : 'deployment_retry_persist_failed',
-      stale: recorded.stale === true
-    };
-  }
-  emitQueueChanged(key);
-  return { ok: true, queue: recorded.queue };
 }
 
 /**

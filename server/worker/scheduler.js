@@ -1052,6 +1052,23 @@ export function createScheduler(deps) {
         expected_revision
       );
     }
+    if (prior.deployment_recovery_identity != null) {
+      if (typeof deps.store.appendResumedRecoveryAttempt !== 'function') {
+        return false;
+      }
+      try {
+        return (
+          deps.store.appendResumedRecoveryAttempt(workspace, {
+            expected_revision:
+              expected_revision ?? deps.store.snapshot(workspace).revision,
+            source_attempt_id: prior.attempt_id,
+            attempt
+          }).ok === true
+        );
+      } catch {
+        return false;
+      }
+    }
     if (!completion_resume) {
       return prerecordAttempt(workspace, attempt, expected_revision);
     }

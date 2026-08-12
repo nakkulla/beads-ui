@@ -86,7 +86,12 @@ describe('repo deployment disclosure', () => {
         description: '사용자 확인이 필요합니다',
         included_merge_count: 2,
         timeline: [{ kind: 'confirmation_required' }],
-        recovery: { bead_id: 'UI-f17c', attempt_id: 'attempt-1' },
+        recovery: {
+          bead_id: 'UI-f17c',
+          attempt_id: 'attempt-1',
+          confirmation_reason: 'deployment_binding_divergent',
+          recent_update: 'deployment_binding_divergent'
+        },
         log: { label: '배포 로그', reference: 'deployment-log' },
         actions: [
           {
@@ -117,6 +122,11 @@ describe('repo deployment disclosure', () => {
     expect(strip.textContent?.replace(/\s+/g, ' ')).toContain('merge 2');
     expect(strip.textContent).toContain('세션 보기');
     expect(strip.textContent).toContain('복구 이어가기');
+    expect(strip.textContent).toContain('확인 내용 보기');
+    expect(strip.textContent).toContain('deployment_binding_divergent');
+    expect(strip.textContent).toContain('배포 로그 보기');
+    expect(strip.textContent).toContain('deployment-log');
+    expect(strip.textContent).not.toContain('/tmp/provider-secret.log');
     expect(strip.textContent).not.toContain('지금 재시도');
   });
 });

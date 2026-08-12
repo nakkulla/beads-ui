@@ -57,7 +57,8 @@ function setup(input = {}) {
       target_sha: SHA,
       generation: 2
     })),
-    deploymentStatus: vi.fn(async () => status(2, 'pending'))
+    deploymentStatus: vi.fn(async () => status(2, 'pending')),
+    covers: vi.fn(async () => true)
   };
   const recovery = createDeploymentRecovery({
     workspace: WS,
@@ -196,6 +197,84 @@ describe('worker/deployment-recovery', () => {
       state: 'pending',
       generation: 2,
       automatic_retry_count: 1,
+      retry_operation: null
+    });
+  });
+
+  test('fences a provider parser rejection behind durable confirmation', async () => {
+    const malformed = Object.assign(new Error('malformed provider status'), {
+      code: 'deployment_provider_malformed'
+    });
+    const h = setup({
+      deploymentJob: {
+        retryDeployment: vi.fn(),
+        deploymentStatus: vi.fn(async () => {
+          throw malformed;
+        }),
+        covers: vi.fn(async () => true)
+      }
+    });
+    h.store.recordDeploymentObservation(WS, status(1, 'failed'));
+
+    const result = await h.recovery.poll();
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'deployment_observation_confirmation_required'
+    });
+    expect(h.store.snapshot(WS).deployment?.recovery).toMatchObject({
+      phase: 'awaiting_confirmation',
+      confirmation_reason: 'deployment_binding_malformed'
+    });
+  });
+
+  test('adopts a manual retry journal after readback crashes without repeating the effect', async () => {
+    const deploymentJob = {
+      retryDeployment: vi.fn(async () => ({
+        target_base: 'main',
+        target_sha: SHA,
+        generation: 2
+      })),
+      deploymentStatus: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('coordinator crashed'))
+        .mockResolvedValueOnce(status(2, 'pending')),
+      covers: vi.fn(async () => true)
+    };
+    const h = setup({ deploymentJob });
+    h.store.recordDeploymentObservation(WS, status(1, 'failed'));
+
+    const interrupted = await h.recovery.retryNow();
+
+    expect(interrupted).toMatchObject({
+      ok: false,
+      reason: 'deployment_retry_status_failed'
+    });
+    expect(h.store.snapshot(WS).deployment?.retry_operation).toMatchObject({
+      phase: 'returned',
+      retry_binding: {
+        target_base: 'main',
+        target_sha: SHA,
+        generation: 2
+      }
+    });
+
+    const restarted = createDeploymentRecovery({
+      workspace: WS,
+      repo: REPO,
+      store: h.store,
+      deploymentJob
+    });
+    const adopted = await restarted.tick();
+
+    expect(adopted).toMatchObject({
+      ok: true,
+      reason: 'deployment_retry_settled'
+    });
+    expect(deploymentJob.retryDeployment).toHaveBeenCalledOnce();
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      state: 'pending',
+      generation: 2,
       retry_operation: null
     });
   });
@@ -681,6 +760,11 @@ describe('worker/deployment-recovery', () => {
       next_retry_at: 31_000,
       superseded_retry_operation: { phase: 'superseded' }
     });
+    expect(h.deploymentJob.covers).toHaveBeenCalledWith(
+      REPO,
+      'b'.repeat(40),
+      SHA
+    );
   });
 
   test('preserves settled retry budget evidence when a higher generation arrives', async () => {
@@ -717,18 +801,77 @@ describe('worker/deployment-recovery', () => {
     );
   });
 
-  test('rejects malformed and divergent observations without provider effects', async () => {
-    const h = setup();
+  test('fences malformed and divergent higher observations behind durable confirmation', async () => {
+    const deploymentJob = {
+      retryDeployment: vi.fn(),
+      deploymentStatus: vi.fn(),
+      covers: vi.fn(async () => false)
+    };
+    const h = setup({ deploymentJob });
     await h.recovery.observe(status(1, 'failed'));
 
-    const result = await h.recovery.observe({
+    const malformed = await h.recovery.observe({
       ...status(1, 'failed'),
       target_sha: 'not-a-sha'
     });
-    await h.recovery.observe(status(0, 'failed'));
+    const divergent = await h.recovery.observe(
+      status(2, 'pending', 'b'.repeat(40))
+    );
 
-    expect(result).toMatchObject({ ok: false });
-    expect(h.deploymentJob.retryDeployment).not.toHaveBeenCalled();
-    expect(h.store.snapshot(WS).deployment?.generation).toBe(1);
+    expect(malformed).toMatchObject({
+      ok: false,
+      reason: 'deployment_observation_confirmation_required'
+    });
+    expect(divergent).toMatchObject({
+      ok: false,
+      reason: 'deployment_observation_confirmation_required'
+    });
+    expect(deploymentJob.retryDeployment).not.toHaveBeenCalled();
+    expect(deploymentJob.covers).toHaveBeenCalledWith(
+      REPO,
+      'b'.repeat(40),
+      SHA
+    );
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      generation: 1,
+      target_sha: SHA,
+      recovery: {
+        phase: 'awaiting_confirmation',
+        outcome: 'awaiting_confirmation',
+        confirmation_reason: 'deployment_binding_divergent'
+      }
+    });
+    const notifications = h.store.snapshot(WS).deployment?.notifications || [];
+    expect(notifications).toHaveLength(2);
+    expect(
+      notifications.every(
+        (notification) => notification.kind === 'awaiting_confirmation'
+      )
+    ).toBe(true);
+  });
+
+  test('keeps an observation confirmation fenced after the valid binding reappears', async () => {
+    const deploymentJob = {
+      retryDeployment: vi.fn(),
+      deploymentStatus: vi.fn(),
+      covers: vi.fn(async () => false)
+    };
+    const h = setup({ deploymentJob });
+    await h.recovery.observe(status(1, 'failed'));
+    await h.recovery.observe(status(2, 'pending', 'b'.repeat(40)));
+
+    const repeated = await h.recovery.observe(status(1, 'failed'));
+    const ticked = await h.recovery.tick();
+
+    expect(repeated).toMatchObject({
+      ok: true,
+      reason: 'awaiting_confirmation'
+    });
+    expect(ticked).toMatchObject({ ok: true, reason: 'idle' });
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      retry_operation: null,
+      recovery: { phase: 'awaiting_confirmation' }
+    });
+    expect(deploymentJob.retryDeployment).not.toHaveBeenCalled();
   });
 });

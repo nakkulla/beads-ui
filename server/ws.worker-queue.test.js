@@ -9,6 +9,7 @@ import {
   __resetWorkerAttachmentsForTest,
   __setUnattachedAdmissionCheckForTest
 } from './worker/attach.js';
+import { createDeploymentRecovery } from './worker/deployment-recovery.js';
 import { resetRepoOpsCache, resolveDeployAt } from './worker/repo-ops.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
@@ -2652,13 +2653,16 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       ok: true,
       attempt_id: 'recovery-attempt-2'
     }));
-    const retryDeployment = vi.fn();
+    const retryNow = vi.fn(async () => ({
+      ok: false,
+      reason: 'deployment_recovery_active'
+    }));
     __registerWorkerAttachmentForTest(
       workspace,
       /** @type {any} */ ({
         runtime: getWorkerRuntime(),
         scheduler: { continueRepoRecovery },
-        deploymentJob: { retryDeployment }
+        deploymentRecovery: { retryNow }
       })
     );
     const sock = fakeSocket();
@@ -2694,7 +2698,7 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
 
     await send(sock, 'deployment-retry-hidden', 'worker-deployment-retry');
 
-    expect(retryDeployment).not.toHaveBeenCalled();
+    expect(retryNow).toHaveBeenCalledOnce();
     expect(replyFor(sock, 'deployment-retry-hidden').payload).toMatchObject({
       applied: false,
       reason: 'deployment_recovery_active'
@@ -2847,6 +2851,84 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
     expect(snapshot.deployment_coverage).toEqual({});
   });
 
+  test('counts a valid done binding without requiring success or a PR URL', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [
+        {
+          bead_id: 'UI-closed-failed',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: TARGET_SHA,
+          deployment_generation: 4,
+          cleanup_cursor: 'deployment_observe',
+          pr_url: null
+        }
+      ],
+      attempts: {},
+      deployment: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'healthcheck_failed',
+        log_path: '/tmp/provider-secret.log'
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).included_merge_count).toBe(
+      1
+    );
+    expect(snapshot.deployment_coverage).toEqual({});
+  });
+
+  test('projects bounded recovery confirmation context without provider paths', () => {
+    const identity = '9'.repeat(64);
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 8,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      deployment: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'healthcheck_failed',
+        log_path: '/tmp/provider-secret.log',
+        recovery: {
+          identity,
+          failure_key: {
+            repo: WS_DEPLOY.root_dir,
+            target_base: 'main',
+            target_sha: TARGET_SHA,
+            generation: 4,
+            error_code: 'healthcheck_failed',
+            log_digest: 'a'.repeat(64)
+          },
+          phase: 'awaiting_confirmation',
+          prepared_at: 1,
+          bead_id: 'UI-recovery',
+          attempt_id: null,
+          outcome: 'awaiting_confirmation',
+          confirmation_reason: 'deployment_binding_divergent'
+        }
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).recovery).toMatchObject({
+      confirmation_reason: 'deployment_binding_divergent',
+      recent_update: 'deployment_binding_divergent'
+    });
+    expect(JSON.stringify(snapshot.deployment)).not.toContain(
+      '/tmp/provider-secret.log'
+    );
+  });
+
   test('retries only the current failed desired binding and persists pending', async () => {
     const store = getWorkerRuntime().queueStore;
     store.recordDeploymentObservation(WS_DEPLOY.root_dir, {
@@ -2866,12 +2948,33 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       generation: 5,
       error_code: null
     }));
+    const deploymentJob = {
+      retryDeployment,
+      deploymentStatus: vi.fn(async () => ({
+        state: 'pending',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 5,
+        error_code: null,
+        log_path: null
+      })),
+      covers: vi.fn(async () => true)
+    };
+    const deploymentRecovery = createDeploymentRecovery({
+      workspace: WS_DEPLOY.root_dir,
+      repo: WS_DEPLOY.root_dir,
+      store,
+      deploymentJob,
+      now: () => 0
+    });
     __registerWorkerAttachmentForTest(
       WS_DEPLOY.root_dir,
       /** @type {any} */ ({
         runtime: getWorkerRuntime(),
         repo: WS_DEPLOY.root_dir,
-        deploymentJob: { retryDeployment }
+        deploymentJob,
+        deploymentRecovery
       })
     );
     const sock = fakeSocket();
@@ -2910,12 +3013,25 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       log_path: null
     });
     const retryDeployment = vi.fn();
+    const deploymentJob = {
+      retryDeployment,
+      deploymentStatus: vi.fn(),
+      covers: vi.fn(async () => true)
+    };
+    const deploymentRecovery = createDeploymentRecovery({
+      workspace,
+      repo: workspace,
+      store,
+      deploymentJob,
+      now: () => 0
+    });
     __registerWorkerAttachmentForTest(
       workspace,
       /** @type {any} */ ({
         runtime: getWorkerRuntime(),
         repo: workspace,
-        deploymentJob: { retryDeployment }
+        deploymentJob,
+        deploymentRecovery
       })
     );
     const sock = fakeSocket();
@@ -2946,15 +3062,19 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       log_path: '/tmp/deploy.log'
     });
     const retryDeployment = vi.fn(async () => {
-      store.recordDeploymentObservation(workspace, {
-        state: 'failed',
-        target_base: 'main',
-        target_sha: TARGET_SHA,
-        deployed_sha: null,
-        generation: 5,
-        error_code: 'healthcheck_failed',
-        log_path: '/tmp/deploy-new.log'
-      });
+      store.recordDeploymentObservation(
+        workspace,
+        {
+          state: 'failed',
+          target_base: 'main',
+          target_sha: TARGET_SHA,
+          deployed_sha: null,
+          generation: 5,
+          error_code: 'healthcheck_failed',
+          log_path: '/tmp/deploy-new.log'
+        },
+        { higher_binding_validated: true }
+      );
       return {
         accepted: true,
         noop: false,
@@ -2964,12 +3084,25 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
         error_code: null
       };
     });
+    const deploymentJob = {
+      retryDeployment,
+      deploymentStatus: vi.fn(),
+      covers: vi.fn(async () => true)
+    };
+    const deploymentRecovery = createDeploymentRecovery({
+      workspace,
+      repo: workspace,
+      store,
+      deploymentJob,
+      now: () => 0
+    });
     __registerWorkerAttachmentForTest(
       workspace,
       /** @type {any} */ ({
         runtime: getWorkerRuntime(),
         repo: workspace,
-        deploymentJob: { retryDeployment }
+        deploymentJob,
+        deploymentRecovery
       })
     );
     const sock = fakeSocket();

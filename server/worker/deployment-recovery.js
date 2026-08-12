@@ -187,6 +187,45 @@ function failureKey(repo, status) {
 }
 
 /**
+ * @param {string} repo
+ * @param {any} current
+ * @param {string} reason
+ * @param {any} observed
+ */
+function observationConfirmationKey(repo, current, reason, observed) {
+  if (
+    !current ||
+    typeof current.target_base !== 'string' ||
+    !isSha(current.target_sha) ||
+    !isGeneration(current.generation)
+  ) {
+    return null;
+  }
+  const observed_binding = {
+    target_base:
+      typeof observed?.target_base === 'string'
+        ? observed.target_base.slice(0, 120)
+        : null,
+    target_sha: isSha(observed?.target_sha)
+      ? String(observed.target_sha).toLowerCase()
+      : null,
+    generation: isGeneration(observed?.generation)
+      ? Number(observed.generation)
+      : null
+  };
+  return {
+    repo,
+    target_base: current.target_base,
+    target_sha: String(current.target_sha).toLowerCase(),
+    generation: Number(current.generation),
+    error_code: reason,
+    log_digest: createHash('sha256')
+      .update(JSON.stringify(observed_binding))
+      .digest('hex')
+  };
+}
+
+/**
  * @param {any} status
  * @param {any} binding
  */
@@ -203,7 +242,7 @@ function matchesBinding(status, binding) {
  *   workspace: string,
  *   repo: string,
  *   store: any,
- *   deploymentJob: { retryDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any> },
+ *   deploymentJob: { retryDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, covers?: (repo: string, descendant: string, ancestor: string) => Promise<boolean> },
  *   recoveryService?: { ensureRepoRecoveryBead: (input: { repo: string, generation: number, failure_key: Record<string, unknown> }) => Promise<{ identity: string, bead_id: string }> },
  *   dispatchRecovery?: (input: { identity: string, bead_id: string, failure_key: any }) => Promise<{ ok: boolean, attempt_id?: string, reason?: string }>,
  *   now?: () => number,
@@ -215,6 +254,31 @@ export function createDeploymentRecovery(deps) {
   const repo = canonicalRepo(deps.repo);
   const now = deps.now || (() => Date.now());
   const notifyChanged = deps.notifyChanged || (() => {});
+
+  /**
+   * @param {string} reason
+   * @param {any} observed
+   */
+  function fenceObservation(reason, observed) {
+    const current = deps.store.snapshot(workspace).deployment;
+    const key = observationConfirmationKey(repo, current, reason, observed);
+    if (!key) {
+      return { ok: false, reason: 'deployment_observation_rejected' };
+    }
+    const identity = repoRecoveryIdentity(repo, key.generation, key).identity;
+    const fenced = deps.store.requireDeploymentObservationConfirmation(
+      workspace,
+      { failure_key: key, reason, identity }
+    );
+    if (!fenced.ok) {
+      return { ok: false, reason: 'deployment_observation_rejected' };
+    }
+    notifyChanged(workspace);
+    return {
+      ok: false,
+      reason: 'deployment_observation_confirmation_required'
+    };
+  }
 
   /**
    * Adopt each durable recovery window before starting its next external step.
@@ -538,9 +602,61 @@ export function createDeploymentRecovery(deps) {
    * @param {any} status
    */
   async function observe(status) {
-    const recorded = deps.store.recordDeploymentObservation(workspace, status);
+    const current = deps.store.snapshot(workspace).deployment;
+    let higher_binding_validated = false;
+    if (
+      current?.generation !== null &&
+      current?.generation !== undefined &&
+      current.target_base !== null &&
+      current.target_sha !== null
+    ) {
+      if (
+        !isRecord(status) ||
+        typeof status.target_base !== 'string' ||
+        !isSha(status.target_sha) ||
+        !isGeneration(status.generation)
+      ) {
+        return fenceObservation('deployment_binding_malformed', status);
+      }
+      const status_generation = Number(status.generation);
+      if (status_generation < current.generation) {
+        return fenceObservation('deployment_binding_stale', status);
+      }
+      if (
+        status_generation === current.generation &&
+        (status.target_base !== current.target_base ||
+          String(status.target_sha).toLowerCase() !== current.target_sha)
+      ) {
+        return fenceObservation('deployment_binding_mismatch', status);
+      }
+      if (status_generation > current.generation) {
+        if (
+          status.target_base !== current.target_base ||
+          typeof deps.deploymentJob.covers !== 'function'
+        ) {
+          return fenceObservation('deployment_binding_divergent', status);
+        }
+        let covered = false;
+        try {
+          covered = await deps.deploymentJob.covers(
+            repo,
+            String(status.target_sha).toLowerCase(),
+            current.target_sha
+          );
+        } catch {
+          covered = false;
+        }
+        if (!covered) {
+          return fenceObservation('deployment_binding_divergent', status);
+        }
+        higher_binding_validated = true;
+      }
+    }
+    const recorded = deps.store.recordDeploymentObservation(workspace, status, {
+      higher_binding_validated
+    });
     if (!recorded.ok) {
-      return { ok: false, reason: 'deployment_observation_rejected' };
+      return fenceObservation('deployment_binding_malformed', status);
     }
     notifyChanged(workspace);
     const key = failureKey(repo, status);
@@ -567,6 +683,9 @@ export function createDeploymentRecovery(deps) {
       notifyChanged(workspace);
       return { ok: false, reason: 'recovery_retry_failed' };
     }
+    if (deployment?.recovery && deployment.recovery.phase !== 'completed') {
+      return { ok: true, reason: deployment.recovery.phase };
+    }
     const count = deployment?.automatic_retry_count ?? 0;
     const delay = count === 0 ? FIRST_RETRY_DELAY_MS : SECOND_RETRY_DELAY_MS;
     const scheduled = deps.store.scheduleDeploymentRetry(
@@ -589,7 +708,14 @@ export function createDeploymentRecovery(deps) {
     try {
       const status = await deps.deploymentJob.deploymentStatus({ repo });
       return await observe(status);
-    } catch {
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      if (code === 'deployment_provider_malformed') {
+        return fenceObservation('deployment_binding_malformed', { code });
+      }
+      if (code === 'deployment_binding_mismatch') {
+        return fenceObservation('deployment_binding_mismatch', { code });
+      }
       return { ok: false, reason: 'deployment_recovery_status_failed' };
     }
   }
@@ -764,5 +890,44 @@ export function createDeploymentRecovery(deps) {
     }
   }
 
-  return { observe, poll, tick, consumeOutcome };
+  /**
+   * Start a user-requested retry through the durable automatic-retry journal.
+   * The prerecord lands before the provider effect, so restart adopts the
+   * existing `calling` or `returned` operation instead of repeating it.
+   */
+  async function retryNow() {
+    const deployment = deps.store.snapshot(workspace).deployment;
+    const key = failureKey(repo, deployment);
+    if (!key) {
+      return { ok: false, reason: 'deployment_not_retryable' };
+    }
+    if (deployment?.recovery) {
+      return { ok: false, reason: 'deployment_recovery_active' };
+    }
+    if (deployment?.retry_operation) {
+      return { ok: false, reason: 'automatic_retry_in_progress' };
+    }
+    const scheduled = deps.store.scheduleDeploymentRetry(workspace, key, now());
+    if (!scheduled.ok) {
+      return {
+        ok: false,
+        reason: scheduled.stale
+          ? 'deployment_retry_stale'
+          : 'deployment_retry_prerecord_rejected'
+      };
+    }
+    notifyChanged(workspace);
+    if (scheduled.exhausted) {
+      return { ok: false, reason: 'deployment_retry_exhausted' };
+    }
+    const result = await tick();
+    if (!result.ok && result.reason === 'deployment_retry_return_rejected') {
+      return { ok: false, reason: 'deployment_retry_stale', stale: true };
+    }
+    return result.ok
+      ? { ...result, queue: deps.store.snapshot(workspace) }
+      : result;
+  }
+
+  return { observe, poll, tick, retryNow, consumeOutcome };
 }

@@ -1100,8 +1100,8 @@ function projectDeployment(queue, workspace_key) {
   }
   /** @type {Record<string, 'pending'|'running'|'succeeded'|'failed'>} */
   const coverage = {};
-  /** @type {number[]} */
-  const covered_pr_numbers = [];
+  /** @type {Set<string>} */
+  const included_bead_ids = new Set();
   const cleanup_failed =
     queue.cleanup_failed &&
     typeof queue.cleanup_failed === 'object' &&
@@ -1153,33 +1153,26 @@ function projectDeployment(queue, workspace_key) {
       continue;
     }
     coverage[row.bead_id] = state;
-    const match = /\/pull\/(\d+)$/.exec(String(row.pr_url || ''));
-    if (match) {
-      covered_pr_numbers.push(Number(match[1]));
-    }
+    included_bead_ids.add(row.bead_id);
   }
-  if (state === 'succeeded') {
-    for (const row of Array.isArray(queue.done) ? queue.done : []) {
-      if (
-        !row ||
-        row.cleanup_cursor !== 'deployment_observe' ||
-        typeof row.merge_sha !== 'string' ||
-        !/^[0-9a-f]{40}$/i.test(row.merge_sha) ||
-        typeof row.verified_target_sha !== 'string' ||
-        !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
-        !Number.isInteger(row.deployment_generation) ||
-        row.deployment_generation <= 0 ||
-        row.deployment_generation > source.generation ||
-        (row.deployment_generation === source.generation &&
-          row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
-      ) {
-        continue;
-      }
-      const match = /\/pull\/(\d+)$/.exec(String(row.pr_url || ''));
-      if (match && !covered_pr_numbers.includes(Number(match[1]))) {
-        covered_pr_numbers.push(Number(match[1]));
-      }
+  for (const row of Array.isArray(queue.done) ? queue.done : []) {
+    if (
+      !row ||
+      typeof row.bead_id !== 'string' ||
+      row.cleanup_cursor !== 'deployment_observe' ||
+      typeof row.merge_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.merge_sha) ||
+      typeof row.verified_target_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
+      !Number.isInteger(row.deployment_generation) ||
+      row.deployment_generation <= 0 ||
+      row.deployment_generation > source.generation ||
+      (row.deployment_generation === source.generation &&
+        row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
+    ) {
+      continue;
     }
+    included_bead_ids.add(row.bead_id);
   }
   const recovery = projectDeploymentRecovery(source.recovery, queue.attempts);
   const presentation = deploymentPresentation(source);
@@ -1189,7 +1182,7 @@ function projectDeployment(queue, workspace_key) {
       repo: publicRepoName(source.recovery?.failure_key?.repo || workspace_key),
       desired_sha: target_sha.slice(0, 8).toLowerCase(),
       description: presentation.description,
-      included_merge_count: covered_pr_numbers.length,
+      included_merge_count: included_bead_ids.size,
       timeline: deploymentTimeline(source, queue.attempts),
       recovery,
       // Provider-owned log paths never cross the websocket boundary. The client
@@ -1283,6 +1276,22 @@ function projectDeploymentRecovery(recovery, attempts) {
   ]) {
     if (typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,160}$/.test(value)) {
       projected[key] = value;
+    }
+  }
+  const confirmation_reason = recovery.confirmation_reason;
+  if (
+    typeof confirmation_reason === 'string' &&
+    /^[a-z0-9][a-z0-9_.:-]{0,199}$/.test(confirmation_reason)
+  ) {
+    projected.confirmation_reason = confirmation_reason;
+    projected.recent_update = confirmation_reason;
+  } else {
+    const recent_update = [recovery.outcome, recovery.phase].find(
+      (value) =>
+        typeof value === 'string' && /^[a-z0-9][a-z0-9_.:-]{0,199}$/.test(value)
+    );
+    if (typeof recent_update === 'string') {
+      projected.recent_update = recent_update;
     }
   }
   return Object.keys(projected).length > 0 ? projected : null;

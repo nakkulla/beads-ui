@@ -1616,17 +1616,43 @@ export function createPrActions(deps) {
     }
     notifyChanged(workspace);
     const cleanup_queue = deps.store.snapshot(workspace);
-    const legacy_rows = cleanup_queue.pr_wait.filter(
+    const closure_candidates = cleanup_queue.pr_wait.filter(
       (/** @type {any} */ row) =>
-        current?.target_base === status.target_base &&
-        current.target_sha === status.target_sha &&
-        current.generation === status.generation &&
         row.cleanup_cursor === 'deployment_observe' &&
         !cleanup_queue.cleanup_failed?.[row.bead_id] &&
-        row.verified_target_sha === status.target_sha &&
-        row.deployment_generation === status.generation
+        typeof row.verified_target_sha === 'string' &&
+        /^[0-9a-f]{40}$/i.test(row.verified_target_sha) &&
+        Number.isInteger(row.deployment_generation) &&
+        row.deployment_generation > 0 &&
+        row.deployment_generation <= status.generation
     );
-    for (const row of legacy_rows) {
+    for (const row of closure_candidates) {
+      let covered =
+        row.deployment_generation === status.generation &&
+        row.verified_target_sha === status.target_sha;
+      if (
+        !covered &&
+        row.deployment_generation < status.generation &&
+        typeof status.target_sha === 'string'
+      ) {
+        if (row.verified_target_sha === status.target_sha) {
+          covered = true;
+        } else {
+          const ancestry = await deps.gitRun(
+            [
+              'merge-base',
+              '--is-ancestor',
+              row.verified_target_sha,
+              status.target_sha
+            ],
+            { cwd: repo }
+          );
+          covered = ancestry.code === 0;
+        }
+      }
+      if (!covered) {
+        continue;
+      }
       if (in_flight.has(row.bead_id)) {
         continue;
       }

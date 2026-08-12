@@ -279,7 +279,10 @@ describe('worker/attach construction + live loop (F1)', () => {
   test('fences manual deployment retry while an automatic journal is active', async () => {
     const runtime = createWorkerRuntime();
     const store = runtime.queueStore;
-    const retryDeployment = vi.fn();
+    const retryNow = vi.fn(async () => ({
+      ok: false,
+      reason: 'automatic_retry_in_progress'
+    }));
     store.recordDeploymentObservation(WS, {
       state: 'failed',
       target_base: 'main',
@@ -307,7 +310,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       /** @type {any} */ ({
         runtime,
         repo: WS,
-        deploymentJob: { retryDeployment }
+        deploymentRecovery: { retryNow }
       })
     );
 
@@ -317,7 +320,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       ok: false,
       reason: 'automatic_retry_in_progress'
     });
-    expect(retryDeployment).not.toHaveBeenCalled();
+    expect(retryNow).toHaveBeenCalledOnce();
     expect(store.snapshot(WS).deployment).toEqual(before);
   });
 

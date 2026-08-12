@@ -2376,6 +2376,98 @@ function deploymentStateRegresses(current, observation) {
 }
 
 /**
+ * Merge one provider observation without letting it erase Worker-owned saga
+ * state. A higher binding is accepted only after the caller proves ancestry at
+ * the repository boundary; the queue store cannot perform that async proof.
+ *
+ * @param {DeploymentObservation|null} current
+ * @param {unknown} input
+ * @param {boolean} higher_binding_validated
+ * @returns {{ deployment: DeploymentObservation|null, rejected: 'malformed'|'stale'|'binding_mismatch'|'regression'|null }}
+ */
+function reduceDeploymentObservation(current, input, higher_binding_validated) {
+  const observation = normalizeDeploymentObservation(input);
+  if (!observation) {
+    return { deployment: null, rejected: 'malformed' };
+  }
+  if (current?.generation !== null && current?.generation !== undefined) {
+    if (
+      observation.generation === null ||
+      observation.generation < current.generation
+    ) {
+      return { deployment: null, rejected: 'stale' };
+    }
+    if (
+      observation.generation === current.generation &&
+      (observation.target_base !== current.target_base ||
+        observation.target_sha !== current.target_sha)
+    ) {
+      return { deployment: null, rejected: 'binding_mismatch' };
+    }
+    if (
+      observation.generation > current.generation &&
+      !higher_binding_validated
+    ) {
+      return { deployment: null, rejected: 'binding_mismatch' };
+    }
+    if (deploymentStateRegresses(current, observation)) {
+      return { deployment: null, rejected: 'regression' };
+    }
+  }
+  const same_binding =
+    current?.target_base === observation.target_base &&
+    current?.target_sha === observation.target_sha &&
+    current?.generation === observation.generation;
+  if (same_binding) {
+    return {
+      deployment: normalizeDeploymentObservation({
+        ...current,
+        .../** @type {Record<string, unknown>} */ (input)
+      }),
+      rejected: null
+    };
+  }
+  const evidence = supersededDeploymentEvidence(current);
+  const completed_recovery =
+    current?.recovery &&
+    (current.recovery.phase === 'completed' ||
+      (current.recovery.phase === 'repair_pr_open' &&
+        observation.target_base === current.target_base &&
+        observation.generation !== null &&
+        current.generation !== null &&
+        observation.generation > current.generation))
+      ? {
+          ...current.recovery,
+          phase: /** @type {'completed'} */ ('completed'),
+          retry_operation: null
+        }
+      : null;
+  const deployment = current?.retry_operation
+    ? {
+        ...observation,
+        ...(completed_recovery ? { recovery: completed_recovery } : {}),
+        superseded_retry_operation: {
+          ...current.retry_operation,
+          phase: 'superseded'
+        },
+        superseded_retry_evidence: evidence
+      }
+    : evidence
+      ? {
+          ...observation,
+          ...(completed_recovery ? { recovery: completed_recovery } : {}),
+          superseded_retry_evidence: evidence
+        }
+      : completed_recovery
+        ? { ...observation, recovery: completed_recovery }
+        : observation;
+  return {
+    deployment: /** @type {DeploymentObservation} */ (deployment),
+    rejected: null
+  };
+}
+
+/**
  * @param {number} index
  * @param {number} length
  * @returns {number}
@@ -3049,6 +3141,78 @@ export function createQueueStore(options = {}) {
           completion_failure_key: source.completion_failure_key
         });
         active_op.attempt_id = attempt.attempt_id;
+        return true;
+      });
+    },
+
+    /**
+     * Append a recovery continuation and transfer the durable recovery pointer
+     * in the same CAS-guarded persist. This prevents a crash between attempt
+     * prerecord and pointer update from leaving the new child unreachable.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, source_attempt_id: string, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @returns {QueueOpResult}
+     */
+    appendResumedRecoveryAttempt(workspace, input) {
+      const { expected_revision, source_attempt_id, attempt } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const source = next.attempts[source_attempt_id];
+        const recovery = next.deployment?.recovery;
+        if (
+          !source ||
+          !recovery ||
+          !attempt ||
+          typeof attempt.attempt_id !== 'string' ||
+          attempt.attempt_id.length === 0 ||
+          Object.hasOwn(next.attempts, attempt.attempt_id) ||
+          attempt.resumed_from !== source_attempt_id ||
+          attempt.bead_id !== source.bead_id ||
+          attempt.repo !== source.repo ||
+          attempt.target_base !== source.target_base ||
+          attempt.base_oid !== source.base_oid ||
+          (attempt.continuation_mode !== 'fresh' &&
+            attempt.runner !== source.runner) ||
+          attempt.session_id != null ||
+          attempt.pid != null ||
+          attempt.status !== 'running' ||
+          (source.status !== 'paused' &&
+            source.status !== 'failed' &&
+            source.status !== 'orphaned') ||
+          Object.values(next.attempts).some(
+            (item) => item.resumed_from === source_attempt_id
+          ) ||
+          !isDeploymentRecoveryIdentity(source.deployment_recovery_identity) ||
+          source.deployment_recovery_failure_key === null ||
+          recovery.identity !== source.deployment_recovery_identity ||
+          recovery.bead_id !== source.bead_id ||
+          recovery.attempt_id !== source_attempt_id ||
+          !sameDeploymentRecoveryKey(
+            recovery,
+            source.deployment_recovery_failure_key
+          ) ||
+          (attempt.deployment_recovery_identity != null &&
+            attempt.deployment_recovery_identity !== recovery.identity) ||
+          (attempt.deployment_recovery_failure_key != null &&
+            JSON.stringify(attempt.deployment_recovery_failure_key) !==
+              JSON.stringify(recovery.failure_key))
+        ) {
+          return false;
+        }
+        next.attempts[attempt.attempt_id] = makeAttempt({
+          ...attempt,
+          worker_serial: source.worker_serial === true,
+          deployment_recovery_identity: recovery.identity,
+          deployment_recovery_root: false,
+          deployment_recovery_failure_key: recovery.failure_key
+        });
+        next.deployment = {
+          .../** @type {DeploymentObservation} */ (next.deployment),
+          recovery: {
+            ...recovery,
+            attempt_id: attempt.attempt_id
+          }
+        };
         return true;
       });
     },
@@ -3790,88 +3954,28 @@ export function createQueueStore(options = {}) {
      *
      * @param {string} workspace
      * @param {DeploymentObservation} input
+     * @param {{ higher_binding_validated?: boolean }} [options]
      * @returns {QueueOpResult}
      */
-    recordDeploymentObservation(workspace, input) {
-      /** @type {'stale'|'binding_mismatch'|'regression'|null} */
+    recordDeploymentObservation(workspace, input, options = {}) {
+      /** @type {'stale'|'binding_mismatch'|'regression'|'malformed'|null} */
       let rejected = null;
       const result = applyUnconditional(workspace, (next) => {
-        const observation = normalizeDeploymentObservation(input);
-        if (!observation) {
+        const current = next.deployment;
+        const reduced = reduceDeploymentObservation(
+          current,
+          input,
+          options.higher_binding_validated === true
+        );
+        if (!reduced.deployment) {
+          rejected = reduced.rejected;
           return false;
         }
-        const current = next.deployment;
-        if (current?.generation !== null && current?.generation !== undefined) {
-          if (
-            observation.generation === null ||
-            observation.generation < current.generation
-          ) {
-            rejected = 'stale';
-            return false;
-          }
-          if (
-            observation.generation === current.generation &&
-            (observation.target_base !== current.target_base ||
-              observation.target_sha !== current.target_sha)
-          ) {
-            rejected = 'binding_mismatch';
-            return false;
-          }
-          if (deploymentStateRegresses(current, observation)) {
-            rejected = 'regression';
-            return false;
-          }
-        }
-        const same_binding =
-          current?.target_base === observation.target_base &&
-          current?.target_sha === observation.target_sha &&
-          current?.generation === observation.generation;
-        if (same_binding) {
-          const merged = normalizeDeploymentObservation({
-            ...current,
-            ...input
-          });
-          if (!merged) {
-            return false;
-          }
-          next.deployment = merged;
-        } else {
-          const evidence = supersededDeploymentEvidence(current);
-          const completed_recovery =
-            current?.recovery &&
-            (current.recovery.phase === 'completed' ||
-              (current.recovery.phase === 'repair_pr_open' &&
-                observation.target_base === current.target_base &&
-                observation.generation !== null &&
-                current.generation !== null &&
-                observation.generation > current.generation))
-              ? {
-                  ...current.recovery,
-                  phase: /** @type {'completed'} */ ('completed'),
-                  retry_operation: null
-                }
-              : null;
-          next.deployment = current?.retry_operation
-            ? {
-                ...observation,
-                ...(completed_recovery ? { recovery: completed_recovery } : {}),
-                superseded_retry_operation: {
-                  ...current.retry_operation,
-                  phase: 'superseded'
-                },
-                superseded_retry_evidence: evidence
-              }
-            : evidence
-              ? {
-                  ...observation,
-                  ...(completed_recovery
-                    ? { recovery: completed_recovery }
-                    : {}),
-                  superseded_retry_evidence: evidence
-                }
-              : completed_recovery
-                ? { ...observation, recovery: completed_recovery }
-                : observation;
+        next.deployment = reduced.deployment;
+        const observation = normalizeDeploymentObservation(input);
+        if (!observation) {
+          rejected = 'malformed';
+          return false;
         }
         const resulting_recovery = next.deployment?.recovery;
         if (
@@ -4560,6 +4664,68 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Fence a malformed, stale, or divergent provider observation while
+     * retaining the last valid desired binding. Unlike a retry failure fence,
+     * this creates its bounded failure identity from the still-current binding.
+     *
+     * @param {string} workspace
+     * @param {{ failure_key: DeploymentFailureKey, reason: string, identity: string }} input
+     */
+    requireDeploymentObservationConfirmation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(input?.failure_key);
+        const deployment = next.deployment;
+        if (
+          !key ||
+          !deployment ||
+          !isDeploymentRecoveryIdentity(input?.identity) ||
+          deployment.target_base !== key.target_base ||
+          deployment.target_sha !== key.target_sha ||
+          deployment.generation !== key.generation
+        ) {
+          return false;
+        }
+        const existing = deployment.recovery;
+        next.deployment = withDeploymentNotification(
+          {
+            ...deployment,
+            failure_key: key,
+            next_retry_at: null,
+            retry_operation: null,
+            recovery:
+              existing &&
+              existing.identity === input.identity &&
+              sameDeploymentRecoveryKey(existing, key)
+                ? {
+                    ...existing,
+                    phase: 'awaiting_confirmation',
+                    outcome: 'awaiting_confirmation',
+                    confirmation_reason: String(input.reason).slice(0, 200),
+                    retry_operation: null
+                  }
+                : {
+                    identity: input.identity,
+                    failure_key: key,
+                    phase: 'awaiting_confirmation',
+                    prepared_at: 0,
+                    bead_id: null,
+                    attempt_id: null,
+                    outcome: 'awaiting_confirmation',
+                    confirmation_reason: String(input.reason).slice(0, 200),
+                    evidence_kind: null,
+                    evidence_digest: null,
+                    retry_operation: null
+                  }
+          },
+          'awaiting_confirmation',
+          input.identity,
+          next.revision + 1
+        );
+        return true;
+      });
+    },
+
+    /**
      * Bind one merged PR row to the accepted external desired generation.  The
      * binding is the merge driver's completion receipt: execution status is
      * observed later and never occupies the merge slot.
@@ -4721,7 +4887,19 @@ export function createQueueStore(options = {}) {
         entry.cleanup_cursor = 'deployment_observe';
         entry.head_ref = input.head_ref || null;
         entry.pr_url = input.pr_url || null;
-        next.deployment = observation;
+        const reduced = reduceDeploymentObservation(
+          current,
+          input.status,
+          true
+        );
+        if (!reduced.deployment) {
+          rejected =
+            reduced.rejected === 'malformed'
+              ? 'binding_mismatch'
+              : reduced.rejected;
+          return false;
+        }
+        next.deployment = reduced.deployment;
         return true;
       });
       return rejected === null ? result : { ...result, [rejected]: true };
