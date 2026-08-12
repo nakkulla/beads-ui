@@ -24,6 +24,145 @@ import {
 import { stepperTemplate } from '../board/stepper.js';
 
 /**
+ * @param {string} kind
+ * @returns {string}
+ */
+function deploymentTimelineLabel(kind) {
+  /** @type {Record<string, string>} */
+  const labels = {
+    deployment_requested: '배포 요청',
+    provider_attempt: '외부 배포 확인',
+    automatic_retry: '자동 재시도',
+    recovery_prepared: '복구 준비',
+    recovery_session: '복구 세션',
+    confirmation_required: '승인 대기',
+    deployment_succeeded: '성공 관측'
+  };
+  return labels[kind] || '배포 갱신';
+}
+
+/**
+ * Compact, browser-local disclosure for the server's sanitized repository
+ * deployment projection. Native details/summary supplies click, keyboard, and
+ * ARIA disclosure semantics without writing local expansion back to authority.
+ *
+ * @param {any} deployment
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+export function deploymentDisclosureTemplate(deployment) {
+  if (
+    !deployment ||
+    typeof deployment !== 'object' ||
+    typeof deployment.state !== 'string' ||
+    typeof deployment.repo !== 'string' ||
+    typeof deployment.desired_sha !== 'string'
+  ) {
+    return '';
+  }
+  const timeline = Array.isArray(deployment.timeline)
+    ? deployment.timeline.slice(0, 5)
+    : [];
+  const recovery =
+    deployment.recovery && typeof deployment.recovery === 'object'
+      ? deployment.recovery
+      : null;
+  const actions = Array.isArray(deployment.actions) ? deployment.actions : [];
+  const session_action = actions.find(
+    (/** @type {{ kind?: unknown, attempt_id?: unknown }} */ action) =>
+      action?.kind === 'view_session' && typeof action.attempt_id === 'string'
+  );
+  const continue_action = actions.find(
+    (/** @type {{ kind?: unknown, attempt_id?: unknown }} */ action) =>
+      action?.kind === 'continue_recovery' &&
+      typeof action.attempt_id === 'string'
+  );
+  return html`<details
+    class="worker-deployment-strip"
+    aria-label="레포 배포 상태"
+    data-deployment-state=${deployment.state}
+  >
+    <summary class="worker-deployment-strip__summary">
+      <span class="worker-deployment-strip__dot" aria-hidden="true"></span>
+      <b>${deployment.state}</b>
+      <span class="worker-deployment-strip__repo">${deployment.repo}</span>
+      <code class="worker-deployment-strip__sha"
+        >${deployment.desired_sha}</code
+      >
+      <span class="worker-deployment-strip__description"
+        >${deployment.description || ''}</span
+      >
+      <span class="worker-deployment-strip__count"
+        >merge
+        ${Number.isInteger(deployment.included_merge_count)
+          ? deployment.included_merge_count
+          : 0}</span
+      >
+      <span class="worker-deployment-strip__caret" aria-hidden="true">›</span>
+    </summary>
+    <div class="worker-deployment-strip__detail">
+      ${timeline.length > 0
+        ? html`<ol class="worker-deployment-strip__timeline">
+            ${timeline.map(
+              (/** @type {{ kind?: unknown }} */ event) =>
+                html`<li>
+                  ${deploymentTimelineLabel(String(event?.kind || ''))}
+                </li>`
+            )}
+          </ol>`
+        : ''}
+      ${recovery
+        ? html`<div class="worker-deployment-strip__recovery">
+            ${recovery.bead_id ? html`<code>${recovery.bead_id}</code>` : ''}
+            ${recovery.session_id
+              ? html`<code>${recovery.session_id}</code>`
+              : ''}
+            ${recovery.attempt_id
+              ? html`<code>${recovery.attempt_id}</code>`
+              : ''}
+            ${recovery.runner || recovery.model || recovery.effort
+              ? html`<span
+                  >${[recovery.runner, recovery.model, recovery.effort]
+                    .filter(Boolean)
+                    .join(' · ')}</span
+                >`
+              : ''}
+          </div>`
+        : ''}
+      ${deployment.log
+        ? html`<span class="worker-deployment-strip__log"
+            >배포 로그 참조 있음</span
+          >`
+        : ''}
+      ${actions.some(
+        (/** @type {{ kind?: unknown }} */ action) => action?.kind === 'retry'
+      )
+        ? html`<button type="button" class="worker-deployment-retry">
+            지금 재시도
+          </button>`
+        : ''}
+      ${session_action
+        ? html`<button
+            type="button"
+            class="worker-deployment-session"
+            data-attempt-id=${session_action.attempt_id}
+          >
+            세션 보기
+          </button>`
+        : ''}
+      ${continue_action
+        ? html`<button
+            type="button"
+            class="worker-deployment-continue"
+            data-attempt-id=${continue_action.attempt_id}
+          >
+            복구 이어가기
+          </button>`
+        : ''}
+    </div>
+  </details>`;
+}
+
+/**
  * The 생성·수정 시각 meta line (UI-d7pw §4.1). Board 카드의 `timesTemplate`과
  * 같은 표기·툴팁을 쓴다 — 같은 사실을 두 탭이 다르게 적으면 안 된다.
  *

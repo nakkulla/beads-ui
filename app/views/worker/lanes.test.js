@@ -2,6 +2,7 @@ import { render } from 'lit-html';
 import { beforeEach, describe, expect, test } from 'vitest';
 import {
   candidateCard,
+  deploymentDisclosureTemplate,
   discardCompletionMessage,
   discardConfirmationMessage,
   discardPhaseLabel,
@@ -73,6 +74,51 @@ const USAGE = {
 beforeEach(() => {
   document.body.innerHTML = '<div id="lane"></div>';
   mount = /** @type {HTMLElement} */ (document.getElementById('lane'));
+});
+
+describe('repo deployment disclosure', () => {
+  test('renders one collapsed native disclosure with an explicit caret and context actions', () => {
+    render(
+      deploymentDisclosureTemplate({
+        state: '확인 필요',
+        repo: 'beads-ui',
+        desired_sha: 'aaaaaaaa',
+        description: '사용자 확인이 필요합니다',
+        included_merge_count: 2,
+        timeline: [{ kind: 'confirmation_required' }],
+        recovery: { bead_id: 'UI-f17c', attempt_id: 'attempt-1' },
+        log: { label: '배포 로그', reference: 'deployment-log' },
+        actions: [
+          {
+            kind: 'view_session',
+            label: '세션 보기',
+            attempt_id: 'attempt-1'
+          },
+          {
+            kind: 'continue_recovery',
+            label: '복구 이어가기',
+            attempt_id: 'attempt-1'
+          }
+        ]
+      }),
+      mount
+    );
+
+    const strip = /** @type {HTMLDetailsElement} */ (
+      mount.querySelector('.worker-deployment-strip')
+    );
+
+    expect(strip.open).toBe(false);
+    expect(strip.querySelector('summary')).not.toBeNull();
+    expect(
+      strip.querySelector('.worker-deployment-strip__caret')
+    ).not.toBeNull();
+    expect(strip.textContent).toContain('확인 필요');
+    expect(strip.textContent?.replace(/\s+/g, ' ')).toContain('merge 2');
+    expect(strip.textContent).toContain('세션 보기');
+    expect(strip.textContent).toContain('복구 이어가기');
+    expect(strip.textContent).not.toContain('지금 재시도');
+  });
 });
 
 describe('done lane row', () => {

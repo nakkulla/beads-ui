@@ -2421,16 +2421,17 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
     });
 
     const snapshot = queueSnapshots(sock).at(-1);
-    expect(snapshot.deployment).toEqual({
-      state: 'failed',
-      target_base: 'main',
-      target_sha: TARGET_SHA,
-      deployed_sha: null,
-      generation: 4,
-      error_code: 'healthcheck_failed',
-      log_path: '/tmp/deploy.log',
-      covered_pr_numbers: [41]
+    expect(snapshot.deployment).toMatchObject({
+      state: '확인 필요',
+      repo: 'wq-deployment',
+      desired_sha: 'aaaaaaaa',
+      included_merge_count: 1,
+      log: { label: '배포 로그' },
+      actions: [{ kind: 'retry', label: '지금 재시도' }]
     });
+    expect(snapshot.deployment).not.toHaveProperty('target_base');
+    expect(snapshot.deployment).not.toHaveProperty('target_sha');
+    expect(snapshot.deployment).not.toHaveProperty('log_path');
     expect(snapshot.deployment_coverage).toEqual({ 'UI-1': 'failed' });
 
     const malformed = decorateQueue(WS_DEPLOY.root_dir, {
@@ -2451,6 +2452,253 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
     });
     expect(malformed.deployment).toBeNull();
     expect(malformed.deployment_coverage).toEqual({});
+  });
+
+  test('projects recovery continuation without exposing unsafe provider retry', () => {
+    const identity = 'd'.repeat(64);
+    const failure_key = {
+      repo: WS_DEPLOY.root_dir,
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      generation: 4,
+      error_code: 'healthcheck_failed',
+      log_digest: 'e'.repeat(64)
+    };
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 7,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {
+        'recovery-attempt': {
+          attempt_id: 'recovery-attempt',
+          status: 'failed',
+          session_id: 'session-1'
+        }
+      },
+      deployment: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'healthcheck_failed',
+        log_path: '/tmp/deploy.log',
+        recovery: {
+          identity,
+          failure_key,
+          phase: 'unrecoverable',
+          prepared_at: 1,
+          bead_id: 'UI-recovery',
+          attempt_id: 'recovery-attempt'
+        }
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).actions).toEqual([
+      {
+        kind: 'view_session',
+        label: '세션 보기',
+        attempt_id: 'recovery-attempt'
+      },
+      {
+        kind: 'continue_recovery',
+        label: '복구 이어가기',
+        attempt_id: 'recovery-attempt'
+      }
+    ]);
+  });
+
+  test('projects settled automatic retry history without a live operation', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 7,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      deployment: {
+        state: 'running',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 4,
+        error_code: null,
+        log_path: '/tmp/deploy.log',
+        automatic_retry_count: 1,
+        retry_operation: null
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).timeline).toEqual([
+      { kind: 'automatic_retry', at: null },
+      { kind: 'provider_attempt', at: null }
+    ]);
+  });
+
+  test('projects only bounded durable deployment notification keys', () => {
+    const identity = 'c'.repeat(64);
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [],
+      attempts: {},
+      deployment: {
+        state: 'failed',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'healthcheck_failed',
+        log_path: '/tmp/deploy.log',
+        notifications: [
+          {
+            kind: 'recovery_prepared',
+            identity,
+            revision: 7,
+            key: `recovery_prepared:${identity}:7`
+          },
+          {
+            kind: 'awaiting_confirmation',
+            identity,
+            revision: 8,
+            key: `awaiting_confirmation:${identity}:7`
+          },
+          { kind: 'deployment_succeeded', key: 'provider-owned-output' }
+        ]
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).notifications).toEqual([
+      {
+        key: `recovery_prepared:${identity}:7`,
+        text: '배포 복구를 준비했습니다',
+        variant: 'warning'
+      }
+    ]);
+  });
+
+  test('continues the current recovery attempt under queue revision CAS', async () => {
+    const workspace = '/tmp/wq-deployment-recovery-continue';
+    const identity = 'f'.repeat(64);
+    const failure_key = {
+      repo: workspace,
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      generation: 3,
+      error_code: 'healthcheck_failed',
+      log_digest: '1'.repeat(64)
+    };
+    const store = getWorkerRuntime().queueStore;
+    /**
+     * @param {number} generation
+     * @param {'pending'|'failed'} state
+     */
+    const observation = (generation, state) => ({
+      state,
+      target_base: 'main',
+      target_sha: TARGET_SHA,
+      deployed_sha: null,
+      generation,
+      error_code: state === 'failed' ? 'healthcheck_failed' : null,
+      log_path: state === 'failed' ? '/tmp/deploy.log' : null
+    });
+    store.recordDeploymentObservation(workspace, observation(1, 'failed'));
+    for (let generation = 1; generation < 3; generation += 1) {
+      const key = { ...failure_key, generation };
+      store.scheduleDeploymentRetry(workspace, key, 0);
+      store.prerecordDeploymentRetry(workspace, key, 0);
+      store.recordDeploymentRetryReturned(workspace, key, {
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        generation: generation + 1
+      });
+      store.settleDeploymentRetry(
+        workspace,
+        key,
+        observation(generation + 1, 'pending')
+      );
+      store.recordDeploymentObservation(
+        workspace,
+        observation(generation + 1, 'failed')
+      );
+    }
+    store.scheduleDeploymentRetry(workspace, failure_key, 0);
+    store.prerecordDeploymentRecovery(workspace, failure_key, {
+      identity,
+      prepared_at: 1
+    });
+    store.bindDeploymentRecoveryBead(workspace, {
+      identity,
+      bead_id: 'UI-recovery'
+    });
+    const appended = store.appendAttempt(workspace, {
+      expected_revision: store.snapshot(workspace).revision,
+      attempt: {
+        attempt_id: 'recovery-attempt',
+        bead_id: 'UI-recovery',
+        status: 'failed',
+        deployment_recovery_identity: identity,
+        deployment_recovery_root: true,
+        deployment_recovery_failure_key: failure_key
+      }
+    });
+    expect(appended.ok).toBe(true);
+    store.bindDeploymentRecoveryAttempt(workspace, {
+      identity,
+      attempt_id: 'recovery-attempt'
+    });
+    const continueRepoRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-attempt-2'
+    }));
+    const retryDeployment = vi.fn();
+    __registerWorkerAttachmentForTest(
+      workspace,
+      /** @type {any} */ ({
+        runtime: getWorkerRuntime(),
+        scheduler: { continueRepoRecovery },
+        deploymentJob: { retryDeployment }
+      })
+    );
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), {
+      root_dir: workspace,
+      db_path: `${workspace}/.beads/db`
+    });
+    const expected_revision = store.snapshot(workspace).revision;
+
+    await send(
+      sock,
+      'deployment-recovery-continue',
+      'worker-deployment-recovery-continue',
+      {
+        attempt_id: 'recovery-attempt',
+        expected_revision
+      }
+    );
+
+    expect(continueRepoRecovery).toHaveBeenCalledWith(workspace, {
+      identity,
+      attempt_id: 'recovery-attempt',
+      continuation: undefined,
+      decision_token: undefined
+    });
+    expect(
+      replyFor(sock, 'deployment-recovery-continue').payload
+    ).toMatchObject({
+      resumed: true,
+      conflict: false,
+      new_attempt_id: 'recovery-attempt-2'
+    });
+
+    await send(sock, 'deployment-retry-hidden', 'worker-deployment-retry');
+
+    expect(retryDeployment).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'deployment-retry-hidden').payload).toMatchObject({
+      applied: false,
+      reason: 'deployment_recovery_active'
+    });
   });
 
   test('withholds a lower-generation row that failed its ancestry check from succeeded coverage', () => {
@@ -2486,8 +2734,8 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       }
     });
 
-    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
-      []
+    expect(/** @type {any} */ (snapshot.deployment).included_merge_count).toBe(
+      0
     );
     expect(snapshot.deployment_coverage).toEqual({});
   });
@@ -2519,8 +2767,8 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       }
     });
 
-    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
-      [43]
+    expect(/** @type {any} */ (snapshot.deployment).included_merge_count).toBe(
+      1
     );
     expect(snapshot.deployment_coverage).toEqual({ 'UI-exact': 'succeeded' });
   });
@@ -2558,8 +2806,8 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       }
     });
 
-    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
-      [44]
+    expect(/** @type {any} */ (snapshot.deployment).included_merge_count).toBe(
+      1
     );
     expect(snapshot.deployment_coverage).toEqual({
       'UI-covered': 'succeeded'
@@ -2593,8 +2841,8 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
       }
     });
 
-    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
-      [45]
+    expect(/** @type {any} */ (snapshot.deployment).included_merge_count).toBe(
+      1
     );
     expect(snapshot.deployment_coverage).toEqual({});
   });

@@ -1591,6 +1591,24 @@ export async function resumeWorkerAttempt(
 }
 
 /**
+ * Continue one existing repo deployment recovery lineage. The scheduler owns
+ * recovery identity, worktree, and continuation-token validation; this adapter
+ * only resolves the live workspace attachment.
+ *
+ * @param {string} workspace_root
+ * @param {{ identity: string, attempt_id: string, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
+ * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
+ */
+export async function continueWorkerDeploymentRecovery(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att) {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.continueRepoRecovery(key, input);
+}
+
+/**
  * Retry exactly the current failed repo-level deployment. The provider client
  * validates the returned +1 binding; the queue-store write then compares the
  * same durable failed observation again so an overlapping status update cannot
@@ -1619,6 +1637,9 @@ export async function retryWorkerDeployment(workspace_root) {
     generation <= 0
   ) {
     return { ok: false, reason: 'deployment_not_retryable' };
+  }
+  if (current.recovery) {
+    return { ok: false, reason: 'deployment_recovery_active' };
   }
   if (current.retry_operation) {
     return { ok: false, reason: 'automatic_retry_in_progress' };

@@ -331,6 +331,7 @@
  * @property {DeploymentRecovery|null} [recovery] - Source-less recovery saga for an exhausted or ambiguous failure.
  * @property {DeploymentRetryOperation|null} [superseded_retry_operation] - Previous generation's terminal retry evidence.
  * @property {DeploymentSupersededEvidence|null} [superseded_retry_evidence] - Bounded active or settled budget evidence from the superseded generation.
+ * @property {DeploymentNotification[]} [notifications] - Durable queue-revision-bound UI notices.
  */
 /**
  * @typedef {Object} DeploymentFailureKey
@@ -378,6 +379,13 @@
  * @property {{ target_base: string, target_sha: string, generation: number }} binding
  * @property {number} automatic_retry_count
  * @property {DeploymentFailureKey|null} failure_key
+ */
+/**
+ * @typedef {Object} DeploymentNotification
+ * @property {'recovery_prepared'|'awaiting_confirmation'|'deployment_succeeded'} kind
+ * @property {string} identity
+ * @property {number} revision
+ * @property {string} key
  */
 /**
  * @typedef {Object} DiscardOperation
@@ -960,7 +968,8 @@ const DEPLOYMENT_RETRY_FIELDS = new Set([
   'failure_key',
   'retry_operation',
   'recovery',
-  'superseded_retry_evidence'
+  'superseded_retry_evidence',
+  'notifications'
 ]);
 
 const DEPLOYMENT_RECOVERY_PHASES = new Set([
@@ -2065,9 +2074,76 @@ function normalizeDeploymentSupersededEvidence(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {DeploymentNotification[]}
+ */
+function normalizeDeploymentNotifications(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  /** @type {DeploymentNotification[]} */
+  const notifications = [];
+  for (const raw of value) {
+    if (
+      !isRecord(raw) ||
+      ![
+        'recovery_prepared',
+        'awaiting_confirmation',
+        'deployment_succeeded'
+      ].includes(String(raw.kind)) ||
+      !isDeploymentRecoveryIdentity(raw.identity) ||
+      !Number.isInteger(raw.revision) ||
+      Number(raw.revision) <= 0 ||
+      typeof raw.key !== 'string' ||
+      raw.key !== `${raw.kind}:${raw.identity}:${raw.revision}`
+    ) {
+      continue;
+    }
+    notifications.push({
+      kind: /** @type {DeploymentNotification['kind']} */ (raw.kind),
+      identity: String(raw.identity),
+      revision: Number(raw.revision),
+      key: raw.key
+    });
+  }
+  return notifications.slice(-3);
+}
+
+/**
+ * @param {DeploymentObservation} deployment
+ * @param {DeploymentNotification['kind']} kind
+ * @param {string} identity
+ * @param {number} revision
+ * @returns {DeploymentObservation}
+ */
+function withDeploymentNotification(deployment, kind, identity, revision) {
+  const notifications = normalizeDeploymentNotifications(
+    deployment.notifications
+  );
+  if (
+    notifications.some(
+      (notification) =>
+        notification.kind === kind && notification.identity === identity
+    )
+  ) {
+    return deployment;
+  }
+  const notification = {
+    kind,
+    identity,
+    revision,
+    key: `${kind}:${identity}:${revision}`
+  };
+  return {
+    ...deployment,
+    notifications: [...notifications, notification].slice(-3)
+  };
+}
+
+/**
  * @param {Record<string, unknown>} value
  * @param {DeploymentObservation} observation
- * @returns {{ automatic_retry_count: number, retry_budget_binding: { target_base: string, target_sha: string, generation: number }|null, next_retry_at: number|null, failure_key: DeploymentFailureKey|null, retry_operation: DeploymentRetryOperation|null, recovery: DeploymentRecovery|null, superseded_retry_evidence: DeploymentSupersededEvidence|null }}
+ * @returns {{ automatic_retry_count: number, retry_budget_binding: { target_base: string, target_sha: string, generation: number }|null, next_retry_at: number|null, failure_key: DeploymentFailureKey|null, retry_operation: DeploymentRetryOperation|null, recovery: DeploymentRecovery|null, superseded_retry_evidence: DeploymentSupersededEvidence|null, notifications: DeploymentNotification[] }}
  */
 function deploymentRetryFields(value, observation) {
   const automatic_retry_count =
@@ -2087,6 +2163,7 @@ function deploymentRetryFields(value, observation) {
   const superseded_retry_evidence = normalizeDeploymentSupersededEvidence(
     value.superseded_retry_evidence
   );
+  const notifications = normalizeDeploymentNotifications(value.notifications);
   const same_binding =
     retry_budget_binding &&
     observation.target_base === retry_budget_binding.target_base &&
@@ -2100,7 +2177,8 @@ function deploymentRetryFields(value, observation) {
       failure_key: null,
       retry_operation: null,
       recovery: recovery?.phase === 'completed' ? recovery : null,
-      superseded_retry_evidence
+      superseded_retry_evidence,
+      notifications
     };
   }
   return {
@@ -2114,7 +2192,8 @@ function deploymentRetryFields(value, observation) {
     failure_key,
     retry_operation,
     recovery,
-    superseded_retry_evidence
+    superseded_retry_evidence,
+    notifications
   };
 }
 
@@ -3794,6 +3873,18 @@ export function createQueueStore(options = {}) {
                 ? { ...observation, recovery: completed_recovery }
                 : observation;
         }
+        const resulting_recovery = next.deployment?.recovery;
+        if (
+          observation.state === 'succeeded' &&
+          resulting_recovery?.phase === 'completed'
+        ) {
+          next.deployment = withDeploymentNotification(
+            /** @type {DeploymentObservation} */ (next.deployment),
+            'deployment_succeeded',
+            resulting_recovery.identity,
+            next.revision + 1
+          );
+        }
         return true;
       });
       return rejected === null ? result : { ...result, [rejected]: true };
@@ -4025,14 +4116,16 @@ export function createQueueStore(options = {}) {
           stale = true;
           return false;
         }
-        next.deployment = {
+        /** @type {DeploymentObservation} */
+        const settled = /** @type {DeploymentObservation} */ ({
           ...observation,
           automatic_retry_count: operation.automatic_retry_count + 1,
           retry_budget_binding: operation.retry_binding,
           next_retry_at: null,
           failure_key: null,
           retry_operation: null
-        };
+        });
+        next.deployment = settled;
         return true;
       });
       return stale ? { ...result, stale: true } : result;
@@ -4073,22 +4166,27 @@ export function createQueueStore(options = {}) {
         const deployment = /** @type {DeploymentObservation} */ (
           next.deployment
         );
-        next.deployment = {
-          ...deployment,
-          recovery: {
-            identity: input.identity,
-            failure_key: key,
-            phase: 'prepared',
-            prepared_at: input.prepared_at,
-            bead_id: null,
-            attempt_id: null,
-            outcome: null,
-            confirmation_reason: null,
-            evidence_kind: null,
-            evidence_digest: null,
-            retry_operation: null
-          }
-        };
+        next.deployment = withDeploymentNotification(
+          {
+            ...deployment,
+            recovery: {
+              identity: input.identity,
+              failure_key: key,
+              phase: 'prepared',
+              prepared_at: input.prepared_at,
+              bead_id: null,
+              attempt_id: null,
+              outcome: null,
+              confirmation_reason: null,
+              evidence_kind: null,
+              evidence_digest: null,
+              retry_operation: null
+            }
+          },
+          'recovery_prepared',
+          input.identity,
+          next.revision + 1
+        );
         return true;
       });
       return adopted ? { ...result, adopted: true } : result;
@@ -4214,7 +4312,7 @@ export function createQueueStore(options = {}) {
           typeof input?.evidence === 'string' && input.evidence.length > 0
             ? createHash('sha256').update(input.evidence).digest('hex')
             : null;
-        next.deployment = {
+        const updated = {
           ...deployment,
           recovery: {
             ...recovery,
@@ -4230,6 +4328,15 @@ export function createQueueStore(options = {}) {
             evidence_digest
           }
         };
+        next.deployment =
+          phase === 'awaiting_confirmation'
+            ? withDeploymentNotification(
+                updated,
+                'awaiting_confirmation',
+                recovery.identity,
+                next.revision + 1
+              )
+            : updated;
         return true;
       });
     },
@@ -4277,7 +4384,8 @@ export function createQueueStore(options = {}) {
         const deployment = /** @type {DeploymentObservation} */ (
           next.deployment
         );
-        next.deployment = {
+        /** @type {DeploymentObservation} */
+        const settled = /** @type {DeploymentObservation} */ ({
           ...deployment,
           recovery: {
             ...recovery,
@@ -4294,7 +4402,8 @@ export function createQueueStore(options = {}) {
               retry_binding: null
             }
           }
-        };
+        });
+        next.deployment = settled;
         return true;
       });
       return adopted ? { ...result, adopted: true } : result;
@@ -4361,7 +4470,8 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        next.deployment = {
+        /** @type {DeploymentObservation} */
+        const settled = /** @type {DeploymentObservation} */ ({
           ...observation,
           automatic_retry_count: 2,
           retry_budget_binding: operation.retry_binding,
@@ -4373,7 +4483,16 @@ export function createQueueStore(options = {}) {
             phase: 'completed',
             retry_operation: null
           }
-        };
+        });
+        next.deployment =
+          observation.state === 'succeeded'
+            ? withDeploymentNotification(
+                settled,
+                'deployment_succeeded',
+                recovery.identity,
+                next.revision + 1
+              )
+            : settled;
         return true;
       });
     },
@@ -4405,31 +4524,36 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const existing = deployment.recovery;
-        next.deployment = {
-          ...deployment,
-          recovery:
-            existing && sameDeploymentRecoveryKey(existing, key)
-              ? {
-                  ...existing,
-                  phase: 'awaiting_confirmation',
-                  outcome: 'awaiting_confirmation',
-                  confirmation_reason: String(reason).slice(0, 200),
-                  retry_operation: null
-                }
-              : {
-                  identity,
-                  failure_key: key,
-                  phase: 'awaiting_confirmation',
-                  prepared_at: 0,
-                  bead_id: null,
-                  attempt_id: null,
-                  outcome: 'awaiting_confirmation',
-                  confirmation_reason: String(reason).slice(0, 200),
-                  evidence_kind: null,
-                  evidence_digest: null,
-                  retry_operation: null
-                }
-        };
+        next.deployment = withDeploymentNotification(
+          {
+            ...deployment,
+            recovery:
+              existing && sameDeploymentRecoveryKey(existing, key)
+                ? {
+                    ...existing,
+                    phase: 'awaiting_confirmation',
+                    outcome: 'awaiting_confirmation',
+                    confirmation_reason: String(reason).slice(0, 200),
+                    retry_operation: null
+                  }
+                : {
+                    identity,
+                    failure_key: key,
+                    phase: 'awaiting_confirmation',
+                    prepared_at: 0,
+                    bead_id: null,
+                    attempt_id: null,
+                    outcome: 'awaiting_confirmation',
+                    confirmation_reason: String(reason).slice(0, 200),
+                    evidence_kind: null,
+                    evidence_digest: null,
+                    retry_operation: null
+                  }
+          },
+          'awaiting_confirmation',
+          identity,
+          next.revision + 1
+        );
         return true;
       });
     },

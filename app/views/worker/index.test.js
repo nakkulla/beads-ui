@@ -3559,14 +3559,16 @@ describe('worker view repo deployment state (UI-lb58 Phase 4)', () => {
           }
         },
         deployment: {
-          state: 'failed',
-          target_base: 'main',
-          target_sha,
-          deployed_sha: null,
-          generation: 3,
-          error_code: 'healthcheck_failed',
-          log_path: null,
-          covered_pr_numbers: [9]
+          state: '확인 필요',
+          repo: 'beads-ui',
+          desired_sha: target_sha.slice(0, 8),
+          description: '사용자 확인이 필요합니다',
+          included_merge_count: 1,
+          timeline: [],
+          recovery: null,
+          log: null,
+          actions: [{ kind: 'retry', label: '지금 재시도' }],
+          notifications: []
         },
         deployment_coverage: { 'UI-deploy': 'failed' }
       })
@@ -3584,6 +3586,7 @@ describe('worker view repo deployment state (UI-lb58 Phase 4)', () => {
     expect(
       mount.querySelectorAll('.worker-mini__merge[data-bead-id="UI-deploy"]')
     ).toHaveLength(0);
+    expect(mount.querySelectorAll('.worker-deployment-strip')).toHaveLength(1);
     expect(mount.querySelectorAll('.worker-deployment-retry')).toHaveLength(1);
 
     /** @type {HTMLElement} */ (
@@ -3592,6 +3595,60 @@ describe('worker view repo deployment state (UI-lb58 Phase 4)', () => {
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-deployment-retry', {});
+  });
+
+  test('continues deployment recovery with the current queue revision', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        revision: 9,
+        deployment: {
+          state: '확인 필요',
+          repo: 'beads-ui',
+          desired_sha: 'a'.repeat(8),
+          description: '복구 세션 확인이 필요합니다',
+          included_merge_count: 1,
+          timeline: [],
+          recovery: {
+            bead_id: 'UI-recovery',
+            attempt_id: 'recovery-attempt'
+          },
+          log: null,
+          actions: [
+            {
+              kind: 'continue_recovery',
+              label: '복구 이어가기',
+              attempt_id: 'recovery-attempt'
+            }
+          ],
+          notifications: []
+        }
+      })
+    );
+    const transport = vi.fn().mockResolvedValue({
+      resumed: true,
+      conflict: false,
+      new_attempt_id: 'recovery-attempt-2'
+    });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-deployment-continue')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-deployment-recovery-continue',
+      {
+        attempt_id: 'recovery-attempt',
+        expected_revision: 9
+      }
+    );
   });
 
   test('does not present an unproven lower-generation row as deployment complete', () => {

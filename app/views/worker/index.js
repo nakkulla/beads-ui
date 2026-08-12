@@ -64,6 +64,7 @@ import {
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import {
+  deploymentDisclosureTemplate,
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
@@ -1499,6 +1500,45 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Continue the repo-level deployment recovery lineage bound to an existing
+   * failed/orphaned/paused attempt. The server derives the opaque recovery
+   * identity from its current queue row; the browser sends only attempt + CAS.
+   *
+   * @param {string} attempt_id
+   */
+  async function continueDeploymentRecovery(attempt_id) {
+    if (!transport || !attempt_id) {
+      return;
+    }
+    /** @param {Record<string, unknown>} extra */
+    const send = async (extra = {}) =>
+      /** @type {any} */ (
+        await transport('worker-deployment-recovery-continue', {
+          attempt_id,
+          expected_revision: currentRevision(),
+          ...extra
+        })
+      );
+    let res = await send();
+    adopt(res);
+    if (res && res.conflict) {
+      res = await send();
+      adopt(res);
+    }
+    res = await resolveContinuationMismatch(
+      res,
+      (continuation, decision_token) => send({ continuation, decision_token }),
+      {
+        onResult: adopt,
+        refresh: () => send()
+      }
+    );
+    if (res && res.resumed === false && !res.conflict && res.reason) {
+      showToast(`복구 이어가기 거부: ${res.reason}`, 'error', 2400);
+    }
+  }
+
+  /**
    * Dismiss (✕) the failure banner's attempt: stamp `dismissed_at` so the
    * failure stops counting as unhandled and the banner drops to the next one (if
    * any). Same CAS discipline as {@link resumeAttempt} — send the current
@@ -2589,8 +2629,8 @@ export function createWorkerView(mount_element, options = {}) {
         ? q.deployment_coverage
         : {};
     const deployment_target_sha =
-      q.deployment && typeof q.deployment.target_sha === 'string'
-        ? q.deployment.target_sha
+      q.deployment && typeof q.deployment.desired_sha === 'string'
+        ? q.deployment.desired_sha
         : null;
     // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵으로
     // 읽고 뱃지를 생략한다 (fail-quiet).
@@ -2962,9 +3002,9 @@ export function createWorkerView(mount_element, options = {}) {
       </button>`;
     const banners = bannersTemplate({
       failure: m.failure,
-      cleanupFailures: m.cleanup_failures,
-      deployment: m.deployment
+      cleanupFailures: m.cleanup_failures
     });
+    const deployment = deploymentDisclosureTemplate(m.deployment);
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
       // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
@@ -2978,7 +3018,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${banners}`;
+        ${deployment}${banners}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -3008,7 +3048,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${banners}`;
+      ${deployment}${banners}`;
   }
 
   /**
@@ -3841,6 +3881,26 @@ export function createWorkerView(mount_element, options = {}) {
         void Promise.resolve(transport('worker-deployment-retry', {})).then(
           adopt
         );
+      }
+      return;
+    }
+    const deploymentSession = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-deployment-session')
+    );
+    if (deploymentSession) {
+      const attempt_id = deploymentSession.dataset.attemptId;
+      if (attempt_id) {
+        openDrawerForAttempt(attempt_id);
+      }
+      return;
+    }
+    const deploymentContinue = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-deployment-continue')
+    );
+    if (deploymentContinue) {
+      const attempt_id = deploymentContinue.dataset.attemptId;
+      if (attempt_id) {
+        void continueDeploymentRecovery(attempt_id);
       }
       return;
     }
