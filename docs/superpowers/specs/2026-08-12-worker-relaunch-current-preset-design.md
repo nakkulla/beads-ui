@@ -54,7 +54,7 @@ Bead metadata + selected workspace default preset
 - existing model/effort/speed validation reason
 - `runner_mismatch`
 
-현재 resolver가 선택한 `exec.stamped_keys`와 12-key `exec_values`가 child attempt와 cleanup authority가 된다. prior attempt의 stamp 목록이나 preset revision은 새 child에 복사하지 않는다. 명시적으로 이슈에 적용된 preset 값은 Bead metadata에서 이기고, workspace default는 비어 있는 key만 채운다.
+`auto`와 `fresh_current`에서는 현재 resolver가 선택한 `exec.stamped_keys`와 12-key `exec_values`가 child attempt와 cleanup authority가 된다. 명시적으로 이슈에 적용된 preset 값은 Bead metadata에서 이기고, workspace default는 비어 있는 key만 채운다. `prior_session`은 사용자가 명시적으로 과거 snapshot을 선택한 예외이며 아래 mode table과 exact restoration 규칙을 사용한다.
 
 ## Continuation decision
 
@@ -66,7 +66,18 @@ prior_session
 fresh_current
 ```
 
-`auto`가 모든 기존 UI action의 기본값이다.
+`auto`가 모든 기존 UI action의 기본값이다. 실행 설정과 persistence source는 mode별로 다음처럼 고정한다.
+
+| decision | launch tuple | preset provenance / 12-key `exec_values` | metadata overlay와 cleanup | provider session | cwd |
+| --- | --- | --- | --- | --- | --- |
+| `auto`, same runner | current resolution | current resolution | current `stamped_keys`; relaunch 직전 raw 값을 capture하고 exact restore | resume | caller 계약 유지 |
+| `auto`, runner mismatch | 없음 | 없음 | 없음 | 없음 | 없음 |
+| `prior_session` | prior attempt | prior attempt | prior 12-key snapshot을 overlay하되 relaunch 직전 raw 값을 capture하고 exact restore | resume | caller 계약 유지 |
+| `fresh_current` | current resolution | current resolution | current `stamped_keys`; relaunch 직전 raw 값을 capture하고 exact restore | fresh | caller 계약 유지 |
+
+`prior_session`은 complete prior 12-key `exec_values`와 usable prior runner/session ID가 있을 때만 활성화한다. 이 snapshot이 없는 legacy mismatch에서는 `prior_session`을 disabled로 표시하고 `fresh_current` 또는 취소만 허용한다. Same-runner legacy `auto`는 current resolution으로 정상 resume할 수 있다.
+
+Metadata overlay는 Bead의 current 값을 잃지 않는다. Child attempt는 overlay 대상 key마다 relaunch 직전 raw value 또는 absence를 `exec_restore_values`에 기록한 뒤 desired snapshot을 set/unset하고 readback한다. 모든 종료·spawn failure·restart recovery cleanup은 `exec_restore_values`를 exact restore한다. 기존처럼 무조건 `unsetMetadata()`만 호출해 사용자가 적용한 current preset을 지우지 않는다.
 
 ### runner가 같은 경우
 
@@ -84,19 +95,29 @@ fresh_current
   reason: 'runner_mismatch',
   continuation_required: true,
   prior: { runner, model, effort, speed },
-  current: { runner, model, effort, speed }
+  current: { runner, model, effort, speed },
+  decision_token: {
+    source_attempt_id,
+    source_attempt_digest,
+    observed_queue_revision,
+    preset_id,
+    preset_revision,
+    effective_exec_digest
+  }
 }
 ```
 
 사용자 dialog는 다음 선택을 제공한다.
 
 - `기존 session 이어하기`: `prior_session`으로 재요청한다. prior attempt tuple과 session ID를 사용한다.
-- `현재 preset으로 새 session`: `fresh_current`로 재요청한다. 현재 effective tuple을 사용하고 `resume_session_id=null`로 같은 worktree에서 새 provider session을 시작한다.
+- `현재 preset으로 새 session`: `fresh_current`로 재요청한다. 현재 effective tuple을 사용하고 `resume_session_id=null`로 caller가 원래 소유한 cwd에서 새 provider session을 시작한다.
 - `취소`: 요청을 보내지 않는다.
 
-`prior_session`은 prior runner가 현재 catalog에서 사용 가능하고 session ID가 있을 때만 허용한다. `fresh_current`는 현재 tuple validation을 다시 통과해야 한다. 두 재요청 모두 CAS revision과 source attempt identity를 다시 확인하며, 그 사이 설정이나 queue revision이 바뀌면 stale decision을 실행하지 않고 최신 상태로 다시 판단한다.
+`source_attempt_digest`는 immutable source attempt의 runner/session/exec lineage를, `effective_exec_digest`는 canonical 12-key current exec와 resolved runner/model/effort/speed를 SHA-256으로 묶는다. 후속 요청은 선택값과 server-issued `decision_token`을 함께 보낸다. Server는 첫 state change 전에 source attempt digest, queue revision, preset id/revision, 재해석한 effective exec digest를 모두 비교한다. Bead metadata 변경은 queue/preset revision이 그대로여도 exec digest가 잡는다. 하나라도 drift하면 선택을 실행하지 않고 갱신된 mismatch/token을 반환한다.
 
-사용자 request/response가 직접 존재하는 manual resume와 REVISE disposition은 mismatch response를 받은 자리에서 dialog를 연다. Merge queue 같은 background relaunch는 terminal failure에 위 mismatch descriptor를 보존하고 affected PR card를 action-required로 표시한다. 그 카드의 다음 진행 action은 먼저 dialog를 열고 선택된 decision을 queue item에 고정한 뒤 다시 dispatch한다. Background path가 `prior_session` 또는 `fresh_current`를 추측해서는 안 된다.
+`prior_session`은 prior runner가 현재 catalog에서 사용 가능하고 session ID와 complete prior exec snapshot이 있을 때만 허용한다. `fresh_current`는 current tuple validation을 다시 통과해야 한다. 두 재요청 모두 CAS revision과 source attempt identity를 다시 확인한다.
+
+사용자 request/response가 직접 존재하는 manual resume와 REVISE disposition은 mismatch response를 받은 자리에서 dialog를 연다. Merge queue 같은 background relaunch는 terminal failure에 위 mismatch descriptor와 token을 atomic하게 보존하고 affected PR card를 action-required로 표시한다. Background record의 token은 그 persistence 결과의 queue revision에 bind한다. 그 카드의 다음 진행 action은 먼저 dialog를 열고 선택값과 token을 durable queue item에 고정한 뒤 다시 dispatch한다. Background path가 `prior_session` 또는 `fresh_current`를 추측해서는 안 된다.
 
 ## Relaunch 범위
 
@@ -105,11 +126,19 @@ fresh_current
 - paused/failed/orphaned attempt의 수동 `이어하기`
 - 기존 attempt/session을 되살리는 내부 PR conflict resolution
 - merge queue가 dispatch하는 internal conflict resolver
+- completion repair의 `resume_root`
 - REVISE `finding 수용·수정` disposition
 - failed `--resume` disposition의 fresh substitute
+- prior external-conflict attempt가 존재하는 반복 external conflict resolution
 - 기존 attempt/worktree를 source로 삼아 session을 resume하거나 대체하는 다른 recovery path
 
-External PR conflict처럼 source attempt/session 없이 fresh launch하는 경로는 이미 현재 Bead/default를 해석하며, 동일 resolver/provenance 규칙을 유지한다. 새 worktree를 만드는 ordinary dispatch와 completion repair의 별도 fresh-dispatch admission은 이 spec이 relaunch로 재분류하지 않는다.
+최초 External PR conflict처럼 source attempt/session 없이 fresh launch하는 경로는 이미 현재 Bead/default를 해석하며, 동일 resolver/provenance 규칙을 유지한다. 새 worktree를 만드는 ordinary dispatch와 completion repair의 `dispatch_repair`는 truly fresh dispatch이므로 relaunch로 재분류하지 않는다.
+
+Continuation decision은 session/tuple/provenance 선택만 결정하고 caller별 cwd 계약을 바꾸지 않는다.
+
+- manual resume, internal conflict, completion `resume_root`, repeated external conflict는 기존 Bead worktree를 사용한다.
+- REVISE disposition이 provider session을 resume할 때는 transcript가 존재하는 원 worktree를 사용한다.
+- REVISE `fresh_current`와 failed-resume substitute는 수정 결과가 base에 착륙해야 하므로 기존 shared target-base checkout을 사용한다.
 
 ## Attempt lineage와 persistence
 
@@ -118,10 +147,13 @@ External PR conflict처럼 source attempt/session 없이 fresh launch하는 경�
 - 실제 launch의 `runner`, `model`, `effort`, `speed`
 - 현재 resolution의 `exec_default_preset_id`, `exec_default_preset_revision`
 - 현재 resolution의 `exec_stamped_keys`, 12-key `exec_values`
+- metadata overlay 전 raw 값을 담은 `exec_restore_values`
 - source attempt의 `resumed_from`
-- `continuation_mode='session'|'worktree'`
+- `continuation_mode='session'|'fresh'`
 
-`resumed_from`은 attempt lineage를 뜻하며 provider transcript continuation을 보장하지 않는다. `continuation_mode='session'`만 같은 provider session ID를 재사용했음을 뜻한다. `continuation_mode='worktree'`는 source worktree와 작업 상태만 이어받고 새 session을 시작했음을 뜻한다.
+위의 “현재 resolution” 필드는 `auto`/`fresh_current`에 적용한다. `prior_session` child는 prior attempt의 preset id/revision과 complete 12-key `exec_values`를 기록하되, 이번 relaunch에서 실제 변경한 key와 exact cleanup authority는 새 `exec_stamped_keys`/`exec_restore_values`에 기록한다. 실제 launch tuple과 durable provenance가 서로 다른 source를 가리켜서는 안 된다.
+
+`resumed_from`은 attempt lineage를 뜻하며 provider transcript continuation을 보장하지 않는다. `continuation_mode='session'`만 같은 provider session ID를 재사용했음을 뜻한다. `continuation_mode='fresh'`는 caller의 기존 작업 위치와 상태를 이어받되 새 provider session을 시작했음을 뜻한다.
 
 Legacy child에 `continuation_mode`가 없으면 UI는 `이전 attempt에서 이어받음`처럼 중립적으로 표시한다. 기존처럼 무조건 `이어받은 세션`이라고 단정하지 않는다.
 
@@ -132,14 +164,14 @@ Source attempt의 repo, target base, base OID, conflict/disposition/external lin
 Attempt-derived relaunch request는 optional `continuation`을 받는다. 부재는 `auto`와 같다.
 
 ```text
-worker-attempt-resume { attempt_id, expected_revision, continuation? }
-worker-revise-fix     { bead_id, expected_revision, continuation? }
-merge/conflict action 또는 durable queue item { ..., continuation? }
+worker-attempt-resume { attempt_id, expected_revision, continuation?, decision_token? }
+worker-revise-fix     { bead_id, expected_revision, continuation?, decision_token? }
+merge/conflict action 또는 durable queue item { ..., continuation?, decision_token? }
 ```
 
 공용 server reply/result는 success 필드와 별개로 optional `continuation_mismatch`를 운반한다. Descriptor에는 prior/current tuple만 포함하고 prompt, session transcript, filesystem path 같은 민감하거나 큰 필드는 넣지 않는다.
 
-Dialog는 runner mismatch에서만 나타난다. 같은 runner의 model/effort/speed 변경에는 질문 없이 기존 action이 곧바로 진행된다. CAS conflict는 기존처럼 authoritative queue를 adopt하고 한 번 재시도하되, 사용자가 고른 continuation decision을 유지한다. 재시도 결과가 새로운 mismatch라면 오래된 선택을 실행하지 않고 dialog 내용을 갱신한다.
+Dialog는 runner mismatch에서만 나타난다. 같은 runner의 model/effort/speed 변경에는 질문 없이 기존 action이 곧바로 진행된다. Unknown continuation, 선택 요청의 missing/invalid token, token identity mismatch는 `bad_request` 또는 `continuation_decision_stale`로 첫 state change 전에 거부한다. CAS conflict는 기존처럼 authoritative queue를 adopt하되 stale token을 그대로 재실행하지 않는다. Fresh resolution이 기존 token과 같을 때만 선택값을 유지해 한 번 재시도하고, 달라졌으면 갱신된 mismatch로 dialog 내용을 바꾼다.
 
 ## 실행 tuple 표시
 
@@ -163,7 +195,7 @@ Dialog는 runner mismatch에서만 나타난다. 같은 runner의 model/effort/s
 Lineage tooltip은 `continuation_mode`에 따라 구분한다.
 
 - `session`: `session 이어받음 (from <attempt>)`
-- `worktree`: `worktree 이어받음 · 새 session (from <attempt>)`
+- `fresh`: `새 session으로 이어받음 (from <attempt>)`
 - legacy absent: `이전 attempt에서 이어받음 (from <attempt>)`
 
 ## 오류 처리와 안전성
@@ -171,7 +203,8 @@ Lineage tooltip은 `continuation_mode`에 따라 구분한다.
 - Current preset이 삭제되거나 비호환이면 prior snapshot으로 조용히 fallback하지 않는다.
 - Runner mismatch decision은 source attempt를 spent 처리하기 전에 끝난다. 취소 또는 거부 후 원 attempt는 다시 선택할 수 있다.
 - `prior_session` 선택은 사용자가 runner 불일치에서 명시적으로 과거 tuple을 승인한 경우에만 prior snapshot을 사용한다.
-- `fresh_current`는 worktree를 재생성하거나 삭제하지 않는다.
+- `prior_session` overlay cleanup은 relaunch 전 current Bead metadata를 exact restore하며 preset 적용값을 unset하지 않는다.
+- `fresh_current`는 caller가 소유한 cwd를 바꾸거나 worktree를 재생성·삭제하지 않는다.
 - Adapter spawn failure는 기존 rollback 경로대로 current stamps와 workflow mode를 되돌리고 child attempt를 failed로 기록한다.
 - Background relaunch mismatch는 merge/disposition을 성공처럼 표시하지 않으며, action-required 상태가 restart 후에도 남는다.
 - Existing `already_resumed`, `bead_running`, `worktree_missing`, base landing, guard hook, admission, CAS 규칙은 유지한다.
@@ -198,11 +231,14 @@ Apply order와 interruption recovery는 기존 managed Adapter protocol을 그�
 - 이슈에 `sol/xhigh/Standard` preset을 적용한 뒤 이전 `sol/ultra/Fast` Codex attempt를 이어하면 같은 worktree와 session ID를 사용하면서 새 argv와 child snapshot은 `sol/xhigh/default`다.
 - 같은 runner에서 model, effort, speed 중 일부만 바뀌어도 dialog 없이 현재 effective tuple로 resume한다.
 - Codex attempt에 Claude preset을 적용하면 첫 요청은 무변경 `runner_mismatch`를 반환한다.
-- mismatch dialog의 `기존 session 이어하기`는 prior tuple/session을, `현재 preset으로 새 session`은 current tuple/같은 worktree/새 session을 사용하며 취소는 무변경이다.
-- Internal PR conflict resolution과 REVISE disposition도 같은 current-resolution 및 mismatch 규칙을 사용한다.
+- mismatch dialog의 `기존 session 이어하기`는 prior tuple/session을, `현재 preset으로 새 session`은 current tuple/caller-owned cwd/새 session을 사용하며 취소는 무변경이다.
+- Bead metadata가 queue revision 변화 없이 수정되거나 preset revision/exec가 바뀐 뒤 오래된 decision token을 보내면 session을 띄우지 않고 갱신된 mismatch를 반환한다.
+- Internal PR conflict resolution, completion `resume_root`, REVISE disposition, repeated external conflict도 같은 current-resolution 및 mismatch 규칙을 사용한다.
+- REVISE의 `fresh_current`와 failed-resume substitute는 shared target-base checkout을, manual/internal conflict/`resume_root`/repeated external conflict는 기존 worktree를 유지한다.
 - Background conflict resolver의 mismatch는 durable action-required 상태로 남고 사용자 decision 전에는 session을 띄우지 않는다.
 - Prior attempt snapshot은 preset 적용과 relaunch 전후에 byte-for-byte 의미상 불변이다.
-- Child attempt는 실제 tuple, current preset provenance/stamps, `resumed_from`, `continuation_mode`를 restart 후에도 보존한다.
+- `prior_session` 종료 후 Bead metadata는 사용자가 relaunch 직전에 적용한 current preset 값으로 exact 복원된다.
+- Child attempt는 실제 tuple, mode별 preset provenance/stamps/restore values, `resumed_from`, `continuation_mode`를 restart 후에도 보존한다.
 - 진행·실패·일시정지 카드와 세션 이력이 effort를 표시하고 Fast attempt에만 `Fast`를 추가한다.
 - Legacy attempt의 누락 field는 빈 separator나 잘못된 session-continuation 단정을 만들지 않는다.
 - Implementation PR이 source와 generated frontend bundle을 함께 운반하고, merged candidate는 선언된 managed deploy의 ordered readback을 통과해야 close할 수 있다.
@@ -222,15 +258,20 @@ Apply order와 interruption recovery는 기존 managed Adapter protocol을 그�
 
 다음 seam은 구현 전 실패하는 RED→GREEN 대상이다.
 
-1. **Current-resolution scheduler seam**: prior snapshot과 다른 current model/effort/speed를 가진 같은-runner Bead를 resume/conflict/disposition할 때 current tuple, current preset revision, current 12-key `exec_values`와 stamps가 child/runner에 도달한다. Prior attempt는 변하지 않는다.
-2. **Mismatch state seam**: `auto`의 cross-runner mismatch가 hook/claim/ancestor settlement/child prerecord/metadata stamp/spawn 없이 structured descriptor를 반환한다. `prior_session`, `fresh_current`, 취소/CAS drift를 각각 검증한다.
-3. **Relaunch caller seam**: manual resume, internal conflict resolver, merge-queue background resolver, REVISE disposition, failed-resume substitute가 공용 decision/resolution 경계를 우회하지 않는다. External fresh conflict launch 회귀도 확인한다.
-4. **Persistence seam**: `continuation_mode`, current preset provenance, current exec snapshot, background mismatch action-required descriptor가 queue persistence와 restart normalize를 왕복한다. Legacy missing field는 허용한다.
-5. **Protocol seam**: resume/disposition/conflict payload가 optional continuation을 검증하고 structured mismatch를 손실 없이 전달한다. Unknown continuation은 `bad_request`; stale revision은 무변경 conflict다.
-6. **Codex adapter seam**: 같은 session ID에 다른 model/effort/default|fast를 준 resume argv가 정확히 생성된다. Claude/Codex cross-runner ID를 adapter에 전달하지 않는다.
-7. **Mismatch UI seam**: 직접 action의 mismatch dialog 세 선택, background action-required card의 재진입, CAS retry 시 decision 유지와 새 mismatch 갱신을 검증한다. 같은-runner 변경에는 dialog가 없어야 한다.
-8. **Tuple UI seam**: running/paused/failed tile과 session history가 `runner · model · effort`를 표시하고 `speed=fast`일 때만 `Fast`를 덧붙인다. Legacy null/default/unknown에는 빈 separator나 Fast label이 없다.
-9. **Regression seam**: `already_resumed`, admission, base-drift, guard-hook rollback, discard, merge queue ordering, disposition completion, attempt usage/session drawer가 기존 동작을 유지한다.
-10. **Deploy continuity seam**: implementation은 기존 managed `[deploy]` declaration을 변경하지 않으며, finish 시 candidate install → journal → pointer → restart handoff → exact runtime readback 순서와 terminal receipt가 이 변경에도 계속 적용된다.
+1. **Current-resolution scheduler seam**: prior snapshot과 다른 current model/effort/speed를 가진 same-runner Bead를 manual resume, internal conflict, completion `resume_root`, repeated external conflict, REVISE에서 이어갈 때 current tuple, current preset revision, current 12-key `exec_values`와 stamps가 child/runner에 도달한다. Prior attempt는 변하지 않는다.
+2. **Mode provenance/rollback seam**: `auto`, `prior_session`, `fresh_current` 각각의 tuple, preset id/revision, 12-key `exec_values`, overlay, `exec_restore_values` source가 표와 일치한다. `prior_session` 종료·spawn failure·restart recovery가 relaunch 직전 Bead metadata를 exact restore한다.
+3. **Mismatch identity seam**: `auto`의 cross-runner mismatch가 hook/claim/ancestor settlement/child prerecord/metadata overlay/spawn 없이 descriptor와 decision token을 반환한다. Queue revision 변화 없는 Bead metadata drift, preset drift, source-attempt drift가 stale token을 거부하는 RED를 포함한다.
+4. **Relaunch caller seam**: manual resume, internal conflict resolver, merge-queue background resolver, completion `resume_root`, repeated external conflict, REVISE disposition, failed-resume substitute가 공용 decision/resolution 경계를 우회하지 않는다. Truly fresh `dispatch_repair`와 최초 external conflict만 current fresh-dispatch 경계를 유지한다.
+5. **Persistence seam**: `continuation_mode`, mode별 preset provenance, exec snapshot/restore values, background mismatch action-required descriptor/token/decision이 queue persistence와 restart normalize를 왕복한다. Legacy missing field는 허용한다.
+6. **Protocol seam**: resume/disposition/conflict payload가 optional continuation과 required decision token 조합을 검증하고 structured mismatch를 손실 없이 전달한다. Unknown continuation, missing/invalid/stale token, stale revision은 첫 state change 전에 결정적으로 거부된다.
+7. **Caller cwd seam**: manual/internal conflict/`resume_root`/repeated external conflict는 existing worktree, REVISE resumed session은 transcript worktree, REVISE `fresh_current`와 substitute는 shared target-base checkout을 runner cwd로 받는다.
+8. **Mismatch UI seam**: 직접 action의 mismatch dialog 세 선택, disabled legacy `prior_session`, background action-required card의 재진입, token drift 시 새 mismatch 갱신을 검증한다. Same-runner 변경에는 dialog가 없어야 한다.
+9. **Tuple UI seam**: running/paused/failed tile과 session history가 `runner · model · effort`를 표시하고 `speed=fast`일 때만 `Fast`를 덧붙인다. Legacy null/default/unknown에는 빈 separator나 Fast label이 없다.
+
+다음은 구현 전부터 GREEN일 수 있으므로 RED authority가 아니라 regression/continuity verification이다.
+
+- Codex adapter가 같은 session ID에 explicit model/effort/default|fast override를 계속 생성한다. Cross-runner session ID 차단은 adapter가 아니라 mismatch scheduler seam에서 증명한다.
+- `already_resumed`, admission, base-drift, guard-hook rollback, discard, merge queue ordering, disposition completion, attempt usage/session drawer가 기존 동작을 유지한다.
+- 기존 managed `[deploy]` declaration을 변경하지 않고 candidate install → journal → pointer → restart handoff → exact runtime readback 순서와 terminal receipt가 계속 적용된다.
 
 Pre-handoff verification은 `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`, `npm run build`를 수행한다. Frontend source 변경으로 생성되는 `app/main.bundle.js`와 source map을 implementation commit에 포함한다.
