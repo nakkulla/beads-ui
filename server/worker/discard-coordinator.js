@@ -310,13 +310,72 @@ export function createDiscardCoordinator(deps) {
     if (remote.sha !== null && remote.sha !== source_head) {
       return { ok: false, reason: 'source_remote_ref_mismatch' };
     }
-    let bead_status;
-    let bead_pr_url;
+    let parent_issue;
+    /** @type {Record<string, any>[]} */
+    let phase_children;
     try {
-      bead_status = await deps.bd.readStatus(bead_id);
-      bead_pr_url = await deps.bd.readMetadata(bead_id, 'pr_url');
+      parent_issue = await deps.bd.readIssue(bead_id);
+      const listed_children = await deps.bd.listChildren(bead_id);
+      if (!Array.isArray(listed_children)) {
+        return { ok: false, reason: 'phase_child_snapshot_failed' };
+      }
+      /** @type {Record<string, any>[]} */
+      const children = [];
+      /** @type {Set<string>} */
+      const child_ids = new Set();
+      for (const listed of listed_children) {
+        const child_id = listed?.id;
+        if (
+          typeof child_id !== 'string' ||
+          child_id.length === 0 ||
+          child_id === bead_id ||
+          child_ids.has(child_id)
+        ) {
+          return { ok: false, reason: 'phase_child_snapshot_failed' };
+        }
+        child_ids.add(child_id);
+        const child = await deps.bd.readIssue(child_id);
+        if (
+          !child ||
+          child.id !== child_id ||
+          child.metadata?.parent !== bead_id ||
+          typeof child.metadata?.plan_task_anchor !== 'string' ||
+          child.metadata.plan_task_anchor.length === 0
+        ) {
+          return { ok: false, reason: 'phase_child_snapshot_failed' };
+        }
+        const descendants = await deps.bd.listChildren(child_id);
+        if (!Array.isArray(descendants)) {
+          return { ok: false, reason: 'phase_child_snapshot_failed' };
+        }
+        if (descendants.length > 0) {
+          return { ok: false, reason: 'phase_child_nested' };
+        }
+        children.push(child);
+      }
+      phase_children = children.sort((left, right) =>
+        left.id.localeCompare(right.id)
+      );
     } catch {
-      return { ok: false, reason: 'bd_snapshot_failed' };
+      return { ok: false, reason: 'phase_child_snapshot_failed' };
+    }
+    const parent_metadata =
+      parent_issue.metadata && typeof parent_issue.metadata === 'object'
+        ? parent_issue.metadata
+        : {};
+    /** @type {Record<string, { present: boolean, value?: unknown }>} */
+    const parent_authority = {};
+    for (const key of [
+      'spec_id',
+      'plan_path',
+      'spec_review',
+      'plan_review',
+      'plan_approval'
+    ]) {
+      const source = key === 'spec_id' ? parent_issue : parent_metadata;
+      parent_authority[key] = Object.hasOwn(source, key)
+        ? { present: true, value: source[key] }
+        : { present: false };
     }
     return {
       ok: true,
@@ -337,8 +396,14 @@ export function createDiscardCoordinator(deps) {
         remote_branch_sha: remote.sha,
         ...(topology.present ? {} : { preexisting_absent: true }),
         pr,
-        bead_status,
-        bead_pr_url,
+        bead_status:
+          typeof parent_issue.status === 'string' ? parent_issue.status : null,
+        bead_pr_url:
+          typeof parent_metadata.pr_url === 'string'
+            ? parent_metadata.pr_url
+            : null,
+        phase_children,
+        parent_authority,
         membership: {
           queue: queue.queue.some(
             (/** @type {any} */ entry) => entry.bead_id === bead_id
@@ -1285,40 +1350,6 @@ export function createDiscardCoordinator(deps) {
     });
   }
 
-  /** @param {any} operation */
-  async function rollbackOpenBead(operation) {
-    try {
-      if ((await deps.bd.readStatus(operation.bead_id)) !== 'open') {
-        await deps.bd.setStatus(operation.bead_id, 'open');
-      }
-      if ((await deps.bd.readStatus(operation.bead_id)) !== 'open') {
-        return fail(operation, 'rollback_open_readback_failed');
-      }
-    } catch {
-      return fail(operation, 'rollback_open_write_failed');
-    }
-    return advance(operation, 'rollback_pr_url_cleared', {
-      receipts: { rollback_bead_opened: { at: now() } }
-    });
-  }
-
-  /** @param {any} operation */
-  async function rollbackClearPrUrl(operation) {
-    try {
-      if ((await deps.bd.readMetadata(operation.bead_id, 'pr_url')) !== null) {
-        await deps.bd.unsetMetadata(operation.bead_id, 'pr_url');
-      }
-      if ((await deps.bd.readMetadata(operation.bead_id, 'pr_url')) !== null) {
-        return fail(operation, 'rollback_pr_url_readback_failed');
-      }
-    } catch {
-      return fail(operation, 'rollback_pr_url_write_failed');
-    }
-    return advance(operation, 'rollback_finalized', {
-      receipts: { rollback_pr_url_cleared: { at: now() } }
-    });
-  }
-
   /**
    * @param {any} operation
    */
@@ -1430,40 +1461,215 @@ export function createDiscardCoordinator(deps) {
   }
 
   /**
-   * @param {any} operation
+   * @param {unknown} value
+   * @returns {value is { present: boolean, value?: unknown }}
    */
-  async function reopenBead(operation) {
-    try {
-      if ((await deps.bd.readStatus(operation.bead_id)) !== 'open') {
-        await deps.bd.setStatus(operation.bead_id, 'open');
+  function isAuthorityValue(value) {
+    if (value === null || typeof value !== 'object') {
+      return false;
+    }
+    const candidate = /** @type {{ present?: unknown }} */ (value);
+    return (
+      typeof candidate.present === 'boolean' &&
+      (!candidate.present || Object.hasOwn(candidate, 'value'))
+    );
+  }
+
+  /**
+   * @param {Record<string, any>} issue
+   * @returns {Record<string, { present: boolean, value?: unknown }>|null}
+   */
+  function parentAuthorityOf(issue) {
+    if (!issue || typeof issue !== 'object') {
+      return null;
+    }
+    const metadata =
+      issue.metadata && typeof issue.metadata === 'object'
+        ? issue.metadata
+        : {};
+    /** @type {Record<string, { present: boolean, value?: unknown }>} */
+    const authority = {};
+    for (const key of [
+      'spec_id',
+      'plan_path',
+      'spec_review',
+      'plan_review',
+      'plan_approval'
+    ]) {
+      const source = key === 'spec_id' ? issue : metadata;
+      authority[key] = Object.hasOwn(source, key)
+        ? { present: true, value: source[key] }
+        : { present: false };
+    }
+    return authority;
+  }
+
+  /**
+   * @param {Record<string, { present: boolean, value?: unknown }>} left
+   * @param {Record<string, { present: boolean, value?: unknown }>} right
+   */
+  function hasSameAuthority(left, right) {
+    for (const key of [
+      'spec_id',
+      'plan_path',
+      'spec_review',
+      'plan_review',
+      'plan_approval'
+    ]) {
+      if (!isAuthorityValue(left?.[key]) || !isAuthorityValue(right?.[key])) {
+        return false;
       }
-      if ((await deps.bd.readStatus(operation.bead_id)) !== 'open') {
-        return fail(operation, 'bd_status_readback_failed');
+      if (left[key].present !== right[key].present) {
+        return false;
+      }
+      if (
+        left[key].present &&
+        JSON.stringify(left[key].value) !== JSON.stringify(right[key].value)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * @param {any} operation
+   * @param {string} next_phase
+   */
+  async function deletePhaseChildren(operation, next_phase) {
+    const snapshot = operation.source_snapshot?.phase_children;
+    if (!Array.isArray(snapshot)) {
+      return fail(operation, 'phase_child_snapshot_missing');
+    }
+    /** @type {Set<string>} */
+    const snapshot_ids = new Set();
+    for (const child of snapshot) {
+      if (
+        !child ||
+        typeof child.id !== 'string' ||
+        child.id.length === 0 ||
+        child.id === operation.bead_id ||
+        snapshot_ids.has(child.id)
+      ) {
+        return fail(operation, 'phase_child_snapshot_invalid');
+      }
+      snapshot_ids.add(child.id);
+    }
+    let current_children;
+    try {
+      current_children = await deps.bd.listChildren(operation.bead_id);
+      if (!Array.isArray(current_children)) {
+        return fail(operation, 'phase_children_delete_failed');
+      }
+      /** @type {Set<string>} */
+      const current_ids = new Set();
+      for (const listed of current_children) {
+        const child_id = listed?.id;
+        if (
+          typeof child_id !== 'string' ||
+          child_id.length === 0 ||
+          current_ids.has(child_id) ||
+          !snapshot_ids.has(child_id)
+        ) {
+          return fail(operation, 'phase_child_set_changed');
+        }
+        current_ids.add(child_id);
+        const child = await deps.bd.readIssue(child_id);
+        if (
+          !child ||
+          child.id !== child_id ||
+          child.metadata?.parent !== operation.bead_id ||
+          typeof child.metadata?.plan_task_anchor !== 'string' ||
+          child.metadata.plan_task_anchor.length === 0
+        ) {
+          return fail(operation, 'phase_children_delete_failed');
+        }
+        const descendants = await deps.bd.listChildren(child_id);
+        if (!Array.isArray(descendants)) {
+          return fail(operation, 'phase_children_delete_failed');
+        }
+        if (descendants.length > 0) {
+          return fail(operation, 'phase_child_nested');
+        }
+      }
+      /** @type {string[]} */
+      const remaining_ids = [];
+      for (const child_id of snapshot_ids) {
+        const found = await deps.bd.findIssue(child_id);
+        if (found === null) {
+          continue;
+        }
+        if (!current_ids.has(child_id)) {
+          return fail(operation, 'phase_child_set_changed');
+        }
+        remaining_ids.push(child_id);
+      }
+      if (remaining_ids.length > 0) {
+        await deps.bd.deleteIssues(remaining_ids);
       }
     } catch {
-      return fail(operation, 'bd_status_write_failed');
+      return fail(operation, 'phase_children_delete_failed');
     }
-    return advance(operation, 'bead_opened', {
-      receipts: { bead_opened: { at: now() } }
+    try {
+      for (const child_id of snapshot_ids) {
+        if ((await deps.bd.findIssue(child_id)) !== null) {
+          return fail(operation, 'phase_children_readback_failed');
+        }
+      }
+      const remaining_children = await deps.bd.listChildren(operation.bead_id);
+      if (
+        !Array.isArray(remaining_children) ||
+        remaining_children.length !== 0
+      ) {
+        return fail(operation, 'phase_children_readback_failed');
+      }
+    } catch {
+      return fail(operation, 'phase_children_readback_failed');
+    }
+    return advance(operation, next_phase, {
+      receipts: { phase_children_deleted: { at: now() } }
     });
   }
 
   /**
    * @param {any} operation
+   * @param {string} next_phase
    */
-  async function clearPrUrl(operation) {
+  async function resetParent(operation, next_phase) {
+    const baseline = operation.source_snapshot?.parent_authority;
+    if (!baseline || typeof baseline !== 'object') {
+      return fail(operation, 'parent_authority_snapshot_missing');
+    }
     try {
-      if ((await deps.bd.readMetadata(operation.bead_id, 'pr_url')) !== null) {
-        await deps.bd.unsetMetadata(operation.bead_id, 'pr_url');
+      const before = await deps.bd.readIssue(operation.bead_id);
+      const current_authority = parentAuthorityOf(before);
+      if (
+        !current_authority ||
+        !hasSameAuthority(baseline, current_authority)
+      ) {
+        return fail(operation, 'bd_parent_authority_changed');
       }
-      if ((await deps.bd.readMetadata(operation.bead_id, 'pr_url')) !== null) {
-        return fail(operation, 'bd_pr_url_readback_failed');
+      await deps.bd.updateFields(operation.bead_id, {
+        status: 'open',
+        unset: ['pr_url', 'impl_review', 'last_checked_sha']
+      });
+      const after = await deps.bd.readIssue(operation.bead_id);
+      const after_authority = parentAuthorityOf(after);
+      if (
+        after.status !== 'open' ||
+        Object.hasOwn(after.metadata || {}, 'pr_url') ||
+        Object.hasOwn(after.metadata || {}, 'impl_review') ||
+        Object.hasOwn(after.metadata || {}, 'last_checked_sha') ||
+        !after_authority ||
+        !hasSameAuthority(baseline, after_authority)
+      ) {
+        return fail(operation, 'bd_parent_reset_readback_failed');
       }
     } catch {
-      return fail(operation, 'bd_pr_url_write_failed');
+      return fail(operation, 'bd_parent_reset_failed');
     }
-    return advance(operation, 'bead_pr_url_cleared', {
-      receipts: { bead_pr_url_cleared: { at: now() } }
+    return advance(operation, next_phase, {
+      receipts: { parent_reset: { at: now() } }
     });
   }
 
@@ -1633,7 +1839,7 @@ export function createDiscardCoordinator(deps) {
           operation,
           operation.revert_pr.branch,
           operation.revert_pr.head_sha,
-          'rollback_bead_opened',
+          'rollback_phase_children_deleting',
           'rollback_revert_remote_removed'
         );
         if (!result || result.ok === false) {
@@ -1644,18 +1850,16 @@ export function createDiscardCoordinator(deps) {
         continue;
       }
       if (operation.phase === 'rollback_bead_opened') {
-        const result = await rollbackOpenBead(operation);
-        if (!result || result.ok === false) {
-          return result || fail(operation, 'rollback_bead_open_phase_failed');
-        }
-        continue;
+        return fail(operation, 'phase_child_snapshot_missing');
       }
       if (operation.phase === 'rollback_pr_url_cleared') {
-        const result = await rollbackClearPrUrl(operation);
-        if (!result || result.ok === false) {
-          return result || fail(operation, 'rollback_pr_url_phase_failed');
-        }
-        continue;
+        return fail(operation, 'phase_child_snapshot_missing');
+      }
+      if (
+        operation.phase === 'bead_opened' ||
+        operation.phase === 'bead_pr_url_cleared'
+      ) {
+        return fail(operation, 'phase_child_snapshot_missing');
       }
       if (operation.phase === 'rollback_finalized') {
         await deps.scheduler.tick(deps.workspace);
@@ -1668,6 +1872,23 @@ export function createDiscardCoordinator(deps) {
         }
         notifyChanged(deps.workspace);
         return { ok: true, operation_id };
+      }
+      if (operation.phase === 'rollback_phase_children_deleting') {
+        const result = await deletePhaseChildren(
+          operation,
+          'rollback_phase_children_deleted'
+        );
+        if (!result || result.ok === false) {
+          return result || fail(operation, 'rollback_phase_children_failed');
+        }
+        continue;
+      }
+      if (operation.phase === 'rollback_phase_children_deleted') {
+        const result = await resetParent(operation, 'rollback_finalized');
+        if (!result || result.ok === false) {
+          return result || fail(operation, 'rollback_parent_reset_failed');
+        }
+        continue;
       }
       if (operation.phase === 'requested') {
         const result = await archive(operation);
@@ -1703,10 +1924,12 @@ export function createDiscardCoordinator(deps) {
         pr_closed: removeWorktree,
         worktree_removed: removeLocalRef,
         local_ref_removed: removeRemoteRef,
-        remote_ref_removed: reopenBead,
-        bead_opened: clearPrUrl
+        remote_ref_removed: (operation) =>
+          deletePhaseChildren(operation, 'phase_children_deleted'),
+        phase_children_deleted: (operation) =>
+          resetParent(operation, 'parent_reset')
       };
-      if (operation.phase === 'bead_pr_url_cleared') {
+      if (operation.phase === 'parent_reset') {
         const completed = deps.store.completeDiscardOperation(deps.workspace, {
           operation_id,
           expected_phase: operation.phase

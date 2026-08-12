@@ -2,6 +2,40 @@ import { describe, expect, test, vi } from 'vitest';
 import { createBdMetadata } from './bd-metadata.js';
 
 describe('worker/bd-metadata argv contract', () => {
+  test('deletes exact explicit IDs with force and without cascade', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    await createBdMetadata({ run, cwd: '/repo' }).deleteIssues([
+      'UI-1.1',
+      'UI-1.2'
+    ]);
+
+    expect(run).toHaveBeenCalledWith(
+      ['delete', 'UI-1.1', 'UI-1.2', '--force'],
+      { cwd: '/repo' }
+    );
+  });
+
+  test('rejects empty or duplicate issue IDs before delete', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const metadata = createBdMetadata({ run });
+
+    await expect(metadata.deleteIssues([])).rejects.toThrow(/non-empty/);
+    await expect(metadata.deleteIssues(['UI-1.1', 'UI-1.1'])).rejects.toThrow(
+      /duplicate/
+    );
+
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('throws when exact batch delete exits non-zero', async () => {
+    const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'blocked' }));
+
+    await expect(
+      createBdMetadata({ run }).deleteIssues(['UI-1.1'])
+    ).rejects.toThrow(/bd delete UI-1.1 failed \(1\)/);
+  });
+
   test('setMetadata → bd update <id> --set-metadata key=value', async () => {
     const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
     await createBdMetadata({ run, cwd: '/repo' }).setMetadata(

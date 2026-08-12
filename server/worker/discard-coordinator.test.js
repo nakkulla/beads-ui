@@ -12,6 +12,25 @@ let workspace;
 
 const HEAD_SHA = 'b'.repeat(40);
 const MERGED_SHA = 'd'.repeat(40);
+const PARENT_AUTHORITY = {
+  spec_id: { present: true, value: 'spec-current' },
+  plan_path: { present: true, value: 'docs/plan.md' },
+  spec_review: { present: true, value: 'codex@spec' },
+  plan_review: { present: true, value: 'codex@plan' },
+  plan_approval: { present: true, value: 'user@plan' }
+};
+
+/**
+ * @param {string} id
+ * @param {string} parent
+ */
+function phaseChild(id, parent = 'UI-1') {
+  return {
+    id,
+    status: 'resolved',
+    metadata: { parent, plan_task_anchor: `anchor-${id}` }
+  };
+}
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-discard-'));
@@ -25,7 +44,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any }} [options]
+ * @param {{ prState?: string, closeRace?: boolean, closeReturnsError?: boolean, remoteAutoDeleteOnClose?: boolean, remoteChangesAfterClose?: boolean, worktreeChangesAfterArchive?: boolean, sourceAbsent?: boolean, localRefSha?: string, remoteRefSha?: string, attemptHeadSha?: string, fetchedPrHeadSha?: string, lsRemoteErrorAt?: number, actionInFlight?: () => boolean, schedulerCanDiscard?: boolean, processController?: any, revertBuilder?: any, verifyRevert?: any, rollbackBaseSync?: any, rollbackVerify?: any, gitRun?: any, phaseChildren?: Record<string, any>[], newChildAfterArchive?: Record<string, any>, parentAuthorityChangesAfterArchive?: boolean, partialDeleteOnce?: boolean, readbackFindFailsOnce?: boolean }} [options]
  */
 function setup(options = {}) {
   const store = createQueueStore({ now: () => 100 });
@@ -64,6 +83,25 @@ function setup(options = {}) {
   let worktree_observations = 0;
   let ls_remote_calls = 0;
   let bead_status = 'resolved';
+  /** @type {Record<string, any>[]} */
+  let phase_children = [...(options.phaseChildren || [])];
+  let partial_delete_pending = options.partialDeleteOnce === true;
+  let deleted_children = false;
+  let readback_find_failure_pending = options.readbackFindFailsOnce === true;
+  const parent_issue = /** @type {Record<string, any>} */ ({
+    id: 'UI-1',
+    status: bead_status,
+    spec_id: 'spec-current',
+    metadata: {
+      pr_url: 'https://github.com/acme/repo/pull/304',
+      impl_review: 'codex@abc',
+      last_checked_sha: HEAD_SHA,
+      plan_path: 'docs/plan.md',
+      spec_review: 'codex@spec',
+      plan_review: 'codex@plan',
+      plan_approval: 'user@plan'
+    }
+  });
   /** @type {string|null} */
   let pr_url = 'https://github.com/acme/repo/pull/304';
   const gh = {
@@ -106,6 +144,7 @@ function setup(options = {}) {
     setStatus: vi.fn(async (_id, status) => {
       calls.push(`bd:status:${status}`);
       bead_status = status;
+      parent_issue.status = status;
     }),
     readMetadata: vi.fn(async () => {
       calls.push(`bd:pr-read:${pr_url === null ? 'null' : 'set'}`);
@@ -114,10 +153,67 @@ function setup(options = {}) {
     unsetMetadata: vi.fn(async () => {
       calls.push('bd:pr-unset');
       pr_url = null;
+      delete parent_issue.metadata.pr_url;
     }),
     setMetadata: vi.fn(async (_id, _key, value) => {
       calls.push('bd:pr-set');
       pr_url = value;
+      parent_issue.metadata.pr_url = value;
+    }),
+    listChildren: vi.fn(async (bead_id) => {
+      calls.push(`bd:children:${bead_id}`);
+      return phase_children
+        .filter((child) => child.metadata?.parent === bead_id)
+        .map((child) => ({ id: child.id, status: child.status }));
+    }),
+    readIssue: vi.fn(async (bead_id) => {
+      calls.push(`bd:issue:${bead_id}`);
+      if (bead_id === 'UI-1') {
+        return structuredClone(parent_issue);
+      }
+      const child = phase_children.find(
+        (candidate) => candidate.id === bead_id
+      );
+      if (!child) {
+        throw new Error('issue absent');
+      }
+      return structuredClone(child);
+    }),
+    findIssue: vi.fn(async (bead_id) => {
+      calls.push(`bd:find:${bead_id}`);
+      if (deleted_children && readback_find_failure_pending) {
+        readback_find_failure_pending = false;
+        throw new Error('readback unavailable');
+      }
+      const child = phase_children.find(
+        (candidate) => candidate.id === bead_id
+      );
+      return child ? structuredClone(child) : null;
+    }),
+    deleteIssues: vi.fn(async (bead_ids) => {
+      calls.push(`bd:delete:${bead_ids.join(',')}`);
+      if (partial_delete_pending) {
+        partial_delete_pending = false;
+        deleted_children = true;
+        phase_children = phase_children.filter(
+          (child) => child.id !== bead_ids[0]
+        );
+        throw new Error('delete interrupted');
+      }
+      deleted_children = true;
+      phase_children = phase_children.filter(
+        (child) => !bead_ids.includes(child.id)
+      );
+    }),
+    updateFields: vi.fn(async (_bead_id, input) => {
+      calls.push('bd:update');
+      if (input.status) {
+        bead_status = input.status;
+        parent_issue.status = input.status;
+      }
+      for (const key of input.unset || []) {
+        delete parent_issue.metadata[key];
+      }
     })
   };
   const worktree = {
@@ -209,6 +305,12 @@ function setup(options = {}) {
   const archive = {
     create: vi.fn(() => {
       calls.push('archive');
+      if (options.newChildAfterArchive) {
+        phase_children.push(options.newChildAfterArchive);
+      }
+      if (options.parentAuthorityChangesAfterArchive) {
+        parent_issue.metadata.plan_approval = 'user@new-plan';
+      }
       return {
         ok: true,
         receipt: {
@@ -444,9 +546,7 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     [
       'rollback_revert_remote_removed',
       `git:push --force-with-lease=refs/heads/revert-UI-1-op:${HEAD_SHA} origin :refs/heads/revert-UI-1-op`
-    ],
-    ['rollback_bead_opened', 'bd:status:open'],
-    ['rollback_pr_url_cleared', 'bd:pr-unset']
+    ]
   ])(
     'reconciles a crash after the %s side effect without repeating the mutation',
     async (phase, side_effect) => {
@@ -463,7 +563,9 @@ describe('worker discard coordinator unmerged lifecycle', () => {
             branch: 'UI-1',
             source_head: HEAD_SHA,
             local_branch_sha: HEAD_SHA,
-            remote_branch_sha: HEAD_SHA
+            remote_branch_sha: HEAD_SHA,
+            phase_children: [],
+            parent_authority: PARENT_AUTHORITY
           }
         }
       });
@@ -840,7 +942,7 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     const archive_at = env.calls.indexOf('archive');
     const close_at = env.calls.indexOf('gh:close');
     const worktree_at = env.calls.indexOf('worktree:remove');
-    const bd_at = env.calls.indexOf('bd:status:open');
+    const bd_at = env.calls.indexOf('bd:update');
     expect(archive_at).toBeGreaterThanOrEqual(0);
     expect(archive_at).toBeLessThan(close_at);
     expect(close_at).toBeLessThan(worktree_at);
@@ -858,6 +960,274 @@ describe('worker discard coordinator unmerged lifecycle', () => {
       'att-1'
     );
     expect(env.worktree.withTopologyLock).toHaveBeenCalledTimes(3);
+  });
+
+  test('archives complete direct phase child JSON before mutation', async () => {
+    const child = {
+      id: 'UI-1.1',
+      status: 'in_progress',
+      metadata: { parent: 'UI-1', plan_task_anchor: 'phase-1' },
+      description: 'original phase child'
+    };
+    const env = setup({ phaseChildren: [child] });
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(env.archive.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_snapshot: expect.objectContaining({
+          phase_children: [child],
+          parent_authority: expect.objectContaining({
+            spec_id: { present: true, value: 'spec-current' },
+            plan_path: { present: true, value: 'docs/plan.md' }
+          })
+        })
+      })
+    );
+  });
+
+  test('deletes snapshotted phase children after archive and git cleanup', async () => {
+    const env = setup({
+      phaseChildren: [
+        {
+          id: 'UI-1.1',
+          status: 'resolved',
+          metadata: { parent: 'UI-1', plan_task_anchor: 'phase-1' }
+        }
+      ]
+    });
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      attempt_id: 'att-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(env.bd.deleteIssues).toHaveBeenCalledWith(['UI-1.1']);
+    expect(env.calls.indexOf('archive')).toBeLessThan(
+      env.calls.indexOf('bd:delete:UI-1.1')
+    );
+    expect(env.calls.indexOf('worktree:remove')).toBeLessThan(
+      env.calls.indexOf('bd:delete:UI-1.1')
+    );
+  });
+
+  test('rejects a nested phase child before creating the archive', async () => {
+    const env = setup({
+      phaseChildren: [phaseChild('UI-1.1'), phaseChild('UI-1.1.1', 'UI-1.1')]
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'phase_child_nested' });
+    expect(env.archive.create).not.toHaveBeenCalled();
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+
+  test('rejects a direct child missing its phase anchor before mutation', async () => {
+    const env = setup({
+      phaseChildren: [
+        {
+          id: 'UI-1.1',
+          status: 'resolved',
+          metadata: { parent: 'UI-1' }
+        }
+      ]
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'phase_child_snapshot_failed'
+    });
+    expect(env.archive.create).not.toHaveBeenCalled();
+  });
+
+  test('stops before delete when a new direct child appears after snapshot', async () => {
+    const env = setup({
+      phaseChildren: [phaseChild('UI-1.1')],
+      newChildAfterArchive: phaseChild('UI-1.2')
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'phase_child_set_changed'
+    });
+    expect(env.bd.deleteIssues).not.toHaveBeenCalled();
+  });
+
+  test('retries only phase children remaining after partial deletion', async () => {
+    const env = setup({
+      phaseChildren: [phaseChild('UI-1.1'), phaseChild('UI-1.2')],
+      partialDeleteOnce: true
+    });
+
+    const first = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const retry = await env.coordinator.retry('discard-1');
+
+    expect(first).toMatchObject({
+      ok: false,
+      reason: 'phase_children_delete_failed'
+    });
+    expect(retry).toMatchObject({ ok: true });
+    expect(env.bd.deleteIssues.mock.calls).toEqual([
+      [['UI-1.1', 'UI-1.2']],
+      [['UI-1.2']]
+    ]);
+  });
+
+  test('resets parent implementation state without changing approval authority', async () => {
+    const env = setup({ phaseChildren: [phaseChild('UI-1.1')] });
+
+    await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    const parent = await env.bd.readIssue('UI-1');
+
+    expect(env.bd.updateFields).toHaveBeenCalledWith('UI-1', {
+      status: 'open',
+      unset: ['pr_url', 'impl_review', 'last_checked_sha']
+    });
+    expect(parent.status).toBe('open');
+    expect(parent.metadata).not.toHaveProperty('pr_url');
+    expect(parent.metadata).not.toHaveProperty('impl_review');
+    expect(parent.metadata).not.toHaveProperty('last_checked_sha');
+    expect(parent.spec_id).toBe('spec-current');
+    expect(parent.metadata.plan_path).toBe('docs/plan.md');
+    expect(parent.metadata.spec_review).toBe('codex@spec');
+    expect(parent.metadata.plan_review).toBe('codex@plan');
+    expect(parent.metadata.plan_approval).toBe('user@plan');
+  });
+
+  test('stops parent reset when preserved authority changed after snapshot', async () => {
+    const env = setup({
+      phaseChildren: [phaseChild('UI-1.1')],
+      parentAuthorityChangesAfterArchive: true
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'bd_parent_authority_changed'
+    });
+    expect(env.bd.updateFields).not.toHaveBeenCalled();
+  });
+
+  test('uses child deletion and readback before merged-revert finalization', async () => {
+    const env = setup({ phaseChildren: [phaseChild('UI-1.1')] });
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-merged-delete',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: {
+          repo: '/repo',
+          phase_children: [phaseChild('UI-1.1')],
+          parent_authority: PARENT_AUTHORITY
+        }
+      }
+    });
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-merged-delete',
+      expected_phase: 'requested',
+      next_phase: 'rollback_revert_remote_removed',
+      patch: {
+        mode: 'merged_revert',
+        revert_pr: { branch: 'revert-UI-1-op', head_sha: HEAD_SHA }
+      }
+    });
+
+    await env.coordinator.recover();
+
+    expect(env.bd.deleteIssues).toHaveBeenCalledWith(['UI-1.1']);
+    expect(env.bd.findIssue).toHaveBeenCalledWith('UI-1.1');
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-merged-delete']
+    ).toMatchObject({ phase: 'done' });
+  });
+
+  test('preserves the operation and archive when child readback fails', async () => {
+    const env = setup({
+      phaseChildren: [phaseChild('UI-1.1')],
+      readbackFindFailsOnce: true
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const repeated = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const operation =
+      env.store.snapshot(workspace).discard_operations['discard-1'];
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'phase_children_readback_failed'
+    });
+    expect(operation).toMatchObject({
+      phase: 'remote_ref_removed',
+      backup: { path: '/state/archive' },
+      last_error: 'phase_children_readback_failed'
+    });
+    expect(repeated).toMatchObject({ ok: true, reused: true });
+  });
+
+  test('fails closed when a legacy merged-revert operation lacks a child snapshot', async () => {
+    const env = setup();
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'discard-legacy-merged',
+        bead_id: 'UI-1',
+        attempt_id: 'att-1',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    env.store.advanceDiscardOperation(workspace, {
+      operation_id: 'discard-legacy-merged',
+      expected_phase: 'requested',
+      next_phase: 'rollback_bead_opened',
+      patch: { mode: 'merged_revert' }
+    });
+
+    await env.coordinator.recover();
+
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-legacy-merged']
+    ).toMatchObject({
+      phase: 'rollback_bead_opened',
+      last_error: 'phase_child_snapshot_missing'
+    });
+    expect(env.bd.updateFields).not.toHaveBeenCalled();
   });
 
   test('switches an OPEN-close race to merged revert without deleting anything', async () => {
@@ -918,6 +1288,8 @@ describe('worker discard coordinator unmerged lifecycle', () => {
           source_head: HEAD_SHA,
           local_branch_sha: HEAD_SHA,
           remote_branch_sha: HEAD_SHA,
+          phase_children: [],
+          parent_authority: PARENT_AUTHORITY,
           pr: { number: 304 }
         }
       }
@@ -1182,8 +1554,7 @@ describe('worker discard coordinator unmerged lifecycle', () => {
       'local_ref_removed',
       `git:push --force-with-lease=refs/heads/UI-1:${HEAD_SHA} origin :refs/heads/UI-1`
     ],
-    ['remote_ref_removed', 'bd:status:open'],
-    ['bead_opened', 'bd:pr-unset']
+    ['remote_ref_removed', 'bd:update']
   ])(
     'retries a crash after the %s side effect without repeating it',
     async (phase, side_effect) => {

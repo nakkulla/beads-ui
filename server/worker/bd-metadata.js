@@ -36,6 +36,7 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  *   readStatus: (bead_id: string) => Promise<string|null>,
  *   readIssue: (bead_id: string) => Promise<Record<string, any>>,
  *   findIssue: (bead_id: string) => Promise<Record<string, any>|null>,
+ *   deleteIssues: (bead_ids: string[]) => Promise<void>,
  *   createIssue: (input: { id: string, title: string, description: string, type: string, priority: number, dependency: string }) => Promise<void>,
  *   updateFields: (bead_id: string, input: { set?: Record<string, string>, unset?: string[], status?: string, append_notes?: string }) => Promise<void>,
  *   listChildren: (bead_id: string) => Promise<{ id: string, status: string }[]>,
@@ -224,6 +225,38 @@ export function createBdMetadata(deps = {}) {
         );
       }
       return /** @type {Record<string, any>} */ (r.stdoutJson[0]);
+    },
+
+    /**
+     * Permanently delete only caller-validated exact issue IDs. The Worker
+     * never cascades phase children because an unexpected descendant is a
+     * fail-closed ownership conflict, not disposable residue.
+     *
+     * @param {string[]} bead_ids
+     */
+    async deleteIssues(bead_ids) {
+      if (!Array.isArray(bead_ids) || bead_ids.length === 0) {
+        throw new Error('bd delete requires non-empty issue IDs');
+      }
+      if (
+        bead_ids.some(
+          (bead_id) =>
+            typeof bead_id !== 'string' ||
+            bead_id.length === 0 ||
+            /\s/.test(bead_id)
+        )
+      ) {
+        throw new Error('bd delete requires explicit issue IDs');
+      }
+      if (new Set(bead_ids).size !== bead_ids.length) {
+        throw new Error('bd delete rejects duplicate issue IDs');
+      }
+      const r = await run(['delete', ...bead_ids, '--force'], opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd delete ${bead_ids.join(' ')} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
     },
 
     /**
