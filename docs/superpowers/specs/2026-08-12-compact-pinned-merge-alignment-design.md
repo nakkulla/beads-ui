@@ -71,14 +71,16 @@ authoritative observation을 받아 mutation 없이 action을 반환하는 한 f
 
 ```text
 decideFastMerge({
-  pr_state, is_draft, base_ref, expected_base,
+  pr_state, merge_commit_sha, is_draft, base_ref, expected_base,
   head_sha, expected_head_sha,
-  merge_state, checks,
+  mergeable, merge_state, checks,
   ownership, impl_receipt
 })
   -> merge_pinned
    | resolve_conflict
    | wait_remote_policy
+   | wait_merge_confirmation
+   | claim_or_adopt_post_merge
    | refuse(reason)
 ```
 
@@ -86,18 +88,45 @@ decideFastMerge({
 completion intent는 automatic authorization source일 뿐 safety semantics는 동일하다. queue는
 결정 결과를 durable operation으로 prerecord한 뒤 기존 driver를 호출한다.
 
-### Decision table
+### Decision order와 table
+
+행을 독립 predicate로 평가하지 않는다. 한 authoritative observation은 다음 우선순위를
+정확히 한 번 통과하고 한 outcome만 반환한다.
+
+1. `pr_state`를 먼저 판정한다. `MERGED`와 exact `merge_commit_sha`는
+   `claim_or_adopt_post_merge`, `CLOSED`는 `refuse(pr_closed_unmerged)`, `MERGED`지만 merge SHA가
+   없으면 `wait_merge_confirmation`이다. 나머지 판정은 `OPEN`에서만 계속한다.
+2. draft/`merge_state=DRAFT`, `base_ref != expected_base`, missing/stale `head_sha`를 순서대로
+   fail closed한다.
+3. `mergeable=UNKNOWN` 또는 `merge_state=UNKNOWN`은
+   `refuse(mergeability_undecidable)`로 보낸다.
+4. `mergeable=CONFLICTING` 또는 `merge_state=DIRTY`이면 checks보다 먼저
+   `resolve_conflict`로 보낸다. 따라서 `DIRTY + known-red|pending`도 resolver 한 종류만 만든다.
+5. `merge_state=UNSTABLE` 또는 check rollup의 known
+   `failure|cancelled|timed_out|action_required`는 `refuse(ci_failed:<conclusion>)`다.
+6. `merge_state=BLOCKED`는 branch를 갱신하지 않고 `wait_remote_policy`로 보낸다.
+7. 남은 `mergeable=MERGEABLE`과 `merge_state=CLEAN|BEHIND|HAS_HOOKS`는
+   pending/queued/in_progress/missing/skipped checks를 기다리지 않고 `merge_pinned`을 반환한다.
+
+이 순서는 GitHub `mergeable`의 active 값 `MERGEABLE|CONFLICTING|UNKNOWN`과
+`mergeStateStatus`의 active 값
+`BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|HAS_HOOKS|UNKNOWN|UNSTABLE`을 모두 닫는다. 별도
+`is_draft`가 먼저 `DRAFT`를 차단하지만 enum도 같은 결과다.
 
 | 관측 | 결과 |
 | --- | --- |
-| OPEN, non-draft, correct base/head, `CLEAN`, no known red | `merge_pinned` |
-| 위와 같고 `BEHIND` | `merge_pinned` |
-| fresh observation에서도 `DIRTY`/conflicting | `resolve_conflict` |
-| mergeability `UNKNOWN`/missing/error | `refuse(mergeability_undecidable)` |
-| draft | `refuse(pr_draft)` |
+| `MERGED` + exact merge SHA | `claim_or_adopt_post_merge` |
+| `MERGED` + missing merge SHA | `wait_merge_confirmation` |
+| `CLOSED` | `refuse(pr_closed_unmerged)` |
+| draft/`DRAFT` | `refuse(pr_draft)` |
 | base mismatch | `refuse(base_mismatch)` |
-| head drift | `refuse(head_drift)` |
-| known red | `refuse(ci_failed:<conclusion>)` |
+| missing head 또는 head drift | `refuse(head_drift)` |
+| `UNKNOWN`/missing/error mergeability | `refuse(mergeability_undecidable)` |
+| fresh observation에서도 `DIRTY`/`CONFLICTING` | `resolve_conflict` |
+| `UNSTABLE` 또는 known red | `refuse(ci_failed:<conclusion>)` |
+| `BLOCKED` | `wait_remote_policy` |
+| `OPEN`, non-draft, correct base/head, `CLEAN`, no known red | `merge_pinned` |
+| 위와 같고 `BEHIND|HAS_HOOKS` | `merge_pinned` |
 | pending/queued/in_progress/missing/skipped checks | merge eligibility 유지 |
 | GitHub가 unfinished required checks로 merge 거절 | `wait_remote_policy` |
 
@@ -157,6 +186,21 @@ queue head는 merge mutual exclusion만 소유한다. `BEHIND` branch update와 
 때까지 cleanup을 시작하지 않는다. MERGED를 확인하면 `UI-f17c` root completion cursor가
 `UI-lb58`의 shared tail을 한 번 실행한다.
 
+server-side completion authority가 `UI-f17c`의 `completion_intents[root_bead_id]`와 queue
+revision CAS를 유일한 durable post-merge cursor로 사용한다. `pr-finish`, click, poller, startup
+recovery는 MERGED와 merge commit OID를 readback한 뒤 동일한
+`claimOrAdoptPostMerge({root_bead_id, pr_number, merge_sha, expected_revision})` surface를
+호출한다. 이 호출은 exact triple에 결합된 `post_merge` operation을 queue-revision CAS로
+`prepared`에 기록하거나 기존 operation을 adopt한다.
+
+CAS winner만 cursor의 다음 effect를 실행한다. loser는 독립 verify/deploy/cleanup을 시작하지
+않고 동일 cursor의 resume만 요청한 뒤 terminal evidence를 readback하거나, 이미 terminal이면
+evidenced no-op한다. holder가 crash해도 다음 actor는 같은 cursor와 merge SHA를 adopt하므로 새
+tail, operation 또는 retry budget을 만들지 않는다. linked worker root의 `pr-finish`도 이
+surface를 우회해 session-local tail을 실행할 수 없고, linked root가 없는 explicit external
+PR만 기존 session-owned tail을 유지한다. `UI-x7fi`는 landed `UI-f17c` primitive에 adapter를
+연결할 뿐 새 Beads metadata나 별도 completion journal을 만들지 않는다.
+
 ```text
 base_sync
   -> post_merge_verify
@@ -167,8 +211,9 @@ base_sync
   -> final_readback
 ```
 
-click handler, poller, startup recovery가 각각 새 cleanup을 만들지 않는다. 같은 root/merge SHA에
-existing cursor가 있으면 resume하고 terminal이면 evidenced no-op한다.
+click handler, poller, startup recovery가 각각 새 cleanup을 만들지 않는다. 같은
+root/PR/merge SHA에 existing cursor가 있으면 위 CAS로 adopt하고 terminal이면 evidenced
+no-op한다.
 
 ## UI
 
@@ -195,20 +240,29 @@ existing cursor가 있으면 resume하고 terminal이면 evidenced no-op한다.
 
 ## Test scope
 
-RED-GREEN seam은 pure decision, queue effect count, existing resolver/deployment integration이다.
+구현은 새 pure function `server/worker/fast-merge-decision.js`와 직접 test target
+`server/worker/fast-merge-decision.test.js`를 생성한다. RED-GREEN seam은 현재 consumer가
+아직 만족하지 않는 다음 네 항목뿐이다.
 
-1. `CLEAN|BEHIND` × click/auto_merge가 같은 `merge_pinned`을 반환한다.
-2. `BEHIND`에서 `gh.updateBranch` 0회, second gate 0회, local verify 0회다.
-3. pending/missing/skipped/no-check에서 pinned merge를 시도하고 known red는 0회다.
-4. draft/base mismatch/head drift/UNKNOWN이 fail closed한다.
-5. worker-owned current receipt exact match/stale/malformed/ambiguous parent matrix가 정확히 갈린다.
-6. fresh DIRTY가 merge command 0회, resolver prerecord/dispatch 1회이며 restart가 같은 op를 adopt한다.
-7. conflict merge commit 뒤 verification/self-review/receipt가 하나라도 없으면 재큐잉하지 않는다.
-8. resolution 뒤 BEHIND는 추가 update 없이 merge하고, 재-DIRTY는 same lineage를 resume한다.
-9. pinned merge race와 remote-policy rejection이 branch update/review/local-verify loop를 만들지 않는다.
-10. MERGED readback 전 cleanup 0회, 이후 deployment request와 parent close가 logical 1회다.
-11. poller/startup/click이 same post-merge cursor를 resume하고 duplicate deploy/close가 없다.
-12. existing UI snapshot/bundle이 advisory/conflict/policy 상태를 같은 semantics로 표시한다.
+1. mixed-state fixture가 state → draft/base/head → UNKNOWN/DIRTY → UNSTABLE/known-red →
+   BLOCKED → mergeable states 우선순위를 따르며 한 outcome만 반환한다.
+2. `CLEAN|BEHIND|HAS_HOOKS`의 click/auto path는 같은 pinned decision을 사용하고 `BEHIND`에서
+   `gh.updateBranch`, second gate, local verify를 모두 0회 호출한다.
+3. fresh `DIRTY`는 merge command 0회이고 existing resolver handoff/adopt만 정확히 한 번
+   허용하며 restart는 같은 operation을 adopt한다.
+4. 동일 root/PR/merge SHA에서 `pr-finish`, click, poller, startup이 경쟁하면 completion-root
+   revision CAS winner 하나만 effect를 실행하고 loser는 cursor resume/evidenced no-op한다.
+
+이미 prerequisite 또는 active behavior가 만족하는 다음 항목은 RED가 아니라 regression
+coverage다.
+
+- pending/missing/skipped/no-check pass와 known-red/draft/base/head/UNKNOWN block
+- worker-owned current receipt exact match/stale/malformed/ambiguous parent matrix
+- conflict merge commit 뒤 verification/controller self-review/receipt freshness gate
+- resolution 뒤 `BEHIND`의 추가 update 금지와 재-`DIRTY` same-lineage resume
+- pinned merge race와 remote-policy rejection의 branch-update/review/local-verify loop 금지
+- MERGED readback 전 cleanup 금지와 deployment/completion exactly-once
+- 기존 UI snapshot/bundle의 advisory/conflict/policy semantics
 
 Focused verification은 landed file layout에 맞춰 최소한 다음 active suites를 포함한다.
 
@@ -229,15 +283,34 @@ tsc, lint, prettier, build, full test
 3. pure decision을 먼저 도입하고 click/auto path를 같은 function에 연결한다.
 4. `BEHIND` update/reverify branch를 제거하고 DIRTY를 existing completion resolver에 연결한다.
 5. focused/full regression과 generated bundle을 검증해 PR Delivery한다.
-6. canonical fast path로 이 PR 자체를 merge하고 shared post-merge tail/runtime readback을 확인한다.
+6. 이 PR은 새 consumer를 선행 가정하지 않는 기존의 한 merge actor로만 merge하고, 기존 tail이
+   terminal임을 확인한 뒤 final external deployment/readback으로 새 runtime을 활성화한다. 이후
+   startup recovery가 terminal cursor를 evidenced no-op으로 adopt하는지 확인하고 새 path에
+   의존한다.
+
+## Cross-repo disposition과 Worker eligibility
+
+두 repository unit은 split이다. dotfiles canonical provider는 `dotfiles-b2yx`, beads-ui
+consumer는 `UI-x7fi`다. `UI-x7fi`에는 `UI-lb58`, `UI-f17c`, foreign `dotfiles-b2yx` blocks
+edge가 있고, 각 prerequisite close와 dependency readback 뒤 이 Bead의 own PR로 consumer를
+운반한다.
+
+필요한 변경은 current `UI-x7fi` PR과 final `[deploy]` external-job declaration/readback이 모두
+운반한다. foreign provider도 dependency-backed Bead+PR split으로 처분됐고 explicit
+interactive-only 또는 enclosed direct landing이 없으므로 required no-PR residue는 없다. spec
+gate receipt를 기록할 때 `worker-ineligible`을 absent로 유지하거나 stale label을 제거하고,
+`spec_review` receipt와 exact label set을 같은 `bd show UI-x7fi --json` readback으로 확인한다.
 
 ## Acceptance criteria
 
-1. `[머지]`와 `auto_merge`는 `BEHIND`에서 update-branch 없이 exact head를 pinned squash한다.
-2. fast path는 feedback/AI review/local full verification을 실행하지 않는다.
-3. `DIRTY`만 existing resolver가 merge commit으로 통합하며 duplicate resolution이 없다.
-4. known red, draft, base mismatch, head drift, unknown mergeability는 차단된다.
-5. pending/missing checks는 기다리지 않고 remote policy 거절만 durable wait로 남는다.
-6. resolver 결과는 verification과 controller self-review/receipt freshness 뒤에만 재머지된다.
-7. `UI-lb58` deployment job과 `UI-f17c` completion cursor가 post-merge tail을 logical 1회 수행한다.
-8. 기존 승인 spec/plan bytes와 receipts는 변경되지 않는다.
+1. 모든 active PR/mergeability/merge-state 값과 mixed state가 명시된 우선순위로 한 outcome만
+   만든다.
+2. `[머지]`와 `auto_merge`는 `BEHIND`에서 update-branch 없이 exact head를 pinned squash한다.
+3. fast path는 feedback/AI review/local full verification을 실행하지 않는다.
+4. `DIRTY`만 existing resolver가 merge commit으로 통합하며 duplicate resolution이 없다.
+5. known red, draft, base mismatch, head drift, unknown mergeability는 차단된다.
+6. pending/missing checks는 기다리지 않고 remote policy 거절만 durable wait로 남는다.
+7. resolver 결과는 verification과 controller self-review/receipt freshness 뒤에만 재머지된다.
+8. `UI-lb58` deployment job과 `UI-f17c` completion cursor는 exact root/PR/merge SHA CAS winner를
+   통해 post-merge tail을 logical 1회 수행한다.
+9. 기존 승인 spec/plan bytes와 receipts는 변경되지 않는다.
