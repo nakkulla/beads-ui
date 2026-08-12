@@ -1,7 +1,12 @@
 import { createServer } from 'node:http';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { fetchListForSubscription } from './list-adapters.js';
-import { attachWsServer, handleMessage, scheduleListRefresh } from './ws.js';
+import {
+  __resetRegistriesForTest,
+  attachWsServer,
+  handleMessage,
+  scheduleListRefresh
+} from './ws.js';
 
 vi.mock('./list-adapters.js', () => ({
   fetchListForSubscription: vi.fn(async () => {
@@ -17,9 +22,31 @@ vi.mock('./list-adapters.js', () => ({
 
 beforeEach(() => {
   vi.useFakeTimers();
+  __resetRegistriesForTest();
 });
 
 describe('ws list refresh coalescing', () => {
+  test('does not refresh when a connected socket has no list demand', async () => {
+    const server = createServer();
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      heartbeat_ms: 10000,
+      refresh_debounce_ms: 50
+    });
+    wss.clients.add(
+      /** @type {any} */ ({ readyState: 1, OPEN: 1, send: () => {} })
+    );
+    const mock = /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    );
+    mock.mockClear();
+
+    scheduleListRefresh('poll');
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(mock).not.toHaveBeenCalled();
+  });
+
   test('schedules one refresh per burst for active specs', async () => {
     const server = createServer();
     const { wss } = attachWsServer(server, {

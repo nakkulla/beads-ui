@@ -37,6 +37,7 @@ import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import { resolveSpecId } from '../spec-id.js';
 import { parsePrNumber } from '../workflow-enrich.js';
+import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { validateAdmission } from './admission.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
@@ -165,7 +166,7 @@ function readyIdSet(arr) {
  * `base_unresolved` instead of thrown, so the refusal names the failing
  * declaration step rather than an incidental `bd_snapshot_failed`.
  *
- * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }> }} config
+ * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>, requestSnapshot?: (workspace: string, cause: string) => Promise<any> }} config
  */
 export function createLiveBd(config) {
   const cwd = config.cwd;
@@ -174,7 +175,8 @@ export function createLiveBd(config) {
   const meta = createBdMetadata({
     cwd,
     run: config.run,
-    runJson: config.runJson
+    runJson: config.runJson,
+    requestSnapshot: config.requestSnapshot || requestWorkspaceSnapshot
   });
 
   return {
@@ -872,8 +874,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return;
     }
     const generation = ++external_scan_generation;
-    const { pr_rows, statuses } = await bd.scanBeads();
+    const { pr_rows, statuses, fresh } = await bd.scanBeads();
     if (generation !== external_scan_generation) {
+      return;
+    }
+    if (fresh === false) {
       return;
     }
     /** @type {Set<string>|null} */

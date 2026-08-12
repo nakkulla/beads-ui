@@ -2,6 +2,8 @@ import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordin
 
 /** @type {Map<string, ReturnType<typeof createWorkspaceSnapshotCoordinator>>} */
 const COORDINATORS = new Map();
+/** @type {typeof createWorkspaceSnapshotCoordinator} */
+let coordinatorFactory = createWorkspaceSnapshotCoordinator;
 
 /**
  * Request the shared raw snapshot for one workspace.
@@ -32,6 +34,17 @@ export function signalWorkspaceSnapshotMutation(root_dir) {
  */
 export function __resetWorkspaceSnapshotRuntimeForTest() {
   COORDINATORS.clear();
+  coordinatorFactory = createWorkspaceSnapshotCoordinator;
+}
+
+/**
+ * Replace the runtime coordinator factory for an isolated integration test.
+ *
+ * @param {typeof createWorkspaceSnapshotCoordinator} factory
+ */
+export function __setWorkspaceSnapshotCoordinatorFactoryForTest(factory) {
+  coordinatorFactory = factory;
+  COORDINATORS.clear();
 }
 
 /**
@@ -41,7 +54,7 @@ function coordinatorFor(root_dir) {
   const key = workspaceKey(root_dir);
   let coordinator = COORDINATORS.get(key);
   if (!coordinator) {
-    coordinator = createWorkspaceSnapshotCoordinator({
+    coordinator = coordinatorFactory({
       cwd: root_dir || undefined
     });
     COORDINATORS.set(key, coordinator);
