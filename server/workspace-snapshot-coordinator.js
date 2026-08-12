@@ -25,12 +25,14 @@ const DEFAULT_RETRY_MAX_MS = 30000;
  * Build a per-workspace raw snapshot coordinator. This module owns generation
  * atomicity only; projection and WebSocket publication remain consumers.
  *
- * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number }} [options]
+ * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout }} [options]
  */
 export function createWorkspaceSnapshotCoordinator(options = {}) {
   const cwd = options.cwd;
   const runBdJson = options.runBdJson || defaultRunBdJson;
   const now = options.now || (() => Date.now());
+  const set_timeout = options.setTimeout || globalThis.setTimeout;
+  const clear_timeout = options.clearTimeout || globalThis.clearTimeout;
   const retry_base_ms = positiveNumber(
     options.retry_base_ms,
     DEFAULT_RETRY_BASE_MS
@@ -40,7 +42,7 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     DEFAULT_RETRY_MAX_MS
   );
 
-  /** @type {{ generation: number, snapshot: WorkspaceSnapshot | null, in_flight: Promise<SnapshotResult> | null, pending_mutation: boolean, request_epoch: number, mutation_epoch: number, last_success_at: number | null, last_failure_at: number | null, retry_attempt: number, next_retry_at: number }} */
+  /** @type {{ generation: number, snapshot: WorkspaceSnapshot | null, in_flight: Promise<SnapshotResult> | null, pending_mutation: boolean, request_epoch: number, mutation_epoch: number, last_success_at: number | null, last_failure_at: number | null, retry_attempt: number, next_retry_at: number, retry_timer: ReturnType<typeof setTimeout> | null }} */
   const state = {
     generation: 0,
     snapshot: null,
@@ -51,7 +53,8 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     last_success_at: null,
     last_failure_at: null,
     retry_attempt: 0,
-    next_retry_at: 0
+    next_retry_at: 0,
+    retry_timer: null
   };
 
   /**
@@ -130,6 +133,7 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
    * @returns {Promise<SnapshotResult>}
    */
   function startGeneration(cause) {
+    cancelRetryTimer();
     const request_epoch = state.request_epoch + 1;
     state.request_epoch = request_epoch;
     const mutation_epoch = state.mutation_epoch;
@@ -142,9 +146,13 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       }
       state.in_flight = null;
 
-      if (result.ok && !result.stale && state.pending_mutation) {
-        state.pending_mutation = false;
-        startGeneration('mutation-trailing');
+      if (state.pending_mutation) {
+        if (result.ok && !result.stale) {
+          state.pending_mutation = false;
+          startGeneration('mutation-trailing');
+        } else {
+          schedulePendingMutationRetry();
+        }
       }
     });
     return work;
@@ -246,6 +254,7 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       state.last_success_at = now();
       state.retry_attempt = 0;
       state.next_retry_at = 0;
+      cancelRetryTimer();
 
       return {
         ok: true,
@@ -294,6 +303,64 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
   function markMutation() {
     state.pending_mutation = true;
     state.mutation_epoch += 1;
+    if (state.in_flight === null) {
+      schedulePendingMutationRetry();
+    }
+  }
+
+  /**
+   * Schedule one unreferenced retry only when mutation evidence must wait for
+   * the current backoff window. Calls coalesce through `retry_timer`.
+   */
+  function schedulePendingMutationRetry() {
+    if (
+      !state.pending_mutation ||
+      state.in_flight !== null ||
+      state.next_retry_at <= now() ||
+      state.retry_timer !== null
+    ) {
+      return;
+    }
+    const delay = state.next_retry_at - now();
+    /** @type {ReturnType<typeof setTimeout>} */
+    let retry_timer;
+    retry_timer = set_timeout(() => {
+      if (state.retry_timer !== retry_timer) {
+        return;
+      }
+      state.retry_timer = null;
+      runPendingMutationRetry();
+    }, delay);
+    state.retry_timer = retry_timer;
+    retry_timer.unref?.();
+  }
+
+  /**
+   * Start the scheduled retry only after the backoff deadline and only when
+   * no request has already consumed the pending mutation evidence.
+   */
+  function runPendingMutationRetry() {
+    if (!state.pending_mutation || state.in_flight !== null) {
+      return;
+    }
+    if (now() < state.next_retry_at) {
+      schedulePendingMutationRetry();
+      return;
+    }
+    state.pending_mutation = false;
+    startGeneration('mutation-retry');
+  }
+
+  /**
+   * Cancel a stale deadline timer before an earlier request or a success can
+   * consume its pending work.
+   */
+  function cancelRetryTimer() {
+    if (state.retry_timer === null) {
+      return;
+    }
+    clear_timeout(state.retry_timer);
+    state.retry_timer = null;
   }
 
   return { request, signalMutation, getSnapshot, getState, waitForIdle };

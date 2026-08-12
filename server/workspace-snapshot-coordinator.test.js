@@ -1,7 +1,7 @@
 /**
  * @import { runBdJson } from './bd.js'
  */
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
@@ -40,6 +40,10 @@ function createRunner(responses) {
 }
 
 describe('workspace snapshot coordinator', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   test('joins concurrent requests for one workspace generation', async () => {
     /** @type {Array<(value: unknown) => void>} */
     const resolvers = [];
@@ -216,6 +220,112 @@ describe('workspace snapshot coordinator', () => {
     expect(coordinator.getSnapshot()?.all.map((issue) => issue.id)).toEqual([
       'B'
     ]);
+  });
+
+  test('retries a warm failure at its deadline without another request', async () => {
+    vi.useFakeTimers();
+    const set_timeout = vi.fn(globalThis.setTimeout);
+    const clear_timeout = vi.fn(globalThis.clearTimeout);
+    const runBdJson = createRunner([
+      ...successfulGeneration([{ id: 'A', dependencies: [] }]),
+      { code: 2, stderr: 'list failed' },
+      { code: 0, stdoutJson: { ready: [], blocked: [] } },
+      ...successfulGeneration([{ id: 'B', dependencies: [] }])
+    ]);
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson,
+      retry_base_ms: 100,
+      setTimeout: /** @type {typeof globalThis.setTimeout} */ (
+        /** @type {unknown} */ (set_timeout)
+      ),
+      clearTimeout: /** @type {typeof globalThis.clearTimeout} */ (
+        /** @type {unknown} */ (clear_timeout)
+      )
+    });
+
+    await coordinator.request('cold-subscribe');
+    await coordinator.request('poll');
+    coordinator.signalMutation();
+    coordinator.signalMutation();
+    coordinator.signalMutation();
+
+    expect(set_timeout).toHaveBeenCalledTimes(1);
+    expect(runBdJson).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await coordinator.waitForIdle();
+
+    expect(runBdJson).toHaveBeenCalledTimes(6);
+    expect(coordinator.getSnapshot()?.all.map((issue) => issue.id)).toEqual([
+      'B'
+    ]);
+  });
+
+  test('retries an in-flight mutation after a failed generation without another request', async () => {
+    vi.useFakeTimers();
+    const set_timeout = vi.fn(globalThis.setTimeout);
+    const runBdJson = createRunner([
+      ...successfulGeneration([{ id: 'A', dependencies: [] }]),
+      { code: 2, stderr: 'list failed' },
+      { code: 0, stdoutJson: { ready: [], blocked: [] } },
+      ...successfulGeneration([{ id: 'B', dependencies: [] }])
+    ]);
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson,
+      retry_base_ms: 100,
+      setTimeout: /** @type {typeof globalThis.setTimeout} */ (
+        /** @type {unknown} */ (set_timeout)
+      )
+    });
+
+    await coordinator.request('cold-subscribe');
+    const failed = coordinator.request('poll');
+    coordinator.signalMutation();
+    coordinator.signalMutation();
+    await failed;
+    await Promise.resolve();
+
+    expect(set_timeout).toHaveBeenCalledTimes(1);
+    expect(runBdJson).toHaveBeenCalledTimes(4);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await coordinator.waitForIdle();
+
+    expect(runBdJson).toHaveBeenCalledTimes(6);
+    expect(coordinator.getSnapshot()?.all.map((issue) => issue.id)).toEqual([
+      'B'
+    ]);
+  });
+
+  test('cancels a scheduled retry when an earlier request starts it', async () => {
+    vi.useFakeTimers();
+    const clear_timeout = vi.fn(globalThis.clearTimeout);
+    const runBdJson = createRunner([
+      ...successfulGeneration([{ id: 'A', dependencies: [] }]),
+      { code: 2, stderr: 'list failed' },
+      { code: 0, stdoutJson: { ready: [], blocked: [] } },
+      ...successfulGeneration([{ id: 'B', dependencies: [] }])
+    ]);
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson,
+      retry_base_ms: 100,
+      clearTimeout: /** @type {typeof globalThis.clearTimeout} */ (
+        /** @type {unknown} */ (clear_timeout)
+      )
+    });
+
+    await coordinator.request('cold-subscribe');
+    await coordinator.request('poll');
+    coordinator.signalMutation();
+    vi.setSystemTime(Date.now() + 100);
+    await coordinator.request('poll');
+
+    expect(clear_timeout).toHaveBeenCalledTimes(1);
+    expect(runBdJson).toHaveBeenCalledTimes(6);
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(runBdJson).toHaveBeenCalledTimes(6);
   });
 
   test('marks a generation stale when a newer mutation arrives before completion', async () => {
