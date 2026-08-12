@@ -14,6 +14,27 @@ import { fileURLToPath } from 'node:url';
 import { debug } from '../server/logging.js';
 
 /**
+ * @param {string} entry
+ * @param {string} outfile
+ * @returns {BuildOptions}
+ */
+export function createBuildOptions(entry, outfile) {
+  return {
+    entryPoints: [entry],
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2020',
+    outfile,
+    sourcemap: true,
+    // Keep source paths independent of a worktree's node_modules symlink target.
+    preserveSymlinks: true,
+    minify: true,
+    legalComments: 'none'
+  };
+}
+
+/**
  * Build frontend bundle to `app/main.bundle.js` using esbuild.
  */
 async function run() {
@@ -28,18 +49,7 @@ async function run() {
   // Ensure output directory exists when running from a fresh checkout
   mkdirSync(app_dir, { recursive: true });
 
-  /** @type {BuildOptions} */
-  const options = {
-    entryPoints: [entry],
-    bundle: true,
-    format: 'esm',
-    platform: 'browser',
-    target: 'es2020',
-    outfile,
-    sourcemap: true, // write external .map file next to the bundle
-    minify: true,
-    legalComments: 'none'
-  };
+  const options = createBuildOptions(entry, outfile);
 
   try {
     const esbuild = await import('esbuild');
@@ -51,4 +61,7 @@ async function run() {
   }
 }
 
-run();
+const script_path = fileURLToPath(import.meta.url);
+if (process.argv[1] && path.resolve(process.argv[1]) === script_path) {
+  run();
+}
