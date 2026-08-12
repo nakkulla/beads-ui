@@ -52,7 +52,7 @@ import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
-import { createPrPoller } from './pr-poller.js';
+import { createPrPoller, hasDeploymentObservationDemand } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
@@ -372,7 +372,7 @@ export function defaultProbePid(pid) {
  *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
- *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void },
+ *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -905,7 +905,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // observation cache, worktree manager and scheduler the poller and dispatch
   // use, so a click can never act on a different view of the world than the
   // badges it followed.
-  const deploymentJob = options.deploymentJob || createDeploymentJob();
+  const deploymentJob =
+    options.deploymentJob ||
+    createDeploymentJob({
+      isAncestor: async (repo_dir, ancestor, descendant) => {
+        const result = await gitRun(
+          ['merge-base', '--is-ancestor', ancestor, descendant],
+          { cwd: repo_dir }
+        );
+        return result.code === 0;
+      }
+    });
   prActions = createPrActions({
     workspace: keyFor(workspace_root),
     repo,
@@ -1281,8 +1291,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     att.autoMerge.start();
     const queue = att.runtime.queueStore.snapshot(key);
     const deployment_pending =
-      queue.deployment !== null ||
-      queue.pr_wait.some((row) => row.cleanup_cursor === 'deployment_observe');
+      queue.deployment !== null || hasDeploymentObservationDemand(queue);
     if (queue.auto_merge === true || deployment_pending) {
       Promise.resolve(att.prPoller.tick()).catch((err) => {
         log('worker boot PR observation failed for %s: %o', key, err);

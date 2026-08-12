@@ -549,7 +549,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : external_cleanup
               ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
               : cleanup_retry
-                ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+                ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
                 : conflicting
                   ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                   : gate?.enabled === true

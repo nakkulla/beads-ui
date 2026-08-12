@@ -3722,6 +3722,31 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     expect(q.done.map((e) => e.bead_id)).toEqual(['UI-1']);
   });
 
+  test('preserves deployment coverage identity when the bead reaches done', () => {
+    const store = createQueueStore();
+    seedPrWait(store);
+    store.bindDeploymentRequest(WS, {
+      bead_id: 'UI-1',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 4,
+      head_ref: 'UI-1',
+      pr_url: 'https://github.com/o/r/pull/41'
+    });
+
+    store.moveToDone(WS, { bead_id: 'UI-1' });
+
+    expect(store.snapshot(WS).done[0]).toMatchObject({
+      bead_id: 'UI-1',
+      merge_sha: 'a'.repeat(40),
+      verified_target_sha: 'b'.repeat(40),
+      deployment_generation: 4,
+      cleanup_cursor: 'deployment_observe',
+      head_ref: 'UI-1',
+      pr_url: 'https://github.com/o/r/pull/41'
+    });
+  });
+
   test('terminates the attempt and moves the bead in one revision (UI-b8n8)', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {

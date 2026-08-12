@@ -215,6 +215,36 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).not.toHaveBeenCalled();
   });
 
+  test('observes cold legacy deployment residue without a subscriber', async () => {
+    const onMerged = vi.fn(async () => {});
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf(),
+        cleanup_failed: {
+          'UI-1': {
+            step: 'deploy',
+            reason: 'deploy_not_detached_for_self'
+          }
+        }
+      },
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(prDetail).toHaveBeenCalledOnce();
+    expect(onMerged).toHaveBeenCalledWith(
+      'UI-1',
+      SHA,
+      expect.objectContaining({ pr_url: PR_URL })
+    );
+  });
+
   test('serializes overlapping status-only deployment ticks and releases guard', async () => {
     /** @type {() => void} */
     let release = () => {};

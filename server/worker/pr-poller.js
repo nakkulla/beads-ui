@@ -264,10 +264,7 @@ export function createPrPoller(deps) {
       return (
         q.auto_merge === true ||
         (Array.isArray(q.merge_queue) && q.merge_queue.length > 0) ||
-        (Array.isArray(q.pr_wait) &&
-          q.pr_wait.some(
-            (row) => row?.cleanup_cursor === 'deployment_observe'
-          )) ||
+        hasDeploymentObservationDemand(q) ||
         Object.values(q.discard_operations || {}).some(
           (operation) =>
             /** @type {any} */ (operation)?.phase === 'revert_pr_wait'
@@ -787,4 +784,29 @@ export function createPrPoller(deps) {
       }
     }
   };
+}
+
+/**
+ * Deployment demand includes the one cold-cutover residue that has no new row
+ * binding yet. It must reach GitHub once to obtain the authoritative merge SHA;
+ * ordinary bound rows remain status-only when nobody is subscribed.
+ *
+ * @param {Record<string, any>} queue
+ */
+export function hasDeploymentObservationDemand(queue) {
+  if (!Array.isArray(queue.pr_wait)) {
+    return false;
+  }
+  return queue.pr_wait.some((row) => {
+    if (row?.cleanup_cursor === 'deployment_observe') {
+      return true;
+    }
+    const failure = queue.cleanup_failed?.[row?.bead_id];
+    return (
+      row?.cleanup_cursor == null &&
+      row?.deployment_generation == null &&
+      failure?.step === 'deploy' &&
+      failure?.reason === 'deploy_not_detached_for_self'
+    );
+  });
 }

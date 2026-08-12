@@ -944,12 +944,15 @@ function prWaitRow(
     !!cleanup_failed &&
     ['deployment_request', 'deploy'].includes(cleanup_failed.step);
   const deployment_action_blocked =
-    deployment_reason !== null || deployment_cleanup_failure;
+    !cleanup_retry &&
+    (deployment_reason !== null || deployment_cleanup_failure);
   return {
     id: bead_id,
     title,
-    reason:
-      deployment_reason || (cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기'),
+    reason: cleanup_retry
+      ? '머지됨 · 정리 미완'
+      : deployment_reason ||
+        (cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기'),
     draggable: false,
     done: true,
     lane: 'pr_wait',
@@ -1046,7 +1049,7 @@ function prWaitRow(
                 : conflict_session === 'paused'
                   ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
                   : cleanup_retry
-                    ? '머지 완료 — 클릭하면 남은 정리를 처음부터 다시 수행합니다'
+                    ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
                     : conflicting
                       ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                       : enabled

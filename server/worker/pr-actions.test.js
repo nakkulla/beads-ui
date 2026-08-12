@@ -1144,6 +1144,51 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     );
   });
 
+  test('adopts cold legacy deploy residue from status without requesting again', async () => {
+    const merge_sha = 'e'.repeat(40);
+    const target_sha = 'd'.repeat(40);
+    const requestDeployment = vi.fn();
+    const deploymentJob = {
+      requestDeployment,
+      deploymentStatus: vi.fn(async () => ({
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: target_sha,
+        generation: 7,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }))
+    };
+    const store = seedStore({
+      cleanup_failed: {
+        [BEAD]: {
+          step: 'deploy',
+          reason: 'deploy_not_detached_for_self'
+        }
+      }
+    });
+    const h = makeActions({ store, deploymentJob });
+
+    const result = await h.actions.cleanupObservedMerge(BEAD, merge_sha, {
+      head_ref: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304'
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(requestDeployment).not.toHaveBeenCalled();
+    expect(deploymentJob.deploymentStatus).toHaveBeenCalledOnce();
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bead_id: BEAD,
+          merge_sha,
+          pr_url: expect.any(String)
+        })
+      ])
+    );
+  });
+
   test('continues covered-row closure after another covered row cleanup fails', async () => {
     const target_sha = 'd'.repeat(40);
     const deploymentJob = {
@@ -1726,6 +1771,56 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
     });
   });
 
+  test('retries only the remaining closure after deployment already succeeded', async () => {
+    let fail_branch = true;
+    let target_sha = 'd'.repeat(40);
+    const requestDeployment = vi.fn(async (input) => {
+      target_sha = input.verified_sha;
+      return {
+        accepted: true,
+        noop: false,
+        target_base: input.target_base,
+        target_sha,
+        generation: 7
+      };
+    });
+    const h = makeActions({
+      deploymentJob: {
+        requestDeployment,
+        deploymentStatus: vi.fn(async () => ({
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: target_sha,
+          generation: 7,
+          error_code: null,
+          log_path: '/tmp/deploy.log'
+        }))
+      },
+      children: { [BEAD]: [{ id: 'UI-1.1', status: 'open' }] },
+      gitFail: (args) => fail_branch && args[0] === 'branch'
+    });
+
+    await h.actions.merge(BEAD);
+    await h.actions.observeDeployment();
+    fail_branch = false;
+    await h.actions.observeDeployment();
+    expect(h.store.snapshot(WS).done).toEqual([]);
+    const result = await h.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true });
+    expect(requestDeployment).toHaveBeenCalledOnce();
+    expect(
+      h.calls.filter((call) => call === 'bd:setStatus:UI-1.1:closed')
+    ).toHaveLength(1);
+    expect(
+      h.calls.filter((call) => call === 'git:fetch --no-tags')
+    ).toHaveLength(1);
+    expect(h.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+  });
+
   test('refuses a cleanup retry while an active discard owns the bead', async () => {
     const h = makeActions();
     h.store.recordCleanupFailure(WS, {
@@ -2046,6 +2141,59 @@ describe('post-merge cleanup — the externally-observed MERGED trigger (§4/§6
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
+  });
+
+  test('keeps subscriber ticks status-only after the deployment request boundary', async () => {
+    const merge_sha = 'c'.repeat(40);
+    let target_sha = 'd'.repeat(40);
+    const requestDeployment = vi.fn(async (input) => {
+      target_sha = input.verified_sha;
+      return {
+        accepted: true,
+        noop: false,
+        target_base: input.target_base,
+        target_sha,
+        generation: 7
+      };
+    });
+    const deploymentJob = {
+      requestDeployment,
+      deploymentStatus: vi.fn(async () => ({
+        state: 'pending',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: null,
+        generation: 7,
+        error_code: null,
+        log_path: null
+      }))
+    };
+    const h = makeActions({
+      deploymentJob,
+      details: [prOf({ state: 'MERGED', merge_sha })]
+    });
+    const poller = createPrPoller({
+      workspace: WS,
+      repo: REPO,
+      store: h.store,
+      gh: /** @type {any} */ (h.gh),
+      observations: h.observations,
+      getSubscriberCount: () => 1,
+      onMerged: (bead_id, observed_merge_sha, refs) =>
+        h.actions.cleanupObservedMerge(bead_id, observed_merge_sha, refs),
+      onDeployment: () => h.actions.observeDeployment(),
+      sleep: async () => {}
+    });
+
+    await poller.tick();
+    await poller.tick();
+    await poller.tick();
+
+    expect(requestDeployment).toHaveBeenCalledOnce();
+    expect(deploymentJob.deploymentStatus).toHaveBeenCalledTimes(2);
+    expect(h.store.snapshot(WS).pr_wait[0]).toMatchObject({
+      cleanup_cursor: 'deployment_observe'
+    });
   });
 
   test('never auto-retries a cleanup that already failed', async () => {

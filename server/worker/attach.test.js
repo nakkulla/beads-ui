@@ -229,6 +229,33 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
+  test('wires repository-aware git ancestry into the default deployment job', async () => {
+    const runtime = createWorkerRuntime();
+    const gitRun = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      gitRun,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const merge_sha = 'a'.repeat(40);
+    const deployed_sha = 'b'.repeat(40);
+
+    const covered = await /** @type {any} */ (att.deploymentJob).covers(
+      WS,
+      deployed_sha,
+      merge_sha
+    );
+
+    expect(covered).toBe(true);
+    expect(gitRun).toHaveBeenCalledWith(
+      ['merge-base', '--is-ancestor', merge_sha, deployed_sha],
+      { cwd: WS }
+    );
+  });
+
   test('wires the completion action driver into the default coordinator', async () => {
     const runtime = createWorkerRuntime();
     const completionActionDriver = {

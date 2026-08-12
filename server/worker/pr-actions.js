@@ -1249,9 +1249,10 @@ export function createPrActions(deps) {
    * this row's immutable merge floor.
    *
    * @param {string} bead_id
+   * @param {boolean} [resume_failure]
    * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
    */
-  async function closeCoveredRow(bead_id) {
+  async function closeCoveredRow(bead_id, resume_failure = false) {
     const q = deps.store.snapshot(workspace);
     const row = q.pr_wait.find(
       (/** @type {any} */ entry) => entry.bead_id === bead_id
@@ -1265,10 +1266,12 @@ export function createPrActions(deps) {
       };
     }
     const prior_failure = q.cleanup_failed?.[bead_id];
+    const closure_steps = ['child_sweep', 'branch_cleanup', 'parent_close'];
     if (
       prior_failure &&
       prior_failure.step !== 'deploy' &&
-      prior_failure.step !== 'deployment_request'
+      prior_failure.step !== 'deployment_request' &&
+      (!closure_steps.includes(prior_failure.step) || !resume_failure)
     ) {
       return {
         ok: false,
@@ -1280,15 +1283,22 @@ export function createPrActions(deps) {
     if (prior_failure) {
       deps.store.clearCleanupFailure(workspace, bead_id);
     }
-    markStep(bead_id, 'child_sweep');
-    const swept = await sweepChildren(bead_id);
-    if (!swept.ok) {
-      return failCleanup(bead_id, 'child_sweep', swept.reason, null);
+    const resume_index = prior_failure
+      ? closure_steps.indexOf(prior_failure.step)
+      : -1;
+    if (resume_index <= 0) {
+      markStep(bead_id, 'child_sweep');
+      const swept = await sweepChildren(bead_id);
+      if (!swept.ok) {
+        return failCleanup(bead_id, 'child_sweep', swept.reason, null);
+      }
     }
-    markStep(bead_id, 'branch_cleanup');
-    const branches = await cleanupBranches(bead_id, row.head_ref || null);
-    if (!branches.ok) {
-      return failCleanup(bead_id, 'branch_cleanup', branches.reason, null);
+    if (resume_index <= 1) {
+      markStep(bead_id, 'branch_cleanup');
+      const branches = await cleanupBranches(bead_id, row.head_ref || null);
+      if (!branches.ok) {
+        return failCleanup(bead_id, 'branch_cleanup', branches.reason, null);
+      }
     }
     markStep(bead_id, 'parent_close');
     const closed = await closeBead(bead_id);
@@ -1313,6 +1323,194 @@ export function createPrActions(deps) {
     requestQueueTick();
     await announceMerged(bead_id, row.pr_url || null);
     return { ok: true, step: null, reason: null, base_sync: null };
+  }
+
+  /**
+   * @param {any} status
+   * @param {any} row
+   * @returns {Promise<{ ok: boolean, reason: string|null }>}
+   */
+  async function validateSucceededCoverage(status, row) {
+    if (!deploymentJob) {
+      return { ok: false, reason: 'deployment_job_unavailable' };
+    }
+    if (
+      typeof row.merge_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(row.merge_sha)
+    ) {
+      return { ok: false, reason: 'deployment_row_binding_invalid' };
+    }
+    try {
+      deploymentJob.validateRowBinding(status, {
+        verified_target_sha: row.verified_target_sha,
+        deployment_generation: row.deployment_generation
+      });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    if (status.state !== 'succeeded' || !status.deployed_sha) {
+      return { ok: false, reason: status.state };
+    }
+    const ancestry = await deps.gitRun(
+      ['merge-base', '--is-ancestor', row.merge_sha, status.deployed_sha],
+      { cwd: repo }
+    );
+    if (ancestry.code === 1) {
+      return { ok: false, reason: 'deployment_not_covering_merge' };
+    }
+    if (ancestry.code !== 0) {
+      return { ok: false, reason: 'deployment_ancestry_check_failed' };
+    }
+    return { ok: true, reason: null };
+  }
+
+  /**
+   * Adopt only the cutover residue the approved rollout names. GitHub supplies
+   * the immutable merge floor; the provider supplies the current binding. No
+   * deployment request or retired provider-file read occurs here.
+   *
+   * @param {string} bead_id
+   * @param {string} merge_sha
+   * @param {{ head_ref?: string|null, pr_url?: string|null }} refs
+   * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function adoptLegacyDeployment(bead_id, merge_sha, refs) {
+    if (!deploymentJob) {
+      return { ok: false, step: null, reason: 'deployment_job_unavailable' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const expected = await expectedBaseFor(q, bead_id);
+    if (!expected.ok) {
+      return { ok: false, step: null, reason: expected.reason };
+    }
+    let status;
+    try {
+      status = await deploymentJob.deploymentStatus({ repo });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        step: null,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    if (
+      status.state === 'idle' ||
+      status.target_base === null ||
+      status.target_sha === null ||
+      status.generation === null
+    ) {
+      return { ok: false, step: null, reason: 'deployment_binding_missing' };
+    }
+    if (status.target_base !== expected.base) {
+      return { ok: false, step: null, reason: 'deployment_binding_mismatch' };
+    }
+    const target_ancestry = await deps.gitRun(
+      ['merge-base', '--is-ancestor', merge_sha, status.target_sha],
+      { cwd: repo }
+    );
+    if (target_ancestry.code === 1) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_not_covering_merge'
+      };
+    }
+    if (target_ancestry.code !== 0) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_ancestry_check_failed'
+      };
+    }
+    const bound = deps.store.recordDeploymentRequest(workspace, {
+      bead_id,
+      merge_sha,
+      verified_target_sha: status.target_sha,
+      deployment_generation: status.generation,
+      target_base: status.target_base,
+      head_ref: refs.head_ref || null,
+      pr_url: refs.pr_url || null
+    });
+    if (!bound.ok) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_request_persist_failed'
+      };
+    }
+    const recorded = deps.store.recordDeploymentObservation(workspace, status);
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        step: null,
+        reason: 'deployment_status_persist_failed'
+      };
+    }
+    notifyChanged(workspace);
+    if (status.state !== 'succeeded' || !status.deployed_sha) {
+      return {
+        ok: true,
+        pending: true,
+        step: null,
+        reason: status.state,
+        base_sync: null
+      };
+    }
+    return await closeCoveredRow(bead_id);
+  }
+
+  /**
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, step: string|null, reason: string|null, base_sync?: BaseSyncOutcome|null }>}
+   */
+  async function resumeCoveredClosure(bead_id) {
+    if (!deploymentJob) {
+      return { ok: false, step: null, reason: 'deployment_job_unavailable' };
+    }
+    const q = deps.store.snapshot(workspace);
+    const row = q.pr_wait.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    );
+    const current = q.deployment;
+    if (!row || !current) {
+      return { ok: false, step: null, reason: 'deployment_binding_missing' };
+    }
+    let status;
+    try {
+      status = await deploymentJob.deploymentStatus({ repo });
+      deploymentJob.validateCurrentBinding(status, {
+        target_base: current.target_base,
+        target_sha: current.target_sha,
+        generation: current.generation
+      });
+    } catch (err) {
+      const code = /** @type {{ code?: unknown }} */ (err).code;
+      return {
+        ok: false,
+        step: null,
+        reason: typeof code === 'string' ? code : 'deployment_status_failed'
+      };
+    }
+    const coverage = await validateSucceededCoverage(status, row);
+    if (!coverage.ok) {
+      return { ok: false, step: null, reason: coverage.reason };
+    }
+    const recorded = deps.store.recordDeploymentObservation(workspace, status);
+    if (!recorded.ok) {
+      return {
+        ok: false,
+        step: null,
+        reason: recorded.stale
+          ? 'deployment_status_stale'
+          : 'deployment_status_persist_failed'
+      };
+    }
+    return await closeCoveredRow(bead_id, true);
   }
 
   /**
@@ -1379,41 +1577,15 @@ export function createPrActions(deps) {
           typeof row.merge_sha === 'string'
       );
     for (const row of rows) {
-      try {
-        deploymentJob.validateRowBinding(status, {
-          verified_target_sha: row.verified_target_sha,
-          deployment_generation: row.deployment_generation
-        });
-      } catch (err) {
-        const code = /** @type {{ code?: unknown }} */ (err).code;
-        if (code !== 'deployment_generation_stale') {
-          await failCleanup(
-            row.bead_id,
-            'deployment_request',
-            typeof code === 'string' ? code : 'deployment_status_failed',
-            null
-          );
+      const coverage = await validateSucceededCoverage(status, row);
+      if (!coverage.ok) {
+        if (coverage.reason === 'deployment_generation_stale') {
+          continue;
         }
-        continue;
-      }
-      const ancestry = await deps.gitRun(
-        ['merge-base', '--is-ancestor', row.merge_sha, status.deployed_sha],
-        { cwd: repo }
-      );
-      if (ancestry.code === 1) {
         await failCleanup(
           row.bead_id,
           'deployment_request',
-          'deployment_not_covering_merge',
-          null
-        );
-        continue;
-      }
-      if (ancestry.code !== 0) {
-        await failCleanup(
-          row.bead_id,
-          'deployment_request',
-          'deployment_ancestry_check_failed',
+          coverage.reason || 'deployment_status_failed',
           null
         );
         continue;
@@ -2293,11 +2465,41 @@ export function createPrActions(deps) {
     if (!inPrWait(q, bead_id) && !external_resume) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
-    if (q.cleanup_failed && q.cleanup_failed[bead_id]) {
+    const row = q.pr_wait.find(
+      (/** @type {any} */ entry) => entry.bead_id === bead_id
+    );
+    if (row?.cleanup_cursor === 'deployment_observe') {
+      return {
+        ok: true,
+        pending: true,
+        step: null,
+        reason: 'deployment_observation_pending',
+        base_sync: null
+      };
+    }
+    const cleanup_failure = q.cleanup_failed?.[bead_id];
+    const legacy_deployment =
+      row?.deployment_generation == null &&
+      cleanup_failure?.step === 'deploy' &&
+      cleanup_failure?.reason === 'deploy_not_detached_for_self';
+    if (cleanup_failure && !legacy_deployment) {
       return { ok: false, step: null, reason: 'merged_cleanup_failed' };
+    }
+    if (
+      legacy_deployment &&
+      (typeof merge_sha !== 'string' || !/^[0-9a-f]{40}$/i.test(merge_sha))
+    ) {
+      return { ok: false, step: null, reason: 'merge_sha_unobserved' };
     }
     in_flight.add(bead_id);
     try {
+      if (legacy_deployment) {
+        return await adoptLegacyDeployment(
+          bead_id,
+          String(merge_sha).toLowerCase(),
+          refs
+        );
+      }
       return await runCleanup(bead_id, { ...refs, merge_sha });
     } finally {
       in_flight.delete(bead_id);
@@ -2338,8 +2540,16 @@ export function createPrActions(deps) {
     if (!inPrWait(q, bead_id)) {
       return { ok: false, step: null, reason: 'not_in_pr_wait' };
     }
-    if (!q.cleanup_failed?.[bead_id]) {
+    const cleanup_failure = q.cleanup_failed?.[bead_id];
+    if (!cleanup_failure) {
       return { ok: false, step: null, reason: 'cleanup_failed_missing' };
+    }
+    if (
+      ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
+        cleanup_failure.step
+      )
+    ) {
+      return await resumeCoveredClosure(bead_id);
     }
     return await runCleanup(bead_id, refs);
   }
@@ -2395,6 +2605,13 @@ export function createPrActions(deps) {
     }
     in_flight.add(root_bead_id);
     try {
+      if (
+        ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
+          q.cleanup_failed?.[root_bead_id]?.step
+        )
+      ) {
+        return await resumeCoveredClosure(root_bead_id);
+      }
       return await runCleanup(root_bead_id);
     } finally {
       in_flight.delete(root_bead_id);

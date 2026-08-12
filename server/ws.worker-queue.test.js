@@ -2566,6 +2566,39 @@ describe('ws repo deployment projection and retry (UI-lb58 Phase 4)', () => {
     });
   });
 
+  test('keeps a covered PR number after closure moves its binding to done', () => {
+    const snapshot = decorateQueue(WS_DEPLOY.root_dir, {
+      revision: 1,
+      queue: [],
+      pr_wait: [],
+      done: [
+        {
+          bead_id: 'UI-closed',
+          merge_sha: 'b'.repeat(40),
+          verified_target_sha: 'c'.repeat(40),
+          deployment_generation: 3,
+          cleanup_cursor: 'deployment_observe',
+          pr_url: 'https://github.com/o/r/pull/45'
+        }
+      ],
+      attempts: {},
+      deployment: {
+        state: 'succeeded',
+        target_base: 'main',
+        target_sha: TARGET_SHA,
+        deployed_sha: TARGET_SHA,
+        generation: 4,
+        error_code: null,
+        log_path: '/tmp/deploy.log'
+      }
+    });
+
+    expect(/** @type {any} */ (snapshot.deployment).covered_pr_numbers).toEqual(
+      [45]
+    );
+    expect(snapshot.deployment_coverage).toEqual({});
+  });
+
   test('retries only the current failed desired binding and persists pending', async () => {
     const store = getWorkerRuntime().queueStore;
     store.recordDeploymentObservation(WS_DEPLOY.root_dir, {

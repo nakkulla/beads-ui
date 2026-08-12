@@ -10,14 +10,21 @@ const SHA = 'a'.repeat(40);
  * @param {unknown} payload
  * @param {number} [code]
  */
-function jsonSpawn(payload, code = 0) {
+function jsonSpawn(payload, code = 0, include_repo = true) {
+  const response =
+    include_repo &&
+    payload !== null &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload)
+      ? { repo: REPO, ...payload }
+      : payload;
   return /** @type {any} */ (
     vi.fn(() => {
       const child = /** @type {any} */ (new PassThrough());
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       queueMicrotask(() => {
-        child.stdout.end(JSON.stringify(payload));
+        child.stdout.end(JSON.stringify(response));
         child.emit('close', code);
       });
       return child;
@@ -116,12 +123,12 @@ describe('worker/deployment-job', () => {
     };
     const covered = createDeploymentJob({
       spawn_impl: jsonSpawn(response),
-      isAncestor: (ancestor, candidate) =>
-        ancestor === SHA && candidate === descendant
+      isAncestor: async (repo, ancestor, candidate) =>
+        repo === REPO && ancestor === SHA && candidate === descendant
     });
     const unrelated = createDeploymentJob({
       spawn_impl: jsonSpawn(response),
-      isAncestor: () => false
+      isAncestor: async () => false
     });
 
     await expect(
@@ -166,6 +173,17 @@ describe('worker/deployment-job', () => {
 
       expect(result.state).toBe(state);
     }
+  });
+
+  test('accepts the installed provider grammar without an echoed repository', async () => {
+    const job = createDeploymentJob({
+      spawn_impl: jsonSpawn(pending(4), 0, false)
+    });
+
+    await expect(job.deploymentStatus({ repo: REPO })).resolves.toMatchObject({
+      state: 'pending',
+      generation: 4
+    });
   });
 
   test('returns an unbound provider failure without treating it as idle', async () => {
@@ -260,6 +278,59 @@ describe('worker/deployment-job', () => {
     ).rejects.toMatchObject({ code: 'deployment_binding_mismatch' });
   });
 
+  test('rejects a request response for another repository', async () => {
+    const job = createDeploymentJob({
+      spawn_impl: jsonSpawn({
+        repo: '/workspace/other',
+        accepted: true,
+        noop: false,
+        target_base: BASE,
+        target_sha: SHA,
+        generation: 4,
+        error_code: null
+      })
+    });
+
+    await expect(
+      job.requestDeployment({
+        repo: REPO,
+        target_base: BASE,
+        verified_sha: SHA
+      })
+    ).rejects.toMatchObject({ code: 'deployment_binding_mismatch' });
+  });
+
+  test('rejects a status response for another repository', async () => {
+    const job = createDeploymentJob({
+      spawn_impl: jsonSpawn({ repo: '/workspace/other', ...pending(4) })
+    });
+
+    await expect(job.deploymentStatus({ repo: REPO })).rejects.toMatchObject({
+      code: 'deployment_binding_mismatch'
+    });
+  });
+
+  test('rejects a retry response for another repository', async () => {
+    const job = createDeploymentJob({
+      spawn_impl: jsonSpawn({
+        repo: '/workspace/other',
+        accepted: true,
+        noop: false,
+        target_base: BASE,
+        target_sha: SHA,
+        generation: 5,
+        error_code: null
+      })
+    });
+
+    await expect(
+      job.retryDeployment({
+        repo: REPO,
+        current_binding: { target_base: BASE, target_sha: SHA, generation: 4 }
+      })
+    ).rejects.toMatchObject({ code: 'deployment_binding_mismatch' });
+  });
+
   test('rejects a stale provider regression but accepts newer generation coverage', async () => {
     const stale = createDeploymentJob({ spawn_impl: jsonSpawn(pending(3)) });
 
@@ -288,17 +359,17 @@ describe('worker/deployment-job', () => {
     ).resolves.toMatchObject({ generation: 5, deployed_sha: newer_sha });
   });
 
-  test('delegates merged-floor coverage separately from the current desired binding', () => {
+  test('delegates merged-floor coverage with repository-aware async ancestry', async () => {
     const isAncestor = vi.fn(
-      (ancestor, descendant) =>
-        ancestor === SHA && descendant === 'b'.repeat(40)
+      async (repo, ancestor, descendant) =>
+        repo === REPO && ancestor === SHA && descendant === 'b'.repeat(40)
     );
     const job = createDeploymentJob({ isAncestor });
 
-    const covered = job.covers('b'.repeat(40), SHA);
+    const covered = await job.covers(REPO, 'b'.repeat(40), SHA);
 
     expect(covered).toBe(true);
-    expect(isAncestor).toHaveBeenCalledWith(SHA, 'b'.repeat(40));
+    expect(isAncestor).toHaveBeenCalledWith(REPO, SHA, 'b'.repeat(40));
   });
 
   test('retries only against the current failed binding', async () => {

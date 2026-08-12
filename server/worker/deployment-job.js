@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import path from 'node:path';
 
 /** @type {ReadonlySet<string>} */
 const DEPLOYMENT_STATES = new Set([
@@ -13,7 +15,7 @@ const DEPLOYMENT_STATES = new Set([
  * @typedef {(command: string, args: string[], options: { cwd: string, shell: false, stdio: string[], windowsHide: boolean }) => import('node:child_process').ChildProcess} SpawnImpl
  */
 /**
- * @typedef {(ancestor: string, descendant: string) => boolean} IsAncestor
+ * @typedef {(repo: string, ancestor: string, descendant: string) => boolean|Promise<boolean>} IsAncestor
  */
 
 /**
@@ -69,6 +71,43 @@ function requireString(value, field) {
 }
 
 /**
+ * @param {string} repo
+ */
+function canonicalRepo(repo) {
+  const resolved = path.resolve(repo);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} value
+ * @param {string} expected_repo
+ */
+function validateResponseRepo(value, expected_repo) {
+  // The installed provider scopes every read/write by canonical `--repo` and
+  // currently omits that identity from JSON. Validate it whenever the provider
+  // echoes it, without rejecting the deployed response grammar.
+  if (value.repo === undefined) {
+    return;
+  }
+  if (typeof value.repo !== 'string' || value.repo.length === 0) {
+    throw new DeploymentJobError(
+      'deployment_provider_malformed',
+      'provider response repo is missing'
+    );
+  }
+  if (canonicalRepo(value.repo) !== expected_repo) {
+    throw new DeploymentJobError(
+      'deployment_binding_mismatch',
+      'provider response belongs to another repository'
+    );
+  }
+}
+
+/**
  * @param {unknown} value
  * @param {string} code
  * @returns {{ target_base: string, target_sha: string, generation: number }}
@@ -92,15 +131,17 @@ function bindingFrom(value, code) {
 
 /**
  * @param {unknown} value
+ * @param {string} expected_repo
  * @returns {{ state: 'idle'|'pending'|'running'|'succeeded'|'failed', target_base: string|null, target_sha: string|null, deployed_sha: string|null, generation: number|null, error_code: string|null, log_path: string|null }}
  */
-function parseStatus(value) {
+function parseStatus(value, expected_repo) {
   if (!isRecord(value) || typeof value.state !== 'string') {
     throw new DeploymentJobError(
       'deployment_provider_malformed',
       'provider status is malformed'
     );
   }
+  validateResponseRepo(value, expected_repo);
   if (!DEPLOYMENT_STATES.has(value.state)) {
     throw new DeploymentJobError(
       'deployment_provider_malformed',
@@ -205,9 +246,10 @@ function parseStatus(value) {
 /**
  * @param {unknown} value
  * @param {string} mismatch_code
+ * @param {string} expected_repo
  * @returns {{ accepted: boolean, noop: boolean, target_base: string, target_sha: string, generation: number, error_code: string|null }}
  */
-function parseRequest(value, mismatch_code) {
+function parseRequest(value, mismatch_code, expected_repo) {
   if (
     !isRecord(value) ||
     typeof value.accepted !== 'boolean' ||
@@ -219,6 +261,7 @@ function parseRequest(value, mismatch_code) {
       'provider request response is malformed'
     );
   }
+  validateResponseRepo(value, expected_repo);
   if (!value.accepted && !value.noop) {
     if (
       value.target_base !== null ||
@@ -402,28 +445,34 @@ export function createDeploymentJob(options = {}) {
   const spawn_impl =
     options.spawn_impl ||
     /** @type {SpawnImpl} */ (/** @type {unknown} */ (spawn));
-  const isAncestor = options.isAncestor || (() => false);
+  const isAncestor = options.isAncestor || (async () => false);
 
   /**
    * Coverage is deliberately separate from provider desired-state parsing: a
    * newer desired generation may cover an older merged PR without matching its
    * target SHA. The caller supplies its repository ancestry primitive.
    *
+   * @param {string} repo
    * @param {string} deployed_sha
    * @param {string} merge_sha
    */
-  function covers(deployed_sha, merge_sha) {
+  async function covers(repo, deployed_sha, merge_sha) {
     if (!isSha(deployed_sha) || !isSha(merge_sha)) {
       return false;
     }
-    return isAncestor(merge_sha.toLowerCase(), deployed_sha.toLowerCase());
+    const canonical_repo = canonicalRepo(requireString(repo, 'repo'));
+    return await isAncestor(
+      canonical_repo,
+      merge_sha.toLowerCase(),
+      deployed_sha.toLowerCase()
+    );
   }
 
   /**
    * @param {{ repo: string, target_base: string, verified_sha: string }} input
    */
   async function requestDeployment(input) {
-    const repo = requireString(input?.repo, 'repo');
+    const repo = canonicalRepo(requireString(input?.repo, 'repo'));
     const target_base = requireString(input?.target_base, 'target_base');
     if (!isSha(input?.verified_sha)) {
       throw new DeploymentJobError(
@@ -446,7 +495,7 @@ export function createDeploymentJob(options = {}) {
       ],
       spawn_impl
     );
-    const result = parseRequest(payload, 'deployment_request_rejected');
+    const result = parseRequest(payload, 'deployment_request_rejected', repo);
     if (exit_code !== 0) {
       throw new DeploymentJobError(
         'deployment_provider_failed',
@@ -463,7 +512,7 @@ export function createDeploymentJob(options = {}) {
       (result.accepted && result.target_sha !== verified_sha) ||
       (result.noop &&
         result.target_sha !== verified_sha &&
-        !isAncestor(verified_sha, result.target_sha))
+        !(await isAncestor(repo, verified_sha, result.target_sha)))
     ) {
       throw new DeploymentJobError(
         'deployment_binding_mismatch',
@@ -477,13 +526,13 @@ export function createDeploymentJob(options = {}) {
    * @param {{ repo: string, current_binding?: { target_base: string, target_sha: string, generation: number }, row_binding?: { verified_target_sha: string, deployment_generation: number } }} input
    */
   async function deploymentStatus(input) {
-    const repo = requireString(input?.repo, 'repo');
+    const repo = canonicalRepo(requireString(input?.repo, 'repo'));
     const { payload, exit_code } = await runProvider(
       repo,
       ['status', '--repo', repo, '--json'],
       spawn_impl
     );
-    const result = parseStatus(payload);
+    const result = parseStatus(payload, repo);
     if (exit_code !== 0 && result.state !== 'failed') {
       throw new DeploymentJobError(
         'deployment_provider_failed',
@@ -503,7 +552,7 @@ export function createDeploymentJob(options = {}) {
    * @param {{ repo: string, current_binding: { target_base: string, target_sha: string, generation: number } }} input
    */
   async function retryDeployment(input) {
-    const repo = requireString(input?.repo, 'repo');
+    const repo = canonicalRepo(requireString(input?.repo, 'repo'));
     const current_binding = bindingFrom(
       input?.current_binding,
       'deployment_retry_binding_mismatch'
@@ -513,7 +562,11 @@ export function createDeploymentJob(options = {}) {
       ['retry', '--repo', repo, '--json'],
       spawn_impl
     );
-    const result = parseRequest(payload, 'deployment_retry_binding_mismatch');
+    const result = parseRequest(
+      payload,
+      'deployment_retry_binding_mismatch',
+      repo
+    );
     if (exit_code !== 0) {
       throw new DeploymentJobError(
         'deployment_provider_failed',

@@ -3173,6 +3173,11 @@ export function createQueueStore(options = {}) {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
+        const source_entry = [
+          ...next.queue,
+          ...next.pr_wait,
+          ...next.done
+        ].find((entry) => entry.bead_id === bead_id);
         if (typeof attempt_id === 'string' && attempt_id.length > 0) {
           const cur = next.attempts[attempt_id];
           // An unknown attempt refuses the WHOLE mutation, exactly as
@@ -3192,7 +3197,13 @@ export function createQueueStore(options = {}) {
         }
         removeFromLanes(next, bead_id);
         delete next.cleanup_failed[bead_id];
-        next.done.push(makeQueueEntry(bead_id, now()));
+        const done_entry = source_entry
+          ? normalizeEntry({ ...source_entry, added_at: now() })
+          : makeQueueEntry(bead_id, now());
+        if (!done_entry) {
+          return false;
+        }
+        next.done.push(done_entry);
         completeIntentForDone(next, bead_id);
         return true;
       });

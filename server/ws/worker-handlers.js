@@ -1153,6 +1153,29 @@ function projectDeployment(queue) {
       covered_pr_numbers.push(Number(match[1]));
     }
   }
+  if (state === 'succeeded') {
+    for (const row of Array.isArray(queue.done) ? queue.done : []) {
+      if (
+        !row ||
+        row.cleanup_cursor !== 'deployment_observe' ||
+        typeof row.merge_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(row.merge_sha) ||
+        typeof row.verified_target_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
+        !Number.isInteger(row.deployment_generation) ||
+        row.deployment_generation <= 0 ||
+        row.deployment_generation > source.generation ||
+        (row.deployment_generation === source.generation &&
+          row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
+      ) {
+        continue;
+      }
+      const match = /\/pull\/(\d+)$/.exec(String(row.pr_url || ''));
+      if (match && !covered_pr_numbers.includes(Number(match[1]))) {
+        covered_pr_numbers.push(Number(match[1]));
+      }
+    }
+  }
   return {
     observation: {
       state,

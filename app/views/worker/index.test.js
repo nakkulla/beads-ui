@@ -3648,6 +3648,64 @@ describe('worker view repo deployment state (UI-lb58 Phase 4)', () => {
     expect(card.textContent).not.toContain('배포에 포함됨');
     expect(card.querySelector('.worker-mini__merge')).toBeNull();
   });
+
+  test('offers closure retry after deployment succeeded but branch cleanup failed', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const target_sha = 'a'.repeat(40);
+    queueStore.set(
+      queueOf({
+        pr_wait: [
+          {
+            bead_id: 'UI-cleanup',
+            added_at: 1,
+            merge_sha: 'b'.repeat(40),
+            verified_target_sha: target_sha,
+            deployment_generation: 4,
+            cleanup_cursor: 'deployment_observe'
+          }
+        ],
+        pr_observations: {
+          'UI-cleanup': {
+            pr: { number: 46, url: 'https://github.com/o/r/pull/46' },
+            gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' }
+          }
+        },
+        cleanup_failed: {
+          'UI-cleanup': {
+            step: 'branch_cleanup',
+            reason: 'local_branch_delete_failed'
+          }
+        },
+        deployment: {
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha,
+          deployed_sha: target_sha,
+          generation: 4,
+          error_code: null,
+          log_path: '/tmp/deploy.log',
+          covered_pr_numbers: [46]
+        },
+        deployment_coverage: { 'UI-cleanup': 'succeeded' }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="UI-cleanup"]')
+    );
+    expect(card.querySelector('.worker-mini__reason')?.textContent).toContain(
+      '정리 미완'
+    );
+    expect(card.querySelector('.worker-mini__merge')?.textContent).toContain(
+      '정리'
+    );
+  });
 });
 
 describe('worker view — REVISE 파킹 처분 카드 (UI-hs11 §3.5)', () => {
