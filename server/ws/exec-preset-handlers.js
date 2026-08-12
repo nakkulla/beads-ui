@@ -29,7 +29,10 @@ function coordinator() {
 
 /**
  * Build one `bd update` argv that replaces every canonical exec metadata key.
- * Missing preset keys become explicit `--unset-metadata` entries.
+ * Missing preset keys become explicit `--unset-metadata` entries, except that
+ * an omitted `orchestration_speed` is set to `default` (Standard) so applying
+ * a preset does not inherit the workspace speed. Explicit speed values pass
+ * through unchanged.
  *
  * @param {string} issue_id
  * @param {Record<string, string>} settings
@@ -40,6 +43,8 @@ export function buildApplyExecPresetArgs(issue_id, settings) {
   for (const key of EXEC_SETTING_KEYS) {
     if (Object.prototype.hasOwnProperty.call(settings, key)) {
       args.push('--set-metadata', `${key}=${settings[key]}`);
+    } else if (key === 'orchestration_speed') {
+      args.push('--set-metadata', `${key}=default`);
     } else {
       args.push('--unset-metadata', key);
     }

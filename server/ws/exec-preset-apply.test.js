@@ -87,8 +87,8 @@ describe('buildApplyExecPresetArgs', () => {
       'orchestration_model=sol',
       '--unset-metadata',
       'orchestration_effort',
-      '--unset-metadata',
-      'orchestration_speed',
+      '--set-metadata',
+      'orchestration_speed=default',
       '--unset-metadata',
       'spec_review_model',
       '--unset-metadata',
@@ -108,6 +108,31 @@ describe('buildApplyExecPresetArgs', () => {
       '--set-metadata',
       'impl_effort=high'
     ]);
+  });
+
+  test('defaults omitted orchestration speed to Standard', () => {
+    const args = buildApplyExecPresetArgs('UI-1', {});
+
+    expect(args).toContain('orchestration_speed=default');
+    expect(args).not.toContain('orchestration_speed');
+  });
+
+  test('preserves explicit fast orchestration speed', () => {
+    const args = buildApplyExecPresetArgs('UI-1', {
+      orchestration_speed: 'fast'
+    });
+
+    expect(args).toContain('orchestration_speed=fast');
+    expect(args).not.toContain('orchestration_speed=default');
+  });
+
+  test('preserves explicit default orchestration speed', () => {
+    const args = buildApplyExecPresetArgs('UI-1', {
+      orchestration_speed: 'default'
+    });
+
+    expect(args).toContain('orchestration_speed=default');
+    expect(args).not.toContain('orchestration_speed=fast');
   });
 
   test('sets all 12 keys when the preset defines every value', () => {
