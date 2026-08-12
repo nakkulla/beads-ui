@@ -211,6 +211,13 @@
  * dispatch shape.
  * @property {CompletionFailureKey|null} completion_failure_key - SHA-bound
  * failure identity the session was asked to repair.
+ * @property {string|null} deployment_recovery_identity - Stable repo failure
+ * identity this attempt is allowed to diagnose.
+ * @property {boolean} deployment_recovery_root - True only for the first fresh
+ * recovery dispatch; continuation attempts inherit the identity but not root
+ * ownership.
+ * @property {DeploymentFailureKey|null} deployment_recovery_failure_key -
+ * Exact provider binding this recovery lineage owns.
  */
 /**
  * @typedef {Object} UsageLeg
@@ -321,6 +328,7 @@
  * @property {number|null} [next_retry_at] - Earliest epoch-ms automatic retry time.
  * @property {DeploymentFailureKey|null} [failure_key] - Bounded identity of the terminal failure.
  * @property {DeploymentRetryOperation|null} [retry_operation] - Crash-safe retry journal.
+ * @property {DeploymentRecovery|null} [recovery] - Source-less recovery saga for an exhausted or ambiguous failure.
  * @property {DeploymentRetryOperation|null} [superseded_retry_operation] - Previous generation's terminal retry evidence.
  * @property {DeploymentSupersededEvidence|null} [superseded_retry_evidence] - Bounded active or settled budget evidence from the superseded generation.
  */
@@ -340,6 +348,28 @@
  * @property {number} automatic_retry_count
  * @property {number} next_retry_at
  * @property {number|null} called_at
+ * @property {{ target_base: string, target_sha: string, generation: number }|null} retry_binding
+ */
+/**
+ * @typedef {Object} DeploymentRecovery
+ * @property {string} identity
+ * @property {DeploymentFailureKey} failure_key
+ * @property {'prepared'|'bead_created'|'bound'|'spawned'|'retrying'|'repair_pr_open'|'awaiting_confirmation'|'unrecoverable'|'completed'} phase
+ * @property {number} prepared_at
+ * @property {string|null} bead_id
+ * @property {string|null} attempt_id
+ * @property {'retry_same'|'repair_pr_open'|'awaiting_confirmation'|'unrecoverable'|null} outcome
+ * @property {string|null} confirmation_reason
+ * @property {'environment_repair'|'repair_pr'|'confirmation'|'diagnosis'|null} evidence_kind
+ * @property {string|null} evidence_digest
+ * @property {DeploymentRecoveryRetryOperation|null} retry_operation
+ */
+/**
+ * @typedef {Object} DeploymentRecoveryRetryOperation
+ * @property {'calling'|'returned'} phase
+ * @property {string} attempt_id
+ * @property {string} evidence_digest
+ * @property {number} called_at
  * @property {{ target_base: string, target_sha: string, generation: number }|null} retry_binding
  */
 /**
@@ -471,6 +501,7 @@
  * @property {string} [reason] - Why a non-conflict rejection happened, for the
  * ops that distinguish causes; absent when there is nothing to distinguish.
  */
+import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { execSettingEnums } from './exec-enums.js';
@@ -928,8 +959,54 @@ const DEPLOYMENT_RETRY_FIELDS = new Set([
   'next_retry_at',
   'failure_key',
   'retry_operation',
+  'recovery',
   'superseded_retry_evidence'
 ]);
+
+const DEPLOYMENT_RECOVERY_PHASES = new Set([
+  'prepared',
+  'bead_created',
+  'bound',
+  'spawned',
+  'retrying',
+  'repair_pr_open',
+  'awaiting_confirmation',
+  'unrecoverable',
+  'completed'
+]);
+
+const DEPLOYMENT_RECOVERY_OUTCOMES = new Set([
+  'retry_same',
+  'repair_pr_open',
+  'awaiting_confirmation',
+  'unrecoverable'
+]);
+
+const DEPLOYMENT_RECOVERY_EVIDENCE_KINDS = new Set([
+  'environment_repair',
+  'repair_pr',
+  'confirmation',
+  'diagnosis'
+]);
+
+/**
+ * @param {unknown} value
+ */
+function isDeploymentRecoveryIdentity(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+/**
+ * @param {any} recovery
+ * @param {DeploymentFailureKey} key
+ */
+function sameDeploymentRecoveryKey(recovery, key) {
+  return (
+    recovery &&
+    JSON.stringify(recovery.failure_key) === JSON.stringify(key) &&
+    isDeploymentRecoveryIdentity(recovery.identity)
+  );
+}
 
 /**
  * Queue properties this module actively normalizes. Any other top-level field
@@ -1583,6 +1660,15 @@ export function makeAttempt(fields) {
         : null,
     completion_failure_key: normalizeCompletionFailureKey(
       fields.completion_failure_key
+    ),
+    deployment_recovery_identity: isDeploymentRecoveryIdentity(
+      fields.deployment_recovery_identity
+    )
+      ? /** @type {string} */ (fields.deployment_recovery_identity)
+      : null,
+    deployment_recovery_root: fields.deployment_recovery_root === true,
+    deployment_recovery_failure_key: normalizeDeploymentFailureKey(
+      fields.deployment_recovery_failure_key
     )
   };
 }
@@ -1864,6 +1950,92 @@ function normalizeDeploymentRetryOperation(value) {
 
 /**
  * @param {unknown} value
+ * @returns {DeploymentRecovery|null}
+ */
+function normalizeDeploymentRecovery(value) {
+  if (!isRecord(value) || !isDeploymentRecoveryIdentity(value.identity)) {
+    return null;
+  }
+  const failure_key = normalizeDeploymentFailureKey(value.failure_key);
+  const evidence_kind = value.evidence_kind ?? null;
+  const evidence_digest = value.evidence_digest ?? null;
+  const raw_retry_operation = value.retry_operation ?? null;
+  if (
+    !failure_key ||
+    typeof value.phase !== 'string' ||
+    !DEPLOYMENT_RECOVERY_PHASES.has(value.phase) ||
+    !Number.isFinite(value.prepared_at) ||
+    (value.bead_id !== null &&
+      (typeof value.bead_id !== 'string' || value.bead_id.length === 0)) ||
+    (value.attempt_id !== null &&
+      (typeof value.attempt_id !== 'string' ||
+        value.attempt_id.length === 0)) ||
+    (value.outcome !== null &&
+      (typeof value.outcome !== 'string' ||
+        !DEPLOYMENT_RECOVERY_OUTCOMES.has(value.outcome))) ||
+    (value.confirmation_reason !== null &&
+      typeof value.confirmation_reason !== 'string') ||
+    (evidence_kind !== null &&
+      (typeof evidence_kind !== 'string' ||
+        !DEPLOYMENT_RECOVERY_EVIDENCE_KINDS.has(evidence_kind))) ||
+    (evidence_digest !== null &&
+      (typeof evidence_digest !== 'string' ||
+        !/^[0-9a-f]{64}$/.test(evidence_digest)))
+  ) {
+    return null;
+  }
+  /** @type {DeploymentRecoveryRetryOperation|null} */
+  let retry_operation = null;
+  if (raw_retry_operation !== null) {
+    const operation = raw_retry_operation;
+    if (
+      !isRecord(operation) ||
+      (operation.phase !== 'calling' && operation.phase !== 'returned') ||
+      typeof operation.attempt_id !== 'string' ||
+      operation.attempt_id.length === 0 ||
+      typeof operation.evidence_digest !== 'string' ||
+      !/^[0-9a-f]{64}$/.test(operation.evidence_digest) ||
+      !Number.isFinite(operation.called_at)
+    ) {
+      return null;
+    }
+    const retry_binding =
+      operation.retry_binding === null
+        ? null
+        : normalizeDeploymentBinding(operation.retry_binding);
+    if (
+      (operation.phase === 'calling' && retry_binding !== null) ||
+      (operation.phase === 'returned' && retry_binding === null)
+    ) {
+      return null;
+    }
+    retry_operation = {
+      phase: /** @type {'calling'|'returned'} */ (operation.phase),
+      attempt_id: operation.attempt_id,
+      evidence_digest: operation.evidence_digest,
+      called_at: Number(operation.called_at),
+      retry_binding
+    };
+  }
+  return {
+    identity: /** @type {string} */ (value.identity),
+    failure_key,
+    phase: /** @type {DeploymentRecovery['phase']} */ (value.phase),
+    prepared_at: Number(value.prepared_at),
+    bead_id: value.bead_id,
+    attempt_id: value.attempt_id,
+    outcome: /** @type {DeploymentRecovery['outcome']} */ (value.outcome),
+    confirmation_reason: value.confirmation_reason,
+    evidence_kind: /** @type {DeploymentRecovery['evidence_kind']} */ (
+      evidence_kind
+    ),
+    evidence_digest,
+    retry_operation
+  };
+}
+
+/**
+ * @param {unknown} value
  * @returns {DeploymentSupersededEvidence|null}
  */
 function normalizeDeploymentSupersededEvidence(value) {
@@ -1895,7 +2067,7 @@ function normalizeDeploymentSupersededEvidence(value) {
 /**
  * @param {Record<string, unknown>} value
  * @param {DeploymentObservation} observation
- * @returns {{ automatic_retry_count: number, retry_budget_binding: { target_base: string, target_sha: string, generation: number }|null, next_retry_at: number|null, failure_key: DeploymentFailureKey|null, retry_operation: DeploymentRetryOperation|null, superseded_retry_evidence: DeploymentSupersededEvidence|null }}
+ * @returns {{ automatic_retry_count: number, retry_budget_binding: { target_base: string, target_sha: string, generation: number }|null, next_retry_at: number|null, failure_key: DeploymentFailureKey|null, retry_operation: DeploymentRetryOperation|null, recovery: DeploymentRecovery|null, superseded_retry_evidence: DeploymentSupersededEvidence|null }}
  */
 function deploymentRetryFields(value, observation) {
   const automatic_retry_count =
@@ -1911,6 +2083,7 @@ function deploymentRetryFields(value, observation) {
   const retry_operation = normalizeDeploymentRetryOperation(
     value.retry_operation
   );
+  const recovery = normalizeDeploymentRecovery(value.recovery);
   const superseded_retry_evidence = normalizeDeploymentSupersededEvidence(
     value.superseded_retry_evidence
   );
@@ -1926,6 +2099,7 @@ function deploymentRetryFields(value, observation) {
       next_retry_at: null,
       failure_key: null,
       retry_operation: null,
+      recovery: recovery?.phase === 'completed' ? recovery : null,
       superseded_retry_evidence
     };
   }
@@ -1939,6 +2113,7 @@ function deploymentRetryFields(value, observation) {
         : null,
     failure_key,
     retry_operation,
+    recovery,
     superseded_retry_evidence
   };
 }
@@ -3583,9 +3758,24 @@ export function createQueueStore(options = {}) {
           next.deployment = merged;
         } else {
           const evidence = supersededDeploymentEvidence(current);
+          const completed_recovery =
+            current?.recovery &&
+            (current.recovery.phase === 'completed' ||
+              (current.recovery.phase === 'repair_pr_open' &&
+                observation.target_base === current.target_base &&
+                observation.generation !== null &&
+                current.generation !== null &&
+                observation.generation > current.generation))
+              ? {
+                  ...current.recovery,
+                  phase: /** @type {'completed'} */ ('completed'),
+                  retry_operation: null
+                }
+              : null;
           next.deployment = current?.retry_operation
             ? {
                 ...observation,
+                ...(completed_recovery ? { recovery: completed_recovery } : {}),
                 superseded_retry_operation: {
                   ...current.retry_operation,
                   phase: 'superseded'
@@ -3593,8 +3783,16 @@ export function createQueueStore(options = {}) {
                 superseded_retry_evidence: evidence
               }
             : evidence
-              ? { ...observation, superseded_retry_evidence: evidence }
-              : observation;
+              ? {
+                  ...observation,
+                  ...(completed_recovery
+                    ? { recovery: completed_recovery }
+                    : {}),
+                  superseded_retry_evidence: evidence
+                }
+              : completed_recovery
+                ? { ...observation, recovery: completed_recovery }
+                : observation;
         }
         return true;
       });
@@ -3838,6 +4036,402 @@ export function createQueueStore(options = {}) {
         return true;
       });
       return stale ? { ...result, stale: true } : result;
+    },
+
+    /**
+     * Durable create prerecord for a source-less deployment recovery. Every
+     * later external effect adopts this exact identity rather than creating a
+     * second Bead, worktree, attempt, or session after a crash.
+     *
+     * @param {string} workspace
+     * @param {DeploymentFailureKey} failure_key
+     * @param {{ identity: string, prepared_at: number }} input
+     */
+    prerecordDeploymentRecovery(workspace, failure_key, input) {
+      /** @type {boolean} */
+      let adopted = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(failure_key);
+        const operation = next.deployment?.retry_operation;
+        if (
+          !key ||
+          !operation ||
+          operation.phase !== 'recovery_ready' ||
+          JSON.stringify(operation.failure_key) !== JSON.stringify(key) ||
+          !isDeploymentRecoveryIdentity(input?.identity) ||
+          !Number.isFinite(input?.prepared_at)
+        ) {
+          return false;
+        }
+        const recovery = next.deployment?.recovery;
+        if (recovery) {
+          adopted =
+            sameDeploymentRecoveryKey(recovery, key) &&
+            recovery.identity === input.identity;
+          return adopted;
+        }
+        const deployment = /** @type {DeploymentObservation} */ (
+          next.deployment
+        );
+        next.deployment = {
+          ...deployment,
+          recovery: {
+            identity: input.identity,
+            failure_key: key,
+            phase: 'prepared',
+            prepared_at: input.prepared_at,
+            bead_id: null,
+            attempt_id: null,
+            outcome: null,
+            confirmation_reason: null,
+            evidence_kind: null,
+            evidence_digest: null,
+            retry_operation: null
+          }
+        };
+        return true;
+      });
+      return adopted ? { ...result, adopted: true } : result;
+    },
+
+    /**
+     * Readback-bind the Bead created for a recovery prerecord.
+     *
+     * @param {string} workspace
+     * @param {{ identity: string, bead_id: string }} input
+     */
+    bindDeploymentRecoveryBead(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const recovery = next.deployment?.recovery;
+        if (
+          !recovery ||
+          recovery.identity !== input?.identity ||
+          typeof input?.bead_id !== 'string' ||
+          input.bead_id.length === 0 ||
+          !DEPLOYMENT_RECOVERY_PHASES.has(recovery.phase)
+        ) {
+          return false;
+        }
+        if (recovery.bead_id !== null && recovery.bead_id !== input.bead_id) {
+          return false;
+        }
+        const deployment = /** @type {DeploymentObservation} */ (
+          next.deployment
+        );
+        next.deployment = {
+          ...deployment,
+          recovery: {
+            ...recovery,
+            bead_id: input.bead_id,
+            phase:
+              recovery.phase === 'prepared' ? 'bead_created' : recovery.phase
+          }
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Bind a freshly spawned recovery attempt after its own durable launch
+     * prerecord has read back. Replays adopt the same attempt id only.
+     *
+     * @param {string} workspace
+     * @param {{ identity: string, attempt_id: string }} input
+     */
+    bindDeploymentRecoveryAttempt(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const recovery = next.deployment?.recovery;
+        if (
+          !recovery ||
+          recovery.identity !== input?.identity ||
+          typeof input?.attempt_id !== 'string' ||
+          input.attempt_id.length === 0 ||
+          (recovery.phase !== 'bead_created' &&
+            recovery.phase !== 'bound' &&
+            recovery.phase !== 'spawned')
+        ) {
+          return false;
+        }
+        if (
+          recovery.attempt_id !== null &&
+          recovery.attempt_id !== input.attempt_id
+        ) {
+          return false;
+        }
+        const deployment = /** @type {DeploymentObservation} */ (
+          next.deployment
+        );
+        next.deployment = {
+          ...deployment,
+          recovery: {
+            ...recovery,
+            attempt_id: input.attempt_id,
+            phase: 'spawned'
+          }
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Consume only the closed recovery outcome vocabulary. Unknown output is a
+     * durable confirmation fence and never authorizes an external mutation.
+     *
+     * @param {string} workspace
+     * @param {{ identity: string, outcome: string, confirmation_reason?: string, evidence_kind?: string, evidence?: string }} input
+     */
+    recordDeploymentRecoveryOutcome(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const recovery = next.deployment?.recovery;
+        if (!recovery || recovery.identity !== input?.identity) {
+          return false;
+        }
+        const known = DEPLOYMENT_RECOVERY_OUTCOMES.has(input?.outcome);
+        /** @type {'retry_same'|'repair_pr_open'|'awaiting_confirmation'|'unrecoverable'} */
+        const outcome = known
+          ? /** @type {'retry_same'|'repair_pr_open'|'awaiting_confirmation'|'unrecoverable'} */ (
+              input.outcome
+            )
+          : 'awaiting_confirmation';
+        /** @type {DeploymentRecovery['phase']} */
+        const phase =
+          outcome === 'retry_same'
+            ? 'retrying'
+            : outcome === 'repair_pr_open'
+              ? 'repair_pr_open'
+              : outcome;
+        const deployment = /** @type {DeploymentObservation} */ (
+          next.deployment
+        );
+        const evidence_kind =
+          typeof input?.evidence_kind === 'string' &&
+          DEPLOYMENT_RECOVERY_EVIDENCE_KINDS.has(input.evidence_kind)
+            ? /** @type {DeploymentRecovery['evidence_kind']} */ (
+                input.evidence_kind
+              )
+            : null;
+        const evidence_digest =
+          typeof input?.evidence === 'string' && input.evidence.length > 0
+            ? createHash('sha256').update(input.evidence).digest('hex')
+            : null;
+        next.deployment = {
+          ...deployment,
+          recovery: {
+            ...recovery,
+            outcome: known ? outcome : 'awaiting_confirmation',
+            phase,
+            confirmation_reason:
+              outcome === 'awaiting_confirmation'
+                ? String(
+                    input?.confirmation_reason || 'recovery_outcome_malformed'
+                  ).slice(0, 200)
+                : null,
+            evidence_kind,
+            evidence_digest
+          }
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Prerecord a coordinator-owned recovery retry before the provider effect.
+     *
+     * @param {string} workspace
+     * @param {{ identity: string, attempt_id: string, evidence: string, called_at: number }} input
+     */
+    prerecordDeploymentRecoveryRetry(workspace, input) {
+      /** @type {boolean} */
+      let adopted = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const recovery = next.deployment?.recovery;
+        const attempt = next.attempts?.[input?.attempt_id];
+        if (
+          !recovery ||
+          recovery.identity !== input?.identity ||
+          recovery.bead_id === null ||
+          !attempt ||
+          attempt.bead_id !== recovery.bead_id ||
+          attempt.deployment_recovery_identity !== recovery.identity ||
+          JSON.stringify(attempt.deployment_recovery_failure_key) !==
+            JSON.stringify(recovery.failure_key) ||
+          typeof input?.evidence !== 'string' ||
+          input.evidence.length === 0 ||
+          input.evidence.length > 240 ||
+          !Number.isFinite(input?.called_at)
+        ) {
+          return false;
+        }
+        const evidence_digest = createHash('sha256')
+          .update(input.evidence)
+          .digest('hex');
+        if (recovery.retry_operation) {
+          adopted =
+            recovery.retry_operation.attempt_id === input.attempt_id &&
+            recovery.retry_operation.evidence_digest === evidence_digest;
+          return adopted;
+        }
+        if (recovery.phase !== 'spawned' && recovery.phase !== 'retrying') {
+          return false;
+        }
+        const deployment = /** @type {DeploymentObservation} */ (
+          next.deployment
+        );
+        next.deployment = {
+          ...deployment,
+          recovery: {
+            ...recovery,
+            phase: 'retrying',
+            outcome: 'retry_same',
+            confirmation_reason: null,
+            evidence_kind: 'environment_repair',
+            evidence_digest,
+            retry_operation: {
+              phase: 'calling',
+              attempt_id: input.attempt_id,
+              evidence_digest,
+              called_at: input.called_at,
+              retry_binding: null
+            }
+          }
+        };
+        return true;
+      });
+      return adopted ? { ...result, adopted: true } : result;
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ identity: string, retry_binding: { target_base: string, target_sha: string, generation: number } }} input
+     */
+    recordDeploymentRecoveryRetryReturned(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const recovery = next.deployment?.recovery;
+        const operation = recovery?.retry_operation;
+        const binding = normalizeDeploymentBinding(input?.retry_binding);
+        if (
+          !recovery ||
+          recovery.identity !== input?.identity ||
+          !operation ||
+          operation.phase !== 'calling' ||
+          !binding ||
+          binding.target_base !== recovery.failure_key.target_base ||
+          binding.target_sha !== recovery.failure_key.target_sha ||
+          binding.generation !== recovery.failure_key.generation + 1
+        ) {
+          return false;
+        }
+        const deployment = /** @type {DeploymentObservation} */ (
+          next.deployment
+        );
+        next.deployment = {
+          ...deployment,
+          recovery: {
+            ...recovery,
+            retry_operation: {
+              ...operation,
+              phase: 'returned',
+              retry_binding: binding
+            }
+          }
+        };
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ identity: string, status: DeploymentObservation }} input
+     */
+    settleDeploymentRecoveryRetry(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const recovery = next.deployment?.recovery;
+        const operation = recovery?.retry_operation;
+        const observation = normalizeDeploymentObservation(input?.status);
+        if (
+          !recovery ||
+          recovery.identity !== input?.identity ||
+          !operation ||
+          operation.phase !== 'returned' ||
+          !operation.retry_binding ||
+          !observation ||
+          observation.target_base !== operation.retry_binding.target_base ||
+          observation.target_sha !== operation.retry_binding.target_sha ||
+          observation.generation !== operation.retry_binding.generation
+        ) {
+          return false;
+        }
+        next.deployment = {
+          ...observation,
+          automatic_retry_count: 2,
+          retry_budget_binding: operation.retry_binding,
+          next_retry_at: null,
+          failure_key: null,
+          retry_operation: null,
+          recovery: {
+            ...recovery,
+            phase: 'completed',
+            retry_operation: null
+          }
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Fence malformed or ambiguous provider observations without executing a
+     * retry. This is intentionally available before retry exhaustion.
+     *
+     * @param {string} workspace
+     * @param {DeploymentFailureKey} failure_key
+     * @param {string} reason
+     * @param {string} identity
+     */
+    requireDeploymentRecoveryConfirmation(
+      workspace,
+      failure_key,
+      reason,
+      identity
+    ) {
+      return applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(failure_key);
+        const deployment = next.deployment;
+        if (
+          !key ||
+          !deployment ||
+          !isDeploymentRecoveryIdentity(identity) ||
+          JSON.stringify(deployment.failure_key) !== JSON.stringify(key)
+        ) {
+          return false;
+        }
+        const existing = deployment.recovery;
+        next.deployment = {
+          ...deployment,
+          recovery:
+            existing && sameDeploymentRecoveryKey(existing, key)
+              ? {
+                  ...existing,
+                  phase: 'awaiting_confirmation',
+                  outcome: 'awaiting_confirmation',
+                  confirmation_reason: String(reason).slice(0, 200),
+                  retry_operation: null
+                }
+              : {
+                  identity,
+                  failure_key: key,
+                  phase: 'awaiting_confirmation',
+                  prepared_at: 0,
+                  bead_id: null,
+                  attempt_id: null,
+                  outcome: 'awaiting_confirmation',
+                  confirmation_reason: String(reason).slice(0, 200),
+                  evidence_kind: null,
+                  evidence_digest: null,
+                  retry_operation: null
+                }
+        };
+        return true;
+      });
     },
 
     /**

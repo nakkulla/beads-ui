@@ -614,6 +614,58 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         ? completionIntent.attemptSettled(input)
         : Promise.resolve();
     },
+    onDeploymentRecoveryAttemptSettled(input) {
+      if (!deploymentRecovery) {
+        return Promise.resolve({
+          ok: false,
+          reason: 'deployment_recovery_unwired'
+        });
+      }
+      if (input.session_success === false) {
+        const attempt = input.attempt;
+        const failure_key = attempt.deployment_recovery_failure_key;
+        if (
+          failure_key &&
+          typeof attempt.deployment_recovery_identity === 'string'
+        ) {
+          runtime.queueStore.requireDeploymentRecoveryConfirmation(
+            keyFor(workspace_root),
+            failure_key,
+            'recovery_session_failed',
+            attempt.deployment_recovery_identity
+          );
+          emitQueueChanged(keyFor(workspace_root));
+        }
+        return Promise.resolve({
+          ok: false,
+          reason: 'recovery_session_failed'
+        });
+      }
+      if (!input.outcome) {
+        const attempt = input.attempt;
+        const failure_key = attempt.deployment_recovery_failure_key;
+        if (
+          failure_key &&
+          typeof attempt.deployment_recovery_identity === 'string'
+        ) {
+          runtime.queueStore.requireDeploymentRecoveryConfirmation(
+            keyFor(workspace_root),
+            failure_key,
+            input.parse_reason || 'recovery_outcome_malformed',
+            attempt.deployment_recovery_identity
+          );
+          emitQueueChanged(keyFor(workspace_root));
+        }
+        return Promise.resolve({
+          ok: false,
+          reason: input.parse_reason || 'recovery_outcome_malformed'
+        });
+      }
+      return deploymentRecovery.consumeOutcome({
+        ...input.outcome,
+        pr_verified: input.pr_verified
+      });
+    },
     probePid,
     ...(processController ? { processController } : {}),
     sessionMonitors,
@@ -953,15 +1005,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notify
   });
 
-  const deploymentRecovery =
-    options.deploymentRecovery ||
-    createDeploymentRecovery({
-      workspace: keyFor(workspace_root),
-      repo,
-      store: runtime.queueStore,
-      deploymentJob: /** @type {any} */ (deploymentJob),
-      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
-    });
+  /** @type {any} */
+  let deploymentRecovery = options.deploymentRecovery || null;
 
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
@@ -1066,6 +1111,23 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       resolveVerify,
       runVerify: (/** @type {any} */ input) =>
         runVerifyAtSha({ ...input, worktree, git: gitRun })
+    });
+
+  deploymentRecovery =
+    deploymentRecovery ||
+    createDeploymentRecovery({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      deploymentJob: /** @type {any} */ (deploymentJob),
+      recoveryService: completionRepair,
+      dispatchRecovery: (input) =>
+        scheduler.dispatchRepoRecovery(keyFor(workspace_root), {
+          identity: input.identity,
+          bead_id: input.bead_id,
+          failure_key: input.failure_key
+        }),
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
     });
 
   const resolvedCompletionActionDriver =

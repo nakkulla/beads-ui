@@ -299,7 +299,7 @@ function makeFakeRunner() {
     factoryNames,
     /**
      * @param {string} bead_id
-     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null }>} v
+     * @param {Partial<{ success: boolean, reason: string, exit: number | null, blocked: boolean, blocked_detail: { reason: string, command: string|null }|null, events: any[] }>} v
      */
     finish(bead_id, v) {
       const rec = byBead.get(bead_id);
@@ -312,7 +312,7 @@ function makeFakeRunner() {
         exit: v.exit ?? 0,
         blocked: v.blocked ?? false,
         blocked_detail: v.blocked_detail ?? null,
-        events: [],
+        events: v.events ?? [],
         raw: []
       });
     },
@@ -502,7 +502,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, onCompletionAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -593,6 +593,7 @@ function setup(opts) {
     gitRun: opts.gitRun,
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
+    onDeploymentRecoveryAttemptSettled: opts.onDeploymentRecoveryAttemptSettled,
     now: () => 1000
   });
   // The concurrency cap lives in the STORE now (worker-phase2 §3), not in a
@@ -603,6 +604,290 @@ function setup(opts) {
   });
   return { store, runner, bd, verify, worktree, scheduler, usage };
 }
+
+describe('scheduler repo deployment recovery', () => {
+  const identity = 'e'.repeat(64);
+  const failure_key = {
+    repo: '/repo',
+    target_base: 'main',
+    target_sha: 'a'.repeat(40),
+    generation: 3,
+    error_code: 'deploy_failed',
+    log_digest: 'f'.repeat(64)
+  };
+
+  /** @param {any} store */
+  function seedRecovery(store) {
+    /**
+     * @param {number} generation
+     * @param {'pending'|'failed'} state
+     */
+    const observation = (generation, state) => ({
+      state,
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      deployed_sha: null,
+      generation,
+      error_code: state === 'failed' ? 'deploy_failed' : null,
+      log_path: state === 'failed' ? '/logs/deploy.log' : null
+    });
+    store.recordDeploymentObservation(WS, observation(1, 'failed'));
+    const key1 = { ...failure_key, generation: 1 };
+    store.scheduleDeploymentRetry(WS, key1, 0);
+    store.prerecordDeploymentRetry(WS, key1, 0);
+    store.recordDeploymentRetryReturned(WS, key1, {
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      generation: 2
+    });
+    store.settleDeploymentRetry(WS, key1, observation(2, 'pending'));
+    store.recordDeploymentObservation(WS, observation(2, 'failed'));
+    const key2 = { ...failure_key, generation: 2 };
+    store.scheduleDeploymentRetry(WS, key2, 0);
+    store.prerecordDeploymentRetry(WS, key2, 0);
+    store.recordDeploymentRetryReturned(WS, key2, {
+      target_base: 'main',
+      target_sha: 'a'.repeat(40),
+      generation: 3
+    });
+    store.settleDeploymentRetry(WS, key2, observation(3, 'pending'));
+    store.recordDeploymentObservation(WS, observation(3, 'failed'));
+    store.scheduleDeploymentRetry(WS, failure_key, 0);
+    store.prerecordDeploymentRecovery(WS, failure_key, {
+      identity,
+      prepared_at: 1000
+    });
+    store.bindDeploymentRecoveryBead(WS, {
+      identity,
+      bead_id: 'recovery-abc'
+    });
+  }
+
+  test('persists exact recovery ownership before spawn and adopts it after restart', async () => {
+    const env = setup({ config: { 'recovery-abc': {} }, slots: 1 });
+    seedRecovery(env.store);
+
+    const first = await env.scheduler.dispatchRepoRecovery(WS, {
+      identity,
+      bead_id: 'recovery-abc',
+      failure_key
+    });
+    env.store.bindDeploymentRecoveryAttempt(WS, {
+      identity,
+      attempt_id: String(first.attempt_id)
+    });
+    env.runner.finish('recovery-abc', { success: false, reason: 'failed' });
+    await flush();
+    await flush();
+    const second = await env.scheduler.dispatchRepoRecovery(WS, {
+      identity,
+      bead_id: 'recovery-abc',
+      failure_key
+    });
+
+    expect(first.ok).toBe(true);
+    expect(second).toEqual({
+      ok: true,
+      attempt_id: first.attempt_id,
+      adopted: true
+    });
+    expect(env.runner.spawnOrder).toEqual(['recovery-abc']);
+    expect(
+      env.store.snapshot(WS).attempts[String(first.attempt_id)]
+    ).toMatchObject({
+      deployment_recovery_identity: identity,
+      deployment_recovery_root: true,
+      deployment_recovery_failure_key: failure_key
+    });
+  });
+
+  test('continues only the same recovery lineage through the current resolver', async () => {
+    const env = setup({ config: { 'recovery-abc': {} }, slots: 1 });
+    seedRecovery(env.store);
+    const first = await env.scheduler.dispatchRepoRecovery(WS, {
+      identity,
+      bead_id: 'recovery-abc',
+      failure_key
+    });
+    env.store.bindDeploymentRecoveryAttempt(WS, {
+      identity,
+      attempt_id: String(first.attempt_id)
+    });
+    env.runner.eventsFor('recovery-abc').emit('session_id', 'recovery-session');
+    await flush();
+    await env.scheduler.pause(WS, String(first.attempt_id));
+
+    const resumed = await env.scheduler.continueRepoRecovery(WS, {
+      identity,
+      attempt_id: String(first.attempt_id)
+    });
+
+    expect(resumed.ok).toBe(true);
+    const child = env.store.snapshot(WS).attempts[String(resumed.attempt_id)];
+    expect(child).toMatchObject({
+      deployment_recovery_identity: identity,
+      deployment_recovery_root: false,
+      resumed_from: first.attempt_id,
+      continuation_mode: 'session'
+    });
+    expect(env.runner.settingsFor('recovery-abc').resume_session_id).toBe(
+      'recovery-session'
+    );
+  });
+
+  test('settles retry_same without a PR observation after coordinator validation', async () => {
+    const onDeploymentRecoveryAttemptSettled = vi.fn(async (input) => ({
+      ok: true,
+      reason:
+        input.outcome?.outcome === 'retry_same'
+          ? 'retry_same_requested'
+          : 'recovery_outcome_malformed'
+    }));
+    const env = setup({
+      config: { 'recovery-abc': {} },
+      slots: 1,
+      onDeploymentRecoveryAttemptSettled
+    });
+    seedRecovery(env.store);
+    const dispatched = await env.scheduler.dispatchRepoRecovery(WS, {
+      identity,
+      bead_id: 'recovery-abc',
+      failure_key
+    });
+    env.store.bindDeploymentRecoveryAttempt(WS, {
+      identity,
+      attempt_id: String(dispatched.attempt_id)
+    });
+    const marker = `BDUI_RECOVERY_OUTCOME ${JSON.stringify({
+      identity,
+      attempt_id: dispatched.attempt_id,
+      outcome: 'retry_same',
+      evidence_kind: 'environment_repair',
+      evidence: 'service_config_repaired',
+      reason: null
+    })}`;
+
+    env.runner.finish('recovery-abc', {
+      success: true,
+      events: [{ kind: 'text', text: marker }]
+    });
+    await flush();
+    await flush();
+
+    expect(onDeploymentRecoveryAttemptSettled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pr_verified: false,
+        outcome: expect.objectContaining({ outcome: 'retry_same' })
+      })
+    );
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(
+      env.store.snapshot(WS).attempts[String(dispatched.attempt_id)]
+    ).toMatchObject({ status: 'done', cause: null });
+  });
+
+  test('records repair_pr_open only after the existing PR verifier passes', async () => {
+    const onDeploymentRecoveryAttemptSettled = vi.fn(async (input) =>
+      input.pr_verified
+        ? { ok: true, reason: 'repair_pr_open' }
+        : { ok: true, reason: 'repair_pr_verification_required' }
+    );
+    const env = setup({
+      config: { 'recovery-abc': {} },
+      slots: 1,
+      onDeploymentRecoveryAttemptSettled
+    });
+    seedRecovery(env.store);
+    const dispatched = await env.scheduler.dispatchRepoRecovery(WS, {
+      identity,
+      bead_id: 'recovery-abc',
+      failure_key
+    });
+    env.store.bindDeploymentRecoveryAttempt(WS, {
+      identity,
+      attempt_id: String(dispatched.attempt_id)
+    });
+    const marker = `BDUI_RECOVERY_OUTCOME ${JSON.stringify({
+      identity,
+      attempt_id: dispatched.attempt_id,
+      outcome: 'repair_pr_open',
+      evidence_kind: 'repair_pr',
+      evidence: 'repair_pr_submitted',
+      reason: null
+    })}`;
+
+    env.runner.finish('recovery-abc', {
+      success: true,
+      events: [{ kind: 'text', text: marker }]
+    });
+    await flush();
+    await flush();
+
+    expect(onDeploymentRecoveryAttemptSettled).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ pr_verified: false })
+    );
+    expect(onDeploymentRecoveryAttemptSettled).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ pr_verified: true })
+    );
+    expect(env.verify.verifyPrSubmitted).toHaveBeenCalledOnce();
+    expect(env.store.snapshot(WS).pr_wait).toEqual([
+      expect.objectContaining({ bead_id: 'recovery-abc' })
+    ]);
+  });
+
+  test('recovers a detached retry_same marker after server restart', async () => {
+    const first = setup({ config: { 'recovery-abc': {} }, slots: 1 });
+    seedRecovery(first.store);
+    const dispatched = await first.scheduler.dispatchRepoRecovery(WS, {
+      identity,
+      bead_id: 'recovery-abc',
+      failure_key
+    });
+    first.store.bindDeploymentRecoveryAttempt(WS, {
+      identity,
+      attempt_id: String(dispatched.attempt_id)
+    });
+    const outcome = {
+      identity,
+      attempt_id: dispatched.attempt_id,
+      outcome: 'retry_same',
+      evidence_kind: 'environment_repair',
+      evidence: 'service_config_repaired',
+      reason: null
+    };
+    const onDeploymentRecoveryAttemptSettled = vi.fn(async () => ({
+      ok: true,
+      reason: 'retry_same_adopted'
+    }));
+    const restarted = setup({
+      config: { 'recovery-abc': {} },
+      store: first.store,
+      slots: 1,
+      probePid: () => ({ alive: false, started_at: null }),
+      sessionMonitors: {
+        stop: vi.fn(() => true),
+        recoverDeploymentOutcome: vi.fn(() => ({ ok: true, outcome }))
+      },
+      onDeploymentRecoveryAttemptSettled
+    });
+
+    await restarted.scheduler.reconcile(WS);
+
+    expect(onDeploymentRecoveryAttemptSettled).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome,
+        pr_verified: false,
+        session_success: null
+      })
+    );
+    expect(restarted.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(
+      first.store.snapshot(WS).attempts[String(dispatched.attempt_id)]
+    ).toMatchObject({ status: 'done', cause: null });
+  });
+});
 
 /**
  * Seed the single waiting lane in order and arm auto_advance.

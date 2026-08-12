@@ -76,6 +76,17 @@ function assistantText(text) {
 }
 
 /**
+ * @param {string} text
+ * @returns {string}
+ */
+function codexText(text) {
+  return `${JSON.stringify({
+    type: 'item.completed',
+    item: { type: 'agent_message', text }
+  })}\n`;
+}
+
+/**
  * @param {string} command
  * @returns {string}
  */
@@ -127,6 +138,46 @@ function setup(options = {}) {
 }
 
 describe('worker/session-monitor (UI-o2yt §3.3)', () => {
+  test.each([
+    ['claude', assistantText],
+    ['codex', codexText]
+  ])(
+    'recovers one bounded deployment outcome from a %s log',
+    (runner, line) => {
+      const env = setup();
+      const identity = 'd'.repeat(64);
+      const attempt = seedRunningAttempt(env.store, {
+        runner,
+        deployment_recovery_identity: identity,
+        deployment_recovery_root: true
+      });
+      sessionWrites(
+        env.session_log,
+        line(
+          `BDUI_RECOVERY_OUTCOME ${JSON.stringify({
+            identity,
+            attempt_id: 'att-1',
+            outcome: 'unrecoverable',
+            evidence_kind: 'diagnosis',
+            evidence: 'missing_credential',
+            reason: 'credential_required'
+          })}`
+        )
+      );
+
+      const recovered = env.monitors.recoverDeploymentOutcome(WS, attempt);
+
+      expect(recovered).toEqual({
+        ok: true,
+        outcome: expect.objectContaining({
+          identity,
+          attempt_id: 'att-1',
+          outcome: 'unrecoverable'
+        })
+      });
+    }
+  );
+
   test('resumes the drawer live follow of an orphan session', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store);

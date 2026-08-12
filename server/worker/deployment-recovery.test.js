@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createDeploymentRecovery } from './deployment-recovery.js';
+import {
+  createDeploymentRecovery,
+  parseDeploymentRecoveryOutcome
+} from './deployment-recovery.js';
 import { createQueueStore } from './queue-store.js';
 
 const WS = '/tmp/deployment-recovery';
@@ -43,7 +46,7 @@ function status(generation, state, sha = SHA) {
 }
 
 /**
- * @param {{ now?: number, repo?: string, deploymentJob?: any }} [input]
+ * @param {{ now?: number, repo?: string, deploymentJob?: any, recoveryService?: any, dispatchRecovery?: any }} [input]
  */
 function setup(input = {}) {
   const store = createQueueStore();
@@ -61,6 +64,8 @@ function setup(input = {}) {
     repo: input.repo ?? REPO,
     store,
     deploymentJob,
+    recoveryService: input.recoveryService,
+    dispatchRecovery: input.dispatchRecovery,
     now: () => now
   });
   return {
@@ -73,7 +78,103 @@ function setup(input = {}) {
   };
 }
 
+/**
+ * Drive one deployment to its bound recovery attempt.
+ *
+ * @param {ReturnType<typeof setup>} h
+ * @returns {Promise<{ identity: string, failure_key: any }>}
+ */
+async function prepareSpawnedRecovery(h) {
+  await h.recovery.observe(status(1, 'failed'));
+  h.advance(30_000);
+  await h.recovery.tick();
+  await h.recovery.observe(status(2, 'failed'));
+  h.advance(120_000);
+  h.deploymentJob.retryDeployment.mockResolvedValueOnce({
+    target_base: 'main',
+    target_sha: SHA,
+    generation: 3
+  });
+  h.deploymentJob.deploymentStatus.mockResolvedValueOnce(status(3, 'pending'));
+  await h.recovery.tick();
+  await h.recovery.observe(status(3, 'failed'));
+  await h.recovery.tick();
+  const recovery = h.store.snapshot(WS).deployment?.recovery;
+  if (!recovery || !recovery.bead_id) {
+    throw new Error('expected deployment recovery');
+  }
+  if (!h.store.snapshot(WS).attempts['recovery-attempt-1']) {
+    h.store.appendAttempt(WS, {
+      expected_revision: h.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'recovery-attempt-1',
+        bead_id: recovery.bead_id,
+        deployment_recovery_identity: recovery.identity,
+        deployment_recovery_root: true,
+        deployment_recovery_failure_key: recovery.failure_key
+      }
+    });
+  }
+  return { identity: recovery.identity, failure_key: recovery.failure_key };
+}
+
 describe('worker/deployment-recovery', () => {
+  test('parses one exact bounded recovery outcome marker', () => {
+    const identity = 'b'.repeat(64);
+
+    const parsed = parseDeploymentRecoveryOutcome(
+      [
+        '진단 완료',
+        `BDUI_RECOVERY_OUTCOME ${JSON.stringify({
+          identity,
+          attempt_id: 'recovery-attempt-1',
+          outcome: 'retry_same',
+          evidence_kind: 'environment_repair',
+          evidence: 'service_config_repaired',
+          reason: null
+        })}`
+      ],
+      { identity, attempt_id: 'recovery-attempt-1' }
+    );
+
+    expect(parsed).toEqual({
+      ok: true,
+      outcome: {
+        identity,
+        attempt_id: 'recovery-attempt-1',
+        outcome: 'retry_same',
+        evidence_kind: 'environment_repair',
+        evidence: 'service_config_repaired',
+        reason: null
+      }
+    });
+  });
+
+  test('rejects duplicate or mismatched recovery outcome markers', () => {
+    const identity = 'c'.repeat(64);
+    const marker = `BDUI_RECOVERY_OUTCOME ${JSON.stringify({
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      outcome: 'retry_same',
+      evidence_kind: 'environment_repair',
+      evidence: 'service_config_repaired',
+      reason: null
+    })}`;
+
+    expect(
+      parseDeploymentRecoveryOutcome([marker, marker], {
+        identity,
+        attempt_id: 'recovery-attempt-1'
+      })
+    ).toEqual({ ok: false, reason: 'recovery_outcome_multiple' });
+    expect(
+      parseDeploymentRecoveryOutcome([marker], {
+        identity,
+        attempt_id: 'other-attempt'
+      })
+    ).toEqual({ ok: false, reason: 'recovery_outcome_unowned' });
+  });
+
   test('schedules the first matching failed binding after thirty seconds', async () => {
     const h = setup();
 
@@ -127,6 +228,363 @@ describe('worker/deployment-recovery', () => {
     expect(h.store.snapshot(WS).deployment).toMatchObject({
       automatic_retry_count: 2,
       retry_operation: { phase: 'recovery_ready' }
+    });
+  });
+
+  test('prerecords, creates, readbacks, and binds one fresh recovery attempt', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const dispatchRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-1'
+    }));
+    const h = setup({ recoveryService, dispatchRecovery });
+
+    await h.recovery.observe(status(1, 'failed'));
+    h.advance(30_000);
+    await h.recovery.tick();
+    await h.recovery.observe(status(2, 'failed'));
+    h.advance(120_000);
+    h.deploymentJob.retryDeployment.mockResolvedValueOnce({
+      target_base: 'main',
+      target_sha: SHA,
+      generation: 3
+    });
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(
+      status(3, 'pending')
+    );
+    await h.recovery.tick();
+    await h.recovery.observe(status(3, 'failed'));
+
+    const result = await h.recovery.tick();
+    await h.recovery.tick();
+
+    expect(result).toMatchObject({
+      ok: true,
+      reason: 'deployment_recovery_spawned'
+    });
+    expect(recoveryService.ensureRepoRecoveryBead).toHaveBeenCalledOnce();
+    expect(dispatchRecovery).toHaveBeenCalledOnce();
+    expect(h.store.snapshot(WS).deployment?.recovery).toMatchObject({
+      bead_id: expect.stringMatching(/^recovery-/),
+      attempt_id: 'recovery-1',
+      phase: 'spawned'
+    });
+  });
+
+  test('adopts a persisted prerecord through create and bind without a second Bead', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const dispatchRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-adopted'
+    }));
+    const h = setup({ recoveryService, dispatchRecovery });
+    await h.recovery.observe(status(1, 'failed'));
+    h.advance(30_000);
+    await h.recovery.tick();
+    await h.recovery.observe(status(2, 'failed'));
+    h.advance(120_000);
+    h.deploymentJob.retryDeployment.mockResolvedValueOnce({
+      target_base: 'main',
+      target_sha: SHA,
+      generation: 3
+    });
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(
+      status(3, 'pending')
+    );
+    await h.recovery.tick();
+    await h.recovery.observe(status(3, 'failed'));
+    const operation = h.store.snapshot(WS).deployment?.retry_operation;
+    if (!operation) throw new Error('expected recovery operation');
+    const { repoRecoveryIdentity } = await import('./completion-repair.js');
+    const identity = repoRecoveryIdentity(REPO, 3, operation.failure_key);
+    h.store.prerecordDeploymentRecovery(WS, operation.failure_key, {
+      identity: identity.identity,
+      prepared_at: 999
+    });
+
+    const reloaded = createQueueStore();
+    const recovery = createDeploymentRecovery({
+      workspace: WS,
+      repo: REPO,
+      store: reloaded,
+      deploymentJob: h.deploymentJob,
+      recoveryService,
+      dispatchRecovery
+    });
+    await recovery.tick();
+    await recovery.tick();
+
+    expect(recoveryService.ensureRepoRecoveryBead).toHaveBeenCalledOnce();
+    expect(dispatchRecovery).toHaveBeenCalledOnce();
+    expect(reloaded.snapshot(WS).deployment?.recovery).toMatchObject({
+      identity: identity.identity,
+      bead_id: identity.bead_id,
+      attempt_id: 'recovery-adopted'
+    });
+  });
+
+  test('fences an ambiguous returned retry behind confirmation without another effect', async () => {
+    const h = setup();
+    await h.recovery.observe(status(1, 'failed'));
+    const operation = h.store.snapshot(WS).deployment?.retry_operation;
+    if (!operation) throw new Error('expected retry operation');
+    h.store.prerecordDeploymentRetry(WS, operation.failure_key, 31_000);
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(status(1, 'failed'));
+
+    const result = await h.recovery.tick();
+
+    expect(result).toMatchObject({ reason: 'deployment_retry_call_ambiguous' });
+    expect(h.deploymentJob.retryDeployment).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).deployment?.recovery).toMatchObject({
+      phase: 'awaiting_confirmation',
+      outcome: 'awaiting_confirmation'
+    });
+  });
+
+  test('fences malformed recovery output before a provider mutation', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const h = setup({ recoveryService });
+    await h.recovery.observe(status(1, 'failed'));
+    h.advance(30_000);
+    await h.recovery.tick();
+    await h.recovery.observe(status(2, 'failed'));
+    h.advance(120_000);
+    h.deploymentJob.retryDeployment.mockResolvedValueOnce({
+      target_base: 'main',
+      target_sha: SHA,
+      generation: 3
+    });
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(
+      status(3, 'pending')
+    );
+    await h.recovery.tick();
+    await h.recovery.observe(status(3, 'failed'));
+    await h.recovery.tick();
+    const identity = h.store.snapshot(WS).deployment?.recovery?.identity;
+    if (!identity) throw new Error('expected recovery identity');
+    h.deploymentJob.retryDeployment.mockClear();
+
+    const result = await h.recovery.consumeOutcome({
+      identity,
+      outcome: 'unbounded_shell_output'
+    });
+
+    expect(result).toMatchObject({ reason: 'recovery_outcome_malformed' });
+    expect(h.deploymentJob.retryDeployment).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).deployment?.recovery).toMatchObject({
+      phase: 'awaiting_confirmation',
+      confirmation_reason: 'recovery_outcome_malformed'
+    });
+  });
+
+  test('adopts a recovery retry that returned before restart without another effect', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const dispatchRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-attempt-1'
+    }));
+    const h = setup({ recoveryService, dispatchRecovery });
+    const { identity } = await prepareSpawnedRecovery(h);
+    h.deploymentJob.retryDeployment.mockClear();
+    h.store.prerecordDeploymentRecoveryRetry(WS, {
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      evidence: 'service_config_repaired',
+      called_at: 200_000
+    });
+    h.store.recordDeploymentRecoveryRetryReturned(WS, {
+      identity,
+      retry_binding: {
+        target_base: 'main',
+        target_sha: SHA,
+        generation: 4
+      }
+    });
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(
+      status(4, 'pending')
+    );
+
+    const result = await h.recovery.consumeOutcome({
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      outcome: 'retry_same',
+      evidence_kind: 'environment_repair',
+      evidence: 'service_config_repaired',
+      reason: null
+    });
+
+    expect(result).toMatchObject({ ok: true, reason: 'retry_same_adopted' });
+    expect(h.deploymentJob.retryDeployment).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      generation: 4,
+      recovery: { identity, phase: 'completed', outcome: 'retry_same' }
+    });
+  });
+
+  test('fences a recovery retry whose provider call became ambiguous', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const dispatchRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-attempt-1'
+    }));
+    const h = setup({ recoveryService, dispatchRecovery });
+    const { identity } = await prepareSpawnedRecovery(h);
+    h.deploymentJob.retryDeployment.mockClear();
+    h.store.prerecordDeploymentRecoveryRetry(WS, {
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      evidence: 'service_config_repaired',
+      called_at: 200_000
+    });
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(status(3, 'failed'));
+
+    const result = await h.recovery.consumeOutcome({
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      outcome: 'retry_same',
+      evidence_kind: 'environment_repair',
+      evidence: 'service_config_repaired',
+      reason: null
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'retry_same_call_ambiguous'
+    });
+    expect(h.deploymentJob.retryDeployment).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).deployment?.recovery).toMatchObject({
+      phase: 'awaiting_confirmation',
+      confirmation_reason: 'retry_same_call_ambiguous'
+    });
+  });
+
+  test('settles a returned recovery retry from the coordinator tick after restart', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const dispatchRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-attempt-1'
+    }));
+    const h = setup({ recoveryService, dispatchRecovery });
+    const { identity } = await prepareSpawnedRecovery(h);
+    h.deploymentJob.retryDeployment.mockClear();
+    h.store.prerecordDeploymentRecoveryRetry(WS, {
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      evidence: 'service_config_repaired',
+      called_at: 200_000
+    });
+    h.store.recordDeploymentRecoveryRetryReturned(WS, {
+      identity,
+      retry_binding: {
+        target_base: 'main',
+        target_sha: SHA,
+        generation: 4
+      }
+    });
+    h.deploymentJob.deploymentStatus.mockResolvedValueOnce(
+      status(4, 'pending')
+    );
+
+    const result = await h.recovery.tick();
+
+    expect(result).toMatchObject({ ok: true, reason: 'retry_same_adopted' });
+    expect(h.deploymentJob.retryDeployment).not.toHaveBeenCalled();
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      generation: 4,
+      recovery: { phase: 'completed', outcome: 'retry_same' }
+    });
+  });
+
+  test('preserves repair PR recovery evidence on its descendant desired generation', async () => {
+    const recoveryService = {
+      ensureRepoRecoveryBead: vi.fn(async (input) => {
+        const { repoRecoveryIdentity } = await import('./completion-repair.js');
+        return repoRecoveryIdentity(
+          input.repo,
+          input.generation,
+          input.failure_key
+        );
+      })
+    };
+    const dispatchRecovery = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'recovery-attempt-1'
+    }));
+    const h = setup({ recoveryService, dispatchRecovery });
+    const { identity } = await prepareSpawnedRecovery(h);
+    await h.recovery.consumeOutcome({
+      identity,
+      attempt_id: 'recovery-attempt-1',
+      outcome: 'repair_pr_open',
+      evidence_kind: 'repair_pr',
+      evidence: 'repair_pr_submitted',
+      reason: null,
+      pr_verified: true
+    });
+
+    await h.recovery.observe(status(4, 'pending'));
+
+    expect(h.store.snapshot(WS).deployment).toMatchObject({
+      generation: 4,
+      recovery: {
+        identity,
+        phase: 'completed',
+        outcome: 'repair_pr_open'
+      }
     });
   });
 
