@@ -28,6 +28,17 @@ describe('worker/bd-metadata argv contract', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  test('rejects option-like issue IDs before delete', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const metadata = createBdMetadata({ run });
+
+    await expect(metadata.deleteIssues(['--cascade'])).rejects.toThrow(
+      /explicit/
+    );
+
+    expect(run).not.toHaveBeenCalled();
+  });
+
   test('throws when exact batch delete exits non-zero', async () => {
     const run = vi.fn(async () => ({ code: 1, stdout: '', stderr: 'blocked' }));
 

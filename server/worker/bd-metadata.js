@@ -243,6 +243,7 @@ export function createBdMetadata(deps = {}) {
           (bead_id) =>
             typeof bead_id !== 'string' ||
             bead_id.length === 0 ||
+            bead_id.startsWith('-') ||
             /\s/.test(bead_id)
         )
       ) {
