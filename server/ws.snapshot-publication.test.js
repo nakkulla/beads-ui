@@ -1,7 +1,10 @@
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { runBdJson } from './bd.js';
-import { __resetWorkspaceSnapshotRuntimeForTest } from './workspace-snapshot-runtime.js';
+import {
+  __resetWorkspaceSnapshotRuntimeForTest,
+  signalWorkspaceSnapshotMutation
+} from './workspace-snapshot-runtime.js';
 import {
   __resetRegistriesForTest,
   attachWsServer,
@@ -94,5 +97,68 @@ describe('workspace snapshot publication', () => {
         (call) => call[0]
       )
     ).toEqual([ALL_ARGS, READY_ARGS]);
+  });
+
+  test('publishes only one trailing Board generation after an in-flight mutation', async () => {
+    const server = createServer();
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      refresh_debounce_ms: 0
+    });
+    const ws = makeSocket();
+    wss.clients.add(/** @type {any} */ (ws));
+    await subscribeList(ws, 'board', 'all-issues');
+    /** @type {import('vitest').Mock} */ (runBdJson).mockClear();
+    ws.sent = [];
+
+    /** @type {Array<(value: unknown) => void>} */
+    const resolvers = [];
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+
+    scheduleListRefresh('poll');
+    await vi.advanceTimersByTimeAsync(0);
+    signalWorkspaceSnapshotMutation(process.cwd());
+    resolvers[0]({
+      code: 0,
+      stdoutJson: [{ id: 'PRE', status: 'open', dependencies: [] }]
+    });
+    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    await vi.advanceTimersByTimeAsync(0);
+    resolvers[2]({
+      code: 0,
+      stdoutJson: [{ id: 'POST', status: 'open', dependencies: [] }]
+    });
+    resolvers[3]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(runBdJson).toHaveBeenCalledTimes(4);
+    const upserts = ws.sent
+      .map((message) => JSON.parse(message))
+      .filter((message) => message.type === 'upsert')
+      .map((message) => message.payload.issue.id);
+    expect(upserts).toEqual(['POST']);
   });
 });

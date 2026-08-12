@@ -208,6 +208,9 @@ async function refreshAllActiveListSubscriptions(cause = 'poll') {
  * @param {string} [root_dir]
  */
 export function scheduleListRefresh(cause = 'watcher', root_dir = undefined) {
+  if (cause === 'watcher') {
+    signalWatcherMutation(root_dir);
+  }
   // Suppress watcher-driven refreshes during an active mutation gate; resolve gate once
   if (MUTATION_GATE) {
     try {
@@ -216,9 +219,6 @@ export function scheduleListRefresh(cause = 'watcher', root_dir = undefined) {
       // ignore
     }
     return;
-  }
-  if (cause === 'watcher') {
-    signalWatcherMutation(root_dir);
   }
   if (REFRESH_TIMER) {
     clearTimeout(REFRESH_TIMER);

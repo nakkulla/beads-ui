@@ -450,7 +450,7 @@ describe('workspace snapshot coordinator', () => {
     expect(runBdJson).toHaveBeenCalledTimes(6);
   });
 
-  test('marks a generation stale when a newer mutation arrives before completion', async () => {
+  test('returns the one trailing fresh generation to consumers after an in-flight mutation', async () => {
     /** @type {Array<(value: unknown) => void>} */
     const resolvers = [];
     const runBdJson = vi.fn(
@@ -463,14 +463,28 @@ describe('workspace snapshot coordinator', () => {
       runBdJson: /** @type {typeof runBdJson} */ (runBdJson)
     });
 
-    const request = coordinator.request('cold-subscribe');
+    const request = coordinator.request('poll');
     coordinator.signalMutation();
-    resolvers[0]({ code: 0, stdoutJson: [{ id: 'A', dependencies: [] }] });
+    coordinator.signalMutation();
+    resolvers[0]({ code: 0, stdoutJson: [{ id: 'PRE', dependencies: [] }] });
     resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    for (let attempt = 0; attempt < 10 && resolvers.length < 4; attempt += 1) {
+      await Promise.resolve();
+    }
+
+    expect(runBdJson).toHaveBeenCalledTimes(4);
+
+    resolvers[2]({ code: 0, stdoutJson: [{ id: 'POST', dependencies: [] }] });
+    resolvers[3]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
 
     const result = await request;
 
-    expect(result).toMatchObject({ ok: true, fresh: false });
+    expect(result).toMatchObject({ ok: true, fresh: true });
+    expect(result.ok && result.snapshot.all.map((issue) => issue.id)).toEqual([
+      'POST'
+    ]);
+    expect(coordinator.getSnapshot()?.generation).toBe(2);
+    expect(runBdJson).toHaveBeenCalledTimes(4);
   });
 
   test('allows external blockers that are absent from the workspace rows', async () => {
@@ -529,7 +543,7 @@ describe('workspace snapshot coordinator', () => {
     expect(runBdJson).toHaveBeenCalledTimes(2);
   });
 
-  test('uses one batched dependency fallback when the list payload lacks dependencies', async () => {
+  test('uses one batched dependency fallback when legacy capability is explicit', async () => {
     const runBdJson = createRunner([
       ...successfulGeneration([{ id: 'A' }, { id: 'B' }]),
       {
@@ -539,7 +553,10 @@ describe('workspace snapshot coordinator', () => {
         ]
       }
     ]);
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson,
+      dependency_mode: 'legacy-dependency-fallback'
+    });
 
     const result = await coordinator.request('cold-subscribe');
 
@@ -559,6 +576,22 @@ describe('workspace snapshot coordinator', () => {
       'B',
       '--json'
     ]);
+  });
+
+  test('uses two commands for supported zero-edge rows that omit dependencies', async () => {
+    const runBdJson = createRunner(
+      successfulGeneration([{ id: 'A' }, { id: 'B' }])
+    );
+    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+
+    const result = await coordinator.request('cold-subscribe');
+
+    expect(result).toMatchObject({ ok: true, fresh: true });
+    expect(result.ok && result.snapshot).toMatchObject({
+      command_mode: 'embedded-dependencies',
+      command_count: 2
+    });
+    expect(runBdJson).toHaveBeenCalledTimes(2);
   });
 
   test('probes installed bd for an embedded discovered-from edge', async () => {

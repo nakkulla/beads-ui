@@ -5,7 +5,11 @@ import {
   mapSubscriptionToBdArgs
 } from './list-adapters.js';
 import { enrichIssuesWorkflow } from './workflow-enrich.js';
-import { __resetWorkspaceSnapshotRuntimeForTest } from './workspace-snapshot-runtime.js';
+import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
+import {
+  __resetWorkspaceSnapshotRuntimeForTest,
+  __setWorkspaceSnapshotCoordinatorFactoryForTest
+} from './workspace-snapshot-runtime.js';
 
 vi.mock('./bd.js', () => ({ runBdJson: vi.fn() }));
 vi.mock('./workflow-enrich.js', () => ({
@@ -477,6 +481,11 @@ describe('list adapters for subscription types', () => {
   });
 
   test('uses one legacy dependency fallback generation with provenance parity', async () => {
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJson: /** @type {typeof runBdJson} */ (runBdJson),
+      dependency_mode: 'legacy-dependency-fallback'
+    });
+    __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
     /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
       async (args) => {
         if (args[0] === 'list') {
@@ -513,6 +522,117 @@ describe('list adapters for subscription types', () => {
     expect(result.ok && result.items).toEqual([
       expect.objectContaining({ id: 'FOLLOWUP-1', from_id: 'ROOT-1' })
     ]);
+  });
+
+  test('omits malformed embedded provenance ids without fabricating a value', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [
+              {
+                id: 'FOLLOWUP-1',
+                status: 'open',
+                dependencies: [
+                  {
+                    type: 'discovered-from',
+                    depends_on_id: { id: 'ROOT-1' }
+                  }
+                ]
+              }
+            ]
+          };
+        }
+        return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+      }
+    );
+
+    const result = await fetchListForSubscription(
+      { type: 'all-issues' },
+      { cwd: '/workspace-embedded-malformed', workspace_snapshot: true }
+    );
+
+    expect(result.ok && 'from_id' in result.items[0]).toBe(false);
+  });
+
+  test('restores legacy subscription caps after snapshot projection', async () => {
+    const rows = [
+      ...Array.from({ length: 51 }, (_, index) => ({
+        id: `ALL-${index + 1}`,
+        status: 'open'
+      })),
+      ...Array.from({ length: 51 }, (_, index) => ({
+        id: `RUN-${index + 1}`,
+        status: 'in_progress'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `READY-${index + 1}`,
+        status: 'open'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `STORED-${index + 1}`,
+        status: 'blocked'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `RESOLVED-${index + 1}`,
+        status: 'resolved'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `DEFERRED-${index + 1}`,
+        status: 'deferred'
+      })),
+      ...Array.from({ length: 1001 }, (_, index) => ({
+        id: `CLOSED-${index + 1}`,
+        status: 'closed',
+        closed_at: '2026-08-03T00:00:00.000Z'
+      }))
+    ];
+    const ready = Array.from({ length: 1001 }, (_, index) => ({
+      id: `READY-${index + 1}`
+    }));
+    const blocked = Array.from({ length: 1001 }, (_, index) => ({
+      id: `READY-${index + 1}`,
+      blocked_by: []
+    }));
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'list') {
+          return { code: 0, stdoutJson: rows };
+        }
+        return { code: 0, stdoutJson: { ready, blocked } };
+      }
+    );
+    const options = { cwd: '/workspace-caps', workspace_snapshot: true };
+    const [
+      all,
+      running,
+      ready_result,
+      blocked_result,
+      resolved,
+      deferred,
+      closed
+    ] = await Promise.all([
+      fetchListForSubscription({ type: 'all-issues' }, options),
+      fetchListForSubscription({ type: 'in-progress-issues' }, options),
+      fetchListForSubscription({ type: 'ready-issues' }, options),
+      fetchListForSubscription({ type: 'blocked-issues' }, options),
+      fetchListForSubscription({ type: 'resolved-issues' }, options),
+      fetchListForSubscription({ type: 'deferred-issues' }, options),
+      fetchListForSubscription({ type: 'closed-issues' }, options)
+    ]);
+
+    expect(all.ok && all.items.map((item) => item.id)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `ALL-${index + 1}`)
+    );
+    expect(running.ok && running.items).toHaveLength(50);
+    expect(ready_result.ok && ready_result.items).toHaveLength(1000);
+    expect(blocked_result.ok && blocked_result.items).toHaveLength(2000);
+    expect(blocked_result.ok && blocked_result.items[0].id).toBe('STORED-1');
+    expect(blocked_result.ok && blocked_result.items[1000].id).toBe('READY-1');
+    expect(resolved.ok && resolved.items).toHaveLength(1000);
+    expect(deferred.ok && deferred.items).toHaveLength(1000);
+    expect(closed.ok && closed.items).toHaveLength(1001);
   });
 });
 
@@ -827,6 +947,24 @@ describe('from_id provenance derivation', () => {
     const res = await fetchListForSubscription({ type: 'all-issues' });
 
     expect(res.ok && res.items[0].from_id).toBe('A-0');
+  });
+
+  test('ignores malformed non-string provenance ids', async () => {
+    mockListThenDeps([{ id: 'A-1' }, { id: 'A-2' }], {
+      code: 0,
+      stdoutJson: [
+        {
+          issue_id: 'A-1',
+          depends_on_id: { id: 'A-0' },
+          type: 'discovered-from'
+        },
+        { issue_id: 7, depends_on_id: 'A-0', type: 'discovered-from' }
+      ]
+    });
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok && res.items.some((item) => 'from_id' in item)).toBe(false);
   });
 
   test('leaves issues untouched when the dep list call fails', async () => {

@@ -45,7 +45,7 @@ const log = debug('workspace-snapshot');
  * Build a per-workspace raw snapshot coordinator. This module owns generation
  * atomicity only; projection and WebSocket publication remain consumers.
  *
- * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
+ * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, dependency_mode?: 'embedded-dependencies'|'legacy-dependency-fallback', setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
  */
 export function createWorkspaceSnapshotCoordinator(options = {}) {
   const cwd = options.cwd;
@@ -63,6 +63,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     options.retry_max_ms,
     DEFAULT_RETRY_MAX_MS
   );
+  const dependency_mode =
+    options.dependency_mode === 'legacy-dependency-fallback'
+      ? 'legacy-dependency-fallback'
+      : 'embedded-dependencies';
 
   /** @type {{ generation: number, snapshot: WorkspaceSnapshot | null, in_flight: Promise<SnapshotResult> | null, pending_mutation: boolean, projection_count: number, request_epoch: number, mutation_epoch: number, last_success_at: number | null, last_failure_at: number | null, retry_attempt: number, next_retry_at: number, retry_timer: ReturnType<typeof setTimeout> | null }} */
   const state = {
@@ -192,24 +196,26 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       trailing,
       retry_attempt
     );
-    state.in_flight = work;
-
-    void work.then((result) => {
-      if (state.in_flight !== work) {
-        return;
+    const completion = work.then((result) => {
+      if (state.in_flight !== completion) {
+        return result;
       }
-      state.in_flight = null;
 
       if (state.pending_mutation) {
         if (result.ok && !result.stale) {
           state.pending_mutation = false;
-          startGeneration('mutation-trailing');
-        } else {
-          schedulePendingMutationRetry();
+          state.in_flight = null;
+          return startGeneration('mutation-trailing');
         }
+        state.in_flight = null;
+        schedulePendingMutationRetry();
+        return result;
       }
+      state.in_flight = null;
+      return result;
     });
-    return work;
+    state.in_flight = completion;
+    return completion;
   }
 
   /**
@@ -313,10 +319,9 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         });
       }
 
-      const embedded_dependencies = raw_all.some(hasDependenciesProperty);
       /** @type {Record<string, unknown>[]} */
       let dependency_edges = [];
-      if (!embedded_dependencies && all.length > 0) {
+      if (dependency_mode === 'legacy-dependency-fallback' && all.length > 0) {
         const dependency_result = await runCommand(
           'dependencies',
           ['dep', 'list', ...all.map((issue) => issue.id), '--json'],
@@ -368,13 +373,11 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         all,
         id_index,
         ready_explain,
-        command_mode:
-          /** @type {'embedded-dependencies'|'legacy-dependency-fallback'} */ (
-            embedded_dependencies
-              ? 'embedded-dependencies'
-              : 'legacy-dependency-fallback'
-          ),
-        command_count: embedded_dependencies || all.length === 0 ? 2 : 3,
+        command_mode: dependency_mode,
+        command_count:
+          dependency_mode === 'legacy-dependency-fallback' && all.length > 0
+            ? 3
+            : 2,
         dependency_edges
       };
       state.generation = snapshot.generation;
@@ -709,13 +712,6 @@ function snapshotError(stage, message) {
  */
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * @param {unknown} value
- */
-function hasDependenciesProperty(value) {
-  return isRecord(value) && Object.hasOwn(value, 'dependencies');
 }
 
 /**

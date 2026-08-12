@@ -15,6 +15,8 @@ const DEPENDENCY_BLOCKED_ARGS = [
   '1000',
   '--json'
 ];
+const DEFAULT_LIST_LIMIT = 50;
+const SNAPSHOT_LIST_LIMIT = 1000;
 
 /**
  * Build concrete `bd` CLI args for a subscription type + params.
@@ -243,11 +245,17 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
   let items;
   switch (type) {
     case 'all-issues': {
-      items = snapshot.all.filter((item) => item.status !== 'closed');
+      items = limitSnapshotItems(
+        snapshot.all.filter((item) => item.status !== 'closed'),
+        DEFAULT_LIST_LIMIT
+      );
       break;
     }
     case 'ready-issues': {
-      items = projectReadyIssues(snapshot);
+      items = limitSnapshotItems(
+        projectReadyIssues(snapshot),
+        SNAPSHOT_LIST_LIMIT
+      );
       break;
     }
     case 'blocked-issues': {
@@ -255,7 +263,10 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
       break;
     }
     case 'in-progress-issues': {
-      items = projectByStatus(snapshot, 'in_progress');
+      items = limitSnapshotItems(
+        projectByStatus(snapshot, 'in_progress'),
+        DEFAULT_LIST_LIMIT
+      );
       break;
     }
     case 'closed-issues': {
@@ -263,11 +274,17 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
       break;
     }
     case 'resolved-issues': {
-      items = projectByStatus(snapshot, 'resolved');
+      items = limitSnapshotItems(
+        projectByStatus(snapshot, 'resolved'),
+        SNAPSHOT_LIST_LIMIT
+      );
       break;
     }
     case 'deferred-issues': {
-      items = projectByStatus(snapshot, 'deferred');
+      items = limitSnapshotItems(
+        projectByStatus(snapshot, 'deferred'),
+        SNAPSHOT_LIST_LIMIT
+      );
       break;
     }
     default: {
@@ -286,6 +303,18 @@ function projectWorkspaceSnapshot(spec, snapshot, options) {
  */
 function projectByStatus(snapshot, status) {
   return snapshot.all.filter((item) => item.status === status);
+}
+
+/**
+ * Restore the cap of the legacy subscription command after preserving raw
+ * whole-list ordering in the shared snapshot.
+ *
+ * @param {NormalizedIssue[]} items
+ * @param {number} limit
+ * @returns {NormalizedIssue[]}
+ */
+function limitSnapshotItems(items, limit) {
+  return items.slice(0, limit);
 }
 
 /**
@@ -310,7 +339,10 @@ function projectReadyIssues(snapshot) {
  * @returns {NormalizedIssue[]}
  */
 function projectBlockedIssues(snapshot) {
-  const stored_items = projectByStatus(snapshot, 'blocked');
+  const stored_items = limitSnapshotItems(
+    projectByStatus(snapshot, 'blocked'),
+    SNAPSHOT_LIST_LIMIT
+  );
   /** @type {NormalizedIssue[]} */
   const dependency_items = [];
   for (const blocked_item of snapshot.ready_explain.blocked) {
@@ -320,15 +352,19 @@ function projectBlockedIssues(snapshot) {
       dependency_items.push(mergeSnapshotIssue(stored, blocked_item));
     }
   }
+  const capped_dependency_items = limitSnapshotItems(
+    dependency_items,
+    SNAPSHOT_LIST_LIMIT
+  );
   return attachBlockedInfo(
     /** @type {any} */ (
       mergeIssueLists(
         /** @type {any} */ (stored_items),
-        /** @type {any} */ (dependency_items)
+        /** @type {any} */ (capped_dependency_items)
       )
     ),
     /** @type {any} */ (stored_items),
-    /** @type {any} */ (dependency_items)
+    /** @type {any} */ (capped_dependency_items)
   );
 }
 
@@ -385,8 +421,8 @@ function collectEmbeddedProvenance(items) {
       if (record.type !== 'discovered-from') {
         continue;
       }
-      const from_id = String(record.depends_on_id ?? '');
-      if (from_id.length > 0 && !by_id.has(item.id)) {
+      const from_id = nonEmptyStringId(record.depends_on_id);
+      if (from_id !== null && !by_id.has(item.id)) {
         by_id.set(item.id, from_id);
       }
     }
@@ -489,14 +525,23 @@ function collectProvenanceEdges(value, requested_ids) {
       if (e.type !== 'discovered-from') {
         continue;
       }
-      issue_id = String(e.issue_id ?? '');
-      origin_id = String(e.depends_on_id ?? '');
+      const batch_issue_id = nonEmptyStringId(e.issue_id);
+      const batch_origin_id = nonEmptyStringId(e.depends_on_id);
+      if (batch_issue_id === null || batch_origin_id === null) {
+        continue;
+      }
+      issue_id = batch_issue_id;
+      origin_id = batch_origin_id;
     } else {
       if (single_id === null || e.dependency_type !== 'discovered-from') {
         continue;
       }
       issue_id = single_id;
-      origin_id = String(e.id ?? '');
+      const single_origin_id = nonEmptyStringId(e.id);
+      if (single_origin_id === null) {
+        continue;
+      }
+      origin_id = single_origin_id;
     }
     if (issue_id.length === 0 || origin_id.length === 0) {
       continue;
@@ -506,6 +551,17 @@ function collectProvenanceEdges(value, requested_ids) {
     }
   }
   return by_id;
+}
+
+/**
+ * Preserve the CLI's identifier contract: malformed values must not turn into
+ * fabricated provenance strings such as "[object Object]".
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function nonEmptyStringId(value) {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
 /**
