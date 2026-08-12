@@ -6,7 +6,7 @@
 - route: `spec_backed`
 - owning Bead: `UI-x7fi`
 - canonical provider: dotfiles `dotfiles-b2yx`
-- prerequisites: `UI-lb58`, `UI-f17c`, `dotfiles-b2yx`
+- prerequisites: `UI-lb58`, `UI-f17c`, `dotfiles-b2yx`, `UI-vobi`
 - provenance: `UI-lbqw` delivery에서 반복된 base chase·reverification
 - 기존 `UI-lb58`, `UI-f17c` spec/plan은 변경하지 않는다.
 
@@ -31,7 +31,8 @@ post-merge completion까지 root intent continuity를 제공한다. 이 후속�
 1. `[머지]` 한 번 또는 `auto_merge=true`로 clean/behind PR이 base update 없이 빠르게 머지된다.
 2. 실제 conflict일 때만 기존 completion resolver가 자동으로 한 번 해결하고 같은 root intent를
    재개한다.
-3. pending/no-check PR을 기다리지 않으며 known-red, draft, stale head/base는 차단한다.
+3. pending/no-check PR을 기다리지 않으며 declared required check의 known-red, draft, stale
+   head/base는 차단한다. Advisory health result는 merge input이 아니다.
 4. merge 뒤 deployment와 cleanup은 `UI-lb58`/`UI-f17c`의 기존 durable state를 그대로 사용한다.
 
 ## 목표
@@ -41,6 +42,8 @@ post-merge completion까지 root intent continuity를 제공한다. 이 후속�
 3. `DIRTY`에서 기존 conflict-resolution completion operation을 정확히 한 번 dispatch/adopt한다.
 4. worker-owned PR의 implementation receipt를 exact head와 결합해 fast local verification을 제거한다.
 5. GitHub pinned merge와 MERGED readback, existing completion/deployment cursor를 유지한다.
+6. pinned base의 repo-ops declaration에서 required PR check identifier를 읽고 그 결론만
+   merge gate에 전달한다.
 
 ## 비목표
 
@@ -50,14 +53,17 @@ post-merge completion까지 root intent continuity를 제공한다. 이 후속�
 - GitHub branch protection 우회, auto-merge 설정, force push, rebase
 - 외부 PR에 workflow receipt를 새로 요구
 - 새 PR별 deploy action 또는 second cleanup saga
+- advisory full-suite failure의 baseline 판정, retry, debug 또는 repair
 
 ## 선행 조건과 issue 경계
 
-`UI-x7fi` implementation worktree는 다음 세 Bead가 close된 final `main`에서만 만든다.
+`UI-x7fi` implementation worktree는 다음 네 Bead가 close된 final `main`에서만 만든다.
 
 1. `UI-lb58`: external deployment job, repo-level deployment state와 post-merge cursor
 2. `UI-f17c`: single completion authority, durable conflict/repair session continuity
 3. `dotfiles-b2yx`: canonical fast decision과 post-merge ownership contract
+4. `UI-vobi`: final beads-ui required-check declaration, static post-merge verifier와
+   scheduled/manual advisory full lane
 
 함수명과 schema는 landed code에서 재탐색하되 의미를 복제하지 않는다. 이 spec은 merge
 eligibility와 handoff adapter만 소유한다. prerequisite의 public semantics가 이 문서와 다르면
@@ -73,7 +79,7 @@ authoritative observation을 받아 mutation 없이 action을 반환하는 한 f
 decideFastMerge({
   pr_state, merge_commit_sha, is_draft, base_ref, expected_base,
   head_sha, expected_head_sha,
-  mergeable, merge_state, checks,
+  mergeable, merge_state, required_checks,
   ownership, impl_receipt
 })
   -> merge_pinned
@@ -101,8 +107,8 @@ completion intent는 automatic authorization source일 뿐 safety semantics는 �
 3. `mergeable=UNKNOWN` 또는 `merge_state=UNKNOWN`은
    `refuse(mergeability_undecidable)`로 보낸다.
 4. `mergeable=CONFLICTING` 또는 `merge_state=DIRTY`이면 checks보다 먼저
-   `resolve_conflict`로 보낸다. 따라서 `DIRTY + known-red|pending`도 resolver 한 종류만 만든다.
-5. `merge_state=UNSTABLE` 또는 check rollup의 known
+   `resolve_conflict`로 보낸다. 따라서 `DIRTY + required-known-red|pending`도 resolver 한 종류만 만든다.
+5. `merge_state=UNSTABLE` 또는 declared required check rollup의 known
    `failure|cancelled|timed_out|action_required`는 `refuse(ci_failed:<conclusion>)`다.
 6. `merge_state=BLOCKED`는 branch를 갱신하지 않고 `wait_remote_policy`로 보낸다.
 7. 남은 `mergeable=MERGEABLE`과 `merge_state=CLEAN|BEHIND|HAS_HOOKS`는
@@ -123,11 +129,12 @@ completion intent는 automatic authorization source일 뿐 safety semantics는 �
 | missing head 또는 head drift | `refuse(head_drift)` |
 | `UNKNOWN`/missing/error mergeability | `refuse(mergeability_undecidable)` |
 | fresh observation에서도 `DIRTY`/`CONFLICTING` | `resolve_conflict` |
-| `UNSTABLE` 또는 known red | `refuse(ci_failed:<conclusion>)` |
+| `UNSTABLE` 또는 required check known red | `refuse(ci_failed:<conclusion>)` |
 | `BLOCKED` | `wait_remote_policy` |
-| `OPEN`, non-draft, correct base/head, `CLEAN`, no known red | `merge_pinned` |
+| `OPEN`, non-draft, correct base/head, `CLEAN`, no required known red | `merge_pinned` |
 | 위와 같고 `BEHIND|HAS_HOOKS` | `merge_pinned` |
 | pending/queued/in_progress/missing/skipped checks | merge eligibility 유지 |
+| advisory workflow/check의 red | merge input에서 제외 |
 | GitHub가 unfinished required checks로 merge 거절 | `wait_remote_policy` |
 
 `BEHIND`는 base tip drift이지 conflict가 아니다. `gh.updateBranch`를 호출하지 않고 최초
@@ -147,7 +154,9 @@ auto path는 fail closed한다. explicit external row의 human `[머지]`는 기
 pinned merge semantics를 유지하며 가짜 receipt를 만들지 않는다.
 
 Fast gate는 current head를 위해 local `[verify]` command를 새로 실행하지 않는다. pending/no-CI를
-local verify tier로 바꾸지 않고 GitHub pinned merge에 넘긴다. known red는 그대로 차단한다.
+local verify tier로 바꾸지 않고 GitHub pinned merge에 넘긴다. Pinned base의 repo-ops
+`required_checks` allowlist에 포함된 known red만 차단하며 advisory result는 수집·분류·재실행하지
+않는다.
 
 ### DIRTY conflict handoff
 
@@ -172,7 +181,7 @@ PR/head/base/check를 authoritative하게 다시 읽는다.
 
 - head/base drift 또는 DIRTY: 해당 decision으로 돌아간다.
 - current head의 required check가 pending: durable `remote_policy_requires_checks`로 대기한다.
-- known red/draft/closed: exact refusal로 terminalize한다.
+- required known red/draft/closed: exact refusal로 terminalize한다.
 - outcome undecidable: `merge_unconfirmed`/needs-human evidence를 남기고 duplicate merge를 금지한다.
 
 remote policy wait는 `updateBranch`, review mode, local verify loop를 자동 시작하지 않는다.
@@ -222,7 +231,8 @@ no-op한다.
 - mergeable `BEHIND`: blocker 대신 `base 변경 · 머지 가능` advisory
 - `DIRTY`: `충돌 해결 중` 또는 existing completion recovery primary state
 - remote policy pending: current check progress
-- known red/draft/base mismatch: existing refused/error display
+- required known red/draft/base mismatch: existing refused/error display
+- advisory full red: PR row와 merge progress에 표시하지 않음
 
 사용자에게 update-branch나 재검증 반복을 별도 progress step으로 노출하지 않는다. 해당 effect가
 더 이상 존재하지 않기 때문이다.
@@ -244,7 +254,7 @@ no-op한다.
 `server/worker/fast-merge-decision.test.js`를 생성한다. RED-GREEN seam은 현재 consumer가
 아직 만족하지 않는 다음 네 항목뿐이다.
 
-1. mixed-state fixture가 state → draft/base/head → UNKNOWN/DIRTY → UNSTABLE/known-red →
+1. mixed-state fixture가 state → draft/base/head → UNKNOWN/DIRTY → UNSTABLE/required-known-red →
    BLOCKED → mergeable states 우선순위를 따르며 한 outcome만 반환한다.
 2. `CLEAN|BEHIND|HAS_HOOKS`의 click/auto path는 같은 pinned decision을 사용하고 `BEHIND`에서
    `gh.updateBranch`, second gate, local verify를 모두 0회 호출한다.
@@ -256,7 +266,8 @@ no-op한다.
 이미 prerequisite 또는 active behavior가 만족하는 다음 항목은 RED가 아니라 regression
 coverage다.
 
-- pending/missing/skipped/no-check pass와 known-red/draft/base/head/UNKNOWN block
+- pending/missing/skipped/no-check pass, required-known-red block, advisory-red ignore와
+  draft/base/head/UNKNOWN block
 - worker-owned current receipt exact match/stale/malformed/ambiguous parent matrix
 - conflict merge commit 뒤 verification/controller self-review/receipt freshness gate
 - resolution 뒤 `BEHIND`의 추가 update 금지와 재-`DIRTY` same-lineage resume
@@ -273,16 +284,17 @@ merge-queue and auto-merge tests
 completion-intent conflict/restart tests
 deployment-job and post-merge cleanup tests
 Worker UI tests
-tsc, lint, prettier, build, full test
+tsc, lint, prettier, build와 `UI-vobi` required verification
 ```
 
 ## Rollout
 
-1. `UI-lb58`, `UI-f17c`, `dotfiles-b2yx` close와 installed runtime readback을 확인한다.
+1. `UI-lb58`, `UI-f17c`, `dotfiles-b2yx`, `UI-vobi` close와 installed runtime readback을 확인한다.
 2. final main에서 exact consumer seam과 historical `updateBranch` callers를 다시 map한다.
 3. pure decision을 먼저 도입하고 click/auto path를 같은 function에 연결한다.
 4. `BEHIND` update/reverify branch를 제거하고 DIRTY를 existing completion resolver에 연결한다.
-5. focused/full regression과 generated bundle을 검증해 PR Delivery한다.
+5. 승인된 focused tests와 `UI-vobi` required static verification, generated bundle을 검증해 PR
+   Delivery한다. Full suite는 advisory lane에 남겨 이 PR의 gate로 실행하지 않는다.
 6. 이 PR은 새 consumer를 선행 가정하지 않는 기존의 한 merge actor로만 merge하고, 기존 tail이
    terminal임을 확인한 뒤 final external deployment/readback으로 새 runtime을 활성화한다. 이후
    startup recovery가 terminal cursor를 evidenced no-op으로 adopt하는지 확인하고 새 path에
@@ -291,7 +303,7 @@ tsc, lint, prettier, build, full test
 ## Cross-repo disposition과 Worker eligibility
 
 두 repository unit은 split이다. dotfiles canonical provider는 `dotfiles-b2yx`, beads-ui
-consumer는 `UI-x7fi`다. `UI-x7fi`에는 `UI-lb58`, `UI-f17c`, foreign `dotfiles-b2yx` blocks
+consumer는 `UI-x7fi`다. `UI-x7fi`에는 `UI-lb58`, `UI-f17c`, `UI-vobi`, foreign `dotfiles-b2yx` blocks
 edge가 있고, 각 prerequisite close와 dependency readback 뒤 이 Bead의 own PR로 consumer를
 운반한다.
 
@@ -308,7 +320,8 @@ gate receipt를 기록할 때 `worker-ineligible`을 absent로 유지하거나 s
 2. `[머지]`와 `auto_merge`는 `BEHIND`에서 update-branch 없이 exact head를 pinned squash한다.
 3. fast path는 feedback/AI review/local full verification을 실행하지 않는다.
 4. `DIRTY`만 existing resolver가 merge commit으로 통합하며 duplicate resolution이 없다.
-5. known red, draft, base mismatch, head drift, unknown mergeability는 차단된다.
+5. required known red, draft, base mismatch, head drift, unknown mergeability는 차단되고 advisory
+   red는 merge input에 포함되지 않는다.
 6. pending/missing checks는 기다리지 않고 remote policy 거절만 durable wait로 남는다.
 7. resolver 결과는 verification과 controller self-review/receipt freshness 뒤에만 재머지된다.
 8. `UI-lb58` deployment job과 `UI-f17c` completion cursor는 exact root/PR/merge SHA CAS winner를
