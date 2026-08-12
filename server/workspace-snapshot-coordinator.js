@@ -45,7 +45,7 @@ const log = debug('workspace-snapshot');
  * Build a per-workspace raw snapshot coordinator. This module owns generation
  * atomicity only; projection and WebSocket publication remain consumers.
  *
- * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, dependency_mode?: 'embedded-dependencies'|'legacy-dependency-fallback', setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
+ * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, dependency_mode?: 'embedded-dependencies'|'legacy-dependency-fallback', resolveDependencyMode?: () => Promise<'embedded-dependencies'|'legacy-dependency-fallback'>, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
  */
 export function createWorkspaceSnapshotCoordinator(options = {}) {
   const cwd = options.cwd;
@@ -67,6 +67,9 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     options.dependency_mode === 'legacy-dependency-fallback'
       ? 'legacy-dependency-fallback'
       : 'embedded-dependencies';
+  const has_explicit_dependency_mode = options.dependency_mode !== undefined;
+  /** @type {Promise<'embedded-dependencies'|'legacy-dependency-fallback'> | null} */
+  let dependency_mode_promise = null;
 
   /** @type {{ generation: number, snapshot: WorkspaceSnapshot | null, in_flight: Promise<SnapshotResult> | null, pending_mutation: boolean, projection_count: number, request_epoch: number, mutation_epoch: number, last_success_at: number | null, last_failure_at: number | null, retry_attempt: number, next_retry_at: number, retry_timer: ReturnType<typeof setTimeout> | null }} */
   const state = {
@@ -237,17 +240,28 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
   ) {
     const generation_started_at = now();
     try {
-      const [all_result, ready_result] = await Promise.all([
-        runCommand('all', ALL_ARGS, cause, generation, trailing, retry_attempt),
-        runCommand(
-          'ready',
-          READY_ARGS,
-          cause,
-          generation,
-          trailing,
-          retry_attempt
-        )
+      const [resolved_dependency_mode, commands] = await Promise.all([
+        resolveDependencyMode(),
+        Promise.all([
+          runCommand(
+            'all',
+            ALL_ARGS,
+            cause,
+            generation,
+            trailing,
+            retry_attempt
+          ),
+          runCommand(
+            'ready',
+            READY_ARGS,
+            cause,
+            generation,
+            trailing,
+            retry_attempt
+          )
+        ])
       ]);
+      const [all_result, ready_result] = commands;
       const all_error = commandError('all', all_result);
       if (all_error !== null) {
         return recordFailure(all_error, {
@@ -321,7 +335,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
 
       /** @type {Record<string, unknown>[]} */
       let dependency_edges = [];
-      if (dependency_mode === 'legacy-dependency-fallback' && all.length > 0) {
+      if (
+        resolved_dependency_mode === 'legacy-dependency-fallback' &&
+        all.length > 0
+      ) {
         const dependency_result = await runCommand(
           'dependencies',
           ['dep', 'list', ...all.map((issue) => issue.id), '--json'],
@@ -373,9 +390,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         all,
         id_index,
         ready_explain,
-        command_mode: dependency_mode,
+        command_mode: resolved_dependency_mode,
         command_count:
-          dependency_mode === 'legacy-dependency-fallback' && all.length > 0
+          resolved_dependency_mode === 'legacy-dependency-fallback' &&
+          all.length > 0
             ? 3
             : 2,
         dependency_edges
@@ -421,6 +439,35 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         }
       );
     }
+  }
+
+  /**
+   * Resolve the embedded dependency capability once for this coordinator.
+   * Explicit test mode preserves deterministic seams when no live resolver is
+   * injected by the process runtime.
+   *
+   * @returns {Promise<'embedded-dependencies'|'legacy-dependency-fallback'>}
+   */
+  function resolveDependencyMode() {
+    if (has_explicit_dependency_mode || !options.resolveDependencyMode) {
+      return Promise.resolve(dependency_mode);
+    }
+    if (dependency_mode_promise === null) {
+      try {
+        dependency_mode_promise = Promise.resolve(
+          options.resolveDependencyMode()
+        )
+          .then((mode) =>
+            mode === 'embedded-dependencies'
+              ? 'embedded-dependencies'
+              : 'legacy-dependency-fallback'
+          )
+          .catch(() => 'legacy-dependency-fallback');
+      } catch {
+        dependency_mode_promise = Promise.resolve('legacy-dependency-fallback');
+      }
+    }
+    return dependency_mode_promise;
   }
 
   /**

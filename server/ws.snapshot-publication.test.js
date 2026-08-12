@@ -11,6 +11,8 @@ import {
   handleMessage,
   scheduleListRefresh
 } from './ws.js';
+import { setConnWorkspace } from './ws/context.js';
+import { triggerMutationRefreshOnce } from './ws/refresh.js';
 
 vi.mock('./bd.js', () => ({ runBdJson: vi.fn(), runBd: vi.fn() }));
 
@@ -23,6 +25,15 @@ beforeEach(() => {
   __resetWorkspaceSnapshotRuntimeForTest();
   /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
     async (args) => {
+      if (args[0] === 'version') {
+        return {
+          code: 0,
+          stdoutJson: {
+            version: '1.2.0-fork.1',
+            commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
+          }
+        };
+      }
       if (args[0] === 'list') {
         return {
           code: 0,
@@ -156,6 +167,85 @@ describe('workspace snapshot publication', () => {
 
     expect(runBdJson).toHaveBeenCalledTimes(4);
     const upserts = ws.sent
+      .map((message) => JSON.parse(message))
+      .filter((message) => message.type === 'upsert')
+      .map((message) => message.payload.issue.id);
+    expect(upserts).toEqual(['POST']);
+  });
+
+  test('waits for B trailing snapshot after a watcher resolves A global mutation gate', async () => {
+    const server = createServer();
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      refresh_debounce_ms: 0
+    });
+    const A = makeSocket();
+    const B = makeSocket();
+    setConnWorkspace(/** @type {any} */ (A), {
+      root_dir: '/workspace/a',
+      db_path: '/workspace/a/.beads/beads.db'
+    });
+    setConnWorkspace(/** @type {any} */ (B), {
+      root_dir: '/workspace/b',
+      db_path: '/workspace/b/.beads/beads.db'
+    });
+    wss.clients.add(/** @type {any} */ (A));
+    wss.clients.add(/** @type {any} */ (B));
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'version') {
+          return {
+            code: 0,
+            stdoutJson: {
+              version: '1.2.0-fork.1',
+              commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
+            }
+          };
+        }
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [{ id: 'INITIAL', status: 'open', dependencies: [] }]
+          };
+        }
+        return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+      }
+    );
+    await subscribeList(B, 'board', 'all-issues');
+    /** @type {import('vitest').Mock} */ (runBdJson).mockClear();
+    B.sent = [];
+
+    /** @type {Array<(value: unknown) => void>} */
+    const resolvers = [];
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+
+    scheduleListRefresh('poll');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolvers).toHaveLength(2);
+
+    triggerMutationRefreshOnce(/** @type {any} */ (A), 500);
+    scheduleListRefresh('watcher', '/workspace/b');
+    resolvers[0]({
+      code: 0,
+      stdoutJson: [{ id: 'PRE', status: 'open', dependencies: [] }]
+    });
+    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolvers).toHaveLength(4);
+
+    resolvers[2]({
+      code: 0,
+      stdoutJson: [{ id: 'POST', status: 'open', dependencies: [] }]
+    });
+    resolvers[3]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const upserts = B.sent
       .map((message) => JSON.parse(message))
       .filter((message) => message.type === 'upsert')
       .map((message) => message.payload.issue.id);

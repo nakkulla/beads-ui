@@ -270,6 +270,9 @@ describe('list adapters for subscription types', () => {
   test('projects concurrent list specs from one workspace snapshot generation', async () => {
     /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
       async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
         if (args[0] === 'list') {
           return {
             code: 0,
@@ -321,7 +324,9 @@ describe('list adapters for subscription types', () => {
       fetchListForSubscription({ type: 'blocked-issues' }, options)
     ]);
 
-    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(snapshotCommandCalls(/** @type {any} */ (runBdJson))).toHaveLength(
+      2
+    );
     expect(all.ok && all.items.map((item) => item.id)).toEqual([
       'OPEN-1',
       'BLOCKED-1'
@@ -352,6 +357,9 @@ describe('list adapters for subscription types', () => {
     const since = Date.parse('2026-08-03T00:00:00.000Z');
     /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
       async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
         if (args[0] === 'list') {
           return {
             code: 0,
@@ -430,7 +438,9 @@ describe('list adapters for subscription types', () => {
         )
       ]);
 
-    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(snapshotCommandCalls(/** @type {any} */ (runBdJson))).toHaveLength(
+      2
+    );
     expect(all.ok && all.items.map((item) => item.id)).toEqual([
       'OPEN-1',
       'BLOCKED-1',
@@ -488,6 +498,9 @@ describe('list adapters for subscription types', () => {
     __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
     /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
       async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
         if (args[0] === 'list') {
           return {
             code: 0,
@@ -527,6 +540,9 @@ describe('list adapters for subscription types', () => {
   test('omits malformed embedded provenance ids without fabricating a value', async () => {
     /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
       async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
         if (args[0] === 'list') {
           return {
             code: 0,
@@ -597,6 +613,9 @@ describe('list adapters for subscription types', () => {
     }));
     /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
       async (args) => {
+        if (args[0] === 'version') {
+          return supportedVersion();
+        }
         if (args[0] === 'list') {
           return { code: 0, stdoutJson: rows };
         }
@@ -635,6 +654,26 @@ describe('list adapters for subscription types', () => {
     expect(closed.ok && closed.items).toHaveLength(1001);
   });
 });
+
+/**
+ * @returns {{ code: number, stdoutJson: { version: string, commit: string } }}
+ */
+function supportedVersion() {
+  return {
+    code: 0,
+    stdoutJson: {
+      version: '1.2.0-fork.1',
+      commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
+    }
+  };
+}
+
+/**
+ * @param {{ mock: { calls: Array<[string[]]> } }} runner
+ */
+function snapshotCommandCalls(runner) {
+  return runner.mock.calls.filter(([args]) => args[0] !== 'version');
+}
 
 describe('blocked-issues blocked_info derivation', () => {
   beforeEach(() => {
