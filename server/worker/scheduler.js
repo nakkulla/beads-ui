@@ -4193,30 +4193,6 @@ export function createScheduler(deps) {
   }
 
   /**
-   * The MOST RECENT attempt of `bead_id`, or null when the bead has none.
-   *
-   * The store's attempt map is insertion-ordered by launch, so the last match is
-   * the latest attempt — and it is the latest one that says which CLI (and which
-   * model) wrote the branch this bead's next session continues.
-   *
-   * @param {string} workspace
-   * @param {string} bead_id
-   * @returns {any}
-   */
-  function lastAttemptOf(workspace, bead_id) {
-    /** @type {any} */
-    let last = null;
-    const attempts = deps.store.snapshot(workspace).attempts || {};
-    for (const attempt of Object.values(attempts)) {
-      const a = /** @type {any} */ (attempt);
-      if (a && a.bead_id === bead_id) {
-        last = a;
-      }
-    }
-    return last;
-  }
-
-  /**
    * Return the one durable source attempt that owns a completion root. Repair
    * attempts always carry an operation id; accepting a latest same-Bead record
    * here would let an unrelated administrative attempt rewrite provenance.
