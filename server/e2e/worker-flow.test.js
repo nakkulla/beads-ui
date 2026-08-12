@@ -593,7 +593,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     const deployment_result = await pr_actions.observeDeployment();
 
     expect(result).toMatchObject({ ok: true, action: 'merged', reason: null });
-    expect(deployment_result).toEqual({ ok: true, reason: null });
+    expect(deployment_result).toEqual({ ok: true, reason: 'succeeded' });
     // The merge was pinned to the sha the click-time gate approved.
     expect(gh_calls).toEqual([['mergeSquash', 1, HEAD_SHA]]);
     // The click's own observation is what the next badge render reads, and it
@@ -711,8 +711,12 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     const result = await pr_actions.merge('M2');
     const deployment_result = await pr_actions.observeDeployment();
 
-    expect(result).toMatchObject({ ok: true, action: 'merged' });
-    expect(deployment_result).toEqual({ ok: true, reason: null });
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'merged',
+      cleanup_step: 'child_sweep'
+    });
+    expect(deployment_result).toEqual({ ok: true, reason: 'succeeded' });
     const snap = runtime.queueStore.snapshot(WS);
     // Returned to the human: still in pr_wait, still `resolved`, banner record
     // written, nothing retried.

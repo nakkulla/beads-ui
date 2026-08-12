@@ -4478,6 +4478,7 @@ export function createQueueStore(options = {}) {
           next_retry_at: null,
           failure_key: null,
           retry_operation: null,
+          notifications: next.deployment?.notifications,
           recovery: {
             ...recovery,
             phase: 'completed',
