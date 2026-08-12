@@ -45,6 +45,7 @@ import {
 } from '../../data/sort.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { selectCurrentChild } from '../../utils/current-child.js';
+import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
@@ -1880,8 +1881,16 @@ export function createWorkerView(mount_element, options = {}) {
     }
 
     // Server decoration is a partial source, so a missing key remains unknown.
-    // Live Ready/Blocked issues are fresher and deliberately overwrite it.
+    // A confirmed mutation refresh can be newer than the live Ready/Blocked
+    // snapshot; only a provably newer live issue may overwrite that cache row.
     worker_serial_by_id.clear();
+    /** @type {Record<string, any>} */
+    const bead_times =
+      q.bead_times &&
+      typeof q.bead_times === 'object' &&
+      !Array.isArray(q.bead_times)
+        ? q.bead_times
+        : {};
     const bead_labels =
       q.bead_labels &&
       typeof q.bead_labels === 'object' &&
@@ -1895,7 +1904,25 @@ export function createWorkerView(mount_element, options = {}) {
     }
     for (const issue of [...ready, ...blocked]) {
       const labels = /** @type {any} */ (issue).labels;
-      if (Array.isArray(labels)) {
+      if (!Array.isArray(labels)) {
+        continue;
+      }
+      if (!worker_serial_by_id.has(issue.id)) {
+        worker_serial_by_id.set(issue.id, isWorkerSerial(labels));
+        continue;
+      }
+      const decorated_times = bead_times[issue.id];
+      const decorated_updated_ms = coerceTimestampMs(
+        decorated_times && typeof decorated_times === 'object'
+          ? decorated_times.updated_at
+          : null
+      );
+      const live_updated_ms = coerceTimestampMs(issue.updated_at);
+      if (
+        live_updated_ms !== null &&
+        decorated_updated_ms !== null &&
+        live_updated_ms > decorated_updated_ms
+      ) {
         worker_serial_by_id.set(issue.id, isWorkerSerial(labels));
       }
     }
@@ -1903,8 +1930,6 @@ export function createWorkerView(mount_element, options = {}) {
     // 생성·수정 시각 (UI-d7pw §4.3). 후보/Ready/Blocked bead는 구독 이슈가
     // 이미 들고 있고, 대기/PR 대기/완료 bead는 서버가 `bead_times`로 실어
     // 보낸다. 서버가 안 보내면 빈 객체 → 메타 줄이 그냥 안 그려진다.
-    /** @type {Record<string, any>} */
-    const bead_times = q.bead_times || {};
     /** @type {Map<string, { created_at?: number|string, updated_at?: number|string }>} */
     const idToTimes = new Map();
     for (const [bead_id, times] of Object.entries(bead_times)) {

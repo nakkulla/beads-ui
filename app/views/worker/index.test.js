@@ -3152,6 +3152,7 @@ describe('waiting execution mode controls (UI-nrut)', () => {
         title: 'live labels win',
         status: 'open',
         labels: [],
+        updated_at: 200,
         metadata: { spec_id: 'S' }
       }
     ]);
@@ -3167,6 +3168,9 @@ describe('waiting execution mode controls (UI-nrut)', () => {
           A: ['worker-serial'],
           B: [],
           C: ['worker-serial']
+        },
+        bead_times: {
+          A: { updated_at: 100 }
         },
         ...over
       })
@@ -3195,7 +3199,7 @@ describe('waiting execution mode controls (UI-nrut)', () => {
     checkbox.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  test('uses live issue labels over partial server labels and leaves missing labels unknown', () => {
+  test('uses newer live issue labels over partial server labels and leaves missing labels unknown', () => {
     const { mount } = mountExecution({
       queue: [
         { bead_id: 'A', added_at: 1 },
@@ -3212,6 +3216,19 @@ describe('waiting execution mode controls (UI-nrut)', () => {
         '.worker-mini[data-bead-id="MISSING"] .worker-mini__serial'
       )?.textContent
     ).toContain('실행 방식 확인 중');
+  });
+
+  test('keeps newer mutation-confirmed labels over stale live issue labels', () => {
+    const { mount } = mountExecution({
+      queue: [{ bead_id: 'A', added_at: 1 }],
+      bead_labels: { A: ['worker-serial'] },
+      bead_times: { A: { updated_at: 300 } }
+    });
+
+    expect(
+      mount.querySelector('.worker-mini[data-bead-id="A"] .worker-mini__serial')
+        ?.textContent
+    ).toContain('머지까지 단독');
   });
 
   test('applies known selected changes in queue order and clears the selection', async () => {
