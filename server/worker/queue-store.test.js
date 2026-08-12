@@ -300,6 +300,50 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('preserves a deployment retry budget and unknown fields through a status refresh', () => {
+    const store = createQueueStore();
+    const target_sha = 'c'.repeat(40);
+    const failure_key = {
+      repo: '/repo',
+      target_base: 'main',
+      target_sha,
+      generation: 4,
+      error_code: 'deploy_failed',
+      log_digest: 'd'.repeat(64)
+    };
+    store.recordDeploymentObservation(
+      WS,
+      /** @type {any} */ ({
+        state: 'failed',
+        target_base: 'main',
+        target_sha,
+        deployed_sha: null,
+        generation: 4,
+        error_code: 'deploy_failed',
+        log_path: '/tmp/deploy.log',
+        legacy_provider_note: { preserved: true }
+      })
+    );
+    store.scheduleDeploymentRetry(WS, failure_key, 31_000);
+
+    store.recordDeploymentObservation(WS, {
+      state: 'failed',
+      target_base: 'main',
+      target_sha,
+      deployed_sha: null,
+      generation: 4,
+      error_code: 'deploy_failed',
+      log_path: '/tmp/deploy.log'
+    });
+
+    expect(store.snapshot(WS).deployment).toMatchObject({
+      automatic_retry_count: 0,
+      next_retry_at: 31_000,
+      retry_operation: { phase: 'scheduled' },
+      legacy_provider_note: { preserved: true }
+    });
+  });
+
   test('keeps a newer deployment observation when a stale status arrives', () => {
     const store = createQueueStore();
     const newer_sha = 'd'.repeat(40);

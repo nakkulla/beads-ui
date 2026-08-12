@@ -792,7 +792,10 @@ export function createPrPoller(deps) {
 export function hasDeploymentObservationDemand(queue) {
   if (
     queue?.deployment?.state === 'pending' ||
-    queue?.deployment?.state === 'running'
+    queue?.deployment?.state === 'running' ||
+    ['scheduled', 'calling', 'returned', 'recovery_ready'].includes(
+      queue?.deployment?.retry_operation?.phase
+    )
   ) {
     return true;
   }

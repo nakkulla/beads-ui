@@ -316,6 +316,38 @@
  * @property {number|null} generation
  * @property {string|null} error_code
  * @property {string|null} log_path
+ * @property {number} [automatic_retry_count] - Successful automatic retries for this desired binding.
+ * @property {{ target_base: string, target_sha: string, generation: number }|null} [retry_budget_binding] - Binding that owns the retry budget.
+ * @property {number|null} [next_retry_at] - Earliest epoch-ms automatic retry time.
+ * @property {DeploymentFailureKey|null} [failure_key] - Bounded identity of the terminal failure.
+ * @property {DeploymentRetryOperation|null} [retry_operation] - Crash-safe retry journal.
+ * @property {DeploymentRetryOperation|null} [superseded_retry_operation] - Previous generation's terminal retry evidence.
+ * @property {DeploymentSupersededEvidence|null} [superseded_retry_evidence] - Bounded active or settled budget evidence from the superseded generation.
+ */
+/**
+ * @typedef {Object} DeploymentFailureKey
+ * @property {string} repo
+ * @property {string} target_base
+ * @property {string} target_sha
+ * @property {number} generation
+ * @property {string} error_code
+ * @property {string} log_digest
+ */
+/**
+ * @typedef {Object} DeploymentRetryOperation
+ * @property {'scheduled'|'calling'|'returned'|'recovery_ready'|'superseded'} phase
+ * @property {DeploymentFailureKey} failure_key
+ * @property {number} automatic_retry_count
+ * @property {number} next_retry_at
+ * @property {number|null} called_at
+ * @property {{ target_base: string, target_sha: string, generation: number }|null} retry_binding
+ */
+/**
+ * @typedef {Object} DeploymentSupersededEvidence
+ * @property {'operation'|'budget'} source
+ * @property {{ target_base: string, target_sha: string, generation: number }} binding
+ * @property {number} automatic_retry_count
+ * @property {DeploymentFailureKey|null} failure_key
  */
 /**
  * @typedef {Object} DiscardOperation
@@ -881,6 +913,23 @@ const DEPLOYMENT_JOB_STATES = [
   'succeeded',
   'failed'
 ];
+
+const DEPLOYMENT_RETRY_PHASES = new Set([
+  'scheduled',
+  'calling',
+  'returned',
+  'recovery_ready',
+  'superseded'
+]);
+
+const DEPLOYMENT_RETRY_FIELDS = new Set([
+  'automatic_retry_count',
+  'retry_budget_binding',
+  'next_retry_at',
+  'failure_key',
+  'retry_operation',
+  'superseded_retry_evidence'
+]);
 
 /**
  * Queue properties this module actively normalizes. Any other top-level field
@@ -1717,6 +1766,220 @@ function normalizeQueue(raw) {
 
 /**
  * @param {unknown} value
+ * @returns {DeploymentFailureKey|null}
+ */
+function normalizeDeploymentFailureKey(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.repo !== 'string' ||
+    value.repo.length === 0 ||
+    typeof value.target_base !== 'string' ||
+    value.target_base.length === 0 ||
+    !isSha(value.target_sha) ||
+    !Number.isInteger(value.generation) ||
+    Number(value.generation) <= 0 ||
+    typeof value.error_code !== 'string' ||
+    value.error_code.length === 0 ||
+    value.error_code.length > 200 ||
+    typeof value.log_digest !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(value.log_digest)
+  ) {
+    return null;
+  }
+  return {
+    repo: value.repo,
+    target_base: value.target_base,
+    target_sha: value.target_sha.toLowerCase(),
+    generation: Number(value.generation),
+    error_code: value.error_code,
+    log_digest: value.log_digest
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {{ target_base: string, target_sha: string, generation: number }|null}
+ */
+function normalizeDeploymentBinding(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.target_base !== 'string' ||
+    value.target_base.length === 0 ||
+    !isSha(value.target_sha) ||
+    !Number.isInteger(value.generation) ||
+    Number(value.generation) <= 0
+  ) {
+    return null;
+  }
+  return {
+    target_base: value.target_base,
+    target_sha: value.target_sha.toLowerCase(),
+    generation: Number(value.generation)
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {DeploymentRetryOperation|null}
+ */
+function normalizeDeploymentRetryOperation(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.phase !== 'string' ||
+    !DEPLOYMENT_RETRY_PHASES.has(value.phase)
+  ) {
+    return null;
+  }
+  const failure_key = normalizeDeploymentFailureKey(value.failure_key);
+  if (
+    !failure_key ||
+    !Number.isInteger(value.automatic_retry_count) ||
+    Number(value.automatic_retry_count) < 0 ||
+    Number(value.automatic_retry_count) > 2 ||
+    typeof value.next_retry_at !== 'number' ||
+    !Number.isFinite(value.next_retry_at) ||
+    (value.called_at !== null &&
+      (typeof value.called_at !== 'number' ||
+        !Number.isFinite(value.called_at)))
+  ) {
+    return null;
+  }
+  const binding = value.retry_binding;
+  const retry_binding = normalizeDeploymentBinding(binding);
+  if (
+    binding !== null &&
+    (!retry_binding || retry_binding.generation !== failure_key.generation + 1)
+  ) {
+    return null;
+  }
+  return {
+    phase: /** @type {DeploymentRetryOperation['phase']} */ (value.phase),
+    failure_key,
+    automatic_retry_count: Number(value.automatic_retry_count),
+    next_retry_at: Number(value.next_retry_at),
+    called_at: typeof value.called_at === 'number' ? value.called_at : null,
+    retry_binding
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {DeploymentSupersededEvidence|null}
+ */
+function normalizeDeploymentSupersededEvidence(value) {
+  if (
+    !isRecord(value) ||
+    (value.source !== 'operation' && value.source !== 'budget') ||
+    !Number.isInteger(value.automatic_retry_count) ||
+    Number(value.automatic_retry_count) < 0 ||
+    Number(value.automatic_retry_count) > 2
+  ) {
+    return null;
+  }
+  const binding = normalizeDeploymentBinding(value.binding);
+  const failure_key =
+    value.failure_key === null
+      ? null
+      : normalizeDeploymentFailureKey(value.failure_key);
+  if (!binding || (value.failure_key !== null && !failure_key)) {
+    return null;
+  }
+  return {
+    source: value.source,
+    binding,
+    automatic_retry_count: Number(value.automatic_retry_count),
+    failure_key
+  };
+}
+
+/**
+ * @param {Record<string, unknown>} value
+ * @param {DeploymentObservation} observation
+ * @returns {{ automatic_retry_count: number, retry_budget_binding: { target_base: string, target_sha: string, generation: number }|null, next_retry_at: number|null, failure_key: DeploymentFailureKey|null, retry_operation: DeploymentRetryOperation|null, superseded_retry_evidence: DeploymentSupersededEvidence|null }}
+ */
+function deploymentRetryFields(value, observation) {
+  const automatic_retry_count =
+    Number.isInteger(value.automatic_retry_count) &&
+    Number(value.automatic_retry_count) >= 0 &&
+    Number(value.automatic_retry_count) <= 2
+      ? Number(value.automatic_retry_count)
+      : 0;
+  const failure_key = normalizeDeploymentFailureKey(value.failure_key);
+  const retry_budget_binding = normalizeDeploymentBinding(
+    value.retry_budget_binding
+  );
+  const retry_operation = normalizeDeploymentRetryOperation(
+    value.retry_operation
+  );
+  const superseded_retry_evidence = normalizeDeploymentSupersededEvidence(
+    value.superseded_retry_evidence
+  );
+  const same_binding =
+    retry_budget_binding &&
+    observation.target_base === retry_budget_binding.target_base &&
+    observation.target_sha === retry_budget_binding.target_sha &&
+    observation.generation === retry_budget_binding.generation;
+  if (!same_binding) {
+    return {
+      automatic_retry_count: 0,
+      retry_budget_binding: null,
+      next_retry_at: null,
+      failure_key: null,
+      retry_operation: null,
+      superseded_retry_evidence
+    };
+  }
+  return {
+    automatic_retry_count,
+    retry_budget_binding,
+    next_retry_at:
+      typeof value.next_retry_at === 'number' &&
+      Number.isFinite(value.next_retry_at)
+        ? Number(value.next_retry_at)
+        : null,
+    failure_key,
+    retry_operation,
+    superseded_retry_evidence
+  };
+}
+
+/**
+ * @param {DeploymentObservation|null} deployment
+ * @returns {DeploymentSupersededEvidence|null}
+ */
+function supersededDeploymentEvidence(deployment) {
+  if (!deployment) {
+    return null;
+  }
+  const operation = deployment.retry_operation;
+  if (operation) {
+    return {
+      source: 'operation',
+      binding: {
+        target_base: operation.failure_key.target_base,
+        target_sha: operation.failure_key.target_sha,
+        generation: operation.failure_key.generation
+      },
+      automatic_retry_count: operation.automatic_retry_count,
+      failure_key: operation.failure_key
+    };
+  }
+  if (
+    deployment.retry_budget_binding &&
+    (deployment.automatic_retry_count ?? 0) > 0
+  ) {
+    return {
+      source: 'budget',
+      binding: deployment.retry_budget_binding,
+      automatic_retry_count: deployment.automatic_retry_count ?? 0,
+      failure_key: deployment.failure_key ?? null
+    };
+  }
+  return null;
+}
+
+/**
+ * @param {unknown} value
  * @returns {DeploymentObservation|null}
  */
 function normalizeDeploymentObservation(value) {
@@ -1808,15 +2071,34 @@ function normalizeDeploymentObservation(value) {
   if (!valid_state) {
     return null;
   }
-  return {
-    state: /** @type {DeploymentObservation['state']} */ (value.state),
-    target_base: value.target_base,
-    target_sha,
-    deployed_sha,
-    generation: Number(value.generation),
-    error_code: value.error_code,
-    log_path: value.log_path
-  };
+  /** @type {DeploymentObservation & Record<string, unknown>} */
+  const normalized =
+    /** @type {DeploymentObservation & Record<string, unknown>} */ ({
+      state: /** @type {DeploymentObservation['state']} */ (value.state),
+      target_base: value.target_base,
+      target_sha,
+      deployed_sha,
+      generation: Number(value.generation),
+      error_code: value.error_code,
+      log_path: value.log_path
+    });
+  for (const [key, unknown] of Object.entries(value)) {
+    if (
+      ![
+        'state',
+        'target_base',
+        'target_sha',
+        'deployed_sha',
+        'generation',
+        'error_code',
+        'log_path'
+      ].includes(key) &&
+      !DEPLOYMENT_RETRY_FIELDS.has(key)
+    ) {
+      normalized[key] = unknown;
+    }
+  }
+  return { ...normalized, ...deploymentRetryFields(value, normalized) };
 }
 
 /**
@@ -3286,7 +3568,34 @@ export function createQueueStore(options = {}) {
             return false;
           }
         }
-        next.deployment = observation;
+        const same_binding =
+          current?.target_base === observation.target_base &&
+          current?.target_sha === observation.target_sha &&
+          current?.generation === observation.generation;
+        if (same_binding) {
+          const merged = normalizeDeploymentObservation({
+            ...current,
+            ...input
+          });
+          if (!merged) {
+            return false;
+          }
+          next.deployment = merged;
+        } else {
+          const evidence = supersededDeploymentEvidence(current);
+          next.deployment = current?.retry_operation
+            ? {
+                ...observation,
+                superseded_retry_operation: {
+                  ...current.retry_operation,
+                  phase: 'superseded'
+                },
+                superseded_retry_evidence: evidence
+              }
+            : evidence
+              ? { ...observation, superseded_retry_evidence: evidence }
+              : observation;
+        }
         return true;
       });
       return rejected === null ? result : { ...result, [rejected]: true };
@@ -3328,6 +3637,203 @@ export function createQueueStore(options = {}) {
           generation: retry_binding.generation,
           error_code: null,
           log_path: null
+        };
+        return true;
+      });
+      return stale ? { ...result, stale: true } : result;
+    },
+
+    /**
+     * Reserve an automatic retry without executing a provider effect. The
+     * reservation is the durable ownership fence for the coordinator.
+     *
+     * @param {string} workspace
+     * @param {DeploymentFailureKey} failure_key
+     * @param {number} next_retry_at
+     * @returns {QueueOpResult & { stale?: boolean, exhausted?: boolean }}
+     */
+    scheduleDeploymentRetry(workspace, failure_key, next_retry_at) {
+      let stale = false;
+      let exhausted = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(failure_key);
+        const current = next.deployment;
+        if (
+          !key ||
+          !current ||
+          current.state !== 'failed' ||
+          current.target_base !== key.target_base ||
+          current.target_sha !== key.target_sha ||
+          current.generation !== key.generation ||
+          current.error_code !== key.error_code ||
+          typeof next_retry_at !== 'number' ||
+          !Number.isFinite(next_retry_at)
+        ) {
+          stale = true;
+          return false;
+        }
+        const count = current.automatic_retry_count ?? 0;
+        if (count >= 2) {
+          exhausted = true;
+          next.deployment = {
+            ...current,
+            failure_key: key,
+            next_retry_at: null,
+            retry_operation: {
+              phase: 'recovery_ready',
+              failure_key: key,
+              automatic_retry_count: count,
+              next_retry_at,
+              called_at: null,
+              retry_binding: null
+            }
+          };
+          return true;
+        }
+        const existing = current.retry_operation;
+        if (existing && existing.phase !== 'superseded') {
+          stale = true;
+          return false;
+        }
+        next.deployment = {
+          ...current,
+          automatic_retry_count: count,
+          retry_budget_binding: {
+            target_base: key.target_base,
+            target_sha: key.target_sha,
+            generation: key.generation
+          },
+          next_retry_at,
+          failure_key: key,
+          retry_operation: {
+            phase: 'scheduled',
+            failure_key: key,
+            automatic_retry_count: count,
+            next_retry_at,
+            called_at: null,
+            retry_binding: null
+          }
+        };
+        return true;
+      });
+      return stale
+        ? { ...result, stale: true }
+        : exhausted
+          ? { ...result, exhausted: true }
+          : result;
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {DeploymentFailureKey} failure_key
+     * @param {number} called_at
+     * @returns {QueueOpResult & { stale?: boolean }}
+     */
+    prerecordDeploymentRetry(workspace, failure_key, called_at) {
+      let stale = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(failure_key);
+        const current = next.deployment;
+        const operation = current?.retry_operation;
+        if (
+          !key ||
+          !current ||
+          !operation ||
+          operation.phase !== 'scheduled' ||
+          JSON.stringify(operation.failure_key) !== JSON.stringify(key) ||
+          current.next_retry_at == null ||
+          called_at < current.next_retry_at
+        ) {
+          stale = true;
+          return false;
+        }
+        next.deployment = {
+          ...current,
+          retry_operation: { ...operation, phase: 'calling', called_at }
+        };
+        return true;
+      });
+      return stale ? { ...result, stale: true } : result;
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {DeploymentFailureKey} failure_key
+     * @param {{ target_base: string, target_sha: string, generation: number }} retry_binding
+     * @returns {QueueOpResult & { stale?: boolean }}
+     */
+    recordDeploymentRetryReturned(workspace, failure_key, retry_binding) {
+      let stale = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(failure_key);
+        const binding = normalizeDeploymentBinding(retry_binding);
+        const current = next.deployment;
+        const operation = current?.retry_operation;
+        if (
+          !key ||
+          !binding ||
+          !current ||
+          !operation ||
+          operation.phase !== 'calling' ||
+          JSON.stringify(operation.failure_key) !== JSON.stringify(key) ||
+          binding.target_base !== key.target_base ||
+          binding.target_sha !== key.target_sha ||
+          binding.generation !== key.generation + 1
+        ) {
+          stale = true;
+          return false;
+        }
+        next.deployment = {
+          ...current,
+          retry_operation: {
+            ...operation,
+            phase: 'returned',
+            retry_binding: binding
+          }
+        };
+        return true;
+      });
+      return stale ? { ...result, stale: true } : result;
+    },
+
+    /**
+     * Commit a returned retry only after the immediate provider status confirms
+     * the exact next binding.
+     *
+     * @param {string} workspace
+     * @param {DeploymentFailureKey} failure_key
+     * @param {DeploymentObservation} status
+     * @returns {QueueOpResult & { stale?: boolean }}
+     */
+    settleDeploymentRetry(workspace, failure_key, status) {
+      let stale = false;
+      const result = applyUnconditional(workspace, (next) => {
+        const key = normalizeDeploymentFailureKey(failure_key);
+        const observation = normalizeDeploymentObservation(status);
+        const current = next.deployment;
+        const operation = current?.retry_operation;
+        if (
+          !key ||
+          !observation ||
+          !current ||
+          !operation ||
+          operation.phase !== 'returned' ||
+          JSON.stringify(operation.failure_key) !== JSON.stringify(key) ||
+          !operation.retry_binding ||
+          observation.target_base !== operation.retry_binding.target_base ||
+          observation.target_sha !== operation.retry_binding.target_sha ||
+          observation.generation !== operation.retry_binding.generation
+        ) {
+          stale = true;
+          return false;
+        }
+        next.deployment = {
+          ...observation,
+          automatic_retry_count: operation.automatic_retry_count + 1,
+          retry_budget_binding: operation.retry_binding,
+          next_retry_at: null,
+          failure_key: null,
+          retry_operation: null
         };
         return true;
       });

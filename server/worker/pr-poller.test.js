@@ -240,6 +240,32 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).not.toHaveBeenCalled();
   });
 
+  test('keeps a retry journal observable without a subscriber or PR row', async () => {
+    const onDeployment = vi.fn(async () => {});
+    const { poller, prDetail } = makePoller({
+      subscribers: 0,
+      queue: {
+        ...queueOf(),
+        deployment: {
+          state: 'failed',
+          target_base: 'main',
+          target_sha: 'a'.repeat(40),
+          deployed_sha: null,
+          generation: 7,
+          error_code: 'deploy_failed',
+          log_path: '/tmp/deploy.log',
+          retry_operation: { phase: 'scheduled' }
+        }
+      },
+      onDeployment
+    });
+
+    await poller.tick();
+
+    expect(onDeployment).toHaveBeenCalledOnce();
+    expect(prDetail).not.toHaveBeenCalled();
+  });
+
   test('observes cold legacy deployment residue without a subscriber', async () => {
     const onMerged = vi.fn(async () => {});
     const { poller, prDetail } = makePoller({

@@ -47,6 +47,7 @@ import {
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDeploymentJob } from './deployment-job.js';
+import { createDeploymentRecovery } from './deployment-recovery.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
@@ -373,6 +374,7 @@ export function defaultProbePid(pid) {
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
+ *   deploymentRecovery?: { poll: () => Promise<any>, tick: () => Promise<any> },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -951,6 +953,16 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notify
   });
 
+  const deploymentRecovery =
+    options.deploymentRecovery ||
+    createDeploymentRecovery({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      deploymentJob: /** @type {any} */ (deploymentJob),
+      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
+    });
+
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -1105,7 +1117,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id, merge_sha, refs) =>
       prActions.cleanupObservedMerge(bead_id, merge_sha, refs),
-    onDeployment: () => prActions.observeDeployment(),
+    onDeployment: async () => {
+      const observed = await prActions.observeDeployment();
+      await deploymentRecovery.poll();
+      await deploymentRecovery.tick();
+      return observed;
+    },
     onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
@@ -1139,6 +1156,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     worktree,
     admission,
     deploymentJob,
+    deploymentRecovery,
     repo,
     resolveBase,
     workspace: workspace_root
@@ -1539,6 +1557,9 @@ export async function retryWorkerDeployment(workspace_root) {
     generation <= 0
   ) {
     return { ok: false, reason: 'deployment_not_retryable' };
+  }
+  if (current.retry_operation) {
+    return { ok: false, reason: 'automatic_retry_in_progress' };
   }
   const current_binding = {
     target_base: current.target_base,
