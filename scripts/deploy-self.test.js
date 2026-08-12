@@ -29,6 +29,9 @@ function fixture() {
     if (bin === 'git' && args[0] === 'status') {
       return { status: 0, stdout: '', stderr: '' };
     }
+    if (bin === 'ts-ip') {
+      return { status: 0, stdout: '100.64.0.10\n', stderr: '' };
+    }
     return { status: 0, stdout: '', stderr: '' };
   });
   return { calls, fs, run };
@@ -108,6 +111,46 @@ describe('deploy-self', () => {
     await expect(deploySelf(input)).resolves.toMatchObject({ ok: true });
 
     expect(f.calls.filter((call) => call[0] === 'bdui-shared')).toHaveLength(2);
+  });
+
+  test('uses the shared data pointer and tailnet health defaults', async () => {
+    const f = fixture();
+    const fetch_impl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        runtime: { source_sha: SHA, source_repo: '/release' }
+      })
+    }));
+
+    const result = await deploySelf({
+      cwd: '/release',
+      env: {
+        HOME: '/home/test',
+        XDG_DATA_HOME: '/data',
+        BDUI_DEPLOY_TARGET_SHA: SHA
+      },
+      fs_impl: f.fs,
+      run_sync: f.run,
+      fetch_impl,
+      sleep: async () => {}
+    });
+
+    expect(result).toEqual({ ok: true, sha: SHA, release_path: '/release' });
+    expect(f.fs.symlinkSync).toHaveBeenCalledWith(
+      '/release',
+      path.join('/data', 'bdui', 'runtime', 'beads-ui', '.current.new'),
+      'junction'
+    );
+    expect(f.fs.renameSync).toHaveBeenCalledWith(
+      path.join('/data', 'bdui', 'runtime', 'beads-ui', '.current.new'),
+      path.join('/data', 'bdui', 'runtime', 'beads-ui', 'current')
+    );
+    expect(f.calls).toContainEqual(['ts-ip']);
+    expect(fetch_impl).toHaveBeenCalledWith(
+      'http://100.64.0.10:3000/healthz',
+      expect.objectContaining({ headers: { accept: 'application/json' } })
+    );
   });
 
   test('rejects a mismatched candidate before publishing', async () => {

@@ -12,9 +12,11 @@ const HEALTH_POLL_MS = 100;
  * @param {NodeJS.ProcessEnv|Record<string, string|undefined>} env
  */
 function defaultRuntimePointerPath(env) {
-  const state_home =
-    env.XDG_STATE_HOME || path.join(env.HOME || '', '.local', 'state');
-  return path.join(state_home, 'bdui', 'runtime', 'current');
+  const configured_data_home = String(env.XDG_DATA_HOME || '');
+  const data_home = configured_data_home.trim()
+    ? configured_data_home
+    : path.join(env.HOME || '', '.local', 'share');
+  return path.join(data_home, 'bdui', 'runtime', 'beads-ui', 'current');
 }
 
 /**
@@ -29,6 +31,28 @@ function delay(ms) {
  */
 function succeeded(result) {
   return !result.error && result.status === 0;
+}
+
+/**
+ * @param {NodeJS.ProcessEnv|Record<string, string|undefined>} env
+ * @param {any} run_sync
+ */
+function defaultHealthUrl(env, run_sync) {
+  const configured_url = String(env.BDUI_DEPLOY_HEALTH_URL || '').trim();
+  if (configured_url) {
+    return configured_url;
+  }
+  let host = String(env.BDUI_HOST || '').trim();
+  if (!host) {
+    const result = run_sync('ts-ip', [], {
+      encoding: 'utf8',
+      shell: false
+    });
+    if (succeeded(result)) {
+      host = String(result.stdout || '').trim();
+    }
+  }
+  return host ? `http://${host}:3000/healthz` : '';
 }
 
 /**
@@ -132,9 +156,10 @@ export async function deploySelf(input = {}) {
   if (!succeeded(restart)) {
     return { ok: false, reason: 'runtime_restart_failed' };
   }
-  const health_url = String(
-    env.BDUI_DEPLOY_HEALTH_URL || 'http://127.0.0.1:3000/healthz'
-  );
+  const health_url = defaultHealthUrl(env, run_sync);
+  if (!health_url) {
+    return { ok: false, reason: 'runtime_health_endpoint_unavailable' };
+  }
   for (let attempt = 0; attempt < HEALTH_ATTEMPTS; attempt += 1) {
     try {
       const response = await fetch_impl(health_url, {
