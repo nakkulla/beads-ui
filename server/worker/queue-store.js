@@ -123,6 +123,9 @@
  * legacy history neutral.
  * @property {Record<string, string|null>|null} exec_restore_values - Raw bead
  * metadata observed immediately before this attempt overlaid exec stamps.
+ * @property {{ mismatch: Record<string, unknown>, continuation: null }|null} continuation_action -
+ * Durable action-required descriptor when a background relaunch cannot choose
+ * across runners. Null on ordinary attempts.
  * @property {boolean} conflict_resolution - Whether this attempt was dispatched
  * to RESOLVE a PR conflict (worker-phase2 §6). It is the single input that
  * relaxes the session-side base-into-branch `git merge` guard, so it is
@@ -1452,6 +1455,9 @@ export function makeAttempt(fields) {
       fields.continuation_mode === 'fresh'
         ? fields.continuation_mode
         : null,
+    continuation_action: isRecord(fields.continuation_action)
+      ? clone(fields.continuation_action)
+      : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
     external_conflict: fields.external_conflict === true,
@@ -4103,12 +4109,13 @@ export function createQueueStore(options = {}) {
      * budget slot or spawning a duplicate session.
      *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, op: CompletionOperation, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
+     * @param {{ root_bead_id: string, op: CompletionOperation, expected_revision?: number, attempt: Partial<Attempt> & { attempt_id: string, bead_id: string } }} input
      * @returns {QueueOpResult}
      */
     beginRepairOp(workspace, input) {
       const { root_bead_id, op, attempt } = input;
-      return applyUnconditional(workspace, (next) => {
+      /** @param {Queue} next */
+      const mutate = (next) => {
         const intent = next.completion_intents[root_bead_id];
         const normalized_op = normalizeCompletionOperation(op);
         const active_op = intent?.active_op;
@@ -4158,7 +4165,10 @@ export function createQueueStore(options = {}) {
           worker_serial: source?.worker_serial === true
         });
         return true;
-      });
+      };
+      return typeof input.expected_revision === 'number'
+        ? applyMutation(workspace, input.expected_revision, mutate)
+        : applyUnconditional(workspace, mutate);
     },
 
     /**

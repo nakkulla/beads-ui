@@ -2571,6 +2571,15 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
           orchestration_speed: 'fast',
           spec_review_model: 'codex'
         },
+        exec_restore_values: { orchestration_model: 'sonnet' },
+        continuation_mode: 'fresh',
+        continuation_action: {
+          mismatch: {
+            continuation_required: true,
+            decision_token: { source_attempt_id: 'att-0' }
+          },
+          continuation: null
+        },
         speed: 'fast'
       }
     });
@@ -2583,6 +2592,11 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       exec_default_preset_id: 'preset-1',
       exec_default_preset_revision: 7,
       speed: 'fast',
+      continuation_mode: 'fresh',
+      exec_restore_values: { orchestration_model: 'sonnet' },
+      continuation_action: {
+        mismatch: { continuation_required: true }
+      },
       exec_values: {
         orchestration_model: 'opus',
         orchestration_speed: 'fast',
@@ -2609,6 +2623,11 @@ describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', (
       exec_default_preset_id: 'preset-1',
       exec_default_preset_revision: 7,
       speed: 'fast',
+      continuation_mode: 'fresh',
+      exec_restore_values: { orchestration_model: 'sonnet' },
+      continuation_action: {
+        mismatch: { continuation_required: true }
+      },
       exec_values: {
         orchestration_model: 'opus',
         orchestration_speed: 'fast',

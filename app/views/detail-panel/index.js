@@ -50,7 +50,7 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @typedef {Object} DetailPanelOptions
  * @property {{ snapshotFor?: (client_id: string) => any[], subscribe?: (fn: () => void) => () => void }} [issueStores]
  * @property {(type: string, payload: unknown) => Promise<unknown>} [transport]
- * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
+ * @property {{ get: () => any, set?: (queue: any) => void, subscribe?: (fn: () => void) => () => void }} [queueStore] - Client worker-queue store (source of a bead's attempts).
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
@@ -504,7 +504,14 @@ export function createDetailPanel(mount_element, options) {
           ...extra
         })
       );
+    /** @param {any} response */
+    const adopt = (response) => {
+      if (response?.queue && queueStore?.set) {
+        queueStore.set(response.queue);
+      }
+    };
     let res = await send();
+    adopt(res);
     if (res && res.conflict) {
       // The conflict reply carries the authoritative queue; retry once against
       // its revision (the push may not have landed in the store yet).
@@ -518,10 +525,12 @@ export function createDetailPanel(mount_element, options) {
           expected_revision: fresh
         })
       );
+      adopt(res);
     }
     res = await resolveContinuationMismatch(
       res,
-      (continuation, decision_token) => send({ continuation, decision_token })
+      (continuation, decision_token) => send({ continuation, decision_token }),
+      { onResult: adopt, refresh: () => send() }
     );
     if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);

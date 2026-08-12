@@ -909,18 +909,76 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Restore a finished attempt's temporary overlay before resolving settings
+   * for a substitute launch. Unlike terminal best-effort cleanup, this path
+   * requires exact readback because the next resolver will treat the restored
+   * values as user-owned input.
+   *
+   * @param {string} bead_id
+   * @param {string|null} workflow_mode_prior
+   * @param {string[]|null|undefined} keys
+   * @param {Record<string, string|null>|null} restore_values
+   */
+  async function restoreAttemptOverlayForRelaunch(
+    bead_id,
+    workflow_mode_prior,
+    keys,
+    restore_values
+  ) {
+    try {
+      await revertWorkflowMode(bead_id, workflow_mode_prior);
+      const workflow_readback = await deps.bd.readMetadata(
+        bead_id,
+        'workflow_mode'
+      );
+      if (
+        (typeof workflow_mode_prior === 'string' &&
+          workflow_readback !== workflow_mode_prior) ||
+        (workflow_mode_prior === null && typeof workflow_readback === 'string')
+      ) {
+        return false;
+      }
+      for (const key of Array.isArray(keys) ? keys : []) {
+        const prior = restore_values?.[key] ?? null;
+        if (typeof prior === 'string') {
+          await deps.bd.setMetadata(bead_id, key, prior);
+        } else {
+          await deps.bd.unsetMetadata(bead_id, key);
+        }
+        const readback = await deps.bd.readMetadata(bead_id, key);
+        if (
+          (typeof prior === 'string' && readback !== prior) ||
+          (prior === null && typeof readback === 'string')
+        ) {
+          return false;
+        }
+      }
+    } catch (err) {
+      log(
+        'attempt overlay restore failed before relaunch for %s: %o',
+        bead_id,
+        err
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Persist a complete attempt before its first metadata write. A failed CAS or
    * persistence write means the launch has no durable cleanup/provenance record
    * and must stop before it can stamp or spawn.
    *
    * @param {string} workspace
    * @param {any} attempt
+   * @param {number} [expected_revision]
    */
-  function prerecordAttempt(workspace, attempt) {
+  function prerecordAttempt(workspace, attempt, expected_revision) {
     try {
       return (
         deps.store.appendAttempt(workspace, {
-          expected_revision: deps.store.snapshot(workspace).revision,
+          expected_revision:
+            expected_revision ?? deps.store.snapshot(workspace).revision,
           attempt
         }).ok === true
       );
@@ -935,15 +993,22 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {any} attempt
    * @param {{ queue_bead_id: string, wait_ms: number }} resolution_wait
+   * @param {number} [expected_revision]
    */
-  function prerecordResolutionAttempt(workspace, attempt, resolution_wait) {
+  function prerecordResolutionAttempt(
+    workspace,
+    attempt,
+    resolution_wait,
+    expected_revision
+  ) {
     if (typeof deps.store.appendResolutionAttempt !== 'function') {
       return false;
     }
     try {
       return (
         deps.store.appendResolutionAttempt(workspace, {
-          expected_revision: deps.store.snapshot(workspace).revision,
+          expected_revision:
+            expected_revision ?? deps.store.snapshot(workspace).revision,
           queue_bead_id: resolution_wait.queue_bead_id,
           subject_bead_id: attempt.bead_id,
           wait_ms: resolution_wait.wait_ms,
@@ -965,19 +1030,26 @@ export function createScheduler(deps) {
    * @param {any} attempt
    * @param {boolean} completion_resume
    * @param {{ queue_bead_id: string, wait_ms: number }|null} resolution_wait
+   * @param {number} [expected_revision]
    */
   function prerecordRelaunchAttempt(
     workspace,
     prior,
     attempt,
     completion_resume,
-    resolution_wait = null
+    resolution_wait = null,
+    expected_revision
   ) {
     if (resolution_wait) {
-      return prerecordResolutionAttempt(workspace, attempt, resolution_wait);
+      return prerecordResolutionAttempt(
+        workspace,
+        attempt,
+        resolution_wait,
+        expected_revision
+      );
     }
     if (!completion_resume) {
-      return prerecordAttempt(workspace, attempt);
+      return prerecordAttempt(workspace, attempt, expected_revision);
     }
     const completion_owned =
       prior.completion_root_id != null ||
@@ -985,7 +1057,7 @@ export function createScheduler(deps) {
       prior.completion_mode != null ||
       prior.completion_failure_key != null;
     if (!completion_owned) {
-      return prerecordAttempt(workspace, attempt);
+      return prerecordAttempt(workspace, attempt, expected_revision);
     }
     if (typeof deps.store.appendResumedCompletionAttempt !== 'function') {
       return false;
@@ -993,7 +1065,8 @@ export function createScheduler(deps) {
     try {
       return (
         deps.store.appendResumedCompletionAttempt(workspace, {
-          expected_revision: deps.store.snapshot(workspace).revision,
+          expected_revision:
+            expected_revision ?? deps.store.snapshot(workspace).revision,
           source_attempt_id: prior.attempt_id,
           attempt
         }).ok === true
@@ -2520,6 +2593,15 @@ export function createScheduler(deps) {
     record,
     verdict
   ) {
+    const restored = await restoreAttemptOverlayForRelaunch(
+      bead_id,
+      record.workflow_mode_prior ?? null,
+      record.exec_stamped_keys,
+      record.exec_restore_values ?? null
+    );
+    if (!restored) {
+      return false;
+    }
     deps.store.updateAttempt(workspace, {
       attempt_id,
       patch: {
@@ -2528,7 +2610,7 @@ export function createScheduler(deps) {
         finished_at: now()
       }
     });
-    /** @type {{ ok: boolean, reason?: string, attempt_id?: string }} */
+    /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
     let relaunched;
     try {
       relaunched = await dispatchReviseFix(workspace, {
@@ -2547,6 +2629,44 @@ export function createScheduler(deps) {
       relaunched = { ok: false, reason: 'error' };
     }
     if (!relaunched.ok) {
+      if (relaunched.continuation_mismatch) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: {
+            continuation_action: {
+              mismatch: relaunched.continuation_mismatch,
+              continuation: null
+            }
+          }
+        });
+        const q = deps.store.snapshot(workspace);
+        const queue_bead_id = q.merge_queue?.find(
+          (/** @type {any} */ entry) => {
+            if (entry.bead_id === bead_id) {
+              return true;
+            }
+            return (
+              q.completion_intents?.[entry.bead_id]?.subject?.bead_id ===
+              bead_id
+            );
+          }
+        )?.bead_id;
+        if (queue_bead_id) {
+          const persisted = deps.store.requireMergeContinuation(workspace, {
+            bead_id: queue_bead_id,
+            subject_bead_id: bead_id,
+            mismatch: relaunched.continuation_mismatch
+          });
+          if (persisted.ok) {
+            releaseDisposition(bead_id);
+            notifyChanged(workspace);
+            return true;
+          }
+        }
+        releaseDisposition(bead_id);
+        notifyChanged(workspace);
+        return true;
+      }
       log(
         'disposition substitute launch refused for %s: %s',
         bead_id,
@@ -4602,8 +4722,10 @@ export function createScheduler(deps) {
       return { ok: false, reason: resolved.exec.invalid_reason };
     }
     const prior_runner = recorded_prior_runner ?? resolved.exec.runner;
-    const decision = options.continuation || 'auto';
-    if (!['auto', 'prior_session', 'fresh_current'].includes(decision)) {
+    const requested_decision = options.continuation || 'auto';
+    if (
+      !['auto', 'prior_session', 'fresh_current'].includes(requested_decision)
+    ) {
       return { ok: false, reason: 'bad_request' };
     }
     const current_exec_values = execValuesFor(resolved.exec);
@@ -4626,10 +4748,19 @@ export function createScheduler(deps) {
         exec_values: current_exec_values
       })
     };
+    const runner_mismatch = prior_runner !== resolved.exec.runner;
+    // A choice is meaningful only while the provider boundary still exists.
+    // Drift back to the prior runner discards the stale choice and follows the
+    // ordinary current-settings path without reopening a dialog.
+    const decision =
+      requested_decision !== 'auto' && !runner_mismatch
+        ? 'auto'
+        : requested_decision;
     const mismatch = () => ({
       reason: 'runner_mismatch',
       continuation_required: true,
       prior_available:
+        options.resume !== false &&
         prior_exec_complete &&
         prior_runner_available &&
         typeof prior.session_id === 'string' &&
@@ -4648,7 +4779,7 @@ export function createScheduler(deps) {
       },
       decision_token
     });
-    if (decision === 'auto' && prior_runner !== resolved.exec.runner) {
+    if (decision === 'auto' && runner_mismatch) {
       return {
         ok: false,
         reason: 'runner_mismatch',
@@ -4670,6 +4801,7 @@ export function createScheduler(deps) {
       use_prior &&
       (!prior_exec_complete ||
         !prior_runner_available ||
+        options.resume === false ||
         typeof prior.session_id !== 'string' ||
         prior.session_id.length === 0)
     ) {
@@ -4699,6 +4831,15 @@ export function createScheduler(deps) {
       ? (prior.speed ?? 'default')
       : (resolved.exec.orchestration_speed ?? 'default');
     const exec_values = use_prior ? prior.exec_values : current_exec_values;
+    if (options.capture_restore === false) {
+      return {
+        ok: true,
+        bead_snapshot,
+        decision,
+        decision_token,
+        runner_mismatch
+      };
+    }
     const candidate_stamped_keys = use_prior
       ? EXEC_SETTING_KEYS
       : resolved.exec.stamped_keys;
@@ -4730,6 +4871,8 @@ export function createScheduler(deps) {
       exec_values,
       exec_restore_values,
       stamped_keys,
+      decision_token,
+      runner_mismatch,
       preset_id: use_prior
         ? (prior.exec_default_preset_id ?? null)
         : resolved.preset_id,
@@ -4740,6 +4883,46 @@ export function createScheduler(deps) {
         decision === 'fresh_current' || options.resume === false
           ? 'fresh'
           : 'session'
+    };
+  }
+
+  /**
+   * Re-read every token input after restore-value capture. This is the final
+   * async preflight before the guard hook, so a changed source, queue revision,
+   * Bead value, or preset cannot cross into a state-changing relaunch.
+   *
+   * @param {string} workspace
+   * @param {any} prior
+   * @param {any} options
+   * @param {any} continuation
+   */
+  async function revalidateContinuationForAttempt(
+    workspace,
+    prior,
+    options,
+    continuation
+  ) {
+    const live_prior =
+      deps.store.snapshot(workspace).attempts?.[prior.attempt_id];
+    if (!live_prior) {
+      return { ok: false, reason: 'continuation_source_stale' };
+    }
+    const latest = await resolveContinuationForAttempt(workspace, live_prior, {
+      ...options,
+      bead_snapshot: null,
+      capture_restore: false
+    });
+    if (!latest.ok) {
+      return latest;
+    }
+    if (
+      !matchesDecisionToken(continuation.decision_token, latest.decision_token)
+    ) {
+      return { ok: false, reason: 'continuation_settings_changed' };
+    }
+    return {
+      ok: true,
+      expected_revision: latest.decision_token.observed_queue_revision
     };
   }
 
@@ -4801,6 +4984,17 @@ export function createScheduler(deps) {
       return { ok: false, reason: serial_launch.reason };
     }
     const serial_lease = serial_launch.lease;
+    const revalidated = await revalidateContinuationForAttempt(
+      workspace,
+      prior,
+      options,
+      continuation
+    );
+    if (!revalidated.ok) {
+      serial_lease.release();
+      return revalidated;
+    }
+    continuation.expected_revision = revalidated.expected_revision;
     const prior_wf =
       typeof bead_snapshot.workflow_mode === 'string'
         ? bead_snapshot.workflow_mode
@@ -4857,7 +5051,8 @@ export function createScheduler(deps) {
           prior,
           relaunch_attempt,
           options.completion_resume === true,
-          options.resolution_wait ?? null
+          options.resolution_wait ?? null,
+          continuation.expected_revision
         )
       ) {
         serial_lease.release();
@@ -4870,7 +5065,6 @@ export function createScheduler(deps) {
     } finally {
       serial_lease.release();
     }
-
     if (
       prior.base_drift == null &&
       (await settleBaseDrift(workspace, attempt_id))
@@ -5318,6 +5512,14 @@ export function createScheduler(deps) {
     let exec_restore_values = {};
     /** @type {'session'|'fresh'|null} */
     let continuation_mode = null;
+    /** @type {number|undefined} */
+    let continuation_expected_revision;
+    /** @type {any|null} */
+    let continuation_source = null;
+    /** @type {any|null} */
+    let continuation_resolution = null;
+    /** @type {any|null} */
+    let continuation_options = null;
     if (mode === 'resume_root') {
       const owned = await proveOwnedWorktree(repo, bead_id);
       if (!owned.ok) {
@@ -5327,17 +5529,20 @@ export function createScheduler(deps) {
       if (!resume_source) {
         return { ok: false, reason: 'no_session_id' };
       }
+      continuation_options = {
+        continuation: input.continuation,
+        decision_token: input.decision_token
+      };
       const continuation = await resolveContinuationForAttempt(
         workspace,
         resume_source,
-        {
-          continuation: input.continuation,
-          decision_token: input.decision_token
-        }
+        continuation_options
       );
       if (!continuation.ok) {
         return continuation;
       }
+      continuation_source = resume_source;
+      continuation_resolution = continuation;
       wt_path = owned.path;
       resume_session_id =
         continuation.continuation_mode === 'session'
@@ -5412,6 +5617,19 @@ export function createScheduler(deps) {
       return { ok: false, reason: serial_launch.reason };
     }
     const serial_lease = serial_launch.lease;
+    if (continuation_source && continuation_resolution) {
+      const revalidated = await revalidateContinuationForAttempt(
+        workspace,
+        continuation_source,
+        continuation_options,
+        continuation_resolution
+      );
+      if (!revalidated.ok) {
+        serial_lease.release();
+        return revalidated;
+      }
+      continuation_expected_revision = revalidated.expected_revision;
+    }
     try {
       if (!installGuardHook({ workspace, attempt_id, repo, target_base })) {
         serial_lease.release();
@@ -5423,6 +5641,7 @@ export function createScheduler(deps) {
         prerecord = deps.store.beginRepairOp(workspace, {
           root_bead_id,
           op,
+          expected_revision: continuation_expected_revision,
           attempt: {
             attempt_id,
             bead_id,

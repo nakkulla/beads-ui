@@ -1484,7 +1484,11 @@ export function createWorkerView(mount_element, options = {}) {
     }
     res = await resolveContinuationMismatch(
       res,
-      (continuation, decision_token) => send({ continuation, decision_token })
+      (continuation, decision_token) => send({ continuation, decision_token }),
+      {
+        onResult: adopt,
+        refresh: () => send()
+      }
     );
     if (res && res.resumed === false && !res.conflict && res.reason) {
       showToast(`이어하기 거부: ${res.reason}`, 'error', 2400);
@@ -1802,7 +1806,11 @@ export function createWorkerView(mount_element, options = {}) {
         res = await resolveContinuationMismatch(
           res,
           (continuation, decision_token) =>
-            send({ continuation, decision_token })
+            send({ continuation, decision_token }),
+          {
+            onResult: adopt,
+            refresh: () => send()
+          }
         );
       }
     } finally {

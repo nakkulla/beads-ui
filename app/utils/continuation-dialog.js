@@ -58,10 +58,16 @@ export function chooseContinuation(mismatch, doc = document) {
  *
  * @param {any} initial
  * @param {(decision: 'prior_session'|'fresh_current', token: Record<string, unknown>) => Promise<any>} resend
+ * @param {{ onResult?: (result: any) => void, refresh?: (conflict: any) => Promise<any> }} [options]
  * @returns {Promise<any>}
  */
-export async function resolveContinuationMismatch(initial, resend) {
+export async function resolveContinuationMismatch(
+  initial,
+  resend,
+  options = {}
+) {
   let result = initial;
+  options.onResult?.(result);
   while (result?.continuation_mismatch) {
     const mismatch = result.continuation_mismatch;
     const decision = await chooseContinuation(mismatch);
@@ -69,6 +75,11 @@ export async function resolveContinuationMismatch(initial, resend) {
       return result;
     }
     result = await resend(decision, mismatch.decision_token);
+    options.onResult?.(result);
+    if (result?.conflict && options.refresh) {
+      result = await options.refresh(result);
+      options.onResult?.(result);
+    }
   }
   return result;
 }

@@ -1,5 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
-import { chooseContinuation } from './continuation-dialog.js';
+import {
+  chooseContinuation,
+  resolveContinuationMismatch
+} from './continuation-dialog.js';
 
 describe('chooseContinuation', () => {
   test('returns the fresh choice and shows both tuples', async () => {
@@ -63,5 +66,35 @@ describe('chooseContinuation', () => {
     ).click();
 
     await expect(choice).resolves.toBeNull();
+  });
+
+  test('adopts a decision conflict and refreshes before reopening', async () => {
+    const mismatch = {
+      prior_available: true,
+      prior: { runner: 'claude' },
+      current: { runner: 'codex' },
+      decision_token: { source_attempt_id: 'a1' }
+    };
+    const adopted = vi.fn();
+    const resend = vi.fn(async () => ({
+      conflict: true,
+      queue: { revision: 2 }
+    }));
+    const refresh = vi.fn(async () => ({ resumed: true }));
+    const result_promise = resolveContinuationMismatch(
+      { continuation_mismatch: mismatch },
+      resend,
+      { onResult: adopted, refresh }
+    );
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('dialog button')[1]
+    ).click();
+
+    await expect(result_promise).resolves.toEqual({ resumed: true });
+    expect(refresh).toHaveBeenCalledWith({
+      conflict: true,
+      queue: { revision: 2 }
+    });
+    expect(adopted).toHaveBeenLastCalledWith({ resumed: true });
   });
 });

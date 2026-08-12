@@ -418,7 +418,19 @@ export function createMonitorView(mount_element, options) {
           root_dir,
           current_revision,
           false
-        )
+        ),
+      {
+        refresh: (conflict) =>
+          sendCas(
+            type,
+            payload,
+            root_dir,
+            conflict?.queue?.revision ??
+              exec_adopted.get(root_dir)?.revision ??
+              current_revision,
+            false
+          )
+      }
     );
   }
 

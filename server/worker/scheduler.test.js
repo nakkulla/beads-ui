@@ -459,6 +459,9 @@ function makeFakeBd(config) {
       // (set succeeds, confirming read fails) — the exec-stamp readback-failure
       // cleanup case.
       const cfg = /** @type {any} */ (config[bead_id]);
+      if (cfg && typeof cfg.onRead === 'function') {
+        cfg.onRead({ bead_id, key });
+      }
       if (cfg && cfg.throwOnReadKey === key) {
         throw new Error(`bd read-metadata failed for ${bead_id} ${key}`);
       }
@@ -467,9 +470,11 @@ function makeFakeBd(config) {
         .reverse()
         .find(
           (c) =>
-            c.method === 'setMetadata' && c.bead_id === bead_id && c.key === key
+            (c.method === 'setMetadata' || c.method === 'unsetMetadata') &&
+            c.bead_id === bead_id &&
+            c.key === key
         );
-      return last?.value ?? null;
+      return last?.method === 'setMetadata' ? (last.value ?? null) : null;
     },
     async setStatus(
       /** @type {string} */ bead_id,
@@ -3881,6 +3886,90 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
+  test('drops a stale explicit choice when drift removes the runner mismatch', async () => {
+    const config = { B1: { model: 'sol', effort: 'high' } };
+    const env = setup({ config, slots: 1 });
+    seedAttempt(env.store, 'drift-same', resumablePrior());
+    const mismatch = await env.scheduler.resume(WS, 'drift-same');
+    config.B1.model = 'opus';
+
+    const resumed = await env.scheduler.resume(WS, 'drift-same', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(resumed.ok).toBe(true);
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+    expect(
+      env.store.snapshot(WS).attempts[String(resumed.attempt_id)]
+    ).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      continuation_mode: 'session'
+    });
+  });
+
+  test('refuses when current settings drift during restore capture', async () => {
+    let drifted = false;
+    /** @type {Record<string, any>} */
+    const config = {
+      B1: {
+        model: null,
+        effort: null,
+        onRead: () => {
+          if (!drifted) {
+            drifted = true;
+            config.B1.model = 'opus';
+          }
+        }
+      }
+    };
+    const env = setup({ config, slots: 1 });
+    seedExecDefaults(env.store, { orchestration_model: 'sol' });
+    seedAttempt(env.store, 'capture-drift', resumablePrior());
+    const mismatch = await env.scheduler.resume(WS, 'capture-drift');
+
+    const stale = await env.scheduler.resume(WS, 'capture-drift', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(stale).toEqual({
+      ok: false,
+      reason: 'continuation_settings_changed'
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(
+      Object.values(env.store.snapshot(WS).attempts).some(
+        (/** @type {any} */ attempt) => attempt.resumed_from === 'capture-drift'
+      )
+    ).toBe(false);
+  });
+
+  test('binds the relaunch prerecord to the revalidated queue revision', async () => {
+    const store = createQueueStore();
+    const guardHook = {
+      install: vi.fn(() => {
+        store.setAutoAdvance(WS, false);
+        return { ok: true };
+      }),
+      remove: vi.fn(() => ({ ok: true }))
+    };
+    const env = setup({ config: {}, slots: 1, store, guardHook });
+    seedAttempt(store, 'cas-drift', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'cas-drift');
+
+    expect(result).toEqual({ ok: false, reason: 'attempt_prerecord_failed' });
+    expect(guardHook.remove).toHaveBeenCalled();
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(
+      Object.values(store.snapshot(WS).attempts).some(
+        (/** @type {any} */ attempt) => attempt.resumed_from === 'cas-drift'
+      )
+    ).toBe(false);
+  });
+
   test('restores current bead metadata after an explicit prior-session run', async () => {
     const env = setup({
       config: { B1: { model: 'sol', effort: 'xhigh' } },
@@ -4958,6 +5047,45 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
     expect(env.runner.cwdFor('B1')).toBe('/repo');
   });
 
+  test('disables prior_session when REVISE cannot resume the original cwd', async () => {
+    const env = setup({
+      config: { B1: { model: 'sol', effort: 'xhigh' } },
+      slots: 1
+    });
+    env.worktree.exists.mockReturnValue(false);
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'opus';
+    exec_values.orchestration_effort = 'high';
+    seedParkedAttempt(env.store, { exec_values });
+
+    const mismatch = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+
+    expect(mismatch).toMatchObject({
+      ok: false,
+      reason: 'runner_mismatch',
+      continuation_mismatch: { prior_available: false }
+    });
+    const refused = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트',
+      continuation: 'prior_session',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+    expect(refused).toMatchObject({
+      ok: false,
+      reason: 'prior_session_unavailable',
+      continuation_mismatch: { prior_available: false }
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('tells the runner this session opens no PR', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedParkedAttempt(env.store);
@@ -5238,6 +5366,40 @@ describe('scheduler REVISE disposition completion (UI-hs11 §3.3)', () => {
     // The disposition is still in flight, so its guard must NOT have been
     // handed back yet.
     expect(release).not.toHaveBeenCalled();
+  });
+
+  test('persists action-required when a disposition substitute crosses runners', async () => {
+    const release = vi.fn();
+    const config = { B1: { model: 'opus', effort: 'high' } };
+    const env = setup({
+      config,
+      slots: 1,
+      disposition: { complete: vi.fn(), release }
+    });
+    const child = await dispatchDisposition(env);
+    config.B1 = { model: 'sol', effort: 'xhigh' };
+
+    env.runner.finish('B1', { success: false, reason: 'no_result' });
+    await flush();
+
+    const q = env.store.snapshot(WS);
+    expect(q.attempts[child]).toMatchObject({
+      cause: 'disposition_resume_failed:no_result',
+      continuation_action: {
+        continuation: null,
+        mismatch: {
+          continuation_required: true,
+          prior: { runner: 'claude' },
+          current: { runner: 'codex' }
+        }
+      }
+    });
+    expect(
+      Object.values(q.attempts).some(
+        (/** @type {any} */ attempt) => attempt.resumed_from === child
+      )
+    ).toBe(false);
+    expect(release).toHaveBeenCalledWith('B1');
   });
 
   test('a substitute session that fails again takes the ordinary failure path', async () => {
