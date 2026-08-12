@@ -286,7 +286,7 @@ export async function handleApplyExecPreset(ws, req) {
   try {
     shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
   } catch (err) {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
     ws.send(
       JSON.stringify(
         makeError(
@@ -298,7 +298,7 @@ export async function handleApplyExecPreset(ws, req) {
     );
     return;
   }
-  triggerMutationRefreshOnce();
+  triggerMutationRefreshOnce(ws);
   const raw_issue = Array.isArray(shown.stdoutJson)
     ? shown.stdoutJson[0]
     : shown.stdoutJson;

@@ -260,6 +260,87 @@ describe('list adapters for subscription types', () => {
       expect(res.error.message).toMatch(/Unknown subscription type/);
     }
   });
+
+  test('projects concurrent list specs from one workspace snapshot generation', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+      async (args) => {
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdoutJson: [
+              {
+                id: 'OPEN-1',
+                status: 'open',
+                dependencies: [
+                  { type: 'discovered-from', depends_on_id: 'ROOT-1' }
+                ]
+              },
+              {
+                id: 'BLOCKED-1',
+                status: 'blocked',
+                metadata: { blocked_reason: 'external wait' },
+                dependencies: []
+              },
+              {
+                id: 'CLOSED-1',
+                status: 'closed',
+                closed_at: '2026-08-03T00:00:00.000Z',
+                dependencies: []
+              }
+            ]
+          };
+        }
+        if (args[0] === 'ready') {
+          return {
+            code: 0,
+            stdoutJson: {
+              ready: [{ id: 'OPEN-1' }],
+              blocked: [
+                {
+                  id: 'OPEN-1',
+                  blocked_by: [{ id: 'UPSTREAM-1' }]
+                }
+              ]
+            }
+          };
+        }
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      }
+    );
+
+    const options = { cwd: '/workspace-a', workspace_snapshot: true };
+    const [all, ready, blocked] = await Promise.all([
+      fetchListForSubscription({ type: 'all-issues' }, options),
+      fetchListForSubscription({ type: 'ready-issues' }, options),
+      fetchListForSubscription({ type: 'blocked-issues' }, options)
+    ]);
+
+    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(all.ok && all.items.map((item) => item.id)).toEqual([
+      'OPEN-1',
+      'BLOCKED-1'
+    ]);
+    expect(all.ok && all.items[0].from_id).toBe('ROOT-1');
+    expect(ready.ok && ready.items.map((item) => item.id)).toEqual(['OPEN-1']);
+    expect(blocked.ok && blocked.items).toEqual([
+      expect.objectContaining({
+        id: 'BLOCKED-1',
+        blocked_info: {
+          external: true,
+          reason: 'external wait',
+          blockers: []
+        }
+      }),
+      expect.objectContaining({
+        id: 'OPEN-1',
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['UPSTREAM-1']
+        }
+      })
+    ]);
+  });
 });
 
 describe('blocked-issues blocked_info derivation', () => {

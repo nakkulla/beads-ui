@@ -155,6 +155,37 @@ describe('ws list subscriptions', () => {
     expect(before_size).toBeGreaterThanOrEqual(1);
   });
 
+  test('subscribe-list requests a cold workspace snapshot for list projections', async () => {
+    const sock = {
+      sent: /** @type {string[]} */ ([]),
+      readyState: 1,
+      OPEN: 1,
+      /** @param {string} msg */
+      send(msg) {
+        this.sent.push(String(msg));
+      }
+    };
+
+    await handleMessage(
+      /** @type {any} */ (sock),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-snapshot',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: { id: 'c-snapshot', type: 'ready-issues' }
+        })
+      )
+    );
+
+    expect(fetchListForSubscription).toHaveBeenCalledWith(
+      { type: 'ready-issues' },
+      expect.objectContaining({
+        workspace_snapshot: true,
+        snapshot_cause: 'cold-subscribe'
+      })
+    );
+  });
+
   test('subscribe-list returns bd_error payload when adapter fails', async () => {
     const mock = /** @type {import('vitest').Mock} */ (
       fetchListForSubscription

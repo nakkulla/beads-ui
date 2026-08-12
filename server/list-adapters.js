@@ -5,6 +5,7 @@ import {
 } from './closed-issues-filter.js';
 import { debug } from './logging.js';
 import { enrichIssuesWorkflow } from './workflow-enrich.js';
+import { requestWorkspaceSnapshot } from './workspace-snapshot-runtime.js';
 
 const log = debug('list-adapters');
 const DEPENDENCY_BLOCKED_ARGS = [
@@ -152,6 +153,7 @@ export function normalizeIssueList(value) {
  * @typedef {Object} FetchListResultSuccess
  * @property {true} ok
  * @property {NormalizedIssue[]} items
+ * @property {boolean} [stale]
  */
 
 /**
@@ -170,10 +172,16 @@ export function normalizeIssueList(value) {
  * shaping.
  *
  * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
- * @param {{ cwd?: string }} [options] - Optional working directory for bd command
+ * @param {{ cwd?: string, workspace_snapshot?: boolean, snapshot_cause?: string }} [options] - Optional working directory and snapshot request options
  * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
  */
 export async function fetchListForSubscription(spec, options = {}) {
+  if (
+    options.workspace_snapshot === true &&
+    isWorkspaceSnapshotListSpec(spec)
+  ) {
+    return fetchWorkspaceSnapshotProjection(spec, options);
+  }
   const result = await fetchListForSubscriptionRaw(spec, options);
   if (result.ok) {
     // Filter BEFORE enrichment: a range view keeps a handful of the closed
@@ -189,6 +197,196 @@ export async function fetchListForSubscription(spec, options = {}) {
     );
   }
   return result;
+}
+
+/**
+ * Fetch one shared workspace generation and project it into a list view.
+ * `issue-detail` deliberately remains on the direct `bd show` path.
+ *
+ * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
+ * @param {{ cwd?: string, snapshot_cause?: string }} options
+ * @returns {Promise<FetchListResultSuccess | FetchListResultFailure>}
+ */
+async function fetchWorkspaceSnapshotProjection(spec, options) {
+  const snapshot_result = await requestWorkspaceSnapshot(
+    options.cwd,
+    options.snapshot_cause || 'background-subscribe'
+  );
+  if (!snapshot_result.ok) {
+    return { ok: false, error: snapshot_result.error };
+  }
+  if (snapshot_result.stale) {
+    return {
+      ok: true,
+      items: projectWorkspaceSnapshot(spec, snapshot_result.snapshot, options),
+      stale: true
+    };
+  }
+  return {
+    ok: true,
+    items: projectWorkspaceSnapshot(spec, snapshot_result.snapshot, options)
+  };
+}
+
+/**
+ * Project one committed raw workspace snapshot into the legacy list payload
+ * shape without issuing another `bd` command.
+ *
+ * @param {{ type: string, params?: Record<string, string | number | boolean> }} spec
+ * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @param {{ cwd?: string }} options
+ * @returns {NormalizedIssue[]}
+ */
+function projectWorkspaceSnapshot(spec, snapshot, options) {
+  const type = String(spec.type);
+  /** @type {NormalizedIssue[]} */
+  let items;
+  switch (type) {
+    case 'all-issues': {
+      items = snapshot.all.filter((item) => item.status !== 'closed');
+      break;
+    }
+    case 'ready-issues': {
+      items = projectReadyIssues(snapshot);
+      break;
+    }
+    case 'blocked-issues': {
+      items = projectBlockedIssues(snapshot);
+      break;
+    }
+    case 'in-progress-issues': {
+      items = projectByStatus(snapshot, 'in_progress');
+      break;
+    }
+    case 'closed-issues': {
+      items = projectByStatus(snapshot, 'closed');
+      break;
+    }
+    case 'resolved-issues': {
+      items = projectByStatus(snapshot, 'resolved');
+      break;
+    }
+    case 'deferred-issues': {
+      items = projectByStatus(snapshot, 'deferred');
+      break;
+    }
+    default: {
+      return [];
+    }
+  }
+  items = applyClosedIssuesFilter(spec, items);
+  items = enrichIssuesWorkflow(/** @type {any} */ (items), options.cwd);
+  return attachSnapshotProvenance(items, snapshot);
+}
+
+/**
+ * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @param {string} status
+ * @returns {NormalizedIssue[]}
+ */
+function projectByStatus(snapshot, status) {
+  return snapshot.all.filter((item) => item.status === status);
+}
+
+/**
+ * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @returns {NormalizedIssue[]}
+ */
+function projectReadyIssues(snapshot) {
+  /** @type {NormalizedIssue[]} */
+  const items = [];
+  for (const ready_item of snapshot.ready_explain.ready) {
+    const id = String(ready_item.id ?? '');
+    const stored = snapshot.id_index.get(id);
+    if (stored) {
+      items.push({ ...stored, ...ready_item });
+    }
+  }
+  return items;
+}
+
+/**
+ * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @returns {NormalizedIssue[]}
+ */
+function projectBlockedIssues(snapshot) {
+  const stored_items = projectByStatus(snapshot, 'blocked');
+  /** @type {NormalizedIssue[]} */
+  const dependency_items = [];
+  for (const blocked_item of snapshot.ready_explain.blocked) {
+    const id = String(blocked_item.id ?? '');
+    const stored = snapshot.id_index.get(id);
+    if (stored) {
+      dependency_items.push({ ...stored, ...blocked_item });
+    }
+  }
+  return attachBlockedInfo(
+    /** @type {any} */ (
+      mergeIssueLists(
+        /** @type {any} */ (stored_items),
+        /** @type {any} */ (dependency_items)
+      )
+    ),
+    /** @type {any} */ (stored_items),
+    /** @type {any} */ (dependency_items)
+  );
+}
+
+/**
+ * @param {NormalizedIssue[]} items
+ * @param {import('./workspace-snapshot-coordinator.js').WorkspaceSnapshot} snapshot
+ * @returns {NormalizedIssue[]}
+ */
+function attachSnapshotProvenance(items, snapshot) {
+  const from_by_id =
+    snapshot.command_mode === 'embedded-dependencies'
+      ? collectEmbeddedProvenance(items)
+      : collectProvenanceEdges(
+          snapshot.dependency_edges,
+          items.map((item) => item.id)
+        );
+  if (from_by_id.size === 0) {
+    return items;
+  }
+  return items.map((item) => {
+    const from_id = from_by_id.get(item.id);
+    return from_id ? { ...item, from_id } : item;
+  });
+}
+
+/**
+ * @param {NormalizedIssue[]} items
+ * @returns {Map<string, string>}
+ */
+function collectEmbeddedProvenance(items) {
+  /** @type {Map<string, string>} */
+  const by_id = new Map();
+  for (const item of items) {
+    if (!Array.isArray(item.dependencies)) {
+      continue;
+    }
+    for (const edge of item.dependencies) {
+      if (!edge || typeof edge !== 'object') {
+        continue;
+      }
+      const record = /** @type {Record<string, unknown>} */ (edge);
+      if (record.type !== 'discovered-from') {
+        continue;
+      }
+      const from_id = String(record.depends_on_id ?? '');
+      if (from_id.length > 0 && !by_id.has(item.id)) {
+        by_id.set(item.id, from_id);
+      }
+    }
+  }
+  return by_id;
+}
+
+/**
+ * @param {{ type: string }} spec
+ */
+function isWorkspaceSnapshotListSpec(spec) {
+  return String(spec.type) !== 'issue-detail';
 }
 
 /**
