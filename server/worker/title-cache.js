@@ -24,6 +24,7 @@
  * `bd show` between them.
  */
 import path from 'node:path';
+import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { runBdJson, unwrapShowJson } from '../bd.js';
 import { debug } from '../logging.js';
 
@@ -58,6 +59,7 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * @property {string} title
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
+ * @property {string[]} labels
  * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
  */
 
@@ -90,13 +92,16 @@ export function createTitleCache(options = {}) {
    * filled is NOT queued again — the in-flight run's completion callback is
    * what delivers it, so a burst of snapshots collapses to one `bd show`.
    *
-   * The value is the run itself, not a mere marker, so an AWAITING caller
-   * (`ensureTitle`) can join a run that a synchronous snapshot started
-   * (UI-vb0t §3.3).
+   * The value carries the run, not a mere marker, so an AWAITING caller
+   * (`ensureTitle`) can join a synchronous snapshot's current-generation run
+   * (UI-vb0t §3.3). A cache invalidation advances that generation and permits
+   * a replacement lookup without an older completion deleting it.
    *
-   * @type {Map<string, Promise<string|null>>}
+   * @type {Map<string, { generation: number, run: Promise<string|null> }>}
    */
   const in_flight = new Map();
+  /** @type {Map<string, Map<string, number>>} */
+  const generations_by_workspace = new Map();
   /** @type {((workspace: string) => void)|null} */
   let onFilled = null;
 
@@ -152,6 +157,40 @@ export function createTitleCache(options = {}) {
   }
 
   /**
+   * @param {string} workspace
+   * @returns {Map<string, number>}
+   */
+  function generationsFor(workspace) {
+    const key = keyOf(workspace);
+    let lane = generations_by_workspace.get(key);
+    if (!lane) {
+      lane = new Map();
+      generations_by_workspace.set(key, lane);
+    }
+    return lane;
+  }
+
+  /**
+   * @param {unknown} issue
+   * @returns {BeadRecord|null}
+   */
+  function recordFromIssue(issue) {
+    const raw_issue = /** @type {any} */ (issue);
+    const title =
+      raw_issue && typeof raw_issue.title === 'string' ? raw_issue.title : '';
+    if (title.length === 0) {
+      return null;
+    }
+    return {
+      title,
+      created_at: stampOf(raw_issue && raw_issue.created_at),
+      updated_at: stampOf(raw_issue && raw_issue.updated_at),
+      labels: workerLabels(raw_issue && raw_issue.labels),
+      at: now()
+    };
+  }
+
+  /**
    * Read one bead's title AND timestamps through `bd show`. The timestamps ride
    * on the same response as the title (UI-d7pw §4.3), so the lane's 생성·수정
    * display costs no extra `bd` call. Every failure mode — non-zero exit,
@@ -160,7 +199,7 @@ export function createTitleCache(options = {}) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {Promise<{ title: string, created_at: number|string|null, updated_at: number|string|null }|null>}
+   * @returns {Promise<BeadRecord|null>}
    */
   async function fetchBead(workspace, bead_id) {
     const r = await runJson(['show', bead_id, '--json'], { cwd: workspace });
@@ -168,15 +207,7 @@ export function createTitleCache(options = {}) {
       return null;
     }
     const issue = unwrapShowJson(r.stdoutJson);
-    const title = issue && typeof issue.title === 'string' ? issue.title : '';
-    if (title.length === 0) {
-      return null;
-    }
-    return {
-      title,
-      created_at: stampOf(issue && issue.created_at),
-      updated_at: stampOf(issue && issue.updated_at)
-    };
+    return recordFromIssue(issue);
   }
 
   /**
@@ -210,11 +241,13 @@ export function createTitleCache(options = {}) {
    */
   function lookup(workspace, bead_id, gate) {
     const flight_key = flightKey(workspace, bead_id);
+    const generation = generationsFor(workspace).get(bead_id) || 0;
     const running = in_flight.get(flight_key);
-    if (running) {
-      return running;
+    if (running && running.generation === generation) {
+      return running.run;
     }
-    const run = (async () => {
+    let run = Promise.resolve(/** @type {string|null} */ (null));
+    run = (async () => {
       if (gate) {
         await gate;
       }
@@ -223,27 +256,37 @@ export function createTitleCache(options = {}) {
       try {
         const bead = await fetchBead(workspace, bead_id);
         if (bead) {
-          lane.set(bead_id, { ...bead, at: now() });
-          failed.delete(bead_id);
-          return bead.title;
+          if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
+            lane.set(bead_id, bead);
+            failed.delete(bead_id);
+            return bead.title;
+          }
+          const fresh = lane.get(bead_id);
+          return fresh ? fresh.title : null;
         }
         // A refresh that failed must NOT evict what is already cached
         // (UI-d7pw §4.4): dropping a title the reader already sees because `bd`
         // hiccupped is a regression. Only the retry is suppressed.
-        failed.set(bead_id, now() + negative_ttl_ms);
+        if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
+          failed.set(bead_id, now() + negative_ttl_ms);
+        }
         log('no title for %s in %s', bead_id, workspace);
         const stale = lane.get(bead_id);
         return stale ? stale.title : null;
       } catch (err) {
-        failed.set(bead_id, now() + negative_ttl_ms);
+        if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
+          failed.set(bead_id, now() + negative_ttl_ms);
+        }
         log('title lookup failed for %s in %s: %o', bead_id, workspace, err);
         const stale = lane.get(bead_id);
         return stale ? stale.title : null;
       } finally {
-        in_flight.delete(flight_key);
+        if (in_flight.get(flight_key)?.run === run) {
+          in_flight.delete(flight_key);
+        }
       }
     })();
-    in_flight.set(flight_key, run);
+    in_flight.set(flight_key, { generation, run });
     return run;
   }
 
@@ -328,7 +371,11 @@ export function createTitleCache(options = {}) {
         }
         failed.delete(bead_id);
       }
-      if (in_flight.has(flightKey(workspace, bead_id))) {
+      const running = in_flight.get(flightKey(workspace, bead_id));
+      if (
+        running &&
+        running.generation === (generationsFor(workspace).get(bead_id) || 0)
+      ) {
         // Someone else's run already covers this id and will fan out when it
         // lands; joining it here would only duplicate that fanout.
         continue;
@@ -395,6 +442,67 @@ export function createTitleCache(options = {}) {
     },
 
     /**
+     * Cache hits for `ids` as normalized label arrays. Partial like titles and
+     * times: an absent key means the client must retain unknown rather than
+     * inferring a false scheduling label.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, string[]>}
+     */
+    labelsFor(workspace, ids) {
+      return collect(workspace, ids, (rec) => rec.labels);
+    },
+
+    /**
+     * Replace one cache entry with a successful mutation readback. Advancing
+     * this bead's generation makes any older in-flight `bd show` unable to
+     * overwrite authoritative labels that arrived after the mutation.
+     *
+     * @param {string} workspace
+     * @param {unknown} issue
+     */
+    refreshFromIssue(workspace, issue) {
+      const raw_issue = /** @type {any} */ (issue);
+      const bead_id =
+        raw_issue && typeof raw_issue.id === 'string' ? raw_issue.id : '';
+      if (bead_id.length === 0) {
+        return;
+      }
+      const generations = generationsFor(workspace);
+      generations.set(bead_id, (generations.get(bead_id) || 0) + 1);
+      const lane = laneFor(workspace);
+      const failed = failedFor(workspace);
+      const record = recordFromIssue(issue);
+      if (record) {
+        lane.set(bead_id, record);
+        failed.delete(bead_id);
+        announceFilled(workspace);
+        return;
+      }
+      lane.delete(bead_id);
+      failed.delete(bead_id);
+    },
+
+    /**
+     * Invalidate one bead so the next synchronous projection queues a fresh
+     * lookup. An older lookup cannot restore its prior value after this call.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     */
+    invalidate(workspace, bead_id) {
+      const id = typeof bead_id === 'string' ? bead_id : '';
+      if (id.length === 0) {
+        return;
+      }
+      const generations = generationsFor(workspace);
+      generations.set(id, (generations.get(id) || 0) + 1);
+      laneFor(workspace).delete(id);
+      failedFor(workspace).delete(id);
+    },
+
+    /**
      * The ASYNCHRONOUS counterpart of {@link titlesFor} for a caller that can
      * wait for one title — the worker's Discord push, whose whole point is
      * naming the bead it is about (UI-vb0t §3.3). A miss is filled here and
@@ -433,7 +541,10 @@ export function createTitleCache(options = {}) {
       // if the refresh fails, so the result is never worse than before.
       // Only the caller that STARTS a run announces its result — a joiner would
       // just repeat the fanout the starter already owes.
-      const started = !in_flight.has(flightKey(workspace, id));
+      const running = in_flight.get(flightKey(workspace, id));
+      const started =
+        !running ||
+        running.generation !== (generationsFor(workspace).get(id) || 0);
       const title = await lookup(workspace, id);
       if (title && started) {
         // A title this path warmed is a title the next queue snapshot can
@@ -451,6 +562,7 @@ export function createTitleCache(options = {}) {
     clear() {
       titles_by_workspace.clear();
       failed_by_workspace.clear();
+      generations_by_workspace.clear();
       in_flight.clear();
     }
   };

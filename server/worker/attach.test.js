@@ -247,7 +247,14 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
     runtime.queueStore.appendAttempt(WS, {
       expected_revision: 0,
-      attempt: { attempt_id: 'att-root', bead_id: 'UI-root' }
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        repo: WS,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
     });
     runtime.queueStore.moveToPrWait(WS, {
       bead_id: 'UI-root',
@@ -260,6 +267,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
     runtime.queueStore.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -308,7 +316,10 @@ describe('worker/attach construction + live loop (F1)', () => {
       attempt: {
         attempt_id: 'att-root',
         bead_id: 'UI-root',
+        repo: WS,
         target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude',
         verify_result: {
           pr_url: 'https://github.com/o/r/pull/1',
           pr_number: 1
@@ -322,6 +333,7 @@ describe('worker/attach construction + live loop (F1)', () => {
     });
     runtime.queueStore.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-root',
       target_base: 'main',
       subject: {
         role: 'root',

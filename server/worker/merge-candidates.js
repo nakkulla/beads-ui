@@ -237,7 +237,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  * @param {string} bead_id
- * @returns {{ target_base: string, subject: any }|null}
+ * @returns {{ source_attempt_id: string, target_base: string, subject: any }|null}
  */
 export function completionIntentSeed(workspace_key, queue, bead_id) {
   let observed = null;
@@ -265,7 +265,7 @@ export function completionIntentSeed(workspace_key, queue, bead_id) {
   }
   /** @type {any} */
   let source = null;
-  for (const attempt of Object.values(
+  for (const [attempt_id, attempt] of Object.entries(
     /** @type {Record<string, any>} */ (queue.attempts || {})
   )) {
     if (
@@ -276,20 +276,28 @@ export function completionIntentSeed(workspace_key, queue, bead_id) {
       typeof attempt.base_oid === 'string' &&
       /^[0-9a-f]{40}$/i.test(attempt.base_oid)
     ) {
-      source = attempt;
+      source = {
+        attempt,
+        attempt_id:
+          typeof attempt.attempt_id === 'string' &&
+          attempt.attempt_id.length > 0
+            ? attempt.attempt_id
+            : attempt_id
+      };
     }
   }
   if (!source) {
     return null;
   }
   return {
-    target_base: source.target_base,
+    source_attempt_id: source.attempt_id,
+    target_base: source.attempt.target_base,
     subject: {
       role: 'root',
       bead_id,
       pr_url: pr.url,
       head_sha: pr.head_sha,
-      base_sha: source.base_oid,
+      base_sha: source.attempt.base_oid,
       merged_sha: pr.state === 'MERGED' ? merged_sha : null
     }
   };

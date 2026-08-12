@@ -67,7 +67,9 @@ function seededCompletionStore() {
       attempt_id: 'att-root',
       bead_id: 'UI-root',
       repo: DRIVER_WS,
-      target_base: 'main'
+      target_base: 'main',
+      base_oid: 'b'.repeat(40),
+      runner: 'claude'
     }
   });
   store.moveToPrWait(DRIVER_WS, {
@@ -81,6 +83,7 @@ function seededCompletionStore() {
   });
   store.enqueueCompletionIntent(DRIVER_WS, {
     root_bead_id: 'UI-root',
+    source_attempt_id: 'att-root',
     target_base: 'main',
     subject: intent().subject
   });

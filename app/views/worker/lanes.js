@@ -303,6 +303,9 @@ export function discardReceiptTemplate(item) {
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
+ * @property {boolean} [selectable] - Waiting queue row exposes a bulk checkbox.
+ * @property {boolean} [selected] - Browser-local bulk selection state.
+ * @property {boolean|null} [worker_serial] - Projected execution mode; null is unknown.
  */
 
 /**
@@ -320,6 +323,7 @@ export function discardReceiptTemplate(item) {
  */
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
+  const queue_reorderable = draggable && item.lane === 'queue';
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
@@ -329,9 +333,37 @@ export function miniRow(item) {
   // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
   const two_line = item.lane === 'done' && !card;
   const done_at_label = two_line ? formatRelativeTime(item.done_at) : '';
-  const grip = draggable
-    ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
+  const select_el = item.selectable
+    ? html`<input
+        class="worker-mini__select"
+        type="checkbox"
+        data-bead-id=${item.id}
+        aria-label=${`${item.id} 선택`}
+        .checked=${item.selected === true}
+      />`
     : '';
+  const grip = queue_reorderable
+    ? html`<button
+        type="button"
+        class="worker-mini__grip"
+        draggable="true"
+        data-bead-id=${item.id}
+        aria-label=${`${item.id} 순서 변경`}
+        title="순서 변경"
+      >
+        ⠿
+      </button>`
+    : draggable
+      ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
+      : '';
+  const serial_el =
+    item.worker_serial === true
+      ? html`<span class="worker-mini__serial">머지까지 단독</span>`
+      : item.worker_serial === null
+        ? html`<span class="worker-mini__serial worker-mini__serial--unknown"
+            >실행 방식 확인 중</span
+          >`
+        : '';
   // 레포 뱃지는 값이 있을 때만 그린다 (UI-qrfo §8) — Worker 탭 행은 이 필드를
   // 싣지 않으므로 렌더가 그대로다.
   const repo_el = item.workspace_name
@@ -494,13 +526,15 @@ export function miniRow(item) {
     item.revise_action
   );
   return html`<div
-    class="worker-mini${card ? ' worker-mini--card' : ''}${draggable
-      ? ''
-      : ' worker-mini--static'}${item.done ? ' worker-mini--done' : ''}${merging
-      ? ' worker-mini--merging'
-      : ''}${item.external ? ' worker-mini--external' : ''}"
+    class="worker-mini${card ? ' worker-mini--card' : ''}${item.selected
+      ? ' worker-mini--selected'
+      : ''}${draggable ? '' : ' worker-mini--static'}${item.done
+      ? ' worker-mini--done'
+      : ''}${merging ? ' worker-mini--merging' : ''}${item.external
+      ? ' worker-mini--external'
+      : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
-    draggable=${draggable ? 'true' : 'false'}
+    draggable=${draggable && !queue_reorderable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
   >
@@ -521,7 +555,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${reason_el}
+              ${select_el}${grip}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}</div>
             ${has_foot
@@ -538,7 +572,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+              ${select_el}${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
             </div>
             ${discardReceiptTemplate(item)} ${timesMeta(item)}`}
   </div>`;

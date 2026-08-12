@@ -189,6 +189,8 @@
  * (`worker-handlers.js`), and the UI fetches them on demand.
  * @property {string|null} completion_root_id - Root completion intent that
  * owns this repair attempt; null for ordinary sessions.
+ * @property {boolean} worker_serial - Whether this attempt's lineage was
+ * authoritatively classified as `worker-serial` at its first dispatch.
  * @property {string|null} completion_op_id - Journal operation paired with the
  * attempt before spawn.
  * @property {'resume_root'|'dispatch_repair'|null} completion_mode - Repair
@@ -1399,6 +1401,7 @@ export function makeAttempt(fields) {
       typeof fields.completion_root_id === 'string'
         ? fields.completion_root_id
         : null,
+    worker_serial: fields.worker_serial === true,
     completion_op_id:
       typeof fields.completion_op_id === 'string'
         ? fields.completion_op_id
@@ -1581,6 +1584,7 @@ function normalizeQueue(raw) {
   q.auto_merge = raw.auto_merge === true;
   q.auto_merge_skips = normalizeMergeSkips(raw.auto_merge_skips);
   q.completion_intents = normalizeCompletionIntents(raw.completion_intents);
+  recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
   q.reconcile = normalizeReconcile(raw.reconcile);
   // A queue.json written before the deploy hook simply has no key → null, which
@@ -1863,6 +1867,103 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
     delete next.auto_merge_skips[root_bead_id];
   }
   return true;
+}
+
+/**
+ * Return the sole immutable root attempt used to anchor a completion lineage.
+ * Completion repair descendants carry a non-null operation id, so they can
+ * never be mistaken for the root provenance record.
+ *
+ * @param {Queue} queue
+ * @param {string} root_bead_id
+ * @returns {Attempt|null}
+ */
+function originalCompletionAnchor(queue, root_bead_id) {
+  const anchors = Object.values(queue.attempts).filter(
+    (attempt) =>
+      attempt.bead_id === root_bead_id &&
+      attempt.completion_root_id === root_bead_id &&
+      attempt.completion_op_id === null
+  );
+  return anchors.length === 1 ? anchors[0] : null;
+}
+
+/**
+ * Backfill the one unambiguous root provenance record written before root
+ * anchors existed. Current completion intake writes its anchor atomically.
+ *
+ * @param {Queue} queue
+ */
+function recoverLegacyCompletionAnchors(queue) {
+  for (const [root_bead_id, intent] of Object.entries(
+    queue.completion_intents
+  )) {
+    if (originalCompletionAnchor(queue, root_bead_id)) {
+      continue;
+    }
+    const candidates = Object.values(queue.attempts).filter(
+      (attempt) =>
+        attempt.bead_id === root_bead_id &&
+        attempt.target_base === intent.target_base &&
+        attempt.base_oid === intent.subject.base_sha &&
+        attempt.completion_root_id === null &&
+        attempt.completion_op_id === null &&
+        attempt.completion_mode === null &&
+        attempt.completion_failure_key === null
+    );
+    if (candidates.length === 1) {
+      candidates[0].completion_root_id = root_bead_id;
+      candidates[0].completion_op_id = null;
+    }
+  }
+}
+
+/**
+ * Validate that an attempt can become a completion intent's sole root anchor.
+ * This is intentionally separate from the mutation so callers can reject an
+ * invalid intake without partially placing its merge-queue entry.
+ *
+ * @param {Queue} queue
+ * @param {string} root_bead_id
+ * @param {string|undefined} source_attempt_id
+ * @param {string} target_base
+ * @param {CompletionSubject} subject
+ * @returns {Attempt|null}
+ */
+function completionSourceForAnchor(
+  queue,
+  root_bead_id,
+  source_attempt_id,
+  target_base,
+  subject
+) {
+  if (typeof source_attempt_id !== 'string' || source_attempt_id.length === 0) {
+    return null;
+  }
+  const source = queue.attempts[source_attempt_id];
+  if (
+    !source ||
+    source.bead_id !== root_bead_id ||
+    source.target_base !== target_base ||
+    source.base_oid !== subject.base_sha ||
+    (source.completion_root_id !== null &&
+      source.completion_root_id !== root_bead_id) ||
+    source.completion_op_id !== null ||
+    source.completion_mode !== null ||
+    source.completion_failure_key !== null
+  ) {
+    return null;
+  }
+  const anchors = Object.values(queue.attempts).filter(
+    (attempt) =>
+      attempt.bead_id === root_bead_id &&
+      attempt.completion_root_id === root_bead_id &&
+      attempt.completion_op_id === null
+  );
+  return anchors.length === 0 ||
+    (anchors.length === 1 && anchors[0].attempt_id === source_attempt_id)
+    ? source
+    : null;
 }
 
 /**
@@ -2575,6 +2676,7 @@ export function createQueueStore(options = {}) {
         }
         next.attempts[attempt.attempt_id] = makeAttempt({
           ...attempt,
+          worker_serial: source.worker_serial === true,
           completion_root_id: source.completion_root_id,
           completion_op_id: source.completion_op_id,
           completion_mode: source.completion_mode,
@@ -3753,13 +3855,14 @@ export function createQueueStore(options = {}) {
      * receive an independent queue entry or budget.
      *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, root_bead_id: string, target_base: string, subject: CompletionSubject, external?: boolean }} input
+     * @param {{ expected_revision?: number|null, root_bead_id: string, source_attempt_id: string, target_base: string, subject: CompletionSubject, external?: boolean }} input
      * @returns {QueueOpResult}
      */
     enqueueCompletionIntent(workspace, input) {
       const {
         expected_revision,
         root_bead_id,
+        source_attempt_id,
         target_base,
         subject,
         external
@@ -3776,8 +3879,7 @@ export function createQueueStore(options = {}) {
           Object.hasOwn(next.completion_intents, root_bead_id) ||
           Object.values(next.completion_intents).some((intent) =>
             intent.repair_bead_ids.includes(root_bead_id)
-          ) ||
-          !enqueueMember(next, root_bead_id, external === true)
+          )
         ) {
           return false;
         }
@@ -3794,6 +3896,18 @@ export function createQueueStore(options = {}) {
         if (normalized.phase === 'needs_human') {
           return false;
         }
+        const source = completionSourceForAnchor(
+          next,
+          root_bead_id,
+          source_attempt_id,
+          target_base,
+          normalized.subject
+        );
+        if (!source || !enqueueMember(next, root_bead_id, external === true)) {
+          return false;
+        }
+        source.completion_root_id = root_bead_id;
+        source.completion_op_id = null;
         next.completion_intents[root_bead_id] = normalized;
         if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
           insertRunnableMergeEntry(next, {
@@ -3859,10 +3973,17 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
+        const source = originalCompletionAnchor(next, root_bead_id);
+        if (!source) {
+          return false;
+        }
         intent.active_op = normalized_op;
         intent.phase = 'repairing';
         intent.repair_sessions_used += 1;
-        next.attempts[attempt.attempt_id] = makeAttempt(attempt);
+        next.attempts[attempt.attempt_id] = makeAttempt({
+          ...attempt,
+          worker_serial: source?.worker_serial === true
+        });
         return true;
       });
     },
@@ -4279,7 +4400,7 @@ export function createQueueStore(options = {}) {
      * every other scheduler/driver write).
      *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, completion?: { target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {
@@ -4307,9 +4428,6 @@ export function createQueueStore(options = {}) {
           if (typeof bead_id !== 'string' || bead_id.length === 0) {
             continue;
           }
-          if (!enqueueMember(next, bead_id, entry.external === true)) {
-            continue;
-          }
           if (entry.completion) {
             if (next.auto_merge !== true || entry.external === true) {
               continue;
@@ -4323,6 +4441,9 @@ export function createQueueStore(options = {}) {
             }
             const existing_intent = next.completion_intents[bead_id];
             if (existing_intent) {
+              if (!enqueueMember(next, bead_id, false)) {
+                continue;
+              }
               if (
                 existing_intent.phase === 'needs_human' ||
                 existing_intent.phase === 'completed'
@@ -4362,6 +4483,18 @@ export function createQueueStore(options = {}) {
             if (normalized.phase === 'needs_human') {
               continue;
             }
+            const source = completionSourceForAnchor(
+              next,
+              bead_id,
+              entry.completion.source_attempt_id,
+              entry.completion.target_base,
+              normalized.subject
+            );
+            if (!source || !enqueueMember(next, bead_id, false)) {
+              continue;
+            }
+            source.completion_root_id = bead_id;
+            source.completion_op_id = null;
             next.completion_intents[bead_id] = normalized;
             if (!next.merge_queue.some((item) => item.bead_id === bead_id)) {
               insertRunnableMergeEntry(next, {
@@ -4374,6 +4507,9 @@ export function createQueueStore(options = {}) {
               delete next.auto_merge_skips[bead_id];
             }
             changed += 1;
+            continue;
+          }
+          if (!enqueueMember(next, bead_id, entry.external === true)) {
             continue;
           }
           const skip = next.auto_merge_skips[bead_id];

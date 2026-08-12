@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
-  createQueueStore
+  createQueueStore,
+  makeAttempt
 } from './queue-store.js';
 import {
   deployLogDir,
@@ -60,6 +61,27 @@ describe('worker/state-paths', () => {
 });
 
 describe('worker/queue-store', () => {
+  test('normalizes the durable worker serial snapshot', () => {
+    const serial = makeAttempt({
+      attempt_id: 'serial-attempt',
+      bead_id: 'UI-serial',
+      worker_serial: true
+    });
+    const legacy = makeAttempt({
+      attempt_id: 'legacy-attempt',
+      bead_id: 'UI-legacy'
+    });
+    const malformed = makeAttempt({
+      attempt_id: 'malformed-attempt',
+      bead_id: 'UI-malformed',
+      worker_serial: /** @type {any} */ ('true')
+    });
+
+    expect(serial.worker_serial).toBe(true);
+    expect(legacy.worker_serial).toBe(false);
+    expect(malformed.worker_serial).toBe(false);
+  });
+
   /**
    * @param {string} [root_bead_id]
    */
@@ -67,7 +89,12 @@ describe('worker/queue-store', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {
       expected_revision: 0,
-      attempt: { attempt_id: `att-${root_bead_id}`, bead_id: root_bead_id }
+      attempt: {
+        attempt_id: `att-${root_bead_id}`,
+        bead_id: root_bead_id,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
     });
     store.moveToPrWait(WS, {
       bead_id: root_bead_id,
@@ -76,6 +103,7 @@ describe('worker/queue-store', () => {
     });
     store.enqueueCompletionIntent(WS, {
       root_bead_id,
+      source_attempt_id: `att-${root_bead_id}`,
       target_base: 'main',
       subject: {
         role: 'root',
@@ -264,6 +292,113 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('recovers one legacy root attempt as a completion anchor on cold load', () => {
+    const base_sha = 'b'.repeat(40);
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          'legacy-root': {
+            bead_id: 'UI-root',
+            target_base: 'main',
+            base_oid: base_sha,
+            status: 'done'
+          }
+        },
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'gating',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-root',
+              pr_url: 'https://github.com/o/r/pull/1',
+              head_sha: 'a'.repeat(40),
+              base_sha,
+              merged_sha: null
+            },
+            repair_sessions_used: 0,
+            repair_bead_ids: [],
+            subject_stack: [],
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const store = createQueueStore();
+    const loaded = store.snapshot(WS);
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('legacy-anchor-repair', 'legacy-anchor-child'),
+      attempt: { attempt_id: 'legacy-anchor-child', bead_id: 'UI-root' }
+    });
+
+    expect(loaded.attempts['legacy-root']).toMatchObject({
+      completion_root_id: 'UI-root',
+      completion_op_id: null,
+      worker_serial: false
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test('keeps ambiguous legacy root attempts unanchored on cold load', () => {
+    const base_sha = 'b'.repeat(40);
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        attempts: {
+          'legacy-root-a': {
+            bead_id: 'UI-root',
+            target_base: 'main',
+            base_oid: base_sha,
+            status: 'done'
+          },
+          'legacy-root-b': {
+            bead_id: 'UI-root',
+            target_base: 'main',
+            base_oid: base_sha,
+            status: 'done'
+          }
+        },
+        completion_intents: {
+          'UI-root': {
+            target_base: 'main',
+            phase: 'gating',
+            subject: {
+              role: 'root',
+              bead_id: 'UI-root',
+              pr_url: 'https://github.com/o/r/pull/1',
+              head_sha: 'a'.repeat(40),
+              base_sha,
+              merged_sha: null
+            },
+            repair_sessions_used: 0,
+            repair_bead_ids: [],
+            subject_stack: [],
+            active_op: null,
+            terminal_reason: null
+          }
+        }
+      })
+    );
+
+    const store = createQueueStore();
+    const loaded = store.snapshot(WS);
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('ambiguous-anchor-repair', 'ambiguous-anchor-child'),
+      attempt: { attempt_id: 'ambiguous-anchor-child', bead_id: 'UI-root' }
+    });
+
+    expect(loaded.attempts['legacy-root-a'].completion_root_id).toBe(null);
+    expect(loaded.attempts['legacy-root-b'].completion_root_id).toBe(null);
+    expect(result.ok).toBe(false);
+  });
+
   test('loads a malformed completion intent as needs_human without resetting budget', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(
@@ -336,7 +471,12 @@ describe('worker/queue-store', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {
       expected_revision: 0,
-      attempt: { attempt_id: 'att-root', bead_id: 'UI-root' }
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
     });
     store.moveToPrWait(WS, {
       bead_id: 'UI-root',
@@ -347,6 +487,7 @@ describe('worker/queue-store', () => {
 
     const result = store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -371,11 +512,112 @@ describe('worker/queue-store', () => {
     });
   });
 
+  test('anchors a completion intent to the exact source attempt atomically', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'completion-source',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        status: 'done'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'completion-source',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'completion-source',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.attempts['completion-source']).toMatchObject({
+      completion_root_id: 'UI-root',
+      completion_op_id: null
+    });
+    expect(result.queue.completion_intents['UI-root']).not.toHaveProperty(
+      'source_attempt_id'
+    );
+  });
+
+  test('rejects a completion intent whose source attempt belongs to another root', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'root-source',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        status: 'done'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'root-source',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'foreign-source',
+        bead_id: 'UI-other',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        status: 'done'
+      }
+    });
+    const revision = store.snapshot(WS).revision;
+
+    const result = store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'foreign-source',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.revision).toBe(revision);
+    expect(result.queue.completion_intents).toEqual({});
+    expect(result.queue.attempts['root-source'].completion_root_id).toBe(null);
+  });
+
   test('prerecords repair op, budget, and attempt in one revision', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {
       expected_revision: 0,
-      attempt: { attempt_id: 'att-root', bead_id: 'UI-root' }
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
     });
     store.moveToPrWait(WS, {
       bead_id: 'UI-root',
@@ -384,6 +626,7 @@ describe('worker/queue-store', () => {
     });
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -436,6 +679,10 @@ describe('worker/queue-store', () => {
   test('transfers completion ownership while appending a resumed child', () => {
     const store = storeWithCompletionIntent();
     const op = beginPausedCompletionAttempt(store);
+    store.updateAttempt(WS, {
+      attempt_id: 'att-repair-1',
+      patch: { worker_serial: true }
+    });
     const revision = store.snapshot(WS).revision;
 
     const result = store.appendResumedCompletionAttempt(WS, {
@@ -463,8 +710,227 @@ describe('worker/queue-store', () => {
       completion_root_id: 'UI-root',
       completion_op_id: op.op_id,
       completion_mode: op.kind,
-      completion_failure_key: op.failure_key
+      completion_failure_key: op.failure_key,
+      worker_serial: true
     });
+  });
+
+  test('forces the completion root serial snapshot for a different repair bead', () => {
+    const store = storeWithCompletionIntent();
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-root',
+      patch: { worker_serial: true }
+    });
+    // A later physical root record is not the completion source.
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'root-admin-attempt',
+        bead_id: 'UI-root',
+        worker_serial: false,
+        status: 'done'
+      }
+    });
+    const failure_key = resumeRepairOp('unused', 'unused').failure_key;
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-child',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-child',
+      repair_bead_id: 'UI-repair'
+    });
+    const op = {
+      op_id: 'dispatch-child',
+      kind: /** @type {const} */ ('dispatch_repair'),
+      failure_key,
+      attempt_id: 'repair-attempt',
+      repair_bead_id: 'UI-repair',
+      status: /** @type {const} */ ('prepared')
+    };
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op,
+      attempt: { attempt_id: 'repair-attempt', bead_id: 'UI-repair' }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.attempts['repair-attempt'].worker_serial).toBe(true);
+  });
+
+  test('inherits nonserial mode from the unique anchored source', () => {
+    const store = storeWithCompletionIntent();
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-root',
+      patch: { worker_serial: false }
+    });
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('anchored-nonserial-op', 'anchored-nonserial-child'),
+      attempt: {
+        attempt_id: 'anchored-nonserial-child',
+        bead_id: 'UI-root'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      result.queue.attempts['anchored-nonserial-child'].worker_serial
+    ).toBe(false);
+  });
+
+  test('inherits serial mode from the unique anchored source', () => {
+    const store = storeWithCompletionIntent();
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-root',
+      patch: { worker_serial: true }
+    });
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('anchored-serial-op', 'anchored-serial-child'),
+      attempt: {
+        attempt_id: 'anchored-serial-child',
+        bead_id: 'UI-root'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.attempts['anchored-serial-child'].worker_serial).toBe(
+      true
+    );
+  });
+
+  test('fails closed when a completion source anchor is absent', () => {
+    const store = storeWithCompletionIntent();
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-root',
+      patch: { completion_root_id: null }
+    });
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('missing-anchor-op', 'missing-anchor-child'),
+      attempt: {
+        attempt_id: 'missing-anchor-child',
+        bead_id: 'UI-root'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.attempts['missing-anchor-child']).toBeUndefined();
+    expect(result.queue.completion_intents['UI-root'].active_op).toBe(null);
+  });
+
+  test('fails closed when completion source anchors are duplicated', () => {
+    const store = storeWithCompletionIntent();
+    store.updateAttempt(WS, {
+      attempt_id: 'att-UI-root',
+      patch: {
+        completion_root_id: 'UI-root',
+        completion_op_id: null,
+        worker_serial: false
+      }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'duplicate-anchor',
+        bead_id: 'UI-root',
+        completion_root_id: 'UI-root',
+        completion_op_id: null,
+        worker_serial: false,
+        status: 'done'
+      }
+    });
+
+    const result = store.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('duplicate-anchor-op', 'duplicate-anchor-child'),
+      attempt: {
+        attempt_id: 'duplicate-anchor-child',
+        bead_id: 'UI-root'
+      }
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.attempts['duplicate-anchor-child']).toBeUndefined();
+    expect(result.queue.completion_intents['UI-root'].active_op).toBe(null);
+  });
+
+  test('round-trips the anchored source before beginning repair', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'older-serial',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        worker_serial: true,
+        status: 'done'
+      }
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'roundtrip-source',
+        bead_id: 'UI-root',
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        worker_serial: false,
+        status: 'done'
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'roundtrip-source',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    const created = store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'roundtrip-source',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    expect(created.ok).toBe(true);
+
+    const reloaded = createQueueStore();
+    expect(reloaded.snapshot(WS).attempts['roundtrip-source']).toMatchObject({
+      completion_root_id: 'UI-root',
+      completion_op_id: null
+    });
+    const result = reloaded.beginRepairOp(WS, {
+      root_bead_id: 'UI-root',
+      op: resumeRepairOp('roundtrip-op', 'roundtrip-child'),
+      attempt: {
+        attempt_id: 'roundtrip-child',
+        bead_id: 'UI-root'
+      }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.attempts['roundtrip-child'].worker_serial).toBe(false);
   });
 
   test('rejects a resumed completion child with mismatched lineage', () => {
@@ -711,6 +1177,7 @@ describe('worker/queue-store', () => {
     });
     const rejected = store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-repair',
+      source_attempt_id: 'missing-repair-source',
       target_base: 'main',
       external: true,
       subject: {
@@ -926,6 +1393,7 @@ describe('worker/queue-store', () => {
           bead_id: 'UI-root',
           head_sha: 'c'.repeat(40),
           completion: {
+            source_attempt_id: 'att-UI-root',
             target_base: 'main',
             subject: {
               role: 'root',

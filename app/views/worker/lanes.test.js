@@ -160,6 +160,31 @@ describe('done lane row', () => {
   });
 });
 
+describe('waiting row execution mode', () => {
+  test('renders a selectable serial waiting row with an accessible grip', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      selectable: true,
+      selected: true,
+      worker_serial: true
+    });
+
+    expect(row.classList.contains('worker-mini--selected')).toBe(true);
+    expect(row.querySelector('.worker-mini__select')).not.toBeNull();
+    expect(
+      row.querySelector('.worker-mini__select')?.getAttribute('aria-label')
+    ).toBe('UI-x1 선택');
+    expect(row.querySelector('.worker-mini__serial')?.textContent).toContain(
+      '머지까지 단독'
+    );
+    expect(
+      row.querySelector('.worker-mini__grip')?.getAttribute('aria-label')
+    ).toBe('UI-x1 순서 변경');
+  });
+});
+
 describe('candidate card', () => {
   test('explains why a quick_fix route cannot enter the worker queue', () => {
     const card = renderCandidate({});

@@ -65,7 +65,14 @@ function seed(bead_ids) {
     const rev = store.snapshot(WS).revision;
     store.appendAttempt(WS, {
       expected_revision: rev,
-      attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      attempt: {
+        attempt_id: `att-${bead_id}`,
+        bead_id,
+        repo: WS,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude'
+      }
     });
     store.moveToPrWait(WS, {
       bead_id,
@@ -273,6 +280,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
     const store = seed(['UI-root', 'UI-next']);
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -308,6 +316,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
     const store = seed(['UI-root']);
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -358,6 +367,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
     const store = seed(['UI-root', 'UI-next']);
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -410,6 +420,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
     store.dequeueMerge(WS, 'UI-repair');
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -507,6 +518,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
     });
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
       target_base: 'main',
       subject: {
         role: 'root',
@@ -614,6 +626,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
     store.dequeueMerge(WS, 'UI-repair');
     store.enqueueCompletionIntent(WS, {
       root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
       target_base: 'main',
       subject: {
         role: 'root',
