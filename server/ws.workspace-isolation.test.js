@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { getGitUserName, runBd, runBdJson } from './bd.js';
 import { fetchListForSubscription } from './list-adapters.js';
 import { registerWorkspace } from './registry-watcher.js';
+import { signalWorkspaceSnapshotMutation } from './workspace-snapshot-runtime.js';
 import {
   __resetRegistriesForTest,
   attachWsServer,
@@ -373,6 +374,42 @@ describe('per-connection workspace isolation', () => {
 
       // A (disconnected) receives nothing further.
       expect(A.sent.length).toBe(0);
+    } finally {
+      await closeSocketServer(wss, server);
+    }
+  });
+
+  test('(6) records a watcher mutation for B while A mutation gate is active', async () => {
+    const { server, wss, A, B } = await setupTwoWorkspaces();
+    try {
+      LIST_ITEMS_BY_CWD.set('/repo-a', [
+        { id: 'A-1', updated_at: 1, closed_at: null }
+      ]);
+      LIST_ITEMS_BY_CWD.set('/repo-b', [
+        { id: 'B-1', updated_at: 1, closed_at: null }
+      ]);
+      await send(A, {
+        id: 'sub-a',
+        type: 'subscribe-list',
+        payload: { id: 'sub-a', type: 'all-issues' }
+      });
+      await send(B, {
+        id: 'sub-b',
+        type: 'subscribe-list',
+        payload: { id: 'sub-b', type: 'all-issues' }
+      });
+      const spy = vi.spyOn(
+        await import('./workspace-snapshot-runtime.js'),
+        'signalWorkspaceSnapshotMutation'
+      );
+      signalWorkspaceSnapshotMutation('/repo-a');
+      await import('./ws/refresh.js').then(({ triggerMutationRefreshOnce }) =>
+        triggerMutationRefreshOnce(500)
+      );
+
+      scheduleListRefresh('watcher', '/repo-b');
+
+      expect(spy).toHaveBeenCalledWith('/repo-b');
     } finally {
       await closeSocketServer(wss, server);
     }

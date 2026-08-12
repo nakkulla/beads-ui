@@ -1763,6 +1763,24 @@ describe('worker/attach closed-queue sweep trigger (UI-m6bg)', () => {
     );
   });
 
+  test('does not apply statuses from a generation fenced by a newer mutation', async () => {
+    const runtime = createWorkerRuntime();
+    const att = attachWithScan(runtime, async () => ({
+      generation: 3,
+      fresh: false,
+      pr_rows: [],
+      statuses: { S1: 'closed' }
+    }));
+    seedQueue(runtime.queueStore, 'S1');
+
+    await att.refreshExternalPrs();
+
+    expect(runtime.queueStore.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(
+      ['S1']
+    );
+    expect(runtime.queueStore.snapshot(WS).done).toEqual([]);
+  });
+
   test('registers an external row for a bead the worker never ran', async () => {
     const runtime = createWorkerRuntime();
     const att = attachWithScan(runtime, async () => ({

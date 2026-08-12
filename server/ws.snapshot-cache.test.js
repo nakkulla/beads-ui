@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { fetchListForSubscription } from './list-adapters.js';
 import { keyOf } from './subscriptions.js';
 import {
@@ -26,6 +26,19 @@ vi.mock('./list-adapters.js', () => ({
 const activeRegistry = () => registryFor(process.cwd());
 
 describe('snapshot cache', () => {
+  beforeEach(() => {
+    /** @type {import('vitest').Mock} */ (fetchListForSubscription).mockReset();
+    /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    ).mockResolvedValue({
+      ok: true,
+      items: [
+        { id: 'A', updated_at: 1, closed_at: null },
+        { id: 'B', updated_at: 1, closed_at: null }
+      ]
+    });
+  });
+
   afterEach(() => {
     __resetRegistriesForTest();
     vi.useRealTimers();
@@ -419,5 +432,133 @@ describe('snapshot cache', () => {
     expect(snapshot.payload.issues).toEqual([]);
 
     resolve_refresh({ ok: true, items: [] });
+  });
+
+  test('keeps cached registry snapshot when a warm refresh is stale', async () => {
+    vi.useFakeTimers();
+    const server = createServer();
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      heartbeat_ms: 10000,
+      refresh_debounce_ms: 50
+    });
+    const sock = {
+      sent: /** @type {string[]} */ ([]),
+      readyState: 1,
+      OPEN: 1,
+      /** @param {string} msg */
+      send(msg) {
+        this.sent.push(String(msg));
+      }
+    };
+    wss.clients.add(/** @type {any} */ (sock));
+
+    await handleMessage(
+      /** @type {any} */ (sock),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-stale',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: { id: 'c-stale', type: 'ready-issues' }
+        })
+      )
+    );
+    sock.sent = [];
+    /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    ).mockResolvedValueOnce({ ok: true, stale: true, items: [] });
+
+    scheduleListRefresh();
+    await vi.advanceTimersByTimeAsync(60);
+
+    const entry = activeRegistry().get(keyOf({ type: 'ready-issues' }));
+    expect(entry?.cachedSnapshot?.map((item) => item.id)).toEqual(['A', 'B']);
+    expect(sock.sent.map((message) => JSON.parse(message).type)).not.toContain(
+      'delete'
+    );
+    expect(sock.sent.map((message) => JSON.parse(message).type)).not.toContain(
+      'upsert'
+    );
+  });
+
+  test('isolates one refresh projection failure from sibling publication', async () => {
+    vi.useFakeTimers();
+    const server = createServer();
+    const { wss } = attachWsServer(server, {
+      path: '/ws',
+      heartbeat_ms: 10000,
+      refresh_debounce_ms: 50
+    });
+    const ready = {
+      sent: /** @type {string[]} */ ([]),
+      readyState: 1,
+      OPEN: 1,
+      /** @param {string} msg */
+      send(msg) {
+        this.sent.push(String(msg));
+      }
+    };
+    const running = {
+      sent: /** @type {string[]} */ ([]),
+      readyState: 1,
+      OPEN: 1,
+      /** @param {string} msg */
+      send(msg) {
+        this.sent.push(String(msg));
+      }
+    };
+    wss.clients.add(/** @type {any} */ (ready));
+    wss.clients.add(/** @type {any} */ (running));
+
+    await handleMessage(
+      /** @type {any} */ (ready),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-ready',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: { id: 'c-ready', type: 'ready-issues' }
+        })
+      )
+    );
+    await handleMessage(
+      /** @type {any} */ (running),
+      Buffer.from(
+        JSON.stringify({
+          id: 'sub-running',
+          type: /** @type {any} */ ('subscribe-list'),
+          payload: { id: 'c-running', type: 'in-progress-issues' }
+        })
+      )
+    );
+    ready.sent = [];
+    running.sent = [];
+    /** @type {import('vitest').Mock} */ (
+      fetchListForSubscription
+    ).mockImplementation(async (spec) => {
+      if (spec.type === 'ready-issues') {
+        throw new Error('projection failed');
+      }
+      return {
+        ok: true,
+        items: [{ id: 'RUNNING-2', updated_at: 2, closed_at: null }]
+      };
+    });
+
+    scheduleListRefresh();
+    await vi.advanceTimersByTimeAsync(60);
+
+    expect(
+      activeRegistry()
+        .get(keyOf({ type: 'ready-issues' }))
+        ?.cachedSnapshot?.map((item) => item.id)
+    ).toEqual(['A', 'B']);
+    expect(
+      activeRegistry()
+        .get(keyOf({ type: 'in-progress-issues' }))
+        ?.cachedSnapshot?.map((item) => item.id)
+    ).toEqual(['RUNNING-2']);
+    expect(running.sent.map((message) => JSON.parse(message).type)).toContain(
+      'upsert'
+    );
   });
 });

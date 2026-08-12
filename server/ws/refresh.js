@@ -1,5 +1,9 @@
+/**
+ * @import { WebSocket } from 'ws'
+ */
 import { fetchListForSubscription } from '../list-adapters.js';
 import { keyOf } from '../subscriptions.js';
+import { signalWorkspaceSnapshotMutation } from '../workspace-snapshot-runtime.js';
 import {
   applyClosedIssuesFilter,
   emitSubscriptionDelete,
@@ -56,9 +60,20 @@ let MUTATION_GATE = null;
  *
  * Fire-and-forget; callers should not await this.
  *
+ * @param {WebSocket | number | undefined} [ws_or_timeout]
  * @param {number} [timeout_ms]
  */
-export function triggerMutationRefreshOnce(timeout_ms = 500) {
+export function triggerMutationRefreshOnce(
+  ws_or_timeout = undefined,
+  timeout_ms = 500
+) {
+  const ws =
+    typeof ws_or_timeout === 'number' || ws_or_timeout === undefined
+      ? undefined
+      : ws_or_timeout;
+  const delay = typeof ws_or_timeout === 'number' ? ws_or_timeout : timeout_ms;
+  const root_dir = ws ? getConnWorkspace(ws)?.root_dir : undefined;
+  signalWorkspaceSnapshotMutation(root_dir);
   if (MUTATION_GATE) {
     return;
   }
@@ -86,7 +101,7 @@ export function triggerMutationRefreshOnce(timeout_ms = 500) {
       } catch {
         // ignore
       }
-    }, timeout_ms)
+    }, delay)
   };
   MUTATION_GATE.timer.unref?.();
 
@@ -94,7 +109,7 @@ export function triggerMutationRefreshOnce(timeout_ms = 500) {
   void p.then(async () => {
     log('mutation window resolved → refresh active subs');
     try {
-      await refreshAllActiveListSubscriptions();
+      await refreshAllActiveListSubscriptions('mutation');
     } catch {
       // ignore refresh errors
     } finally {
@@ -149,15 +164,36 @@ function collectActiveListSubscriptions() {
 }
 
 /**
+ * Record one watcher mutation signal for each affected workspace before its
+ * active specs join the shared refresh generation.
+ *
+ * @param {string | undefined} root_dir
+ */
+function signalWatcherMutation(root_dir) {
+  if (root_dir !== undefined) {
+    signalWorkspaceSnapshotMutation(root_dir);
+    return;
+  }
+  /** @type {Set<string>} */
+  const root_dirs = new Set();
+  for (const pair of collectActiveListSubscriptions()) {
+    root_dirs.add(pair.root_dir);
+  }
+  for (const active_root_dir of root_dirs) {
+    signalWorkspaceSnapshotMutation(active_root_dir);
+  }
+}
+
+/**
  * Run refresh for all active (workspace, spec) pairs and publish deltas.
  */
-async function refreshAllActiveListSubscriptions() {
+async function refreshAllActiveListSubscriptions(cause = 'poll') {
   const pairs = collectActiveListSubscriptions();
   // Run refreshes concurrently; locking is handled per key per registry
   await Promise.all(
     pairs.map(async ({ root_dir, spec }) => {
       try {
-        await refreshAndPublish(root_dir, spec);
+        await refreshAndPublish(root_dir, spec, cause);
       } catch {
         // ignore refresh errors per (workspace, spec) pair
       }
@@ -167,8 +203,14 @@ async function refreshAllActiveListSubscriptions() {
 
 /**
  * Schedule a coalesced refresh of all active list subscriptions.
+ *
+ * @param {string} [cause]
+ * @param {string} [root_dir]
  */
-export function scheduleListRefresh() {
+export function scheduleListRefresh(cause = 'watcher', root_dir = undefined) {
+  if (cause === 'watcher') {
+    signalWatcherMutation(root_dir);
+  }
   // Suppress watcher-driven refreshes during an active mutation gate; resolve gate once
   if (MUTATION_GATE) {
     try {
@@ -184,7 +226,7 @@ export function scheduleListRefresh() {
   REFRESH_TIMER = setTimeout(() => {
     REFRESH_TIMER = null;
     // Fire and forget; callers don't await scheduling
-    void refreshAllActiveListSubscriptions();
+    void refreshAllActiveListSubscriptions(cause);
   }, REFRESH_DEBOUNCE_MS);
   REFRESH_TIMER.unref?.();
 }
@@ -196,9 +238,11 @@ export function scheduleListRefresh() {
  * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
  */
 export function scheduleBackgroundRefresh(root_dir, spec) {
-  void refreshAndPublish(root_dir, spec).catch((err) => {
-    log('background refresh failed for %s: %o', keyOf(spec), err);
-  });
+  void refreshAndPublish(root_dir, spec, 'background-subscribe').catch(
+    (err) => {
+      log('background refresh failed for %s: %o', keyOf(spec), err);
+    }
+  );
 }
 
 /**
@@ -210,7 +254,7 @@ export function scheduleBackgroundRefresh(root_dir, spec) {
  * @param {string} root_dir
  * @param {{ type: string, params?: Record<string, string|number|boolean> }} spec
  */
-export async function refreshAndPublish(root_dir, spec) {
+export async function refreshAndPublish(root_dir, spec, cause = 'poll') {
   const reg = registryFor(root_dir);
   const gen = reg.generation;
   const key = keyOf(spec);
@@ -218,11 +262,30 @@ export async function refreshAndPublish(root_dir, spec) {
     if (reg.generation !== gen) {
       return;
     }
-    const res = await fetchListForSubscription(spec, {
-      cwd: root_dir || undefined
-    });
+    /** @type {Awaited<ReturnType<typeof fetchListForSubscription>>} */
+    let res;
+    try {
+      res = await fetchListForSubscription(spec, {
+        cwd: root_dir || undefined,
+        workspace_snapshot: String(spec.type) !== 'issue-detail',
+        snapshot_cause: cause
+      });
+    } catch (error) {
+      log(
+        'snapshot projection failed workspace=%s key=%s cause=%s: %o',
+        root_dir,
+        key,
+        cause,
+        error
+      );
+      return;
+    }
     if (!res.ok) {
       log('refresh failed for %s: %s %o', key, res.error.message, res.error);
+      return;
+    }
+    if (res.stale) {
+      log('refresh retained stale snapshot for %s', key);
       return;
     }
     if (reg.generation !== gen) {

@@ -68,7 +68,7 @@ export async function handleUpdateAssignee(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -223,7 +223,7 @@ export async function handleUpdateExecSettings(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -288,7 +288,7 @@ export async function handleUpdateImplTarget(ws, req) {
   try {
     shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
   } catch (err) {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
     ws.send(
       JSON.stringify(
         makeError(
@@ -310,7 +310,7 @@ export async function handleUpdateImplTarget(ws, req) {
     Array.isArray(raw_issue) ||
     typeof (/** @type {any} */ (raw_issue).id) !== 'string'
   ) {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
     ws.send(
       JSON.stringify(
         makeError(req, 'bd_readback_failed', shown.stderr || 'bd show failed')
@@ -319,7 +319,7 @@ export async function handleUpdateImplTarget(ws, req) {
     return;
   }
   ws.send(JSON.stringify(makeOk(req, raw_issue)));
-  triggerMutationRefreshOnce();
+  triggerMutationRefreshOnce(ws);
 }
 
 /**
@@ -398,7 +398,7 @@ export async function handleUpdateWorkflowMeta(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -454,7 +454,7 @@ export async function handleUpdateStatus(ws, req) {
   }
   // After mutation, refresh active subscriptions once (watcher or timeout)
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -506,7 +506,7 @@ export async function handleUpdatePriority(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -572,7 +572,7 @@ export async function handleEditText(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -623,7 +623,7 @@ export async function handleCreateIssue(ws, req) {
   ws.send(JSON.stringify(makeOk(req, { created: true })));
   // Refresh active subscriptions once (watcher or timeout)
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -669,7 +669,7 @@ export async function handleDepAdd(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -715,7 +715,7 @@ export async function handleDepRemove(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -760,7 +760,7 @@ export async function handleLabelAdd(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -805,7 +805,7 @@ export async function handleLabelRemove(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }
@@ -910,7 +910,7 @@ export async function handleDeleteIssue(ws, req) {
   }
   ws.send(JSON.stringify(makeOk(req, { deleted: true, id })));
   try {
-    triggerMutationRefreshOnce();
+    triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
   }

@@ -288,6 +288,33 @@ describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
     }
   ];
 
+  test('reuses a fresh shared snapshot without another whole-list scan', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      fresh: true,
+      snapshot: { generation: 7, all: ROWS }
+    }));
+    const runJson = vi.fn(async () => {
+      throw new Error('whole-list scan must not run');
+    });
+
+    const result = await createBdMetadata({
+      cwd: '/repo',
+      runJson,
+      requestSnapshot
+    }).scanBeads();
+
+    expect(requestSnapshot).toHaveBeenCalledWith('/repo', 'worker-external');
+    expect(runJson).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      generation: 7,
+      fresh: true,
+      pr_rows: [{ bead_id: 'UI-1', pr_url: 'https://github.com/o/r/pull/7' }],
+      statuses: { 'UI-4': 'closed' }
+    });
+  });
+
   test('scans the WHOLE bd list, not the default 50-row page', async () => {
     const runJson = vi.fn(async () => ({ code: 0, stdoutJson: [] }));
 
