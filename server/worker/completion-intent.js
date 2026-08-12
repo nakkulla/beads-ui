@@ -111,7 +111,9 @@ export function decideCompletionAction(input) {
     return null;
   }
   if (input.auto_merge !== true) {
-    return intent.active_op ? null : { kind: 'pause' };
+    return intent.active_op || intent.phase === 'paused'
+      ? null
+      : { kind: 'pause' };
   }
   if (intent.active_op) {
     return { kind: 'reconcile_op' };
@@ -1423,8 +1425,12 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'pause') {
-      deps.store.pauseCompletionIntent(deps.workspace, { root_bead_id });
-      notify();
+      const paused = deps.store.pauseCompletionIntent(deps.workspace, {
+        root_bead_id
+      });
+      if (paused.ok) {
+        notify();
+      }
       return;
     }
     if (action.kind === 'needs_human') {

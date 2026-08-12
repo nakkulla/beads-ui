@@ -363,6 +363,16 @@ describe('worker/completion-intent decisions', () => {
     expect(settle).toBe(null);
   });
 
+  test('leaves an already paused intent idle while auto-merge is off', () => {
+    const action = decideCompletionAction({
+      auto_merge: false,
+      intent: intent({ phase: 'paused' }),
+      fact: { state: 'waiting' }
+    });
+
+    expect(action).toBe(null);
+  });
+
   test('reconciles an active operation after auto-merge restarts', () => {
     const action = decideCompletionAction({
       auto_merge: true,
@@ -1301,6 +1311,18 @@ describe('worker/completion-intent action driver', () => {
     expect(store.snapshot(DRIVER_WS).completion_intents['UI-root'].phase).toBe(
       'paused'
     );
+  });
+
+  test('does not notify when a pause mutation is refused', async () => {
+    const store = seededCompletionStore();
+    store.pauseCompletionIntent(DRIVER_WS, { root_bead_id: 'UI-root' });
+    const notifyChanged = vi.fn();
+    const driver = actionDriver(store, { notifyChanged });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction('UI-root', { kind: 'pause' }, current);
+
+    expect(notifyChanged).not.toHaveBeenCalled();
   });
 
   test('terminalizes a non-repairable cleanup failure with its evidence', async () => {
