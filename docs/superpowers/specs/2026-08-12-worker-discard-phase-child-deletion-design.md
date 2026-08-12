@@ -4,6 +4,7 @@
 - Bead: `UI-cfzq`
 - Route: `spec_backed`
 - 선행 설계: `docs/superpowers/specs/2026-08-10-worker-recovered-control-discard-rollback-design.md`
+- Unit ledger: beads-ui 구현 `bead:UI-cfzq`; dotfiles 잔여 정리 `enclosed:UI-cfzq`
 
 ## 배경
 
@@ -59,6 +60,24 @@ plan으로 재개하면 과거 `plan_task_digest`와 현재 phase digest가 달�
 진행하며 이동한 freshness cursor이므로 새 실행의 authority가 될 수 없다. 반면 spec과
 plan review/approval receipt는 현재 승인 artifact의 authority이므로 유지한다.
 
+## Parent authority baseline
+
+source observation은 child를 읽는 시점에 parent를 `bd show --json` 한 번으로 읽고
+다음 baseline을 `source_snapshot.parent_authority`에 저장한다. 각 key는 값뿐 아니라
+존재 여부도 보존해 absent와 empty/string 값을 구분한다.
+
+- native `spec_id`
+- metadata `plan_path`
+- metadata `spec_review`
+- metadata `plan_review`
+- metadata `plan_approval`
+
+parent implementation metadata transition 직전에 parent를 다시 한 번 읽어 다섯 필드의
+존재 여부와 값이 baseline과 정확히 같은지 비교한다. 다르면 아무 parent field도 쓰지
+않고 `bd_parent_authority_changed`로 멈춘다. `updateFields` 직후에는 parent status가
+`open`이고 `pr_url`/`impl_review`/`last_checked_sha`가 absent이며, 보존할 다섯 필드가
+baseline과 여전히 같은지를 하나의 readback 결과로 검증한다.
+
 ## Child snapshot 계약
 
 `discard-coordinator`의 source observation 단계에서 parent의 direct child를 조회한다.
@@ -98,7 +117,8 @@ Unmerged와 merged-revert finalize 모두 parent를 다시 후보로 돌리기 �
    `phase_children_readback_failed`에 유지한다.
 6. parent를 `open`으로 만들면서 `pr_url`, `impl_review`, `last_checked_sha`를 하나의
    logical metadata transition으로 제거한다. 이후 status와 세 metadata 부재를 다시
-   읽는다.
+   읽고, `source_snapshot.parent_authority`의 다섯 필드가 존재 여부까지 동일한지 함께
+   확인한다.
 7. queue/pr_wait/admission/cleanup state와 discard operation을 기존 원자적 store
    mutation으로 완료하고 후보 snapshot을 refresh한다.
 
@@ -121,21 +141,56 @@ non-zero exit, malformed JSON, duplicate/ambiguous ID, child-set drift는 모두
 
 ## 현재 잔여 상태 정리
 
-기능 배포 뒤 현재 `dotfiles-hdid`의 direct phase child
+기능 구현과 focused/full verification이 green인 뒤, implementation gate와 PR Delivery
+전에 현재 `dotfiles-hdid`의 direct phase child
 `dotfiles-hdid.1`, `.2`, `.3`, `.4`를 동일한 안전 경계로 정리한다.
 
-1. 네 child와 descendant 부재를 read-only로 재확인한다.
-2. 전체 child JSON을
-   `$XDG_STATE_HOME/bdui/<workspace-slug>/discard-backups/manual-dotfiles-hdid-<timestamp>/`
-   아래 `manifest.json`과 `COMPLETE` checksum으로 보존하고 검증한다. 환경 변수가
-   없으면 기존 state-path resolver의 기본 root를 사용한다.
-3. `bd delete` dry-run이 정확히 네 ID만 가리키는지 확인한다.
-4. exact batch delete 후 각 ID absent와 parent direct child empty를 readback한다.
-5. parent의 현재 `spec_id`, `plan_path`, `spec_review`, `plan_review`, `plan_approval`이
-   변경 전 값과 동일한지 확인한다.
-6. parent `impl_review`, `pr_url`, `last_checked_sha`만 부재인지 확인한다.
+1. 첫 mutation 전에 고정 operation ID
+   `manual-dotfiles-hdid-child-cleanup-v1`을 사용한다. archive 경로는
+   `$XDG_STATE_HOME/bdui/<workspace-slug>/discard-backups/manual-dotfiles-hdid-child-cleanup-v1/`
+   이며, 환경 변수가 없으면 기존 state-path resolver의 기본 root를 사용한다.
+2. 네 child, 각 descendant 부재, parent authority baseline을 read-only로 확인한다.
+   `manifest.json`에는 operation ID, exact expected child IDs, 전체 child JSON, parent
+   authority baseline을 넣고 `COMPLETE` checksum을 생성·검증한다. 같은 경로가 이미
+   있으면 새 snapshot을 만들지 않고 기존 manifest/checksum을 검증해 재사용한다.
+3. 삭제 직전에 현재 direct child 집합과 descendant를 다시 읽는다. manifest 밖 child나
+   descendant가 있으면 멈춘다. manifest child 일부가 absent면 partial-delete 재개로
+   간주하고 remaining ID만 계산한다.
+4. `bd delete` dry-run이 remaining exact IDs만 가리키는지 확인한 뒤, remaining IDs만
+   exact batch delete한다.
+5. 각 manifest child ID absent와 parent direct child empty를 readback한다.
+6. parent authority가 manifest baseline과 동일한지 확인한 뒤 parent를 `open`으로
+   만들고 `impl_review`, `pr_url`, `last_checked_sha`를 하나의 logical transition으로
+   제거한다. 이후 authority 동일성과 제거 필드 부재를 함께 readback한다.
+7. operation ID, archive checksum, child absence, parent readback을 `UI-cfzq` notes에
+   기록한다. 이 evidence가 없으면 implementation gate와 PR Delivery로 진행하지 않는다.
 
 이 운영 정리는 dotfiles의 spec/plan 파일이나 git history를 변경하지 않는다.
+
+## Worker eligibility와 apply order
+
+dotfiles 잔여 정리는 `docs/agents/repo-ops.toml`의 `[deploy]`가 운반하지 않는 required
+no-PR residue다. 따라서 spec gate close에서 `spec_review` receipt와 같은 logical
+write로 `worker-ineligible`을 추가하고 두 값을 readback한다.
+
+고정 apply order는 다음과 같다.
+
+1. `.worktrees/UI-cfzq`에서 코드와 테스트를 구현하고 focused/full verification을
+   완료한다.
+2. 위 고정 manual operation으로 `dotfiles-hdid` child와 implementation metadata를
+   정리하고 archive·Beads readback을 `UI-cfzq` notes에 기록한다.
+3. no-PR residue가 없어진 것을 확인한 뒤 `worker-ineligible`을 제거하고 readback한다.
+4. integrated code diff와 manual cleanup evidence를 함께 implementation gate에서
+   검토한다.
+5. PR Delivery/merge 뒤 target base를 sync하고 `npm run build` 결과가 포함된 merged
+   SHA에서 `docs/agents/repo-ops.toml` `[deploy]`의 `scripts/deploy-self.js`를 실행한다.
+6. shared server의 process checkout, listening port, HTTP response가 merged SHA를
+   제공하는지 확인한 뒤에만 완료한다.
+
+각 단계는 직전 readback이 성공해야 다음 단계로 간다. 2단계 도중 중단되면 고정
+operation archive에서 remaining IDs만 재개하고, 2단계 전 중단은 Beads를 변경하지
+않는다. `worker-ineligible` 제거 전 중단은 Worker dispatch를 계속 막으며, 배포 전
+중단은 merged code가 live라고 주장하지 않는다.
 
 ## 오류 처리
 
@@ -158,7 +213,8 @@ non-zero exit, malformed JSON, duplicate/ambiguous ID, child-set drift는 모두
    empty/duplicate ID, `--cascade`, delete non-zero를 거부한다.
 2. discard source snapshot이 direct phase child 전체를 archive manifest에 포함하고,
    nested/invalid child를 mutation 전에 거부한다.
-3. archive 검증 전에는 `bd delete`가 호출되지 않는다.
+3. unmerged discard 성공 경로에서 archive 검증 receipt와 exact child batch delete가
+   모두 발생하고, 검증 receipt가 delete보다 먼저 관측된다.
 4. unmerged discard가 git residue 정리 뒤 exact child IDs만 batch delete하고,
    `--cascade`를 사용하지 않는다.
 5. merged-revert finalize도 동일한 child 삭제/readback을 통과한다.
@@ -191,3 +247,5 @@ non-zero exit, malformed JSON, duplicate/ambiguous ID, child-set drift는 모두
 6. 정상 PR merge/finish 경로의 leaves-first child close 의미는 변하지 않는다.
 7. `dotfiles-hdid.1`~`.4` 잔여 child가 삭제되고 parent의 수정된 spec/plan authority는
    그대로 유지된다.
+8. spec gate close에는 `worker-ineligible`이 있고, current residue readback 완료 뒤
+   implementation gate 전에는 label이 제거된다.
