@@ -4,11 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import {
-  readRuntimeMarker as readRuntimeMarkerFile,
-  runtimeIdentitiesEqual,
-  validateRuntimeIdentity
-} from '../server/runtime-identity.js';
+import { validateRuntimeIdentity } from '../server/runtime-identity.js';
 import {
   candidateInstallMarkerPath,
   managedJournalPath,
@@ -262,14 +258,17 @@ export async function readRuntimeHealth(identity, fetch_impl = fetch) {
 }
 
 /**
- * Write the terminal protocol-v1 receipt only after marker, pointer, journal,
- * and live health all prove one exact candidate process.
+ * Test-only transition seam: active runtime code no longer writes or reads a
+ * marker. Phase 5 deletes this managed recovery path; until then callers must
+ * inject the observed process identity instead of reading a marker file.
  *
- * @param {{ binding: Binding, release_realpath: string, lockfile_sha256: string, state: any, previous_marker: string|null, readRuntimeMarker?: typeof readRuntimeMarkerFile, readRuntimeHealth?: typeof readRuntimeHealth, now?: () => Date }} input
+ * @param {{ binding: Binding, release_realpath: string, lockfile_sha256: string, state: any, previous_marker: string|null, readRuntimeMarker?: () => any, readRuntimeHealth?: typeof readRuntimeHealth, now?: () => Date }} input
  */
 async function recoverRuntimeReceipt(input) {
-  const readMarker = input.readRuntimeMarker || readRuntimeMarkerFile;
-  const marker = readMarker();
+  if (!input.readRuntimeMarker) {
+    return { ok: false, reason: 'runtime_marker_reader_unavailable' };
+  }
+  const marker = input.readRuntimeMarker();
   if (
     !marker.ok ||
     !validateRuntimeIdentity(marker.identity) ||
@@ -289,7 +288,13 @@ async function recoverRuntimeReceipt(input) {
           : 'runtime_health_red'
     };
   }
-  if (!runtimeIdentitiesEqual(marker.identity, health.runtime)) {
+  const runtime = health.runtime;
+  if (
+    !validateRuntimeIdentity(runtime) ||
+    Object.keys(marker.identity).some(
+      (key) => marker.identity[key] !== runtime[key]
+    )
+  ) {
     return { ok: false, reason: 'runtime_identity_mismatch' };
   }
   const action_outcomes = [
@@ -338,11 +343,7 @@ async function recoverRuntimeReceipt(input) {
   try {
     writePrivateJsonAtomic(input.binding.receipt_path, receipt);
   } catch {
-    return {
-      ok: false,
-      reason: 'receipt_write_failed',
-      runtime_proven: true
-    };
+    return { ok: false, reason: 'receipt_write_failed', runtime_proven: true };
   }
   const readback = validateDeploymentReceipt({
     receipt_path: input.binding.receipt_path,

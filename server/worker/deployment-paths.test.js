@@ -11,7 +11,6 @@ import {
   managedFailurePath,
   managedJournalPath,
   releasePath,
-  runtimeMarkerPath,
   runtimePointerPath
 } from './deployment-paths.js';
 import { workspaceSlug, workspaceStateDir } from './state-paths.js';
@@ -84,7 +83,6 @@ describe('worker/deployment-paths', () => {
       path.join(releasePath(REPO, SHA), '.bdui', 'managed-install.json')
     );
     expect(runtimePointerPath()).toBe('/data/bdui/runtime/beads-ui/current');
-    expect(runtimeMarkerPath()).toBe('/state/bdui/runtime/beads-ui.json');
   });
 
   test('keeps distinct unsafe attempt ids separate', () => {

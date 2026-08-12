@@ -123,15 +123,6 @@ export function runtimePointerPath() {
   return path.join(dataHome(), 'bdui', 'runtime', 'beads-ui', 'current');
 }
 
-export function runtimeMarkerPath() {
-  const xdg = process.env.XDG_STATE_HOME;
-  const state =
-    typeof xdg === 'string' && xdg.trim().length > 0
-      ? path.resolve(xdg)
-      : path.join(os.homedir(), '.local', 'state');
-  return path.join(state, 'bdui', 'runtime', 'beads-ui.json');
-}
-
 /**
  * @param {string} repo - Source repository path.
  * @param {string} candidate_sha - Exact candidate commit SHA.

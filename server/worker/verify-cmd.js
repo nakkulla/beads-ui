@@ -24,6 +24,7 @@
  */
 import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { debug } from '../logging.js';
 import { errorDetail } from './error-detail.js';
@@ -403,6 +404,7 @@ function spawnErrorResult(err) {
  *   spawn_impl?: typeof spawn,
  *   log_context?: VerifyLogContext|null,
  *   fs_impl?: typeof import('node:fs')
+ *   env?: NodeJS.ProcessEnv
  * }} input
  * @returns {Promise<VerifyCmdResult>}
  */
@@ -426,6 +428,7 @@ export function runVerifyCmd(input) {
     try {
       child = spawn_impl(input.cmd[0], input.cmd.slice(1), {
         cwd: input.cwd,
+        env: input.env || process.env,
         shell: false,
         // Piped so the failure's own output can be preserved (UI-qult §1). Both
         // pipes are drained below — an unread pipe would stall the child once
@@ -693,12 +696,14 @@ function withLifecycleMutex(key, fn) {
  *   git: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   spawn_impl?: typeof spawn,
  *   fs_impl?: typeof import('node:fs'),
+ *   isolation_fs?: any,
  *   retry_flaky?: boolean
  * }} input
  * @returns {Promise<VerifyCmdResult>}
  */
 export async function runVerifyAtSha(input) {
   const retry_flaky = input.retry_flaky === true;
+  const isolation_fs = input.isolation_fs || nodeFs;
   /**
    * @param {VerifyCmdResult[]} results
    * @returns {VerifyCmdResult}
@@ -774,12 +779,66 @@ export async function runVerifyAtSha(input) {
           detail: errorDetail(err)
         };
       }
+      /** @type {string|null} */
+      let isolated_root = null;
+      try {
+        const created_root = isolation_fs.mkdtempSync(
+          path.join(os.tmpdir(), 'bdui-verify-')
+        );
+        isolated_root = created_root;
+        isolation_fs.mkdirSync(path.join(created_root, 'config'), {
+          recursive: true
+        });
+        isolation_fs.writeFileSync(
+          path.join(created_root, 'config', 'config.toml'),
+          ''
+        );
+      } catch {
+        if (isolated_root) {
+          try {
+            isolation_fs.rmSync(isolated_root, {
+              recursive: true,
+              force: true
+            });
+          } catch {
+            // Isolation setup failure remains the actionable verdict.
+          }
+        }
+        try {
+          await input.worktree.removeDetached({ repo: input.repo, name });
+        } catch {
+          // Isolation failure remains the actionable verdict.
+        }
+        return {
+          ok: false,
+          reason: 'verify_cmd_spawn_error',
+          exit: null,
+          detail: 'verify_isolation_unavailable'
+        };
+      }
+      if (isolated_root === null) {
+        return {
+          ok: false,
+          reason: 'verify_cmd_spawn_error',
+          exit: null,
+          detail: 'verify_isolation_unavailable'
+        };
+      }
       try {
         return await runVerifyCmd({
           cwd: wt.path,
           cmd: input.cmd,
           timeout_ms: input.timeout_ms,
           spawn_impl: input.spawn_impl,
+          env: {
+            ...process.env,
+            XDG_STATE_HOME: path.join(isolated_root, 'state'),
+            XDG_CONFIG_HOME: path.join(isolated_root, 'config'),
+            BDUI_RUNTIME_DIR: path.join(isolated_root, 'runtime'),
+            BDUI_CONFIG_PATH: path.join(isolated_root, 'config', 'config.toml'),
+            PORT: '0',
+            HOST: '127.0.0.1'
+          },
           // `cwd` is the detached worktree, which is deleted in the `finally`
           // below — the log has to be keyed on the REPO instead (UI-0x54).
           log_context: {
@@ -814,6 +873,11 @@ export async function runVerifyAtSha(input) {
             name,
             errorDetail(err)
           );
+        }
+        try {
+          isolation_fs.rmSync(isolated_root, { recursive: true, force: true });
+        } catch {
+          // The verifier verdict remains authoritative if temp cleanup fails.
         }
       }
     };

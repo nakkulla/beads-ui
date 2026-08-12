@@ -1419,6 +1419,87 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
     expect(results[0]).toBe(results[1]);
   });
 
+  test('clears a failed in-flight resolution so a later force call retries', async () => {
+    let fetch_calls = 0;
+    const att = attach({
+      bd: fakeBd(),
+      gitRun: async (/** @type {string[]} */ args) => {
+        if (args[0] === 'fetch') {
+          fetch_calls += 1;
+          return {
+            code: fetch_calls <= 3 ? 128 : 0,
+            stdout: '',
+            stderr: 'network unreachable'
+          };
+        }
+        if (args[0] === 'remote') {
+          return { code: 0, stdout: 'origin\n', stderr: '' };
+        }
+        if (args[0] === 'config') {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        if (args[0] === 'rev-parse') {
+          return { code: 0, stdout: 'f'.repeat(40), stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+    });
+
+    const first = await att.resolveBase({ force: true });
+    const second = await att.resolveBase({ force: true });
+
+    expect(first).toMatchObject({ ok: false, step: 'fetch' });
+    expect(second).toMatchObject({ ok: true });
+    expect(fetch_calls).toBe(4);
+  });
+
+  test('resolves different repositories independently while one fetch is in flight', async () => {
+    const other_workspace = path.join(tmp_state, 'other-workspace');
+    let release_first = () => {};
+    const first_gate = new Promise((resolve) => {
+      release_first = () => resolve(undefined);
+    });
+    /** @type {string[]} */
+    const fetched = [];
+    const gitRun = async (
+      /** @type {string[]} */ args,
+      /** @type {any} */ options
+    ) => {
+      if (args[0] === 'fetch') {
+        fetched.push(String(options?.cwd));
+        if (options?.cwd === WS) {
+          await first_gate;
+        }
+      }
+      if (args[0] === 'remote') {
+        return { code: 0, stdout: 'origin\n', stderr: '' };
+      }
+      if (args[0] === 'config') {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        return { code: 0, stdout: 'f'.repeat(40), stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const first = attach({ bd: fakeBd(), gitRun });
+    const second = createWorkerAttachment(other_workspace, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      gitRun
+    });
+
+    const blocked = first.resolveBase({ force: true });
+    const independent = second.resolveBase({ force: true });
+    await expect(independent).resolves.toMatchObject({ ok: true });
+    expect(fetched).toContain(other_workspace);
+    release_first();
+    await expect(blocked).resolves.toMatchObject({ ok: true });
+  });
+
   test('refuses admission with the failing step when the base is unresolved', async () => {
     const att = attach({
       bd: fakeBd(),
@@ -1951,6 +2032,26 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
         stderr: ''
       }),
       resolveBase: okBase('main', 'b'.repeat(40)),
+      deploymentJob: {
+        requestDeployment: async (input) => ({
+          accepted: true,
+          noop: true,
+          target_base: input.target_base,
+          target_sha: 'b'.repeat(40),
+          generation: 1
+        }),
+        deploymentStatus: async () => ({
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha: 'b'.repeat(40),
+          deployed_sha: 'b'.repeat(40),
+          generation: 1,
+          error_code: null,
+          log_path: '/tmp/deploy.log'
+        }),
+        validateCurrentBinding: () => {},
+        validateRowBinding: () => {}
+      },
       gh: /** @type {any} */ ({
         checkAvailability: async () => ({ state: 'ok', data: true })
       })
@@ -1973,8 +2074,10 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     // about the registry is stubbed, so a missing `drop` in `attach.js` leaves
     // the row behind for the next enroller pass to trip over.
     const r = await att.prActions.cleanupObservedMerge('X1', 'a'.repeat(40));
+    const observed = await att.prActions.observeDeployment();
 
     expect(r).toMatchObject({ ok: true, reason: null });
+    expect(observed).toEqual({ ok: true, reason: null });
     expect(runtime.externalPrs.list(WS)).toEqual([]);
   });
 });

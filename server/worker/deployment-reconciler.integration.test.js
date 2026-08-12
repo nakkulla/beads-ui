@@ -10,7 +10,6 @@ import {
   runAdapter,
   runRestartHelper
 } from '../../scripts/managed-self-deploy.js';
-import { readRuntimeMarker, writeRuntimeMarker } from '../runtime-identity.js';
 import {
   managedJournalPath,
   releasePath,
@@ -385,7 +384,11 @@ describe('worker/deployment-reconciler real git integration', () => {
           randomToken: () => `token-${++token_index}-00000000`,
           processController: {
             probe: () => ({ state: 'gone' })
-          }
+          },
+          readRuntimeMarker: () =>
+            runtime
+              ? { ok: true, identity: runtime.identity }
+              : { ok: false, reason: 'runtime_marker_unavailable' }
         };
         if (mode === 'spawn_before') {
           adapter_input.spawnHelper = () => {
@@ -589,13 +592,6 @@ describe('worker/deployment-reconciler real git integration', () => {
         runtime = await startFakeRuntime({
           source_repo: fs.realpathSync(latest_release),
           source_sha: fixture.candidate_sha
-        });
-        expect(writeRuntimeMarker({ identity: runtime.identity })).toEqual({
-          ok: true
-        });
-        expect(readRuntimeMarker()).toEqual({
-          ok: true,
-          identity: runtime.identity
         });
 
         mode = 'recover';

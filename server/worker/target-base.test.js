@@ -208,9 +208,14 @@ describe('resolveTargetBase five-step validation', () => {
     const git = gitRunner(HEALTHY);
     const delay = vi.fn(async () => {});
     let fetch_calls = 0;
-    /** @param {string[]} args */
-    const run = async (args) => {
+    /** @type {any[]} */
+    const fetch_options = [];
+    const run = async (
+      /** @type {string[]} */ args,
+      /** @type {any} */ options
+    ) => {
       if (args[0] === 'fetch') {
+        fetch_options.push(options);
         fetch_calls += 1;
         if (fetch_calls === 1) {
           return {
@@ -227,7 +232,30 @@ describe('resolveTargetBase five-step validation', () => {
 
     expect(result).toMatchObject({ ok: true, base: 'ilsun/dev' });
     expect(fetch_calls).toBe(2);
+    expect(fetch_options).toHaveLength(2);
+    expect(fetch_options.every((options) => options.timeout_ms > 0)).toBe(true);
     expect(delay).toHaveBeenCalledExactlyOnceWith(100);
+  });
+
+  test('passes a bounded timeout to every fetch attempt', async () => {
+    writeDeclaration('base = "ilsun/dev"\n');
+    /** @type {any[]} */
+    const calls = [];
+    const gitRun = async (
+      /** @type {string[]} */ args,
+      /** @type {any} */ options
+    ) => {
+      calls.push({ args, options });
+      return gitRunner(HEALTHY).run(args);
+    };
+
+    await resolveTargetBase({ repo, gitRun });
+
+    const fetch_options = calls.find(
+      (call) => call.args[0] === 'fetch'
+    )?.options;
+    expect(fetch_options).toMatchObject({ cwd: repo });
+    expect(fetch_options.timeout_ms).toBeGreaterThan(0);
   });
 
   test.each([
