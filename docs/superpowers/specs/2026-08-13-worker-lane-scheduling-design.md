@@ -58,7 +58,8 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
 1. 대기열을 병렬 레인 + N개 고정 직렬 레인으로 재구성하고, 레인당 활성 lineage
    1개의 배타를 스케줄러가 보장한다.
 2. `blocks` edge를 큐 구성원 사이에서 수집해 직렬 레인 내 순서를 자동 정렬하고,
-   blocked 이슈도 대기열에 앉아 ready 전환 시 실행되게 한다.
+   blocked 이슈가 대기열에 앉아 ready 전환 시 실행되는 기존 동작을 레인
+   구조에서도 유지한다.
 3. `worker-serial` 라벨 소비·전역 뮤텍스·라벨 쓰기 UI를 제거하고 마이그레이션
    한 번으로 정산한다.
 4. 병렬성 분석을 "직렬 그룹 + 순서" 추천으로 재정의한다. 추천은 편집 가능한
@@ -90,8 +91,11 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
 - `server/worker/attach.js`: `bd show --json`/`bd ready` 기반 snapshot이
   `ready`/`blocked`만 계산하고 dependency edge를 버린다. `blocks` edge 수집을
   여기에 추가한다. `blocked`/`ready` 판정 자체는 계속 `bd ready`에 위임한다.
-- `server/worker/admission.js`: route/spec/spec_review/base 검증은 유지한다.
-  blocked 이슈의 큐 진입 거부만 완화한다(진입 허용, dispatch는 ready 전환 후).
+- `server/worker/admission.js`: route/spec/spec_review/base 검증을 그대로
+  유지하며 이번 범위에서 변경하지 않는다. 현재도 placement admission은 ready
+  여부를 검사하지 않아 blocked 이슈의 큐 진입이 허용되고, scheduler가 scan과
+  dispatch 직전에 ready/blocked를 재검증한다 — 이 동작을 regression으로
+  유지한다.
 - `app/views/worker/lanes.js`·`index.js`: `miniRow` 행 렌더·drag 컨트롤러를
   재사용한다. 체크박스(`worker-mini__select`)·일괄 실행 방식 dropdown
   (`executionModeControlsTemplate`, `applyExecutionMode`)·"머지까지 단독" 라벨
@@ -145,6 +149,11 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
   완료 또는 폐기)를 **최대 1개** 가진다. 레인 점유 판정은 기존
   `activeSerialLineages`의 lineage 어휘(`completion_root_id ?? bead_id`)를 레인
   id 기준으로 일반화한 것이다.
+- 점유는 lineage 단위이며 attempt 상태로 조기 해제되지 않는다: 최신 leaf
+  attempt가 실패·orphaned·paused여도 lineage가 머지·정리 완료 또는 폐기에
+  도달할 때까지 레인 점유를 유지한다. 같은 lineage의 후속 attempt(재개·repair·
+  fresh recovery)는 `serial_lane_id`를 상속한다. 해제 조건은 머지·정리 완료
+  또는 폐기 두 가지뿐이다.
 - dispatch 후보: 병렬 레인의 모든 ready 항목 + 점유 없는 각 직렬 레인의 head
   (entries[0])가 ready인 경우. 전역 실행 중 attempt 수 < `slots`일 때만
   launch한다. `slots=1`이 전역 순차 override로 계속 동작한다.
@@ -169,7 +178,9 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
 - `attach.js` snapshot에 큐 구성원 간 직접 `blocks` edge를 추가한다. 소스는
   `bd show --json`의 `dependencies`이며 `dependency_type === 'blocks'`만
   스케줄링 신호다. edge 방향은 blocker → blockee. 큐 구성원 밖의 blocker는
-  edge로 들지 않고 기존 `ready`/`blocked` 이진 판정으로만 반영된다.
+  정렬 신호로 들지 않고 기존 `ready`/`blocked` 이진 판정으로만 dispatch에
+  반영되되, 직접 `blocks` 대상 ID는 표시 전용 `blocked_by`로 스냅샷에
+  보존한다(§4의 대기 사유 chip이 이 값을 쓴다).
 - 직렬 레인 배치·드래그·분석 제출 시 서버가 레인 내 순서를 검증한다: blocker가
   blockee보다 앞이어야 한다. 위반 순서는 사용자 순서를 최대한 보존하는 안정
   topological 보정(사용자 순서 tie-break)을 적용하고, 보정이 일어난 항목에
@@ -188,10 +199,11 @@ serial 이슈가 실행 중이면 다른 모든 launch 거부)로 얹혀 있다.
   제거하고, blocked 행에 `⏸ <blocker> 완료 대기 (blocks)` chip, 분석 추천
   overlay가 있는 행에 `✳ serial 권장 · <대상>와` chip을 표시한다.
 - **직렬 레인 카드**가 그 아래 `serial_lane_count`만큼 고정 표시. 카드 헤더는
-  `직렬 N` + 점유 상태 배지(`① 실행 중 · 점유` / `PR 대기 · 점유` / `대기`),
-  본문은 ①②③ 순번 행. 실행 중(또는 pr_wait) head는 흐린 ghost 행으로 남아
-  점유를 보여준다. 빈 레인은 점선 접힌 카드("비어 있음 — 행을 여기로
-  드래그")로 고정 위치 드롭 타깃이 된다.
+  `직렬 N` + 점유 상태 배지(`① 실행 중 · 점유` / `PR 대기 · 점유` /
+  `실패 · 점유 유지` / `대기`), 본문은 ①②③ 순번 행. 점유 중인 lineage의
+  head(실행·pr_wait·실패 유지 포함)는 흐린 ghost 행으로 남아 점유를 보여준다.
+  빈 레인은 점선 접힌 카드("비어 있음 — 행을 여기로 드래그")로 고정 위치 드롭
+  타깃이 된다.
 - 인터랙션은 ⠿ grip 드래그 하나: 병렬 ↔ 직렬 이동, 직렬 간 이동, 레인 내 순서
   변경. 체크박스·일괄 dropdown·"머지까지 단독" chip 쓰기 UI는 제거한다. 기존
   `worker-serial` 라벨이 남아 있는 행은 표시 전용 취소선 chip으로만 보여 준다
@@ -316,8 +328,9 @@ live 라벨은 semantic digest에 들어가지 않는 적용 가능성 overlay�
   active lineage가 아닌지, (3) 대상 `lane`이 현재 `serial_lane_count` 안의 직렬
   레인인지 검증한 뒤, 큐 CAS 한 번으로 항목들을 대상 레인으로 이동한다. 배치는
   기존 entries 뒤에 제출 순서대로 append하며 blocks 자동 정렬(§3)이 최종
-  우선이다. **bd 라벨·의존성·repository는 변경하지 않는다.** 부분 실패는 실패
-  항목만 남기고 성공 항목은 유지한다.
+  우선이다. **bd 라벨·의존성·repository는 변경하지 않는다.** 제출은
+  all-or-nothing이다: 위 검증 또는 CAS가 하나라도 실패하면 전체 제출을 무변경
+  거부하고 사유를 fail-visible로 반환한다. 항목별 부분 적용은 없다.
 - 추천 overlay chip(§4)은 last-good result에서 파생하며 snapshot 갱신마다 stale
   판정을 다시 계산한다.
 
@@ -353,8 +366,8 @@ live 라벨은 semantic digest에 들어가지 않는 적용 가능성 overlay�
   `docs/contracts/workflow.md`가 소유한다. 이 설계는 beads-ui의 **소비 은퇴**만
   수행하고 어휘를 재정의하지 않는다. 계약 문서의 `### Worker serial execution`
   (queue barrier·durable snapshot·lineage·release 의미론)과 "beads-ui Worker가
-  유일한 기계 소비자"라는 서술의 정정은 dotfiles 별도 unit이 소유한다(핸드오프
-  시 dotfiles rig에 Bead 생성).
+  유일한 기계 소비자"라는 서술의 정정은 dotfiles Bead `dotfiles-9gon`이 별도
+  Bead+PR unit으로 소유한다(생성·readback 완료; beads-ui 구현 머지 후 적용).
 - 레인 배치·순서는 beads-ui 로컬 스케줄링 상태(queue.json)이며 workflow 계약
   표면이 아니다. Bead metadata·라벨에 새 키를 도입하지 않는다.
 
@@ -363,15 +376,15 @@ live 라벨은 semantic digest에 들어가지 않는 적용 가능성 overlay�
 | Seam | RED | GREEN | 제외 |
 | --- | --- | --- | --- |
 | A — queue-store 레인 스키마 | serial_lanes·count·단일 소속 invariant·축소 복귀·`pr_wait_holds_slot` 폐기가 한 경계에 없음 | v(n+1) normalizeQueue, CAS mutator(place/reorder/count), invariant 검증, 레거시 worker_serial attempt 정산 | 동적 레인 생성 |
-| B — 스케줄러 레인 뮤텍스 | 전역 뮤텍스 제거 후 레인당 배타·head-only dispatch·점유 재구성을 보장하는 경계가 없음 | 레인당 활성 lineage ≤ 1, head-only·비-head 거부, slots 캡 병행, 재시작 재구성, worker-serial 판정 제거 | anti-starvation 재설계 |
-| C — blocks edge·자동 정렬 | dependency edge가 snapshot에 없고 레인 순서가 blocks를 위반할 수 있음 | attach의 blocks edge 수집, 안정 topological 보정(사용자 순서 tie-break), cycle fail-visible | blocks 외 dependency type, edge 자동 작성 |
-| D — admission blocked 진입 | blocked 이슈가 큐에 들어올 수 없거나 무검증으로 실행될 수 있음 | 진입 허용 + dispatch에서 ready 재검증, 사유 노출 | spec/review 검증 완화 |
-| E — Worker UI 레인 | 레인 카드·드래그 이동·ghost 점유·빈 레인 드롭 타깃·체크박스 제거가 표시와 어긋날 수 있음 | lane 카드 렌더, grip 드래그(병렬↔직렬·순서), 축소 스낵바, 추천/blocked/legacy chip | 체크박스·일괄 dropdown 부활 |
+| B — 스케줄러 레인 뮤텍스 | 전역 뮤텍스 제거 후 레인당 배타·head-only dispatch·점유 재구성을 보장하는 경계가 없고, 실패·orphaned attempt가 점유를 조기 해제해 머지·정리 전 다음 항목이 실행될 수 있음 | 레인당 활성 lineage ≤ 1, head-only·비-head 거부, slots 캡 병행, 실패→재개→pr_wait→정리·orphan/재시작·폐기 경로의 점유 유지와 `serial_lane_id` 상속, 재시작 재구성, worker-serial 판정 제거 | anti-starvation 재설계 |
+| C — blocks edge·자동 정렬 | dependency edge가 snapshot에 없고 레인 순서가 blocks를 위반할 수 있음 | attach의 blocks edge 수집과 표시 전용 `blocked_by`, 안정 topological 보정(사용자 순서 tie-break), cycle fail-visible | blocks 외 dependency type, edge 자동 작성 |
+| D — blocked 항목 레인 대기 | blocked 항목을 직렬 레인에 배치했을 때 head 대기·타 레인 진행·ready 전환 후 dispatch를 한 경계에서 보장하지 못함 | head blocked 시 레인 대기와 사유 노출, 다른 레인·병렬 레인 정상 진행, ready 전환 관측 후 head dispatch, blocked 진입 허용의 기존 동작 regression 유지 | admission spec/review 검증 변경 |
+| E — Worker UI 레인 | 레인 카드·드래그 이동·점유 표시(실패·pr_wait 포함)·빈 레인 드롭 타깃·체크박스 제거가 표시와 어긋날 수 있음 | lane 카드 렌더, grip 드래그(병렬↔직렬·순서), 점유 상태 배지(실행·PR 대기·실패 유지), 축소 스낵바, 추천/blocked/legacy chip | 체크박스·일괄 dropdown 부활 |
 | F — 분석 snapshot/bundle | 승계 seam: dirty worktree·secret path·directory 확장 유입 | pinned blob reader, 안전 캡, omission manifest, temp cleanup | repository archive |
 | G — 분석 settings/cache/job | 승계 seam: 설정·freshness의 durable owner 부재, 중복 process | CAS settings, per-workspace cache, exact identity, single-flight, last-good 보존, orphan idle | Bead metadata hint |
 | H — read-only runner | 승계 seam: write-capable 또는 live-read runner 재사용 위험 | stdin-only bundle, tool-free probe, no-persistence, escape 차단 실측, timeout/cancel | implementation runner 변경 |
 | I — 결과 v2 검증 | malformed/분할 위반/비서로소 그룹/fabricated evidence 표시 위험 | exact-partition invariant, 그룹 서로소·순열, strong verdict 게이트, locator 검증 | 자유 prose parser |
-| J — 제출 handler | digest·멤버·레인 무검증 제출이 큐를 오염할 수 있음 | digest 일치, 멤버 현재성·비활성 lineage, 레인 유효성, CAS 이동, 부분 실패 보존, bd 무변경 실측 | 라벨 writer 경로 |
+| J — 제출 handler | digest·멤버·레인 무검증 제출이 큐를 오염할 수 있음 | digest 일치, 멤버 현재성·비활성 lineage, 레인 유효성, 단일 CAS 이동, all-or-nothing 거부(부분 적용 없음), bd 무변경 실측 | 라벨 writer 경로 |
 | K — disposable workspace E2E | 레인 드래그→분석→편집→제출→dispatch 흐름이 수동 확인에만 남음 | fake tool-free runner + fixture Beads로 레인 배치, 분석 cache hit, 초안 편집, 제출, head dispatch 순서를 PR 안에서 자동 검증 | 실제 provider 호출 |
 
 이미 green인 assertion이나 snapshot-only golden은 RED를 대신하지 않는다. 각
@@ -425,8 +438,7 @@ path·port·HTTP 응답 readback만 검증한다. 기능 검증은 seam K가 PR 
 
 - `server/worker/queue-store.js` (레인 스키마·마이그레이션·mutator)
 - `server/worker/scheduler.js` (레인 뮤텍스, worker-serial 판정 제거)
-- `server/worker/attach.js` (blocks edge 수집)
-- `server/worker/admission.js` (blocked 진입 완화)
+- `server/worker/attach.js` (blocks edge·`blocked_by` 수집)
 - `server/worker/parallel-analysis-{targets,bundle,store,runner,validator}.js`
 - `server/ws/worker-handlers.js`, `server/ws/worker-parallel-analysis-handlers.js`
 - `server/ws/mutation-handlers.js` (worker-serial 특별 경로 제거)
@@ -449,7 +461,8 @@ plan authoring에서 파일 경계는 조정할 수 있지만, 레인당 배타�
 2. `worker-serial` 라벨·전역 뮤텍스·일괄 실행 방식 UI·`pr_wait_holds_slot`이
    스케줄링에서 제거되고 마이그레이션이 기존 상태를 유실 없이 정산한다.
 3. blocks edge가 레인 내 순서를 자동 보정하고, blocked 이슈가 큐에서 대기하다
-   ready 전환 시 실행된다.
+   ready 전환 시 실행되는 기존 동작이 레인 구조에서 유지된다. 실패·orphaned
+   attempt는 레인 점유를 조기 해제하지 않는다.
 4. 일반 queue add/reorder/auto-advance는 analyzer를 호출하지 않고, 버튼 클릭만
    canonical snapshot에서 configured provider 하나를 read-only로 실행한다.
 5. 동일 identity는 cache hit, 변경된 base/artifact/scope/dependency/model은
@@ -457,7 +470,8 @@ plan authoring에서 파일 경계는 조정할 수 있지만, 레인당 배타�
 6. strong evidence가 검증된 high-confidence 그룹만 serial 권장으로 표시되고,
    편집된 초안 제출은 서버 digest·멤버·레인 재검증 후 큐 CAS로만 수렴하며 bd
    상태를 변경하지 않는다.
-7. cancel·timeout·invalid output·prompt injection·부분 실패가 큐 진행을 막거나
-   last-good cache를 손상하지 않는다.
+7. cancel·timeout·invalid output·prompt injection·거부된 제출이 큐 진행을
+   막거나 last-good cache를 손상하지 않으며, 제출은 all-or-nothing으로만
+   수렴한다.
 8. disposable workspace E2E와 full repository verification, frontend build,
    managed deploy, process path·port·HTTP readback이 모두 통과한다.
