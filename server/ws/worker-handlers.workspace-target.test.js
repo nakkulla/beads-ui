@@ -1,11 +1,11 @@
 /**
  * Every worker MUTATION must honour an optional `payload.root_dir` (UI-qrfo §5).
  *
- * Table-driven over all seventeen actions on purpose: a single-action test
- * cannot catch a leftover `workspaceKeyOf(ws)` in the other sixteen, and that
+ * Table-driven over all mutation actions on purpose: a single-action test
+ * cannot catch a leftover `workspaceKeyOf(ws)` in another handler, and that
  * leftover is exactly the bug this change can leave behind.
  *
- * The observation seam is `worker/attach.js`. Every one of the seventeen reaches
+ * The observation seam is `worker/attach.js`. Every mutation reaches
  * it with the resolved workspace key — either directly (the attachment actions)
  * or through the snapshot decoration every reply carries — so "which workspace
  * did this handler decide on" is one uniform assertion instead of seventeen
@@ -93,7 +93,7 @@ function fakeSocket() {
 }
 
 /**
- * The seventeen mutation actions §5 enumerates, each with the minimal payload
+ * The mutation actions §5 enumerates, each with the minimal payload
  * that reaches its workspace decision.
  *
  * @type {Array<{ action: string, run: (ws: any, req: any) => unknown, payload: Record<string, unknown> }>}
@@ -112,6 +112,11 @@ const MUTATIONS = [
   {
     action: 'worker-queue-toggle',
     run: handlers.handleWorkerQueueToggle,
+    payload: { on: true, expected_revision: 0 }
+  },
+  {
+    action: 'worker-automation-toggle',
+    run: handlers.handleWorkerAutomationToggle,
     payload: { on: true, expected_revision: 0 }
   },
   {

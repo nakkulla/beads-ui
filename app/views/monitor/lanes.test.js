@@ -1502,11 +1502,14 @@ describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
       Array.from(mount.querySelectorAll('.mon-ctl__label')).map((el) =>
         el.textContent?.trim()
       )
-    ).toEqual(['진행', '머지', '슬롯', '설정']);
+    ).toEqual(['자동화', '머지', '슬롯', '설정']);
     const advance = mount.querySelector('.mon-ctl--advance');
     expect(advance?.getAttribute('data-on')).toBe('true');
     expect(advance?.getAttribute('data-revision')).toBe('9');
     expect(advance?.getAttribute('data-root-dir')).toBe(WS_B);
+    expect(advance?.getAttribute('title')).toBe(
+      '자동화 꺼짐 — 클릭하면 자동 진행·자동 머지를 함께 켭니다'
+    );
   });
 
   // 이모지는 폰트마다 크기·색이 제각각이라 라벨보다 시각적으로 앞선다.

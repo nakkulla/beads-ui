@@ -71,6 +71,12 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
+  test('isMessageType returns true for worker-automation-toggle', () => {
+    const res = isMessageType('worker-automation-toggle');
+
+    expect(res).toBe(true);
+  });
+
   test('isMessageType returns false for unknown type', () => {
     const res = isMessageType('not-a-type');
 

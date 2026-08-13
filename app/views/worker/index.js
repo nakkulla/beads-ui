@@ -1879,17 +1879,17 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * @param {boolean} on
    */
-  async function setAutoAdvance(on) {
+  async function setAutomation(on) {
     if (!transport) {
       return;
     }
-    const res = await transport('worker-queue-toggle', {
+    const res = await transport('worker-automation-toggle', {
       on,
       expected_revision: currentRevision()
     });
     adopt(res);
     if (res && res.conflict) {
-      await transport('worker-queue-toggle', {
+      await transport('worker-automation-toggle', {
         on,
         expected_revision: currentRevision()
       }).then(adopt);
@@ -2933,7 +2933,7 @@ export function createWorkerView(mount_element, options = {}) {
       type="button"
       class="worker-play${m.queue.auto_advance ? ' is-active' : ''}"
     >
-      ${m.queue.auto_advance ? '⏸ 일시정지' : '▶ 자동 진행'}
+      ${m.queue.auto_advance ? '⏸ 자동화 멈춤' : '▶ 자동화'}
     </button>`;
     // 자동 머지 토글은 실행/PR 패널 유무와 관계없이 툴바에 고정한다. 같은
     // 템플릿을 한 번만 삽입해 모바일 지금 패널·데스크톱 PR 대기 헤더 중복도
@@ -3943,7 +3943,7 @@ export function createWorkerView(mount_element, options = {}) {
       return;
     }
     if (target?.closest?.('.worker-play')) {
-      void setAutoAdvance(!currentQueue().auto_advance);
+      void setAutomation(!currentQueue().auto_advance);
       return;
     }
     // The toolbar's bulk merge control (UI-5v7d §4). Keep it ahead of generic

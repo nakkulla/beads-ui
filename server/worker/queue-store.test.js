@@ -224,6 +224,98 @@ describe('worker/queue-store', () => {
     expect(restarted.snapshot(WS).auto_advance).toBe(false);
   });
 
+  test('turns both automation flags on in one revision', () => {
+    const store = createQueueStore();
+
+    const result = store.toggleAutomation(WS, {
+      expected_revision: 0,
+      on: true
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(1);
+    expect(result.queue.auto_advance).toBe(true);
+    expect(result.queue.auto_merge).toBe(true);
+  });
+
+  test('turns both automation flags off and clears ordinary merge waits', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 3,
+        auto_advance: true,
+        auto_merge: true,
+        merge_queue: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.toggleAutomation(WS, {
+      expected_revision: 3,
+      on: false
+    });
+
+    expect(result.queue.revision).toBe(4);
+    expect(result.queue.auto_advance).toBe(false);
+    expect(result.queue.auto_merge).toBe(false);
+    expect(result.queue.merge_queue).toEqual([]);
+  });
+
+  test('preserves the active merge and resolution journal while turning automation off', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 7,
+        auto_advance: true,
+        auto_merge: true,
+        merge_queue: [
+          { bead_id: 'UI-active' },
+          { bead_id: 'UI-waiting' },
+          {
+            bead_id: 'UI-resolution',
+            resolution: {
+              attempt_id: 'res-1',
+              subject_bead_id: 'UI-subject',
+              deadline_at: 100,
+              state: 'waiting',
+              yielded_at: null,
+              settled_at: null
+            }
+          }
+        ]
+      })
+    );
+    const store = createQueueStore();
+
+    const result = store.toggleAutomation(WS, {
+      expected_revision: 7,
+      on: false,
+      keep: 'UI-active'
+    });
+
+    expect(result.queue.merge_queue.map((entry) => entry.bead_id)).toEqual([
+      'UI-active',
+      'UI-resolution'
+    ]);
+  });
+
+  test('rejects a stale automation revision without changing state', () => {
+    const store = createQueueStore();
+    store.toggleAutomation(WS, { expected_revision: 0, on: true });
+    const before = store.snapshot(WS);
+
+    const result = store.toggleAutomation(WS, {
+      expected_revision: 0,
+      on: false,
+      keep: 'UI-active'
+    });
+
+    expect(result.conflict).toBe(true);
+    expect(store.snapshot(WS)).toEqual(before);
+  });
+
   test('defaults pr_wait_holds_slot off for a legacy queue', () => {
     fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
     fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 4 }));

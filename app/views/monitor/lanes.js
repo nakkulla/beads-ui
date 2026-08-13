@@ -1267,8 +1267,8 @@ export function monitorCardBody(item, now) {
 
 /**
  * The waiting lane's per-repo group header — 그 레포의 workspace 단위 제어 넷을
- * 전부 싣는다 (§6 「레포별 제어」): `▶/⏸`(auto_advance) · `🔀`(auto_merge) ·
- * 슬롯 · 실행 기본값.
+ * 전부 싣는다 (§6 「레포별 제어」): `▶/⏸`(workspace automation) ·
+ * `🔀`(independent auto_merge) · 슬롯 · 실행 기본값.
  *
  * 네 제어 모두 `data-root-dir`과 `data-revision`을 직접 싣는다. 파이프라인이 빈
  * workspace는 무거운 배열에 없으므로, 그 레포의 CAS 토큰은 그룹이 `workspaces_state`
@@ -1297,11 +1297,11 @@ export function monitorGroupHeaderTemplate(group) {
         data-on=${group.auto_advance ? 'false' : 'true'}
         aria-pressed=${group.auto_advance ? 'true' : 'false'}
         title=${group.auto_advance
-          ? '자동 진행 켜짐 — 클릭하면 멈춥니다'
-          : '자동 진행 꺼짐 — 클릭하면 대기 큐를 디스패치합니다'}
+          ? '자동화 켜짐 — 클릭하면 자동 진행·자동 머지를 함께 끕니다'
+          : '자동화 꺼짐 — 클릭하면 자동 진행·자동 머지를 함께 켭니다'}
       >
         ${group.auto_advance ? iconPause() : iconPlay()}
-        <span class="mon-ctl__label">진행</span>
+        <span class="mon-ctl__label">자동화</span>
       </button>
       <button
         type="button"

@@ -146,8 +146,12 @@ Nothing merges without a human `[머지]` click.
   auto_advance-ON queue with a free slot starts the bead without waiting for
   another trigger.
 - `worker-queue-reorder` payload: `{ bead_id, to_index, expected_revision }`
-- `worker-queue-toggle` payload: `{ on, expected_revision }` — persists
-  `auto_advance` and, on turn-ON, kicks the live dispatch loop (`tick`).
+- `worker-queue-toggle` payload: `{ on, expected_revision }` — persists the
+  legacy independent `auto_advance` surface and, on turn-ON, kicks the live
+  dispatch loop (`tick`).
+- `worker-automation-toggle` payload: `{ on, expected_revision }` — atomically
+  aligns `auto_advance` and `auto_merge`; OFF also clears ordinary waiting merge
+  entries while preserving active and resolution-bound work.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
 - `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when

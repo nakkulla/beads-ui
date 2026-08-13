@@ -5,8 +5,6 @@ const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
 /**
- * A socket that records every frame the handler sends.
- *
  * @returns {any}
  */
 function fakeSocket() {
@@ -30,92 +28,87 @@ function lastReply(sock) {
 }
 
 /**
- * A queue store stand-in with a real per-workspace revision that both toggles
- * bump — the point of the ordering assertion below.
- *
- * @param {{ revisions?: Record<string, number>, throwFor?: string[], rejectAdvance?: string[], rejectMerge?: string[] }} [input]
+ * @param {{
+ *   states?: Record<string, { revision?: number, auto_advance?: boolean, auto_merge?: boolean }>,
+ *   throwFor?: string[],
+ *   rejectFor?: Record<string, { conflict?: boolean, reason?: string }>
+ * }} [input]
  */
 function fakeStore(input = {}) {
-  /** @type {Record<string, number>} */
-  const revisions = { ...(input.revisions || {}) };
+  /** @type {Record<string, { revision: number, auto_advance: boolean, auto_merge: boolean }>} */
+  const states = {};
   /** @type {Array<{ op: string, workspace: string, input: any }>} */
   const calls = [];
 
   /**
    * @param {string} workspace
-   * @returns {number}
    */
-  function revisionOf(workspace) {
-    if (typeof revisions[workspace] !== 'number') {
-      revisions[workspace] = 0;
+  function stateOf(workspace) {
+    if (!states[workspace]) {
+      const configured = input.states?.[workspace];
+      states[workspace] = {
+        revision: configured?.revision ?? 0,
+        auto_advance: configured?.auto_advance === true,
+        auto_merge: configured?.auto_merge === true
+      };
     }
-    return revisions[workspace];
+    return states[workspace];
   }
 
   return {
     calls,
-    /** @param {string} workspace */
+    /**
+     * @param {string} workspace
+     */
     snapshot(workspace) {
       if ((input.throwFor || []).includes(workspace)) {
         throw new Error('snapshot boom');
       }
       calls.push({ op: 'snapshot', workspace, input: null });
-      return { revision: revisionOf(workspace) };
+      return { ...stateOf(workspace) };
     },
     /**
      * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean }} args
+     * @param {{ expected_revision: number, on: boolean, keep?: string|null }} args
      */
-    toggleAutoAdvance(workspace, args) {
-      calls.push({ op: 'toggleAutoAdvance', workspace, input: args });
-      if ((input.rejectAdvance || []).includes(workspace)) {
+    toggleAutomation(workspace, args) {
+      calls.push({ op: 'toggleAutomation', workspace, input: args });
+      const state = stateOf(workspace);
+      const rejected = input.rejectFor?.[workspace];
+      if (rejected) {
+        return {
+          ok: false,
+          conflict: rejected.conflict === true,
+          reason: rejected.reason,
+          queue: { ...state }
+        };
+      }
+      if (args.expected_revision !== state.revision) {
         return {
           ok: false,
           conflict: true,
-          queue: { revision: revisionOf(workspace) }
+          queue: { ...state }
         };
       }
-      if (args.expected_revision !== revisionOf(workspace)) {
-        return {
-          ok: false,
-          conflict: true,
-          queue: { revision: revisionOf(workspace) }
-        };
-      }
-      revisions[workspace] = revisionOf(workspace) + 1;
+      state.revision += 1;
+      state.auto_advance = args.on;
+      state.auto_merge = args.on;
       return {
         ok: true,
         conflict: false,
-        queue: { revision: revisions[workspace], auto_advance: args.on }
+        queue: { ...state }
       };
     },
     /**
+     * Simulate the independent auto-merge control while observation is active.
+     *
      * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean, clear_waiting?: boolean, keep?: string|null }} args
+     * @param {boolean} on
      */
-    toggleAutoMerge(workspace, args) {
-      calls.push({ op: 'toggleAutoMerge', workspace, input: args });
-      if ((input.rejectMerge || []).includes(workspace)) {
-        return {
-          ok: false,
-          conflict: false,
-          reason: 'nope',
-          queue: { revision: revisionOf(workspace) }
-        };
-      }
-      if (args.expected_revision !== revisionOf(workspace)) {
-        return {
-          ok: false,
-          conflict: true,
-          queue: { revision: revisionOf(workspace) }
-        };
-      }
-      revisions[workspace] = revisionOf(workspace) + 1;
-      return {
-        ok: true,
-        conflict: false,
-        queue: { revision: revisions[workspace], auto_merge: args.on }
-      };
+    setAutoMerge(workspace, on) {
+      const state = stateOf(workspace);
+      state.revision += 1;
+      state.auto_merge = on;
     }
   };
 }
@@ -127,27 +120,39 @@ function fakeStore(input = {}) {
  *   workspaces?: string[],
  *   hidden?: string[],
  *   active?: Record<string, string|null>,
- *   ticked?: string[],
- *   pushes?: number[]
+ *   observe?: (root_dir: string) => unknown
  * }} input
  */
 function toggle(input) {
   const sock = fakeSocket();
   const store = input.store || fakeStore();
-  const ticked = input.ticked || [];
-  const pushes = input.pushes || [];
+  /** @type {string[]} */
+  const ticked = [];
+  /** @type {string[]} */
+  const observed = [];
+  /** @type {string[]} */
+  const enrolled = [];
+  /** @type {number[]} */
+  const pushes = [];
   handleMonitorAutoToggle(
     sock,
     { id: 'r1', type: 'monitor-auto-toggle', payload: { on: input.on } },
     {
       queueStore: () => /** @type {any} */ (store),
       listWorkspaces: () =>
-        (input.workspaces || [WS_A, WS_B]).map((p) => ({
-          path: p
+        (input.workspaces || [WS_A, WS_B]).map((workspace) => ({
+          path: workspace
         })),
       listHidden: () => input.hidden || [],
       tick: (root_dir) => {
         ticked.push(root_dir);
+      },
+      observe: (root_dir) => {
+        observed.push(root_dir);
+        return input.observe ? input.observe(root_dir) : undefined;
+      },
+      enroll: (root_dir) => {
+        enrolled.push(root_dir);
       },
       mergeQueueState: (root_dir) => ({
         active: (input.active || {})[root_dir] ?? null,
@@ -158,18 +163,33 @@ function toggle(input) {
       }
     }
   );
-  return { sock, store, ticked, pushes, reply: lastReply(sock) };
+  return {
+    sock,
+    store,
+    ticked,
+    observed,
+    enrolled,
+    pushes,
+    reply: lastReply(sock)
+  };
 }
 
-describe('monitor-auto-toggle target set (UI-qrfo §6)', () => {
-  test('applies to every visible workspace', () => {
+/**
+ * Let the fire-and-forget observation pipeline settle.
+ */
+async function flushEffects() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe('monitor-auto-toggle target set', () => {
+  test('applies one integrated mutation to every visible workspace', () => {
     const { reply, store } = toggle({ on: true });
 
     expect(reply.payload).toMatchObject({ applied: 2, failed: [] });
     expect(
       store.calls
-        .filter((c) => c.op === 'toggleAutoAdvance')
-        .map((c) => c.workspace)
+        .filter((call) => call.op === 'toggleAutomation')
+        .map((call) => call.workspace)
     ).toEqual([WS_A, WS_B]);
   });
 
@@ -178,8 +198,8 @@ describe('monitor-auto-toggle target set (UI-qrfo §6)', () => {
 
     expect(
       store.calls
-        .filter((c) => c.op === 'toggleAutoAdvance')
-        .map((c) => c.workspace)
+        .filter((call) => call.op === 'toggleAutomation')
+        .map((call) => call.workspace)
     ).toEqual([WS_A]);
   });
 
@@ -198,129 +218,158 @@ describe('monitor-auto-toggle target set (UI-qrfo §6)', () => {
     });
   });
 
-  test('schedules exactly one aggregation push for the whole sweep', () => {
+  test('schedules one aggregation push for the whole sweep', () => {
     const { pushes } = toggle({ on: true });
 
-    expect(pushes.length).toBe(1);
+    expect(pushes).toHaveLength(1);
   });
 });
 
-describe('monitor-auto-toggle CAS ordering (UI-qrfo §6)', () => {
-  // 첫 토글이 revision을 올리므로, 처음 읽은 값을 두 번 쓰면 두 번째가 충돌한다.
-  test('sends the revision the first toggle produced to the second', () => {
-    const { store } = toggle({
-      on: true,
-      workspaces: [WS_A],
-      store: fakeStore({ revisions: { [WS_A]: 7 } })
+describe('monitor-auto-toggle atomic mutation', () => {
+  test('uses the current revision once for both automation axes', () => {
+    const store = fakeStore({ states: { [WS_A]: { revision: 7 } } });
+
+    toggle({ on: true, workspaces: [WS_A], store });
+
+    const mutations = store.calls.filter(
+      (call) => call.op === 'toggleAutomation'
+    );
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0].input).toMatchObject({
+      expected_revision: 7,
+      on: true
+    });
+    expect(store.snapshot(WS_A)).toMatchObject({
+      revision: 8,
+      auto_advance: true,
+      auto_merge: true
+    });
+  });
+
+  test('leaves both axes unchanged when the integrated mutation fails', () => {
+    const store = fakeStore({
+      rejectFor: { [WS_A]: { conflict: true } }
     });
 
-    const advance = store.calls.find((c) => c.op === 'toggleAutoAdvance');
-    const merge = store.calls.find((c) => c.op === 'toggleAutoMerge');
-    expect(advance?.input.expected_revision).toBe(7);
-    expect(merge?.input.expected_revision).toBe(8);
+    const { reply } = toggle({ on: true, workspaces: [WS_A], store });
+
+    expect(reply.payload).toMatchObject({
+      applied: 0,
+      failed: [{ root_dir: WS_A, reason: 'conflict' }]
+    });
+    expect(store.snapshot(WS_A)).toMatchObject({
+      auto_advance: false,
+      auto_merge: false
+    });
   });
 
-  test('applies both axes without a conflict', () => {
-    const { reply } = toggle({
-      on: true,
-      workspaces: [WS_A],
-      store: fakeStore({ revisions: { [WS_A]: 7 } })
+  test('passes the active merge identity while turning automation off', () => {
+    const store = fakeStore({
+      states: {
+        [WS_A]: { revision: 3, auto_advance: true, auto_merge: true }
+      }
     });
 
-    expect(reply.payload).toMatchObject({ applied: 1, failed: [] });
-  });
-});
-
-describe('monitor-auto-toggle side effects (UI-qrfo §6)', () => {
-  test('kicks the dispatch loop of every workspace it turned on', () => {
-    const { ticked } = toggle({ on: true });
-
-    expect(ticked).toEqual([WS_A, WS_B]);
-  });
-
-  test('kicks nothing when turning automation off', () => {
-    const { ticked } = toggle({ on: false });
-
-    expect(ticked).toEqual([]);
-  });
-
-  test('clears the waiting merge queue in the same write when turning off', () => {
-    const { store } = toggle({
+    toggle({
       on: false,
       workspaces: [WS_A],
-      active: { [WS_A]: 'UI-9' }
+      active: { [WS_A]: 'UI-active' },
+      store
     });
 
-    const merge = store.calls.find((c) => c.op === 'toggleAutoMerge');
-    expect(merge?.input).toMatchObject({
+    const mutation = store.calls.find((call) => call.op === 'toggleAutomation');
+    expect(mutation?.input).toMatchObject({
+      expected_revision: 3,
       on: false,
-      clear_waiting: true,
-      keep: 'UI-9'
+      keep: 'UI-active'
     });
-  });
-
-  test('leaves the waiting merge queue alone when turning on', () => {
-    const { store } = toggle({ on: true, workspaces: [WS_A] });
-
-    const merge = store.calls.find((c) => c.op === 'toggleAutoMerge');
-    expect(merge?.input).toMatchObject({ on: true, clear_waiting: false });
+    expect(store.snapshot(WS_A)).toMatchObject({
+      auto_advance: false,
+      auto_merge: false
+    });
   });
 });
 
-describe('monitor-auto-toggle partial failure (UI-qrfo §10)', () => {
+describe('monitor-auto-toggle side effects', () => {
+  test('starts dispatch and conditional enrollment for every successful ON', async () => {
+    const result = toggle({ on: true });
+
+    await flushEffects();
+
+    expect(result.ticked).toEqual([WS_A, WS_B]);
+    expect(result.observed).toEqual([WS_A, WS_B]);
+    expect(result.enrolled).toEqual([WS_A, WS_B]);
+  });
+
+  test('skips enrollment when independent merge OFF lands during observation', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const observing = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const store = fakeStore();
+    const result = toggle({
+      on: true,
+      workspaces: [WS_A],
+      store,
+      observe: () => observing
+    });
+
+    store.setAutoMerge(WS_A, false);
+    release();
+    await flushEffects();
+
+    expect(result.observed).toEqual([WS_A]);
+    expect(result.enrolled).toEqual([]);
+  });
+
+  test('starts no ON effects while turning automation off', async () => {
+    const store = fakeStore({
+      states: {
+        [WS_A]: { auto_advance: true, auto_merge: true }
+      }
+    });
+    const result = toggle({ on: false, workspaces: [WS_A], store });
+
+    await flushEffects();
+
+    expect(result.ticked).toEqual([]);
+    expect(result.observed).toEqual([]);
+    expect(result.enrolled).toEqual([]);
+  });
+});
+
+describe('monitor-auto-toggle partial failure', () => {
   test('applies the remaining workspaces when one throws', () => {
-    const { reply, store } = toggle({
-      on: true,
-      store: fakeStore({ throwFor: [WS_A] })
-    });
+    const store = fakeStore({ throwFor: [WS_A] });
 
-    expect(reply.payload.applied).toBe(1);
+    const { reply } = toggle({ on: true, store });
+
+    expect(reply.payload).toMatchObject({
+      applied: 1,
+      failed: [{ root_dir: WS_A, reason: 'error' }]
+    });
     expect(
       store.calls
-        .filter((c) => c.op === 'toggleAutoAdvance')
-        .map((c) => c.workspace)
+        .filter((call) => call.op === 'toggleAutomation')
+        .map((call) => call.workspace)
     ).toEqual([WS_B]);
   });
 
-  test('names the failed repo in the reply', () => {
-    const { reply } = toggle({
-      on: true,
-      store: fakeStore({ throwFor: [WS_A] })
+  test('starts effects only for workspaces whose mutation succeeded', async () => {
+    const store = fakeStore({
+      rejectFor: { [WS_B]: { conflict: false, reason: 'nope' } }
     });
+    const result = toggle({ on: true, store });
 
-    expect(reply.payload.failed).toEqual([{ root_dir: WS_A, reason: 'error' }]);
-  });
+    await flushEffects();
 
-  test('reports a CAS conflict on the first axis as a failure', () => {
-    const { reply } = toggle({
-      on: true,
-      store: fakeStore({ rejectAdvance: [WS_B] })
-    });
-
-    expect(reply.payload).toMatchObject({
-      applied: 1,
-      failed: [{ root_dir: WS_B, reason: 'conflict' }]
-    });
-  });
-
-  test('reports a refused second axis with the store reason', () => {
-    const { reply } = toggle({
-      on: true,
-      store: fakeStore({ rejectMerge: [WS_B] })
-    });
-
-    expect(reply.payload).toMatchObject({
+    expect(result.reply.payload).toMatchObject({
       applied: 1,
       failed: [{ root_dir: WS_B, reason: 'nope' }]
     });
-  });
-
-  test('does not kick a workspace whose toggle failed', () => {
-    const { ticked } = toggle({
-      on: true,
-      store: fakeStore({ rejectMerge: [WS_B] })
-    });
-
-    expect(ticked).toEqual([WS_A]);
+    expect(result.ticked).toEqual([WS_A]);
+    expect(result.observed).toEqual([WS_A]);
+    expect(result.enrolled).toEqual([WS_A]);
   });
 });

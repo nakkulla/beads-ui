@@ -78,6 +78,7 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerAutomationToggle,
   handleWorkerDeploymentRecoveryContinue,
   handleWorkerDeploymentRetry,
   handleWorkerDiscard,
@@ -499,6 +500,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-toggle':
       handleWorkerQueueToggle(ws, req);
+      return;
+    case 'worker-automation-toggle':
+      handleWorkerAutomationToggle(ws, req);
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
