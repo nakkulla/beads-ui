@@ -21,7 +21,7 @@ Worker의 새 정책은 아래 여섯 문장으로 설명할 수 있어야 한�
    live readback을 끝낼 때까지 기다린다.
 5. Worker가 안전하게 확정할 수 있는 fetch/checkout/restart-adoption 문제는
    자동으로 복구한다.
-6. script가 실패하면 workspace의 `auto_repair` 설정에 따라 같은 Bead의 repair
+6. script가 실패하면 workspace의 `auto_repair` 설정에 따라 owner Bead의 repair
    session을 최대 한 번 자동 시작하고, 그래도 실패하면 사람이 버튼으로 이어간다.
 
 첫 rollout의 네 저장소는 모두 verify를 선언하지 않고 deploy만 선언한다.
@@ -111,8 +111,8 @@ resolver output은 다음 normalized value다.
 ```js
 {
   base: 'main',
-  verify: null | { script, timeout_ms, blob_sha },
-  deploy: null | { script, timeout_ms, blob_sha },
+  verify: null | { script, timeout_ms, mode, blob_sha },
+  deploy: null | { script, timeout_ms, mode, blob_sha },
   config_blob_sha: null | '<40-hex>'
 }
 ```
@@ -121,9 +121,11 @@ PR delivery에는 이전 target-base SHA의 declaration/script를 effective poli
 pin하여 PR이 자기 operation을 끄거나 바꾸지 못하게 한다. 새 declaration은 해당
 delivery가 끝난 뒤 다음 candidate부터 활성화한다.
 
-일반 delivery에서는 previous-base와 target tree의 effective script blob이 같음을
-확인한 뒤 target worktree의 `repo-ops/script/deploy`를 실행한다. config 또는 script
-자체가 바뀌는 transition delivery는 previous-base에서 pin한 exact script bytes와
+일반 delivery에서는 previous-base와 target tree의 effective script identity —
+object type, executable mode, blob SHA — 가 모두 같음을 확인한 뒤 target worktree의
+`repo-ops/script/deploy`를 실행한다. Git blob SHA는 mode를 포함하지 않으므로
+mode-only 변경도 identity 불일치다. config 또는 script identity가 바뀌는 transition
+delivery는 previous-base에서 pin한 exact script bytes와
 executable mode를 Worker-owned ephemeral launcher에 materialize한다. launcher는
 target `.worktrees/.repo-ops-deploy`를 cwd/`REPO_OPS_REPO_ROOT`로 사용하고 repo
 worktree를 수정하지 않으며, terminal success 뒤 회수된다. 새 policy는 그 성공 뒤
@@ -172,7 +174,7 @@ self-restart 중 실제 생존을 증명하지 못하면 implementation을 완�
 
 기존 scheduler의 단일 `launchSession`/resume/log/monitor Interface를 재사용한다.
 verify/deploy마다 새로운 agent runner를 만들지 않는다. operation failure evidence를
-정규화해 같은 Bead의 repair attempt를 dispatch하고, session 결과가 아니라 fresh
+정규화해 owner Bead의 repair attempt를 dispatch하고, session 결과가 아니라 fresh
 Git/operation readback으로 다음 상태를 판정한다.
 
 ### 4.5 UI projection
@@ -206,6 +208,7 @@ workspace queue에 `auto_repair`와 `repo_operations`를 추가한다.
       target_sha: null | '<fetch 뒤 pin한 origin/<base> tip 40-hex>',
       target_tree: null | '<40-hex>',
       deploy_worktree: null | '<repo>/.worktrees/.repo-ops-deploy',
+      script_mode: '100755',
       script_blob_sha: '<40-hex>',
       state: 'queued' | 'running' | 'succeeded' | 'failed' | 'repairing',
       attempt_id: '<opaque-id>',
@@ -224,6 +227,8 @@ workspace queue에 `auto_repair`와 `repo_operations`를 추가한다.
         interrupted: false
       },
       repair: {
+        chain_id: '<첫 terminal failure operation 파생 stable id>',
+        owner_bead: null | 'UI-...',
         auto_budget: 1,
         auto_used: 0,
         session_id: null,
@@ -246,6 +251,15 @@ desired/status copy, repo script result JSON은 없다.
 모든 mutation은 기존 queue CAS/atomic write를 사용한다. operation success와 Bead
 coverage/cleanup cursor 반영은 한 mutation 또는 재시작해도 같은 결과가 되는
 순서로 저장한다. process spawn 전에 durable `queued`/attempt prerecord를 완료한다.
+
+repair chain identity는 첫 terminal failure operation에서 `chain_id`로 시작한다.
+같은 operation의 새 attempt와, 그 chain의 repair 산출(corrective PR merged SHA,
+same-target replay)로 생긴 successor operation은 `chain_id`·`owner_bead`·`auto_used`를
+같은 queue CAS로 계승한다 — 새 operation record가 만들어져도 budget은 리셋되지
+않는다. chain은 chain에 속한 operation의 terminal success에서 닫히고 이후의 독립
+failure는 새 chain이다. 여러 Bead subject를 coalesce한 operation의 repair session은
+결정적 owner Bead — target에 포함된 가장 최신 merged_sha의 subject, 동률이면
+bead_id 사전순 첫 항목 — 하나에 붙는다.
 
 ## 6. authoritative operation checkout
 
@@ -354,7 +368,8 @@ fresh PR/base/head
 ```
 
 receipt key는
-`(effective_base_sha, candidate_tree_sha, verify_script_blob_sha)`다. 단순 head commit
+`(effective_base_sha, candidate_tree_sha, verify_script_identity)`다. script
+identity는 object type·executable mode·blob SHA이고, 단순 head commit
 SHA cache가 아니다. base가 움직이거나 squash result tree가 달라지면 stale다.
 
 ### 7.2 외부에서 이미 merge된 PR
@@ -399,7 +414,8 @@ subject를 coalesce한다. lock을 얻은 뒤 `origin/<base>`를 fetch해 target
 operation은 다시 fetch하므로 더 최신 target을 적용한다. 새 target이 이전 subject를
 포함하고 exit 0이면 그 predecessor를 coverage할 수 있다. 앞 operation failure가
 뒤의 descendant operation을 막지 않으며, 뒤 commit이 원인을 고쳤다면 자동으로
-수렴한다. 오래된 target이 최신 runtime 뒤에 실행되거나 non-ancestor remote tip으로
+수렴한다. repair가 만든 successor operation은 §9.3의 chain identity와 사용된
+budget을 계승한다. 오래된 target이 최신 runtime 뒤에 실행되거나 non-ancestor remote tip으로
 자동 rollback되는 순서는 없다.
 
 Worker가 보는 성공 조건은 timeout 없는 script exit 0과 final permanent worktree
@@ -455,11 +471,17 @@ terminal failure는 다음 UI/action을 만든다.
 - ON 전환은 eligible failed operation을 즉시 reconcile
 - legacy cleanup failures에는 소급하지 않음
 - completion chain당 automatic repair session 1회
+- chain identity는 첫 terminal failure operation에서 시작해 같은 operation의 새
+  attempt와 repair 산출 successor operation(corrective PR merged SHA, same-target
+  replay)에 CAS로 계승되고 chain 내 terminal success에서 닫힌다 — successor
+  operation에서 budget이 리셋되지 않는다
+- multi-subject operation의 repair session owner는 결정적이다: target에 포함된
+  가장 최신 merged_sha subject의 Bead, 동률이면 bead_id 사전순 첫 항목
 - 같은 fingerprint가 tree/script/environment evidence 변화 없이 재현되면 budget을
   더 쓰지 않고 manual button 상태 유지
 - scheduler workspace slot과 exec preset을 그대로 사용
 
-repair session은 같은 Bead에 붙고 기본적으로 새 Bead를 만들지 않는다. failure exact
+repair session은 owner Bead에 붙고 기본적으로 새 Bead를 만들지 않는다. failure exact
 input, sanitized output/log, spec/plan Test scope, current review/PR facts를 받는다.
 
 session이 할 수 있는 일:
@@ -717,6 +739,8 @@ specs/plans/receipts는 immutable evidence로 유지한다.
    - invalid config/path/mode/timeout은 fail-closed다.
    - previous-base declaration이 PR bytes보다 우선한다.
    - legacy config/home fallback을 최종 상태에서 읽지 않는다.
+   - mode-only script 변경이 identity 불일치로 transition delivery로 분류된다
+     (blob SHA 단독 판정은 RED).
 2. **operation checkout**
    - stale/dirty/behind user checkout과 무관하게 fetched `origin/<base>` tip을
      target으로 pin한다.
@@ -747,6 +771,8 @@ specs/plans/receipts는 immutable evidence로 유지한다.
    - default ON, durable toggle, OFF no-new-dispatch, running preservation을 검증한다.
    - chain당 1회 budget과 same-fingerprint loop 차단을 검증한다.
    - repair result가 아닌 fresh repo/operation facts만 continuation을 연다.
+   - multi-subject operation의 owner Bead 결정이 결정적이고, corrective-PR
+     successor operation의 chain_id/auto_used 계승이 추가 자동 dispatch를 막는다.
    - config-disable 우회를 거부한다.
 7. **UI/protocol**
    - setting toggle, policy 세 목록, operation card/log/exit/session link를 검증한다.
