@@ -167,6 +167,61 @@ describe('worker/queue-store', () => {
     return op;
   }
 
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function seedHistoricalStaleRepair(store) {
+    const merged_sha = 'd'.repeat(40);
+    const failure_key = {
+      stage: 'post_merge_cleanup',
+      reason: 'verify_cmd_failed',
+      subject_sha: merged_sha,
+      base_sha: 'b'.repeat(40),
+      result_digest: 'c'.repeat(64)
+    };
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      subject: {
+        ...store.snapshot(WS).completion_intents['UI-root'].subject,
+        merged_sha
+      }
+    });
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'create-stale-repair',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+    store.recordCompletionRepairBead(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'create-stale-repair',
+      repair_bead_id: 'UI-repair'
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'completion_subject_sha_stale',
+        stage: 'repair_dispatch',
+        failure_key,
+        evidence: 'historical scheduler guard',
+        log_path: null,
+        at: 1
+      }
+    });
+    return failure_key;
+  }
+
   test('place persists and round-trips through a fresh store instance', () => {
     const a = createQueueStore();
     const r = a.place(WS, {
@@ -2305,6 +2360,182 @@ describe('worker/queue-store', () => {
     });
     expect(repeated.ok).toBe(false);
     expect(repeated.queue.revision).toBe(revision + 1);
+  });
+
+  test('adopts an exact post-merge stale repair terminal atomically', () => {
+    const store = storeWithCompletionIntent();
+    seedHistoricalStaleRepair(store);
+    const before = store.snapshot(WS);
+    const subject_stack = before.completion_intents['UI-root'].subject_stack;
+
+    const result = store.adoptHistoricalStaleRepair(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(before.revision + 1);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'repairing',
+      active_op: {
+        op_id: 'create-stale-repair',
+        kind: 'create_repair',
+        status: 'observed',
+        repair_bead_id: 'UI-repair'
+      },
+      repair_bead_ids: ['UI-repair'],
+      repair_sessions_used: 0,
+      subject_stack,
+      terminal_reason: null
+    });
+    expect(result.queue.merge_queue).toEqual([
+      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+    ]);
+
+    const repeated = store.adoptHistoricalStaleRepair(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(repeated.ok).toBe(false);
+    expect(repeated.queue.revision).toBe(result.queue.revision);
+    expect(repeated.queue.merge_queue).toEqual([
+      { bead_id: 'UI-root', resolution_rounds: 0, resolution: null }
+    ]);
+    expect(repeated.queue.completion_intents['UI-root']).toMatchObject({
+      active_op: result.queue.completion_intents['UI-root'].active_op,
+      repair_sessions_used:
+        result.queue.completion_intents['UI-root'].repair_sessions_used
+    });
+  });
+
+  test.each([
+    [
+      'auto-merge is disabled',
+      (/** @type {any} */ queue) => (queue.auto_merge = false)
+    ],
+    [
+      'merged SHA is absent',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents['UI-root'].subject.merged_sha = null)
+    ],
+    [
+      'merged SHA equals head SHA',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents['UI-root'].subject.merged_sha =
+          queue.completion_intents['UI-root'].subject.head_sha)
+    ],
+    [
+      'create operation is not observed',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents['UI-root'].active_op.status = 'prepared')
+    ],
+    [
+      'terminal failure differs from the active operation',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents[
+          'UI-root'
+        ].terminal_reason.failure_key.reason = 'other_failure')
+    ],
+    [
+      'matching failure subjects drift from the merged SHA',
+      (/** @type {any} */ queue) => {
+        queue.completion_intents[
+          'UI-root'
+        ].terminal_reason.failure_key.subject_sha = 'e'.repeat(40);
+        queue.completion_intents['UI-root'].active_op.failure_key.subject_sha =
+          'e'.repeat(40);
+      }
+    ],
+    [
+      'repair Bead is missing from its root lineage',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents['UI-root'].repair_bead_ids = [])
+    ],
+    [
+      'repair Bead collides with another root lineage',
+      (/** @type {any} */ queue) => {
+        queue.completion_intents['UI-other'] = {
+          target_base: 'main',
+          phase: 'gating',
+          subject: {
+            role: 'root',
+            bead_id: 'UI-other',
+            pr_url: 'https://github.com/o/r/pull/2',
+            head_sha: 'e'.repeat(40),
+            base_sha: 'b'.repeat(40),
+            merged_sha: null
+          },
+          repair_sessions_used: 0,
+          repair_bead_ids: ['UI-repair'],
+          subject_stack: [],
+          active_op: null,
+          terminal_reason: null
+        };
+      }
+    ],
+    [
+      'failure base SHA drifts from the subject',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents['UI-root'].subject.base_sha = 'e'.repeat(40))
+    ],
+    [
+      'root already has a merge-queue entry',
+      (/** @type {any} */ queue) =>
+        queue.merge_queue.push({
+          bead_id: 'UI-root',
+          resolution_rounds: 0,
+          resolution: null
+        })
+    ],
+    [
+      'repair session budget is exhausted',
+      (/** @type {any} */ queue) =>
+        (queue.completion_intents['UI-root'].repair_sessions_used = 2)
+    ]
+  ])('keeps a historical stale repair terminal when %s', (_label, mutate) => {
+    const store = storeWithCompletionIntent();
+    seedHistoricalStaleRepair(store);
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    mutate(raw);
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const restarted = createQueueStore();
+    const before = restarted.snapshot(WS);
+
+    const result = restarted.adoptHistoricalStaleRepair(WS, {
+      root_bead_id: 'UI-root'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.revision).toBe(before.revision);
+    expect(result.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'completion_subject_sha_stale' }
+    });
+  });
+
+  test('leaves the historical stale repair terminal intact when persistence fails', () => {
+    const good = storeWithCompletionIntent();
+    seedHistoricalStaleRepair(good);
+    const before = fs.readFileSync(queueFilePath(WS), 'utf8');
+    const failing = createQueueStore({
+      fs: /** @type {any} */ ({
+        readFileSync: fs.readFileSync,
+        mkdirSync: fs.mkdirSync,
+        renameSync: fs.renameSync,
+        writeFileSync: () => {
+          throw new Error('disk full');
+        }
+      })
+    });
+
+    expect(() =>
+      failing.adoptHistoricalStaleRepair(WS, { root_bead_id: 'UI-root' })
+    ).toThrow(/disk full/);
+
+    expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
+    expect(failing.snapshot(WS).completion_intents['UI-root']).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'completion_subject_sha_stale' }
+    });
   });
 
   test('marks the root intent completed in the same move to done', () => {
