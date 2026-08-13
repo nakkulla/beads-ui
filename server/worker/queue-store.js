@@ -2956,6 +2956,30 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Toggle both workspace automation axes in one CAS-guarded mutation. OFF
+     * also removes ordinary merge waits while preserving the active item and
+     * every durable resolution journal.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, on: boolean, keep?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    toggleAutomation(workspace, input) {
+      const { expected_revision, on, keep } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        next.auto_advance = !!on;
+        next.auto_merge = !!on;
+        if (!on) {
+          next.merge_queue = next.merge_queue.filter(
+            (entry) =>
+              entry.bead_id === (keep || null) || entry.resolution !== null
+          );
+        }
+        return true;
+      });
+    },
+
+    /**
      * Toggle merge-serial dispatch through the durable PR-wait lifecycle. The
      * flag is durable because the wait routinely spans server restarts.
      *

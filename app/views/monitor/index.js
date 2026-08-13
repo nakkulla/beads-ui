@@ -1087,7 +1087,7 @@ export function createMonitorView(mount_element, options) {
       ev.preventDefault();
       const { root_dir, revision } = casOf(advance);
       void sendCas(
-        'worker-queue-toggle',
+        'worker-automation-toggle',
         { on: advance.getAttribute('data-on') === 'true' },
         root_dir,
         revision

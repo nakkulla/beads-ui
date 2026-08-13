@@ -474,6 +474,32 @@ describe('ws worker-queue channel', () => {
     expect(snaps.at(-1).auto_advance).toBe(true);
   });
 
+  test('automation toggle turns both axes on in one queue revision', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-automation-toggle', {
+      on: true,
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: true,
+      conflict: false,
+      queue: {
+        revision: 1,
+        auto_advance: true,
+        auto_merge: true
+      }
+    });
+    expect(queueSnapshots(sock).at(-1)).toMatchObject({
+      revision: 1,
+      auto_advance: true,
+      auto_merge: true
+    });
+  });
+
   test('toggle ON kicks the live tick; retired stop never mutates', async () => {
     const tick = vi.fn(async () => {});
     const discard = vi.fn(async () => ({
@@ -643,6 +669,7 @@ describe('ws worker-queue channel', () => {
       'worker-attempt-stop',
       'worker-attempt-resume',
       'worker-queue-toggle',
+      'worker-automation-toggle',
       'worker-queue-place',
       'worker-queue-reorder',
       'worker-queue-remove',
@@ -1612,6 +1639,166 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       'UI-1'
     ]);
     expect(kick).toHaveBeenCalled();
+  });
+
+  test('automation ON starts dispatch, observes PRs, and enrolls eligible rows', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const tick = vi.fn(async () => {});
+    const observe = vi.fn(async () => {});
+    const kick = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        mergeQueue: {
+          kick,
+          state: () => ({ active: null, failures: {} })
+        },
+        prPoller: { tick: observe }
+      })
+    );
+    const store = getWorkerRuntime().queueStore;
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-automation-toggle', {
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(tick).toHaveBeenCalledWith(process.cwd());
+    expect(observe).toHaveBeenCalledOnce();
+    expect(
+      store
+        .snapshot('')
+        .merge_queue.map((/** @type {any} */ entry) => entry.bead_id)
+    ).toEqual(['UI-1']);
+    expect(kick).toHaveBeenCalled();
+  });
+
+  test('independent merge OFF during automation observation prevents enrollment', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    /** @type {() => void} */
+    let release = () => {};
+    const observing = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        mergeQueue: {
+          kick: vi.fn(async () => {}),
+          state: () => ({ active: null, failures: {} })
+        },
+        prPoller: { tick: () => observing }
+      })
+    );
+    const store = getWorkerRuntime().queueStore;
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-automation-toggle', {
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+    await send(sock, 'm2', 'worker-merge-auto-toggle', {
+      on: false,
+      expected_revision: store.snapshot('').revision
+    });
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const queue = store.snapshot('');
+    expect(queue.auto_advance).toBe(true);
+    expect(queue.auto_merge).toBe(false);
+    expect(queue.merge_queue).toEqual([]);
+  });
+
+  test('automation OFF clears waiting merges without starting ON effects', async () => {
+    parkInPrWait('UI-1');
+    parkInPrWait('UI-2');
+    const tick = vi.fn(async () => {});
+    const observe = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        mergeQueue: {
+          kick: vi.fn(async () => {}),
+          state: () => ({ active: 'UI-1', failures: {} })
+        },
+        prPoller: { tick: observe }
+      })
+    );
+    const store = getWorkerRuntime().queueStore;
+    store.enqueueMerge('', {
+      expected_revision: store.snapshot('').revision,
+      entries: [{ bead_id: 'UI-1' }, { bead_id: 'UI-2' }]
+    });
+    store.toggleAutomation('', {
+      expected_revision: store.snapshot('').revision,
+      on: true
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-automation-toggle', {
+      on: false,
+      expected_revision: store.snapshot('').revision
+    });
+    await Promise.resolve();
+
+    expect(replyFor(sock, 'm1').payload.queue).toMatchObject({
+      auto_advance: false,
+      auto_merge: false
+    });
+    expect(
+      store
+        .snapshot('')
+        .merge_queue.map((/** @type {any} */ entry) => entry.bead_id)
+    ).toEqual(['UI-1']);
+    expect(tick).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
+  });
+
+  test('automation conflict returns the current queue without starting effects', async () => {
+    const tick = vi.fn(async () => {});
+    const observe = vi.fn(async () => {});
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick, stop: vi.fn() },
+        prActions: { merge: vi.fn(), discard: vi.fn() },
+        mergeQueue: {
+          kick: vi.fn(async () => {}),
+          state: () => ({ active: null, failures: {} })
+        },
+        prPoller: { tick: observe }
+      })
+    );
+    const sock = fakeSocket();
+
+    await send(sock, 'm1', 'worker-automation-toggle', {
+      on: true,
+      expected_revision: 99
+    });
+    await Promise.resolve();
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      conflict: true,
+      queue: { revision: 0, auto_advance: false, auto_merge: false }
+    });
+    expect(tick).not.toHaveBeenCalled();
+    expect(observe).not.toHaveBeenCalled();
   });
 
   test('turning the toggle OFF also empties the waiting queue', async () => {

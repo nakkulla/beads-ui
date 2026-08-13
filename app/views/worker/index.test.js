@@ -525,7 +525,7 @@ describe('views/worker', () => {
     });
   });
 
-  test('toggling auto-advance sends worker-queue-toggle and flips the button to pause', async () => {
+  test('turning automation on sends the integrated toggle and updates its label', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi
       .fn()
@@ -539,12 +539,12 @@ describe('views/worker', () => {
     const play = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-play')
     );
-    expect(play.textContent).toContain('▶ 자동 진행');
+    expect(play.textContent).toContain('▶ 자동화');
 
     play.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
-    expect(transport).toHaveBeenCalledWith('worker-queue-toggle', {
+    expect(transport).toHaveBeenCalledWith('worker-automation-toggle', {
       on: true,
       expected_revision: 0
     });
@@ -552,10 +552,10 @@ describe('views/worker', () => {
       mount.querySelector('.worker-play')
     );
     expect(toggled.classList.contains('is-active')).toBe(true);
-    expect(toggled.textContent).toContain('⏸ 일시정지');
+    expect(toggled.textContent).toContain('⏸ 자동화 멈춤');
   });
 
-  test('clicking the active toggle sends worker-queue-toggle off', async () => {
+  test('turning automation off sends the integrated toggle', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ auto_advance: true, revision: 5 }));
@@ -574,7 +574,7 @@ describe('views/worker', () => {
     pause.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();
 
-    expect(transport).toHaveBeenCalledWith('worker-queue-toggle', {
+    expect(transport).toHaveBeenCalledWith('worker-automation-toggle', {
       on: false,
       expected_revision: 5
     });

@@ -12,11 +12,12 @@
  * On conflict the handler replies with the current snapshot so the client
  * re-syncs and retries.
  *
- * Execution: `worker-queue-toggle` persists the `auto_advance` flag (CAS) and,
- * on turn-ON, kicks the live dispatch loop via a fire-and-forget `tick` against
- * the registered worker attachment. Legacy destructive messages bridge into
- * the same durable `worker-discard` coordinator and are inert when no
- * attachment is registered for the workspace.
+ * Execution: `worker-queue-toggle` retains the legacy independent
+ * `auto_advance` mutation. `worker-automation-toggle` atomically aligns
+ * `auto_advance` and `auto_merge`, then starts both live automation pipelines
+ * on turn-ON. Legacy destructive messages bridge into the same durable
+ * `worker-discard` coordinator and are inert when no attachment is registered
+ * for the workspace.
  *
  * Auth: these handlers only run for already-authenticated sockets — the
  * connection layer's first-frame auth gate fronts `handleMessage`, and these
@@ -2062,6 +2063,64 @@ export function handleWorkerQueueToggle(ws, req) {
 }
 
 /**
+ * Observe the workspace once and enroll only while durable auto-merge remains
+ * enabled after the asynchronous observation completes.
+ *
+ * @param {string} workspace_key
+ */
+function observeAndEnrollAutoMerge(workspace_key) {
+  Promise.resolve(observeWorkerPrs(workspace_key))
+    .catch((err) => {
+      log('auto-merge observation failed for %s: %o', workspace_key, err);
+    })
+    .then(() => {
+      if (queueStore().snapshot(workspace_key).auto_merge !== true) {
+        return;
+      }
+      enrollWorkerMergeCandidates(workspace_key);
+    })
+    .catch((err) => {
+      log('auto-merge enrolment failed for %s: %o', workspace_key, err);
+    });
+}
+
+/**
+ * Handle `worker-automation-toggle`.
+ * Payload: `{ on: boolean, expected_revision }`.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerAutomationToggle(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.on !== 'boolean') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const state = p.on === false ? workerMergeQueueState(key) : null;
+  const result = queueStore().toggleAutomation(key, {
+    expected_revision: revisionOf(p),
+    on: p.on,
+    keep: state ? state.active : null
+  });
+  replyMutation(ws, req, key, result);
+  if (result.ok && p.on === true) {
+    Promise.resolve(tickWorkerQueue(key)).catch((err) => {
+      log('worker tick after automation toggle failed for %s: %o', key, err);
+    });
+    observeAndEnrollAutoMerge(key);
+  }
+}
+
+/**
  * Handle `worker-queue-set-slots`. Payload: `{ slots: number, expected_revision }`.
  * Persists the workspace concurrency cap (CAS, worker-phase2 §3) — the value the
  * scheduler's single scan fills up to. Bound + integer validation lives in the
@@ -2730,10 +2789,10 @@ export function handleWorkerMergeQueueAddAll(ws, req) {
 /**
  * Handle `worker-merge-auto-toggle`. Payload: `{ on: boolean, expected_revision }`.
  *
- * The PR 대기 lane's durable auto-merge switch (UI-yk55 §5). Symmetric with
- * `worker-queue-toggle` down to the CAS, and deliberately NOT the same switch:
- * starting a session is reversible, landing a merge is not, so one control must
- * never turn both on.
+ * The PR 대기 lane's durable independent auto-merge switch (UI-yk55 §5). The
+ * workspace automation control may align both axes at click time, but this
+ * message remains available afterwards so merge automation can be changed on
+ * its own.
  *
  * Turning it ON does three things in order — persist, observe once, enroll once
  * — because the enrolment judges against the observation cache, and after a
@@ -2812,23 +2871,7 @@ export function handleWorkerMergeAutoToggle(ws, req) {
   fanout(key, /** @type {any} */ (result.queue));
   // Fire-and-forget: the observation is a `gh` round-trip per open PR, and the
   // reply above already carries the persisted flag.
-  Promise.resolve(observeWorkerPrs(key))
-    .catch((err) => {
-      log('auto-merge toggle observation failed for %s: %o', key, err);
-    })
-    .then(() => {
-      // The observation is a `gh` round-trip, and the user can turn the mode
-      // back OFF while it is in flight. Enrolling on the strength of the flag
-      // this request SAW would merge after a stop click — so the flag is read
-      // again, now.
-      if (queueStore().snapshot(key).auto_merge !== true) {
-        return;
-      }
-      enrollWorkerMergeCandidates(key);
-    })
-    .catch((err) => {
-      log('auto-merge toggle enrolment failed for %s: %o', key, err);
-    });
+  observeAndEnrollAutoMerge(key);
 }
 
 /**

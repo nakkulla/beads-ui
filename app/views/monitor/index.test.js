@@ -350,7 +350,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     ]);
   });
 
-  test('sends the group auto-advance toggle with that repo revision', () => {
+  test('sends the group automation toggle with that repo revision', () => {
     const { mount, view, sent } = setup({
       workspaces: [],
       workspaces_state: [
@@ -363,7 +363,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
 
     expect(sent).toEqual([
       {
-        type: 'worker-queue-toggle',
+        type: 'worker-automation-toggle',
         payload: { on: true, root_dir: WS_B, expected_revision: 12 }
       }
     ]);

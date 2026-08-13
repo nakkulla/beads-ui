@@ -22,6 +22,8 @@ import { createPoller } from '../poller.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
+  enrollWorkerMergeCandidates,
+  observeWorkerPrs,
   refreshWorkerExternalPrs,
   tickWorkerQueue,
   workerMergeQueueState
@@ -758,18 +760,16 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
  * The master automation switch. It takes NO `root_dir`: the target is always
  * every VISIBLE workspace, which is also the master button's denominator.
  *
- * Both axes go through the USER mutation path — `toggleAutoAdvance` and
- * `toggleAutoMerge`, the same store methods the two single-workspace handlers
- * call — rather than the scheduler's unconditional `setAutoAdvance`, which
- * exists for "stop on failure" and would blur the two meanings if a user command
- * borrowed it. What this removes is the CLIENT's CAS precondition, not CAS: the
- * server reads each workspace's own current revision, because `expected_revision`
- * differs per repo and no client can know twenty of them.
+ * Both axes go through the same integrated USER mutation as the workspace
+ * automation button. What this removes is the CLIENT's CAS precondition, not
+ * CAS: the server reads each workspace's own current revision, because
+ * `expected_revision` differs per repo and no client can know twenty of them.
  *
- * The two side effects of the single-workspace handlers are reproduced exactly:
- * ON kicks that workspace's dispatch loop, OFF empties the waiting merge queue
- * in the SAME write that clears the flag (a restart between two writes would
- * leave "stopped" with a full queue for the boot-resume driver).
+ * The single-workspace effects are reproduced exactly: ON kicks that
+ * workspace's dispatch loop, observes PRs, and conditionally enrolls while
+ * auto-merge remains enabled. OFF empties the waiting merge queue in the SAME
+ * write that clears both flags (a restart between two writes would leave
+ * "stopped" with a full queue for the boot-resume driver).
  *
  * Partial failure PROCEEDS (§10): one unreadable repo must not veto the other
  * nineteen, so the reply names the ones that failed instead.
@@ -782,6 +782,8 @@ export function handleUnsubscribeMonitorPipeline(ws, req) {
  *   listHidden?: () => string[],
  *   listRoots?: () => string[],
  *   tick?: (workspace_key: string) => unknown,
+ *   observe?: (workspace_key: string) => unknown,
+ *   enroll?: (workspace_key: string) => unknown,
  *   mergeQueueState?: (workspace_key: string) => { active: string|null } | null,
  *   onApplied?: () => void
  * }} [options] - Test seams; each defaults to the live server source.
@@ -800,6 +802,8 @@ export function handleMonitorAutoToggle(ws, req, options = {}) {
   const storeOf = options.queueStore || (() => getWorkerRuntime().queueStore);
   const listRoots = options.listRoots || (() => visibleWorkspaceRoots(options));
   const kick = options.tick || tickWorkerQueue;
+  const observe = options.observe || observeWorkerPrs;
+  const enroll = options.enroll || enrollWorkerMergeCandidates;
   const mergeStateOf = options.mergeQueueState || workerMergeQueueState;
   const onApplied = options.onApplied || schedulePush;
 
@@ -818,40 +822,52 @@ export function handleMonitorAutoToggle(ws, req, options = {}) {
   for (const root_dir of roots) {
     try {
       const store = storeOf();
-      const advance = store.toggleAutoAdvance(root_dir, {
+      const state = on === false ? mergeStateOf(root_dir) : null;
+      const result = store.toggleAutomation(root_dir, {
         expected_revision: /** @type {any} */ (store.snapshot(root_dir))
           .revision,
-        on
-      });
-      if (!advance.ok) {
-        failed.push({ root_dir, reason: reasonOf(advance) });
-        continue;
-      }
-      // The revision the FIRST toggle produced, never the one read above: that
-      // write bumped it, so re-sending the original value would make this second
-      // call a guaranteed CAS conflict on every workspace.
-      const state = on === false ? mergeStateOf(root_dir) : null;
-      const merge = store.toggleAutoMerge(root_dir, {
-        expected_revision: /** @type {any} */ (advance.queue).revision,
         on,
-        clear_waiting: on === false,
         keep: state ? state.active : null
       });
-      if (!merge.ok) {
-        failed.push({ root_dir, reason: reasonOf(merge) });
+      if (!result.ok) {
+        failed.push({ root_dir, reason: reasonOf(result) });
         continue;
       }
       applied += 1;
       if (on === true) {
-        // Fire-and-forget, exactly as `worker-queue-toggle` does it: a dispatch
-        // that has to spawn a session must not hold this reply.
-        Promise.resolve(kick(root_dir)).catch((err) => {
-          log(
-            'monitor: tick after master toggle failed for %s: %o',
-            root_dir,
-            err
-          );
-        });
+        // Both pipelines are fire-and-forget: session dispatch and PR
+        // observation must not hold the cross-workspace reply.
+        Promise.resolve()
+          .then(() => kick(root_dir))
+          .catch((err) => {
+            log(
+              'monitor: tick after master toggle failed for %s: %o',
+              root_dir,
+              err
+            );
+          });
+        Promise.resolve()
+          .then(() => observe(root_dir))
+          .catch((err) => {
+            log(
+              'monitor: observation after master toggle failed for %s: %o',
+              root_dir,
+              err
+            );
+          })
+          .then(() => {
+            if (store.snapshot(root_dir).auto_merge !== true) {
+              return;
+            }
+            return enroll(root_dir);
+          })
+          .catch((err) => {
+            log(
+              'monitor: enrolment after master toggle failed for %s: %o',
+              root_dir,
+              err
+            );
+          });
       }
     } catch (err) {
       log('monitor: master toggle failed for %s: %o', root_dir, err);
