@@ -122,6 +122,11 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
 
 ## Pre‑Handoff Validation
 
+- Before the first validation in a new worktree, confirm `node --version`
+  satisfies `package.json#engines` and `npm ls --depth=0` succeeds from that
+  worktree. If dependencies are missing, install them in that worktree; do not
+  borrow or symlink another checkout's `node_modules`, because frontend source
+  maps must remain checkout-path independent.
 - Run type checks: `npm run tsc`
 - Run tests: `npm test`
 - Run eslint: `npm run lint`
