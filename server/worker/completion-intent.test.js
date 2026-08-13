@@ -198,78 +198,6 @@ function terminalizeResolutionTimeout(store) {
 }
 
 /**
- * @param {string} root_bead_id
- * @param {string} kind
- * @param {any} failure_key
- * @param {number|null} repair_round
- */
-function completionOperationId(root_bead_id, kind, failure_key, repair_round) {
-  const digest = createHash('sha256')
-    .update(
-      JSON.stringify({
-        root_bead_id,
-        kind,
-        repair_round,
-        stage: failure_key.stage,
-        reason: failure_key.reason,
-        subject_sha: failure_key.subject_sha,
-        base_sha: failure_key.base_sha,
-        result_digest: failure_key.result_digest
-      })
-    )
-    .digest('hex')
-    .slice(0, 24);
-  return `completion-${digest}`;
-}
-
-/**
- * @param {ReturnType<typeof seededCompletionStore>} store
- */
-function terminalizeHistoricalStaleRepair(store) {
-  const merged_sha = 'c'.repeat(40);
-  const failure_key = createCompletionFailureKey({
-    stage: 'post_merge_cleanup',
-    reason: 'verify_cmd_failed',
-    subject_sha: merged_sha,
-    base_sha: 'b'.repeat(40),
-    evidence: { output_tail: 'historical scheduler guard' }
-  });
-  store.setCompletionSubject(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    phase: 'repairing',
-    subject: { ...intent().subject, merged_sha }
-  });
-  store.prepareCompletionOp(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    phase: 'repairing',
-    op: {
-      op_id: completionOperationId('UI-root', 'create_repair', failure_key, 1),
-      kind: 'create_repair',
-      failure_key,
-      attempt_id: null,
-      repair_bead_id: null,
-      status: 'prepared'
-    }
-  });
-  store.recordCompletionRepairBead(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    op_id: completionOperationId('UI-root', 'create_repair', failure_key, 1),
-    repair_bead_id: 'UI-repair'
-  });
-  store.terminalizeCompletionIntent(DRIVER_WS, {
-    root_bead_id: 'UI-root',
-    terminal: {
-      reason: 'completion_subject_sha_stale',
-      stage: 'repair_dispatch',
-      failure_key,
-      evidence: 'historical scheduler guard',
-      log_path: null,
-      at: 1
-    }
-  });
-}
-
-/**
  * @param {ReturnType<typeof createQueueStore>} store
  */
 function linkRepairSubject(store) {
@@ -1713,13 +1641,13 @@ describe('worker/completion-intent action driver', () => {
       const driver = actionDriver(store, { prActions: { completionGate } });
       let queue = store.snapshot(DRIVER_WS);
 
-      const adopted = await driver.adoptHistoricalTerminal(
+      const adopted = await driver.adoptLegacyTimeout(
         'UI-root',
         queue.completion_intents['UI-root'],
         queue
       );
       queue = store.snapshot(DRIVER_WS);
-      const repeated = await driver.adoptHistoricalTerminal(
+      const repeated = await driver.adoptLegacyTimeout(
         'UI-root',
         queue.completion_intents['UI-root'],
         queue
@@ -2107,49 +2035,6 @@ describe('worker/completion-intent lifecycle', () => {
     );
     expect(observe).not.toHaveBeenCalled();
     expect(onAction).not.toHaveBeenCalled();
-  });
-
-  test('adopts a historical stale repair then dispatches its recorded create op once', async () => {
-    const store = seededCompletionStore();
-    terminalizeHistoricalStaleRepair(store);
-    const dispatchCompletionRepair = vi.fn(async (_workspace, input) => {
-      const result = store.beginRepairOp(DRIVER_WS, {
-        root_bead_id: input.root_bead_id,
-        op: input.op,
-        attempt: {
-          attempt_id: input.op.attempt_id,
-          bead_id: input.op.repair_bead_id,
-          status: 'running'
-        }
-      });
-      return { ok: result.ok };
-    });
-    const driver = actionDriver(store, {
-      scheduler: { dispatchCompletionRepair }
-    });
-    const coordinator = createCompletionIntentCoordinator({
-      workspace: DRIVER_WS,
-      store,
-      observe: driver.observe,
-      onAction: driver.onAction,
-      adoptLegacy: driver.adoptHistoricalTerminal
-    });
-
-    await coordinator.reconcile();
-    await coordinator.reconcile();
-    await coordinator.reconcile();
-
-    expect(dispatchCompletionRepair).toHaveBeenCalledTimes(1);
-    expect(
-      store.snapshot(DRIVER_WS).completion_intents['UI-root']
-    ).toMatchObject({
-      phase: 'repairing',
-      repair_sessions_used: 1,
-      active_op: {
-        kind: 'dispatch_repair',
-        repair_bead_id: 'UI-repair'
-      }
-    });
   });
 
   test('observes the first runnable completion instead of a yielded root', async () => {

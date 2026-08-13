@@ -1154,9 +1154,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       subscribeQueueChanged: onQueueChanged,
       observe: resolvedCompletionActionDriver.observe,
       onAction: resolvedCompletionActionDriver.onAction,
-      adoptLegacy:
-        resolvedCompletionActionDriver.adoptHistoricalTerminal ||
-        resolvedCompletionActionDriver.adoptLegacyTimeout,
+      adoptLegacy: resolvedCompletionActionDriver.adoptLegacyTimeout,
       onAttemptSettled: resolvedCompletionActionDriver.onAttemptSettled,
       log
     });
