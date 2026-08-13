@@ -832,6 +832,74 @@ describe('worker exec preset dialog', () => {
     );
   });
 
+  test('restores the release control after a failed release', async () => {
+    const transport = vi.fn().mockRejectedValue(new Error('down'));
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      },
+      transport,
+      { revision: 2, default_exec_preset_id: 'p1' }
+    );
+
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-workspace-preset-release="p1"]')
+      )
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      mount.querySelector('[data-workspace-preset-release="p1"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('[data-workspace-default-badge]')
+    ).not.toBeNull();
+  });
+
+  test('restores the missing-default card after a conflicted release', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: {
+        revision: 5,
+        exec_defaults: {},
+        default_exec_preset_id: 'gone',
+        runner_catalog: catalogFixture()
+      },
+      presets: {
+        revision: 4,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      }
+    });
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      },
+      transport,
+      { revision: 2, default_exec_preset_id: 'gone' }
+    );
+
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector(
+          '[data-workspace-preset-missing] [data-workspace-preset-release]'
+        )
+      )
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      mount.querySelector(
+        '[data-workspace-preset-missing] [data-workspace-preset-release]'
+      )
+    ).not.toBeNull();
+  });
+
   test('renders an unknown preset reference count as unverifiable', () => {
     const { mount } = setup({
       revision: 1,

@@ -192,6 +192,9 @@ export function createExecDefaultsDialog(mount_element, options) {
     if (!state) {
       return;
     }
+    // Optimistic only while the CAS request is in flight: every terminal
+    // path below must fall back to the authoritative queue snapshot, or a
+    // failed release would keep hiding the badge/release controls for good.
     workspace_selection = preset_id || '';
     const selection = workspacePresetSelection(preset_id);
     doRender();
@@ -203,6 +206,8 @@ export function createExecDefaultsDialog(mount_element, options) {
         'error',
         4000
       );
+      workspace_selection = null;
+      doRender();
       return;
     }
     try {
@@ -221,17 +226,14 @@ export function createExecDefaultsDialog(mount_element, options) {
           'error',
           4000
         );
-        return;
+      } else if (!(res && res.applied)) {
+        showToast('워크스페이스 기본 프리셋 저장 실패', 'error', 4000);
       }
-      if (res && res.applied) {
-        workspace_selection = null;
-        doRender();
-        return;
-      }
-      showToast('워크스페이스 기본 프리셋 저장 실패', 'error', 4000);
     } catch {
       showToast('워크스페이스 기본 프리셋 저장 실패', 'error', 4000);
     }
+    workspace_selection = null;
+    doRender();
   }
 
   /** @param {any} preset */
