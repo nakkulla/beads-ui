@@ -2,6 +2,8 @@ import { html, render } from 'lit-html';
 import { showToast } from '../../utils/toast.js';
 import {
   DEFAULT_LABELS,
+  EXEC_ADVANCED_GROUPS,
+  EXEC_CORE_KEYS,
   EXEC_KEYS,
   EXEC_SETTING_PRESENTATION,
   execSettingLabelTemplate,
@@ -495,6 +497,17 @@ export function createExecDefaultsDialog(mount_element, options) {
       runner_catalog: currentCatalog(),
       controller_runtime: presetDraftControllerRuntime()
     });
+    const advanced_count = EXEC_ADVANCED_GROUPS.flatMap(
+      (group) => group.keys
+    ).filter((key) => typeof preset_draft?.settings[key] === 'string').length;
+    /**
+     * @param {string} key
+     * @returns {import('lit-html').TemplateResult|string}
+     */
+    const rowTemplate = (key) => {
+      const row = rows.find((entry) => entry.key === key);
+      return row ? presetSelectRow(row) : '';
+    };
     const state = currentPresetState();
     const deleted =
       preset_draft.id !== null &&
@@ -527,7 +540,22 @@ export function createExecDefaultsDialog(mount_element, options) {
             편집하던 프리셋이 다른 곳에서 삭제됐습니다.
           </p>`
         : ''}
-      ${rows.map(presetSelectRow)}
+      <section class="exec-preset-editor__core" data-preset-core>
+        ${EXEC_CORE_KEYS.map(rowTemplate)}
+      </section>
+      <details class="exec-preset-editor__advanced" data-preset-advanced>
+        <summary>고급 설정 — ${advanced_count}개 변경됨</summary>
+        ${EXEC_ADVANCED_GROUPS.map(
+          (group) =>
+            html`<section
+              class="exec-preset-editor__group"
+              data-preset-group=${group.id}
+            >
+              <h4>${group.label}</h4>
+              ${group.keys.map(rowTemplate)}
+            </section>`
+        )}
+      </details>
       <div class="exec-preset-editor__actions">
         ${deleted
           ? html`<button
@@ -564,6 +592,8 @@ export function createExecDefaultsDialog(mount_element, options) {
     const presets = state
       ? state.presets.filter((preset) => preset?.migration_pending !== true)
       : [];
+    const selected_id = selectedWorkspacePresetId() || '';
+    const selected_workspace = workspacePresetSelection(selected_id);
     return html`<section class="exec-presets" data-exec-presets>
       <div class="exec-presets__heading">
         <h3>공용 실행 프리셋</h3>
@@ -582,6 +612,13 @@ export function createExecDefaultsDialog(mount_element, options) {
             </p>`
           : presets.map((preset) => {
               const summary = presetSummary(preset);
+              const assignment = workspacePresetSelection(preset.id);
+              const is_default = preset.id === selected_id;
+              const assignment_reason = assignment.missing
+                ? '프리셋을 찾을 수 없어 기본으로 지정할 수 없습니다'
+                : assignment.incompatible
+                  ? '비호환 프리셋은 기본으로 지정할 수 없습니다'
+                  : '';
               const has_reference_count =
                 typeof preset.reference_count === 'number';
               const reference_count = has_reference_count
@@ -602,13 +639,20 @@ export function createExecDefaultsDialog(mount_element, options) {
               >
                 <div class="exec-preset-card__main">
                   <strong>${preset.name}</strong>
+                  ${is_default
+                    ? html`<span
+                        class="exec-defaults__vd-badge"
+                        data-workspace-default-badge
+                        >워크스페이스 기본</span
+                      >`
+                    : ''}
                   <span>${summary.count}</span>
                   <span data-preset-references=${preset.id}
                     >${has_reference_count
                       ? `참조 ${reference_count}개`
                       : '참조 확인 불가'}</span
                   >
-                  ${presetIsIncompatible(preset)
+                  ${assignment.incompatible
                     ? html`<span data-preset-incompatible>비호환</span>`
                     : ''}
                   <small>${summary.choices}</small>
@@ -619,6 +663,23 @@ export function createExecDefaultsDialog(mount_element, options) {
                     : ''}
                 </div>
                 <div class="exec-preset-card__actions">
+                  ${is_default
+                    ? html`<button
+                        type="button"
+                        data-workspace-preset-release=${preset.id}
+                        @click=${() => void saveWorkspacePreset('')}
+                      >
+                        기본 해제
+                      </button>`
+                    : html`<button
+                        type="button"
+                        data-workspace-preset-assign=${preset.id}
+                        ?disabled=${!assignment.viable}
+                        title=${assignment_reason}
+                        @click=${() => void saveWorkspacePreset(preset.id)}
+                      >
+                        기본으로
+                      </button>`}
                   <button
                     type="button"
                     data-preset-edit=${preset.id}
@@ -646,70 +707,30 @@ export function createExecDefaultsDialog(mount_element, options) {
                 </div>
               </article>`;
             })}
-      ${presetEditor()}
-    </section>`;
-  }
-
-  function workspacePresetSection() {
-    const state = currentPresetState();
-    const presets = state
-      ? state.presets.filter((preset) => preset?.migration_pending !== true)
-      : [];
-    const selected_id = selectedWorkspacePresetId() || '';
-    const selection = workspacePresetSelection(selected_id);
-    const selected = selection.preset;
-    const summary = selected ? presetSummary(selected) : null;
-    return html`<section class="exec-defaults__workspace" data-workspace-preset>
-      <h3>현재 워크스페이스 기본 프리셋</h3>
-      <p class="exec-defaults__hint">
-        이 워크스페이스는 프리셋 하나를 참조합니다. 없음은 harness 기본값을
-        사용합니다.
-      </p>
-      <select
-        class="exec-defaults__sel"
-        data-workspace-preset-select
-        aria-label="워크스페이스 기본 프리셋"
-        .value=${selected_id}
-        ?disabled=${state === null}
-        @change=${(/** @type {Event} */ ev) =>
-          void saveWorkspacePreset(
-            /** @type {HTMLSelectElement} */ (ev.target).value
-          )}
-      >
-        <option value="" ?selected=${selected_id === ''}>
-          없음 — harness 기본값
-        </option>
-        ${selected_id && selection.missing
-          ? html`<option value=${selected_id} ?selected=${true}>
-              ${selected_id} (선택한 프리셋 없음)
-            </option>`
-          : ''}
-        ${presets.map(
-          (preset) =>
-            html`<option
-              value=${preset.id}
-              ?selected=${preset.id === selected_id}
-              ?disabled=${preset.compatible === false}
-            >
-              ${preset.name}${preset.compatible === false ? ' (비호환)' : ''}
-            </option>`
-        )}
-      </select>
-      ${selected
-        ? html`<p data-workspace-preset-summary>
-            ${summary?.count} · ${summary?.choices}
-            ${selection.incompatible ? ' · 비호환' : ''}
-          </p>`
+      ${state !== null && selected_id && selected_workspace.missing
+        ? html`<article class="exec-preset-card" data-workspace-preset-missing>
+            <div class="exec-preset-card__main">
+              <strong>워크스페이스 기본 프리셋을 찾을 수 없습니다</strong>
+              <span class="exec-defaults__vd-badge" data-workspace-default-badge
+                >워크스페이스 기본</span
+              >
+              <small>
+                참조 ${selected_id} · 실행이 차단됩니다. 기본을 해제하거나 다른
+                프리셋을 지정하세요.
+              </small>
+            </div>
+            <div class="exec-preset-card__actions">
+              <button
+                type="button"
+                data-workspace-preset-release=${selected_id}
+                @click=${() => void saveWorkspacePreset('')}
+              >
+                기본 해제
+              </button>
+            </div>
+          </article>`
         : ''}
-      ${selection.missing
-        ? html`<p data-workspace-preset-missing>
-            선택한 프리셋을 찾을 수 없습니다. 실행이 차단됩니다.
-          </p>`
-        : selection.incompatible
-          ? html`<p data-workspace-preset-incompatible>
-              선택한 프리셋이 비호환입니다. 실행이 차단됩니다.
-            </p>`
-          : ''}
+      ${presetEditor()}
     </section>`;
   }
 
@@ -940,22 +961,13 @@ export function createExecDefaultsDialog(mount_element, options) {
             </button>
           </header>
           <div class="exec-defaults__body">
-            ${presetSection()} ${workspacePresetSection()}
-            ${verifyDeploySection(currentWorkspaceInfo())}
+            ${presetSection()} ${verifyDeploySection(currentWorkspaceInfo())}
             ${systemPromptSection()}
           </div>
         </div>
       `,
       dialog
     );
-    if (workspace_selection !== null) {
-      const select = /** @type {HTMLSelectElement|null} */ (
-        dialog.querySelector('[data-workspace-preset-select]')
-      );
-      if (select) {
-        select.value = workspace_selection;
-      }
-    }
   }
 
   // Tracked separately from `dialog.open` so a pushed snapshot still re-renders

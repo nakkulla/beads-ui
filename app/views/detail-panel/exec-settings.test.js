@@ -109,16 +109,24 @@ function optionGroups(sel) {
  * @param {Record<string, any>} [exec_defaults]
  * @param {any} [catalog]
  * @param {{ onChange: (key: string, value: string) => void }} [handlers]
+ * @param {string} [default_source]
  * @returns {HTMLElement}
  */
-function mountTemplate(metadata, exec_defaults, catalog, handlers) {
+function mountTemplate(
+  metadata,
+  exec_defaults,
+  catalog,
+  handlers,
+  default_source = ''
+) {
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   render(
     execSettingsTemplate(
       { metadata: metadata || {} },
       handlers || { onChange: vi.fn() },
       exec_defaults || {},
-      catalog === undefined ? catalogFixture() : catalog
+      catalog === undefined ? catalogFixture() : catalog,
+      default_source
     ),
     mount
   );
@@ -128,6 +136,97 @@ function mountTemplate(metadata, exec_defaults, catalog, handlers) {
 describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  test('labels summary sources as issue pin, preset, and default', () => {
+    const mount = mountTemplate(
+      { orchestration_model: 'sonnet' },
+      { impl_runtime: 'codex' },
+      undefined,
+      undefined,
+      '개발'
+    );
+
+    expect(
+      mount.querySelector('[data-exec-summary="worker"] [data-exec-source]')
+        ?.textContent
+    ).toBe('이슈 핀');
+    expect(
+      mount.querySelector(
+        '[data-exec-summary="implementation"] [data-exec-source]'
+      )?.textContent
+    ).toBe('프리셋 「개발」');
+    expect(
+      mount.querySelector('[data-exec-summary="review"] [data-exec-source]')
+        ?.textContent
+    ).toBe('기본');
+    expect(
+      mount.querySelector('[data-exec-summary="worker"]')?.textContent
+    ).toContain('sonnet');
+    expect(
+      mount.querySelector('[data-exec-summary="implementation"]')?.textContent
+    ).toContain('codex · auto');
+    expect(
+      mount.querySelector('[data-exec-summary="review"]')?.textContent
+    ).toContain('스펙 codex · 계획 codex · 구현 codex');
+  });
+
+  test('groups three core keys above ten advanced keys', () => {
+    const mount = mountTemplate();
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('[data-exec-settings-core] select[data-key]')
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual(['workflow_mode', 'impl_runtime', 'orchestration_model']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-exec-settings-group="worker-detail"] select[data-key]'
+        )
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual(['orchestration_effort', 'orchestration_speed']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-exec-settings-group="implementation-detail"] select[data-key]'
+        )
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual(['impl_model', 'impl_effort']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-exec-settings-group="review"] select[data-key]'
+        )
+      ).map((select) => select.getAttribute('data-key'))
+    ).toEqual([
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort'
+    ]);
+    expect(
+      mount.querySelectorAll('[data-exec-settings-advanced] select[data-key]')
+    ).toHaveLength(10);
+  });
+
+  test('counts non-default advanced values in the fold summary', () => {
+    const mount = mountTemplate(
+      {
+        workflow_mode: 'fast_track',
+        orchestration_model: 'sol',
+        orchestration_effort: 'high',
+        impl_model: 'terra'
+      },
+      { impl_effort: 'medium' }
+    );
+
+    expect(
+      mount.querySelector('[data-exec-settings-advanced] > summary')
+        ?.textContent
+    ).toContain('고급 설정 — 2개 변경됨');
   });
 
   test('renders the 12 exec keys plus workflow_mode and drops review_model', () => {
@@ -165,19 +264,19 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     }));
 
     expect(labels).toEqual([
+      { label: '워크플로 모드', key: 'workflow_mode' },
+      { label: '구현 runtime', key: 'impl_runtime' },
       { label: '워커 실행 모델', key: 'orchestration_model' },
       { label: '워커 reasoning effort', key: 'orchestration_effort' },
       { label: '워커 실행 속도', key: 'orchestration_speed' },
+      { label: '구현 모델', key: 'impl_model' },
+      { label: '구현 reasoning effort', key: 'impl_effort' },
       { label: '스펙 리뷰어', key: 'spec_review_model' },
       { label: '스펙 리뷰 reasoning effort', key: 'spec_review_effort' },
       { label: '계획 리뷰어', key: 'plan_review_model' },
       { label: '계획 리뷰 reasoning effort', key: 'plan_review_effort' },
       { label: '구현 리뷰어', key: 'impl_review_model' },
-      { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' },
-      { label: '구현 runtime', key: 'impl_runtime' },
-      { label: '구현 모델', key: 'impl_model' },
-      { label: '구현 reasoning effort', key: 'impl_effort' },
-      { label: '워크플로 모드', key: 'workflow_mode' }
+      { label: '구현 리뷰 reasoning effort', key: 'impl_review_effort' }
     ]);
   });
 
@@ -226,7 +325,7 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     }
   });
 
-  test('each step key emits its own mutation', () => {
+  test('each editable key emits its own mutation', () => {
     const onChange = vi.fn();
     const mount = mountTemplate(
       { impl_runtime: 'codex', orchestration_model: 'sol' },
@@ -236,15 +335,19 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     );
 
     for (const [key, value] of [
+      ['workflow_mode', 'fast_track'],
+      ['impl_runtime', 'codex'],
+      ['orchestration_model', 'luna'],
+      ['orchestration_effort', 'high'],
+      ['orchestration_speed', 'fast'],
+      ['impl_model', 'sol'],
+      ['impl_effort', 'medium'],
       ['spec_review_model', 'codex'],
       ['spec_review_effort', 'high'],
-      ['orchestration_speed', 'fast'],
-      ['impl_review_model', 'self'],
-      ['impl_review_effort', 'low'],
       ['plan_review_model', 'skip'],
       ['plan_review_effort', 'xhigh'],
-      ['impl_model', 'sol'],
-      ['impl_effort', 'medium']
+      ['impl_review_model', 'self'],
+      ['impl_review_effort', 'low']
     ]) {
       const sel = selectFor(mount, key);
       sel.value = value;
