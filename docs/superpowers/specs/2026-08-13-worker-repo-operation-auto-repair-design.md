@@ -689,20 +689,21 @@ provider를 먼저 삭제하거나 dual reader를 무기한 남기지 않는다.
 
 ## 16. 관련 Bead 통합
 
-새 두 specs의 formal gate 뒤 다음처럼 정리한다.
+두 specs가 승계하는 Bead disposition은 다음과 같다.
 
 - `UI-vobi`: Worker/runtime/auto repair/rollout host로 유지
 - `dotfiles-b2yx`: canonical contract/dotfiles owner로 유지
-- `UI-x7fi`: no-CI candidate-tree merge flow에 흡수되어 superseded close
-- `UI-q1hs`: unified operation/closure migration에 흡수되어 superseded close
-- `UI-oj2f`: one-time exact provider adoption migration에 흡수되어 superseded close
-- `UI-qero`: resolved 상태와 historical receipt/PR/revert를 보존하고 notes에 새 owner를
-  기록; reverted implementation은 landed behavior로 세지 않음
-- `UI-9f54`: bounded fetch/process cleanup에 흡수되어 superseded close
-- `UI-yjc2`: generic verify 제거와 operation-isolated TMP/runtime 계약에 흡수되어
-  superseded close
-- `dotfiles-ji9f`: authoritative remote materialization과 provider retirement에 흡수되어
-  superseded close
+- superseded 중복 Bead `UI-x7fi`(no-CI candidate-tree merge flow),
+  `UI-q1hs`(unified operation/closure migration), `UI-oj2f`(one-time exact
+  provider adoption migration), `UI-qero`(reverted SHA reentry; reverted
+  implementation은 landed behavior로 세지 않음), `UI-9f54`(bounded
+  fetch/process cleanup), `UI-yjc2`(generic verify 제거와 operation-isolated
+  TMP/runtime 계약)는 2026-08-13 사용자 명시 승인으로 이미 `bd delete --force`
+  삭제됐다. 괄호의 흡수 범위는 이 설계가 승계하고, git의 historical
+  specs/plans/PRs/commits는 immutable evidence로 보존하며, 삭제된 Bead를
+  rollout unit으로 재생성하지 않는다.
+- `dotfiles-ji9f`: authoritative remote materialization과 provider retirement에
+  흡수; 두 spec의 formal gate 뒤 superseded close한다.
 
 closed historical UI-lb58/UI-f17c/UI-ckgr와 dotfiles-uib7/j8e6/lsyn/hdid/1jbu/we2r의
 specs/plans/receipts는 immutable evidence로 유지한다.
@@ -723,7 +724,8 @@ specs/plans/receipts는 immutable evidence로 유지한다.
    - `.worktrees/.repo-ops-deploy`가 registered worktree/common-dir/journal/detached
      ownership proof를 모두 요구한다.
    - deploy branch를 만들지 않고 owned worktree만 exact target으로 정렬한다.
-   - ownership mismatch와 non-ancestor remote rewind는 자동 삭제·deploy하지 않는다.
+   - ownership mismatch와 이미 성공한 deploy SHA의 descendant가 아닌 remote
+     tip(rewind)은 자동 삭제·deploy하지 않는다.
    - verify candidate와 deploy worktree의 repo/origin/base/SHA/script path mismatch를
      거부한다.
 3. **verify flow**
