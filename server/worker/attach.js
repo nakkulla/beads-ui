@@ -57,6 +57,7 @@ import { createPrPoller, hasDeploymentObservationDemand } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
+import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { peekVerifyResolution, resolveVerifyAt } from './repo-ops.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
@@ -493,6 +494,13 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
   const worktree =
     options.worktree || createWorktreeManager({ locks: runtime.locks });
+  const repoOperationCoordinator = createRepoOperationCoordinator({
+    workspace: workspace_root,
+    repo,
+    store: runtime.queueStore,
+    locks: runtime.locks,
+    gitRun
+  });
   // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
   // bd writer is the same metadata adapter the scheduler uses (extended with
   // the status pair), so both write through one confirmed argv encoding.
@@ -768,6 +776,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       Promise.resolve(scheduler.reconcile(ws_key)).catch((err) => {
         log('reconcile pass failed for %s: %o', ws_key, err);
       });
+      Promise.resolve(repoOperationCoordinator.reconcile(ws_key)).catch(
+        (err) => {
+          log('repo-operation reconcile pass failed for %s: %o', ws_key, err);
+        }
+      );
     }
   });
 
@@ -1219,6 +1232,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     admission,
     deploymentJob,
     deploymentRecovery,
+    repoOperationCoordinator,
     repo,
     resolveBase,
     workspace: workspace_root
@@ -1342,6 +1356,11 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('startup reconcile failed for %s: %o', key, err);
     return;
+  }
+  try {
+    await att.repoOperationCoordinator.reconcile(key);
+  } catch (err) {
+    log('repo-operation startup reconcile failed for %s: %o', key, err);
   }
   try {
     await att.prActions.resumeDeploymentObservation();

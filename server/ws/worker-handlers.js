@@ -913,6 +913,10 @@ export function decorateQueue(workspace_key, raw_queue) {
   delete public_queue.deployment;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
+  // RepoOperation internals stay off the protocol until the UI-vobi
+  // projection is approved (UI-1lmv compat boundary).
+  delete public_queue.auto_repair;
+  delete public_queue.repo_operations;
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );
