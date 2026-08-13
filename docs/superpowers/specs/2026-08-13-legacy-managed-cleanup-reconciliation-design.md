@@ -80,6 +80,13 @@ residue를 현재 provider authority로 수렴하는 compatibility gap이다.
 
 이로써 demand와 effect gate의 vocabulary가 갈라지지 않는다.
 
+poller 안에서는 repo-level status-only demand와 legacy GitHub-observation demand를
+구분한다. 두 demand 모두 subscriber 없이 poller를 깨우지만, `onDeployment`가 provider
+status를 읽은 뒤의 조기 return은 status-only demand에만 적용한다. 지원 대상 legacy
+residue가 있으면 subscriber가 0이어도 durable `pr_wait`를 계속 순회해 `prDetail`에서
+authoritative merge SHA를 얻고 `onMerged`까지 전달한다. near-miss는 legacy demand를
+만들지 않는다.
+
 ### Evidence-gated adoption
 
 poller가 GitHub에서 PR을 `MERGED`로 관측하고 merge SHA를 얻으면 기존
@@ -121,6 +128,10 @@ child sweep -> branch cleanup -> parent close -> Done
 poller는 supported legacy residue가 남아 있는 동안만 demand를 유지하므로 provider가
 나중에 성공하면 다음 bounded poll에서 다시 증거를 확인할 수 있다.
 
+`onDeployment`가 연결된 실제 runtime에서도 legacy demand가 status-only 조기 return에
+막히지 않아야 한다. 이 경계는 helper 단위 판정만이 아니라 subscriber 0의 poller pass로
+검증한다.
+
 ## 영향 범위
 
 - `server/worker/completion-repair-policy.js`
@@ -137,13 +148,25 @@ RED-GREEN seam은 다음으로 고정한다.
 
 - pure policy test: exact managed signature와 기존 cutover signature는 true, field별
   near-miss와 다른 deploy failure는 false
-- `server/worker/pr-poller.test.js`: exact managed residue가 subscriber 없이 observation
-  demand를 만들고 near-miss는 만들지 않음
+- `server/worker/pr-poller.test.js`: `onDeployment`가 연결되고 subscriber가 0인 실제
+  runtime 조건에서 exact managed residue와 기존 cutover residue가 status observation
+  뒤에도 `prDetail`과 `onMerged`까지 도달함. near-miss는 `onDeployment`, `prDetail`,
+  `onMerged` 어느 것도 호출하지 않음
 - `server/worker/pr-actions.test.js`: provider `succeeded`의 `deployed_sha`가 merge SHA를
-  포함할 때 request 없이 binding, cleanup, close, Done을 완료함
-- `server/worker/pr-actions.test.js`: pending/failed 또는 deployed non-ancestor에서는
-  cleanup failure와 `resolved` 상태를 보존함
-- 기존 `deploy_not_detached_for_self` adoption test를 strengthened success 조건 아래 유지
+  포함할 때 `deploymentStatus`를 호출하지만 request는 보내지 않고 binding, cleanup,
+  close, Done을 완료함
+- `server/worker/pr-actions.test.js`: exact managed residue의 pending/failed status에서
+  `deploymentStatus`까지 호출했지만 binding, closure, Done은 발생하지 않고 cleanup
+  failure와 `resolved` 상태를 보존함
+- `server/worker/pr-actions.test.js`: exact managed residue의 deployed non-ancestor에서
+  ancestry check까지 도달했지만 binding과 closure는 발생하지 않음
+- 기존 `deploy_not_detached_for_self` succeeded adoption test는 회귀 test로 유지함
+- 기존 cutover residue의 pending/failed status가 변경 전처럼 조기 close되지 않는
+  RED seam을 추가함
+
+pure predicate와 exact managed positive, subscriber 0 poller, 기존 cutover pending/failed
+seam은 변경 전 실패해야 한다. 기존 cutover succeeded positive는 새 동작의 RED 증거가
+아니라 호환성 회귀 증거로만 취급한다.
 
 Focused verification:
 
