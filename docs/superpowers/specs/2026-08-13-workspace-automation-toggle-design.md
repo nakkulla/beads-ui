@@ -169,6 +169,11 @@ ON 성공 레포에는 단일 워크스페이스 handler와 같은 scheduler·�
    - 레포마다 통합 mutation을 한 번 호출한다.
    - 한 레포 실패가 다른 레포 적용을 막지 않는다.
    - 레포 내부의 두 축 partial application expectation을 제거한다.
+   - ON 성공 레포마다 scheduler tick과 PR 관측을 시작하고, 관측 완료 시
+     `auto_merge`가 여전히 ON인 경우에만 eligible PR을 등록한다.
+   - 관측 중 독립 머지 OFF가 일어나면 등록하지 않는다.
+   - OFF 레포와 mutation 실패 레포에는 tick·PR 관측·등록 후속 효과를 시작하지
+     않는다.
 4. **Worker UI**
    - 자동화 버튼이 `worker-automation-toggle`을 정확한 revision과 함께 보낸다.
    - ON/OFF 문구가 새 의미를 표시한다.
@@ -181,7 +186,42 @@ ON 성공 레포에는 단일 워크스페이스 handler와 같은 scheduler·�
    - 새 message type이 protocol allowlist에 포함된다.
    - canonical frontend build가 bundle과 source map을 source와 정합시킨다.
 
-## 9. 수용 기준
+## 9. Post-merge apply 절차
+
+`docs/agents/repo-ops.toml`의 `[deploy]`가 선언한
+`cmd = ["scripts/deploy-self.js"]`를 exact candidate release에서 실행하는 것이
+자동 배포의 canonical 경로다. 다음 순서는 `scripts/deploy-self.js`의 fail-closed
+단계와 controller의 최종 readback을 합친 완료 계약이다.
+
+1. provider가 `BDUI_DEPLOY_TARGET_SHA`의 40-hex candidate SHA와 release checkout의
+   `git rev-parse HEAD`가 같은지 확인하고, tracked worktree가 clean인지 확인한다.
+   SHA 불일치·HEAD 조회 실패·dirty checkout이면 설치 전에 중단한다.
+2. 같은 release checkout에서 `npm ci`를 실행하고 성공한 뒤 `npm run build`를
+   실행한다. 어느 단계든 실패하면 runtime pointer를 바꾸지 않고 중단한다.
+3. runtime pointer parent에 임시 symlink `.current.new`를 만들고 exact candidate
+   release를 가리키는지 확인한 뒤 rename으로 `current` pointer를 원자적으로
+   publish한다. publish 실패 시 임시 symlink를 제거하고 중단한다.
+4. publish된 exact candidate checkout을 cwd로 `bdui-shared restart`를 실행한다.
+   restart 실패는 배포 실패이며 성공으로 보고하지 않는다.
+5. provider가 bounded poll로 shared port의 `/healthz` HTTP JSON을 읽고
+   `runtime.source_sha === candidate SHA`와 `realpath(runtime.source_repo) ===
+   realpath(candidate release)`를 확인한다. timeout·HTTP 오류·identity 불일치는
+   `runtime_health_mismatch`로 실패한다.
+6. controller가 배포 receipt의 candidate SHA와 실제 process executable/source
+   path, listening port, `/healthz` HTTP 응답·source path·source SHA를 read-only로
+   대조한다. 이 readback 전에는 완료를 선언하지 않는다.
+
+1~3단계 중 중단되면 이전 `current` pointer와 서비스가 그대로 남거나, rename 뒤
+중단되면 pointer만 새 candidate를 가리킬 수 있다. 어느 경우든 provider는 **같은
+candidate SHA와 release checkout**으로 전체 절차를 처음부터 재실행한다.
+`deploy-self.js`가 시작 시 stale `.current.new`를 제거하고 pointer를 다시 원자
+publish한 뒤 restart·health identity를 재검증하므로, 별도 수동 state 편집 없이
+동일 SHA replay로 복구한다. 다른 SHA로의 임의 재시도는 이 복구 절차가 아니다.
+
+이 `[deploy]` coverage가 현재 PR의 post-merge 작업을 운반하므로 별도 no-PR
+residue가 없으며 `UI-7l3j`에는 `worker-ineligible`을 붙이지 않는다.
+
+## 10. 수용 기준
 
 1. Worker에서 `▶ 자동화`를 누르면 같은 queue snapshot에서
    `auto_advance=true`, `auto_merge=true`가 관측된다.
@@ -196,7 +236,7 @@ ON 성공 레포에는 단일 워크스페이스 handler와 같은 scheduler·�
 7. 머지 후 공유 서비스가 merged checkout에서 재시작되고 process path·port·HTTP
    응답 검증을 통과한다.
 
-## 10. 기존 설계와의 관계
+## 11. 기존 설계와의 관계
 
 이 스펙은 `2026-08-05-worker-tab-cleanup-design.md`의 “자동 진행과 자동 머지를
 별도 토글로 둔다”는 UI 구조 자체는 유지한다. 다만 자동화 버튼 클릭 순간에도
