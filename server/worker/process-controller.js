@@ -44,7 +44,9 @@ function inspectProcess(pid) {
     const output = execFileSync(
       'ps',
       ['-o', 'pgid=', '-o', 'lstart=', '-p', String(pid)],
-      { encoding: 'utf8' }
+      // LC_ALL=C pins lstart to the POSIX date format; a localized month or
+      // weekday name is not Date.parse-able and read as ps_parse_failed.
+      { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }
     ).trim();
     const match = /^(\d+)\s+(.+)$/.exec(output);
     if (!match) {

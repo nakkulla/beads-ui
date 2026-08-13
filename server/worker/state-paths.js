@@ -308,6 +308,23 @@ export function repoOperationMarkerPath(
 }
 
 /**
+ * Launch handshake the runner child writes BEFORE executing the script, so a
+ * crash between spawn and the queue record never orphans a live process.
+ *
+ * @param {string} workspace_root
+ * @param {string} operation_id
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function repoOperationLaunchMarkerPath(
+  workspace_root,
+  operation_id,
+  attempt_id
+) {
+  return `${repoOperationMarkerPath(workspace_root, operation_id, attempt_id)}.launch`;
+}
+
+/**
  * @param {string} workspace_root
  * @returns {string}
  */

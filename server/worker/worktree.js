@@ -661,7 +661,11 @@ export function createWorktreeManager(deps) {
  * does not share the session-worktree namespace: the fixed path is protected
  * by a durable ownership journal as well as Git's own registration record.
  *
- * @param {{ locks: { repoOperationLock: (repo: string) => Promise<() => void>, topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), journalPath?: (workspace: string) => string }} deps
+ * Repo-operation serialization is CALLER-owned: the coordinator holds the
+ * repo-operation lock across bind, align, spawn, and durable record. This
+ * manager takes only the topology lock, and only around `worktree add`.
+ *
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), journalPath?: (workspace: string) => string }} deps
  */
 export function createRepoOpsDeployWorktreeManager(deps) {
   const fs = deps.fs || nodeFs;
@@ -710,53 +714,62 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
-   * @param {{ repo: string, base: string, workspace?: string, last_successful_sha?: string|null }} input
+   * Bound fetch of `origin/<base>` and immutable target pin. Retries exactly
+   * once, and only after a fully-reclaimed pre-execution timeout (exit 124).
+   *
+   * @param {{ repo: string, base: string, last_successful_sha?: string|null }} input
+   * @returns {Promise<{ ok: boolean, code?: string, target_sha?: string }>}
    */
-  async function ensure(input) {
+  async function bindTarget(input) {
     const repo = fs.realpathSync(path.resolve(input.repo));
-    const deploy_path = pathFor(repo);
-    const workspace = input.workspace || repo;
-    const release_operation = await deps.locks.repoOperationLock(repo);
-    try {
-      let fetch_result = await run(['fetch', 'origin', input.base], {
+    let fetch_result = await run(['fetch', 'origin', input.base], {
+      cwd: repo,
+      timeout_ms: 30_000
+    });
+    if (fetch_result.code === 124) {
+      fetch_result = await run(['fetch', 'origin', input.base], {
         cwd: repo,
         timeout_ms: 30_000
       });
-      if (fetch_result.code === 124) {
-        fetch_result = await run(['fetch', 'origin', input.base], {
-          cwd: repo,
-          timeout_ms: 30_000
-        });
-      }
-      if (fetch_result.code !== 0) {
-        return { ok: false, code: 'repo_ops_fetch_failed' };
-      }
-      const target_result = await run(
-        ['rev-parse', `refs/remotes/origin/${input.base}^{commit}`],
+    }
+    if (fetch_result.code !== 0) {
+      return { ok: false, code: 'repo_ops_fetch_failed' };
+    }
+    const target_result = await run(
+      ['rev-parse', `refs/remotes/origin/${input.base}^{commit}`],
+      { cwd: repo }
+    );
+    const target_sha =
+      target_result.code === 0 ? target_result.stdout.trim().toLowerCase() : '';
+    if (!/^[0-9a-f]{40}$/.test(target_sha)) {
+      return { ok: false, code: 'repo_ops_target_unresolved' };
+    }
+    if (input.last_successful_sha) {
+      const containment = await run(
+        ['merge-base', '--is-ancestor', input.last_successful_sha, target_sha],
         { cwd: repo }
       );
-      const target_sha =
-        target_result.code === 0
-          ? target_result.stdout.trim().toLowerCase()
-          : '';
-      if (!/^[0-9a-f]{40}$/.test(target_sha)) {
-        return { ok: false, code: 'repo_ops_target_unresolved' };
-      }
-      if (input.last_successful_sha) {
-        const containment = await run(
-          [
-            'merge-base',
-            '--is-ancestor',
-            input.last_successful_sha,
-            target_sha
-          ],
-          { cwd: repo }
-        );
-        if (containment.code === 1)
-          return { ok: false, code: 'remote_history_not_monotonic' };
-        if (containment.code !== 0)
-          return { ok: false, code: 'repo_ops_ancestry_check_failed' };
-      }
+      if (containment.code === 1)
+        return { ok: false, code: 'remote_history_not_monotonic' };
+      if (containment.code !== 0)
+        return { ok: false, code: 'repo_ops_ancestry_check_failed' };
+    }
+    return { ok: true, target_sha };
+  }
+
+  /**
+   * Ownership-proven alignment of the permanent worktree to an already-bound
+   * target SHA. Never deletes an ambiguous path.
+   *
+   * @param {{ repo: string, workspace?: string, target_sha: string }} input
+   * @returns {Promise<{ ok: boolean, code?: string, path?: string, target_sha?: string }>}
+   */
+  async function ensureAligned(input) {
+    const repo = fs.realpathSync(path.resolve(input.repo));
+    const deploy_path = pathFor(repo);
+    const workspace = input.workspace || repo;
+    const target_sha = input.target_sha;
+    {
       const journal_file = journalPath(workspace);
       const journal = readJournal(journal_file);
       const list = await run(['worktree', 'list', '--porcelain', '-z'], {
@@ -829,10 +842,51 @@ export function createRepoOpsDeployWorktreeManager(deps) {
         return { ok: false, code: 'repo_ops_worktree_align_failed' };
       }
       return { ok: true, path: deploy_path, target_sha };
-    } finally {
-      release_operation();
     }
   }
 
-  return { pathFor, ensure };
+  /**
+   * Verify the terminal postcondition of a deploy run: the owned worktree is
+   * still at the bound target and clean (master spec §6.3 step 7).
+   *
+   * @param {{ repo: string, target_sha: string }} input
+   */
+  async function verifyAligned(input) {
+    const repo = fs.realpathSync(path.resolve(input.repo));
+    const deploy_path = pathFor(repo);
+    const current = await run(['rev-parse', 'HEAD'], { cwd: deploy_path });
+    const dirty = await run(
+      ['status', '--porcelain', '--untracked-files=all'],
+      {
+        cwd: deploy_path
+      }
+    );
+    const aligned =
+      current.code === 0 &&
+      dirty.code === 0 &&
+      current.stdout.trim().toLowerCase() === input.target_sha &&
+      dirty.stdout.trim() === '';
+    return { ok: aligned };
+  }
+
+  /**
+   * @param {{ repo: string, base: string, workspace?: string, last_successful_sha?: string|null }} input
+   * @returns {Promise<{ ok: boolean, code?: string, path?: string, target_sha?: string }>}
+   */
+  async function ensure(input) {
+    const bound = await bindTarget(input);
+    if (!bound.ok) {
+      return bound;
+    }
+    if (typeof bound.target_sha !== 'string') {
+      return { ok: false, code: 'repo_ops_target_unresolved' };
+    }
+    return ensureAligned({
+      repo: input.repo,
+      workspace: input.workspace,
+      target_sha: bound.target_sha
+    });
+  }
+
+  return { pathFor, bindTarget, ensureAligned, verifyAligned, ensure };
 }

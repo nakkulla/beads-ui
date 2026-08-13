@@ -90,7 +90,7 @@ function configInvalid(value) {
 }
 
 /**
- * @param {{ repo: string, sha: string, gitRun: (args: string[], options: { cwd: string }) => Promise<{ code: number, stdout: string, stderr: string }> }} input
+ * @param {{ repo: string, sha: string, gitRun: (args: string[], options: { cwd: string }) => Promise<{ code: number, stdout: string, stderr: string }>, lenient_script_identity?: boolean }} input
  */
 export async function resolveRepoOps(input) {
   if (!isSha(input.sha)) {
@@ -109,7 +109,16 @@ export async function resolveRepoOps(input) {
       ['ls-tree', input.sha, '--', REPO_OPS_CONFIG_PATH],
       { cwd: input.repo }
     );
-    if (config_tree.code !== 0 || !parseLsTree(config_tree.stdout)) {
+    // Absent is proven only by a SUCCESSFUL empty tree listing; a failed
+    // probe (bad SHA, repo error) must never fail open into the inert path.
+    if (config_tree.code !== 0) {
+      return {
+        ok: false,
+        code: 'repo_ops_config_invalid',
+        detail: 'config_probe_failed'
+      };
+    }
+    if (config_tree.stdout.trim() === '') {
       return {
         base: 'main',
         verify: null,
@@ -168,6 +177,18 @@ export async function resolveRepoOps(input) {
       entry.type !== 'blob' ||
       entry.mode !== '100755'
     ) {
+      // Lenient callers (transition classification) still need the observed
+      // identity so a mode-only change classifies instead of failing here.
+      if (input.lenient_script_identity) {
+        return {
+          script: declaration.script,
+          timeout_ms: declaration.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+          mode: entry ? entry.mode : null,
+          blob_sha: entry ? entry.blob_sha : null,
+          object_type: entry ? entry.type : null,
+          identity_invalid: true
+        };
+      }
       throw new Error(`bad_${kind}_identity`);
     }
     return {
@@ -208,14 +229,19 @@ export async function resolveEffectiveRepoOps(input) {
         gitRun: input.gitRun
       })
     : { base: 'main', verify: null, deploy: null, config_blob_sha: null };
+  if (!previous.ok && previous.code) return previous;
+  const previous_operation = previous[kind];
+  // The target tree is read leniently only when a previous policy will keep
+  // executing this delivery: a mode-only or bytes change then classifies as
+  // transition instead of failing the whole resolution. Without a previous
+  // policy the target IS the policy, so it stays strict fail-closed.
   const target = await resolveRepoOps({
     repo: input.repo,
     sha: input.target_sha,
-    gitRun: input.gitRun
+    gitRun: input.gitRun,
+    lenient_script_identity: Boolean(previous_operation)
   });
-  if (!previous.ok && previous.code) return previous;
   if (!target.ok && target.code) return target;
-  const previous_operation = previous[kind];
   const target_operation = target[kind];
   if (!previous_operation && target_operation) {
     return { policy: previous, target, classification: 'bootstrap' };
@@ -226,6 +252,7 @@ export async function resolveEffectiveRepoOps(input) {
   const same =
     previous.config_blob_sha === target.config_blob_sha &&
     target_operation &&
+    !target_operation.identity_invalid &&
     previous_operation.object_type === target_operation.object_type &&
     previous_operation.mode === target_operation.mode &&
     previous_operation.blob_sha === target_operation.blob_sha;

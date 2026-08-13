@@ -56,7 +56,10 @@ describe('repo-ops-bootstrap CLI', () => {
     const request_id = names[0].replace(/\.json$/, '');
     const processed = repoOpsSpoolProcessedDir(root);
     fs.mkdirSync(processed, { recursive: true });
-    fs.writeFileSync(path.join(processed, `${request_id}.receipt.json`), '{}');
+    fs.writeFileSync(
+      path.join(processed, `${request_id}.receipt.json`),
+      '{"ok":true}'
+    );
     const code = await promise;
     expect(code).toBe(0);
     expect(names).toHaveLength(1);

@@ -43,11 +43,8 @@ function gitForBootstrap(options = {}) {
         ? { code: 0, stdout: '', stderr: '' }
         : { code: 1, stdout: '', stderr: 'missing' };
     }
-    if (args[0] === 'fetch') {
+    if (args[0] === 'merge-base') {
       return { code: 0, stdout: '', stderr: '' };
-    }
-    if (args[0] === 'rev-parse') {
-      return { code: 0, stdout: `${TARGET}\n`, stderr: '' };
     }
     if (args[0] === 'show') {
       return String(args[1]).startsWith(TARGET)
@@ -55,6 +52,9 @@ function gitForBootstrap(options = {}) {
         : { code: 128, stdout: '', stderr: 'missing' };
     }
     if (args[0] === 'ls-tree') {
+      if (!String(args[1]).startsWith(TARGET)) {
+        return { code: 0, stdout: '', stderr: '' };
+      }
       const entry =
         args.at(-1) === 'repo-ops/config.toml'
           ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
@@ -80,21 +80,24 @@ function coordinatorFor(overrides = {}) {
       marker_path: path.join(root, 'operation.marker.json')
     }),
     readMarker: () => null,
+    readLaunchMarker: () => null,
     processController: { probe: () => ({ state: 'owned' }) }
   };
   const coordinator = createRepoOperationCoordinator({
     workspace: root,
-    repo: '/repo',
+    repo: root,
     store,
     locks: createLockManager(),
     gitRun: overrides.gitRun ?? gitForBootstrap(),
     runner: /** @type {never} */ (runner),
     deployWorktree: /** @type {never} */ ({
-      ensure: async () => ({
+      bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+      ensureAligned: async () => ({
         ok: true,
-        path: '/repo/.worktrees/.repo-ops-deploy',
+        path: path.join(root, '.worktrees', '.repo-ops-deploy'),
         target_sha: TARGET
-      })
+      }),
+      verifyAligned: async () => ({ ok: true })
     })
   });
   return { store, coordinator };
@@ -111,18 +114,26 @@ function spoolRequest(request) {
   return file;
 }
 
+/**
+ * @param {object} [overrides]
+ */
+function validRequest(overrides = {}) {
+  return {
+    request_id: 'req-1',
+    repo: root,
+    target_base: 'main',
+    approved_source_path: 'docs/spec.md',
+    approved_source_sha: APPROVED,
+    requested_by: 'operator',
+    requested_at: 7,
+    ...overrides
+  };
+}
+
 describe('RepoOperation coordinator', () => {
   test('consumes a valid spool request into a provenance prerecord and receipt', async () => {
     const { store, coordinator } = coordinatorFor();
-    spoolRequest({
-      request_id: 'req-1',
-      repo: '/repo',
-      target_base: 'main',
-      approved_source_path: 'docs/spec.md',
-      approved_source_sha: APPROVED,
-      requested_by: 'operator',
-      requested_at: 7
-    });
+    spoolRequest(validRequest());
 
     await coordinator.reconcile(root);
 
@@ -130,6 +141,7 @@ describe('RepoOperation coordinator', () => {
     expect(operations).toHaveLength(1);
     expect(operations[0]).toMatchObject({
       state: 'running',
+      target_sha: TARGET,
       bootstrap_provenance: {
         approved_source_path: 'docs/spec.md',
         approved_source_sha: APPROVED,
@@ -141,6 +153,7 @@ describe('RepoOperation coordinator', () => {
       fs.readFileSync(path.join(processed, 'req-1.receipt.json'), 'utf8')
     );
     expect(receipt.ok).toBe(true);
+    expect(typeof receipt.operation_id).toBe('string');
     expect(fs.existsSync(path.join(processed, 'req-1.request.json'))).toBe(
       true
     );
@@ -151,15 +164,7 @@ describe('RepoOperation coordinator', () => {
     const { store, coordinator } = coordinatorFor({
       gitRun: gitForBootstrap({ known_shas: [] })
     });
-    spoolRequest({
-      request_id: 'req-1',
-      repo: '/repo',
-      target_base: 'main',
-      approved_source_path: 'docs/spec.md',
-      approved_source_sha: APPROVED,
-      requested_by: 'operator',
-      requested_at: 7
-    });
+    spoolRequest(validRequest());
 
     await coordinator.reconcile(root);
 
@@ -176,12 +181,31 @@ describe('RepoOperation coordinator', () => {
     });
   });
 
+  test('rejects a spool request bound to a foreign repo path', async () => {
+    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'foreign-repo-'));
+    const { store, coordinator } = coordinatorFor();
+    spoolRequest(validRequest({ repo: foreign }));
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations).toEqual({});
+    const receipt = JSON.parse(
+      fs.readFileSync(
+        path.join(repoOpsSpoolProcessedDir(root), 'req-1.receipt.json'),
+        'utf8'
+      )
+    );
+    expect(receipt).toMatchObject({
+      ok: false,
+      code: 'bootstrap_provenance_invalid'
+    });
+    fs.rmSync(foreign, { recursive: true, force: true });
+  });
+
   test('refuses a bootstrap-classified deploy without provenance', async () => {
     const { store, coordinator } = coordinatorFor();
 
     const result = await coordinator.ensureDeploy({
-      effective_base_sha: null,
-      target_sha: TARGET,
       target_base: 'main',
       subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }]
     });
@@ -190,7 +214,9 @@ describe('RepoOperation coordinator', () => {
     expect(store.snapshot(root).repo_operations).toEqual({});
   });
 
-  test('settles a running operation from its terminal marker', async () => {
+  test('settles a running operation from its terminal marker with digest evidence', async () => {
+    const log_path = path.join(root, 'operation.log');
+    fs.writeFileSync(log_path, 'deploy output\n');
     const { store, coordinator } = coordinatorFor({
       runner: {
         start: () => ({ ok: false, code: 'unused' }),
@@ -200,12 +226,13 @@ describe('RepoOperation coordinator', () => {
           started_at: 1,
           finished_at: 2
         }),
+        readLaunchMarker: () => null,
         processController: { probe: () => ({ state: 'owned' }) }
       }
     });
     store.ensureRepoOperation(root, {
       operation_id: 'op-1',
-      repo_id: '/repo',
+      repo_id: root,
       kind: 'deploy',
       subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
       effective_base_sha: TARGET,
@@ -218,18 +245,83 @@ describe('RepoOperation coordinator', () => {
       operation_id: 'op-1',
       attempt_id,
       process_identity: { pid: 1, pgid: 1, started_at: 1 },
-      log_path: path.join(root, 'operation.log')
+      log_path,
+      target_sha: TARGET
     });
 
     await coordinator.reconcile(root);
 
+    const settled = store.snapshot(root).repo_operations['op-1'];
+    expect(settled).toMatchObject({ state: 'succeeded', exit_code: 0 });
+    expect(settled.log_digest).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('fails a zero-exit deploy whose worktree readback is not aligned', async () => {
+    const { store, coordinator } = coordinatorFor({
+      runner: {
+        start: () => ({ ok: false, code: 'unused' }),
+        readMarker: () => ({
+          exit_code: 0,
+          signal: null,
+          started_at: 1,
+          finished_at: 2
+        }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    const misaligned = createRepoOperationCoordinator({
+      workspace: root,
+      repo: root,
+      store,
+      locks: createLockManager(),
+      gitRun: gitForBootstrap(),
+      runner: /** @type {never} */ ({
+        start: () => ({ ok: false, code: 'unused' }),
+        readMarker: () => ({
+          exit_code: 0,
+          signal: null,
+          started_at: 1,
+          finished_at: 2
+        }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }),
+      deployWorktree: /** @type {never} */ ({
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        ensureAligned: async () => ({ ok: true, path: root }),
+        verifyAligned: async () => ({ ok: false })
+      })
+    });
+    void coordinator;
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+
+    await misaligned.reconcile(root);
+
     expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
-      state: 'succeeded',
-      exit_code: 0
+      state: 'failed',
+      failure: { code: 'deploy_worktree_residue' }
     });
   });
 
-  test('settles a marker-less dead process as interrupted without respawning', async () => {
+  test('settles a marker-less dead process as interrupted with a fingerprint, without respawning', async () => {
     /** @type {object[]} */
     const start_calls = [];
     const { store, coordinator } = coordinatorFor({
@@ -239,12 +331,13 @@ describe('RepoOperation coordinator', () => {
           return { ok: false, code: 'unused' };
         },
         readMarker: () => null,
+        readLaunchMarker: () => null,
         processController: { probe: () => ({ state: 'gone' }) }
       }
     });
     store.ensureRepoOperation(root, {
       operation_id: 'op-1',
-      repo_id: '/repo',
+      repo_id: root,
       kind: 'deploy',
       subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
       effective_base_sha: TARGET,
@@ -262,10 +355,77 @@ describe('RepoOperation coordinator', () => {
 
     await coordinator.reconcile(root);
 
-    expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
+    const settled = store.snapshot(root).repo_operations['op-1'];
+    expect(settled).toMatchObject({
       state: 'failed',
       failure: { code: 'interrupted', interrupted: true }
     });
+    expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(start_calls).toHaveLength(0);
+  });
+
+  test('adopts a queued record whose launch handshake process is still alive', async () => {
+    /** @type {object[]} */
+    const start_calls = [];
+    const { store, coordinator } = coordinatorFor({
+      runner: {
+        start: (/** @type {object} */ input) => {
+          start_calls.push(input);
+          return { ok: false, code: 'unused' };
+        },
+        readMarker: () => null,
+        readLaunchMarker: () => ({ pid: 42, pgid: 42, started_at: 1 }),
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+
+    await coordinator.reconcile(root);
+
+    const adopted = store.snapshot(root).repo_operations['op-1'];
+    expect(adopted).toMatchObject({
+      state: 'running',
+      process_identity: { pid: 42, pgid: 42 }
+    });
+    expect(start_calls).toHaveLength(0);
+  });
+
+  test('relaunches a stuck queued record and settles a pre-spawn failure durably', async () => {
+    const { store, coordinator } = coordinatorFor({
+      runner: {
+        start: () => ({ ok: false, code: 'repo_operation_spawn_failed' }),
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+
+    await coordinator.reconcile(root);
+
+    const settled = store.snapshot(root).repo_operations['op-1'];
+    expect(settled).toMatchObject({
+      state: 'failed',
+      failure: { code: 'repo_operation_spawn_failed' }
+    });
+    expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 });

@@ -26,7 +26,10 @@ describe('resolveRepoOps', () => {
     const result = await resolveRepoOps({
       repo: '/repo',
       sha: 'a'.repeat(40),
-      gitRun: async () => ({ code: 128, stdout: '', stderr: 'missing' })
+      gitRun: async (args) =>
+        args[0] === 'ls-tree'
+          ? { code: 0, stdout: '', stderr: '' }
+          : { code: 128, stdout: '', stderr: 'missing' }
     });
 
     expect(result).toEqual({
@@ -34,6 +37,19 @@ describe('resolveRepoOps', () => {
       verify: null,
       deploy: null,
       config_blob_sha: null
+    });
+  });
+
+  it('fails closed when the absence probe itself fails', async () => {
+    const result = await resolveRepoOps({
+      repo: '/repo',
+      sha: 'a'.repeat(40),
+      gitRun: async () => ({ code: 128, stdout: '', stderr: 'bad object' })
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_config_invalid'
     });
   });
 
@@ -196,9 +212,9 @@ describe('resolveEffectiveRepoOps', () => {
     expect(result.policy.deploy?.blob_sha).toBe('d'.repeat(40));
   });
 
-  it('never classifies a mode-only change as normal', async () => {
-    // A target script that lost its executable bit fails closed rather than
-    // classifying; a blob-SHA-only identity would have judged this 'normal'.
+  it('classifies a mode-only change as transition, never normal', async () => {
+    // Same blob SHA, different executable bit: a blob-SHA-only identity would
+    // have judged this 'normal'; the pinned previous policy keeps executing.
     const gitRun = gitForTrees({
       [PREVIOUS]: {
         config: CONFIG,
@@ -219,9 +235,8 @@ describe('resolveEffectiveRepoOps', () => {
       gitRun
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      code: 'repo_ops_config_invalid'
-    });
+    expect(result).toMatchObject({ classification: 'transition' });
+    if (!('policy' in result) || !('deploy' in result.policy)) return;
+    expect(result.policy.deploy?.mode).toBe('100755');
   });
 });

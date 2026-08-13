@@ -4,6 +4,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { createLockManager } from './locks.js';
+import { createQueueStore } from './queue-store.js';
+import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { repoOperationMarkerPath } from './state-paths.js';
 
@@ -59,7 +62,7 @@ describe('RepoOperation runner', () => {
         terminate: async () => ({ ok: true, state: 'gone', forced: false })
       }
     });
-    const started = runner.start({
+    const started = await runner.start({
       workspace: root,
       operation_id: 'op',
       attempt_id: 'one',
@@ -111,7 +114,7 @@ describe('RepoOperation runner', () => {
       }
     });
 
-    const started = runner.start({
+    const started = await runner.start({
       workspace: root,
       operation_id: 'slow',
       attempt_id: 'one',
@@ -166,6 +169,83 @@ describe('RepoOperation runner', () => {
     expect(fs.existsSync(marker_path)).toBe(false);
     await eventually(() => expect(runnerMarkerExit(marker_path)).toBe(0));
     expect(fs.readFileSync(log_path, 'utf8')).toContain('survived');
+  });
+
+  test('restarted worker adopts the live operation and settles its real marker', async () => {
+    const script = path.join(root, 'adopted.js');
+    fs.writeFileSync(
+      script,
+      '#!/usr/bin/env node\nsetTimeout(() => { console.log("done"); }, 700);\n'
+    );
+    fs.chmodSync(script, 0o755);
+    const runner_a = createRepoOperationRunner();
+    const store_a = createQueueStore({
+      filePathFor: (workspace) => path.join(workspace, 'queue.json')
+    });
+    store_a.ensureRepoOperation(root, {
+      operation_id: 'op-adopt',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'a'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'c'.repeat(40)
+    });
+    const attempt_id =
+      store_a.snapshot(root).repo_operations['op-adopt'].attempt_id;
+    const started = await runner_a.start({
+      workspace: root,
+      operation_id: 'op-adopt',
+      attempt_id,
+      script_path: script,
+      cwd: root,
+      target_sha: 'a'.repeat(40),
+      target_base: 'main',
+      timeout_ms: 10_000
+    });
+    expect(started.ok).toBe(true);
+    if (!started.ok || !started.process_identity) return;
+    store_a.startRepoOperation(root, {
+      operation_id: 'op-adopt',
+      attempt_id,
+      process_identity: started.process_identity,
+      log_path: started.log_path ?? '',
+      target_sha: 'a'.repeat(40)
+    });
+
+    // A "restarted" Worker: fresh store and coordinator instances that only
+    // share the durable queue file and marker directory on disk.
+    const store_b = createQueueStore({
+      filePathFor: (workspace) => path.join(workspace, 'queue.json')
+    });
+    const coordinator = createRepoOperationCoordinator({
+      workspace: root,
+      repo: root,
+      store: store_b,
+      locks: createLockManager(),
+      gitRun: async () => ({ code: 0, stdout: '', stderr: '' }),
+      deployWorktree: /** @type {never} */ ({
+        bindTarget: async () => ({ ok: true, target_sha: 'a'.repeat(40) }),
+        ensureAligned: async () => ({ ok: true, path: root }),
+        verifyAligned: async () => ({ ok: true })
+      })
+    });
+
+    await coordinator.reconcile(root);
+    const adopted = store_b.snapshot(root).repo_operations['op-adopt'];
+    expect(adopted.state).toBe('running');
+
+    await eventually(() => {
+      expect(
+        fs.existsSync(repoOperationMarkerPath(root, 'op-adopt', attempt_id))
+      ).toBe(true);
+    });
+    await coordinator.reconcile(root);
+    expect(store_b.snapshot(root).repo_operations['op-adopt']).toMatchObject({
+      state: 'succeeded',
+      exit_code: 0
+    });
   });
 
   test('does not read a stale marker from another attempt', () => {

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,39 +14,73 @@ afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * @param {Buffer} bytes
+ */
+function gitBlobSha(bytes) {
+  return crypto
+    .createHash('sha1')
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest('hex');
+}
+
 describe('RepoOperation transition', () => {
-  test('materializes only the previous-base bytes and reclaims the executable', async () => {
+  test('materializes the exact previous-base bytes and reclaims the executable', async () => {
+    const root = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-transition-')
+    );
+    roots.push(root);
+    const bytes = Buffer.concat([
+      Buffer.from('#!/bin/sh\n'),
+      Buffer.from([0xff, 0xfe, 0x00, 0x81]),
+      Buffer.from('\necho previous\n')
+    ]);
+    const blob_sha = gitBlobSha(bytes);
+    const launcher = createRepoOperationTransitionLauncher({
+      stateDir: () => root,
+      readBlob: async () => bytes
+    });
+
+    const result = await launcher.materialize({
+      workspace: '/workspace',
+      repo: '/repo',
+      operation_id: 'op',
+      blob_sha,
+      mode: '100755'
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    if (typeof result.path !== 'string') return;
+    expect(fs.readFileSync(result.path).equals(bytes)).toBe(true);
+    expect(fs.statSync(result.path).mode & 0o111).not.toBe(0);
+    launcher.reclaim('/workspace', 'op');
+    expect(fs.existsSync(result.path)).toBe(false);
+  });
+
+  test('rejects blob bytes that do not match the pinned blob SHA', async () => {
     const root = fs.mkdtempSync(
       path.join(os.tmpdir(), 'repo-operation-transition-')
     );
     roots.push(root);
     const launcher = createRepoOperationTransitionLauncher({
-      stateDir: () => root
+      stateDir: () => root,
+      readBlob: async () => Buffer.from('tampered bytes\n')
     });
-    /** @param {string[]} args - Git arguments. */
-    const gitRun = async (args) => ({
-      code: 0,
-      stdout: `#!/bin/sh\necho ${args[1]}\n`,
-      stderr: ''
-    });
+
     const result = await launcher.materialize({
       workspace: '/workspace',
       repo: '/repo',
       operation_id: 'op',
-      base_sha: 'a'.repeat(40),
-      script: 'repo-ops/script/deploy',
-      mode: '100755',
-      gitRun
+      blob_sha: 'a'.repeat(40),
+      mode: '100755'
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    if (typeof result.path !== 'string') return;
-    expect(fs.readFileSync(result.path, 'utf8')).toContain(
-      `${'a'.repeat(40)}:repo-ops/script/deploy`
-    );
-    expect(fs.statSync(result.path).mode & 0o111).not.toBe(0);
-    launcher.reclaim('/workspace', 'op');
-    expect(fs.existsSync(result.path)).toBe(false);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_transition_materialize_failed'
+    });
   });
 
   test('selects the latest successful target SHA for durable policy and monotonic guard', () => {
