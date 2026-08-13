@@ -48,8 +48,11 @@ detail panel의 "실행 설정" 섹션은 실행 설정 12키 + `workflow_mode`�
 - 프리셋 카드에 **「워크스페이스 기본」 배지**와 **「기본으로」/「기본 해제」 버튼**을
   추가하고, 별도 "현재 워크스페이스 기본 프리셋" 셀렉트 섹션은 제거한다.
   전송 메시지(`worker-queue-set-default-exec-preset`)와 CAS·adopt·토스트 계약은 그대로.
-  비호환/missing 프리셋의 기본 지정 차단 규칙도 기존 판정(`workspacePresetSelection`)을
-  버튼 disabled + 사유 툴팁으로 옮겨 유지한다.
+- 차단은 **「기본으로」(지정)에만** 적용한다: 비호환/missing 후보의 지정은 기존 판정
+  (`workspacePresetSelection`)대로 버튼 disabled + 사유 툴팁으로 차단하되, **「기본 해제」
+  는 항상 허용**한다(현재 기본이 비호환이어도). 기본 참조가 missing(프리셋 삭제 등)이면
+  대응 카드가 없으므로 **합성 카드/배너**를 표시해 상태를 알리고 `preset_id: null` CAS
+  해제 경로를 제공한다 — 셀렉트 섹션 제거로 해제 경로가 사라지는 상태를 만들지 않는다.
 - 프리셋 편집기는 범위 1과 같은 그룹 구성(핵심 2 + 고급 10 접기)을 재사용한다.
   `workflow_mode`는 프리셋 표면에 나타나지 않는다(기존과 동일).
 - 검증·배포, 워커 시스템 프롬프트 읽기 전용 섹션은 변경하지 않는다.
@@ -69,7 +72,10 @@ detail panel의 "실행 설정" 섹션은 실행 설정 12키 + `workflow_mode`�
 - RED-GREEN seam 2 — `app/views/worker/exec-defaults-dialog.test.js`:
   카드 배지·「기본으로/기본 해제」가 기존 `worker-queue-set-default-exec-preset`
   CAS 흐름(adopt·conflict 토스트)을 그대로 타는지, 별도 셀렉트 섹션 부재,
-  비호환 프리셋 기본 지정 차단. 새 assertion은 현 구현에서 RED.
+  비호환 프리셋 「기본으로」 차단과 「기본 해제」 상시 허용, missing 참조의 합성
+  카드/배너와 `preset_id: null` 해제 경로, 프리셋 편집기의 핵심 2 + 고급 10 그룹
+  구성과 12개 셀렉터·change mutation 유지, `workflow_mode` 셀렉터 부재.
+  새 assertion은 현 구현에서 RED.
 - `npm test`(vitest), `npm run lint`, `npm run build` green.
 
 ## 수용 기준
@@ -78,7 +84,9 @@ detail panel의 "실행 설정" 섹션은 실행 설정 12키 + `workflow_mode`�
    12키 + `workflow_mode` 편집, `(비호환)` 표시, effort 게이팅이 회귀 없이 유지된다.
 2. 출처 칩이 bead 값 > 프리셋 값 > 기본의 우선순위로 정확히 판정된다.
 3. 전역 다이얼로그에서 워크스페이스 기본 지정·해제가 카드 버튼으로 동작하고 기존
-   CAS 충돌 처리(adopt, 토스트)와 비호환 차단이 유지된다.
+   CAS 충돌 처리(adopt, 토스트)가 유지된다. 지정 차단은 비호환/missing 후보에만
+   적용되고, 「기본 해제」는 비호환 현재 기본과 missing 참조(합성 카드/배너 경유)에서도
+   항상 가능하다 — 해제 불가 고착 상태가 존재하지 않는다.
 4. 서버 코드·프로토콜 diff가 없다.
 
 ## 비범위·남은 위험
