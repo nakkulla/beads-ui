@@ -1042,6 +1042,142 @@ describe('scheduler completion repair dispatch', () => {
     });
   }
 
+  test('dispatches one post-merge repair pinned to the merged SHA', async () => {
+    const repair_bead_id = 'B1-rmerged';
+    const env = setup({
+      config: { B1: {}, [repair_bead_id]: {} },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    const merged_sha = 'd'.repeat(40);
+    const failure_key = {
+      ...COMPLETION_FAILURE,
+      subject_sha: merged_sha
+    };
+    env.store.setCompletionSubject(WS, {
+      root_bead_id: 'B1',
+      phase: 'repairing',
+      subject: {
+        ...env.store.snapshot(WS).completion_intents.B1.subject,
+        merged_sha
+      }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.add.mockImplementation(async ({ bead_id, base }) => ({
+      path: `/wt/${bead_id}`,
+      branch: bead_id,
+      base_oid: base
+    }));
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'post-merge-dispatch',
+        kind: 'dispatch_repair',
+        failure_key,
+        attempt_id: 'post-merge-attempt',
+        repair_bead_id,
+        status: 'prepared'
+      }
+    });
+
+    expect(result).toEqual({ ok: true, attempt_id: 'post-merge-attempt' });
+    expect(
+      env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
+    ).toBe(1);
+    expect(env.runner.spawnOrder).toEqual([repair_bead_id]);
+  });
+
+  test.each([
+    [
+      'canonical subject differs',
+      (/** @type {any} */ failure_key) => ({
+        ...failure_key,
+        subject_sha: 'e'.repeat(40)
+      }),
+      'completion_subject_sha_stale'
+    ],
+    [
+      'canonical base differs',
+      (/** @type {any} */ failure_key) => ({
+        ...failure_key,
+        base_sha: 'e'.repeat(40)
+      }),
+      'completion_base_sha_stale'
+    ]
+  ])(
+    'rejects a post-merge repair when its %s',
+    async (_label, change_failure, reason) => {
+      const repair_bead_id = 'B1-rmerged';
+      const env = setup({
+        config: { B1: {}, [repair_bead_id]: {} },
+        gitRun: ownedGit(),
+        slots: 1
+      });
+      seedCompletionIntent(env.store, repair_bead_id);
+      const merged_sha = 'd'.repeat(40);
+      env.store.setCompletionSubject(WS, {
+        root_bead_id: 'B1',
+        phase: 'repairing',
+        subject: {
+          ...env.store.snapshot(WS).completion_intents.B1.subject,
+          merged_sha
+        }
+      });
+      const failure_key = change_failure({
+        ...COMPLETION_FAILURE,
+        subject_sha: merged_sha
+      });
+
+      const result = await env.scheduler.dispatchCompletionRepair(WS, {
+        root_bead_id: 'B1',
+        op: {
+          op_id: `post-merge-${reason}`,
+          kind: 'dispatch_repair',
+          failure_key,
+          attempt_id: `post-merge-${reason}-attempt`,
+          repair_bead_id,
+          status: 'prepared'
+        }
+      });
+
+      expect(result).toEqual({ ok: false, reason });
+      expect(env.runner.spawnOrder).toEqual([]);
+    }
+  );
+
+  test('keeps the head SHA as the canonical pin before merge', async () => {
+    const repair_bead_id = 'B1-rhead';
+    const env = setup({
+      config: { B1: {}, [repair_bead_id]: {} },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store, repair_bead_id);
+    env.worktree.exists.mockReturnValue(false);
+    env.worktree.add.mockImplementation(async ({ bead_id, base }) => ({
+      path: `/wt/${bead_id}`,
+      branch: bead_id,
+      base_oid: base
+    }));
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'pre-merge-dispatch',
+        kind: 'dispatch_repair',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'pre-merge-attempt',
+        repair_bead_id,
+        status: 'prepared'
+      }
+    });
+
+    expect(result).toEqual({ ok: true, attempt_id: 'pre-merge-attempt' });
+    expect(env.runner.spawnOrder).toEqual([repair_bead_id]);
+  });
+
   test('resumes the latest same-Bead transcript with the preallocated attempt', async () => {
     const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
     seedCompletionIntent(env.store);

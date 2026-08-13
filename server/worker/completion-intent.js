@@ -717,6 +717,65 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
+   * Strictly re-adopt the one historical post-merge repair terminal caused by
+   * the retired head-SHA dispatch guard. The store owns the complete atomic
+   * predicate; this layer additionally verifies the deterministic create-op
+   * identity it can derive from the preserved journal.
+   *
+   * @param {string} root_bead_id
+   * @param {any} intent
+   * @returns {Promise<boolean>}
+   */
+  async function adoptHistoricalStaleRepair(root_bead_id, intent) {
+    const terminal = intent?.terminal_reason;
+    const active_op = intent?.active_op;
+    if (
+      intent?.phase !== 'needs_human' ||
+      terminal?.reason !== 'completion_subject_sha_stale' ||
+      terminal.stage !== 'repair_dispatch' ||
+      active_op?.kind !== 'create_repair' ||
+      active_op.status !== 'observed' ||
+      active_op.attempt_id !== null ||
+      !active_op.failure_key ||
+      active_op.op_id !==
+        operationIdentity(
+          root_bead_id,
+          'create_repair',
+          active_op.failure_key,
+          intent.repair_sessions_used + 1
+        ) ||
+      typeof deps.store.adoptHistoricalStaleRepair !== 'function'
+    ) {
+      return false;
+    }
+    const adopted = deps.store.adoptHistoricalStaleRepair(deps.workspace, {
+      root_bead_id
+    });
+    if (!adopted.ok) {
+      return false;
+    }
+    notify();
+    return true;
+  }
+
+  /**
+   * Re-enter only a recognized historical terminal shape. The stale repair
+   * record is checked first; all other historical records retain the retired
+   * resolution-timeout adoption path.
+   *
+   * @param {string} root_bead_id
+   * @param {any} intent
+   * @param {any} queue
+   * @returns {Promise<boolean>}
+   */
+  async function adoptHistoricalTerminal(root_bead_id, intent, queue) {
+    if (await adoptHistoricalStaleRepair(root_bead_id, intent)) {
+      return true;
+    }
+    return adoptLegacyTimeout(root_bead_id, intent, queue);
+  }
+
+  /**
    * @param {string} root_bead_id
    * @param {any} fact
    */
@@ -1685,6 +1744,7 @@ export function createCompletionActionDriver(deps) {
   return {
     observe,
     onAction,
+    adoptHistoricalTerminal,
     adoptLegacyTimeout,
     onAttemptSettled,
     onMergeResult
