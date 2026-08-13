@@ -16,9 +16,11 @@ Worker의 새 정책은 아래 여섯 문장으로 설명할 수 있어야 한�
 1. GitHub CI/check는 사용하지 않는다.
 2. `repo-ops/config.toml`에 없는 verify/deploy는 실행하지 않는다.
 3. verify가 있으면 실제 merge candidate tree를 한 번만 검증한다.
-4. deploy가 있으면 merge된 exact target SHA를 한 번 배포하고 live SHA를 확인한다.
-5. Worker가 안전하게 확정할 수 있는 fetch/candidate/restart-adoption 문제는 자동으로
-   복구한다.
+4. deploy가 있으면 fetched `origin/<base>` tip을 Worker 전용
+   `.worktrees/.repo-ops-deploy` detached worktree에 정렬하고, repo script가 apply와
+   live readback을 끝낼 때까지 기다린다.
+5. Worker가 안전하게 확정할 수 있는 fetch/checkout/restart-adoption 문제는
+   자동으로 복구한다.
 6. script가 실패하면 workspace의 `auto_repair` 설정에 따라 같은 Bead의 repair
    session을 최대 한 번 자동 시작하고, 그래도 실패하면 사람이 버튼으로 이어간다.
 
@@ -61,9 +63,10 @@ spec/plan `Test scope`, implementation review, focused verification은 그대로
 - request 실패 후 provider status는 이전 성공을 계속 보여 주는 이중 상태 해석
 - cleanup/recovery 경로마다 수동 retry와 repair Bead가 추가됨
 
-새 설계는 하나의 깊은 `RepoOperation` Module로 exact-candidate 실행을 감추고,
-repo-specific 동작은 표준 script Interface 뒤에 둔다. Module을 삭제해 안전성을
-분산하지 않고, provider와 Worker가 나누어 가진 중복 상태를 하나로 합친다.
+새 설계는 하나의 깊은 `RepoOperation` Module로 verify candidate와 deploy permanent
+detached worktree 실행을 감추고, repo-specific 동작은 표준 script Interface 뒤에 둔다.
+Module을 삭제해 안전성을 분산하지 않고, provider와 Worker가 나누어 가진 중복
+상태를 하나로 합친다.
 
 ## 3. 목표와 비목표
 
@@ -71,10 +74,11 @@ repo-specific 동작은 표준 script Interface 뒤에 둔다. Module을 삭제�
 
 1. `[ci]`, GitHub checks 관측, CI gate/cache/polling을 완전히 제거한다.
 2. `repo-ops/config.toml`의 optional verify/deploy만 실행한다.
-3. pre/post verify를 하나의 candidate-tree receipt로 통합한다.
+3. pre/post verify를 하나의 candidate-tree evidence로 통합한다.
 4. `repo-deployctl` daemon/provider와 Worker deployment adapter/recovery를 제거한다.
-5. authoritative remote exact candidate, dirty checkout isolation, self-restart survival,
-   repo serial ordering, timeout/log/readback은 보존한다.
+5. authoritative `origin/<base>` pin, Worker-owned permanent detached worktree, dirty
+   user-checkout isolation, self-restart survival, repo serial ordering,
+   timeout/log/readback은 보존한다.
 6. operation 상태를 Worker의 durable journal 하나로 표현한다.
 7. 실패를 안전한 executor recovery와 repair session으로 분리한다.
 8. workspace별 `auto_repair` toggle과 현재 자동 정책 설명을 UI에서 제공한다.
@@ -106,7 +110,6 @@ resolver output은 다음 normalized value다.
 
 ```js
 {
-  version: 1,
   base: 'main',
   verify: null | { script, timeout_ms, blob_sha },
   deploy: null | { script, timeout_ms, blob_sha },
@@ -118,6 +121,16 @@ PR delivery에는 이전 target-base SHA의 declaration/script를 effective poli
 pin하여 PR이 자기 operation을 끄거나 바꾸지 못하게 한다. 새 declaration은 해당
 delivery가 끝난 뒤 다음 candidate부터 활성화한다.
 
+일반 delivery에서는 previous-base와 target tree의 effective script blob이 같음을
+확인한 뒤 target worktree의 `repo-ops/script/deploy`를 실행한다. config 또는 script
+자체가 바뀌는 transition delivery는 previous-base에서 pin한 exact script bytes와
+executable mode를 Worker-owned ephemeral launcher에 materialize한다. launcher는
+target `.worktrees/.repo-ops-deploy`를 cwd/`REPO_OPS_REPO_ROOT`로 사용하고 repo
+worktree를 수정하지 않으며, terminal success 뒤 회수된다. 새 policy는 그 성공 뒤
+다음 operation부터 활성화한다. repo script는 `$0` 위치가 아니라
+`REPO_OPS_REPO_ROOT`를 기준으로 helper를 찾는다. 이전 deploy가 없던 bootstrap은
+approved rollout operation만 새 script를 처음 실행할 수 있다.
+
 ### 4.2 `RepoOperationCoordinator` Module
 
 merge request, external merged observation, startup reconciliation, repair completion이
@@ -125,27 +138,31 @@ merge request, external merged observation, startup reconciliation, repair compl
 
 ```text
 ensureVerify(candidate)
-ensureDeploy(target)
+ensureDeploy(subject)
 observe(operation_id)
 startRepair(operation_id, mode)
 reconcile(workspace)
 ```
 
-caller는 process, candidate path, provider generation, retry journal을 알지 못한다.
-coordinator는 하나의 operation record와 terminal receipt만 돌려준다.
+caller는 process, checkout path, provider generation, retry journal을 알지 못한다.
+coordinator는 하나의 operation record와 terminal exit/log evidence만 돌려준다.
 
 ### 4.3 `RepoOperationRunner` Implementation
 
-authoritative remote에서 exact candidate를 만들고 표준 script를 shell 없이
-실행하는 one-shot executor다. daemon이나 desired-state provider가 아니다.
+authoritative remote에서 operation checkout을 준비하고 표준 script를 shell 없이
+실행하는 one-shot executor다. daemon이나 desired-state provider가 아니다. verify는
+temporary synthetic merge candidate를, deploy는 Worker-owned permanent detached
+worktree를 사용한다.
 
-- operation 하나를 받아 candidate, process group, timeout, log, result file을
-  소유한다.
+- operation 하나를 받아 checkout, process group, timeout, stdout/stderr log와
+  terminal exit marker를 소유한다.
 - stdio는 operation log file로 보내고 server socket/stdio를 상속하지 않는다.
 - detached process를 unref하여 beads-ui self-restart 뒤에도 계속 실행한다.
-- terminal result를 operation directory에 atomic rename으로 쓴다.
+- helper가 script exit code/signal/timestamps를 작은 terminal marker에 atomic
+  rename으로 쓴다. 이 marker는 Worker 내부 crash recovery이고 repo script JSON
+  protocol이 아니다.
 - process가 살아 있으면 restart 후 같은 operation으로 adoption한다.
-- receipt 없이 process가 사라지면 duplicate spawn하지 않고 `interrupted`로
+- terminal marker 없이 process가 사라지면 duplicate spawn하지 않고 `interrupted`로
   실패시킨다.
 
 self-restart 중 실제 생존을 증명하지 못하면 implementation을 완료로 보지 않는다.
@@ -168,7 +185,7 @@ toggle/button mutation만 보낸다. policy 문장을 frontend에 별도 hard-co
 다르면 build/contract test가 실패한다.
 
 이 분리는 Adapter가 repo script와 scheduler를 연결하고, 깊은 Module이 crash와
-receipt 복잡성을 숨기며, UI가 projection만 소비하도록 한다. 기존 provider 삭제
+process/exit 복잡성을 숨기며, UI가 projection만 소비하도록 한다. 기존 provider 삭제
 후에도 같은 책임이 여러 caller로 되돌아가지 않는 것이 architecture acceptance다.
 
 ## 5. durable data model
@@ -183,11 +200,12 @@ workspace queue에 `auto_repair`와 `repo_operations`를 추가한다.
       schema: 1,
       repo_id: '<canonical-realpath-derived-id>',
       kind: 'verify' | 'deploy',
-      subjects: ['UI-...'],
+      subjects: [{ bead_id: 'UI-...', merged_sha: '<40-hex>' }],
       effective_base_sha: '<40-hex>',
       target_base: 'main',
-      target_sha: '<40-hex>',
-      target_tree: '<40-hex>',
+      target_sha: null | '<fetch 뒤 pin한 origin/<base> tip 40-hex>',
+      target_tree: null | '<40-hex>',
+      deploy_worktree: null | '<repo>/.worktrees/.repo-ops-deploy',
       script_blob_sha: '<40-hex>',
       state: 'queued' | 'running' | 'succeeded' | 'failed' | 'repairing',
       attempt_id: '<opaque-id>',
@@ -196,8 +214,9 @@ workspace queue에 `auto_repair`와 `repo_operations`를 추가한다.
       finished_at: null,
       process_identity: null,
       log_path: null,
-      result_path: null,
-      result: null,
+      log_digest: null,
+      exit_code: null,
+      signal: null,
       failure: null | {
         code: '<stable-code>',
         fingerprint: '<sha256>',
@@ -216,32 +235,100 @@ workspace queue에 `auto_repair`와 `repo_operations`를 추가한다.
 }
 ```
 
-operation identity는 repo/kind/effective policy/target input에서 결정적으로 만든다.
-같은 input은 같은 record를 adoption하고, remediation 뒤 새 실행은 같은 operation의
-새 attempt다. provider generation과 repo-level desired/status copy는 없다.
+verify operation identity는 repo/kind/effective policy/candidate input에서
+결정적으로 만든다. deploy는 repo/base/effective policy별 queued operation에 아직
+coverage되지 않은 subject SHA를 coalesce하고, repo lock을 얻어 fetch한 순간
+`target_sha`를 한 번만 bind한다. bind 뒤 remote에 새 commit이 생기면 다음 queued
+operation이 처리한다. 같은 exact input은 같은 record를 adoption하고, remediation 뒤
+새 실행은 같은 operation의 새 attempt다. provider generation, repo-level
+desired/status copy, repo script result JSON은 없다.
 
 모든 mutation은 기존 queue CAS/atomic write를 사용한다. operation success와 Bead
 coverage/cleanup cursor 반영은 한 mutation 또는 재시작해도 같은 결과가 되는
 순서로 저장한다. process spawn 전에 durable `queued`/attempt prerecord를 완료한다.
 
-## 6. authoritative candidate materialization
+## 6. authoritative operation checkout
 
-runner는 canonical checkout의 checked-out branch나 local `origin/main`을 clone하지
-않는다.
+runner는 사용자의 canonical checkout HEAD나 local `main` branch를 deploy source로
+쓰지 않는다. 배포 source of truth는 bounded fetch로 갱신한
+`refs/remotes/origin/<base>` 하나다.
 
-1. workspace remote URL과 target base를 normalize한다.
-2. operation-owned bare/cache namespace로 authoritative remote ref를 fetch한다.
-3. requested SHA가 commit이고 fetched target base에 포함됨을 증명한다.
-4. exact commit/tree에서 clean detached candidate를 materialize한다.
-5. candidate origin identity, HEAD/tree, tracked cleanliness, effective script blob/path/
-   executable mode를 재검증한다.
-6. user checkout의 HEAD/index/worktree/untracked files를 전후 비교해 불변임을
+### 6.1 공통 remote proof
+
+1. workspace의 canonical `origin` URL과 target base를 normalize한다.
+2. `origin/<base>` remote-tracking ref를 bounded fetch한다.
+3. fetched tip을 operation의 immutable target SHA로 pin하고, coverage할 merged SHA가
+   모두 그 target에 포함됨을 증명한다.
+4. effective script blob/path/executable mode를 exact policy SHA에서 검증한다.
+5. user checkout의 HEAD/index/worktree/untracked files를 전후 비교해 불변임을
    확인한다.
 
 fetch는 bounded timeout, process-group termination, stdout/stderr tail을 가진다.
 완전히 회수된 pre-execution timeout만 1회 자동 재시도한다. retry 후에도 실패하면
 operation failure로 session에 넘긴다. 이 Seam이 `UI-9f54`와
 `dotfiles-ji9f`를 흡수한다.
+
+### 6.2 verify checkout
+
+verify가 opt-in된 경우 exact base/head로 synthetic merge candidate를 temporary clean
+checkout에 materialize한다. verify가 없는 현재 네 repo에는 이 candidate를 만들지
+않는다.
+
+### 6.3 deploy permanent detached worktree
+
+deploy는 canonical repo의 고정 경로 `.worktrees/.repo-ops-deploy`에 등록한 worktree
+하나를 쓴다. 이 worktree는 Git common object/ref store만 canonical repo와 공유하고
+별도 HEAD·index·working tree를 가지며 항상 detached HEAD다. `deploy` branch는
+만들지 않는다. path가 영구적이므로 dotfiles installed symlink나 beads-ui runtime
+source가 이 root를 가리켜도 다음 operation에서 경로가 사라지지 않는다.
+
+최초 준비는 repo lock 안에서 다음 의미로 수행한다.
+
+```text
+bounded fetch origin <base> → refs/remotes/origin/<base>
+target_sha = rev-parse refs/remotes/origin/<base>^{commit}
+git worktree add --detach .worktrees/.repo-ops-deploy <target_sha>
+```
+
+매 deploy는 다음 순서다.
+
+1. repo별 serial lock을 얻는다.
+2. `origin/<base>`를 bounded fetch하고 tip을 operation의 immutable target SHA로
+   bind한다. operation subjects의 merged SHA가 모두 target의 ancestor인지 확인한다.
+3. canonical path equality, `git worktree list` registration, canonical repo와 같은
+   `--git-common-dir`, Worker journal의 repo/path identity, detached HEAD를 함께
+   확인한다.
+4. 위 소유권이 전부 증명된 worktree만 target SHA로 강제 정렬하고 non-ignored
+   residue를 회수하거나 안전하게 recreate한다. 소유권이 모호한 경로나 사람의
+   파일은 삭제·reset하지 않는다.
+5. unmerged/staged/tracked dirtiness와 non-ignored untracked residue가 없고
+   `HEAD == target_sha`인지 확인한다.
+6. cwd와 `REPO_OPS_REPO_ROOT`를 이 checkout으로 설정해 effective policy에 pin된
+   deploy executable을 shell 없이 실행한다.
+7. 종료 후에도 HEAD equality와 cleanliness를 확인하고 terminal evidence를
+   기록한 뒤 lock을 해제한다.
+
+이 worktree에서는 사람이 작업하지 않고 branch·commit·push를 만들지 않는다.
+Worker만 fetched exact SHA로 정렬한다. ignored dependency cache는 보존할 수 있다.
+user checkout의 HEAD/index/tracked/untracked files는 reset/stash/clean하지 않는다.
+이미 성공한 deploy SHA의 descendant가 아닌 remote tip은 자동 rollback하지 않고
+`remote_history_not_monotonic` failure로 전환한다.
+
+### 6.4 deploy script contract
+
+Worker가 repo-defined protocol로 전달하는 환경은 다음 세 개뿐이다.
+
+```text
+REPO_OPS_TARGET_SHA=<fetch 뒤 pin한 origin/<base> tip 40-hex SHA>
+REPO_OPS_TARGET_BASE=<main, ilsun/dev 등>
+REPO_OPS_REPO_ROOT=<canonical repo>/.worktrees/.repo-ops-deploy
+```
+
+cwd는 `REPO_OPS_REPO_ROOT`다. script는 시작과 끝의 local HEAD equality, install/
+restart/remote sync, 실제 적용 readback을 직접 수행하고 모두 성공한 뒤 exit 0을
+반환한다. nonzero/signal/timeout은 failure다. 같은 SHA replay는 idempotent하고,
+stdin 질문이나 background-only success는 금지한다. 별도 JSON, generation, health
+schema를 Worker에 노출하지 않는다.
 
 ## 7. merge와 verify 흐름
 
@@ -295,7 +382,8 @@ remote merged containment
   → effective operation resolution
   → verify success adoption 또는 필요한 final-tree verify
   → deploy absent: skip
-  → deploy present: exact target SHA one-shot operation + live receipt
+  → deploy present: repo lock + fetch origin/<base> + detached worktree exact alignment
+                    + one-shot script + exit/log
   → child sweep
   → worktree/branch cleanup
   → parent close/readback
@@ -305,26 +393,37 @@ remote merged containment
 유지하지 않는다. cleanup cursor는 `base_containment`, `repo_operations`,
 `child_sweep`, `branch_cleanup`, `parent_close`만 표현한다.
 
-deploy는 repo별 serial이다. SHA A operation이 running이면 descendant B는 queued다.
-A가 terminal 된 뒤 B를 실행한다. B가 성공하면 B에 포함된 A의 subjects를 coverage할
-수 있다. A failure 때문에 B를 막지 않으며, B가 원인을 포함해 고쳤다면 자동으로
-수렴한다. 오래된 A가 B 뒤에 실행되는 순서는 없다.
+deploy는 repo별 serial이다. operation이 lock을 얻기 전에는 같은 policy의 pending
+subject를 coalesce한다. lock을 얻은 뒤 `origin/<base>`를 fetch해 target A를 bind하고
+실행하는 동안 새 merged SHA B가 생기면 B는 다음 operation에 queued된다. 다음
+operation은 다시 fetch하므로 더 최신 target을 적용한다. 새 target이 이전 subject를
+포함하고 exit 0이면 그 predecessor를 coverage할 수 있다. 앞 operation failure가
+뒤의 descendant operation을 막지 않으며, 뒤 commit이 원인을 고쳤다면 자동으로
+수렴한다. 오래된 target이 최신 runtime 뒤에 실행되거나 non-ancestor remote tip으로
+자동 rollback되는 순서는 없다.
 
-성공 조건은 script exit 0 + atomic receipt + exact deployed SHA + repo-specific live
-checks다. success 전에는 Bead를 close하지 않는다. deploy absent면 가짜 provider
-pending/succeeded record 없이 바로 다음 cleanup 단계로 간다.
+Worker가 보는 성공 조건은 timeout 없는 script exit 0과 final permanent worktree
+`HEAD == target_sha`·tracked-clean readback이다. 실제 install/restart/remote
+HEAD/health 확인은 script가 exit 전에 직접 수행한다. Worker는 health JSON이나
+repo-specific output을 parse하지 않고 target SHA, exit code, stdout/stderr log만
+terminal evidence로 기록한다. success 전에는 Bead를 close하지 않는다. deploy
+absent면 가짜 provider pending/succeeded record 없이 바로 다음 cleanup 단계로 간다.
 
 ## 9. 실패 분류와 자동 대응
 
 ### 9.1 Worker가 session 없이 자동 복구
 
-- stale/missing candidate 재생성
+- owned `.worktrees/.repo-ops-deploy` fetch/detached alignment/recreate
 - 완전히 회수된 fetch timeout 1회 retry
 - repo serial lock queueing
 - restart 후 live detached process adoption
-- same exact input의 terminal success receipt adoption
+- same exact input의 terminal exit-0 evidence adoption
 - newer successful descendant SHA의 predecessor coverage
-- owned temp candidate/worktree cleanup
+- owned verify temp candidate cleanup
+
+소유권 proof가 전부 맞는 worktree만 자동 정렬·recreate한다. path 충돌, common-dir
+mismatch, journal identity mismatch처럼 사람의 파일일 가능성이 있는 상태는 자동
+삭제하지 않고 operation failure evidence와 repair session으로 넘긴다.
 
 이 목록은 runtime code의 hidden behavior가 아니다. dotfiles
 `workflow.yaml` canonical enum을 generated policy JSON으로 render하고 beads-ui
@@ -345,7 +444,7 @@ terminal failure는 다음 UI/action을 만든다.
 | pre-merge verify failure | `검증 실패 해결 후 머지` | fresh repair 뒤 original merge intent 1회 |
 | post-merge verify failure | `검증 실패 해결` | corrective PR 또는 same-input remediation |
 | deploy failure | `배포 실패 해결` | same SHA replay 또는 corrective PR 뒤 closure |
-| interrupted/no receipt | kind에 맞는 해결 버튼 | duplicate spawn 없이 diagnosis |
+| interrupted/no exit marker | kind에 맞는 해결 버튼 | duplicate spawn 없이 diagnosis |
 
 ### 9.3 `auto_repair`
 
@@ -386,8 +485,8 @@ Worker/Monitor workspace 설정에 독립 `자동 해결` toggle을 추가한다
 
 ```text
 Worker가 자동 처리
-  exact candidate 재생성 · fetch 1회 복구 · lock 대기 · restart adoption
-  exact receipt adoption · 최신 SHA coverage
+  전용 detached worktree 복구 · fetch 1회 복구 · lock 대기 · restart adoption
+  exact exit-0 evidence adoption · 최신 SHA coverage
 
 자동 repair session
   verify 실패 · deploy 실패 · interrupted operation
@@ -399,7 +498,8 @@ Worker가 자동 처리
 ```
 
 각 operation card는 kind, target SHA/tree, script path/blob, elapsed time, state,
-sanitized output tail, 전체 log link, result/live SHA, repair session link를 표시한다.
+sanitized output tail, 전체 log link, exit code, target SHA, repair session link를
+표시한다.
 generic `재시도` 버튼은 두지 않는다. manual 해결 버튼도 repair evidence를 만든 뒤
 coordinator가 새 attempt를 생성한다.
 
@@ -420,8 +520,9 @@ legacy record를 계속 dual-read하지 않는다.
 3. legacy `post_merge_verify` failure는 effective new config에 verify가 있으면 new
    verify operation으로 변환하고, 없으면 failure를 retire하고 다음 단계로 간다.
 4. legacy `deployment_request`/`deploy` failure는 old provider status를 migration
-   중 딱 한 번 읽는다. exact repo/base/target/deployed SHA terminal success면 new
-   success receipt로 adoption하고, 아니면 new deploy operation을 만든다.
+   중 딱 한 번 읽는다. exact repo/base/target/deployed SHA terminal success면
+   migrated terminal evidence로 adoption하고, 아니면 fetched `origin/<base>` tip을
+   쓰는 새 deploy operation을 만든다.
 5. `child_sweep`/`branch_cleanup`/`parent_close` failure는 operations success 뒤
    기존 idempotent closure를 재개한다.
 6. ambiguity, missing subject, mismatched old status는 fake success로 만들지 않고
@@ -485,7 +586,6 @@ readback을 가진다. user checkout은 변경하지 않는다.
 ### 14.1 beads-ui
 
 ```toml
-version = 1
 base = "main"
 
 [deploy]
@@ -494,25 +594,37 @@ timeout_ms = 600000
 ```
 
 - `[verify]`와 CI workflow를 제거한다.
-- `scripts/deploy-self.js`의 candidate install/build, atomic runtime pointer,
-  `bdui-shared restart`, `/healthz` exact source SHA/path readback을
+- `scripts/deploy-self.js`의 install/build/restart/readback을
   `repo-ops/script/deploy` Interface로 이동한다.
+- `.worktrees/.repo-ops-deploy`가 stable runtime source다. candidate release와
+  `current` release symlink를 만들지 않는다.
+- wrapper는 local HEAD 확인, `npm ci`, `npm run build`, `bdui-shared restart`, bounded
+  `/healthz` 조회를 순서대로 수행하고 health의 source SHA와 realpath가 각각 target
+  SHA와 `REPO_OPS_REPO_ROOT`인지 확인한 뒤 exit 0을 반환한다.
 - self-deploy script가 new one-shot executor를 실행 중인 server를 restart하고도
-  terminal receipt를 쓰는 실제 E2E를 통과한다.
+  executor가 exit code/log marker를 남기는 실제 E2E를 통과한다.
 - project AGENTS의 Post-Merge Runtime Validation을 새 path/operation/auto repair로
   갱신한다.
 
 ### 14.2 dotfiles
 
 `dotfiles-b2yx`가 config와 `repo-ops/script/deploy`, CI removal, canonical contract를
-land한다. 새 Worker가 exact dotfiles deploy/install/runtime receipt를 성공시킨 뒤
+land한다. 새 Worker가 durable dotfiles deploy exit/log와 installed runtime
+readback을 성공시킨 뒤
 UI-vobi enclosed retirement unit이 provider binary/service/install references를
 제거한다.
+
+dotfiles의 installed symlink/service path는 영구
+`.worktrees/.repo-ops-deploy` root를 가리킬 수 있다. dotfiles wrapper는 installer를
+glob으로 찾지 않는다. approved plan이 current
+canonical install completion bundle의 literal 순서를 pin하고 wrapper가 그 순서대로
+shell/Claude/Codex installer와 installed-copy/service verifier를 호출한다. 새 helper
+파일이 디렉터리에 추가됐다는 이유만으로 자동 실행되지 않는다. local HEAD와
+installed runtime 검증이 끝난 뒤 exit 0을 반환한다.
 
 ### 14.3 train_bot
 
 ```toml
-version = 1
 base = "main"
 
 [deploy]
@@ -522,17 +634,18 @@ timeout_ms = 600000
 
 - 기존 full unittest declaration은 제거한다.
 - 기존 `scripts/deploy.sh`를 표준 entrypoint로 이동한다.
+- 시작 시 local `.worktrees/.repo-ops-deploy` HEAD가 fetched `origin/main` target
+  SHA인지 확인한다.
 - `REPO_OPS_TARGET_SHA`를 remote host에 전달하고 `git fetch` 후 exact commit으로
   ff-only sync한다. 단순 remote tip `git pull`은 쓰지 않는다.
 - dependency install, `projectmgr restart trainbot`, remote HEAD exact SHA,
-  `projectmgr status trainbot`을 terminal receipt에 기록한다.
+  `projectmgr status trainbot`을 모두 확인한 뒤 exit 0을 반환한다.
 - SSH/remote/projectmgr/credential failure는 secret-free log와 repair session으로
   넘긴다.
 
 ### 14.4 TRACE-ICI
 
 ```toml
-version = 1
 base = "ilsun/dev"
 
 [deploy]
@@ -544,8 +657,10 @@ timeout_ms = 600000
 - `scripts/deploy_fisher.sh`의 expected SHA, SLURM running-job fail-closed, remote
   branch/fetch/ff-only exact sync, `uv sync`, final SHA readback을 표준 entrypoint로
   이동한다.
+- 시작과 끝에 local `.worktrees/.repo-ops-deploy` HEAD도 fetched
+  `origin/ilsun/dev` target SHA인지 확인한다.
 - active SLURM job, unavailable SSH/uv/index는 명확한 failure code와 session
-  evidence를 남긴다. successful receipt는 Fisher remote HEAD exact SHA를 요구한다.
+  evidence를 남긴다. success exit 전 Fisher remote HEAD exact SHA를 확인한다.
 
 ## 15. 두 Bead rollout 순서
 
@@ -568,7 +683,7 @@ issue-level 순환 dependency 대신 두 approved plans가 exact commit/readback
 10. 두 repo full verification, generated artifacts, runtime health, exact remote tips 확인
 11. superseded Bead disposition과 `worker-ineligible` 제거, completion reports, close
 
-각 gate는 이전 단계 exact commit과 terminal receipt를 다음 plan phase input으로
+각 gate는 이전 단계 exact commit과 terminal exit/log·repo readback evidence를 다음 plan phase input으로
 pin한다. 실패하면 현재 단계에서 멈추고 이미 작동 중인 이전 runtime path를 보존한다.
 provider를 먼저 삭제하거나 dual reader를 무기한 남기지 않는다.
 
@@ -601,10 +716,16 @@ specs/plans/receipts는 immutable evidence로 유지한다.
    - invalid config/path/mode/timeout은 fail-closed다.
    - previous-base declaration이 PR bytes보다 우선한다.
    - legacy config/home fallback을 최종 상태에서 읽지 않는다.
-2. **candidate materialization**
-   - stale/dirty/behind local checkout과 무관하게 remote exact SHA를 staging한다.
+2. **operation checkout**
+   - stale/dirty/behind user checkout과 무관하게 fetched `origin/<base>` tip을
+     target으로 pin한다.
    - fetch timeout이 child process를 회수하고 한 번만 retry한다.
-   - repo/origin/base/SHA/tree/script path mismatch를 거부한다.
+   - `.worktrees/.repo-ops-deploy`가 registered worktree/common-dir/journal/detached
+     ownership proof를 모두 요구한다.
+   - deploy branch를 만들지 않고 owned worktree만 exact target으로 정렬한다.
+   - ownership mismatch와 non-ancestor remote rewind는 자동 삭제·deploy하지 않는다.
+   - verify candidate와 deploy worktree의 repo/origin/base/SHA/script path mismatch를
+     거부한다.
 3. **verify flow**
    - absent verify가 process/evidence/failure를 만들지 않는다.
    - candidate tree receipt가 동일 merged tree에 승계된다.
@@ -612,19 +733,21 @@ specs/plans/receipts는 immutable evidence로 유지한다.
    - different final tree는 post-merge 한 번만 실행한다.
 4. **operation store/coordinator**
    - prerecord-before-spawn, CAS, restart adoption, terminal settlement이 idempotent다.
-   - repo serial ordering과 newer descendant coverage가 stale 역전을 막는다.
+   - lock-acquisition fetch/bind, repo serial ordering, newer descendant coverage가
+     stale 역전을 막는다.
    - failed/interrupted operation을 duplicate spawn하지 않는다.
 5. **one-shot runner**
-   - shell=false, sanitized env, timeout/process group/log/result atomicity를 검증한다.
-   - 실제 beads-ui restart 중 child가 살아 terminal receipt를 쓴다.
-   - mismatched/missing deploy receipt를 실패시킨다.
+   - shell=false, 세 protocol env, timeout/process group/log/exit-marker atomicity를
+     검증한다.
+   - 실제 beads-ui restart 중 child가 살아 exit code/log marker를 쓴다.
+   - missing exit marker, nonzero, signal, final HEAD/clean mismatch를 실패시킨다.
 6. **auto repair**
    - default ON, durable toggle, OFF no-new-dispatch, running preservation을 검증한다.
    - chain당 1회 budget과 same-fingerprint loop 차단을 검증한다.
    - repair result가 아닌 fresh repo/operation facts만 continuation을 연다.
    - config-disable 우회를 거부한다.
 7. **UI/protocol**
-   - setting toggle, policy 세 목록, operation card/log/result/session link를 검증한다.
+   - setting toggle, policy 세 목록, operation card/log/exit/session link를 검증한다.
    - verify/deploy absent stage는 `안 함`으로 표시하고 오류 badge를 만들지 않는다.
    - 실패 kind별 해결 버튼과 automatic repairing 상태를 검증한다.
 8. **legacy migration**
@@ -654,9 +777,10 @@ specs/plans/receipts는 immutable evidence로 유지한다.
 3. PR merge는 fresh identity/mergeability/review와 optional verify만 본다.
 4. verify가 향후 opt-in되면 candidate tree당 최대 한 번이고 pre/post 중복 실행이
    없다.
-5. deploy는 exact remote candidate에서 직렬 실행되고 exact live SHA receipt 전에는
+5. deploy는 repo lock 안에서 fetched `origin/<base>` tip으로 정렬한 영구 detached
+   worktree에서 직렬 실행되고 script exit 0과 local/readback evidence 전에는
    close하지 않는다.
-6. beads-ui self-restart 중 one-shot operation이 살아서 terminal receipt를 남긴다.
+6. beads-ui self-restart 중 one-shot operation이 살아서 exit code와 log를 남긴다.
 7. `auto_repair` 기본 ON/OFF/readback, chain당 1회, manual fallback이 UI와 durable
    state에서 일치한다.
 8. 사용자가 설정 UI와 canonical contract에서 Worker 자동 처리/자동 session/자동
@@ -667,8 +791,10 @@ specs/plans/receipts는 immutable evidence로 유지한다.
 11. train_bot과 TRACE-ICI는 새 Bead 없이 각각 target base에 enclosed direct
     landing되고 exact remote deploy/readback을 통과한다.
 12. user checkout의 branch/index/tracked/untracked 상태가 rollout 전후 보존된다.
-13. 관련 superseded Beads와 receipts가 authoritative readback으로 정리된다.
-14. focused/full contract tests, generated artifacts, shared runtime health가 모두
+13. 어떤 repo에도 deploy branch, candidate release, provider generation이 생기지
+    않으며 `.repo-ops-deploy`는 Worker만 정렬한다.
+14. 관련 superseded Beads와 receipts가 authoritative readback으로 정리된다.
+15. focused/full contract tests, generated artifacts, shared runtime health가 모두
     green이다.
 
 ## 19. 완료와 worker eligibility
@@ -678,10 +804,10 @@ landing·deploy/readback이라는 required no-PR residue를 포함하므로 impl
 중 `worker-ineligible`을 유지한다. 다음 증거를 모두 얻은 뒤 spec follow-up
 self-review와 같은 logical write에서 label을 제거한다.
 
-- beads-ui new one-shot self-deploy terminal receipt와 live health
+- beads-ui new one-shot self-deploy exit/log와 script-owned live health
 - dotfiles new operation deploy와 provider absence readback
-- train_bot target-base containment/deploy/status receipt
-- TRACE-ICI target-base containment/deploy/status receipt
+- train_bot target-base containment/deploy exit/status log
+- TRACE-ICI target-base containment/deploy exit/status log
 - union follow-up inventory와 superseded Bead disposition readback
 
 merge나 session 자기보고만으로 완료하지 않는다. parent close는 exact remote
