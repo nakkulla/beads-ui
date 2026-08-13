@@ -173,7 +173,8 @@ deploy: absent | invalid | resolved(cmd, timeout_ms)
 - active true인데 cmd가 없거나 schema가 invalid하면 fail closed한다.
 - false/false에 stale cmd/timeout이 있으면 invalid로 거부해 dead command를 남기지 않는다.
 - `~/.config/bdui/config.toml [worker.verify]`는 execution fallback에서 제거한다.
-- `[deploy]` resolution과 provider request는 verify result에 의존하지 않는다.
+- `[deploy]` resolution은 verify declaration의 유무와 독립이다. Provider request는 selected post
+  disposition이 `local_pass|declared_none`일 때만 시작하며 active local failure를 건너뛰지 않는다.
 
 ### 2. Pre-merge observation/gate
 
@@ -238,6 +239,7 @@ MERGED/merge SHA readback
   -> base_sync
   -> verification disposition(local_pass | declared_none)
   -> deployment_request/status binding
+  -> deployment terminal readback
   -> child_sweep
   -> branch_cleanup
   -> parent_close
@@ -247,8 +249,10 @@ MERGED/merge SHA readback
 - declaration/config/identity error는 해당 step에서 fail closed한다.
 - local command red는 자동 retry 없이 멈춘다.
 - `declared_none`은 green command를 위조하지 않고 policy가 off였음을 기록한다.
-- accepted/pending deployment request는 existing durable continuation을 사용한다.
-- later deploy failure는 이미 닫힌 Bead를 reopen하지 않는다.
+- accepted/pending deployment request는 existing durable continuation을 사용하고 child/branch/parent
+  closure를 terminal success까지 보류한다.
+- terminal success로 닫힌 뒤의 별도 runtime regression은 historical Bead를 reopen하지 않고 owning
+  deployment recovery policy로 처리한다.
 - verify/deploy failure만으로 follow-up을 만들지 않는다. read-only diagnosis와 same-scope fix/redeploy를
   먼저 수행하고 concrete external/authority/destructive/unreachable blocker만 `unsafe_now`다.
 
@@ -267,8 +271,9 @@ Landed code에서 exact caller를 다시 확인하되 다음 owned semantics를 
 - focused unit/integration/UI tests와 frontend bundle
 
 `UI-x7fi`의 pure pinned merge decision은 이 Bead의 schema를 소비한다. `UI-x7fi` implementation
-entry 전에 stale spec의 “required-check allowlist + local verify fallback + 항상
-post_merge_verify” 문구를 다음으로 정합한다.
+entry 전에 해당 spec의 formal review와 final provider freshness self-review를 닫고, 이전
+“required-check allowlist + local verify fallback + 항상 post_merge_verify” 가정을 다음으로
+정합한다.
 
 - `[ci]` declared names만 CI input
 - `[ci]` absent는 no-CI, not error
@@ -312,9 +317,10 @@ Controller는 publish range와 owned paths를 self-review한 뒤 non-force fast-
 push하고 exact remote containment을 확인한다. 이어 durable synced `main` checkout을 landed SHA로
 ff-only sync하고 `HEAD == landed_sha`를 readback한다. 그 checkout에서 repository-owned direct/manual
 path인 `bdui-shared restart`를 실행한 뒤 runtime config, process release path/source SHA, port와
-`/healthz`를 확인한다. Durable checkout이 dirty/ahead/diverged/wrong-branch 상태이거나 exact SHA로
-안전하게 sync할 수 없으면 external provider로 우회하지 않고 hard stop한다. Generic implementation
-worktree에서 live install/restart를 직접 실행하지 않는다.
+`/healthz`를 확인한다. Durable checkout이 target-base branch가 아니거나 ahead/diverged 상태이거나,
+ff-only sync가 locally modified tracked file 또는 colliding untracked path를 덮어써야 하면 external
+provider로 우회하지 않고 hard stop한다. 무관한 user work는 그대로 보존한다. Generic
+implementation worktree에서 live install/restart를 직접 실행하지 않는다.
 
 ## Enclosed cross-repo ledger
 
@@ -444,18 +450,21 @@ follow-up self-review가 모두 끝난 뒤에만 label을 제거하고 Bead를 c
 
 ## Ordered rollout
 
-1. `dotfiles-b2yx`가 canonical schema, resolver, checker/tests/generated output과 dotfiles declaration을
+1. `dotfiles-b2yx`, `UI-vobi`, `UI-x7fi` 세 스펙을 final schema/ownership/order에 정합하고 각 formal
+   spec gate를 먼저 닫는다.
+2. `dotfiles-b2yx`가 canonical schema, resolver, checker/tests/generated output과 dotfiles declaration을
    PR로 land/deploy하고 close한다.
-2. `UI-vobi`가 final provider contract 위에서 beads-ui consumer를 구현하고 spec/implementation gate를
+3. `UI-vobi`가 final provider contract 위에서 beads-ui consumer를 구현하고 implementation gate를
    닫는다.
-3. reviewed beads-ui candidate를 direct `main`에 push하고 durable synced `main` checkout에서
+4. reviewed beads-ui candidate를 direct `main`에 push하고 durable synced `main` checkout에서
    `bdui-shared restart`와 exact live readback을 완료한다.
-4. new runtime이 `[ci]`/phase booleans/`declared_none`을 읽는 것을 focused live probe로 확인한다.
-5. train_bot enclosed unit을 latest `origin/main`에 land하고 exact deploy/readback한다.
-6. TRACE-ICI enclosed unit을 latest `origin/ilsun/dev`에 land하고 exact deploy/readback한다.
-7. foreign ranges를 controller follow-up self-review하고 `UI-vobi`의 worker-ineligible residue를
+5. new runtime이 `[ci]`/phase booleans/`declared_none`을 읽는 것을 focused live probe로 확인한다.
+6. train_bot enclosed unit을 latest `origin/main`에 land하고 exact deploy/readback한다.
+7. TRACE-ICI enclosed unit을 latest `origin/ilsun/dev`에 land하고 exact deploy/readback한다.
+8. foreign ranges를 controller follow-up self-review하고 `UI-vobi`의 worker-ineligible residue를
    해소한 뒤 completion report와 close readback을 완료한다.
-8. `UI-x7fi`는 fresh schema에 맞춰 자신의 spec을 amend/review한 뒤 pinned merge adapter를 구현한다.
+9. `UI-x7fi`는 final provider commits에 대한 spec freshness self-review 뒤 pinned merge adapter를
+   구현한다.
 
 ## Test scope
 
@@ -476,6 +485,7 @@ follow-up self-review가 모두 끝난 뒤에만 label을 제거하고 Bead를 c
 
 - post false는 spawn 0회, exact SHA `declared_none`, deploy request 1회를 만든다.
 - post true는 explicit attempt당 command 1회이고 red 뒤 deploy 0회다.
+- deploy pending은 continuation을 남기고 closure 0회이며 terminal success 뒤에만 sweep을 계속한다.
 - whole-command automatic retry, baseline comparison, automatic repair child는 0회다.
 - legacy `post_merge_verify` row를 읽고 current false policy로 safe resume한다.
 
