@@ -309,9 +309,12 @@ git diff --check
 ```
 
 Controller는 publish range와 owned paths를 self-review한 뒤 non-force fast-forward로 `main`에
-push하고 exact remote containment을 확인한다. 이어 exact landed SHA로 external deployment를
-request하고 provider terminal success, process release path/source SHA, port와 `/healthz`를 확인한다.
-Generic implementation worktree에서 live install/restart를 직접 실행하지 않는다.
+push하고 exact remote containment을 확인한다. 이어 durable synced `main` checkout을 landed SHA로
+ff-only sync하고 `HEAD == landed_sha`를 readback한다. 그 checkout에서 repository-owned direct/manual
+path인 `bdui-shared restart`를 실행한 뒤 runtime config, process release path/source SHA, port와
+`/healthz`를 확인한다. Durable checkout이 dirty/ahead/diverged/wrong-branch 상태이거나 exact SHA로
+안전하게 sync할 수 없으면 external provider로 우회하지 않고 hard stop한다. Generic implementation
+worktree에서 live install/restart를 직접 실행하지 않는다.
 
 ## Enclosed cross-repo ledger
 
@@ -348,7 +351,8 @@ UI-x7fi merge adapter       = existing downstream bead:UI-x7fi
   - `PYTHONDONTWRITEBYTECODE=1`, candidate 내부 bytecode/cache 생성 금지
   - `bash -n scripts/deploy.sh`
   - exact candidate `git diff --check`
-  - post-landing external provider terminal success, remote `HEAD==landed_sha`,
+  - post-landing durable target-base checkout `HEAD==landed_sha`
+  - 그 checkout에서 `bash scripts/deploy.sh` exit 0, remote `HEAD==landed_sha`,
     `projectmgr status trainbot` readback
 - why_not_split: user refused the split proposal on 2026-08-13 and explicitly chose
   `enclosed:UI-vobi` direct `main` landing.
@@ -357,7 +361,10 @@ UI-x7fi merge adapter       = existing downstream bead:UI-x7fi
 required bundle에 넣지 않는다. Full unittest hook을 끄는 이유이기도 하다. Future command를
 도입하려면 isolated HOME을 가진 repo-owned wrapper를 별도 설계한다.
 
-`scripts/deploy.sh`는 candidate에서 `expected_sha=$(git rev-parse HEAD)`를 구하고 그 값을 SSH
+Landing 뒤 durable `main` checkout을 ff-only로 exact landed SHA에 sync하고 HEAD를 확인한 다음 그
+checkout에서 `bash scripts/deploy.sh`를 실행한다. Checkout이 안전하게 exact sync될 수 없으면 external
+provider로 우회하지 않고 hard stop한다. `scripts/deploy.sh`는 실행 checkout에서
+`expected_sha=$(git rev-parse HEAD)`를 구하고 그 값을 SSH
 argument로 전달한다. Remote script는 canonical checkout/branch를 확인하고 `origin/main`을 fetch한
 뒤 expected commit 존재와 current HEAD의 ancestor 관계를 증명하고 `git merge --ff-only
 <expected_sha>`한다. Dependency install/restart 뒤 final `HEAD == expected_sha`와
@@ -383,14 +390,17 @@ latest tip을 조용히 배포하지 않고 fail closed한다. Credential이나 
   - `scripts/diag/verify_prereg.py --repo . --quiet`
   - `bash -n scripts/deploy_fisher.sh`
   - exact candidate `git diff --check`
-  - post-landing external provider terminal success와 fisher canonical checkout
+  - post-landing durable target-base checkout `HEAD==landed_sha`
+  - 그 checkout에서 `bash scripts/deploy_fisher.sh` exit 0과 fisher canonical checkout
     `HEAD==landed_sha` readback
 - why_not_split: user refused the split proposal on 2026-08-13 and explicitly chose
   `enclosed:UI-vobi` direct `ilsun/dev` landing.
 
-GPU, real data, `.env`, SLURM job execution과 full scientific pipeline은 이 declaration-only change의
-required verification이 아니다. Existing deploy script의 `squeue` guard가 active job이 있으면
-deployment를 fail closed한다.
+Landing 뒤 durable `ilsun/dev` checkout을 ff-only로 exact landed SHA에 sync하고 HEAD를 확인한 다음
+그 checkout에서 `bash scripts/deploy_fisher.sh`를 실행한다. Checkout이 안전하게 exact sync될 수
+없으면 external provider로 우회하지 않고 hard stop한다. GPU, real data, `.env`, SLURM job execution과
+full scientific pipeline은 이 declaration-only change의 required verification이 아니다. Existing
+deploy script의 `squeue` guard가 active job이 있으면 deployment를 fail closed한다.
 
 ### Enclosed publication evidence
 
@@ -405,7 +415,9 @@ landed_tip
 owned_commit_shas
 owned changed-path list
 verification result
-provider generation/state/deployed_sha
+durable target-base checkout path/base/HEAD
+direct/manual deploy command and exit status
+remote exact-SHA readback
 runtime/readback result
 helper result(landed | already_contained)
 ```
@@ -427,8 +439,8 @@ controller가 self-review하고, 두 landing 뒤 union range에 controller follo
 Host `impl_review` receipt는 host SHA 형식을 유지하고 foreign range는 notes evidence로 결합한다.
 
 `UI-vobi`는 required interactive enclosed residue가 있으므로 spec gate에서 `worker-ineligible`을
-추가한다. beads-ui direct deployment와 두 enclosed landing/deploy/readback, follow-up self-review가
-모두 끝난 뒤에만 label을 제거하고 Bead를 close한다.
+추가한다. beads-ui direct/manual deployment와 두 enclosed landing/direct-manual deploy/readback,
+follow-up self-review가 모두 끝난 뒤에만 label을 제거하고 Bead를 close한다.
 
 ## Ordered rollout
 
@@ -436,8 +448,8 @@ Host `impl_review` receipt는 host SHA 형식을 유지하고 foreign range는 n
    PR로 land/deploy하고 close한다.
 2. `UI-vobi`가 final provider contract 위에서 beads-ui consumer를 구현하고 spec/implementation gate를
    닫는다.
-3. reviewed beads-ui candidate를 direct `main`에 push하고 exact provider deploy/live readback을
-   완료한다.
+3. reviewed beads-ui candidate를 direct `main`에 push하고 durable synced `main` checkout에서
+   `bdui-shared restart`와 exact live readback을 완료한다.
 4. new runtime이 `[ci]`/phase booleans/`declared_none`을 읽는 것을 focused live probe로 확인한다.
 5. train_bot enclosed unit을 latest `origin/main`에 land하고 exact deploy/readback한다.
 6. TRACE-ICI enclosed unit을 latest `origin/ilsun/dev`에 land하고 exact deploy/readback한다.
@@ -488,8 +500,8 @@ Host `impl_review` receipt는 host SHA 형식을 유지하고 foreign range는 n
 4. post local off는 exact SHA `declared_none` evidence 뒤 deploy/cleanup을 계속한다.
 5. local failure는 automatic retry/baseline compare/repair Bead를 만들지 않는다.
 6. legacy `post_merge_verify` failure/log를 읽고 explicit recovery할 수 있다.
-7. beads-ui consumer가 reviewed exact candidate로 direct `main`에 반영되고 external deploy/live
-   readback이 exact landed SHA와 일치한다.
+7. beads-ui consumer가 reviewed exact candidate로 direct `main`에 반영되고 durable synced `main`
+   checkout의 direct/manual deployment와 live readback이 exact landed SHA와 일치한다.
 8. train_bot과 TRACE-ICI는 새 Bead/PR 없이 declared target base에 enclosed landing되고 각
    exact deploy/readback이 terminal이다.
 9. shared checkouts의 unrelated dirty/untracked work와 existing user specs를 건드리지 않는다.
