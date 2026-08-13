@@ -74,9 +74,12 @@ prerecord write-ahead 패턴 위에 master spec §5 스키마를 추가한다:
 `repo_operations{}`(subjects·`target_sha`·`script_mode`/`script_blob_sha`·state
 enum·`failure{code,fingerprint,detail,interrupted}`·
 `repair{chain_id,owner_bead,auto_budget,auto_used,session_id,attempt_id}`·
-`superseded_by`). `chain_id`/`owner_bead`/`auto_used`의 successor 계승 mutation을
+`superseded_by`). 이 단위는 여기에 `bootstrap_provenance: null |
+{approved_source_path, approved_source_sha, requested_by, requested_at}` 필드를
+추가한다(§3.5). `chain_id`/`owner_bead`/`auto_used`의 successor 계승 mutation을
 store API로 제공한다. process spawn 전에 durable `queued`/attempt prerecord를
-완료한다.
+완료한다. queue 파일의 writer는 실행 중인 Worker 프로세스 하나뿐이다 — 외부
+프로세스는 §3.5의 spool을 통해서만 요청을 전달한다.
 
 ### 3.3 영구 deploy worktree 관리
 
@@ -102,22 +105,34 @@ adoption하고, marker 없이 사라진 process는 duplicate spawn 없이 `inter
 
 Coordinator는 이 단위에서 `ensureDeploy(subject)`/`observe(operation_id)`/
 `reconcile(workspace)`만 노출한다. `ensureVerify`/`startRepair`는 UI-vobi가
-추가한다. 재시작 reconciliation은 기존 `attach.js` 부팅 순서에 연결한다.
+추가한다. 재시작 reconciliation은 기존 `attach.js` 부팅 순서에 연결하며,
+§3.5 bootstrap spool 소비도 같은 reconcile 경로가 담당한다.
 
 ### 3.5 approved bootstrap CLI
 
 이전 policy에 deploy가 없던 repo의 첫 실행은 자동 감지하지 않는다. 서버
 호스트에서 운영자/controller가 실행하는 작은 CLI가 유일한 입구다.
 
-- 입력: repo 경로, target base, approved source(승인 spec/plan 경로와 40-hex
-  commit SHA), 요청자 식별.
-- 동작: durable operation prerecord를 bootstrap provenance와 함께 enqueue하고,
-  터미널에 operation 상태를 bounded polling으로 출력한다.
-- 규칙: 승인 근거가 없는 bootstrap 요청은 기록을 만들지 않고 거부한다. Worker는
-  bootstrap provenance가 없는 bootstrap-분류 operation을 실행하지 않는다(no-op
-  failure `bootstrap_not_approved`). 같은 exact target의 재요청은 새 record 대신
-  기존 record를 adoption한다. prerecord는 restart를 생존하며, CLI 프로세스
-  종료는 operation에 영향을 주지 않는다.
+- 입력: repo 경로, target base, approved source(승인 spec/plan의
+  workspace-상대 경로와 40-hex commit SHA), 요청자 식별.
+- 전달 경로: CLI는 Worker의 queue 파일을 직접 쓰지 않는다. Worker-owned spool
+  디렉터리에 요청 파일을 temp+rename으로 atomic하게 놓고, 실행 중인 Worker의
+  reconcile이 그것을 소비해 자신의 단일-writer CAS로 durable prerecord를 만든
+  뒤 요청 파일을 receipt와 함께 processed로 이동한다. CLI는 receipt와 operation
+  상태를 bounded polling으로 출력한다. 서버가 내려가 있으면 spool 요청은 서버
+  기동 후 reconcile이 소비한다.
+- provenance 결속과 검증: `bootstrap_provenance`는 operation record에 durable로
+  저장되고 그 record의 repo/target base에 결속된다. Worker는 소비 시
+  `approved_source_sha` commit이 대상 repo에 존재하고 그 commit tree가
+  `approved_source_path`를 포함함을 검증한다. 검증 실패는 prerecord를 만들지
+  않고 `bootstrap_provenance_invalid` receipt로 거부한다.
+- 규칙: 승인 근거가 없는 요청은 CLI가 기록을 만들지 않고 거부한다. Worker는
+  provenance가 없는 bootstrap-분류 operation을 실행하지 않는다(failure
+  `bootstrap_not_approved`). 같은 exact target의 승인 재요청은 새 record 대신
+  기존 record를 adoption한다 — 대상이 provenance 없이 실패한 record라면
+  검증된 provenance를 부착하고 같은 operation의 새 attempt로 전이한다. spool
+  요청과 prerecord는 restart를 생존하며, CLI 프로세스 종료는 operation에 영향을
+  주지 않는다.
 
 ### 3.6 transition ephemeral launcher
 
@@ -155,9 +170,13 @@ success 뒤 다음 operation부터 활성화된다. PR bytes가 current delivery
 4. **one-shot runner** (master §17.5): shell=false·3 env·timeout/process
    group·log/exit-marker atomicity, 실제 beads-ui server restart 중 생존 E2E,
    missing marker → `interrupted`.
-5. **bootstrap 승인 게이트** (신규): 승인 근거 없는 요청 거부, provenance 없는
-   bootstrap-분류 operation의 `bootstrap_not_approved` no-op, exact 재요청
-   adoption, prerecord restart 생존.
+5. **bootstrap 승인 게이트** (신규): 승인 근거 없는 CLI 요청 거부, spool
+   temp+rename atomicity와 서버 재시작 후 소비, invalid/mismatched approved
+   source의 `bootstrap_provenance_invalid` 거부, provenance 없는 bootstrap-분류
+   operation의 `bootstrap_not_approved`, provenance-less 실패 record에 대한
+   승인 재요청의 provenance 부착·새 attempt 전이, exact 재요청 adoption,
+   CLI·Worker 동시 동작에서 queue 단일-writer 보존, spool/prerecord restart
+   생존.
 6. **transition launcher** (신규): previous-base bytes/mode materialization과
    회수, PR bytes의 current delivery 변경 불가, terminal success 후에만 새
    policy 활성화.
@@ -170,9 +189,9 @@ seam은 UI-vobi Test scope 소유. 기존 legacy suite는 수정하지 않는다
 1. `npm run all`과 신규 focused suites가 green이고 기존 suite 수정이 없다.
 2. legacy lane으로 merge·배포한 뒤 4개 workspace의 runtime 동작이 불변이다
    (`/healthz` source SHA/path exact readback 포함).
-3. config를 선언한 repo가 나타나면(b2yx 이후 dotfiles) bootstrap CLI →
-   prerecord → 새 runner 실행 → terminal exit/log evidence까지 Worker 개입
-   없이 동작할 수 있는 상태다.
+3. config를 선언한 repo가 나타나면(b2yx 이후 dotfiles) bootstrap CLI → spool
+   → 검증된 provenance prerecord → 새 runner 실행 → terminal exit/log
+   evidence까지 사람 개입이 CLI 실행 한 번뿐인 상태다.
 4. 실행 중 beads-ui self-restart에도 operation process가 생존해 exit code/log
    marker를 남기고, 재시작된 Worker가 같은 operation을 adoption한다.
 5. 사용자 checkout·legacy provider state·기존 UI/protocol 표면이 변경되지
