@@ -209,6 +209,37 @@ completion recovery lock은 기존 차단 조건을 유지한다.
 ## 배포와 완료
 
 변경은 현재 Bead의 PR에 server, frontend source, tests, rebuilt bundle을 함께 싣는다.
-이 저장소의 `docs/agents/repo-ops.toml` `[deploy]`가 merge 후 shared service restart를
-운반하므로 required no-PR residue는 없다. merge 후에는 실제 merged checkout 기반의
-process path, listening port, HTTP response를 확인해야 완료다.
+required no-PR residue는 없으며, merge 후 live apply는
+`docs/agents/repo-ops.toml`의 `[deploy]` 선언이 소유한
+`scripts/deploy-self.js`를 exact candidate release에서 실행하는 경로만 사용한다.
+
+적용 순서와 각 성공 경계는 다음과 같다.
+
+1. provider는 `BDUI_DEPLOY_TARGET_SHA`로 고정된 candidate에서 실행하고, 현재
+   checkout의 `HEAD`가 target SHA와 같으며 tracked worktree가 clean인지 확인한다.
+   불일치하면 runtime pointer를 건드리지 않고 중단한다.
+2. 같은 candidate에서 `npm ci`와 `npm run build`를 순서대로 실행한다. 어느 명령이든
+   실패하면 pointer publish 전에 중단하며, 기존 shared runtime은 유지된다.
+3. 검증된 candidate를 임시 symlink에 준비한 뒤 `rename`으로 runtime `current`
+   pointer를 atomic publish한다. publish 전 중단은 기존 pointer를 보존한다. 임시
+   pointer 준비나 rename이 실패하면 임시 항목을 정리하고 실패를 반환한다.
+4. publish 후 `bdui-shared restart`를 실행한다. restart 실패 시 성공으로 기록하지
+   않으며 pointer는 같은 candidate를 가리킨다. 이 상태는 같은 target SHA로 1단계부터
+   재실행해 안전하게 복구한다.
+5. restart 후 bounded `/healthz` polling으로 선언된 endpoint와 port의 HTTP 응답을
+   확인하고, 응답의 `runtime.source_sha`가 target SHA인지와
+   `runtime.source_repo`의 realpath가 candidate release path인지 검증한다. timeout,
+   HTTP 실패, SHA/path 불일치는 모두 terminal deploy failure이며 같은 candidate
+   replay가 복구 절차다.
+
+중단 시점이 pointer publish 전이면 이전 runtime이 그대로 남고, publish 이후라면
+pointer가 exact candidate를 유지한다. restart 이후 health readback 전에 실행이
+끊겨도 같은 candidate 적용을 다시 시작할 수 있다. provider는 bounded health 검증까지
+통과하기 전에는 deploy 성공을 기록하지 않으며, 실패 상태와 recovery evidence를
+durable하게 남긴다.
+
+provider 성공 뒤 controller의 최종 완료 검증은 `~/.config/bdui/config.toml` runtime
+설정 정합, 실제 shared process가 merged candidate 경로에서 실행되는지, 선언된
+listening port를 소유하는지, 해당 port의 `/healthz`가 target SHA/path와 함께
+응답하는지를 다시 읽는다. process 확인 출력은 PID, PPID, state와 sanitized executable
+name으로 제한한다. 이 readback을 모두 통과해야 작업 완료를 선언한다.
