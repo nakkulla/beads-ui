@@ -743,6 +743,24 @@ describe('worker/pr-poller — pure helpers', () => {
     expect(resolvePrRef(/** @type {any} */ (q), 'UI-1')?.number).toBe(304);
   });
 
+  test('resolvePrRef reads the durable pr_wait url without an attempt', () => {
+    const q = /** @type {any} */ (queueOf());
+    q.attempts = {};
+    q.pr_wait[0].pr_url = 'https://github.com/o/r/pull/777';
+
+    expect(resolvePrRef(q, 'UI-1')).toEqual({
+      number: 777,
+      url: 'https://github.com/o/r/pull/777'
+    });
+  });
+
+  test('resolvePrRef prefers the attempt over the durable pr_wait url', () => {
+    const q = /** @type {any} */ (queueOf());
+    q.pr_wait[0].pr_url = 'https://github.com/o/r/pull/777';
+
+    expect(resolvePrRef(q, 'UI-1')?.number).toBe(304);
+  });
+
   test('resolvePrRef returns null for a bead with no PR record', () => {
     expect(resolvePrRef(/** @type {any} */ (queueOf()), 'UI-9')).toBe(null);
   });

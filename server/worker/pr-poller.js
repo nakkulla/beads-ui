@@ -86,10 +86,11 @@ function prNumberFromUrl(url) {
  * survives a restart: the attempts are persisted even though the observation
  * cache is not.
  *
- * A bead with NO attempt at all — a PR a normal session delivered (UI-7agi §3)
- * — falls back to `external`, the row the registry derived from bd's own
- * `metadata.pr_url`. Attempts still win: when both exist the worker's own
- * record is the more specific one.
+ * A promoted external row can retain its PR url directly in durable `pr_wait`
+ * state after the bead closes and leaves the resolved-only registry. That row
+ * is the restart-safe fallback after attempts and before `external`, the row
+ * the registry derived from bd's own `metadata.pr_url`. Attempts still win:
+ * when both exist the worker's own record is the more specific one.
  *
  * @param {Queue} queue
  * @param {string} bead_id
@@ -132,6 +133,15 @@ export function resolvePrRef(queue, bead_id, external = null) {
   }
   if (best) {
     return { number: best.number, url: best.url };
+  }
+  const durable_row = (Array.isArray(queue?.pr_wait) ? queue.pr_wait : []).find(
+    (entry) => entry?.bead_id === bead_id
+  );
+  const durable_url =
+    typeof durable_row?.pr_url === 'string' ? durable_row.pr_url : '';
+  const durable_number = prNumberFromUrl(durable_url);
+  if (durable_number !== null) {
+    return { number: durable_number, url: durable_url };
   }
   if (!external) {
     return null;
