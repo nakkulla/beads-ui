@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Worker 대기 레인 재설계 목업</title>
+<style>
+  :root {
+    --bg-app: #0b0e14; --bg-panel: #11151d; --bg-card: #171c26; --bg-tile-run: #141d1a;
+    --border-card: #262e3d; --border-panel: #1e2530; --border-chip: #2a3342;
+    --border-tile-run: #2b4a3a; --border-warn: #4a3f2b; --border-info: #1e4a44;
+    --text-title: #dbe2ee; --text-primary: #c8d2e0; --text-secondary: #a9b4c6;
+    --text-muted: #8b96a8; --text-dim: #5c6778; --text-id-mono: #7ee2d8;
+    --text-gripline: #3a4356;
+    --stage-plan-on: #60a5fa; --stage-impl-on: #a78bfa; --stage-pr-on: #f472b6;
+    --stage-merge-on: #4ade80; --stage-spec-on: #2dd4bf;
+    --chip-blocked: #e8b45a; --accent-warn: #e8b45a; --accent-danger: #e8756a;
+    --accent-success: #5ad198;
+    --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg-app); color: var(--text-primary);
+    font: 13px/1.45 -apple-system, "Apple SD Gothic Neo", sans-serif;
+  }
+  .page { max-width: 1060px; margin: 0 auto; display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
+  h1 { font-size: 16px; color: var(--text-title); margin: 0 0 4px; }
+  .pagehead { width: 100%; margin-bottom: 6px; }
+  .pagehead p { margin: 0; color: var(--text-muted); font-size: 12px; }
+
+  .panel {
+    width: 480px; background: var(--bg-panel); border: 1px solid var(--border-panel);
+    border-radius: 10px; padding: 14px;
+  }
+  .panel-title { font-size: 12px; color: var(--text-dim); text-transform: none; margin: 0 0 10px; }
+
+  /* control bar */
+  .ctrl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .btn {
+    background: var(--bg-card); border: 1px solid var(--border-card); color: var(--text-primary);
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .btn--primary { border-color: var(--stage-plan-on); color: var(--stage-plan-on); }
+  .btn--analysis { border-color: var(--stage-impl-on); color: var(--stage-impl-on); }
+  .btn--ghost { border-color: transparent; color: var(--text-muted); }
+  .slots { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 12px; }
+  .slots input { width: 34px; background: var(--bg-card); border: 1px solid var(--border-card); color: var(--text-primary); border-radius: 4px; padding: 2px 4px; }
+  label.chk { display: inline-flex; gap: 4px; align-items: center; color: var(--text-muted); font-size: 12px; }
+
+  /* section headers */
+  .sect { display: flex; align-items: center; gap: 6px; margin: 14px 0 6px; color: var(--text-dim); font-size: 11px; }
+  .sect .cnt { color: var(--text-muted); }
+  .sect::after { content: ""; flex: 1; border-top: 1px solid var(--border-panel); }
+
+  /* rows */
+  .mini {
+    display: flex; align-items: flex-start; gap: 7px; margin-bottom: 6px; padding: 6px 9px;
+    border: 1px solid var(--border-card); border-radius: 7px; background: var(--bg-card); font-size: 12px;
+  }
+  .mini--run { background: var(--bg-tile-run); border-color: var(--border-tile-run); }
+  .mini--ghost { opacity: 0.55; }
+  .mini--selected { border-color: var(--stage-plan-on); background: color-mix(in srgb, var(--stage-plan-on) 8%, var(--bg-card)); }
+  .grip { color: var(--text-gripline); cursor: grab; flex: 0 0 auto; }
+  .sel { accent-color: var(--stage-plan-on); margin: 2px 0 0; flex: 0 0 auto; }
+  .ord { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border-chip);
+         color: var(--text-muted); font-size: 10px; display: inline-flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .id { color: var(--text-id-mono); font-family: var(--font-mono); flex: 0 0 auto; }
+  .ttl { color: var(--text-primary); min-width: 0; }
+  .chips { margin-left: auto; display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; }
+  .chip { border: 1px solid var(--border-chip); border-radius: 6px; padding: 0 6px; font-size: 10px; white-space: nowrap; color: var(--text-muted); }
+  .chip--run { border-color: var(--stage-merge-on); color: var(--stage-merge-on); }
+  .chip--pr { border-color: var(--stage-pr-on); color: var(--stage-pr-on); }
+  .chip--rec { border-color: var(--stage-impl-on); color: var(--stage-impl-on); }
+  .chip--blocked { border-color: var(--border-warn); color: var(--chip-blocked); }
+  .chip--legacy { border-color: var(--border-chip); color: var(--text-dim); text-decoration: line-through; }
+  .chip--auto { border-color: var(--border-info); color: var(--stage-spec-on); }
+
+  /* serial lane card */
+  .lane {
+    border: 1px solid var(--border-card); border-radius: 9px; padding: 8px 9px; margin-bottom: 10px;
+    background: color-mix(in srgb, var(--stage-plan-on) 3%, var(--bg-panel));
+  }
+  .lane__head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+  .lane--empty { border-style: dashed; background: transparent; }
+  .lane--empty .lane__head { margin-bottom: 0; }
+  .lane__name { color: var(--text-title); font-size: 12px; font-weight: 600; }
+  .lane__edit { color: var(--text-dim); cursor: pointer; font-size: 11px; }
+  .lane__state { margin-left: auto; font-size: 10px; }
+  .lane .mini { margin-bottom: 5px; }
+  .lane .mini:last-child { margin-bottom: 0; }
+
+  /* new-lane drop zone */
+  .dropzone {
+    border: 1px dashed var(--border-chip); border-radius: 8px; padding: 10px;
+    margin-top: 10px; text-align: center; color: var(--text-dim); font-size: 12px;
+  }
+  .draft .mini { margin-bottom: 5px; }
+  .rm { color: var(--text-dim); cursor: pointer; font-size: 11px; padding: 0 3px; }
+
+  /* analysis dialog */
+  .dlg { width: 480px; background: var(--bg-panel); border: 1px solid var(--stage-impl-on); border-radius: 10px; padding: 14px; }
+  .dlg__head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .dlg__title { color: var(--text-title); font-weight: 600; font-size: 13px; }
+  .meta { color: var(--text-dim); font-size: 11px; }
+  .group {
+    border: 1px solid var(--border-card); border-radius: 8px; padding: 9px 10px; margin-bottom: 10px; background: var(--bg-card);
+  }
+  .group__head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+  .group__verdict { color: var(--stage-impl-on); font-weight: 600; font-size: 12px; }
+  .order { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin: 6px 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-id-mono); }
+  .order .arrow { color: var(--text-dim); }
+  .reason { color: var(--text-secondary); font-size: 12px; margin: 4px 0; }
+  .evid { color: var(--text-dim); font-size: 10px; font-family: var(--font-mono); }
+  .group__foot { display: flex; justify-content: flex-end; margin-top: 8px; gap: 6px; }
+  .quiet { color: var(--text-muted); font-size: 12px; margin: 10px 0 4px; }
+
+  /* annotations */
+  .note { border-left: 2px solid var(--stage-spec-on); padding: 2px 8px; color: var(--text-muted); font-size: 11px; margin: 10px 0; }
+  .note b { color: var(--stage-spec-on); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="pagehead">
+    <h1>Worker 대기 레인 재설계 — 목업 (2026-08-13, UI-04vo respec)</h1>
+    <p>왼쪽: Worker 패널의 대기 영역(병렬 레인 + serial 레인 카드). 오른쪽: [병렬성 분석] 다이얼로그. 다크 테마 기준.</p>
+  </div>
+
+  <!-- ============ WORKER PANEL ============ -->
+  <div class="panel">
+    <p class="panel-title">Worker 패널 — 대기 영역</p>
+
+    <div class="ctrl">
+      <button class="btn btn--primary">▶ 자동 진행</button>
+      <button class="btn">⇥ 일괄 머지</button>
+      <span class="slots">슬롯 <input value="2"></span>
+      <span class="slots">직렬 레인 <select><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></span>
+      <button class="btn btn--analysis">✳ 병렬성 분석</button>
+      <button class="btn btn--ghost">⚙</button>
+    </div>
+
+    <div class="sect">실행 중 <span class="cnt">2/2</span></div>
+    <div class="mini mini--run">
+      <span class="id">UI-r1aa</span><span class="ttl">배포 saga 재정렬</span>
+      <span class="chips"><span class="chip chip--auto">직렬 1 · ①</span><span class="chip chip--run">실행 중</span></span>
+    </div>
+    <div class="mini mini--run">
+      <span class="id">UI-p9bb</span><span class="ttl">이슈 상세 blocks 표시</span>
+      <span class="chips"><span class="chip">병렬</span><span class="chip chip--run">실행 중</span></span>
+    </div>
+
+    <div class="sect">병렬 대기 <span class="cnt">3</span></div>
+    <div class="mini">
+      <span class="grip">⠿</span>      <span class="id">UI-ab12</span><span class="ttl">스냅샷 폴링 간격 조정</span>
+      <span class="chips"><span class="chip chip--rec">✳ serial 권장 · 직렬 2와</span></span>
+    </div>
+    <div class="mini">
+      <span class="grip">⠿</span>      <span class="id">UI-cd34</span><span class="ttl">토큰 사용량 집계 뷰</span>
+      <span class="chips"></span>
+    </div>
+    <div class="mini">
+      <span class="grip">⠿</span>      <span class="id">UI-ef56</span><span class="ttl">감사 로그 내보내기</span>
+      <span class="chips"><span class="chip chip--blocked">⏸ UI-p9bb 완료 대기 (blocks)</span></span>
+    </div>
+
+    <div class="note"><b>병렬 레인</b> = 기존 queue 그대로. blocked 이슈도 진입 가능하고 사유 chip이 붙으며, ready가 되면 자동 dispatch 대상. ✳ chip은 분석 추천 overlay(비강제).</div>
+
+    <div class="sect">serial 레인 <span class="cnt">2</span></div>
+
+    <div class="lane">
+      <div class="lane__head">
+        <span class="lane__name">직렬 1</span>
+        <span class="lane__state chip chip--run">① 실행 중 · 점유</span>
+      </div>
+      <div class="mini mini--ghost">
+        <span class="ord">1</span><span class="id">UI-r1aa</span><span class="ttl">배포 saga 재정렬</span>
+        <span class="chips"><span class="chip chip--run">실행 중</span></span>
+      </div>
+      <div class="mini">
+        <span class="grip">⠿</span>        <span class="ord">2</span><span class="id">UI-gh78</span><span class="ttl">재시작 receipt 검증 강화</span>
+        <span class="chips"></span>
+      </div>
+      <div class="mini">
+        <span class="grip">⠿</span>        <span class="ord">3</span><span class="id">UI-ij90</span><span class="ttl">배포 상태 배너 정리</span>
+        <span class="chips"><span class="chip chip--auto">🔗 UI-gh78 뒤 (blocks 자동)</span></span>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane__head">
+        <span class="lane__name">직렬 2</span>
+        <span class="lane__state chip">대기</span>
+      </div>
+      <div class="mini">
+        <span class="grip">⠿</span>        <span class="ord">1</span><span class="id">UI-kl12</span><span class="ttl">queue.json v3 마이그레이션</span>
+        <span class="chips"></span>
+      </div>
+      <div class="mini">
+        <span class="grip">⠿</span>        <span class="ord">2</span><span class="id">UI-mn34</span><span class="ttl">attempt 스키마 정리</span>
+        <span class="chips"><span class="chip chip--legacy">머지까지 단독</span></span>
+      </div>
+    </div>
+
+    <div class="lane lane--empty">
+      <div class="lane__head">
+        <span class="lane__name">직렬 3</span>
+        <span class="lane__state meta">비어 있음 — 행을 여기로 드래그</span>
+      </div>
+    </div>
+
+    <div class="note"><b>직렬 레인 = 고정 슬롯.</b> 병렬 레인이 항상 맨 위, 직렬 레인은 컨트롤 바 dropdown으로 개수만 조절(기본 2). 레인 안은 ①→②→③ 순차(이전 항목 머지·정리/폐기까지), 레인끼리·병렬 레인과는 동시 진행, 전역 슬롯 캡만 공통. 실행 중 head는 흐린 ghost로 점유 표시. 빈 레인은 접힌 드롭 타깃. 인터랙션은 ⠿ 드래그 하나 — 체크박스·일괄 dropdown 없음, blocks 위반 드래그는 서버가 보정하고 🔗 chip으로 알림. 취소선 chip은 은퇴한 worker-serial 라벨의 표시 전용 잔재.</div>
+  </div>
+
+  <!-- ============ ANALYSIS DIALOG ============ -->
+  <div class="dlg">
+    <div class="dlg__head">
+      <span class="dlg__title">✳ 병렬성 분석</span>
+      <span class="chip">codex · gpt-5.3 · high</span>
+      <span class="meta">base 1af3ee2 · 대상 7건 · 5분 전 · 캐시</span>
+      <span style="margin-left:auto"><button class="btn">재분석</button></span>
+    </div>
+
+    <div class="group">
+      <div class="group__head">
+        <span class="group__verdict">serial 권장</span>
+        <span class="chip chip--rec">high</span>
+        <span class="chip">shared_deploy_surface</span>
+      </div>
+      <div class="draft">
+        <div class="mini"><span class="grip">⠿</span><span class="ord">1</span><span class="id">UI-ab12</span><span class="ttl">스냅샷 폴링 간격 조정</span><span class="chips"><span class="rm">✕</span></span></div>
+        <div class="mini"><span class="grip">⠿</span><span class="ord">2</span><span class="id">UI-kl12</span><span class="ttl">queue.json v3 마이그레이션</span><span class="chips"><span class="rm">✕</span></span></div>
+        <div class="mini"><span class="grip">⠿</span><span class="ord">3</span><span class="id">UI-mn34</span><span class="ttl">attempt 스키마 정리</span><span class="chips"><span class="chip">직렬 2에 있음</span><span class="rm">✕</span></span></div>
+      </div>
+      <div class="reason">세 이슈 모두 queue.json 스키마와 워커 재시작 경로를 수정. 동시 머지 시 마이그레이션 순서 충돌.</div>
+      <div class="evid">spec: 2026-08-12-workspace-snapshot-polling-design.md §3 · plan: …-worker-parallelism… §Phase 2</div>
+      <div class="group__foot">
+        <span class="meta">편집됨 · 원래 제안: 3건</span>
+        <button class="btn btn--ghost">제안으로 되돌리기</button>
+        <span class="slots">제출: <select><option selected>직렬 3 (비어 있음)</option><option>직렬 2 뒤에 추가</option></select></span>
+        <button class="btn btn--primary">제출</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group__head">
+        <span class="group__verdict">serial 권장</span>
+        <span class="chip chip--rec">high</span>
+        <span class="chip">canonical_contract</span>
+      </div>
+      <div class="order"><span>UI-gh78</span><span class="arrow">→</span><span>UI-ij90</span></div>
+      <div class="reason">동일 계약 문서 표면을 수정. 이미 직렬 1에 같은 순서로 배치되어 있음.</div>
+      <div class="evid">spec: …-repo-deployment-job-design.md §deploy</div>
+      <div class="group__foot">
+        <span class="chip chip--auto">✓ 이미 반영됨</span>
+      </div>
+    </div>
+
+    <p class="quiet">병렬 무방 2건 · 불확실 1건 (UI-ef56 — plan 미발행, 근거 부족)</p>
+
+    <div class="note"><b>추천은 편집 가능한 초안, 비강제.</b> 그룹 카드 안에서 ⠿ 드래그로 순서 변경, ✕로 멤버 제외 후 제출 대상 직렬 레인을 골라 [제출] — 그때 큐 상태(레인 배치)만 바뀌고 bd 라벨·의존성은 건드리지 않음. 기본 제출 대상은 첫 빈 직렬 레인, 없으면 기존 레인 뒤에 추가하거나 레인 수를 늘리라고 안내. 실행 중/pr_wait 항목은 분석 문맥으로만 표시되고 적용 대상에서 제외. base·artifact가 바뀌면 stale 표시 후 적용 비활성.</div>
+  </div>
+</div>
+</body>
+</html>
