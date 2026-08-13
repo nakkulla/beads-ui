@@ -313,6 +313,38 @@
  * empty map; every non-done operation fences its bead from other drivers.
  * @property {DeploymentObservation|null} deployment - The current external
  * deployment-provider observation. It is repo-level, not a PR-row result.
+ * @property {boolean} auto_repair - Whether a terminal RepoOperation may ask
+ * the later repair adapter to dispatch. This unit stores the setting only.
+ * @property {Record<string, RepoOperation>} repo_operations - Worker-owned
+ * one-shot repository operation journal.
+ */
+/**
+ * @typedef {Object} RepoOperation
+ * @property {number} schema
+ * @property {string} repo_id
+ * @property {'verify'|'deploy'} kind
+ * @property {{ bead_id: string, merged_sha: string }[]} subjects
+ * @property {string} effective_base_sha
+ * @property {string} target_base
+ * @property {string|null} target_sha
+ * @property {string|null} target_tree
+ * @property {string|null} deploy_worktree
+ * @property {string} script_mode
+ * @property {string} script_blob_sha
+ * @property {'queued'|'running'|'succeeded'|'failed'|'repairing'} state
+ * @property {string} attempt_id
+ * @property {number} requested_at
+ * @property {number|null} started_at
+ * @property {number|null} finished_at
+ * @property {{ pid: number, pgid: number, started_at: number }|null} process_identity
+ * @property {string|null} log_path
+ * @property {string|null} log_digest
+ * @property {number|null} exit_code
+ * @property {string|null} signal
+ * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean }|null} failure
+ * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null }} repair
+ * @property {string|null} superseded_by
+ * @property {{ approved_source_path: string, approved_source_sha: string, requested_by: string, requested_at: number }|null} bootstrap_provenance
  */
 /**
  * @typedef {Object} DeploymentObservation
@@ -1047,7 +1079,9 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'drift_policy',
   'worker_runner',
   'review_model',
-  'ship_failure'
+  'ship_failure',
+  'auto_repair',
+  'repo_operations'
 ]);
 
 /**
@@ -1072,7 +1106,9 @@ function emptyQueue() {
     auto_merge_skips: {},
     completion_intents: {},
     discard_operations: {},
-    deployment: null
+    deployment: null,
+    auto_repair: true,
+    repo_operations: {}
   };
 }
 
@@ -1702,6 +1738,142 @@ function migrateLegacyStopped(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {RepoOperation|null}
+ */
+function normalizeRepoOperation(value) {
+  if (
+    !isRecord(value) ||
+    value.schema !== 1 ||
+    (value.kind !== 'verify' && value.kind !== 'deploy') ||
+    typeof value.repo_id !== 'string' ||
+    typeof value.effective_base_sha !== 'string' ||
+    typeof value.target_base !== 'string' ||
+    typeof value.script_mode !== 'string' ||
+    typeof value.script_blob_sha !== 'string' ||
+    !['queued', 'running', 'succeeded', 'failed', 'repairing'].includes(
+      String(value.state)
+    ) ||
+    typeof value.attempt_id !== 'string'
+  ) {
+    return null;
+  }
+  const subjects = Array.isArray(value.subjects)
+    ? value.subjects
+        .filter(
+          (subject) =>
+            isRecord(subject) &&
+            typeof subject.bead_id === 'string' &&
+            isSha(subject.merged_sha)
+        )
+        .map((subject) => ({
+          bead_id: String(subject.bead_id),
+          merged_sha: String(subject.merged_sha).toLowerCase()
+        }))
+    : [];
+  if (subjects.length === 0) {
+    return null;
+  }
+  const repair_raw = isRecord(value.repair) ? value.repair : {};
+  const provenance_raw = isRecord(value.bootstrap_provenance)
+    ? value.bootstrap_provenance
+    : null;
+  const failure_raw = isRecord(value.failure) ? value.failure : null;
+  const identity_raw = isRecord(value.process_identity)
+    ? value.process_identity
+    : null;
+  return {
+    schema: 1,
+    repo_id: value.repo_id,
+    kind: value.kind,
+    subjects,
+    effective_base_sha: value.effective_base_sha.toLowerCase(),
+    target_base: value.target_base,
+    target_sha: isSha(value.target_sha) ? value.target_sha.toLowerCase() : null,
+    target_tree: isSha(value.target_tree)
+      ? value.target_tree.toLowerCase()
+      : null,
+    deploy_worktree:
+      typeof value.deploy_worktree === 'string' ? value.deploy_worktree : null,
+    script_mode: value.script_mode,
+    script_blob_sha: value.script_blob_sha.toLowerCase(),
+    state: /** @type {RepoOperation['state']} */ (value.state),
+    attempt_id: value.attempt_id,
+    requested_at:
+      typeof value.requested_at === 'number' ? value.requested_at : 0,
+    started_at: typeof value.started_at === 'number' ? value.started_at : null,
+    finished_at:
+      typeof value.finished_at === 'number' ? value.finished_at : null,
+    process_identity:
+      identity_raw &&
+      Number.isInteger(identity_raw.pid) &&
+      Number.isInteger(identity_raw.pgid) &&
+      typeof identity_raw.started_at === 'number'
+        ? {
+            pid: Number(identity_raw.pid),
+            pgid: Number(identity_raw.pgid),
+            started_at: identity_raw.started_at
+          }
+        : null,
+    log_path: typeof value.log_path === 'string' ? value.log_path : null,
+    log_digest: typeof value.log_digest === 'string' ? value.log_digest : null,
+    exit_code: Number.isInteger(value.exit_code)
+      ? Number(value.exit_code)
+      : null,
+    signal: typeof value.signal === 'string' ? value.signal : null,
+    failure:
+      failure_raw && typeof failure_raw.code === 'string'
+        ? {
+            code: failure_raw.code,
+            fingerprint:
+              typeof failure_raw.fingerprint === 'string'
+                ? failure_raw.fingerprint
+                : '',
+            detail:
+              typeof failure_raw.detail === 'string' ? failure_raw.detail : '',
+            interrupted: failure_raw.interrupted === true
+          }
+        : null,
+    repair: {
+      chain_id:
+        typeof repair_raw.chain_id === 'string' ? repair_raw.chain_id : null,
+      owner_bead:
+        typeof repair_raw.owner_bead === 'string'
+          ? repair_raw.owner_bead
+          : null,
+      auto_budget: 1,
+      auto_used:
+        Number.isInteger(repair_raw.auto_used) &&
+        Number(repair_raw.auto_used) >= 0
+          ? Number(repair_raw.auto_used)
+          : 0,
+      session_id:
+        typeof repair_raw.session_id === 'string'
+          ? repair_raw.session_id
+          : null,
+      attempt_id:
+        typeof repair_raw.attempt_id === 'string' ? repair_raw.attempt_id : null
+    },
+    superseded_by:
+      typeof value.superseded_by === 'string' ? value.superseded_by : null,
+    bootstrap_provenance:
+      provenance_raw &&
+      typeof provenance_raw.approved_source_path === 'string' &&
+      isSha(provenance_raw.approved_source_sha) &&
+      typeof provenance_raw.requested_by === 'string' &&
+      typeof provenance_raw.requested_at === 'number'
+        ? {
+            approved_source_path: provenance_raw.approved_source_path,
+            approved_source_sha:
+              provenance_raw.approved_source_sha.toLowerCase(),
+            requested_by: provenance_raw.requested_by,
+            requested_at: provenance_raw.requested_at
+          }
+        : null
+  };
+}
+
+/**
  * @param {unknown} raw
  * @returns {Queue}
  */
@@ -1855,6 +2027,17 @@ function normalizeQueue(raw) {
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
   q.deployment = normalizeDeploymentObservation(raw.deployment);
+  q.auto_repair = raw.auto_repair !== false;
+  if (isRecord(raw.repo_operations)) {
+    for (const [operation_id, operation] of Object.entries(
+      raw.repo_operations
+    )) {
+      const normalized = normalizeRepoOperation(operation);
+      if (normalized) {
+        q.repo_operations[operation_id] = normalized;
+      }
+    }
+  }
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
 }
@@ -2951,6 +3134,288 @@ export function createQueueStore(options = {}) {
       const { expected_revision, on } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         next.auto_advance = !!on;
+        return true;
+      });
+    },
+
+    /**
+     * Persist the independent RepoOperation repair policy without dispatching
+     * any work.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, on: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    toggleAutoRepair(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        next.auto_repair = input.on === true;
+        return true;
+      });
+    },
+
+    /**
+     * Create or adopt a durable queued operation. This is the write-ahead
+     * record the coordinator must receive before it asks the runner to spawn.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, script_mode: string, script_blob_sha: string, attempt_id?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @returns {QueueOpResult}
+     */
+    ensureRepoOperation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        if (
+          !input.operation_id ||
+          !input.repo_id ||
+          !isSha(input.effective_base_sha) ||
+          !isSha(input.script_blob_sha) ||
+          !Array.isArray(input.subjects) ||
+          input.subjects.length === 0 ||
+          (input.kind !== 'verify' && input.kind !== 'deploy')
+        ) {
+          return false;
+        }
+        const existing = next.repo_operations[input.operation_id];
+        if (existing) {
+          if (
+            existing.repo_id !== input.repo_id ||
+            existing.kind !== input.kind ||
+            existing.effective_base_sha !==
+              input.effective_base_sha.toLowerCase() ||
+            existing.script_blob_sha !== input.script_blob_sha.toLowerCase()
+          ) {
+            return false;
+          }
+          const uncovered = [];
+          for (const subject of input.subjects) {
+            if (
+              typeof subject.bead_id !== 'string' ||
+              !isSha(subject.merged_sha)
+            ) {
+              return false;
+            }
+            if (
+              !existing.subjects.some(
+                (item) =>
+                  item.bead_id === subject.bead_id &&
+                  item.merged_sha === subject.merged_sha.toLowerCase()
+              )
+            ) {
+              uncovered.push({
+                bead_id: subject.bead_id,
+                merged_sha: subject.merged_sha.toLowerCase()
+              });
+            }
+          }
+          if (existing.state !== 'queued') {
+            return true;
+          }
+          for (const subject of uncovered) {
+            existing.subjects.push({
+              bead_id: subject.bead_id,
+              merged_sha: subject.merged_sha
+            });
+          }
+          return true;
+        }
+        const subjects = input.subjects.map((subject) => ({
+          bead_id: subject.bead_id,
+          merged_sha: subject.merged_sha.toLowerCase()
+        }));
+        if (
+          subjects.some(
+            (subject) =>
+              typeof subject.bead_id !== 'string' || !isSha(subject.merged_sha)
+          )
+        ) {
+          return false;
+        }
+        next.repo_operations[input.operation_id] = {
+          schema: 1,
+          repo_id: input.repo_id,
+          kind: input.kind,
+          subjects,
+          effective_base_sha: input.effective_base_sha.toLowerCase(),
+          target_base: input.target_base,
+          target_sha: null,
+          target_tree: null,
+          deploy_worktree: null,
+          script_mode: input.script_mode,
+          script_blob_sha: input.script_blob_sha.toLowerCase(),
+          state: 'queued',
+          attempt_id: input.attempt_id || `${input.operation_id}:${now()}`,
+          requested_at: now(),
+          started_at: null,
+          finished_at: null,
+          process_identity: null,
+          log_path: null,
+          log_digest: null,
+          exit_code: null,
+          signal: null,
+          failure: null,
+          repair: {
+            chain_id: null,
+            owner_bead: null,
+            auto_budget: 1,
+            auto_used: 0,
+            session_id: null,
+            attempt_id: null
+          },
+          superseded_by: null,
+          bootstrap_provenance: input.bootstrap_provenance ?? null
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Bind a live detached process to the pre-recorded operation.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, deploy_worktree?: string }} input
+     * @returns {QueueOpResult}
+     */
+    startRepoOperation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (
+          !operation ||
+          operation.attempt_id !== input.attempt_id ||
+          (operation.state !== 'queued' && operation.state !== 'running') ||
+          !input.process_identity ||
+          typeof input.log_path !== 'string'
+        ) {
+          return false;
+        }
+        operation.state = 'running';
+        operation.started_at = operation.started_at ?? now();
+        operation.process_identity = input.process_identity;
+        operation.log_path = input.log_path;
+        if (isSha(input.target_sha))
+          operation.target_sha = input.target_sha.toLowerCase();
+        if (typeof input.deploy_worktree === 'string')
+          operation.deploy_worktree = input.deploy_worktree;
+        return true;
+      });
+    },
+
+    /**
+     * Idempotently settle one terminal attempt. Duplicate markers never alter
+     * a previously terminal record.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, owner_bead?: string }} input
+     * @returns {QueueOpResult}
+     */
+    settleRepoOperation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.attempt_id !== input.attempt_id)
+          return false;
+        if (operation.state === 'succeeded' || operation.state === 'failed')
+          return true;
+        operation.exit_code = Number.isInteger(input.exit_code)
+          ? input.exit_code
+          : null;
+        operation.signal =
+          typeof input.signal === 'string' ? input.signal : null;
+        operation.log_digest = input.log_digest ?? operation.log_digest;
+        operation.finished_at = now();
+        operation.process_identity = null;
+        if (operation.exit_code === 0 && !operation.signal && !input.failure) {
+          operation.state = 'succeeded';
+          operation.failure = null;
+        } else {
+          operation.state = 'failed';
+          operation.failure = input.failure ?? {
+            code: 'runner_failed',
+            fingerprint: '',
+            detail: '',
+            interrupted: false
+          };
+          operation.repair.chain_id =
+            operation.repair.chain_id || input.operation_id;
+          const requested_owner = operation.subjects.some(
+            (subject) => subject.bead_id === input.owner_bead
+          )
+            ? input.owner_bead
+            : null;
+          operation.repair.owner_bead =
+            operation.repair.owner_bead ||
+            requested_owner ||
+            [...operation.subjects].sort((left, right) =>
+              left.bead_id.localeCompare(right.bead_id)
+            )[0]?.bead_id ||
+            null;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Attach validated bootstrap provenance and create a fresh attempt only
+     * when the prior record is the provenance-less failed bootstrap record.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, provenance: NonNullable<RepoOperation['bootstrap_provenance']>, attempt_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    attachRepoOperationBootstrap(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (
+          !operation ||
+          operation.bootstrap_provenance ||
+          operation.state !== 'failed'
+        )
+          return false;
+        operation.bootstrap_provenance = input.provenance;
+        operation.state = 'queued';
+        operation.attempt_id = input.attempt_id;
+        operation.started_at = null;
+        operation.finished_at = null;
+        operation.failure = null;
+        operation.process_identity = null;
+        return true;
+      });
+    },
+
+    /**
+     * Carry one repair chain into a newly prerecorded successor without giving
+     * it a fresh automatic-repair budget.
+     *
+     * @param {string} workspace
+     * @param {{ from_operation_id: string, to_operation_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    inheritRepoOperationChain(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const from = next.repo_operations[input.from_operation_id];
+        const to = next.repo_operations[input.to_operation_id];
+        if (!from || !to) {
+          return false;
+        }
+        const chain_id = from.repair.chain_id || input.from_operation_id;
+        if (to.repair.chain_id && to.repair.chain_id !== chain_id) {
+          return false;
+        }
+        to.repair.chain_id = chain_id;
+        to.repair.owner_bead = from.repair.owner_bead;
+        to.repair.auto_used = from.repair.auto_used;
+        from.superseded_by = input.to_operation_id;
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ operation_id: string, successor_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    supersedeRepoOperation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.superseded_by) return false;
+        operation.superseded_by = input.successor_id;
         return true;
       });
     },

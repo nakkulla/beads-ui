@@ -15,9 +15,10 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
+import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
 
 /**
- * @typedef {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRunner
+ * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRunner
  */
 
 /**
@@ -653,4 +654,185 @@ export function createWorktreeManager(deps) {
       }
     }
   };
+}
+
+/**
+ * Create the permanent, detached deploy worktree manager. It intentionally
+ * does not share the session-worktree namespace: the fixed path is protected
+ * by a durable ownership journal as well as Git's own registration record.
+ *
+ * @param {{ locks: { repoOperationLock: (repo: string) => Promise<() => void>, topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), journalPath?: (workspace: string) => string }} deps
+ */
+export function createRepoOpsDeployWorktreeManager(deps) {
+  const fs = deps.fs || nodeFs;
+  /** @type {GitRunner} */
+  const run = deps.run || ((args, options) => runShell('git', args, options));
+  const journalPath = deps.journalPath || repoOpsDeployWorktreeJournalPath;
+
+  /**
+   * @param {string} repo
+   */
+  function pathFor(repo) {
+    return path.resolve(repo, '.worktrees', '.repo-ops-deploy');
+  }
+
+  /**
+   * @param {string} file
+   * @param {unknown} value
+   */
+  function persistJournal(file, value) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temp = `${file}.tmp`;
+    fs.writeFileSync(temp, JSON.stringify(value));
+    fs.renameSync(temp, file);
+  }
+
+  /**
+   * @param {string} file
+   */
+  function readJournal(file) {
+    try {
+      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return value && typeof value === 'object' ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * @param {string} stdout
+   */
+  function registeredPaths(stdout) {
+    return stdout
+      .split('\0')
+      .filter((line) => line.startsWith('worktree '))
+      .map((line) => path.resolve(line.slice('worktree '.length)));
+  }
+
+  /**
+   * @param {{ repo: string, base: string, workspace?: string, last_successful_sha?: string|null }} input
+   */
+  async function ensure(input) {
+    const repo = fs.realpathSync(path.resolve(input.repo));
+    const deploy_path = pathFor(repo);
+    const workspace = input.workspace || repo;
+    const release_operation = await deps.locks.repoOperationLock(repo);
+    try {
+      let fetch_result = await run(['fetch', 'origin', input.base], {
+        cwd: repo,
+        timeout_ms: 30_000
+      });
+      if (fetch_result.code === 124) {
+        fetch_result = await run(['fetch', 'origin', input.base], {
+          cwd: repo,
+          timeout_ms: 30_000
+        });
+      }
+      if (fetch_result.code !== 0) {
+        return { ok: false, code: 'repo_ops_fetch_failed' };
+      }
+      const target_result = await run(
+        ['rev-parse', `refs/remotes/origin/${input.base}^{commit}`],
+        { cwd: repo }
+      );
+      const target_sha =
+        target_result.code === 0
+          ? target_result.stdout.trim().toLowerCase()
+          : '';
+      if (!/^[0-9a-f]{40}$/.test(target_sha)) {
+        return { ok: false, code: 'repo_ops_target_unresolved' };
+      }
+      if (input.last_successful_sha) {
+        const containment = await run(
+          [
+            'merge-base',
+            '--is-ancestor',
+            input.last_successful_sha,
+            target_sha
+          ],
+          { cwd: repo }
+        );
+        if (containment.code === 1)
+          return { ok: false, code: 'remote_history_not_monotonic' };
+        if (containment.code !== 0)
+          return { ok: false, code: 'repo_ops_ancestry_check_failed' };
+      }
+      const journal_file = journalPath(workspace);
+      const journal = readJournal(journal_file);
+      const list = await run(['worktree', 'list', '--porcelain', '-z'], {
+        cwd: repo
+      });
+      const registered =
+        list.code === 0 && registeredPaths(list.stdout).includes(deploy_path);
+      const exists = fs.existsSync(deploy_path);
+      if (exists || registered || journal) {
+        const common_repo = await run(
+          ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+          {
+            cwd: repo
+          }
+        );
+        const common_deploy = exists
+          ? await run(
+              ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+              { cwd: deploy_path }
+            )
+          : { code: 1, stdout: '' };
+        const head = exists
+          ? await run(['symbolic-ref', '-q', 'HEAD'], { cwd: deploy_path })
+          : { code: 1 };
+        const journal_owned =
+          journal && journal.repo === repo && journal.path === deploy_path;
+        const common_equal =
+          common_repo.code === 0 &&
+          common_deploy.code === 0 &&
+          path.resolve(repo, common_repo.stdout.trim()) ===
+            path.resolve(deploy_path, common_deploy.stdout.trim());
+        if (
+          !exists ||
+          !registered ||
+          !journal_owned ||
+          !common_equal ||
+          head.code === 0
+        ) {
+          return { ok: false, code: 'repo_ops_worktree_unowned' };
+        }
+      } else {
+        const release_topology = await deps.locks.topologyLock(repo);
+        try {
+          const added = await run(
+            ['worktree', 'add', '--detach', deploy_path, target_sha],
+            { cwd: repo }
+          );
+          if (added.code !== 0)
+            return { ok: false, code: 'repo_ops_worktree_create_failed' };
+          persistJournal(journal_file, { repo, path: deploy_path });
+        } finally {
+          release_topology();
+        }
+      }
+      const reset = await run(['reset', '--hard', target_sha], {
+        cwd: deploy_path
+      });
+      const clean = await run(['clean', '-ffd'], { cwd: deploy_path });
+      const current = await run(['rev-parse', 'HEAD'], { cwd: deploy_path });
+      const dirty = await run(
+        ['status', '--porcelain', '--untracked-files=all'],
+        { cwd: deploy_path }
+      );
+      if (
+        reset.code !== 0 ||
+        clean.code !== 0 ||
+        current.stdout.trim().toLowerCase() !== target_sha ||
+        dirty.stdout.trim() !== ''
+      ) {
+        return { ok: false, code: 'repo_ops_worktree_align_failed' };
+      }
+      return { ok: true, path: deploy_path, target_sha };
+    } finally {
+      release_operation();
+    }
+  }
+
+  return { pathFor, ensure };
 }
