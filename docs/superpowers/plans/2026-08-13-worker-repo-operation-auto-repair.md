@@ -65,6 +65,52 @@
   모두 `.worktrees/.repo-ops-deploy` 미생성. train_bot/TRACE-ICI에 repo-ops
   없음.
 
+### 완주 계약 (2026-08-14 사용자 지시로 채택, fast_track)
+
+이 계획의 실행은 dotfiles 스펙
+`docs/superpowers/specs/2026-08-14-fast-track-autonomous-finish-v3-design.md`
+(Bead `dotfiles-5864`)의 이슈 생애주기를 따른다. 그 스펙 §10은 진행 중 이슈의
+소급 재구성을 비목표로 두지만, **사용자가 2026-08-14 현재 발화로 UI-vobi에
+적용을 지시**했으므로 그 지시가 우선한다.
+
+- **부모 워크트리 단일화(§3.1)**: 이슈 전체를 `.worktrees/UI-vobi` 하나에서
+  수행하고 branch는 `UI-vobi`로 고정한다(basename==branch 유지). **phase child는
+  워크트리·브랜치를 갖지 않는다.** 예외는 둘뿐이다 — enclosed cross-repo landing의
+  임시 detached 워크트리(Phase 1·6·7·9), Worker 소유 `.worktrees/.repo-ops-deploy`.
+- **누적 기본(§3.2)**: seal된 phase의 커밋은 부모 브랜치에 남고 base 반영은
+  미룬다. phase마다 PR을 만들지 않는다 — 아래 `landing:` 힌트가 있는 phase만
+  중간 합류한다.
+- **중간 landing은 선언된 phase만, 세션이 자체 수행(§3.3)**: `landing: direct`는
+  PR 없이 clean integration 워크트리에서 squash·검증·push한다. landing 대상은
+  부모 브랜치의 **현재 누적 전체**이며 부분 landing은 없다. landing 후 부모
+  브랜치를 landed tip으로 재정렬하고 누적을 비운다. 안전 조건 6항(ancestry,
+  content equality, focused verification green, seal receipt, fail-closed,
+  repo-ops terminal evidence)과 재정렬 전건 확인은 스펙 §3.3 그대로다.
+- **최종 PR 1개(§3.4)**: 마지막 phase seal 후 이슈 통합 diff에 대해
+  implementation gate 1회를 돌리고, PR을 하나 만들어 완료 보고·`pr_url` 기록 후
+  PR Delivery stop한다. 사람 접점은 이 PR 하나뿐이다.
+- **위임 단위는 phase 하나(2026-08-14 사용자 지시)**: 그룹 A/B/C 같은 phase 내부
+  경계는 *부분 완료 시 재개 지점*이지 dispatch 단위가 아니다.
+- **모드는 `fast_track`**: 게이트 질문 없이 완주하며, 정지 지점은 hard stop 5종과
+  최종 PR Delivery stop뿐이다.
+
+#### phase별 landing 힌트
+
+| phase | landing | 사유 |
+| --- | --- | --- |
+| 1 | — | enclosed foreign(dotfiles). 부모 브랜치 누적 대상이 아니다. |
+| 2 | 없음(누적) | 구조적 필요 없음. |
+| 3 | `direct` | 수용 증거가 **실제 workspace queue의 migration schema version·result record readback과 재시작 후 adoption 실측**이라 코드가 배포되어 돌아야 한다. 배포는 merged base 정책을 읽으므로 merged 상태가 전제다. |
+| 4 | 없음(누적) | seam 테스트로 검증이 닫힌다. |
+| 5 | `direct` | 자기 배포 경로 전환. 첫 self-deploy가 **previous base에 pin된 정책**을 읽고 `.worktrees/.repo-ops-deploy`에서 실행되므로 merged 상태 없이는 성립하지 않는다(계획 본문도 "merge 후 첫 self-deploy"로 전제한다). |
+| 6·7·9 | — | enclosed foreign(train_bot·TRACE-ICI·dotfiles). 부모 브랜치 누적 대상이 아니다. |
+| 8 | 없음(누적) | 제거와 checker로 검증이 닫힌다. |
+| 10 | 금지 | 마지막 phase는 landing 힌트를 가질 수 없다(스펙 §4.1). 최종 PR이 비지 않도록 누적을 강제한다. |
+
+Phase 3의 landing은 Phase 2+3 누적 전체를, Phase 5의 landing은 Phase 4+5 누적
+전체를 대상으로 한다. 최종 PR에는 Phase 6~10의 누적분(코드 몫은 주로 Phase 8)이
+담긴다.
+
 ### 실행 규칙 (모든 phase 공통)
 
 - **compat dual-lane**: Phase 2~7 구간에서 post-merge owner는 fetched
@@ -72,9 +118,9 @@
   lane, 없는 repo는 기존 legacy lane을 그대로 탄다. Phase 8 전까지 모든
   config-absent repo는 legacy lane을 유지하며, legacy lane 코드 제거는 Phase
   8에서만 한다. 실패 시 현재 phase에서 멈추고 이전 runtime path를 보존한다.
-- **effective policy pinning**: 각 phase PR 자신의 배포는 previous target-base
-  SHA에 pin된 정책으로 수행된다(PR이 자기 verify/deploy를 정의할 수 없음).
-  이전 정책에 deploy가 없던 첫 실행은 approved bootstrap CLI만 입구다.
+- **effective policy pinning**: 각 landing 자신의 배포는 previous target-base
+  SHA에 pin된 정책으로 수행된다(합류하는 변경이 자기 verify/deploy를 정의할 수
+  없음). 이전 정책에 deploy가 없던 첫 실행은 approved bootstrap CLI만 입구다.
 - **enclosed foreign 단위**(Phase 1·6·7·9): master spec §14과 승인된
   ledger(`enclosed:UI-vobi`)에 따라 새 Bead/PR 없이 resolved target base에
   direct landing한다. 각 landing 전에 target repo abspath·resolved base와
@@ -82,11 +128,11 @@
   actual tip/landed tip/owned commit SHA를 UI-vobi notes에 기록한다. user
   checkout의 HEAD/index/tracked/untracked를 전후 snapshot으로 비교해 불변임을
   증명한다(§18.12).
-- **beads-ui PR phase의 공통 검증**: Phase 2·3·4·5·8은 해당 worktree에서 AGENTS
+- **beads-ui 코드 phase의 공통 검증**: Phase 2·3·4·5·8은 부모 워크트리에서 AGENTS
   Pre-Handoff Validation(`node --version` engines 정합·`npm ls --depth=0`·
   `npm run tsc`·`npm test`·`npm run lint`·`npm run prettier:write`)을 수행하고,
   frontend 변경이 있으면 `npm run build` 후 `app/main.bundle.js`/`.map`을 같은
-  PR에 포함한다. 마지막 phase의 전체 검증은 앞 phase의 seal 조건을 대신하지
+  커밋에 포함한다. 마지막 phase의 전체 검증은 앞 phase의 seal 조건을 대신하지
   않는다.
 - 각 phase 완료는 이전 phase의 exact commit·terminal exit/log·readback
   evidence를 다음 phase input으로 pin한다.
@@ -124,8 +170,9 @@ receipt, user checkout snapshot 전후 불변.
 
 ## Phase 2: merge 판정·verify·post-merge lane 전환 (§15-4, §7, §8, §12)
 
-beads-ui PR 하나. 같은 저장소·같은 검증 번들·순차 dependency로 이어지는 세
-작업을 한 seal 단위로 묶는다. 재개 지점은 그룹 A→B→C 경계다.
+부모 브랜치 누적. 같은 저장소·같은 검증 번들·순차 dependency로 이어지는 세
+작업을 한 seal 단위로 묶는다. **위임은 이 phase 전체가 한 단위**이며, 그룹
+A→B→C 경계는 부분 완료 시 재개 지점일 뿐이다.
 
 **그룹 A — no-CI merge eligibility (§12)**
 
@@ -180,8 +227,11 @@ close 전 success 요구) + 기존 legacy suite 무수정 green.
 
 `실행: main(durable queue schema/data를 1회 변환하는 되돌리기 어려운 효과와 그
 수렴 readback 통제)`
+`landing: direct(수용 증거가 실제 workspace queue readback과 재시작 adoption
+실측이라 배포된 코드가 필요하고, 배포는 merged base 정책을 읽는다)`
 
-beads-ui PR. 새 runtime 첫 부팅에서 1회 실행되며 dual-read 종료를 준비한다.
+seal 후 Phase 2+3 누적 전체를 direct landing한다. 새 runtime 첫 부팅에서 1회
+실행되며 dual-read 종료를 준비한다.
 Phase 2가 만든 새 lane이 legacy record를 인수하는 단계다.
 
 1. canonical subject SHA를 `merge_sha` 우선/`head_sha` 보조로 계산하고 remote
@@ -202,8 +252,9 @@ Validation 통과.
 
 ## Phase 4: auto repair 엔진과 설정·policy projection (§4.4, §4.5, §9.3, §10, §15-4)
 
-beads-ui PR 하나. backend 엔진과 그 제어·표시 표면은 같은 저장소·같은 검증
-번들의 한 산출물이다. 재개 지점은 그룹 A→B 경계다.
+부모 브랜치 누적. backend 엔진과 그 제어·표시 표면은 같은 저장소·같은 검증
+번들의 한 산출물이다. **위임은 이 phase 전체가 한 단위**이며, 그룹 A→B 경계는
+부분 완료 시 재개 지점일 뿐이다.
 
 **그룹 A — RepairSessionAdapter (§4.4, §9.3)**
 
@@ -249,8 +300,10 @@ toggle·세 목록·card/log/exit/session link·absent stage `안 함` 표시·k
 
 `실행: main(자기 배포 경로 전환과 self-restart 실측이라는 되돌리기 어려운
 외부효과 통제)`
+`landing: direct(첫 self-deploy가 previous base에 pin된 정책을 읽고 영구 deploy
+워크트리에서 실행되므로 merged 상태가 전제다)`
 
-beads-ui PR + 외부 효과(자기 배포 경로 전환).
+seal 후 Phase 4+5 누적 전체를 direct landing한다. 외부 효과(자기 배포 경로 전환).
 
 1. `repo-ops/config.toml`(base=main, [deploy] script/timeout)과
    `repo-ops/script/deploy`를 추가한다: `scripts/deploy-self.js`의 install/
@@ -328,7 +381,8 @@ replay idempotency와 secret-free failure 검증 결과 + user checkout snapshot
 
 ## Phase 8: legacy reader/provider consumer 제거 (§13, §15-8)
 
-beads-ui PR. 네 repo가 모두 새 lane으로 옮겨진 뒤 실행한다.
+부모 브랜치 누적(최종 PR에 담긴다). 네 repo가 모두 새 lane으로 옮겨진 뒤
+실행한다.
 
 1. `server/worker/repo-ops.js`(v1 reader)와 attach.js/worker-handlers.js의
    소비처, `deployment-job.js`, `deployment-recovery.js`, queue-store의
@@ -374,8 +428,9 @@ checkout snapshot 불변.
 `실행: main(Bead disposition·label·보고서라는 durable 상태 쓰기와 그 readback
 통제)`
 
-durable write 몫만 이 phase가 소유한다. parent close는 이 phase seal 뒤
-`## 완료 절차`에서 canonical finish로 수행한다.
+durable write 몫만 이 phase가 소유한다. **마지막 phase이므로 landing 힌트를 가질
+수 없다**(완주 계약 §4.1). parent close는 이 phase seal 뒤 `## 완료 절차`의 최종
+delivery와 merge leg에서 수행한다.
 
 1. `dotfiles-ji9f`를 superseded close하고, union follow-up inventory와
    superseded Bead disposition을 authoritative readback으로 확인한다(§18.14).
@@ -393,16 +448,22 @@ tests, 네 repo config/path/executable checks) + §19 증거 5종 notes 기록 r
 
 ## 완료 절차
 
-phase가 아니다 — writable deliverable 없이 read-only 통합 확인과 canonical
-finish만 수행한다.
+phase가 아니다 — read-only 통합 확인과 최종 delivery만 수행한다.
 
 1. 두 repo full verification을 확인 목적으로 재실행한다(beads-ui `npm run all`
    +`npm run build`, dotfiles 자체 checker), generated artifacts digest(policy
    JSON copy vs dotfiles source commit), shared runtime health, 네 repo exact
    remote tips/deploy evidence를 최종 확인한다.
-2. parent close 순서를 밟는다: remote containment → applicable operation
-   terminal evidence → enclosed foreign tips/readbacks → completion report 확인
-   → close (§19).
+2. **최종 delivery(완주 계약 §3.4)**: 이슈 통합 diff — 부모 브랜치의 남은 누적
+   전체 + Phase 3·5에서 landed된 커밋 SHA 목록 — 에 implementation gate를 1회
+   돌리고 `impl_review=<reviewer>@<최종 head sha>`를 기록한다. 그 뒤 PR을 하나
+   만들고, 완료 보고를 parent Bead의 bd comment로 쓰고(landed SHA·검증·잔여 위험
+   열거), parent를 `resolved` + `pr_url`로 두고 **PR Delivery stop**한다.
+   브랜치와 부모 워크트리는 보존한다.
+3. parent close는 이 세션이 하지 않는다. 사용자가 그 PR을 확인해 `pr-finish`
+   또는 beads-ui [머지]로 머지하면, 불변식 9종·post-merge tail·zero-residue
+   스윕(남은 child leaves-first close → 워크트리·브랜치 제거 → parent close →
+   final readback)이 §19 순서대로 수행된다.
 
 확인: 위 재실행이 모두 green이고 Phase 10이 기록한 증거 목록과 일치한다.
 
