@@ -42,6 +42,210 @@ function deploymentTimelineLabel(kind) {
 }
 
 /**
+ * State words for one RepoOperation card. Display only — the vocabulary is the
+ * durable one, this map just says it in Korean.
+ *
+ * @type {Record<string, string>}
+ */
+const REPO_OPERATION_STATE_LABELS = {
+  queued: '대기',
+  running: '실행 중',
+  succeeded: '성공',
+  failed: '실패',
+  repairing: '자동 해결 중'
+};
+
+/**
+ * The resolve button's wording per failure kind (master spec §9.2). There is no
+ * generic 재시도 entry here on purpose: every button names the failure it
+ * resolves, and each one goes through the coordinator's repair path.
+ *
+ * @type {Record<string, string>}
+ */
+const REPO_OPERATION_RESOLVE_LABELS = {
+  verify_script_failure: '검증 실패 해결',
+  verify_script_failure_pre_merge: '검증 실패 해결 후 머지',
+  deploy_script_failure: '배포 실패 해결',
+  interrupted_without_terminal_exit: '중단된 작업 진단',
+  other: '실패 해결'
+};
+
+/**
+ * @param {unknown} sha
+ * @returns {string}
+ */
+function shortSha(sha) {
+  return typeof sha === 'string' && sha.length >= 7 ? sha.slice(0, 7) : '—';
+}
+
+/**
+ * @param {unknown} elapsed_ms
+ * @returns {string}
+ */
+function formatElapsed(elapsed_ms) {
+  if (
+    typeof elapsed_ms !== 'number' ||
+    !Number.isFinite(elapsed_ms) ||
+    elapsed_ms < 0
+  ) {
+    return '—';
+  }
+  if (elapsed_ms < 1000) {
+    return `${Math.round(elapsed_ms)}ms`;
+  }
+  const seconds = elapsed_ms / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}초`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}분 ${Math.round(seconds - minutes * 60)}초`;
+}
+
+/**
+ * One RepoOperation card (master spec §10): kind, target SHA and tree, script
+ * path and blob, elapsed time, state, sanitized output tail, full log link,
+ * exit code, and the repair session link — plus the resolve button for THIS
+ * failure kind.
+ *
+ * @param {any} operation
+ * @returns {import('lit-html').TemplateResult}
+ */
+function repoOperationCardTemplate(operation) {
+  const failure = operation.failure || null;
+  const repair = operation.repair || {};
+  const resolve_key =
+    operation.failure_kind === 'verify_script_failure' &&
+    operation.verify_stage === 'pre_merge'
+      ? 'verify_script_failure_pre_merge'
+      : operation.failure_kind || 'other';
+  return html`<article
+    class="worker-repo-op"
+    data-operation-id=${operation.operation_id}
+    data-state=${operation.state}
+    data-kind=${operation.kind}
+  >
+    <div class="worker-repo-op__head">
+      <span class="worker-repo-op__kind">${operation.kind}</span>
+      <span class="worker-repo-op__state"
+        >${REPO_OPERATION_STATE_LABELS[operation.state] ||
+        operation.state}</span
+      >
+      <code class="worker-repo-op__target" title=${operation.target_sha || ''}
+        >${operation.target_base}@${shortSha(operation.target_sha)}</code
+      >
+      <code class="worker-repo-op__tree" title="target tree"
+        >tree ${shortSha(operation.target_tree)}</code
+      >
+      <span class="worker-repo-op__elapsed"
+        >${formatElapsed(operation.elapsed_ms)}</span
+      >
+    </div>
+    <div class="worker-repo-op__meta">
+      <code class="worker-repo-op__script"
+        >${operation.script_path || '(경로 미기록)'}</code
+      >
+      <code class="worker-repo-op__blob"
+        >blob ${shortSha(operation.script_blob_sha)}</code
+      >
+      ${Number.isInteger(operation.exit_code)
+        ? html`<span class="worker-repo-op__exit"
+            >exit ${operation.exit_code}</span
+          >`
+        : ''}
+      ${operation.signal
+        ? html`<span class="worker-repo-op__signal"
+            >signal ${operation.signal}</span
+          >`
+        : ''}
+    </div>
+    ${failure
+      ? html`<div class="worker-repo-op__failure">
+          <code>${failure.code}</code>
+          ${failure.detail
+            ? html`<span class="worker-repo-op__detail"
+                >${failure.detail}</span
+              >`
+            : ''}
+        </div>`
+      : ''}
+    ${operation.output_tail
+      ? html`<details class="worker-repo-op__output">
+          <summary>출력 마지막 부분</summary>
+          <pre>${operation.output_tail}</pre>
+        </details>`
+      : ''}
+    ${operation.log_path
+      ? html`<div class="worker-repo-op__log">
+          전체 로그 <code>${operation.log_path}</code>
+        </div>`
+      : ''}
+    <div class="worker-repo-op__actions">
+      <span class="worker-repo-op__budget"
+        >자동 해결 남음
+        ${repair.remaining ?? 0}/${repair.auto_budget ?? 1}</span
+      >
+      ${repair.attempt_id
+        ? html`<button
+            type="button"
+            class="worker-repo-op__session"
+            data-attempt-id=${repair.attempt_id}
+          >
+            해결 세션 보기
+          </button>`
+        : ''}
+      ${operation.state === 'failed'
+        ? html`<button
+            type="button"
+            class="worker-repo-op__resolve"
+            data-operation-id=${operation.operation_id}
+            data-failure-kind=${operation.failure_kind || 'other'}
+          >
+            ${REPO_OPERATION_RESOLVE_LABELS[resolve_key] ||
+            REPO_OPERATION_RESOLVE_LABELS.other}
+          </button>`
+        : ''}
+    </div>
+  </article>`;
+}
+
+/**
+ * The RepoOperation strip: every verify/deploy operation the Worker owns for
+ * this workspace, newest first. Empty projection renders nothing — a lane with
+ * no operations is not a state worth a panel.
+ *
+ * @param {any} operations
+ * @returns {import('lit-html').TemplateResult|string}
+ */
+export function repoOperationsDisclosureTemplate(operations) {
+  const cards = Array.isArray(operations) ? operations : [];
+  if (cards.length === 0) {
+    return '';
+  }
+  const failing = cards.filter(
+    (/** @type {any} */ card) =>
+      card.state === 'failed' || card.state === 'repairing'
+  ).length;
+  return html`<details
+    class="worker-repo-ops"
+    aria-label="레포 오퍼레이션"
+    ?open=${failing > 0}
+  >
+    <summary class="worker-repo-ops__summary">
+      <b>레포 오퍼레이션</b>
+      <span class="worker-repo-ops__count">${cards.length}건</span>
+      ${failing > 0
+        ? html`<span class="worker-repo-ops__failing"
+            >해결 필요 ${failing}</span
+          >`
+        : ''}
+    </summary>
+    <div class="worker-repo-ops__list">
+      ${cards.map((/** @type {any} */ card) => repoOperationCardTemplate(card))}
+    </div>
+  </details>`;
+}
+
+/**
  * Compact, browser-local disclosure for the server's sanitized repository
  * deployment projection. Native details/summary supplies click, keyboard, and
  * ARIA disclosure semantics without writing local expansion back to authority.

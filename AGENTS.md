@@ -137,55 +137,50 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
 ## Post‑Merge Runtime Validation
 
 - **필수 마감 단계 — 머지는 완료가 아니다**: 이 저장소의 코드 수정은 공유 서비스
-  배포까지 마쳐야 완료다. 머지 후 (1) `~/.config/bdui/config.toml` 런타임 설정
-  정합을 확인하고, (2) `bdui-shared restart`로 공유 서버를 재시작한 뒤, (3) 아래
-  검증(프로세스 경로·포트·HTTP 응답)을 통과한 다음에만 작업 완료를 선언한다.
-- **배포 선언의 SoT이자 실행 표면은 `docs/agents/repo-ops.toml`의 `[deploy]`다 —
-  루트 `deploy.json`이 아니다**: 이 저장소의 머지 후 재시작은 그 파일에
-  `cmd = ["bdui-shared", "restart"]`, `detached = true`로 선언돼 있고, 워커가 그
-  선언을 직접 읽어(`server/worker/repo-ops.js`) 머지 후 정리 sweep에서 실행한다.
-  `~/.config/bdui/config.toml`의
-  `[worker.verify."<abs>"]`·`[worker.deploy."<abs>"]`는 선언 섹션이 없을 때만
-  쓰이는 **레거시 폴백**으로 남았다(대조는 dotfiles `scripts/repo_ops_check.py`
-  warn-only). 선언은 워킹트리가 아니라 핀된 base SHA의 git blob에서 읽으므로 —
-  머지 전은 fetch된 target-base tip, 머지 후는 `base_sync`가 확정한 SHA — PR이
-  자기 검증 명령을 정의할 수 없다. 선언이 있으나 해석 불가면 폴백으로 넘어가지
-  않고 fail-closed다(verify는 머지 게이트 차단, deploy는
-  `deploy_config_invalid`). 단 `detached = true`라 `CLEANUP_STEPS`의 `deploy`
-  단계에서 바로 뜨지 않는다 — 그 단계는 명령을 `pending`으로 넘기기만 하고, 실제
-  `bdui-shared restart`는 나머지 정리 단계가 모두 성공하고 durable 기록이 끝난
-  뒤 마지막에 launch된다 (`server/worker/pr-actions.js` THE TERMINAL LAUNCH).
-  재시작이 이 서버 자신을 죽이기 때문이다. 이 저장소가 배포 대상일 때
-  `detached`가 아닌 선언은 `deploy_not_detached_for_self`로 거부되고, 두 단 모두
-  `[deploy]`가 없으면 `deploy_missing_for_self`로 정리가 멈춘다 — 재시작 없는
-  조용한 머지 종료를 막기 위해서다.
+  배포까지 마쳐야 완료다. 머지 후 배포 operation이 terminal success에 도달하고
+  아래 검증(프로세스 경로·포트·HTTP 응답)을 통과한 다음에만 작업 완료를
+  선언한다.
+- **배포 선언의 SoT이자 실행 표면은 `repo-ops/config.toml`의 `[deploy]`다.**
+  Worker는 이 선언을 워킹트리가 아니라 **핀된 base SHA의 git blob**에서 읽으므로
+  PR이 자기 검증·배포 명령을 정의할 수 없다 — 머지 전은 fetch된 target-base tip,
+  머지 후는 `base_containment`가 확정한 SHA가 핀이다. 선언이 있으나 해석 불가면
+  폴백 없이 fail-closed다.
+- **실행 위치는 Worker가 소유한 영구 detached 워크트리
+  `.worktrees/.repo-ops-deploy`**이며, 그 워크트리가 안정 런타임 소스다.
+  candidate release 디렉터리나 `current` release symlink는 만들지 않는다.
+  Worker는 fetch로 target SHA를 pin하고 그 워크트리를 exact 정렬한 뒤
+  `repo-ops/script/deploy`를 one-shot으로 한 번 실행한다. 성공 조건은 script
+  exit 0과 워크트리 `HEAD == target_sha`·tracked-clean readback뿐이며, Worker는
+  health JSON이나 repo-specific 출력을 파싱하지 않는다.
+- script는 `REPO_OPS_TARGET_SHA`·`REPO_OPS_TARGET_BASE`·`REPO_OPS_REPO_ROOT` 세
+  변수만 받고, local HEAD 확인 → `npm ci` → `npm run build` →
+  `bdui-shared restart` → bounded `/healthz`에서 source SHA와 realpath가 각각
+  target SHA와 `REPO_OPS_REPO_ROOT`인지 확인 → exit 0 순서로 스스로 검증한다.
+  재시작이 이 서버 자신을 죽이지만 one-shot executor는 detached라 살아남아 exit
+  code와 log marker를 남기고, 재시작된 Worker가 같은 operation을 adoption한다.
+- **정리 cursor**는
+  `base_containment → repo_operations → child_sweep → branch_cleanup → parent_close`다.
+  deploy operation이 succeeded가 되기 전에는 Bead를 close하지 않는다.
+  `repo-ops/config.toml`이 없는 저장소는 legacy lane을 그대로 탄다(그 코드
+  제거는 별도 단계).
 - **자동 경로는 이 서버의 [머지] 클릭으로 머지된 PR에만 걸린다**: github.com에서
   직접 머지한 PR은 external row로 **관측만 기록되고 정리가 자동으로 돌지
-  않는다** (`server/worker/pr-poller.js` — 레인에 `머지됨 · 정리`가 뜨고 [정리]
-  클릭이 단일 트리거다). `post_merge_verify`가 `verify_cmd_failed`로 실패할 때만
-  전체 verify를 1회 bounded 자동 재시도하며, 그 재시도 후에도 정리가 멈추면
-  detached 배포는 launch되지 않으므로 재시작도 일어나지 않는다. 그때 bead는
-  `pr_wait`에 `resolved`로 남고 배너가 뜨며 [AI 정리] 버튼으로 진단하거나 사람이
-  이어받아야 한다.
-- 루트 `deploy.json`은 없고, 이 저장소에는 그 파일을 읽는 코드도 없다 — 새로
-  만들어도 아무도 읽지 않는다. workflow 계약의 post-merge continuity 판정은
-  `docs/agents/repo-ops.toml`의 `[deploy]` 선언을 읽으며 `test -f deploy.json`은
-  판정에서 명시적으로 금지됐다(dotfiles workflow.yaml v29). 등록 위치가 다를 뿐
-  restart 커버리지는 존재한다. 이를 놓쳐 `worker-ineligible` 라벨이 잘못 붙은
-  사례가 있다(UI-1xcd · UI-dixx · UI-u7hh; 계약 문구 정정은 dotfiles
-  `dotfiles-1tif`가 소유).
+  않는다** — 레인에 `머지됨 · 정리`가 뜨고 [정리] 클릭이 단일 트리거다.
+- **실패했을 때**: verify script 실패·deploy script 실패·terminal exit 없는
+  중단은 workspace 설정의 **`자동 해결`**(기본 ON) 아래에서 completion chain당
+  **1회** 자동 repair session을 받는다. budget을 다 썼거나 같은 fingerprint가 새
+  증거 없이 재현되면 자동은 멈추고 operation card의 실패 kind별 해결 버튼이
+  입구다. 무엇이 자동이고 무엇이 아닌지는 설정 화면의 세 목록에 그대로 있으며,
+  그 목록은 dotfiles가 소유한 정책 아티팩트에서 온다(문장 하드코딩 아님).
 - **자동 배포는 재시작을 대신할 뿐 확인을 대신하지 않는다**: 자동 경로가
-  돌았어도 위 (3)의 검증(프로세스 경로·포트·HTTP 응답)과 완료 선언 책임은 그대로
-  남는다. 자동 경로가 성립하지 않았거나 정리가 멈췄다면 아래 수동 절차로 직접
-  재시작·검증한다.
-- After merging code changes into `main`, restart the actual server from the
-  merged checkout before claiming the work is fully finished.
-- If the merged change affects runtime behavior, re-run the modified program and
-  verify that the real server process comes up from the merged workspace, not a
+  돌았어도 아래 검증과 완료 선언 책임은 그대로 남는다. 자동 경로가 성립하지
+  않았거나 정리가 멈췄다면 수동 절차로 직접 재시작·검증한다.
+- 이 저장소의 실제 동작을 찾을 때 볼 곳: canonical `repo-ops/config.toml`,
+  Worker/Monitor 설정 화면의 `자동 해결` 섹션과 세 목록, 그리고 dotfiles의
+  workflow 계약(`docs/contracts/workflow.{md,yaml}`).
+- If the merged change affects runtime behavior, verify that the real server
+  process comes up from `.worktrees/.repo-ops-deploy` at the merged SHA, not a
   stale worktree or pre-merge checkout.
-- For frontend source changes, rebuild the static bundle from the merged
-  checkout with `npm run build` before restarting or claiming the shared UI is
-  current.
 - For the canonical shared server path, prefer:
   ```bash
   bdui-shared restart
@@ -225,19 +220,21 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   `app/main.bundle.js`; after frontend source edits, run `npm run build` before
   expecting UI changes to appear.
 
-## GitHub Actions — 이 fork에서는 CI가 돌지 않는다
+## GitHub Actions — 이 저장소에는 CI 워크플로가 없다
 
-- `nakkulla/beads-ui` fork에서 `Build`(ci.yml) 워크플로는 push/PR 어느
-  이벤트로도 트리거되지 않는다(2026-07-27 기준 실행 이력 0회, PR head 커밋에
-  check-suite 미생성). GitHub CI를 활성화하지 않고 로컬 검증이 CI 역할을
-  대신하는 것이 이 저장소의 결정이다.
-- 따라서 PR 체크를 기다리지 마라: `gh pr checks` 결과가 비어 있으면 "체크 없음 =
-  즉시 통과(vacuous pass)"로 처리하고 다음 단계로 진행한다.
-- 체크 상태를 폴링해야 할 때도 반드시 유한 타임아웃을 두고, "체크가 1개 이상
-  생길 때까지"(`length > 0`) 같은 존재 조건으로 대기하지 마라 — 이 저장소에선
-  영원히 충족되지 않는다.
-- 머지 전 검증은 Pre‑Handoff Validation(lint/tsc/test/prettier/build, 전체 약
-  12초)으로 수행한다.
+- `.github/workflows/`는 비어 있고, 다시 추가하면 테스트가 실패한다
+  (`scripts/ci-workflow-retired.test.js`). branch protection의 required check도
+  0개다(`gh api repos/<owner>/<repo>/branches/main/protection` →
+  `Branch not protected`).
+- **머지 자격 판정은 checks를 아예 보지 않는다.** 판정 입력은 네 가지뿐이다:
+  fresh PR/base/head identity, clean mergeability, current workflow review
+  영수증(`spec_review`·`impl_review`가 현재 head SHA에 결속), 그리고
+  `repo-ops/config.toml`에 `[verify]`가 선언된 경우에만 그 verify 영수증. 이
+  저장소는 `[verify]`를 선언하지 않는다.
+- 따라서 `gh pr checks`를 기다리거나 폴링하지 마라. 빈 checks를 즉시 통과로
+  취급하던 예전 특례는, 판정에서 checks 자체가 사라지면서 함께 없어졌다.
+- 머지 전 검증은 Pre‑Handoff Validation(lint/tsc/test/prettier/build)으로
+  수행한다.
 
 ## Pull Request Target
 

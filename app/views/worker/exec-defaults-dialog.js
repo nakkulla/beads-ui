@@ -783,7 +783,7 @@ export function createExecDefaultsDialog(mount_element, options) {
               : ''}
           </div>`
         : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
-            검증 없음 —
+            ${badge('absent', '안 함')} 검증 없음 —
             <span class="exec-defaults__vd-cmd"
               >[worker.verify."${workspace_path}"]</span
             >
@@ -815,7 +815,7 @@ export function createExecDefaultsDialog(mount_element, options) {
             <span class="exec-defaults__vd-meta">${note}</span>
           </div>`
         : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
-            배포 없음 —
+            ${badge('absent', '안 함')} 배포 없음 —
             <span class="exec-defaults__vd-cmd"
               >docs/agents/repo-ops.toml [deploy]</span
             >
@@ -947,6 +947,178 @@ export function createExecDefaultsDialog(mount_element, options) {
     </section>`;
   }
 
+  /**
+   * Send the INDEPENDENT `자동 해결` mutation (master spec §9.3). It carries only
+   * the queue revision and its own boolean: this switch never reads or writes
+   * 자동화 (`auto_advance`/`auto_merge`), and 자동화 never writes this one.
+   *
+   * @param {boolean} on
+   */
+  async function saveAutoRepair(on) {
+    if (!transport) {
+      return;
+    }
+    const res = await transport(
+      /** @type {any} */ ('worker-auto-repair-toggle'),
+      { on, expected_revision: currentRevision() }
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      const retried = await transport(
+        /** @type {any} */ ('worker-auto-repair-toggle'),
+        { on, expected_revision: currentRevision() }
+      );
+      adopt(retried);
+    }
+    doRender();
+  }
+
+  /**
+   * The three §10 lists. Their MEMBERSHIP comes entirely from the pinned policy
+   * the server projects — this map only says each contract token in Korean and
+   * falls back to the token itself, so a contract that gains an entry shows up
+   * here without anyone editing a sentence into the client.
+   *
+   * @type {Record<string, string>}
+   */
+  const POLICY_TOKEN_LABELS = {
+    owned_deploy_worktree_fetch_detached_alignment_recreate:
+      '전용 배포 워크트리 정렬·복구',
+    recovered_pre_execution_fetch_timeout_retry_once: 'fetch 타임아웃 1회 복구',
+    repo_serial_lock_wait: '저장소 순차 실행 대기',
+    restart_operation_adoption: '재시작 후 작업 인계',
+    exact_input_exit_zero_evidence_adoption: '동일 입력 성공 증거 인계',
+    descendant_success_covers_ancestor_rows: '최신 SHA 성공이 이전 행 커버',
+    owned_verify_candidate_cleanup: '검증 임시 체크아웃 정리',
+    verify_script_failure: '검증 실패',
+    deploy_script_failure: '배포 실패',
+    interrupted_without_terminal_exit: '중단된 작업',
+    whole_command_retry: '명령 통째 재시도',
+    baseline_failure_ignore: '기존 실패 무시',
+    config_or_script_deletion_to_bypass_gate:
+      '설정·스크립트 삭제로 게이트 우회',
+    credential_entry: '자격증명 입력·출력',
+    destructive_action: '파괴적 작업',
+    history_rewrite: '히스토리 재작성',
+    agent_self_report_as_success: '세션 자기보고를 성공 처리',
+    unbounded_repair_session_retry: '무한 해결 세션 반복'
+  };
+
+  /**
+   * @param {string} title
+   * @param {string[]} tokens
+   * @param {string} seam
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function policyList(title, tokens, seam) {
+    return html`<div class="exec-defaults__policy-group" data-policy=${seam}>
+      <div class="exec-defaults__policy-label">${title}</div>
+      <ul class="exec-defaults__policy-list">
+        ${tokens.map(
+          (token) =>
+            html`<li data-token=${token}>
+              ${POLICY_TOKEN_LABELS[token] || token}
+            </li>`
+        )}
+      </ul>
+    </div>`;
+  }
+
+  /**
+   * The `자동 해결` section: the durable toggle, the remaining automatic budget,
+   * the active repair session, and the three policy lists the backend sends.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function autoRepairSection() {
+    const q = currentQueue();
+    const on = q.auto_repair !== false;
+    const policy =
+      q.repo_operation_policy && typeof q.repo_operation_policy === 'object'
+        ? q.repo_operation_policy
+        : null;
+    const operations = Array.isArray(q.repo_operations)
+      ? q.repo_operations
+      : [];
+    const active = operations.find(
+      (/** @type {any} */ card) => card.state === 'repairing'
+    );
+    // The remaining budget the reader cares about is the one closest to being
+    // spent: the smallest remaining count across the operations that still
+    // have a live repair chain.
+    const open_chains = operations.filter(
+      (/** @type {any} */ card) =>
+        card.state === 'failed' || card.state === 'repairing'
+    );
+    const remaining = open_chains.length
+      ? Math.min(
+          ...open_chains.map((/** @type {any} */ card) =>
+            typeof card.repair?.remaining === 'number'
+              ? card.repair.remaining
+              : 0
+          )
+        )
+      : (policy?.auto_repair?.budget_per_completion_chain ?? 1);
+    return html`<section class="exec-defaults__repair" data-seam="auto-repair">
+      <p class="exec-defaults__vd-title">
+        자동 해결
+        <span class="exec-defaults__vd-ro"
+          >자동화(대기열·머지)와 독립된 스위치</span
+        >
+      </p>
+      <label class="exec-defaults__repair-toggle">
+        <input
+          type="checkbox"
+          class="exec-defaults__repair-input"
+          .checked=${on}
+          @change=${(/** @type {Event} */ ev) =>
+            void saveAutoRepair(
+              /** @type {HTMLInputElement} */ (ev.target).checked
+            )}
+        />
+        검증·배포 실패를 자동으로 해결 시도
+      </label>
+      <div class="exec-defaults__repair-state">
+        <span class="exec-defaults__repair-value" data-seam="auto-repair-value"
+          >${on ? '켜짐' : '꺼짐'}</span
+        >
+        <span
+          class="exec-defaults__repair-budget"
+          data-seam="auto-repair-budget"
+          >남은 자동 해결 ${remaining}회</span
+        >
+        <span
+          class="exec-defaults__repair-session"
+          data-seam="auto-repair-session"
+          >${active
+            ? `해결 세션 실행 중 · ${active.repair?.owner_bead || active.operation_id}`
+            : '실행 중인 해결 세션 없음'}</span
+        >
+      </div>
+      ${policy
+        ? html`<div class="exec-defaults__policy">
+            ${policyList(
+              'Worker가 자동 처리',
+              policy.worker_automatic || [],
+              'worker-automatic'
+            )}
+            ${policyList(
+              `자동 해결 세션 (완료 체인당 최대 ${
+                policy.auto_repair?.budget_per_completion_chain ?? 1
+              }회)`,
+              policy.auto_repair?.eligible || [],
+              'auto-repair-eligible'
+            )}
+            ${policyList(
+              '자동으로 하지 않음',
+              policy.never_automatic || [],
+              'never-automatic'
+            )}
+          </div>`
+        : ''}
+    </section>`;
+  }
+
   function doRender() {
     render(
       html`
@@ -964,7 +1136,7 @@ export function createExecDefaultsDialog(mount_element, options) {
           </header>
           <div class="exec-defaults__body">
             ${presetSection()} ${verifyDeploySection(currentWorkspaceInfo())}
-            ${systemPromptSection()}
+            ${autoRepairSection()} ${systemPromptSection()}
           </div>
         </div>
       `,

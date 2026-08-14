@@ -48,6 +48,7 @@ import { parseDeploymentRecoveryOutcome } from './deployment-recovery.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import * as default_guard_hook from './guard-hook.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
+import { repairSessionPrompt } from './repair-session-adapter.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import * as default_usage_receipts from './usage-receipts.js';
@@ -366,6 +367,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>,
  *   dispatchRepoRecovery: (workspace: string, input: { identity: string, bead_id: string, failure_key: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
  *   continueRepoRecovery: (workspace: string, input: { identity: string, attempt_id: string, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchRepoOperationRepair: (workspace: string, input: { bead_id: string, operation_id: string, packet: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, session_id?: string|null }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   finalizeDiscardAttempt: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
@@ -3980,6 +3982,85 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Dispatch one RepoOperation repair session (master spec §4.4). This is the
+   * `RepairSessionAdapter`'s only door into the scheduler, and it deliberately
+   * adds NO session machinery: it resolves the owner Bead's own latest attempt
+   * and hands it to the existing relaunch path with the adapter's packet as the
+   * prompt. Every launch, log, and monitor concern therefore stays exactly
+   * where it already lived.
+   *
+   * It refuses rather than improvises: no attempt lineage, a worktree that is
+   * not provably the Bead's, or a session already running on that Bead all end
+   * as a manual state instead of a second dispatch path.
+   *
+   * @param {string} workspace
+   * @param {{ bead_id: string, operation_id: string, packet: any }} input
+   */
+  async function dispatchRepoOperationRepair(workspace, input) {
+    if (
+      !input ||
+      typeof input.bead_id !== 'string' ||
+      input.bead_id.length === 0 ||
+      typeof input.operation_id !== 'string' ||
+      input.operation_id.length === 0 ||
+      !input.packet ||
+      typeof input.packet !== 'object'
+    ) {
+      return { ok: false, reason: 'repair_packet_invalid' };
+    }
+    if (claimed.has(input.bead_id)) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    const attempts = Object.values(
+      deps.store.snapshot(workspace).attempts || {}
+    );
+    if (
+      attempts.some(
+        (attempt) =>
+          attempt?.bead_id === input.bead_id && attempt.status === 'running'
+      )
+    ) {
+      return { ok: false, reason: 'bead_running' };
+    }
+    const resumed_from = new Set(
+      attempts.map((attempt) => attempt?.resumed_from).filter(Boolean)
+    );
+    const lineage = attempts
+      .filter(
+        (attempt) =>
+          attempt?.bead_id === input.bead_id &&
+          !resumed_from.has(attempt.attempt_id)
+      )
+      .sort(
+        (left, right) =>
+          (right.started_at || 0) - (left.started_at || 0) ||
+          right.attempt_id.localeCompare(left.attempt_id)
+      );
+    const prior = lineage[0];
+    if (!prior || typeof prior.repo !== 'string' || prior.repo.length === 0) {
+      return { ok: false, reason: 'repair_attempt_source_missing' };
+    }
+    const owned = await proveOwnedWorktree(prior.repo, input.bead_id);
+    if (!owned.ok) {
+      return { ok: false, reason: owned.reason };
+    }
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(input.bead_id);
+    } catch {
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const launched = await relaunchFromAttempt(workspace, prior, {
+      prompt: repairSessionPrompt(input.packet),
+      bead_snapshot: snap,
+      cwd: owned.path
+    });
+    return launched.ok
+      ? { ok: true, attempt_id: launched.attempt_id, session_id: null }
+      : launched;
+  }
+
+  /**
    * @param {string} workspace
    * @param {string} attempt_id
    */
@@ -7238,6 +7319,7 @@ export function createScheduler(deps) {
     dispatchCompletionRepair,
     dispatchRepoRecovery,
     continueRepoRecovery,
+    dispatchRepoOperationRepair,
     canDiscardAttempt,
     fenceDiscardAttempt,
     finalizeDiscardAttempt,

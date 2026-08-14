@@ -10,6 +10,11 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  repairEvidenceKey,
+  resolveRepairOwner
+} from './repair-session-adapter.js';
+import { isRepairEligible } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
@@ -68,7 +73,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> } }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> } }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -157,31 +162,20 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * The deterministic repair owner (§9.3), delegated to the adapter so the
+   * settle path and the dispatch path can never disagree about it.
+   *
    * @param {any} operation
    */
   async function ownerBead(operation) {
     if (operation.subjects.length < 2) {
       return undefined;
     }
-    /** @type {{ bead_id: string, timestamp: number }[]} */
-    const candidates = [];
-    for (const subject of operation.subjects) {
-      const result = await deps.gitRun(
-        ['log', '-1', '--format=%ct', subject.merged_sha],
-        { cwd: deps.repo }
-      );
-      const timestamp = Number.parseInt(result.stdout.trim(), 10);
-      candidates.push({
-        bead_id: subject.bead_id,
-        timestamp: Number.isFinite(timestamp) ? timestamp : -1
-      });
-    }
-    candidates.sort(
-      (left, right) =>
-        right.timestamp - left.timestamp ||
-        left.bead_id.localeCompare(right.bead_id)
+    const owner = await resolveRepairOwner(
+      { gitRun: deps.gitRun, repo: deps.repo },
+      operation
     );
-    return candidates[0]?.bead_id;
+    return owner ?? undefined;
   }
 
   /**
@@ -404,6 +398,7 @@ export function createRepoOperationCoordinator(deps) {
       verify_head_sha: candidate.head_sha,
       deploy_worktree: materialized.path,
       script_object_type: declaration.object_type,
+      script_path: declaration.script,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha
     });
@@ -691,6 +686,7 @@ export function createRepoOperationCoordinator(deps) {
       subjects,
       effective_base_sha,
       target_base: subject.target_base,
+      script_path: declaration.script,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha,
       bootstrap_provenance: subject.bootstrap_provenance || null
@@ -1005,6 +1001,7 @@ export function createRepoOperationCoordinator(deps) {
     try {
       names = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
     } catch {
+      await reconcileRepairsLocked(workspace);
       return;
     }
     for (const name of names) {
@@ -1016,6 +1013,218 @@ export function createRepoOperationCoordinator(deps) {
       } catch {
         writeReceipt(file, { ok: false, code: 'bootstrap_provenance_invalid' });
       }
+    }
+    await reconcileRepairsLocked(workspace);
+  }
+
+  /**
+   * The chain's spent automatic budget. It is the MAXIMUM across the chain's
+   * records, not a per-record value: a successor operation inherits `auto_used`
+   * precisely so a new record cannot present itself as an unspent chain.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} chain_id
+   */
+  function chainAutoUsed(operations, chain_id) {
+    let used = 0;
+    for (const operation of Object.values(operations)) {
+      if (operation.repair.chain_id === chain_id) {
+        used = Math.max(used, operation.repair.auto_used);
+      }
+    }
+    return used;
+  }
+
+  /**
+   * A chain closes on a terminal success of one of its operations (§9.3).
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} chain_id
+   */
+  function chainClosed(operations, chain_id) {
+    return Object.values(operations).some(
+      (operation) =>
+        operation.repair.chain_id === chain_id &&
+        operation.state === 'succeeded'
+    );
+  }
+
+  /**
+   * The same failure reproducing with no new tree/script/environment evidence
+   * (§9.3): identical fingerprint AND identical evidence key on another record.
+   * Such a record buys no further automatic budget and stays manual — including
+   * when it opened its own chain, which is the loop this rule exists to close.
+   *
+   * @param {Record<string, any>} operations
+   * @param {string} operation_id
+   * @param {any} operation
+   */
+  function reproducedWithoutNewEvidence(operations, operation_id, operation) {
+    const fingerprint = operation.failure?.fingerprint;
+    if (typeof fingerprint !== 'string' || fingerprint.length === 0) {
+      return false;
+    }
+    const evidence = repairEvidenceKey(operation);
+    for (const [candidate_id, candidate] of Object.entries(operations)) {
+      if (candidate_id === operation_id) continue;
+      if (candidate.repo_id !== deps.repo) continue;
+      if (candidate.failure?.fingerprint !== fingerprint) continue;
+      if (repairEvidenceKey(candidate) !== evidence) continue;
+      if (candidate.repair.auto_used > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Start one repair session for a terminal failure. Caller holds the
+   * repo-operation lock.
+   *
+   * `auto` is the contract-gated path: it requires the workspace flag, an
+   * eligible failure class, unspent chain budget, and evidence that this is not
+   * the same failure reproducing. `manual` is a human click — it skips the
+   * budget and the flag, but goes through the SAME coordinator dispatch so a
+   * new attempt is only ever created after repair evidence exists.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   * @param {'auto'|'manual'} mode
+   */
+  async function startRepairLocked(workspace, operation_id, mode) {
+    const queue = deps.store.snapshot(workspace);
+    const operation = queue.repo_operations[operation_id];
+    if (!operation) {
+      return { ok: false, code: 'repo_operation_missing' };
+    }
+    if (operation.state === 'repairing') {
+      return { ok: true, operation_id, adopted: true };
+    }
+    if (operation.state !== 'failed') {
+      return { ok: false, code: 'repo_operation_not_failed' };
+    }
+    const chain_id = operation.repair.chain_id || operation_id;
+    if (chainClosed(queue.repo_operations, chain_id)) {
+      return { ok: false, code: 'repair_chain_closed' };
+    }
+    if (mode === 'auto') {
+      // The config disable is not advisory: an automatic dispatch asked for
+      // while the flag is off is REFUSED, never downgraded to a manual one.
+      if (queue.auto_repair !== true) {
+        return { ok: false, code: 'auto_repair_disabled' };
+      }
+      if (!isRepairEligible(operation)) {
+        return { ok: false, code: 'repair_not_eligible' };
+      }
+      if (
+        chainAutoUsed(queue.repo_operations, chain_id) >=
+        operation.repair.auto_budget
+      ) {
+        return { ok: false, code: 'repair_budget_exhausted' };
+      }
+      if (
+        reproducedWithoutNewEvidence(
+          queue.repo_operations,
+          operation_id,
+          operation
+        )
+      ) {
+        return { ok: false, code: 'repair_fingerprint_repeated' };
+      }
+    }
+    if (!deps.repairSession) {
+      return { ok: false, code: 'repair_session_unavailable' };
+    }
+    const owner_bead =
+      operation.repair.owner_bead ||
+      (await resolveRepairOwner(
+        { gitRun: deps.gitRun, repo: deps.repo },
+        operation
+      ));
+    if (!owner_bead) {
+      return { ok: false, code: 'repair_owner_unresolved' };
+    }
+    const prerecorded = deps.store.startRepoOperationRepair(workspace, {
+      operation_id,
+      mode,
+      owner_bead
+    });
+    if (!prerecorded.ok) {
+      return { ok: false, code: 'repair_prerecord_failed' };
+    }
+    const dispatched = await deps.repairSession.dispatch({
+      workspace,
+      operation_id,
+      operation: deps.store.snapshot(workspace).repo_operations[operation_id],
+      mode,
+      owner_bead
+    });
+    if (!dispatched.ok || typeof dispatched.attempt_id !== 'string') {
+      deps.store.releaseRepoOperationRepair(workspace, { operation_id });
+      return { ok: false, code: dispatched.reason || 'repair_dispatch_failed' };
+    }
+    deps.store.bindRepoOperationRepairSession(workspace, {
+      operation_id,
+      attempt_id: dispatched.attempt_id,
+      session_id: dispatched.session_id ?? null
+    });
+    return {
+      ok: true,
+      operation_id,
+      mode,
+      attempt_id: dispatched.attempt_id,
+      session_id: dispatched.session_id ?? null
+    };
+  }
+
+  /**
+   * @param {string} operation_id
+   * @param {'auto'|'manual'} [mode]
+   */
+  async function startRepair(operation_id, mode = 'manual') {
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      return await startRepairLocked(deps.workspace, operation_id, mode);
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Reconcile the repair lane. Two passes, both driven by facts the coordinator
+   * can read for itself:
+   *
+   *   - a `repairing` record whose session is no longer running returns to
+   *     `failed`, because a session ENDING is not a repair. Nothing here reads
+   *     what the session said about itself.
+   *   - a `failed` record that passes every §9.3 gate gets its one automatic
+   *     dispatch. Turning `auto_repair` back ON therefore reconciles eligible
+   *     failures on the very next pass without any extra trigger.
+   *
+   * Caller holds the repo-operation lock.
+   *
+   * @param {string} workspace
+   */
+  async function reconcileRepairsLocked(workspace) {
+    if (!deps.repairSession) {
+      return;
+    }
+    for (const [operation_id, operation] of Object.entries(
+      deps.store.snapshot(workspace).repo_operations
+    )) {
+      if (operation.repo_id !== deps.repo) continue;
+      if (operation.state === 'repairing') {
+        const judged = await deps.repairSession.judge({
+          workspace,
+          operation_id
+        });
+        if (judged.verdict !== 'session_running') {
+          deps.store.releaseRepoOperationRepair(workspace, { operation_id });
+        }
+        continue;
+      }
+      if (operation.state !== 'failed') continue;
+      await startRepairLocked(workspace, operation_id, 'auto');
     }
   }
 
@@ -1116,7 +1325,8 @@ export function createRepoOperationCoordinator(deps) {
     waitForTerminal,
     hasConfig,
     deploymentEvidence,
-    reconcile
+    reconcile,
+    startRepair
   };
 }
 

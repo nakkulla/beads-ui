@@ -1,0 +1,111 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'repo-ops deploy: %s\n' "$*" >&2
+    exit 1
+}
+
+# The Worker gives this script no stdin, and a question would hang the operation
+# until its timeout. Closing stdin makes that a loud failure instead.
+exec </dev/null
+
+: "${REPO_OPS_TARGET_SHA:?REPO_OPS_TARGET_SHA is required}"
+: "${REPO_OPS_TARGET_BASE:?REPO_OPS_TARGET_BASE is required}"
+: "${REPO_OPS_REPO_ROOT:?REPO_OPS_REPO_ROOT is required}"
+
+case "$REPO_OPS_TARGET_SHA" in
+    *[!0-9a-f]*|'') fail "REPO_OPS_TARGET_SHA must be a lowercase hex SHA" ;;
+esac
+[ "${#REPO_OPS_TARGET_SHA}" -eq 40 ] || fail "REPO_OPS_TARGET_SHA must be 40 hex characters"
+
+repo_root="$(cd "$REPO_OPS_REPO_ROOT" && pwd -P)" || fail "REPO_OPS_REPO_ROOT is unavailable"
+cwd="$(pwd -P)"
+[ "$cwd" = "$repo_root" ] || fail "cwd must equal REPO_OPS_REPO_ROOT"
+
+read_head() {
+    git -C "$repo_root" rev-parse --verify HEAD^{commit}
+}
+
+start_head="$(read_head)" || fail "cannot read start HEAD"
+[ "$start_head" = "$REPO_OPS_TARGET_SHA" ] || fail "start HEAD differs from REPO_OPS_TARGET_SHA"
+
+npm ci || fail "npm ci failed"
+npm run build || fail "npm run build failed"
+
+# The restart kills the server this operation was launched from. The one-shot
+# executor is detached precisely so it outlives that and still records the exit
+# code and log marker below.
+bdui-shared restart || fail "bdui-shared restart failed"
+
+# Health identity is the whole success condition: the live process must report
+# THIS target SHA and must be running out of THIS worktree. Anything else means
+# the restart brought back a different source, which is not a deploy.
+health_url="${BDUI_DEPLOY_HEALTH_URL:-}"
+if [ -z "$health_url" ]; then
+    health_host="${BDUI_HOST:-}"
+    if [ -z "$health_host" ] && command -v ts-ip >/dev/null 2>&1; then
+        health_host="$(ts-ip 2>/dev/null || true)"
+    fi
+    [ -n "$health_host" ] || health_host="127.0.0.1"
+    health_url="http://${health_host}:3000/healthz"
+fi
+
+HEALTH_ATTEMPTS="${REPO_OPS_HEALTH_ATTEMPTS:-60}"
+HEALTH_POLL_SECONDS="${REPO_OPS_HEALTH_POLL_SECONDS:-1}"
+
+# Node is a hard dependency of this repo, so the readback parses the health JSON
+# and resolves the reported repo path with it rather than adding jq/curl to the
+# contract. It prints nothing but `ok` or a stable reason.
+health_probe() {
+    REPO_OPS_HEALTH_URL="$health_url" \
+    REPO_OPS_EXPECT_SHA="$REPO_OPS_TARGET_SHA" \
+    REPO_OPS_EXPECT_ROOT="$repo_root" \
+    node --input-type=module -e '
+import fs from "node:fs";
+const url = process.env.REPO_OPS_HEALTH_URL;
+const expect_sha = process.env.REPO_OPS_EXPECT_SHA;
+const expect_root = process.env.REPO_OPS_EXPECT_ROOT;
+let body = null;
+try {
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(2000)
+  });
+  body = response.ok ? await response.json() : null;
+} catch {
+  body = null;
+}
+const runtime = body && typeof body === "object" ? body.runtime : null;
+if (!runtime || typeof runtime !== "object") {
+  process.stdout.write("unreachable");
+  process.exit(0);
+}
+if (runtime.source_sha !== expect_sha) {
+  process.stdout.write("source_sha_mismatch");
+  process.exit(0);
+}
+let resolved = null;
+try {
+  resolved = fs.realpathSync(String(runtime.source_repo || ""));
+} catch {
+  resolved = null;
+}
+process.stdout.write(resolved === expect_root ? "ok" : "source_repo_mismatch");
+'
+}
+
+attempt=0
+probe_result="unreachable"
+while [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; do
+    probe_result="$(health_probe)" || probe_result="unreachable"
+    [ "$probe_result" = "ok" ] && break
+    attempt=$((attempt + 1))
+    sleep "$HEALTH_POLL_SECONDS"
+done
+[ "$probe_result" = "ok" ] || fail "runtime health readback failed: $probe_result"
+
+end_head="$(read_head)" || fail "cannot read end HEAD"
+[ "$end_head" = "$REPO_OPS_TARGET_SHA" ] || fail "end HEAD differs from REPO_OPS_TARGET_SHA"
+
+printf 'repo-ops deploy ok: base=%s target=%s\n' "$REPO_OPS_TARGET_BASE" "$REPO_OPS_TARGET_SHA"

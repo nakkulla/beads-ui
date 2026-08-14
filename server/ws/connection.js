@@ -78,6 +78,7 @@ import {
   handleWorkerAttemptPause,
   handleWorkerAttemptResume,
   handleWorkerAttemptStop,
+  handleWorkerAutoRepairToggle,
   handleWorkerAutomationToggle,
   handleWorkerDeploymentRecoveryContinue,
   handleWorkerDeploymentRetry,
@@ -94,6 +95,7 @@ import {
   handleWorkerQueueSetPrWaitHold,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
+  handleWorkerRepoOperationRepair,
   handleWorkerReviseApprove,
   handleWorkerReviseFix
 } from './worker-handlers.js';
@@ -503,6 +505,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-automation-toggle':
       handleWorkerAutomationToggle(ws, req);
+      return;
+    case 'worker-auto-repair-toggle':
+      handleWorkerAutoRepairToggle(ws, req);
+      return;
+    case 'worker-repo-operation-repair':
+      await handleWorkerRepoOperationRepair(ws, req);
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);

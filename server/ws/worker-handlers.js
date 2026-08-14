@@ -27,6 +27,7 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
+import nodeFs from 'node:fs';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
@@ -37,11 +38,13 @@ import {
   kickWorkerMergeQueue,
   observeWorkerPrs,
   pauseWorkerAttempt,
+  reconcileWorkerRepoOperations,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
   retryWorkerDeployment,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
+  startWorkerRepoOperationRepair,
   tickWorkerQueue,
   workerMergeQueueState,
   workerSlots,
@@ -52,6 +55,12 @@ import {
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import { sanitizeOutput } from '../worker/repair-session-adapter.js';
+import {
+  classifyRepoOperationFailure,
+  isRepairEligible,
+  projectRepoOperationPolicy
+} from '../worker/repo-operation-policy.js';
 import {
   peekDeployResolution,
   peekVerifyResolution
@@ -871,6 +880,145 @@ function completionStatusFor(workspace_key, queue) {
   return { statuses, repair_ids };
 }
 
+/** Bytes of operation log the card carries inline. */
+const OPERATION_TAIL_BYTES = 2000;
+
+/**
+ * Read the tail of an operation log with credentials removed. Bounded by
+ * construction — the card shows a tail, the full log stays behind its path.
+ *
+ * @param {unknown} log_path
+ * @returns {string}
+ */
+function operationOutputTail(log_path) {
+  if (typeof log_path !== 'string' || log_path.length === 0) {
+    return '';
+  }
+  try {
+    const size = nodeFs.statSync(log_path).size;
+    const start = Math.max(0, size - OPERATION_TAIL_BYTES);
+    const length = size - start;
+    if (length <= 0) {
+      return '';
+    }
+    const buffer = Buffer.alloc(length);
+    const fd = nodeFs.openSync(log_path, 'r');
+    try {
+      nodeFs.readSync(fd, buffer, 0, length, start);
+    } finally {
+      nodeFs.closeSync(fd);
+    }
+    return sanitizeOutput(buffer.toString('utf8'));
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Project the durable RepoOperation records as UI cards (master spec §10).
+ *
+ * Each card carries kind, target SHA/tree, script path and blob, elapsed time,
+ * state, a sanitized output tail, the full log path, the exit code, and the
+ * repair session link. It also carries `failure_kind` — the pinned contract's
+ * classification — so the client can offer a resolve button PER FAILURE KIND
+ * without deciding for itself what is eligible. There is deliberately no
+ * generic retry affordance in this projection.
+ *
+ * @param {unknown} operations
+ * @param {unknown} attempts
+ * @returns {Record<string, any>[]}
+ */
+function projectRepoOperations(operations, attempts) {
+  if (!operations || typeof operations !== 'object') {
+    return [];
+  }
+  const attempt_map =
+    attempts && typeof attempts === 'object'
+      ? /** @type {Record<string, any>} */ (attempts)
+      : {};
+  /** @type {Record<string, any>[]} */
+  const cards = [];
+  for (const [operation_id, raw] of Object.entries(
+    /** @type {Record<string, any>} */ (operations)
+  )) {
+    if (!raw || typeof raw !== 'object' || !raw.repair) {
+      continue;
+    }
+    const terminal_failure =
+      raw.state === 'failed' || raw.state === 'repairing';
+    const failure = raw.failure || null;
+    const repair_attempt = raw.repair.attempt_id
+      ? attempt_map[raw.repair.attempt_id]
+      : null;
+    cards.push({
+      operation_id,
+      kind: raw.kind,
+      repo_id: raw.repo_id,
+      target_base: raw.target_base,
+      target_sha: raw.target_sha,
+      target_tree: raw.target_tree,
+      effective_base_sha: raw.effective_base_sha,
+      script_path: raw.script_path ?? null,
+      script_blob_sha: raw.script_blob_sha,
+      script_mode: raw.script_mode,
+      state: raw.state,
+      requested_at: raw.requested_at,
+      started_at: raw.started_at,
+      finished_at: raw.finished_at,
+      elapsed_ms:
+        typeof raw.started_at === 'number'
+          ? (typeof raw.finished_at === 'number'
+              ? raw.finished_at
+              : Date.now()) - raw.started_at
+          : null,
+      exit_code: raw.exit_code,
+      signal: raw.signal,
+      log_path: raw.log_path,
+      log_digest: raw.log_digest,
+      output_tail: terminal_failure ? operationOutputTail(raw.log_path) : '',
+      subjects: Array.isArray(raw.subjects) ? raw.subjects : [],
+      failure: failure
+        ? {
+            code: failure.code,
+            fingerprint: failure.fingerprint,
+            detail: sanitizeOutput(failure.detail),
+            interrupted: failure.interrupted === true
+          }
+        : null,
+      failure_kind: failure ? classifyRepoOperationFailure(raw) : null,
+      // Pre- vs post-merge verify (master spec §9.2) decides which resolve
+      // wording the card offers. A post-merge verify runs against the merged
+      // commit, so its bound target is no longer the PR head it was cut from.
+      verify_stage:
+        raw.kind !== 'verify'
+          ? null
+          : typeof raw.target_sha === 'string' &&
+              typeof raw.verify_head_sha === 'string' &&
+              raw.target_sha !== raw.verify_head_sha
+            ? 'post_merge'
+            : 'pre_merge',
+      repair_eligible: failure ? isRepairEligible(raw) : false,
+      repair: {
+        chain_id: raw.repair.chain_id,
+        owner_bead: raw.repair.owner_bead,
+        auto_budget: raw.repair.auto_budget,
+        auto_used: raw.repair.auto_used,
+        remaining: Math.max(0, raw.repair.auto_budget - raw.repair.auto_used),
+        session_id: raw.repair.session_id,
+        attempt_id: raw.repair.attempt_id,
+        attempt_status: repair_attempt ? repair_attempt.status : null
+      },
+      superseded_by: raw.superseded_by
+    });
+  }
+  cards.sort(
+    (left, right) =>
+      (right.requested_at || 0) - (left.requested_at || 0) ||
+      left.operation_id.localeCompare(right.operation_id)
+  );
+  return cards;
+}
+
 /**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the resolved verify_cmd, which comes from an explicit `[worker.verify]`
@@ -917,10 +1065,17 @@ export function decorateQueue(workspace_key, raw_queue) {
   delete public_queue.deployment;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
-  // RepoOperation internals stay off the protocol until the UI-vobi
-  // projection is approved (UI-1lmv compat boundary).
-  delete public_queue.auto_repair;
-  delete public_queue.repo_operations;
+  // The RepoOperation lane's PUBLIC surface (master spec §4.5, §10): the durable
+  // `auto_repair` value, the operation cards, and the pinned policy projection.
+  // The raw records never travel — a card is a display projection with a bounded
+  // sanitized tail, and the policy is read from the pinned contract copy so no
+  // policy sentence is authored here.
+  public_queue.auto_repair = overlaid.auto_repair !== false;
+  public_queue.repo_operations = projectRepoOperations(
+    overlaid.repo_operations,
+    overlaid.attempts
+  );
+  public_queue.repo_operation_policy = projectRepoOperationPolicy();
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );
@@ -2126,6 +2281,98 @@ export function handleWorkerAutomationToggle(ws, req) {
     });
     observeAndEnrollAutoMerge(key);
   }
+}
+
+/**
+ * Handle `worker-auto-repair-toggle`. Payload: `{ on: boolean, expected_revision }`.
+ *
+ * The INDEPENDENT repair axis (§9.3): it neither reads nor writes `auto_advance`
+ * or `auto_merge`, and neither of those touches it. OFF blocks new dispatch only
+ * — a running repair session is not stopped here or anywhere else. ON reconciles
+ * eligible failed operations immediately rather than waiting for the periodic
+ * pass, which is what makes the switch feel like a decision instead of a hint.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerAutoRepairToggle(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.on !== 'boolean') {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const result = queueStore().toggleAutoRepair(key, {
+    expected_revision: revisionOf(p),
+    on: p.on
+  });
+  replyMutation(ws, req, key, result);
+  if (result.ok && p.on === true) {
+    Promise.resolve(reconcileWorkerRepoOperations(key)).catch((err) => {
+      log(
+        'repo-operation reconcile after auto_repair ON failed for %s: %o',
+        key,
+        err
+      );
+    });
+  }
+}
+
+/**
+ * Handle `worker-repo-operation-repair`. Payload: `{ operation_id: string }`.
+ *
+ * The per-failure-kind resolve click. It goes through the coordinator like the
+ * automatic path does, so the new attempt is only ever created after a repair
+ * session produced evidence — there is no command here that simply runs the
+ * failed script again.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerRepoOperationRepair(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.operation_id !== 'string' || p.operation_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { operation_id }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, code?: string, attempt_id?: string, session_id?: string|null }} */
+  let result;
+  try {
+    result = await startWorkerRepoOperationRepair(key, {
+      operation_id: p.operation_id,
+      mode: 'manual'
+    });
+  } catch (err) {
+    log('repo-operation repair failed for %s: %o', key, err);
+    result = { ok: false, code: 'repair_dispatch_failed' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ok: result.ok === true,
+        reason:
+          result.ok === true ? undefined : result.code || 'repair_refused',
+        attempt_id: result.attempt_id ?? null,
+        queue: decorateQueue(key, queueStore().snapshot(key))
+      })
+    )
+  );
+  fanout(key, queueStore().snapshot(key));
 }
 
 /**

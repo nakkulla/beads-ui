@@ -69,7 +69,8 @@ import {
   discardConfirmationMessage,
   discardProjection,
   miniRow,
-  paneTemplate
+  paneTemplate,
+  repoOperationsDisclosureTemplate
 } from './lanes.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -1899,6 +1900,30 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Ask the coordinator to resolve ONE failed operation. Deliberately not a
+   * retry: the server dispatches a repair session and only creates a new
+   * attempt once that session produced evidence.
+   *
+   * @param {string} operation_id
+   */
+  async function resolveRepoOperation(operation_id) {
+    if (!transport || !operation_id) {
+      return;
+    }
+    const res = await transport('worker-repo-operation-repair', {
+      operation_id
+    });
+    adopt(res);
+    if (res && res.ok === false) {
+      showToast(`해결 세션 거부: ${res.reason || ''}`, 'error', 3000);
+      return;
+    }
+    if (res && res.ok === true) {
+      showToast('해결 세션을 띄웠습니다', 'success', 2400);
+    }
+  }
+
+  /**
    * Set the concurrency cap (worker-phase2 §3), under the same CAS discipline
    * as the other mutations. The value is clamped to the lower bound before it
    * is sent — the server rejects (never clamps) an out-of-bound value.
@@ -1948,7 +1973,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, deployment: any }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, deployment: any, repo_operations: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2921,7 +2946,10 @@ export function createWorkerView(mount_element, options = {}) {
       done: done_rows,
       token_total,
       cleanup_failures,
-      deployment: q.deployment || null
+      deployment: q.deployment || null,
+      // The RepoOperation lane's cards (master spec §10) — already projected by
+      // the server, including which failure kind each resolve button names.
+      repo_operations: Array.isArray(q.repo_operations) ? q.repo_operations : []
     };
   }
 
@@ -3007,6 +3035,7 @@ export function createWorkerView(mount_element, options = {}) {
       cleanupFailures: m.cleanup_failures
     });
     const deployment = deploymentDisclosureTemplate(m.deployment);
+    const repo_operations = repoOperationsDisclosureTemplate(m.repo_operations);
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
       // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
@@ -3020,7 +3049,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${deployment}${banners}`;
+        ${deployment}${repo_operations}${banners}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -3050,7 +3079,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${deployment}${banners}`;
+      ${deployment}${repo_operations}${banners}`;
   }
 
   /**
@@ -3894,6 +3923,23 @@ export function createWorkerView(mount_element, options = {}) {
       if (attempt_id) {
         openDrawerForAttempt(attempt_id);
       }
+      return;
+    }
+    const repoOpSession = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-repo-op__session')
+    );
+    if (repoOpSession) {
+      const attempt_id = repoOpSession.dataset.attemptId;
+      if (attempt_id) {
+        openDrawerForAttempt(attempt_id);
+      }
+      return;
+    }
+    const repoOpResolve = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-repo-op__resolve')
+    );
+    if (repoOpResolve) {
+      void resolveRepoOperation(repoOpResolve.dataset.operationId || '');
       return;
     }
     const deploymentContinue = /** @type {HTMLElement|null} */ (

@@ -152,6 +152,42 @@ Nothing merges without a human `[머지]` click.
 - `worker-automation-toggle` payload: `{ on, expected_revision }` — atomically
   aligns `auto_advance` and `auto_merge`; OFF also clears ordinary waiting merge
   entries while preserving active and resolution-bound work.
+- `worker-auto-repair-toggle` payload: `{ on, expected_revision }` — the
+  INDEPENDENT RepoOperation repair axis (master spec §9.3). It neither reads nor
+  writes `auto_advance`/`auto_merge`, and neither of those writes it. OFF blocks
+  NEW automatic repair dispatch only: a repair session already running is never
+  stopped by this mutation. ON reconciles eligible failed operations immediately
+  rather than waiting for the periodic pass. Reply carries the authoritative
+  `queue` like every other CAS mutation.
+- `worker-repo-operation-repair` payload: `{ operation_id }` — the per-failure
+  resolve click (master spec §10). Not a retry: the server dispatches a repair
+  session through the coordinator, and a NEW attempt exists only after that
+  session produced evidence. Reply `{ ok, reason?, attempt_id, queue }`;
+  `reason` is the coordinator's refusal code (`repo_operation_not_failed`,
+  `repair_chain_closed`, `repair_session_unavailable`,
+  `repair_owner_unresolved`, a scheduler reason such as
+  `worktree_missing`/`bead_running`, …).
+- The `worker-queue-snapshot` carries `auto_repair: boolean` — the durable value
+  of that axis; an absent key on a legacy queue reads as ON.
+- The `worker-queue-snapshot` carries `repo_operation_policy` — the projection
+  of the PINNED contract copy `generated/contracts/repo-operation-policy.json`
+  (an exact byte copy of the dotfiles artifact, with its source commit and
+  digest in the sibling provenance file). Shape:
+  `{ schema_version, source_commit, digest, worker_automatic: string[], auto_repair: { default, eligible: string[], budget_per_completion_chain }, completion_chain: Record<string,string>, never_automatic: string[] }`.
+  The three lists are the §10 vocabulary VERBATIM: list membership is decided by
+  the contract alone, never by server or client code. A client renders each
+  token through a display dictionary and MUST fall back to the raw token, so a
+  contract that gains an entry shows up without a client change.
+- The `worker-queue-snapshot` carries `repo_operations` — the operation cards,
+  newest `requested_at` first. Each card:
+  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'repairing', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, repair_eligible, repair: { chain_id, owner_bead, auto_budget, auto_used, remaining, session_id, attempt_id, attempt_status }, superseded_by }`.
+  `output_tail` and `failure.detail` are SANITIZED (credential-shaped substrings
+  redacted) and the tail is bounded — the full log stays behind `log_path`.
+  `failure_kind` is the contract's classification (`verify_script_failure`,
+  `deploy_script_failure`, `interrupted_without_terminal_exit`, or `other`),
+  which is what selects the card's resolve button; there is deliberately no
+  generic retry affordance. A record that cannot be read as a complete operation
+  is DROPPED rather than projected partially.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
 - `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when

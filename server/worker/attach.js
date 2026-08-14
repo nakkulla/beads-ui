@@ -26,6 +26,7 @@
  * @import { BeadSnapshot } from './scheduler.js'
  */
 import { execFileSync, spawn } from 'node:child_process';
+import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
   isWorkerIneligible,
@@ -57,6 +58,10 @@ import { createPrPoller, hasDeploymentObservationDemand } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
+import {
+  createRepairSessionAdapter,
+  testScopeOf
+} from './repair-session-adapter.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
 import { peekVerifyResolution, resolveVerifyAt } from './repo-ops.js';
@@ -364,6 +369,7 @@ export function defaultProbePid(pid) {
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
  *   processController?: ReturnType<typeof createProcessController>,
  *   sessionMonitors?: any,
+ *   repairSession?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
  *   notify?: any,
@@ -496,12 +502,72 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   };
   const worktree =
     options.worktree || createWorktreeManager({ locks: runtime.locks });
+  // The repair lane's session Interface (master spec §4.4). It is built BEFORE
+  // the scheduler and reaches it through a closure on purpose: the coordinator
+  // needs the adapter at construction, the adapter needs the scheduler only at
+  // dispatch time, and nothing here may become a second session runner.
+  const repairSession =
+    options.repairSession ||
+    createRepairSessionAdapter({
+      repo,
+      store: runtime.queueStore,
+      gitRun,
+      fs: nodeFs,
+      /**
+       * The review/PR and `Test scope` facts the packet carries. Observations
+       * only — the session is told what is true now, never what to conclude.
+       *
+       * @param {string} bead_id
+       */
+      async beadFacts(bead_id) {
+        /** @type {Record<string, string|null>} */
+        const metadata = {};
+        for (const key of [
+          'plan_path',
+          'spec_id',
+          'pr_url',
+          'spec_review',
+          'impl_review'
+        ]) {
+          try {
+            metadata[key] = await bd.readMetadata(bead_id, key);
+          } catch {
+            metadata[key] = null;
+          }
+        }
+        const queue = runtime.queueStore.snapshot(keyFor(workspace_root));
+        const row = (queue.pr_wait || []).find(
+          (/** @type {any} */ entry) => entry.bead_id === bead_id
+        );
+        return {
+          test_scope: testScopeOf(metadata),
+          review: {
+            bead_id,
+            pr_url: metadata.pr_url ?? row?.pr_url ?? null,
+            merge_sha: row?.merge_sha ?? null,
+            head_ref: row?.head_ref ?? null,
+            spec_review: metadata.spec_review,
+            impl_review: metadata.impl_review
+          }
+        };
+      },
+      /**
+       * @param {any} input
+       */
+      dispatchSession: (input) =>
+        scheduler.dispatchRepoOperationRepair(keyFor(workspace_root), {
+          bead_id: input.bead_id,
+          operation_id: input.operation_id,
+          packet: input.packet
+        })
+    });
   const repoOperationCoordinator = createRepoOperationCoordinator({
     workspace: workspace_root,
     repo,
     store: runtime.queueStore,
     locks: runtime.locks,
-    gitRun
+    gitRun,
+    repairSession
   });
   // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
   // bd writer is the same metadata adapter the scheduler uses (extended with
@@ -1691,6 +1757,44 @@ export async function retryWorkerDeployment(workspace_root) {
       reason: typeof code === 'string' ? code : 'deployment_retry_failed'
     };
   }
+}
+
+/**
+ * Start one repair session for a terminal RepoOperation failure. `manual` is
+ * the click path — it produces repair evidence and only then lets the
+ * coordinator create a new attempt, which is why there is no generic retry
+ * anywhere on this surface.
+ *
+ * @param {string} workspace_root
+ * @param {{ operation_id: string, mode?: 'auto'|'manual' }} input
+ * @returns {Promise<{ ok: boolean, code?: string, operation_id?: string, attempt_id?: string, session_id?: string|null }>}
+ */
+export async function startWorkerRepoOperationRepair(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.repoOperationCoordinator) {
+    return { ok: false, code: 'no_attachment' };
+  }
+  return att.repoOperationCoordinator.startRepair(
+    input.operation_id,
+    input.mode === 'auto' ? 'auto' : 'manual'
+  );
+}
+
+/**
+ * Reconcile the RepoOperation lane now. Called right after `auto_repair` is
+ * switched ON so eligible failures are picked up immediately (§9.3) instead of
+ * waiting for the periodic pass.
+ *
+ * @param {string} workspace_root
+ * @returns {Promise<void>}
+ */
+export async function reconcileWorkerRepoOperations(workspace_root) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.repoOperationCoordinator) {
+    return;
+  }
+  await att.repoOperationCoordinator.reconcile(key);
 }
 
 /**

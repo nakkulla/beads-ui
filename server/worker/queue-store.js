@@ -356,6 +356,8 @@
  * @property {string|null} verify_head_sha
  * @property {string|null} deploy_worktree
  * @property {string} script_object_type
+ * @property {string|null} script_path - Declared repo-relative script path, for
+ * display alongside the pinned blob. Null on records written before it existed.
  * @property {string} script_mode
  * @property {string} script_blob_sha
  * @property {'queued'|'running'|'succeeded'|'failed'|'repairing'} state
@@ -1831,6 +1833,8 @@ function normalizeRepoOperation(value) {
       typeof value.script_object_type === 'string'
         ? value.script_object_type
         : 'blob',
+    script_path:
+      typeof value.script_path === 'string' ? value.script_path : null,
     script_mode: value.script_mode,
     script_blob_sha: value.script_blob_sha.toLowerCase(),
     state: /** @type {RepoOperation['state']} */ (value.state),
@@ -3257,7 +3261,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_path?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -3347,6 +3351,8 @@ export function createQueueStore(options = {}) {
               ? input.deploy_worktree
               : null,
           script_object_type: input.script_object_type || 'blob',
+          script_path:
+            typeof input.script_path === 'string' ? input.script_path : null,
           script_mode: input.script_mode,
           script_blob_sha: input.script_blob_sha.toLowerCase(),
           state: 'queued',
@@ -3572,6 +3578,87 @@ export function createQueueStore(options = {}) {
             entry.cleanup_cursor = 'base_containment';
           }
         }
+        return true;
+      });
+    },
+
+    /**
+     * Prerecord ONE repair dispatch before any session effect. An automatic
+     * dispatch spends the chain budget HERE, so a later spawn refusal cannot
+     * buy a second automatic try (§9.3 `unbounded_repair_session_retry`).
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, mode: 'auto'|'manual', owner_bead?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    startRepoOperationRepair(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.state !== 'failed') {
+          return false;
+        }
+        if (input.mode !== 'auto' && input.mode !== 'manual') {
+          return false;
+        }
+        if (
+          input.mode === 'auto' &&
+          operation.repair.auto_used >= operation.repair.auto_budget
+        ) {
+          return false;
+        }
+        operation.state = 'repairing';
+        operation.repair.chain_id =
+          operation.repair.chain_id || input.operation_id;
+        if (typeof input.owner_bead === 'string') {
+          operation.repair.owner_bead = input.owner_bead;
+        }
+        operation.repair.session_id = null;
+        operation.repair.attempt_id = null;
+        if (input.mode === 'auto') {
+          operation.repair.auto_used += 1;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Bind the dispatched session to the repairing record.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, attempt_id: string, session_id?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    bindRepoOperationRepairSession(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.state !== 'repairing') {
+          return false;
+        }
+        operation.repair.attempt_id = input.attempt_id;
+        operation.repair.session_id =
+          typeof input.session_id === 'string' ? input.session_id : null;
+        return true;
+      });
+    },
+
+    /**
+     * Return a repairing record to its terminal failure — the manual state.
+     * The spent budget is NOT refunded: the chain already had its automatic
+     * try, and refunding it is exactly the unbounded retry the contract bans.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    releaseRepoOperationRepair(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.state !== 'repairing') {
+          return false;
+        }
+        operation.state = 'failed';
+        operation.repair.session_id = null;
+        operation.repair.attempt_id = null;
         return true;
       });
     },

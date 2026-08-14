@@ -8,3 +8,7 @@ docs/superpowers/
 CHANGES.md
 app/main.bundle.js
 app/main.bundle.js.map
+
+# Pinned byte-exact contract copies from dotfiles. Reformatting them would
+# break the digest the contract test pins, which is the point of the pin.
+generated/contracts/

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "worker_automatic": [
+    "owned_deploy_worktree_fetch_detached_alignment_recreate",
+    "recovered_pre_execution_fetch_timeout_retry_once",
+    "repo_serial_lock_wait",
+    "restart_operation_adoption",
+    "exact_input_exit_zero_evidence_adoption",
+    "descendant_success_covers_ancestor_rows",
+    "owned_verify_candidate_cleanup"
+  ],
+  "auto_repair": {
+    "default": true,
+    "eligible": [
+      "verify_script_failure",
+      "deploy_script_failure",
+      "interrupted_without_terminal_exit"
+    ],
+    "budget_per_completion_chain": 1
+  },
+  "completion_chain": {
+    "identity": "first_terminal_failure_operation",
+    "inheritance": "successor_attempts_and_repair_operations_inherit_chain_and_budget",
+    "closure": "chain_operation_terminal_success",
+    "coalesced_owner": "latest_merged_sha_subject_then_lexicographic_bead_id",
+    "repeated_fingerprint_without_new_evidence": "manual_only",
+    "off_semantics": "blocks_new_sessions_only_running_session_survives"
+  },
+  "never_automatic": [
+    "whole_command_retry",
+    "baseline_failure_ignore",
+    "config_or_script_deletion_to_bypass_gate",
+    "credential_entry",
+    "destructive_action",
+    "history_rewrite",
+    "agent_self_report_as_success",
+    "unbounded_repair_session_retry"
+  ]
+}
