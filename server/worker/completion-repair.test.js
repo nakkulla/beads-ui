@@ -186,7 +186,7 @@ describe('worker/completion-repair pinned ownership probe', () => {
 
     const result = await service.probeOwnership({
       root_bead_id: ROOT,
-      source: 'local_verify',
+      source: 'verify',
       failure_key: failureKey()
     });
 
@@ -220,7 +220,7 @@ describe('worker/completion-repair pinned ownership probe', () => {
 
     const result = await service.probeOwnership({
       root_bead_id: ROOT,
-      source: 'local_verify',
+      source: 'verify',
       failure_key: failureKey()
     });
 
@@ -250,55 +250,13 @@ describe('worker/completion-repair pinned ownership probe', () => {
 
     const result = await service.probeOwnership({
       root_bead_id: ROOT,
-      source: 'local_verify',
+      source: 'verify',
       failure_key: failureKey()
     });
 
     expect(result).toEqual({
       state: 'undecidable',
       reason: 'verify_cmd_timeout'
-    });
-  });
-
-  test('queries checks for the exact base SHA and classifies a red base as base-owned', async () => {
-    const gh = {
-      commitChecks: vi.fn(async () => ({
-        state: 'ok',
-        data: [{ name: 'Build', conclusion: 'fail' }]
-      }))
-    };
-    const service = createCompletionRepairService({
-      bd: /** @type {any} */ ({}),
-      repo: REPO,
-      gh
-    });
-
-    const result = await service.probeOwnership({
-      root_bead_id: ROOT,
-      source: 'ci',
-      failure_key: failureKey({ reason: 'ci_failed' })
-    });
-
-    expect(result).toMatchObject({ state: 'base_owned' });
-    expect(gh.commitChecks).toHaveBeenCalledWith(REPO, BASE_SHA);
-  });
-
-  test('leaves absent base checks undecidable', async () => {
-    const service = createCompletionRepairService({
-      bd: /** @type {any} */ ({}),
-      repo: REPO,
-      gh: { commitChecks: async () => ({ state: 'empty' }) }
-    });
-
-    const result = await service.probeOwnership({
-      root_bead_id: ROOT,
-      source: 'ci',
-      failure_key: failureKey({ reason: 'ci_failed' })
-    });
-
-    expect(result).toEqual({
-      state: 'undecidable',
-      reason: 'base_checks_absent'
     });
   });
 });

@@ -5653,4 +5653,232 @@ describe('worker/queue-store — 자동 머지 durable 상태 (UI-yk55 §2/§3)'
     expect(r.ok).toBe(false);
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
+
+  test('advances cleanup through the canonical cursor sequence', () => {
+    const store = createQueueStore();
+    park(store, ['UI-cursor']);
+
+    for (const cursor of [
+      'base_containment',
+      'repo_operations',
+      'child_sweep',
+      'branch_cleanup',
+      'parent_close'
+    ]) {
+      const result = store.setCleanupCursor(WS, {
+        bead_id: 'UI-cursor',
+        cursor,
+        merge_sha: 'a'.repeat(40)
+      });
+      expect(result.ok).toBe(true);
+    }
+
+    expect(store.snapshot(WS).pr_wait[0]).toMatchObject({
+      cleanup_cursor: 'parent_close',
+      merge_sha: 'a'.repeat(40)
+    });
+  });
+
+  test('rejects skipped and retired cleanup cursor steps', () => {
+    const store = createQueueStore();
+    park(store, ['UI-cursor']);
+
+    const skipped = store.setCleanupCursor(WS, {
+      bead_id: 'UI-cursor',
+      cursor: 'child_sweep'
+    });
+    const retired = store.setCleanupCursor(WS, {
+      bead_id: 'UI-cursor',
+      cursor: 'post_merge_verify'
+    });
+
+    expect(skipped.ok).toBe(false);
+    expect(retired.ok).toBe(false);
+    expect(store.snapshot(WS).pr_wait[0].cleanup_cursor).toBeNull();
+  });
+});
+
+describe('worker/queue-store — legacy migration stamp (master spec §11)', () => {
+  const SUBJECT = 'a'.repeat(40);
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {string[]} bead_ids
+   */
+  function park(store, bead_ids) {
+    for (const bead_id of bead_ids) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: `att-${bead_id}`, bead_id }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done' }
+      });
+    }
+  }
+
+  /**
+   * @param {Partial<Record<string, unknown>>} [overrides]
+   */
+  function migrationInput(overrides = {}) {
+    return {
+      version: 1,
+      at: 1000,
+      results: {
+        'UI-mig': {
+          bead_id: 'UI-mig',
+          from_step: 'deploy',
+          from_reason: 'deploy_failed',
+          subject_sha: SUBJECT,
+          subject_source: 'merge_sha',
+          target_base: 'main',
+          disposition: 'new_deploy_operation',
+          reason: null,
+          evidence: null,
+          at: 1000
+        }
+      },
+      ...overrides
+    };
+  }
+
+  test('defaults to an unmigrated workspace', () => {
+    const store = createQueueStore();
+
+    expect(store.snapshot(WS).repo_operation_migration).toBeNull();
+  });
+
+  test('stores the result and its schema version', () => {
+    const store = createQueueStore();
+
+    const result = store.recordRepoOperationMigration(WS, migrationInput());
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).repo_operation_migration).toMatchObject({
+      version: 1,
+      results: { 'UI-mig': { disposition: 'new_deploy_operation' } }
+    });
+  });
+
+  test('retires the legacy failure records it converted in the same write', () => {
+    const store = createQueueStore();
+    park(store, ['UI-mig']);
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-mig',
+      step: 'deploy',
+      reason: 'deploy_failed'
+    });
+    const before = store.snapshot(WS).revision;
+
+    store.recordRepoOperationMigration(
+      WS,
+      migrationInput({ retire: ['UI-mig'] })
+    );
+
+    expect(store.snapshot(WS).cleanup_failed['UI-mig']).toBeUndefined();
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+  });
+
+  test('pins the canonical subject SHA on the converted row', () => {
+    const store = createQueueStore();
+    park(store, ['UI-mig']);
+
+    store.recordRepoOperationMigration(
+      WS,
+      migrationInput({
+        rows: [
+          {
+            bead_id: 'UI-mig',
+            merge_sha: SUBJECT,
+            cursor: 'base_containment'
+          }
+        ]
+      })
+    );
+
+    expect(store.snapshot(WS).pr_wait[0]).toMatchObject({
+      merge_sha: SUBJECT,
+      cleanup_cursor: 'base_containment'
+    });
+  });
+
+  test('keeps a row that already entered the lane on its own cursor', () => {
+    const store = createQueueStore();
+    park(store, ['UI-mig']);
+    store.setCleanupCursor(WS, {
+      bead_id: 'UI-mig',
+      cursor: 'base_containment'
+    });
+    store.setCleanupCursor(WS, {
+      bead_id: 'UI-mig',
+      cursor: 'repo_operations'
+    });
+
+    store.recordRepoOperationMigration(
+      WS,
+      migrationInput({
+        rows: [
+          { bead_id: 'UI-mig', merge_sha: SUBJECT, cursor: 'base_containment' }
+        ]
+      })
+    );
+
+    expect(store.snapshot(WS).pr_wait[0].cleanup_cursor).toBe(
+      'repo_operations'
+    );
+  });
+
+  test('rejects a second stamp at the same schema version', () => {
+    const store = createQueueStore();
+    store.recordRepoOperationMigration(WS, migrationInput());
+
+    const again = store.recordRepoOperationMigration(
+      WS,
+      migrationInput({ at: 2000, results: {} })
+    );
+
+    expect(again.ok).toBe(false);
+    expect(store.snapshot(WS).repo_operation_migration).toMatchObject({
+      at: 1000
+    });
+  });
+
+  test('rejects a stamp without a readable result entry', () => {
+    const store = createQueueStore();
+
+    const result = store.recordRepoOperationMigration(
+      WS,
+      migrationInput({ results: { 'UI-mig': { from_step: 'deploy' } } })
+    );
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).repo_operation_migration).toBeNull();
+  });
+
+  test('reads a damaged stored stamp as never migrated', () => {
+    const file = queueFilePath(WS);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ revision: 3, repo_operation_migration: { version: 0 } })
+    );
+
+    const store = createQueueStore();
+
+    expect(store.snapshot(WS).repo_operation_migration).toBeNull();
+  });
+
+  test('survives a reload of the persisted stamp', () => {
+    const first = createQueueStore();
+    first.recordRepoOperationMigration(WS, migrationInput());
+
+    const reloaded = createQueueStore();
+
+    expect(reloaded.snapshot(WS).repo_operation_migration).toMatchObject({
+      version: 1,
+      results: { 'UI-mig': { subject_sha: SUBJECT } }
+    });
+  });
 });

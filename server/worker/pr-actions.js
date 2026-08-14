@@ -17,12 +17,12 @@
  *      cache holds, the gate is re-evaluated against the NEW sha — running the
  *      local verification if that tier needs it. A restart (empty cache) lands
  *      in exactly this path and therefore VERIFIES rather than passing.
- *   3. THREE BRANCHES, ONE OF WHICH IS NOT A MERGE.
+ *   3. THREE OUTCOMES, ONLY ONE OF WHICH MERGES.
  *        CLEAN → squash merge.
- *        BEHIND → update-branch on GitHub, re-confirm the gate, then merge.
  *        DIRTY → do NOT merge; dispatch a conflict-resolution session and stop.
+ *        BEHIND / UNKNOWN / otherwise unclean → refuse without an effect.
  *      Automatic conflict resolution is fine; automatic merging is not. Nothing
- *      here merges after a resolution, after a green CI, or on any timer — the
+ *      here merges after a resolution or on any timer — the
  *      only merge triggers are this click and a merge a human performed on
  *      github.com (which the poller observes and routes into the SAME cleanup).
  *
@@ -50,8 +50,8 @@
  */
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
-import { evaluateMergeGate } from './merge-gate.js';
-import { resolvePrRef, rollupConclusion } from './pr-poller.js';
+import { evaluateMergeGate, reviewReceiptState } from './merge-gate.js';
+import { resolvePrRef } from './pr-poller.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -79,9 +79,8 @@ export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
  * @type {string[]}
  */
 export const CLEANUP_STEPS = [
-  'base_sync',
-  'post_merge_verify',
-  'deployment_request',
+  'base_containment',
+  'repo_operations',
   'child_sweep',
   'branch_cleanup',
   'parent_close'
@@ -99,7 +98,7 @@ export const CLEANUP_STEPS = [
 /**
  * @typedef {Object} MergeClickResult
  * @property {boolean} ok - Whether the click accomplished what it set out to.
- * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'refused'} action
+ * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'verify_blocked'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
  * resolution is a legitimate outcome that merged nothing, and
  * `cleanup_pending` is a landed merge with an accepted external deployment
@@ -124,6 +123,7 @@ export const CLEANUP_STEPS = [
  * @property {string|null} head_sha
  * @property {string|null} base_ref
  * @property {boolean} external
+ * @property {'verify'} [continuation]
  */
 
 /**
@@ -189,6 +189,7 @@ function authoritativeMergeSha(pr) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
+ *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any, hasConfig: (sha: string) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
  *   deploymentJob?: { requestDeployment: (input: { repo: string, target_base: string, verified_sha: string }) => Promise<{ accepted: boolean, noop: boolean, target_base: string, target_sha: string, generation: number }>, deploymentStatus: (input: { repo: string }) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
@@ -226,6 +227,7 @@ export function createPrActions(deps) {
         reason: 'verify_cmd_spawn_error',
         exit: null
       }));
+  const repo_operations = deps.repoOperations || null;
 
   /**
    * Beads with an action in flight. A merge and its cleanup can take minutes
@@ -529,9 +531,33 @@ export function createPrActions(deps) {
   }
 
   /**
+   * Read workflow review authority at action time. Quick fixes intentionally
+   * carry no formal receipts. Spec-backed routes require a reviewed spec and an
+   * implementation receipt bound to the current PR head.
+   *
+   * @param {string} bead_id
+   * @param {string} head_sha
+   * @returns {Promise<'current'|'missing'|'stale'|'invalid'>}
+   */
+  async function readReviewReceiptState(bead_id, head_sha) {
+    if (typeof deps.bd.readIssue !== 'function') {
+      return 'invalid';
+    }
+    /** @type {Record<string, any>} */
+    let issue;
+    try {
+      issue = await deps.bd.readIssue(bead_id);
+    } catch (err) {
+      log('review receipt read failed for %s: %o', bead_id, err);
+      return 'invalid';
+    }
+    return reviewReceiptState(issue, head_sha);
+  }
+
+  /**
    * ONE authoritative observation at click time: read the PR, resolve a lazy
-   * `UNKNOWN` mergeability, read its checks, and write the result into the
-   * observation cache so the badge the user sees next matches the decision that
+   * `UNKNOWN` mergeability, and write the result into the observation cache so
+   * the badge the user sees next matches the decision that
    * was just taken on it.
    *
    * @param {string} bead_id
@@ -568,44 +594,11 @@ export function createPrActions(deps) {
     }
     const pr = /** @type {PrDetail} */ (detail.data);
     if (pr.state !== 'OPEN') {
-      // A terminal PR is classified by its state alone — no checks query is
-      // spent on it, exactly as the poller does.
+      // A terminal PR is classified by its state alone.
       deps.observations.record(workspace, bead_id, { error: null, pr });
       return { pr };
     }
-
-    /** @type {any} */
-    let checks;
-    try {
-      checks = await deps.gh.prChecks(repo, number);
-    } catch {
-      checks = { state: 'error', reason: 'gh_spawn_failed' };
-    }
-    const ci =
-      checks.state === 'ok'
-        ? {
-            state: /** @type {const} */ ('ok'),
-            head_sha: pr.head_sha,
-            checks: checks.data,
-            conclusion: rollupConclusion(checks.data),
-            reason: null
-          }
-        : checks.state === 'empty'
-          ? {
-              state: /** @type {const} */ ('empty'),
-              head_sha: pr.head_sha,
-              checks: [],
-              conclusion: null,
-              reason: null
-            }
-          : {
-              state: /** @type {const} */ ('error'),
-              head_sha: pr.head_sha,
-              checks: [],
-              conclusion: null,
-              reason: checks.reason
-            };
-    deps.observations.record(workspace, bead_id, { error: null, pr, ci });
+    deps.observations.record(workspace, bead_id, { error: null, pr });
     return { pr };
   }
 
@@ -615,14 +608,14 @@ export function createPrActions(deps) {
    * bound to this exact commit.
    *
    * This is the step that makes a stale green worthless: the gate compares the
-   * verify/CI binding against the sha just read, so a head that advanced (a
+   * verify receipt binding against the sha just read, so a head that advanced (a
    * branch update, a conflict resolution's push) or a cache the restart emptied
    * both land on `verify_missing` / `verify_sha_stale` and re-run rather than
    * pass.
    *
    * @param {string} bead_id
    * @param {number} number
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict }|{ error: string }>}
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean }|{ error: string }>}
    */
   async function gateNow(bead_id, number) {
     const observed = await observeNow(bead_id, number);
@@ -630,15 +623,169 @@ export function createPrActions(deps) {
       return observed;
     }
     const pr = observed.pr;
+    if (repo_operations && pr.state === 'OPEN') {
+      let pinned;
+      try {
+        pinned = await deps.resolveBase?.({ force: true });
+      } catch {
+        return { error: 'base_unresolved:git_error' };
+      }
+      if (!pinned?.ok || typeof pinned.base_oid !== 'string') {
+        return {
+          error: `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'no_resolver'}`
+        };
+      }
+      const config = await repo_operations.hasConfig(pinned.base_oid);
+      if (!config.ok) {
+        return { error: config.code || 'repo_ops_config_invalid' };
+      }
+      if (config.present) {
+        const review_receipt_state = await readReviewReceiptState(
+          bead_id,
+          pr.head_sha
+        );
+        deps.observations.record(workspace, bead_id, {
+          error: null,
+          pr,
+          review_receipt: {
+            state: review_receipt_state,
+            head_sha: pr.head_sha
+          }
+        });
+        const preliminary = evaluateMergeGate(
+          deps.observations.get(workspace, bead_id),
+          {
+            review_receipt_state,
+            verify_receipt_state: {
+              declaration_state: 'absent',
+              receipt: null
+            }
+          }
+        );
+        if (!preliminary.enabled) {
+          return {
+            pr,
+            verdict: preliminary,
+            base_sha: pinned.base_oid,
+            repo_operations: true,
+            verify_operation_id: null,
+            verify_attempted: false
+          };
+        }
+        const ensured = await repo_operations.ensureVerify({
+          repo,
+          origin: 'origin',
+          target_base: pinned.base,
+          base_sha: pinned.base_oid,
+          head_sha: pr.head_sha,
+          bead_id,
+          pr_number: number,
+          script_path: config.verify_script_path
+        });
+        if (ensured.inert) {
+          return {
+            pr,
+            verdict: preliminary,
+            base_sha: pinned.base_oid,
+            repo_operations: true,
+            verify_operation_id: null,
+            verify_attempted: false
+          };
+        }
+        if (!ensured.ok || typeof ensured.operation_id !== 'string') {
+          return {
+            pr,
+            verdict: evaluateMergeGate(
+              deps.observations.get(workspace, bead_id),
+              {
+                review_receipt_state,
+                verify_receipt_state: {
+                  declaration_state: 'invalid',
+                  receipt: null
+                }
+              }
+            ),
+            base_sha: pinned.base_oid,
+            repo_operations: true,
+            verify_operation_id:
+              typeof ensured.operation_id === 'string'
+                ? ensured.operation_id
+                : null,
+            verify_attempted: true
+          };
+        }
+        const receipt =
+          (await repo_operations.waitForTerminal(ensured.operation_id, {
+            timeout_ms: ensured.timeout_ms
+          })) || repo_operations.verifyReceipt(ensured.operation_id);
+        if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
+          deps.observations.recordVerify(workspace, bead_id, receipt);
+        }
+        const expected_key = receipt
+          ? {
+              effective_base_sha: receipt.effective_base_sha,
+              head_sha: receipt.head_sha,
+              candidate_tree_sha: receipt.candidate_tree_sha,
+              script_object_type: receipt.script_object_type,
+              script_mode: receipt.script_mode,
+              script_blob_sha: receipt.script_blob_sha
+            }
+          : null;
+        return {
+          pr,
+          verdict: evaluateMergeGate(
+            deps.observations.get(workspace, bead_id),
+            {
+              review_receipt_state,
+              verify_receipt_state: {
+                declaration_state: 'present',
+                receipt:
+                  receipt?.state === 'succeeded' || receipt?.state === 'failed'
+                    ? receipt
+                    : null,
+                expected_key
+              }
+            }
+          ),
+          base_sha: pinned.base_oid,
+          repo_operations: true,
+          verify_operation_id: ensured.operation_id,
+          verify_attempted: true
+        };
+      }
+    }
     // Pre-merge context: the resolver pins rung 1 to the fetched remote
     // target-base tip, so a PR cannot define the command that judges it
     // (UI-kfl4 §4.1). `force` because this is the AUTHORITATIVE click-time
     // gate — a memoized pin could still name the base as it stood before a
     // declaration landed on it, which is the one place that matters.
     const resolved = await resolveVerify({ force: true });
+    const review_receipt_state =
+      pr.state === 'OPEN'
+        ? await readReviewReceiptState(bead_id, pr.head_sha)
+        : 'current';
+    if (pr.state === 'OPEN') {
+      deps.observations.record(workspace, bead_id, {
+        error: null,
+        pr,
+        review_receipt: {
+          state: review_receipt_state,
+          head_sha: pr.head_sha
+        }
+      });
+    }
     let entry = deps.observations.get(workspace, bead_id);
     let verdict = evaluateMergeGate(entry, {
-      verify_cmd_state: resolved.state
+      review_receipt_state,
+      verify_receipt_state: {
+        declaration_state:
+          resolved.state === 'resolved'
+            ? 'present'
+            : resolved.state === 'invalid'
+              ? 'invalid'
+              : 'absent',
+        receipt: entry?.verify || null
+      }
     });
     const cached_flaky_failure =
       verdict.reason === 'verify_cmd_failed' &&
@@ -647,7 +794,7 @@ export function createPrActions(deps) {
     if (
       resolved.state === 'resolved' &&
       !verdict.enabled &&
-      verdict.tier === 'local_verify' &&
+      verdict.tier === 'verify' &&
       (verdict.reason === 'verify_missing' ||
         verdict.reason === 'verify_sha_stale' ||
         cached_flaky_failure)
@@ -682,7 +829,13 @@ export function createPrActions(deps) {
         ...(typeof r.log_path === 'string' ? { log_path: r.log_path } : {})
       });
       entry = deps.observations.get(workspace, bead_id);
-      verdict = evaluateMergeGate(entry, { verify_cmd_state: 'resolved' });
+      verdict = evaluateMergeGate(entry, {
+        review_receipt_state,
+        verify_receipt_state: {
+          declaration_state: 'present',
+          receipt: entry?.verify || null
+        }
+      });
     }
     return { pr, verdict };
   }
@@ -750,7 +903,6 @@ export function createPrActions(deps) {
       return { ok: false, reason: 'merge_sha_unobserved' };
     }
     const entry = deps.observations.get(workspace, bead_id);
-    const ci = entry?.ci;
     const verify = entry?.verify;
     return {
       ok: true,
@@ -766,17 +918,6 @@ export function createPrActions(deps) {
       },
       verdict: gated.verdict,
       evidence: {
-        ...(ci
-          ? {
-              ci: {
-                state: ci.state,
-                head_sha: ci.head_sha,
-                conclusion: ci.conclusion,
-                reason: ci.reason,
-                checks: ci.checks.slice(0, 100)
-              }
-            }
-          : {}),
         ...(verify
           ? {
               verify: {
@@ -1402,6 +1543,7 @@ export function createPrActions(deps) {
       prior_failure &&
       prior_failure.step !== 'deploy' &&
       prior_failure.step !== 'deployment_request' &&
+      prior_failure.step !== 'repo_operations' &&
       (!closure_steps.includes(prior_failure.step) || !resume_failure)
     ) {
       return {
@@ -1418,6 +1560,10 @@ export function createPrActions(deps) {
       ? closure_steps.indexOf(prior_failure.step)
       : -1;
     if (resume_index <= 0) {
+      deps.store.setCleanupCursor?.(workspace, {
+        bead_id,
+        cursor: 'child_sweep'
+      });
       markStep(bead_id, 'child_sweep');
       const swept = await sweepChildren(bead_id);
       if (!swept.ok) {
@@ -1425,12 +1571,20 @@ export function createPrActions(deps) {
       }
     }
     if (resume_index <= 1) {
+      deps.store.setCleanupCursor?.(workspace, {
+        bead_id,
+        cursor: 'branch_cleanup'
+      });
       markStep(bead_id, 'branch_cleanup');
       const branches = await cleanupBranches(bead_id, row.head_ref || null);
       if (!branches.ok) {
         return failCleanup(bead_id, 'branch_cleanup', branches.reason, null);
       }
     }
+    deps.store.setCleanupCursor?.(workspace, {
+      bead_id,
+      cursor: 'parent_close'
+    });
     markStep(bead_id, 'parent_close');
     const closed = await closeBead(bead_id);
     if (!closed.ok) {
@@ -1673,7 +1827,7 @@ export function createPrActions(deps) {
    * second copy for the external case is exactly the divergence §6 forbids.
    *
    * @param {string} bead_id
-   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null }} [refs]
+   * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null, target_base?: string|null, verify_operation_id?: string|null, verified_base_sha?: string, verified_head_sha?: string }} [refs]
    * - What the click-time gate observed on GitHub (UI-7agi §3). Load-bearing
    * for an external PR, which has no attempt to read a target base from.
    * @returns {Promise<{ ok: boolean, pending?: boolean, step: string|null, reason: string|null, base_sync: BaseSyncOutcome|null }>}
@@ -1696,7 +1850,7 @@ export function createPrActions(deps) {
         ? { ok: /** @type {const} */ (true), base: refs.target_base }
         : await expectedBaseFor(q, bead_id);
     if (!expected.ok) {
-      return failCleanup(bead_id, 'base_sync', expected.reason, null);
+      return failCleanup(bead_id, 'base_containment', expected.reason, null);
     }
     const target_base = expected.base;
     // The merge notification's url (UI-9rrk). The CLICK's own resolution wins:
@@ -1719,12 +1873,16 @@ export function createPrActions(deps) {
     // leaves. The deploy record is workspace-level and stays either way: a
     // deploy that really ran is a real fact about this repo.
     let durable = inPrWait(q, bead_id);
-    if (deploymentJob && !durable && external?.get(workspace, bead_id)) {
+    if (
+      (deploymentJob || repo_operations) &&
+      !durable &&
+      external?.get(workspace, bead_id)
+    ) {
       const merge_sha = await cleanupMergeSha(q, bead_id, refs);
       if (merge_sha === null) {
         return {
           ok: false,
-          step: 'base_sync',
+          step: 'base_containment',
           reason: 'merge_sha_unobserved',
           base_sync: null
         };
@@ -1741,7 +1899,7 @@ export function createPrActions(deps) {
       if (!promoted.ok) {
         return {
           ok: false,
-          step: 'deployment_request',
+          step: 'repo_operations',
           reason: 'external_deployment_promote_failed',
           base_sync: null
         };
@@ -1752,31 +1910,193 @@ export function createPrActions(deps) {
 
     /** @type {BaseSyncOutcome|null} */
     let base_sync = null;
-    if (!deploymentJob || !durable) {
+    if ((!deploymentJob && !repo_operations) || !durable) {
       return failCleanup(
         bead_id,
-        'deployment_request',
-        'deployment_job_unavailable',
+        'repo_operations',
+        'repo_operations_unavailable',
         null
       );
     }
     {
       const merge_sha = await cleanupMergeSha(q, bead_id, refs);
       if (merge_sha === null) {
-        return failCleanup(bead_id, 'base_sync', 'merge_sha_unobserved', null);
+        return failCleanup(
+          bead_id,
+          'base_containment',
+          'merge_sha_unobserved',
+          null
+        );
       }
-      markStep(bead_id, 'base_sync');
+      deps.store.setCleanupCursor?.(workspace, {
+        bead_id,
+        cursor: 'base_containment',
+        merge_sha,
+        head_ref:
+          refs.head_ref ||
+          deps.observations.get(workspace, bead_id)?.pr?.head_ref ||
+          null,
+        pr_url
+      });
+      markStep(bead_id, 'base_containment');
       const synced = await syncBase(target_base);
       if (!synced.ok) {
-        return failCleanup(bead_id, 'base_sync', synced.reason, null);
+        return failCleanup(bead_id, 'base_containment', synced.reason, null);
       }
       base_sync = synced.outcome;
-      markStep(bead_id, 'post_merge_verify');
+      const covers_merge = await deps.gitRun(
+        ['merge-base', '--is-ancestor', merge_sha, synced.sha],
+        { cwd: repo }
+      );
+      if (covers_merge.code === 1) {
+        return failCleanup(
+          bead_id,
+          'base_containment',
+          'deployment_target_not_covering_merge',
+          base_sync
+        );
+      }
+      if (covers_merge.code !== 0) {
+        return failCleanup(
+          bead_id,
+          'base_containment',
+          'deployment_candidate_ancestry_check_failed',
+          base_sync
+        );
+      }
+      deps.store.setCleanupCursor?.(workspace, {
+        bead_id,
+        cursor: 'repo_operations'
+      });
+      markStep(bead_id, 'repo_operations');
+      const config = repo_operations
+        ? await repo_operations.hasConfig(synced.sha)
+        : { ok: true, present: false };
+      if (!config.ok) {
+        return failCleanup(
+          bead_id,
+          'repo_operations',
+          config.code || 'repo_ops_config_invalid',
+          base_sync
+        );
+      }
+      if (config.present && repo_operations) {
+        let effective_base_sha = refs.verified_base_sha;
+        if (!effective_base_sha) {
+          const parent = await deps.gitRun(['rev-parse', `${merge_sha}^`], {
+            cwd: repo
+          });
+          effective_base_sha =
+            parent.code === 0 ? parent.stdout.trim() : undefined;
+        }
+        const verified_head_sha =
+          refs.verified_head_sha ||
+          deps.observations.get(workspace, bead_id)?.pr?.head_sha;
+        const verify_policy = effective_base_sha
+          ? await repo_operations.hasConfig(effective_base_sha)
+          : { ok: false, code: 'verify_candidate_mismatch' };
+        if (
+          !effective_base_sha ||
+          !/^[0-9a-f]{40}$/i.test(effective_base_sha) ||
+          typeof verified_head_sha !== 'string' ||
+          !/^[0-9a-f]{40}$/i.test(verified_head_sha) ||
+          !verify_policy.ok
+        ) {
+          return failCleanup(
+            bead_id,
+            'repo_operations',
+            'verify_candidate_mismatch',
+            base_sync
+          );
+        }
+        const verified = await repo_operations.ensureVerify({
+          repo,
+          origin: 'origin',
+          target_base,
+          base_sha: effective_base_sha,
+          head_sha: verified_head_sha,
+          final_sha: merge_sha,
+          bead_id,
+          pr_number: parsePrNumber(pr_url || '') || 0,
+          script_path: verify_policy.verify_script_path,
+          receipt_operation_id: refs.verify_operation_id || null
+        });
+        if (!verified.ok) {
+          return failCleanup(
+            bead_id,
+            'repo_operations',
+            verified.code || 'verify_failed',
+            base_sync
+          );
+        }
+        if (!verified.inert && typeof verified.operation_id === 'string') {
+          const receipt =
+            (await repo_operations.waitForTerminal(verified.operation_id, {
+              timeout_ms: verified.timeout_ms
+            })) || repo_operations.verifyReceipt(verified.operation_id);
+          if (!receipt || receipt.state !== 'succeeded') {
+            return failCleanup(
+              bead_id,
+              'repo_operations',
+              receipt?.reason || 'verify_failed',
+              base_sync,
+              undefined,
+              undefined,
+              undefined,
+              receipt?.log_path
+            );
+          }
+        }
+        const deployed = await repo_operations.ensureDeploy({
+          target_base,
+          subjects: [{ bead_id, merged_sha: merge_sha }]
+        });
+        if (!deployed.ok) {
+          return failCleanup(
+            bead_id,
+            'repo_operations',
+            deployed.code || 'repo_operation_failed',
+            base_sync
+          );
+        }
+        if (!deployed.inert && typeof deployed.operation_id === 'string') {
+          const evidence = await repo_operations.deploymentEvidence(
+            deployed.operation_id,
+            { target_base, merged_sha: merge_sha }
+          );
+          if (evidence.state === 'failed') {
+            return failCleanup(
+              bead_id,
+              'repo_operations',
+              evidence.code || 'repo_operation_failed',
+              base_sync
+            );
+          }
+          if (evidence.state !== 'succeeded') {
+            return {
+              ok: true,
+              pending: true,
+              step: 'repo_operations',
+              reason: null,
+              base_sync
+            };
+          }
+        }
+        return { ...(await closeCoveredRow(bead_id)), base_sync };
+      }
+      if (!deploymentJob) {
+        return failCleanup(
+          bead_id,
+          'repo_operations',
+          'deployment_job_unavailable',
+          base_sync
+        );
+      }
       const verified = await postMergeVerify(bead_id, synced.sha);
       if (!verified.ok) {
         return failCleanup(
           bead_id,
-          'post_merge_verify',
+          'repo_operations',
           verified.reason,
           base_sync,
           undefined,
@@ -1785,27 +2105,6 @@ export function createPrActions(deps) {
           verified.log_path
         );
       }
-      const covers_merge = await deps.gitRun(
-        ['merge-base', '--is-ancestor', merge_sha, synced.sha],
-        { cwd: repo }
-      );
-      if (covers_merge.code === 1) {
-        return failCleanup(
-          bead_id,
-          'deployment_request',
-          'deployment_target_not_covering_merge',
-          base_sync
-        );
-      }
-      if (covers_merge.code !== 0) {
-        return failCleanup(
-          bead_id,
-          'deployment_request',
-          'deployment_candidate_ancestry_check_failed',
-          base_sync
-        );
-      }
-      markStep(bead_id, 'deployment_request');
       const requested = await requestDeployment(
         bead_id,
         target_base,
@@ -1819,7 +2118,7 @@ export function createPrActions(deps) {
       if (!requested.ok) {
         return failCleanup(
           bead_id,
-          'deployment_request',
+          'repo_operations',
           requested.reason || 'deployment_request_failed',
           base_sync
         );
@@ -2014,14 +2313,11 @@ export function createPrActions(deps) {
         ok: false,
         kind: 'blocked',
         ...common,
-        reason: observed.verdict.reason || 'gate_blocked'
+        reason: observed.verdict.reason || 'gate_blocked',
+        ...(observed.verify_attempted ? { continuation: 'verify' } : {})
       };
     }
-    return {
-      ok: true,
-      kind: observed.pr.merge_state_status === 'BEHIND' ? 'behind' : 'clean',
-      ...common
-    };
+    return { ok: true, kind: 'clean', ...common };
   }
 
   /**
@@ -2039,8 +2335,7 @@ export function createPrActions(deps) {
       return refuse('discard_in_progress');
     }
     in_flight.add(bead_id);
-    // Step 1 of 7 (UI-raqh §4): the re-gate + the merge itself, including the
-    // BEHIND arm's update-branch and its re-observation.
+    // Step 1 of 7 (UI-raqh §4): the re-gate + the merge itself.
     markStep(bead_id, 'merging');
     try {
       const q = deps.store.snapshot(workspace);
@@ -2110,7 +2405,7 @@ export function createPrActions(deps) {
         return refuse('pr_closed_unmerged');
       }
       // DIRTY comes BEFORE the gate: a conflicting PR needs resolving whatever
-      // its CI says, and resolving is not merging.
+      // its cached eligibility says, and resolving is not merging.
       if (isConflicting(first.pr)) {
         if (discardActive(deps.store.snapshot(workspace), bead_id)) {
           return refuse('discard_in_progress');
@@ -2138,90 +2433,31 @@ export function createPrActions(deps) {
         return dispatchResolution(bead_id, first.pr.head_sha);
       }
       if (!first.verdict.enabled) {
+        if (first.verify_attempted) {
+          return {
+            ok: false,
+            action: 'verify_blocked',
+            reason: first.verdict.reason || 'verify_failed',
+            head_sha: first.pr.head_sha
+          };
+        }
         return refuse(first.verdict.reason || 'gate_blocked');
       }
 
-      if (first.pr.merge_state_status !== 'BEHIND') {
-        // AWAITED: `in_flight` and the progress record must both outlive the
-        // cleanup, which is exactly what the guard promises — returning the
-        // promise unawaited would run this `finally` before the merge even
-        // issued.
-        return await doMerge(
-          bead_id,
-          ref.number,
-          first.pr.head_sha,
-          'merged',
-          refs
-        );
-      }
-
-      // BEHIND — merge the base into the branch ON GITHUB, then re-confirm.
-      if (discardActive(deps.store.snapshot(workspace), bead_id)) {
-        return refuse('discard_in_progress');
-      }
-      /** @type {any} */
-      let updated;
-      try {
-        updated = await deps.gh.updateBranch(repo, ref.number);
-      } catch {
-        updated = { state: 'error', reason: 'gh_spawn_failed' };
-      }
-      if (updated.state !== 'ok') {
-        return refuse(`update_branch_failed:${updated.reason || 'gh_failed'}`);
-      }
-      // The update produced a NEW head commit, so the whole gate is re-derived
-      // against it — CI/local verification included.
-      const second = await gateNow(bead_id, ref.number);
-      if ('error' in second) {
-        return refuse(second.error);
-      }
-      // `update-branch` produced a new head; re-compare the base too — the whole
-      // gate is re-derived against the new observation, and the base is part of
-      // it (§5).
-      const second_base_ok = await baseGate(q, bead_id, second.pr.base_ref);
-      if (!second_base_ok.ok) {
-        return refuse(second_base_ok.reason);
-      }
-      if (second.pr.state !== 'OPEN') {
-        return refuse(
-          second.pr.state === 'MERGED'
-            ? 'pr_already_merged'
-            : 'pr_closed_unmerged'
-        );
-      }
-      if (isConflicting(second.pr)) {
-        if (options.allow_conflict_resolution === false) {
-          return {
-            ok: false,
-            action: 'refused',
-            reason: 'conflict_resolution_required',
-            head_sha: second.pr.head_sha
-          };
-        }
-        if (is_external) {
-          return dispatchExternalResolution(
-            bead_id,
-            second.pr.head_sha,
-            second.pr.base_ref || ''
-          );
-        }
-        return dispatchResolution(bead_id, second.pr.head_sha);
-      }
-      if (!second.verdict.enabled) {
-        return refuse(second.verdict.reason || 'gate_blocked');
-      }
-      if (second.pr.merge_state_status === 'BEHIND') {
-        return refuse('still_behind');
-      }
+      // AWAITED: `in_flight` and the progress record must both outlive the
+      // cleanup, which is exactly what the guard promises — returning the
+      // promise unawaited would run this `finally` before the merge even
+      // issued.
       return await doMerge(
         bead_id,
         ref.number,
-        second.pr.head_sha,
-        'updated_and_merged',
+        first.pr.head_sha,
+        'merged',
+        refs,
         {
-          base_ref: second.pr.base_ref || null,
-          head_ref: second.pr.head_ref || null,
-          pr_url: ref.url || null
+          base_sha: first.base_sha,
+          repo_operations: first.repo_operations === true,
+          verify_operation_id: first.verify_operation_id || null
         }
       );
     } finally {
@@ -2252,16 +2488,39 @@ export function createPrActions(deps) {
    * @param {string} head_sha
    * @param {'merged'|'updated_and_merged'} action
    * @param {{ base_ref?: string|null, head_ref?: string|null, pr_url?: string|null, merge_sha?: string|null }} [refs]
+   * @param {{ base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null }} [verification]
    * - The gate-time base/head branch names and the click-resolved PR url,
    * forwarded to the cleanup (UI-7agi §3, UI-9rrk).
    * @returns {Promise<MergeClickResult>}
    */
-  async function doMerge(bead_id, number, head_sha, action, refs = {}) {
+  async function doMerge(
+    bead_id,
+    number,
+    head_sha,
+    action,
+    refs = {},
+    verification = {}
+  ) {
     if (discardActive(deps.store.snapshot(workspace), bead_id)) {
       return refuse('discard_in_progress');
     }
     /** @type {any} */
     let merged;
+    if (verification.repo_operations) {
+      const [fresh_pr, fresh_base] = await Promise.all([
+        deps.gh.prDetail(repo, number),
+        deps.resolveBase?.({ force: true })
+      ]);
+      if (
+        fresh_pr?.state !== 'ok' ||
+        fresh_pr.data.state !== 'OPEN' ||
+        fresh_pr.data.head_sha !== head_sha ||
+        !fresh_base?.ok ||
+        fresh_base.base_oid !== verification.base_sha
+      ) {
+        return refuse('verify_candidate_stale');
+      }
+    }
     try {
       // Pinned to the head the gate approved — GitHub refuses the merge if the
       // branch moved since, so an unverified commit can never land (§5/§6).
@@ -2306,7 +2565,10 @@ export function createPrActions(deps) {
 
     const c = await runCleanup(bead_id, {
       ...refs,
-      merge_sha: authoritativeMergeSha(after.data)
+      merge_sha: authoritativeMergeSha(after.data),
+      verify_operation_id: verification.verify_operation_id || null,
+      verified_base_sha: verification.base_sha,
+      verified_head_sha: head_sha
     });
     return {
       ok: c.ok,
@@ -2440,7 +2702,7 @@ export function createPrActions(deps) {
   /**
    * Dispatch only the exact DIRTY head/base pair the merge driver approved.
    * The seam re-probes immediately before the effect, so a moved branch or a
-   * newly CLEAN/BEHIND PR returns without starting a resolver.
+   * newly non-conflicting PR returns without starting a resolver.
    *
    * @param {string} bead_id
    * @param {{ head_sha: string, base_ref: string|null }} approved
@@ -2578,6 +2840,98 @@ export function createPrActions(deps) {
       )
     ) {
       await observeDeployment();
+    }
+    return [];
+  }
+
+  /**
+   * The PR/remote facts one bead's cleanup would use, from the resolvers that
+   * already own them. It applies no policy: the legacy-state migration (master
+   * spec §11 rule 1) is what picks a canonical subject out of these and proves
+   * its remote containment.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ base: string|null, base_reason: string|null, merge_sha: string|null, head_sha: string|null, head_ref: string|null, pr_url: string|null }>}
+   */
+  async function cleanupFacts(bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const row =
+      q.pr_wait.find((/** @type {any} */ entry) => entry.bead_id === bead_id) ||
+      null;
+    const expected = await expectedBaseFor(q, bead_id);
+    const merge_sha = await cleanupMergeSha(q, bead_id, {
+      merge_sha: row ? row.merge_sha : null
+    });
+    const observed = deps.observations.get(workspace, bead_id);
+    return {
+      base: expected.ok ? expected.base : null,
+      base_reason: expected.ok ? null : expected.reason,
+      merge_sha,
+      head_sha:
+        observed?.pr?.head_sha ||
+        q.completion_intents?.[bead_id]?.subject?.head_sha ||
+        null,
+      head_ref: (row ? row.head_ref : null) || observed?.pr?.head_ref || null,
+      pr_url:
+        (row ? row.pr_url : null) ||
+        resolvePrRef(
+          q,
+          bead_id,
+          external ? external.get(workspace, bead_id) : null
+        )?.url ||
+        null
+    };
+  }
+
+  /**
+   * Resume the idempotent closure half for one migrated legacy row (master
+   * spec §11 rule 5). The migration has already retired the legacy failure
+   * record and pinned the canonical subject SHA, so this entry adds no policy
+   * of its own — it is the same closure every other caller runs.
+   *
+   * @param {string} bead_id
+   */
+  async function resumeMigratedClosure(bead_id) {
+    if (in_flight.has(bead_id)) {
+      return { ok: false, step: null, reason: 'action_in_flight' };
+    }
+    in_flight.add(bead_id);
+    try {
+      return await closeCoveredRow(bead_id, true);
+    } finally {
+      in_flight.delete(bead_id);
+      clearStep(bead_id);
+    }
+  }
+
+  /** Resume only nonterminal coordinator-owned cleanup rows after restart. */
+  async function resumeRepoOperations() {
+    if (!repo_operations) {
+      return [];
+    }
+    const queue = deps.store.snapshot(workspace);
+    const rows = queue.pr_wait.filter(
+      (/** @type {any} */ row) =>
+        (row.cleanup_cursor === 'base_containment' ||
+          row.cleanup_cursor === 'repo_operations') &&
+        typeof row.merge_sha === 'string' &&
+        !queue.cleanup_failed?.[row.bead_id]
+    );
+    for (const row of rows) {
+      if (in_flight.has(row.bead_id)) {
+        continue;
+      }
+      in_flight.add(row.bead_id);
+      try {
+        await runCleanup(row.bead_id, {
+          merge_sha: row.merge_sha,
+          head_ref: row.head_ref,
+          pr_url: row.pr_url
+        });
+      } finally {
+        in_flight.delete(row.bead_id);
+        clearStep(row.bead_id);
+      }
     }
     return [];
   }
@@ -2730,7 +3084,7 @@ export function createPrActions(deps) {
 
   /**
    * The click-time authoritative PR state (discard spec §1 step 1). Only the
-   * `state` field decides here, so no checks query is spent and no observation
+   * `state` field decides here, so no merge gate is evaluated and no observation
    * is recorded — the barrier is already open and would suppress the write
    * anyway.
    *
@@ -2752,7 +3106,7 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Read one `pr_wait` bead's PR state, with no gate, no checks query and no
+   * Read one `pr_wait` bead's PR state, with no gate and no
    * side effect at all. The merge queue's `merge_unconfirmed` watch (UI-5v7d §2
    * step 4) is the caller: it holds the head while asking, once a minute, the
    * ONE question that can end that state — did the PR actually land?
@@ -2861,6 +3215,9 @@ export function createPrActions(deps) {
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),
     cleanupObservedMerge,
     observeDeployment,
+    cleanupFacts,
+    resumeMigratedClosure,
+    resumeRepoOperations,
     resumeDeploymentObservation,
     retryCleanup,
     rollbackBaseSync,

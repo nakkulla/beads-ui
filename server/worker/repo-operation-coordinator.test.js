@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
@@ -12,7 +12,13 @@ import {
 
 const TARGET = 'b'.repeat(40);
 const APPROVED = 'e'.repeat(40);
+const BASE = '1'.repeat(40);
+const HEAD = '2'.repeat(40);
+const TREE = '3'.repeat(40);
+const FINAL = '6'.repeat(40);
+const FINAL_TREE = '7'.repeat(40);
 const CONFIG = '[deploy]\nscript = "repo-ops/script/deploy"';
+const VERIFY_CONFIG = '[verify]\nscript = "repo-ops/script/verify"';
 
 /** @type {string} */
 let root;
@@ -66,7 +72,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -90,6 +96,15 @@ function coordinatorFor(overrides = {}) {
     locks: createLockManager(),
     gitRun: overrides.gitRun ?? gitForBootstrap(),
     runner: /** @type {never} */ (runner),
+    transition: /** @type {never} */ (
+      overrides.transition ?? {
+        materialize: async () => ({
+          ok: true,
+          path: path.join(root, 'script')
+        }),
+        reclaim: () => {}
+      }
+    ),
     deployWorktree: /** @type {never} */ ({
       bindTarget: async () => ({ ok: true, target_sha: TARGET }),
       ensureAligned: async () => ({
@@ -98,9 +113,58 @@ function coordinatorFor(overrides = {}) {
         target_sha: TARGET
       }),
       verifyAligned: async () => ({ ok: true })
-    })
+    }),
+    verifyCheckout: /** @type {never} */ (overrides.verifyCheckout)
   });
   return { store, coordinator };
+}
+
+/**
+ * @param {{ verify?: boolean }} [options]
+ */
+function gitForVerify(options = {}) {
+  return vi.fn(async (args) => {
+    if (args[0] === 'show') {
+      return options.verify
+        ? { code: 0, stdout: VERIFY_CONFIG, stderr: '' }
+        : { code: 128, stdout: '', stderr: 'missing' };
+    }
+    if (args[0] === 'ls-tree') {
+      const requested_path = args.at(-1);
+      if (requested_path === 'repo-ops/config.toml') {
+        return options.verify
+          ? {
+              code: 0,
+              stdout: `100644 blob ${'4'.repeat(40)}\trepo-ops/config.toml`,
+              stderr: ''
+            }
+          : { code: 0, stdout: '', stderr: '' };
+      }
+      return {
+        code: 0,
+        stdout: `100755 blob ${'5'.repeat(40)}\trepo-ops/script/verify`,
+        stderr: ''
+      };
+    }
+    return { code: 0, stdout: '', stderr: '' };
+  });
+}
+
+/**
+ * @param {object} [overrides]
+ */
+function verifyCandidate(overrides = {}) {
+  return {
+    repo: root,
+    origin: 'origin',
+    target_base: 'main',
+    base_sha: BASE,
+    head_sha: HEAD,
+    bead_id: 'UI-1',
+    pr_number: 7,
+    script_path: 'repo-ops/script/verify',
+    ...overrides
+  };
 }
 
 /**
@@ -131,6 +195,312 @@ function validRequest(overrides = {}) {
 }
 
 describe('RepoOperation coordinator', () => {
+  test('creates no operation when verify is absent', async () => {
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify(),
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      },
+      verifyCheckout: { materialize: vi.fn() }
+    });
+
+    const result = await coordinator.ensureVerify(verifyCandidate());
+
+    expect(result).toEqual({ ok: true, inert: true });
+    expect(start).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('rejects a verify candidate bound to another repository', async () => {
+    const materialize = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize }
+    });
+
+    const result = await coordinator.ensureVerify(
+      verifyCandidate({ repo: path.join(root, 'foreign') })
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'verify_candidate_mismatch'
+    });
+    expect(materialize).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test.each([
+    ['origin', { origin: 'upstream' }],
+    ['target base', { target_base: 'develop' }],
+    ['base SHA', { base_sha: 'not-a-sha' }],
+    ['head SHA', { head_sha: 'not-a-sha' }],
+    ['script path', { script_path: 'repo-ops/script/other' }]
+  ])('rejects a verify candidate with mismatched %s', async (_axis, patch) => {
+    const materialize = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize }
+    });
+
+    const result = await coordinator.ensureVerify(verifyCandidate(patch));
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'verify_candidate_mismatch'
+    });
+    expect(materialize).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('prerecords candidate tree and script identity before one spawn', async () => {
+    /** @type {string[]} */
+    const calls = [];
+    const runner = {
+      start: vi.fn(async () => {
+        calls.push('spawn');
+        return {
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'verify.log')
+        };
+      }),
+      readMarker: () => null,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      runner,
+      verifyCheckout: {
+        materialize: vi.fn(async () => {
+          const operations = Object.values(
+            store.snapshot(root).repo_operations
+          );
+          calls.push(operations.length === 0 ? 'materialize' : 'bad-prerecord');
+          return { ok: true, path: root, tree_sha: TREE };
+        }),
+        verify: vi.fn(async () => ({ ok: true })),
+        cleanup: vi.fn(async () => {})
+      }
+    });
+
+    const result = await coordinator.ensureVerify(verifyCandidate());
+
+    expect(result).toMatchObject({
+      ok: true,
+      operation_id: expect.any(String)
+    });
+    expect(calls).toEqual(['materialize', 'spawn']);
+    expect(runner.start).toHaveBeenCalledTimes(1);
+    expect(
+      store.snapshot(root).repo_operations[result.operation_id]
+    ).toMatchObject({
+      kind: 'verify',
+      effective_base_sha: BASE,
+      target_tree: TREE,
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40),
+      state: 'running'
+    });
+  });
+
+  test('inherits an exact candidate receipt and runs a different final tree once', async () => {
+    /** @type {{ exit_code: number, signal: null }|null} */
+    let marker = null;
+    let tree_sha = TREE;
+    const runner = {
+      start: vi.fn(async () => ({
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'verify.log')
+      })),
+      readMarker: () => marker,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const verifyCheckout = {
+      materialize: vi.fn(async () => ({
+        ok: true,
+        path: root,
+        tree_sha
+      })),
+      verify: vi.fn(async () => ({ ok: true })),
+      cleanup: vi.fn(async () => {})
+    };
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      runner,
+      verifyCheckout
+    });
+    const initial = await coordinator.ensureVerify(verifyCandidate());
+    marker = { exit_code: 0, signal: null };
+    await coordinator.reconcile(root);
+    marker = null;
+
+    const inherited = await coordinator.ensureVerify(
+      verifyCandidate({
+        final_sha: FINAL,
+        receipt_operation_id: initial.operation_id
+      })
+    );
+    tree_sha = FINAL_TREE;
+    const rerun = await coordinator.ensureVerify(
+      verifyCandidate({
+        final_sha: FINAL,
+        receipt_operation_id: initial.operation_id
+      })
+    );
+
+    expect(inherited).toMatchObject({
+      ok: true,
+      inherited: true,
+      operation_id: initial.operation_id
+    });
+    expect(rerun).toMatchObject({
+      ok: true,
+      operation_id: expect.not.stringMatching(initial.operation_id)
+    });
+    expect(runner.start).toHaveBeenCalledTimes(2);
+  });
+
+  test('lets a successful descendant cover an earlier failed deploy', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: vi.fn(async (args) => ({
+        code: args[0] === 'merge-base' ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      }))
+    });
+    for (const operation_id of ['failed-deploy', 'later-deploy']) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: BASE,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+    }
+    const failed = store.snapshot(root).repo_operations['failed-deploy'];
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const later = store.snapshot(root).repo_operations['later-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'later-deploy',
+      attempt_id: later.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'later.log'),
+      target_sha: TARGET
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'later-deploy',
+      attempt_id: later.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    const evidence = await coordinator.deploymentEvidence('failed-deploy', {
+      target_base: 'main',
+      merged_sha: HEAD
+    });
+
+    expect(evidence).toEqual({
+      state: 'succeeded',
+      operation_id: 'later-deploy',
+      covered_operation_id: 'failed-deploy'
+    });
+  });
+
+  test('coalesces uncovered subjects into one queued deploy target', async () => {
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'merge-base') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'show') {
+        return { code: 0, stdout: CONFIG, stderr: '' };
+      }
+      if (args[0] === 'ls-tree') {
+        const entry =
+          args.at(-1) === 'repo-ops/config.toml'
+            ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+            : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+        return { code: 0, stdout: entry, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: 'unexpected' };
+    });
+    const { store, coordinator } = coordinatorFor({ gitRun });
+    store.ensureRepoOperation(root, {
+      operation_id: 'previous',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-old', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const previous = store.snapshot(root).repo_operations.previous;
+    store.startRepoOperation(root, {
+      operation_id: 'previous',
+      attempt_id: previous.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'previous.log'),
+      target_sha: APPROVED
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'previous',
+      attempt_id: previous.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'blocker',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-blocker', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'other',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const blocker = store.snapshot(root).repo_operations.blocker;
+    store.startRepoOperation(root, {
+      operation_id: 'blocker',
+      attempt_id: blocker.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'blocker.log'),
+      target_sha: APPROVED
+    });
+
+    const first = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
+    });
+    const second = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-2', merged_sha: FINAL }]
+    });
+
+    expect(second.operation_id).toBe(first.operation_id);
+    expect(
+      store.snapshot(root).repo_operations[first.operation_id].subjects
+    ).toEqual([
+      { bead_id: 'UI-1', merged_sha: HEAD },
+      { bead_id: 'UI-2', merged_sha: FINAL }
+    ]);
+  });
+
   test('consumes a valid spool request into a provenance prerecord and receipt', async () => {
     const { store, coordinator } = coordinatorFor();
     spoolRequest(validRequest());

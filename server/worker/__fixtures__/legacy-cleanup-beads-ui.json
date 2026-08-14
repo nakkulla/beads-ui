@@ -1,0 +1,36 @@
+{
+  "revision": 1183,
+  "auto_advance": false,
+  "pr_wait_holds_slot": false,
+  "slots": 2,
+  "queue": [],
+  "pr_wait": [
+    {
+      "bead_id": "UI-f17c",
+      "added_at": 1786569084917,
+      "merge_sha": "eee3b741f5055d9da7736fac6008a39317544dbf",
+      "verified_target_sha": null,
+      "deployment_generation": null,
+      "cleanup_cursor": null,
+      "head_ref": "UI-f17c",
+      "pr_url": "https://github.com/nakkulla/beads-ui/pull/128"
+    }
+  ],
+  "done": [],
+  "attempts": {},
+  "cleanup_failed": {
+    "UI-f17c": {
+      "step": "post_merge_verify",
+      "reason": "verify_cmd_failed",
+      "bd_restore": null,
+      "at": 1786581584471,
+      "detail": null,
+      "output_tail": "Test Files  1 failed | 212 passed (213)\n"
+    }
+  },
+  "merge_queue": [],
+  "auto_merge": false,
+  "completion_intents": {},
+  "discard_operations": {},
+  "deployment": null
+}

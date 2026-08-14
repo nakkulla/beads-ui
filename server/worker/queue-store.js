@@ -317,6 +317,31 @@
  * the later repair adapter to dispatch. This unit stores the setting only.
  * @property {Record<string, RepoOperation>} repo_operations - Worker-owned
  * one-shot repository operation journal.
+ * @property {RepoOperationMigration|null} repo_operation_migration - The
+ * one-shot legacy-state migration stamp. Absent (null) on every queue written
+ * before the RepoOperation runtime, which is exactly what makes the migration
+ * run once and never again.
+ */
+/**
+ * @typedef {Object} RepoOperationMigrationResult
+ * @property {string} bead_id
+ * @property {string} from_step - Legacy cleanup step the record failed at.
+ * @property {string} from_reason - Legacy failure reason, kept verbatim.
+ * @property {string|null} subject_sha - Canonical subject SHA proven contained
+ * in the fetched remote base tip.
+ * @property {'merge_sha'|'head_sha'|null} subject_source
+ * @property {string|null} target_base
+ * @property {string} disposition - What the migration decided (master spec §11).
+ * @property {string|null} reason - Why a `legacy_manual` record was preserved.
+ * @property {Record<string, unknown>|null} evidence - Retired-provider status
+ * snapshot read once during the migration, when one was read.
+ * @property {number} at
+ */
+/**
+ * @typedef {Object} RepoOperationMigration
+ * @property {number} version - Migration schema version.
+ * @property {number} at
+ * @property {Record<string, RepoOperationMigrationResult>} results
  */
 /**
  * @typedef {Object} RepoOperation
@@ -328,7 +353,9 @@
  * @property {string} target_base
  * @property {string|null} target_sha
  * @property {string|null} target_tree
+ * @property {string|null} verify_head_sha
  * @property {string|null} deploy_worktree
+ * @property {string} script_object_type
  * @property {string} script_mode
  * @property {string} script_blob_sha
  * @property {'queued'|'running'|'succeeded'|'failed'|'repairing'} state
@@ -1081,7 +1108,8 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'review_model',
   'ship_failure',
   'auto_repair',
-  'repo_operations'
+  'repo_operations',
+  'repo_operation_migration'
 ]);
 
 /**
@@ -1108,7 +1136,8 @@ function emptyQueue() {
     discard_operations: {},
     deployment: null,
     auto_repair: true,
-    repo_operations: {}
+    repo_operations: {},
+    repo_operation_migration: null
   };
 }
 
@@ -1793,8 +1822,15 @@ function normalizeRepoOperation(value) {
     target_tree: isSha(value.target_tree)
       ? value.target_tree.toLowerCase()
       : null,
+    verify_head_sha: isSha(value.verify_head_sha)
+      ? value.verify_head_sha.toLowerCase()
+      : null,
     deploy_worktree:
       typeof value.deploy_worktree === 'string' ? value.deploy_worktree : null,
+    script_object_type:
+      typeof value.script_object_type === 'string'
+        ? value.script_object_type
+        : 'blob',
     script_mode: value.script_mode,
     script_blob_sha: value.script_blob_sha.toLowerCase(),
     state: /** @type {RepoOperation['state']} */ (value.state),
@@ -1870,6 +1906,66 @@ function normalizeRepoOperation(value) {
             requested_at: provenance_raw.requested_at
           }
         : null
+  };
+}
+
+/**
+ * A migration stamp is only honoured when it is fully readable: a damaged
+ * record reads as "never migrated", which re-runs a migration that is
+ * idempotent by construction rather than skipping a conversion forever.
+ *
+ * @param {unknown} value
+ * @returns {RepoOperationMigration|null}
+ */
+function normalizeRepoOperationMigration(value) {
+  if (
+    !isRecord(value) ||
+    !Number.isInteger(value.version) ||
+    Number(value.version) < 1 ||
+    typeof value.at !== 'number' ||
+    !Number.isFinite(value.at) ||
+    !isRecord(value.results)
+  ) {
+    return null;
+  }
+  /** @type {Record<string, RepoOperationMigrationResult>} */
+  const results = {};
+  for (const [bead_id, entry] of Object.entries(value.results)) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.disposition !== 'string' ||
+      entry.disposition.length === 0 ||
+      typeof entry.from_step !== 'string'
+    ) {
+      return null;
+    }
+    results[bead_id] = {
+      bead_id,
+      from_step: entry.from_step,
+      from_reason:
+        typeof entry.from_reason === 'string' ? entry.from_reason : '',
+      subject_sha: isSha(entry.subject_sha)
+        ? String(entry.subject_sha).toLowerCase()
+        : null,
+      subject_source:
+        entry.subject_source === 'merge_sha' ||
+        entry.subject_source === 'head_sha'
+          ? entry.subject_source
+          : null,
+      target_base:
+        typeof entry.target_base === 'string' && entry.target_base.length > 0
+          ? entry.target_base
+          : null,
+      disposition: entry.disposition,
+      reason: typeof entry.reason === 'string' ? entry.reason : null,
+      evidence: isRecord(entry.evidence) ? entry.evidence : null,
+      at: typeof entry.at === 'number' ? entry.at : 0
+    };
+  }
+  return {
+    version: Number(value.version),
+    at: Number(value.at),
+    results
   };
 }
 
@@ -2038,6 +2134,9 @@ function normalizeQueue(raw) {
       }
     }
   }
+  q.repo_operation_migration = normalizeRepoOperationMigration(
+    raw.repo_operation_migration
+  );
   // auto_advance intentionally left false — see load() restart-safety note.
   return q;
 }
@@ -3158,7 +3257,7 @@ export function createQueueStore(options = {}) {
      * record the coordinator must receive before it asks the runner to spawn.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, script_mode: string, script_blob_sha: string, attempt_id?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
+     * @param {{ operation_id: string, repo_id: string, kind: 'verify'|'deploy', subjects: { bead_id: string, merged_sha: string }[], effective_base_sha: string, target_base: string, target_tree?: string, verify_head_sha?: string, deploy_worktree?: string, script_object_type?: string, script_mode: string, script_blob_sha: string, attempt_id?: string, bootstrap_provenance?: RepoOperation['bootstrap_provenance'] }} input
      * @returns {QueueOpResult}
      */
     ensureRepoOperation(workspace, input) {
@@ -3237,8 +3336,17 @@ export function createQueueStore(options = {}) {
           effective_base_sha: input.effective_base_sha.toLowerCase(),
           target_base: input.target_base,
           target_sha: null,
-          target_tree: null,
-          deploy_worktree: null,
+          target_tree: isSha(input.target_tree)
+            ? input.target_tree.toLowerCase()
+            : null,
+          verify_head_sha: isSha(input.verify_head_sha)
+            ? input.verify_head_sha.toLowerCase()
+            : null,
+          deploy_worktree:
+            typeof input.deploy_worktree === 'string'
+              ? input.deploy_worktree
+              : null,
+          script_object_type: input.script_object_type || 'blob',
           script_mode: input.script_mode,
           script_blob_sha: input.script_blob_sha.toLowerCase(),
           state: 'queued',
@@ -3271,7 +3379,7 @@ export function createQueueStore(options = {}) {
      * Bind a live detached process to the pre-recorded operation.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, deploy_worktree?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, process_identity: RepoOperation['process_identity'], log_path: string, target_sha?: string, target_tree?: string, deploy_worktree?: string }} input
      * @returns {QueueOpResult}
      */
     startRepoOperation(workspace, input) {
@@ -3292,6 +3400,8 @@ export function createQueueStore(options = {}) {
         operation.log_path = input.log_path;
         if (isSha(input.target_sha))
           operation.target_sha = input.target_sha.toLowerCase();
+        if (isSha(input.target_tree))
+          operation.target_tree = input.target_tree.toLowerCase();
         if (typeof input.deploy_worktree === 'string')
           operation.deploy_worktree = input.deploy_worktree;
         return true;
@@ -3402,6 +3512,66 @@ export function createQueueStore(options = {}) {
         to.repair.owner_bead = from.repair.owner_bead;
         to.repair.auto_used = from.repair.auto_used;
         from.superseded_by = input.to_operation_id;
+        return true;
+      });
+    },
+
+    /**
+     * Store the one-shot legacy migration result, retire the legacy failure
+     * records it converted, and pin each converted row's canonical subject SHA
+     * — in ONE atomic write (master spec §11 rule 7), through the same
+     * temp-file-and-rename path every other mutation uses.
+     *
+     * An equal-or-newer stamp is never overwritten: that is what makes a
+     * restart adopt the stored result instead of migrating twice.
+     *
+     * @param {string} workspace
+     * @param {{ version: number, at: number, results: Record<string, unknown>, retire?: string[], rows?: { bead_id: string, merge_sha?: string|null, head_ref?: string|null, pr_url?: string|null, cursor?: string|null }[] }} input
+     * @returns {QueueOpResult}
+     */
+    recordRepoOperationMigration(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const migration = normalizeRepoOperationMigration({
+          version: input.version,
+          at: input.at,
+          results: input.results
+        });
+        if (!migration) {
+          return false;
+        }
+        if (
+          next.repo_operation_migration &&
+          next.repo_operation_migration.version >= migration.version
+        ) {
+          return false;
+        }
+        next.repo_operation_migration = migration;
+        for (const bead_id of input.retire || []) {
+          delete next.cleanup_failed[bead_id];
+        }
+        for (const row of input.rows || []) {
+          const entry = next.pr_wait.find(
+            (item) => item.bead_id === row.bead_id
+          );
+          if (!entry) {
+            continue;
+          }
+          if (isSha(row.merge_sha)) {
+            entry.merge_sha = String(row.merge_sha).toLowerCase();
+          }
+          if (typeof row.head_ref === 'string') {
+            entry.head_ref = row.head_ref;
+          }
+          if (typeof row.pr_url === 'string') {
+            entry.pr_url = row.pr_url;
+          }
+          // The only cursor a migration may seed, and only onto a row that
+          // never entered the coordinator lane: a row already mid-lane keeps
+          // its own progress.
+          if (row.cursor === 'base_containment' && !entry.cleanup_cursor) {
+            entry.cleanup_cursor = 'base_containment';
+          }
+        }
         return true;
       });
     },
@@ -4398,6 +4568,56 @@ export function createQueueStore(options = {}) {
       });
       consumeTerminalReceipts(result, prepared.files);
       return result;
+    },
+
+    /**
+     * Persist the active post-merge coordinator cursor. Only the canonical
+     * monotonic sequence is accepted; retries may repeat the current step.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, cursor: string, merge_sha?: string, head_ref?: string|null, pr_url?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    setCleanupCursor(workspace, input) {
+      const cursors = [
+        'base_containment',
+        'repo_operations',
+        'child_sweep',
+        'branch_cleanup',
+        'parent_close'
+      ];
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.pr_wait.find(
+          (item) => item.bead_id === input.bead_id
+        );
+        const next_index = cursors.indexOf(input.cursor);
+        if (!entry || next_index < 0) {
+          return false;
+        }
+        const current_index = entry.cleanup_cursor
+          ? cursors.indexOf(entry.cleanup_cursor)
+          : -1;
+        if (current_index === -1 && next_index !== 0) {
+          return false;
+        }
+        if (current_index >= 0 && next_index > current_index + 1) {
+          return false;
+        }
+        if (current_index >= 0 && next_index < current_index) {
+          return false;
+        }
+        entry.cleanup_cursor = input.cursor;
+        if (isSha(input.merge_sha)) {
+          entry.merge_sha = input.merge_sha.toLowerCase();
+        }
+        if (typeof input.head_ref === 'string') {
+          entry.head_ref = input.head_ref;
+        }
+        if (typeof input.pr_url === 'string') {
+          entry.pr_url = input.pr_url;
+        }
+        return true;
+      });
     },
 
     /**

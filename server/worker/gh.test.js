@@ -719,122 +719,6 @@ describe('worker/gh — prDetail (worker-phase2 §4)', () => {
   });
 });
 
-describe('worker/gh — prChecks 3-state (worker-phase2 §5)', () => {
-  test('returns ok with normalized check conclusions', async () => {
-    const run = makeRun({
-      stdout: JSON.stringify({
-        statusCheckRollup: [
-          {
-            __typename: 'CheckRun',
-            name: 'build',
-            status: 'COMPLETED',
-            conclusion: 'SUCCESS'
-          },
-          {
-            __typename: 'CheckRun',
-            name: 'lint',
-            status: 'IN_PROGRESS',
-            conclusion: null
-          }
-        ]
-      })
-    });
-
-    const r = await makeGh(run).prChecks('/repo', 304);
-
-    expect(r).toEqual({
-      state: 'ok',
-      data: [
-        { name: 'build', conclusion: 'pass' },
-        { name: 'lint', conclusion: 'pending' }
-      ]
-    });
-  });
-
-  test('queries the status-check rollup, not gh pr checks', async () => {
-    const run = makeRun({ stdout: JSON.stringify({ statusCheckRollup: [] }) });
-
-    await makeGh(run).prChecks('/repo', 304);
-
-    expect(run).toHaveBeenCalledWith(
-      ['pr', 'view', '304', '--json', 'statusCheckRollup', '--repo', 'o/r'],
-      { cwd: '/repo' }
-    );
-  });
-
-  test('returns empty for a SUCCESSFUL query on a repo with no checks', async () => {
-    const run = makeRun({ stdout: JSON.stringify({ statusCheckRollup: [] }) });
-
-    const r = await makeGh(run).prChecks('/repo', 304);
-
-    expect(r).toEqual({ state: 'empty' });
-  });
-
-  test('returns error (never empty) when the query itself fails', async () => {
-    const run = makeRun({ code: 1, stderr: 'GraphQL: Could not resolve' });
-
-    const r = await makeGh(run).prChecks('/repo', 999999);
-
-    expect(r).toEqual({ state: 'error', reason: 'gh_failed' });
-  });
-
-  test('returns error (never empty) when the rollup key is absent', async () => {
-    const run = makeRun({ stdout: JSON.stringify({ number: 304 }) });
-
-    const r = await makeGh(run).prChecks('/repo', 304);
-
-    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
-  });
-
-  test('maps a failed check run to fail', async () => {
-    const run = makeRun({
-      stdout: JSON.stringify({
-        statusCheckRollup: [
-          { name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' }
-        ]
-      })
-    });
-
-    const r = await makeGh(run).prChecks('/repo', 304);
-
-    expect(r).toEqual({
-      state: 'ok',
-      data: [{ name: 'test', conclusion: 'fail' }]
-    });
-  });
-
-  test('maps a legacy StatusContext by its state field', async () => {
-    const run = makeRun({
-      stdout: JSON.stringify({
-        statusCheckRollup: [
-          {
-            __typename: 'StatusContext',
-            context: 'ci/legacy',
-            state: 'PENDING'
-          }
-        ]
-      })
-    });
-
-    const r = await makeGh(run).prChecks('/repo', 304);
-
-    expect(r).toEqual({
-      state: 'ok',
-      data: [{ name: 'ci/legacy', conclusion: 'pending' }]
-    });
-  });
-
-  test('returns error on an unclassifiable rollup item', async () => {
-    const run = makeRun({
-      stdout: JSON.stringify({ statusCheckRollup: [{ name: 'mystery' }] })
-    });
-
-    const r = await makeGh(run).prChecks('/repo', 304);
-
-    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
-  });
-});
-
 describe('worker/gh — write operations (worker-phase2 §6)', () => {
   test('squash-merges without deleting the branch', async () => {
     const run = makeRun();
@@ -943,7 +827,6 @@ describe('worker/gh — explicit --repo from origin', () => {
   async function callEveryPrOperation(gh, repo_dir) {
     await gh.openPrForBranch(repo_dir, 'UI-1');
     await gh.prDetail(repo_dir, 304);
-    await gh.prChecks(repo_dir, 304);
     await gh.mergeSquash(repo_dir, 304, 'a'.repeat(40));
     await gh.updateBranch(repo_dir, 304);
     await gh.closePr(repo_dir, 304);
@@ -955,7 +838,7 @@ describe('worker/gh — explicit --repo from origin', () => {
     await callEveryPrOperation(makeGh(run), '/repo');
 
     const calls = /** @type {any} */ (run).mock.calls;
-    expect(calls).toHaveLength(6);
+    expect(calls).toHaveLength(5);
     for (const [args] of calls) {
       expect(args.slice(-2)).toEqual(['--repo', 'o/r']);
     }
@@ -1192,101 +1075,5 @@ describe('worker/gh — repoSlug (UI-b8n8)', () => {
     await makeGh(run).repoSlug('/repo');
 
     expect(run).not.toHaveBeenCalled();
-  });
-});
-
-describe('worker/gh — commitChecks', () => {
-  test('combines check runs and commit statuses bound to the exact SHA', async () => {
-    const sha = 'b'.repeat(40);
-    const run = vi.fn(async (/** @type {string[]} */ args) => {
-      if (args[3].endsWith('/check-runs?per_page=100')) {
-        return {
-          code: 0,
-          stdout: JSON.stringify({
-            total_count: 1,
-            check_runs: [
-              { name: 'Build', status: 'completed', conclusion: 'failure' }
-            ]
-          }),
-          stderr: ''
-        };
-      }
-      return {
-        code: 0,
-        stdout: JSON.stringify({
-          total_count: 1,
-          statuses: [{ context: 'legacy', state: 'success' }]
-        }),
-        stderr: ''
-      };
-    });
-
-    const result = await makeGh(run).commitChecks('/repo', sha);
-
-    expect(result).toEqual({
-      state: 'ok',
-      data: [
-        { name: 'Build', conclusion: 'fail' },
-        { name: 'legacy', conclusion: 'pass' }
-      ]
-    });
-    expect(run).toHaveBeenNthCalledWith(
-      1,
-      [
-        'api',
-        '--method',
-        'GET',
-        `repos/o/r/commits/${sha}/check-runs?per_page=100`
-      ],
-      { cwd: '/repo' }
-    );
-    expect(run).toHaveBeenNthCalledWith(
-      2,
-      [
-        'api',
-        '--method',
-        'GET',
-        `repos/o/r/commits/${sha}/status?per_page=100`
-      ],
-      { cwd: '/repo' }
-    );
-  });
-
-  test('returns empty only when both exact-SHA sources are structurally empty', async () => {
-    const run = vi
-      .fn()
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout: JSON.stringify({ total_count: 0, check_runs: [] }),
-        stderr: ''
-      })
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout: JSON.stringify({ total_count: 0, statuses: [] }),
-        stderr: ''
-      });
-
-    const result = await makeGh(run).commitChecks('/repo', 'b'.repeat(40));
-
-    expect(result).toEqual({ state: 'empty' });
-  });
-
-  test('fails closed when a source exceeds the bounded response', async () => {
-    const run = vi
-      .fn()
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout: JSON.stringify({ total_count: 101, check_runs: [] }),
-        stderr: ''
-      })
-      .mockResolvedValueOnce({
-        code: 0,
-        stdout: JSON.stringify({ total_count: 0, statuses: [] }),
-        stderr: ''
-      });
-
-    const result = await makeGh(run).commitChecks('/repo', 'b'.repeat(40));
-
-    expect(result).toEqual({ state: 'error', reason: 'gh_checks_truncated' });
   });
 });

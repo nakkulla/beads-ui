@@ -485,13 +485,13 @@ function blockedReason(issue) {
  *
  * @type {string[]}
  */
-const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
+const ALERT_GATE_TIERS = ['closed_unmerged', 'review', 'undecidable'];
 
 /**
  * Poller activity replaces a gate badge ONLY where it changes what the badge
  * MEANS (UI-raqh §3): "관측 대기" while a gh round-trip is actually in flight is
- * 확인중, and "로컬검증 대기" while the suite is actually running is 로컬검증
- * 실행 중. Anywhere else — CI ✓/✗, 머지됨, 관측 오류 — the poller working
+ * 확인중, and "검증 대기" while the suite is actually running is 검증 중.
+ * Anywhere else — 머지 가능, 머지됨, 관측 오류 — the poller working
  * changes nothing about the state, and swapping the badge there would make the
  * row flicker every poll interval for no information.
  *
@@ -499,7 +499,7 @@ const ALERT_GATE_TIERS = ['closed_unmerged', 'undecidable'];
  */
 const ACTIVITY_BADGE_SUBSTITUTIONS = [
   { from: '관측 대기', activity: 'checking', to: '확인중' },
-  { from: '로컬검증 대기', activity: 'verifying', to: '로컬검증 실행 중' }
+  { from: '검증 대기', activity: 'verifying', to: '검증 중' }
 ];
 
 /**
@@ -530,8 +530,8 @@ export function activityBadge(gate_badge, activity) {
  */
 const MERGE_STEPS = [
   { step: 'merging', label: '머지 중', index: 1 },
-  { step: 'base_sync', label: 'base 동기화', index: 2 },
-  { step: 'post_merge_verify', label: '머지 후 검증', index: 3 },
+  { step: 'base_containment', label: 'base 포함 확인', index: 2 },
+  { step: 'repo_operations', label: '저장소 작업', index: 3 },
   { step: 'child_sweep', label: '자식 정리', index: 4 },
   { step: 'branch_cleanup', label: '브랜치 정리', index: 5 },
   { step: 'parent_close', label: '부모 close', index: 6 }
@@ -943,7 +943,9 @@ function prWaitRow(
           : null;
   const deployment_cleanup_failure =
     !!cleanup_failed &&
-    ['deployment_request', 'deploy'].includes(cleanup_failed.step);
+    ['repo_operations', 'deployment_request', 'deploy'].includes(
+      cleanup_failed.step
+    );
   const deployment_action_blocked =
     !cleanup_retry &&
     (deployment_reason !== null || deployment_cleanup_failure);
@@ -1011,7 +1013,7 @@ function prWaitRow(
     // session exists, there is nothing left to dispatch until it settles.
     // A worktree-less external conflict vetoes even a GREEN gate: the
     // click-time branch order puts DIRTY before the gate, so the server refuses
-    // a conflicting external PR whatever its CI says (UI-7agi §5).
+    // a conflicting external PR whatever its cached eligibility says (UI-7agi §5).
     merge_enabled:
       !merge_step &&
       !conflict_session &&
@@ -2912,8 +2914,8 @@ export function createWorkerView(mount_element, options = {}) {
       auto_excluded: pr_wait_entries
         .map((/** @type {any} */ e) => e.bead_id)
         .filter((/** @type {string} */ id) => autoSkipReason(id) !== null),
-      // 자동 머지 경고 문구의 근거 (UI-yk55 §6): 검증 신호가 없는 워크스페이스는
-      // 게이트 Tier 3이라 클릭 없이 머지된다는 사실을 버튼이 말해야 한다.
+      // 자동 머지 경고 문구의 근거 (UI-yk55 §6): verify 선언이 없는
+      // 워크스페이스는 추가 검증 영수증 없이 자격을 얻을 수 있음을 버튼이 말해야 한다.
       verify_cmd_present: !!(q.workspace_info || {}).verify_cmd,
       declared_base,
       done: done_rows,
@@ -3329,7 +3331,7 @@ export function createWorkerView(mount_element, options = {}) {
       class="worker-merge-all"
       title=${m.verify_cmd_present
         ? '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다'
-        : '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다 — 이 워크스페이스는 검증 신호가 없어 CI·로컬검증 없이 머지됩니다'}
+        : '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다 — 이 워크스페이스는 verify 선언이 없어 추가 검증 없이 머지됩니다'}
     >
       ▶ 자동 머지${count > 0 ? ` ${count}` : ''}
     </button>`;

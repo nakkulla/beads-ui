@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
 import { createPrObservationStore } from './pr-observations.js';
-import { createPrPoller, resolvePrRef, rollupConclusion } from './pr-poller.js';
+import { createPrPoller, resolvePrRef } from './pr-poller.js';
 import { __resetQueueEventsForTest } from './queue-events.js';
 
 const SHA = 'a'.repeat(40);
@@ -71,10 +71,10 @@ function queueOf(input = {}) {
  * @param {{
  *   queue?: any,
  *   detail?: any,
- *   checks?: any,
  *   subscribers?: number,
  *   observations?: any,
  *   activity?: any,
+ *   readIssue?: any,
  *   resolveVerify?: any,
  *   runVerify?: any,
  *   onMerged?: any,
@@ -90,7 +90,6 @@ function makePoller(input = {}) {
       ? input.detail()
       : (input.detail ?? { state: 'ok', data: detailOf() })
   );
-  const prChecks = vi.fn(async () => input.checks ?? { state: 'empty' });
   const observations = input.observations ?? createPrObservationStore();
   const activity = input.activity ?? createActivityStore();
   const notifyChanged = vi.fn();
@@ -98,8 +97,10 @@ function makePoller(input = {}) {
     workspace: '/ws',
     repo: '/repo',
     store: { snapshot: () => queue },
-    gh: { prDetail, prChecks },
+    gh: { prDetail },
     observations,
+    readIssue:
+      input.readIssue ?? (async () => ({ metadata: { route: 'quick_fix' } })),
     activity,
     getSubscriberCount: () => input.subscribers ?? 1,
     resolveVerify: input.resolveVerify ?? (async () => ({ state: 'absent' })),
@@ -113,7 +114,7 @@ function makePoller(input = {}) {
     sleep: async () => {},
     now: () => 5000
   });
-  return { poller, prDetail, prChecks, observations, activity, notifyChanged };
+  return { poller, prDetail, observations, activity, notifyChanged };
 }
 
 /**
@@ -137,12 +138,11 @@ function externalOf(rows) {
 
 describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
   test('makes no gh call without subscribers', async () => {
-    const { poller, prDetail, prChecks } = makePoller({ subscribers: 0 });
+    const { poller, prDetail } = makePoller({ subscribers: 0 });
 
     await poller.tick();
 
     expect(prDetail).not.toHaveBeenCalled();
-    expect(prChecks).not.toHaveBeenCalled();
   });
 
   test('observes with no subscriber at all while auto_merge is ON', async () => {
@@ -156,6 +156,40 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     // 자동 머지는 브라우저 탭에 묶여서는 안 된다 (UI-yk55 §4.4): 탭이 닫히면
     // 관측이 멎고, 편입할 것이 영원히 생기지 않는다.
     expect(prDetail).toHaveBeenCalled();
+  });
+
+  test('records a stale implementation review against the observed head', async () => {
+    const { poller, observations } = makePoller({
+      readIssue: async () => ({
+        spec_id: 'docs/spec.md',
+        metadata: {
+          route: 'spec_backed',
+          spec_review: `codex@${SHA}`,
+          impl_review: `self@${NEW_SHA}`
+        }
+      })
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.review_receipt).toEqual({
+      state: 'stale',
+      head_sha: SHA
+    });
+  });
+
+  test('records an unreadable review source as invalid', async () => {
+    const { poller, observations } = makePoller({
+      readIssue: async () => {
+        throw new Error('bd unavailable');
+      }
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.review_receipt?.state).toBe(
+      'invalid'
+    );
   });
 
   test('keeps the old silence when the toggle is OFF and nobody is watching', async () => {
@@ -385,14 +419,13 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
   });
 
   test('makes no gh call when pr_wait is empty', async () => {
-    const { poller, prDetail, prChecks } = makePoller({
+    const { poller, prDetail } = makePoller({
       queue: queueOf({ pr_wait: [] })
     });
 
     await poller.tick();
 
     expect(prDetail).not.toHaveBeenCalled();
-    expect(prChecks).not.toHaveBeenCalled();
   });
 
   test('observes the pr_wait PR when a subscriber is watching', async () => {
@@ -462,7 +495,7 @@ describe('worker/pr-poller — mergeable UNKNOWN re-query (§4)', () => {
 describe('worker/pr-poller — external PR state classification (§4)', () => {
   test('records a MERGED PR without any cleanup', async () => {
     const store_snapshot = queueOf();
-    const { poller, observations, prChecks } = makePoller({
+    const { poller, observations } = makePoller({
       queue: store_snapshot,
       detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) }
     });
@@ -472,7 +505,6 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
     expect(observations.get('/ws', 'UI-1')?.pr?.state).toBe('MERGED');
     expect(store_snapshot.pr_wait).toEqual([{ bead_id: 'UI-1', added_at: 1 }]);
     expect(store_snapshot.done).toEqual([]);
-    expect(prChecks).not.toHaveBeenCalled();
   });
 
   test('keeps a CLOSED-unmerged bead in pr_wait with its state recorded', async () => {
@@ -501,7 +533,7 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
         }
       }
     });
-    const { poller, prChecks } = makePoller({
+    const { poller } = makePoller({
       queue,
       detail: { state: 'ok', data: detailOf({ state: 'CLOSED' }) },
       onMerged,
@@ -512,7 +544,6 @@ describe('worker/pr-poller — external PR state classification (§4)', () => {
 
     expect(onDiscardObservation).toHaveBeenCalledWith('UI-1');
     expect(onMerged).not.toHaveBeenCalled();
-    expect(prChecks).not.toHaveBeenCalled();
   });
 
   test('routes a discard-fenced MERGED observation away from ordinary cleanup', async () => {
@@ -555,20 +586,6 @@ describe('worker/pr-poller — observation errors fail closed', () => {
     });
   });
 
-  test('records a failed checks query as a CI error bound to the head sha', async () => {
-    const { poller, observations } = makePoller({
-      checks: { state: 'error', reason: 'gh_bad_json' }
-    });
-
-    await poller.tick();
-
-    expect(observations.get('/ws', 'UI-1')?.ci).toMatchObject({
-      state: 'error',
-      reason: 'gh_bad_json',
-      head_sha: SHA
-    });
-  });
-
   test('records an unresolvable PR reference as an error', async () => {
     const { poller, observations, prDetail } = makePoller({
       queue: queueOf({ pr_number: null, pr_url: '' })
@@ -581,7 +598,7 @@ describe('worker/pr-poller — observation errors fail closed', () => {
   });
 });
 
-describe('worker/pr-poller — local verification binding (§5)', () => {
+describe('worker/pr-poller — optional verification binding (§5)', () => {
   const RESOLVED = /** @type {const} */ ({
     state: 'resolved',
     source: 'declaration',
@@ -614,32 +631,15 @@ describe('worker/pr-poller — local verification binding (§5)', () => {
     });
   });
 
-  test('does not run a verification when the repo HAS CI', async () => {
-    const runVerify = vi.fn();
-    const { poller } = makePoller({
-      checks: { state: 'ok', data: [{ name: 'build', conclusion: 'pass' }] },
-      resolveVerify: async () => RESOLVED,
-      runVerify
-    });
-
-    await poller.tick();
-
-    expect(runVerify).not.toHaveBeenCalled();
-  });
-
-  test('resolves the declaration even for a repo that HAS ci (UI-kfl4)', async () => {
+  test('resolves the declaration for every open PR', async () => {
     const resolveVerify = vi.fn(async () => RESOLVED);
     const { poller } = makePoller({
-      checks: { state: 'ok', data: [{ name: 'build', conclusion: 'pass' }] },
       resolveVerify,
       runVerify: vi.fn()
     });
 
     await poller.tick();
 
-    // The run below needs it only in the no-CI tier, but the synchronous
-    // consumers read the projection this call publishes: skipping it left a
-    // broken declaration rendering as a mergeable row.
     expect(resolveVerify).toHaveBeenCalled();
   });
 
@@ -764,34 +764,6 @@ describe('worker/pr-poller — pure helpers', () => {
   test('resolvePrRef returns null for a bead with no PR record', () => {
     expect(resolvePrRef(/** @type {any} */ (queueOf()), 'UI-9')).toBe(null);
   });
-
-  test('rollupConclusion reports fail when any check failed', () => {
-    const checks = [
-      { name: 'a', conclusion: /** @type {const} */ ('pass') },
-      { name: 'b', conclusion: /** @type {const} */ ('fail') },
-      { name: 'c', conclusion: /** @type {const} */ ('pending') }
-    ];
-
-    expect(rollupConclusion(checks)).toBe('fail');
-  });
-
-  test('rollupConclusion reports pending while a check is still running', () => {
-    const checks = [
-      { name: 'a', conclusion: /** @type {const} */ ('pass') },
-      { name: 'b', conclusion: /** @type {const} */ ('pending') }
-    ];
-
-    expect(rollupConclusion(checks)).toBe('pending');
-  });
-
-  test('rollupConclusion treats skipped checks as passing', () => {
-    const checks = [
-      { name: 'a', conclusion: /** @type {const} */ ('pass') },
-      { name: 'b', conclusion: /** @type {const} */ ('skip') }
-    ];
-
-    expect(rollupConclusion(checks)).toBe('pass');
-  });
 });
 
 describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
@@ -847,7 +819,6 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
     const activity = createActivityStore();
     const { poller } = makePoller({
       activity,
-      checks: { state: 'empty' },
       resolveVerify: async () => ({
         state: 'resolved',
         source: 'declaration',
@@ -877,7 +848,6 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
     const activity = createActivityStore();
     const { poller } = makePoller({
       activity,
-      checks: { state: 'empty' },
       resolveVerify: async () => ({
         state: 'resolved',
         source: 'declaration',

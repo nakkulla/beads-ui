@@ -58,6 +58,7 @@ import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
+import { createRepoOperationMigration } from './repo-operation-migration.js';
 import { peekVerifyResolution, resolveVerifyAt } from './repo-ops.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
@@ -376,6 +377,7 @@ export function defaultProbePid(pid) {
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
  *   deploymentRecovery?: { poll: () => Promise<any>, tick: () => Promise<any>, retryNow?: () => Promise<any>, consumeOutcome?: (input: any) => Promise<any> },
+ *   repoOperationMigration?: { run: () => Promise<any> },
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -1010,6 +1012,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     resolveVerify,
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
+    repoOperations: repoOperationCoordinator,
     deploymentJob,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
     // The SAME notifier the scheduler pushes attempt transitions through, so
@@ -1017,6 +1020,24 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // its PR (UI-9rrk).
     notify
   });
+
+  // The one-shot legacy-state migration (master spec §11). It converts durable
+  // state only; the lane resume that follows it at startup is what asks the
+  // coordinator for the operations that conversion implies.
+  const repoOperationMigration =
+    options.repoOperationMigration ||
+    createRepoOperationMigration({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      gitRun,
+      cleanupFacts: (/** @type {string} */ bead_id) =>
+        prActions.cleanupFacts(bead_id),
+      repoOperations: repoOperationCoordinator,
+      deploymentJob,
+      resumeClosure: (/** @type {string} */ bead_id) =>
+        prActions.resumeMigratedClosure(bead_id)
+    });
 
   /** @type {any} */
   let deploymentRecovery = options.deploymentRecovery || null;
@@ -1120,7 +1141,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createCompletionRepairService({
       bd,
       repo,
-      gh,
       resolveVerify,
       runVerify: (/** @type {any} */ input) =>
         runVerifyAtSha({ ...input, worktree, git: gitRun })
@@ -1183,6 +1203,10 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     gh,
     observations: runtime.prObservations,
+    readIssue:
+      typeof bd.readIssue === 'function'
+        ? (/** @type {string} */ bead_id) => bd.readIssue(bead_id)
+        : undefined,
     activity: runtime.activityStore,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
     resolveVerify,
@@ -1233,6 +1257,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     deploymentJob,
     deploymentRecovery,
     repoOperationCoordinator,
+    repoOperationMigration,
     repo,
     resolveBase,
     workspace: workspace_root
@@ -1361,6 +1386,21 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     await att.repoOperationCoordinator.reconcile(key);
   } catch (err) {
     log('repo-operation startup reconcile failed for %s: %o', key, err);
+  }
+  // Before the lane resumes: the legacy records must already be converted, or
+  // the resume would skip exactly the rows the migration exists for. A failure
+  // here is not fatal — an unconverted row keeps its legacy failure record and
+  // the resume passes it by, which is the state we started from.
+  try {
+    await att.repoOperationMigration?.run();
+  } catch (err) {
+    log('repo-operation legacy migration failed for %s: %o', key, err);
+  }
+  try {
+    await att.prActions.resumeRepoOperations?.();
+  } catch (err) {
+    log('repo-operation cleanup resume failed for %s: %o', key, err);
+    return;
   }
   try {
     await att.prActions.resumeDeploymentObservation();

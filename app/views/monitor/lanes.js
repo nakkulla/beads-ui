@@ -500,6 +500,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         !!gate &&
         gate.tier === 'merged';
       const external_cleanup = external && !!gate && gate.tier === 'merged';
+      const gate_alert =
+        !!gate &&
+        ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier);
       const discard = discardProjection(discard_operations, bead_id, {
         external,
         merge_active: active,
@@ -518,8 +521,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
           ? ['이어하기 선택 필요']
           : cleanup
             ? ['정리 실패']
-            : [],
-        alert: !!cleanup,
+            : typeof gate?.gate_badge === 'string' && gate.gate_badge.length > 0
+              ? [gate.gate_badge]
+              : [],
+        alert: !!cleanup || gate_alert,
         reason: cleanup ? '머지됨 · 정리 미완' : 'PR 대기',
         // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
         // (Worker 탭 [취소]와 같은 규약).

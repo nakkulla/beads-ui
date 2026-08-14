@@ -3387,7 +3387,6 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
             state: 'OPEN',
             head_sha: 'a'.repeat(40)
           },
-          ci: null,
           verify: null,
           error: null,
           observed_at: 1,
@@ -3419,8 +3418,8 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     const row = renderWith(
       withObservation({
         enabled: true,
-        tier: 'ci',
-        gate_badge: 'CI ✓',
+        tier: 'eligible',
+        gate_badge: '머지 가능',
         base_badge: '최신',
         reason: null
       })
@@ -3445,8 +3444,8 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     const row = renderWith(
       withObservation({
         enabled: true,
-        tier: 'ci',
-        gate_badge: 'CI ✓',
+        tier: 'eligible',
+        gate_badge: '머지 가능',
         base_badge: '최신',
         reason: null
       })
@@ -3455,22 +3454,22 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     const badges = Array.from(row.querySelectorAll('.worker-mini__badge')).map(
       (b) => b.textContent
     );
-    expect(badges).toEqual(['CI ✓', '최신']);
+    expect(badges).toEqual(['머지 가능', '최신']);
   });
 
-  test('renders the local-verification badge for a no-CI repo', () => {
+  test('renders the optional verification badge', () => {
     const row = renderWith(
       withObservation({
         enabled: false,
-        tier: 'local_verify',
-        gate_badge: '로컬검증 대기',
+        tier: 'verify',
+        gate_badge: '검증 대기',
         base_badge: '최신',
         reason: 'verify_missing'
       })
     );
 
     expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
-      '로컬검증 대기'
+      '검증 대기'
     );
   });
 
@@ -3962,7 +3961,6 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
             state: 'OPEN',
             head_sha: 'a'.repeat(40)
           },
-          ci: null,
           verify: null,
           error: null,
           observed_at: 1,
@@ -3994,17 +3992,17 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
 
   const GREEN = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '최신',
     reason: null
   };
   const RED = {
     enabled: false,
-    tier: 'ci',
-    gate_badge: 'CI ✗',
+    tier: 'verify',
+    gate_badge: '검증 실패',
     base_badge: '최신',
-    reason: 'ci_failed'
+    reason: 'verify_cmd_failed'
   };
 
   /**
@@ -4013,23 +4011,33 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
    * @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>}
    */
   const PASSING_TIERS = [
-    { tier: 'ci', gate_badge: 'CI ✓', enabled: true, reason: null },
+    { tier: 'eligible', gate_badge: '머지 가능', enabled: true, reason: null },
     {
-      tier: 'local_verify',
-      gate_badge: '로컬검증 ✓',
+      tier: 'eligible',
+      gate_badge: '검증 완료',
       enabled: true,
       reason: null
     },
-    { tier: 'none', gate_badge: '검증 신호 없음', enabled: true, reason: null }
+    { tier: 'eligible', gate_badge: '머지 가능', enabled: true, reason: null }
   ];
 
   /** @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>} */
   const REFUSING_TIERS = [
-    { tier: 'ci', gate_badge: 'CI ✗', enabled: false, reason: 'ci_failed' },
-    { tier: 'ci', gate_badge: 'CI 대기', enabled: false, reason: 'ci_pending' },
     {
-      tier: 'local_verify',
-      gate_badge: '로컬검증 ✗',
+      tier: 'review',
+      gate_badge: '리뷰 확인 필요',
+      enabled: false,
+      reason: 'review_receipt_missing'
+    },
+    {
+      tier: 'verify',
+      gate_badge: '검증 대기',
+      enabled: false,
+      reason: 'verify_missing'
+    },
+    {
+      tier: 'verify',
+      gate_badge: '검증 실패',
       enabled: false,
       reason: 'verify_cmd_failed'
     },
@@ -4212,17 +4220,17 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       mount.querySelector('.worker-mini__merge')
     );
     expect(btn.disabled).toBe(true);
-    expect(btn.getAttribute('title')).toContain('ci_failed');
+    expect(btn.getAttribute('title')).toContain('verify_cmd_failed');
   });
 
   test('keeps 머지 clickable on a conflict so the click can dispatch a resolution', () => {
     const { mount } = mountWith(
       queueWithGate({
         enabled: false,
-        tier: 'ci',
-        gate_badge: 'CI ✓',
+        tier: 'verify',
+        gate_badge: '검증 대기',
         base_badge: '충돌',
-        reason: 'ci_pending'
+        reason: 'verify_missing'
       })
     );
 
@@ -6057,9 +6065,9 @@ describe('poller activity badge — projection (UI-raqh §3)', () => {
     });
   });
 
-  test('renames 로컬검증 대기 to 로컬검증 실행 중 while the suite runs', () => {
-    expect(activityBadge('로컬검증 대기', 'verifying')).toEqual({
-      label: '로컬검증 실행 중',
+  test('renames 검증 대기 to 검증 중 while the suite runs', () => {
+    expect(activityBadge('검증 대기', 'verifying')).toEqual({
+      label: '검증 중',
       live: true
     });
   });
@@ -6071,9 +6079,9 @@ describe('poller activity badge — projection (UI-raqh §3)', () => {
     });
   });
 
-  test('leaves a CI badge alone while the poller works', () => {
-    expect(activityBadge('CI ✓', 'checking')).toEqual({
-      label: 'CI ✓',
+  test('leaves an eligibility badge alone while the poller works', () => {
+    expect(activityBadge('머지 가능', 'checking')).toEqual({
+      label: '머지 가능',
       live: false
     });
   });
@@ -6111,7 +6119,6 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
               state: 'OPEN',
               head_sha: 'a'.repeat(40)
             },
-            ci: null,
             verify: null,
             error: null,
             observed_at: 1,
@@ -6142,15 +6149,15 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
   };
   const VERIFY_PENDING = {
     enabled: false,
-    tier: 'local_verify',
-    gate_badge: '로컬검증 대기',
+    tier: 'verify',
+    gate_badge: '검증 대기',
     base_badge: '최신',
     reason: 'verify_missing'
   };
-  const CI_PASS = {
+  const ELIGIBLE = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '최신',
     reason: null
   };
@@ -6165,12 +6172,12 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
     expect(badge.querySelector('.act-dot')).not.toBe(null);
   });
 
-  test('shows 로컬검증 실행 중 while the local suite runs', () => {
+  test('shows 검증 중 while the optional verification runs', () => {
     const row = renderRow(VERIFY_PENDING, 'verifying');
 
     expect(
       row.querySelector('.worker-mini__badge--activity')?.textContent?.trim()
-    ).toBe('로컬검증 실행 중');
+    ).toBe('검증 중');
   });
 
   test('keeps the settled badge when nothing is running', () => {
@@ -6180,11 +6187,11 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
     expect(row.textContent).toContain('관측 대기');
   });
 
-  test('leaves a CI badge untouched while the poller works', () => {
-    const row = renderRow(CI_PASS, 'checking');
+  test('leaves an eligibility badge untouched while the poller works', () => {
+    const row = renderRow(ELIGIBLE, 'checking');
 
     expect(row.querySelector('.worker-mini__badge--activity')).toBe(null);
-    expect(row.textContent).toContain('CI ✓');
+    expect(row.textContent).toContain('머지 가능');
   });
 
   test('draws the activity badge without the alert colour', () => {
@@ -6218,16 +6225,16 @@ describe('merge progress — projection (UI-raqh §4)', () => {
 
   test('translates every cleanup step to Korean', () => {
     const labels = [
-      'base_sync',
-      'post_merge_verify',
+      'base_containment',
+      'repo_operations',
       'child_sweep',
       'branch_cleanup',
       'parent_close'
     ].map((s) => mergeStepView(s)?.label);
 
     expect(labels).toEqual([
-      'base 동기화',
-      '머지 후 검증',
+      'base 포함 확인',
+      '저장소 작업',
       '자식 정리',
       '브랜치 정리',
       '부모 close'
@@ -6254,8 +6261,8 @@ describe('merge progress — view (UI-raqh §4)', () => {
 
   const GATE_OK = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '최신',
     reason: null
   };
@@ -6281,7 +6288,6 @@ describe('merge progress — view (UI-raqh §4)', () => {
               state: 'OPEN',
               head_sha: 'a'.repeat(40)
             },
-            ci: null,
             verify: null,
             error: null,
             observed_at: 1,
@@ -6302,19 +6308,19 @@ describe('merge progress — view (UI-raqh §4)', () => {
   test('shows the step name and its position while merging', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'post_merge_verify', started_at: 1 }
+      merge_progress: { step: 'repo_operations', started_at: 1 }
     });
 
     const step = /** @type {HTMLElement} */ (
       mount.querySelector('.merge-step')
     );
-    expect(step.textContent?.replace(/\s+/g, '')).toBe('머지후검증3/6');
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('저장소작업3/6');
   });
 
   test('marks the row and its progress width', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'post_merge_verify', started_at: 1 }
+      merge_progress: { step: 'repo_operations', started_at: 1 }
     });
 
     const row = /** @type {HTMLElement} */ (
@@ -6327,7 +6333,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
   test('disables both actions while merging', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'base_sync', started_at: 1 }
+      merge_progress: { step: 'base_containment', started_at: 1 }
     });
 
     const row = /** @type {HTMLElement} */ (
@@ -7619,18 +7625,18 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     window.localStorage.clear();
   });
 
-  /** CI is green but the branch conflicts with base — the UI-2yoq case. */
+  /** Reviews are current but the branch conflicts with base. */
   const CONFLICTING = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'mergeability',
+    gate_badge: '머지 불가',
     base_badge: '충돌',
     reason: null
   };
   const CLEAN = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '최신',
     reason: null
   };
@@ -7660,7 +7666,6 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
               state: 'OPEN',
               head_sha: 'a'.repeat(40)
             },
-            ci: null,
             verify: null,
             error: null,
             observed_at: 1,
@@ -7831,7 +7836,10 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
   test('keeps the merge-in-flight discard tooltip on the merge path', () => {
     const mount = mountBoard({
       gate: CLEAN,
-      activity: { activity: null, merge_progress: { step: 'base_sync' } }
+      activity: {
+        activity: null,
+        merge_progress: { step: 'base_containment' }
+      }
     });
 
     expect(button(mount, '.worker-mini__discard').getAttribute('title')).toBe(
@@ -8017,15 +8025,15 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
 
   const OPEN_GREEN = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '최신',
     reason: null
   };
   const CONFLICTING = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '충돌',
     reason: null
   };
@@ -8072,7 +8080,6 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
               state: 'OPEN',
               head_sha: 'a'.repeat(40)
             },
-            ci: null,
             verify: null,
             error: null,
             observed_at: 1,
@@ -8245,8 +8252,8 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
 
   const GREEN_GATE = {
     enabled: true,
-    tier: 'ci',
-    gate_badge: 'CI ✓',
+    tier: 'eligible',
+    gate_badge: '머지 가능',
     base_badge: '최신',
     reason: null
   };
@@ -8266,7 +8273,6 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
           state: 'OPEN',
           head_sha: 'a'.repeat(40)
         },
-        ci: null,
         verify: null,
         error: null,
         observed_at: 1,
@@ -8874,7 +8880,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
         auto_merge_skips: {
           'RD-1': {
             head_sha: 'a'.repeat(40),
-            reason: 'ci_failed',
+            reason: 'verify_cmd_failed',
             at: 1
           }
         }
@@ -8896,7 +8902,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
         auto_merge_skips: {
           'RD-1': {
             head_sha: '9'.repeat(40),
-            reason: 'ci_failed',
+            reason: 'verify_cmd_failed',
             at: 1
           }
         }

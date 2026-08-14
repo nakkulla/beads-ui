@@ -201,6 +201,32 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     expect(kick).not.toHaveBeenCalled();
   });
 
+  test('passes an unreadable verify declaration as invalid', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    /** @type {string|null} */
+    let observed_state = null;
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyCmdState: () => {
+        throw new Error('unreadable');
+      },
+      headSha: () => HEAD,
+      lane: () => [{ bead_id: 'UI-1', external: false }],
+      candidates: (_workspace, _queue, verify_cmd_state) => {
+        observed_state = verify_cmd_state;
+        return [];
+      },
+      notifyChanged: vi.fn(),
+      kick: vi.fn(async () => {})
+    });
+
+    const result = auto.enroll();
+
+    expect(result.queued).toBe(0);
+    expect(observed_state).toBe('invalid');
+  });
+
   test('atomically creates a root completion intent for repairable red', () => {
     const store = park(createQueueStore(), ['UI-1']);
     store.updateAttempt(WS, {

@@ -100,7 +100,7 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  *   workspace: string,
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
- *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, external: boolean }>,
+ *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, external: boolean, continuation?: 'verify' }>,
  *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
@@ -1106,8 +1106,9 @@ export function createMergeQueue(deps) {
     if (!probe.ok) {
       return {
         ok: false,
-        action: 'refused',
-        reason: probe.reason || 'mergeability_probe_blocked'
+        action: probe.continuation === 'verify' ? 'verify_blocked' : 'refused',
+        reason: probe.reason || 'mergeability_probe_blocked',
+        head_sha: probe.head_sha || null
       };
     }
     if (probe.kind !== 'dirty') {
@@ -1449,6 +1450,13 @@ export function createMergeQueue(deps) {
       if (action === 'cleanup_pending') {
         deps.store.dequeueMerge(workspace, bead_id);
         void requestDrain();
+        return;
+      }
+
+      if (action === 'verify_blocked') {
+        fail(bead_id, result.reason || 'verify_failed');
+        halted = true;
+        notify();
         return;
       }
 

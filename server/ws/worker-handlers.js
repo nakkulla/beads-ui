@@ -47,7 +47,10 @@ import {
   workerSlots,
   workerWorktreeExists
 } from '../worker/attach.js';
-import { evaluateMergeGate } from '../worker/merge-gate.js';
+import {
+  evaluateMergeGate,
+  observedReviewReceiptState
+} from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import {
   peekDeployResolution,
@@ -343,11 +346,21 @@ function prObservationsFor(workspace_key, queue, verify_cmd_state) {
     const record = observed[bead_id] || null;
     out[bead_id] = {
       pr: record ? record.pr : null,
-      ci: record ? record.ci : null,
       verify: record ? record.verify : null,
       error: record ? record.error : null,
       observed_at: record ? record.observed_at : null,
-      gate: evaluateMergeGate(record, { verify_cmd_state })
+      gate: evaluateMergeGate(record, {
+        review_receipt_state: observedReviewReceiptState(record),
+        verify_receipt_state: {
+          declaration_state:
+            verify_cmd_state === 'resolved'
+              ? 'present'
+              : verify_cmd_state === 'invalid'
+                ? 'invalid'
+                : 'absent',
+          receipt: record?.verify || null
+        }
+      })
     };
   }
   return out;
@@ -825,15 +838,6 @@ function completionStatusFor(workspace_key, queue) {
       }
       if (evidence === null) {
         evidence = boundedCompletionText(observed?.verify?.output_tail);
-        if (evidence === null && Array.isArray(observed?.ci?.checks)) {
-          try {
-            evidence = JSON.stringify(observed.ci.checks.slice(0, 100)).slice(
-              -4000
-            );
-          } catch {
-            evidence = null;
-          }
-        }
       }
       if (log_path === null) {
         log_path = boundedCompletionText(observed?.verify?.log_path, 1000);

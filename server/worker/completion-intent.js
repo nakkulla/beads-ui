@@ -11,8 +11,6 @@ import { isRepairableCleanupFailure } from './completion-repair-policy.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
-const CHECKS_MAX = 100;
-const CHECK_FIELD_MAX = 200;
 const REASON_MAX = 500;
 const CONFLICT_RESOLUTION_FAILURES = new Set([
   'resolution_wait_invalid',
@@ -26,15 +24,15 @@ const CONFLICT_RESOLUTION_FAILURES = new Set([
 
 /**
  * Build the stable identity of one failure observed at pinned subject/base
- * SHAs. The digest input is bounded and normalized so check ordering and line
- * endings cannot manufacture distinct repair operations for the same result.
+ * SHAs. The digest input is bounded and normalized so line endings cannot
+ * manufacture distinct repair operations for the same result.
  *
  * @param {{
  *   stage: string,
  *   reason: string,
  *   subject_sha: string,
  *   base_sha: string,
- *   evidence?: { output_tail?: unknown, checks?: unknown }
+ *   evidence?: { output_tail?: unknown }
  * }} input
  */
 export function createCompletionFailureKey(input) {
@@ -43,33 +41,9 @@ export function createCompletionFailureKey(input) {
     typeof evidence.output_tail === 'string'
       ? evidence.output_tail.replace(/\r\n?/g, '\n').slice(-OUTPUT_TAIL_MAX)
       : '';
-  /** @type {{ name: string, conclusion: string }[]} */
-  const checks = [];
-  if (Array.isArray(evidence.checks)) {
-    for (const raw of evidence.checks) {
-      if (
-        !raw ||
-        typeof raw !== 'object' ||
-        Array.isArray(raw) ||
-        typeof raw.name !== 'string' ||
-        typeof raw.conclusion !== 'string'
-      ) {
-        continue;
-      }
-      checks.push({
-        name: raw.name.slice(0, CHECK_FIELD_MAX),
-        conclusion: raw.conclusion.slice(0, CHECK_FIELD_MAX)
-      });
-    }
-  }
-  checks.sort((left, right) => {
-    const by_name = left.name.localeCompare(right.name);
-    return by_name || left.conclusion.localeCompare(right.conclusion);
-  });
   const normalized = JSON.stringify({
     reason: String(input.reason || '').slice(0, REASON_MAX),
-    output_tail,
-    checks: checks.slice(0, CHECKS_MAX)
+    output_tail
   });
   return {
     stage: input.stage,
@@ -81,7 +55,7 @@ export function createCompletionFailureKey(input) {
 }
 
 /**
- * @typedef {'green'|'conflict'|'verify_red'|'ci_red'|'pr_owned'|'base_owned'|'repair_created'|'cleanup_repairable'|'cleanup_pending'|'cleanup_red'|'repair_pr_open'|'repair_pr_merged'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
+ * @typedef {'green'|'conflict'|'verify_red'|'pr_owned'|'base_owned'|'repair_created'|'cleanup_repairable'|'cleanup_pending'|'cleanup_red'|'repair_pr_open'|'repair_pr_merged'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
  */
 /**
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
@@ -179,7 +153,7 @@ export function decideCompletionAction(input) {
   ) {
     return { kind: 'merge_subject' };
   }
-  if (fact.state === 'verify_red' || fact.state === 'ci_red') {
+  if (fact.state === 'verify_red') {
     return { kind: 'probe' };
   }
   if (fact.state === 'pr_owned') {
@@ -886,29 +860,24 @@ export function createCompletionActionDriver(deps) {
       return { state: 'conflict', gated };
     }
     const reason = verdict.reason;
-    if (reason === 'verify_cmd_failed' || reason === 'ci_failed') {
+    if (reason === 'verify_cmd_failed') {
       const verify = gated.evidence?.verify;
-      const ci = gated.evidence?.ci;
       const failure_key = createCompletionFailureKey({
         stage: 'merge_gate',
         reason,
         subject_sha: gated.subject.head_sha,
         base_sha: gated.base_sha,
-        evidence: {
-          output_tail: verify?.output_tail,
-          checks: ci?.checks
-        }
+        evidence: { output_tail: verify?.output_tail }
       });
       return {
-        state: reason === 'ci_failed' ? 'ci_red' : 'verify_red',
-        source: reason === 'ci_failed' ? 'ci' : 'local_verify',
+        state: 'verify_red',
+        source: 'verify',
         failure_key,
-        evidence: reason === 'ci_failed' ? ci : verify,
+        evidence: verify,
         gated
       };
     }
     if (
-      reason === 'ci_pending' ||
       reason === 'verify_missing' ||
       reason === 'verify_sha_stale' ||
       reason === 'not_observed'
@@ -952,7 +921,7 @@ export function createCompletionActionDriver(deps) {
     if (isRepairableCleanupFailure(failure)) {
       return {
         state: 'cleanup_repairable',
-        source: 'local_verify',
+        source: 'verify',
         failure_key,
         evidence: failure
       };

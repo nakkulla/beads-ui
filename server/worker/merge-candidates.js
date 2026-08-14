@@ -16,7 +16,7 @@
  * @import { Queue } from './queue-store.js'
  */
 import { isRepairableCleanupFailure } from './completion-repair-policy.js';
-import { evaluateMergeGate } from './merge-gate.js';
+import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { getWorkerRuntime } from './runtime.js';
 
 /**
@@ -194,19 +194,28 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
       continue;
     }
     const external = entry.external === true;
-    const gate = evaluateMergeGate(observed[bead_id] || null, {
-      verify_cmd_state
+    const record = observed[bead_id] || null;
+    const gate = evaluateMergeGate(record, {
+      review_receipt_state: observedReviewReceiptState(record),
+      verify_receipt_state: {
+        declaration_state:
+          verify_cmd_state === 'resolved'
+            ? 'present'
+            : verify_cmd_state === 'invalid'
+              ? 'invalid'
+              : 'absent',
+        receipt: record?.verify || null
+      }
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';
     const repairable =
       !external &&
-      ((gate.tier === 'local_verify' && gate.reason === 'verify_cmd_failed') ||
-        (gate.tier === 'ci' && gate.reason === 'ci_failed') ||
+      ((gate.tier === 'verify' && gate.reason === 'verify_cmd_failed') ||
         (merged_tier && isRepairableCleanupFailure(cleanup_failed[bead_id])));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
     // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
-    // `merge()` refuses it whatever its CI says.
+    // `merge()` refuses it whatever the cached eligibility says.
     if (external && conflicting) {
       continue;
     }

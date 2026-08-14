@@ -8,10 +8,14 @@
  */
 import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
-import { resolveEffectiveRepoOps } from './repo-ops-resolver.js';
+import {
+  resolveEffectiveRepoOps,
+  resolveRepoOps
+} from './repo-ops-resolver.js';
 import {
   repoOpsSpoolPendingDir,
   repoOpsSpoolProcessedDir
@@ -64,7 +68,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> } }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -73,13 +77,16 @@ export function createRepoOperationCoordinator(deps) {
   const deploy_worktree =
     deps.deployWorktree ||
     createRepoOpsDeployWorktreeManager({ locks: deps.locks, run: deps.gitRun });
+  const verify_checkout =
+    deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
 
   /**
-   * Deploy operation identity per master spec §5: repo, kind, base, and the
-   * pinned effective policy — never the subject set, so uncovered subjects
-   * coalesce into the queued operation instead of forking a twin.
+   * Deploy operation identity per master spec §5: repo, kind, base, fetched
+   * target, and pinned effective policy — never the subject set, so uncovered
+   * subjects on the same target coalesce while a later fetched target queues a
+   * successor instead of attaching itself to an older running operation.
    *
-   * @param {{ effective_base_sha: string, target_base: string, script_mode: string, script_blob_sha: string }} input
+   * @param {{ effective_base_sha: string, target_base: string, target_sha: string, script_mode: string, script_blob_sha: string }} input
    */
   function operationId(input) {
     return crypto
@@ -89,7 +96,30 @@ export function createRepoOperationCoordinator(deps) {
           repo: deps.repo,
           kind: 'deploy',
           target_base: input.target_base,
+          target_sha: input.target_sha,
           effective_base_sha: input.effective_base_sha,
+          script_mode: input.script_mode,
+          script_blob_sha: input.script_blob_sha
+        })
+      )
+      .digest('hex')
+      .slice(0, 24);
+  }
+
+  /**
+   * @param {{ effective_base_sha: string, target_base: string, target_tree: string, script_object_type: string, script_mode: string, script_blob_sha: string }} input
+   */
+  function verifyOperationId(input) {
+    return crypto
+      .createHash('sha256')
+      .update(
+        JSON.stringify({
+          repo: deps.repo,
+          kind: 'verify',
+          target_base: input.target_base,
+          effective_base_sha: input.effective_base_sha,
+          target_tree: input.target_tree,
+          script_object_type: input.script_object_type,
           script_mode: input.script_mode,
           script_blob_sha: input.script_blob_sha
         })
@@ -202,15 +232,24 @@ export function createRepoOperationCoordinator(deps) {
   async function settleFromMarker(workspace, operation, operation_id, marker) {
     if (marker.exit_code === 0 && !marker.signal) {
       const aligned =
-        typeof operation.target_sha === 'string'
-          ? await deploy_worktree.verifyAligned({
+        operation.kind === 'verify'
+          ? await verify_checkout.verify({
               repo: deps.repo,
-              target_sha: operation.target_sha
+              path: operation.deploy_worktree,
+              target_tree: operation.target_tree
             })
-          : { ok: false };
+          : typeof operation.target_sha === 'string'
+            ? await deploy_worktree.verifyAligned({
+                repo: deps.repo,
+                target_sha: operation.target_sha
+              })
+            : { ok: false };
       if (!aligned.ok) {
         await settleFailure(workspace, operation, operation_id, {
-          code: 'deploy_worktree_residue',
+          code:
+            operation.kind === 'verify'
+              ? 'verify_candidate_mismatch'
+              : 'deploy_worktree_residue',
           exit_code: marker.exit_code,
           signal: marker.signal
         });
@@ -227,6 +266,12 @@ export function createRepoOperationCoordinator(deps) {
         log_digest
       });
       transition.reclaim(workspace, operation_id);
+      if (operation.kind === 'verify') {
+        await verify_checkout.cleanup({
+          repo: deps.repo,
+          path: operation.deploy_worktree
+        });
+      }
       return;
     }
     await settleFailure(workspace, operation, operation_id, {
@@ -234,6 +279,236 @@ export function createRepoOperationCoordinator(deps) {
       exit_code: marker.exit_code,
       signal: marker.signal
     });
+    if (operation.kind === 'verify') {
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: operation.deploy_worktree
+      });
+    }
+  }
+
+  /**
+   * @param {any} candidate
+   */
+  function verifyCandidateMatches(candidate) {
+    let candidate_repo = '';
+    let coordinator_repo = '';
+    try {
+      candidate_repo = fs.realpathSync(path.resolve(candidate.repo));
+      coordinator_repo = fs.realpathSync(path.resolve(deps.repo));
+    } catch {
+      return false;
+    }
+    return (
+      candidate_repo === coordinator_repo &&
+      candidate.origin === 'origin' &&
+      typeof candidate.target_base === 'string' &&
+      candidate.target_base.length > 0 &&
+      /^[0-9a-f]{40}$/i.test(candidate.base_sha) &&
+      /^[0-9a-f]{40}$/i.test(candidate.head_sha) &&
+      (candidate.script_path === null ||
+        typeof candidate.script_path === 'string') &&
+      (candidate.final_sha === undefined ||
+        /^[0-9a-f]{40}$/i.test(candidate.final_sha)) &&
+      typeof candidate.bead_id === 'string' &&
+      candidate.bead_id.length > 0 &&
+      (candidate.final_sha !== undefined ||
+        Number.isInteger(candidate.pr_number))
+    );
+  }
+
+  /**
+   * @param {any} candidate
+   */
+  async function ensureVerify(candidate) {
+    if (!verifyCandidateMatches(candidate)) {
+      return { ok: false, code: 'verify_candidate_mismatch' };
+    }
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      return await ensureVerifyLocked(candidate);
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * @param {any} candidate
+   */
+  async function ensureVerifyLocked(candidate) {
+    /** @type {any} */
+    const policy = await resolveEffectiveRepoOps({
+      repo: deps.repo,
+      previous_sha: candidate.base_sha,
+      target_sha: candidate.final_sha || candidate.head_sha,
+      kind: 'verify',
+      gitRun: deps.gitRun
+    });
+    if (!policy.policy || !policy.target) {
+      return policy;
+    }
+    const declaration = policy.policy.verify;
+    if (!declaration) {
+      return { ok: true, inert: true };
+    }
+    if (
+      declaration.identity_invalid ||
+      declaration.object_type !== 'blob' ||
+      candidate.script_path !== declaration.script ||
+      policy.policy.base !== candidate.target_base
+    ) {
+      return { ok: false, code: 'verify_candidate_mismatch' };
+    }
+    const materialized = await verify_checkout.materialize({
+      repo: deps.repo,
+      origin: candidate.origin,
+      target_base: candidate.target_base,
+      base_sha: candidate.base_sha,
+      head_sha: candidate.head_sha,
+      pr_number: candidate.pr_number,
+      final_sha: candidate.final_sha
+    });
+    if (
+      !materialized.ok ||
+      typeof materialized.path !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(materialized.tree_sha)
+    ) {
+      return {
+        ok: false,
+        code: materialized.code || 'verify_candidate_mismatch'
+      };
+    }
+    const operation_id = verifyOperationId({
+      effective_base_sha: candidate.base_sha,
+      target_base: candidate.target_base,
+      target_tree: materialized.tree_sha,
+      script_object_type: declaration.object_type,
+      script_mode: declaration.mode,
+      script_blob_sha: declaration.blob_sha
+    });
+    const existing_before =
+      deps.store.snapshot(deps.workspace).repo_operations[operation_id] || null;
+    const prerecord = deps.store.ensureRepoOperation(deps.workspace, {
+      operation_id,
+      repo_id: deps.repo,
+      kind: 'verify',
+      subjects: [
+        {
+          bead_id: candidate.bead_id,
+          merged_sha: candidate.final_sha || candidate.head_sha
+        }
+      ],
+      effective_base_sha: candidate.base_sha,
+      target_base: candidate.target_base,
+      target_tree: materialized.tree_sha,
+      verify_head_sha: candidate.head_sha,
+      deploy_worktree: materialized.path,
+      script_object_type: declaration.object_type,
+      script_mode: declaration.mode,
+      script_blob_sha: declaration.blob_sha
+    });
+    if (!prerecord.ok) {
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return { ok: false, code: 'repo_operation_prerecord_failed' };
+    }
+    const operation = prerecord.queue.repo_operations[operation_id];
+    const inherited = candidate.receipt_operation_id
+      ? deps.store.snapshot(deps.workspace).repo_operations[
+          candidate.receipt_operation_id
+        ]
+      : null;
+    if (
+      inherited &&
+      inherited.kind === 'verify' &&
+      inherited.state === 'succeeded' &&
+      inherited.effective_base_sha === candidate.base_sha.toLowerCase() &&
+      inherited.verify_head_sha === candidate.head_sha.toLowerCase() &&
+      inherited.target_tree === materialized.tree_sha.toLowerCase() &&
+      inherited.script_object_type === declaration.object_type &&
+      inherited.script_mode === declaration.mode &&
+      inherited.script_blob_sha === declaration.blob_sha
+    ) {
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return {
+        ok: true,
+        operation_id: candidate.receipt_operation_id,
+        adopted: true,
+        inherited: true
+      };
+    }
+    if (existing_before) {
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return { ok: true, operation_id, adopted: true };
+    }
+    if (operation.state !== 'queued') {
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return { ok: true, operation_id, adopted: true };
+    }
+    const script = await transition.materialize({
+      workspace: deps.workspace,
+      repo: deps.repo,
+      operation_id,
+      blob_sha: declaration.blob_sha,
+      mode: declaration.mode
+    });
+    if (!script.ok || typeof script.path !== 'string') {
+      await settleFailure(deps.workspace, operation, operation_id, {
+        code: 'verify_script_materialize_failed'
+      });
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return {
+        ok: false,
+        code: 'verify_script_materialize_failed',
+        operation_id
+      };
+    }
+    const started = await runner.start({
+      workspace: deps.workspace,
+      operation_id,
+      attempt_id: operation.attempt_id,
+      script_path: script.path,
+      cwd: materialized.path,
+      target_sha: candidate.final_sha || candidate.head_sha,
+      target_base: candidate.target_base,
+      timeout_ms: declaration.timeout_ms
+    });
+    if (!started.ok || !started.process_identity) {
+      await settleFailure(deps.workspace, operation, operation_id, {
+        code: started.code || 'repo_operation_spawn_failed'
+      });
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return { ok: false, code: started.code, operation_id };
+    }
+    const running = deps.store.startRepoOperation(deps.workspace, {
+      operation_id,
+      attempt_id: operation.attempt_id,
+      process_identity: started.process_identity,
+      log_path: started.log_path,
+      target_sha: candidate.final_sha || candidate.head_sha,
+      target_tree: materialized.tree_sha,
+      deploy_worktree: materialized.path
+    });
+    return running.ok
+      ? { ok: true, operation_id, timeout_ms: declaration.timeout_ms }
+      : { ok: false, code: 'repo_operation_start_record_failed', operation_id };
   }
 
   /**
@@ -388,6 +663,7 @@ export function createRepoOperationCoordinator(deps) {
     const operation_id = operationId({
       effective_base_sha,
       target_base: subject.target_base,
+      target_sha,
       script_mode: declaration.mode,
       script_blob_sha: declaration.blob_sha
     });
@@ -502,6 +778,127 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * @param {string} operation_id
+   */
+  function verifyReceipt(operation_id) {
+    const operation = observe(operation_id);
+    if (!operation || operation.kind !== 'verify') {
+      return null;
+    }
+    return {
+      operation_id,
+      effective_base_sha: operation.effective_base_sha,
+      head_sha: operation.verify_head_sha,
+      candidate_tree_sha: operation.target_tree,
+      script_object_type: operation.script_object_type,
+      script_mode: operation.script_mode,
+      script_blob_sha: operation.script_blob_sha,
+      ok: operation.state === 'succeeded',
+      reason:
+        operation.state === 'failed'
+          ? operation.failure?.code || 'verify_failed'
+          : operation.state,
+      at:
+        operation.finished_at || operation.started_at || operation.requested_at,
+      state: operation.state,
+      ...(typeof operation.log_path === 'string'
+        ? { log_path: operation.log_path }
+        : {})
+    };
+  }
+
+  /**
+   * @param {string} operation_id
+   * @param {{ timeout_ms?: number, poll_ms?: number }} [options]
+   */
+  async function waitForTerminal(operation_id, options = {}) {
+    const deadline = Date.now() + (options.timeout_ms ?? 600_000) + 5000;
+    const poll_ms = options.poll_ms ?? 100;
+    while (Date.now() <= deadline) {
+      await reconcile(deps.workspace);
+      const operation = observe(operation_id);
+      if (
+        operation &&
+        (operation.state === 'succeeded' || operation.state === 'failed')
+      ) {
+        return verifyReceipt(operation_id);
+      }
+      await new Promise((resolve) => setTimeout(resolve, poll_ms));
+    }
+    return null;
+  }
+
+  /**
+   * @param {string} sha
+   */
+  async function hasConfig(sha) {
+    const resolved = await resolveRepoOps({
+      repo: deps.repo,
+      sha,
+      gitRun: deps.gitRun
+    });
+    if (!resolved.ok && resolved.code) {
+      return resolved;
+    }
+    return {
+      ok: true,
+      present: resolved.config_blob_sha !== null,
+      verify_script_path: resolved.verify?.script ?? null
+    };
+  }
+
+  /**
+   * @param {string} operation_id
+   * @param {{ target_base: string, merged_sha: string }} subject
+   */
+  async function deploymentEvidence(operation_id, subject) {
+    const operation = observe(operation_id);
+    if (!operation) {
+      return { state: 'failed', code: 'repo_operation_missing' };
+    }
+    if (operation.state === 'succeeded') {
+      return { state: 'succeeded', operation_id };
+    }
+    const operations = Object.entries(
+      deps.store.snapshot(deps.workspace).repo_operations
+    );
+    for (const [candidate_id, candidate] of operations) {
+      if (
+        candidate.kind !== 'deploy' ||
+        candidate.repo_id !== deps.repo ||
+        candidate.target_base !== subject.target_base ||
+        candidate.state !== 'succeeded' ||
+        typeof candidate.target_sha !== 'string'
+      ) {
+        continue;
+      }
+      const covered = await deps.gitRun(
+        [
+          'merge-base',
+          '--is-ancestor',
+          subject.merged_sha,
+          candidate.target_sha
+        ],
+        { cwd: deps.repo }
+      );
+      if (covered.code === 0) {
+        return {
+          state: 'succeeded',
+          operation_id: candidate_id,
+          covered_operation_id: operation_id
+        };
+      }
+    }
+    return operation.state === 'failed'
+      ? {
+          state: 'failed',
+          operation_id,
+          code: operation.failure?.code || 'repo_operation_failed'
+        }
+      : { state: operation.state, operation_id };
+  }
+
+  /**
    * @param {string} workspace
    */
   async function reconcile(workspace) {
@@ -540,6 +937,12 @@ export function createRepoOperationCoordinator(deps) {
             detail: 'marker_missing',
             interrupted: true
           });
+          if (operation.kind === 'verify') {
+            await verify_checkout.cleanup({
+              repo: deps.repo,
+              path: operation.deploy_worktree
+            });
+          }
         }
         continue;
       }
@@ -576,6 +979,18 @@ export function createRepoOperationCoordinator(deps) {
             interrupted: true
           });
         }
+        continue;
+      }
+      if (operation.kind === 'verify') {
+        await settleFailure(workspace, operation, operation_id, {
+          code: 'interrupted',
+          detail: 'verify_launch_missing',
+          interrupted: true
+        });
+        await verify_checkout.cleanup({
+          repo: deps.repo,
+          path: operation.deploy_worktree
+        });
         continue;
       }
       const operations_now =
@@ -693,5 +1108,130 @@ export function createRepoOperationCoordinator(deps) {
       : ensured;
   }
 
-  return { ensureDeploy, observe, reconcile };
+  return {
+    ensureDeploy,
+    ensureVerify,
+    observe,
+    verifyReceipt,
+    waitForTerminal,
+    hasConfig,
+    deploymentEvidence,
+    reconcile
+  };
+}
+
+/**
+ * @param {{ fs: typeof import('node:fs'), gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }> }} deps
+ */
+function createVerifyCheckout(deps) {
+  return {
+    /**
+     * @param {{ repo: string, origin: string, target_base: string, base_sha: string, head_sha: string, pr_number: number, final_sha?: string }} input
+     */
+    async materialize(input) {
+      if (input.final_sha) {
+        const checkout_path = deps.fs.mkdtempSync(
+          path.join(os.tmpdir(), 'bdui-verify-final-')
+        );
+        deps.fs.rmdirSync(checkout_path);
+        const added = await deps.gitRun(
+          ['worktree', 'add', '--detach', checkout_path, input.final_sha],
+          { cwd: input.repo }
+        );
+        const tree =
+          added.code === 0
+            ? await deps.gitRun(['rev-parse', `${input.final_sha}^{tree}`], {
+                cwd: input.repo
+              })
+            : { code: 1, stdout: '', stderr: added.stderr };
+        if (tree.code !== 0 || !/^[0-9a-f]{40}$/i.test(tree.stdout.trim())) {
+          await this.cleanup({ repo: input.repo, path: checkout_path });
+          return { ok: false, code: 'verify_candidate_mismatch' };
+        }
+        return { ok: true, path: checkout_path, tree_sha: tree.stdout.trim() };
+      }
+      const fetched = await deps.gitRun(
+        ['fetch', input.origin, `pull/${input.pr_number}/head`],
+        { cwd: input.repo, timeout_ms: 120_000 }
+      );
+      if (fetched.code !== 0) {
+        return { ok: false, code: 'verify_candidate_mismatch' };
+      }
+      const remote = await deps.gitRun(
+        [
+          'rev-parse',
+          `refs/remotes/${input.origin}/${input.target_base}^{commit}`
+        ],
+        { cwd: input.repo }
+      );
+      if (
+        remote.code !== 0 ||
+        remote.stdout.trim().toLowerCase() !== input.base_sha.toLowerCase()
+      ) {
+        return { ok: false, code: 'verify_candidate_mismatch' };
+      }
+      const head = await deps.gitRun(['rev-parse', 'FETCH_HEAD^{commit}'], {
+        cwd: input.repo
+      });
+      if (
+        head.code !== 0 ||
+        head.stdout.trim().toLowerCase() !== input.head_sha.toLowerCase()
+      ) {
+        return { ok: false, code: 'verify_candidate_mismatch' };
+      }
+      const checkout_path = deps.fs.mkdtempSync(
+        path.join(os.tmpdir(), 'bdui-verify-candidate-')
+      );
+      deps.fs.rmdirSync(checkout_path);
+      const added = await deps.gitRun(
+        ['worktree', 'add', '--detach', checkout_path, input.base_sha],
+        { cwd: input.repo }
+      );
+      if (added.code !== 0) {
+        deps.fs.rmSync(checkout_path, { recursive: true, force: true });
+        return { ok: false, code: 'verify_candidate_materialize_failed' };
+      }
+      const merged = await deps.gitRun(
+        ['merge', '--squash', '--no-commit', input.head_sha],
+        { cwd: checkout_path }
+      );
+      const tree =
+        merged.code === 0
+          ? await deps.gitRun(['write-tree'], { cwd: checkout_path })
+          : { code: 1, stdout: '', stderr: merged.stderr };
+      if (tree.code !== 0 || !/^[0-9a-f]{40}$/i.test(tree.stdout.trim())) {
+        await this.cleanup({ repo: input.repo, path: checkout_path });
+        return { ok: false, code: 'verify_candidate_materialize_failed' };
+      }
+      return { ok: true, path: checkout_path, tree_sha: tree.stdout.trim() };
+    },
+
+    /**
+     * @param {{ repo: string, path: string|null, target_tree: string|null }} input
+     */
+    async verify(input) {
+      if (!input.path || !input.target_tree) {
+        return { ok: false };
+      }
+      const tree = await deps.gitRun(['write-tree'], { cwd: input.path });
+      return {
+        ok:
+          tree.code === 0 &&
+          tree.stdout.trim().toLowerCase() === input.target_tree.toLowerCase()
+      };
+    },
+
+    /**
+     * @param {{ repo: string, path: string|null }} input
+     */
+    async cleanup(input) {
+      if (!input.path) {
+        return;
+      }
+      await deps.gitRun(['worktree', 'remove', '--force', input.path], {
+        cwd: input.repo
+      });
+      deps.fs.rmSync(input.path, { recursive: true, force: true });
+    }
+  };
 }
