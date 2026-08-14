@@ -664,10 +664,12 @@ export function createRepoOperationCoordinator(deps) {
     });
     const existing =
       deps.store.snapshot(workspace).repo_operations[operation_id];
+    // A fresh approved bootstrap request reopens a failed record — including
+    // one whose own bootstrap run failed. The approval is the authority, and
+    // re-requesting it is the only remediation entry a bootstrap operation has.
     if (
       existing &&
       existing.state === 'failed' &&
-      existing.bootstrap_provenance === null &&
       subject.bootstrap_provenance
     ) {
       const attached = deps.store.attachRepoOperationBootstrap(workspace, {

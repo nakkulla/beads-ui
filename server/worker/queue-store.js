@@ -3478,12 +3478,16 @@ export function createQueueStore(options = {}) {
     attachRepoOperationBootstrap(workspace, input) {
       return applyUnconditional(workspace, (next) => {
         const operation = next.repo_operations[input.operation_id];
-        if (
-          !operation ||
-          operation.bootstrap_provenance ||
-          operation.state !== 'failed'
-        )
+        // `failed` is the whole guard. An approved bootstrap request IS the
+        // human remediation entry (master spec §5: a new run after remediation
+        // is a new attempt of the same operation), so re-requesting it must
+        // reopen the record even when the FIRST bootstrap run is what failed —
+        // otherwise a bootstrap that trips a precondition can never be retried,
+        // because its exact input keeps adopting its own terminal failure and
+        // the repair lane cannot own a synthetic `bootstrap` subject.
+        if (!operation || operation.state !== 'failed') {
           return false;
+        }
         operation.bootstrap_provenance = input.provenance;
         operation.state = 'queued';
         operation.attempt_id = input.attempt_id;

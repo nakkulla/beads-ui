@@ -599,6 +599,37 @@ describe('RepoOperation coordinator', () => {
     expect(store.snapshot(root).repo_operations).toEqual({});
   });
 
+  test('reopens a failed bootstrap operation on a fresh approved request', async () => {
+    const { store, coordinator } = coordinatorFor();
+    spoolRequest(validRequest());
+    await coordinator.reconcile(root);
+    const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
+    const attempt_id =
+      store.snapshot(root).repo_operations[operation_id].attempt_id;
+    store.settleRepoOperation(root, {
+      operation_id,
+      attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'repo_ops_worktree_unowned',
+        fingerprint: 'f',
+        detail: '',
+        interrupted: false
+      }
+    });
+    expect(store.snapshot(root).repo_operations[operation_id].state).toBe(
+      'failed'
+    );
+
+    spoolRequest(validRequest({ request_id: 'req-2' }));
+    await coordinator.reconcile(root);
+
+    const operation = store.snapshot(root).repo_operations[operation_id];
+    expect(operation.state).not.toBe('failed');
+    expect(operation.failure).toBeNull();
+  });
+
   test('settles a running operation from its terminal marker with digest evidence', async () => {
     const log_path = path.join(root, 'operation.log');
     fs.writeFileSync(log_path, 'deploy output\n');
