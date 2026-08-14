@@ -47,14 +47,12 @@ import {
   createCompletionIntentCoordinator
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
-import { createDeploymentJob } from './deployment-job.js';
-import { createDeploymentRecovery } from './deployment-recovery.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
-import { createPrPoller, hasDeploymentObservationDemand } from './pr-poller.js';
+import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
 import { createRecoveryArchive } from './recovery-archive.js';
@@ -64,7 +62,6 @@ import {
 } from './repair-session-adapter.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
-import { peekVerifyResolution, resolveVerifyAt } from './repo-ops.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
@@ -73,7 +70,7 @@ import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
 import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
-import { runVerifyAtSha } from './verify-cmd.js';
+import { resolveConfiguredVerify, runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -381,8 +378,6 @@ export function defaultProbePid(pid) {
  *   completionRepair?: any,
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
- *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, retryDeployment?: (input: any) => Promise<any>, validateCurrentBinding: (status: any, current_binding: { target_base: string, target_sha: string, generation: number }) => void, validateRowBinding: (status: any, row_binding: { verified_target_sha: string, deployment_generation: number }) => void, covers?: (repo: string, deployed_sha: string, merge_sha: string) => Promise<boolean> },
- *   deploymentRecovery?: { poll: () => Promise<any>, tick: () => Promise<any>, retryNow?: () => Promise<any>, consumeOutcome?: (input: any) => Promise<any> },
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   getSubscriberCount?: () => number
  * }} [options]
@@ -690,58 +685,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         ? completionIntent.attemptSettled(input)
         : Promise.resolve();
     },
-    onDeploymentRecoveryAttemptSettled(input) {
-      if (!deploymentRecovery) {
-        return Promise.resolve({
-          ok: false,
-          reason: 'deployment_recovery_unwired'
-        });
-      }
-      if (input.session_success === false) {
-        const attempt = input.attempt;
-        const failure_key = attempt.deployment_recovery_failure_key;
-        if (
-          failure_key &&
-          typeof attempt.deployment_recovery_identity === 'string'
-        ) {
-          runtime.queueStore.requireDeploymentRecoveryConfirmation(
-            keyFor(workspace_root),
-            failure_key,
-            'recovery_session_failed',
-            attempt.deployment_recovery_identity
-          );
-          emitQueueChanged(keyFor(workspace_root));
-        }
-        return Promise.resolve({
-          ok: false,
-          reason: 'recovery_session_failed'
-        });
-      }
-      if (!input.outcome) {
-        const attempt = input.attempt;
-        const failure_key = attempt.deployment_recovery_failure_key;
-        if (
-          failure_key &&
-          typeof attempt.deployment_recovery_identity === 'string'
-        ) {
-          runtime.queueStore.requireDeploymentRecoveryConfirmation(
-            keyFor(workspace_root),
-            failure_key,
-            input.parse_reason || 'recovery_outcome_malformed',
-            attempt.deployment_recovery_identity
-          );
-          emitQueueChanged(keyFor(workspace_root));
-        }
-        return Promise.resolve({
-          ok: false,
-          reason: input.parse_reason || 'recovery_outcome_malformed'
-        });
-      }
-      return deploymentRecovery.consumeOutcome({
-        ...input.outcome,
-        pr_verified: input.pr_verified
-      });
-    },
     probePid,
     ...(processController ? { processController } : {}),
     sessionMonitors,
@@ -767,18 +710,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       verifyRevert: async (
         /** @type {{ worktree: string, base_sha: string }} */ input
       ) => {
-        const resolved = await resolveVerify({
-          sha: input.base_sha,
-          force: true
-        });
+        const resolved = await resolveVerify();
         if (resolved.state !== 'resolved') {
-          return {
-            ok: false,
-            reason:
-              resolved.state === 'invalid'
-                ? 'verify_config_invalid'
-                : 'verify_missing'
-          };
+          return { ok: false, reason: 'verify_missing' };
         }
         const result = await runShell(
           resolved.value.cmd[0],
@@ -856,24 +790,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
   /**
-   * The base sha a PRE-MERGE resolution pins to: the FETCHED remote tip of the
-   * target base (UI-kfl4 §4.1). Null when the base cannot be resolved, which
-   * drops the declaration rung and leaves the legacy config rung answering
-   * alone — the behaviour that existed before the declaration was read at all.
-   *
-   * @returns {Promise<string|null>}
-   */
-  const premergePin = async (/** @type {boolean} */ force) => {
-    try {
-      const resolved = await resolveBase(force ? { force: true } : {});
-      return resolved.ok ? resolved.base_oid : null;
-    } catch {
-      return null;
-    }
-  };
-
-  /**
-   * Which commit a resolution reads rung 1 from.
+   * Which commit a resolution reads from. Kept as the resolver's parameter
+   * shape after the pinned-declaration rung was retired: the config rung has no
+   * pin, so both fields are accepted and ignored.
    *
    * @typedef {Object} OpsPin
    * @property {string|null} [sha] - An explicit pin: the cleanup's synced base
@@ -884,32 +803,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
    */
 
   /**
-   * The workspace's resolved verify command, read LIVE (both rungs can change
+   * The workspace's resolved verify command, read LIVE (config can change
    * between a poll and a click) — shared by the poller's pre-merge tier and the
-   * actions' click-time re-verification + post-merge verification.
+   * actions' click-time re-verification + rollback verification.
    *
-   * A THROWN resolution is `invalid`, not `absent`: a resolver that could not
-   * answer must never be read as a repo that declares nothing, which is a
-   * passing tier for the merge gate.
-   *
-   * @param {OpsPin} [pin]
-   * @returns {Promise<import('./repo-ops.js').VerifyResolution>}
+   * @returns {Promise<import('./verify-cmd.js').VerifyResolution>}
    */
-  const resolveVerify = async (pin = {}) => {
+  const resolveVerify = async () => {
     try {
-      return await resolveVerifyAt({
-        gitRun,
-        repo,
-        sha: pin.sha || (await premergePin(pin.force === true)),
-        config_map: getConfig().worker_verify
-      });
+      return resolveConfiguredVerify(repo, getConfig().worker_verify);
     } catch (err) {
       log('verify resolution failed for %s: %o', repo, err);
-      return {
-        state: 'invalid',
-        source: 'declaration',
-        detail: 'resolver_threw'
-      };
+      return { state: 'absent' };
     }
   };
 
@@ -1040,17 +945,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   // observation cache, worktree manager and scheduler the poller and dispatch
   // use, so a click can never act on a different view of the world than the
   // badges it followed.
-  const deploymentJob =
-    options.deploymentJob ||
-    createDeploymentJob({
-      isAncestor: async (repo_dir, ancestor, descendant) => {
-        const result = await gitRun(
-          ['merge-base', '--is-ancestor', ancestor, descendant],
-          { cwd: repo_dir }
-        );
-        return result.code === 0;
-      }
-    });
   prActions = createPrActions({
     workspace: keyFor(workspace_root),
     repo,
@@ -1079,7 +973,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     runVerify: (/** @type {any} */ input) =>
       runVerifyAtSha({ ...input, worktree, git: gitRun }),
     repoOperations: repoOperationCoordinator,
-    deploymentJob,
     notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
     // The SAME notifier the scheduler pushes attempt transitions through, so
     // the merge that closes a bead lands in the same channel as its start and
@@ -1100,13 +993,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       cleanupFacts: (/** @type {string} */ bead_id) =>
         prActions.cleanupFacts(bead_id),
       repoOperations: repoOperationCoordinator,
-      deploymentJob,
       resumeClosure: (/** @type {string} */ bead_id) =>
         prActions.resumeMigratedClosure(bead_id)
     });
-
-  /** @type {any} */
-  let deploymentRecovery = options.deploymentRecovery || null;
 
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
@@ -1187,7 +1076,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // queues is re-gated by `gateNow` against a fresh pin before it merges.
       verifyCmdState: () => {
         try {
-          return peekVerifyResolution(
+          return resolveConfiguredVerify(
             keyFor(workspace_root),
             getConfig().worker_verify
           ).state;
@@ -1210,23 +1099,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       resolveVerify,
       runVerify: (/** @type {any} */ input) =>
         runVerifyAtSha({ ...input, worktree, git: gitRun })
-    });
-
-  deploymentRecovery =
-    deploymentRecovery ||
-    createDeploymentRecovery({
-      workspace: keyFor(workspace_root),
-      repo,
-      store: runtime.queueStore,
-      deploymentJob: /** @type {any} */ (deploymentJob),
-      recoveryService: completionRepair,
-      dispatchRecovery: (input) =>
-        scheduler.dispatchRepoRecovery(keyFor(workspace_root), {
-          identity: input.identity,
-          bead_id: input.bead_id,
-          failure_key: input.failure_key
-        }),
-      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
     });
 
   const resolvedCompletionActionDriver =
@@ -1282,12 +1154,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id, merge_sha, refs) =>
       prActions.cleanupObservedMerge(bead_id, merge_sha, refs),
-    onDeployment: async () => {
-      const observed = await prActions.observeDeployment();
-      await deploymentRecovery.poll();
-      await deploymentRecovery.tick();
-      return observed;
-    },
     onDiscardObservation: (bead_id) => discardCoordinator.observeBead(bead_id),
     // The external registry rides the poller's own subscriber gate and cadence
     // (UI-7agi §1) — an idle server scans bd exactly as often as it queries gh:
@@ -1320,8 +1186,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
     worktree,
     admission,
-    deploymentJob,
-    deploymentRecovery,
     repoOperationCoordinator,
     repoOperationMigration,
     repo,
@@ -1468,13 +1332,6 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
     log('repo-operation cleanup resume failed for %s: %o', key, err);
     return;
   }
-  try {
-    await att.prActions.resumeDeploymentObservation();
-  } catch (err) {
-    log('startup deployment recovery failed for %s: %o', key, err);
-    return;
-  }
-
   if (start_pr_poller) {
     try {
       att.prPoller.start();
@@ -1495,9 +1352,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   try {
     att.autoMerge.start();
     const queue = att.runtime.queueStore.snapshot(key);
-    const deployment_pending =
-      queue.deployment !== null || hasDeploymentObservationDemand(queue);
-    if (queue.auto_merge === true || deployment_pending) {
+    if (queue.auto_merge === true) {
       Promise.resolve(att.prPoller.tick()).catch((err) => {
         log('worker boot PR observation failed for %s: %o', key, err);
       });
@@ -1716,50 +1571,6 @@ export async function resumeWorkerAttempt(
 }
 
 /**
- * Continue one existing repo deployment recovery lineage. The scheduler owns
- * recovery identity, worktree, and continuation-token validation; this adapter
- * only resolves the live workspace attachment.
- *
- * @param {string} workspace_root
- * @param {{ identity: string, attempt_id: string, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
- * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
- */
-export async function continueWorkerDeploymentRecovery(workspace_root, input) {
-  const key = keyFor(workspace_root);
-  const att = ATTACHMENTS.get(key);
-  if (!att) {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  return att.scheduler.continueRepoRecovery(key, input);
-}
-
-/**
- * Retry exactly the current failed repo-level deployment. The provider client
- * validates the returned +1 binding; the queue-store write then compares the
- * same durable failed observation again so an overlapping status update cannot
- * be overwritten by a stale retry response.
- *
- * @param {string} workspace_root
- * @returns {Promise<{ ok: boolean, reason?: string, queue?: import('./queue-store.js').Queue, stale?: boolean }>}
- */
-export async function retryWorkerDeployment(workspace_root) {
-  const key = keyFor(workspace_root);
-  const att = ATTACHMENTS.get(key);
-  if (!att || typeof att.deploymentRecovery?.retryNow !== 'function') {
-    return { ok: false, reason: 'no_attachment' };
-  }
-  try {
-    return await att.deploymentRecovery.retryNow();
-  } catch (err) {
-    const code = /** @type {{ code?: unknown }} */ (err).code;
-    return {
-      ok: false,
-      reason: typeof code === 'string' ? code : 'deployment_retry_failed'
-    };
-  }
-}
-
-/**
  * Start one repair session for a terminal RepoOperation failure. `manual` is
  * the click path — it produces repair evidence and only then lets the
  * coordinator create a new attempt, which is why there is no generic retry
@@ -1843,7 +1654,7 @@ export function enrollWorkerMergeCandidates(workspace_root, input = {}) {
       store: getWorkerRuntime().queueStore,
       verifyCmdState: () => {
         try {
-          return peekVerifyResolution(key, getConfig().worker_verify).state;
+          return resolveConfiguredVerify(key, getConfig().worker_verify).state;
         } catch {
           return 'absent';
         }

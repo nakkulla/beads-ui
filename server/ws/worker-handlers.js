@@ -32,7 +32,6 @@ import { makeError, makeOk } from '../../app/protocol.js';
 import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
-  continueWorkerDeploymentRecovery,
   discardWorkerBead,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
@@ -41,7 +40,6 @@ import {
   reconcileWorkerRepoOperations,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
-  retryWorkerDeployment,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationRepair,
@@ -61,10 +59,6 @@ import {
   isRepairEligible,
   projectRepoOperationPolicy
 } from '../worker/repo-operation-policy.js';
-import {
-  peekDeployResolution,
-  peekVerifyResolution
-} from '../worker/repo-ops.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -73,6 +67,7 @@ import {
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from '../worker/usage-receipts.js';
+import { resolveConfiguredVerify } from '../worker/verify-cmd.js';
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
@@ -1043,8 +1038,6 @@ function projectRepoOperations(operations, attempts) {
  *   - `runner_catalog`: the resolved runner/model catalog (UI-jrb3 §7) the
  *     exec-setting selectors render from, so the client never keeps its own copy
  *     of a table `config.toml` can extend,
- *   - the configured `deploy_cmd`, which stays read-only: repository deployment
- *     desired state is projected separately and never inferred from a command.
  *
  * Exported since UI-nprg: the monitor's cross-workspace aggregation builds its
  * per-workspace payload with THIS function rather than a second assembly path,
@@ -1062,7 +1055,6 @@ export function decorateQueue(workspace_key, raw_queue) {
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
   delete public_queue.completion_intents;
-  delete public_queue.deployment;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
   // The RepoOperation lane's PUBLIC surface (master spec §4.5, §10): the durable
@@ -1102,14 +1094,12 @@ export function decorateQueue(workspace_key, raw_queue) {
       : [],
     completion_status: completion.statuses
   };
-  // Read through the pinned declaration resolver's synchronous projection
-  // because this decoration runs on every snapshot push and cannot await git.
-  // Verify may still use its config fallback; deploy is declaration-only and
-  // displayed for the external provider, never executed by this Worker.
-  /** @type {import('../worker/repo-ops.js').VerifyResolution} */
+  // Read synchronously because this decoration runs on every snapshot push and
+  // cannot await git; the verify command comes from workspace config alone.
+  /** @type {import('../worker/verify-cmd.js').VerifyResolution} */
   let verify_resolution = { state: 'absent' };
   try {
-    verify_resolution = peekVerifyResolution(
+    verify_resolution = resolveConfiguredVerify(
       workspace_key,
       getConfig().worker_verify
     );
@@ -1118,15 +1108,6 @@ export function decorateQueue(workspace_key, raw_queue) {
   }
   const verify_cmd =
     verify_resolution.state === 'resolved' ? verify_resolution.value : null;
-  /** @type {{ cmd: string[], timeout_ms: number } | null} */
-  let deploy_cmd = null;
-  try {
-    const deploy_resolution = peekDeployResolution(workspace_key);
-    deploy_cmd =
-      deploy_resolution.state === 'resolved' ? deploy_resolution.value : null;
-  } catch {
-    deploy_cmd = null;
-  }
   /** @type {number|null} */
   let slots = null;
   try {
@@ -1158,10 +1139,6 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     runner_catalog = null;
   }
-  const deployment = projectDeployment(
-    { ...overlaid, pr_wait: queue.pr_wait },
-    workspace_key
-  );
   return {
     ...queue,
     runner_catalog,
@@ -1171,9 +1148,7 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),
-    workspace_info: { verify_cmd, deploy_cmd, slots },
-    deployment: deployment.observation,
-    deployment_coverage: deployment.coverage,
+    workspace_info: { verify_cmd, slots },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
     pr_observations: prObservationsFor(
@@ -1206,389 +1181,6 @@ export function decorateQueue(workspace_key, raw_queue) {
       failures: {}
     }
   };
-}
-
-/**
- * Project only a complete, internally consistent repo deployment observation.
- * The browser never receives malformed durable state as a partial success.
- *
- * @param {Record<string, any>} queue
- * @param {string} workspace_key
- * @returns {{ observation: Record<string, any>|null, coverage: Record<string, 'pending'|'running'|'succeeded'|'failed'> }}
- */
-function projectDeployment(queue, workspace_key) {
-  const source = queue.deployment;
-  if (!source || typeof source !== 'object' || Array.isArray(source)) {
-    return { observation: null, coverage: {} };
-  }
-  const state = source.state;
-  const target_sha = source.target_sha;
-  const valid_binding =
-    typeof source.target_base === 'string' &&
-    source.target_base.length > 0 &&
-    typeof target_sha === 'string' &&
-    /^[0-9a-f]{40}$/i.test(target_sha) &&
-    Number.isInteger(source.generation) &&
-    source.generation > 0;
-  if (
-    !valid_binding ||
-    !['pending', 'running', 'succeeded', 'failed'].includes(state)
-  ) {
-    return { observation: null, coverage: {} };
-  }
-  const deployed_sha = source.deployed_sha;
-  const error_code = source.error_code;
-  const log_path = source.log_path;
-  const has_log_path = typeof log_path === 'string' && log_path.length > 0;
-  const valid_state =
-    (state === 'pending' &&
-      deployed_sha === null &&
-      error_code === null &&
-      log_path === null) ||
-    (state === 'running' &&
-      deployed_sha === null &&
-      error_code === null &&
-      has_log_path) ||
-    (state === 'succeeded' &&
-      typeof deployed_sha === 'string' &&
-      deployed_sha.toLowerCase() === target_sha.toLowerCase() &&
-      error_code === null &&
-      has_log_path) ||
-    (state === 'failed' &&
-      deployed_sha === null &&
-      typeof error_code === 'string' &&
-      error_code.length > 0 &&
-      has_log_path);
-  if (!valid_state) {
-    return { observation: null, coverage: {} };
-  }
-  /** @type {Record<string, 'pending'|'running'|'succeeded'|'failed'>} */
-  const coverage = {};
-  /** @type {Set<string>} */
-  const included_bead_ids = new Set();
-  const cleanup_failed =
-    queue.cleanup_failed &&
-    typeof queue.cleanup_failed === 'object' &&
-    !Array.isArray(queue.cleanup_failed)
-      ? queue.cleanup_failed
-      : {};
-  for (const row of Array.isArray(queue.pr_wait) ? queue.pr_wait : []) {
-    if (
-      !row ||
-      typeof row.bead_id !== 'string' ||
-      typeof row.verified_target_sha !== 'string' ||
-      !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
-      !Number.isInteger(row.deployment_generation) ||
-      row.deployment_generation <= 0 ||
-      row.deployment_generation > source.generation ||
-      (row.deployment_generation === source.generation &&
-        row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
-    ) {
-      continue;
-    }
-    const cleanup_failure = cleanup_failed[row.bead_id];
-    const deployment_failure =
-      cleanup_failure &&
-      typeof cleanup_failure === 'object' &&
-      (['deployment_request', 'deploy'].includes(cleanup_failure.step) ||
-        (typeof cleanup_failure.reason === 'string' &&
-          cleanup_failure.reason.startsWith('deployment_')));
-    const same_generation_binding =
-      row.deployment_generation === source.generation &&
-      row.verified_target_sha.toLowerCase() === target_sha.toLowerCase();
-    const lower_generation_ancestry_proven =
-      row.deployment_generation < source.generation &&
-      cleanup_failure &&
-      typeof cleanup_failure === 'object' &&
-      ['child_sweep', 'branch_cleanup', 'parent_close'].includes(
-        cleanup_failure.step
-      );
-    // A lower-generation request tells us only that the provider accepted a
-    // desired target. The Phase 2 ancestry check is the authority for whether
-    // that target covers the immutable merge floor. Its only durable evidence
-    // while the row remains in pr_wait is a later cleanup failure; a completed
-    // cleanup removes the row. Never turn a deployment-request failure into a
-    // success merely because a newer repo deployment succeeded.
-    if (
-      state === 'succeeded' &&
-      (deployment_failure ||
-        (!same_generation_binding && !lower_generation_ancestry_proven))
-    ) {
-      continue;
-    }
-    coverage[row.bead_id] = state;
-    included_bead_ids.add(row.bead_id);
-  }
-  for (const row of Array.isArray(queue.done) ? queue.done : []) {
-    if (
-      !row ||
-      typeof row.bead_id !== 'string' ||
-      row.cleanup_cursor !== 'deployment_observe' ||
-      typeof row.merge_sha !== 'string' ||
-      !/^[0-9a-f]{40}$/i.test(row.merge_sha) ||
-      typeof row.verified_target_sha !== 'string' ||
-      !/^[0-9a-f]{40}$/i.test(row.verified_target_sha) ||
-      !Number.isInteger(row.deployment_generation) ||
-      row.deployment_generation <= 0 ||
-      row.deployment_generation > source.generation ||
-      (row.deployment_generation === source.generation &&
-        row.verified_target_sha.toLowerCase() !== target_sha.toLowerCase())
-    ) {
-      continue;
-    }
-    included_bead_ids.add(row.bead_id);
-  }
-  const recovery = projectDeploymentRecovery(source.recovery, queue.attempts);
-  const presentation = deploymentPresentation(source);
-  return {
-    observation: {
-      state: presentation.state,
-      repo: publicRepoName(source.recovery?.failure_key?.repo || workspace_key),
-      desired_sha: target_sha.slice(0, 8).toLowerCase(),
-      description: presentation.description,
-      included_merge_count: included_bead_ids.size,
-      timeline: deploymentTimeline(source, queue.attempts),
-      recovery,
-      // Provider-owned log paths never cross the websocket boundary. The client
-      // can disclose that a sanitized log reference exists, but cannot open a
-      // local path or receive the provider output.
-      log: has_log_path
-        ? { label: '배포 로그', reference: 'deployment-log' }
-        : null,
-      actions: deploymentActions(source, queue.attempts),
-      notifications: deploymentNotifications(source.notifications)
-    },
-    coverage
-  };
-}
-
-/**
- * @param {unknown} value
- * @returns {string}
- */
-function publicRepoName(value) {
-  const raw = typeof value === 'string' ? value : '';
-  const leaf = raw.split(/[\\/]/).filter(Boolean).at(-1) || 'repo';
-  return /^[a-zA-Z0-9._-]{1,80}$/.test(leaf) ? leaf : 'repo';
-}
-
-/**
- * @param {any} source
- * @returns {{ state: string, description: string }}
- */
-function deploymentPresentation(source) {
-  const recovery_phase = source?.recovery?.phase;
-  if (source.state === 'succeeded') {
-    return {
-      state: '배포 완료',
-      description: '현재 desired SHA가 배포되었습니다'
-    };
-  }
-  if (
-    recovery_phase === 'awaiting_confirmation' ||
-    recovery_phase === 'unrecoverable' ||
-    (source.state === 'failed' && !source.retry_operation)
-  ) {
-    return { state: '확인 필요', description: '사용자 확인이 필요합니다' };
-  }
-  if (recovery_phase || source.retry_operation?.phase === 'recovery_ready') {
-    return { state: '복구 중', description: '복구 세션을 진행하고 있습니다' };
-  }
-  if (
-    source.automatic_retry_count > 0 ||
-    ['scheduled', 'calling', 'returned'].includes(source.retry_operation?.phase)
-  ) {
-    const current = source.retry_operation
-      ? Math.min(2, source.automatic_retry_count + 1)
-      : Math.min(2, source.automatic_retry_count);
-    return {
-      state: `재시도 ${current}/2`,
-      description: '자동 재시도를 기다리고 있습니다'
-    };
-  }
-  if (source.state === 'running') {
-    return {
-      state: '배포 중',
-      description: '외부 배포 상태를 확인하고 있습니다'
-    };
-  }
-  return { state: '배포 대기', description: '배포 요청을 기다리고 있습니다' };
-}
-
-/**
- * @param {any} recovery
- * @param {any} attempts
- * @returns {Record<string, string>|null}
- */
-function projectDeploymentRecovery(recovery, attempts) {
-  if (!recovery || typeof recovery !== 'object') {
-    return null;
-  }
-  const attempt =
-    recovery.attempt_id && attempts && typeof attempts === 'object'
-      ? attempts[recovery.attempt_id]
-      : null;
-  /** @type {Record<string, string>} */
-  const projected = {};
-  for (const [key, value] of [
-    ['bead_id', recovery.bead_id],
-    ['attempt_id', recovery.attempt_id],
-    ['session_id', attempt?.session_id],
-    ['runner', attempt?.runner],
-    ['model', attempt?.model],
-    ['effort', attempt?.effort]
-  ]) {
-    if (typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,160}$/.test(value)) {
-      projected[key] = value;
-    }
-  }
-  const confirmation_reason = recovery.confirmation_reason;
-  if (
-    typeof confirmation_reason === 'string' &&
-    /^[a-z0-9][a-z0-9_.:-]{0,199}$/.test(confirmation_reason)
-  ) {
-    projected.confirmation_reason = confirmation_reason;
-    projected.recent_update = confirmation_reason;
-  } else {
-    const recent_update = [recovery.outcome, recovery.phase].find(
-      (value) =>
-        typeof value === 'string' && /^[a-z0-9][a-z0-9_.:-]{0,199}$/.test(value)
-    );
-    if (typeof recent_update === 'string') {
-      projected.recent_update = recent_update;
-    }
-  }
-  return Object.keys(projected).length > 0 ? projected : null;
-}
-
-/**
- * @param {any} source
- * @param {any} attempts
- * @returns {Array<{ kind: string, at: number|null }>}
- */
-function deploymentTimeline(source, attempts) {
-  /** @type {Array<{ kind: string, at: number|null }>} */
-  const timeline = [];
-  /**
-   * @param {string} kind
-   * @param {number|null} [at]
-   */
-  const add = (kind, at = null) => {
-    if (timeline.length < 5) {
-      timeline.push({ kind, at: Number.isFinite(at) ? at : null });
-    }
-  };
-  if (source.automatic_retry_count > 0 || source.retry_operation?.phase) {
-    add(
-      'automatic_retry',
-      source.retry_operation?.called_at ?? source.next_retry_at
-    );
-  }
-  const recovery = source.recovery;
-  if (recovery) {
-    add('recovery_prepared', recovery.prepared_at);
-    const attempt = recovery.attempt_id
-      ? attempts?.[recovery.attempt_id]
-      : null;
-    if (recovery.attempt_id) {
-      add('recovery_session', attempt?.started_at ?? null);
-    }
-    if (recovery.phase === 'awaiting_confirmation') {
-      add('confirmation_required');
-    }
-  }
-  if (source.state === 'succeeded') {
-    add('deployment_succeeded');
-  } else if (source.state === 'running') {
-    add('provider_attempt');
-  } else if (source.state === 'pending') {
-    add('deployment_requested');
-  }
-  return timeline;
-}
-
-/**
- * @param {any} source
- * @param {any} attempts
- * @returns {Array<Record<string, string>>}
- */
-function deploymentActions(source, attempts) {
-  /** @type {Array<Record<string, string>>} */
-  const actions = [];
-  const attempt_id = source.recovery?.attempt_id;
-  const attempt =
-    typeof attempt_id === 'string' && attempts && typeof attempts === 'object'
-      ? attempts[attempt_id]
-      : null;
-  if (attempt && typeof attempt.session_id === 'string') {
-    actions.push({ kind: 'view_session', label: '세션 보기', attempt_id });
-  }
-  if (
-    attempt &&
-    ['failed', 'orphaned', 'paused'].includes(String(attempt.status))
-  ) {
-    actions.push({
-      kind: 'continue_recovery',
-      label: '복구 이어가기',
-      attempt_id
-    });
-  }
-  if (
-    source.state === 'failed' &&
-    !source.retry_operation &&
-    !source.recovery
-  ) {
-    actions.push({ kind: 'retry', label: '지금 재시도' });
-  }
-  return actions;
-}
-
-/**
- * Browser-local delivery never writes these durable transition records back to
- * the queue. Unknown records are omitted rather than reconstructed.
- *
- * @param {unknown} value
- * @returns {Array<{ key: string, text: string, variant: 'info'|'warning'|'success' }>}
- */
-function deploymentNotifications(value) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  /** @type {Record<string, { text: string, variant: 'info'|'warning'|'success' }>} */
-  const messages = {
-    recovery_prepared: { text: '배포 복구를 준비했습니다', variant: 'warning' },
-    awaiting_confirmation: {
-      text: '배포 복구에 확인이 필요합니다',
-      variant: 'warning'
-    },
-    deployment_succeeded: { text: '배포가 완료되었습니다', variant: 'success' }
-  };
-  return value
-    .flatMap((raw) => {
-      const key_match =
-        raw && typeof raw === 'object' && typeof raw.key === 'string'
-          ? /^(recovery_prepared|awaiting_confirmation|deployment_succeeded):([a-f0-9]{64}):([1-9][0-9]*)$/i.exec(
-              raw.key
-            )
-          : null;
-      if (
-        !raw ||
-        typeof raw !== 'object' ||
-        typeof raw.key !== 'string' ||
-        typeof raw.kind !== 'string' ||
-        typeof raw.identity !== 'string' ||
-        !Number.isInteger(raw.revision) ||
-        !messages[raw.kind] ||
-        !key_match ||
-        key_match[1] !== raw.kind ||
-        key_match[2].toLowerCase() !== raw.identity.toLowerCase() ||
-        Number(key_match[3]) !== raw.revision
-      ) {
-        return [];
-      }
-      return [{ key: raw.key, ...messages[raw.kind] }];
-    })
-    .slice(-3);
 }
 
 /**
@@ -2404,165 +1996,6 @@ export function handleWorkerQueueSetSlots(ws, req) {
     slots: p.slots
   });
   replyMutation(ws, req, key, result);
-}
-
-/**
- * Retry the repository's current failed deployment desired state. The handler
- * carries no PR identity or revision: retry belongs to the one repo-level
- * binding, and the store rechecks that binding after the provider returns.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerDeploymentRetry(ws, req) {
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  const result = await retryWorkerDeployment(key);
-  const queue = result.queue || queueStore().snapshot(key);
-  ws.send(
-    JSON.stringify(
-      makeOk(req, {
-        applied: result.ok,
-        reason: result.ok ? null : result.reason || 'deployment_retry_failed',
-        queue: decorateQueue(key, queue)
-      })
-    )
-  );
-  if (result.ok) {
-    fanout(key, queue);
-  }
-}
-
-/**
- * Continue the exact recovery attempt currently bound to the repository
- * deployment row. Payload:
- * `{ attempt_id, expected_revision, continuation?, decision_token? }`.
- *
- * @param {WebSocket} ws
- * @param {RequestEnvelope} req
- */
-export async function handleWorkerDeploymentRecoveryContinue(ws, req) {
-  const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.attempt_id !== 'string' || p.attempt_id.length === 0) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { attempt_id: string }')
-      )
-    );
-    return;
-  }
-  if (
-    p.continuation != null &&
-    p.continuation !== 'auto' &&
-    p.continuation !== 'prior_session' &&
-    p.continuation !== 'fresh_current'
-  ) {
-    ws.send(
-      JSON.stringify(makeError(req, 'bad_request', 'invalid continuation'))
-    );
-    return;
-  }
-  if (
-    (p.continuation === 'prior_session' ||
-      p.continuation === 'fresh_current') &&
-    (!p.decision_token ||
-      typeof p.decision_token !== 'object' ||
-      Array.isArray(p.decision_token))
-  ) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'decision_token is required')
-      )
-    );
-    return;
-  }
-  if (
-    p.decision_token !== undefined &&
-    p.continuation !== 'prior_session' &&
-    p.continuation !== 'fresh_current'
-  ) {
-    ws.send(
-      JSON.stringify(
-        makeError(req, 'bad_request', 'decision_token requires continuation')
-      )
-    );
-    return;
-  }
-  const key = mutationWorkspaceOf(ws, req);
-  if (key === null) {
-    return;
-  }
-  const current = /** @type {any} */ (queueStore().snapshot(key));
-  if (revisionOf(p) !== current.revision) {
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          attempt_id: p.attempt_id,
-          resumed: false,
-          conflict: true,
-          new_attempt_id: null,
-          reason: null,
-          queue: decorateQueue(key, current)
-        })
-      )
-    );
-    return;
-  }
-  const recovery = current.deployment?.recovery;
-  if (
-    !recovery ||
-    typeof recovery.identity !== 'string' ||
-    recovery.attempt_id !== p.attempt_id
-  ) {
-    ws.send(
-      JSON.stringify(
-        makeOk(req, {
-          attempt_id: p.attempt_id,
-          resumed: false,
-          conflict: false,
-          new_attempt_id: null,
-          reason: 'recovery_attempt_unowned',
-          continuation_mismatch: null
-        })
-      )
-    );
-    return;
-  }
-  /** @type {{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }} */
-  let result;
-  try {
-    result = await continueWorkerDeploymentRecovery(key, {
-      identity: recovery.identity,
-      attempt_id: p.attempt_id,
-      continuation: p.continuation,
-      decision_token: p.decision_token
-    });
-  } catch (err) {
-    log(
-      'worker-deployment-recovery-continue failed for %s/%s: %o',
-      key,
-      p.attempt_id,
-      err
-    );
-    result = { ok: false, reason: 'error' };
-  }
-  ws.send(
-    JSON.stringify(
-      makeOk(req, {
-        attempt_id: p.attempt_id,
-        resumed: !!result.ok,
-        conflict: false,
-        new_attempt_id: result.attempt_id || null,
-        reason: result.ok ? null : result.reason || null,
-        continuation_mismatch: result.continuation_mismatch || null
-      })
-    )
-  );
-  if (result.ok) {
-    fanout(key, /** @type {any} */ (queueStore().snapshot(key)));
-  }
 }
 
 /**

@@ -80,8 +80,6 @@ import {
   handleWorkerAttemptStop,
   handleWorkerAutoRepairToggle,
   handleWorkerAutomationToggle,
-  handleWorkerDeploymentRecoveryContinue,
-  handleWorkerDeploymentRetry,
   handleWorkerDiscard,
   handleWorkerMergeAutoToggle,
   handleWorkerMergeQueueAdd,
@@ -514,12 +512,6 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
-      return;
-    case 'worker-deployment-retry':
-      await handleWorkerDeploymentRetry(ws, req);
-      return;
-    case 'worker-deployment-recovery-continue':
-      await handleWorkerDeploymentRecoveryContinue(ws, req);
       return;
     case 'worker-queue-set-pr-wait-hold':
       handleWorkerQueueSetPrWaitHold(ws, req);

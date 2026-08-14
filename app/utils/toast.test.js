@@ -47,8 +47,14 @@ describe('showToast', () => {
   test('renders a durable notification key once per browser session', () => {
     window.sessionStorage.clear();
 
-    const first = showToastOnce('deployment:recovery-prepared:4', '복구 준비');
-    const second = showToastOnce('deployment:recovery-prepared:4', '복구 준비');
+    const first = showToastOnce(
+      'repo-operation:recovery-prepared:4',
+      '복구 준비'
+    );
+    const second = showToastOnce(
+      'repo-operation:recovery-prepared:4',
+      '복구 준비'
+    );
 
     expect(first).toBe(true);
     expect(second).toBe(false);
@@ -64,8 +70,8 @@ describe('showToast', () => {
       }
     });
 
-    const first = showToastOnce('deployment:fallback:9', 'fallback');
-    const second = showToastOnce('deployment:fallback:9', 'fallback');
+    const first = showToastOnce('repo-operation:fallback:9', 'fallback');
+    const second = showToastOnce('repo-operation:fallback:9', 'fallback');
 
     if (storage) {
       Object.defineProperty(window, 'sessionStorage', storage);

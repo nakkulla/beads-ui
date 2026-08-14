@@ -12,8 +12,8 @@
  * bead — Phase 5 owns every action.
  *
  * Cost discipline (spec §4):
- *   - it runs ONLY while the workspace has worker-queue subscribers, durable
- *     `auto_merge`/merge-queue demand, or a pending deployment observation,
+ *   - it runs ONLY while the workspace has worker-queue subscribers or durable
+ *     `auto_merge`/merge-queue demand,
  *   - it makes ZERO `gh` calls when `pr_wait` is empty.
  * Both gates are checked before any query, so an idle server is silent. The
  * demand gate is inherited by reusing {@link createPoller}.
@@ -162,12 +162,11 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
- *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
+ *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./verify-cmd.js').VerifyResolution>,
  *   worktree?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
  *   onMerged?: (bead_id: string, merge_sha: string, refs?: { head_ref: string|null, pr_url: string|null }) => Promise<unknown>,
- *   onDeployment?: () => Promise<unknown>,
  *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
  *     refresh: () => Promise<unknown>,
@@ -196,7 +195,7 @@ export function createPrPoller(deps) {
     deps.resolveVerify ||
     (() =>
       Promise.resolve(
-        /** @type {import('./repo-ops.js').VerifyResolution} */ ({
+        /** @type {import('./verify-cmd.js').VerifyResolution} */ ({
           state: 'absent'
         })
       ));
@@ -231,9 +230,8 @@ export function createPrPoller(deps) {
    * The `auto_merge` flag cannot stand in for it: a manual [머지] click fills
    * the queue with the toggle off.
    *
-   * A pending deployment observation is also durable demand: status polling
-   * resumes after restart without replaying a deployment effect. With
-   * none of these present the old rule stands: no subscribers, no `gh` traffic.
+   * With none of these present the old rule stands: no subscribers, no `gh`
+   * traffic.
    *
    * @returns {boolean}
    */
@@ -246,7 +244,6 @@ export function createPrPoller(deps) {
       return (
         q.auto_merge === true ||
         (Array.isArray(q.merge_queue) && q.merge_queue.length > 0) ||
-        hasDeploymentObservationDemand(q) ||
         Object.values(q.discard_operations || {}).some(
           (operation) =>
             /** @type {any} */ (operation)?.phase === 'revert_pr_wait'
@@ -535,26 +532,6 @@ export function createPrPoller(deps) {
     }
     observing = true;
     try {
-      const initial_queue = deps.store.snapshot(workspace);
-      const deployment_pending = hasDeploymentObservationDemand(initial_queue);
-      if (deployment_pending && typeof deps.onDeployment === 'function') {
-        try {
-          await deps.onDeployment();
-        } catch (err) {
-          log('deployment observation failed for %s: %o', workspace, err);
-        }
-        // A deployment observer has no dependency on browser tabs or GitHub PR
-        // reads.  With no other durable demand, return after status-only work.
-        if (
-          deps.getSubscriberCount() === 0 &&
-          initial_queue.auto_merge !== true &&
-          (!Array.isArray(initial_queue.merge_queue) ||
-            initial_queue.merge_queue.length === 0) &&
-          Object.values(initial_queue.discard_operations || {}).length === 0
-        ) {
-          return;
-        }
-      }
       // The external registry is re-derived from bd on the SAME cadence, inside
       // the same subscriber gate, so an idle server scans nothing (UI-7agi §1).
       // A failed scan keeps the previous rows rather than emptying the lane.
@@ -567,104 +544,99 @@ export function createPrPoller(deps) {
       }
       /** @type {Promise<void>[]} */
       const pending = [];
-      try {
-        const queue = deps.store.snapshot(workspace);
-        const durable = Array.isArray(queue.pr_wait) ? [...queue.pr_wait] : [];
-        for (const operation of Object.values(queue.discard_operations || {})) {
-          const record = /** @type {any} */ (operation);
-          if (
-            record?.phase === 'revert_pr_wait' &&
-            typeof record.bead_id === 'string' &&
-            !durable.some((entry) => entry.bead_id === record.bead_id)
-          ) {
-            durable.push({
-              bead_id: record.bead_id,
-              added_at: record.requested_at
-            });
-          }
+      const queue = deps.store.snapshot(workspace);
+      const durable = Array.isArray(queue.pr_wait) ? [...queue.pr_wait] : [];
+      for (const operation of Object.values(queue.discard_operations || {})) {
+        const record = /** @type {any} */ (operation);
+        if (
+          record?.phase === 'revert_pr_wait' &&
+          typeof record.bead_id === 'string' &&
+          !durable.some((entry) => entry.bead_id === record.bead_id)
+        ) {
+          durable.push({
+            bead_id: record.bead_id,
+            added_at: record.requested_at
+          });
         }
-        const durable_ids = new Set(durable.map((e) => e.bead_id));
-        /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
-        const external_rows = new Map();
-        if (external) {
-          for (const row of external.list()) {
-            // A bead the worker itself put in `pr_wait` is a WORKER row: the
-            // durable attempt is the better record, so the overlay yields.
-            if (!durable_ids.has(row.bead_id)) {
-              external_rows.set(row.bead_id, row);
-            }
-          }
-        }
-        const entries = [
-          ...durable,
-          ...[...external_rows.values()].map((row) => ({
-            bead_id: row.bead_id,
-            added_at: row.added_at
-          }))
-        ];
-        const lane_ids = entries.map((e) => e.bead_id);
-        // A MERGE QUEUE member keeps its observation even after it drops out of
-        // the lane (UI-yk55 §3.2). An external row vanishes from the overlay with
-        // no lane mutation behind it, and the driver still has to dispose of the
-        // item — which it can only do by reading the head SHA this cache holds.
-        // Pruning it there would leave the driver unable to record an exclusion,
-        // so it would hold the item and halt, blocking every item behind it.
-        const queued_ids = Array.isArray(queue.merge_queue)
-          ? queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)
-          : [];
-        // Whether anything was being observed BEFORE this pass pruned. It decides
-        // the empty-lane fanout below.
-        const had_observations =
-          Object.keys(deps.observations.snapshot(workspace)).length > 0;
-        deps.observations.prune(workspace, [...lane_ids, ...queued_ids]);
-        // The activity cache describes the same lane, so it is pruned with it —
-        // a bead that merged or was discarded must not keep a stale badge.
-        if (activity) {
-          activity.prune(workspace, lane_ids);
-        }
-        if (entries.length === 0) {
-          // The lane just emptied. For a durable row the queue mutation that
-          // emptied it already fanned out; a registry-only row has NO other
-          // emitter (implementation review 2026-07-28), so without this the
-          // client would keep rendering a row whose bead is gone — and every
-          // later pass returns here too, so it would never self-correct. Gated on
-          // there having been something to drop, which makes it fire once.
-          if (had_observations) {
-            notifyChanged(workspace);
-          }
-          return;
-        }
-        for (const entry of entries) {
-          // `확인중` covers exactly the gh round-trip for this bead (UI-raqh §3);
-          // its own `finally` is the only thing that clears it, so an overlapping
-          // local verification's badge is never touched.
-          markActivity('beginChecking', entry.bead_id);
-          try {
-            const r = await observeBead(
-              queue,
-              entry.bead_id,
-              external_rows.get(entry.bead_id) || null
-            );
-            if (r.verify) {
-              pending.push(r.verify);
-            }
-          } catch (err) {
-            log('observation failed for %s: %o', entry.bead_id, err);
-            // Record the failure so EVERY lane member ends the pass with an
-            // entry: the queue-changed hook re-ticks while a bead is unobserved,
-            // and a silently skipped bead would make that hook self-trigger.
-            deps.observations.record(workspace, entry.bead_id, {
-              error: 'observation_error'
-            });
-          } finally {
-            markActivity('endChecking', entry.bead_id);
-          }
-        }
-        notifyChanged(workspace);
-      } finally {
-        // The outer guard spans deployment status too; do not release it between
-        // status observation and the PR pass.
       }
+      const durable_ids = new Set(durable.map((e) => e.bead_id));
+      /** @type {Map<string, import('./external-pr.js').ExternalPrRow>} */
+      const external_rows = new Map();
+      if (external) {
+        for (const row of external.list()) {
+          // A bead the worker itself put in `pr_wait` is a WORKER row: the
+          // durable attempt is the better record, so the overlay yields.
+          if (!durable_ids.has(row.bead_id)) {
+            external_rows.set(row.bead_id, row);
+          }
+        }
+      }
+      const entries = [
+        ...durable,
+        ...[...external_rows.values()].map((row) => ({
+          bead_id: row.bead_id,
+          added_at: row.added_at
+        }))
+      ];
+      const lane_ids = entries.map((e) => e.bead_id);
+      // A MERGE QUEUE member keeps its observation even after it drops out of
+      // the lane (UI-yk55 §3.2). An external row vanishes from the overlay with
+      // no lane mutation behind it, and the driver still has to dispose of the
+      // item — which it can only do by reading the head SHA this cache holds.
+      // Pruning it there would leave the driver unable to record an exclusion,
+      // so it would hold the item and halt, blocking every item behind it.
+      const queued_ids = Array.isArray(queue.merge_queue)
+        ? queue.merge_queue.map((/** @type {any} */ e) => e.bead_id)
+        : [];
+      // Whether anything was being observed BEFORE this pass pruned. It decides
+      // the empty-lane fanout below.
+      const had_observations =
+        Object.keys(deps.observations.snapshot(workspace)).length > 0;
+      deps.observations.prune(workspace, [...lane_ids, ...queued_ids]);
+      // The activity cache describes the same lane, so it is pruned with it —
+      // a bead that merged or was discarded must not keep a stale badge.
+      if (activity) {
+        activity.prune(workspace, lane_ids);
+      }
+      if (entries.length === 0) {
+        // The lane just emptied. For a durable row the queue mutation that
+        // emptied it already fanned out; a registry-only row has NO other
+        // emitter (implementation review 2026-07-28), so without this the
+        // client would keep rendering a row whose bead is gone — and every
+        // later pass returns here too, so it would never self-correct. Gated on
+        // there having been something to drop, which makes it fire once.
+        if (had_observations) {
+          notifyChanged(workspace);
+        }
+        return;
+      }
+      for (const entry of entries) {
+        // `확인중` covers exactly the gh round-trip for this bead (UI-raqh §3);
+        // its own `finally` is the only thing that clears it, so an overlapping
+        // local verification's badge is never touched.
+        markActivity('beginChecking', entry.bead_id);
+        try {
+          const r = await observeBead(
+            queue,
+            entry.bead_id,
+            external_rows.get(entry.bead_id) || null
+          );
+          if (r.verify) {
+            pending.push(r.verify);
+          }
+        } catch (err) {
+          log('observation failed for %s: %o', entry.bead_id, err);
+          // Record the failure so EVERY lane member ends the pass with an
+          // entry: the queue-changed hook re-ticks while a bead is unobserved,
+          // and a silently skipped bead would make that hook self-trigger.
+          deps.observations.record(workspace, entry.bead_id, {
+            error: 'observation_error'
+          });
+        } finally {
+          markActivity('endChecking', entry.bead_id);
+        }
+      }
+      notifyChanged(workspace);
       await Promise.all(pending);
     } finally {
       observing = false;
@@ -733,38 +705,4 @@ export function createPrPoller(deps) {
       }
     }
   };
-}
-
-/**
- * Deployment demand includes the one cold-cutover residue that has no new row
- * binding yet. It must reach GitHub once to obtain the authoritative merge SHA;
- * ordinary bound rows remain status-only when nobody is subscribed.
- *
- * @param {Record<string, any>} queue
- */
-export function hasDeploymentObservationDemand(queue) {
-  if (
-    queue?.deployment?.state === 'pending' ||
-    queue?.deployment?.state === 'running' ||
-    ['scheduled', 'calling', 'returned', 'recovery_ready'].includes(
-      queue?.deployment?.retry_operation?.phase
-    )
-  ) {
-    return true;
-  }
-  if (!Array.isArray(queue.pr_wait)) {
-    return false;
-  }
-  return queue.pr_wait.some((row) => {
-    if (row?.cleanup_cursor === 'deployment_observe') {
-      return true;
-    }
-    const failure = queue.cleanup_failed?.[row?.bead_id];
-    return (
-      row?.cleanup_cursor == null &&
-      row?.deployment_generation == null &&
-      failure?.step === 'deploy' &&
-      failure?.reason === 'deploy_not_detached_for_self'
-    );
-  });
 }

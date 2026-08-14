@@ -568,20 +568,6 @@ describe('자동 해결 workspace setting', () => {
     ]).toEqual(['안 함', null]);
   });
 
-  test('marks an absent deploy stage as 안 함 with no error badge', () => {
-    const { mount } = mountWorker({ workspace_info: { deploy_cmd: null } });
-
-    const dialog = openSettings(mount);
-    const group = /** @type {HTMLElement} */ (
-      dialog.querySelector('.exec-defaults__vd-group[data-vd="deploy"]')
-    );
-
-    expect([
-      group.querySelector('.exec-defaults__vd-badge--absent')?.textContent,
-      group.querySelector('.exec-defaults__vd-badge--error')
-    ]).toEqual(['안 함', null]);
-  });
-
   test('omits the policy lists when the backend sent none', () => {
     const { mount } = mountWorker({ repo_operation_policy: null });
 

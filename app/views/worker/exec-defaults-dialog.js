@@ -30,10 +30,9 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
  * model does not accept) shows as its own selected `(비호환)` option, still
  * resettable to `(기본)`.
  *
- * Below the editing form the dialog also renders read-only verification and
- * external deployment declarations. Data rides the queue snapshot's
- * `workspace_info` decoration with no extra request or channel. Verification
- * may use config fallback; deployment comes only from the pinned repo declaration.
+ * Below the editing form the dialog also renders the read-only verification
+ * declaration. Data rides the queue snapshot's `workspace_info` decoration with
+ * no extra request or channel.
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
  * @typedef {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} PresetStore
@@ -758,9 +757,9 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
-   * The verify row: what the merge gate runs before merging. Symmetric with
-   * deploy since UI-uk6d — the command can only come from config, so unset it
-   * names the section a user has to write.
+   * The verify row: what the merge gate runs before merging. The command can
+   * only come from config (UI-uk6d), so unset it names the section a user has
+   * to write.
    *
    * @param {any} verify_cmd
    * @returns {import('lit-html').TemplateResult}
@@ -788,38 +787,6 @@ export function createExecDefaultsDialog(mount_element, options) {
               >[worker.verify."${workspace_path}"]</span
             >
             섹션으로 정의
-          </div>`}
-    </div>`;
-  }
-
-  /**
-   * The deploy row: the pinned repository declaration the external deployment
-   * provider consumes after Worker verification. The Worker displays this
-   * command but never runs it.
-   *
-   * @param {any} deploy_cmd
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function deployGroup(deploy_cmd) {
-    const cmd_text = deploy_cmd ? formatCmd(deploy_cmd.cmd) : '';
-    const timeout_text = deploy_cmd ? formatTimeout(deploy_cmd.timeout_ms) : '';
-    const note = timeout_text
-      ? `timeout ${timeout_text} · external deployer 실행`
-      : 'external deployer 실행';
-    return html`<div class="exec-defaults__vd-group" data-vd="deploy">
-      <div class="exec-defaults__vd-label">머지 후 배포 (deploy)</div>
-      ${cmd_text
-        ? html`<div class="exec-defaults__vd-line">
-            <span class="exec-defaults__vd-cmd">${cmd_text}</span>
-            ${badge('deployer', 'external')}
-            <span class="exec-defaults__vd-meta">${note}</span>
-          </div>`
-        : html`<div class="exec-defaults__vd-line exec-defaults__vd-absent">
-            ${badge('absent', '안 함')} 배포 없음 —
-            <span class="exec-defaults__vd-cmd"
-              >docs/agents/repo-ops.toml [deploy]</span
-            >
-            선언으로 정의
           </div>`}
     </div>`;
   }
@@ -938,12 +905,10 @@ export function createExecDefaultsDialog(mount_element, options) {
   function verifyDeploySection(info) {
     return html`<section class="exec-defaults__vd">
       <p class="exec-defaults__vd-title">
-        검증·배포 설정
-        <span class="exec-defaults__vd-ro"
-          >읽기 전용 — repo 선언/config에서 정의</span
-        >
+        검증 설정
+        <span class="exec-defaults__vd-ro">읽기 전용 — config에서 정의</span>
       </p>
-      ${verifyGroup(info.verify_cmd)} ${deployGroup(info.deploy_cmd)}
+      ${verifyGroup(info.verify_cmd)}
     </section>`;
   }
 

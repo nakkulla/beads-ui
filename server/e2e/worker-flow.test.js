@@ -29,8 +29,6 @@ import {
   createCompletionIntentCoordinator,
   decideCompletionAction
 } from '../worker/completion-intent.js';
-import { repoRecoveryIdentity } from '../worker/completion-repair.js';
-import { evaluateMergeGate } from '../worker/merge-gate.js';
 import { createMergeQueue } from '../worker/merge-queue.js';
 import { createPrActions } from '../worker/pr-actions.js';
 import { createPrObservationStore } from '../worker/pr-observations.js';
@@ -339,64 +337,6 @@ function prActionsWorktree(runtime) {
 }
 
 /**
- * Provider fake that accepts the verified target and reports it deployed.
- * Optional first-call fault models a process loss after the provider applied
- * the request but before Worker could read back and bind it.
- *
- * @param {{ crashAfterFirstRequest?: boolean, initialBinding?: { target_base: string, target_sha: string, generation: number }, initialState?: 'failed'|'succeeded' }} [options]
- */
-function createSuccessfulDeploymentJob(options = {}) {
-  /** @type {{ target_base: string, target_sha: string, generation: number }|null} */
-  let binding = options.initialBinding ?? null;
-  let state = options.initialState ?? (binding ? 'failed' : 'succeeded');
-  const stats = { request_calls: 0, applied_requests: 0 };
-  let fail_next_status = false;
-  return {
-    stats,
-    requestDeployment: async (/** @type {any} */ input) => {
-      stats.request_calls += 1;
-      if (binding === null || binding.target_sha !== input.verified_sha) {
-        stats.applied_requests += 1;
-        binding = {
-          target_base: input.target_base,
-          target_sha: input.verified_sha,
-          generation: (binding?.generation ?? 0) + 1
-        };
-        state = 'succeeded';
-      }
-      if (options.crashAfterFirstRequest && stats.request_calls === 1) {
-        fail_next_status = true;
-        throw new Error('process lost after provider request');
-      }
-      return {
-        accepted: true,
-        noop: stats.request_calls > 1,
-        ...binding,
-        error_code: null
-      };
-    },
-    deploymentStatus: async () => {
-      if (fail_next_status) {
-        fail_next_status = false;
-        throw new Error('process lost before provider readback');
-      }
-      if (binding === null) {
-        throw new Error('deployment request missing');
-      }
-      return {
-        state,
-        ...binding,
-        deployed_sha: state === 'succeeded' ? binding.target_sha : null,
-        error_code: state === 'failed' ? 'deploy_failed' : null,
-        log_path: '/tmp/deploy.log'
-      };
-    },
-    validateCurrentBinding() {},
-    validateRowBinding() {}
-  };
-}
-
-/**
  * @param {any} store
  * @param {string[]} ids
  */
@@ -497,236 +437,6 @@ describe('worker e2e — full success flow', () => {
 });
 
 describe('worker e2e — the human [머지] click carries the bead to done', () => {
-  test('adopts a request crash through the real merge cleanup without another provider effect', async () => {
-    const HEAD_SHA = 'a'.repeat(40);
-    const { runtime, scheduler, bd_record } = buildSystem({
-      fixture: 'claude-success.jsonl',
-      config: { M1: { runner: 'claude' } },
-      slots: 1
-    });
-
-    seedQueue(runtime.queueStore, ['M1']);
-    await scheduler.tick(WS);
-
-    // The observation verdict moves the bead into `pr_wait` — NOT done. An open
-    // PR is not a completion; the merge click is (worker-phase2 §1/§4).
-    await waitFor(() =>
-      runtime.queueStore.snapshot(WS).pr_wait.some((e) => e.bead_id === 'M1')
-    );
-    expect(bd_record.status).toBe('resolved');
-    expect(runtime.queueStore.snapshot(WS).done).toEqual([]);
-
-    const failed_sha = 'd'.repeat(40);
-    const failure_key = {
-      repo: repo_dir,
-      target_base: 'main',
-      target_sha: failed_sha,
-      generation: 3,
-      error_code: 'deploy_failed',
-      log_digest: 'e'.repeat(64)
-    };
-    const recovery_identity = repoRecoveryIdentity(
-      repo_dir,
-      failure_key.generation,
-      failure_key
-    ).identity;
-    runtime.queueStore.recordDeploymentObservation(WS, {
-      state: 'failed',
-      target_base: 'main',
-      target_sha: failed_sha,
-      deployed_sha: null,
-      generation: 3,
-      error_code: 'deploy_failed',
-      log_path: '/tmp/deploy.log',
-      automatic_retry_count: 2,
-      retry_budget_binding: {
-        target_base: 'main',
-        target_sha: failed_sha,
-        generation: 3
-      },
-      failure_key,
-      recovery: {
-        identity: recovery_identity,
-        failure_key,
-        phase: 'repair_pr_open',
-        prepared_at: 1,
-        bead_id: 'M1',
-        attempt_id: null,
-        outcome: 'repair_pr_open',
-        confirmation_reason: null,
-        evidence_kind: 'repair_pr',
-        evidence_digest: 'f'.repeat(64),
-        retry_operation: null
-      }
-    });
-
-    /** @type {Array<[string, number, string|null]>} */
-    const gh_calls = [];
-    const observations = createPrObservationStore();
-    // GitHub's own view of the PR, which only becomes MERGED once the merge
-    // command has actually landed it — the cleanup keys off THAT, not off the
-    // command's exit status (§6).
-    let pr_state = 'OPEN';
-    /** @type {string|null} */
-    let merged_sha = null;
-    const deployment_job = createSuccessfulDeploymentJob({
-      crashAfterFirstRequest: true,
-      initialBinding: {
-        target_base: 'main',
-        target_sha: failed_sha,
-        generation: 3
-      },
-      initialState: 'failed'
-    });
-    const pr_actions = createPrActions({
-      workspace: WS,
-      repo: repo_dir,
-      store: runtime.queueStore,
-      observations,
-      gh: {
-        prDetail: async (
-          /** @type {string} */ _repo,
-          /** @type {number} */ number
-        ) => ({
-          state: 'ok',
-          data: {
-            number,
-            url: 'https://github.com/o/r/pull/1',
-            state: pr_state,
-            mergeable: 'MERGEABLE',
-            merge_state_status: 'CLEAN',
-            // Real `gh` always reports a base; the pre-merge base comparison
-            // (worker-base-scope-alignment §5) reads it.
-            base_ref: 'main',
-            head_ref: 'M1',
-            head_sha: HEAD_SHA,
-            merged_sha
-          }
-        }),
-        mergeSquash: async (
-          /** @type {string} */ _repo,
-          /** @type {number} */ number,
-          /** @type {string} */ head_sha
-        ) => {
-          gh_calls.push(['mergeSquash', number, head_sha]);
-          // The squash lands on the base for real, so the cleanup's base sync
-          // reads a base that actually moved.
-          await gitRun(['push', '-q', 'origin', 'main'], { cwd: repo_dir });
-          const merged = await gitRun(['rev-parse', 'origin/main'], {
-            cwd: repo_dir
-          });
-          merged_sha = merged.stdout.trim();
-          pr_state = 'MERGED';
-          return { state: 'ok', data: { merged: true } };
-        },
-        updateBranch: async () => ({ state: 'error', reason: 'unexpected' }),
-        closePr: async () => ({ state: 'error', reason: 'unexpected' })
-      },
-      bd: {
-        setStatus: async (
-          /** @type {string} */ _id,
-          /** @type {string} */ status
-        ) => {
-          bd_record.status = status;
-        },
-        readStatus: async () => bd_record.status,
-        unsetMetadata: async (
-          /** @type {string} */ _id,
-          /** @type {string} */ key
-        ) => {
-          delete bd_record.metadata[key];
-        },
-        readMetadata: async (
-          /** @type {string} */ _id,
-          /** @type {string} */ key
-        ) => bd_record.metadata[key] ?? null,
-        listChildren: async () => [],
-        readIssue: async (/** @type {string} */ id) => ({
-          id,
-          status: bd_record.status,
-          labels: [],
-          metadata: bd_record.metadata
-        })
-      },
-      worktree: prActionsWorktree(runtime),
-      gitRun,
-      scheduler: {
-        resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
-        dispatchExternalConflict: async () => ({
-          ok: false,
-          reason: 'unexpected'
-        }),
-        tick: async () => {}
-      },
-      resolveVerify: async () => ({ state: 'absent' }),
-      deploymentJob: deployment_job,
-      requeryDelayMs: 0,
-      sleep: async () => {}
-    });
-
-    const interrupted = await pr_actions.merge('M1');
-    const result = await pr_actions.merge('M1');
-    const deployment_result = await pr_actions.observeDeployment();
-
-    expect(interrupted).toMatchObject({
-      ok: false,
-      action: 'merged',
-      cleanup_step: 'repo_operations',
-      reason: 'deployment_request_unknown'
-    });
-    expect(result).toMatchObject({
-      ok: true,
-      action: 'already_merged',
-      reason: null
-    });
-    expect(deployment_result).toEqual({ ok: true, reason: 'succeeded' });
-    expect(deployment_job.stats).toEqual({
-      request_calls: 2,
-      applied_requests: 1
-    });
-    expect(runtime.queueStore.snapshot(WS).deployment).toMatchObject({
-      state: 'succeeded',
-      generation: 4,
-      recovery: {
-        identity: recovery_identity,
-        phase: 'completed',
-        outcome: 'repair_pr_open'
-      }
-    });
-    // The merge was pinned to the sha the click-time gate approved.
-    expect(gh_calls).toEqual([['mergeSquash', 1, HEAD_SHA]]);
-    // The retry click re-observes the already-merged PR before resuming cleanup.
-    expect(
-      evaluateMergeGate(observations.get(WS, 'M1'), {
-        review_receipt_state: 'current',
-        verify_receipt_state: {
-          declaration_state: 'absent',
-          receipt: null
-        }
-      })
-    ).toMatchObject({
-      enabled: false,
-      tier: 'merged',
-      gate_badge: '머지됨'
-    });
-
-    // pr_wait → done in the cleanup's final mutation, with the contract's close
-    // (PR Finish closes) actually applied and no cleanup failure recorded.
-    const snap = runtime.queueStore.snapshot(WS);
-    expect(snap.pr_wait.map((e) => e.bead_id)).not.toContain('M1');
-    expect(snap.done.map((e) => e.bead_id)).toContain('M1');
-    expect(snap.cleanup_failed?.M1).toBeUndefined();
-    expect(bd_record.status).toBe('closed');
-    // Branch cleanup really happened in the git repo.
-    expect(
-      (
-        await gitRun(['rev-parse', '--verify', 'refs/heads/M1'], {
-          cwd: repo_dir
-        })
-      ).code
-    ).not.toBe(0);
-  });
-
   test('a cleanup that stops leaves the bead in pr_wait with a durable failure', async () => {
     const { runtime, scheduler, bd_record } = buildSystem({
       fixture: 'claude-success.jsonl',
@@ -809,20 +519,31 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         tick: async () => {}
       },
       resolveVerify: async () => ({ state: 'absent' }),
-      deploymentJob: createSuccessfulDeploymentJob(),
+      resolveBase: /** @type {any} */ (
+        async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: merged_sha,
+          declared: false,
+          remote: 'origin',
+          remote_ref: 'refs/remotes/origin/main',
+          local_only: false
+        })
+      ),
+      repoOperations: /** @type {any} */ ({
+        hasConfig: async () => ({ ok: true, present: false })
+      }),
       requeryDelayMs: 0,
       sleep: async () => {}
     });
 
     const result = await pr_actions.merge('M2');
-    const deployment_result = await pr_actions.observeDeployment();
 
     expect(result).toMatchObject({
       ok: false,
       action: 'merged',
       cleanup_step: 'child_sweep'
     });
-    expect(deployment_result).toEqual({ ok: true, reason: 'succeeded' });
     const snap = runtime.queueStore.snapshot(WS);
     // Returned to the human: still in pr_wait, still `resolved`, banner record
     // written, nothing retried.

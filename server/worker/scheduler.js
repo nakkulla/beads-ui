@@ -44,7 +44,6 @@ import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { isWorkerSerial } from '../../app/utils/worker-serial.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
-import { parseDeploymentRecoveryOutcome } from './deployment-recovery.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import * as default_guard_hook from './guard-hook.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -297,7 +296,7 @@ function staleDispatchPrompt(bead_id, stale) {
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
  * tests want.
- * @property {{ stop: (workspace: string, attempt_id: string) => boolean, recoverDeploymentOutcome?: (workspace: string, attempt: any) => any }} [sessionMonitors]
+ * @property {{ stop: (workspace: string, attempt_id: string) => boolean }} [sessionMonitors]
  * Detached-session monitors (UI-o2yt §3.3). Present in the live wiring only: a
  * dead attempt's monitor is stopped — draining its log to EOF — before the
  * disposition reads the guard evidence and lifts the terminal usage tally.
@@ -314,7 +313,6 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {(input: { workspace: string, root_bead_id: string, op_id: string, failure_key: any, attempt: any, verdict: RunnerVerdict|null }) => Promise<void>|void} [onCompletionAttemptSettled]
  * Completion coordinator settlement hook. Invoked only after the ordinary
  * attempt termination path has durably updated the record.
- * @property {(input: { workspace: string, attempt: any, outcome: any|null, parse_reason: string|null, pr_verified: boolean, session_success: boolean|null }) => Promise<{ ok: boolean, reason: string }>|{ ok: boolean, reason: string }} [onDeploymentRecoveryAttemptSettled]
  * @property {{
  *   attemptStarted: (i: any) => void,
  *   attemptFailed: (i: any) => void,
@@ -365,8 +363,6 @@ function staleDispatchPrompt(bead_id, stale) {
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>,
- *   dispatchRepoRecovery: (workspace: string, input: { identity: string, bead_id: string, failure_key: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean }>,
- *   continueRepoRecovery: (workspace: string, input: { identity: string, attempt_id: string, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchRepoOperationRepair: (workspace: string, input: { bead_id: string, operation_id: string, packet: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, session_id?: string|null }>,
  *   canDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
  *   fenceDiscardAttempt: (attempt_id: string|null|undefined) => boolean,
@@ -1053,23 +1049,6 @@ export function createScheduler(deps) {
         resolution_wait,
         expected_revision
       );
-    }
-    if (prior.deployment_recovery_identity != null) {
-      if (typeof deps.store.appendResumedRecoveryAttempt !== 'function') {
-        return false;
-      }
-      try {
-        return (
-          deps.store.appendResumedRecoveryAttempt(workspace, {
-            expected_revision:
-              expected_revision ?? deps.store.snapshot(workspace).revision,
-            source_attempt_id: prior.attempt_id,
-            attempt
-          }).ok === true
-        );
-      } catch {
-        return false;
-      }
     }
     if (!completion_resume) {
       return prerecordAttempt(workspace, attempt, expected_revision);
@@ -2228,63 +2207,6 @@ export function createScheduler(deps) {
         return;
       }
 
-      const recovery_attempt = deploymentRecoveryAttemptOf(
-        workspace,
-        attempt_id
-      );
-      let recovery_outcome = null;
-      if (recovery_attempt) {
-        const parsed = parseDeploymentRecoveryOutcome(
-          verdict.events
-            .filter((event) => event.kind === 'text')
-            .map((event) => event.text || ''),
-          {
-            identity: recovery_attempt.deployment_recovery_identity,
-            attempt_id
-          }
-        );
-        recovery_outcome = parsed.ok ? parsed.outcome : null;
-        const recovery_result = await reportDeploymentRecoverySettlement({
-          workspace,
-          attempt: recovery_attempt,
-          outcome: recovery_outcome,
-          parse_reason: parsed.ok ? null : parsed.reason,
-          pr_verified: false,
-          session_success: verdict.success
-        });
-        if (
-          recovery_result.reason === 'repair_pr_verification_required' &&
-          verdict.success
-        ) {
-          // Existing PR observation below remains sole repair-PR authority.
-        } else if (
-          recovery_result.ok &&
-          (recovery_result.reason === 'retry_same_requested' ||
-            recovery_result.reason === 'retry_same_adopted')
-        ) {
-          await finishDeploymentRecoveryAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            prior
-          );
-          notifyChanged(workspace);
-          await tick(workspace);
-          return;
-        } else {
-          await failAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            prior,
-            `deployment_recovery:${recovery_result.reason}`
-          );
-          notifyChanged(workspace);
-          await tick(workspace);
-          return;
-        }
-      }
-
       if (!verdict.success) {
         await failAttempt(
           workspace,
@@ -2356,42 +2278,6 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { verify_result: vr }
       });
-
-      if (recovery_attempt && vr.ok) {
-        const recovery_result = await reportDeploymentRecoverySettlement({
-          workspace,
-          attempt: recovery_attempt,
-          outcome: recovery_outcome,
-          parse_reason: null,
-          pr_verified: true,
-          session_success: true
-        });
-        if (
-          !recovery_result.ok ||
-          recovery_result.reason !== 'repair_pr_open'
-        ) {
-          await failAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            prior,
-            `deployment_recovery:${recovery_result.reason}`
-          );
-          notifyChanged(workspace);
-          await tick(workspace);
-          return;
-        }
-      }
-      if (recovery_attempt && !vr.ok) {
-        await reportDeploymentRecoverySettlement({
-          workspace,
-          attempt: recovery_attempt,
-          outcome: null,
-          parse_reason: 'repair_pr_not_observed',
-          pr_verified: false,
-          session_success: true
-        });
-      }
 
       if (vr.ok) {
         // EVERY success is now PR-stop in nature: the bead stays open for a
@@ -2947,8 +2833,6 @@ export function createScheduler(deps) {
     }
     // Re-read AFTER the drain: the evidence may have been written by it.
     const guard_kill = guardKillOf(workspace, attempt_id);
-    const recovery_attempt = deploymentRecoveryAttemptOf(workspace, attempt_id);
-    let recovery_outcome = null;
     // The restart-side settlement (UI-8mvc §3). Ahead of both special branches
     // for the same reason it is in `onSessionDone`: they return, and the
     // exclusion of a disposition / an unpinned external resolution has to be
@@ -2972,66 +2856,6 @@ export function createScheduler(deps) {
       notifyChanged(workspace);
       await tick(workspace);
       return;
-    }
-    if (recovery_attempt && !guard_kill) {
-      const parsed =
-        typeof deps.sessionMonitors?.recoverDeploymentOutcome === 'function'
-          ? deps.sessionMonitors.recoverDeploymentOutcome(
-              workspace,
-              recovery_attempt
-            )
-          : { ok: false, reason: 'recovery_outcome_log_unavailable' };
-      recovery_outcome = parsed.ok ? parsed.outcome : null;
-      const recovery_result = await reportDeploymentRecoverySettlement({
-        workspace,
-        attempt: recovery_attempt,
-        outcome: recovery_outcome,
-        parse_reason: parsed.ok ? null : parsed.reason,
-        pr_verified: false,
-        session_success: null
-      });
-      if (recovery_result.reason === 'repair_pr_verification_required') {
-        // Existing PR observation below remains sole repair-PR authority.
-      } else if (
-        recovery_result.ok &&
-        (recovery_result.reason === 'retry_same_requested' ||
-          recovery_result.reason === 'retry_same_adopted')
-      ) {
-        claimed.add(bead_id);
-        try {
-          deps.store.updateAttempt(workspace, {
-            attempt_id,
-            patch: usagePatch(workspace, attempt_id)
-          });
-          await finishDeploymentRecoveryAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            prior
-          );
-        } finally {
-          claimed.delete(bead_id);
-        }
-        notifyChanged(workspace);
-        await tick(workspace);
-        return;
-      } else {
-        claimed.add(bead_id);
-        try {
-          await failAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            prior,
-            `deployment_recovery:${recovery_result.reason}`
-          );
-        } finally {
-          claimed.delete(bead_id);
-        }
-        notifyChanged(workspace);
-        await tick(workspace);
-        return;
-      }
     }
     if (kind) {
       // No claim is taken here, unlike the branch below: the disposition path
@@ -3172,42 +2996,6 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { verify_result: vr, ...usagePatch(workspace, attempt_id) }
       });
-
-      if (recovery_attempt && vr.ok) {
-        const recovery_result = await reportDeploymentRecoverySettlement({
-          workspace,
-          attempt: recovery_attempt,
-          outcome: recovery_outcome,
-          parse_reason: null,
-          pr_verified: true,
-          session_success: null
-        });
-        if (
-          !recovery_result.ok ||
-          recovery_result.reason !== 'repair_pr_open'
-        ) {
-          await failAttempt(
-            workspace,
-            attempt_id,
-            bead_id,
-            prior,
-            `deployment_recovery:${recovery_result.reason}`
-          );
-          notifyChanged(workspace);
-          await tick(workspace);
-          return;
-        }
-      }
-      if (recovery_attempt && !vr.ok) {
-        await reportDeploymentRecoverySettlement({
-          workspace,
-          attempt: recovery_attempt,
-          outcome: null,
-          parse_reason: 'repair_pr_not_observed',
-          pr_verified: false,
-          session_success: null
-        });
-      }
 
       if (guard_kill) {
         // Blocker evidence OUTRANKS the `gh` observation (UI-o2yt §3.3). An
@@ -3380,14 +3168,8 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {WorkerSerialLease|null} reservation
-   * @param {{ recovery?: { identity: string, failure_key: any } }} [options]
    */
-  async function dispatch(
-    workspace,
-    bead_id,
-    reservation = null,
-    options = {}
-  ) {
+  async function dispatch(workspace, bead_id, reservation = null) {
     try {
       // RE-READ authoritative ready/blocked/deps/exec-settings at dispatch.
       // A disagreement with the scan pass is a real TOCTOU stop, so it is
@@ -3556,9 +3338,7 @@ export function createScheduler(deps) {
       // Admission re-check against the PINNED base_oid — the tick scan validated
       // against a moving base tip, so a base advance between scan and worktree
       // creation (TOCTOU) is caught here, fail-closed.
-      const adm = options.recovery
-        ? { ok: true }
-        : await checkAdmission(snap, wt.base_oid);
+      const adm = await checkAdmission(snap, wt.base_oid);
       if (adm.ok && adm.stale) {
         // The re-check is pinned to base_oid, so ITS payload — not the scan's —
         // is what the session is told about (UI-dlim §3.2). A bead that was fresh
@@ -3619,10 +3399,6 @@ export function createScheduler(deps) {
           exec_restore_values,
           spec_review_stale: !!adm.stale,
           worker_serial: isWorkerSerial(snap.labels),
-          deployment_recovery_identity: options.recovery?.identity ?? null,
-          deployment_recovery_root: !!options.recovery,
-          deployment_recovery_failure_key:
-            options.recovery?.failure_key ?? null,
           status: 'running',
           pid: null
         })
@@ -3806,179 +3582,11 @@ export function createScheduler(deps) {
                 delta_shas: adm.stale.delta_shas
               })
             }
-          : options.recovery
-            ? {
-                id: bead_id,
-                prompt: repoRecoveryPrompt({
-                  identity: options.recovery.identity,
-                  attempt_id,
-                  failure_key: options.recovery.failure_key
-                })
-              }
-            : { id: bead_id }
+          : { id: bead_id }
       });
     } finally {
       reservation?.release();
     }
-  }
-
-  /**
-   * @param {{ identity: string, attempt_id: string, failure_key: any }} input
-   * @returns {string}
-   */
-  function repoRecoveryPrompt(input) {
-    const failure = input.failure_key;
-    return [
-      'repo-level 배포 실패를 진단하고 필요한 code/config 또는 안전한 environment repair만 수행하라.',
-      'provider state file, release, lock, process marker를 직접 수정하지 말고 provider retry나 성공을 직접 선언하지 마라.',
-      `recovery identity=${input.identity}, attempt=${input.attempt_id}, target=${failure?.target_base}@${failure?.target_sha}, generation=${failure?.generation}, error=${failure?.error_code}.`,
-      '마지막 assistant text에 정확히 한 줄만 출력하라:',
-      `BDUI_RECOVERY_OUTCOME {"identity":"${input.identity}","attempt_id":"${input.attempt_id}","outcome":"retry_same|repair_pr_open|awaiting_confirmation|unrecoverable","evidence_kind":"environment_repair|repair_pr|confirmation|diagnosis","evidence":"lower_snake_case_token","reason":null}`
-    ].join(' ');
-  }
-
-  /**
-   * Fresh source-less recovery dispatch. It deliberately reuses the ordinary
-   * worktree/preset/attempt/runner launch path but bypasses the user-Bead
-   * admission contract, which cannot apply to a repo-owned recovery Bead.
-   *
-   * @param {string} workspace
-   * @param {{ identity: string, bead_id: string, failure_key: any }} input
-   */
-  async function dispatchRepoRecovery(workspace, input) {
-    if (
-      !input ||
-      typeof input.identity !== 'string' ||
-      !/^[0-9a-f]{64}$/.test(input.identity) ||
-      typeof input.bead_id !== 'string' ||
-      input.bead_id.length === 0 ||
-      !input.failure_key ||
-      typeof input.failure_key !== 'object'
-    ) {
-      return { ok: false, reason: 'recovery_bead_invalid' };
-    }
-    const attempts = Object.values(
-      deps.store.snapshot(workspace).attempts || {}
-    );
-    const owned = attempts.filter(
-      (attempt) =>
-        attempt?.deployment_recovery_root === true &&
-        attempt.deployment_recovery_identity === input.identity
-    );
-    if (owned.length > 1) {
-      return { ok: false, reason: 'recovery_attempt_collision' };
-    }
-    const prior = owned[0];
-    if (prior?.attempt_id) {
-      const exact =
-        prior.bead_id === input.bead_id &&
-        JSON.stringify(prior.deployment_recovery_failure_key) ===
-          JSON.stringify(input.failure_key);
-      return exact
-        ? { ok: true, attempt_id: prior.attempt_id, adopted: true }
-        : { ok: false, reason: 'recovery_attempt_collision' };
-    }
-    if (
-      attempts.some(
-        (attempt) =>
-          attempt?.bead_id === input.bead_id &&
-          attempt.deployment_recovery_root === true
-      )
-    ) {
-      return { ok: false, reason: 'recovery_attempt_collision' };
-    }
-    if (claimed.has(input.bead_id)) {
-      return { ok: false, reason: 'recovery_bead_running' };
-    }
-    claimed.add(input.bead_id);
-    await dispatch(workspace, input.bead_id, null, {
-      recovery: {
-        identity: input.identity,
-        failure_key: input.failure_key
-      }
-    });
-    const attempt = Object.values(
-      deps.store.snapshot(workspace).attempts || {}
-    ).find(
-      (entry) =>
-        entry?.deployment_recovery_root === true &&
-        entry.deployment_recovery_identity === input.identity
-    );
-    return attempt?.attempt_id
-      ? { ok: true, attempt_id: attempt.attempt_id }
-      : { ok: false, reason: 'recovery_dispatch_failed' };
-  }
-
-  /**
-   * Continue only an existing recovery lineage. The UI-lbqw resolver owns
-   * same-runner resume and cross-runner current/prior choice semantics.
-   *
-   * @param {string} workspace
-   * @param {{ identity: string, attempt_id: string, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} input
-   */
-  async function continueRepoRecovery(workspace, input) {
-    const q = deps.store.snapshot(workspace);
-    const prior = q.attempts?.[input?.attempt_id];
-    if (
-      !prior ||
-      prior.deployment_recovery_identity !== input?.identity ||
-      !prior.deployment_recovery_failure_key ||
-      (prior.status !== 'failed' &&
-        prior.status !== 'orphaned' &&
-        prior.status !== 'paused')
-    ) {
-      return { ok: false, reason: 'recovery_attempt_unowned' };
-    }
-    const recovery = q.deployment?.recovery;
-    if (
-      !recovery ||
-      recovery.identity !== input.identity ||
-      recovery.bead_id !== prior.bead_id ||
-      JSON.stringify(recovery.failure_key) !==
-        JSON.stringify(prior.deployment_recovery_failure_key)
-    ) {
-      return { ok: false, reason: 'recovery_attempt_unowned' };
-    }
-    if (
-      typeof deps.worktree.exists === 'function' &&
-      !deps.worktree.exists(prior.repo, prior.bead_id)
-    ) {
-      return { ok: false, reason: 'worktree_missing' };
-    }
-    if (claimed.has(prior.bead_id)) {
-      return { ok: false, reason: 'bead_running' };
-    }
-    if (
-      Object.values(q.attempts || {}).some(
-        (attempt) =>
-          attempt?.bead_id === prior.bead_id && attempt.status === 'running'
-      )
-    ) {
-      return { ok: false, reason: 'bead_running' };
-    }
-    if (
-      Object.values(q.attempts || {}).some(
-        (attempt) => attempt?.resumed_from === prior.attempt_id
-      )
-    ) {
-      return { ok: false, reason: 'already_resumed' };
-    }
-    let snap;
-    try {
-      snap = await deps.bd.snapshotBead(prior.bead_id);
-    } catch {
-      return { ok: false, reason: 'bd_snapshot_failed' };
-    }
-    return relaunchFromAttempt(workspace, prior, {
-      prompt: repoRecoveryPrompt({
-        identity: input.identity,
-        attempt_id: prior.attempt_id,
-        failure_key: prior.deployment_recovery_failure_key
-      }),
-      continuation: input.continuation,
-      decision_token: input.decision_token,
-      bead_snapshot: snap
-    });
   }
 
   /**
@@ -4058,72 +3666,6 @@ export function createScheduler(deps) {
     return launched.ok
       ? { ok: true, attempt_id: launched.attempt_id, session_id: null }
       : launched;
-  }
-
-  /**
-   * @param {string} workspace
-   * @param {string} attempt_id
-   */
-  function deploymentRecoveryAttemptOf(workspace, attempt_id) {
-    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
-    return attempt && typeof attempt.deployment_recovery_identity === 'string'
-      ? attempt
-      : null;
-  }
-
-  /**
-   * @param {{ workspace: string, attempt: any, outcome: any|null, parse_reason: string|null, pr_verified: boolean, session_success: boolean|null }} input
-   */
-  async function reportDeploymentRecoverySettlement(input) {
-    if (typeof deps.onDeploymentRecoveryAttemptSettled !== 'function') {
-      return { ok: false, reason: 'deployment_recovery_unwired' };
-    }
-    try {
-      const result = await deps.onDeploymentRecoveryAttemptSettled(input);
-      return result && typeof result.reason === 'string'
-        ? result
-        : { ok: false, reason: 'deployment_recovery_settlement_invalid' };
-    } catch {
-      return { ok: false, reason: 'deployment_recovery_settlement_failed' };
-    }
-  }
-
-  /**
-   * Close a recovery attempt whose coordinator-owned retry settled. No PR lane
-   * is involved; provider status remains the independent deployment authority.
-   *
-   * @param {string} workspace
-   * @param {string} attempt_id
-   * @param {string} bead_id
-   * @param {string|null} prior
-   */
-  async function finishDeploymentRecoveryAttempt(
-    workspace,
-    attempt_id,
-    bead_id,
-    prior
-  ) {
-    try {
-      await revertWorkflowMode(bead_id, prior);
-    } catch {
-      await failAttempt(
-        workspace,
-        attempt_id,
-        bead_id,
-        prior,
-        'workflow_mode_revert_failed'
-      );
-      return;
-    }
-    await revertExecStamps(
-      bead_id,
-      execStampedKeysOf(workspace, attempt_id),
-      execRestoreValuesOf(workspace, attempt_id)
-    );
-    deps.store.updateAttempt(workspace, {
-      attempt_id,
-      patch: { status: 'done', cause: null, finished_at: now() }
-    });
   }
 
   /**
@@ -5542,10 +5084,6 @@ export function createScheduler(deps) {
         ? continuation_mode === 'session'
         : false,
       disposition_prompt: options.disposition ? options.prompt : null,
-      deployment_recovery_identity: prior.deployment_recovery_identity ?? null,
-      deployment_recovery_root: false,
-      deployment_recovery_failure_key:
-        prior.deployment_recovery_failure_key ?? null,
       started_at: options.resolution_wait ? now() : null,
       status: 'running',
       pid: null
@@ -5734,13 +5272,7 @@ export function createScheduler(deps) {
           : 'resume',
       spawnBead: {
         id: bead_id,
-        prompt: prior.deployment_recovery_identity
-          ? repoRecoveryPrompt({
-              identity: prior.deployment_recovery_identity,
-              attempt_id: new_attempt_id,
-              failure_key: prior.deployment_recovery_failure_key
-            })
-          : options.prompt
+        prompt: options.prompt
       },
       resume_session_id:
         continuation_mode === 'session' ? prior.session_id : null,
@@ -7317,8 +6849,6 @@ export function createScheduler(deps) {
     queueConflictBlocked,
     dispatchReviseFix,
     dispatchCompletionRepair,
-    dispatchRepoRecovery,
-    continueRepoRecovery,
     dispatchRepoOperationRepair,
     canDiscardAttempt,
     fenceDiscardAttempt,

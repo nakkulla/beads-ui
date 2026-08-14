@@ -19,7 +19,7 @@ import { createHashRouter } from './router.js';
 import { createStore } from './state.js';
 import { createActivityIndicator } from './utils/activity-indicator.js';
 import { debug } from './utils/logging.js';
-import { showToast, showToastOnce } from './utils/toast.js';
+import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
 import { createDisplaySettingsDialog } from './views/display-settings-dialog.js';
@@ -1311,25 +1311,6 @@ export function bootstrap(root_element) {
         return;
       }
       try {
-        const notifications = p.queue?.deployment?.notifications;
-        if (Array.isArray(notifications)) {
-          for (const notification of notifications) {
-            if (
-              notification &&
-              typeof notification.key === 'string' &&
-              typeof notification.text === 'string' &&
-              (notification.variant === 'success' ||
-                notification.variant === 'warning' ||
-                notification.variant === 'info')
-            ) {
-              showToastOnce(
-                notification.key,
-                notification.text,
-                notification.variant
-              );
-            }
-          }
-        }
         worker_queue_store.set(p.queue);
       } catch {
         // ignore

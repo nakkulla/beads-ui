@@ -1,32 +1,62 @@
 #!/usr/bin/env node
+/**
+ * Beads-ui-scoped retirement checker for the v1 repository DEPLOYMENT PROVIDER
+ * (the external `repo-deployctl` job, its recovery saga, and the pinned
+ * `docs/agents/repo-ops.toml` verify/deploy declaration reader). The v2
+ * RepoOperation lane replaced all of it, so every token below must have zero
+ * ACTIVE readers or writers.
+ *
+ * Frozen history is not a reader: closed specs, plans, reviews, handoffs, and
+ * the legacy queue fixtures the one-shot migration consumes are records of what
+ * WAS and must round-trip verbatim, so they are excluded from the scan.
+ *
+ * `docs/agents/repo-ops.toml` is deliberately NOT a forbidden token:
+ * `server/worker/target-base.js` still reads that path from each managed
+ * workspace's working tree to resolve its target base, which is a different
+ * contract with a different owner. Only beads-ui's own copy — which declared no
+ * `base` — is asserted gone.
+ */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const FORBIDDEN = [
-  'deployment-reconciler',
-  'managed-state',
-  'managed-failure',
-  'managed-self-deploy',
-  'deployment_reconcile',
-  'managed_failure',
-  'BDUI_DEPLOY_PROTOCOL_VERSION',
-  'BDUI_DEPLOY_RECEIPT_PATH',
-  'writeRuntimeMarker',
-  'readRuntimeMarker',
-  'managed-deploy',
-  'deploy-receipts',
-  '.bdui/managed-install.json',
-  'bdui/runtime/beads-ui'
+  'deployment-job',
+  'deployment-recovery',
+  'deploymentJob',
+  'deploymentRecovery',
+  'requestDeployment',
+  'deploymentStatus',
+  'retryDeployment',
+  'observeDeployment',
+  'repo-deployctl',
+  'deployment_generation',
+  'deployment_observe',
+  'verified_target_sha',
+  'deployment_recovery_identity',
+  'deployment_recovery_root',
+  'deployment_recovery_failure_key',
+  'recordDeploymentObservation',
+  'recordDeploymentBinding',
+  'bindDeploymentRequest',
+  'scheduleDeploymentRetry',
+  'peekDeployResolution',
+  'resolveDeployAt',
+  'resolveVerifyAt',
+  'worker-deployment-retry',
+  'worker-deployment-recovery-continue',
+  'BDUI_RECOVERY_OUTCOME',
+  'deploy-self',
+  'deploy_cmd'
 ];
 
 const DELETED = [
-  'server/worker/deployment-reconciler.js',
-  'server/worker/managed-state.js',
-  'server/worker/managed-failure.js',
-  'server/worker/deployment-paths.js',
-  'scripts/managed-self-deploy.js'
+  'server/worker/repo-ops.js',
+  'server/worker/deployment-job.js',
+  'server/worker/deployment-recovery.js',
+  'scripts/deploy-self.js',
+  'docs/agents/repo-ops.toml'
 ];
 
 /**
@@ -46,7 +76,7 @@ function parseArgs(args) {
     return { repo: args[1], ref: args[3] };
   }
   throw new Error(
-    'usage: check-managed-deploy-retired.js [--repo <abs> --ref <git-ref>]'
+    'usage: check-repo-deploy-provider-retired.js [--repo <abs> --ref <git-ref>]'
   );
 }
 
@@ -54,6 +84,7 @@ function parseArgs(args) {
  * @param {string} root
  */
 function currentFiles(root) {
+  /** @type {string[]} */
   const files = [];
   for (const prefix of [
     'server',
@@ -118,7 +149,8 @@ function readTreeFile(repo, ref, file) {
  */
 function scannedFile(file) {
   return (
-    file !== 'scripts/check-managed-deploy-retired.js' &&
+    file !== 'scripts/check-repo-deploy-provider-retired.js' &&
+    !file.startsWith('server/worker/__fixtures__/') &&
     !file.startsWith('docs/superpowers/specs/') &&
     !file.startsWith('docs/superpowers/plans/') &&
     !file.startsWith('docs/superpowers/reviews/') &&
@@ -130,6 +162,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const input = parseArgs(process.argv.slice(2));
 const files = input ? treeFiles(input.repo, input.ref) : currentFiles(root);
 const tree_file_set = input ? new Set(files) : null;
+/** @type {string[]} */
 const failures = [];
 for (const file of files.filter(scannedFile)) {
   const text = input
@@ -149,7 +182,7 @@ for (const file of DELETED) {
     failures.push(`deleted file remains: ${file}`);
   }
 }
-for (const file of ['scripts/check-managed-deploy-retired.js']) {
+for (const file of ['scripts/check-repo-deploy-provider-retired.js']) {
   const mode = input
     ? String(
         execFileSync('git', ['ls-tree', input.ref, file], {

@@ -64,14 +64,12 @@ function isSha(value) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, cleanupFacts: (bead_id: string) => Promise<{ base: string|null, base_reason: string|null, merge_sha: string|null, head_sha: string|null, head_ref: string|null, pr_url: string|null }>, repoOperations?: { hasConfig: (sha: string) => Promise<any> }|null, deploymentJob?: { deploymentStatus: (input: { repo: string }) => Promise<any> }|null, resumeClosure?: ((bead_id: string) => Promise<any>)|null, now?: () => number }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, cleanupFacts: (bead_id: string) => Promise<{ base: string|null, base_reason: string|null, merge_sha: string|null, head_sha: string|null, head_ref: string|null, pr_url: string|null }>, repoOperations?: { hasConfig: (sha: string) => Promise<any> }|null, resumeClosure?: ((bead_id: string) => Promise<any>)|null, now?: () => number }} deps
  */
 export function createRepoOperationMigration(deps) {
   const now = deps.now || (() => Date.now());
   /** @type {Map<string, string|null>} */
   const remote_tips = new Map();
-  /** @type {{ read: boolean, status: any, code: string|null }} */
-  const provider = { read: false, status: null, code: null };
 
   /**
    * Master spec §6.1: one bounded fetch per target base, then the pinned tip.
@@ -122,30 +120,6 @@ export function createRepoOperationMigration(deps) {
     } catch {
       return false;
     }
-  }
-
-  /**
-   * Master spec §11 rule 4: the retired provider is asked for its status at
-   * most once per migration, whatever the number of legacy rows.
-   */
-  async function legacyProviderStatus() {
-    if (provider.read) {
-      return provider;
-    }
-    provider.read = true;
-    if (!deps.deploymentJob) {
-      return provider;
-    }
-    try {
-      provider.status = await deps.deploymentJob.deploymentStatus({
-        repo: deps.repo
-      });
-    } catch (err) {
-      const code = /** @type {{ code?: unknown }} */ (err).code;
-      provider.code =
-        typeof code === 'string' ? code : 'deployment_status_failed';
-    }
-    return provider;
   }
 
   /**
@@ -279,7 +253,7 @@ export function createRepoOperationMigration(deps) {
         row: handoff
       });
     }
-    return await planDeploy(bead_id, failure, {
+    return planDeploy(bead_id, failure, {
       subject_sha,
       subject_source,
       target_base,
@@ -331,69 +305,21 @@ export function createRepoOperationMigration(deps) {
   }
 
   /**
-   * Master spec §11 rule 4: adopt an exact terminal success as migrated
-   * evidence, and otherwise hand the subject to a new deploy operation built
-   * on the fetched `origin/<base>` tip.
+   * Master spec §11 rule 4, after the retired provider was removed: there is no
+   * legacy status left to adopt, so every legacy deploy subject is handed to a
+   * new deploy operation built on the fetched `origin/<base>` tip.
    *
    * @param {string} bead_id
    * @param {{ step: string, reason: string }} failure
    * @param {{ subject_sha: string, subject_source: 'merge_sha'|'head_sha', target_base: string, row: any }} input
    */
-  async function planDeploy(bead_id, failure, input) {
-    const fields = {
-      subject_sha: input.subject_sha,
-      subject_source: input.subject_source,
-      target_base: input.target_base
-    };
-    const observed = await legacyProviderStatus();
-    if (observed.code !== null) {
-      // The provider answered with an error: whether it ever deployed this
-      // subject is unknowable, which is exactly rule 6's ambiguity.
-      return {
-        result: result(bead_id, failure, 'legacy_manual', {
-          ...fields,
-          reason: 'legacy_status_unreadable',
-          evidence: { source: 'legacy_provider', error_code: observed.code }
-        }),
-        row: null
-      };
-    }
-    const status = observed.status;
-    const evidence = status
-      ? {
-          source: 'legacy_provider',
-          state: status.state,
-          target_base: status.target_base,
-          target_sha: status.target_sha,
-          deployed_sha: status.deployed_sha,
-          generation: status.generation
-        }
-      : null;
-    const exact =
-      status !== null &&
-      status.state === 'succeeded' &&
-      status.target_base === input.target_base &&
-      isSha(status.target_sha) &&
-      isSha(status.deployed_sha) &&
-      String(status.deployed_sha).toLowerCase() ===
-        String(status.target_sha).toLowerCase() &&
-      (await contains(
-        input.subject_sha,
-        String(status.deployed_sha).toLowerCase()
-      ));
-    if (exact) {
-      return {
-        result: result(bead_id, failure, 'adopted_legacy_deploy', {
-          ...fields,
-          evidence
-        }),
-        row: { ...input.row, cursor: null }
-      };
-    }
+  function planDeploy(bead_id, failure, input) {
     return {
       result: result(bead_id, failure, 'new_deploy_operation', {
-        ...fields,
-        evidence
+        subject_sha: input.subject_sha,
+        subject_source: input.subject_source,
+        target_base: input.target_base,
+        evidence: null
       }),
       row: input.row
     };
@@ -401,7 +327,7 @@ export function createRepoOperationMigration(deps) {
 
   /**
    * Run the migration once. A workspace already stamped at this version adopts
-   * its stored result: no provider read, no second conversion.
+   * its stored result: no second conversion.
    *
    * @returns {Promise<{ ok: boolean, adopted: boolean, version: number, results: Record<string, any>, code: string|null }>}
    */

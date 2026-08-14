@@ -2596,7 +2596,6 @@ describe('views/worker', () => {
 
     const dialog = openWithWorkspaceInfo(mount, {
       verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
-      deploy_cmd: null,
       slots: 2
     });
 
@@ -2609,57 +2608,10 @@ describe('views/worker', () => {
     );
   });
 
-  test('renders the external deploy declaration without a detached adapter badge', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
-      deploy_cmd: {
-        cmd: ['scripts/deploy-self.js'],
-        timeout_ms: 600000
-      },
-      slots: 2
-    });
-
-    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
-    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
-      'scripts/deploy-self.js'
-    );
-    expect(
-      group.querySelector('.exec-defaults__vd-badge--deployer')?.textContent
-    ).toBe('external');
-    expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
-      'timeout 10분 · external deployer 실행'
-    );
-    expect(
-      group.querySelector('.exec-defaults__vd-badge--detached')
-    ).toBeNull();
-  });
-
-  test('names the repository declaration when deploy is absent', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-
-    const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: null,
-      deploy_cmd: null,
-      slots: 2
-    });
-
-    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'deploy'));
-    expect(group.textContent).toContain('배포 없음');
-    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
-      'docs/agents/repo-ops.toml [deploy]'
-    );
-  });
-
-  test('keeps the verify and deploy section read-only', () => {
+  test('keeps the verify section read-only', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const dialog = openWithWorkspaceInfo(mount, {
       verify_cmd: { cmd: ['npm', 'test'], timeout_ms: 600000 },
-      deploy_cmd: {
-        cmd: ['scripts/deploy-self.js'],
-        timeout_ms: 600000
-      },
       slots: 2
     });
 
@@ -2686,7 +2638,6 @@ describe('views/worker', () => {
 
     expect(dialog.querySelector('.exec-defaults__vd')).not.toBeNull();
     expect(vdGroup(dialog, 'verify')?.textContent).toContain('검증 없음');
-    expect(vdGroup(dialog, 'deploy')?.textContent).toContain('배포 없음');
   });
 
   test('failure banner ↻ resumes the newest eligible failed attempt (§1)', () => {
@@ -3519,240 +3470,6 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     expect(row.querySelector('.worker-mini__badge')).toBe(null);
     expect(row.querySelector('.worker-mini__reason')?.textContent).toBe(
       'PR 대기'
-    );
-  });
-});
-
-describe('worker view repo deployment state (UI-lb58 Phase 4)', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '<div id="m"></div>';
-  });
-
-  test('shows deployment inclusion on merged cards and sends one repo retry', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const target_sha = 'a'.repeat(40);
-    queueStore.set(
-      queueOf({
-        pr_wait: [
-          {
-            bead_id: 'UI-deploy',
-            added_at: 1,
-            merge_sha: 'b'.repeat(40),
-            verified_target_sha: target_sha,
-            deployment_generation: 3,
-            cleanup_cursor: 'deployment_observe'
-          }
-        ],
-        pr_observations: {
-          'UI-deploy': {
-            pr: { number: 9, url: 'https://github.com/o/r/pull/9' },
-            gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' }
-          }
-        },
-        deployment: {
-          state: '확인 필요',
-          repo: 'beads-ui',
-          desired_sha: target_sha.slice(0, 8),
-          description: '사용자 확인이 필요합니다',
-          included_merge_count: 1,
-          timeline: [],
-          recovery: null,
-          log: null,
-          actions: [{ kind: 'retry', label: '지금 재시도' }],
-          notifications: []
-        },
-        deployment_coverage: { 'UI-deploy': 'failed' }
-      })
-    );
-    const transport = vi.fn().mockResolvedValue({ applied: true });
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    expect(
-      mount.querySelector('.worker-mini[data-bead-id="UI-deploy"]')?.textContent
-    ).toContain('머지됨 · 배포 대기');
-    expect(
-      mount.querySelectorAll('.worker-mini__merge[data-bead-id="UI-deploy"]')
-    ).toHaveLength(0);
-    expect(mount.querySelectorAll('.worker-deployment-strip')).toHaveLength(1);
-    expect(mount.querySelectorAll('.worker-deployment-retry')).toHaveLength(1);
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-deployment-retry')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-deployment-retry', {});
-  });
-
-  test('continues deployment recovery with the current queue revision', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        revision: 9,
-        deployment: {
-          state: '확인 필요',
-          repo: 'beads-ui',
-          desired_sha: 'a'.repeat(8),
-          description: '복구 세션 확인이 필요합니다',
-          included_merge_count: 1,
-          timeline: [],
-          recovery: {
-            bead_id: 'UI-recovery',
-            attempt_id: 'recovery-attempt'
-          },
-          log: null,
-          actions: [
-            {
-              kind: 'continue_recovery',
-              label: '복구 이어가기',
-              attempt_id: 'recovery-attempt'
-            }
-          ],
-          notifications: []
-        }
-      })
-    );
-    const transport = vi.fn().mockResolvedValue({
-      resumed: true,
-      conflict: false,
-      new_attempt_id: 'recovery-attempt-2'
-    });
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-deployment-continue')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith(
-      'worker-deployment-recovery-continue',
-      {
-        attempt_id: 'recovery-attempt',
-        expected_revision: 9
-      }
-    );
-  });
-
-  test('does not present an unproven lower-generation row as deployment complete', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const target_sha = 'a'.repeat(40);
-    queueStore.set(
-      queueOf({
-        pr_wait: [
-          {
-            bead_id: 'UI-not-covered',
-            added_at: 1,
-            merge_sha: 'b'.repeat(40),
-            verified_target_sha: 'c'.repeat(40),
-            deployment_generation: 3,
-            cleanup_cursor: 'deployment_observe'
-          }
-        ],
-        pr_observations: {
-          'UI-not-covered': {
-            pr: { number: 42, url: 'https://github.com/o/r/pull/42' },
-            gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' }
-          }
-        },
-        cleanup_failed: {
-          'UI-not-covered': {
-            step: 'deployment_request',
-            reason: 'deployment_not_covering_merge'
-          }
-        },
-        deployment: {
-          state: 'succeeded',
-          target_base: 'main',
-          target_sha,
-          deployed_sha: target_sha,
-          generation: 4,
-          error_code: null,
-          log_path: '/tmp/deploy.log',
-          covered_pr_numbers: []
-        },
-        deployment_coverage: {}
-      })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const card = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="UI-not-covered"]')
-    );
-    expect(card.textContent).not.toContain('배포 완료');
-    expect(card.textContent).not.toContain('배포에 포함됨');
-    expect(card.querySelector('.worker-mini__merge')).toBeNull();
-  });
-
-  test('offers closure retry after deployment succeeded but branch cleanup failed', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    const target_sha = 'a'.repeat(40);
-    queueStore.set(
-      queueOf({
-        pr_wait: [
-          {
-            bead_id: 'UI-cleanup',
-            added_at: 1,
-            merge_sha: 'b'.repeat(40),
-            verified_target_sha: target_sha,
-            deployment_generation: 4,
-            cleanup_cursor: 'deployment_observe'
-          }
-        ],
-        pr_observations: {
-          'UI-cleanup': {
-            pr: { number: 46, url: 'https://github.com/o/r/pull/46' },
-            gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' }
-          }
-        },
-        cleanup_failed: {
-          'UI-cleanup': {
-            step: 'branch_cleanup',
-            reason: 'local_branch_delete_failed'
-          }
-        },
-        deployment: {
-          state: 'succeeded',
-          target_base: 'main',
-          target_sha,
-          deployed_sha: target_sha,
-          generation: 4,
-          error_code: null,
-          log_path: '/tmp/deploy.log',
-          covered_pr_numbers: [46]
-        },
-        deployment_coverage: { 'UI-cleanup': 'succeeded' }
-      })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    const card = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="UI-cleanup"]')
-    );
-    expect(card.querySelector('.worker-mini__reason')?.textContent).toContain(
-      '정리 미완'
-    );
-    expect(card.querySelector('.worker-mini__merge')?.textContent).toContain(
-      '정리'
     );
   });
 });
