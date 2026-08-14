@@ -527,7 +527,6 @@ describe('worker/attach construction + live loop (F1)', () => {
     const runtime = createWorkerRuntime();
     const gh = {
       prDetail: vi.fn(),
-      prChecks: vi.fn(),
       openPrForBranch: vi.fn(),
       checkAvailability: vi.fn(async () => ({ state: 'ok', data: true }))
     };
@@ -543,7 +542,6 @@ describe('worker/attach construction + live loop (F1)', () => {
     await att.prPoller.tick();
 
     expect(gh.prDetail).not.toHaveBeenCalled();
-    expect(gh.prChecks).not.toHaveBeenCalled();
   });
 
   test('toggle→tick dispatches via the real runner with the PR-submit preamble injected (fake spawn)', async () => {
@@ -2081,16 +2079,21 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
       worktree: fakeWorktree,
       verify: okVerify,
       spawn_impl: makeFixtureSpawn({ lines: [] }),
-      gitRun: async (/** @type {string[]} */ args) => ({
-        code: 0,
-        stdout:
-          args.join(' ') === 'remote get-url origin'
-            ? 'git@example.test:o/r.git\n'
-            : args[0] === 'rev-parse'
-              ? `${'b'.repeat(40)}\n`
-              : '',
-        stderr: ''
-      }),
+      gitRun: async (/** @type {string[]} */ args) => {
+        if (args[0] === 'show' && args[1]?.endsWith(':repo-ops/config.toml')) {
+          return { code: 128, stdout: '', stderr: 'missing' };
+        }
+        return {
+          code: 0,
+          stdout:
+            args.join(' ') === 'remote get-url origin'
+              ? 'git@example.test:o/r.git\n'
+              : args[0] === 'rev-parse'
+                ? `${'b'.repeat(40)}\n`
+                : '',
+          stderr: ''
+        };
+      },
       resolveBase: okBase('main', 'b'.repeat(40)),
       deploymentJob: {
         requestDeployment: async (input) => ({
@@ -2139,5 +2142,70 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     expect(r).toMatchObject({ ok: true, reason: null });
     expect(observed).toEqual({ ok: true, reason: 'succeeded' });
     expect(runtime.externalPrs.list(WS)).toEqual([]);
+  });
+});
+
+describe('worker/attach — legacy state migration (master spec §11)', () => {
+  test('runs the one-shot migration before the cleanup lane resumes', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      repoOperationMigration: {
+        run: vi.fn(async () => {
+          order.push('migration');
+          return { ok: true };
+        })
+      }
+    });
+    att.prActions.resumeRepoOperations = vi.fn(async () => {
+      order.push('resume');
+      return [];
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    await waitFor(() => order.length === 2);
+    expect(order).toEqual(['migration', 'resume']);
+  });
+
+  test('resumes the cleanup lane even when the migration throws', async () => {
+    const resumeRepoOperations = vi.fn(async () => []);
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      repoOperationMigration: {
+        run: vi.fn(async () => {
+          throw new Error('migration exploded');
+        })
+      }
+    });
+    att.prActions.resumeRepoOperations = resumeRepoOperations;
+    __registerWorkerAttachmentForTest(WS, att);
+
+    initWorkerRuntime({ workspaces: [WS] });
+
+    await waitFor(() => resumeRepoOperations.mock.calls.length === 1);
+    expect(resumeRepoOperations).toHaveBeenCalledTimes(1);
+  });
+
+  test('builds a migration bound to this attachment by default', () => {
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+
+    expect(typeof att.repoOperationMigration.run).toBe('function');
   });
 });

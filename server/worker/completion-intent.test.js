@@ -101,7 +101,7 @@ function redGate(patch = {}) {
     subject: intent().subject,
     verdict: {
       enabled: false,
-      tier: 'local_verify',
+      tier: 'verify',
       reason: 'verify_cmd_failed'
     },
     evidence: {
@@ -243,11 +243,7 @@ describe('worker/completion-intent decisions', () => {
       subject_sha: 'a'.repeat(40),
       base_sha: 'b'.repeat(40),
       evidence: {
-        output_tail: 'line 1\r\nline 2',
-        checks: [
-          { name: 'lint', conclusion: 'failure' },
-          { name: 'test', conclusion: 'success' }
-        ]
+        output_tail: 'line 1\r\nline 2'
       }
     });
     const second = createCompletionFailureKey({
@@ -256,11 +252,7 @@ describe('worker/completion-intent decisions', () => {
       subject_sha: 'a'.repeat(40),
       base_sha: 'b'.repeat(40),
       evidence: {
-        output_tail: 'line 1\nline 2',
-        checks: [
-          { name: 'test', conclusion: 'success' },
-          { name: 'lint', conclusion: 'failure' }
-        ]
+        output_tail: 'line 1\nline 2'
       }
     });
 
@@ -420,7 +412,7 @@ describe('worker/completion-intent action driver', () => {
     expect(probeOwnership).toHaveBeenCalledWith(
       expect.objectContaining({
         root_bead_id: 'UI-root',
-        source: 'local_verify'
+        source: 'verify'
       })
     );
     expect(dispatchCompletionRepair).toHaveBeenCalledWith(

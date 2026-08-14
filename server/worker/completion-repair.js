@@ -113,7 +113,6 @@ function matchesIdentity(issue, expected) {
  *     createIssue?: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>
  *   },
  *   repo: string,
- *   gh?: { commitChecks: (repo: string, sha: string) => Promise<any> },
  *   resolveVerify?: (pin: { sha: string }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<any>
  * }} deps
@@ -244,50 +243,12 @@ export function createCompletionRepairService(deps) {
      * Missing, pending, timeout, spawn, auth, or config evidence is never
      * guessed.
      *
-     * @param {{ root_bead_id: string, source: 'local_verify'|'ci', failure_key: any }} input
+     * @param {{ root_bead_id: string, source: 'verify', failure_key: any }} input
      */
     async probeOwnership(input) {
       const { root_bead_id, source, failure_key } = input;
-      if (source === 'ci') {
-        if (!deps.gh || typeof deps.gh.commitChecks !== 'function') {
-          return { state: 'undecidable', reason: 'base_checks_unavailable' };
-        }
-        let observed;
-        try {
-          observed = await deps.gh.commitChecks(
-            deps.repo,
-            failure_key.base_sha
-          );
-        } catch {
-          return { state: 'undecidable', reason: 'base_checks_spawn_failed' };
-        }
-        if (observed.state === 'empty') {
-          return { state: 'undecidable', reason: 'base_checks_absent' };
-        }
-        if (observed.state !== 'ok') {
-          return {
-            state: 'undecidable',
-            reason: `base_checks_${observed.reason || 'failed'}`
-          };
-        }
-        const checks = observed.data;
-        if (!Array.isArray(checks) || checks.length === 0) {
-          return { state: 'undecidable', reason: 'base_checks_absent' };
-        }
-        if (checks.some((check) => check.conclusion === 'pending')) {
-          return {
-            state: 'undecidable',
-            reason: 'base_checks_pending',
-            evidence: { checks }
-          };
-        }
-        return checks.some((check) => check.conclusion === 'fail')
-          ? { state: 'base_owned', evidence: { checks } }
-          : { state: 'pr_owned', evidence: { checks } };
-      }
-
       if (
-        source !== 'local_verify' ||
+        source !== 'verify' ||
         typeof deps.resolveVerify !== 'function' ||
         typeof deps.runVerify !== 'function'
       ) {

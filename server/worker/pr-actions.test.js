@@ -4,7 +4,7 @@
  * `gh` is fully mocked here — this suite never reaches the network and never
  * merges anything real. What it holds down:
  *
- *   - the click's three branches (CLEAN / BEHIND / DIRTY) and what each calls,
+ *   - the click's CLEAN merge, DIRTY resolution, and unclean refusal paths,
  *   - that a head SHA which moved between render and click re-opens the gate,
  *     that a stale green does not pass, and that an empty cache (restart)
  *     VERIFIES rather than passing,
@@ -124,7 +124,6 @@ function seedStore(options = {}) {
  *
  * @param {{
  *   details?: any[],
- *   checks?: any,
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number }|null,
  *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }>,
@@ -149,9 +148,12 @@ function seedStore(options = {}) {
  *   external?: Record<string, { bead_id: string, pr_url: string, pr_number: number|null, added_at: number }>,
  *   bdStatus?: Record<string, string>,
  *   bdPrUrl?: string|null,
+ *   bdMetadata?: Record<string, unknown>,
+ *   bdSpecId?: string|null,
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   deploymentJob?: { requestDeployment: (input: any) => Promise<any>, deploymentStatus: (input: any) => Promise<any>, validateCurrentBinding?: (status: any, current_binding: any) => void, validateRowBinding?: (status: any, row_binding: any) => void },
+ *   repoOperations?: any,
  *   noNotify?: boolean
  * }} [options]
  */
@@ -187,10 +189,6 @@ function makeActions(options = {}) {
       const d = details[Math.min(detail_i, details.length - 1)];
       detail_i += 1;
       return d.state === 'error' ? d : { state: 'ok', data: d };
-    }),
-    prChecks: vi.fn(async () => {
-      calls.push('gh:prChecks');
-      return options.checks || { state: 'empty' };
     }),
     mergeSquash: vi.fn(async () => {
       calls.push('gh:mergeSquash');
@@ -257,12 +255,17 @@ function makeActions(options = {}) {
       }
       return {
         id,
+        spec_id: options.bdSpecId ?? null,
         // The CLICK-TIME guard answer, kept apart from `bd_status` (which
         // models the cleanup's own close/restore readbacks).
         status: (options.bdStatus || {})[id] ?? bd_status.get(id) ?? 'closed',
-        metadata: Object.hasOwn(options, 'bdPrUrl')
-          ? { pr_url: options.bdPrUrl ?? undefined }
-          : {}
+        metadata: {
+          route: 'quick_fix',
+          ...(options.bdMetadata || {}),
+          ...(Object.hasOwn(options, 'bdPrUrl')
+            ? { pr_url: options.bdPrUrl ?? undefined }
+            : {})
+        }
       };
     }),
     updateFields: vi.fn(
@@ -350,6 +353,9 @@ function makeActions(options = {}) {
     }
     if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
       return { code: 0, stdout: `${BASE_SHA}\n`, stderr: '' };
+    }
+    if (args[0] === 'rev-parse' && String(args[1]).endsWith('^')) {
+      return { code: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
     }
     if (args.join(' ') === 'remote get-url origin') {
       return {
@@ -516,6 +522,7 @@ function makeActions(options = {}) {
           }
         : { state: /** @type {const} */ ('absent') }),
     runVerify,
+    repoOperations: options.repoOperations,
     deploymentJob: {
       ...deploymentJob,
       validateCurrentBinding:
@@ -615,7 +622,7 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
   });
 
-  test('updates the branch, re-checks, then merges a BEHIND pull request', async () => {
+  test('refuses a BEHIND pull request', async () => {
     const h = makeActions({
       details: [
         prOf({ merge_state_status: 'BEHIND' }),
@@ -625,17 +632,13 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r).toMatchObject({ ok: true, action: 'updated_and_merged' });
-    expect(h.calls.filter((c) => c.startsWith('gh:'))).toEqual([
-      'gh:prDetail',
-      'gh:prChecks',
-      'gh:updateBranch',
-      'gh:prDetail',
-      'gh:prChecks',
-      'gh:mergeSquash',
-      // The merge is CONFIRMED by re-reading the PR before any cleanup runs.
-      'gh:prDetail'
-    ]);
+    expect(r).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'base_behind'
+    });
+    expect(h.gh.updateBranch).not.toHaveBeenCalled();
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
   test('dispatches a conflict-resolution session for a DIRTY pull request without merging', async () => {
@@ -656,10 +659,8 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
 
   test('refuses without merging when the click-time gate is red', async () => {
     const h = makeActions({
-      checks: {
-        state: 'ok',
-        data: [{ name: 'ci', conclusion: 'fail' }]
-      }
+      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
+      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
     });
 
     const r = await h.actions.merge(BEAD);
@@ -667,7 +668,48 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(r).toMatchObject({
       ok: false,
       action: 'refused',
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('merges a spec-backed PR with current review receipts', async () => {
+    const head_sha = 'a'.repeat(40);
+    const h = makeActions({
+      details: [prOf({ head_sha })],
+      bdSpecId: 'docs/spec.md',
+      bdMetadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        impl_review: `self@${head_sha}`
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+  });
+
+  test('refuses a spec-backed PR with a stale implementation review', async () => {
+    const h = makeActions({
+      details: [prOf({ head_sha: 'a'.repeat(40) })],
+      bdSpecId: 'docs/spec.md',
+      bdMetadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        impl_review: `self@${'c'.repeat(40)}`
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'review_receipt_stale'
+    });
+    expect(h.observations.get(WS, BEAD)?.review_receipt).toEqual({
+      state: 'stale',
+      head_sha: 'a'.repeat(40)
     });
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
@@ -687,7 +729,6 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
   test.each([
     ['CLEAN', prOf({ merge_state_status: 'CLEAN' }), 'clean'],
     ['MERGED', prOf({ state: 'MERGED' }), 'merged'],
-    ['BEHIND', prOf({ merge_state_status: 'BEHIND' }), 'behind'],
     [
       'DIRTY',
       prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' }),
@@ -702,6 +743,22 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
     expect(h.gh.updateBranch).not.toHaveBeenCalled();
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
     expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+  });
+
+  test('blocks latest BEHIND without an effect', async () => {
+    const h = makeActions({
+      details: [prOf({ merge_state_status: 'BEHIND' })]
+    });
+
+    const result = await h.actions.probeMergeability(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      kind: 'blocked',
+      reason: 'base_behind',
+      head_sha: 'sha-aaa'
+    });
+    expect(h.gh.updateBranch).not.toHaveBeenCalled();
   });
 
   test('refuses DIRTY without dispatch when the driver disallows it', async () => {
@@ -839,7 +896,7 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
 
   test('re-runs local verification when the head SHA moved past a cached green', async () => {
     const h = makeActions({
-      verify: VERIFY,
+      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
       details: [prOf({ head_sha: 'sha-new' })]
     });
     // A green earned on the PREVIOUS head — exactly the stale green §5 refuses.
@@ -864,7 +921,7 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
 
   test('does not merge on a stale green when the fresh verification is red', async () => {
     const h = makeActions({
-      verify: VERIFY,
+      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
       details: [prOf({ head_sha: 'sha-new' })],
       verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
     });
@@ -902,7 +959,7 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
     expect(r.ok).toBe(true);
   });
 
-  test('re-evaluates the gate against the NEW SHA the branch update produced', async () => {
+  test('does not verify or update a BEHIND head', async () => {
     const h = makeActions({
       verify: VERIFY,
       details: [
@@ -911,16 +968,11 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
       ]
     });
 
-    await h.actions.merge(BEAD);
+    const result = await h.actions.merge(BEAD);
 
-    // Two click-time runs: one on the sha as read, one on the sha the branch
-    // update produced. The third is the post-merge run, pinned to the base.
-    const shas = /** @type {any[]} */ (
-      /** @type {any} */ (h.runVerify).mock.calls
-    )
-      .slice(0, 2)
-      .map((c) => c[0].sha);
-    expect(shas).toEqual(['sha-old', 'sha-updated']);
+    expect(result).toMatchObject({ ok: false, reason: 'base_behind' });
+    expect(h.runVerify).not.toHaveBeenCalled();
+    expect(h.gh.updateBranch).not.toHaveBeenCalled();
   });
 
   test('retries a cached current-head verify failure and records a merge-gate flake note', async () => {
@@ -1243,7 +1295,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'deployment_request',
+      step: 'repo_operations',
       reason: 'deployment_request_unknown'
     });
     expect(h.calls).not.toContain('bd:setStatus:UI-1:closed');
@@ -1270,7 +1322,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     expect(h.store.snapshot(WS).pr_wait[0]).toMatchObject({
       deployment_generation: null,
-      cleanup_cursor: null
+      cleanup_cursor: 'repo_operations'
     });
     expect(resume).toMatchObject({
       ok: false,
@@ -1611,7 +1663,7 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     expect(h.store.snapshot(WS).pr_wait).toHaveLength(1);
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'deployment_request',
+      step: 'repo_operations',
       reason: 'deployment_binding_mismatch'
     });
   });
@@ -2026,12 +2078,12 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     expect(r).toMatchObject({
       ok: false,
-      cleanup_step: 'post_merge_verify',
+      cleanup_step: 'repo_operations',
       reason: 'verify_cmd_failed'
     });
     const q = h.store.snapshot(WS);
     expect(q.cleanup_failed[BEAD]).toMatchObject({
-      step: 'post_merge_verify',
+      step: 'repo_operations',
       reason: 'verify_cmd_failed'
     });
     // The bead stays in `pr_wait` (bd untouched ⇒ still `resolved`), and the
@@ -2124,12 +2176,12 @@ describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
 
     expect(r).toMatchObject({
       ok: false,
-      cleanup_step: 'post_merge_verify',
+      cleanup_step: 'repo_operations',
       reason: 'verify_cmd_failed'
     });
     expect(h.bd.updateFields).not.toHaveBeenCalled();
     expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'post_merge_verify',
+      step: 'repo_operations',
       reason: 'verify_cmd_failed'
     });
   });
@@ -2338,7 +2390,7 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r).toMatchObject({ ok: false, cleanup_step: 'base_sync' });
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'base_containment' });
     expect(h.bd.setStatus).not.toHaveBeenCalled();
     expect(h.store.snapshot(WS).cleanup_failed[BEAD].bd_restore).toBeNull();
   });
@@ -2852,9 +2904,8 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
 
     expect(env.steps).toEqual([
       'merging',
-      'base_sync',
-      'post_merge_verify',
-      'deployment_request',
+      'base_containment',
+      'repo_operations',
       'child_sweep',
       'branch_cleanup',
       'parent_close',
@@ -2894,10 +2945,8 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
 
   test('releases the progress when the gate refuses the click', async () => {
     const env = makeActions({
-      checks: {
-        state: 'ok',
-        data: [{ name: 'ci', conclusion: 'fail', status: 'completed' }]
-      }
+      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
+      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
     });
 
     const r = await env.actions.merge(BEAD);
@@ -2911,12 +2960,199 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
 
     await env.actions.cleanupObservedMerge(BEAD, 'c'.repeat(40));
 
-    expect(env.steps[0]).toBe('base_sync');
+    expect(env.steps[0]).toBe('base_containment');
     expect(env.steps[env.steps.length - 1]).toBe('(cleared)');
 
     await observeSucceededDeployment(env);
 
     expect(env.steps).toContain('parent_close');
+  });
+});
+
+describe('worker/pr-actions — RepoOperation cleanup lane', () => {
+  function repoOperations(overrides = {}) {
+    return {
+      hasConfig: vi.fn(async () => ({ ok: true, present: true })),
+      ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForTerminal: vi.fn(),
+      verifyReceipt: vi.fn(),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' })),
+      ...overrides
+    };
+  }
+
+  test('uses coordinator and skips legacy verify and deploy for configured repos', async () => {
+    const operations = repoOperations();
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(operations.ensureVerify).toHaveBeenCalled();
+    expect(operations.ensureDeploy).toHaveBeenCalled();
+    expect(env.runVerify).not.toHaveBeenCalled();
+    expect(env.calls).not.toContain('deploy:request');
+    expect(env.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+  });
+
+  test('keeps the legacy lane when the coordinator finds no config', async () => {
+    let requested_sha = '';
+    const requestDeployment = vi.fn(async (input) => {
+      requested_sha = input.verified_sha;
+      return {
+        accepted: true,
+        noop: false,
+        target_base: input.target_base,
+        target_sha: input.verified_sha,
+        generation: 1
+      };
+    });
+    const operations = repoOperations({
+      hasConfig: vi.fn(async () => ({ ok: true, present: false }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      verify: VERIFY_CFG,
+      deploymentJob: {
+        requestDeployment,
+        deploymentStatus: vi.fn(async () => ({
+          state: 'succeeded',
+          target_base: 'main',
+          target_sha: requested_sha,
+          deployed_sha: requested_sha,
+          generation: 1,
+          error_code: null,
+          log_path: '/tmp/deploy.log'
+        }))
+      }
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(env.runVerify).toHaveBeenCalledTimes(2);
+    expect(env.runVerify).toHaveBeenLastCalledWith(
+      expect.objectContaining({ bead_id: `${BEAD}-postmerge` })
+    );
+    expect(requestDeployment).toHaveBeenCalledOnce();
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+    expect(operations.ensureDeploy).not.toHaveBeenCalled();
+    expect(env.steps).toEqual([
+      'merging',
+      'base_containment',
+      'repo_operations',
+      'child_sweep',
+      'branch_cleanup',
+      'parent_close',
+      '(cleared)'
+    ]);
+  });
+
+  test('refuses an unreadable coordinator config before legacy work', async () => {
+    const requestDeployment = vi.fn();
+    const operations = repoOperations({
+      hasConfig: vi.fn(async () => ({
+        ok: false,
+        code: 'repo_ops_config_invalid'
+      }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      verify: VERIFY_CFG,
+      deploymentJob: {
+        requestDeployment,
+        deploymentStatus: vi.fn()
+      }
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'repo_ops_config_invalid'
+    });
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(env.runVerify).not.toHaveBeenCalled();
+    expect(requestDeployment).not.toHaveBeenCalled();
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+    expect(operations.ensureDeploy).not.toHaveBeenCalled();
+  });
+
+  test('returns a durable continuation outcome for pre-merge verify failure', async () => {
+    const operations = repoOperations({
+      ensureVerify: vi.fn(async () => ({
+        ok: true,
+        operation_id: 'verify-1',
+        timeout_ms: 100
+      })),
+      waitForTerminal: vi.fn(async () => ({
+        operation_id: 'verify-1',
+        effective_base_sha: BASE_SHA,
+        head_sha: 'a'.repeat(40),
+        candidate_tree_sha: 'c'.repeat(40),
+        script_object_type: 'blob',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40),
+        ok: false,
+        reason: 'verify_cmd_failed',
+        state: 'failed',
+        at: 1
+      }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ state: 'OPEN', head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'verify_blocked',
+      reason: 'verify_cmd_failed',
+      head_sha: 'a'.repeat(40)
+    });
+  });
+
+  test('keeps bead open until deploy operation has terminal success evidence', async () => {
+    let deployment_state = 'running';
+    const operations = repoOperations({
+      ensureDeploy: vi.fn(async () => ({
+        ok: true,
+        operation_id: 'deploy-1'
+      })),
+      deploymentEvidence: vi.fn(async () => ({ state: deployment_state }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const pending = await env.actions.merge(BEAD);
+    deployment_state = 'succeeded';
+    const completed = await env.actions.cleanupObservedMerge(
+      BEAD,
+      'c'.repeat(40)
+    );
+
+    expect(pending).toMatchObject({
+      ok: true,
+      action: 'merged',
+      cleanup_step: 'repo_operations',
+      reason: null
+    });
+    expect(completed).toMatchObject({ ok: true, reason: null });
+    expect(env.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
+    expect(env.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
   });
 });
 
@@ -3087,7 +3323,7 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     );
   });
 
-  test('dispatches after the BEHIND update-branch re-observes a conflict', async () => {
+  test('refuses an external BEHIND row without updating it', async () => {
     const env = makeActions(
       externalOptions({
         declaredBase: 'release',
@@ -3104,13 +3340,53 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
 
     const r = await env.actions.merge(EXTERNAL_BEAD);
 
-    expect(env.gh.updateBranch).toHaveBeenCalled();
-    expect(r.action).toBe('conflict_resolution');
-    expect(env.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
-      WS,
-      EXTERNAL_BEAD,
-      'release'
+    expect(env.gh.updateBranch).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ ok: false, reason: 'base_behind' });
+    expect(env.scheduler.dispatchExternalConflict).not.toHaveBeenCalled();
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('routes an externally merged row through the coordinator interface', async () => {
+    const ensureVerify = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'verify-final',
+      timeout_ms: 100
+    }));
+    const ensureDeploy = vi.fn(async () => ({ ok: true, inert: true }));
+    const env = makeActions(
+      externalOptions({
+        details: [
+          prOf({
+            state: 'MERGED',
+            head_sha: 'a'.repeat(40),
+            merged_sha: 'c'.repeat(40)
+          })
+        ],
+        repoOperations: {
+          hasConfig: vi.fn(async () => ({ ok: true, present: true })),
+          ensureVerify,
+          ensureDeploy,
+          waitForTerminal: vi.fn(async () => ({
+            state: 'succeeded',
+            ok: true,
+            reason: 'ok'
+          })),
+          verifyReceipt: vi.fn(),
+          deploymentEvidence: vi.fn()
+        }
+      })
     );
+
+    const result = await env.actions.merge(EXTERNAL_BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'already_merged' });
+    expect(ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        final_sha: 'c'.repeat(40),
+        receipt_operation_id: null
+      })
+    );
+    expect(ensureDeploy).toHaveBeenCalledOnce();
     expect(env.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
@@ -3334,16 +3610,14 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
     expect(r).toEqual({ ok: false, reason: 'not_in_pr_wait' });
   });
 
-  test('a durable pr_wait row still merges without any bd re-read', async () => {
+  test('re-reads review authority before merging a durable pr_wait row', async () => {
     const env = makeActions();
 
     const r = await env.actions.merge(BEAD);
 
     expect(r.action).toBe('merged');
-    // Scoped to the CLICK: the cleanup's ship step reads the bead again on
-    // purpose (UI-4ii4), so the claim is about lane membership, not the run.
     const click = env.calls.slice(0, env.calls.indexOf('gh:mergeSquash'));
-    expect(click).not.toContain(`bd:readIssue:${BEAD}`);
+    expect(click).toContain(`bd:readIssue:${BEAD}`);
   });
 });
 
@@ -3404,7 +3678,7 @@ describe('worker/pr-actions — external rows acquire a durable deployment hando
 
     expect(r.ok).toBe(false);
     expect(env.store.snapshot(WS).cleanup_failed[EXTERNAL_BEAD]).toMatchObject({
-      step: 'base_sync',
+      step: 'base_containment',
       reason: 'base_fetch_failed'
     });
   });
@@ -3417,19 +3691,17 @@ describe('worker/pr-actions — external rows acquire a durable deployment hando
     await env.actions.merge(BEAD);
 
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
-      step: 'base_sync'
+      step: 'base_containment'
     });
   });
 
-  test('reads status and pr_url in ONE bd show so they cannot disagree', async () => {
+  test('reads status and pr_url atomically before the review read', async () => {
     const env = makeActions(externalOptions());
 
     await env.actions.merge(EXTERNAL_BEAD);
 
-    // ONE read up to the merge — the later reads belong to the ship step
-    // (UI-4ii4), which runs long after the click-time guard has decided.
     const click = env.calls.slice(0, env.calls.indexOf('gh:mergeSquash'));
-    expect(click.filter((c) => c.startsWith('bd:readIssue:'))).toHaveLength(1);
+    expect(click.filter((c) => c.startsWith('bd:readIssue:'))).toHaveLength(2);
   });
 
   test('refuses when the bd adapter cannot answer atomically', async () => {
@@ -3540,13 +3812,14 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
 
     const r = await h.actions.merge(BEAD);
 
-    expect(r).toMatchObject({ ok: false, cleanup_step: 'post_merge_verify' });
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'repo_operations' });
     expect(h.notify.mergeCompleted).not.toHaveBeenCalled();
   });
 
   test('announces nothing when the click-time gate refuses the merge', async () => {
     const h = makeActions({
-      checks: { state: 'ok', data: [{ name: 'ci', conclusion: 'fail' }] }
+      verify: VERIFY_CFG,
+      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
     });
 
     const r = await h.actions.merge(BEAD);
@@ -3664,7 +3937,7 @@ describe('worker/pr-actions — base gate operand separation (worker-base-scope-
     expect(r).toMatchObject({ ok: false, reason: 'base_ref_unobserved' });
   });
 
-  test('re-compares the base after the BEHIND update-branch', async () => {
+  test('refuses BEHIND before updating or re-comparing the base', async () => {
     const env = makeActions({
       store: attemptStore('main'),
       details: [
@@ -3675,10 +3948,10 @@ describe('worker/pr-actions — base gate operand separation (worker-base-scope-
 
     const r = await env.actions.merge(BEAD);
 
-    expect(env.gh.updateBranch).toHaveBeenCalled();
+    expect(env.gh.updateBranch).not.toHaveBeenCalled();
     expect(r).toMatchObject({
       ok: false,
-      reason: 'base_mismatch:main!=ilsun/dev'
+      reason: 'base_behind'
     });
     expect(env.gh.mergeSquash).not.toHaveBeenCalled();
   });
@@ -3768,7 +4041,7 @@ describe('worker/pr-actions completion gate evidence', () => {
       },
       verdict: {
         enabled: false,
-        tier: 'local_verify',
+        tier: 'verify',
         reason: 'verify_cmd_failed'
       },
       evidence: {
@@ -3815,5 +4088,59 @@ describe('worker/pr-actions completion gate evidence', () => {
     const result = await env.actions.completionGate(BEAD);
 
     expect(result).toEqual({ ok: false, reason: 'merge_sha_unobserved' });
+  });
+});
+
+describe('worker/pr-actions — legacy migration seams (master spec §11)', () => {
+  test('reports the expected base and the observed merge SHA for a row', async () => {
+    const env = makeActions({
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })]
+    });
+
+    const facts = await env.actions.cleanupFacts(BEAD);
+
+    expect(facts).toMatchObject({
+      base: 'main',
+      base_reason: null,
+      merge_sha: 'c'.repeat(40)
+    });
+  });
+
+  test('reports the base resolution failure instead of guessing a base', async () => {
+    const env = makeActions({
+      store: createQueueStore(),
+      resolveBase: async () => ({ ok: false, step: 'declaration_missing' })
+    });
+
+    const facts = await env.actions.cleanupFacts('UI-unknown');
+
+    expect(facts).toMatchObject({
+      base: null,
+      base_reason: 'base_unresolved:declaration_missing'
+    });
+  });
+
+  test('closes a migrated row through the standard closure', async () => {
+    const env = makeActions({ details: [prOf({ state: 'MERGED' })] });
+
+    const result = await env.actions.resumeMigratedClosure(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(env.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+  });
+
+  test('resumes a closure the migration already retired the failure for', async () => {
+    const store = seedStore({
+      cleanup_failed: { [BEAD]: { step: 'child_sweep', reason: 'boom' } }
+    });
+    const env = makeActions({ store, details: [prOf({ state: 'MERGED' })] });
+    store.clearCleanupFailure(WS, BEAD);
+
+    const result = await env.actions.resumeMigratedClosure(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
   });
 });

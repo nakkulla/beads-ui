@@ -5,8 +5,8 @@
  * Phase 1 made "the server OBSERVED an open PR" the completion verdict and
  * parked the bead in `pr_wait`. Nothing watched it after that: the tile knew a
  * PR existed and nothing else. This module closes that loop — every interval it
- * re-observes each `pr_wait` PR (state · mergeable · mergeStateStatus · CI ·
- * head SHA), writes the result into the non-persistent observation cache, and
+ * re-observes each `pr_wait` PR (state · mergeable · mergeStateStatus · head
+ * SHA), writes the result into the non-persistent observation cache, and
  * emits a queue-changed so the existing `worker-queue-snapshot` push carries
  * fresh badges to every subscriber. It NEVER merges, cleans up, or moves a
  * bead — Phase 5 owns every action.
@@ -23,20 +23,15 @@
  * only TRIGGERS that computation, so reporting it verbatim would show
  * "확인중" indefinitely. The delay is injected so tests never sleep.
  *
- * Local verification (§5 tier 2) runs from here too, pinned to the observed
- * head SHA — see {@link runVerifyAtSha}. It is started only for an OPEN PR
- * whose checks observation came back SUCCESSFULLY EMPTY (no CI) when the
- * workspace resolves a `verify_cmd` and the cache holds no result for that
- * exact SHA (a restart cache-miss, or the head advanced). A recorded RED for
- * the current SHA is not re-run on a timer — that would relaunch a full test
- * suite every interval forever; Phase 5's click-time re-check is what re-runs
- * it deliberately.
+ * Optional verification runs from here too, pinned to the observed head SHA.
+ * A recorded failure for the current SHA is not re-run on a timer; click-time
+ * evaluation owns deliberate retries.
  *
  * @import { Queue } from './queue-store.js'
- * @import { CiObservation } from './pr-observations.js'
  */
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
 import { runVerifyAtSha } from './verify-cmd.js';
 
@@ -156,38 +151,15 @@ export function resolvePrRef(queue, bead_id, external = null) {
 }
 
 /**
- * Roll a set of normalized checks up to one verdict. A single failure decides
- * the whole rollup; otherwise anything still running keeps it pending; skipped
- * checks do not hold the gate.
- *
- * @param {import('./gh.js').CheckObservation[]} checks
- * @returns {'pass'|'fail'|'pending'}
- */
-export function rollupConclusion(checks) {
-  let pending = false;
-  for (const c of checks) {
-    if (c.conclusion === 'fail') {
-      return 'fail';
-    }
-    if (c.conclusion === 'pending') {
-      pending = true;
-    }
-  }
-  return pending ? 'pending' : 'pass';
-}
-
-/**
  * Create a PR poller for ONE workspace.
  *
  * @param {{
  *   workspace: string,
  *   repo: string,
  *   store: { snapshot: (workspace: string) => Queue },
- *   gh: {
- *     prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>>,
- *     prChecks: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').CheckObservation[]>>
- *   },
+ *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>> },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
+ *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./repo-ops.js').VerifyResolution>,
@@ -388,8 +360,7 @@ export function createPrPoller(deps) {
       };
     }
 
-    // A merged or closed PR is classified by its state alone — there is no gate
-    // left to compute, so no checks query is spent on it. MERGED hands off to
+    // A merged or closed PR is classified by its state alone. MERGED hands off to
     // the SAME post-merge cleanup the [머지] button runs (worker-phase2 §6 — one
     // implementation, two triggers); CLOSED-unmerged is NOT a completion, so the
     // bead simply stays where it is awaiting a human decision (§4).
@@ -417,55 +388,27 @@ export function createPrPoller(deps) {
       return { verify: null };
     }
 
-    /** @type {import('./gh.js').GhResult<import('./gh.js').CheckObservation[]>} */
-    let checks;
-    try {
-      checks = await deps.gh.prChecks(repo, ref.number);
-    } catch {
-      checks = { state: 'error', reason: 'gh_spawn_failed' };
+    /** @type {'current'|'missing'|'stale'|'invalid'} */
+    let review_receipt_state = 'invalid';
+    if (typeof deps.readIssue === 'function') {
+      try {
+        const issue = await deps.readIssue(bead_id);
+        review_receipt_state = reviewReceiptState(issue, pr.head_sha);
+      } catch {
+        review_receipt_state = 'invalid';
+      }
     }
-    /** @type {CiObservation} */
-    const ci =
-      checks.state === 'ok'
-        ? {
-            state: 'ok',
-            head_sha: pr.head_sha,
-            checks: checks.data,
-            conclusion: rollupConclusion(checks.data),
-            reason: null
-          }
-        : checks.state === 'empty'
-          ? {
-              state: 'empty',
-              head_sha: pr.head_sha,
-              checks: [],
-              conclusion: null,
-              reason: null
-            }
-          : {
-              state: 'error',
-              head_sha: pr.head_sha,
-              checks: [],
-              conclusion: null,
-              reason: checks.reason
-            };
-    deps.observations.record(workspace, bead_id, { error: null, pr, ci });
+    deps.observations.record(workspace, bead_id, {
+      error: null,
+      pr,
+      review_receipt: {
+        state: review_receipt_state,
+        head_sha: pr.head_sha
+      }
+    });
 
-    // Resolved on EVERY pass, CI or no CI (UI-kfl4 §4.1). The run below only
-    // needs it in the no-CI tier, but the SYNCHRONOUS consumers — the queue
-    // decoration's gate verdict and the auto-merge enrollment scan — read the
-    // projection this call publishes. Resolving only in the no-CI branch left a
-    // repo WITH CI publishing nothing, so a broken declaration rendered as a
-    // mergeable row and got enrolled.
-    // Pre-merge context, so the pin is the fetched remote target-base tip that
-    // the injected resolver supplies.
+    // Pre-merge context: the injected resolver pins policy to target base.
     const resolved = await resolveVerify();
-    if (ci.state !== 'empty') {
-      return { verify: null };
-    }
-    // An `invalid` declaration starts NO run: the gate refuses the row as
-    // undecidable, and running a command resolved from the legacy fallback
-    // would be the silent drift the ladder exists to end.
     if (resolved.state !== 'resolved') {
       return { verify: null };
     }

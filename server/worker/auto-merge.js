@@ -88,9 +88,7 @@ export function createAutoMerge(deps) {
     try {
       verify_cmd_state = deps.verifyCmdState();
     } catch {
-      // An unreadable resolution is not a broken declaration — it is no
-      // declaration this pass could see, so the gate falls to its own tiers.
-      verify_cmd_state = 'absent';
+      verify_cmd_state = 'invalid';
     }
     /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
     const entries = [];

@@ -237,3 +237,100 @@ export function usageReceiptInboxDir(workspace_root, attempt_id) {
 export function usageReceiptRootDir(workspace_root) {
   return path.resolve(workspaceStateDir(workspace_root), 'usage-receipts');
 }
+
+/**
+ * Absolute directory used by the Worker-owned bootstrap handoff. CLI callers
+ * may create request files here, but only the running Worker consumes them and
+ * writes queue state.
+ *
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function repoOpsSpoolDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'repo-ops-spool');
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function repoOpsSpoolPendingDir(workspace_root) {
+  return path.join(repoOpsSpoolDir(workspace_root), 'pending');
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function repoOpsSpoolProcessedDir(workspace_root) {
+  return path.join(repoOpsSpoolDir(workspace_root), 'processed');
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function repoOperationLogDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'repo-operation-logs');
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function repoOperationMarkerDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'repo-operation-markers');
+}
+
+/**
+ * @param {string} workspace_root
+ * @param {string} operation_id
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function repoOperationMarkerPath(
+  workspace_root,
+  operation_id,
+  attempt_id
+) {
+  const safe_operation = String(operation_id || 'operation').replace(
+    /[^A-Za-z0-9._-]/g,
+    '_'
+  );
+  const safe_attempt = String(attempt_id || 'attempt').replace(
+    /[^A-Za-z0-9._-]/g,
+    '_'
+  );
+  return path.join(
+    repoOperationMarkerDir(workspace_root),
+    `${safe_operation}__${safe_attempt}.json`
+  );
+}
+
+/**
+ * Launch handshake the runner child writes BEFORE executing the script, so a
+ * crash between spawn and the queue record never orphans a live process.
+ *
+ * @param {string} workspace_root
+ * @param {string} operation_id
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function repoOperationLaunchMarkerPath(
+  workspace_root,
+  operation_id,
+  attempt_id
+) {
+  return `${repoOperationMarkerPath(workspace_root, operation_id, attempt_id)}.launch`;
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function repoOpsDeployWorktreeJournalPath(workspace_root) {
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'repo-ops-deploy-worktree.json'
+  );
+}

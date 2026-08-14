@@ -722,7 +722,7 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
         workspace({
           pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
           pr_observations: {
-            'A-pr': { gate: { enabled: false, tier: 'ci_pending' } }
+            'A-pr': { gate: { enabled: false, tier: 'verify' } }
           }
         })
       ],
@@ -731,6 +731,28 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
 
     expect(lanes.pr_wait[0].merge_action).toBe(true);
     expect(lanes.pr_wait[0].merge_enabled).toBe(false);
+  });
+
+  test('projects the no-CI eligibility badge', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          pr_observations: {
+            'A-pr': {
+              gate: {
+                enabled: true,
+                tier: 'eligible',
+                gate_badge: '머지 가능'
+              }
+            }
+          }
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].badges).toContain('머지 가능');
   });
 
   test('enables merge on a conflicting gate so the click dispatches resolution', () => {

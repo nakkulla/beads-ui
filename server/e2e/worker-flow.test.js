@@ -214,7 +214,10 @@ function buildSystem(opts) {
   const bd = makeFakeBd(opts.config);
   const pr_open = opts.prOpen ?? true;
   /** @type {{ metadata: Record<string, string>, status: string }} */
-  const bd_record = { metadata: {}, status: 'in_progress' };
+  const bd_record = {
+    metadata: { route: 'quick_fix' },
+    status: 'in_progress'
+  };
   const verify = createVerifier({
     gh: {
       openPrForBranch: async (
@@ -600,9 +603,6 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
             merged_sha
           }
         }),
-        // A repo with no CI and no verify_cmd — §5's third tier, where the
-        // click itself is the decision.
-        prChecks: async () => ({ state: 'empty' }),
         mergeSquash: async (
           /** @type {string} */ _repo,
           /** @type {number} */ number,
@@ -671,7 +671,7 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     expect(interrupted).toMatchObject({
       ok: false,
       action: 'merged',
-      cleanup_step: 'deployment_request',
+      cleanup_step: 'repo_operations',
       reason: 'deployment_request_unknown'
     });
     expect(result).toMatchObject({
@@ -698,7 +698,11 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
     // The retry click re-observes the already-merged PR before resuming cleanup.
     expect(
       evaluateMergeGate(observations.get(WS, 'M1'), {
-        verify_cmd_state: 'absent'
+        review_receipt_state: 'current',
+        verify_receipt_state: {
+          declaration_state: 'absent',
+          receipt: null
+        }
       })
     ).toMatchObject({
       enabled: false,
@@ -766,7 +770,6 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
             merged_sha: pr_state === 'MERGED' ? merged_sha : null
           }
         }),
-        prChecks: async () => ({ state: 'empty' }),
         mergeSquash: async () => {
           pr_state = 'MERGED';
           return { state: 'ok', data: { merged: true } };
@@ -784,6 +787,11 @@ describe('worker e2e — the human [머지] click carries the bead to done', () 
         readStatus: async () => bd_record.status,
         unsetMetadata: async () => {},
         readMetadata: async () => null,
+        readIssue: async (/** @type {string} */ id) => ({
+          id,
+          status: bd_record.status,
+          metadata: bd_record.metadata
+        }),
         // bd cannot answer — an unreadable child list STOPS the sweep rather
         // than closing a parent over unknown children (§6).
         listChildren: async () => {
@@ -1055,7 +1063,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     });
     const failure_key = {
       stage: 'merge_gate',
-      reason: 'ci_failed',
+      reason: 'verify_cmd_failed',
       subject_sha: old_subject.head_sha,
       base_sha,
       result_digest: 'c'.repeat(64)
@@ -1208,7 +1216,7 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     });
     const failure_key = {
       stage: 'merge_gate',
-      reason: 'ci_failed',
+      reason: 'verify_cmd_failed',
       subject_sha: subject.head_sha,
       base_sha: subject.base_sha,
       result_digest: 'c'.repeat(64)

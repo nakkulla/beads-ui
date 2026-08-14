@@ -135,8 +135,7 @@ describe('ws worker-queue channel', () => {
         head_ref: repair_bead_id,
         head_sha: 'c'.repeat(40),
         base_ref: 'main'
-      },
-      ci: null
+      }
     });
     const snapshot = /** @type {any} */ (
       decorateQueue('', {
@@ -998,8 +997,9 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
 
   /**
    * @param {Partial<import('./worker/gh.js').PrDetail>} [pr]
+   * @param {'current'|'missing'|'stale'|'invalid'} [review_state]
    */
-  function observe(pr = {}) {
+  function observe(pr = {}, review_state = 'current') {
     getWorkerRuntime().prObservations.record('', 'UI-9', {
       error: null,
       pr: {
@@ -1013,13 +1013,7 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
         head_sha: SHA,
         ...pr
       },
-      ci: {
-        state: 'ok',
-        head_sha: SHA,
-        checks: [{ name: 'build', conclusion: 'pass' }],
-        conclusion: 'pass',
-        reason: null
-      }
+      review_receipt: { state: review_state, head_sha: SHA }
     });
   }
 
@@ -1050,7 +1044,23 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
 
     const obs = queueSnapshots(sock).at(-1).pr_observations['UI-9'];
     expect(obs.pr).toMatchObject({ number: 304, head_sha: SHA });
-    expect(obs.gate).toMatchObject({ enabled: true, gate_badge: 'CI ✓' });
+    expect(obs.gate).toMatchObject({ enabled: true, gate_badge: '머지 가능' });
+  });
+
+  test('the snapshot refuses a stale implementation review', async () => {
+    parkInPrWait('UI-9');
+    observe({}, 'stale');
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].gate
+    ).toMatchObject({
+      enabled: false,
+      tier: 'review',
+      reason: 'review_receipt_stale'
+    });
   });
 
   test('an unobserved pr_wait bead is gated shut, never enabled', async () => {
@@ -1184,7 +1194,7 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
 
     expect(
       queueSnapshots(sock).at(-1).pr_observations['UI-9'].gate
-    ).toMatchObject({ enabled: true, gate_badge: 'CI ✓' });
+    ).toMatchObject({ enabled: true, gate_badge: '머지 가능' });
   });
 
   test('a bead already in the durable lane is not duplicated by the overlay', async () => {
@@ -1443,13 +1453,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
         head_sha: sha,
         ...pr
       },
-      ci: {
-        state: 'ok',
-        head_sha: sha,
-        checks: [{ name: 'build', conclusion: 'pass' }],
-        conclusion: 'pass',
-        reason: null
-      }
+      review_receipt: { state: 'current', head_sha: sha }
     });
   }
 
@@ -1910,7 +1914,7 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     store.recordMergeSkip('', {
       bead_id: 'UI-1',
       head_sha: 'f'.repeat(40),
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     });
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });

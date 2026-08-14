@@ -1,59 +1,142 @@
 /**
- * The three-tier merge gate (worker-phase2 §5) — a PURE function over one
- * bead's PR observation.
+ * No-CI merge eligibility. Pure evaluation over an observed PR's mergeability,
+ * workflow review receipts, and the optional verify receipt.
  *
- * | signal source                 | gate                        | badge        |
- * |-------------------------------|-----------------------------|--------------|
- * | GitHub CI present             | [머지] only while CI green  | CI ✓         |
- * | no CI + `verify_cmd` resolved | only with a local green FOR | 로컬검증 ✓   |
- * |                               | THE CURRENT head SHA        |              |
- * | neither (successful empties)  | no gate                     | 검증 신호 없음 |
- * | `verify_cmd` UNREADABLE       | blocked, undecidable        | 관측 오류    |
+ * Observation failures stay fail-closed. Every receipt that can approve a
+ * merge is bound to the currently observed head SHA.
  *
- * Two rules dominate everything else here:
+ * Identity is not a caller-provided gate input. Cached projections are advisory
+ * and stay bound to the latest poller's PR/head observation. The authoritative
+ * click re-runs `observeNow`, then compares the observed base with `baseGate`
+ * before any effect; that effect boundary owns target-base/head freshness.
  *
- * 1. FAIL CLOSED. Any observation ERROR — a failed `gh` query, an unresolvable
- *    PR reference, an unreadable checks payload — makes the gate UNDECIDABLE:
- *    disabled, with an error badge. It is NEVER downgraded to the third
- *    "검증 신호 없음" tier. Only a SUCCESSFUL empty checks observation may
- *    conclude "this repo has no CI".
- * 2. EVERY verdict is bound to the CURRENT head SHA. A CI or local-verify
- *    result carried over from an older commit does not satisfy the gate; the
- *    gate reports "not observed yet" until a result for the current head
- *    arrives. That is what makes a branch update / conflict resolution / a
- *    server restart (cache miss) re-verify instead of passing on a stale green.
- *
- * Nothing here merges, queries, or mutates — Phase 5 owns the [머지] action and
- * its click-time authoritative re-query.
- *
- * @import { PrObservationEntry } from './pr-observations.js'
+ * @import { PrObservationEntry, VerifyObservation } from './pr-observations.js'
+ */
+
+/**
+ * @typedef {'current'|'missing'|'stale'|'invalid'} CurrentState
+ */
+
+/**
+ * @typedef {Object} VerifyReceiptState
+ * @property {'present'|'absent'|'invalid'} declaration_state
+ * @property {VerifyObservation|null} receipt
+ * @property {Record<string, string>|null} [expected_key]
+ */
+
+/**
+ * @typedef {Object} MergeGateInput
+ * @property {CurrentState} review_receipt_state
+ * @property {VerifyReceiptState} verify_receipt_state
  */
 
 /**
  * @typedef {Object} MergeGateVerdict
- * @property {boolean} enabled - Whether [머지] may be offered as clickable.
- * @property {'ci'|'local_verify'|'none'|'undecidable'|'unobserved'|'merged'|'closed_unmerged'} tier
- * Which §5 row decided this (or the terminal PR state that pre-empted them).
- * @property {string} gate_badge - Badge for the verification signal.
- * @property {string} base_badge - Badge for the PR's base relationship
- * (`충돌` / `base 뒤처짐` / `최신` …); empty when there is nothing to say.
- * @property {string|null} reason - Machine-readable cause for a refusal.
+ * @property {boolean} enabled
+ * @property {'eligible'|'mergeability'|'review'|'verify'|'undecidable'|'unobserved'|'merged'|'closed_unmerged'} tier
+ * @property {string} gate_badge
+ * @property {string} base_badge
+ * @property {string|null} reason
  */
 
-/** Badge strings (worker-phase2 §5/§7). */
 export const GATE_BADGES = {
-  ci_pass: 'CI ✓',
-  ci_fail: 'CI ✗',
-  ci_pending: 'CI 대기',
-  verify_pass: '로컬검증 ✓',
-  verify_fail: '로컬검증 ✗',
-  verify_pending: '로컬검증 대기',
-  no_signal: '검증 신호 없음',
+  eligible: '머지 가능',
+  review: '리뷰 확인 필요',
+  verify_pass: '검증 완료',
+  verify_fail: '검증 실패',
+  verify_pending: '검증 대기',
+  blocked: '머지 불가',
   error: '관측 오류',
   unobserved: '관측 대기',
   merged: '머지됨',
   closed: 'PR closed'
 };
+
+const REVIEW_RECEIPT_RE = /^[^@\s]+@([0-9a-f]{40})$/i;
+
+const VERIFY_RECEIPT_FIELDS = [
+  'effective_base_sha',
+  'head_sha',
+  'candidate_tree_sha',
+  'script_object_type',
+  'script_mode',
+  'script_blob_sha'
+];
+
+/**
+ * @param {Record<string, unknown>|null|undefined} receipt
+ * @param {Record<string, unknown>|null|undefined} expected
+ */
+export function verifyReceiptMatches(receipt, expected) {
+  if (!receipt || !expected) {
+    return false;
+  }
+  return VERIFY_RECEIPT_FIELDS.every(
+    (field) =>
+      typeof receipt[field] === 'string' && receipt[field] === expected[field]
+  );
+}
+
+/**
+ * Derive workflow review freshness from one authoritative Bead read.
+ *
+ * @param {Record<string, any>|null|undefined} issue
+ * @param {string} head_sha
+ * @returns {CurrentState}
+ */
+export function reviewReceiptState(issue, head_sha) {
+  if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
+    return 'invalid';
+  }
+  const metadata =
+    issue.metadata &&
+    typeof issue.metadata === 'object' &&
+    !Array.isArray(issue.metadata)
+      ? /** @type {Record<string, unknown>} */ (issue.metadata)
+      : null;
+  if (!metadata) {
+    return 'missing';
+  }
+  if (metadata.route === 'quick_fix') {
+    return 'current';
+  }
+  if (metadata.route !== 'spec_backed' && metadata.route !== 'full_plan') {
+    return 'invalid';
+  }
+  if (typeof issue.spec_id !== 'string' || issue.spec_id.length === 0) {
+    return 'missing';
+  }
+  const spec_review =
+    typeof metadata.spec_review === 'string'
+      ? REVIEW_RECEIPT_RE.exec(metadata.spec_review.trim())
+      : null;
+  const impl_review =
+    typeof metadata.impl_review === 'string'
+      ? REVIEW_RECEIPT_RE.exec(metadata.impl_review.trim())
+      : null;
+  if (!spec_review || !impl_review) {
+    return 'missing';
+  }
+  return impl_review[1].toLowerCase() === head_sha.toLowerCase()
+    ? 'current'
+    : 'stale';
+}
+
+/**
+ * Read a cached review result only while it is bound to the cached PR head.
+ *
+ * @param {PrObservationEntry|null} entry
+ * @returns {CurrentState}
+ */
+export function observedReviewReceiptState(entry) {
+  if (!entry || !entry.pr || !entry.review_receipt) {
+    return 'missing';
+  }
+  if (entry.review_receipt.head_sha !== entry.pr.head_sha) {
+    return 'stale';
+  }
+  return entry.review_receipt.state;
+}
 
 /**
  * @param {boolean} enabled
@@ -68,10 +151,6 @@ function verdict(enabled, tier, gate_badge, base_badge, reason) {
 }
 
 /**
- * Describe the PR's relationship to its base. Advisory only — §6 makes the
- * click-time re-query authoritative — so an unrecognized combination says
- * nothing rather than guessing.
- *
  * @param {import('./gh.js').PrDetail} pr
  * @returns {string}
  */
@@ -82,27 +161,41 @@ function baseBadge(pr) {
   if (pr.merge_state_status === 'BEHIND') {
     return 'base 뒤처짐';
   }
-  if (pr.merge_state_status === 'CLEAN') {
-    return '최신';
-  }
-  if (pr.mergeable === 'UNKNOWN') {
+  if (pr.mergeable === 'UNKNOWN' || pr.merge_state_status === 'UNKNOWN') {
     return 'base 확인중';
+  }
+  if (pr.mergeable === 'MERGEABLE' && pr.merge_state_status === 'CLEAN') {
+    return '최신';
   }
   return '';
 }
 
 /**
- * Evaluate the merge gate for one bead.
- *
- * @param {PrObservationEntry|null} entry - The bead's observation, or null when
- * the poller has not observed it yet.
- * @param {{ verify_cmd_state: 'resolved'|'absent'|'invalid' }} options - How the
- * workspace's verify command RESOLVES (UI-kfl4). The second tier exists only for
- * `resolved`; `invalid` is a declaration that cannot be read and is handled by
- * fail-closed rule 3 below.
+ * @param {import('./gh.js').PrDetail} pr
+ * @returns {string|null}
+ */
+function mergeabilityReason(pr) {
+  if (pr.mergeable === 'CONFLICTING' || pr.merge_state_status === 'DIRTY') {
+    return 'merge_conflicting';
+  }
+  if (pr.merge_state_status === 'BEHIND') {
+    return 'base_behind';
+  }
+  if (pr.mergeable === 'UNKNOWN' || pr.merge_state_status === 'UNKNOWN') {
+    return 'mergeability_unknown';
+  }
+  if (pr.mergeable !== 'MERGEABLE' || pr.merge_state_status !== 'CLEAN') {
+    return 'mergeability_not_clean';
+  }
+  return null;
+}
+
+/**
+ * @param {PrObservationEntry|null} entry
+ * @param {MergeGateInput} input
  * @returns {MergeGateVerdict}
  */
-export function evaluateMergeGate(entry, options) {
+export function evaluateMergeGate(entry, input) {
   if (!entry) {
     return verdict(
       false,
@@ -112,7 +205,6 @@ export function evaluateMergeGate(entry, options) {
       'not_observed'
     );
   }
-  // Fail-closed rule 1: an observation error is undecidable, not "no signal".
   if (entry.error) {
     return verdict(false, 'undecidable', GATE_BADGES.error, '', entry.error);
   }
@@ -126,10 +218,6 @@ export function evaluateMergeGate(entry, options) {
       'no_pr_observation'
     );
   }
-  // Terminal PR states pre-empt the verification tiers: there is nothing left
-  // to gate. MERGED is recorded for Phase 5's cleanup to consume; CLOSED
-  // without a merge is NOT a completion — the bead stays in `pr_wait` awaiting
-  // a human decision (worker-phase2 §4, codex review finding 2).
   if (pr.state === 'MERGED') {
     return verdict(
       false,
@@ -149,83 +237,84 @@ export function evaluateMergeGate(entry, options) {
     );
   }
 
-  const base = baseBadge(pr);
-  // Fail-closed rule 3 (UI-kfl4): a verify declaration that EXISTS but cannot be
-  // read is undecidable, never tier 3. Collapsing it to "검증 신호 없음" would
-  // turn a broken `[verify]` section into an unverified-merge path — the exact
-  // inversion rule 1 forbids for observation errors. Checked ahead of the CI
-  // tier because the declaration is also what the post-merge steps read: a repo
-  // whose declaration is unreadable should not be merged on ANY signal.
-  if (options.verify_cmd_state === 'invalid') {
+  const base_badge = baseBadge(pr);
+  const mergeability_reason = mergeabilityReason(pr);
+  if (mergeability_reason !== null) {
+    return verdict(
+      false,
+      'mergeability',
+      GATE_BADGES.blocked,
+      base_badge,
+      mergeability_reason
+    );
+  }
+
+  if (input.review_receipt_state !== 'current') {
+    return verdict(
+      false,
+      'review',
+      GATE_BADGES.review,
+      base_badge,
+      `review_receipt_${input.review_receipt_state}`
+    );
+  }
+
+  const verify_state = input.verify_receipt_state;
+  if (verify_state.declaration_state === 'invalid') {
     return verdict(
       false,
       'undecidable',
       GATE_BADGES.error,
-      base,
+      base_badge,
       'verify_config_invalid'
     );
   }
-  const ci = entry.ci;
-  if (!ci || ci.state === 'error') {
-    return verdict(
-      false,
-      'undecidable',
-      GATE_BADGES.error,
-      base,
-      (ci && ci.reason) || 'no_ci_observation'
-    );
-  }
-  // Fail-closed rule 2: a checks observation taken at another commit says
-  // nothing about this one.
-  if (ci.head_sha !== pr.head_sha) {
-    return verdict(
-      false,
-      'unobserved',
-      GATE_BADGES.unobserved,
-      base,
-      'ci_sha_stale'
-    );
+  if (verify_state.declaration_state === 'absent') {
+    return verdict(true, 'eligible', GATE_BADGES.eligible, base_badge, null);
   }
 
-  // Tier 1 — the repo has CI.
-  if (ci.state === 'ok') {
-    if (ci.conclusion === 'pass') {
-      return verdict(true, 'ci', GATE_BADGES.ci_pass, base, null);
-    }
-    if (ci.conclusion === 'fail') {
-      return verdict(false, 'ci', GATE_BADGES.ci_fail, base, 'ci_failed');
-    }
-    return verdict(false, 'ci', GATE_BADGES.ci_pending, base, 'ci_pending');
-  }
-
-  // Tier 2 — a SUCCESSFUL empty checks observation plus a resolved verify_cmd.
-  if (options.verify_cmd_state === 'resolved') {
-    const v = entry.verify;
-    if (!v || v.head_sha !== pr.head_sha) {
-      // No result for the current head: a cache miss after a restart, or the
-      // SHA advanced past an older run. Either way the gate waits for a fresh
-      // run — a stale green never passes.
-      return verdict(
-        false,
-        'local_verify',
-        GATE_BADGES.verify_pending,
-        base,
-        v ? 'verify_sha_stale' : 'verify_missing'
-      );
-    }
-    if (v.ok) {
-      return verdict(true, 'local_verify', GATE_BADGES.verify_pass, base, null);
-    }
+  const receipt = verify_state.receipt;
+  if (!receipt) {
     return verdict(
       false,
-      'local_verify',
+      'verify',
+      GATE_BADGES.verify_pending,
+      base_badge,
+      'verify_missing'
+    );
+  }
+  if (
+    verify_state.expected_key &&
+    !verifyReceiptMatches(
+      /** @type {Record<string, unknown>} */ (receipt),
+      verify_state.expected_key
+    )
+  ) {
+    return verdict(
+      false,
+      'verify',
+      GATE_BADGES.verify_pending,
+      base_badge,
+      'verify_receipt_stale'
+    );
+  }
+  if (receipt.head_sha !== pr.head_sha) {
+    return verdict(
+      false,
+      'verify',
+      GATE_BADGES.verify_pending,
+      base_badge,
+      'verify_sha_stale'
+    );
+  }
+  if (!receipt.ok) {
+    return verdict(
+      false,
+      'verify',
       GATE_BADGES.verify_fail,
-      base,
-      v.reason
+      base_badge,
+      receipt.reason
     );
   }
-
-  // Tier 3 — no CI, no verify_cmd. The click itself is the human's decision,
-  // so the gate steps aside and the badge says honestly what it is based on.
-  return verdict(true, 'none', GATE_BADGES.no_signal, base, null);
+  return verdict(true, 'eligible', GATE_BADGES.verify_pass, base_badge, null);
 }

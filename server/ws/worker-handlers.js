@@ -47,7 +47,10 @@ import {
   workerSlots,
   workerWorktreeExists
 } from '../worker/attach.js';
-import { evaluateMergeGate } from '../worker/merge-gate.js';
+import {
+  evaluateMergeGate,
+  observedReviewReceiptState
+} from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import {
   peekDeployResolution,
@@ -343,11 +346,21 @@ function prObservationsFor(workspace_key, queue, verify_cmd_state) {
     const record = observed[bead_id] || null;
     out[bead_id] = {
       pr: record ? record.pr : null,
-      ci: record ? record.ci : null,
       verify: record ? record.verify : null,
       error: record ? record.error : null,
       observed_at: record ? record.observed_at : null,
-      gate: evaluateMergeGate(record, { verify_cmd_state })
+      gate: evaluateMergeGate(record, {
+        review_receipt_state: observedReviewReceiptState(record),
+        verify_receipt_state: {
+          declaration_state:
+            verify_cmd_state === 'resolved'
+              ? 'present'
+              : verify_cmd_state === 'invalid'
+                ? 'invalid'
+                : 'absent',
+          receipt: record?.verify || null
+        }
+      })
     };
   }
   return out;
@@ -825,15 +838,6 @@ function completionStatusFor(workspace_key, queue) {
       }
       if (evidence === null) {
         evidence = boundedCompletionText(observed?.verify?.output_tail);
-        if (evidence === null && Array.isArray(observed?.ci?.checks)) {
-          try {
-            evidence = JSON.stringify(observed.ci.checks.slice(0, 100)).slice(
-              -4000
-            );
-          } catch {
-            evidence = null;
-          }
-        }
       }
       if (log_path === null) {
         log_path = boundedCompletionText(observed?.verify?.log_path, 1000);
@@ -913,6 +917,10 @@ export function decorateQueue(workspace_key, raw_queue) {
   delete public_queue.deployment;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
+  // RepoOperation internals stay off the protocol until the UI-vobi
+  // projection is approved (UI-1lmv compat boundary).
+  delete public_queue.auto_repair;
+  delete public_queue.repo_operations;
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );

@@ -2,8 +2,8 @@
  * In-memory PR observation cache (worker-phase2 §4 / 부록 B.3).
  *
  * What the server has SEEN on GitHub for the beads sitting in `pr_wait`: PR
- * state, mergeability, CI checks, head SHA — plus the local `verify_cmd`
- * result that §5's second gate tier stands on.
+ * state, mergeability, and head SHA, plus the optional local verification
+ * receipt.
  *
  * DELIBERATELY NON-PERSISTENT. None of this goes into `queue.json`: it is an
  * observation of a remote system, not queue placement, and a stale observation
@@ -16,33 +16,33 @@
  * the currently observed head, so a green earned on an older commit cannot
  * satisfy the gate after the branch advances.
  *
- * @import { CheckObservation, PrDetail } from './gh.js'
+ * @import { PrDetail } from './gh.js'
  */
 import path from 'node:path';
-
-/**
- * The CI side of one observation, bound to the head SHA it was taken at.
- *
- * @typedef {Object} CiObservation
- * @property {'ok'|'empty'|'error'} state - The gh adapter's 3-state, carried
- * through verbatim: `empty` is "this repo reported no checks", NEVER "the query
- * failed" (worker-phase2 §5 fail-closed).
- * @property {string} head_sha - Head SHA this observation belongs to.
- * @property {CheckObservation[]} checks - Normalized checks (empty unless ok).
- * @property {'pass'|'fail'|'pending'|null} conclusion - Rolled-up verdict.
- * @property {string|null} reason - The adapter's failure reason when errored.
- */
 
 /**
  * A local `verify_cmd` run result, bound to the head SHA it ran against.
  *
  * @typedef {Object} VerifyObservation
  * @property {string} head_sha - The SHA the detached worktree was pinned to.
+ * @property {string} [operation_id]
+ * @property {string} [effective_base_sha]
+ * @property {string} [candidate_tree_sha]
+ * @property {string} [script_object_type]
+ * @property {string} [script_mode]
+ * @property {string} [script_blob_sha]
+ * @property {string} [state]
  * @property {boolean} ok - Whether the command exited 0 in time.
  * @property {string} reason - `ok` or one of the verify-cmd failure reasons.
  * @property {number} at - Epoch ms the run finished.
  * @property {string} [output_tail] - Bounded failure output for repair evidence.
  * @property {string} [log_path] - Full-output log path when one was written.
+ */
+
+/**
+ * @typedef {Object} ReviewReceiptObservation
+ * @property {'current'|'missing'|'stale'|'invalid'} state
+ * @property {string} head_sha
  */
 
 /**
@@ -55,8 +55,8 @@ import path from 'node:path';
  * non-null value makes the merge gate UNDECIDABLE — it is never read as "no
  * signal" (worker-phase2 §5).
  * @property {PrDetail|null} pr - Last successfully observed PR detail.
- * @property {CiObservation|null} ci - Last CI observation (null when the PR is
- * no longer open — a merged/closed PR is classified by `pr.state` alone).
+ * @property {ReviewReceiptObservation|null} review_receipt - Workflow review
+ * state from the same poll pass, bound to the observed head SHA.
  * @property {VerifyObservation|null} verify - Last local verification result.
  */
 
@@ -113,7 +113,7 @@ export function createPrObservationStore(options = {}) {
       observed_at: 0,
       error: null,
       pr: null,
-      ci: null,
+      review_receipt: null,
       verify: null
     };
   }
@@ -139,8 +139,7 @@ export function createPrObservationStore(options = {}) {
 
   return {
     /**
-     * One bead's record, or null when nothing has been observed yet (which the
-     * gate reads as "not observed", never as "no signal").
+     * One bead's record, or null when nothing has been observed yet.
      *
      * @param {string} workspace
      * @param {string} bead_id
@@ -158,7 +157,7 @@ export function createPrObservationStore(options = {}) {
      *
      * @param {string} workspace
      * @param {string} bead_id
-     * @param {{ error?: string|null, pr?: PrDetail|null, ci?: CiObservation|null }} input
+     * @param {{ error?: string|null, pr?: PrDetail|null, review_receipt?: ReviewReceiptObservation|null }} input
      * @returns {PrObservationEntry}
      */
     record(workspace, bead_id, input) {
@@ -174,7 +173,7 @@ export function createPrObservationStore(options = {}) {
         observed_at: now(),
         error: input.error ?? null,
         pr: input.pr ?? null,
-        ci: input.ci ?? null,
+        review_receipt: input.review_receipt ?? null,
         verify: prior ? prior.verify : null
       };
       lane.set(bead_id, next);
@@ -199,7 +198,7 @@ export function createPrObservationStore(options = {}) {
         observed_at: prior ? prior.observed_at : 0,
         error: prior ? prior.error : null,
         pr: prior ? prior.pr : null,
-        ci: prior ? prior.ci : null,
+        review_receipt: prior ? prior.review_receipt : null,
         verify
       });
     },

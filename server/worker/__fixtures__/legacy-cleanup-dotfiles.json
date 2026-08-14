@@ -1,0 +1,89 @@
+{
+  "revision": 1009,
+  "auto_advance": false,
+  "pr_wait_holds_slot": false,
+  "slots": 6,
+  "queue": [],
+  "pr_wait": [
+    {
+      "bead_id": "dotfiles-3vb8",
+      "added_at": 1786471733328,
+      "merge_sha": null,
+      "verified_target_sha": null,
+      "deployment_generation": null,
+      "cleanup_cursor": null,
+      "head_ref": null,
+      "pr_url": null
+    },
+    {
+      "bead_id": "dotfiles-y3qv",
+      "added_at": 1786593095463,
+      "merge_sha": null,
+      "verified_target_sha": null,
+      "deployment_generation": null,
+      "cleanup_cursor": null,
+      "head_ref": null,
+      "pr_url": null
+    },
+    {
+      "bead_id": "dotfiles-p0mq",
+      "added_at": 1786596387798,
+      "merge_sha": "74f0b0c531798431b8a45e227079c503a077a2e6",
+      "verified_target_sha": null,
+      "deployment_generation": null,
+      "cleanup_cursor": null,
+      "head_ref": "dotfiles-p0mq",
+      "pr_url": "https://github.com/nakkulla/dotfiles/pull/387"
+    }
+  ],
+  "done": [],
+  "attempts": {},
+  "cleanup_failed": {
+    "dotfiles-3vb8": {
+      "step": "deploy",
+      "reason": "deploy_base_not_synced",
+      "bd_restore": null,
+      "at": 1786511640166,
+      "detail": "checkout_dirty",
+      "retryable": false,
+      "retry_count": 1
+    },
+    "dotfiles-p0mq": {
+      "step": "deployment_request",
+      "reason": "deployment_request_rejected",
+      "bd_restore": null,
+      "at": 1786596396732,
+      "detail": null
+    },
+    "dotfiles-y3qv": {
+      "step": "deployment_request",
+      "reason": "deployment_request_rejected",
+      "bd_restore": null,
+      "at": 1786598007132,
+      "detail": null
+    }
+  },
+  "merge_queue": [],
+  "auto_merge": false,
+  "completion_intents": {
+    "dotfiles-3vb8": {
+      "target_base": "main",
+      "phase": "needs_human",
+      "subject": {
+        "role": "root",
+        "bead_id": "dotfiles-3vb8",
+        "pr_url": "https://github.com/nakkulla/dotfiles/pull/378",
+        "head_sha": "a324170326f0236e1a6220506293562a5e02d1dd",
+        "base_sha": "3d5017c863d125d355c84c6f8c6c81f3c6163519",
+        "merged_sha": "e3b3b22411263aa37649215ca1a9adb8e27f24dc"
+      },
+      "repair_sessions_used": 0,
+      "repair_bead_ids": [],
+      "subject_stack": [],
+      "active_op": null,
+      "terminal_reason": null
+    }
+  },
+  "discard_operations": {},
+  "deployment": null
+}

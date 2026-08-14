@@ -229,7 +229,7 @@ describe('worker/merge-queue — sequencing', () => {
       merge: async (/** @type {string} */ bead_id) => {
         seen.push(bead_id);
         if (bead_id === 'UI-1') {
-          return { ok: false, action: 'refused', reason: 'ci_failed' };
+          return { ok: false, action: 'refused', reason: 'verify_cmd_failed' };
         }
         landMerge(store, bead_id);
         return { ok: true, action: 'merged', reason: null };
@@ -239,8 +239,33 @@ describe('worker/merge-queue — sequencing', () => {
     await mq.kick();
 
     expect(seen).toEqual(['UI-1', 'UI-2']);
-    expect(mq.state().failures['UI-1']).toBe('ci_failed');
+    expect(mq.state().failures['UI-1']).toBe('verify_cmd_failed');
     expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('preserves a verification-blocked merge intent across restart', async () => {
+    const store = seed(['UI-1']);
+    const blocked = driver(store, {
+      merge: async () => ({
+        ok: false,
+        action: 'verify_blocked',
+        reason: 'verify_cmd_failed',
+        head_sha: 'a'.repeat(40)
+      })
+    });
+
+    await blocked.kick();
+    blocked.stop();
+    const resumed = driver(store, {
+      merge: async () => {
+        landMerge(store, 'UI-1');
+        return { ok: true, action: 'merged', reason: null };
+      }
+    });
+    await resumed.kick();
+
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(store.snapshot(WS).auto_merge_skips).toEqual({});
   });
 
   test('a merge that throws is a skip, never an unhandled rejection', async () => {
@@ -581,7 +606,7 @@ describe('worker/merge-queue — completion subject continuity', () => {
               attempt_id: 'conflict-1'
             };
           }
-          return { ok: false, action: 'refused', reason: 'ci_failed' };
+          return { ok: false, action: 'refused', reason: 'verify_cmd_failed' };
         },
         onCompletionResult: vi.fn()
       },
@@ -1746,7 +1771,7 @@ describe('worker/merge-queue — lifecycle', () => {
     const merge = vi.fn(async () => ({
       ok: false,
       action: 'refused',
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     }));
     const mq = driver(
       {
@@ -1824,14 +1849,18 @@ describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () 
   test('records the head SHA with every failure disposition', async () => {
     const store = seed(['UI-1']);
     const mq = driver(store, {
-      merge: async () => ({ ok: false, action: 'refused', reason: 'ci_failed' })
+      merge: async () => ({
+        ok: false,
+        action: 'refused',
+        reason: 'verify_cmd_failed'
+      })
     });
 
     await mq.kick();
 
     expect(store.snapshot(WS).auto_merge_skips['UI-1']).toMatchObject({
       head_sha: HEAD,
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     });
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
@@ -1873,7 +1902,7 @@ describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () 
     const merge = vi.fn(async () => ({
       ok: false,
       action: 'refused',
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     }));
 
     const mq = driver(store, { merge, headSha: () => null });
@@ -1897,7 +1926,7 @@ describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () 
     const merge = vi.fn(async () => ({
       ok: false,
       action: 'refused',
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     }));
     const mq = driver(store, {
       merge,
@@ -2087,7 +2116,7 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
     const merge = vi.fn(async () => ({
       ok: false,
       action: 'refused',
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     }));
 
     const mq = driver(store, { merge, headSha: () => null });
@@ -2114,7 +2143,7 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
     const merge = vi.fn(async () => ({
       ok: false,
       action: 'refused',
-      reason: 'ci_failed'
+      reason: 'verify_cmd_failed'
     }));
     const mq = driver(store, {
       merge,
@@ -2160,7 +2189,7 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
     const mq = driver(store, {
       merge: async (/** @type {string} */ bead_id) => {
         attempted.push(bead_id);
-        return { ok: false, action: 'refused', reason: 'ci_failed' };
+        return { ok: false, action: 'refused', reason: 'verify_cmd_failed' };
       },
       headSha: () => null,
       isExternalRow: () => registered,
@@ -2201,7 +2230,7 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
       merge: async () => ({
         ok: false,
         action: 'refused',
-        reason: 'ci_failed'
+        reason: 'verify_cmd_failed'
       }),
       headSha: () => null,
       isExternalRow: () => {

@@ -102,60 +102,43 @@ describe('worker/merge-candidates — overlaidPrWait', () => {
 });
 
 /** @type {Array<[string, 'empty'|'ok', null|'fail', string|null]>} */
-const REPAIRABLE_RED_CASES = [
-  ['local verify', 'empty', null, 'verify_cmd_failed'],
-  ['CI', 'ok', 'fail', null]
-];
-
 describe('worker/merge-candidates — completion repair intake', () => {
-  test.each(REPAIRABLE_RED_CASES)(
-    'includes a worker-owned repairable %s red',
-    (_name, ci_state, conclusion, verify_reason) => {
-      const runtime = getWorkerRuntime();
-      runtime.prObservations.record(WS, 'UI-1', {
-        pr: {
-          number: 1,
-          url: 'https://github.com/o/r/pull/1',
-          state: 'OPEN',
-          mergeable: 'MERGEABLE',
-          merge_state_status: 'CLEAN',
-          head_ref: 'UI-1',
-          head_sha: 'a'.repeat(40),
-          base_ref: 'main'
-        },
-        ci: {
-          state: ci_state,
-          head_sha: 'a'.repeat(40),
-          checks:
-            ci_state === 'ok' ? [{ name: 'Build', conclusion: 'fail' }] : [],
-          conclusion,
-          reason: null
-        }
-      });
-      if (verify_reason) {
-        runtime.prObservations.recordVerify(WS, 'UI-1', {
-          head_sha: 'a'.repeat(40),
-          ok: false,
-          reason: verify_reason,
-          at: 1
-        });
-      }
+  test('includes a worker-owned repairable verify failure', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+    });
+    runtime.prObservations.recordVerify(WS, 'UI-1', {
+      head_sha: 'a'.repeat(40),
+      ok: false,
+      reason: 'verify_cmd_failed',
+      at: 1
+    });
 
-      const result = mergeQueueCandidates(
-        WS,
-        {
-          pr_wait: [{ bead_id: 'UI-1' }],
-          attempts: {},
-          cleanup_failed: {}
-        },
-        'resolved'
-      );
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {}
+      },
+      'resolved'
+    );
 
-      expect(result).toEqual([
-        { bead_id: 'UI-1', external: false, repairable: true }
-      ]);
-    }
-  );
+    expect(result).toEqual([
+      { bead_id: 'UI-1', external: false, repairable: true }
+    ]);
+  });
 
   test('does not auto-repair an external red row', () => {
     const runtime = getWorkerRuntime();
@@ -170,13 +153,13 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_sha: 'b'.repeat(40),
         base_ref: 'main'
       },
-      ci: {
-        state: 'ok',
-        head_sha: 'b'.repeat(40),
-        checks: [{ name: 'Build', conclusion: 'fail' }],
-        conclusion: 'fail',
-        reason: null
-      }
+      review_receipt: { state: 'current', head_sha: 'b'.repeat(40) }
+    });
+    runtime.prObservations.recordVerify(WS, 'EXT-1', {
+      head_sha: 'b'.repeat(40),
+      ok: false,
+      reason: 'verify_cmd_failed',
+      at: 1
     });
 
     expect(
@@ -205,8 +188,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_sha: 'a'.repeat(40),
         base_ref: 'main',
         merged_sha: 'c'.repeat(40)
-      },
-      ci: null
+      }
     });
 
     const result = mergeQueueCandidates(
@@ -229,6 +211,35 @@ describe('worker/merge-candidates — completion repair intake', () => {
     ]);
   });
 
+  test('excludes a clean row whose implementation review is stale', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'stale', head_sha: 'a'.repeat(40) }
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {}
+      },
+      'absent'
+    );
+
+    expect(result).toEqual([]);
+  });
+
   test('includes a worker-owned verified Adapter regression', () => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {
@@ -242,8 +253,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_sha: 'a'.repeat(40),
         base_ref: 'main',
         merged_sha: 'c'.repeat(40)
-      },
-      ci: null
+      }
     });
 
     const result = mergeQueueCandidates(
@@ -288,8 +298,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_sha: 'a'.repeat(40),
         base_ref: 'main',
         merged_sha: 'c'.repeat(40)
-      },
-      ci: null
+      }
     });
 
     const result = mergeQueueCandidates(
@@ -318,8 +327,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_sha: 'a'.repeat(40),
         base_ref: 'main',
         merged_sha: 'c'.repeat(40)
-      },
-      ci: null
+      }
     });
 
     const result = completionIntentSeed(
@@ -354,8 +362,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_ref: 'UI-1',
         head_sha: 'a'.repeat(40),
         base_ref: 'main'
-      },
-      ci: null
+      }
     });
 
     const result = completionIntentSeed(
@@ -399,8 +406,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         head_sha: 'a'.repeat(40),
         base_ref: 'main',
         merged_sha: null
-      },
-      ci: null
+      }
     });
 
     const result = completionIntentSeed(

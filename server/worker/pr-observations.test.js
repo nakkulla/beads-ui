@@ -50,6 +50,21 @@ describe('worker/pr-observations', () => {
     expect(store.get('/ws', 'UI-1')?.verify).toMatchObject({ ok: true });
   });
 
+  test('binds the review state to the observed head', () => {
+    const store = createPrObservationStore();
+
+    store.record('/ws', 'UI-1', {
+      error: null,
+      pr: prOf(),
+      review_receipt: { state: 'current', head_sha: SHA }
+    });
+
+    expect(store.get('/ws', 'UI-1')?.review_receipt).toEqual({
+      state: 'current',
+      head_sha: SHA
+    });
+  });
+
   test('keeps observations of different workspaces apart', () => {
     const store = createPrObservationStore();
 
