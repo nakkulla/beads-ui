@@ -15,9 +15,33 @@
 - 폐기된 8-phase 초안의 blocking findings를 이 계획이 승계한다:
   (3) 외부 효과 단위(migration/cutover/train_bot/TRACE/legacy 제거/dotfiles
   retirement)를 개별 phase로 분리, (4) auto_repair 검증 4종(durable ON/OFF
-  readback·OFF 중 running 보존·ON 전환 즉시 reconcile·fresh-facts continuation),
-  (5) master §17.2 seam의 Phase 분리(deploy 몫은 UI-1lmv에서 완료, verify
-  candidate 몫은 이 계획)와 §18.12 user-checkout pre/post snapshot 검증.
+  readback·OFF 중 running 보존·ON 전환 즉시 reconcile·fresh-facts
+  continuation), (5) master §17.2 seam의 Phase 분리(deploy 몫은 UI-1lmv에서
+  완료, verify candidate 몫은 이 계획)와 §18.12 user-checkout pre/post snapshot
+  검증.
+
+### 재분해 이력 (2026-08-14, 13 phase → 10 phase)
+
+- 이 계획의 최초 게시본(`0343175c278c68308dedc9e0721f8fd460e7f3e9`)은 13개
+  phase였다. 사용자 지시로 dotfiles 승인 스펙
+  `docs/superpowers/specs/2026-08-12-execution-unit-promotion-contract-design.md`
+  (Bead `dotfiles-5ivc`)의 §3.1 seal 4조건과 §3.3 최소-개수 선호를 기준으로
+  재분해했다.
+- 적용한 판정 규칙: 인접 작업이 ⓐ 같은 저장소 ⓑ 같은 검증 번들 ⓒ 순차
+  dependency로 이어지면 한 phase가 기본이고, 분리는 **다른 repo / 독립
+  외부효과 / 승인된 병렬성 / 실행 힌트 차이** 중 하나만 정당화한다. task 수는
+  분할 사유가 아니다. 독립 외부효과와 독립 durable readback을 갖는 단위는 그대로
+  개별 phase로 남는다.
+- 매핑: 구1→Phase 1 · 구2+3+4→Phase 2 · 구5→Phase 3 · 구6+7→Phase 4 ·
+  구8→Phase 5 · 구9→Phase 6 · 구10→Phase 7 · 구11→Phase 8 · 구12→Phase 9 ·
+  구13→Phase 10(disposition·label·report의 durable write 몫) + `## 완료
+  절차`(read-only integration 확인과 parent close 몫).
+- 근거 스펙 `dotfiles-5ivc`는 `open`이고 그 계약은 아직 active surface
+  (`docs/contracts/workflow.yaml`·`harness.yaml`)에 반영되지 않았다. 같은 스펙
+  §10은 UI-vobi를 소급 재분해 비목표로 두므로, 이 재분해는 계약 강제가 아니라
+  **사용자 지시**에 따른 것이다.
+- 재분해 시점에 phase 진행은 0건이었다(children 13개 모두 `open`,
+  implementation edit 없음).
 
 ### 관측된 시작 상태 (2026-08-14, main=b4d0213)
 
@@ -43,25 +67,39 @@
 
 ### 실행 규칙 (모든 phase 공통)
 
-- **compat dual-lane**: Phase 4~10 구간에서 post-merge owner는 fetched
+- **compat dual-lane**: Phase 2~7 구간에서 post-merge owner는 fetched
   `repo-ops/config.toml` 존재로 분기한다 — config 있는 repo는 새 RepoOperation
-  lane, 없는 repo는 기존 legacy lane을 그대로 탄다. Phase 11 전까지 모든
+  lane, 없는 repo는 기존 legacy lane을 그대로 탄다. Phase 8 전까지 모든
   config-absent repo는 legacy lane을 유지하며, legacy lane 코드 제거는 Phase
-  11에서만 한다. 실패 시 현재 phase에서 멈추고 이전 runtime path를 보존한다.
+  8에서만 한다. 실패 시 현재 phase에서 멈추고 이전 runtime path를 보존한다.
 - **effective policy pinning**: 각 phase PR 자신의 배포는 previous target-base
   SHA에 pin된 정책으로 수행된다(PR이 자기 verify/deploy를 정의할 수 없음).
   이전 정책에 deploy가 없던 첫 실행은 approved bootstrap CLI만 입구다.
-- **enclosed foreign 단위**(Phase 1·9·10·12): master spec §14과 승인된
+- **enclosed foreign 단위**(Phase 1·6·7·9): master spec §14과 승인된
   ledger(`enclosed:UI-vobi`)에 따라 새 Bead/PR 없이 resolved target base에
   direct landing한다. 각 landing 전에 target repo abspath·resolved base와
   근거·fetch된 tip SHA·owned paths·verification bundle을 선언하고, landing 후
   actual tip/landed tip/owned commit SHA를 UI-vobi notes에 기록한다. user
   checkout의 HEAD/index/tracked/untracked를 전후 snapshot으로 비교해 불변임을
   증명한다(§18.12).
+- **beads-ui PR phase의 공통 검증**: Phase 2·3·4·5·8은 해당 worktree에서 AGENTS
+  Pre-Handoff Validation(`node --version` engines 정합·`npm ls --depth=0`·
+  `npm run tsc`·`npm test`·`npm run lint`·`npm run prettier:write`)을 수행하고,
+  frontend 변경이 있으면 `npm run build` 후 `app/main.bundle.js`/`.map`을 같은
+  PR에 포함한다. 마지막 phase의 전체 검증은 앞 phase의 seal 조건을 대신하지
+  않는다.
 - 각 phase 완료는 이전 phase의 exact commit·terminal exit/log·readback
   evidence를 다음 phase input으로 pin한다.
+- **실행 힌트**: `실행: main(<사유>)`가 있는 phase만 controller main이 직접
+  수행한다. 힌트가 없는 phase는 delegate 기본이며, 실행 시점 이탈은 phase
+  child의 execution 영수증에 사유 1줄로 남긴다.
+- **병합 phase의 재개 지점**: Phase 2·4는 여러 구 phase를 합친 단위다. 부분
+  완료가 발생하면 각 phase에 표시된 task 그룹 경계에서 이어받고, 그룹 경계를
+  넘지 않은 미완 작업은 같은 phase 안에서 복구한다.
 
 ## Phase 1: dotfiles 첫 new-runner deploy 실증 (§15-3 잔여)
+
+`실행: main(되돌리기 어려운 외부 배포 효과 통제)`
 
 b2yx가 남긴 미완 단계. 코드 변경 없음, 외부 효과(dotfiles runtime 재배포).
 
@@ -84,9 +122,12 @@ b2yx가 남긴 미완 단계. 코드 변경 없음, 외부 효과(dotfiles runti
 adoption receipt, deploy worktree `HEAD == pinned origin/main tip`, CLI
 receipt, user checkout snapshot 전후 불변.
 
-## Phase 2: no-CI merge eligibility (§15-4, §12)
+## Phase 2: merge 판정·verify·post-merge lane 전환 (§15-4, §7, §8, §12)
 
-beads-ui PR. merge 판정에서 GitHub checks를 제거한다.
+beads-ui PR 하나. 같은 저장소·같은 검증 번들·순차 dependency로 이어지는 세
+작업을 한 seal 단위로 묶는다. 재개 지점은 그룹 A→B→C 경계다.
+
+**그룹 A — no-CI merge eligibility (§12)**
 
 1. `merge-gate.js`를 재작성한다: CI tier·local fallback tier·no-signal tier와
    `GATE_BADGES`의 CI 문구를 제거하고, eligibility를 fresh PR/base/head
@@ -99,53 +140,49 @@ beads-ui PR. merge 판정에서 GitHub checks를 제거한다.
 3. frontend `app/views/worker/index.js`(+lanes)의 CI badge 렌더와 관련 fixture를
    새 판정 표시로 갱신한다.
 
-검증: `npm run all` green + frontend 변경이므로 `npm run build` 실행 후
-`app/main.bundle.js`/`.map`을 같은 PR에 포함 + `rg`로 active tree에서 checks
-consumer(prChecks·commitChecks·ci badge) 0건(§17.9의 checks 몫 RED→GREEN).
+**그룹 B — verify flow: ensureVerify와 candidate-tree receipt (§7)**
 
-## Phase 3: verify flow — ensureVerify와 candidate-tree receipt (§7, §15-4)
-
-beads-ui PR. 네 repo 모두 현재 verify 미선언이므로 dormant지만 계약상 필수 경로.
-
-1. coordinator에 `ensureVerify(candidate)`를 추가한다: 실제 merge 방식의
+4. coordinator에 `ensureVerify(candidate)`를 추가한다: 실제 merge 방식의
    synthetic candidate tree를 temporary clean checkout에 materialize하고
    effective base script를 한 번 실행, receipt key =
    `(effective_base_sha, candidate_tree_sha, verify_script_identity)`.
-2. merge flow 연결: verify absent → 즉시 eligibility(§7.2 포함: post-merge
+5. merge flow 연결: verify absent → 즉시 eligibility(§7.2 포함: post-merge
    stage/failure 미생성); present → pre-merge 1회 실행, merge 후 remote merged
    tree 동일 시 receipt 승계, 다르면 final tree에서 1회 재실행.
-3. pre-merge failure는 merge를 중지하고 원래 merge intent를 durable
+6. pre-merge failure는 merge를 중지하고 원래 merge intent를 durable
    continuation으로 보존, post-merge failure는 rollback 없이 Bead를
-   `resolved/pr_wait`에 유지한다(§7.3).
+   `resolved/pr_wait`에 유지한다(§7.3). 네 repo 모두 현재 verify 미선언이므로
+   이 경로는 dormant지만 계약상 필수다.
 
-검증: 신규 focused suite green — absent no-op·receipt 승계·base/head/tree/script
-변경 시 stale·different-final-tree 1회 실행·verify candidate와 repo/origin/base/
-SHA/script mismatch 거부(master §17.2 verify 몫+§17.3).
+**그룹 C — post-merge coordinator 연결과 cleanup cursor 재작성 (§8)**
 
-## Phase 4: post-merge coordinator 연결과 cleanup cursor 재작성 (§8, §15-4)
-
-beads-ui PR. post-merge owner를 config-present repo에 대해 새 lane으로 바꾼다.
-
-1. `pr-actions.js` cleanup cursor를 `base_containment → repo_operations →
+7. `pr-actions.js` cleanup cursor를 `base_containment → repo_operations →
    child_sweep → branch_cleanup → parent_close`로 재작성한다. config-present
    repo는 `ensureDeploy` coalescing(+미커버 subject 승계, lock 후 fetch-bind)을
    호출하고 terminal evidence로 진행하며, config-absent repo는 기존
-   `post_merge_verify/deployment_request` legacy lane을 유지한다(Phase 11까지).
-2. external merged observation([정리] 클릭 경로)과 startup reconciliation이 같은
+   `post_merge_verify/deployment_request` legacy lane을 유지한다(Phase 8까지).
+8. external merged observation([정리] 클릭 경로)과 startup reconciliation이 같은
    coordinator Interface를 쓰도록 연결한다. deploy absent → 가짜 record 없이
    skip.
-3. 성공 판정은 script exit 0 + 영구 worktree `HEAD==target_sha`·tracked-clean
+9. 성공 판정은 script exit 0 + 영구 worktree `HEAD==target_sha`·tracked-clean
    readback으로만 하고, success 전 Bead close를 금지한다. descendant coverage
    (뒤 operation 성공이 앞 subject를 커버)와 실패 격리(앞 failure가 뒤
    descendant를 막지 않음)를 store 규칙대로 연결한다.
 
-검증: focused suite green — 새 cursor 전이·dual-lane 분기·coalesce/coverage·
-close 전 success 요구(§17.4의 coordinator 연결 몫); 기존 legacy suite 무수정
-green.
+검증: AGENTS Pre-Handoff Validation 전체 통과 + `npm run build` 후
+bundle/map 포함 + `rg`로 active tree에서 checks consumer(prChecks·
+commitChecks·ci badge) 0건 + 신규 focused suite green(verify absent no-op·
+receipt 승계·base/head/tree/script 변경 시 stale·different-final-tree 1회 실행·
+verify candidate mismatch 거부·새 cursor 전이·dual-lane 분기·coalesce/coverage·
+close 전 success 요구) + 기존 legacy suite 무수정 green.
 
-## Phase 5: legacy state migration `repo_operation_migration_v1` (§11, §15-4)
+## Phase 3: legacy state migration `repo_operation_migration_v1` (§11, §15-4)
 
-beads-ui PR. 새 runtime 첫 부팅 1회 실행, dual-read 종료 준비.
+`실행: main(durable queue schema/data를 1회 변환하는 되돌리기 어려운 효과와 그
+수렴 readback 통제)`
+
+beads-ui PR. 새 runtime 첫 부팅에서 1회 실행되며 dual-read 종료를 준비한다.
+Phase 2가 만든 새 lane이 legacy record를 인수하는 단계다.
 
 1. canonical subject SHA를 `merge_sha` 우선/`head_sha` 보조로 계산하고 remote
    containment를 확인한다. legacy `base_sync` failure는 새 bounded remote
@@ -158,12 +195,17 @@ beads-ui PR. 새 runtime 첫 부팅 1회 실행, dual-read 종료 준비.
 3. migration result와 schema version을 atomic 저장하고 재시작 시 같은 input을
    adoption한다. legacy failure에 auto repair budget을 소급 소비하지 않는다.
 
-검증: §17.8 seam green — q1hs/oj2f/qero 대표 record의 1회 수렴·exact old
-success만 adoption·budget 미소급.
+검증: §17.8 seam green(q1hs/oj2f/qero 대표 record의 1회 수렴·exact old success만
+adoption·budget 미소급) + 실제 workspace queue에서 migration schema version과
+result record readback + 재시작 후 같은 input adoption 실측 + AGENTS Pre-Handoff
+Validation 통과.
 
-## Phase 6: auto repair 엔진 — RepairSessionAdapter (§4.4, §9.3, §15-4)
+## Phase 4: auto repair 엔진과 설정·policy projection (§4.4, §4.5, §9.3, §10, §15-4)
 
-beads-ui PR. dispatch는 backend까지, UI는 Phase 7.
+beads-ui PR 하나. backend 엔진과 그 제어·표시 표면은 같은 저장소·같은 검증
+번들의 한 산출물이다. 재개 지점은 그룹 A→B 경계다.
+
+**그룹 A — RepairSessionAdapter (§4.4, §9.3)**
 
 1. `RepairSessionAdapter`를 기존 scheduler `launchSession`/resume/log/monitor
    Interface 위에 구현한다: failure exact input·sanitized log·Test scope·현재
@@ -180,32 +222,33 @@ beads-ui PR. dispatch는 backend까지, UI는 Phase 7.
    facts로만 연다. repair session 금지 목록(§9.3 session이 할 수 없는 일)을
    packet과 게이트에 반영한다.
 
-검증: §17.6 seam green — advisory 4종(durable ON/OFF readback·OFF running
-보존·ON 즉시 reconcile·fresh-facts continuation) + chain 1회 budget·fingerprint
-loop 차단·successor 계승이 추가 dispatch를 막음·config-disable 우회 거부.
+**그룹 B — 설정·policy projection UI/protocol (§4.5, §10)**
 
-## Phase 7: auto_repair 설정·policy projection UI/protocol (§4.5, §10, §15-4)
-
-beads-ui PR.
-
-1. dotfiles `generated/contracts/repo-operation-policy.json`의 exact copy를
+4. dotfiles `generated/contracts/repo-operation-policy.json`의 exact copy를
    source commit과 함께 beads-ui generated runtime copy로 pin하고, digest/source
    commit이 approved artifact와 다르면 실패하는 contract test를 추가한다.
    backend는 그 copy와 operation state를 protocol로 전달한다(정책 문장
    hard-code 금지).
-2. Worker/Monitor workspace 설정에 독립 `자동 해결` toggle(기본 ON, 남은
+5. Worker/Monitor workspace 설정에 독립 `자동 해결` toggle(기본 ON, 남은
    budget·active repair session 표시)과 §10의 세 목록(자동 처리/자동 session/
    자동 금지)을 추가한다. 기존 자동화 toggle과 상호 불간섭을 유지한다.
-3. operation card(kind·target SHA/tree·script path/blob·elapsed·state·sanitized
+6. operation card(kind·target SHA/tree·script path/blob·elapsed·state·sanitized
    output tail·log link·exit code·repair session link)와 실패 kind별 해결
    버튼(수동 버튼도 coordinator 새 attempt 경유)을 붙인다. generic `재시도`
    버튼은 만들지 않는다. `app/protocol.js`/`app/protocol.md`에 `auto_repair`
    mutation·policy projection·operation states를 기록한다.
 
-검증: §17.7 seam green — toggle·세 목록·card/log/exit/session link·absent
-stage `안 함` 표시·kind별 해결 버튼; `npm run build` 후 bundle/map 포함.
+검증: §17.6·§17.7 seam green — advisory 4종(durable ON/OFF readback·OFF running
+보존·ON 즉시 reconcile·fresh-facts continuation) + chain 1회 budget·fingerprint
+loop 차단·successor 계승이 추가 dispatch를 막음·config-disable 우회 거부 +
+toggle·세 목록·card/log/exit/session link·absent stage `안 함` 표시·kind별 해결
+버튼; AGENTS Pre-Handoff Validation 전체 통과 + `npm run build` 후 bundle/map
+포함.
 
-## Phase 8: beads-ui cutover — repo-ops 선언과 self-deploy (§14.1, §15-5)
+## Phase 5: beads-ui cutover — repo-ops 선언과 self-deploy (§14.1, §15-5)
+
+`실행: main(자기 배포 경로 전환과 self-restart 실측이라는 되돌리기 어려운
+외부효과 통제)`
 
 beads-ui PR + 외부 효과(자기 배포 경로 전환).
 
@@ -225,11 +268,17 @@ beads-ui PR + 외부 효과(자기 배포 경로 전환).
    재시작해도 one-shot executor가 살아 exit code/log marker를 남기고 재시작된
    Worker가 같은 operation을 adoption함을 실측한다.
 
-검증: §17.5 self-restart 실측 + §17.10 beads-ui script(same-SHA replay
-idempotent, secret-free failure) + live `/healthz` source SHA/realpath exact
-readback + user checkout snapshot 불변(§18.12).
+검증: §17.5 self-restart 실측 + §17.9의 CI workflow 제거 몫 — active tree에
+`.github/workflows/ci.yml` 부재와 branch protection required check 0개 API
+readback(§18.2) + §17.10 beads-ui script(same-SHA replay idempotent, secret-free
+failure) + live `/healthz` source SHA/realpath exact readback + §17.11의
+beads-ui AGENTS/protocol/bundle/source map 몫 + AGENTS Pre-Handoff Validation
+통과 + user checkout snapshot 불변(§18.12).
 
-## Phase 9: train_bot enclosed direct landing + deploy/readback (§14.3, §15-6)
+## Phase 6: train_bot enclosed direct landing + deploy/readback (§14.3, §15-6)
+
+`실행: main(다른 repo direct landing과 원격 재배포라는 되돌리기 어려운 외부효과
+통제)`
 
 외부 효과. `enclosed:UI-vobi`, target `train_bot/main`.
 
@@ -249,9 +298,14 @@ readback + user checkout snapshot 불변(§18.12).
    경로로 넘어가는지 확인한다.
 
 검증: enclosed landing guards(공통 규칙) + queue record `succeeded` + remote
-HEAD==target SHA + user checkout snapshot 불변.
+HEAD==target SHA + §17.10의 train_bot script 몫 — 대상 repo 테스트 관례에 따른
+same-SHA replay idempotency와 secret-free failure 검증 결과 + user checkout
+snapshot 불변.
 
-## Phase 10: TRACE-ICI enclosed direct landing + deploy/readback (§14.4, §15-7)
+## Phase 7: TRACE-ICI enclosed direct landing + deploy/readback (§14.4, §15-7)
+
+`실행: main(다른 repo direct landing과 SLURM 원격 배포라는 되돌리기 어려운
+외부효과 통제)`
 
 외부 효과. `enclosed:UI-vobi`, target `TRACE-ICI/ilsun/dev`.
 
@@ -263,16 +317,18 @@ HEAD==target SHA + user checkout snapshot 불변.
    `origin/ilsun/dev` target SHA를 확인하고, success exit 전 Fisher remote HEAD
    exact SHA를 확인한다.
 3. 새 Worker operation으로 deploy를 실행해 terminal exit/log·readback을 얻는다.
-   첫 실행은 bootstrap CLI이며 approved source는 Phase 9와 같은 방식의
+   첫 실행은 bootstrap CLI이며 approved source는 Phase 6과 같은 방식의
    target-local enclosed landing commit + `repo-ops/config.toml` 경로다.
    active SLURM job·unavailable SSH/uv/index는 명확한 failure code로 남긴다.
 
 검증: enclosed landing guards + queue record `succeeded` + Fisher remote
-HEAD==target + user checkout snapshot 불변.
+HEAD==target + §17.10의 TRACE script 몫 — 대상 repo 테스트 관례에 따른 same-SHA
+replay idempotency와 secret-free failure 검증 결과 + user checkout snapshot
+불변.
 
-## Phase 11: legacy reader/provider consumer 제거 (§13, §15-8)
+## Phase 8: legacy reader/provider consumer 제거 (§13, §15-8)
 
-beads-ui PR. 네 repo가 모두 새 lane으로 옮겨진 뒤 실행.
+beads-ui PR. 네 repo가 모두 새 lane으로 옮겨진 뒤 실행한다.
 
 1. `server/worker/repo-ops.js`(v1 reader)와 attach.js/worker-handlers.js의
    소비처, `deployment-job.js`, `deployment-recovery.js`, queue-store의
@@ -288,12 +344,15 @@ beads-ui PR. 네 repo가 모두 새 lane으로 옮겨진 뒤 실행.
    삭제하지 않음을 테스트로 고정한다.
 
 검증: §17.9 seam green — deployment-job/recovery/repo-deployctl reader/writer
-0건, shared owners 보존; `npm run all` green.
+0건, shared owners 보존; AGENTS Pre-Handoff Validation 전체 통과.
 
-## Phase 12: dotfiles enclosed provider retirement + absence readback (§14.2, §15-9)
+## Phase 9: dotfiles enclosed provider retirement + absence readback (§14.2, §15-9)
+
+`실행: main(다른 repo direct landing과 설치 표면 제거라는 되돌리기 어려운
+외부효과 통제)`
 
 외부 효과. `enclosed:UI-vobi`, target `dotfiles/main`. Phase 1의 새 runner
-dotfiles deploy 성공 evidence가 전제.
+dotfiles deploy 성공 evidence가 전제다.
 
 1. dotfiles에서 `repo-deployctl` CLI/serve daemon, repo-deployer
    launchd/projectmgr service, installer/runtime verifier,
@@ -310,21 +369,42 @@ reader/writer 0, binary/service/install/runtime reference 부재(§17.9의
 dotfiles provider 몫) + retirement 후 deploy operation `succeeded` + user
 checkout snapshot 불변.
 
-## Phase 13: 최종 검증·disposition·close 준비 (§15-10~11, §19)
+## Phase 10: 최종 disposition·label·completion report (§15-10~11, §19)
 
-1. 두 repo full verification(beads-ui `npm run all`+build, dotfiles 자체
-   checker), generated artifacts digest(policy JSON copy vs dotfiles source
-   commit), shared runtime health, 네 repo exact remote tips/deploy evidence를
-   최종 확인한다.
-2. `dotfiles-ji9f`를 superseded close하고 union follow-up inventory와
-   superseded Bead disposition을 readback한다.
-3. §19 증거 5종이 모두 모였는지 확인한 뒤 spec follow-up self-review와 같은
-   logical write에서 `worker-ineligible` label을 제거하고, completion report
-   작성 후 parent close 순서(remote containment → operation terminal evidence →
-   enclosed tips/readbacks → report → close)를 밟는다.
+`실행: main(Bead disposition·label·보고서라는 durable 상태 쓰기와 그 readback
+통제)`
 
-검증: §17.11 seam(instructions/generated/runtime checks) green + §19 증거 목록
-전부 notes에 기록 + label 제거·close readback.
+durable write 몫만 이 phase가 소유한다. parent close는 이 phase seal 뒤
+`## 완료 절차`에서 canonical finish로 수행한다.
+
+1. `dotfiles-ji9f`를 superseded close하고, union follow-up inventory와
+   superseded Bead disposition을 authoritative readback으로 확인한다(§18.14).
+2. §19 증거 5종(beads-ui self-deploy exit/log와 script-owned live health ·
+   dotfiles new operation deploy와 provider absence readback · train_bot
+   target-base containment/deploy exit/status log · TRACE-ICI 동일 · union
+   follow-up inventory와 superseded Bead disposition readback)이 모두 모였는지
+   확인하고 UI-vobi notes에 기록한다.
+3. spec follow-up self-review와 같은 logical write에서 `worker-ineligible`
+   label을 제거하고, completion report를 parent Bead의 bd comment로 작성한다.
+
+검증: §17.11의 나머지 몫 green(dotfiles workflow/skills/checker/render/install
+tests, 네 repo config/path/executable checks) + §19 증거 5종 notes 기록 readback
++ label 제거와 `dotfiles-ji9f` close의 `bd show --json` readback.
+
+## 완료 절차
+
+phase가 아니다 — writable deliverable 없이 read-only 통합 확인과 canonical
+finish만 수행한다.
+
+1. 두 repo full verification을 확인 목적으로 재실행한다(beads-ui `npm run all`
+   +`npm run build`, dotfiles 자체 checker), generated artifacts digest(policy
+   JSON copy vs dotfiles source commit), shared runtime health, 네 repo exact
+   remote tips/deploy evidence를 최종 확인한다.
+2. parent close 순서를 밟는다: remote containment → applicable operation
+   terminal evidence → enclosed foreign tips/readbacks → completion report 확인
+   → close (§19).
+
+확인: 위 재실행이 모두 green이고 Phase 10이 기록한 증거 목록과 일치한다.
 
 ## Test scope
 
@@ -337,22 +417,25 @@ UI-1lmv가 이미 green으로 만든 seam(§17.1 resolver, §17.2 deploy checkou
 - Phase 1: §17.10 dotfiles 몫 — worker adoption 실증(같은 exact target 재요청)
   + b2yx script 검증 evidence pin(same-SHA replay idempotency·secret-free
   failure).
-- Phase 2: §17.9의 checks consumer 제거 몫(negative: active tree 0건).
-- Phase 3: §17.2의 verify candidate mismatch 몫 + §17.3 전체.
-- Phase 4: §17.4의 coordinator 연결 몫(cursor 전이·dual-lane·coalesce/coverage).
-- Phase 5: §17.8 전체.
-- Phase 6: §17.6 전체(advisory 4종 + chain budget/owner/fingerprint).
-- Phase 7: §17.7 전체.
-- Phase 8: §17.5의 self-deploy 실측 E2E + §17.10 beads-ui 몫 + §17.11 AGENTS/
-  bundle/source map 몫.
-- Phase 9/10: §17.10 train_bot/TRACE 몫(각 enclosed repo의 script 검증은 해당
-  repo 테스트 관례를 따르고 beads-ui suite에 이식하지 않는다).
-- Phase 11: §17.9의 provider deletion 몫(beads-ui) + shared owner 보존 고정.
-- Phase 12: §17.9의 dotfiles provider 몫 — active reader/writer·service/
+- Phase 2: §17.9의 checks consumer 제거 몫(negative: active tree 0건) +
+  §17.2의 verify candidate mismatch 몫 + §17.3 전체 + §17.4의 coordinator 연결
+  몫(cursor 전이·dual-lane·coalesce/coverage).
+- Phase 3: §17.8 전체.
+- Phase 4: §17.6 전체(advisory 4종 + chain budget/owner/fingerprint) + §17.7
+  전체.
+- Phase 5: §17.5의 self-deploy 실측 E2E + §17.9의 CI workflow 제거 몫과 §18.2
+  required check 0 readback + §17.10 beads-ui 몫 + §17.11의 beads-ui AGENTS/
+  protocol/bundle/source map 몫.
+- Phase 6/7: §17.10 train_bot/TRACE 몫 — remote exact HEAD/projectmgr 및 Fisher
+  exact HEAD/SLURM/uv와 각 script의 same-SHA replay idempotency·secret-free
+  failure(각 enclosed repo의 script 검증은 해당 repo 테스트 관례를 따르고
+  beads-ui suite에 이식하지 않는다).
+- Phase 8: §17.9의 provider deletion 몫(beads-ui) + shared owner 보존 고정.
+- Phase 9: §17.9의 dotfiles provider 몫 — active reader/writer·service/
   install/runtime reference 부재 readback.
-- Phase 13: §17.11 나머지.
-- §18.12 user-checkout snapshot 검증은 Phase 1·8·9·10·12의 검증 라인에
-  포함된다.
+- Phase 10: §17.11의 나머지 몫(dotfiles workflow/skills/checker/render/install
+  tests, 네 repo config/path/executable checks).
+- §18.12 user-checkout snapshot 검증은 Phase 1·5·6·7·9의 검증 라인에 포함된다.
 
 제외: verify를 어느 repo에 실제 선언하는 작업(향후 opt-in), 새 provider/daemon
 작성, GitHub Actions 재도입, closed historical specs/plans/receipts 삭제.
@@ -361,5 +444,5 @@ UI-1lmv가 이미 green으로 만든 seam(§17.1 resolver, §17.2 deploy checkou
 
 - workspace UI의 기타 개선(worker lane 재설계 등 다른 Bead 소유)은 손대지
   않는다.
-- `~/.config/bdui/config.toml`의 runtime pointer 정합은 Phase 8 cutover에서
+- `~/.config/bdui/config.toml`의 runtime pointer 정합은 Phase 5 cutover에서
   필요한 최소 변경만 수행하고 전후 값을 notes에 기록한다.
