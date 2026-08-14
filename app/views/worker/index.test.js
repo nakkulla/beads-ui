@@ -4404,6 +4404,29 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     ]);
   });
 
+  test('offers a timeline link instead of a locked merge action', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
+    );
+
+    expect([
+      mount.querySelector('.worker-mini__merge'),
+      mount.querySelector('.worker-mini__timeline')?.textContent?.trim()
+    ]).toEqual([null, '저장소 작업 보기']);
+  });
+
+  test('opens the timeline from that link', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__timeline')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.worker-repo-drawer')).not.toBeNull();
+  });
+
   test('names the stopped step on the pr_wait badge', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
