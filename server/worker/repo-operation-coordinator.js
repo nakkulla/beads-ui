@@ -255,6 +255,110 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Test whether one commit is contained by another without letting an
+   * unavailable ref or git error block terminal settlement.
+   *
+   * @param {string} ancestor_ref
+   * @param {string} descendant_sha
+   */
+  async function isCoveredByDescendant(ancestor_ref, descendant_sha) {
+    try {
+      const result = await deps.gitRun(
+        ['merge-base', '--is-ancestor', ancestor_ref, descendant_sha],
+        { cwd: deps.repo }
+      );
+      return result.code === 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Durably cover failed deploy rows when terminal settlement proves a
+   * successful descendant, regardless of which row settled last.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   */
+  async function sweepDescendantCoverage(workspace, operation_id) {
+    try {
+      const queue = deps.store.snapshot(workspace);
+      const settled = queue.repo_operations[operation_id];
+      if (
+        !settled ||
+        settled.kind !== 'deploy' ||
+        (settled.state !== 'succeeded' && settled.state !== 'failed')
+      ) {
+        return;
+      }
+      if (settled.state === 'succeeded') {
+        if (typeof settled.target_sha !== 'string') {
+          return;
+        }
+        for (const [failed_id, failed] of Object.entries(
+          queue.repo_operations
+        )) {
+          if (
+            failed.kind !== 'deploy' ||
+            failed.repo_id !== settled.repo_id ||
+            failed.state !== 'failed' ||
+            failed.superseded_by
+          ) {
+            continue;
+          }
+          const ancestor_ref = failed.target_sha ?? failed.effective_base_sha;
+          if (
+            typeof ancestor_ref !== 'string' ||
+            !(await isCoveredByDescendant(ancestor_ref, settled.target_sha))
+          ) {
+            continue;
+          }
+          try {
+            deps.store.supersedeRepoOperation(workspace, {
+              operation_id: failed_id,
+              successor_id: operation_id
+            });
+          } catch {
+            continue;
+          }
+        }
+        return;
+      }
+      if (settled.superseded_by) {
+        return;
+      }
+      const ancestor_ref = settled.target_sha ?? settled.effective_base_sha;
+      if (typeof ancestor_ref !== 'string') {
+        return;
+      }
+      for (const [succeeded_id, succeeded] of Object.entries(
+        queue.repo_operations
+      )) {
+        if (
+          succeeded.kind !== 'deploy' ||
+          succeeded.repo_id !== settled.repo_id ||
+          succeeded.state !== 'succeeded' ||
+          typeof succeeded.target_sha !== 'string' ||
+          !(await isCoveredByDescendant(ancestor_ref, succeeded.target_sha))
+        ) {
+          continue;
+        }
+        try {
+          deps.store.supersedeRepoOperation(workspace, {
+            operation_id,
+            successor_id: succeeded_id
+          });
+        } catch {
+          return;
+        }
+        return;
+      }
+    } catch {
+      return;
+    }
+  }
+
+  /**
    * Durable failure settlement with the master §5 fingerprint identity.
    *
    * @param {string} workspace
@@ -286,6 +390,7 @@ export function createRepoOperationCoordinator(deps) {
         interrupted: failure.interrupted === true
       }
     });
+    await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
   }
 
@@ -335,6 +440,7 @@ export function createRepoOperationCoordinator(deps) {
         signal: marker.signal,
         log_digest
       });
+      await sweepDescendantCoverage(workspace, operation_id);
       transition.reclaim(workspace, operation_id);
       if (operation.kind === 'verify') {
         await verify_checkout.cleanup({
@@ -1182,6 +1288,14 @@ export function createRepoOperationCoordinator(deps) {
       return { ok: false, code: 'repo_operation_not_failed' };
     }
     const chain_id = operation.repair.chain_id || operation_id;
+    if (operation.superseded_by) {
+      return {
+        ok: false,
+        code: chainClosed(queue.repo_operations, chain_id)
+          ? 'repair_chain_closed'
+          : 'repo_operation_superseded'
+      };
+    }
     if (chainClosed(queue.repo_operations, chain_id)) {
       return { ok: false, code: 'repair_chain_closed' };
     }

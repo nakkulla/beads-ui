@@ -114,7 +114,8 @@ export function repoOpsStripModel(operations, cleanup_failures) {
   }
   const unresolved =
     cards.filter(
-      (/** @type {any} */ card) => card.state === 'failed' && !card.dismissed
+      (/** @type {any} */ card) =>
+        card.state === 'failed' && !card.dismissed && !card.superseded_by
     ).length + cleanup.length;
   const repairing = cards.some(
     (/** @type {any} */ card) => card.state === 'repairing'

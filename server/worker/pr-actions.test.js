@@ -1019,6 +1019,20 @@ describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
 });
 
 describe('post-merge cleanup — the pr-finish contract ORDER (§6)', () => {
+  test('clears a base containment failure after a successful cleanup retry', async () => {
+    let fail_fetch = true;
+    const h = makeActions({
+      gitFail: (args) => fail_fetch && args[0] === 'fetch'
+    });
+
+    await h.actions.merge(BEAD);
+    fail_fetch = false;
+    const result = await h.actions.retryCleanup(BEAD);
+
+    expect(result).toMatchObject({ ok: true, step: null, reason: null });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
   test('refuses a cleanup retry while an active discard owns the bead', async () => {
     const h = makeActions();
     h.store.recordCleanupFailure(WS, {

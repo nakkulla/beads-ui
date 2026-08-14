@@ -167,6 +167,16 @@ describe('RepoOperation protocol projection', () => {
     ]);
   });
 
+  test('projects a superseded failure as ineligible for repair', () => {
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation({ superseded_by: 'op-2' })
+    });
+
+    const card = /** @type {any[]} */ (decorated.repo_operations)[0];
+
+    expect(card.repair_eligible).toBe(false);
+  });
+
   test('links the repair session and its live attempt status', () => {
     const decorated = decorateWith({ 'op-1': failedDeployOperation() });
 

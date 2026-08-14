@@ -218,7 +218,11 @@ function explainTemplate(text, suffix = '', warn = false) {
  * @returns {TemplateResult|string}
  */
 function operationActionsTemplate(operation) {
-  if (operation.state !== 'failed' || operation.dismissed) {
+  if (
+    operation.state !== 'failed' ||
+    operation.dismissed ||
+    operation.superseded_by
+  ) {
     return '';
   }
   const repair = operation.repair || {};
@@ -313,6 +317,9 @@ function operationEventTemplate(event) {
         >
         ${operation.dismissed
           ? html`<span class="worker-ev__st worker-ev__st--quiet">접수됨</span>`
+          : ''}
+        ${operation.superseded_by
+          ? html`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`
           : ''}
       </div>
       ${failed

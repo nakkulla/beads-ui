@@ -994,7 +994,8 @@ function projectRepoOperations(operations, attempts) {
               raw.target_sha !== raw.verify_head_sha
             ? 'post_merge'
             : 'pre_merge',
-      repair_eligible: failure ? isRepairEligible(raw) : false,
+      repair_eligible:
+        failure && !raw.superseded_by ? isRepairEligible(raw) : false,
       repair: {
         chain_id: raw.repair.chain_id,
         owner_bead: raw.repair.owner_bead,

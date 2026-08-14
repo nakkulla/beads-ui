@@ -395,6 +395,15 @@ describe('repoOpsStripModel (UI-q0uy §4.1)', () => {
     expect(model?.badge).toEqual({ tone: 'quiet', label: '모두 정상' });
   });
 
+  test('drops a superseded failure from the tally', () => {
+    const model = repoOpsStripModel(
+      [card({ state: 'failed', superseded_by: 'op-2' })],
+      []
+    );
+
+    expect(model?.badge).toEqual({ tone: 'quiet', label: '모두 정상' });
+  });
+
   test('reports a running repair session', () => {
     const model = repoOpsStripModel([card({ state: 'repairing' })], []);
 

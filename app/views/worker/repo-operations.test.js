@@ -562,6 +562,22 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).toContain('접수됨');
   });
 
+  test('marks a superseded failure as 덮임 without action buttons', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ superseded_by: 'op-2' })]
+    });
+
+    const timeline = openTimeline(mount);
+    expect(
+      Array.from(timeline.querySelectorAll('.worker-ev__st')).map(
+        (element) => element.textContent
+      )
+    ).toEqual(['실패', '덮임']);
+    expect(timeline.querySelector('.worker-repo-op__resolve')).toBeNull();
+    expect(timeline.querySelector('.worker-repo-op__dismiss')).toBeNull();
+    expect(timeline.querySelector('.worker-ev__details')).not.toBeNull();
+  });
+
   test('sends the resolve click through the coordinator mutation', () => {
     const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
     const { mount } = mountWorker(
