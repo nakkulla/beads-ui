@@ -164,109 +164,221 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-describe('repo operation cards', () => {
+/**
+ * Open the timeline the way a user does — the strip click (§4.1/§4.2).
+ *
+ * @param {HTMLElement} mount
+ * @returns {HTMLElement}
+ */
+function openTimeline(mount) {
+  /** @type {HTMLElement} */ (
+    mount.querySelector('.worker-repo-strip')
+  ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  return /** @type {HTMLElement} */ (
+    mount.querySelector('.worker-repo-drawer')
+  );
+}
+
+describe('저장소 작업 상태 스트립 (UI-q0uy §4.1)', () => {
   test('renders nothing when the workspace has no operations', () => {
     const { mount } = mountWorker();
 
-    expect(mount.querySelector('.worker-repo-ops')).toBeNull();
+    expect(mount.querySelector('.worker-repo-strip')).toBeNull();
   });
 
-  test('renders one card per projected operation', () => {
+  test('never forces itself open on a failure', () => {
     const { mount } = mountWorker({ repo_operations: [operationCard()] });
 
-    expect(mount.querySelectorAll('.worker-repo-op')).toHaveLength(1);
+    expect(mount.querySelector('details.worker-repo-ops')).toBeNull();
   });
 
-  test('shows the kind and the bound target sha', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+  test('reads the current deployment while collapsed', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ state: 'succeeded', failure: null })]
+    });
 
-    const card = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-repo-op')
-    );
-
-    expect([
-      card.querySelector('.worker-repo-op__kind')?.textContent,
-      card.querySelector('.worker-repo-op__target')?.textContent
-    ]).toEqual(['deploy', `main@${'c'.repeat(7)}`]);
-  });
-
-  test('shows the target tree', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(mount.querySelector('.worker-repo-op__tree')?.textContent).toBe(
-      `tree ${'d'.repeat(7)}`
+    expect(mount.querySelector('.worker-repo-strip__sha')?.textContent).toBe(
+      'c'.repeat(7)
     );
   });
 
-  test('shows the declared script path and pinned blob', () => {
+  test('omits the deployment fact when no deploy has succeeded', () => {
     const { mount } = mountWorker({ repo_operations: [operationCard()] });
 
-    expect([
-      mount.querySelector('.worker-repo-op__script')?.textContent,
-      mount.querySelector('.worker-repo-op__blob')?.textContent
-    ]).toEqual(['repo-ops/script/deploy', `blob ${'e'.repeat(7)}`]);
+    expect(mount.querySelector('.worker-repo-strip__fact')).toBeNull();
   });
 
-  test('shows the elapsed time', () => {
+  test('counts an unresolved failure in the badge', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
+      '해결 필요 1'
+    );
+  });
+
+  test('counts a stopped cleanup in the same badge', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ state: 'succeeded', failure: null })],
+      cleanup_failed: { 'UI-a': { step: 'child_sweep', reason: 'x', at: 1 } }
+    });
+
+    expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
+      '해결 필요 1'
+    );
+  });
+
+  test('drops a dismissed failure from the tally', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ dismissed: { at: 5, by: 'user' } })]
+    });
+
+    expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
+      '모두 정상'
+    );
+  });
+
+  test('says a repair session is running', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ state: 'repairing' })]
+    });
+
+    expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
+      '자동 해결 중'
+    );
+  });
+
+  test('says 모두 정상 when nothing needs a human', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ state: 'succeeded', failure: null })]
+    });
+
+    expect(mount.querySelector('.worker-repo-strip__badge')?.textContent).toBe(
+      '모두 정상'
+    );
+  });
+});
+
+describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
+  test('opens on a strip click', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(openTimeline(mount)).not.toBeNull();
+  });
+
+  test('renders one event per operation', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard(),
+        operationCard({ operation_id: 'op-2' })
+      ]
+    });
+
+    expect(openTimeline(mount).querySelectorAll('.worker-ev')).toHaveLength(2);
+  });
+
+  test('names the deploy lane in human words', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__what')?.textContent
+    ).toBe('머지 후 배포');
+  });
+
+  test('says a known failure as a cause sentence', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          failure: {
+            code: 'repo_ops_worktree_unowned',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          }
+        })
+      ]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__cause')?.textContent
+    ).toBe(
+      '배포 워크트리가 아직 Worker 소유가 아니어서 스크립트 실행 전에 중단됐습니다.'
+    );
+  });
+
+  test('renders an unknown contract token verbatim', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          failure: {
+            code: 'a_future_failure_code',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          }
+        })
+      ]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__cause')?.textContent
+    ).toBe('a_future_failure_code');
+  });
+
+  test('keeps the raw failure code inside the details block', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__kv dd')?.textContent
+    ).toBe('script_failed');
+  });
+
+  test('keeps the script, blob and exit code in the details block', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__kv')?.textContent
+    ).toContain(`repo-ops/script/deploy · blob ${'e'.repeat(7)} · exit 2`);
+  });
+
+  test('keeps the full log path in the details block', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__kv')?.textContent
+    ).toContain('/logs/op-1.log');
+  });
+
+  test('keeps the sanitized output tail in the details block', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__kv')?.textContent
+    ).toContain('npm run build exited with 2');
+  });
+
+  test('shows the elapsed time on the event line', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ elapsed_ms: 90_000 })]
     });
 
-    expect(mount.querySelector('.worker-repo-op__elapsed')?.textContent).toBe(
-      '1분 30초'
-    );
-  });
-
-  test('shows the exit code', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(mount.querySelector('.worker-repo-op__exit')?.textContent).toBe(
-      'exit 2'
-    );
-  });
-
-  test('shows the sanitized output tail behind a disclosure', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
     expect(
-      mount.querySelector('.worker-repo-op__output pre')?.textContent
-    ).toBe('npm run build exited with 2');
-  });
-
-  test('shows the full log path', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(mount.querySelector('.worker-repo-op__log code')?.textContent).toBe(
-      '/logs/op-1.log'
-    );
-  });
-
-  test('links the repair session attempt', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(
-      /** @type {HTMLElement} */ (
-        mount.querySelector('.worker-repo-op__session')
-      ).dataset.attemptId
-    ).toBe('att-1');
-  });
-
-  test('shows the remaining automatic budget', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
-
-    expect(
-      mount
-        .querySelector('.worker-repo-op__budget')
-        ?.textContent?.replace(/\s+/g, ' ')
-        .trim()
-    ).toBe('자동 해결 남음 0/1');
+      openTimeline(mount).querySelector('.worker-ev__meta')?.textContent
+    ).toContain('1분 30초');
   });
 
   test('names the deploy failure on its resolve button', () => {
-    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          repair: { ...operationCard().repair, remaining: 1, auto_used: 0 }
+        })
+      ]
+    });
 
     expect(
-      mount.querySelector('.worker-repo-op__resolve')?.textContent?.trim()
+      openTimeline(mount)
+        .querySelector('.worker-repo-op__resolve')
+        ?.textContent?.trim()
     ).toBe('배포 실패 해결');
   });
 
@@ -282,7 +394,9 @@ describe('repo operation cards', () => {
     });
 
     expect(
-      mount.querySelector('.worker-repo-op__resolve')?.textContent?.trim()
+      openTimeline(mount)
+        .querySelector('.worker-repo-op__resolve')
+        ?.textContent?.trim()
     ).toBe('검증 실패 해결 후 머지');
   });
 
@@ -298,7 +412,9 @@ describe('repo operation cards', () => {
     });
 
     expect(
-      mount.querySelector('.worker-repo-op__resolve')?.textContent?.trim()
+      openTimeline(mount)
+        .querySelector('.worker-repo-op__resolve')
+        ?.textContent?.trim()
     ).toBe('검증 실패 해결');
   });
 
@@ -310,7 +426,9 @@ describe('repo operation cards', () => {
     });
 
     expect(
-      mount.querySelector('.worker-repo-op__resolve')?.textContent?.trim()
+      openTimeline(mount)
+        .querySelector('.worker-repo-op__resolve')
+        ?.textContent?.trim()
     ).toBe('중단된 작업 진단');
   });
 
@@ -318,10 +436,44 @@ describe('repo operation cards', () => {
     const { mount } = mountWorker({ repo_operations: [operationCard()] });
 
     const labels = Array.from(
-      mount.querySelectorAll('.worker-repo-op button')
+      openTimeline(mount).querySelectorAll('.worker-ev button')
     ).map((button) => button.textContent?.trim());
 
     expect(labels).not.toContain('재시도');
+  });
+
+  test('says what a repair session costs', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          repair: { ...operationCard().repair, auto_used: 0, remaining: 1 }
+        })
+      ]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__btn-sub')?.textContent
+    ).toBe('repair 세션 1회를 씁니다 · 남음 1/1');
+  });
+
+  test('disables the resolve button once the budget is spent', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        openTimeline(mount).querySelector('.worker-repo-op__resolve')
+      ).disabled
+    ).toBe(true);
+  });
+
+  test('links the repair session attempt', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+
+    expect(
+      /** @type {HTMLElement} */ (
+        openTimeline(mount).querySelector('.worker-repo-op__session')
+      ).dataset.attemptId
+    ).toBe('att-1');
   });
 
   test('shows an automatically repairing operation as such', () => {
@@ -329,20 +481,66 @@ describe('repo operation cards', () => {
       repo_operations: [operationCard({ state: 'repairing' })]
     });
 
-    expect(mount.querySelector('.worker-repo-op__state')?.textContent).toBe(
-      '자동 해결 중'
-    );
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__st')?.textContent
+    ).toBe('자동 해결 중');
   });
 
-  test('offers no resolve button while a repair is running', () => {
+  test('offers no action buttons while a repair is running', () => {
     const { mount } = mountWorker({
       repo_operations: [operationCard({ state: 'repairing' })]
     });
 
-    expect(mount.querySelector('.worker-repo-op__resolve')).toBeNull();
+    expect(
+      openTimeline(mount).querySelector('.worker-repo-op__resolve')
+    ).toBeNull();
+  });
+
+  test('offers no action buttons on an acknowledged failure', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ dismissed: { at: 5, by: 'user' } })]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-repo-op__dismiss')
+    ).toBeNull();
+  });
+
+  test('marks an acknowledged failure as 접수됨', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ dismissed: { at: 5, by: 'user' } })]
+    });
+
+    expect(
+      Array.from(openTimeline(mount).querySelectorAll('.worker-ev__st')).map(
+        (el) => el.textContent
+      )
+    ).toContain('접수됨');
   });
 
   test('sends the resolve click through the coordinator mutation', () => {
+    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
+    const { mount } = mountWorker(
+      {
+        repo_operations: [
+          operationCard({
+            repair: { ...operationCard().repair, auto_used: 0, remaining: 1 }
+          })
+        ]
+      },
+      transport
+    );
+
+    /** @type {HTMLElement} */ (
+      openTimeline(mount).querySelector('.worker-repo-op__resolve')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('worker-repo-operation-repair', {
+      operation_id: 'op-1'
+    });
+  });
+
+  test('sends the dismiss click as its own mutation', () => {
     const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
     const { mount } = mountWorker(
       { repo_operations: [operationCard()] },
@@ -350,12 +548,54 @@ describe('repo operation cards', () => {
     );
 
     /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-repo-op__resolve')
+      openTimeline(mount).querySelector('.worker-repo-op__dismiss')
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
-    expect(transport).toHaveBeenCalledWith('worker-repo-operation-repair', {
+    expect(transport).toHaveBeenCalledWith('worker-repo-operation-dismiss', {
       operation_id: 'op-1'
     });
+  });
+
+  test('merges operations and stopped cleanups newest first', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ finished_at: 1000 })],
+      cleanup_failed: { 'UI-b': { step: 'child_sweep', reason: 'x', at: 5000 } }
+    });
+
+    expect(
+      Array.from(openTimeline(mount).querySelectorAll('.worker-ev')).map((el) =>
+        el.getAttribute('data-state')
+      )
+    ).toEqual(['cleanup_stalled', 'failed']);
+  });
+
+  test('sorts an event with no time to the oldest end', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          operation_id: 'op-timeless',
+          finished_at: null,
+          requested_at: null
+        }),
+        operationCard({ operation_id: 'op-timed', finished_at: 10 })
+      ]
+    });
+
+    expect(
+      Array.from(openTimeline(mount).querySelectorAll('.worker-ev')).map((el) =>
+        el.getAttribute('data-operation-id')
+      )
+    ).toEqual(['op-timed', 'op-timeless']);
+  });
+
+  test('caps the rail at twenty events', () => {
+    const { mount } = mountWorker({
+      repo_operations: Array.from({ length: 25 }, (_unused, index) =>
+        operationCard({ operation_id: `op-${index}`, finished_at: index })
+      )
+    });
+
+    expect(openTimeline(mount).querySelectorAll('.worker-ev')).toHaveLength(20);
   });
 });
 
@@ -568,11 +808,227 @@ describe('자동 해결 workspace setting', () => {
     ]).toEqual(['안 함', null]);
   });
 
+  test('collapses the three policy lists by default', () => {
+    const { mount } = mountWorker();
+
+    const dialog = openSettings(mount);
+
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        dialog.querySelector('[data-seam="policy-lists"]')
+      ).open
+    ).toBe(false);
+  });
+
+  test('summarizes the three list sizes on the collapsed summary', () => {
+    const { mount } = mountWorker();
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog
+        .querySelector('.exec-defaults__policy-count')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('자동 7 · 해결 세션 3 (체인당 1회) · 금지 8');
+  });
+
   test('omits the policy lists when the backend sent none', () => {
     const { mount } = mountWorker({ repo_operation_policy: null });
 
     const dialog = openSettings(mount);
 
     expect(dialog.querySelector('.exec-defaults__policy')).toBeNull();
+  });
+});
+
+/**
+ * @param {Record<string, any>} [over]
+ */
+function repoOps(over = {}) {
+  return {
+    status: 'resolved',
+    source_path: 'repo-ops/config.toml',
+    base_ref: 'main',
+    base_sha: 'a'.repeat(40),
+    verify: null,
+    deploy: { script: 'repo-ops/script/deploy', timeout_ms: 600_000 },
+    error_code: null,
+    ...over
+  };
+}
+
+describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
+  test('names the declaration source with its pinned base', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(dialog.querySelector('.exec-defaults__vd-src')?.textContent).toBe(
+      `repo-ops/config.toml @ main@${'a'.repeat(7)}`
+    );
+  });
+
+  test('shows the deploy script this repo actually declares', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('[data-lane="deploy"] .exec-defaults__vd-cmd')
+        ?.textContent
+    ).toBe('repo-ops/script/deploy');
+  });
+
+  test('shows the deploy timeout', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('[data-lane="deploy"] .exec-defaults__vd-badge')
+        ?.textContent
+    ).toBe('timeout 10분');
+  });
+
+  test('names where the deploy script runs', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('[data-lane="deploy"] .exec-defaults__lane-d')
+        ?.textContent
+    ).toContain('.worktrees/.repo-ops-deploy');
+  });
+
+  test('says an undeclared verify lane judges without verify', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog
+        .querySelector('[data-lane="verify"] .exec-defaults__lane-v')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('선언 없음verify 없이 판정');
+  });
+
+  test('shows a declared verify script', () => {
+    const { mount } = mountWorker({
+      workspace_info: {
+        verify_cmd: null,
+        repo_ops: repoOps({
+          verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 }
+        })
+      }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('[data-lane="verify"] .exec-defaults__vd-cmd')
+        ?.textContent
+    ).toBe('repo-ops/script/verify');
+  });
+
+  test('renders both lanes as undeclared when the config declares neither', () => {
+    const { mount } = mountWorker({
+      workspace_info: {
+        verify_cmd: null,
+        repo_ops: repoOps({ verify: null, deploy: null })
+      }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(dialog.querySelectorAll('.exec-defaults__vd-cmd')).toHaveLength(0);
+  });
+
+  test('falls back to the legacy display only on a proven absence', () => {
+    const { mount } = mountWorker({
+      workspace_info: {
+        verify_cmd: null,
+        repo_ops: repoOps({ status: 'absent', verify: null, deploy: null })
+      }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
+    ).not.toBeNull();
+  });
+
+  test('falls back to the legacy display on a snapshot without the field', () => {
+    const { mount } = mountWorker({ workspace_info: { verify_cmd: null } });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
+    ).not.toBeNull();
+  });
+
+  test('says the declaration is still being read while pending', () => {
+    const { mount } = mountWorker({
+      workspace_info: {
+        verify_cmd: null,
+        repo_ops: repoOps({ status: 'pending' })
+      }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('[data-seam="repo-ops-status"]')?.textContent?.trim()
+    ).toBe('선언 확인 중');
+  });
+
+  test('says the declaration could not be read on an error', () => {
+    const { mount } = mountWorker({
+      workspace_info: {
+        verify_cmd: null,
+        repo_ops: repoOps({
+          status: 'error',
+          error_code: 'repo_ops_config_invalid'
+        })
+      }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog
+        .querySelector('[data-seam="repo-ops-status"]')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toContain('선언 읽기 실패');
+  });
+
+  test('never falls back to the legacy display while pending', () => {
+    const { mount } = mountWorker({
+      workspace_info: {
+        verify_cmd: null,
+        repo_ops: repoOps({ status: 'pending' })
+      }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
+    ).toBeNull();
   });
 });

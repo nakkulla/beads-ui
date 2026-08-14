@@ -623,7 +623,7 @@ describe('views/board/card display policy', () => {
       m.querySelector('.ctl-chip--cleanup')
     );
 
-    expect(chip.textContent).toContain('정리 실패');
+    expect(chip.textContent).toContain('정리 멈춤');
     expect(m.querySelector('.board-card__cleanup-diagnose')).toBeNull();
     expect(m.querySelector('.board-card__cleanup-diagnosis')).toBeNull();
   });

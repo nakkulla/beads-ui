@@ -18,6 +18,10 @@ import { isRepairEligible } from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
+  recordRepoOpsResolution,
+  refreshRepoOpsDisplay
+} from './repo-ops-display.js';
+import {
   resolveEffectiveRepoOps,
   resolveRepoOps
 } from './repo-ops-resolver.js';
@@ -84,6 +88,53 @@ export function createRepoOperationCoordinator(deps) {
     createRepoOpsDeployWorktreeManager({ locks: deps.locks, run: deps.gitRun });
   const verify_checkout =
     deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
+
+  /**
+   * `resolveEffectiveRepoOps`, plus the display-cache update (UI-q0uy §4.6-1).
+   * The cache is fed by the resolve this launch ALREADY does — there is no
+   * second resolution anywhere on this path. The recorded declaration is the one
+   * read at the fetched TARGET tree: that is what the repo declares right now,
+   * which is the question the settings surface asks.
+   *
+   * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
+   */
+  async function resolveEffectiveTracked(input) {
+    /** @type {any} */
+    const result = await resolveEffectiveRepoOps(input);
+    const resolution =
+      result && typeof result === 'object' && result.target
+        ? result.target
+        : result;
+    if (
+      resolution &&
+      typeof resolution === 'object' &&
+      (resolution.ok === false || 'config_blob_sha' in resolution)
+    ) {
+      recordRepoOpsResolution({
+        workspace: deps.workspace,
+        resolution,
+        base_sha: input.target_sha
+      });
+    }
+    return result;
+  }
+
+  /**
+   * The attach-time fill (UI-q0uy §4.6-1 (a)): one resolve at the base tip the
+   * attachment already resolved, so a workspace shows its declaration before any
+   * operation has run.
+   *
+   * @param {{ base: string|null, sha: string|null }} input
+   */
+  async function refreshDisplay(input) {
+    return refreshRepoOpsDisplay({
+      workspace: deps.workspace,
+      repo: deps.repo,
+      base: input.base,
+      sha: input.sha,
+      gitRun: deps.gitRun
+    });
+  }
 
   /**
    * Deploy operation identity per master spec §5: repo, kind, base, fetched
@@ -331,7 +382,7 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function ensureVerifyLocked(candidate) {
     /** @type {any} */
-    const policy = await resolveEffectiveRepoOps({
+    const policy = await resolveEffectiveTracked({
       repo: deps.repo,
       previous_sha: candidate.base_sha,
       target_sha: candidate.final_sha || candidate.head_sha,
@@ -619,7 +670,7 @@ export function createRepoOperationCoordinator(deps) {
     }
     const target_sha = bound.target_sha;
     /** @type {any} */
-    const policy = await resolveEffectiveRepoOps({
+    const policy = await resolveEffectiveTracked({
       repo: deps.repo,
       previous_sha,
       target_sha,
@@ -735,7 +786,7 @@ export function createRepoOperationCoordinator(deps) {
       return;
     }
     /** @type {any} */
-    const policy = await resolveEffectiveRepoOps({
+    const policy = await resolveEffectiveTracked({
       repo: deps.repo,
       previous_sha: operation.effective_base_sha,
       target_sha: bound.target_sha,
@@ -1199,6 +1250,37 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Acknowledge one failed row (UI-q0uy §4.6-2). Not a transition and not a
+   * repair: the record keeps its state and evidence, and the repair budget and
+   * chain are untouched. Under the repo-operation lock like every other write
+   * here, so it cannot race a launch that is about to move the same row.
+   *
+   * @param {string} operation_id
+   */
+  async function dismiss(operation_id) {
+    const release = await deps.locks.repoOperationLock(deps.repo);
+    try {
+      const operation = observe(operation_id);
+      if (!operation) {
+        return { ok: false, code: 'repo_operation_missing' };
+      }
+      if (operation.state !== 'failed') {
+        return { ok: false, code: 'repo_operation_not_failed' };
+      }
+      const applied = deps.store.dismissRepoOperation(deps.workspace, {
+        operation_id,
+        by: 'user'
+      });
+      if (!applied || applied.ok !== true) {
+        return { ok: false, code: 'repo_operation_dismiss_refused' };
+      }
+      return { ok: true, operation_id };
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Reconcile the repair lane. Two passes, both driven by facts the coordinator
    * can read for itself:
    *
@@ -1334,7 +1416,9 @@ export function createRepoOperationCoordinator(deps) {
     hasConfig,
     deploymentEvidence,
     reconcile,
-    startRepair
+    startRepair,
+    dismiss,
+    refreshDisplay
   };
 }
 

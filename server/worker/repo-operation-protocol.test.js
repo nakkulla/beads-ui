@@ -214,4 +214,40 @@ describe('RepoOperation protocol projection', () => {
 
     expect(decorated.repo_operations).toEqual([]);
   });
+
+  test('projects the acknowledgement mark on a dismissed row (UI-q0uy §4.6-2)', () => {
+    const decorated = decorateWith({
+      'op-1': failedDeployOperation({ dismissed: { at: 42, by: 'user' } })
+    });
+
+    expect(
+      /** @type {any[]} */ (decorated.repo_operations)[0].dismissed
+    ).toEqual({ at: 42, by: 'user' });
+  });
+
+  test('leaves an unacknowledged row null rather than absent', () => {
+    const decorated = decorateWith({ 'op-1': failedDeployOperation() });
+
+    expect(
+      /** @type {any[]} */ (decorated.repo_operations)[0].dismissed
+    ).toBeNull();
+  });
+});
+
+describe('workspace_info.repo_ops projection (UI-q0uy §4.6-1)', () => {
+  test('reports an unfilled cache as pending rather than absent', () => {
+    const decorated = decorateWith();
+
+    expect(/** @type {any} */ (decorated.workspace_info).repo_ops.status).toBe(
+      'pending'
+    );
+  });
+
+  test('keeps the legacy verify_cmd decoration alongside it', () => {
+    const decorated = decorateWith();
+
+    expect('verify_cmd' in /** @type {any} */ (decorated.workspace_info)).toBe(
+      true
+    );
+  });
 });

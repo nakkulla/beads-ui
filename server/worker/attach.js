@@ -1317,6 +1317,18 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('repo-operation startup reconcile failed for %s: %o', key, err);
   }
+  // Fill the declaration DISPLAY cache once at the base tip this attachment
+  // already resolved (UI-q0uy §4.6-1 (a)). Non-fatal: an unfilled cache reads as
+  // 선언 확인 중 in the settings dialog, never as a legacy fallback.
+  try {
+    const base = await att.resolveBase();
+    await att.repoOperationCoordinator.refreshDisplay({
+      base: base.base,
+      sha: base.ok ? base.base_oid : null
+    });
+  } catch (err) {
+    log('repo-ops display refresh failed for %s: %o', key, err);
+  }
   // Before the lane resumes: the legacy records must already be converted, or
   // the resume would skip exactly the rows the migration exists for. A failure
   // here is not fatal — an unconverted row keeps its legacy failure record and
@@ -1589,6 +1601,22 @@ export async function startWorkerRepoOperationRepair(workspace_root, input) {
     input.operation_id,
     input.mode === 'auto' ? 'auto' : 'manual'
   );
+}
+
+/**
+ * Acknowledge one FAILED RepoOperation row (UI-q0uy §4.6-2). The row stays
+ * failed and auditable; only the 해결 필요 tally and its action buttons drop it.
+ *
+ * @param {string} workspace_root
+ * @param {{ operation_id: string }} input
+ * @returns {Promise<{ ok: boolean, code?: string, operation_id?: string }>}
+ */
+export async function dismissWorkerRepoOperation(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.repoOperationCoordinator) {
+    return { ok: false, code: 'no_attachment' };
+  }
+  return att.repoOperationCoordinator.dismiss(input.operation_id);
 }
 
 /**

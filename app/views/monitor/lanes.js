@@ -39,6 +39,10 @@ import {
   usageTooltip
 } from '../../utils/token-usage.js';
 import { discardProjection, discardReceiptTemplate } from '../worker/lanes.js';
+import {
+  cleanupStalledReason,
+  cleanupStepLabel
+} from '../worker/merge-steps.js';
 import { formatElapsed } from '../worker/running-grid.js';
 import {
   iconClose,
@@ -517,15 +521,21 @@ export function buildLanes(workspaces, workspaces_state, options) {
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
         external,
         usage: sumAttemptUsage(attempts, bead_id),
+        // Worker 탭 `prWaitRow`와 같은 문자열이어야 한다 (UI-q0uy §4.4) — 같은
+        // 사실을 두 탭이 다르게 적으면 안 된다.
         badges: continuation_required
           ? ['이어하기 선택 필요']
           : cleanup
-            ? ['정리 실패']
+            ? [
+                cleanupStepLabel(cleanup.step)
+                  ? `정리 멈춤 · ${cleanupStepLabel(cleanup.step)}`
+                  : '정리 멈춤'
+              ]
             : typeof gate?.gate_badge === 'string' && gate.gate_badge.length > 0
               ? [gate.gate_badge]
               : [],
         alert: !!cleanup || gate_alert,
-        reason: cleanup ? '머지됨 · 정리 미완' : 'PR 대기',
+        reason: cleanup ? cleanupStalledReason(cleanup.step) : 'PR 대기',
         // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
         // (Worker 탭 [취소]와 같은 규약).
         merge_action: !queued || continuation_required,
@@ -541,7 +551,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         merge_label: continuation_required
           ? '이어하기 선택'
           : external_cleanup || cleanup_retry
-            ? '정리'
+            ? '정리 재개'
             : conflicting && !cleanup_retry
               ? '충돌 해소 후 머지'
               : undefined,

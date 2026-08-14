@@ -147,4 +147,122 @@ describe('RepoOperation store', () => {
       { state: 'queued', attempt_id: 'fresh' }
     );
   });
+
+  it('marks a failed row as acknowledged without changing its state', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.settleRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null
+    });
+
+    const result = store.dismissRepoOperation(workspace, {
+      operation_id: 'deploy-a'
+    });
+
+    expect([
+      result.ok,
+      result.queue.repo_operations['deploy-a'].state,
+      result.queue.repo_operations['deploy-a'].dismissed?.by
+    ]).toEqual([true, 'failed', 'user']);
+  });
+
+  it('leaves the repair budget untouched when a row is acknowledged', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.settleRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null
+    });
+
+    const result = store.dismissRepoOperation(workspace, {
+      operation_id: 'deploy-a'
+    });
+
+    expect(result.queue.repo_operations['deploy-a'].repair.auto_used).toBe(0);
+  });
+
+  it('refuses to acknowledge a row that is not failed', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+
+    const result = store.dismissRepoOperation(workspace, {
+      operation_id: 'deploy-a'
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('refuses a second acknowledgement of the same row', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.settleRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null
+    });
+    store.dismissRepoOperation(workspace, { operation_id: 'deploy-a' });
+
+    const result = store.dismissRepoOperation(workspace, {
+      operation_id: 'deploy-a'
+    });
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('survives a reload with its acknowledgement intact', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const filePathFor = (/** @type {string} */ root) =>
+      path.join(root, 'queue.json');
+    const store = createQueueStore({ filePathFor });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.settleRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null
+    });
+    store.dismissRepoOperation(workspace, { operation_id: 'deploy-a' });
+
+    const reloaded = createQueueStore({ filePathFor });
+
+    expect(
+      reloaded.snapshot(workspace).repo_operations['deploy-a'].dismissed?.by
+    ).toBe('user');
+  });
 });

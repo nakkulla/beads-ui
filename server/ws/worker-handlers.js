@@ -33,6 +33,7 @@ import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   discardWorkerBead,
+  dismissWorkerRepoOperation,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
   observeWorkerPrs,
@@ -59,6 +60,7 @@ import {
   isRepairEligible,
   projectRepoOperationPolicy
 } from '../worker/repo-operation-policy.js';
+import { repoOpsDisplayFor } from '../worker/repo-ops-display.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -1003,7 +1005,11 @@ function projectRepoOperations(operations, attempts) {
         attempt_id: raw.repair.attempt_id,
         attempt_status: repair_attempt ? repair_attempt.status : null
       },
-      superseded_by: raw.superseded_by
+      superseded_by: raw.superseded_by,
+      // A human acknowledged this failed row (UI-q0uy §4.6-2). Projected so the
+      // client can drop it from the 해결 필요 tally without inventing its own
+      // notion of "handled".
+      dismissed: raw.dismissed ?? null
     });
   }
   cards.sort(
@@ -1148,7 +1154,15 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),
-    workspace_info: { verify_cmd, slots },
+    // `repo_ops` is the declaration the deploy lane ACTUALLY consumes
+    // (`repo-ops/config.toml` at a pinned SHA, UI-q0uy §4.6-1), read from the
+    // display cache rather than resolved here — this decoration cannot await
+    // git. `verify_cmd` above stays the legacy `[worker.verify]` config read.
+    workspace_info: {
+      verify_cmd,
+      slots,
+      repo_ops: repoOpsDisplayFor(workspace_key)
+    },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
     pr_observations: prObservationsFor(
@@ -1960,6 +1974,54 @@ export async function handleWorkerRepoOperationRepair(ws, req) {
         reason:
           result.ok === true ? undefined : result.code || 'repair_refused',
         attempt_id: result.attempt_id ?? null,
+        queue: decorateQueue(key, queueStore().snapshot(key))
+      })
+    )
+  );
+  fanout(key, queueStore().snapshot(key));
+}
+
+/**
+ * Handle `worker-repo-operation-dismiss`. Payload: `{ operation_id: string }`.
+ *
+ * The 「기록 닫기」 click (UI-q0uy §4.6-2). It is NOT a state transition and NOT
+ * a repair: the row stays `failed` with its whole evidence trail, and only the
+ * 해결 필요 tally and the timeline's action buttons stop counting it. A row that
+ * is queued/running/repairing is refused as an invalid state.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerRepoOperationDismiss(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.operation_id !== 'string' || p.operation_id.length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { operation_id }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {{ ok: boolean, code?: string, operation_id?: string }} */
+  let result;
+  try {
+    result = await dismissWorkerRepoOperation(key, {
+      operation_id: p.operation_id
+    });
+  } catch (err) {
+    log('repo-operation dismiss failed for %s: %o', key, err);
+    result = { ok: false, code: 'repo_operation_dismiss_failed' };
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        ok: result.ok === true,
+        reason:
+          result.ok === true ? undefined : result.code || 'dismiss_refused',
         queue: decorateQueue(key, queueStore().snapshot(key))
       })
     )

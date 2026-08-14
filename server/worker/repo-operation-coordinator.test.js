@@ -6,6 +6,10 @@ import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import {
+  __resetRepoOpsDisplayForTest,
+  repoOpsDisplayFor
+} from './repo-ops-display.js';
+import {
   repoOpsSpoolPendingDir,
   repoOpsSpoolProcessedDir
 } from './state-paths.js';
@@ -26,6 +30,7 @@ let root;
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-operation-coord-'));
   process.env.XDG_STATE_HOME = path.join(root, 'state');
+  __resetRepoOpsDisplayForTest();
 });
 
 afterEach(() => {
@@ -843,5 +848,94 @@ describe('RepoOperation coordinator', () => {
       failure: { code: 'repo_operation_spawn_failed' }
     });
     expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () => {
+  test('acknowledges one failed row through the coordinator', async () => {
+    const { store, coordinator } = coordinatorFor();
+    spoolRequest(validRequest());
+    await coordinator.reconcile(root);
+    const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
+    const attempt_id =
+      store.snapshot(root).repo_operations[operation_id].attempt_id;
+    store.settleRepoOperation(root, {
+      operation_id,
+      attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'repo_ops_worktree_unowned',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    const result = await coordinator.dismiss(operation_id);
+
+    expect([
+      result.ok,
+      store.snapshot(root).repo_operations[operation_id].state
+    ]).toEqual([true, 'failed']);
+  });
+
+  test('refuses to acknowledge a row that is not failed', async () => {
+    const { store, coordinator } = coordinatorFor();
+    spoolRequest(validRequest());
+    await coordinator.reconcile(root);
+    const [operation_id] = Object.keys(store.snapshot(root).repo_operations);
+
+    const result = await coordinator.dismiss(operation_id);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_operation_not_failed'
+    });
+  });
+
+  test('refuses to acknowledge an operation it does not have', async () => {
+    const { coordinator } = coordinatorFor();
+
+    const result = await coordinator.dismiss('nope');
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_operation_missing'
+    });
+  });
+
+  test('fills the display cache from the resolve a launch already did', async () => {
+    const { coordinator } = coordinatorFor();
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    expect(repoOpsDisplayFor(root)).toMatchObject({
+      status: 'resolved',
+      deploy: { script: 'repo-ops/script/deploy' }
+    });
+  });
+
+  test('fills the cache at attach time from the resolved base tip', async () => {
+    const { coordinator } = coordinatorFor();
+
+    await coordinator.refreshDisplay({ base: 'main', sha: TARGET });
+
+    expect(repoOpsDisplayFor(root)).toMatchObject({
+      status: 'resolved',
+      base_sha: TARGET
+    });
+  });
+
+  test('records an unresolvable base as an error, not an absence', async () => {
+    const { coordinator } = coordinatorFor();
+
+    await coordinator.refreshDisplay({ base: 'main', sha: null });
+
+    expect(repoOpsDisplayFor(root)).toMatchObject({
+      status: 'error',
+      error_code: 'repo_ops_base_unresolved'
+    });
   });
 });

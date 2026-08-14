@@ -362,6 +362,10 @@
  * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean }|null} failure
  * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null }} repair
  * @property {string|null} superseded_by
+ * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
+ * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
+ * `failed` and auditable, and only the 해결 필요 tally and the timeline's action
+ * buttons leave it out. Repair budget and chain are untouched.
  * @property {{ approved_source_path: string, approved_source_sha: string, requested_by: string, requested_at: number }|null} bootstrap_provenance
  */
 /**
@@ -1707,6 +1711,12 @@ function normalizeRepoOperation(value) {
     },
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
+    dismissed:
+      isRecord(value.dismissed) &&
+      typeof value.dismissed.at === 'number' &&
+      typeof value.dismissed.by === 'string'
+        ? { at: value.dismissed.at, by: value.dismissed.by }
+        : null,
     bootstrap_provenance:
       provenance_raw &&
       typeof provenance_raw.approved_source_path === 'string' &&
@@ -2577,6 +2587,7 @@ export function createQueueStore(options = {}) {
             attempt_id: null
           },
           superseded_by: null,
+          dismissed: null,
           bootstrap_provenance: input.bootstrap_provenance ?? null
         };
         return true;
@@ -2865,6 +2876,31 @@ export function createQueueStore(options = {}) {
         operation.state = 'failed';
         operation.repair.session_id = null;
         operation.repair.attempt_id = null;
+        return true;
+      });
+    },
+
+    /**
+     * Mark a FAILED row as acknowledged by a human (UI-q0uy §4.6-2). The row
+     * keeps its `failed` state and its whole evidence trail — this only takes it
+     * out of the 해결 필요 tally and hides its action buttons. A row that is
+     * queued/running/repairing is refused: acknowledging work that is still
+     * moving would hide a live failure path.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, by?: string }} input
+     * @returns {QueueOpResult}
+     */
+    dismissRepoOperation(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.state !== 'failed' || operation.dismissed) {
+          return false;
+        }
+        operation.dismissed = {
+          at: now(),
+          by: typeof input.by === 'string' && input.by ? input.by : 'user'
+        };
         return true;
       });
     },
