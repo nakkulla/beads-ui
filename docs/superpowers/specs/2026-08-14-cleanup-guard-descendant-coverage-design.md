@@ -97,8 +97,9 @@ adoption·reconcile 정착도 같은 경로를 지나므로 별도 훅이 없다
 - superseded 행은 목록/타임라인에서 '후속 배포로 덮임' + successor operation
   참조로 표시한다(감사 가능, 행동 버튼 없음). 구체 마크업·용어는 랜딩된
   UI-q0uy 표면의 어휘를 따른다.
-- 서버 `ws/worker-handlers.js`는 이미 카드에 `superseded_by`를 매핑하므로 서버
-  투영 변경은 없다.
+- 서버 `ws/worker-handlers.js`의 `superseded_by` 필드 매핑은 이미 있으므로
+  변경하지 않되, `repair_eligible` 카드 투영은 §3.2대로 `superseded_by` 없음
+  조건을 추가로 얻는다.
 
 ### 3.4 dotfiles enclosed 유닛 (`.worktrees/.enclosed-UI-b9f4` 직접 랜딩)
 
@@ -124,7 +125,7 @@ adoption·reconcile 정착도 같은 경로를 지나므로 별도 훅이 없다
 
 ## 5. Test scope
 
-RED-GREEN seam은 아래 다섯이다. 구현 코드를 테스트에 맞춰 변형하지 않는다.
+RED-GREEN seam은 아래 일곱이다. 구현 코드를 테스트에 맞춰 변형하지 않는다.
 
 1. `server/worker/pr-actions.test.js` — base fetch 실패로
    `cleanup_failed{step:'base_containment'}` 기록 → 재시도 전 단계 성공 →
@@ -139,6 +140,10 @@ RED-GREEN seam은 아래 다섯이다. 구현 코드를 테스트에 맞춰 변�
    불변이다.
 5. 프론트 테스트 — 미해제 집계가 `superseded_by` 행을 제외하고 강제 expand가
    발생하지 않는다 (UI-q0uy 랜딩 후 표면 기준).
+6. coordinator 테스트 — `superseded_by`가 기록된 failed 행은 `auto_repair`
+   ON·eligible 실패 분류여도 자동 repair 디스패치 게이트에서 거부된다.
+7. worker-handlers 테스트 — `superseded_by` 행의 카드 투영이
+   `repair_eligible=false`다.
 
 ## 6. 수용 기준
 
