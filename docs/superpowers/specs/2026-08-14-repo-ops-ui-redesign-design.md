@@ -25,8 +25,9 @@
 
 - 접힌 상태에서도 현재 상태(최신 배포 SHA·상태·해결 필요 수)가 읽히고, 강제
   expand가 없다.
-- 모든 실패는 사람 용어(검증 실패·배포 실패·중단됨)와 원인 문장으로 표시하고,
-  행동 버튼은 눌렀을 때 일어나는 일을 이름으로 말한다.
+- 알려진 실패는 사람 용어(검증 실패·배포 실패·중단됨)와 원인 문장으로 표시하고
+  (미지 계약 토큰은 §4.3 폴백), 행동 버튼은 눌렀을 때 일어나는 일을 이름으로
+  말한다.
 - 정리(cleanup)는 5단계 스텝퍼로 멈춘 위치가 보이고, 버튼은 "정리 재개"다.
 - 설정은 Worker가 실제 소비하는 `repo-ops/config.toml` 선언을 표시한다.
 
@@ -119,9 +120,10 @@
     `선언 없음 — verify 없이 판정` + 판정 입력 설명 한 줄.
   - 머지 후 배포 lane: `[deploy]` script·timeout + 실행 위치(`.worktrees/
     .repo-ops-deploy`) 설명 한 줄.
-- `repo_ops` 필드가 없는 저장소(레거시 lane, repo-ops/config.toml 미보유)는
-  기존 verifyGroup/deployGroup 표시를 그대로 유지한다(fail-quiet 전환; 레거시
-  코드 제거는 별도 단계라는 기존 방침 유지).
+- 레거시 표시(기존 verifyGroup/deployGroup)는 `repo_ops.status === 'absent'`
+  또는 `repo_ops` 필드 부재(구버전 스냅샷)일 때만 유지한다. `pending`/`error`는
+  §4.6 1번의 상태 문구를 표시하며 레거시로 폴백하지 않는다(레거시 코드 제거는
+  별도 단계라는 기존 방침 유지).
 - 자동 처리 기준 3목록(`autoRepairSection`의 policyList 3개)은 `<details>`
   기본 접힘으로 감싸고, summary에 `자동 N · 해결 세션 M (체인당 K회) · 금지 L`
   개수 요약을 표기한다. 자동 해결 토글·남은 횟수·실행 중 세션 줄은 접힘 밖에
@@ -130,11 +132,22 @@
 ### 4.6 서버 변경 (2건)
 
 1. **workspace_info 확장** — `server/ws/worker-handlers.js`의 `workspace_info`에
-   `repo_ops` 요약을 추가한다: `{ source_path, base_ref, base_sha, verify:
-   null|{cmd,timeout_ms}, deploy: null|{script,timeout_ms} }`.
-   `server/worker/repo-ops-resolver.js`의 최신 resolution(핀된 base SHA blob)을
-   재사용하며, resolution이 아직 없으면 필드를 생략한다(클라이언트는 생략 시
-   레거시 표시로 폴백).
+   `repo_ops` 요약을 추가한다:
+   `{ status, source_path, base_ref, base_sha, verify: null|{cmd,timeout_ms},
+   deploy: null|{script,timeout_ms} }`.
+   - **표시용 resolution lifecycle**: `resolveRepoOps`(repo-ops-resolver.js)는
+     캐시 없는 순수 async 함수이므로, 서버가 저장소별 표시 캐시
+     `repo_ops_display`를 새로 소유한다. 채움 시점은 두 곳: (a) workspace
+     attach/재연결 시 `origin/<base>`의 마지막 알려진 tip SHA로 1회 resolve,
+     (b) coordinator가 operation을 위해 resolve할 때마다 그 결과로 갱신(중복
+     resolve 없음). 캐시 갱신은 queue 스냅샷 재브로드캐스트를 유발한다.
+   - **상태 구분**: `status`는 `resolved`(선언 해석 완료) / `absent`(성공한
+     빈 tree 조회로 config 부재가 증명됨) / `pending`(아직 resolve 전) /
+     `error`(resolve 실패, `repo_ops_config_invalid` 등)의 4값이다. 클라이언트
+     레거시 폴백 표시는 **`absent`일 때만** 적용하고, `pending`은 "선언 확인
+     중", `error`는 "선언 읽기 실패"를 표시한다 — config 보유 저장소가
+     resolution 지연·실패로 조용히 레거시 표시에 빠지지 않게 한다. 필드
+     자체가 없는 구버전 서버 스냅샷도 레거시 표시로 폴백한다.
 2. **실패 기록 닫기** — 신규 ws 메시지 `worker-repo-operation-dismiss`
    `{operation_id}`. failed 상태 행에 `dismissed: {at, by: 'user'}`를 마킹한다.
    상태 전이는 아니며(행은 failed로 남아 감사 가능), 스트립의 해결 필요 집계와
@@ -155,11 +168,15 @@ RED-GREEN seam은 아래 파생 함수·렌더 경계로 한정한다.
 - `failure-labels.js`: 코드→범주/문장, 복합 코드 분해, 미지 코드 원시 폴백.
 - 스트립 요약 파생: 성공만/실패 포함/repairing/빈 목록/성공 부재.
 - 타임라인 병합: operation·cleanup 혼합 정렬, 시각 결손 행, 20개 절단.
-- `exec-defaults-dialog`: repo_ops 있음(3형: verify+deploy/deploy만/둘 다 없음)·
-  없음(레거시 폴백) 렌더, 3목록 기본 접힘과 summary 개수.
+- `exec-defaults-dialog`: repo_ops resolved(3형: verify+deploy/deploy만/둘 다
+  없음)·absent와 필드 부재(레거시 폴백)·pending·error 렌더, 3목록 기본 접힘과
+  summary 개수.
 - pr_wait 행 파생: `정리 재개` 라벨, `정리 멈춤 · <단계>` 배지, worker/monitor
   미러 일치.
-- 서버: workspace_info `repo_ops` 유/무 투영, `worker-repo-operation-dismiss`
+- 서버: workspace_info `repo_ops` 4상태(resolved/absent/pending/error) 투영,
+  attach 시 resolve → `workspace_info.repo_ops` 도달까지의 통합 seam(초기 v2
+  workspace, fake gitRun으로 resolved·absent·error 각 경로), coordinator
+  resolve 결과의 캐시 갱신·재브로드캐스트, `worker-repo-operation-dismiss`
   마킹·집계 제외·invalid state 거부.
 - 기존 배너·패널 문구를 단언하는 테스트(index.test.js, lanes, running-grid,
   board/card.test.js)와 테마 테스트를 새 구조로 갱신한다.
@@ -168,7 +185,9 @@ RED-GREEN seam은 아래 파생 함수·렌더 경계로 한정한다.
 
 1. 실패 행이 있어도 패널이 자동으로 펼쳐지지 않고, 접힌 스트립에서 최신 배포
    SHA·상태·해결 필요 수가 읽힌다.
-2. 화면 본문 어디에도 원시 실패 코드가 노출되지 않는다(세부 접힘 제외).
+2. 라벨 맵에 있는 실패 코드는 화면 본문에 원문으로 노출되지 않는다(세부 접힘
+   제외). 미지 계약 토큰은 소비자 계약(§4.3 폴백)에 따라 원시 표시가 허용되는
+   예외이며, 이때도 원문은 세부 접힘에 함께 남는다.
 3. 정리 멈춤 항목에서 멈춘 단계가 스텝퍼로 보이고, 버튼 라벨이 재개 지점을
    말한다.
 4. 설정에서 이 저장소의 `[deploy]` script·timeout·실행 위치가 보이고, verify는
