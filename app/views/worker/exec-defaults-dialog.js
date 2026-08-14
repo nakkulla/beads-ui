@@ -922,6 +922,22 @@ export function createExecDefaultsDialog(mount_element, options) {
    * @param {any} repo_ops
    * @returns {import('lit-html').TemplateResult}
    */
+  /**
+   * The timeout badge for one declared lane, or nothing when the declaration
+   * carries no readable timeout — an empty badge is a shape with no fact in it.
+   *
+   * @param {unknown} timeout_ms
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function laneTimeoutBadge(timeout_ms) {
+    const text = formatLaneTimeout(timeout_ms);
+    return text ? badge('config', text) : '';
+  }
+
+  /**
+   * @param {any} repo_ops
+   * @returns {import('lit-html').TemplateResult}
+   */
   function repoOpsDeclarationSection(repo_ops) {
     const sha = typeof repo_ops.base_sha === 'string' ? repo_ops.base_sha : '';
     const source = `${repo_ops.source_path || 'repo-ops/config.toml'} @ ${
@@ -938,10 +954,7 @@ export function createExecDefaultsDialog(mount_element, options) {
           >${repo_ops.verify
             ? html`<code class="exec-defaults__vd-cmd"
                   >${repo_ops.verify.script}</code
-                >${badge(
-                  'config',
-                  formatLaneTimeout(repo_ops.verify.timeout_ms)
-                )}`
+                >${laneTimeoutBadge(repo_ops.verify.timeout_ms)}`
             : html`선언 없음${badge('absent', 'verify 없이 판정')}`}</span
         >
         <span class="exec-defaults__lane-d"
@@ -956,10 +969,7 @@ export function createExecDefaultsDialog(mount_element, options) {
           >${repo_ops.deploy
             ? html`<code class="exec-defaults__vd-cmd"
                   >${repo_ops.deploy.script}</code
-                >${badge(
-                  'config',
-                  formatLaneTimeout(repo_ops.deploy.timeout_ms)
-                )}`
+                >${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}`
             : html`선언 없음${badge('absent', '배포 없음')}`}</span
         >
         <span class="exec-defaults__lane-d"
