@@ -229,7 +229,7 @@ function chipsTemplate(issue, ctx) {
     : null;
   if (cleanup_failure && isChipEnabled(policy, 'blocked')) {
     items.push(
-      html`<span class="ctl-chip ctl-chip--cleanup">⚠ 정리 실패</span>`
+      html`<span class="ctl-chip ctl-chip--cleanup">⚠ 정리 멈춤</span>`
     );
   }
   if (items.length === 0) {

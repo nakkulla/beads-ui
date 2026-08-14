@@ -899,10 +899,126 @@ export function createExecDefaultsDialog(mount_element, options) {
   }
 
   /**
+   * Format a timeout for display. `10분` reads; `600000` does not.
+   *
+   * @param {unknown} timeout_ms
+   * @returns {string}
+   */
+  function formatLaneTimeout(timeout_ms) {
+    if (typeof timeout_ms !== 'number' || !Number.isFinite(timeout_ms)) {
+      return '';
+    }
+    const minutes = timeout_ms / 60000;
+    return Number.isInteger(minutes)
+      ? `timeout ${minutes}분`
+      : `timeout ${Math.round(timeout_ms / 1000)}초`;
+  }
+
+  /**
+   * The 저장소 작업 선언 card (UI-q0uy §4.5): what the WORKER actually consumes —
+   * `repo-ops/config.toml` read from a pinned base SHA — rather than the legacy
+   * path the old rows read, which is why this repo's `[deploy]` was invisible.
+   *
+   * @param {any} repo_ops
+   * @returns {import('lit-html').TemplateResult}
+   */
+  /**
+   * The timeout badge for one declared lane, or nothing when the declaration
+   * carries no readable timeout — an empty badge is a shape with no fact in it.
+   *
+   * @param {unknown} timeout_ms
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function laneTimeoutBadge(timeout_ms) {
+    const text = formatLaneTimeout(timeout_ms);
+    return text ? badge('config', text) : '';
+  }
+
+  /**
+   * @param {any} repo_ops
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function repoOpsDeclarationSection(repo_ops) {
+    const sha = typeof repo_ops.base_sha === 'string' ? repo_ops.base_sha : '';
+    const source = `${repo_ops.source_path || 'repo-ops/config.toml'} @ ${
+      repo_ops.base_ref || '?'
+    }${sha ? `@${sha.slice(0, 7)}` : ''}`;
+    return html`<section class="exec-defaults__vd" data-seam="repo-ops">
+      <p class="exec-defaults__vd-title">
+        저장소 작업 선언
+        <span class="exec-defaults__vd-src">${source}</span>
+      </p>
+      <div class="exec-defaults__lane" data-lane="verify">
+        <span class="exec-defaults__lane-k">머지 전 검증</span>
+        <span class="exec-defaults__lane-v"
+          >${repo_ops.verify
+            ? html`<code class="exec-defaults__vd-cmd"
+                  >${repo_ops.verify.script}</code
+                >${laneTimeoutBadge(repo_ops.verify.timeout_ms)}`
+            : html`선언 없음${badge('absent', 'verify 없이 판정')}`}</span
+        >
+        <span class="exec-defaults__lane-d"
+          >${repo_ops.verify
+            ? '머지 전에 이 스크립트가 통과해야 자격을 얻습니다.'
+            : '머지 자격은 PR/base/head 신선도·mergeability·리뷰 영수증으로만 판정합니다.'}</span
+        >
+      </div>
+      <div class="exec-defaults__lane" data-lane="deploy">
+        <span class="exec-defaults__lane-k">머지 후 배포</span>
+        <span class="exec-defaults__lane-v"
+          >${repo_ops.deploy
+            ? html`<code class="exec-defaults__vd-cmd"
+                  >${repo_ops.deploy.script}</code
+                >${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}`
+            : html`선언 없음${badge('absent', '배포 없음')}`}</span
+        >
+        <span class="exec-defaults__lane-d"
+          >${repo_ops.deploy
+            ? html`Worker가 <code>.worktrees/.repo-ops-deploy</code>에서 대상
+                SHA로 정렬한 뒤 1회 실행합니다.`
+            : '머지 후 배포 단계 없이 곧바로 정리로 넘어갑니다.'}</span
+        >
+      </div>
+    </section>`;
+  }
+
+  /**
+   * The declaration surface. Only a PROVEN absence (`absent`, or a snapshot from
+   * a server that predates the field) falls back to the legacy verify row —
+   * `pending` and `error` say what they are, so a repo that HAS a declaration
+   * never quietly reads as one that does not (§4.5/§4.6-1).
+   *
    * @param {any} info
    * @returns {import('lit-html').TemplateResult}
    */
   function verifyDeploySection(info) {
+    const repo_ops =
+      info.repo_ops && typeof info.repo_ops === 'object' ? info.repo_ops : null;
+    if (repo_ops && repo_ops.status === 'resolved') {
+      return repoOpsDeclarationSection(repo_ops);
+    }
+    if (
+      repo_ops &&
+      (repo_ops.status === 'pending' || repo_ops.status === 'error')
+    ) {
+      return html`<section class="exec-defaults__vd" data-seam="repo-ops">
+        <p class="exec-defaults__vd-title">
+          저장소 작업 선언
+          <span class="exec-defaults__vd-ro">읽기 전용 — config에서 정의</span>
+        </p>
+        <div
+          class="exec-defaults__vd-line exec-defaults__vd-absent"
+          data-seam="repo-ops-status"
+        >
+          ${repo_ops.status === 'pending'
+            ? '선언 확인 중'
+            : html`선언 읽기
+              실패${repo_ops.error_code
+                ? html` — <code>${repo_ops.error_code}</code>`
+                : ''}`}
+        </div>
+      </section>`;
+    }
     return html`<section class="exec-defaults__vd">
       <p class="exec-defaults__vd-title">
         검증 설정
@@ -1061,7 +1177,16 @@ export function createExecDefaultsDialog(mount_element, options) {
         >
       </div>
       ${policy
-        ? html`<div class="exec-defaults__policy">
+        ? html`<details class="exec-defaults__policy" data-seam="policy-lists">
+            <summary>
+              Worker 자동 처리 기준
+              <span class="exec-defaults__policy-count"
+                >자동 ${(policy.worker_automatic || []).length} · 해결 세션
+                ${(policy.auto_repair?.eligible || []).length} (체인당
+                ${policy.auto_repair?.budget_per_completion_chain ?? 1}회) ·
+                금지 ${(policy.never_automatic || []).length}</span
+              >
+            </summary>
             ${policyList(
               'Worker가 자동 처리',
               policy.worker_automatic || [],
@@ -1079,7 +1204,7 @@ export function createExecDefaultsDialog(mount_element, options) {
               policy.never_automatic || [],
               'never-automatic'
             )}
-          </div>`
+          </details>`
         : ''}
     </section>`;
   }

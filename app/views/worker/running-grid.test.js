@@ -107,36 +107,52 @@ describe('worker failed running tile template', () => {
     );
   });
 
-  test('keeps cleanup failure evidence without rendering AI diagnosis controls', () => {
+  test('renders no cleanup banner — the timeline owns stopped cleanups', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(bannersTemplate({}), mount);
+
+    expect(mount.querySelector('.worker-banner--cleanup')).toBeNull();
+  });
+
+  test('says a session failure in the shared failure vocabulary', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     render(
       bannersTemplate({
-        cleanupFailures: /** @type {any[]} */ ([
-          {
-            bead_id: 'UI-3',
-            step: 'post_merge_verify',
-            reason: 'verify_cmd_failed',
-            detail: 'verify output retained for operator review',
-            diagnosis: {
-              verdict: 'regression',
-              evidence: 'historical diagnosis must not become an active surface'
-            },
-            diagnosis_pending: true
-          }
-        ])
+        failure: /** @type {any} */ ({
+          repo: 'beads-ui',
+          bead_id: 'UI-3',
+          reason: 'verify_failed:gh_observation_failed',
+          discard: { action: false }
+        })
       }),
       mount
     );
 
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup')
+    expect(
+      mount.querySelector('.worker-banner--failure')?.textContent
+    ).toContain('검증 실패 — GitHub에서 PR 상태를 읽지 못했습니다.');
+  });
+
+  test('keeps the raw failure code inside the banner details block', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      bannersTemplate({
+        failure: /** @type {any} */ ({
+          repo: 'beads-ui',
+          bead_id: 'UI-3',
+          reason: 'verify_failed:gh_observation_failed',
+          discard: { action: false }
+        })
+      }),
+      mount
     );
 
-    expect(banner.textContent).toContain('verify output retained');
-    expect(banner.textContent).not.toContain('AI 정리');
-    expect(banner.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
-    expect(banner.textContent).not.toContain('historical diagnosis');
+    expect(mount.querySelector('.worker-banner__raw dd')?.textContent).toBe(
+      'verify_failed:gh_observation_failed'
+    );
   });
 });
 

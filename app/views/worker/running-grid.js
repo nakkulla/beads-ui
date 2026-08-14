@@ -21,6 +21,7 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
+import { failureText } from './failure-labels.js';
 import { discardReceiptTemplate, timesMeta } from './lanes.js';
 
 /**
@@ -137,39 +138,29 @@ function causeDetailLine(detail) {
 }
 
 /**
- * The collapsed verify-output block under a cleanup banner (UI-qult §3). `open`
- * is deliberately NOT bound, which leaves it DOM state — a user's expanded tail
- * then survives every queue-snapshot re-render. The tail is a text binding, so
- * lit-html escapes it: command output is untrusted input.
+ * The banner's 세부 block: the RAW contract token behind the sentence above
+ * (UI-q0uy §4.3). It exists on every mapped failure precisely because the body
+ * no longer shows the code — the debugging path must not be translated away.
  *
- * @param {string|null|undefined} tail
+ * `open` is deliberately NOT bound, which leaves it DOM state, so an expanded
+ * block survives every queue-snapshot re-render.
+ *
+ * @param {string|null|undefined} code
  * @returns {import('lit-html').TemplateResult|string}
  */
-function outputTailBlock(tail) {
-  if (!tail) {
+function rawFailureBlock(code) {
+  if (!code) {
     return '';
   }
-  return html`<details class="worker-banner__tail">
-    <summary>출력 tail</summary>
-    <pre>${tail}</pre>
+  return html`<details class="worker-banner__raw">
+    <summary>세부</summary>
+    <dl class="worker-banner__kv">
+      <div>
+        <dt>실패 코드</dt>
+        <dd>${code}</dd>
+      </div>
+    </dl>
   </details>`;
-}
-
-/**
- * The full-log path line under a cleanup banner (UI-0x54). The tail above is
- * capped, so this is what a human opens when the capped end does not name the
- * failure. A text binding — lit-html escapes it.
- *
- * @param {string|null|undefined} log_path
- * @returns {import('lit-html').TemplateResult|string}
- */
-function logPathLine(log_path) {
-  if (!log_path) {
-    return '';
-  }
-  return html`<div class="worker-banner__log-path">
-    전체 로그: <code>${log_path}</code>
-  </div>`;
 }
 
 /**
@@ -193,18 +184,25 @@ export function formatElapsed(ms) {
 /**
  * Banners area above the running grid.
  *
- * @param {{ failure?: FailureBanner|null, cleanupFailures?: CleanupFailure[] }} state
+ * The stopped-cleanup banners moved into the repo-ops timeline (UI-q0uy §4.2),
+ * which absorbs their whole content — stepper, cause, log path and output tail —
+ * next to the button that resumes them. What is left here is the session-failure
+ * banner, now speaking the shared failure vocabulary (§4.3) with the raw
+ * contract token preserved in its 세부 disclosure.
+ *
+ * @param {{ failure?: FailureBanner|null }} state
  * @returns {import('lit-html').TemplateResult}
  */
 export function bannersTemplate(state) {
-  const cleanup = Array.isArray(state.cleanupFailures)
-    ? state.cleanupFailures
-    : [];
+  const failure_text = state.failure ? failureText(state.failure.reason) : '';
   return html`<div class="worker-banners">
     ${state.failure
       ? html`<div class="worker-banner worker-banner--failure" role="alert">
           ⛔ ${state.failure.repo || 'repo'} 세션 실패 —
-          ${state.failure.reason || ''}. 자동 진행을 껐습니다, 수동 ▶ 필요.
+          ${failure_text}${failure_text && !failure_text.endsWith('.')
+            ? '.'
+            : ''}
+          자동 진행을 껐습니다, 수동 ▶ 필요.
           ${state.failure.resume_attempt_id
             ? html`<button
                 type="button"
@@ -245,32 +243,10 @@ export function bannersTemplate(state) {
               </button>`
             : ''}
           ${causeDetailLine(state.failure.cause_detail)}
+          ${rawFailureBlock(state.failure.reason)}
           ${discardReceiptTemplate({ discard: state.failure.discard })}
         </div>`
       : ''}
-    ${cleanup.map(
-      (c) =>
-        html`<div
-          class="worker-banner worker-banner--cleanup"
-          role="alert"
-          data-bead-id=${c.bead_id}
-        >
-          ⚠ ${c.bead_id} 머지 완료 — 머지 후 정리가 <b>${c.step}</b> 단계에서
-          멈췄습니다 (${c.reason}).
-          ${typeof c.retry_count === 'number' &&
-          Number.isInteger(c.retry_count) &&
-          c.retry_count > 0
-            ? html`${c.retry_count}회 자동 재시도 후에도 실패했습니다 — `
-            : ''}정리를
-          사람이 마무리하세요.
-          ${c.detail
-            ? html`<div class="worker-banner__detail">
-                <code>${truncateDetail(c.detail)}</code>
-              </div>`
-            : ''}
-          ${logPathLine(c.log_path)} ${outputTailBlock(c.output_tail)}
-        </div>`
-    )}
   </div>`;
 }
 

@@ -4141,178 +4141,27 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     vi.unstubAllGlobals();
   });
 
-  test('renders a merged_cleanup_failed banner that asks a human to finish it', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'child_sweep',
-              reason: 'child_close_failed:RD-1.1',
-              at: 1
-            }
-          }
-        }
-      )
+  /**
+   * Open the 저장소 작업 타임라인 the way a user does — the strip click (§4.1).
+   *
+   * @param {HTMLElement} mount
+   * @returns {HTMLElement}
+   */
+  function openTimeline(mount) {
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-repo-strip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-repo-drawer')
     );
+  }
 
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup')
-    );
-    const text = (banner.textContent || '').replace(/\s+/g, ' ');
-    expect(text).toContain('child_sweep');
-    expect(text).not.toContain('자동 재시도');
-    expect(text).toContain('정리를 사람이 마무리하세요');
-    expect(text).not.toContain('AI 정리');
-    expect(banner.getAttribute('data-bead-id')).toBe('RD-1');
-    // The bead stays in the PR-wait row (not Done); the existing cleanup retry
-    // remains the human's click after any applicable bounded verify retry.
-    const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__merge')
-    );
-    expect(btn.disabled).toBe(false);
-    expect(btn.textContent?.trim()).toBe('정리');
-    expect(btn.getAttribute('title')).toContain('남은 정리를');
-  });
-
-  test('mentions retry only when durable cleanup evidence consumed it', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed',
-              retry_count: 1,
-              at: 1
-            }
-          }
-        }
-      )
-    );
-
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup')
-    );
-    const text = (banner.textContent || '').replace(/\s+/g, ' ');
-
-    expect(text).toContain('1회 자동 재시도 후에도 실패했습니다');
-  });
-
-  test('does not expose a cleanup diagnosis button or durable diagnosis result', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed',
-              diagnosis: {
-                verdict: 'regression',
-                attempt_id: 'diagnosis-1',
-                consumed: false,
-                evidence: '새 verify가 동일하게 실패합니다',
-                fix_bead_id: 'UI-fix'
-              }
-            }
-          }
-        }
-      )
-    );
-
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup')
-    );
-    expect(banner.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
-    expect(banner.textContent).not.toContain('regression');
-    expect(banner.textContent).not.toContain('새 verify가 동일하게 실패합니다');
-    expect(banner.textContent).not.toContain('UI-fix');
-  });
-
-  test('does not expose malformed cleanup diagnosis', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed',
-              diagnosis: {
-                verdict: 'malformed',
-                attempt_id: 'diagnosis-1',
-                consumed: false,
-                evidence: 'diagnosis result is absent',
-                malformed: true
-              }
-            }
-          }
-        }
-      )
-    );
-
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup')
-    );
-
-    expect(banner.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
-    expect(banner.textContent).not.toContain('진단 결과 형식 오류');
-    expect(banner.textContent).not.toContain('diagnosis result is absent');
-  });
-
-  test('does not dispatch cleanup diagnosis when the failure banner is clicked', async () => {
-    const transport = vi.fn();
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': { step: 'post_merge_verify', reason: 'verify_cmd_failed' }
-          }
-        }
-      ),
-      transport
-    );
-
-    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
-    expect(transport).not.toHaveBeenCalled();
-  });
-
-  test('does not expose a durable cleanup diagnosis attempt as an active control', () => {
-    const queue = queueWithGate(
+  /**
+   * @param {Record<string, any>} record
+   * @returns {Record<string, any>}
+   */
+  function mergedWithCleanup(record) {
+    return queueWithGate(
       {
         enabled: false,
         tier: 'merged',
@@ -4320,278 +4169,274 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
         base_badge: '머지됨',
         reason: null
       },
-      {
-        cleanup_failed: {
-          'RD-1': { step: 'post_merge_verify', reason: 'verify_cmd_failed' }
-        }
-      }
+      { cleanup_failed: { 'RD-1': record } }
     );
-    const { mount, queueStore } = mountWith(queue);
+  }
 
-    queueStore.set({
-      ...queue,
-      attempts: {
-        diagnosis: {
-          attempt_id: 'diagnosis',
-          bead_id: 'RD-1',
-          cleanup_diagnosis: true,
-          status: 'running'
-        }
-      }
-    });
+  test('renders a stopped cleanup as a timeline event, not a banner', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'child_sweep',
+        reason: 'child_close_failed:RD-1.1',
+        at: 1
+      })
+    );
 
-    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    const drawer = openTimeline(mount);
 
-    queueStore.set({
-      ...queue,
-      attempts: {
-        diagnosis: {
-          attempt_id: 'diagnosis',
-          bead_id: 'RD-1',
-          cleanup_diagnosis: true,
-          status: 'done'
-        }
-      }
-    });
-
-    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(mount.querySelector('.worker-banner--cleanup')).toBeNull();
+    expect(
+      drawer.querySelector('.worker-ev[data-bead-id="RD-1"]')
+    ).not.toBeNull();
   });
 
-  test('shows the cleanup failure detail line when the record carries one', () => {
+  test('marks the stopped step on the cleanup stepper', () => {
     const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_worktree_failed',
-              at: 1,
-              detail: "fatal: could not lock ref 'refs/heads/x'"
-            }
-          }
-        }
-      )
+      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
     );
 
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
-    );
-
-    expect(banner.textContent).toContain("could not lock ref 'refs/heads/x'");
-  });
-
-  test('omits the cleanup detail line on a record without one', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': { step: 'child_sweep', reason: 'child_close_failed', at: 1 }
-          }
-        }
-      )
-    );
+    const drawer = openTimeline(mount);
 
     expect(
-      mount.querySelector('.worker-banner--cleanup .worker-banner__detail')
-    ).toBeNull();
+      drawer.querySelector('.worker-step--stall')?.textContent?.trim()
+    ).toBe('자식 정리');
   });
 
-  test('renders the verify output tail as a collapsed details block (UI-qult §3)', () => {
+  test('names the resume point on the resume button', () => {
     const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed',
-              at: 1,
-              output_tail: 'FAIL test/x.test.js\nrg: command not found'
-            }
-          }
-        }
-      )
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
     );
 
-    const details = /** @type {HTMLDetailsElement} */ (
-      mount.querySelector('.worker-banner--cleanup details.worker-banner__tail')
+    const drawer = openTimeline(mount);
+
+    expect(
+      drawer.querySelector('.worker-cleanup__resume')?.textContent?.trim()
+    ).toBe('정리 재개 — 저장소 작업 단계부터');
+  });
+
+  test('mentions retry only when durable cleanup evidence consumed it', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        retry_count: 1,
+        at: 1
+      })
     );
-    const pre = /** @type {HTMLElement} */ (details.querySelector('pre'));
+
+    const drawer = openTimeline(mount);
+
+    expect(drawer.querySelector('.worker-ev__explain')?.textContent).toContain(
+      '1회 자동 재시도 후에도 실패했습니다'
+    );
+  });
+
+  test('says a known cleanup failure in human words', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1
+      })
+    );
+
+    const drawer = openTimeline(mount);
+
+    expect(drawer.querySelector('.worker-ev__cause')?.textContent).toBe(
+      '검증 실패 — 머지 후 검증 명령이 실패했습니다.'
+    );
+  });
+
+  test('keeps the raw cleanup failure code inside the details block', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1
+      })
+    );
+
+    const drawer = openTimeline(mount);
+
+    expect(drawer.querySelector('.worker-ev__kv dd')?.textContent).toBe(
+      'verify_cmd_failed'
+    );
+  });
+
+  test('does not expose a cleanup diagnosis button or durable diagnosis result', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1,
+        diagnosis: {
+          verdict: 'regression',
+          attempt_id: 'diagnosis-1',
+          consumed: false,
+          evidence: '새 verify가 동일하게 실패합니다',
+          fix_bead_id: 'UI-fix'
+        }
+      })
+    );
+
+    const drawer = openTimeline(mount);
+
+    expect(drawer.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(drawer.textContent).not.toContain('새 verify가 동일하게 실패합니다');
+    expect(drawer.textContent).not.toContain('UI-fix');
+  });
+
+  test('does not dispatch cleanup diagnosis on render', async () => {
+    const transport = vi.fn();
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1
+      }),
+      transport
+    );
+
+    openTimeline(mount);
+
+    expect(mount.querySelector('.worker-banner__cleanup-diagnose')).toBeNull();
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('shows the cleanup failure detail when the record carries one', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_worktree_failed',
+        at: 1,
+        detail: "fatal: could not lock ref 'refs/heads/x'"
+      })
+    );
+
+    const drawer = openTimeline(mount);
+
+    expect(drawer.querySelector('.worker-ev__kv')?.textContent).toContain(
+      "could not lock ref 'refs/heads/x'"
+    );
+  });
+
+  test('renders the cleanup evidence as a collapsed details block', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1,
+        output_tail: 'FAIL test/x.test.js\nrg: command not found'
+      })
+    );
+
+    const drawer = openTimeline(mount);
+    const details = /** @type {HTMLDetailsElement} */ (
+      drawer.querySelector('.worker-ev__details')
+    );
 
     expect(details.open).toBe(false);
-    expect(pre.textContent).toContain('rg: command not found');
+    expect(details.textContent).toContain('rg: command not found');
   });
 
-  test('omits the tail block on a cleanup record without one', () => {
+  test('escapes markup in the cleanup output tail', () => {
     const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': { step: 'child_sweep', reason: 'child_close_failed', at: 1 }
-          }
-        }
-      )
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1,
+        output_tail: '<img src=x onerror="boom()">'
+      })
     );
 
-    expect(
-      mount.querySelector('.worker-banner--cleanup .worker-banner__tail')
-    ).toBeNull();
+    const drawer = openTimeline(mount);
+    const details = /** @type {HTMLElement} */ (
+      drawer.querySelector('.worker-ev__details')
+    );
+
+    expect(details.querySelector('img')).toBeNull();
+    expect(details.textContent).toContain('<img src=x onerror="boom()">');
   });
 
-  test('escapes markup in the verify output tail', () => {
+  test('renders the full cleanup log path', () => {
     const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed',
-              at: 1,
-              output_tail: '<img src=x onerror="boom()">'
-            }
-          }
-        }
-      )
+      mergedWithCleanup({
+        step: 'repo_operations',
+        reason: 'verify_cmd_failed',
+        at: 1,
+        log_path: '/state/bdui/ws-abc/verify-logs/verify-RD-1-abc1234-17.log'
+      })
     );
 
-    const pre = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner__tail pre')
-    );
+    const drawer = openTimeline(mount);
 
-    expect(pre.querySelector('img')).toBeNull();
-    expect(pre.textContent).toContain('<img src=x onerror="boom()">');
-  });
-
-  test('renders the full verify log path line (UI-0x54)', () => {
-    const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'post_merge_verify',
-              reason: 'verify_cmd_failed',
-              at: 1,
-              log_path:
-                '/state/bdui/ws-abc/verify-logs/verify-RD-1-abc1234-17.log'
-            }
-          }
-        }
-      )
-    );
-
-    const line = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup .worker-banner__log-path')
-    );
-
-    expect(line.textContent).toContain('전체 로그:');
-    expect(line.textContent).toContain(
+    expect(drawer.querySelector('.worker-ev__kv')?.textContent).toContain(
       '/state/bdui/ws-abc/verify-logs/verify-RD-1-abc1234-17.log'
     );
   });
 
-  test('omits the log path line on a cleanup record without one', () => {
+  test('omits detail rows a cleanup record does not carry', () => {
     const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': { step: 'child_sweep', reason: 'child_close_failed', at: 1 }
-          }
-        }
-      )
+      mergedWithCleanup({
+        step: 'child_sweep',
+        reason: 'child_close_failed',
+        at: 1
+      })
     );
 
-    expect(
-      mount.querySelector('.worker-banner--cleanup .worker-banner__log-path')
-    ).toBeNull();
+    const drawer = openTimeline(mount);
+
+    expect(drawer.querySelectorAll('.worker-ev__kv dt')).toHaveLength(1);
   });
 
-  test('renders a DEPLOY step tail and log path with no banner change (UI-l53x §5)', () => {
+  test('keeps the merged row clickable as a cleanup resume', () => {
     const { mount } = mountWith(
-      queueWithGate(
-        {
-          enabled: false,
-          tier: 'merged',
-          gate_badge: '머지됨',
-          base_badge: '머지됨',
-          reason: null
-        },
-        {
-          cleanup_failed: {
-            'RD-1': {
-              step: 'deploy',
-              reason: 'deploy_failed',
-              at: 1,
-              detail: 'spawn EACCES',
-              output_tail: 'render failed: codex config.toml',
-              log_path:
-                '/state/bdui/ws-abc/deploy-logs/deploy-RD-1-abc1234-17.log'
-            }
-          }
-        }
+      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
+    );
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+
+    expect([btn.disabled, btn.textContent?.trim()]).toEqual([
+      false,
+      '정리 재개'
+    ]);
+  });
+
+  test('offers a timeline link instead of a locked merge action', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
+    );
+
+    expect([
+      mount.querySelector('.worker-mini__merge'),
+      mount.querySelector('.worker-mini__timeline')?.textContent?.trim()
+    ]).toEqual([null, '저장소 작업 보기']);
+  });
+
+  test('opens the timeline from that link', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini__timeline')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.worker-repo-drawer')).not.toBeNull();
+  });
+
+  test('names the stopped step on the pr_wait badge', () => {
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 })
+    );
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-mini__badge')).map(
+        (el) => el.textContent
       )
-    );
-
-    const banner = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-banner--cleanup')
-    );
-
-    expect(
-      banner.querySelector('.worker-banner__log-path')?.textContent
-    ).toContain('deploy-logs/deploy-RD-1-abc1234-17.log');
-    expect(banner.querySelector('.worker-banner__tail pre')?.textContent).toBe(
-      'render failed: codex config.toml'
-    );
-    expect(
-      banner.querySelector('.worker-banner__detail')?.textContent
-    ).toContain('spawn EACCES');
+    ).toContain('정리 멈춤 · 자식 정리');
   });
 });
 
@@ -7849,7 +7694,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')
     );
-    expect(btn.textContent?.trim()).toBe('정리');
+    expect(btn.textContent?.trim()).toBe('정리 재개');
     expect(btn.disabled).toBe(false);
   });
 

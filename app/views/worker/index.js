@@ -69,10 +69,18 @@ import {
   discardProjection,
   miniRow,
   paneTemplate,
-  repoOperationsDisclosureTemplate
+  repoOpsStripTemplate
 } from './lanes.js';
+import {
+  cleanupStalledReason,
+  cleanupStepLabel,
+  mergeStepView
+} from './merge-steps.js';
+import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
+
+export { mergeStepView } from './merge-steps.js';
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -520,53 +528,6 @@ export function activityBadge(gate_badge, activity) {
 }
 
 /**
- * The merge's seven steps in server order (UI-raqh §4), each with the label the
- * row shows. Mirrors `pr-actions.js` — `merging` plus the six `CLEANUP_STEPS`
- * — and the client keeps its own copy because a view must not import server
- * code. An unknown step still renders (by its raw name) rather than blanking the
- * row.
- *
- * @type {Array<{ step: string, label: string, index: number }>}
- */
-const MERGE_STEPS = [
-  { step: 'merging', label: '머지 중', index: 1 },
-  { step: 'base_containment', label: 'base 포함 확인', index: 2 },
-  { step: 'repo_operations', label: '저장소 작업', index: 3 },
-  { step: 'child_sweep', label: '자식 정리', index: 4 },
-  { step: 'branch_cleanup', label: '브랜치 정리', index: 5 },
-  { step: 'parent_close', label: '부모 close', index: 6 }
-];
-
-/**
- * Project a merge step onto what the row draws: its Korean label, its position
- * in the sequence, and how far along the bar is.
- *
- * The counter is not decoration — this is an ORDERED sequence with a known
- * length, so `4/8` tells a reader how much is left, which "머지 중…" alone
- * cannot. A step the client does not know still shows, with no counter: a
- * server that grew a step must not blank the row.
- *
- * @param {string|null|undefined} step
- * @returns {{ label: string, index: number, total: number, percent: number }|null}
- */
-export function mergeStepView(step) {
-  if (typeof step !== 'string' || step.length === 0) {
-    return null;
-  }
-  const total = 6;
-  const found = MERGE_STEPS.find((s) => s.step === step);
-  if (!found) {
-    return { label: step, index: 0, total, percent: 0 };
-  }
-  return {
-    label: found.label,
-    index: found.index,
-    total,
-    percent: Math.round((found.index / total) * 100)
-  };
-}
-
-/**
  * Korean text for a merge-queue skip reason (UI-5v7d §4). The driver's
  * vocabulary is machine-readable; an unknown value travels through verbatim
  * rather than being swallowed — a server that grew a reason must not blank the
@@ -870,8 +831,11 @@ function prWaitRow(
   if (base_exception) {
     badges.push(base_exception);
   }
+  // 「어디서 멈췄나」가 「실패했다」보다 행동 가능한 사실이다 (§4.4). 단계를
+  // 모르는 기록은 단계 없이 그대로 말한다 — 추측하지 않는다.
   if (cleanup_failed) {
-    badges.push('정리 실패');
+    const stopped = cleanupStepLabel(cleanup_failed.step);
+    badges.push(stopped ? `정리 멈춤 · ${stopped}` : '정리 멈춤');
   }
   if (recovery) {
     badges.push(recovery.badge);
@@ -935,11 +899,9 @@ function prWaitRow(
   return {
     id: bead_id,
     title,
-    reason: cleanup_retry
-      ? '머지됨 · 정리 미완'
-      : cleanup_failed
-        ? '머지됨 · 정리 미완'
-        : 'PR 대기',
+    reason: cleanup_failed
+      ? cleanupStalledReason(cleanup_failed.step)
+      : 'PR 대기',
     draggable: false,
     done: true,
     lane: 'pr_wait',
@@ -979,6 +941,9 @@ function prWaitRow(
     merge_action: repo_operations_action_blocked
       ? false
       : !queued || continuation_required,
+    // 머지 액션이 저장소 작업 단계에서 잠긴 카드 (§4.4): 잠금 사유를 문장으로
+    // 반복하는 대신, 그 사유가 실제로 적혀 있는 타임라인으로 데려간다.
+    timeline_action: repo_operations_action_blocked,
     cancel_action: queued && !continuation_required,
     cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
     cancel_title:
@@ -1015,7 +980,7 @@ function prWaitRow(
     merge_label: continuation_required
       ? '이어하기 선택'
       : cleanup_retry || external_cleanup
-        ? '정리'
+        ? '정리 재개'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
           : undefined,
@@ -1188,7 +1153,13 @@ export function createWorkerView(mount_element, options = {}) {
   drawer_backdrop_el.className = 'worker-drawer-overlay__backdrop';
   const drawer_el = document.createElement('div');
   drawer_el.className = 'worker-drawer-host';
-  drawer_overlay_el.append(drawer_backdrop_el, drawer_el);
+  // The repo-ops timeline shares the overlay chrome but keeps its OWN lit-html
+  // root (UI-q0uy §4.2): two components rendering into one root would clobber
+  // each other, and only one of the two is ever open.
+  const repo_ops_drawer_el = document.createElement('div');
+  repo_ops_drawer_el.className = 'worker-drawer-host';
+  repo_ops_drawer_el.hidden = true;
+  drawer_overlay_el.append(drawer_backdrop_el, drawer_el, repo_ops_drawer_el);
   const lanes_el = document.createElement('div');
   // Flex host so .worker-lanes' flex sizing is live — a plain block div here
   // breaks the min-height:0 chain and the pane bodies can never scroll.
@@ -1204,6 +1175,17 @@ export function createWorkerView(mount_element, options = {}) {
     sessionLogStore,
     onClose: () => {
       selected_attempt = null;
+      drawer_overlay_el.hidden = true;
+      doRender();
+    }
+  });
+
+  // Session-ephemeral by design (§4.1): the timeline is a "what just happened"
+  // surface, and a drawer that reopened itself on every reload would be exactly
+  // the forced expansion this redesign removed.
+  const repo_ops_drawer = createRepoOpsDrawer(repo_ops_drawer_el, {
+    onClose: () => {
+      repo_ops_drawer_el.hidden = true;
       drawer_overlay_el.hidden = true;
       doRender();
     }
@@ -1868,6 +1850,26 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Acknowledge ONE failed operation — the 기록 닫기 click (§4.6-2). Not a retry
+   * and not a state transition: the row keeps its failure and its evidence, and
+   * only the 해결 필요 tally and its action buttons let it go.
+   *
+   * @param {string} operation_id
+   */
+  async function dismissRepoOperation(operation_id) {
+    if (!transport || !operation_id) {
+      return;
+    }
+    const res = await transport('worker-repo-operation-dismiss', {
+      operation_id
+    });
+    adopt(res);
+    if (res && res.ok === false) {
+      showToast(`기록 닫기 거부: ${res.reason || ''}`, 'error', 3000);
+    }
+  }
+
+  /**
    * Set the concurrency cap (worker-phase2 §3), under the same CAS discipline
    * as the other mutations. The value is clamped to the lower bound before it
    * is sent — the server rejects (never clamps) an out-of-bound value.
@@ -2065,6 +2067,9 @@ export function createWorkerView(mount_element, options = {}) {
         bead_id,
         step: rec && rec.step ? rec.step : '',
         reason: rec && rec.reason ? rec.reason : '',
+        // When it stopped — the timeline sorts on this (§4.2). Fail-quiet: a
+        // record without it sorts to the oldest end rather than to the top.
+        at: rec && typeof rec.at === 'number' ? rec.at : null,
         // Fail-quiet: a record written before the field existed has none.
         detail: rec && typeof rec.detail === 'string' ? rec.detail : null,
         output_tail:
@@ -2961,11 +2966,13 @@ export function createWorkerView(mount_element, options = {}) {
       >
         ⚙
       </button>`;
-    const banners = bannersTemplate({
-      failure: m.failure,
-      cleanupFailures: m.cleanup_failures
-    });
-    const repo_operations = repoOperationsDisclosureTemplate(m.repo_operations);
+    const banners = bannersTemplate({ failure: m.failure });
+    // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
+    // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
+    const repo_operations = repoOpsStripTemplate(
+      m.repo_operations,
+      m.cleanup_failures
+    );
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
       // 슬롯·⚙는 아래 조작 줄로 내리고 배너는 리본 밖에 남긴다 — 고정되는 것은
@@ -3773,6 +3780,35 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The two projections the timeline derives from (§4.2). Both already ride the
+   * queue snapshot — opening the drawer queries nothing.
+   *
+   * @returns {{ operations: any, cleanup_failures: any, repo: string }}
+   */
+  function repoOpsDrawerInput() {
+    const model = buildModel();
+    return {
+      operations: model.repo_operations,
+      cleanup_failures: model.cleanup_failures,
+      repo: (getWorkspacePath && getWorkspacePath()) || ''
+    };
+  }
+
+  /**
+   * Open the 저장소 작업 타임라인 (§4.2). The transcript drawer closes first:
+   * the two share one overlay, and only one of them is ever the subject.
+   */
+  function openRepoOpsDrawer() {
+    if (selected_attempt) {
+      drawer.close();
+    }
+    repo_ops_drawer_el.hidden = false;
+    drawer_overlay_el.hidden = false;
+    repo_ops_drawer.open(repoOpsDrawerInput());
+    doRender();
+  }
+
+  /**
    * Open (or switch) the transcript drawer for a running attempt (spec §5.6).
    *
    * @param {string} attempt_id
@@ -3781,6 +3817,8 @@ export function createWorkerView(mount_element, options = {}) {
     const q = currentQueue();
     const a = q.attempts ? q.attempts[attempt_id] : null;
     selected_attempt = attempt_id;
+    repo_ops_drawer.close();
+    repo_ops_drawer_el.hidden = true;
     drawer_overlay_el.hidden = false;
     drawer.open({ attempt_id, meta: metaForAttempt(a) });
     doRender();
@@ -3793,6 +3831,13 @@ export function createWorkerView(mount_element, options = {}) {
    * latest record into the drawer.
    */
   function refreshOpenDrawerMeta() {
+    // The timeline is a pure derivation, so a fresh snapshot simply re-derives
+    // it — a dismissed row or a finished deploy must not need a reopen to show.
+    // Guarded on the open state: the derivation is the whole lane model, and a
+    // closed drawer must not pay for it on every push.
+    if (repo_ops_drawer.isOpen()) {
+      repo_ops_drawer.refresh(repoOpsDrawerInput());
+    }
     if (!selected_attempt) {
       return;
     }
@@ -3837,6 +3882,13 @@ export function createWorkerView(mount_element, options = {}) {
       exec_defaults_dialog.open();
       return;
     }
+    if (
+      target?.closest?.('.worker-repo-strip') ||
+      target?.closest?.('.worker-mini__timeline')
+    ) {
+      openRepoOpsDrawer();
+      return;
+    }
     const repoOpSession = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-repo-op__session')
     );
@@ -3852,6 +3904,25 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (repoOpResolve) {
       void resolveRepoOperation(repoOpResolve.dataset.operationId || '');
+      return;
+    }
+    const repoOpDismiss = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-repo-op__dismiss')
+    );
+    if (repoOpDismiss) {
+      void dismissRepoOperation(repoOpDismiss.dataset.operationId || '');
+      return;
+    }
+    // 타임라인의 정리 재개는 PR 대기 카드의 [정리 재개]와 같은 mutation이다 —
+    // 서버가 멈춘 단계부터 재개하는 기존 semantics 그대로다 (§4.4).
+    const cleanupResume = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-cleanup__resume')
+    );
+    if (cleanupResume) {
+      const bead_id = cleanupResume.dataset.beadId;
+      if (bead_id) {
+        void queueMerge(bead_id);
+      }
       return;
     }
     // The failure banner's ↻ resumes the newest eligible failed attempt (§1).
@@ -4070,6 +4141,7 @@ export function createWorkerView(mount_element, options = {}) {
     // Backdrop click closes the drawer modal (the ✕ inside the bar is the
     // drawer's own handler).
     if (target?.closest?.('.worker-drawer-overlay__backdrop')) {
+      repo_ops_drawer.close();
       drawer.close();
       return;
     }

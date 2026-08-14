@@ -24,39 +24,10 @@ import {
 import { stepperTemplate } from '../board/stepper.js';
 
 /**
- * State words for one RepoOperation card. Display only — the vocabulary is the
- * durable one, this map just says it in Korean.
- *
- * @type {Record<string, string>}
- */
-const REPO_OPERATION_STATE_LABELS = {
-  queued: '대기',
-  running: '실행 중',
-  succeeded: '성공',
-  failed: '실패',
-  repairing: '자동 해결 중'
-};
-
-/**
- * The resolve button's wording per failure kind (master spec §9.2). There is no
- * generic 재시도 entry here on purpose: every button names the failure it
- * resolves, and each one goes through the coordinator's repair path.
- *
- * @type {Record<string, string>}
- */
-const REPO_OPERATION_RESOLVE_LABELS = {
-  verify_script_failure: '검증 실패 해결',
-  verify_script_failure_pre_merge: '검증 실패 해결 후 머지',
-  deploy_script_failure: '배포 실패 해결',
-  interrupted_without_terminal_exit: '중단된 작업 진단',
-  other: '실패 해결'
-};
-
-/**
  * @param {unknown} sha
  * @returns {string}
  */
-function shortSha(sha) {
+export function shortSha(sha) {
   return typeof sha === 'string' && sha.length >= 7 ? sha.slice(0, 7) : '—';
 }
 
@@ -64,7 +35,7 @@ function shortSha(sha) {
  * @param {unknown} elapsed_ms
  * @returns {string}
  */
-function formatElapsed(elapsed_ms) {
+export function formatElapsed(elapsed_ms) {
   if (
     typeof elapsed_ms !== 'number' ||
     !Number.isFinite(elapsed_ms) ||
@@ -84,147 +55,137 @@ function formatElapsed(elapsed_ms) {
 }
 
 /**
- * One RepoOperation card (master spec §10): kind, target SHA and tree, script
- * path and blob, elapsed time, state, sanitized output tail, full log link,
- * exit code, and the repair session link — plus the resolve button for THIS
- * failure kind.
+ * Local wall-clock `HH:MM` for a timestamp, or '' when there is none. The strip
+ * says WHEN the current deployment landed, and a date is noise for something
+ * that happened today; the full timestamp lives in the title attribute.
  *
- * @param {any} operation
- * @returns {import('lit-html').TemplateResult}
+ * @param {unknown} at
+ * @returns {string}
  */
-function repoOperationCardTemplate(operation) {
-  const failure = operation.failure || null;
-  const repair = operation.repair || {};
-  const resolve_key =
-    operation.failure_kind === 'verify_script_failure' &&
-    operation.verify_stage === 'pre_merge'
-      ? 'verify_script_failure_pre_merge'
-      : operation.failure_kind || 'other';
-  return html`<article
-    class="worker-repo-op"
-    data-operation-id=${operation.operation_id}
-    data-state=${operation.state}
-    data-kind=${operation.kind}
-  >
-    <div class="worker-repo-op__head">
-      <span class="worker-repo-op__kind">${operation.kind}</span>
-      <span class="worker-repo-op__state"
-        >${REPO_OPERATION_STATE_LABELS[operation.state] ||
-        operation.state}</span
-      >
-      <code class="worker-repo-op__target" title=${operation.target_sha || ''}
-        >${operation.target_base}@${shortSha(operation.target_sha)}</code
-      >
-      <code class="worker-repo-op__tree" title="target tree"
-        >tree ${shortSha(operation.target_tree)}</code
-      >
-      <span class="worker-repo-op__elapsed"
-        >${formatElapsed(operation.elapsed_ms)}</span
-      >
-    </div>
-    <div class="worker-repo-op__meta">
-      <code class="worker-repo-op__script"
-        >${operation.script_path || '(경로 미기록)'}</code
-      >
-      <code class="worker-repo-op__blob"
-        >blob ${shortSha(operation.script_blob_sha)}</code
-      >
-      ${Number.isInteger(operation.exit_code)
-        ? html`<span class="worker-repo-op__exit"
-            >exit ${operation.exit_code}</span
-          >`
-        : ''}
-      ${operation.signal
-        ? html`<span class="worker-repo-op__signal"
-            >signal ${operation.signal}</span
-          >`
-        : ''}
-    </div>
-    ${failure
-      ? html`<div class="worker-repo-op__failure">
-          <code>${failure.code}</code>
-          ${failure.detail
-            ? html`<span class="worker-repo-op__detail"
-                >${failure.detail}</span
-              >`
-            : ''}
-        </div>`
-      : ''}
-    ${operation.output_tail
-      ? html`<details class="worker-repo-op__output">
-          <summary>출력 마지막 부분</summary>
-          <pre>${operation.output_tail}</pre>
-        </details>`
-      : ''}
-    ${operation.log_path
-      ? html`<div class="worker-repo-op__log">
-          전체 로그 <code>${operation.log_path}</code>
-        </div>`
-      : ''}
-    <div class="worker-repo-op__actions">
-      <span class="worker-repo-op__budget"
-        >자동 해결 남음
-        ${repair.remaining ?? 0}/${repair.auto_budget ?? 1}</span
-      >
-      ${repair.attempt_id
-        ? html`<button
-            type="button"
-            class="worker-repo-op__session"
-            data-attempt-id=${repair.attempt_id}
-          >
-            해결 세션 보기
-          </button>`
-        : ''}
-      ${operation.state === 'failed'
-        ? html`<button
-            type="button"
-            class="worker-repo-op__resolve"
-            data-operation-id=${operation.operation_id}
-            data-failure-kind=${operation.failure_kind || 'other'}
-          >
-            ${REPO_OPERATION_RESOLVE_LABELS[resolve_key] ||
-            REPO_OPERATION_RESOLVE_LABELS.other}
-          </button>`
-        : ''}
-    </div>
-  </article>`;
+export function formatClock(at) {
+  if (typeof at !== 'number' || !Number.isFinite(at) || at <= 0) {
+    return '';
+  }
+  const date = new Date(at);
+  return `${String(date.getHours()).padStart(2, '0')}:${String(
+    date.getMinutes()
+  ).padStart(2, '0')}`;
 }
 
 /**
- * The RepoOperation strip: every verify/deploy operation the Worker owns for
- * this workspace, newest first. Empty projection renders nothing — a lane with
- * no operations is not a state worth a panel.
+ * What the collapsed 저장소 작업 strip says (UI-q0uy §4.1). Pure derivation over
+ * the projections the snapshot already carries, so a reader gets the current
+ * deployment, its freshness and the outstanding count WITHOUT expanding
+ * anything — and nothing here ever forces an expansion.
+ *
+ * 해결 필요 counts unresolved failures only: a `failed` row a human already
+ * acknowledged (§4.6-2 `dismissed`) is out, and a stopped cleanup is in.
+ *
+ * Returns null when this workspace has neither operations nor a stopped
+ * cleanup — there is no state there worth a strip.
+ *
+ * @param {any} operations - Projected `repo_operations` cards.
+ * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
+ * @returns {{ deploy: { sha: string, at: number|null, elapsed_ms: number|null }|null, unresolved: number, repairing: boolean, badge: { tone: 'act'|'live'|'quiet', label: string } }|null}
+ */
+export function repoOpsStripModel(operations, cleanup_failures) {
+  const cards = Array.isArray(operations) ? operations : [];
+  const cleanup = Array.isArray(cleanup_failures) ? cleanup_failures : [];
+  if (cards.length === 0 && cleanup.length === 0) {
+    return null;
+  }
+  /** @type {any|null} */
+  let latest = null;
+  for (const card of cards) {
+    if (
+      card.kind !== 'deploy' ||
+      card.state !== 'succeeded' ||
+      typeof card.target_sha !== 'string'
+    ) {
+      continue;
+    }
+    if (
+      !latest ||
+      (typeof card.finished_at === 'number' ? card.finished_at : 0) >
+        (typeof latest.finished_at === 'number' ? latest.finished_at : 0)
+    ) {
+      latest = card;
+    }
+  }
+  const unresolved =
+    cards.filter(
+      (/** @type {any} */ card) => card.state === 'failed' && !card.dismissed
+    ).length + cleanup.length;
+  const repairing = cards.some(
+    (/** @type {any} */ card) => card.state === 'repairing'
+  );
+  return {
+    deploy: latest
+      ? {
+          sha: shortSha(latest.target_sha),
+          at:
+            typeof latest.finished_at === 'number' ? latest.finished_at : null,
+          elapsed_ms:
+            typeof latest.elapsed_ms === 'number' ? latest.elapsed_ms : null
+        }
+      : null,
+    unresolved,
+    repairing,
+    badge:
+      unresolved > 0
+        ? { tone: 'act', label: `해결 필요 ${unresolved}` }
+        : repairing
+          ? { tone: 'live', label: '자동 해결 중' }
+          : { tone: 'quiet', label: '모두 정상' }
+  };
+}
+
+/**
+ * The 저장소 작업 strip (UI-q0uy §4.1): one line that reads as a fact even while
+ * collapsed, and a BUTTON rather than a `<details>` — the panel used to force
+ * itself open on any failure, which is what buried everything else on the
+ * screen. The badge calls; the click opens the timeline drawer.
  *
  * @param {any} operations
+ * @param {any} cleanup_failures
  * @returns {import('lit-html').TemplateResult|string}
  */
-export function repoOperationsDisclosureTemplate(operations) {
-  const cards = Array.isArray(operations) ? operations : [];
-  if (cards.length === 0) {
+export function repoOpsStripTemplate(operations, cleanup_failures) {
+  const model = repoOpsStripModel(operations, cleanup_failures);
+  if (!model) {
     return '';
   }
-  const failing = cards.filter(
-    (/** @type {any} */ card) =>
-      card.state === 'failed' || card.state === 'repairing'
-  ).length;
-  return html`<details
-    class="worker-repo-ops"
-    aria-label="레포 오퍼레이션"
-    ?open=${failing > 0}
+  return html`<button
+    type="button"
+    class="worker-repo-strip"
+    data-seam="repo-ops-strip"
+    aria-label="저장소 작업 타임라인 열기"
   >
-    <summary class="worker-repo-ops__summary">
-      <b>레포 오퍼레이션</b>
-      <span class="worker-repo-ops__count">${cards.length}건</span>
-      ${failing > 0
-        ? html`<span class="worker-repo-ops__failing"
-            >해결 필요 ${failing}</span
-          >`
-        : ''}
-    </summary>
-    <div class="worker-repo-ops__list">
-      ${cards.map((/** @type {any} */ card) => repoOperationCardTemplate(card))}
-    </div>
-  </details>`;
+    <span class="worker-repo-strip__cue" aria-hidden="true">▸</span>
+    <span class="worker-repo-strip__name">저장소 작업</span>
+    ${model.deploy
+      ? html`<span class="worker-repo-strip__fact">
+          배포
+          <code class="worker-repo-strip__sha">${model.deploy.sha}</code>
+          <span class="worker-repo-strip__ok">✓ 최신</span>
+          <span
+            class="worker-repo-strip__ago"
+            title=${model.deploy.at
+              ? formatTimestampLocal(model.deploy.at)
+              : ''}
+            >${formatClock(model.deploy.at)}${model.deploy.elapsed_ms !== null
+              ? ` · ${formatElapsed(model.deploy.elapsed_ms)}`
+              : ''}</span
+          >
+        </span>`
+      : ''}
+    <span class="worker-repo-strip__spacer"></span>
+    <span
+      class="worker-repo-strip__badge worker-repo-strip__badge--${model.badge
+        .tone}"
+      >${model.badge.label}</span
+    >
+  </button>`;
 }
 
 /**
@@ -488,6 +449,9 @@ export function discardReceiptTemplate(item) {
  * @property {boolean} [cancel_action] - Render [취소] INSTEAD of [머지]
  * (UI-5v7d §4): the row is already waiting its turn in the merge queue, so the
  * only thing left to click is giving that turn up.
+ * @property {boolean} [timeline_action] - Render [저장소 작업 보기] (UI-q0uy
+ * §4.4): the merge action is locked because a repo operation stopped, and the
+ * timeline is where that reason and its resolve buttons actually live.
  * @property {boolean} [cancel_enabled] - Whether [취소] may be clicked; false on
  * the item the driver is actively merging.
  * @property {string} [cancel_title] - Tooltip for [취소].
@@ -674,6 +638,19 @@ export function miniRow(item) {
         취소
       </button>`
     : '';
+  // 저장소 작업 단계에서 머지 액션이 잠긴 카드 (UI-q0uy §4.4). 잠금 사유를
+  // 여기서 다시 문장으로 쓰지 않고, 그 사유가 실제로 적혀 있는 타임라인으로
+  // 보낸다 — 같은 사실을 두 곳에 쓰면 한쪽은 반드시 낡는다.
+  const timeline_el = item.timeline_action
+    ? html`<button
+        type="button"
+        class="worker-mini__timeline"
+        data-bead-id=${item.id}
+        title="저장소 작업이 끝나지 않아 머지 액션이 잠겼습니다 — 타임라인에서 원인과 해결 버튼을 볼 수 있습니다"
+      >
+        저장소 작업 보기
+      </button>`
+    : '';
   const discard = item.discard;
   const discard_el =
     discard?.action || item.discard_action
@@ -725,6 +702,7 @@ export function miniRow(item) {
     merging ||
     item.merge_action ||
     item.cancel_action ||
+    item.timeline_action ||
     item.discard_action ||
     discard?.operation ||
     item.revise_action
@@ -753,7 +731,7 @@ export function miniRow(item) {
                 >`
               : ''}${badge_els}${merge_step_el}
             <span class="worker-mini__actions"
-              >${merge_el}${cancel_el}${discard_el}</span
+              >${merge_el}${cancel_el}${timeline_el}${discard_el}</span
             >
             ${timesMeta(item)}
           </div>`
@@ -766,7 +744,7 @@ export function miniRow(item) {
               ? html`<div class="worker-mini__foot">
                   ${usage_el}${merge_step_el}
                   <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${discard_el}${revise_els}</span
+                    >${merge_el}${cancel_el}${timeline_el}${discard_el}${revise_els}</span
                   >
                   ${discardReceiptTemplate(item)}
                 </div>`
@@ -776,7 +754,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${select_el}${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${discard_el}
+              ${select_el}${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
             ${discardReceiptTemplate(item)} ${timesMeta(item)}`}
   </div>`;

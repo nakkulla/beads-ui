@@ -7,7 +7,9 @@ import {
   discardPhaseLabel,
   discardProjection,
   discardReceiptTemplate,
-  miniRow
+  formatClock,
+  miniRow,
+  repoOpsStripModel
 } from './lanes.js';
 
 /** @type {HTMLElement} */
@@ -315,5 +317,111 @@ describe('discard receipts', () => {
 
     expect(discard.operation?.operation_id).toBe('newer');
     expect(discard.label).toBe('재시도');
+  });
+});
+
+describe('repoOpsStripModel (UI-q0uy §4.1)', () => {
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  function card(patch = {}) {
+    return {
+      operation_id: 'op-1',
+      kind: 'deploy',
+      state: 'succeeded',
+      target_sha: 'c'.repeat(40),
+      finished_at: 1000,
+      elapsed_ms: 64_000,
+      ...patch
+    };
+  }
+
+  test('renders nothing for a workspace with no repo work at all', () => {
+    expect(repoOpsStripModel([], [])).toBeNull();
+  });
+
+  test('renders for a workspace whose only state is a stopped cleanup', () => {
+    expect(
+      repoOpsStripModel([], [{ bead_id: 'UI-a', step: 'child_sweep' }])
+    ).not.toBeNull();
+  });
+
+  test('takes the newest successful deploy as the current one', () => {
+    const model = repoOpsStripModel(
+      [
+        card({
+          operation_id: 'old',
+          target_sha: 'a'.repeat(40),
+          finished_at: 1
+        }),
+        card()
+      ],
+      []
+    );
+
+    expect(model?.deploy?.sha).toBe('c'.repeat(7));
+  });
+
+  test('ignores a failed deploy when naming the current one', () => {
+    const model = repoOpsStripModel(
+      [card({ state: 'failed', finished_at: 9999 })],
+      []
+    );
+
+    expect(model?.deploy).toBeNull();
+  });
+
+  test('ignores a verify operation when naming the current deployment', () => {
+    const model = repoOpsStripModel([card({ kind: 'verify' })], []);
+
+    expect(model?.deploy).toBeNull();
+  });
+
+  test('counts an unresolved failure and a stopped cleanup together', () => {
+    const model = repoOpsStripModel(
+      [card({ state: 'failed' })],
+      [{ bead_id: 'UI-a', step: 'child_sweep' }]
+    );
+
+    expect(model?.unresolved).toBe(2);
+  });
+
+  test('drops an acknowledged failure from the tally', () => {
+    const model = repoOpsStripModel(
+      [card({ state: 'failed', dismissed: { at: 1, by: 'user' } })],
+      []
+    );
+
+    expect(model?.badge).toEqual({ tone: 'quiet', label: '모두 정상' });
+  });
+
+  test('reports a running repair session', () => {
+    const model = repoOpsStripModel([card({ state: 'repairing' })], []);
+
+    expect(model?.badge).toEqual({ tone: 'live', label: '자동 해결 중' });
+  });
+
+  test('lets 해결 필요 outrank a running repair session', () => {
+    const model = repoOpsStripModel(
+      [
+        card({ state: 'repairing' }),
+        card({ operation_id: 'op-2', state: 'failed' })
+      ],
+      []
+    );
+
+    expect(model?.badge.label).toBe('해결 필요 1');
+  });
+});
+
+describe('formatClock', () => {
+  test('renders a timestamp as local HH:MM', () => {
+    const at = new Date(2026, 7, 14, 16, 29).getTime();
+
+    expect(formatClock(at)).toBe('16:29');
+  });
+
+  test('renders nothing for an absent timestamp', () => {
+    expect(formatClock(null)).toBe('');
   });
 });

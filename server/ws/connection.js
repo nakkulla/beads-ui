@@ -93,6 +93,7 @@ import {
   handleWorkerQueueSetPrWaitHold,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
+  handleWorkerRepoOperationDismiss,
   handleWorkerRepoOperationRepair,
   handleWorkerReviseApprove,
   handleWorkerReviseFix
@@ -509,6 +510,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-repo-operation-repair':
       await handleWorkerRepoOperationRepair(ws, req);
+      return;
+    case 'worker-repo-operation-dismiss':
+      await handleWorkerRepoOperationDismiss(ws, req);
       return;
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
