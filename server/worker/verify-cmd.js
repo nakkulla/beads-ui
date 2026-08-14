@@ -88,6 +88,26 @@ export function resolveVerifyCmd(repo, config_map) {
 }
 
 /**
+ * The resolution shape the pre-merge lane reads. Since the retired repository
+ * deployment provider was removed, `[worker.verify."<abs>"]` config is the only
+ * source left, so a resolution is either that command or nothing.
+ *
+ * @typedef {{ state: 'resolved', source: 'config', value: ResolvedVerifyCmd }|{ state: 'absent' }} VerifyResolution
+ */
+
+/**
+ * @param {string} repo
+ * @param {Record<string, { cmd: string[], timeout_ms: number }>|null|undefined} config_map
+ * @returns {VerifyResolution}
+ */
+export function resolveConfiguredVerify(repo, config_map) {
+  const configured = resolveVerifyCmd(repo, config_map);
+  return configured
+    ? { state: 'resolved', source: 'config', value: configured }
+    : { state: 'absent' };
+}
+
+/**
  * Rolling capture window for the verify command's own output (UI-qult §1). The
  * process may print megabytes; only the END is diagnostic, so the buffer is
  * trimmed from the front to keep memory bounded. 16KB comfortably covers both

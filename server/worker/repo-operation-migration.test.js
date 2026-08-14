@@ -118,15 +118,6 @@ function repoOperationsFor(config = {}) {
 }
 
 /**
- * @param {any} status
- */
-function deploymentJobFor(status) {
-  return {
-    deploymentStatus: vi.fn(async () => status)
-  };
-}
-
-/**
  * @param {any} overrides
  */
 function migrationWith(overrides) {
@@ -135,7 +126,6 @@ function migrationWith(overrides) {
     repo: REPO,
     gitRun: gitFor(),
     repoOperations: repoOperationsFor(),
-    deploymentJob: null,
     resumeClosure: null,
     now: () => 1_800_000_000_000,
     ...overrides
@@ -278,182 +268,6 @@ describe('worker/repo-operation-migration', () => {
       disposition: 'legacy_manual',
       reason: 'base_unresolved:no_resolver'
     });
-  });
-
-  test('adopts an exact terminal legacy deploy success as migrated evidence', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const migration = migrationWith({
-      store,
-      deploymentJob: deploymentJobFor({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha: TIP,
-        deployed_sha: TIP,
-        generation: 42
-      }),
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    const run = await migration.run();
-
-    expect(run.results['dotfiles-p0mq']).toMatchObject({
-      disposition: 'adopted_legacy_deploy',
-      evidence: { source: 'legacy_provider', deployed_sha: TIP, generation: 42 }
-    });
-  });
-
-  test('leaves an adopted row on its own cursor instead of replaying the lane', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const migration = migrationWith({
-      store,
-      deploymentJob: deploymentJobFor({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha: TIP,
-        deployed_sha: TIP,
-        generation: 42
-      }),
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    await migration.run();
-
-    const row = store
-      .snapshot(WS)
-      .pr_wait.find((entry) => entry.bead_id === 'dotfiles-p0mq');
-    expect(row?.cleanup_cursor).toBeNull();
-  });
-
-  test('resumes the closure for an adopted legacy deploy success', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const resumeClosure = vi.fn(async () => ({ ok: true }));
-    const migration = migrationWith({
-      store,
-      resumeClosure,
-      deploymentJob: deploymentJobFor({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha: TIP,
-        deployed_sha: TIP,
-        generation: 42
-      }),
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    await migration.run();
-
-    expect(resumeClosure).toHaveBeenCalledWith('dotfiles-p0mq');
-  });
-
-  test('refuses to adopt a near-miss legacy deploy status', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const migration = migrationWith({
-      store,
-      deploymentJob: deploymentJobFor({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha: TIP,
-        deployed_sha: 'b'.repeat(40),
-        generation: 42
-      }),
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    const run = await migration.run();
-
-    expect(run.results['dotfiles-p0mq']).toMatchObject({
-      disposition: 'new_deploy_operation',
-      evidence: { deployed_sha: 'b'.repeat(40) }
-    });
-  });
-
-  test('refuses to adopt a legacy deploy success bound to another base', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const migration = migrationWith({
-      store,
-      deploymentJob: deploymentJobFor({
-        state: 'succeeded',
-        target_base: 'release',
-        target_sha: TIP,
-        deployed_sha: TIP,
-        generation: 42
-      }),
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    const run = await migration.run();
-
-    expect(run.results['dotfiles-p0mq'].disposition).toBe(
-      'new_deploy_operation'
-    );
-  });
-
-  test('refuses to adopt a legacy deploy that does not cover the subject', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const migration = migrationWith({
-      store,
-      gitRun: gitFor({ covers: (ancestor, descendant) => descendant === TIP }),
-      deploymentJob: deploymentJobFor({
-        state: 'succeeded',
-        target_base: 'main',
-        target_sha: 'c'.repeat(40),
-        deployed_sha: 'c'.repeat(40),
-        generation: 42
-      }),
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    const run = await migration.run();
-
-    expect(run.results['dotfiles-p0mq'].disposition).toBe(
-      'new_deploy_operation'
-    );
-  });
-
-  test('preserves a legacy deploy row whose retired provider cannot answer', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const migration = migrationWith({
-      store,
-      deploymentJob: {
-        deploymentStatus: vi.fn(async () => {
-          throw Object.assign(new Error('provider gone'), {
-            code: 'deployment_provider_spawn_failed'
-          });
-        })
-      },
-      cleanupFacts: factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
-    });
-
-    const run = await migration.run();
-
-    expect(run.results['dotfiles-p0mq']).toMatchObject({
-      disposition: 'legacy_manual',
-      reason: 'legacy_status_unreadable'
-    });
-  });
-
-  test('reads the retired provider status once for every legacy deploy row', async () => {
-    const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const deploymentJob = deploymentJobFor({
-      state: 'failed',
-      target_base: 'main',
-      target_sha: TIP,
-      deployed_sha: null,
-      generation: 7
-    });
-    const migration = migrationWith({
-      store,
-      deploymentJob,
-      cleanupFacts: factsFor({
-        'dotfiles-3vb8': { merge_sha: MERGED },
-        'dotfiles-p0mq': { merge_sha: P0MQ_MERGED },
-        'dotfiles-y3qv': { merge_sha: 'd'.repeat(40) }
-      })
-    });
-
-    await migration.run();
-
-    expect(deploymentJob.deploymentStatus).toHaveBeenCalledTimes(1);
   });
 
   test('resumes the idempotent closure for a legacy closure-step failure', async () => {
@@ -614,31 +428,16 @@ describe('worker/repo-operation-migration', () => {
 
   test('adopts the stored result on a second run instead of migrating again', async () => {
     const store = storeWith(fixture('legacy-cleanup-dotfiles.json'));
-    const deploymentJob = deploymentJobFor({
-      state: 'failed',
-      target_base: 'main',
-      target_sha: TIP,
-      deployed_sha: null,
-      generation: 7
-    });
     const cleanupFacts = vi.fn(
       factsFor({ 'dotfiles-p0mq': { merge_sha: P0MQ_MERGED } })
     );
-    const first = await migrationWith({
-      store,
-      deploymentJob,
-      cleanupFacts
-    }).run();
+    const first = await migrationWith({ store, cleanupFacts }).run();
     const revision_after_first = store.snapshot(WS).revision;
 
-    const second = await migrationWith({
-      store,
-      deploymentJob,
-      cleanupFacts
-    }).run();
+    const second = await migrationWith({ store, cleanupFacts }).run();
 
     expect(second).toMatchObject({ adopted: true, results: first.results });
-    expect(deploymentJob.deploymentStatus).toHaveBeenCalledTimes(1);
+    expect(cleanupFacts).toHaveBeenCalledTimes(3);
     expect(store.snapshot(WS).revision).toBe(revision_after_first);
   });
 

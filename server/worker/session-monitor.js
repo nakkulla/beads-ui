@@ -19,7 +19,6 @@
  */
 import nodeFs from 'node:fs';
 import { debug } from '../logging.js';
-import { parseDeploymentRecoveryOutcome } from './deployment-recovery.js';
 import { claudeSpec } from './runner/claude.js';
 import {
   findMergeViolation,
@@ -426,76 +425,6 @@ export function createSessionMonitors(deps) {
   }
 
   return {
-    /**
-     * Read only the bounded tail of a detached recovery log, normalize it with
-     * the attempt's own adapter, and return the structured marker alone. Raw
-     * provider output never leaves this function.
-     *
-     * @param {string} workspace
-     * @param {any} attempt
-     */
-    recoverDeploymentOutcome(workspace, attempt) {
-      if (
-        !attempt ||
-        typeof attempt.attempt_id !== 'string' ||
-        typeof attempt.deployment_recovery_identity !== 'string'
-      ) {
-        return { ok: false, reason: 'recovery_outcome_unowned' };
-      }
-      const file = deps.sessionLog.pathFor(workspace, attempt.attempt_id);
-      const max_bytes = 256 * 1024;
-      let content;
-      try {
-        const stat = fs.statSync(file);
-        const length = Math.min(stat.size, max_bytes);
-        const start = Math.max(0, stat.size - length);
-        const fd = fs.openSync(file, 'r');
-        try {
-          const buffer = Buffer.alloc(length);
-          fs.readSync(fd, buffer, 0, length, start);
-          content = buffer.toString('utf8');
-        } finally {
-          fs.closeSync(fd);
-        }
-        if (start > 0) {
-          const boundary = content.indexOf('\n');
-          content = boundary === -1 ? '' : content.slice(boundary + 1);
-        }
-      } catch {
-        return { ok: false, reason: 'recovery_outcome_log_unavailable' };
-      }
-      const spec = specForAttempt(attempt);
-      /** @type {string[]} */
-      const texts = [];
-      for (const line of content.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) {
-          continue;
-        }
-        let raw;
-        try {
-          raw = JSON.parse(trimmed);
-        } catch {
-          continue;
-        }
-        const normalized = spec.normalize(raw);
-        const events = Array.isArray(normalized)
-          ? normalized
-          : normalized
-            ? [normalized]
-            : [];
-        for (const event of events) {
-          if (event.kind === 'text' && typeof event.text === 'string') {
-            texts.push(event.text);
-          }
-        }
-      }
-      return parseDeploymentRecoveryOutcome(texts, {
-        identity: attempt.deployment_recovery_identity,
-        attempt_id: attempt.attempt_id
-      });
-    },
-
     /**
      * Start monitoring one persisted `running` attempt. Refuses (returns false)
      * when the attempt is already monitored or its pid is dead/recycled — a

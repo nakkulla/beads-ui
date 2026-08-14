@@ -160,9 +160,12 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   code와 log marker를 남기고, 재시작된 Worker가 같은 operation을 adoption한다.
 - **정리 cursor**는
   `base_containment → repo_operations → child_sweep → branch_cleanup → parent_close`다.
-  deploy operation이 succeeded가 되기 전에는 Bead를 close하지 않는다.
-  `repo-ops/config.toml`이 없는 저장소는 legacy lane을 그대로 탄다(그 코드
-  제거는 별도 단계).
+  deploy operation이 succeeded가 되기 전에는 Bead를 close하지 않는다. 은퇴한 v1
+  deployment provider(`repo-deployctl` 외부 job과 그 recovery saga,
+  `docs/agents/repo-ops.toml` 선언 reader)는 남아 있지 않으므로 legacy lane도
+  없다 — `repo-ops/config.toml`을 선언하지 않은 base는 verify·deploy 단계 없이
+  곧바로 closure로 넘어간다. 재등장은
+  `scripts/check-repo-deploy-provider-retired.js`가 막는다.
 - **자동 경로는 이 서버의 [머지] 클릭으로 머지된 PR에만 걸린다**: github.com에서
   직접 머지한 PR은 external row로 **관측만 기록되고 정리가 자동으로 돌지
   않는다** — 레인에 `머지됨 · 정리`가 뜨고 [정리] 클릭이 단일 트리거다.

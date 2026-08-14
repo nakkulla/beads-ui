@@ -64,7 +64,6 @@ import {
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import {
-  deploymentDisclosureTemplate,
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
@@ -802,8 +801,6 @@ function completionView(completion) {
  * @param {Record<string, any>} [discard_operations] - UI-safe durable discard projection.
  * the durable journal itself never reaches the client (UI-x9tu §10).
  * @param {boolean} [worker_serial] - Durable attempt execution mode.
- * @param {'pending'|'running'|'succeeded'|'failed'|null} [deployment_coverage]
- * @param {string|null} [deployment_target_sha]
  * @returns {any}
  */
 function prWaitRow(
@@ -821,9 +818,7 @@ function prWaitRow(
   base_exception = null,
   completion = null,
   discard_operations = {},
-  worker_serial = false,
-  deployment_coverage = null,
-  deployment_target_sha = null
+  worker_serial = false
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -933,30 +928,18 @@ function prWaitRow(
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
-  const deployment_reason =
-    deployment_coverage === 'pending' || deployment_coverage === 'failed'
-      ? '머지됨 · 배포 대기'
-      : deployment_coverage === 'running' &&
-          typeof deployment_target_sha === 'string'
-        ? `머지됨 · ${deployment_target_sha.slice(0, 8)} 배포에 포함됨`
-        : deployment_coverage === 'succeeded'
-          ? '머지됨 · 배포 완료'
-          : null;
-  const deployment_cleanup_failure =
-    !!cleanup_failed &&
-    ['repo_operations', 'deployment_request', 'deploy'].includes(
-      cleanup_failed.step
-    );
-  const deployment_action_blocked =
+  const repo_operations_action_blocked =
     !cleanup_retry &&
-    (deployment_reason !== null || deployment_cleanup_failure);
+    !!cleanup_failed &&
+    cleanup_failed.step === 'repo_operations';
   return {
     id: bead_id,
     title,
     reason: cleanup_retry
       ? '머지됨 · 정리 미완'
-      : deployment_reason ||
-        (cleanup_failed ? '머지됨 · 정리 미완' : 'PR 대기'),
+      : cleanup_failed
+        ? '머지됨 · 정리 미완'
+        : 'PR 대기',
     draggable: false,
     done: true,
     lane: 'pr_wait',
@@ -993,7 +976,7 @@ function prWaitRow(
       !!(recovery && recovery.alert),
     // A queued row has nothing to click but [취소]: the merge is the driver's
     // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
-    merge_action: deployment_action_blocked
+    merge_action: repo_operations_action_blocked
       ? false
       : !queued || continuation_required,
     cancel_action: queued && !continuation_required,
@@ -1021,7 +1004,7 @@ function prWaitRow(
       !discard_blocks_merge &&
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
-      !deployment_action_blocked &&
+      !repo_operations_action_blocked &&
       (enabled || conflicting || cleanup_retry || external_cleanup),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
@@ -1503,45 +1486,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Continue the repo-level deployment recovery lineage bound to an existing
-   * failed/orphaned/paused attempt. The server derives the opaque recovery
-   * identity from its current queue row; the browser sends only attempt + CAS.
-   *
-   * @param {string} attempt_id
-   */
-  async function continueDeploymentRecovery(attempt_id) {
-    if (!transport || !attempt_id) {
-      return;
-    }
-    /** @param {Record<string, unknown>} extra */
-    const send = async (extra = {}) =>
-      /** @type {any} */ (
-        await transport('worker-deployment-recovery-continue', {
-          attempt_id,
-          expected_revision: currentRevision(),
-          ...extra
-        })
-      );
-    let res = await send();
-    adopt(res);
-    if (res && res.conflict) {
-      res = await send();
-      adopt(res);
-    }
-    res = await resolveContinuationMismatch(
-      res,
-      (continuation, decision_token) => send({ continuation, decision_token }),
-      {
-        onResult: adopt,
-        refresh: () => send()
-      }
-    );
-    if (res && res.resumed === false && !res.conflict && res.reason) {
-      showToast(`복구 이어가기 거부: ${res.reason}`, 'error', 2400);
-    }
-  }
-
-  /**
    * Dismiss (✕) the failure banner's attempt: stamp `dismissed_at` so the
    * failure stops counting as unhandled and the banner drops to the next one (if
    * any). Same CAS discipline as {@link resumeAttempt} — send the current
@@ -1973,7 +1917,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, deployment: any, repo_operations: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2649,16 +2593,6 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
     /** @type {Record<string, string>} */
     const merge_failures = merge_state.failures || {};
-    const deployment_coverage =
-      q.deployment_coverage &&
-      typeof q.deployment_coverage === 'object' &&
-      !Array.isArray(q.deployment_coverage)
-        ? q.deployment_coverage
-        : {};
-    const deployment_target_sha =
-      q.deployment && typeof q.deployment.desired_sha === 'string'
-        ? q.deployment.desired_sha
-        : null;
     // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵으로
     // 읽고 뱃지를 생략한다 (fail-quiet).
     /** @type {Record<string, { head_sha: string, reason: string, at: number }>} */
@@ -2925,9 +2859,7 @@ export function createWorkerView(mount_element, options = {}) {
               ? q.discard_operations
               : {},
             attempt_by_id.get(last_attempt_by_bead.get(e.bead_id) || '')
-              ?.worker_serial === true,
-            deployment_coverage[e.bead_id] || null,
-            deployment_target_sha
+              ?.worker_serial === true
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
@@ -2946,7 +2878,6 @@ export function createWorkerView(mount_element, options = {}) {
       done: done_rows,
       token_total,
       cleanup_failures,
-      deployment: q.deployment || null,
       // The RepoOperation lane's cards (master spec §10) — already projected by
       // the server, including which failure kind each resolve button names.
       repo_operations: Array.isArray(q.repo_operations) ? q.repo_operations : []
@@ -3034,7 +2965,6 @@ export function createWorkerView(mount_element, options = {}) {
       failure: m.failure,
       cleanupFailures: m.cleanup_failures
     });
-    const deployment = deploymentDisclosureTemplate(m.deployment);
     const repo_operations = repoOperationsDisclosureTemplate(m.repo_operations);
     if (is_mobile) {
       // sticky 리본 (UI-58y2 §모바일 1)에는 두 자동화 토글과 세 카운트만 둔다.
@@ -3049,7 +2979,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${deployment}${repo_operations}${banners}`;
+        ${repo_operations}${banners}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -3079,7 +3009,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${deployment}${repo_operations}${banners}`;
+      ${repo_operations}${banners}`;
   }
 
   /**
@@ -3907,24 +3837,6 @@ export function createWorkerView(mount_element, options = {}) {
       exec_defaults_dialog.open();
       return;
     }
-    if (target?.closest?.('.worker-deployment-retry')) {
-      if (transport) {
-        void Promise.resolve(transport('worker-deployment-retry', {})).then(
-          adopt
-        );
-      }
-      return;
-    }
-    const deploymentSession = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-deployment-session')
-    );
-    if (deploymentSession) {
-      const attempt_id = deploymentSession.dataset.attemptId;
-      if (attempt_id) {
-        openDrawerForAttempt(attempt_id);
-      }
-      return;
-    }
     const repoOpSession = /** @type {HTMLElement|null} */ (
       target?.closest?.('.worker-repo-op__session')
     );
@@ -3940,16 +3852,6 @@ export function createWorkerView(mount_element, options = {}) {
     );
     if (repoOpResolve) {
       void resolveRepoOperation(repoOpResolve.dataset.operationId || '');
-      return;
-    }
-    const deploymentContinue = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-deployment-continue')
-    );
-    if (deploymentContinue) {
-      const attempt_id = deploymentContinue.dataset.attemptId;
-      if (attempt_id) {
-        void continueDeploymentRecovery(attempt_id);
-      }
       return;
     }
     // The failure banner's ↻ resumes the newest eligible failed attempt (§1).

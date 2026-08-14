@@ -9,7 +9,6 @@ import {
   createLiveBd,
   createWorkerAttachment,
   initWorkerRuntime,
-  retryWorkerDeployment,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
@@ -228,127 +227,6 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
-  });
-
-  test('runs recovery poll then tick after a deployment observation', async () => {
-    const runtime = createWorkerRuntime();
-    const recovery = {
-      poll: vi.fn(async () => {}),
-      tick: vi.fn(async () => {})
-    };
-    const deploymentJob = {
-      requestDeployment: vi.fn(),
-      retryDeployment: vi.fn(),
-      deploymentStatus: vi.fn(async () => ({
-        state: 'pending',
-        target_base: 'main',
-        target_sha: 'a'.repeat(40),
-        deployed_sha: null,
-        generation: 1,
-        error_code: null,
-        log_path: null
-      })),
-      validateCurrentBinding: () => {},
-      validateRowBinding: () => {}
-    };
-    const att = createWorkerAttachment(WS, {
-      runtime,
-      bd: fakeBd(),
-      worktree: fakeWorktree,
-      verify: okVerify,
-      deploymentJob,
-      deploymentRecovery: recovery,
-      getSubscriberCount: () => 0
-    });
-    runtime.queueStore.recordDeploymentObservation(WS, {
-      state: 'pending',
-      target_base: 'main',
-      target_sha: 'a'.repeat(40),
-      deployed_sha: null,
-      generation: 1,
-      error_code: null,
-      log_path: null
-    });
-
-    await att.prPoller.tick();
-
-    expect(recovery.poll).toHaveBeenCalledOnce();
-    expect(recovery.tick).toHaveBeenCalledOnce();
-  });
-
-  test('fences manual deployment retry while an automatic journal is active', async () => {
-    const runtime = createWorkerRuntime();
-    const store = runtime.queueStore;
-    const retryNow = vi.fn(async () => ({
-      ok: false,
-      reason: 'automatic_retry_in_progress'
-    }));
-    store.recordDeploymentObservation(WS, {
-      state: 'failed',
-      target_base: 'main',
-      target_sha: 'a'.repeat(40),
-      deployed_sha: null,
-      generation: 1,
-      error_code: 'deploy_failed',
-      log_path: '/tmp/deploy.log'
-    });
-    store.scheduleDeploymentRetry(
-      WS,
-      {
-        repo: WS,
-        target_base: 'main',
-        target_sha: 'a'.repeat(40),
-        generation: 1,
-        error_code: 'deploy_failed',
-        log_digest: 'a'.repeat(64)
-      },
-      31_000
-    );
-    const before = store.snapshot(WS).deployment;
-    __registerWorkerAttachmentForTest(
-      WS,
-      /** @type {any} */ ({
-        runtime,
-        repo: WS,
-        deploymentRecovery: { retryNow }
-      })
-    );
-
-    const result = await retryWorkerDeployment(WS);
-
-    expect(result).toEqual({
-      ok: false,
-      reason: 'automatic_retry_in_progress'
-    });
-    expect(retryNow).toHaveBeenCalledOnce();
-    expect(store.snapshot(WS).deployment).toEqual(before);
-  });
-
-  test('wires repository-aware git ancestry into the default deployment job', async () => {
-    const runtime = createWorkerRuntime();
-    const gitRun = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
-    const att = createWorkerAttachment(WS, {
-      runtime,
-      bd: fakeBd(),
-      worktree: fakeWorktree,
-      verify: okVerify,
-      gitRun,
-      spawn_impl: makeFixtureSpawn({ lines: [] })
-    });
-    const merge_sha = 'a'.repeat(40);
-    const deployed_sha = 'b'.repeat(40);
-
-    const covered = await /** @type {any} */ (att.deploymentJob).covers(
-      WS,
-      deployed_sha,
-      merge_sha
-    );
-
-    expect(covered).toBe(true);
-    expect(gitRun).toHaveBeenCalledWith(
-      ['merge-base', '--is-ancestor', merge_sha, deployed_sha],
-      { cwd: WS }
-    );
   });
 
   test('wires the completion action driver into the default coordinator', async () => {
@@ -731,24 +609,17 @@ describe('worker/attach construction + live loop (F1)', () => {
     vi.spyOn(att.scheduler, 'recoverControls').mockImplementation(async () => {
       order.push('control');
     });
-    vi.spyOn(att.prActions, 'resumeDeploymentObservation').mockImplementation(
-      async () => {
-        order.push('deploy-resume');
-        return [];
-      }
-    );
     __registerWorkerAttachmentForTest(WS, att);
 
     initWorkerRuntime({ workspaces: [WS] });
-    await waitFor(() => order.includes('deploy-resume'));
+    await waitFor(() => order.includes('reconcile'));
 
     expect(order).toEqual([
       'discard-fence',
       'control',
       'monitor',
       'discard-drive',
-      'reconcile',
-      'deploy-resume'
+      'reconcile'
     ]);
   });
 
@@ -2095,26 +1966,6 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
         };
       },
       resolveBase: okBase('main', 'b'.repeat(40)),
-      deploymentJob: {
-        requestDeployment: async (input) => ({
-          accepted: true,
-          noop: true,
-          target_base: input.target_base,
-          target_sha: 'b'.repeat(40),
-          generation: 1
-        }),
-        deploymentStatus: async () => ({
-          state: 'succeeded',
-          target_base: 'main',
-          target_sha: 'b'.repeat(40),
-          deployed_sha: 'b'.repeat(40),
-          generation: 1,
-          error_code: null,
-          log_path: '/tmp/deploy.log'
-        }),
-        validateCurrentBinding: () => {},
-        validateRowBinding: () => {}
-      },
       gh: /** @type {any} */ ({
         checkAvailability: async () => ({ state: 'ok', data: true })
       })
@@ -2137,10 +1988,8 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
     // about the registry is stubbed, so a missing `drop` in `attach.js` leaves
     // the row behind for the next enroller pass to trip over.
     const r = await att.prActions.cleanupObservedMerge('X1', 'a'.repeat(40));
-    const observed = await att.prActions.observeDeployment();
 
     expect(r).toMatchObject({ ok: true, reason: null });
-    expect(observed).toEqual({ ok: true, reason: 'succeeded' });
     expect(runtime.externalPrs.list(WS)).toEqual([]);
   });
 });

@@ -193,6 +193,25 @@ describe('auto repair defaults and durable toggle', () => {
     ]);
   });
 
+  test('spends no budget when the only subject is the bootstrap marker', async () => {
+    const { store, coordinator, dispatch } = repairFixture();
+    seedFailure(store, {
+      operation_id: 'op-1',
+      subjects: [{ bead_id: 'bootstrap', merged_sha: TARGET }]
+    });
+
+    const result = await coordinator.startRepair('op-1', 'auto');
+
+    expect([result.ok, result.code, dispatch.mock.calls.length]).toEqual([
+      false,
+      'repair_owner_unresolved',
+      0
+    ]);
+    expect(store.snapshot(root).repo_operations['op-1'].repair.auto_used).toBe(
+      0
+    );
+  });
+
   test('never stops a running repair when the flag goes off', async () => {
     const { store, coordinator } = repairFixture();
     seedFailure(store, { operation_id: 'op-1' });

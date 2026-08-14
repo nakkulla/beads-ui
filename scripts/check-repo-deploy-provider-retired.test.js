@@ -6,7 +6,11 @@ import { afterEach, expect, test } from 'vitest';
 
 /** @type {string[]} */
 const temporary_repos = [];
-const CHECKER_NAME = ['check', 'managed' + '-deploy', 'retired.js'].join('-');
+// Assembled rather than written so this test file is not itself a reader of
+// the retired vocabulary the checker forbids.
+const CHECKER_NAME = ['check', 'repo', 'deploy', 'provider', 'retired.js'].join(
+  '-'
+);
 
 afterEach(() => {
   for (const repo of temporary_repos.splice(0)) {
@@ -64,14 +68,35 @@ test('checks a pinned repository tree reference', () => {
 });
 
 test.each([
-  ['retired module', ['managed', 'state'].join('-')],
-  ['runtime marker writer', ['write', 'Runtime', 'Marker'].join('')],
-  ['runtime marker reader', ['read', 'Runtime', 'Marker'].join('')],
-  ['runtime marker path', ['bdui', 'runtime', 'beads-ui'].join('/')]
+  ['provider client module', ['deployment', 'job'].join('-')],
+  ['recovery saga module', ['deployment', 'recovery'].join('-')],
+  ['provider control binary', ['repo', 'deployctl'].join('-')],
+  ['provider status call', ['deployment', 'Status'].join('')],
+  ['row generation field', ['deployment', 'generation'].join('_')],
+  ['retired declaration reader', ['resolve', 'Verify', 'At'].join('')],
+  ['retired ws message', ['worker', 'deployment', 'retry'].join('-')]
 ])('rejects a forbidden %s in a pinned repository tree', (_, token) => {
   const repo = createTree('forbidden', `export const value = '${token}';\n`);
   const result = runChecker(['--repo', repo, '--ref', 'HEAD']);
 
   expect(result.status).toBe(1);
   expect(result.stderr).toContain(`server/fixture.js: ${token}`);
+});
+
+test('rejects a retired module that came back', () => {
+  const repo = createTree('resurrected', 'export const value = 1;\n');
+  fs.mkdirSync(path.join(repo, 'server', 'worker'), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, 'server', 'worker', 'repo-ops.js'),
+    'export const value = 1;\n'
+  );
+  execFileSync('git', ['add', '.'], { cwd: repo });
+  execFileSync('git', ['commit', '--quiet', '-m', 'resurrect'], { cwd: repo });
+
+  const result = runChecker(['--repo', repo, '--ref', 'HEAD']);
+
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain(
+    'deleted file remains: server/worker/repo-ops.js'
+  );
 });
