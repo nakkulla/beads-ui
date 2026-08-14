@@ -77,7 +77,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -119,7 +119,8 @@ function coordinatorFor(overrides = {}) {
       }),
       verifyAligned: async () => ({ ok: true })
     }),
-    verifyCheckout: /** @type {never} */ (overrides.verifyCheckout)
+    verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
+    repairSession: /** @type {never} */ (overrides.repairSession)
   });
   return { store, coordinator };
 }
@@ -440,6 +441,244 @@ describe('RepoOperation coordinator', () => {
       operation_id: 'later-deploy',
       covered_operation_id: 'failed-deploy'
     });
+  });
+
+  test('supersedes an ancestor failed deploy when a descendant succeeds', async () => {
+    const runner = {
+      start: () => ({ ok: false, code: 'unused' }),
+      readMarker: () => ({ exit_code: 0, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: vi.fn(async (args) => ({
+        code: args[0] === 'merge-base' ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      }))
+    });
+    for (const operation_id of ['failed-deploy', 'descendant-deploy']) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: BASE,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+    }
+    const failed = store.snapshot(root).repo_operations['failed-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'failed.log'),
+      target_sha: HEAD
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const descendant =
+      store.snapshot(root).repo_operations['descendant-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'descendant-deploy',
+      attempt_id: descendant.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'descendant.log'),
+      target_sha: TARGET
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['failed-deploy'].superseded_by
+    ).toBe('descendant-deploy');
+  });
+
+  test('uses effective base sha to supersede a failed deploy without a target sha', async () => {
+    const runner = {
+      start: () => ({ ok: false, code: 'unused' }),
+      readMarker: () => ({ exit_code: 0, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: vi.fn(async (args) => ({
+        code: args[0] === 'merge-base' ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      }))
+    });
+    for (const operation_id of ['failed-deploy', 'descendant-deploy']) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: operation_id === 'failed-deploy' ? HEAD : BASE,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+    }
+    const failed = store.snapshot(root).repo_operations['failed-deploy'];
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const descendant =
+      store.snapshot(root).repo_operations['descendant-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'descendant-deploy',
+      attempt_id: descendant.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'descendant.log'),
+      target_sha: TARGET
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['failed-deploy'].superseded_by
+    ).toBe('descendant-deploy');
+  });
+
+  test('supersedes a late failed deploy without changing repairing or covered rows', async () => {
+    const runner = {
+      start: () => ({ ok: false, code: 'unused' }),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: vi.fn(async (args) => ({
+        code: args[0] === 'merge-base' ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      }))
+    });
+    for (const operation_id of [
+      'descendant-deploy',
+      'late-failed',
+      'repairing-deploy',
+      'covered-deploy'
+    ]) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: BASE,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+      const operation = store.snapshot(root).repo_operations[operation_id];
+      store.startRepoOperation(root, {
+        operation_id,
+        attempt_id: operation.attempt_id,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, `${operation_id}.log`),
+        target_sha: operation_id === 'descendant-deploy' ? TARGET : HEAD
+      });
+    }
+    const descendant =
+      store.snapshot(root).repo_operations['descendant-deploy'];
+    store.settleRepoOperation(root, {
+      operation_id: 'descendant-deploy',
+      attempt_id: descendant.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    for (const operation_id of ['repairing-deploy', 'covered-deploy']) {
+      const operation = store.snapshot(root).repo_operations[operation_id];
+      store.settleRepoOperation(root, {
+        operation_id,
+        attempt_id: operation.attempt_id,
+        exit_code: 1,
+        signal: null
+      });
+    }
+    store.startRepoOperationRepair(root, {
+      operation_id: 'repairing-deploy',
+      mode: 'manual'
+    });
+    store.supersedeRepoOperation(root, {
+      operation_id: 'covered-deploy',
+      successor_id: 'original-successor'
+    });
+
+    await coordinator.reconcile(root);
+
+    const operations = store.snapshot(root).repo_operations;
+    expect(operations['late-failed'].superseded_by).toBe('descendant-deploy');
+    expect(operations['repairing-deploy']).toMatchObject({
+      state: 'repairing',
+      superseded_by: null
+    });
+    expect(operations['covered-deploy'].superseded_by).toBe(
+      'original-successor'
+    );
+  });
+
+  test('refuses automatic and manual repair for a superseded failure', async () => {
+    const dispatch = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'att-1',
+      session_id: 'sess-1'
+    }));
+    const { store, coordinator } = coordinatorFor({
+      repairSession: {
+        dispatch,
+        judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const operation = store.snapshot(root).repo_operations['failed-deploy'];
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: operation.attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+    store.supersedeRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      successor_id: 'descendant-deploy'
+    });
+
+    const automatic = await coordinator.startRepair('failed-deploy', 'auto');
+    const manual = await coordinator.startRepair('failed-deploy', 'manual');
+
+    expect([automatic.code, manual.code, dispatch.mock.calls.length]).toEqual([
+      'repo_operation_superseded',
+      'repo_operation_superseded',
+      0
+    ]);
   });
 
   test('coalesces uncovered subjects into one queued deploy target', async () => {

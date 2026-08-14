@@ -1336,12 +1336,12 @@ export function createPrActions(deps) {
       };
     }
     const prior_failure = q.cleanup_failed?.[bead_id];
-    const closure_steps = ['child_sweep', 'branch_cleanup', 'parent_close'];
-    if (
-      prior_failure &&
-      prior_failure.step !== 'repo_operations' &&
-      (!closure_steps.includes(prior_failure.step) || !resume_failure)
-    ) {
+    const closure_start = CLEANUP_STEPS.indexOf('child_sweep');
+    const closure_steps = CLEANUP_STEPS.slice(closure_start);
+    const prior_step_index = prior_failure
+      ? CLEANUP_STEPS.indexOf(prior_failure.step)
+      : -1;
+    if (prior_failure && prior_step_index >= closure_start && !resume_failure) {
       return {
         ok: false,
         step: prior_failure.step,
