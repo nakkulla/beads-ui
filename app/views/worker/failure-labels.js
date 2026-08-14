@@ -65,7 +65,9 @@ function segmentsOf(code) {
  */
 export function failureCategory(code) {
   for (const segment of segmentsOf(code)) {
-    if (FAILURE_CATEGORIES[segment]) {
+    // Own-property only: a token like `constructor` or `toString` would
+    // otherwise match a prototype member and escape the raw-token fallback.
+    if (Object.hasOwn(FAILURE_CATEGORIES, segment)) {
       return FAILURE_CATEGORIES[segment];
     }
   }
@@ -84,7 +86,7 @@ export function failureSentence(code) {
   /** @type {string|null} */
   let found = null;
   for (const segment of segmentsOf(code)) {
-    if (FAILURE_SENTENCES[segment]) {
+    if (Object.hasOwn(FAILURE_SENTENCES, segment)) {
       found = FAILURE_SENTENCES[segment];
     }
   }
@@ -121,4 +123,32 @@ export function failureText(code) {
  */
 export function isKnownFailure(code) {
   return failureCategory(code) !== null || failureSentence(code) !== null;
+}
+
+/**
+ * The human text for a repo-operation failure, which carries TWO contract
+ * tokens: the raw `failure.code` and the server's own `failure_kind`
+ * classification.
+ *
+ * They answer different halves. `failure_kind` is what the policy contract calls
+ * this failure (검증 실패 · 배포 실패 · 중단됨) and is the only half that knows a
+ * bare `script_failed` was a deploy script; `failure.code` is the specific cause
+ * and, when it maps, says more than the kind can. So the category comes from the
+ * kind first and the sentence from the code first, each falling back to the
+ * other, and only a pair that maps to nothing at all falls back to the raw code.
+ *
+ * @param {unknown} kind - Server `failure_kind` (`other` when unclassified).
+ * @param {unknown} code - Raw `failure.code`.
+ * @returns {string}
+ */
+export function operationFailureText(kind, code) {
+  const category = failureCategory(kind) ?? failureCategory(code);
+  const sentence = failureSentence(code) ?? failureSentence(kind);
+  if (category && sentence) {
+    return `${category} — ${sentence}`;
+  }
+  if (category || sentence) {
+    return /** @type {string} */ (category || sentence);
+  }
+  return typeof code === 'string' ? code : '';
 }

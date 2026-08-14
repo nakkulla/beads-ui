@@ -911,8 +911,10 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
 
     await coordinator.reconcile(root);
 
+    // A bootstrap is the one classification where the TARGET tree is the policy.
     expect(repoOpsDisplayFor(root)).toMatchObject({
       status: 'resolved',
+      base_sha: TARGET,
       deploy: { script: 'repo-ops/script/deploy' }
     });
   });
@@ -926,6 +928,44 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
       status: 'resolved',
       base_sha: TARGET
     });
+  });
+
+  test('never records a PR head as the declaration base (verify lane)', async () => {
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize: vi.fn(async () => ({ ok: false })) }
+    });
+
+    await coordinator.ensureVerify(verifyCandidate());
+
+    // `target_sha` on this lane is the PR head/final SHA. Recording it would let
+    // an unmerged PR define what the settings surface claims this repo declares.
+    expect(repoOpsDisplayFor(root).base_sha).not.toBe(HEAD);
+  });
+
+  test('records the pinned previous base as the declaration base', async () => {
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize: vi.fn(async () => ({ ok: false })) }
+    });
+
+    await coordinator.ensureVerify(verifyCandidate());
+
+    expect(repoOpsDisplayFor(root).base_sha).toBe(BASE);
+  });
+
+  test('records a failed resolve without claiming a base SHA', async () => {
+    const { coordinator } = coordinatorFor({
+      gitRun: async () => ({ code: 128, stdout: '', stderr: 'boom' }),
+      verifyCheckout: { materialize: vi.fn(async () => ({ ok: false })) }
+    });
+
+    await coordinator.ensureVerify(verifyCandidate());
+
+    expect([
+      repoOpsDisplayFor(root).status,
+      repoOpsDisplayFor(root).base_sha
+    ]).toEqual(['error', null]);
   });
 
   test('records an unresolvable base as an error, not an absence', async () => {

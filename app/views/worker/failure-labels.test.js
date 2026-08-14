@@ -3,7 +3,8 @@ import {
   failureCategory,
   failureSentence,
   failureText,
-  isKnownFailure
+  isKnownFailure,
+  operationFailureText
 } from './failure-labels.js';
 
 describe('failureCategory', () => {
@@ -87,5 +88,49 @@ describe('isKnownFailure', () => {
 
   test('reports an unmapped code as unknown', () => {
     expect(isKnownFailure('brand_new_contract_token')).toBe(false);
+  });
+});
+
+describe('prototype-member tokens', () => {
+  test('does not match a prototype member as a category', () => {
+    expect(failureCategory('constructor')).toBeNull();
+  });
+
+  test('does not match a prototype member as a sentence', () => {
+    expect(failureSentence('toString')).toBeNull();
+  });
+
+  test('falls back to the raw token for a prototype-member name', () => {
+    expect(failureText('__proto__')).toBe('__proto__');
+  });
+});
+
+describe('operationFailureText', () => {
+  test('takes the category from the server classification', () => {
+    expect(operationFailureText('deploy_script_failure', 'script_failed')).toBe(
+      '배포 실패 — 배포 스크립트가 실패했습니다.'
+    );
+  });
+
+  test('classifies a bare timeout by its lane too', () => {
+    expect(operationFailureText('verify_script_failure', 'timeout')).toBe(
+      '검증 실패 — 검증 스크립트가 실패했습니다.'
+    );
+  });
+
+  test('prefers the specific cause sentence over the kind sentence', () => {
+    expect(operationFailureText('other', 'repo_ops_worktree_unowned')).toBe(
+      '배포 워크트리가 아직 Worker 소유가 아니어서 스크립트 실행 전에 중단됐습니다.'
+    );
+  });
+
+  test('falls back to the raw code when neither half maps', () => {
+    expect(operationFailureText('other', 'a_future_failure_code')).toBe(
+      'a_future_failure_code'
+    );
+  });
+
+  test('renders nothing when there is no failure at all', () => {
+    expect(operationFailureText(null, '')).toBe('');
   });
 });

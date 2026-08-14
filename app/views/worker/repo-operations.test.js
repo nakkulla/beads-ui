@@ -293,7 +293,8 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
             fingerprint: 'f'.repeat(64),
             detail: '',
             interrupted: false
-          }
+          },
+          failure_kind: 'other'
         })
       ]
     });
@@ -305,6 +306,48 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     );
   });
 
+  test('says a bare script failure by its server classification', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          failure: {
+            code: 'script_failed',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'deploy_script_failure'
+        })
+      ]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__cause')?.textContent
+    ).toBe('배포 실패 — 배포 스크립트가 실패했습니다.');
+  });
+
+  test('keeps a classified failure code out of the visible body', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          failure: {
+            code: 'script_failed',
+            fingerprint: 'f'.repeat(64),
+            detail: '',
+            interrupted: false
+          },
+          failure_kind: 'deploy_script_failure'
+        })
+      ]
+    });
+    const drawer = openTimeline(mount);
+    /** @type {HTMLElement} */ (
+      drawer.querySelector('.worker-ev__details')
+    ).remove();
+
+    expect(drawer.textContent).not.toContain('script_failed');
+  });
+
   test('renders an unknown contract token verbatim', () => {
     const { mount } = mountWorker({
       repo_operations: [
@@ -314,7 +357,8 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
             fingerprint: 'f'.repeat(64),
             detail: '',
             interrupted: false
-          }
+          },
+          failure_kind: 'other'
         })
       ]
     });

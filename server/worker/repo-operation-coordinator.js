@@ -92,28 +92,53 @@ export function createRepoOperationCoordinator(deps) {
   /**
    * `resolveEffectiveRepoOps`, plus the display-cache update (UI-q0uy §4.6-1).
    * The cache is fed by the resolve this launch ALREADY does — there is no
-   * second resolution anywhere on this path. The recorded declaration is the one
-   * read at the fetched TARGET tree: that is what the repo declares right now,
-   * which is the question the settings surface asks.
+   * second resolution anywhere on this path.
+   *
+   * What gets recorded is the declaration the Worker ACTUALLY consumed, which is
+   * the pinned `policy` side except on a bootstrap, where the target tree IS the
+   * policy. Recording the target unconditionally would let a PR head define what
+   * the settings surface claims this repo declares — exactly the inversion
+   * `AGENTS.md` forbids, and on the verify lane `target_sha` is a PR head or
+   * final SHA, never a base at all.
+   *
+   * Two cases record nothing rather than guess:
+   *   - no `previous_sha` on a non-bootstrap resolve: the "previous" policy is
+   *     then a hardcoded default, not a tree read, and recording it would claim
+   *     a proven absence nobody proved;
+   *   - a failed resolve: `resolveEffectiveRepoOps` collapses a previous-side and
+   *     a target-side failure into one shape, so the SHA it failed at is not
+   *     recoverable here. The error is recorded with a null SHA, which the
+   *     settings surface renders as 선언 읽기 실패 with no base claim.
    *
    * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
    */
   async function resolveEffectiveTracked(input) {
     /** @type {any} */
     const result = await resolveEffectiveRepoOps(input);
-    const resolution =
-      result && typeof result === 'object' && result.target
-        ? result.target
-        : result;
+    if (!result || typeof result !== 'object') {
+      return result;
+    }
+    if (result.ok === false) {
+      recordRepoOpsResolution({
+        workspace: deps.workspace,
+        resolution: result,
+        base_sha: null
+      });
+      return result;
+    }
+    const bootstrap = result.classification === 'bootstrap';
+    const resolution = bootstrap ? result.target : result.policy;
+    const base_sha = bootstrap ? input.target_sha : input.previous_sha;
     if (
+      typeof base_sha === 'string' &&
       resolution &&
       typeof resolution === 'object' &&
-      (resolution.ok === false || 'config_blob_sha' in resolution)
+      'config_blob_sha' in resolution
     ) {
       recordRepoOpsResolution({
         workspace: deps.workspace,
         resolution,
-        base_sha: input.target_sha
+        base_sha
       });
     }
     return result;

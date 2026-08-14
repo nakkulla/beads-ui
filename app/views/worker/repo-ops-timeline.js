@@ -16,7 +16,7 @@
  */
 import { html, render } from 'lit-html';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
-import { failureText } from './failure-labels.js';
+import { failureText, operationFailureText } from './failure-labels.js';
 import { formatClock, formatElapsed, shortSha } from './lanes.js';
 import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 
@@ -187,17 +187,16 @@ function detailsTemplate(rows) {
 }
 
 /**
- * The failure explanation block. Known codes read as a sentence; an unknown
+ * The failure explanation block. Known failures read as a sentence; an unknown
  * contract token falls back to the raw string (§4.3), which the 세부 block
  * repeats verbatim either way.
  *
- * @param {string} code
+ * @param {string} text - Already-resolved human text for this failure.
  * @param {string} [suffix] - Optional second line of context.
  * @param {boolean} [warn] - Warn tone (a stopped cleanup) instead of danger.
  * @returns {TemplateResult|string}
  */
-function explainTemplate(code, suffix = '', warn = false) {
-  const text = failureText(code);
+function explainTemplate(text, suffix = '', warn = false) {
   if (!text && !suffix) {
     return '';
   }
@@ -243,7 +242,9 @@ function operationActionsTemplate(operation) {
         ? '자동 해결 횟수를 다 썼습니다 — 수동으로 해결하세요'
         : '해결 세션을 띄웁니다 (실패한 명령을 그대로 다시 돌리지 않습니다)'}
     >
-      ${RESOLVE_LABELS[resolve_key] || RESOLVE_LABELS.other}
+      ${Object.hasOwn(RESOLVE_LABELS, resolve_key)
+        ? RESOLVE_LABELS[resolve_key]
+        : RESOLVE_LABELS.other}
     </button>
     <span class="worker-ev__btn-sub"
       >${spent
@@ -296,7 +297,9 @@ function operationEventTemplate(event) {
     <div class="worker-ev__body">
       <div class="worker-ev__line1">
         <span class="worker-ev__what"
-          >${OPERATION_KIND_LABELS[operation.kind] || operation.kind}</span
+          >${Object.hasOwn(OPERATION_KIND_LABELS, operation.kind)
+            ? OPERATION_KIND_LABELS[operation.kind]
+            : operation.kind}</span
         >
         <span class="worker-ev__meta"
           >${operation.target_base}@${shortSha(
@@ -312,7 +315,9 @@ function operationEventTemplate(event) {
           ? html`<span class="worker-ev__st worker-ev__st--quiet">접수됨</span>`
           : ''}
       </div>
-      ${failed ? explainTemplate(code) : ''}
+      ${failed
+        ? explainTemplate(operationFailureText(operation.failure_kind, code))
+        : ''}
       ${operationActionsTemplate(operation)}
       ${detailsTemplate([
         { term: '실패 코드', value: failed ? code : '' },
@@ -380,7 +385,7 @@ function cleanupEventTemplate(event) {
         )}
       </ol>
       ${explainTemplate(
-        cleanup.reason,
+        failureText(cleanup.reason),
         typeof cleanup.retry_count === 'number' && cleanup.retry_count > 0
           ? `${cleanup.retry_count}회 자동 재시도 후에도 실패했습니다 — 정리를 재개하면 멈춘 단계부터 다시 진행합니다.`
           : '정리를 재개하면 멈춘 단계부터 다시 진행합니다.',
