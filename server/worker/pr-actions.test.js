@@ -575,6 +575,9 @@ const VERIFY_CFG = {
   timeout_ms: 1000
 };
 
+/** What `hasConfig` reports for a base that declares `[verify]`. */
+const VERIFY_SCRIPT_PATH = 'repo-ops/script/verify';
+
 /**
  * Harness options that put the local checkout on a clean target-base SHA.
  *
@@ -2972,7 +2975,11 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
 describe('worker/pr-actions — RepoOperation cleanup lane', () => {
   function repoOperations(overrides = {}) {
     return {
-      hasConfig: vi.fn(async () => ({ ok: true, present: true })),
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path: VERIFY_SCRIPT_PATH
+      })),
       ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
       ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
       waitForTerminal: vi.fn(),
@@ -3153,6 +3160,146 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
     expect(env.store.snapshot(WS).done).toEqual(
       expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
     );
+  });
+});
+
+describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8)', () => {
+  const NO_VERIFY_BEAD = 'UI-nv';
+  const NO_VERIFY_URL = 'https://github.com/o/r/pull/777';
+
+  /**
+   * The coordinator interface over a base whose repo-ops config declares
+   * `[deploy]` only — `verify_script_path: null` is exactly what `hasConfig`
+   * reports for a `[verify]`-less base.
+   *
+   * @param {string|null} verify_script_path
+   */
+  function coordinatorFor(verify_script_path) {
+    return {
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path
+      })),
+      ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForTerminal: vi.fn(),
+      verifyReceipt: vi.fn(),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' }))
+    };
+  }
+
+  /**
+   * The boot-resume shape `resumeRepoOperations` reads back after a restart: a
+   * nonterminal `repo_operations` row carrying its merge SHA, and nothing at
+   * all in the non-persistent observation cache.
+   *
+   * @param {any} store
+   */
+  function seedResumableRow(store) {
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: 'c'.repeat(40),
+      head_ref: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304'
+    });
+    store.setCleanupCursor(WS, { bead_id: BEAD, cursor: 'repo_operations' });
+  }
+
+  /**
+   * An external merged row whose PR detail carries no usable head SHA — the
+   * [정리] click's only source for one.
+   *
+   * @param {any} operations
+   */
+  function externalMergedOptions(operations) {
+    return {
+      ...ON_BASE,
+      store: createQueueStore(),
+      external: {
+        [NO_VERIFY_BEAD]: {
+          bead_id: NO_VERIFY_BEAD,
+          pr_url: NO_VERIFY_URL,
+          pr_number: 777,
+          added_at: 1
+        }
+      },
+      bdStatus: { [NO_VERIFY_BEAD]: 'resolved' },
+      bdPrUrl: NO_VERIFY_URL,
+      details: [prOf({ state: 'MERGED', merged_sha: 'c'.repeat(40) })],
+      repoOperations: operations
+    };
+  }
+
+  test('runs no verify operation when a boot-resumed base declares none', async () => {
+    const operations = coordinatorFor(null);
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+  });
+
+  test('reaches deploy on a boot-resumed base that declares no verify', async () => {
+    const operations = coordinatorFor(null);
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(operations.ensureDeploy).toHaveBeenCalledOnce();
+  });
+
+  test('records no cleanup failure for a boot-resumed base without verify', async () => {
+    const operations = coordinatorFor(null);
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('completes the external merged [정리] click when the base declares no verify', async () => {
+    const operations = coordinatorFor(null);
+    const env = makeActions(externalMergedOptions(operations));
+
+    const result = await env.actions.merge(NO_VERIFY_BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+  });
+
+  test('runs no verify operation on the external merged [정리] click without a head SHA', async () => {
+    const operations = coordinatorFor(null);
+    const env = makeActions(externalMergedOptions(operations));
+
+    await env.actions.merge(NO_VERIFY_BEAD);
+
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+  });
+
+  test('fails closed with the missing-input reason when verify is declared but no head SHA exists', async () => {
+    const operations = coordinatorFor(VERIFY_SCRIPT_PATH);
+    const env = makeActions(externalMergedOptions(operations));
+
+    const result = await env.actions.merge(NO_VERIFY_BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'repo_operations',
+      reason: 'verify_head_sha_unobserved'
+    });
+  });
+
+  test('starts no verify operation when the declared verify has no head SHA', async () => {
+    const operations = coordinatorFor(VERIFY_SCRIPT_PATH);
+    const env = makeActions(externalMergedOptions(operations));
+
+    await env.actions.merge(NO_VERIFY_BEAD);
+
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
   });
 });
 
@@ -3363,7 +3510,11 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
           })
         ],
         repoOperations: {
-          hasConfig: vi.fn(async () => ({ ok: true, present: true })),
+          hasConfig: vi.fn(async () => ({
+            ok: true,
+            present: true,
+            verify_script_path: VERIFY_SCRIPT_PATH
+          })),
           ensureVerify,
           ensureDeploy,
           waitForTerminal: vi.fn(async () => ({

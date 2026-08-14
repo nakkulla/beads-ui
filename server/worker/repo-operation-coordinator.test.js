@@ -195,6 +195,21 @@ function validRequest(overrides = {}) {
 }
 
 describe('RepoOperation coordinator', () => {
+  // The deploy-only declaration every caller must be able to tell apart from a
+  // declared `[verify]`: `null` here is what lets the cleanup skip the verify
+  // stage instead of demanding a verify candidate it can never build.
+  test('reports a deploy-only base as present with no verify script', async () => {
+    const { coordinator } = coordinatorFor({ gitRun: gitForBootstrap() });
+
+    const result = await coordinator.hasConfig(TARGET);
+
+    expect(result).toEqual({
+      ok: true,
+      present: true,
+      verify_script_path: null
+    });
+  });
+
   test('creates no operation when verify is absent', async () => {
     const start = vi.fn();
     const { store, coordinator } = coordinatorFor({

@@ -1989,18 +1989,9 @@ export function createPrActions(deps) {
           effective_base_sha =
             parent.code === 0 ? parent.stdout.trim() : undefined;
         }
-        const verified_head_sha =
-          refs.verified_head_sha ||
-          deps.observations.get(workspace, bead_id)?.pr?.head_sha;
-        const verify_policy = effective_base_sha
-          ? await repo_operations.hasConfig(effective_base_sha)
-          : { ok: false, code: 'verify_candidate_mismatch' };
         if (
           !effective_base_sha ||
-          !/^[0-9a-f]{40}$/i.test(effective_base_sha) ||
-          typeof verified_head_sha !== 'string' ||
-          !/^[0-9a-f]{40}$/i.test(verified_head_sha) ||
-          !verify_policy.ok
+          !/^[0-9a-f]{40}$/i.test(effective_base_sha)
         ) {
           return failCleanup(
             bead_id,
@@ -2009,42 +2000,72 @@ export function createPrActions(deps) {
             base_sync
           );
         }
-        const verified = await repo_operations.ensureVerify({
-          repo,
-          origin: 'origin',
-          target_base,
-          base_sha: effective_base_sha,
-          head_sha: verified_head_sha,
-          final_sha: merge_sha,
-          bead_id,
-          pr_number: parsePrNumber(pr_url || '') || 0,
-          script_path: verify_policy.verify_script_path,
-          receipt_operation_id: refs.verify_operation_id || null
-        });
-        if (!verified.ok) {
+        const verify_policy =
+          await repo_operations.hasConfig(effective_base_sha);
+        if (!verify_policy.ok) {
           return failCleanup(
             bead_id,
             'repo_operations',
-            verified.code || 'verify_failed',
+            'verify_candidate_mismatch',
             base_sync
           );
         }
-        if (!verified.inert && typeof verified.operation_id === 'string') {
-          const receipt =
-            (await repo_operations.waitForTerminal(verified.operation_id, {
-              timeout_ms: verified.timeout_ms
-            })) || repo_operations.verifyReceipt(verified.operation_id);
-          if (!receipt || receipt.state !== 'succeeded') {
+        // Spec §7.2/§8: a base declaring no [verify] must create no verify
+        // stage and no verify-shaped failure. The head SHA lives only in the
+        // non-persistent observation cache, so it is demanded after — never
+        // before — the effective base says verify actually runs.
+        if (typeof verify_policy.verify_script_path === 'string') {
+          const verified_head_sha =
+            refs.verified_head_sha ||
+            deps.observations.get(workspace, bead_id)?.pr?.head_sha;
+          if (
+            typeof verified_head_sha !== 'string' ||
+            !/^[0-9a-f]{40}$/i.test(verified_head_sha)
+          ) {
             return failCleanup(
               bead_id,
               'repo_operations',
-              receipt?.reason || 'verify_failed',
-              base_sync,
-              undefined,
-              undefined,
-              undefined,
-              receipt?.log_path
+              'verify_head_sha_unobserved',
+              base_sync
             );
+          }
+          const verified = await repo_operations.ensureVerify({
+            repo,
+            origin: 'origin',
+            target_base,
+            base_sha: effective_base_sha,
+            head_sha: verified_head_sha,
+            final_sha: merge_sha,
+            bead_id,
+            pr_number: parsePrNumber(pr_url || '') || 0,
+            script_path: verify_policy.verify_script_path,
+            receipt_operation_id: refs.verify_operation_id || null
+          });
+          if (!verified.ok) {
+            return failCleanup(
+              bead_id,
+              'repo_operations',
+              verified.code || 'verify_failed',
+              base_sync
+            );
+          }
+          if (!verified.inert && typeof verified.operation_id === 'string') {
+            const receipt =
+              (await repo_operations.waitForTerminal(verified.operation_id, {
+                timeout_ms: verified.timeout_ms
+              })) || repo_operations.verifyReceipt(verified.operation_id);
+            if (!receipt || receipt.state !== 'succeeded') {
+              return failCleanup(
+                bead_id,
+                'repo_operations',
+                receipt?.reason || 'verify_failed',
+                base_sync,
+                undefined,
+                undefined,
+                undefined,
+                receipt?.log_path
+              );
+            }
           }
         }
         const deployed = await repo_operations.ensureDeploy({
