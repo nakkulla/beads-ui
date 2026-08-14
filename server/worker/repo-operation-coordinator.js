@@ -1143,7 +1143,13 @@ export function createRepoOperationCoordinator(deps) {
         { gitRun: deps.gitRun, repo: deps.repo },
         operation
       ));
-    if (!owner_bead) {
+    // A bootstrap operation's only subject is the synthetic `bootstrap` marker,
+    // not a Bead a session can attach to. Refusing here — BEFORE the prerecord —
+    // is what keeps the chain's one automatic budget unspent: the prerecord
+    // spends it deliberately ahead of any session effect, and releasing a failed
+    // dispatch does not refund, so resolving an undispatchable owner would burn
+    // the budget on a repair that could never have run.
+    if (!owner_bead || owner_bead === 'bootstrap') {
       return { ok: false, code: 'repair_owner_unresolved' };
     }
     const prerecorded = deps.store.startRepoOperationRepair(workspace, {
