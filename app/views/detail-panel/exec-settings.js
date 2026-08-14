@@ -50,6 +50,35 @@ export const EXEC_KEYS = [
   'impl_effort'
 ];
 
+/** Core exec keys shared by detail-panel and preset editors. */
+export const EXEC_CORE_KEYS = ['impl_runtime', 'orchestration_model'];
+
+/** Advanced groups shared by detail-panel and preset editors. */
+export const EXEC_ADVANCED_GROUPS = [
+  {
+    id: 'worker-detail',
+    label: '워커 상세',
+    keys: ['orchestration_effort', 'orchestration_speed']
+  },
+  {
+    id: 'implementation-detail',
+    label: '구현 상세',
+    keys: ['impl_model', 'impl_effort']
+  },
+  {
+    id: 'review',
+    label: '리뷰',
+    keys: [
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort'
+    ]
+  }
+];
+
 /**
  * User-facing execution-setting names and the two non-obvious fallback hints.
  * Every execution-settings surface renders this table so labels cannot drift.
@@ -724,6 +753,113 @@ function selectRow(
 }
 
 /**
+ * Resolve the single source chip for a summary row. A row may cover several
+ * settings, so the highest-priority populated layer wins.
+ *
+ * @param {string[]} keys
+ * @param {(key: string) => string} selectedOf
+ * @param {(key: string) => string} effectiveOf
+ * @param {string} default_source
+ * @returns {string}
+ */
+function summarySourceLabel(keys, selectedOf, effectiveOf, default_source) {
+  if (keys.some((key) => selectedOf(key))) {
+    return '이슈 핀';
+  }
+  if (keys.some((key) => effectiveOf(key))) {
+    return `프리셋 「${default_source || '워크스페이스 프리셋'}」`;
+  }
+  return '기본';
+}
+
+/**
+ * Effective execution summary derived from the same selected/effective
+ * callbacks as the editor rows.
+ *
+ * @param {(key: string) => string} selectedOf
+ * @param {(key: string) => string} effectiveOf
+ * @param {string} default_source
+ * @returns {TemplateResult}
+ */
+function execSummaryTemplate(selectedOf, effectiveOf, default_source) {
+  const worker_parts = [effectiveOf('orchestration_model') || 'opus'];
+  const worker_effort = effectiveOf('orchestration_effort');
+  const worker_speed = effectiveOf('orchestration_speed');
+  if (worker_effort) {
+    worker_parts.push(`effort ${worker_effort}`);
+  }
+  if (worker_speed && worker_speed !== 'default') {
+    worker_parts.push(
+      `speed ${worker_speed === 'fast' ? 'Fast' : worker_speed}`
+    );
+  }
+
+  const impl_value = `${effectiveOf('impl_runtime') || 'inherit'} · ${effectiveOf('impl_model') || 'auto'}`;
+  const review_steps = [
+    ['스펙', 'spec_review_model', 'spec_review_effort'],
+    ['계획', 'plan_review_model', 'plan_review_effort'],
+    ['구현', 'impl_review_model', 'impl_review_effort']
+  ].map(([label, model_key, effort_key]) => {
+    const model = effectiveOf(model_key) || 'codex';
+    const effort = effectiveOf(effort_key);
+    return `${label} ${model}${effort ? `/${effort}` : ''}`;
+  });
+  const summary_rows = [
+    {
+      id: 'worker',
+      label: '워커',
+      keys: EXEC_KEYS.slice(0, 3),
+      value: worker_parts.join(' · ')
+    },
+    {
+      id: 'implementation',
+      label: '구현',
+      keys: ['impl_runtime', 'impl_model', 'impl_effort'],
+      value: impl_value
+    },
+    {
+      id: 'review',
+      label: '리뷰',
+      keys: [
+        'spec_review_model',
+        'spec_review_effort',
+        'plan_review_model',
+        'plan_review_effort',
+        'impl_review_model',
+        'impl_review_effort'
+      ],
+      value: review_steps.join(' · ')
+    }
+  ];
+
+  return html`<section
+    class="detail-exec-presets exec-settings-summary"
+    data-exec-settings-summary
+  >
+    ${summary_rows.map(
+      (row) =>
+        html`<div
+          class="workflow-summary__row exec-settings-summary__row"
+          data-exec-summary=${row.id}
+        >
+          <span class="workflow-summary__label">${row.label}</span>
+          <span class="detail-kv__vgroup">
+            <span class="workflow-summary__value">${row.value}</span>
+            <span class="detail-kv__v" data-exec-source
+              >${summarySourceLabel(
+                row.keys,
+                selectedOf,
+                effectiveOf,
+                default_source
+              )}</span
+            >
+          </span>
+        </div>`
+    )}
+  </section>`;
+}
+
+/**
  * Execution-settings editor (detail-panel.html "실행 설정"): the 12 exec keys +
  * workflow_mode. Selecting `standard` for workflow_mode (or `(기본)` for a key)
  * records an unset — the server mutation removes the metadata key.
@@ -760,32 +896,66 @@ export function execSettingsTemplate(
   };
   const rows = execSettingRows({ selectedOf, effectiveOf, runner_catalog });
   const wf_mode = md.workflow_mode === 'fast_track' ? 'fast_track' : 'standard';
+  /** @type {Map<string, ExecRow>} */
+  const row_by_key = new Map(rows.map((row) => [row.key, row]));
+  const advanced_count = EXEC_ADVANCED_GROUPS.flatMap(
+    (group) => group.keys
+  ).filter((key) => selectedOf(key)).length;
+
+  /**
+   * @param {string} key
+   * @returns {TemplateResult|string}
+   */
+  const rowTemplate = (key) => {
+    const row = row_by_key.get(key);
+    if (!row) {
+      return '';
+    }
+    return selectRow(
+      row.key,
+      selectOptionsTemplate(
+        row.groups,
+        row.selected,
+        defaultLabelFor(row.key, globals, default_source)
+      ),
+      row.selected,
+      Boolean(row.selected),
+      row.disabled,
+      row.runner,
+      handlers
+    );
+  };
 
   return html`
     <div class="detail-section-label">실행 설정 (수정 가능)</div>
-    ${rows.map((row) =>
-      selectRow(
-        row.key,
-        selectOptionsTemplate(
-          row.groups,
-          row.selected,
-          defaultLabelFor(row.key, globals, default_source)
-        ),
-        row.selected,
+    ${execSummaryTemplate(selectedOf, effectiveOf, default_source)}
+    <section class="exec-settings-core" data-exec-settings-core>
+      ${selectRow(
+        'workflow_mode',
+        selectOptionsTemplate(valueGroups(WORKFLOW_MODES, wf_mode), wf_mode),
+        wf_mode,
+        md.workflow_mode === 'fast_track',
         false,
-        row.disabled,
-        row.runner,
+        null,
         handlers
-      )
-    )}
-    ${selectRow(
-      'workflow_mode',
-      selectOptionsTemplate(valueGroups(WORKFLOW_MODES, wf_mode), wf_mode),
-      wf_mode,
-      md.workflow_mode === 'fast_track',
-      false,
-      null,
-      handlers
-    )}
+      )}
+      ${EXEC_CORE_KEYS.map(rowTemplate)}
+    </section>
+    <details
+      class="detail-exec-presets exec-settings-advanced"
+      data-exec-settings-advanced
+    >
+      <summary>고급 설정 — ${advanced_count}개 변경됨</summary>
+      ${EXEC_ADVANCED_GROUPS.map(
+        (group) =>
+          html`<section
+            class="exec-settings-advanced__group"
+            data-exec-settings-group=${group.id}
+          >
+            <h4>${group.label}</h4>
+            ${group.keys.map(rowTemplate)}
+          </section>`
+      )}
+    </details>
   `;
 }

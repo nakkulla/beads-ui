@@ -2487,13 +2487,12 @@ describe('views/worker', () => {
 
     const dialog = openExecDefaults(mount);
     expect(dialog.hasAttribute('open')).toBe(true);
-    expect(
-      dialog.querySelector('[data-workspace-preset-select]')
-    ).not.toBeNull();
+    expect(dialog.querySelector('[data-exec-presets]')).not.toBeNull();
+    expect(dialog.querySelector('[data-workspace-preset-select]')).toBeNull();
     expect(dialog.querySelectorAll('.exec-defaults__row')).toHaveLength(0);
   });
 
-  test('selecting a workspace preset sends both current revisions', async () => {
+  test('assigning a workspace default via the preset card sends both current revisions', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ revision: 3 }));
@@ -2518,11 +2517,9 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = /** @type {HTMLSelectElement} */ (
-      dialog.querySelector('[data-workspace-preset-select]')
-    );
-    sel.value = 'p1';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      dialog.querySelector('[data-workspace-preset-assign="p1"]')
+    ).click();
     await flush();
 
     expect(transport).toHaveBeenCalledWith(
@@ -2535,7 +2532,7 @@ describe('views/worker', () => {
     );
   });
 
-  test('adopts both authoritative snapshots and keeps selection after a dual CAS conflict', async () => {
+  test('adopts both authoritative snapshots after a dual CAS conflict', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(queueOf({ revision: 3 }));
@@ -2561,21 +2558,17 @@ describe('views/worker', () => {
     });
 
     const dialog = openExecDefaults(mount);
-    const sel = /** @type {HTMLSelectElement} */ (
-      dialog.querySelector('[data-workspace-preset-select]')
-    );
-    sel.value = 'p1';
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      dialog.querySelector('[data-workspace-preset-assign="p1"]')
+    ).click();
     await flush();
 
     expect(transport).toHaveBeenCalledTimes(1);
     expect(queueStore.get()?.revision).toBe(4);
     expect(execPresetStore.get()?.revision).toBe(8);
     expect(
-      /** @type {HTMLSelectElement} */ (
-        dialog.querySelector('[data-workspace-preset-select]')
-      ).value
-    ).toBe('p1');
+      dialog.querySelector('[data-preset-id="p2"]')?.textContent
+    ).toContain('최신');
   });
 
   /**

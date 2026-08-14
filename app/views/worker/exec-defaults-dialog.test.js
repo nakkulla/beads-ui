@@ -84,6 +84,19 @@ function click(element) {
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 }
 
+/**
+ * @param {HTMLElement} mount
+ * @param {string} key
+ * @param {string} value
+ */
+function changePresetValue(mount, key, value) {
+  const select = /** @type {HTMLSelectElement} */ (
+    mount.querySelector(`[data-preset-key="${key}"]`)
+  );
+  select.value = value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 async function flush() {
   await Promise.resolve();
   await Promise.resolve();
@@ -354,12 +367,97 @@ describe('worker exec preset dialog', () => {
     expect(
       mount.querySelector('.exec-preset-editor [data-exec-setting-title]')
         ?.textContent
-    ).toBe('워커 실행 모델');
+    ).toBe('구현 runtime');
     expect(
       mount.querySelector(
         '.exec-preset-editor [data-exec-setting-help="impl_model"]'
       )?.textContent
     ).toContain('복잡 구현');
+  });
+
+  test('groups two core preset keys above ten advanced keys', () => {
+    const { mount } = setup({ revision: 0, presets: [] });
+    click(
+      /** @type {HTMLElement} */ (mount.querySelector('[data-preset-new]'))
+    );
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('[data-preset-core] [data-preset-key]')
+      ).map((select) => select.getAttribute('data-preset-key'))
+    ).toEqual(['impl_runtime', 'orchestration_model']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-preset-group="worker-detail"] [data-preset-key]'
+        )
+      ).map((select) => select.getAttribute('data-preset-key'))
+    ).toEqual(['orchestration_effort', 'orchestration_speed']);
+    expect(
+      Array.from(
+        mount.querySelectorAll(
+          '[data-preset-group="implementation-detail"] [data-preset-key]'
+        )
+      ).map((select) => select.getAttribute('data-preset-key'))
+    ).toEqual(['impl_model', 'impl_effort']);
+    expect(
+      mount.querySelectorAll('[data-preset-advanced] [data-preset-key]')
+    ).toHaveLength(10);
+    expect(mount.querySelectorAll('[data-preset-key]')).toHaveLength(12);
+    expect(mount.querySelector('[data-preset-key="workflow_mode"]')).toBe(null);
+  });
+
+  test('keeps change mutations for all twelve preset selectors', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      revision: 6,
+      presets: []
+    });
+    const { mount } = setup({ revision: 5, presets: [] }, transport);
+    click(
+      /** @type {HTMLElement} */ (mount.querySelector('[data-preset-new]'))
+    );
+
+    for (const [key, value] of [
+      ['orchestration_model', 'terra'],
+      ['orchestration_effort', 'high'],
+      ['orchestration_speed', 'fast'],
+      ['impl_runtime', 'codex'],
+      ['impl_model', 'terra'],
+      ['impl_effort', 'high'],
+      ['spec_review_model', 'codex'],
+      ['spec_review_effort', 'high'],
+      ['plan_review_model', 'codex'],
+      ['plan_review_effort', 'high'],
+      ['impl_review_model', 'codex'],
+      ['impl_review_effort', 'high']
+    ]) {
+      changePresetValue(mount, key, value);
+    }
+    click(
+      /** @type {HTMLElement} */ (mount.querySelector('[data-preset-save]'))
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('exec-preset-create', {
+      expected_revision: 5,
+      name: '',
+      settings: {
+        orchestration_model: 'terra',
+        orchestration_effort: 'high',
+        orchestration_speed: 'fast',
+        impl_runtime: 'codex',
+        impl_model: 'terra',
+        impl_effort: 'high',
+        spec_review_model: 'codex',
+        spec_review_effort: 'high',
+        plan_review_model: 'codex',
+        plan_review_effort: 'high',
+        impl_review_model: 'codex',
+        impl_review_effort: 'high'
+      }
+    });
   });
 
   test('resets a preset draft model and effort when runtime switches provider', () => {
@@ -550,15 +648,106 @@ describe('worker exec preset dialog', () => {
     ).toBe('');
   });
 
-  test('shows a missing workspace selection and blocks its dispatch', () => {
-    const transport = vi.fn();
+  test('renders workspace default controls on preset cards without a separate select', () => {
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [
+          { id: 'p1', name: '기본 개발', settings: {} },
+          { id: 'p2', name: '검증 강화', settings: {} }
+        ]
+      },
+      vi.fn(),
+      { default_exec_preset_id: 'p1' }
+    );
+
+    expect(
+      mount.querySelector(
+        '[data-preset-id="p1"] [data-workspace-default-badge]'
+      )?.textContent
+    ).toContain('워크스페이스 기본');
+    expect(
+      mount.querySelector(
+        '[data-preset-id="p1"] [data-workspace-preset-release]'
+      )?.textContent
+    ).toContain('기본 해제');
+    expect(
+      mount.querySelector(
+        '[data-preset-id="p2"] [data-workspace-preset-assign]'
+      )?.textContent
+    ).toContain('기본으로');
+    expect(mount.querySelector('[data-workspace-preset-select]')).toBe(null);
+    expect(mount.querySelector('.exec-defaults__workspace')).toBe(null);
+  });
+
+  test('adopts conflict snapshots and toasts when card assignment conflicts', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: {
+        revision: 8,
+        exec_defaults: {},
+        default_exec_preset_id: 'p2',
+        runner_catalog: catalogFixture()
+      },
+      presets: {
+        revision: 4,
+        presets: [{ id: 'p2', name: '원격 기본', settings: {} }]
+      }
+    });
+    const { mount, presetStore, queueStore } = setup(
+      {
+        revision: 3,
+        presets: [{ id: 'p1', name: '내 선택', settings: {} }]
+      },
+      transport,
+      { revision: 7 }
+    );
+
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-workspace-preset-assign="p1"]')
+      )
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-set-default-exec-preset',
+      {
+        preset_id: 'p1',
+        expected_queue_revision: 7,
+        expected_preset_revision: 3
+      }
+    );
+    expect(queueStore.get().revision).toBe(8);
+    expect(presetStore.get()?.revision).toBe(4);
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '기본 프리셋이 변경됐습니다'
+    );
+  });
+
+  test('releases a missing workspace default through a synthetic card', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: {
+        revision: 8,
+        exec_defaults: {},
+        default_exec_preset_id: null,
+        runner_catalog: catalogFixture()
+      },
+      presets: {
+        revision: 2,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      }
+    });
     const { mount } = setup(
       { revision: 1, presets: [{ id: 'p1', name: '개발', settings: {} }] },
       transport,
-      { default_exec_preset_id: 'gone' }
+      { revision: 7, default_exec_preset_id: 'gone' }
     );
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-workspace-preset-select]')
+    const release = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-workspace-preset-release="gone"]')
     );
 
     expect(
@@ -566,35 +755,149 @@ describe('worker exec preset dialog', () => {
     ).toContain('찾을 수 없습니다');
     expect(
       mount.querySelector('[data-workspace-preset-missing]')?.textContent
-    ).toContain('실행이 차단됩니다');
-    expect(select.options[select.selectedIndex].textContent).toContain(
-      '선택한 프리셋 없음'
+    ).toContain('gone');
+    expect(release.disabled).toBe(false);
+
+    click(release);
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-set-default-exec-preset',
+      {
+        preset_id: null,
+        expected_queue_revision: 7,
+        expected_preset_revision: 1
+      }
     );
-    select.value = 'gone';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-    expect(transport).not.toHaveBeenCalled();
   });
 
-  test('shows an incompatible workspace selection and blocks its dispatch', () => {
+  test('blocks assigning an incompatible preset with a reason tooltip', () => {
     const transport = vi.fn();
     const { mount } = setup(
       {
         revision: 1,
         presets: [{ id: 'p1', name: '과거', settings: {}, compatible: false }]
       },
-      transport,
-      { default_exec_preset_id: 'p1' }
+      transport
     );
-    const select = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('[data-workspace-preset-select]')
+    const assign = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-workspace-preset-assign="p1"]')
     );
 
-    expect(
-      mount.querySelector('[data-workspace-preset-incompatible]')?.textContent
-    ).toContain('실행이 차단됩니다');
-    select.value = 'p1';
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(assign.disabled).toBe(true);
+    expect(assign.title).toContain('비호환');
+    assign.click();
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('always releases an incompatible current default', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      conflict: false,
+      queue: {
+        revision: 3,
+        exec_defaults: {},
+        default_exec_preset_id: null,
+        runner_catalog: catalogFixture()
+      },
+      presets: {
+        revision: 2,
+        presets: [{ id: 'p1', name: '과거', settings: {}, compatible: false }]
+      }
+    });
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [{ id: 'p1', name: '과거', settings: {}, compatible: false }]
+      },
+      transport,
+      { revision: 2, default_exec_preset_id: 'p1' }
+    );
+    const release = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-workspace-preset-release="p1"]')
+    );
+
+    expect(release.disabled).toBe(false);
+
+    click(release);
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-set-default-exec-preset',
+      {
+        preset_id: null,
+        expected_queue_revision: 2,
+        expected_preset_revision: 1
+      }
+    );
+  });
+
+  test('restores the release control after a failed release', async () => {
+    const transport = vi.fn().mockRejectedValue(new Error('down'));
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      },
+      transport,
+      { revision: 2, default_exec_preset_id: 'p1' }
+    );
+
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('[data-workspace-preset-release="p1"]')
+      )
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      mount.querySelector('[data-workspace-preset-release="p1"]')
+    ).not.toBeNull();
+    expect(
+      mount.querySelector('[data-workspace-default-badge]')
+    ).not.toBeNull();
+  });
+
+  test('restores the missing-default card after a conflicted release', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: {
+        revision: 5,
+        exec_defaults: {},
+        default_exec_preset_id: 'gone',
+        runner_catalog: catalogFixture()
+      },
+      presets: {
+        revision: 4,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      }
+    });
+    const { mount } = setup(
+      {
+        revision: 1,
+        presets: [{ id: 'p1', name: '개발', settings: {} }]
+      },
+      transport,
+      { revision: 2, default_exec_preset_id: 'gone' }
+    );
+
+    click(
+      /** @type {HTMLElement} */ (
+        mount.querySelector(
+          '[data-workspace-preset-missing] [data-workspace-preset-release]'
+        )
+      )
+    );
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(
+      mount.querySelector(
+        '[data-workspace-preset-missing] [data-workspace-preset-release]'
+      )
+    ).not.toBeNull();
   });
 
   test('renders an unknown preset reference count as unverifiable', () => {
