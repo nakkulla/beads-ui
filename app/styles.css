@@ -3730,6 +3730,20 @@ html[data-theme='dark'] {
   max-height: 85vh;
 }
 
+/* 오버레이는 host를 둘(transcript·저장소 작업) 담고 한 번에 하나만 연다. 닫힌
+   host를 숨기는 두 장치가 모두 위 규칙에 졌다: `[hidden]`은 UA 스타일이라 author
+   규칙에 지고, `.worker-drawer-host:empty`는 특성성이 같은데 소스 순서가 앞이라
+   진다. 그래서 닫힌 host가 계속 flex item으로 폭을 먹었고
+   `justify-content: center`가 열린 쪽을 그만큼 옆으로 밀었다 — 타임라인이 화면
+   중앙이 아니라 오른쪽에 치우쳐 보인 원인. 두 장치를 여기서 되살린다.
+   `:empty`가 필요한 이유: transcript host는 `hidden`을 쓰지 않고 close에서
+   `render(html``)`로 비우기만 하며, lit-html이 남기는 마커는 주석이라
+   `:empty`에 걸린다. */
+.worker-drawer-overlay .worker-drawer-host[hidden],
+.worker-drawer-overlay .worker-drawer-host:empty {
+  display: none;
+}
+
 .worker-drawer-overlay .sv {
   display: flex;
   flex-direction: column;
@@ -3741,6 +3755,24 @@ html[data-theme='dark'] {
 /* The overlay height bound owns the scroll; the inline drawer's vh cap would
    double-bound it. */
 .worker-drawer-overlay .sv__body {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 저장소 작업 타임라인은 transcript drawer와 같은 오버레이를 쓰지만 `.sv`가
+   아니므로 위 두 규칙을 받지 못했다: 폭을 host에 맞추지 않고, rail의 60vh 상한이
+   host의 높이 상한과 이중으로 걸려 배포 이력 뒤쪽이 스크롤 없이 잘렸다. `.sv`와
+   같은 계약으로 맞춘다 — 높이는 host가 정하고, 스크롤은 rail이 갖는다. */
+.worker-drawer-overlay .worker-repo-drawer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+.worker-drawer-overlay .worker-rail {
   max-height: none;
   flex: 1 1 auto;
   min-height: 0;
@@ -6497,6 +6529,77 @@ html[data-theme='dark'] {
 
   .session-log-root .sv__body {
     max-height: 60vh;
+  }
+
+  /* 저장소 작업 스트립 (UI-q0uy §4.1): 한 줄로 사실을 다 말하는 계약은 데스크톱
+     폭에서만 성립한다. 폰에서는 ▸·이름·배지가 첫 줄에 남고 배포 사실이 둘째 줄로
+     흐른다 — 부르는 쪽인 배지는 밀려나면 안 되고, 사실은 잘리느니 줄을 하나 더
+     쓴다. DOM 순서는 그대로 두고 order만 바꾼다(§모바일 관제 순서와 같은 이유:
+     화면 폭마다 탭 이동 순서가 달라지면 안 된다). */
+  .worker-repo-strip {
+    flex-wrap: wrap;
+    row-gap: var(--sp-4);
+    padding: var(--sp-8) var(--sp-10);
+  }
+
+  .worker-repo-strip__spacer {
+    order: 1;
+  }
+
+  .worker-repo-strip__badge {
+    order: 2;
+  }
+
+  /* 둘째 줄 전체를 차지하고, 그 안에서 다시 줄바꿈한다. 들여쓰기는 cue 폭 + gap
+     이라 배포 사실이 이름 아래가 아니라 이름과 같은 열에서 시작한다. */
+  .worker-repo-strip__fact {
+    order: 3;
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding-left: calc(var(--sp-10) + var(--sp-10));
+  }
+
+  /* 타임라인 드로어는 bottom-sheet 셸을 쓰므로 `.sv`와 같은 모서리를 갖는다. */
+  .worker-drawer-overlay .worker-repo-drawer {
+    padding: var(--sp-12) var(--sp-12) var(--sp-14);
+    border-radius: var(--r-10) var(--r-10) 0 0;
+  }
+
+  /* 저장소 경로 힌트가 제목과 닫기 버튼 사이를 벌려 ✕를 화면 밖으로 밀었다. */
+  .worker-repo-drawer__hd {
+    flex-wrap: wrap;
+    row-gap: var(--sp-4);
+    margin-bottom: var(--sp-10);
+  }
+
+  .worker-repo-drawer__hint {
+    order: 3;
+    flex: 1 0 100%;
+  }
+
+  /* 타임라인 행: 시각·노드 고정 컬럼이 80px를 먹어 본문이 눌렸다. 시각은 여전히
+     `19:09`가 들어가는 폭이고, 노드는 9px dot이 중앙에 서는 최소폭이다. */
+  .worker-ev {
+    grid-template-columns: 42px 22px 1fr;
+  }
+
+  /* 계약 토큰 목록은 74px dt + 12px gap이 남지 않는다 — 용어를 값 위로 올린다. */
+  .worker-ev__kv div {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .worker-ev__kv dt {
+    width: auto;
+  }
+
+  /* 정리 스텝퍼 5칸은 폰 폭에서 라벨이 서로 닿는다. 어절 단위 줄바꿈을 허용해
+     pip 아래로 쌓이게 한다 — 칸을 줄이면 어느 단계에서 멈췄는지가 사라진다. */
+  .worker-step__lb {
+    overflow-wrap: anywhere;
+    word-break: keep-all;
+    line-height: 1.25;
   }
 }
 

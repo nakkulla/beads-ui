@@ -92,4 +92,74 @@ describe('worker console styles', () => {
     expect(baseRule).not.toContain('display: none');
     expect(mediaBlock).not.toContain('.worker-card__place');
   });
+
+  // 저장소 작업 타임라인은 transcript drawer와 오버레이를 공유하지만 `.sv`가
+  // 아니어서 폭·스크롤 계약을 못 받았고, rail의 60vh 상한이 host 높이와 이중으로
+  // 걸려 배포 이력 뒤쪽이 스크롤 없이 잘렸다.
+  test('gives the repo-ops drawer the same overlay contract as the transcript drawer', () => {
+    const drawerRule =
+      CSS.match(
+        /(?:^|\n)\.worker-drawer-overlay \.worker-repo-drawer\s*{([^}]*)}/
+      )?.[1] || '';
+    const railRule =
+      CSS.match(
+        /(?:^|\n)\.worker-drawer-overlay \.worker-rail\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(drawerRule).toContain('width: 100%');
+    expect(drawerRule).toContain('flex-direction: column');
+    expect(drawerRule).toContain('min-height: 0');
+    expect(railRule).toContain('max-height: none');
+    expect(railRule).toContain('flex: 1 1 auto');
+  });
+
+  // 오버레이는 host 둘을 담고 하나만 연다. 닫힌 host가 flex item으로 남으면
+  // `justify-content: center`가 열린 쪽을 옆으로 민다. 이 규칙이 오버레이 규칙보다
+  // 뒤에 있어야 이기므로, 소스 순서 자체가 계약이다.
+  test('keeps a closed drawer host out of the overlay layout', () => {
+    const overlayRuleAt = CSS.indexOf(
+      '.worker-drawer-overlay .worker-drawer-host {'
+    );
+    const suppressAt = CSS.indexOf(
+      '.worker-drawer-overlay .worker-drawer-host[hidden]'
+    );
+    const suppressRule =
+      CSS.match(
+        /\.worker-drawer-overlay \.worker-drawer-host\[hidden\],\s*\n\s*\.worker-drawer-overlay \.worker-drawer-host:empty\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(overlayRuleAt).toBeGreaterThan(0);
+    expect(suppressAt).toBeGreaterThan(overlayRuleAt);
+    expect(suppressRule).toContain('display: none');
+  });
+
+  test('wraps the repo-ops strip into two rows below 640px', () => {
+    const mediaStart = CSS.indexOf('/* ---------- Worker responsive (<=640px)');
+    const mq = CSS.slice(mediaStart);
+    const stripRule =
+      mq.match(/(?:^|\n)\s*\.worker-repo-strip\s*{([^}]*)}/)?.[1] || '';
+    const factRule =
+      mq.match(/(?:^|\n)\s*\.worker-repo-strip__fact\s*{([^}]*)}/)?.[1] || '';
+    const badgeRule =
+      mq.match(/(?:^|\n)\s*\.worker-repo-strip__badge\s*{([^}]*)}/)?.[1] || '';
+
+    expect(mediaStart).toBeGreaterThan(0);
+    expect(stripRule).toContain('flex-wrap: wrap');
+    expect(factRule).toContain('flex: 1 0 100%');
+    // 배지는 부르는 쪽이므로 사실보다 앞 줄에 남는다.
+    expect(badgeRule).toContain('order: 2');
+    expect(factRule).toContain('order: 3');
+  });
+
+  test('narrows the repo-ops timeline gutters below 640px', () => {
+    const mq = CSS.slice(
+      CSS.indexOf('/* ---------- Worker responsive (<=640px)')
+    );
+    const eventRule = mq.match(/(?:^|\n)\s*\.worker-ev\s*{([^}]*)}/)?.[1] || '';
+    const kvRule =
+      mq.match(/(?:^|\n)\s*\.worker-ev__kv dt\s*{([^}]*)}/)?.[1] || '';
+
+    expect(eventRule).toContain('grid-template-columns: 42px 22px 1fr');
+    expect(kvRule).toContain('width: auto');
+  });
 });
