@@ -5,7 +5,8 @@ import {
   projectRepoOpsDisplay,
   recordRepoOpsResolution,
   refreshRepoOpsDisplay,
-  repoOpsDisplayFor
+  repoOpsDisplayFor,
+  repoOpsVerifyState
 } from './repo-ops-display.js';
 
 const SHA = 'a'.repeat(40);
@@ -49,6 +50,21 @@ describe('repoOpsDisplayFor', () => {
     const display = repoOpsDisplayFor('/repo');
 
     expect([display.verify, display.deploy]).toEqual([null, null]);
+  });
+});
+
+describe('repoOpsVerifyState', () => {
+  test.each([
+    [
+      { status: 'resolved', verify: { script: 'repo-ops/script/verify' } },
+      'present'
+    ],
+    [{ status: 'resolved', verify: null }, 'absent'],
+    [{ status: 'absent', verify: null }, 'absent'],
+    [{ status: 'pending', verify: null }, 'invalid'],
+    [{ status: 'error', verify: null }, 'invalid']
+  ])('maps repo-ops display to verify gate state', (display, expected) => {
+    expect(repoOpsVerifyState(/** @type {any} */ (display))).toBe(expected);
   });
 });
 

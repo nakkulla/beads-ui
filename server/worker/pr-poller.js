@@ -33,7 +33,6 @@ import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import { reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
-import { runVerifyAtSha } from './verify-cmd.js';
 
 const log = debug('worker:pr-poller');
 
@@ -162,10 +161,8 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
- *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./verify-cmd.js').VerifyResolution>,
- *   worktree?: any,
- *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null }>,
+ *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
+ *   repoOperations?: { hasConfig: (sha: string) => Promise<any>, ensureVerify: (candidate: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any },
  *   onMerged?: (bead_id: string, merge_sha: string, refs?: { head_ref: string|null, pr_url: string|null }) => Promise<unknown>,
  *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
@@ -182,7 +179,6 @@ export function resolvePrRef(queue, bead_id, external = null) {
 export function createPrPoller(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
-  const now = deps.now || (() => Date.now());
   const sleep =
     deps.sleep ||
     ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
@@ -191,22 +187,7 @@ export function createPrPoller(deps) {
       ? deps.requeryDelayMs
       : DEFAULT_UNKNOWN_REQUERY_DELAY_MS;
   const notifyChanged = deps.notifyChanged || (() => {});
-  const resolveVerify =
-    deps.resolveVerify ||
-    (() =>
-      Promise.resolve(
-        /** @type {import('./verify-cmd.js').VerifyResolution} */ ({
-          state: 'absent'
-        })
-      ));
-  const runVerify =
-    deps.runVerify ||
-    ((/** @type {any} */ input) =>
-      runVerifyAtSha({
-        ...input,
-        worktree: deps.worktree,
-        git: deps.gitRun
-      }));
+  const repo_operations = deps.repoOperations || null;
 
   const activity = deps.activity || null;
   const external = deps.external || null;
@@ -405,17 +386,28 @@ export function createPrPoller(deps) {
       }
     });
 
-    // Pre-merge context: the injected resolver pins policy to target base.
-    const resolved = await resolveVerify();
-    if (resolved.state !== 'resolved') {
+    if (!repo_operations || typeof deps.resolveBase !== 'function') {
       return { verify: null };
     }
-    const prior = deps.observations.get(workspace, bead_id);
-    if (prior && prior.verify && prior.verify.head_sha === pr.head_sha) {
+    let pinned;
+    try {
+      pinned = await deps.resolveBase();
+    } catch {
+      return { verify: null };
+    }
+    if (!pinned.ok || typeof pinned.base_oid !== 'string') {
+      return { verify: null };
+    }
+    const policy = await repo_operations.hasConfig(pinned.base_oid);
+    if (!policy.ok || typeof policy.verify_script_path !== 'string') {
       return { verify: null };
     }
     return {
-      verify: startVerify(bead_id, ref.number, pr.head_sha, resolved.value)
+      verify: startVerify(bead_id, ref.number, pr.head_sha, {
+        target_base: pinned.base,
+        base_sha: pinned.base_oid,
+        script_path: policy.verify_script_path
+      })
     };
   }
 
@@ -520,11 +512,14 @@ export function createPrPoller(deps) {
    * @param {string} bead_id
    * @param {number} pr_number
    * @param {string} head_sha
-   * @param {import('./verify-cmd.js').ResolvedVerifyCmd} resolved
+   * @param {{ target_base: string, base_sha: string, script_path: string }} policy
    * @returns {Promise<void>}
    */
-  async function startVerify(bead_id, pr_number, head_sha, resolved) {
-    const key = `${bead_id}\u0000${head_sha}`;
+  async function startVerify(bead_id, pr_number, head_sha, policy) {
+    if (!repo_operations) {
+      return;
+    }
+    const key = `${bead_id}\u0000${policy.base_sha}\u0000${head_sha}\u0000${policy.script_path}`;
     if (verifying.has(key)) {
       return;
     }
@@ -533,20 +528,26 @@ export function createPrPoller(deps) {
     // the first run to finish must not switch the badge off under the second.
     markActivity('beginVerifying', bead_id);
     try {
-      const r = await runVerify({
+      const ensured = await repo_operations.ensureVerify({
         repo,
-        bead_id,
-        sha: head_sha,
-        pr_number,
-        cmd: resolved.cmd,
-        timeout_ms: resolved.timeout_ms
-      });
-      deps.observations.recordVerify(workspace, bead_id, {
+        origin: 'origin',
+        target_base: policy.target_base,
+        base_sha: policy.base_sha,
         head_sha,
-        ok: !!r.ok,
-        reason: r.reason,
-        at: now()
+        bead_id,
+        pr_number,
+        script_path: policy.script_path
       });
+      if (!ensured.ok || typeof ensured.operation_id !== 'string') {
+        return;
+      }
+      const receipt =
+        (await repo_operations.waitForTerminal(ensured.operation_id, {
+          timeout_ms: ensured.timeout_ms
+        })) || repo_operations.verifyReceipt(ensured.operation_id);
+      if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
+        deps.observations.recordVerify(workspace, bead_id, receipt);
+      }
       notifyChanged(workspace);
     } catch (err) {
       log('verify run failed for %s@%s: %o', bead_id, head_sha, err);

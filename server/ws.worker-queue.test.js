@@ -9,6 +9,10 @@ import {
   __resetWorkerAttachmentsForTest,
   __setUnattachedAdmissionCheckForTest
 } from './worker/attach.js';
+import {
+  __resetRepoOpsDisplayForTest,
+  recordRepoOpsDisplay
+} from './worker/repo-ops-display.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 import {
   __resetRegistriesForTest,
@@ -101,6 +105,18 @@ beforeEach(() => {
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
+  __resetRepoOpsDisplayForTest();
+  const absent_repo_ops = {
+    status: 'absent',
+    source_path: 'repo-ops/config.toml',
+    base_ref: 'main',
+    base_sha: 'a'.repeat(40),
+    verify: null,
+    deploy: null,
+    error_code: null
+  };
+  recordRepoOpsDisplay('', /** @type {any} */ (absent_repo_ops));
+  recordRepoOpsDisplay(process.cwd(), /** @type {any} */ (absent_repo_ops));
   // Seed DEFAULT_WORKSPACE so bare sockets resolve a deterministic workspace.
   attachWsServer(createServer(), { path: '/ws' });
 });
@@ -110,6 +126,7 @@ afterEach(() => {
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
   __resetWorkerAttachmentsForTest();
+  __resetRepoOpsDisplayForTest();
   try {
     fs.rmSync(tmp_state, { recursive: true, force: true });
   } catch {
@@ -1041,6 +1058,40 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
     const obs = queueSnapshots(sock).at(-1).pr_observations['UI-9'];
     expect(obs.pr).toMatchObject({ number: 304, head_sha: SHA });
     expect(obs.gate).toMatchObject({ enabled: true, gate_badge: '머지 가능' });
+  });
+
+  test('the snapshot rejects a verify receipt pinned to an older base', async () => {
+    parkInPrWait('UI-9');
+    observe();
+    getWorkerRuntime().prObservations.recordVerify('', 'UI-9', {
+      effective_base_sha: 'a'.repeat(40),
+      head_sha: SHA,
+      ok: true,
+      reason: 'ok',
+      at: 1
+    });
+    const repo_ops = {
+      status: 'resolved',
+      source_path: 'repo-ops/config.toml',
+      base_ref: 'main',
+      base_sha: 'b'.repeat(40),
+      verify: { script: 'repo-ops/script/verify', timeout_ms: 1000 },
+      deploy: null,
+      error_code: null
+    };
+    recordRepoOpsDisplay('', /** @type {any} */ (repo_ops));
+    recordRepoOpsDisplay(process.cwd(), /** @type {any} */ (repo_ops));
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].gate
+    ).toMatchObject({
+      enabled: false,
+      tier: 'verify',
+      reason: 'verify_missing'
+    });
   });
 
   test('the snapshot refuses a stale implementation review', async () => {

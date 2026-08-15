@@ -37,9 +37,9 @@ import {
  * @param {{
  *   workspace: string,
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
- *   verifyCmdState: () => 'resolved'|'absent'|'invalid',
+ *   verifyState: () => { declaration_state: 'present'|'absent'|'invalid', base_sha: string|null },
  *   headSha?: (bead_id: string) => string|null,
- *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_cmd_state: 'resolved'|'absent'|'invalid') => Array<{ bead_id: string, external: boolean, repairable?: boolean }>,
+ *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_policy: { declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }) => Array<{ bead_id: string, external: boolean, repairable?: boolean }>,
  *   lane?: (workspace: string, queue: Record<string, unknown>) => Array<{ bead_id: string, external: boolean }>,
  *   completionSeed?: (workspace: string, queue: Record<string, unknown>, bead_id: string) => { source_attempt_id: string, target_base: string, subject: any }|null,
  *   notifyChanged?: (workspace: string) => void,
@@ -83,16 +83,16 @@ export function createAutoMerge(deps) {
     const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
     const rows = lane(workspace, snapshot);
     const overlaid = { ...snapshot, pr_wait: rows };
-    /** @type {'resolved'|'absent'|'invalid'} */
-    let verify_cmd_state = 'absent';
+    /** @type {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} */
+    let verify_policy = { declaration_state: 'invalid', base_sha: null };
     try {
-      verify_cmd_state = deps.verifyCmdState();
+      verify_policy = deps.verifyState();
     } catch {
-      verify_cmd_state = 'invalid';
+      verify_policy = { declaration_state: 'invalid', base_sha: null };
     }
     /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
     const entries = [];
-    for (const c of candidates(workspace, overlaid, verify_cmd_state)) {
+    for (const c of candidates(workspace, overlaid, verify_policy)) {
       const head_sha = headSha(c.bead_id);
       if (!head_sha) {
         // Fail closed, the merge gate's own first rule: an unreadable head

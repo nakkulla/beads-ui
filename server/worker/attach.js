@@ -62,6 +62,7 @@ import {
 } from './repair-session-adapter.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
+import { repoOpsDisplayFor, repoOpsVerifyPolicy } from './repo-ops-display.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
@@ -70,7 +71,7 @@ import { createScheduler } from './scheduler.js';
 import { createSessionMonitors } from './session-monitor.js';
 import { baseUnresolvedReason, resolveTargetBase } from './target-base.js';
 import { replayUsage } from './usage-replay.js';
-import { resolveConfiguredVerify, runVerifyAtSha } from './verify-cmd.js';
+import { runVerifyAtSha } from './verify-cmd.js';
 import { createVerifier } from './verify.js';
 import { createWorktreeManager } from './worktree.js';
 
@@ -710,9 +711,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       verifyRevert: async (
         /** @type {{ worktree: string, base_sha: string }} */ input
       ) => {
-        const resolved = await resolveVerify();
+        const resolved = await resolveVerify({ sha: input.base_sha });
+        if (resolved.state === 'absent') {
+          return { ok: true };
+        }
         if (resolved.state !== 'resolved') {
-          return { ok: false, reason: 'verify_missing' };
+          return {
+            ok: false,
+            reason: resolved.reason || 'repo_ops_config_invalid'
+          };
         }
         const result = await runShell(
           resolved.value.cmd[0],
@@ -790,31 +797,46 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   runtime.setRunningCountProvider(() => scheduler.runningCount());
 
   /**
-   * Which commit a resolution reads from. Kept as the resolver's parameter
-   * shape after the pinned-declaration rung was retired: the config rung has no
-   * pin, so both fields are accepted and ignored.
+   * Which exact commit a compatibility resolution reads from.
    *
    * @typedef {Object} OpsPin
-   * @property {string|null} [sha] - An explicit pin: the cleanup's synced base
-   * commit. Everything else omits it and takes the pre-merge pin.
-   * @property {boolean} [force] - Re-resolve the target base instead of taking
-   * the scan memo. Set by the AUTHORITATIVE click-time gate, whose whole job is
-   * to judge against the base as it stands right now.
+   * @property {string|null} [sha] - The exact repository commit whose
+   * declaration authorizes a compatibility run. Omission is inert.
+   * @property {boolean} [force] - Retained caller shape; ignored.
    */
 
   /**
-   * The workspace's resolved verify command, read LIVE (config can change
-   * between a poll and a click) — shared by the poller's pre-merge tier and the
-   * actions' click-time re-verification + rollback verification.
+   * Compatibility runner input from one exact pinned repository declaration.
+   * Pre-merge poll/click paths use RepoOperationCoordinator directly.
    *
-   * @returns {Promise<import('./verify-cmd.js').VerifyResolution>}
+   * @param {OpsPin} [pin]
+   * @returns {Promise<any>}
    */
-  const resolveVerify = async () => {
+  const resolveVerify = async (pin = {}) => {
+    if (typeof pin.sha !== 'string') {
+      return { state: 'absent' };
+    }
     try {
-      return resolveConfiguredVerify(repo, getConfig().worker_verify);
+      const policy = /** @type {any} */ (
+        await repoOperationCoordinator.hasConfig(pin.sha)
+      );
+      if (!policy.ok) {
+        return { state: 'invalid', reason: policy.code };
+      }
+      if (typeof policy.verify_script_path !== 'string') {
+        return { state: 'absent' };
+      }
+      return {
+        state: 'resolved',
+        source: 'repo_ops',
+        value: {
+          cmd: [policy.verify_script_path],
+          timeout_ms: policy.verify_timeout_ms
+        }
+      };
     } catch (err) {
       log('verify resolution failed for %s: %o', repo, err);
-      return { state: 'absent' };
+      return { state: 'invalid', reason: 'repo_ops_config_invalid' };
     }
   };
 
@@ -1074,16 +1096,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // The enrollment scan is synchronous, so it reads the ladder through the
       // cached projection (UI-kfl4): advisory shortlisting only — every item it
       // queues is re-gated by `gateNow` against a fresh pin before it merges.
-      verifyCmdState: () => {
-        try {
-          return resolveConfiguredVerify(
-            keyFor(workspace_root),
-            getConfig().worker_verify
-          ).state;
-        } catch {
-          return 'absent';
-        }
-      },
+      verifyState: () =>
+        repoOpsVerifyPolicy(repoOpsDisplayFor(keyFor(workspace_root))),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       // Persist alone leaves items in a queue nobody drains (UI-yk55 §4.2).
       kick: () => mergeQueue.kick(),
@@ -1096,6 +1110,24 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     createCompletionRepairService({
       bd,
       repo,
+      hasDurableVerify(input) {
+        const operations = Object.values(
+          runtime.queueStore.snapshot(keyFor(workspace_root)).repo_operations ||
+            {}
+        );
+        return operations.some((operation) => {
+          const row = /** @type {any} */ (operation);
+          return (
+            row.kind === 'verify' &&
+            row.effective_base_sha === input.base_sha?.toLowerCase() &&
+            row.verify_head_sha === input.subject_sha?.toLowerCase() &&
+            Array.isArray(row.subjects) &&
+            row.subjects.some(
+              (/** @type {any} */ subject) => subject?.bead_id === input.bead_id
+            )
+          );
+        });
+      },
       resolveVerify,
       runVerify: (/** @type {any} */ input) =>
         runVerifyAtSha({ ...input, worktree, git: gitRun })
@@ -1147,9 +1179,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         : undefined,
     activity: runtime.activityStore,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
-    resolveVerify,
-    worktree,
-    gitRun,
+    resolveBase,
+    repoOperations: repoOperationCoordinator,
     // The externally-observed MERGED trigger routes into the SAME cleanup the
     // button runs — one implementation, two triggers (worker-phase2 §6).
     onMerged: (bead_id, merge_sha, refs) =>
@@ -1319,7 +1350,7 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   }
   // Fill the declaration DISPLAY cache once at the base tip this attachment
   // already resolved (UI-q0uy §4.6-1 (a)). Non-fatal: an unfilled cache reads as
-  // 선언 확인 중 in the settings dialog, never as a legacy fallback.
+  // 선언 확인 중 in the settings dialog without claiming policy is absent.
   try {
     const base = await att.resolveBase();
     await att.repoOperationCoordinator.refreshDisplay({
@@ -1680,13 +1711,7 @@ export function enrollWorkerMergeCandidates(workspace_root, input = {}) {
     createAutoMerge({
       workspace: key,
       store: getWorkerRuntime().queueStore,
-      verifyCmdState: () => {
-        try {
-          return resolveConfiguredVerify(key, getConfig().worker_verify).state;
-        } catch {
-          return 'absent';
-        }
-      },
+      verifyState: () => repoOpsVerifyPolicy(repoOpsDisplayFor(key)),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kick: () => kickWorkerMergeQueue(key),
       log

@@ -272,11 +272,11 @@ describe('workspace_info.repo_ops projection (UI-q0uy §4.6-1)', () => {
     );
   });
 
-  test('keeps the legacy verify_cmd decoration alongside it', () => {
+  test('omits the legacy verify_cmd decoration', () => {
     const decorated = decorateWith();
 
     expect('verify_cmd' in /** @type {any} */ (decorated.workspace_info)).toBe(
-      true
+      false
     );
   });
 });

@@ -78,80 +78,13 @@ function normalizeWorkspaceConfig(parsed) {
   };
 }
 
-/** Default verify_cmd timeout (worker-phase2 §5). */
-const DEFAULT_VERIFY_TIMEOUT_MS = 600000;
-
-/**
- * Normalize the `[worker.verify."<absolute workspace path>"]` sections
- * (worker-phase2 §5) into `{ <resolved path>: { cmd, timeout_ms } }`.
- *
- * The command is the worker's PRE-MERGE verification: on a repo with no GitHub
- * CI it stands in for CI as the middle tier of the merge gate, so `[머지]` stays
- * disabled until it passes. A workspace with neither CI nor a `verify_cmd` falls
- * through to the "검증 신호 없음" tier — the button is enabled and the human
- * click is the decision.
- *
- * `cmd` MUST be an argv string array — the worker spawns it WITHOUT a shell,
- * so a shell one-liner string is rejected (section ignored → the workspace
- * counts as verify_cmd-unset).
- *
- * Toolchain constraint: the command runs in a CLEAN detached worktree pinned to
- * the PR's head SHA, which has no untracked toolchain (`.venv` etc.). Configure
- * either a self-contained command or absolute interpreter paths into the
- * canonical checkout, e.g.:
- *
- *   [worker.verify."/Users/me/GitHub/beads-ui"]
- *   cmd = ["npm", "run", "all"]        # self-contained (npm resolves per-tree)
- *   timeout_ms = 600000                # optional, default 600000
- *
- * Sections with a non-absolute key or an invalid `cmd` are ignored.
- *
- * @param {any} parsed
- * @returns {Record<string, { cmd: string[], timeout_ms: number }>}
- */
-function normalizeWorkerVerify(parsed) {
-  /** @type {Record<string, { cmd: string[], timeout_ms: number }>} */
-  const out = {};
-  const section = parsed?.worker?.verify;
-  if (!section || typeof section !== 'object' || Array.isArray(section)) {
-    return out;
-  }
-  for (const [key, value] of Object.entries(section)) {
-    const workspace = normalizeWorkspacePath(key);
-    if (!workspace || !value || typeof value !== 'object') {
-      continue;
-    }
-    const raw_cmd = /** @type {any} */ (value).cmd;
-    const cmd =
-      Array.isArray(raw_cmd) &&
-      raw_cmd.length > 0 &&
-      raw_cmd.every((a) => typeof a === 'string' && a.length > 0)
-        ? raw_cmd.slice()
-        : null;
-    if (!cmd) {
-      log('worker.verify %s ignored: cmd must be a non-empty argv array', key);
-      continue;
-    }
-    const raw_timeout = /** @type {any} */ (value).timeout_ms;
-    const timeout_ms =
-      typeof raw_timeout === 'number' &&
-      Number.isFinite(raw_timeout) &&
-      raw_timeout > 0
-        ? Math.floor(raw_timeout)
-        : DEFAULT_VERIFY_TIMEOUT_MS;
-    out[workspace] = { cmd, timeout_ms };
-  }
-  return out;
-}
-
 /**
  * Normalize the `[worker.notify]` section (UI-2yoq) into
  * `{ enabled, cmd }`.
  *
  * Worker attempt lifecycle pushes are a MACHINE-level concern, not a per-repo
  * one — a single operator watches every workspace's queue from one Discord
- * channel — so this is one global section instead of the workspace-keyed map
- * `[worker.verify]` uses:
+ * channel — so this is one global section:
  *
  *   [worker.notify]
  *   enabled = true
@@ -235,7 +168,6 @@ function normalizePollIntervalSeconds(value) {
  *     workspaces: string[]
  *   },
  *   poll_interval_seconds: number,
- *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_notify: { enabled: boolean, cmd: string[] },
  *   runner_overrides: Record<string, unknown>
  * }}
@@ -272,7 +204,6 @@ function readRuntimeConfig(config_path) {
       poll_interval_seconds: normalizePollIntervalSeconds(
         parsed?.poll_interval_seconds
       ),
-      worker_verify: normalizeWorkerVerify(parsed),
       worker_notify: normalizeWorkerNotify(parsed),
       runner_overrides: readRunnerOverrides(parsed)
     };
@@ -294,7 +225,6 @@ function readRuntimeConfig(config_path) {
         workspaces: DEFAULT_WORKSPACE_CONFIG.workspaces.slice()
       },
       poll_interval_seconds: DEFAULT_POLL_INTERVAL_SECONDS,
-      worker_verify: {},
       worker_notify: { enabled: false, cmd: DEFAULT_NOTIFY_CMD.slice() },
       runner_overrides: {}
     };
@@ -325,7 +255,6 @@ export const readRuntimeConfigForTest = readRuntimeConfig;
  *     workspaces: string[]
  *   },
  *   poll_interval_seconds: number,
- *   worker_verify: Record<string, { cmd: string[], timeout_ms: number }>,
  *   worker_notify: { enabled: boolean, cmd: string[] },
  *   runner_overrides: Record<string, unknown>
  * }}

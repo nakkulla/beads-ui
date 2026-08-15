@@ -127,8 +127,8 @@ function seedStore(options = {}) {
  *   store?: any,
  *   verify?: { cmd: string[], timeout_ms: number }|null,
  *   verifyResults?: Array<{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }>,
- *   verifyResolution?: import('./verify-cmd.js').VerifyResolution,
- *   verifyResolutions?: Array<import('./verify-cmd.js').VerifyResolution>,
+ *   verifyResolution?: any,
+ *   verifyResolutions?: any[],
  *   repo?: string,
  *   gitFail?: (args: string[]) => boolean,
  *   gitResult?: (args: string[]) => number|null,
@@ -152,6 +152,7 @@ function seedStore(options = {}) {
  *   bdSpecId?: string|null,
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
+ *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   repoOperations?: any,
  *   noNotify?: boolean
  * }} [options]
@@ -169,6 +170,22 @@ function makeActions(options = {}) {
   let detail_i = 0;
   /** How many verify resolutions the actions have asked for. */
   let verify_resolutions = 0;
+  const resolveVerify =
+    options.resolveVerify ||
+    (async () =>
+      (Array.isArray(options.verifyResolutions)
+        ? options.verifyResolutions[
+            Math.min(verify_resolutions++, options.verifyResolutions.length - 1)
+          ]
+        : null) ??
+      options.verifyResolution ??
+      (options.verify
+        ? {
+            state: /** @type {const} */ ('resolved'),
+            source: /** @type {const} */ ('config'),
+            value: options.verify
+          }
+        : { state: /** @type {const} */ ('absent') }));
   // What GitHub reports about the PR once OUR merge command has returned zero.
   // The default is the ordinary case (it really merged); a test overrides it to
   // model a merge queue that only ENQUEUED the PR, or an unreadable re-check.
@@ -480,23 +497,7 @@ function makeActions(options = {}) {
     // The verify resolver's two-rung contract (UI-kfl4). `verify` is shorthand
     // for "this repo resolves THIS command"; `verifyResolution` drives the
     // three-state tests.
-    resolveVerify: async () =>
-      // `verifyResolutions` walks one entry per resolution call and holds on the
-      // last — how a base that advanced between the click gate and the cleanup
-      // is expressed.
-      (Array.isArray(options.verifyResolutions)
-        ? options.verifyResolutions[
-            Math.min(verify_resolutions++, options.verifyResolutions.length - 1)
-          ]
-        : null) ??
-      options.verifyResolution ??
-      (options.verify
-        ? {
-            state: /** @type {const} */ ('resolved'),
-            source: /** @type {const} */ ('config'),
-            value: options.verify
-          }
-        : { state: /** @type {const} */ ('absent') }),
+    resolveVerify,
     runVerify,
     // Every live attachment wires the coordinator; a base that declares no
     // `repo-ops/config.toml` is the default so cleanup runs straight to closure.
@@ -526,6 +527,7 @@ function makeActions(options = {}) {
     git_argv,
     external_drop,
     scheduler,
+    resolveVerify,
     runVerify,
     notify,
     merge_notices
@@ -542,6 +544,42 @@ const VERIFY_CFG = {
 const VERIFY_SCRIPT_PATH = 'repo-ops/script/verify';
 
 /**
+ * @returns {any}
+ */
+function failedVerifyOperations() {
+  let candidate = { base_sha: 'a'.repeat(40), head_sha: 'sha-aaa' };
+  return {
+    hasConfig: vi.fn(async () => ({
+      ok: true,
+      present: true,
+      verify_script_path: VERIFY_SCRIPT_PATH
+    })),
+    ensureVerify: vi.fn(async (input) => {
+      candidate = input;
+      return {
+        ok: true,
+        operation_id: 'verify-failed',
+        timeout_ms: 1000
+      };
+    }),
+    waitForTerminal: vi.fn(async () => ({
+      operation_id: 'verify-failed',
+      effective_base_sha: candidate.base_sha,
+      head_sha: candidate.head_sha,
+      candidate_tree_sha: 'c'.repeat(40),
+      script_object_type: 'blob',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40),
+      ok: false,
+      reason: 'verify_cmd_failed',
+      state: 'failed',
+      at: 1
+    })),
+    verifyReceipt: vi.fn()
+  };
+}
+
+/**
  * Harness options that put the local checkout on a clean target-base SHA.
  *
  * @type {{ gitBranch: string, gitStatus: string, gitHead: string }}
@@ -551,6 +589,31 @@ const ON_BASE = {
   gitStatus: '',
   gitHead: BASE_SHA
 };
+
+describe('worker/pr-actions rollback verify compatibility', () => {
+  test('is inert when pinned repo ops declares no verify', async () => {
+    const env = makeActions({ verifyResolution: { state: 'absent' } });
+
+    const result = await env.actions.rollbackVerify(BEAD, BASE_SHA);
+
+    expect(result).toEqual({ ok: true });
+    expect(env.runVerify).not.toHaveBeenCalled();
+  });
+
+  test('fails closed without a raw run when pinned repo ops is invalid', async () => {
+    const env = makeActions({
+      verifyResolution: {
+        state: 'invalid',
+        reason: 'repo_ops_config_invalid'
+      }
+    });
+
+    const result = await env.actions.rollbackVerify(BEAD, BASE_SHA);
+
+    expect(result).toEqual({ ok: false, reason: 'repo_ops_config_invalid' });
+    expect(env.runVerify).not.toHaveBeenCalled();
+  });
+});
 
 describe('merge click — the three branches (worker-phase2 §6)', () => {
   test('refuses a bead fenced by an active discard operation', async () => {
@@ -625,15 +688,14 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
 
   test('refuses without merging when the click-time gate is red', async () => {
     const h = makeActions({
-      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
-      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
+      repoOperations: failedVerifyOperations()
     });
 
     const r = await h.actions.merge(BEAD);
 
     expect(r).toMatchObject({
       ok: false,
-      action: 'refused',
+      action: 'verify_blocked',
       reason: 'verify_cmd_failed'
     });
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
@@ -849,172 +911,6 @@ describe('merge click — a zero exit is not a merge (§6)', () => {
     expect(
       h.store.snapshot(WS).done.map((/** @type {any} */ e) => e.bead_id)
     ).toEqual([BEAD]);
-  });
-});
-
-describe('merge click — click-time SHA re-evaluation (§5/§6)', () => {
-  const VERIFY = {
-    cmd: ['npm', 'test'],
-    timeout_ms: 1000
-  };
-
-  test('re-runs local verification when the head SHA moved past a cached green', async () => {
-    const h = makeActions({
-      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
-      details: [prOf({ head_sha: 'sha-new' })]
-    });
-    // A green earned on the PREVIOUS head — exactly the stale green §5 refuses.
-    h.observations.recordVerify(WS, BEAD, {
-      head_sha: 'sha-old',
-      ok: true,
-      reason: 'ok',
-      at: 1
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    // The FIRST run is the click-time one, pinned to the sha just read.
-    expect(/** @type {any} */ (h.runVerify).mock.calls[0][0]).toMatchObject({
-      sha: 'sha-new'
-    });
-    expect(h.calls.indexOf('verify:run')).toBeLessThan(
-      h.calls.indexOf('gh:mergeSquash')
-    );
-    expect(r).toMatchObject({ ok: true, action: 'merged' });
-  });
-
-  test('does not merge on a stale green when the fresh verification is red', async () => {
-    const h = makeActions({
-      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
-      details: [prOf({ head_sha: 'sha-new' })],
-      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
-    });
-    h.observations.recordVerify(WS, BEAD, {
-      head_sha: 'sha-old',
-      ok: true,
-      reason: 'ok',
-      at: 1
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({
-      ok: false,
-      action: 'refused',
-      reason: 'verify_cmd_failed'
-    });
-    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
-  });
-
-  test('verifies rather than passing when the cache is empty (restart)', async () => {
-    const h = makeActions({ verify: VERIFY });
-
-    const r = await h.actions.merge(BEAD);
-
-    // Nothing was cached, so the gate could not have passed on a prior result:
-    // a verification ran BEFORE the merge.
-    expect(h.calls.indexOf('verify:run')).toBeGreaterThanOrEqual(0);
-    expect(h.calls.indexOf('verify:run')).toBeLessThan(
-      h.calls.indexOf('gh:mergeSquash')
-    );
-    expect(/** @type {any} */ (h.runVerify).mock.calls[0][0]).toMatchObject({
-      sha: 'sha-aaa'
-    });
-    expect(r.ok).toBe(true);
-  });
-
-  test('does not verify or update a BEHIND head', async () => {
-    const h = makeActions({
-      verify: VERIFY,
-      details: [
-        prOf({ merge_state_status: 'BEHIND', head_sha: 'sha-old' }),
-        prOf({ merge_state_status: 'CLEAN', head_sha: 'sha-updated' })
-      ]
-    });
-
-    const result = await h.actions.merge(BEAD);
-
-    expect(result).toMatchObject({ ok: false, reason: 'base_behind' });
-    expect(h.runVerify).not.toHaveBeenCalled();
-    expect(h.gh.updateBranch).not.toHaveBeenCalled();
-  });
-
-  test('retries a cached current-head verify failure and records a merge-gate flake note', async () => {
-    const h = makeActions({
-      verify: VERIFY,
-      verifyResults: [
-        {
-          ok: true,
-          reason: 'ok',
-          attempts: [
-            {
-              reason: 'verify_cmd_failed',
-              log_path: '/state/gate-r1.log'
-            },
-            { reason: 'ok', log_path: '/state/gate-r2.log' }
-          ]
-        },
-        { ok: true, reason: 'ok' }
-      ]
-    });
-    h.observations.recordVerify(WS, BEAD, {
-      head_sha: 'sha-aaa',
-      ok: false,
-      reason: 'verify_cmd_failed',
-      at: 1
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, action: 'merged' });
-    expect(h.runVerify).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sha: 'sha-aaa',
-        retry_flaky: true
-      })
-    );
-    expect(h.observations.get(WS, BEAD)?.verify).toMatchObject({
-      head_sha: 'sha-aaa',
-      ok: true,
-      reason: 'ok'
-    });
-    expect(h.bd.updateFields).toHaveBeenCalledWith(BEAD, {
-      append_notes:
-        'verify flake 흡수 (merge_gate): 1차 verify_cmd_failed (/state/gate-r1.log) → 재시도 green (/state/gate-r2.log)'
-    });
-  });
-
-  test('keeps a green gate when merge-gate flake note append fails', async () => {
-    const h = makeActions({
-      verify: VERIFY,
-      bdFail: (method) => method === 'updateFields',
-      verifyResults: [
-        {
-          ok: true,
-          reason: 'ok',
-          attempts: [
-            {
-              reason: 'verify_cmd_failed',
-              log_path: '/state/gate-r1.log'
-            },
-            { reason: 'ok', log_path: '/state/gate-r2.log' }
-          ]
-        },
-        { ok: true, reason: 'ok' }
-      ]
-    });
-    h.observations.recordVerify(WS, BEAD, {
-      head_sha: 'sha-aaa',
-      ok: false,
-      reason: 'verify_cmd_failed',
-      at: 1
-    });
-
-    const r = await h.actions.merge(BEAD);
-
-    expect(r).toMatchObject({ ok: true, action: 'merged' });
-    expect(h.bd.updateFields).toHaveBeenCalledTimes(1);
-    expect(h.observations.get(WS, BEAD)?.verify?.ok).toBe(true);
   });
 });
 
@@ -1665,8 +1561,7 @@ describe('worker/pr-actions — merge progress (UI-raqh §4)', () => {
 
   test('releases the progress when the gate refuses the click', async () => {
     const env = makeActions({
-      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
-      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
+      repoOperations: failedVerifyOperations()
     });
 
     const r = await env.actions.merge(BEAD);
@@ -1704,6 +1599,47 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
     };
   }
 
+  test('uses an absent repo-ops gate without consulting legacy verify hooks', async () => {
+    const resolveVerify = vi.fn(async () => ({ state: 'resolved' }));
+    const operations = repoOperations({
+      hasConfig: vi.fn(async () => ({ ok: true, present: false }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      resolveVerify,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(resolveVerify).not.toHaveBeenCalled();
+    expect(env.runVerify).not.toHaveBeenCalled();
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+  });
+
+  test('refuses an invalid repo-ops policy before merge or raw verify', async () => {
+    const resolveVerify = vi.fn(async () => ({ state: 'resolved' }));
+    const operations = repoOperations({
+      hasConfig: vi.fn(async () => ({
+        ok: false,
+        code: 'repo_ops_config_invalid'
+      }))
+    });
+    const env = makeActions({ repoOperations: operations, resolveVerify });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: 'refused',
+      reason: 'repo_ops_config_invalid'
+    });
+    expect(resolveVerify).not.toHaveBeenCalled();
+    expect(env.runVerify).not.toHaveBeenCalled();
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
   test('uses coordinator and skips legacy verify and deploy for configured repos', async () => {
     const operations = repoOperations();
     const env = makeActions({
@@ -1714,7 +1650,13 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
     const result = await env.actions.merge(BEAD);
 
     expect(result).toMatchObject({ ok: true, reason: null });
-    expect(operations.ensureVerify).toHaveBeenCalled();
+    expect(operations.hasConfig).toHaveBeenNthCalledWith(1, 'a'.repeat(40));
+    expect(operations.ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        base_sha: 'a'.repeat(40),
+        head_sha: 'a'.repeat(40)
+      })
+    );
     expect(operations.ensureDeploy).toHaveBeenCalledWith(
       expect.objectContaining({ target_sha: BASE_SHA })
     );
@@ -2614,8 +2556,7 @@ describe('post-merge cleanup — the merge notification (UI-9rrk)', () => {
 
   test('announces nothing when the click-time gate refuses the merge', async () => {
     const h = makeActions({
-      verify: VERIFY_CFG,
-      verifyResults: [{ ok: false, reason: 'verify_cmd_failed' }]
+      repoOperations: failedVerifyOperations()
     });
 
     const r = await h.actions.merge(BEAD);
@@ -2809,15 +2750,7 @@ describe('worker/pr-actions base gate freshness (implementation review 2026-07-3
 describe('worker/pr-actions completion gate evidence', () => {
   test('returns a bounded pinned gate result without issuing a merge', async () => {
     const env = makeActions({
-      verify: { cmd: ['npm', 'test'], timeout_ms: 1000 },
-      verifyResults: [
-        {
-          ok: false,
-          reason: 'verify_cmd_failed',
-          output_tail: 'regression',
-          log_path: '/state/verify.log'
-        }
-      ],
+      repoOperations: failedVerifyOperations(),
       details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })]
     });
 

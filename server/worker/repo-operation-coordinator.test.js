@@ -218,7 +218,8 @@ describe('RepoOperation coordinator', () => {
     expect(result).toEqual({
       ok: true,
       present: true,
-      verify_script_path: null
+      verify_script_path: null,
+      verify_timeout_ms: null
     });
   });
 
@@ -334,6 +335,42 @@ describe('RepoOperation coordinator', () => {
       script_blob_sha: '5'.repeat(40),
       state: 'running'
     });
+  });
+
+  test('adopts one deterministic verify operation across concurrent callers', async () => {
+    const runner = {
+      start: vi.fn(async () => ({
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'verify.log')
+      })),
+      readMarker: () => null,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      runner,
+      verifyCheckout: {
+        materialize: vi.fn(async () => ({
+          ok: true,
+          path: root,
+          tree_sha: TREE
+        })),
+        verify: vi.fn(async () => ({ ok: true })),
+        cleanup: vi.fn(async () => {})
+      }
+    });
+
+    const [poller_result, click_result] = await Promise.all([
+      coordinator.ensureVerify(verifyCandidate()),
+      coordinator.ensureVerify(verifyCandidate())
+    ]);
+
+    expect(poller_result).toMatchObject({ ok: true });
+    expect(click_result).toMatchObject({ ok: true });
+    expect(poller_result.operation_id).toBe(click_result.operation_id);
+    expect(runner.start).toHaveBeenCalledTimes(1);
   });
 
   test('inherits an exact candidate receipt and runs a different final tree once', async () => {

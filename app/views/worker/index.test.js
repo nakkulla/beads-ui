@@ -2456,15 +2456,6 @@ describe('views/worker', () => {
     );
   }
 
-  /**
-   * @param {HTMLElement} dialog
-   * @param {string} name
-   * @returns {HTMLElement|null}
-   */
-  function vdGroup(dialog, name) {
-    return dialog.querySelector(`.exec-defaults__vd-group[data-vd="${name}"]`);
-  }
-
   test('the ⚙ button carries aria-haspopup and opens the global exec-defaults dialog', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     createWorkerView(mount, {
@@ -2591,34 +2582,51 @@ describe('views/worker', () => {
     return openExecDefaults(mount);
   }
 
-  test('renders the verify command and timeout', () => {
+  test('renders the repo-ops verify script and timeout', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: { cmd: ['npm', 'run', 'all'], timeout_ms: 600000 },
+      repo_ops: {
+        status: 'resolved',
+        source_path: 'repo-ops/config.toml',
+        base_ref: 'main',
+        base_sha: 'a'.repeat(40),
+        verify: { script: 'repo-ops/script/verify', timeout_ms: 600000 },
+        deploy: null,
+        error_code: null
+      },
       slots: 2
     });
 
-    const group = /** @type {HTMLElement} */ (vdGroup(dialog, 'verify'));
-    expect(group.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
-      'npm run all'
+    const lane = /** @type {HTMLElement} */ (
+      dialog.querySelector('[data-lane="verify"]')
     );
-    expect(group.querySelector('.exec-defaults__vd-meta')?.textContent).toBe(
+    expect(lane.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
+      'repo-ops/script/verify'
+    );
+    expect(lane.querySelector('.exec-defaults__vd-badge')?.textContent).toBe(
       'timeout 10분'
     );
   });
 
-  test('keeps the verify section read-only', () => {
+  test('keeps the repo-ops section read-only', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const dialog = openWithWorkspaceInfo(mount, {
-      verify_cmd: { cmd: ['npm', 'test'], timeout_ms: 600000 },
+      repo_ops: {
+        status: 'resolved',
+        source_path: 'repo-ops/config.toml',
+        base_ref: 'main',
+        base_sha: 'a'.repeat(40),
+        verify: null,
+        deploy: null,
+        error_code: null
+      },
       slots: 2
     });
 
     const section = /** @type {HTMLElement} */ (
       dialog.querySelector('.exec-defaults__vd')
     );
-    expect(section.textContent).toContain('읽기 전용');
     expect(
       section.querySelectorAll('input, select, textarea, button').length
     ).toBe(0);
@@ -2637,7 +2645,9 @@ describe('views/worker', () => {
     const dialog = openExecDefaults(mount);
 
     expect(dialog.querySelector('.exec-defaults__vd')).not.toBeNull();
-    expect(vdGroup(dialog, 'verify')?.textContent).toContain('검증 없음');
+    expect(dialog.querySelector('.exec-defaults__vd')?.textContent).toContain(
+      '선언 확인 중'
+    );
   });
 
   test('failure banner ↻ resumes the newest eligible failed attempt (§1)', () => {

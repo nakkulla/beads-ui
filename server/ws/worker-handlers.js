@@ -29,7 +29,6 @@
  */
 import nodeFs from 'node:fs';
 import { makeError, makeOk } from '../../app/protocol.js';
-import { getConfig } from '../config.js';
 import {
   checkWorkerQueueAdmission,
   discardWorkerBead,
@@ -60,7 +59,11 @@ import {
   isRepairEligible,
   projectRepoOperationPolicy
 } from '../worker/repo-operation-policy.js';
-import { repoOpsDisplayFor } from '../worker/repo-ops-display.js';
+import {
+  repoOpsDisplayFor,
+  repoOpsVerifyPolicy,
+  repoOpsVerifyReceiptState
+} from '../worker/repo-ops-display.js';
 import {
   normalizeResolutionSubjects,
   normalizeScriptRetry
@@ -73,7 +76,6 @@ import {
   normalizeUsageLegs,
   readAttemptUsageReceipts
 } from '../worker/usage-receipts.js';
-import { resolveConfiguredVerify } from '../worker/verify-cmd.js';
 import {
   emitSessionLogAppend,
   emitSessionLogSnapshot,
@@ -329,10 +331,10 @@ export function withExternalPrWait(workspace_key, queue) {
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
- * @param {'resolved'|'absent'|'invalid'} verify_cmd_state
+ * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} verify_policy
  * @returns {Record<string, unknown>}
  */
-function prObservationsFor(workspace_key, queue, verify_cmd_state) {
+function prObservationsFor(workspace_key, queue, verify_policy) {
   /** @type {Record<string, unknown>} */
   const out = {};
   const lane = Array.isArray(queue.pr_wait)
@@ -361,15 +363,10 @@ function prObservationsFor(workspace_key, queue, verify_cmd_state) {
       observed_at: record ? record.observed_at : null,
       gate: evaluateMergeGate(record, {
         review_receipt_state: observedReviewReceiptState(record),
-        verify_receipt_state: {
-          declaration_state:
-            verify_cmd_state === 'resolved'
-              ? 'present'
-              : verify_cmd_state === 'invalid'
-                ? 'invalid'
-                : 'absent',
-          receipt: record?.verify || null
-        }
+        verify_receipt_state: repoOpsVerifyReceiptState(
+          verify_policy,
+          record?.verify || null
+        )
       })
     };
   }
@@ -1040,9 +1037,7 @@ function projectRepoOperations(operations, attempts) {
 
 /**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
- *   - the resolved verify_cmd, which comes from an explicit `[worker.verify]`
- *     config section or not at all (UI-uk6d) — read-only display, no UI edit
- *     surface (worker-autorun-policy §4/§6),
+ *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
  *     flag live sessions exceeding the cap after a manual resume
  *     (worker-phase1 §2.3, worker-phase2 §3),
@@ -1146,20 +1141,8 @@ export function decorateQueue(workspace_key, raw_queue) {
       : [],
     completion_status: completion.statuses
   };
-  // Read synchronously because this decoration runs on every snapshot push and
-  // cannot await git; the verify command comes from workspace config alone.
-  /** @type {import('../worker/verify-cmd.js').VerifyResolution} */
-  let verify_resolution = { state: 'absent' };
-  try {
-    verify_resolution = resolveConfiguredVerify(
-      workspace_key,
-      getConfig().worker_verify
-    );
-  } catch {
-    verify_resolution = { state: 'absent' };
-  }
-  const verify_cmd =
-    verify_resolution.state === 'resolved' ? verify_resolution.value : null;
+  const repo_ops = repoOpsDisplayFor(workspace_key);
+  const verify_policy = repoOpsVerifyPolicy(repo_ops);
   /** @type {number|null} */
   let slots = null;
   try {
@@ -1200,22 +1183,14 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Attempts carry the LIVE usage tally while they run (UI-raqh §1); the
     // persisted `Attempt.usage` stands on its own once they end.
     attempts: attemptsWithUsage(queue, workspace_key),
-    // `repo_ops` is the declaration the deploy lane ACTUALLY consumes
-    // (`repo-ops/config.toml` at a pinned SHA, UI-q0uy §4.6-1), read from the
-    // display cache rather than resolved here — this decoration cannot await
-    // git. `verify_cmd` above stays the legacy `[worker.verify]` config read.
+    // `repo_ops` is the pinned declaration consumed by verify and deploy.
     workspace_info: {
-      verify_cmd,
       slots,
-      repo_ops: repoOpsDisplayFor(workspace_key)
+      repo_ops
     },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
-    pr_observations: prObservationsFor(
-      workspace_key,
-      queue,
-      verify_resolution.state
-    ),
+    pr_observations: prObservationsFor(workspace_key, queue, verify_policy),
     // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
     // observation/verification activity and merge progress. Also non-persisted.
     pr_activity: prActivityFor(workspace_key, queue),

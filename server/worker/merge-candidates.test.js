@@ -13,6 +13,13 @@ import { getWorkerRuntime } from './runtime.js';
 const WS = '/tmp/example-workspace/merge-candidates';
 
 /**
+ * @param {'present'|'absent'|'invalid'} declaration_state
+ */
+function verifyPolicy(declaration_state) {
+  return { declaration_state, base_sha: 'b'.repeat(40) };
+}
+
+/**
  * @param {{ pr_wait?: any[], queue?: any[], done?: any[] }} lanes
  */
 function queueOf(lanes) {
@@ -125,7 +132,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         attempts: {},
         cleanup_failed: {}
       },
-      'absent'
+      verifyPolicy('absent')
     );
 
     expect(result).toEqual([]);
@@ -155,7 +162,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
           'EXT-1': { step: 'base_containment', reason: 'base_fetch_failed' }
         }
       },
-      'absent'
+      verifyPolicy('absent')
     );
 
     expect(result).toEqual([{ bead_id: 'EXT-1', external: true }]);
@@ -177,6 +184,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
       review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
     });
     runtime.prObservations.recordVerify(WS, 'UI-1', {
+      effective_base_sha: 'b'.repeat(40),
       head_sha: 'a'.repeat(40),
       ok: false,
       reason: 'verify_cmd_failed',
@@ -190,7 +198,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         attempts: {},
         cleanup_failed: {}
       },
-      'resolved'
+      verifyPolicy('present')
     );
 
     expect(result).toEqual([
@@ -228,7 +236,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
           attempts: {},
           cleanup_failed: {}
         },
-        'resolved'
+        verifyPolicy('present')
       )
     ).toEqual([]);
   });
@@ -261,7 +269,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
           }
         }
       },
-      'resolved'
+      verifyPolicy('present')
     );
 
     expect(result).toEqual([
@@ -292,7 +300,74 @@ describe('worker/merge-candidates — completion repair intake', () => {
         attempts: {},
         cleanup_failed: {}
       },
-      'absent'
+      verifyPolicy('absent')
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  test('excludes an old-base verify receipt after the repo-ops base advances', () => {
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+    });
+    runtime.prObservations.recordVerify(WS, 'UI-1', {
+      effective_base_sha: 'b'.repeat(40),
+      head_sha: 'a'.repeat(40),
+      ok: true,
+      reason: 'ok',
+      at: 1
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {}
+      },
+      {
+        declaration_state: 'present',
+        base_sha: 'c'.repeat(40)
+      }
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  test('excludes a clean row when repo-ops policy is invalid', () => {
+    getWorkerRuntime().prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {}
+      },
+      verifyPolicy('invalid')
     );
 
     expect(result).toEqual([]);
@@ -328,7 +403,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
           }
         }
       },
-      'resolved'
+      verifyPolicy('present')
     );
 
     expect(result).toEqual([
@@ -366,7 +441,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
         attempts: {},
         cleanup_failed: { 'UI-1': { step: 'deploy', reason } }
       },
-      'resolved'
+      verifyPolicy('present')
     );
 
     expect(result).toEqual([

@@ -393,6 +393,29 @@ describe('worker/completion-intent decisions', () => {
 });
 
 describe('worker/completion-intent action driver', () => {
+  test('keeps a repo-operation-owned verify intent active', async () => {
+    const store = seededCompletionStore();
+    const dispatchCompletionRepair = vi.fn();
+    const ensureLinkedBead = vi.fn();
+    const driver = actionDriver(store, {
+      completionRepair: {
+        probeOwnership: vi.fn(async () => ({ state: 'repo_operation' })),
+        ensureLinkedBead
+      },
+      scheduler: { dispatchCompletionRepair }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', current);
+    await driver.onAction('UI-root', { kind: 'probe' }, current);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', active_op: null });
+    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
+    expect(ensureLinkedBead).not.toHaveBeenCalled();
+  });
+
   test('dispatches a PR-owned failure through the root resume path', async () => {
     const store = seededCompletionStore();
     const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));

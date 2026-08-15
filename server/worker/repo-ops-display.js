@@ -11,11 +11,9 @@
  *   (b) the coordinator — every time it already resolved a declaration for an
  *       operation, its result lands here too. No duplicate resolve exists.
  *
- * The four states matter to the client: only `absent` — an EMPTY tree listing
- * that actually proves there is no config — lets the settings dialog fall back
- * to its legacy display. `pending` and `error` say so instead, so a repo that
- * HAS a config never quietly reads as one that does not just because resolution
- * was slow or failed.
+ * The four states matter to every consumer: only `absent` proves there is no
+ * declaration. `pending` and `error` remain explicit so advisory gates and the
+ * settings display fail closed while resolution is incomplete or invalid.
  */
 import { emitQueueChanged } from './queue-events.js';
 import { REPO_OPS_CONFIG_PATH, resolveRepoOps } from './repo-ops-resolver.js';
@@ -44,7 +42,7 @@ function keyFor(workspace) {
 
 /**
  * The shape a workspace with no cache entry shows: nothing is claimed, and the
- * client renders "선언 확인 중" rather than a legacy fallback.
+ * client renders "선언 확인 중" without claiming that policy is absent.
  *
  * @returns {RepoOpsDisplay}
  */
@@ -69,6 +67,58 @@ function pendingDisplay() {
  */
 export function repoOpsDisplayFor(workspace) {
   return DISPLAY.get(keyFor(workspace)) || pendingDisplay();
+}
+
+/**
+ * @param {RepoOpsDisplay} display
+ * @returns {'present'|'absent'|'invalid'}
+ */
+export function repoOpsVerifyState(display) {
+  if (display.status === 'resolved') {
+    return display.verify ? 'present' : 'absent';
+  }
+  if (display.status === 'absent') {
+    return 'absent';
+  }
+  return 'invalid';
+}
+
+/**
+ * Bind the advisory verify declaration state to the base SHA at which repo-ops
+ * was resolved.
+ *
+ * @param {RepoOpsDisplay} display
+ * @returns {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }}
+ */
+export function repoOpsVerifyPolicy(display) {
+  return {
+    declaration_state: repoOpsVerifyState(display),
+    base_sha: display.base_sha
+  };
+}
+
+/**
+ * A cached receipt can satisfy an advisory gate only at the exact base SHA
+ * whose repo-ops declaration produced the current policy.
+ *
+ * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} policy
+ * @param {any} receipt
+ * @returns {{ declaration_state: 'present'|'absent'|'invalid', receipt: any|null }}
+ */
+export function repoOpsVerifyReceiptState(policy, receipt) {
+  if (policy.declaration_state !== 'present') {
+    return { declaration_state: policy.declaration_state, receipt: null };
+  }
+  const expected_base = policy.base_sha?.toLowerCase() || null;
+  const receipt_base =
+    typeof receipt?.effective_base_sha === 'string'
+      ? receipt.effective_base_sha.toLowerCase()
+      : null;
+  return {
+    declaration_state: 'present',
+    receipt:
+      expected_base !== null && receipt_base === expected_base ? receipt : null
+  };
 }
 
 /**

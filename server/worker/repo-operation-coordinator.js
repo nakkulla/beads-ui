@@ -1474,12 +1474,23 @@ export function createRepoOperationCoordinator(deps) {
       gitRun: deps.gitRun
     });
     if (!resolved.ok && resolved.code) {
+      recordRepoOpsResolution({
+        workspace: deps.workspace,
+        resolution: resolved,
+        base_sha: sha
+      });
       return resolved;
     }
+    recordRepoOpsResolution({
+      workspace: deps.workspace,
+      resolution: resolved,
+      base_sha: sha
+    });
     return {
       ok: true,
       present: resolved.config_blob_sha !== null,
-      verify_script_path: resolved.verify?.script ?? null
+      verify_script_path: resolved.verify?.script ?? null,
+      verify_timeout_ms: resolved.verify?.timeout_ms ?? null
     };
   }
 
