@@ -6585,14 +6585,12 @@ html[data-theme='dark'] {
   }
 
   /* 계약 토큰 목록은 74px dt + 12px gap이 남지 않는다 — 용어를 값 위로 올린다. */
-  .worker-ev__kv div,
-  .worker-banner__kv div {
+  .worker-ev__kv div {
     flex-direction: column;
     gap: 0;
   }
 
-  .worker-ev__kv dt,
-  .worker-banner__kv dt {
+  .worker-ev__kv dt {
     width: auto;
   }
 

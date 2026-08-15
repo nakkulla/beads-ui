@@ -157,9 +157,7 @@ describe('worker console styles', () => {
     );
     const eventRule = mq.match(/(?:^|\n)\s*\.worker-ev\s*{([^}]*)}/)?.[1] || '';
     const kvRule =
-      mq.match(
-        /(?:^|\n)\s*\.worker-ev__kv dt,\s*\n\s*\.worker-banner__kv dt\s*{([^}]*)}/
-      )?.[1] || '';
+      mq.match(/(?:^|\n)\s*\.worker-ev__kv dt\s*{([^}]*)}/)?.[1] || '';
 
     expect(eventRule).toContain('grid-template-columns: 42px 22px 1fr');
     expect(kvRule).toContain('width: auto');
