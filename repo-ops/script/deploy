@@ -26,8 +26,15 @@ cwd="$(pwd -P)"
 # Re-exec this script while a Python-owned flock descriptor remains inherited by
 # the shell and every child it launches. macOS has no flock(1), so fcntl.flock
 # is the one portable protocol shared with the Worker coordinator.
+#
+# The lockfile path is spelled as one literal because the contract's activation
+# gate decides a script is lock-capable by searching its bytes for
+# `.worktrees/.repo-ops-deploy.lock`; assembling the path from segments keeps the
+# gate shut even though the resolved path is identical.
 if [ "${REPO_OPS_DEPLOY_LOCKED:-}" != "1" ]; then
-    lock_file="$(dirname "$repo_root")/.repo-ops-deploy.lock"
+    common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)" ||
+        fail "cannot resolve the main repository directory"
+    lock_file="$(dirname "$common_dir")/.worktrees/.repo-ops-deploy.lock"
     exec python3 -c '
 import fcntl
 import os
@@ -35,6 +42,7 @@ import sys
 
 script = sys.argv[1]
 lock_file = sys.argv[2]
+os.makedirs(os.path.dirname(lock_file), exist_ok=True)
 fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, 0o600)
 fcntl.flock(fd, fcntl.LOCK_EX)
 os.set_inheritable(fd, True)
