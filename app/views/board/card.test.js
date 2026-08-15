@@ -581,6 +581,42 @@ describe('views/board/card display policy', () => {
     expect(chipTexts(m, '.ctl-chip--pr')).toEqual(['PR #42']);
   });
 
+  test('renders execution and implementation entry chips', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        workflow: {
+          chips: {
+            exec_receipt: {
+              kind: 'delegated',
+              actor: 'gpt-5.6-sol',
+              sha: 'a'.repeat(40)
+            },
+            impl_entry: { actor: 'user', sha: 'b'.repeat(40) }
+          }
+        }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--exec-receipt')).toEqual([
+      'exec gpt-5.6-sol · aaaaaaa'
+    ]);
+    expect(chipTexts(m, '.ctl-chip--impl-entry')).toEqual([
+      'impl user · bbbbbbb'
+    ]);
+  });
+
+  test('omits absent execution metadata chips', () => {
+    const m = mountCard(
+      { id: 'UI-1', workflow: { chips: {} } },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(m.querySelector('.ctl-chip--exec-receipt')).toBeNull();
+    expect(m.querySelector('.ctl-chip--impl-entry')).toBeNull();
+  });
+
   test('omits the provenance chip when its toggle is off', () => {
     const m = mountCard(
       { id: 'UI-1', from_id: 'UI-0' },

@@ -156,7 +156,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  * @param {{
  *   workspace: string,
  *   repo: string,
- *   store: { snapshot: (workspace: string) => Queue },
+ *   store: { snapshot: (workspace: string) => Queue, promoteMergedExternal?: (workspace: string, input: any) => { ok: boolean }, recordCleanupFailure?: (workspace: string, input: any) => unknown },
  *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>> },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
@@ -365,7 +365,7 @@ export function createPrPoller(deps) {
       deps.observations.record(workspace, bead_id, { error: null, pr });
       if (
         pr.state === 'MERGED' &&
-        !external_row &&
+        !queue.cleanup_failed?.[bead_id] &&
         typeof deps.onMerged === 'function'
       ) {
         const merge_sha = pr.merge_sha || pr.merged_sha;
@@ -378,7 +378,8 @@ export function createPrPoller(deps) {
         return {
           verify: cleanupMerged(bead_id, merge_sha, {
             head_ref: pr.head_ref || null,
-            pr_url: pr.url || null
+            pr_url: pr.url || null,
+            external: external_row !== null
           })
         };
       }
@@ -428,18 +429,64 @@ export function createPrPoller(deps) {
    *
    * @param {string} bead_id
    * @param {string} merge_sha
-   * @param {{ head_ref?: string|null, pr_url?: string|null }} [refs]
+   * @param {{ head_ref?: string|null, pr_url?: string|null, external?: boolean }} [refs]
    * @returns {Promise<void>}
    */
   async function cleanupMerged(bead_id, merge_sha, refs = {}) {
-    if (cleaning.has(bead_id)) {
+    const before = deps.store.snapshot(workspace);
+    if (cleaning.has(bead_id) || before.cleanup_failed?.[bead_id]) {
       return;
     }
     cleaning.add(bead_id);
     try {
-      await /** @type {any} */ (deps.onMerged)(bead_id, merge_sha, refs);
+      if (
+        refs.external === true &&
+        !before.pr_wait.some((entry) => entry.bead_id === bead_id)
+      ) {
+        const promoted = deps.store.promoteMergedExternal?.(workspace, {
+          bead_id,
+          merge_sha,
+          head_ref: refs.head_ref || null,
+          pr_url: refs.pr_url || null
+        });
+        const promoted_queue = deps.store.snapshot(workspace);
+        const durable = promoted_queue.pr_wait.some(
+          (entry) => entry.bead_id === bead_id
+        );
+        if (!promoted?.ok && !durable) {
+          deps.store.recordCleanupFailure?.(workspace, {
+            bead_id,
+            step: 'repo_operations',
+            reason: 'external_deployment_promote_failed'
+          });
+          notifyChanged(workspace);
+          return;
+        }
+      }
+      const result = await /** @type {any} */ (deps.onMerged)(
+        bead_id,
+        merge_sha,
+        refs
+      );
+      if (
+        result?.ok === false &&
+        !deps.store.snapshot(workspace).cleanup_failed?.[bead_id]
+      ) {
+        deps.store.recordCleanupFailure?.(workspace, {
+          bead_id,
+          step: result.step || 'repo_operations',
+          reason: result.reason || 'cleanup_observer_failed'
+        });
+      }
       notifyChanged(workspace);
     } catch (err) {
+      if (!deps.store.snapshot(workspace).cleanup_failed?.[bead_id]) {
+        deps.store.recordCleanupFailure?.(workspace, {
+          bead_id,
+          step: 'repo_operations',
+          reason: 'cleanup_observer_failed'
+        });
+      }
       log('post-merge cleanup failed for %s: %o', bead_id, err);
     } finally {
       cleaning.delete(bead_id);

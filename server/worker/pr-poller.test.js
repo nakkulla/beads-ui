@@ -63,7 +63,8 @@ function queueOf(input = {}) {
     done: [],
     attempts,
     admission: {},
-    discard_operations: input.discard_operations ?? {}
+    discard_operations: input.discard_operations ?? {},
+    cleanup_failed: {}
   };
 }
 
@@ -93,10 +94,34 @@ function makePoller(input = {}) {
   const observations = input.observations ?? createPrObservationStore();
   const activity = input.activity ?? createActivityStore();
   const notifyChanged = vi.fn();
+  const store = {
+    snapshot: () => queue,
+    promoteMergedExternal: vi.fn((_workspace, values) => {
+      if (
+        queue.pr_wait.some(
+          (/** @type {any} */ entry) => entry.bead_id === values.bead_id
+        )
+      ) {
+        return { ok: false };
+      }
+      queue.pr_wait.push({
+        bead_id: values.bead_id,
+        added_at: 1,
+        merge_sha: values.merge_sha,
+        head_ref: values.head_ref,
+        pr_url: values.pr_url
+      });
+      return { ok: true };
+    }),
+    recordCleanupFailure: vi.fn((_workspace, values) => {
+      queue.cleanup_failed[values.bead_id] = values;
+      return { ok: true };
+    })
+  };
   const poller = createPrPoller({
     workspace: '/ws',
     repo: '/repo',
-    store: { snapshot: () => queue },
+    store,
     gh: { prDetail },
     observations,
     readIssue:
@@ -113,7 +138,7 @@ function makePoller(input = {}) {
     sleep: async () => {},
     now: () => 5000
   });
-  return { poller, prDetail, observations, activity, notifyChanged };
+  return { poller, prDetail, observations, activity, notifyChanged, store };
 }
 
 /**
@@ -821,19 +846,119 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(prDetail).toHaveBeenCalledWith('/repo', 304);
   });
 
-  test('records an external MERGED observation WITHOUT running cleanup', async () => {
+  test('hands an external MERGED observation to the shared cleanup', async () => {
     const onMerged = vi.fn(async () => {});
     const { poller, observations } = makePoller({
       queue: queueOf({ pr_wait: [] }),
       external: externalOf([{ bead_id: 'UI-ext' }]),
-      detail: { state: 'ok', data: detailOf({ state: 'MERGED' }) },
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
       onMerged
     });
 
     await poller.tick();
 
     expect(observations.get('/ws', 'UI-ext')?.pr?.state).toBe('MERGED');
+    expect(onMerged).toHaveBeenCalledWith(
+      'UI-ext',
+      NEW_SHA,
+      expect.objectContaining({ head_ref: 'UI-1', pr_url: PR_URL })
+    );
+  });
+
+  test('durably promotes an external row before shared cleanup starts', async () => {
+    const onMerged = vi.fn(async () => ({ ok: true }));
+    const { poller, store } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(store.promoteMergedExternal).toHaveBeenCalledOnce();
+    expect(
+      store.promoteMergedExternal.mock.invocationCallOrder[0]
+    ).toBeLessThan(onMerged.mock.invocationCallOrder[0]);
+  });
+
+  test('records promotion failure without entering shared cleanup', async () => {
+    const onMerged = vi.fn();
+    const { poller, store } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+    store.promoteMergedExternal.mockImplementation(() => ({ ok: false }));
+
+    await poller.tick();
+
     expect(onMerged).not.toHaveBeenCalled();
+    expect(store.recordCleanupFailure).toHaveBeenCalledWith('/ws', {
+      bead_id: 'UI-ext',
+      step: 'repo_operations',
+      reason: 'external_deployment_promote_failed'
+    });
+  });
+
+  test('does not auto-run a merged cleanup after a durable failure', async () => {
+    const queue = queueOf({ pr_wait: [] });
+    const onMerged = vi.fn(async () => {
+      /** @type {Record<string, any>} */ (queue.cleanup_failed)['UI-ext'] = {
+        step: 'base_containment',
+        reason: 'fetch_failed'
+      };
+    });
+    const { poller } = makePoller({
+      queue,
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+    await poller.tick();
+
+    expect(onMerged).toHaveBeenCalledTimes(1);
+  });
+
+  test('deduplicates a merged cleanup while the first handoff is in flight', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () => resolve(undefined);
+    });
+    const onMerged = vi.fn(() => gate);
+    const { poller } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+
+    const first = poller.tick();
+    await vi.waitFor(() => expect(onMerged).toHaveBeenCalledOnce());
+    await poller.tick();
+    release();
+    await first;
+
+    expect(onMerged).toHaveBeenCalledOnce();
   });
 
   test('still hands a WORKER row MERGED to the cleanup', async () => {

@@ -446,7 +446,7 @@ describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
-  test('still takes a registered external row whose PR is merged', () => {
+  test('skips a merged external row without a cleanup failure record (UI-exua)', () => {
     const runtime = getWorkerRuntime();
     runtime.externalPrs.clear();
     runtime.externalPrs.replace(WS, [
@@ -468,10 +468,10 @@ describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A
 
     const r = realEnroller(store).enroll();
 
-    expect(
-      store.snapshot(WS).merge_queue.map((/** @type {any} */ e) => e.bead_id)
-    ).toEqual(['X1']);
-    expect(r.queued).toBe(1);
+    // UI-exua: merged external rows without cleanup_failed converge through the
+    // automatic cleanup path, so bulk enrollment no longer takes them.
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(r.queued).toBe(0);
   });
 });
 

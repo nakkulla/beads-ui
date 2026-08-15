@@ -3,11 +3,12 @@
  * drives it: the real script, the three protocol variables, and fake `npm` /
  * `bdui-shared` / health responses on `PATH`.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
 
@@ -47,7 +48,7 @@ function git(repo, ...args) {
  * `bdui-shared` and `node` stand in for the real ones. `node` is only shadowed
  * for the health probe, so the fake forwards everything else to the real one.
  *
- * @param {{ health?: string }} [options]
+ * @param {{ health?: string, npm_body?: string, restart_body?: string }} [options]
  */
 function fixture(options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-deploy-'));
@@ -65,14 +66,18 @@ function fixture(options = {}) {
   const log = path.join(root, 'calls.log');
   const bin = path.join(root, 'bin');
   fs.mkdirSync(bin);
-  for (const name of ['npm', 'bdui-shared']) {
-    fs.writeFileSync(
-      path.join(bin, name),
-      `#!/bin/sh\nprintf '${name} %s\\n' "$*" >> "$CALL_LOG"\n`,
-      'utf8'
-    );
-    fs.chmodSync(path.join(bin, name), 0o755);
-  }
+  fs.writeFileSync(
+    path.join(bin, 'npm'),
+    `#!/bin/sh\nprintf 'npm %s\\n' "$*" >> "$CALL_LOG"\n${options.npm_body || ''}\n`,
+    'utf8'
+  );
+  fs.chmodSync(path.join(bin, 'npm'), 0o755);
+  fs.writeFileSync(
+    path.join(bin, 'bdui-shared'),
+    `#!/bin/sh\nprintf 'bdui-shared %s\\n' "$*" >> "$CALL_LOG"\n${options.restart_body || ''}\n`,
+    'utf8'
+  );
+  fs.chmodSync(path.join(bin, 'bdui-shared'), 0o755);
   // The health probe is the only `node` the script runs; the fake answers with
   // the canned verdict instead of doing a real fetch.
   const health = options.health ?? 'ok';
@@ -106,6 +111,45 @@ function run(env, overrides = {}) {
       BDUI_DEPLOY_HEALTH_URL: 'http://127.0.0.1:3000/healthz'
     }
   });
+}
+
+/**
+ * @param {ReturnType<typeof fixture>} env
+ * @param {Record<string, string>} [extra_env]
+ */
+function runAsync(env, extra_env = {}) {
+  return spawn(ADAPTER, [], {
+    cwd: env.repo,
+    env: {
+      ...process.env,
+      PATH: `${env.bin}${path.delimiter}${process.env.PATH}`,
+      CALL_LOG: env.log,
+      REPO_OPS_TARGET_SHA: env.sha,
+      REPO_OPS_TARGET_BASE: 'main',
+      REPO_OPS_REPO_ROOT: env.repo,
+      REPO_OPS_HEALTH_ATTEMPTS: '1',
+      REPO_OPS_HEALTH_POLL_SECONDS: '0',
+      BDUI_DEPLOY_HEALTH_URL: 'http://127.0.0.1:3000/healthz',
+      ...extra_env
+    },
+    stdio: 'ignore'
+  });
+}
+
+/** @param {import('node:child_process').ChildProcess} child */
+function exited(child) {
+  return new Promise((resolve) => child.once('exit', resolve));
+}
+
+/** @param {() => boolean} predicate */
+async function waitFor(predicate) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) {
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error('condition_not_observed');
 }
 
 /**
@@ -145,6 +189,27 @@ describe('repo-ops/script/deploy', () => {
     expect(git(env.repo, 'status', '--porcelain')).toBe('');
   });
 
+  test('holds the shared flock for the whole deploy execution', async () => {
+    const release_file = path.join(os.tmpdir(), `deploy-release-${Date.now()}`);
+    const env = fixture({
+      npm_body:
+        'if [ "$1" = "ci" ]; then while [ ! -f "$RELEASE_FILE" ]; do sleep 0.01; done; fi'
+    });
+    const first = runAsync(env, { RELEASE_FILE: release_file });
+    await waitFor(
+      () => calls(env).filter((line) => line === 'npm ci').length === 1
+    );
+
+    const second = runAsync(env, { RELEASE_FILE: release_file });
+    await delay(75);
+
+    expect(calls(env).filter((line) => line === 'npm ci')).toHaveLength(1);
+    fs.writeFileSync(release_file, 'release');
+    await Promise.all([exited(first), exited(second)]);
+    expect(calls(env).filter((line) => line === 'npm ci')).toHaveLength(2);
+    fs.rmSync(release_file, { force: true });
+  });
+
   test('refuses a target SHA that is not the local HEAD', () => {
     const env = fixture();
 
@@ -180,6 +245,29 @@ describe('repo-ops/script/deploy', () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('source_repo_mismatch');
+  });
+
+  test('fails when execution leaves the deploy worktree dirty', () => {
+    const env = fixture({
+      restart_body: 'printf dirty > "$REPO_OPS_REPO_ROOT/untracked.txt"'
+    });
+
+    const result = run(env);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('worktree is not tracked-clean');
+  });
+
+  test('fails when execution changes the deploy worktree HEAD', () => {
+    const env = fixture({
+      restart_body:
+        'printf changed > "$REPO_OPS_REPO_ROOT/package.json"; git -C "$REPO_OPS_REPO_ROOT" add package.json; git -C "$REPO_OPS_REPO_ROOT" commit -qm changed'
+    });
+
+    const result = run(env);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('end HEAD differs');
   });
 
   test('keeps a failure message free of credential-shaped values', () => {

@@ -257,6 +257,75 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('renders parsed execution metadata rows and omits malformed values', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {
+          route: 'spec_backed',
+          exec_receipt: 'malformed',
+          impl_entry: 'malformed'
+        },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          stages: { spec: {}, impl: {} },
+          exec_receipt: {
+            kind: 'delegated',
+            actor: 'gpt-5.6-sol',
+            sha: 'a'.repeat(40)
+          },
+          impl_entry: { actor: 'user', sha: 'b'.repeat(40) }
+        }
+      },
+      vi.fn()
+    );
+    const rows = Array.from(mount.querySelectorAll('.detail-kv')).map(
+      (row) => ({
+        key: row.querySelector('.detail-kv__k')?.textContent?.trim(),
+        value: row.querySelector('.detail-kv__v')?.textContent?.trim()
+      })
+    );
+
+    expect(rows).toContainEqual({
+      key: 'exec_receipt',
+      value: `delegated:gpt-5.6-sol@${'a'.repeat(40)}`
+    });
+    expect(rows).toContainEqual({
+      key: 'impl_entry',
+      value: `user@${'b'.repeat(40)}`
+    });
+    panel.destroy();
+
+    document.body.innerHTML = '<div id="m"></div>';
+    const quiet_mount = /** @type {HTMLElement} */ (
+      document.getElementById('m')
+    );
+    const { panel: quiet_panel } = seedPanel(
+      quiet_mount,
+      {
+        ...baseIssue,
+        metadata: { route: 'spec_backed' },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          stages: { spec: {}, impl: {} },
+          exec_receipt: null,
+          impl_entry: null
+        }
+      },
+      vi.fn()
+    );
+    const quiet_keys = Array.from(
+      quiet_mount.querySelectorAll('.detail-kv__k')
+    ).map((node) => node.textContent?.trim());
+    expect(quiet_keys).not.toContain('exec_receipt');
+    expect(quiet_keys).not.toContain('impl_entry');
+    quiet_panel.destroy();
+  });
+
   test('title pencil opens an input; save sends edit-text title', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi

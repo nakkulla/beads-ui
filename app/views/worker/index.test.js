@@ -7609,7 +7609,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
 
   /**
    * @param {any} gate
-   * @param {{ external?: boolean, wt_present?: boolean, attempts?: Record<string, any> }} [over]
+   * @param {{ external?: boolean, wt_present?: boolean, attempts?: Record<string, any>, cleanup_failed?: Record<string, any> }} [over]
    * @returns {HTMLElement}
    */
   function mountRow(gate, over = {}) {
@@ -7618,6 +7618,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     queueStore.set(
       queueOf({
         attempts: over.attempts || {},
+        cleanup_failed: over.cleanup_failed || {},
         pr_wait: [
           {
             bead_id: 'RD-1',
@@ -7688,8 +7689,21 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     expect(btn.disabled).toBe(false);
   });
 
-  test('offers 정리 on a merged external row — nothing auto-cleans it', () => {
+  test('hides 정리 on a merged external row before a failure is recorded', () => {
     const mount = mountRow(MERGED);
+
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(btn.disabled).toBe(true);
+  });
+
+  test('offers 정리 재개 on a merged external row after a failure', () => {
+    const mount = mountRow(MERGED, {
+      cleanup_failed: {
+        'RD-1': { step: 'base_containment', reason: 'base_fetch_failed' }
+      }
+    });
 
     const btn = /** @type {HTMLButtonElement} */ (
       mount.querySelector('.worker-mini__merge')

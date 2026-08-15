@@ -77,7 +77,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, policySupported?: () => boolean }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -110,15 +110,20 @@ function coordinatorFor(overrides = {}) {
         reclaim: () => {}
       }
     ),
-    deployWorktree: /** @type {never} */ ({
-      bindTarget: async () => ({ ok: true, target_sha: TARGET }),
-      ensureAligned: async () => ({
-        ok: true,
-        path: path.join(root, '.worktrees', '.repo-ops-deploy'),
-        target_sha: TARGET
-      }),
-      verifyAligned: async () => ({ ok: true })
-    }),
+    deployWorktree: /** @type {never} */ (
+      overrides.deployWorktree ?? {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true }),
+        verifyAligned: async () => ({ ok: true })
+      }
+    ),
+    deployLock: overrides.deployLock,
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     repairSession: /** @type {never} */ (overrides.repairSession),
     policySupported: overrides.policySupported
@@ -793,6 +798,83 @@ describe('RepoOperation coordinator', () => {
     expect(fs.readdirSync(repoOpsSpoolPendingDir(root))).toHaveLength(0);
   });
 
+  test('releases the shared deploy lock before spawning the script', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const { coordinator } = coordinatorFor({
+      deployLock: async () => ({
+        ok: true,
+        release: () => order.push('unlock')
+      }),
+      runner: {
+        start: () => {
+          order.push('spawn');
+          return {
+            ok: true,
+            process_identity: { pid: 1, pgid: 1, started_at: 1 },
+            log_path: path.join(root, 'operation.log')
+          };
+        },
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    expect(order).toEqual(['unlock', 'spawn']);
+  });
+
+  test('settles a shared deploy lock timeout as a durable terminal failure', async () => {
+    const { store, coordinator } = coordinatorFor({
+      deployLock: async () => ({ ok: false, code: 'deploy_lock_timeout' })
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    const [operation] = Object.values(store.snapshot(root).repo_operations);
+    expect(operation).toMatchObject({
+      state: 'failed',
+      failure: { code: 'deploy_lock_timeout' }
+    });
+  });
+
+  test('settles a session-predeployed target as covered without spawning', async () => {
+    const start = vi.fn();
+    const ensureAligned = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      deployLock: async () => ({ ok: true, release: vi.fn() }),
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: TARGET,
+          clean: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy')
+        }),
+        ensureAligned,
+        verifyCovered: async () => ({ ok: true })
+      },
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    const [operation] = Object.values(store.snapshot(root).repo_operations);
+    expect(operation.state).toBe('succeeded');
+    expect(ensureAligned).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   test('rejects an unknown approved source without creating any record', async () => {
     const { store, coordinator } = coordinatorFor({
       gitRun: gitForBootstrap({ known_shas: [] })
@@ -1184,6 +1266,89 @@ describe('RepoOperation coordinator', () => {
 
     expect(runner.start).toHaveBeenCalledTimes(1);
     expect(store.snapshot(root).repo_operations['op-1'].state).toBe('running');
+  });
+
+  test('fresh-rebinds a retry and supersedes an older target without realigning it', async () => {
+    const bindTarget = vi.fn(async () => ({ ok: true, target_sha: TARGET }));
+    const ensureAligned = vi.fn();
+    const start = vi.fn();
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'show') {
+        return { code: 0, stdout: CONFIG, stderr: '' };
+      }
+      if (args[0] === 'ls-tree') {
+        const entry =
+          args.at(-1) === 'repo-ops/config.toml'
+            ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+            : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+        return { code: 0, stdout: entry, stderr: '' };
+      }
+      if (args[0] === 'merge-base') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployLock: async () => ({ ok: true, release: vi.fn() }),
+      deployWorktree: {
+        bindTarget,
+        readState: async () => ({
+          ok: true,
+          head: TARGET,
+          clean: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy')
+        }),
+        ensureAligned,
+        verifyCovered: async () => ({ ok: true })
+      },
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'old-target',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-old', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'main',
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const operation = store.snapshot(root).repo_operations['old-target'];
+    store.startRepoOperation(root, {
+      operation_id: 'old-target',
+      attempt_id: operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'old.log'),
+      target_sha: APPROVED
+    });
+    store.deferRepoOperationRetry(root, {
+      operation_id: 'old-target',
+      attempt_id: operation.attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(bindTarget).toHaveBeenCalledOnce();
+    expect(store.snapshot(root).repo_operations['old-target'].state).toBe(
+      'succeeded'
+    );
+    expect(ensureAligned).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
   });
 
   test('settles the first failure after restart between consumption and spawn', async () => {

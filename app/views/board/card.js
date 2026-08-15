@@ -32,6 +32,8 @@ import { stepperTemplate } from './stepper.js';
  * @property {'explicit'|'derived'} [route_source]
  * @property {boolean} [fast_track]
  * @property {{ number: number | null } | null} [pr]
+ * @property {{ kind: string, actor: string, sha: string } | null} [exec_receipt]
+ * @property {{ actor: string, sha: string } | null} [impl_entry]
  */
 
 /**
@@ -196,6 +198,26 @@ function chipsTemplate(issue, ctx) {
     items.push(
       html`<span class="ctl-chip ctl-chip--pr"
         >${`PR${n != null ? ` #${n}` : ''}`}</span
+      >`
+    );
+  }
+  if (chips.exec_receipt) {
+    const receipt = chips.exec_receipt;
+    items.push(
+      html`<span
+        class="ctl-chip ctl-chip--exec-receipt"
+        title=${`exec_receipt ${receipt.kind}:${receipt.actor}@${receipt.sha}`}
+        >${`exec ${receipt.kind === 'delegated' ? receipt.actor : `main:${receipt.actor}`} · ${receipt.sha.slice(0, 7)}`}</span
+      >`
+    );
+  }
+  if (chips.impl_entry) {
+    const entry = chips.impl_entry;
+    items.push(
+      html`<span
+        class="ctl-chip ctl-chip--impl-entry"
+        title=${`impl_entry ${entry.actor}@${entry.sha}`}
+        >${`impl ${entry.actor} · ${entry.sha.slice(0, 7)}`}</span
       >`
     );
   }

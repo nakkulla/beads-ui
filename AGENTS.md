@@ -138,49 +138,27 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
 
 - **필수 마감 단계 — 머지는 완료가 아니다**: 이 저장소의 코드 수정은 공유 서비스
   배포까지 마쳐야 완료다. 머지 후 배포 operation이 terminal success에 도달하고
-  아래 검증(프로세스 경로·포트·HTTP 응답)을 통과한 다음에만 작업 완료를
-  선언한다.
-- **배포 선언의 SoT이자 실행 표면은 `repo-ops/config.toml`의 `[deploy]`다.**
-  Worker는 이 선언을 워킹트리가 아니라 **핀된 base SHA의 git blob**에서 읽으므로
-  PR이 자기 검증·배포 명령을 정의할 수 없다 — 머지 전은 fetch된 target-base tip,
-  머지 후는 `base_containment`가 확정한 SHA가 핀이다. 선언이 있으나 해석 불가면
-  폴백 없이 fail-closed다.
-- **실행 위치는 Worker가 소유한 영구 detached 워크트리
-  `.worktrees/.repo-ops-deploy`**이며, 그 워크트리가 안정 런타임 소스다.
-  candidate release 디렉터리나 `current` release symlink는 만들지 않는다.
-  Worker는 fetch로 target SHA를 pin하고 그 워크트리를 exact 정렬한 뒤
-  `repo-ops/script/deploy`를 one-shot으로 한 번 실행한다. 성공 조건은 script
-  exit 0과 워크트리 `HEAD == target_sha`·tracked-clean readback뿐이며, Worker는
-  health JSON이나 repo-specific 출력을 파싱하지 않는다.
-- script는 `REPO_OPS_TARGET_SHA`·`REPO_OPS_TARGET_BASE`·`REPO_OPS_REPO_ROOT` 세
-  변수만 받고, local HEAD 확인 → `npm ci` → `npm run build` →
-  `bdui-shared restart` → bounded `/healthz`에서 source SHA와 realpath가 각각
-  target SHA와 `REPO_OPS_REPO_ROOT`인지 확인 → exit 0 순서로 스스로 검증한다.
-  재시작이 이 서버 자신을 죽이지만 one-shot executor는 detached라 살아남아 exit
-  code와 log marker를 남기고, 재시작된 Worker가 같은 operation을 adoption한다.
-- **정리 cursor**는
+  프로세스 경로·포트·HTTP 응답 검증까지 통과한 다음에만 완료를 선언한다.
+- 배포 선언의 SoT은 핀된 base SHA에서 읽는 `repo-ops/config.toml`의
+  `[deploy]`다. 선언이 없으면 배포 단계를 생략하고, 선언이 있으나 해석할 수
+  없으면 fail-closed다.
+- 안정 런타임 소스는 공유 detached 워크트리 `.worktrees/.repo-ops-deploy`다.
+  Worker와 세션 등 외부 executor는 `.worktrees/.repo-ops-deploy.lock`의 같은
+  `fcntl.flock` 계약을 사용한다. 정렬 executor는 lock 안에서 target을 다시
+  bind하고 단조성을 확인한 뒤 정렬하며 script spawn 전에 해제한다. deploy
+  script는 실행 전체를 self-flock하고 진입 시 HEAD, 종료 시 HEAD와
+  tracked-clean을 검증한다.
+- 정리 cursor는
   `base_containment → repo_operations → child_sweep → branch_cleanup → parent_close`다.
-  deploy operation이 succeeded가 되기 전에는 Bead를 close하지 않는다. 은퇴한 v1
-  deployment provider(`repo-deployctl` 외부 job과 그 recovery saga,
-  `docs/agents/repo-ops.toml` 선언 reader)는 남아 있지 않으므로 legacy lane도
-  없다 — `repo-ops/config.toml`을 선언하지 않은 base는 verify·deploy 단계 없이
-  곧바로 closure로 넘어간다. 재등장은
-  `scripts/check-repo-deploy-provider-retired.js`가 막는다.
-- **자동 경로는 이 서버의 [머지] 클릭으로 머지된 PR에만 걸린다**: github.com에서
-  직접 머지한 PR은 external row로 **관측만 기록되고 정리가 자동으로 돌지
-  않는다** — 레인에 `머지됨 · 정리`가 뜨고 [정리] 클릭이 단일 트리거다.
-- **실패했을 때**: verify script 실패·deploy script 실패·terminal exit 없는
-  중단은 workspace 설정의 **`자동 해결`**(기본 ON) 아래에서 completion chain당
-  **1회** 자동 repair session을 받는다. budget을 다 썼거나 같은 fingerprint가 새
-  증거 없이 재현되면 자동은 멈추고 operation card의 실패 kind별 해결 버튼이
-  입구다. 무엇이 자동이고 무엇이 아닌지는 설정 화면의 세 목록에 그대로 있으며,
-  그 목록은 dotfiles가 소유한 정책 아티팩트에서 온다(문장 하드코딩 아님).
-- **자동 배포는 재시작을 대신할 뿐 확인을 대신하지 않는다**: 자동 경로가
-  돌았어도 아래 검증과 완료 선언 책임은 그대로 남는다. 자동 경로가 성립하지
-  않았거나 정리가 멈췄다면 수동 절차로 직접 재시작·검증한다.
-- 이 저장소의 실제 동작을 찾을 때 볼 곳: canonical `repo-ops/config.toml`,
-  Worker/Monitor 설정 화면의 `자동 해결` 섹션과 세 목록, 그리고 dotfiles의
-  workflow 계약(`docs/contracts/workflow.{md,yaml}`).
+  [머지] 클릭, 세션 직접 머지, 외부 머지는 모두 관측 후 같은 자동 정리 경로로
+  수렴한다. `[정리]`는 `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
+- 실패 해결은 v2 사다리
+  `script_retry → auto_repair_session → user_triggered_session` 순서다. 구체적인
+  자동화·예산·중단 의미는 dotfiles의 `docs/contracts/workflow.{md,yaml}`과
+  Worker/Monitor의 계약 projection을 따른다.
+- 실제 소비자 표면은 canonical `repo-ops/config.toml`, `repo-ops/script/deploy`,
+  Worker/Monitor의 저장소 작업·자동 해결 화면이다. 계약 문구와 automation enum은
+  dotfiles가 소유하며 이 문서에 복제하지 않는다.
 - If the merged change affects runtime behavior, verify that the real server
   process comes up from `.worktrees/.repo-ops-deploy` at the merged SHA, not a
   stale worktree or pre-merge checkout.

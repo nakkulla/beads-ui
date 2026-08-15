@@ -39,6 +39,8 @@ const PLAN_REVIEW_RECEIPT_RE = /^(codex|fable|self|skipped)@([0-9a-fA-F]{12})$/;
 
 /** New native Plan Mode approval, bound to the saved plan commit. */
 const PLAN_APPROVAL_RECEIPT_RE = /^(user)@([0-9a-fA-F]{40})$/;
+const EXEC_RECEIPT_RE = /^(delegated|main):([^@\n]+)@([0-9a-fA-F]{40})$/;
+const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
 
 /**
  * Reviewer tokens the workflow contract enumerates as review evidence
@@ -90,6 +92,31 @@ export function parseReceipt(value) {
   }
   const reviewer = m[1];
   return { reviewer, sha: m[2], is_skip: reviewer === 'skipped' };
+}
+
+/**
+ * Parse execution provenance for display only. Malformed or absent metadata is
+ * omitted and never participates in workflow gating.
+ *
+ * @param {unknown} value
+ */
+export function parseExecReceipt(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = EXEC_RECEIPT_RE.exec(value.trim());
+  return match
+    ? { kind: match[1], actor: match[2], sha: match[3].toLowerCase() }
+    : null;
+}
+
+/** @param {unknown} value */
+export function parseImplEntry(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = IMPL_ENTRY_RE.exec(value.trim());
+  return match ? { actor: match[1], sha: match[2].toLowerCase() } : null;
 }
 
 /**
@@ -693,7 +720,9 @@ function mergeStage(md, status) {
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
- * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null }} chips
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, exec_receipt: { kind: string, actor: string, sha: string }|null, impl_entry: { actor: string, sha: string }|null }} chips
+ * @property {{ kind: string, actor: string, sha: string }|null} exec_receipt
+ * @property {{ actor: string, sha: string }|null} impl_entry
  */
 
 /**
@@ -721,6 +750,8 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     );
 
   const route = deriveRoute(md);
+  const exec_receipt = parseExecReceipt(md.exec_receipt);
+  const impl_entry = parseImplEntry(md.impl_entry);
   // Explicit only when the metadata pin itself is a valid enum value — any
   // fallback (absence, invalid value, plan_path inference) is 'derived'.
   const route_source =
@@ -754,11 +785,15 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     route,
     route_source,
     stages,
+    exec_receipt,
+    impl_entry,
     chips: {
       route,
       route_source,
       fast_track: md.workflow_mode === 'fast_track',
-      pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null
+      pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null,
+      exec_receipt,
+      impl_entry
     }
   };
 }

@@ -875,9 +875,8 @@ function prWaitRow(
     ) &&
     !!gate &&
     gate.tier === 'merged';
-  // An external MERGED row is never auto-cleaned (UI-7agi §1), so the button IS
-  // the cleanup trigger — with or without a recorded failure.
-  const external_cleanup = external && !!gate && gate.tier === 'merged';
+  const external_cleanup =
+    external && !!cleanup_failed && !!gate && gate.tier === 'merged';
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
   // never recreates one (UI-w0hi 제외), so the button would refuse every time.
   // The badge reports the conflict; the user resolves it in their own session.
@@ -993,7 +992,7 @@ function prWaitRow(
         : merge_step
           ? `머지 진행 중 — ${merge_step.label}`
           : external_cleanup
-            ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+            ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
             : external_conflict_unresolvable
               ? '워크트리 없음 — 세션에서 직접 해소하세요'
               : conflict_session === 'running'

@@ -846,6 +846,39 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
+   * Read the deploy worktree evidence without changing it. A missing worktree is
+   * a normal pre-bootstrap state; unreadable existing state fails closed.
+   *
+   * @param {{ repo: string }} input
+   */
+  async function readState(input) {
+    const repo = fs.realpathSync(path.resolve(input.repo));
+    const deploy_path = pathFor(repo);
+    if (!fs.existsSync(deploy_path)) {
+      return { ok: true, path: deploy_path, head: null, clean: true };
+    }
+    const current = await run(['rev-parse', 'HEAD'], { cwd: deploy_path });
+    const dirty = await run(
+      ['status', '--porcelain', '--untracked-files=all'],
+      { cwd: deploy_path }
+    );
+    const head = current.stdout.trim().toLowerCase();
+    if (
+      current.code !== 0 ||
+      dirty.code !== 0 ||
+      !/^[0-9a-f]{40}$/.test(head)
+    ) {
+      return { ok: false, path: deploy_path, head: null, clean: false };
+    }
+    return {
+      ok: true,
+      path: deploy_path,
+      head,
+      clean: dirty.stdout.trim() === ''
+    };
+  }
+
+  /**
    * Verify the terminal postcondition of a deploy run: the owned worktree is
    * still at the bound target and clean (master spec §6.3 step 7).
    *
@@ -870,6 +903,33 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
+   * Verify that the clean deploy worktree still covers the operation target.
+   * A newer successful deploy therefore cannot invalidate an older operation's
+   * zero-exit marker during the executor's post-script readback.
+   *
+   * @param {{ repo: string, target_sha: string }} input
+   */
+  async function verifyCovered(input) {
+    const state = await readState({ repo: input.repo });
+    if (
+      !state.ok ||
+      !state.clean ||
+      typeof state.head !== 'string' ||
+      typeof state.path !== 'string'
+    ) {
+      return { ok: false };
+    }
+    if (state.head === input.target_sha) {
+      return { ok: true };
+    }
+    const contained = await run(
+      ['merge-base', '--is-ancestor', input.target_sha, state.head],
+      { cwd: input.repo }
+    );
+    return { ok: contained.code === 0 };
+  }
+
+  /**
    * @param {{ repo: string, base: string, workspace?: string, last_successful_sha?: string|null }} input
    * @returns {Promise<{ ok: boolean, code?: string, path?: string, target_sha?: string }>}
    */
@@ -888,5 +948,13 @@ export function createRepoOpsDeployWorktreeManager(deps) {
     });
   }
 
-  return { pathFor, bindTarget, ensureAligned, verifyAligned, ensure };
+  return {
+    pathFor,
+    bindTarget,
+    ensureAligned,
+    readState,
+    verifyAligned,
+    verifyCovered,
+    ensure
+  };
 }

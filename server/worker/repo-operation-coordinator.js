@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { acquireDeployLock } from './deploy-lock.js';
 import { resolveRepairOwner } from './repair-session-adapter.js';
 import {
   isRepairEligible,
@@ -85,7 +86,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, policySupported?: () => boolean }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, policySupported?: () => boolean }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -94,6 +95,7 @@ export function createRepoOperationCoordinator(deps) {
   const deploy_worktree =
     deps.deployWorktree ||
     createRepoOpsDeployWorktreeManager({ locks: deps.locks, run: deps.gitRun });
+  const deployLock = deps.deployLock || acquireDeployLock;
   const verify_checkout =
     deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
   const policySupported = deps.policySupported || repoOperationPolicySupported;
@@ -468,10 +470,15 @@ export function createRepoOperationCoordinator(deps) {
               target_tree: operation.target_tree
             })
           : typeof operation.target_sha === 'string'
-            ? await deploy_worktree.verifyAligned({
-                repo: deps.repo,
-                target_sha: operation.target_sha
-              })
+            ? typeof deploy_worktree.verifyCovered === 'function'
+              ? await deploy_worktree.verifyCovered({
+                  repo: deps.repo,
+                  target_sha: operation.target_sha
+                })
+              : await deploy_worktree.verifyAligned({
+                  repo: deps.repo,
+                  target_sha: operation.target_sha
+                })
             : { ok: false };
       if (!aligned.ok) {
         await settleFailure(workspace, operation, operation_id, {
@@ -831,6 +838,103 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Bind, check monotonic deploy evidence, and align while holding the shared
+   * cross-process lock. The caller already holds the in-process repo-operation
+   * lock, so the only nesting direction is in-process then cross-process.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   * @param {any} operation
+   * @param {{ declaration: any, target_sha: string, retry?: boolean }} plan
+   */
+  async function alignRecordedDeploy(workspace, operation_id, operation, plan) {
+    const acquired = await deployLock({
+      repo: deps.repo,
+      timeout_ms: plan.declaration.timeout_ms
+    });
+    if (!acquired.ok) {
+      await settleFailure(workspace, operation, operation_id, {
+        code: acquired.code
+      });
+      return { ok: false, code: acquired.code, operation_id };
+    }
+    try {
+      const rebound = await deploy_worktree.bindTarget({
+        repo: deps.repo,
+        base: operation.target_base,
+        last_successful_sha: latestSuccessfulDeploySha(
+          deps.store.snapshot(workspace),
+          deps.repo,
+          operation.target_base
+        )
+      });
+      if (!rebound.ok || typeof rebound.target_sha !== 'string') {
+        const code = rebound.code || 'repo_ops_target_unresolved';
+        if (plan.retry === true) {
+          deps.store.settleConsumedRepoOperationRetry(workspace, {
+            operation_id,
+            owner_bead: await ownerBead(operation),
+            blocked_reason: code
+          });
+        } else {
+          await settleFailure(workspace, operation, operation_id, { code });
+        }
+        return { ok: false, code, operation_id };
+      }
+
+      const state =
+        typeof deploy_worktree.readState === 'function'
+          ? await deploy_worktree.readState({ repo: deps.repo })
+          : { ok: true, head: null, clean: true };
+      if (
+        state.ok &&
+        state.clean === true &&
+        typeof state.head === 'string' &&
+        (state.head === plan.target_sha ||
+          (await isCoveredByDescendant(plan.target_sha, state.head)))
+      ) {
+        deps.store.settleRepoOperation(workspace, {
+          operation_id,
+          attempt_id: operation.attempt_id,
+          exit_code: 0,
+          signal: null
+        });
+        await sweepDescendantCoverage(workspace, operation_id);
+        transition.reclaim(workspace, operation_id);
+        return {
+          ok: true,
+          operation_id,
+          terminal: true,
+          covered: state.head === plan.target_sha,
+          superseded: state.head !== plan.target_sha
+        };
+      }
+
+      const aligned = await deploy_worktree.ensureAligned({
+        repo: deps.repo,
+        workspace,
+        target_sha: plan.target_sha
+      });
+      if (!aligned.ok || typeof aligned.path !== 'string') {
+        const code = aligned.code || 'repo_ops_worktree_align_failed';
+        if (plan.retry === true) {
+          deps.store.settleConsumedRepoOperationRetry(workspace, {
+            operation_id,
+            owner_bead: await ownerBead(operation),
+            blocked_reason: code
+          });
+        } else {
+          await settleFailure(workspace, operation, operation_id, { code });
+        }
+        return { ok: false, code, operation_id };
+      }
+      return { ok: true, path: aligned.path, operation_id };
+    } finally {
+      await acquired.release();
+    }
+  }
+
+  /**
    * Align, materialize, spawn, and record one already-prerecorded queued
    * operation. Every pre-spawn failure settles durably instead of leaving a
    * silent queued record. Caller holds the repo-operation lock.
@@ -848,24 +952,24 @@ export function createRepoOperationCoordinator(deps) {
     ) {
       return { ok: true, operation_id, adopted: true };
     }
-    const aligned = await deploy_worktree.ensureAligned({
-      repo: deps.repo,
+    const aligned = await alignRecordedDeploy(
       workspace,
-      target_sha: plan.target_sha
-    });
-    if (!aligned.ok || typeof aligned.path !== 'string') {
-      if (plan.retry === true) {
-        deps.store.settleConsumedRepoOperationRetry(workspace, {
-          operation_id,
-          owner_bead: await ownerBead(operation),
-          blocked_reason: aligned.code || 'repo_ops_worktree_align_failed'
-        });
-      } else {
-        await settleFailure(workspace, operation, operation_id, {
-          code: aligned.code || 'repo_ops_worktree_align_failed'
-        });
-      }
-      return { ok: false, code: aligned.code, operation_id };
+      operation_id,
+      operation,
+      plan
+    );
+    if (!aligned.ok || aligned.terminal === true) {
+      return aligned;
+    }
+    if (typeof aligned.path !== 'string') {
+      await settleFailure(workspace, operation, operation_id, {
+        code: 'repo_ops_worktree_align_failed'
+      });
+      return {
+        ok: false,
+        code: 'repo_ops_worktree_align_failed',
+        operation_id
+      };
     }
     let script_path = path.join(aligned.path, plan.declaration.script);
     if (plan.classification === 'transition') {
