@@ -1356,6 +1356,22 @@ export function createDetailPanel(mount_element, options) {
             >
           </div>`
         : ''}
+      ${wf.exec_receipt
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">exec_receipt</span>
+            <span class="detail-kv__v detail-kv__v--wrap"
+              >${`${wf.exec_receipt.kind}:${wf.exec_receipt.actor}@${wf.exec_receipt.sha}`}</span
+            >
+          </div>`
+        : ''}
+      ${wf.impl_entry
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">impl_entry</span>
+            <span class="detail-kv__v"
+              >${`${wf.impl_entry.actor}@${wf.impl_entry.sha}`}</span
+            >
+          </div>`
+        : ''}
       ${md.pr_url
         ? html`<div class="detail-kv">
             <span class="detail-kv__k">pr_url</span>

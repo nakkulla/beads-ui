@@ -121,6 +121,9 @@ describe('worker/completion-repair deterministic Bead lineage', () => {
           description: input.description,
           dependencies: [{ depends_on_id: ROOT, type: 'discovered-from' }]
         });
+      }),
+      updateFields: vi.fn(async (/** @type {string} */ id, input) => {
+        issues.get(id).metadata = { ...input.set };
       })
     };
     const service = createCompletionRepairService({ bd, repo: REPO });
@@ -144,6 +147,67 @@ describe('worker/completion-repair deterministic Bead lineage', () => {
         dependency: `discovered-from:${ROOT}`
       })
     );
+    expect(bd.updateFields).toHaveBeenCalledWith('UI-root-rdcfdab23', {
+      set: {
+        completion_op_id: 'create-child',
+        completion_failure_key: `merge_gate/verify_cmd_failed/${DIGEST}`
+      }
+    });
+    expect(issues.get('UI-root-rdcfdab23').description).not.toContain(
+      'completion_op='
+    );
+    expect(issues.get('UI-root-rdcfdab23').description).not.toContain(
+      'completion_failure='
+    );
+  });
+
+  test('backfills metadata after creation was interrupted', async () => {
+    const issues = new Map();
+    let fail_update = true;
+    const bd = {
+      findIssue: vi.fn(
+        async (/** @type {string} */ id) => issues.get(id) || null
+      ),
+      createIssue: vi.fn(async (/** @type {any} */ input) => {
+        issues.set(input.id, {
+          id: input.id,
+          title: input.title,
+          issue_type: input.type,
+          priority: input.priority,
+          description: input.description,
+          dependencies: [{ depends_on_id: ROOT, type: 'discovered-from' }]
+        });
+      }),
+      updateFields: vi.fn(async (/** @type {string} */ id, input) => {
+        if (fail_update) {
+          fail_update = false;
+          throw new Error('metadata unavailable');
+        }
+        issues.get(id).metadata = { ...input.set };
+      })
+    };
+    const service = createCompletionRepairService({ bd, repo: REPO });
+    const input = {
+      root_bead_id: ROOT,
+      op_id: 'create-child',
+      failure_key: failureKey()
+    };
+
+    await expect(service.ensureLinkedBead(input)).rejects.toThrow(
+      'metadata unavailable'
+    );
+    const result = await service.ensureLinkedBead(input);
+
+    expect(result).toEqual({
+      bead_id: 'UI-root-rdcfdab23',
+      branch: 'UI-root-rdcfdab23',
+      created: false
+    });
+    expect(bd.createIssue).toHaveBeenCalledOnce();
+    expect(issues.get('UI-root-rdcfdab23').metadata).toEqual({
+      completion_op_id: 'create-child',
+      completion_failure_key: `merge_gate/verify_cmd_failed/${DIGEST}`
+    });
   });
 
   test('rejects an existing id whose dependency belongs to another operation', async () => {

@@ -8,6 +8,8 @@ import {
   classifyGlyph,
   computeStale,
   enrichIssueWorkflow,
+  parseExecReceipt,
+  parseImplEntry,
   parsePlanReceipt,
   parseReceipt
 } from './workflow-enrich.js';
@@ -94,6 +96,46 @@ describe('parseReceipt', () => {
     expect(parseReceipt('nope')).toBeNull();
     expect(parseReceipt(undefined)).toBeNull();
     expect(parseReceipt('codex@zzz')).toBeNull();
+  });
+});
+
+describe('execution metadata display projection', () => {
+  test('parses delegated and main execution receipts', () => {
+    expect(parseExecReceipt(`delegated:gpt-5.6-sol@${'a'.repeat(40)}`)).toEqual(
+      {
+        kind: 'delegated',
+        actor: 'gpt-5.6-sol',
+        sha: 'a'.repeat(40)
+      }
+    );
+    expect(parseExecReceipt(`main:국소 수정@${'b'.repeat(40)}`)).toEqual({
+      kind: 'main',
+      actor: '국소 수정',
+      sha: 'b'.repeat(40)
+    });
+  });
+
+  test('parses user implementation entry receipts', () => {
+    expect(parseImplEntry(`user@${'c'.repeat(40)}`)).toEqual({
+      actor: 'user',
+      sha: 'c'.repeat(40)
+    });
+  });
+
+  test('omits malformed execution metadata from enrichment', () => {
+    const workflow = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        metadata: { exec_receipt: 'delegated:no-sha', impl_entry: 'self@bad' }
+      },
+      null,
+      null
+    );
+
+    expect(workflow.exec_receipt).toBeNull();
+    expect(workflow.impl_entry).toBeNull();
+    expect(workflow.chips.exec_receipt).toBeNull();
+    expect(workflow.chips.impl_entry).toBeNull();
   });
 });
 

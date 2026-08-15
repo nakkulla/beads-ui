@@ -223,7 +223,6 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
       gate.enabled === true ||
       (conflicting && !external) ||
       (!!cleanup_failed[bead_id] && merged_tier) ||
-      (external && merged_tier) ||
       repairable;
     if (!eligible) {
       continue;

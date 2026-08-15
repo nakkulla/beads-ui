@@ -72,7 +72,7 @@ export function repairBeadIdentity(root_bead_id, op_id) {
  * @param {string} op_id
  * @param {{ stage: string, reason: string, result_digest: string }} failure_key
  */
-function failureMarker(root_bead_id, op_id, failure_key) {
+function legacyFailureMarker(root_bead_id, op_id, failure_key) {
   return [
     `출처: ${root_bead_id}`,
     `completion_op=${op_id}`,
@@ -80,9 +80,19 @@ function failureMarker(root_bead_id, op_id, failure_key) {
   ].join('\n');
 }
 
+/** @param {{ stage: string, reason: string, result_digest: string }} failure_key */
+function completionFailureKey(failure_key) {
+  return `${failure_key.stage}/${failure_key.reason}/${failure_key.result_digest}`;
+}
+
+/** @param {string} root_bead_id */
+function repairNarrative(root_bead_id) {
+  return `${root_bead_id}의 자동머지 완료 의도에서 관측된 실패를 복구한다.`;
+}
+
 /**
  * @param {Record<string, any>} issue
- * @param {{ root_bead_id: string, marker: string, title: string }} expected
+ * @param {{ root_bead_id: string, op_id: string, failure_key: string, marker: string, title: string }} expected
  */
 function matchesIdentity(issue, expected) {
   const description =
@@ -91,17 +101,64 @@ function matchesIdentity(issue, expected) {
   const dependencies = Array.isArray(issue.dependencies)
     ? issue.dependencies
     : [];
-  return (
+  const base_matches =
     issue.title === expected.title &&
     issue.issue_type === 'bug' &&
     issue.priority === 1 &&
-    `${description}\n${notes}`.includes(expected.marker) &&
     dependencies.some(
       (dependency) =>
         dependency &&
         typeof dependency === 'object' &&
         dependency.depends_on_id === expected.root_bead_id &&
         dependency.type === 'discovered-from'
+    );
+  if (!base_matches) {
+    return false;
+  }
+  const metadata =
+    issue.metadata &&
+    typeof issue.metadata === 'object' &&
+    !Array.isArray(issue.metadata)
+      ? issue.metadata
+      : {};
+  const has_op = Object.hasOwn(metadata, 'completion_op_id');
+  const has_failure = Object.hasOwn(metadata, 'completion_failure_key');
+  if (has_op || has_failure) {
+    return (
+      has_op &&
+      has_failure &&
+      metadata.completion_op_id === expected.op_id &&
+      metadata.completion_failure_key === expected.failure_key
+    );
+  }
+  return `${description}\n${notes}`.includes(expected.marker);
+}
+
+/**
+ * @param {Record<string, any>} issue
+ * @param {{ root_bead_id: string, title: string, narrative: string }} expected
+ */
+function matchesInterruptedCreation(issue, expected) {
+  const metadata =
+    issue.metadata &&
+    typeof issue.metadata === 'object' &&
+    !Array.isArray(issue.metadata)
+      ? issue.metadata
+      : {};
+  const dependencies = Array.isArray(issue.dependencies)
+    ? issue.dependencies
+    : [];
+  return (
+    issue.title === expected.title &&
+    issue.issue_type === 'bug' &&
+    issue.priority === 1 &&
+    issue.description === expected.narrative &&
+    !Object.hasOwn(metadata, 'completion_op_id') &&
+    !Object.hasOwn(metadata, 'completion_failure_key') &&
+    dependencies.some(
+      (dependency) =>
+        dependency?.depends_on_id === expected.root_bead_id &&
+        dependency?.type === 'discovered-from'
     )
   );
 }
@@ -110,7 +167,8 @@ function matchesIdentity(issue, expected) {
  * @param {{
  *   bd: {
  *     findIssue?: (bead_id: string) => Promise<Record<string, any>|null>,
- *     createIssue?: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>
+ *     createIssue?: (input: { id: string, title: string, description: string, type: string, priority: number, dependency?: string }) => Promise<void>,
+ *     updateFields?: (bead_id: string, input: { set: Record<string, string> }) => Promise<void>
  *   },
  *   repo: string,
  *   resolveVerify?: (pin: { sha: string }) => Promise<any>,
@@ -190,35 +248,78 @@ export function createCompletionRepairService(deps) {
     async ensureLinkedBead(input) {
       const { root_bead_id, op_id, failure_key } = input;
       const identity = repairBeadIdentity(root_bead_id, op_id);
-      const marker = failureMarker(root_bead_id, op_id, failure_key);
+      const marker = legacyFailureMarker(root_bead_id, op_id, failure_key);
+      const failure_identity = completionFailureKey(failure_key);
+      const narrative = repairNarrative(root_bead_id);
       const title = `${root_bead_id} 자동머지 실패 복구`;
-      const expected = { root_bead_id, marker, title };
+      const expected = {
+        root_bead_id,
+        op_id,
+        failure_key: failure_identity,
+        marker,
+        title
+      };
       const findIssue = deps.bd.findIssue;
       const createIssue = deps.bd.createIssue;
+      const updateFields = deps.bd.updateFields;
       if (
         typeof findIssue !== 'function' ||
         typeof createIssue !== 'function'
       ) {
         throw new Error('repair_bead_adapter_missing');
       }
-      const existing = await findIssue(identity.bead_id);
+      const readIssue =
+        /** @type {(bead_id: string) => Promise<Record<string, any>|null>} */ (
+          findIssue
+        );
+      /** @param {Record<string, any>} issue */
+      async function backfillInterrupted(issue) {
+        if (
+          !matchesInterruptedCreation(issue, {
+            root_bead_id,
+            title,
+            narrative
+          })
+        ) {
+          return false;
+        }
+        if (typeof updateFields !== 'function') {
+          throw new Error('repair_bead_adapter_missing');
+        }
+        await updateFields(identity.bead_id, {
+          set: {
+            completion_op_id: op_id,
+            completion_failure_key: failure_identity
+          }
+        });
+        const confirmed = await readIssue(identity.bead_id);
+        if (!confirmed || !matchesIdentity(confirmed, expected)) {
+          throw new Error('repair_bead_metadata_readback_failed');
+        }
+        return true;
+      }
+      const existing = await readIssue(identity.bead_id);
       if (existing) {
+        if (matchesIdentity(existing, expected)) {
+          return { ...identity, created: false };
+        }
+        if (await backfillInterrupted(existing)) {
+          return { ...identity, created: false };
+        }
         if (!matchesIdentity(existing, expected)) {
           throw new Error('repair_bead_identity_conflict');
         }
-        return { ...identity, created: false };
       }
 
       let created = true;
+      if (typeof updateFields !== 'function') {
+        throw new Error('repair_bead_adapter_missing');
+      }
       try {
         await createIssue({
           id: identity.bead_id,
           title,
-          description: [
-            `${root_bead_id}의 자동머지 완료 의도에서 관측된 실패를 복구한다.`,
-            '',
-            marker
-          ].join('\n'),
+          description: narrative,
           type: 'bug',
           priority: 1,
           dependency: `discovered-from:${root_bead_id}`
@@ -226,7 +327,21 @@ export function createCompletionRepairService(deps) {
       } catch {
         created = false;
       }
-      const confirmed = await findIssue(identity.bead_id);
+      let confirmed = await readIssue(identity.bead_id);
+      if (confirmed && !matchesIdentity(confirmed, expected)) {
+        if (await backfillInterrupted(confirmed)) {
+          return { ...identity, created };
+        }
+      }
+      if (created) {
+        await updateFields(identity.bead_id, {
+          set: {
+            completion_op_id: op_id,
+            completion_failure_key: failure_identity
+          }
+        });
+        confirmed = await readIssue(identity.bead_id);
+      }
       if (!confirmed || !matchesIdentity(confirmed, expected)) {
         throw new Error(
           confirmed

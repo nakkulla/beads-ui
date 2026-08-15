@@ -503,7 +503,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ) &&
         !!gate &&
         gate.tier === 'merged';
-      const external_cleanup = external && !!gate && gate.tier === 'merged';
+      const external_cleanup =
+        external && !!cleanup && !!gate && gate.tier === 'merged';
       const gate_alert =
         !!gate &&
         ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier);
@@ -562,7 +563,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
               ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
               : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
             : external_cleanup
-              ? '머지됨 — 클릭하면 머지 후 정리를 수행합니다'
+              ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
               : cleanup_retry
                 ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
                 : conflicting

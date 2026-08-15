@@ -130,6 +130,39 @@ describe('RepoOps deploy worktree', () => {
     );
   });
 
+  test('rejects a foreign clean checkout as deploy state', async () => {
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager()
+    });
+    const foreign_path = path.join(repo, '.worktrees', '.repo-ops-deploy');
+    fs.mkdirSync(path.dirname(foreign_path), { recursive: true });
+    git(['clone', '-q', '-b', 'main', remote, foreign_path], root);
+
+    const state = await manager.readState({ repo });
+
+    expect(state).toMatchObject({
+      ok: false,
+      code: 'repo_ops_worktree_unowned'
+    });
+  });
+
+  test('rejects a foreign clean checkout as coverage evidence', async () => {
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager()
+    });
+    const foreign_path = path.join(repo, '.worktrees', '.repo-ops-deploy');
+    fs.mkdirSync(path.dirname(foreign_path), { recursive: true });
+    git(['clone', '-q', '-b', 'main', remote, foreign_path], root);
+    const target_sha = git(['rev-parse', 'HEAD'], foreign_path).trim();
+
+    const covered = await manager.verifyCovered({ repo, target_sha });
+
+    expect(covered).toMatchObject({
+      ok: false,
+      code: 'repo_ops_worktree_unowned'
+    });
+  });
+
   test('refuses a registered worktree whose ownership journal is missing', async () => {
     const manager = createRepoOpsDeployWorktreeManager({
       locks: createLockManager()

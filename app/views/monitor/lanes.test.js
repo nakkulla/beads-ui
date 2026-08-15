@@ -828,6 +828,24 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
     expect(lanes.pr_wait[0].badges).toContain('정리 멈춤 · 자식 정리');
   });
 
+  test('hides cleanup action for a merged external row without a failure', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW, external: true }],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, tier: 'merged' } }
+          },
+          cleanup_failed: {}
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_enabled).toBe(false);
+    expect(lanes.pr_wait[0].merge_label).toBeUndefined();
+  });
+
   test('keeps cleanup disabled while a failed discard awaits retry', () => {
     const lanes = buildLanes(
       [

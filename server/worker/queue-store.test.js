@@ -3257,6 +3257,43 @@ describe('worker/queue-store single lane + slots (worker-phase2 §3/§9)', () =>
   });
 });
 
+describe('worker/queue-store — 외부 머지 durable 승격 (UI-exua §3.2)', () => {
+  test('keeps external origin on the promoted pr_wait entry', () => {
+    const store = createQueueStore();
+
+    const r = store.promoteMergedExternal(WS, {
+      bead_id: 'X1',
+      merge_sha: 'a'.repeat(40),
+      head_ref: 'X1',
+      pr_url: 'https://github.com/o/r/pull/9'
+    });
+
+    expect(r.ok).toBe(true);
+    const row = store
+      .snapshot(WS)
+      .pr_wait.find((/** @type {any} */ e) => e.bead_id === 'X1');
+    expect(row).toMatchObject({
+      external: true,
+      merge_sha: 'a'.repeat(40)
+    });
+  });
+
+  test('keeps external origin across normalization on cold load', () => {
+    const store = createQueueStore();
+    store.promoteMergedExternal(WS, {
+      bead_id: 'X1',
+      merge_sha: 'a'.repeat(40)
+    });
+
+    const restarted = createQueueStore();
+
+    const row = restarted
+      .load(WS)
+      .pr_wait.find((/** @type {any} */ e) => e.bead_id === 'X1');
+    expect(row?.external).toBe(true);
+  });
+});
+
 describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', () => {
   /**
    * @param {any} store

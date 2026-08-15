@@ -103,6 +103,64 @@ describe('worker/merge-candidates — overlaidPrWait', () => {
 
 /** @type {Array<[string, 'empty'|'ok', null|'fail', string|null]>} */
 describe('worker/merge-candidates — completion repair intake', () => {
+  test('excludes a merged external row until cleanup has failed', () => {
+    getWorkerRuntime().prObservations.record(WS, 'EXT-1', {
+      pr: {
+        number: 2,
+        url: 'https://github.com/o/r/pull/2',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'EXT-1',
+        head_sha: 'b'.repeat(40),
+        base_ref: 'main',
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'EXT-1', external: true }],
+        attempts: {},
+        cleanup_failed: {}
+      },
+      'absent'
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  test('includes a merged external row after cleanup has failed', () => {
+    getWorkerRuntime().prObservations.record(WS, 'EXT-1', {
+      pr: {
+        number: 2,
+        url: 'https://github.com/o/r/pull/2',
+        state: 'MERGED',
+        mergeable: 'UNKNOWN',
+        merge_state_status: 'UNKNOWN',
+        head_ref: 'EXT-1',
+        head_sha: 'b'.repeat(40),
+        base_ref: 'main',
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'EXT-1', external: true }],
+        attempts: {},
+        cleanup_failed: {
+          'EXT-1': { step: 'base_containment', reason: 'base_fetch_failed' }
+        }
+      },
+      'absent'
+    );
+
+    expect(result).toEqual([{ bead_id: 'EXT-1', external: true }]);
+  });
+
   test('includes a worker-owned repairable verify failure', () => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {
