@@ -158,7 +158,9 @@ beads-ui의 active consumer 문서인 `app/protocol.md`, runtime comments, UI �
 
 ## 8. Test scope
 
-다음 seam에 RED→GREEN 실행 권한을 둔다.
+### 8.1 RED→GREEN seams
+
+다음 현재-failing seam에 RED→GREEN 실행 권한을 둔다.
 
 1. **config parser**
    - `[worker.verify]`가 있어도 runtime config에 `worker_verify`가 생기지 않는다.
@@ -181,13 +183,18 @@ beads-ui의 active consumer 문서인 `app/protocol.md`, runtime comments, UI �
    - snapshot에 `workspace_info.verify_cmd`가 없다.
    - settings와 auto-merge UI에 legacy row·fallback·홈 설정 안내가 없다.
    - repo-ops verify `resolved|absent|pending|error` 표시가 유지된다.
-6. **compatibility**
-   - 대표 historical `verify_cmd_failed`, `post_merge_verify`, `verify_cmd_result` record와
-     log/failure label은 계속 읽힌다.
-   - historical record가 active verify declaration이나 green receipt로 승격되지 않는다.
-7. **retirement guard**
+6. **retirement guard**
    - active source에서 `getConfig().worker_verify`, `resolveConfiguredVerify`,
      `[worker.verify]` UI/help text가 다시 추가되지 않음을 검사한다.
+
+### 8.2 Regression verification
+
+다음 compatibility 동작은 현재도 green이므로 새 RED seam이 아니다. 기존 focused test와
+representative fixture로 회귀만 확인한다.
+
+- 대표 historical `verify_cmd_failed`, `post_merge_verify`, `verify_cmd_result` record와
+  log/failure label은 계속 읽힌다.
+- historical record가 active verify declaration이나 green receipt로 승격되지 않는다.
 
 ## 9. 수용 기준
 
