@@ -1071,10 +1071,15 @@ export function createExecDefaultsDialog(mount_element, options) {
     exact_input_exit_zero_evidence_adoption: '동일 입력 성공 증거 인계',
     descendant_success_covers_ancestor_rows: '최신 SHA 성공이 이전 행 커버',
     owned_verify_candidate_cleanup: '검증 임시 체크아웃 정리',
-    verify_script_failure: '검증 실패',
-    deploy_script_failure: '배포 실패',
-    interrupted_without_terminal_exit: '중단된 작업',
-    whole_command_retry: '명령 통째 재시도',
+    script_retry: '스크립트 재시도',
+    auto_repair_session: '자동 해결 세션',
+    user_triggered_session: '사용자 해결 세션',
+    automatic: '자동',
+    user_action_only: '사용자 클릭',
+    script_identity_present: '스크립트가 있을 때만',
+    per_completion_chain: '완료 체인당',
+    unbounded: '횟수 제한 없음',
+    bounded_single_script_retry_exceeded: '단일 스크립트 재시도 한도 초과',
     baseline_failure_ignore: '기존 실패 무시',
     config_or_script_deletion_to_bypass_gate:
       '설정·스크립트 삭제로 게이트 우회',
@@ -1102,6 +1107,51 @@ export function createExecDefaultsDialog(mount_element, options) {
             </li>`
         )}
       </ul>
+    </div>`;
+  }
+
+  /**
+   * Render the ordered ladder from artifact fields. Unknown ids, triggers, and
+   * limit tokens stay visible verbatim instead of being dropped by the client.
+   *
+   * @param {Record<string, any>[]} entries
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function resolutionLadder(entries) {
+    return html`<div
+      class="exec-defaults__policy-group"
+      data-policy="resolution-ladder"
+    >
+      <div class="exec-defaults__policy-label">해결 사다리</div>
+      <ol class="exec-defaults__policy-list">
+        ${entries.map((entry) => {
+          /** @type {string[]} */
+          const details = [POLICY_TOKEN_LABELS[entry.trigger] || entry.trigger];
+          if (Number.isInteger(entry.attempts_per_operation_attempt)) {
+            details.push(
+              `operation당 ${entry.attempts_per_operation_attempt}회`
+            );
+          } else if (Number.isInteger(entry.attempts)) {
+            details.push(
+              `${POLICY_TOKEN_LABELS[entry.budget] || entry.budget} ${entry.attempts}회`
+            );
+          } else if (Number.isInteger(entry.sessions_per_user_action)) {
+            details.push(
+              `${entry.sessions_per_user_action}회`,
+              POLICY_TOKEN_LABELS[entry.user_actions] || entry.user_actions
+            );
+          }
+          if (entry.applies_when) {
+            details.push(
+              POLICY_TOKEN_LABELS[entry.applies_when] || entry.applies_when
+            );
+          }
+          return html`<li data-token=${entry.id}>
+            <strong>${POLICY_TOKEN_LABELS[entry.id] || entry.id}</strong>
+            <span>${details.filter(Boolean).join(' · ')}</span>
+          </li>`;
+        })}
+      </ol>
     </div>`;
   }
 
@@ -1139,7 +1189,12 @@ export function createExecDefaultsDialog(mount_element, options) {
               : 0
           )
         )
-      : (policy?.auto_repair?.budget_per_completion_chain ?? 1);
+      : (policy?.auto_repair?.resolution_ladder?.find(
+          (/** @type {any} */ entry) => entry.id === 'auto_repair_session'
+        )?.attempts ?? 1);
+    const ladder = Array.isArray(policy?.auto_repair?.resolution_ladder)
+      ? policy.auto_repair.resolution_ladder
+      : [];
     return html`<section class="exec-defaults__repair" data-seam="auto-repair">
       <p class="exec-defaults__vd-title">
         자동 해결
@@ -1181,10 +1236,9 @@ export function createExecDefaultsDialog(mount_element, options) {
             <summary>
               Worker 자동 처리 기준
               <span class="exec-defaults__policy-count"
-                >자동 ${(policy.worker_automatic || []).length} · 해결 세션
-                ${(policy.auto_repair?.eligible || []).length} (체인당
-                ${policy.auto_repair?.budget_per_completion_chain ?? 1}회) ·
-                금지 ${(policy.never_automatic || []).length}</span
+                >자동 ${(policy.worker_automatic || []).length} · 해결 사다리
+                ${ladder.length} · 금지
+                ${(policy.never_automatic || []).length}</span
               >
             </summary>
             ${policyList(
@@ -1192,13 +1246,14 @@ export function createExecDefaultsDialog(mount_element, options) {
               policy.worker_automatic || [],
               'worker-automatic'
             )}
-            ${policyList(
-              `자동 해결 세션 (완료 체인당 최대 ${
-                policy.auto_repair?.budget_per_completion_chain ?? 1
-              }회)`,
-              policy.auto_repair?.eligible || [],
-              'auto-repair-eligible'
-            )}
+            ${policy.supported === false || policy.schema_version !== 2
+              ? html`<div
+                  class="exec-defaults__policy-group"
+                  data-policy="resolution-ladder"
+                >
+                  ${`계약 스키마 불일치 — 자동 해결이 정지되었습니다 (v${policy.schema_version})`}
+                </div>`
+              : resolutionLadder(ladder)}
             ${policyList(
               '자동으로 하지 않음',
               policy.never_automatic || [],

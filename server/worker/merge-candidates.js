@@ -15,8 +15,8 @@
  *
  * @import { Queue } from './queue-store.js'
  */
-import { isRepairableCleanupFailure } from './completion-repair-policy.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
+import { isCleanupResolutionFailure } from './resolution-ladder.js';
 import { getWorkerRuntime } from './runtime.js';
 
 /**
@@ -212,7 +212,7 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
     const repairable =
       !external &&
       ((gate.tier === 'verify' && gate.reason === 'verify_cmd_failed') ||
-        (merged_tier && isRepairableCleanupFailure(cleanup_failed[bead_id])));
+        (merged_tier && isCleanupResolutionFailure(cleanup_failed[bead_id])));
     // An EXTERNAL conflict vetoes even a green gate, exactly as the row does
     // (UI-7agi §5): the click-time branch order puts DIRTY before the gate, so
     // `merge()` refuses it whatever the cached eligibility says.

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
+import { createRepairSessionAdapter } from './repair-session-adapter.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 
 const TARGET = 'b'.repeat(40);
@@ -24,7 +25,7 @@ afterEach(() => {
 });
 
 /**
- * @param {{ dispatch?: any, judge?: any, repairSession?: any }} [overrides]
+ * @param {{ dispatch?: any, judge?: any, repairSession?: any, repairSessionFactory?: (store: any) => any }} [overrides]
  */
 function repairFixture(overrides = {}) {
   const store = createQueueStore({
@@ -67,7 +68,9 @@ function repairFixture(overrides = {}) {
       cleanup: async () => {}
     }),
     repairSession:
-      overrides.repairSession ?? /** @type {never} */ ({ dispatch, judge })
+      overrides.repairSessionFactory?.(store) ??
+      overrides.repairSession ??
+      /** @type {never} */ ({ dispatch, judge })
   });
   return { store, coordinator, dispatch, judge };
 }
@@ -347,7 +350,7 @@ describe('completion chain budget', () => {
     });
   });
 
-  test('blocks the same fingerprint reproducing with no new evidence', async () => {
+  test('does not let another chain suppress its first automatic session', async () => {
     const { store, coordinator, dispatch } = repairFixture();
     seedFailure(store, { operation_id: 'op-1' });
     await coordinator.startRepair('op-1', 'auto');
@@ -356,11 +359,7 @@ describe('completion chain budget', () => {
 
     const repeated = await coordinator.startRepair('op-2', 'auto');
 
-    expect([repeated.ok, repeated.code, dispatch.mock.calls.length]).toEqual([
-      false,
-      'repair_fingerprint_repeated',
-      1
-    ]);
+    expect([repeated.ok, dispatch.mock.calls.length]).toEqual([true, 2]);
   });
 
   test('allows a new chain when the failing evidence changed', async () => {
@@ -427,7 +426,7 @@ describe('repair eligibility', () => {
     expect(dispatch.mock.calls.length).toBe(1);
   });
 
-  test('refuses an automatic dispatch for a pre-spawn alignment failure', async () => {
+  test('dispatches an automatic session for a pre-spawn terminal failure', async () => {
     const { store, coordinator, dispatch } = repairFixture();
     seedFailure(store, {
       operation_id: 'op-1',
@@ -436,15 +435,12 @@ describe('repair eligibility', () => {
 
     const result = await coordinator.startRepair('op-1', 'auto');
 
-    expect([result.code, dispatch.mock.calls.length]).toEqual([
-      'repair_not_eligible',
-      0
-    ]);
+    expect([result.ok, dispatch.mock.calls.length]).toEqual([true, 1]);
   });
 
   test('leaves legacy cleanup failures outside the repair lane', async () => {
     const { store, coordinator, dispatch } = repairFixture();
-    seedFailure(store, { operation_id: 'op-seed', code: 'unused_seed' });
+    seedSuccess(store, { operation_id: 'op-seed' });
     const queue = store.snapshot(root);
 
     await coordinator.reconcile(root);
@@ -519,5 +515,84 @@ describe('manual resolve', () => {
     expect(store.snapshot(root).repo_operations['op-1'].repair.auto_used).toBe(
       1
     );
+  });
+
+  test('dispatches prior ladder outcomes and chain fingerprints in the packet', async () => {
+    const dispatchSession = vi.fn(async () => ({
+      ok: true,
+      attempt_id: 'att-1',
+      session_id: 'sess-1'
+    }));
+    const { store, coordinator } = repairFixture({
+      repairSessionFactory: (queue_store) =>
+        createRepairSessionAdapter({
+          repo: root,
+          store: queue_store,
+          gitRun: async () => ({ code: 0, stdout: '' }),
+          dispatchSession
+        })
+    });
+    seedFailure(store, { operation_id: 'op-1' });
+
+    await coordinator.startRepair('op-1', 'manual');
+
+    const packet = /** @type {any[]} */ (dispatchSession.mock.calls)[0][0]
+      .packet;
+    expect(packet.ladder).toMatchObject({
+      script_retry: 'consumed',
+      auto_repair_session: 'unused',
+      stage: 'user_triggered_session',
+      prior_fingerprints: [
+        {
+          operation_id: 'op-1',
+          code: 'script_failed',
+          fingerprint: 'f'.repeat(64)
+        }
+      ]
+    });
+  });
+
+  test('opens the same repair path for a cleanup cursor subject', async () => {
+    const { store, coordinator, dispatch } = repairFixture();
+    store.appendAttempt(root, {
+      expected_revision: store.snapshot(root).revision,
+      attempt: {
+        attempt_id: 'attempt-cleanup',
+        bead_id: 'UI-cleanup'
+      }
+    });
+    store.moveToPrWait(root, {
+      bead_id: 'UI-cleanup',
+      attempt_id: 'attempt-cleanup',
+      patch: { status: 'done' }
+    });
+    store.setCleanupCursor(root, {
+      bead_id: 'UI-cleanup',
+      cursor: 'base_containment'
+    });
+    store.setCleanupCursor(root, {
+      bead_id: 'UI-cleanup',
+      cursor: 'repo_operations'
+    });
+    store.recordCleanupFailure(root, {
+      bead_id: 'UI-cleanup',
+      step: 'repo_operations',
+      reason: 'verify_cmd_failed',
+      bd_restore: null,
+      detail: null
+    });
+
+    const result = await coordinator.startRepair(
+      'cleanup:UI-cleanup',
+      'manual'
+    );
+
+    expect([result.ok, dispatch.mock.calls.length]).toEqual([true, 1]);
+    expect(
+      store.snapshot(root).cleanup_failed['UI-cleanup'].repair
+    ).toMatchObject({
+      ladder_stage: 'user_triggered_session',
+      attempt_id: 'att-1'
+    });
   });
 });

@@ -133,6 +133,71 @@ describe('worker exec preset dialog', () => {
     expect(dialog.hasAttribute('open')).toBe(true);
   });
 
+  test('renders the repo-operation resolution ladder from policy tokens', () => {
+    const { mount } = setup({ revision: 0, presets: [] }, vi.fn(), {
+      auto_repair: true,
+      repo_operations: [],
+      repo_operation_policy: {
+        schema_version: 2,
+        supported: true,
+        worker_automatic: [],
+        auto_repair: {
+          default: true,
+          scope: 'all_terminal_failures',
+          resolution_ladder: [
+            {
+              id: 'script_retry',
+              trigger: 'automatic',
+              applies_when: 'script_identity_present',
+              attempts_per_operation_attempt: 1
+            },
+            {
+              id: 'auto_repair_session',
+              trigger: 'automatic',
+              attempts: 1,
+              budget: 'per_completion_chain'
+            },
+            {
+              id: 'user_triggered_session',
+              trigger: 'user_action_only',
+              sessions_per_user_action: 1,
+              user_actions: 'unbounded'
+            }
+          ]
+        },
+        never_automatic: []
+      }
+    });
+
+    expect(
+      Array.from(
+        mount.querySelectorAll('[data-policy="resolution-ladder"] li')
+      ).map((item) => /** @type {HTMLElement} */ (item).dataset.token)
+    ).toEqual([
+      'script_retry',
+      'auto_repair_session',
+      'user_triggered_session'
+    ]);
+  });
+
+  test('shows the decoder guard instead of a mismatched policy ladder', () => {
+    const { mount } = setup({ revision: 0, presets: [] }, vi.fn(), {
+      auto_repair: true,
+      repo_operations: [],
+      repo_operation_policy: {
+        schema_version: 7,
+        supported: false,
+        worker_automatic: [],
+        auto_repair: { default: true, resolution_ladder: [] },
+        never_automatic: []
+      }
+    });
+
+    expect(mount.textContent).toContain(
+      '계약 스키마 불일치 — 자동 해결이 정지되었습니다 (v7)'
+    );
+  });
+
   test('creates a preset from the body editor with the current revision', async () => {
     const transport = vi.fn().mockResolvedValue({
       applied: true,

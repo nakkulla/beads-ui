@@ -250,7 +250,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, repair?: { chain_id: string, auto_used: number, attempt_id: string|null, session_id: string|null, mode: 'auto'|'manual'|null, ladder_stage: 'auto_repair_session'|'user_triggered_session' } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -349,7 +349,7 @@
  * display alongside the pinned blob. Null on records written before it existed.
  * @property {string} script_mode
  * @property {string} script_blob_sha
- * @property {'queued'|'running'|'succeeded'|'failed'|'repairing'} state
+ * @property {'queued'|'running'|'succeeded'|'failed'|'repairing'|'retry_pending'} state
  * @property {string} attempt_id
  * @property {number} requested_at
  * @property {number|null} started_at
@@ -360,7 +360,8 @@
  * @property {number|null} exit_code
  * @property {string|null} signal
  * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean }|null} failure
- * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null }} repair
+ * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null, ladder_stage: 'script_retry'|'auto_repair_session'|'user_triggered_session' }} repair
+ * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
@@ -1584,6 +1585,111 @@ function migrateLegacyStopped(value) {
 }
 
 /**
+ * Normalize optional retry evidence without changing RepoOperation schema 1.
+ * A malformed object is retained only as a consumed marker so it can never
+ * recreate retry eligibility after restart.
+ *
+ * @param {unknown} value
+ * @param {unknown} state
+ * @param {RepoOperation['failure']} failure
+ * @returns {RepoOperation['retry']}
+ */
+function normalizeRepoOperationRetry(value, state, failure) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (!isRecord(value)) {
+    return {
+      first_failure: failure,
+      first_fingerprint: failure?.fingerprint || null,
+      consumed_key: null,
+      absorbed: null,
+      outcome: 'consumed',
+      blocked_reason: 'malformed'
+    };
+  }
+  const first_raw = isRecord(value.first_failure) ? value.first_failure : null;
+  const first_failure =
+    first_raw && typeof first_raw.code === 'string'
+      ? {
+          code: first_raw.code,
+          fingerprint:
+            typeof first_raw.fingerprint === 'string'
+              ? first_raw.fingerprint
+              : '',
+          detail: typeof first_raw.detail === 'string' ? first_raw.detail : '',
+          interrupted: first_raw.interrupted === true
+        }
+      : failure;
+  const consumed_key =
+    Array.isArray(value.consumed_key) &&
+    value.consumed_key.length === 3 &&
+    value.consumed_key.every((part) => typeof part === 'string')
+      ? /** @type {[string, string, string]} */ ([...value.consumed_key])
+      : null;
+  const absorbed_raw = isRecord(value.absorbed) ? value.absorbed : null;
+  const absorbed_failure = isRecord(absorbed_raw?.first_failure)
+    ? absorbed_raw.first_failure
+    : null;
+  const absorbed =
+    absorbed_raw &&
+    absorbed_failure &&
+    typeof absorbed_failure.code === 'string' &&
+    typeof absorbed_raw.first_fingerprint === 'string' &&
+    typeof absorbed_raw.at === 'number'
+      ? {
+          first_failure: {
+            code: absorbed_failure.code,
+            fingerprint:
+              typeof absorbed_failure.fingerprint === 'string'
+                ? absorbed_failure.fingerprint
+                : '',
+            detail:
+              typeof absorbed_failure.detail === 'string'
+                ? absorbed_failure.detail
+                : '',
+            interrupted: absorbed_failure.interrupted === true
+          },
+          first_fingerprint: absorbed_raw.first_fingerprint,
+          at: absorbed_raw.at
+        }
+      : null;
+  const valid_outcome = [
+    'pending',
+    'consumed',
+    'not_applicable',
+    'absorbed'
+  ].includes(String(value.outcome));
+  const malformed =
+    !valid_outcome ||
+    ((state === 'retry_pending' || consumed_key !== null) && !first_failure) ||
+    (value.consumed_key !== null &&
+      value.consumed_key !== undefined &&
+      consumed_key === null) ||
+    (value.absorbed !== null && value.absorbed !== undefined && !absorbed);
+  return {
+    first_failure,
+    first_fingerprint:
+      typeof value.first_fingerprint === 'string'
+        ? value.first_fingerprint
+        : first_failure?.fingerprint || null,
+    consumed_key,
+    absorbed,
+    outcome: malformed
+      ? 'consumed'
+      : /** @type {NonNullable<RepoOperation['retry']>['outcome']} */ (
+          value.outcome
+        ),
+    blocked_reason:
+      malformed === true
+        ? 'malformed'
+        : typeof value.blocked_reason === 'string'
+          ? value.blocked_reason
+          : null
+  };
+}
+
+/**
  * @param {unknown} value
  * @returns {RepoOperation|null}
  */
@@ -1597,9 +1703,14 @@ function normalizeRepoOperation(value) {
     typeof value.target_base !== 'string' ||
     typeof value.script_mode !== 'string' ||
     typeof value.script_blob_sha !== 'string' ||
-    !['queued', 'running', 'succeeded', 'failed', 'repairing'].includes(
-      String(value.state)
-    ) ||
+    ![
+      'queued',
+      'running',
+      'succeeded',
+      'failed',
+      'repairing',
+      'retry_pending'
+    ].includes(String(value.state)) ||
     typeof value.attempt_id !== 'string'
   ) {
     return null;
@@ -1628,6 +1739,20 @@ function normalizeRepoOperation(value) {
   const identity_raw = isRecord(value.process_identity)
     ? value.process_identity
     : null;
+  const failure =
+    failure_raw && typeof failure_raw.code === 'string'
+      ? {
+          code: failure_raw.code,
+          fingerprint:
+            typeof failure_raw.fingerprint === 'string'
+              ? failure_raw.fingerprint
+              : '',
+          detail:
+            typeof failure_raw.detail === 'string' ? failure_raw.detail : '',
+          interrupted: failure_raw.interrupted === true
+        }
+      : null;
+  const retry = normalizeRepoOperationRetry(value.retry, value.state, failure);
   return {
     schema: 1,
     repo_id: value.repo_id,
@@ -1676,19 +1801,7 @@ function normalizeRepoOperation(value) {
       ? Number(value.exit_code)
       : null,
     signal: typeof value.signal === 'string' ? value.signal : null,
-    failure:
-      failure_raw && typeof failure_raw.code === 'string'
-        ? {
-            code: failure_raw.code,
-            fingerprint:
-              typeof failure_raw.fingerprint === 'string'
-                ? failure_raw.fingerprint
-                : '',
-            detail:
-              typeof failure_raw.detail === 'string' ? failure_raw.detail : '',
-            interrupted: failure_raw.interrupted === true
-          }
-        : null,
+    failure,
     repair: {
       chain_id:
         typeof repair_raw.chain_id === 'string' ? repair_raw.chain_id : null,
@@ -1707,8 +1820,16 @@ function normalizeRepoOperation(value) {
           ? repair_raw.session_id
           : null,
       attempt_id:
-        typeof repair_raw.attempt_id === 'string' ? repair_raw.attempt_id : null
+        typeof repair_raw.attempt_id === 'string'
+          ? repair_raw.attempt_id
+          : null,
+      ladder_stage:
+        repair_raw.ladder_stage === 'script_retry' ||
+        repair_raw.ladder_stage === 'user_triggered_session'
+          ? repair_raw.ladder_stage
+          : 'auto_repair_session'
     },
+    retry,
     superseded_by:
       typeof value.superseded_by === 'string' ? value.superseded_by : null,
     dismissed:
@@ -1932,6 +2053,35 @@ function normalizeQueue(raw) {
           if (value.diagnosis.malformed === true) {
             q.cleanup_failed[bead_id].diagnosis.malformed = true;
           }
+        }
+        if (
+          isRecord(value.repair) &&
+          typeof value.repair.chain_id === 'string'
+        ) {
+          q.cleanup_failed[bead_id].repair = {
+            chain_id: value.repair.chain_id,
+            auto_used:
+              Number.isInteger(value.repair.auto_used) &&
+              Number(value.repair.auto_used) >= 0
+                ? Number(value.repair.auto_used)
+                : 0,
+            attempt_id:
+              typeof value.repair.attempt_id === 'string'
+                ? value.repair.attempt_id
+                : null,
+            session_id:
+              typeof value.repair.session_id === 'string'
+                ? value.repair.session_id
+                : null,
+            mode:
+              value.repair.mode === 'auto' || value.repair.mode === 'manual'
+                ? value.repair.mode
+                : null,
+            ladder_stage:
+              value.repair.ladder_stage === 'user_triggered_session'
+                ? 'user_triggered_session'
+                : 'auto_repair_session'
+          };
         }
       }
     }
@@ -2584,8 +2734,10 @@ export function createQueueStore(options = {}) {
             auto_budget: 1,
             auto_used: 0,
             session_id: null,
-            attempt_id: null
+            attempt_id: null,
+            ladder_stage: 'script_retry'
           },
+          retry: null,
           superseded_by: null,
           dismissed: null,
           bootstrap_provenance: input.bootstrap_provenance ?? null
@@ -2628,11 +2780,149 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Preserve the first runner failure as nonterminal retry evidence. Entering
+     * `retry_pending` does not consume the one retry; consumption is a separate
+     * mutation immediately before the coordinator respawns.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure: NonNullable<RepoOperation['failure']>, log_digest?: string|null, owner_bead?: string }} input
+     * @returns {QueueOpResult}
+     */
+    deferRepoOperationRetry(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (
+          !operation ||
+          operation.attempt_id !== input.attempt_id ||
+          operation.state !== 'running' ||
+          operation.retry !== null ||
+          !input.failure ||
+          typeof input.failure.code !== 'string'
+        ) {
+          return false;
+        }
+        operation.state = 'retry_pending';
+        operation.exit_code = Number.isInteger(input.exit_code)
+          ? input.exit_code
+          : null;
+        operation.signal =
+          typeof input.signal === 'string' ? input.signal : null;
+        operation.log_digest = input.log_digest ?? operation.log_digest;
+        operation.finished_at = null;
+        operation.process_identity = null;
+        operation.failure = null;
+        operation.retry = {
+          first_failure: { ...input.failure },
+          first_fingerprint: input.failure.fingerprint,
+          consumed_key: null,
+          absorbed: null,
+          outcome: 'pending',
+          blocked_reason: null
+        };
+        operation.repair.ladder_stage = 'script_retry';
+        if (
+          typeof input.owner_bead === 'string' &&
+          operation.subjects.some(
+            (subject) => subject.bead_id === input.owner_bead
+          )
+        ) {
+          operation.repair.owner_bead = input.owner_bead;
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Consume one exact retry key and return the same attempt to queued. This is
+     * the last durable write before the runner invocation.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, attempt_id: string, consumed_key: [string, string, string] }} input
+     * @returns {QueueOpResult}
+     */
+    consumeRepoOperationRetry(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        const retry = operation?.retry;
+        if (
+          !operation ||
+          operation.attempt_id !== input.attempt_id ||
+          operation.state !== 'retry_pending' ||
+          !retry ||
+          retry.consumed_key !== null ||
+          !Array.isArray(input.consumed_key) ||
+          input.consumed_key.length !== 3 ||
+          input.consumed_key.some((part) => typeof part !== 'string')
+        ) {
+          return false;
+        }
+        retry.consumed_key = [...input.consumed_key];
+        retry.outcome = 'consumed';
+        operation.state = 'queued';
+        operation.process_identity = null;
+        operation.finished_at = null;
+        return true;
+      });
+    },
+
+    /**
+     * Settle a consumed retry that cannot produce a terminal marker. The first
+     * failure is the only complete terminal evidence, and consumption is never
+     * rolled back.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string, owner_bead?: string, ladder_stage?: 'auto_repair_session'|'user_triggered_session', blocked_reason?: string }} input
+     * @returns {QueueOpResult}
+     */
+    settleConsumedRepoOperationRetry(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        const retry = operation?.retry;
+        if (
+          !operation ||
+          !retry ||
+          !retry.first_failure ||
+          (retry.consumed_key === null &&
+            retry.outcome !== 'consumed' &&
+            typeof input.blocked_reason !== 'string') ||
+          !['queued', 'running', 'retry_pending'].includes(operation.state)
+        ) {
+          return false;
+        }
+        operation.state = 'failed';
+        operation.failure = { ...retry.first_failure };
+        operation.finished_at = now();
+        operation.process_identity = null;
+        operation.repair.chain_id =
+          operation.repair.chain_id || input.operation_id;
+        operation.repair.ladder_stage =
+          input.ladder_stage || 'auto_repair_session';
+        if (typeof input.blocked_reason === 'string') {
+          retry.outcome = 'not_applicable';
+          retry.blocked_reason = input.blocked_reason;
+        }
+        const requested_owner = operation.subjects.some(
+          (subject) => subject.bead_id === input.owner_bead
+        )
+          ? input.owner_bead
+          : null;
+        operation.repair.owner_bead =
+          operation.repair.owner_bead ||
+          requested_owner ||
+          [...operation.subjects].sort((left, right) =>
+            left.bead_id.localeCompare(right.bead_id)
+          )[0]?.bead_id ||
+          null;
+        return true;
+      });
+    },
+
+    /**
      * Idempotently settle one terminal attempt. Duplicate markers never alter
      * a previously terminal record.
      *
      * @param {string} workspace
-     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, owner_bead?: string }} input
+     * @param {{ operation_id: string, attempt_id: string, exit_code: number|null, signal: string|null, failure?: RepoOperation['failure'], log_digest?: string|null, owner_bead?: string, ladder_stage?: 'auto_repair_session'|'user_triggered_session', retry_outcome?: 'not_applicable'|'consumed', retry_blocked_reason?: string|null }} input
      * @returns {QueueOpResult}
      */
     settleRepoOperation(workspace, input) {
@@ -2653,6 +2943,18 @@ export function createQueueStore(options = {}) {
         if (operation.exit_code === 0 && !operation.signal && !input.failure) {
           operation.state = 'succeeded';
           operation.failure = null;
+          if (
+            operation.retry?.consumed_key &&
+            operation.retry.first_failure &&
+            operation.retry.first_fingerprint
+          ) {
+            operation.retry.absorbed = {
+              first_failure: { ...operation.retry.first_failure },
+              first_fingerprint: operation.retry.first_fingerprint,
+              at: now()
+            };
+            operation.retry.outcome = 'absorbed';
+          }
         } else {
           operation.state = 'failed';
           operation.failure = input.failure ?? {
@@ -2663,6 +2965,8 @@ export function createQueueStore(options = {}) {
           };
           operation.repair.chain_id =
             operation.repair.chain_id || input.operation_id;
+          operation.repair.ladder_stage =
+            input.ladder_stage || 'auto_repair_session';
           const requested_owner = operation.subjects.some(
             (subject) => subject.bead_id === input.owner_bead
           )
@@ -2675,6 +2979,21 @@ export function createQueueStore(options = {}) {
               left.bead_id.localeCompare(right.bead_id)
             )[0]?.bead_id ||
             null;
+          if (input.retry_outcome) {
+            operation.retry = {
+              first_failure: operation.failure
+                ? { ...operation.failure }
+                : null,
+              first_fingerprint: operation.failure?.fingerprint || null,
+              consumed_key: null,
+              absorbed: null,
+              outcome: input.retry_outcome,
+              blocked_reason:
+                typeof input.retry_blocked_reason === 'string'
+                  ? input.retry_blocked_reason
+                  : null
+            };
+          }
         }
         return true;
       });
@@ -2708,6 +3027,8 @@ export function createQueueStore(options = {}) {
         operation.finished_at = null;
         operation.failure = null;
         operation.process_identity = null;
+        operation.retry = null;
+        operation.repair.ladder_stage = 'script_retry';
         return true;
       });
     },
@@ -2734,6 +3055,7 @@ export function createQueueStore(options = {}) {
         to.repair.chain_id = chain_id;
         to.repair.owner_bead = from.repair.owner_bead;
         to.repair.auto_used = from.repair.auto_used;
+        to.repair.ladder_stage = from.repair.ladder_stage;
         from.superseded_by = input.to_operation_id;
         return true;
       });
@@ -2831,6 +3153,10 @@ export function createQueueStore(options = {}) {
         }
         operation.repair.session_id = null;
         operation.repair.attempt_id = null;
+        operation.repair.ladder_stage =
+          input.mode === 'auto'
+            ? 'auto_repair_session'
+            : 'user_triggered_session';
         if (input.mode === 'auto') {
           operation.repair.auto_used += 1;
         }
@@ -2876,6 +3202,111 @@ export function createQueueStore(options = {}) {
         operation.state = 'failed';
         operation.repair.session_id = null;
         operation.repair.attempt_id = null;
+        operation.repair.ladder_stage = 'user_triggered_session';
+        return true;
+      });
+    },
+
+    /**
+     * Durably descend a terminal operation to the user-triggered stage after an
+     * automatic guard or budget has been consumed.
+     *
+     * @param {string} workspace
+     * @param {{ operation_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    descendRepoOperationToUser(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const operation = next.repo_operations[input.operation_id];
+        if (!operation || operation.state !== 'failed') {
+          return false;
+        }
+        operation.repair.ladder_stage = 'user_triggered_session';
+        return true;
+      });
+    },
+
+    /**
+     * Prerecord a repair dispatch for a cursor-stopping cleanup failure.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, mode: 'auto'|'manual' }} input
+     * @returns {QueueOpResult}
+     */
+    startCleanupRepair(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const failure = next.cleanup_failed[input.bead_id];
+        const row = next.pr_wait.find(
+          (entry) => entry.bead_id === input.bead_id
+        );
+        if (
+          !failure ||
+          !row ||
+          row.cleanup_cursor !== failure.step ||
+          (input.mode !== 'auto' && input.mode !== 'manual') ||
+          failure.repair?.mode
+        ) {
+          return false;
+        }
+        const repair = failure.repair || {
+          chain_id: `cleanup:${input.bead_id}`,
+          auto_used: 0,
+          attempt_id: null,
+          session_id: null,
+          mode: null,
+          ladder_stage: 'auto_repair_session'
+        };
+        if (input.mode === 'auto' && repair.auto_used >= 1) {
+          return false;
+        }
+        repair.mode = input.mode;
+        repair.attempt_id = null;
+        repair.session_id = null;
+        repair.ladder_stage =
+          input.mode === 'auto'
+            ? 'auto_repair_session'
+            : 'user_triggered_session';
+        if (input.mode === 'auto') {
+          repair.auto_used += 1;
+        }
+        failure.repair = repair;
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string, attempt_id: string, session_id?: string|null }} input
+     * @returns {QueueOpResult}
+     */
+    bindCleanupRepairSession(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const repair = next.cleanup_failed[input.bead_id]?.repair;
+        if (!repair || !repair.mode) {
+          return false;
+        }
+        repair.attempt_id = input.attempt_id;
+        repair.session_id =
+          typeof input.session_id === 'string' ? input.session_id : null;
+        return true;
+      });
+    },
+
+    /**
+     * @param {string} workspace
+     * @param {{ bead_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    releaseCleanupRepair(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const repair = next.cleanup_failed[input.bead_id]?.repair;
+        if (!repair || !repair.mode) {
+          return false;
+        }
+        repair.mode = null;
+        repair.attempt_id = null;
+        repair.session_id = null;
+        repair.ladder_stage = 'user_triggered_session';
         return true;
       });
     },
@@ -4025,6 +4456,7 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const diagnosis = next.cleanup_failed[bead_id]?.diagnosis;
+        const repair = next.cleanup_failed[bead_id]?.repair;
         next.cleanup_failed[bead_id] = {
           step: typeof step === 'string' ? step : '',
           reason,
@@ -4050,6 +4482,9 @@ export function createQueueStore(options = {}) {
         }
         if (diagnosis) {
           next.cleanup_failed[bead_id].diagnosis = diagnosis;
+        }
+        if (repair) {
+          next.cleanup_failed[bead_id].repair = repair;
         }
         return true;
       });

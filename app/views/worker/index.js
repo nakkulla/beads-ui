@@ -2060,7 +2060,7 @@ export function createWorkerView(mount_element, options = {}) {
     // DURABLE post-merge cleanup failures (worker-phase2 §6): the merge landed
     // but the pr-finish sequence stopped part-way, so a human has to finish it.
     // Nothing retries automatically, which is exactly why this has a banner.
-    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number }>} */
+    /** @type {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, subject_id?: string, repair_eligible?: boolean, repair?: Record<string, unknown> }>} */
     const cleanup_failed = q.cleanup_failed || {};
     const cleanup_failures = Object.entries(cleanup_failed).map(
       ([bead_id, rec]) => ({
@@ -2086,7 +2086,21 @@ export function createWorkerView(mount_element, options = {}) {
           Number.isInteger(rec.retry_count) &&
           rec.retry_count > 0
             ? rec.retry_count
-            : 0
+            : 0,
+        // The resolution-subject overlay the server puts on a cursor-stopping
+        // row. Carried through VERBATIM: the client never decides which row is
+        // a subject, so a row the server did not overlay renders no resolve
+        // entry rather than one the coordinator would refuse.
+        failure_code:
+          rec && typeof rec.failure_code === 'string'
+            ? rec.failure_code
+            : undefined,
+        subject_id:
+          rec && typeof rec.subject_id === 'string'
+            ? rec.subject_id
+            : undefined,
+        repair_eligible: Boolean(rec && rec.repair_eligible),
+        repair: rec && rec.repair ? rec.repair : undefined
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
