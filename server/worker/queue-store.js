@@ -361,7 +361,7 @@
  * @property {string|null} signal
  * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean }|null} failure
  * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null, ladder_stage: 'script_retry'|'auto_repair_session'|'user_triggered_session' }} repair
- * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
+ * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
  * @property {{ at: number, by: string }|null} dismissed - A human acknowledged
  * this failed row (UI-q0uy §4.6-2). NOT a state transition: the row stays
@@ -1602,6 +1602,7 @@ function normalizeRepoOperationRetry(value, state, failure) {
     return {
       first_failure: failure,
       first_fingerprint: failure?.fingerprint || null,
+      first_failed_at: null,
       consumed_key: null,
       absorbed: null,
       outcome: 'consumed',
@@ -1673,6 +1674,8 @@ function normalizeRepoOperationRetry(value, state, failure) {
       typeof value.first_fingerprint === 'string'
         ? value.first_fingerprint
         : first_failure?.fingerprint || null,
+    first_failed_at:
+      typeof value.first_failed_at === 'number' ? value.first_failed_at : null,
     consumed_key,
     absorbed,
     outcome: malformed
@@ -1753,6 +1756,28 @@ function normalizeRepoOperation(value) {
         }
       : null;
   const retry = normalizeRepoOperationRetry(value.retry, value.state, failure);
+  // `retry_pending` is a NON-TERMINAL state whose only exit needs the preserved
+  // first failure: the reconcile either respawns from it or settles it. A record
+  // in that state with no usable retry evidence can do neither, so it would sit
+  // in `retry_pending` forever, invisible to the resolution ladder. Fail closed
+  // by reading it as the terminal failure it actually is — the ladder then hands
+  // it to a session like any other unresolved failure.
+  const malformed_retry_pending =
+    value.state === 'retry_pending' && (retry === null || !retry.first_failure);
+  const state = malformed_retry_pending ? 'failed' : value.state;
+  // A terminal record must carry a failure or the ladder cannot see it as an
+  // unresolved subject. Prefer whatever the record already had, then the
+  // preserved first failure, and only then a deterministic stand-in that names
+  // the malformed state rather than inventing a cause.
+  const settled_failure = !malformed_retry_pending
+    ? failure
+    : failure ||
+      retry?.first_failure || {
+        code: 'retry_pending_malformed',
+        fingerprint: '',
+        detail: '',
+        interrupted: false
+      };
   return {
     schema: 1,
     repo_id: value.repo_id,
@@ -1777,7 +1802,7 @@ function normalizeRepoOperation(value) {
       typeof value.script_path === 'string' ? value.script_path : null,
     script_mode: value.script_mode,
     script_blob_sha: value.script_blob_sha.toLowerCase(),
-    state: /** @type {RepoOperation['state']} */ (value.state),
+    state: /** @type {RepoOperation['state']} */ (state),
     attempt_id: value.attempt_id,
     requested_at:
       typeof value.requested_at === 'number' ? value.requested_at : 0,
@@ -1801,7 +1826,7 @@ function normalizeRepoOperation(value) {
       ? Number(value.exit_code)
       : null,
     signal: typeof value.signal === 'string' ? value.signal : null,
-    failure,
+    failure: settled_failure,
     repair: {
       chain_id:
         typeof repair_raw.chain_id === 'string' ? repair_raw.chain_id : null,
@@ -2814,6 +2839,9 @@ export function createQueueStore(options = {}) {
         operation.retry = {
           first_failure: { ...input.failure },
           first_fingerprint: input.failure.fingerprint,
+          // When the first attempt failed. The repair packet needs it to tell a
+          // session that the failure it sees is a reproduction, not a new one.
+          first_failed_at: now(),
           consumed_key: null,
           absorbed: null,
           outcome: 'pending',
@@ -2985,6 +3013,7 @@ export function createQueueStore(options = {}) {
                 ? { ...operation.failure }
                 : null,
               first_fingerprint: operation.failure?.fingerprint || null,
+              first_failed_at: null,
               consumed_key: null,
               absorbed: null,
               outcome: input.retry_outcome,

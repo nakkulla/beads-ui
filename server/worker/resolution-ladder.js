@@ -221,7 +221,7 @@ function cleanupSubject(bead_id, failure) {
  * into one subject list. A failed operation bound to a bead wins over the less
  * specific cleanup row for that bead.
  *
- * @param {{ repo_operations?: Record<string, any>, cleanup_failed?: Record<string, any>, pr_wait?: any[] }} queue
+ * @param {{ repo_operations?: Record<string, any>, cleanup_failed?: Record<string, any>, pr_wait?: any[], completion_intents?: Record<string, any> }} queue
  * @returns {any[]}
  */
 export function normalizeResolutionSubjects(queue) {
@@ -233,13 +233,19 @@ export function normalizeResolutionSubjects(queue) {
     queue.repo_operations || {}
   )) {
     if (
-      operation?.state !== 'failed' ||
-      operation.superseded_by ||
+      operation?.superseded_by ||
       typeof operation.failure?.code !== 'string'
     ) {
       continue;
     }
-    subjects.push(operationSubject(operation, operation_id));
+    // Claiming the bead is wider than being a subject. Only a `failed` record
+    // is an unresolved subject, but a record already `repairing` still OWNS its
+    // bead's resolution — dropping it here would let the same failure's cleanup
+    // row promote into a second subject the moment the ladder starts working on
+    // the first one, which is exactly one failure with two sessions.
+    if (operation.state !== 'failed' && operation.state !== 'repairing') {
+      continue;
+    }
     for (const entry of Array.isArray(operation.subjects)
       ? operation.subjects
       : []) {
@@ -247,10 +253,25 @@ export function normalizeResolutionSubjects(queue) {
         operation_beads.add(entry.bead_id);
       }
     }
+    if (operation.state !== 'failed') {
+      continue;
+    }
+    subjects.push(operationSubject(operation, operation_id));
   }
   const rows = Array.isArray(queue.pr_wait) ? queue.pr_wait : [];
+  const intents = /** @type {Record<string, any>} */ (
+    queue.completion_intents || {}
+  );
   for (const [bead_id, failure] of Object.entries(queue.cleanup_failed || {})) {
+    // The completion-intent lane owns a bead it is actively repairing through
+    // its own linked repair PR. Promoting that bead's cleanup row here would put
+    // two automatic dispatchers on one failure, so the ladder yields while that
+    // lane holds it and picks the row up only once the lane is no longer working
+    // on it.
+    const intent_phase = intents[bead_id]?.phase;
     if (
+      intent_phase === 'repairing' ||
+      intent_phase === 'waiting_repair_pr' ||
       operation_beads.has(bead_id) ||
       !isCleanupResolutionFailure(failure) ||
       !CLEANUP_STEPS.includes(failure.step) ||
@@ -317,9 +338,16 @@ export function reproducedWithoutNewEvidence(operations, operation_id) {
   if (typeof fingerprint !== 'string' || fingerprint.length === 0) {
     return false;
   }
-  const chain_consumed = Object.values(operations).some(
-    (candidate) =>
-      (candidate.repair?.chain_id || null) === chain_id &&
+  // A record that opened its own chain carries no `chain_id`, so every chain
+  // comparison must apply the SAME id-fallback the subject used. Comparing a
+  // bare null against the resolved chain id would read a legacy record as
+  // belonging to no chain, and the guard would then miss a chain that has in
+  // fact already spent its automatic session.
+  const chainIdOf = (/** @type {string} */ id, /** @type {any} */ candidate) =>
+    candidate.repair?.chain_id || id;
+  const chain_consumed = Object.entries(operations).some(
+    ([candidate_id, candidate]) =>
+      chainIdOf(candidate_id, candidate) === chain_id &&
       (candidate.repair?.auto_used > 0 ||
         candidate.repair?.ladder_stage === 'user_triggered_session')
   );
@@ -332,7 +360,7 @@ export function reproducedWithoutNewEvidence(operations, operation_id) {
       return false;
     }
     return (
-      candidate.repair?.chain_id === chain_id &&
+      chainIdOf(candidate_id, candidate) === chain_id &&
       candidate.failure?.fingerprint === fingerprint &&
       repairEvidenceKey(candidate) === evidence
     );

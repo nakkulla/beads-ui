@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
+import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { isCleanupResolutionFailure } from './resolution-ladder.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
@@ -1001,12 +1002,21 @@ export function createCompletionActionDriver(deps) {
    * @param {any} fact
    */
   async function startRepair(root_bead_id, kind, fact) {
-    const current = deps.store.snapshot(deps.workspace).completion_intents?.[
-      root_bead_id
-    ];
+    const queue = deps.store.snapshot(deps.workspace);
+    const current = queue.completion_intents?.[root_bead_id];
     const failure_key = fact?.failure_key;
     if (!current || !failure_key) {
       terminalize(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
+      return;
+    }
+    // This is an AUTOMATIC dispatch, so it answers to the same two gates the
+    // RepoOperation ladder answers to: the workspace `auto_repair` toggle and
+    // the pinned policy's decoder guard. Without them a workspace that turned
+    // automation off, or a consumer that cannot read the pinned contract, would
+    // still open sessions from this lane. Neither gate terminalizes the intent —
+    // the failure stays exactly where it is, waiting for the toggle to come back
+    // on or for a user-triggered resolution.
+    if (queue.auto_repair !== true || !repoOperationPolicySupported()) {
       return;
     }
     if (current.repair_sessions_used >= REPAIR_SESSION_CAP) {

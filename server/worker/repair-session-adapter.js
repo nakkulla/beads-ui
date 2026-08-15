@@ -175,12 +175,22 @@ export function createRepairSessionAdapter(deps) {
     const queue = deps.store.snapshot(input.workspace);
     const chain_id = operation.repair.chain_id || input.operation_id;
     const retry = normalizeScriptRetry(operation);
+    // The case that matters most is the retry that FAILED AGAIN: the session
+    // must see the first failure's fingerprint to recognize it is looking at a
+    // reproduction rather than a fresh symptom. Reading only `absorbed` would
+    // carry evidence exactly when the retry succeeded and no session runs, and
+    // drop it on the path that dispatches one.
     const retry_evidence = operation.retry?.absorbed
       ? {
           first_fingerprint: operation.retry.absorbed.first_fingerprint,
           at: operation.retry.absorbed.at
         }
-      : null;
+      : operation.retry?.first_fingerprint
+        ? {
+            first_fingerprint: operation.retry.first_fingerprint,
+            at: operation.retry.first_failed_at ?? null
+          }
+        : null;
     const prior_fingerprints = Object.entries(queue.repo_operations || {})
       .filter(
         ([, candidate]) =>

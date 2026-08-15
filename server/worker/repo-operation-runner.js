@@ -134,7 +134,16 @@ export function createRepoOperationRunner(deps = {}) {
       return {
         pid: Number(marker.pid),
         pgid: Number(marker.pgid),
-        started_at: marker.started_at
+        started_at: marker.started_at,
+        // Invocation identity, absent on a handshake written before this field
+        // existed. The adopter treats absence as "no proof of invocation"
+        // rather than substituting a guess.
+        log_path: typeof marker.log_path === 'string' ? marker.log_path : null,
+        target_sha:
+          typeof marker.target_sha === 'string' &&
+          /^[0-9a-f]{40}$/.test(marker.target_sha)
+            ? marker.target_sha
+            : null
       };
     } catch {
       return null;

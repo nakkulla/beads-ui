@@ -203,11 +203,14 @@ Nothing merges without a human `[머지]` click.
   only — the resolve button stays. A record that cannot be read as a complete
   operation is DROPPED rather than projected partially.
 - `cleanup_failed` rows that stop the cleanup cursor are OVERLAID at projection
-  time with `subject_id`, `repair_eligible: true`, and the same
-  `repair: { chain_id, auto_used, auto_budget, remaining, ladder_stage, … }`
-  shape an operation card carries, so a failure recorded on that surface has the
-  same resolve entry. No durable state is migrated. A bead that already owns a
-  failed operation record is NOT overlaid, because the operation record carries
+  time with `subject_id`, `repair_eligible: true`, and a `repair` object, so a
+  failure recorded on that surface has the same resolve entry as an operation
+  card. Before any repair is prerecorded that object carries only `auto_budget`
+  and `remaining`; `chain_id`, `auto_used`, `ladder_stage`, `attempt_id`, and
+  `session_id` appear once the coordinator prerecords a dispatch. A client MUST
+  therefore treat those fields as absent-until-dispatched. No durable state is
+  migrated. A bead that already owns a `failed` or `repairing` operation record
+  is NOT overlaid, because that record owns the bead's resolution and carries
   the more specific failure facts.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).

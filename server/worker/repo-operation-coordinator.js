@@ -1039,15 +1039,27 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function launchQueued(workspace, operation_id, operation) {
     const retry = operation.state === 'retry_pending';
-    const bound = await deploy_worktree.bindTarget({
-      repo: deps.repo,
-      base: operation.target_base,
-      last_successful_sha: latestSuccessfulDeploySha(
-        deps.store.snapshot(workspace),
-        deps.repo,
-        operation.target_base
-      )
-    });
+    // A retry re-runs the SAME command at the SAME target the first attempt
+    // failed at (contract §3.2). Re-binding would resolve the remote's CURRENT
+    // tip, so a base that moved between the two runs would leave the consumed
+    // key pinned to the old SHA while the script executed against a new one —
+    // a different command wearing the first one's retry budget. The pinned SHA
+    // is authority here; its absence fails closed rather than falling back to a
+    // fresh bind.
+    /** @type {{ ok: boolean, code?: string, target_sha?: string }} */
+    const bound = retry
+      ? typeof operation.target_sha === 'string' && operation.target_sha
+        ? { ok: true, target_sha: operation.target_sha }
+        : { ok: false, code: 'repo_ops_retry_target_missing' }
+      : await deploy_worktree.bindTarget({
+          repo: deps.repo,
+          base: operation.target_base,
+          last_successful_sha: latestSuccessfulDeploySha(
+            deps.store.snapshot(workspace),
+            deps.repo,
+            operation.target_base
+          )
+        });
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       if (retry) {
         deps.store.settleConsumedRepoOperationRetry(workspace, {
@@ -1436,11 +1448,18 @@ export function createRepoOperationCoordinator(deps) {
         }
         const probe = runner.processController.probe(launch);
         if (probe.state === 'owned') {
+          // Restore the invocation identity the handshake recorded. Without the
+          // log path and the pinned target this adopted record could not prove a
+          // script ever ran, and its failure would skip the script retry the
+          // contract grants a real invocation (§3.2).
           deps.store.startRepoOperation(workspace, {
             operation_id,
             attempt_id: operation.attempt_id,
             process_identity: launch,
-            log_path: operation.log_path || ''
+            log_path: operation.log_path || launch.log_path || '',
+            ...(operation.target_sha || !launch.target_sha
+              ? {}
+              : { target_sha: launch.target_sha })
           });
         } else {
           await settleFailure(workspace, operation, operation_id, {

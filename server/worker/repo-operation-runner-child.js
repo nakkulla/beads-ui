@@ -33,10 +33,18 @@ if (typeof encoded !== 'string') {
     // Durable handshake BEFORE the script runs: a Worker that crashed between
     // spawn and its queue write re-adopts this process instead of respawning.
     // Detached spawn makes this child its own process-group leader.
+    //
+    // The handshake also carries the INVOCATION IDENTITY — the log this run
+    // writes and the target it was pinned to. An adopted record otherwise has
+    // no proof it ever reached a script, so its failure would be read as a
+    // pre-spawn one and silently lose the single script retry the contract
+    // grants a real invocation.
     writeMarker(input.launch_marker_path, {
       pid: process.pid,
       pgid: process.pid,
-      started_at
+      started_at,
+      log_path: input.log_path,
+      target_sha: input.env.REPO_OPS_TARGET_SHA || null
     });
   }
   const child = spawn(input.script_path, [], {

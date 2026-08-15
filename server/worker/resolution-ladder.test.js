@@ -177,6 +177,46 @@ describe('resolution subject normalization', () => {
 
     expect(subjects.map((subject) => subject.subject_id)).toEqual(['op:op-1']);
   });
+
+  test('keeps claiming the bead while its operation is repairing', () => {
+    const subjects = normalizeResolutionSubjects({
+      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
+      repo_operations: { 'op-1': failedOperation({ state: 'repairing' }) },
+      cleanup_failed: {
+        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
+      }
+    });
+
+    expect(subjects).toEqual([]);
+  });
+
+  test('yields a cleanup row the completion-intent lane is repairing', () => {
+    const subjects = normalizeResolutionSubjects({
+      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
+      repo_operations: {},
+      completion_intents: { 'UI-a': { phase: 'repairing' } },
+      cleanup_failed: {
+        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
+      }
+    });
+
+    expect(subjects).toEqual([]);
+  });
+
+  test('promotes a cleanup row once that lane is no longer repairing it', () => {
+    const subjects = normalizeResolutionSubjects({
+      pr_wait: [{ bead_id: 'UI-a', cleanup_cursor: 'repo_operations' }],
+      repo_operations: {},
+      completion_intents: { 'UI-a': { phase: 'cleaning' } },
+      cleanup_failed: {
+        'UI-a': { step: 'repo_operations', reason: 'verify_cmd_failed', at: 1 }
+      }
+    });
+
+    expect(subjects.map((subject) => subject.subject_id)).toEqual([
+      'cleanup:UI-a'
+    ]);
+  });
 });
 
 describe('automatic and user-triggered access', () => {
