@@ -59,6 +59,9 @@ function fixture(options = {}) {
   git(repo, 'config', 'user.email', 'test@example.com');
   git(repo, 'config', 'user.name', 'Test User');
   fs.writeFileSync(path.join(repo, 'package.json'), '{}\n', 'utf8');
+  // The real repository ignores `.worktrees/`, which is why the shared lockfile
+  // the script creates there never shows up in its tracked-clean readback.
+  fs.writeFileSync(path.join(repo, '.gitignore'), '.worktrees/\n', 'utf8');
   git(repo, 'add', '.');
   git(repo, 'commit', '-qm', 'fixture');
   const sha = git(repo, 'rev-parse', 'HEAD');
@@ -277,6 +280,22 @@ describe('repo-ops/script/deploy', () => {
 
     expect(result.stderr).not.toMatch(/gh[pousr]_[A-Za-z0-9]{16,}/);
     expect(result.stderr).not.toMatch(/Authorization|Bearer|password|secret/i);
+  });
+
+  test('spells the lockfile path as the literal the activation gate scans for (UI-ffeu)', () => {
+    const text = fs.readFileSync(ADAPTER, 'utf8');
+
+    expect(text).toContain('.worktrees/.repo-ops-deploy.lock');
+  });
+
+  test('locks under the main repository root, where the Worker locks', () => {
+    const env = fixture();
+
+    run(env);
+
+    expect(
+      fs.existsSync(path.join(env.repo, '.worktrees', '.repo-ops-deploy.lock'))
+    ).toBe(true);
   });
 
   test('is a tracked regular executable with no provider protocol', () => {
