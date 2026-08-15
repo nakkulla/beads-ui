@@ -24,6 +24,9 @@
  * @property {string|null} [cleanup_cursor] - Next post-merge cleanup step.
  * @property {string|null} [head_ref] - Branch identity retained for deferred cleanup.
  * @property {string|null} [pr_url] - PR URL retained for deferred notification.
+ * @property {boolean} [external] - Durable external origin: a promoted
+ *   externally-merged row keeps this after the registry overlay yields, so
+ *   failure-resume eligibility ([정리]) still classifies it as external.
  */
 /**
  * Per-attempt record container (spec §5.2). Phase 9 persists the shape; Phase 10
@@ -4394,6 +4397,7 @@ export function createQueueStore(options = {}) {
         entry.merge_sha = input.merge_sha.toLowerCase();
         entry.head_ref = input.head_ref || null;
         entry.pr_url = input.pr_url || null;
+        entry.external = true;
         next.pr_wait.push(entry);
         return true;
       });

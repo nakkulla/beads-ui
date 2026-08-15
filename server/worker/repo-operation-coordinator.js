@@ -288,6 +288,26 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * @param {string} ancestor_ref
+   * @param {string} descendant_sha
+   * @returns {Promise<'ancestor'|'not_ancestor'|'unknown'>}
+   */
+  async function ancestryStatus(ancestor_ref, descendant_sha) {
+    try {
+      const result = await deps.gitRun(
+        ['merge-base', '--is-ancestor', ancestor_ref, descendant_sha],
+        { cwd: deps.repo }
+      );
+      if (result.code === 0) {
+        return 'ancestor';
+      }
+      return result.code === 1 ? 'not_ancestor' : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  /**
    * Durably cover failed deploy rows when terminal settlement proves a
    * successful descendant, regardless of which row settled last.
    *
@@ -481,11 +501,15 @@ export function createRepoOperationCoordinator(deps) {
                 })
             : { ok: false };
       if (!aligned.ok) {
+        const deploy_code =
+          'code' in aligned && aligned.code === 'repo_ops_worktree_unowned'
+            ? aligned.code
+            : 'deploy_worktree_residue';
         await settleFailure(workspace, operation, operation_id, {
           code:
             operation.kind === 'verify'
               ? 'verify_candidate_mismatch'
-              : 'deploy_worktree_residue',
+              : deploy_code,
           exit_code: marker.exit_code,
           signal: marker.signal
         });
@@ -887,27 +911,61 @@ export function createRepoOperationCoordinator(deps) {
           ? await deploy_worktree.readState({ repo: deps.repo })
           : { ok: true, head: null, clean: true };
       if (
-        state.ok &&
-        state.clean === true &&
-        typeof state.head === 'string' &&
-        (state.head === plan.target_sha ||
-          (await isCoveredByDescendant(plan.target_sha, state.head)))
+        !state.ok &&
+        'code' in state &&
+        state.code === 'repo_ops_worktree_unowned'
       ) {
-        deps.store.settleRepoOperation(workspace, {
-          operation_id,
-          attempt_id: operation.attempt_id,
-          exit_code: 0,
-          signal: null
-        });
-        await sweepDescendantCoverage(workspace, operation_id);
-        transition.reclaim(workspace, operation_id);
-        return {
-          ok: true,
-          operation_id,
-          terminal: true,
-          covered: state.head === plan.target_sha,
-          superseded: state.head !== plan.target_sha
-        };
+        const code = 'repo_ops_worktree_unowned';
+        if (plan.retry === true) {
+          deps.store.settleConsumedRepoOperationRetry(workspace, {
+            operation_id,
+            owner_bead: await ownerBead(operation),
+            blocked_reason: code
+          });
+        } else {
+          await settleFailure(workspace, operation, operation_id, { code });
+        }
+        return { ok: false, code, operation_id };
+      }
+      if (state.ok && state.clean === true && typeof state.head === 'string') {
+        const target_status =
+          state.head === plan.target_sha
+            ? 'ancestor'
+            : await ancestryStatus(plan.target_sha, state.head);
+        if (target_status === 'ancestor') {
+          deps.store.settleRepoOperation(workspace, {
+            operation_id,
+            attempt_id: operation.attempt_id,
+            exit_code: 0,
+            signal: null
+          });
+          await sweepDescendantCoverage(workspace, operation_id);
+          transition.reclaim(workspace, operation_id);
+          return {
+            ok: true,
+            operation_id,
+            terminal: true,
+            covered: state.head === plan.target_sha,
+            superseded: state.head !== plan.target_sha
+          };
+        }
+        const head_status = await ancestryStatus(state.head, plan.target_sha);
+        if (head_status !== 'ancestor') {
+          const code =
+            target_status === 'not_ancestor' && head_status === 'not_ancestor'
+              ? 'remote_history_not_monotonic'
+              : 'repo_ops_ancestry_check_failed';
+          if (plan.retry === true) {
+            deps.store.settleConsumedRepoOperationRetry(workspace, {
+              operation_id,
+              owner_bead: await ownerBead(operation),
+              blocked_reason: code
+            });
+          } else {
+            await settleFailure(workspace, operation, operation_id, { code });
+          }
+          return { ok: false, code, operation_id };
+        }
       }
 
       const aligned = await deploy_worktree.ensureAligned({

@@ -86,4 +86,38 @@ describe('worker/deploy-lock', () => {
       code: 'deploy_lock_unavailable'
     });
   });
+
+  test('returns unavailable when spawning throws synchronously', async () => {
+    const result = await acquireDeployLock({
+      repo: root,
+      timeout_ms: 1000,
+      spawn: /** @type {any} */ (
+        () => {
+          throw new Error('spawn failed');
+        }
+      )
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'deploy_lock_unavailable'
+    });
+  });
+
+  test('returns unavailable when preparing the lock directory throws', async () => {
+    const result = await acquireDeployLock({
+      repo: root,
+      timeout_ms: 1000,
+      fs: /** @type {any} */ ({
+        mkdirSync: () => {
+          throw new Error('mkdir failed');
+        }
+      })
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      code: 'deploy_lock_unavailable'
+    });
+  });
 });

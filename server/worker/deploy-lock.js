@@ -23,73 +23,77 @@ sys.stdin.buffer.read()
  * @returns {Promise<{ ok: true, release: () => Promise<void>, child: import('node:child_process').ChildProcess }|{ ok: false, code: 'deploy_lock_timeout'|'deploy_lock_unavailable' }>}
  */
 export async function acquireDeployLock(input) {
-  const fs_impl = input.fs || fs;
-  const spawn_impl = input.spawn || spawn;
-  const lock_path = path.resolve(
-    input.repo,
-    '.worktrees',
-    '.repo-ops-deploy.lock'
-  );
-  fs_impl.mkdirSync(path.dirname(lock_path), { recursive: true });
-  const timeout_ms = Math.max(1, Math.floor(input.timeout_ms));
+  try {
+    const fs_impl = input.fs || fs;
+    const spawn_impl = input.spawn || spawn;
+    const lock_path = path.resolve(
+      input.repo,
+      '.worktrees',
+      '.repo-ops-deploy.lock'
+    );
+    fs_impl.mkdirSync(path.dirname(lock_path), { recursive: true });
+    const timeout_ms = Math.max(1, Math.floor(input.timeout_ms));
 
-  return await new Promise((resolve) => {
-    const child = spawn_impl('python3', ['-c', HOLDER_SOURCE, lock_path], {
-      cwd: input.repo,
-      shell: false,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    let settled = false;
-    let stdout = '';
+    return await new Promise((resolve) => {
+      const child = spawn_impl('python3', ['-c', HOLDER_SOURCE, lock_path], {
+        cwd: input.repo,
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      let settled = false;
+      let stdout = '';
 
-    /** @param {'deploy_lock_timeout'|'deploy_lock_unavailable'} code */
-    function fail(code) {
-      if (settled) {
-        return;
+      /** @param {'deploy_lock_timeout'|'deploy_lock_unavailable'} code */
+      function fail(code) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        child.kill('SIGKILL');
+        resolve({ ok: false, code });
       }
-      settled = true;
-      clearTimeout(timer);
-      child.kill('SIGKILL');
-      resolve({ ok: false, code });
-    }
 
-    /** Release the holder and wait until the OS has closed its lock fd. */
-    function release() {
-      if (child.exitCode !== null || child.signalCode !== null) {
-        return Promise.resolve();
+      /** Release the holder and wait until the OS has closed its lock fd. */
+      function release() {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          return Promise.resolve();
+        }
+        return new Promise((resolve_release) => {
+          child.once('exit', () => resolve_release(undefined));
+          if (child.stdin) {
+            child.stdin.end();
+          } else {
+            child.kill('SIGKILL');
+          }
+        });
       }
-      return new Promise((resolve_release) => {
-        child.once('exit', () => resolve_release(undefined));
-        if (child.stdin) {
-          child.stdin.end();
-        } else {
-          child.kill('SIGKILL');
+
+      const timer = setTimeout(() => fail('deploy_lock_timeout'), timeout_ms);
+      child.once('error', () => fail('deploy_lock_unavailable'));
+      child.once('exit', () => {
+        if (!settled) {
+          fail('deploy_lock_unavailable');
         }
       });
-    }
-
-    const timer = setTimeout(() => fail('deploy_lock_timeout'), timeout_ms);
-    child.once('error', () => fail('deploy_lock_unavailable'));
-    child.once('exit', () => {
-      if (!settled) {
-        fail('deploy_lock_unavailable');
-      }
+      child.stdout?.on('data', (chunk) => {
+        if (settled) {
+          return;
+        }
+        stdout += String(chunk);
+        if (!stdout.includes('\n')) {
+          return;
+        }
+        if (stdout.split('\n', 1)[0] !== 'acquired') {
+          fail('deploy_lock_unavailable');
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: true, release, child });
+      });
     });
-    child.stdout?.on('data', (chunk) => {
-      if (settled) {
-        return;
-      }
-      stdout += String(chunk);
-      if (!stdout.includes('\n')) {
-        return;
-      }
-      if (stdout.split('\n', 1)[0] !== 'acquired') {
-        fail('deploy_lock_unavailable');
-        return;
-      }
-      settled = true;
-      clearTimeout(timer);
-      resolve({ ok: true, release, child });
-    });
-  });
+  } catch {
+    return { ok: false, code: 'deploy_lock_unavailable' };
+  }
 }

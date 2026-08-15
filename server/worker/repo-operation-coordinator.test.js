@@ -842,6 +842,94 @@ describe('RepoOperation coordinator', () => {
     });
   });
 
+  test('settles unowned deploy state without realigning it', async () => {
+    const ensureAligned = vi.fn(async () => ({
+      ok: true,
+      path: path.join(root, '.worktrees', '.repo-ops-deploy')
+    }));
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: false,
+          code: 'repo_ops_worktree_unowned'
+        }),
+        ensureAligned,
+        verifyCovered: async () => ({ ok: true })
+      },
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    const [operation] = Object.values(store.snapshot(root).repo_operations);
+    expect(operation).toMatchObject({
+      state: 'failed',
+      failure: { code: 'repo_ops_worktree_unowned' }
+    });
+    expect(ensureAligned).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  test('settles a sibling deploy target without realigning it', async () => {
+    const base_git = gitForBootstrap();
+    const gitRun = vi.fn(async (args) => {
+      const left = args[2];
+      const right = args[3];
+      if (
+        args[0] === 'merge-base' &&
+        ((left === TARGET && right === APPROVED) ||
+          (left === APPROVED && right === TARGET))
+      ) {
+        return { code: 1, stdout: '', stderr: '' };
+      }
+      return base_git(args);
+    });
+    const ensureAligned = vi.fn(async () => ({
+      ok: true,
+      path: path.join(root, '.worktrees', '.repo-ops-deploy')
+    }));
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployWorktree: {
+        bindTarget: async () => ({ ok: true, target_sha: TARGET }),
+        readState: async () => ({
+          ok: true,
+          head: APPROVED,
+          clean: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy')
+        }),
+        ensureAligned,
+        verifyCovered: async () => ({ ok: true })
+      },
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    spoolRequest(validRequest());
+
+    await coordinator.reconcile(root);
+
+    const [operation] = Object.values(store.snapshot(root).repo_operations);
+    expect(operation).toMatchObject({
+      state: 'failed',
+      failure: { code: 'remote_history_not_monotonic' }
+    });
+    expect(ensureAligned).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+  });
+
   test('settles a session-predeployed target as covered without spawning', async () => {
     const start = vi.fn();
     const ensureAligned = vi.fn();
@@ -1002,7 +1090,18 @@ describe('RepoOperation coordinator', () => {
     expect(settled.log_digest).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test('fails a zero-exit deploy whose worktree readback is not aligned', async () => {
+  test.each([
+    {
+      name: 'fails a zero-exit deploy whose worktree readback is not aligned',
+      verification: { ok: false },
+      expected_code: 'deploy_worktree_residue'
+    },
+    {
+      name: 'surfaces unowned coverage evidence after a zero-exit deploy',
+      verification: { ok: false, code: 'repo_ops_worktree_unowned' },
+      expected_code: 'repo_ops_worktree_unowned'
+    }
+  ])('$name', async ({ verification, expected_code }) => {
     const { store, coordinator } = coordinatorFor({
       runner: {
         start: () => ({ ok: false, code: 'unused' }),
@@ -1036,6 +1135,7 @@ describe('RepoOperation coordinator', () => {
       deployWorktree: /** @type {never} */ ({
         bindTarget: async () => ({ ok: true, target_sha: TARGET }),
         ensureAligned: async () => ({ ok: true, path: root }),
+        verifyCovered: async () => verification,
         verifyAligned: async () => ({ ok: false })
       })
     });
@@ -1063,7 +1163,7 @@ describe('RepoOperation coordinator', () => {
 
     expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
       state: 'retry_pending',
-      retry: { first_failure: { code: 'deploy_worktree_residue' } }
+      retry: { first_failure: { code: expected_code } }
     });
   });
 

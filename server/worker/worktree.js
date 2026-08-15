@@ -714,6 +714,64 @@ export function createRepoOpsDeployWorktreeManager(deps) {
   }
 
   /**
+   * Prove that any state at the reserved deploy path belongs to this repository
+   * and to the durable ownership journal. Complete absence is a valid bootstrap
+   * state; partial or foreign evidence is not.
+   *
+   * @param {{ repo: string, workspace?: string }} input
+   * @returns {Promise<{ ok: true, path: string, exists: boolean }|{ ok: false, code: 'repo_ops_worktree_unowned', path: string, exists: boolean }>}
+   */
+  async function inspectOwnership(input) {
+    const repo = input.repo;
+    const deploy_path = pathFor(repo);
+    const workspace = input.workspace || repo;
+    const journal = readJournal(journalPath(workspace));
+    const list = await run(['worktree', 'list', '--porcelain', '-z'], {
+      cwd: repo
+    });
+    const registered =
+      list.code === 0 && registeredPaths(list.stdout).includes(deploy_path);
+    const exists = fs.existsSync(deploy_path);
+    if (!exists && !registered && !journal) {
+      return { ok: true, path: deploy_path, exists: false };
+    }
+    const common_repo = await run(
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: repo }
+    );
+    const common_deploy = exists
+      ? await run(['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+          cwd: deploy_path
+        })
+      : { code: 1, stdout: '' };
+    const head = exists
+      ? await run(['symbolic-ref', '-q', 'HEAD'], { cwd: deploy_path })
+      : { code: 1 };
+    const journal_owned =
+      journal && journal.repo === repo && journal.path === deploy_path;
+    const common_equal =
+      common_repo.code === 0 &&
+      common_deploy.code === 0 &&
+      path.resolve(repo, common_repo.stdout.trim()) ===
+        path.resolve(deploy_path, common_deploy.stdout.trim());
+    if (
+      !exists ||
+      !registered ||
+      !journal_owned ||
+      !common_equal ||
+      head.code === 0
+    ) {
+      return {
+        ok: false,
+        code: 'repo_ops_worktree_unowned',
+        path: deploy_path,
+        exists
+      };
+    }
+    return { ok: true, path: deploy_path, exists: true };
+  }
+
+  /**
    * Bound fetch of `origin/<base>` and immutable target pin. Retries exactly
    * once, and only after a fully-reclaimed pre-execution timeout (exit 124).
    *
@@ -771,46 +829,11 @@ export function createRepoOpsDeployWorktreeManager(deps) {
     const target_sha = input.target_sha;
     {
       const journal_file = journalPath(workspace);
-      const journal = readJournal(journal_file);
-      const list = await run(['worktree', 'list', '--porcelain', '-z'], {
-        cwd: repo
-      });
-      const registered =
-        list.code === 0 && registeredPaths(list.stdout).includes(deploy_path);
-      const exists = fs.existsSync(deploy_path);
-      if (exists || registered || journal) {
-        const common_repo = await run(
-          ['rev-parse', '--path-format=absolute', '--git-common-dir'],
-          {
-            cwd: repo
-          }
-        );
-        const common_deploy = exists
-          ? await run(
-              ['rev-parse', '--path-format=absolute', '--git-common-dir'],
-              { cwd: deploy_path }
-            )
-          : { code: 1, stdout: '' };
-        const head = exists
-          ? await run(['symbolic-ref', '-q', 'HEAD'], { cwd: deploy_path })
-          : { code: 1 };
-        const journal_owned =
-          journal && journal.repo === repo && journal.path === deploy_path;
-        const common_equal =
-          common_repo.code === 0 &&
-          common_deploy.code === 0 &&
-          path.resolve(repo, common_repo.stdout.trim()) ===
-            path.resolve(deploy_path, common_deploy.stdout.trim());
-        if (
-          !exists ||
-          !registered ||
-          !journal_owned ||
-          !common_equal ||
-          head.code === 0
-        ) {
-          return { ok: false, code: 'repo_ops_worktree_unowned' };
-        }
-      } else {
+      const ownership = await inspectOwnership({ repo, workspace });
+      if (!ownership.ok) {
+        return { ok: false, code: ownership.code };
+      }
+      if (!ownership.exists) {
         const release_topology = await deps.locks.topologyLock(repo);
         try {
           const added = await run(
@@ -853,14 +876,30 @@ export function createRepoOpsDeployWorktreeManager(deps) {
    */
   async function readState(input) {
     const repo = fs.realpathSync(path.resolve(input.repo));
-    const deploy_path = pathFor(repo);
-    if (!fs.existsSync(deploy_path)) {
-      return { ok: true, path: deploy_path, head: null, clean: true };
+    const ownership = await inspectOwnership({ repo });
+    if (!ownership.ok) {
+      return {
+        ok: false,
+        code: ownership.code,
+        path: ownership.path,
+        head: null,
+        clean: false
+      };
     }
-    const current = await run(['rev-parse', 'HEAD'], { cwd: deploy_path });
+    if (!ownership.exists) {
+      return {
+        ok: true,
+        path: ownership.path,
+        head: null,
+        clean: true
+      };
+    }
+    const current = await run(['rev-parse', 'HEAD'], {
+      cwd: ownership.path
+    });
     const dirty = await run(
       ['status', '--porcelain', '--untracked-files=all'],
-      { cwd: deploy_path }
+      { cwd: ownership.path }
     );
     const head = current.stdout.trim().toLowerCase();
     if (
@@ -868,11 +907,16 @@ export function createRepoOpsDeployWorktreeManager(deps) {
       dirty.code !== 0 ||
       !/^[0-9a-f]{40}$/.test(head)
     ) {
-      return { ok: false, path: deploy_path, head: null, clean: false };
+      return {
+        ok: false,
+        path: ownership.path,
+        head: null,
+        clean: false
+      };
     }
     return {
       ok: true,
-      path: deploy_path,
+      path: ownership.path,
       head,
       clean: dirty.stdout.trim() === ''
     };
@@ -885,21 +929,16 @@ export function createRepoOpsDeployWorktreeManager(deps) {
    * @param {{ repo: string, target_sha: string }} input
    */
   async function verifyAligned(input) {
-    const repo = fs.realpathSync(path.resolve(input.repo));
-    const deploy_path = pathFor(repo);
-    const current = await run(['rev-parse', 'HEAD'], { cwd: deploy_path });
-    const dirty = await run(
-      ['status', '--porcelain', '--untracked-files=all'],
-      {
-        cwd: deploy_path
-      }
-    );
-    const aligned =
-      current.code === 0 &&
-      dirty.code === 0 &&
-      current.stdout.trim().toLowerCase() === input.target_sha &&
-      dirty.stdout.trim() === '';
-    return { ok: aligned };
+    const state = await readState({ repo: input.repo });
+    if (!state.ok) {
+      return { ok: false, ...(state.code ? { code: state.code } : {}) };
+    }
+    return {
+      ok:
+        state.clean === true &&
+        typeof state.head === 'string' &&
+        state.head === input.target_sha
+    };
   }
 
   /**
@@ -917,7 +956,7 @@ export function createRepoOpsDeployWorktreeManager(deps) {
       typeof state.head !== 'string' ||
       typeof state.path !== 'string'
     ) {
-      return { ok: false };
+      return { ok: false, ...(state.code ? { code: state.code } : {}) };
     }
     if (state.head === input.target_sha) {
       return { ok: true };
