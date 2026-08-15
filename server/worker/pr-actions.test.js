@@ -2748,6 +2748,42 @@ describe('worker/pr-actions base gate freshness (implementation review 2026-07-3
 });
 
 describe('worker/pr-actions completion gate evidence', () => {
+  test('binds an open completion gate to one exact base pin', async () => {
+    const first_base = '1'.repeat(40);
+    const second_base = '2'.repeat(40);
+    const resolveBase = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        base: 'main',
+        base_oid: first_base
+      })
+      .mockResolvedValue({
+        ok: true,
+        base: 'main',
+        base_oid: second_base
+      });
+    const repoOperations = failedVerifyOperations();
+    const env = makeActions({
+      resolveBase,
+      repoOperations,
+      details: [prOf({ head_sha: 'a'.repeat(40), base_ref: 'main' })]
+    });
+
+    const result = await env.actions.completionGate(BEAD);
+
+    expect(resolveBase).toHaveBeenCalledTimes(1);
+    expect(repoOperations.ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({ base_sha: first_base })
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      base_sha: first_base,
+      subject: { base_sha: first_base },
+      verdict: { reason: 'verify_cmd_failed' }
+    });
+  });
+
   test('returns a bounded pinned gate result without issuing a merge', async () => {
     const env = makeActions({
       repoOperations: failedVerifyOperations(),

@@ -31,6 +31,8 @@ import { REPO_OPS_CONFIG_PATH, resolveRepoOps } from './repo-ops-resolver.js';
 
 /** @type {Map<string, RepoOpsDisplay>} */
 const DISPLAY = new Map();
+/** @type {Map<string, number>} */
+const RESOLUTION_GENERATION = new Map();
 
 /**
  * @param {unknown} workspace
@@ -67,6 +69,20 @@ function pendingDisplay() {
  */
 export function repoOpsDisplayFor(workspace) {
   return DISPLAY.get(keyFor(workspace)) || pendingDisplay();
+}
+
+/**
+ * Issue a workspace-local publication token when an async resolution starts.
+ * Later-started requests supersede earlier ones regardless of completion order.
+ *
+ * @param {string} workspace
+ * @returns {number}
+ */
+export function beginRepoOpsDisplayResolution(workspace) {
+  const key = keyFor(workspace);
+  const generation = (RESOLUTION_GENERATION.get(key) || 0) + 1;
+  RESOLUTION_GENERATION.set(key, generation);
+  return generation;
 }
 
 /**
@@ -189,10 +205,17 @@ export function projectRepoOpsDisplay(resolution, base_sha) {
  *
  * @param {string} workspace
  * @param {RepoOpsDisplay} entry
+ * @param {number} [generation]
  * @returns {boolean} Whether the cache changed.
  */
-export function recordRepoOpsDisplay(workspace, entry) {
+export function recordRepoOpsDisplay(workspace, entry, generation) {
   const key = keyFor(workspace);
+  if (
+    typeof generation === 'number' &&
+    RESOLUTION_GENERATION.get(key) !== generation
+  ) {
+    return false;
+  }
   const previous = DISPLAY.get(key);
   if (previous && JSON.stringify(previous) === JSON.stringify(entry)) {
     return false;
@@ -206,13 +229,14 @@ export function recordRepoOpsDisplay(workspace, entry) {
  * Record the result of a resolve the CALLER already performed (the coordinator
  * path). Nothing is resolved here — that is the whole point.
  *
- * @param {{ workspace: string, resolution: any, base_sha: string|null }} input
+ * @param {{ workspace: string, resolution: any, base_sha: string|null, generation?: number }} input
  * @returns {boolean}
  */
 export function recordRepoOpsResolution(input) {
   return recordRepoOpsDisplay(
     input.workspace,
-    projectRepoOpsDisplay(input.resolution, input.base_sha)
+    projectRepoOpsDisplay(input.resolution, input.base_sha),
+    input.generation
   );
 }
 
@@ -226,6 +250,7 @@ export function recordRepoOpsResolution(input) {
  * @returns {Promise<RepoOpsDisplay>}
  */
 export async function refreshRepoOpsDisplay(input) {
+  const generation = beginRepoOpsDisplayResolution(input.workspace);
   const sha = typeof input.sha === 'string' ? input.sha.trim() : '';
   if (!/^[0-9a-f]{40}$/i.test(sha)) {
     const entry = /** @type {RepoOpsDisplay} */ ({
@@ -234,7 +259,7 @@ export async function refreshRepoOpsDisplay(input) {
       base_ref: input.base || null,
       error_code: 'repo_ops_base_unresolved'
     });
-    recordRepoOpsDisplay(input.workspace, entry);
+    recordRepoOpsDisplay(input.workspace, entry, generation);
     return entry;
   }
   const resolution = await resolveRepoOps({
@@ -243,7 +268,7 @@ export async function refreshRepoOpsDisplay(input) {
     gitRun: /** @type {any} */ (input.gitRun)
   });
   const entry = projectRepoOpsDisplay(resolution, sha);
-  recordRepoOpsDisplay(input.workspace, entry);
+  recordRepoOpsDisplay(input.workspace, entry, generation);
   return entry;
 }
 
@@ -252,4 +277,5 @@ export async function refreshRepoOpsDisplay(input) {
  */
 export function __resetRepoOpsDisplayForTest() {
   DISPLAY.clear();
+  RESOLUTION_GENERATION.clear();
 }

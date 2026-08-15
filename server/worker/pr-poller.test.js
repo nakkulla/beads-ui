@@ -1,8 +1,17 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
+import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller, resolvePrRef } from './pr-poller.js';
 import { __resetQueueEventsForTest } from './queue-events.js';
+import {
+  __resetRepoOpsDisplayForTest,
+  recordRepoOpsDisplay,
+  refreshRepoOpsDisplay,
+  repoOpsDisplayFor,
+  repoOpsVerifyPolicy,
+  repoOpsVerifyReceiptState
+} from './repo-ops-display.js';
 
 const SHA = 'a'.repeat(40);
 const NEW_SHA = 'c'.repeat(40);
@@ -11,6 +20,7 @@ const PR_URL = 'https://github.com/o/r/pull/304';
 
 afterEach(() => {
   __resetQueueEventsForTest();
+  __resetRepoOpsDisplayForTest();
 });
 
 /**
@@ -523,6 +533,81 @@ describe('worker/pr-poller — observation errors fail closed', () => {
 });
 
 describe('worker/pr-poller — optional verification binding (§5)', () => {
+  test.each([
+    [
+      'throws',
+      async () => {
+        throw new Error('fetch failed');
+      },
+      'base_unresolved:git_error'
+    ],
+    [
+      'fails',
+      async () => ({ ok: false, step: 'declaration_missing' }),
+      'base_unresolved:declaration_missing'
+    ],
+    [
+      'omits its SHA',
+      async () => ({ ok: true, base: 'main' }),
+      'base_unresolved:base_sha_unobserved'
+    ]
+  ])(
+    'invalidates cached advisory authority when base resolution %s',
+    async (_case, resolveBase, expected_error) => {
+      const observations = createPrObservationStore();
+      observations.record('/ws', 'UI-1', {
+        pr: detailOf(),
+        review_receipt: { state: 'current', head_sha: SHA }
+      });
+      observations.recordVerify('/ws', 'UI-1', {
+        head_sha: SHA,
+        effective_base_sha: BASE_SHA,
+        ok: true,
+        reason: 'ok',
+        at: 1
+      });
+      recordRepoOpsDisplay('/ws', {
+        status: 'absent',
+        source_path: 'repo-ops/config.toml',
+        base_ref: 'main',
+        base_sha: BASE_SHA,
+        verify: null,
+        deploy: null,
+        error_code: null
+      });
+      const operations = /** @type {any} */ (repoOperations());
+      operations.refreshDisplay = vi.fn((input) =>
+        refreshRepoOpsDisplay({
+          workspace: '/ws',
+          repo: '/repo',
+          base: input.base,
+          sha: input.sha,
+          gitRun: vi.fn()
+        })
+      );
+      const { poller } = makePoller({
+        observations,
+        repoOperations: operations,
+        resolveBase
+      });
+
+      await poller.tick();
+
+      const entry = observations.get('/ws', 'UI-1');
+      const policy = repoOpsVerifyPolicy(repoOpsDisplayFor('/ws'));
+      expect(policy.declaration_state).toBe('invalid');
+      expect(entry?.error).toBe(expected_error);
+      expect(
+        evaluateMergeGate(entry, {
+          review_receipt_state: observedReviewReceiptState(entry),
+          verify_receipt_state: repoOpsVerifyReceiptState(policy, entry?.verify)
+        })
+      ).toMatchObject({ enabled: false, tier: 'undecidable' });
+      expect(operations.ensureVerify).not.toHaveBeenCalled();
+      expect(operations.waitForTerminal).not.toHaveBeenCalled();
+    }
+  );
+
   test('starts the durable verification pinned to base and head', async () => {
     const operations = repoOperations();
     const { poller, observations } = makePoller({

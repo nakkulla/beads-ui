@@ -217,7 +217,9 @@ export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
     }
     const eligible =
       gate.enabled === true ||
-      (conflicting && !external) ||
+      (conflicting &&
+        !external &&
+        verify_policy.declaration_state !== 'invalid') ||
       (!!cleanup_failed[bead_id] && merged_tier) ||
       repairable;
     if (!eligible) {

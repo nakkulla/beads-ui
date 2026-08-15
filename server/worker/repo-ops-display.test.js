@@ -123,6 +123,54 @@ describe('projectRepoOpsDisplay', () => {
 });
 
 describe('refreshRepoOpsDisplay', () => {
+  test('keeps the latest-started resolution when completions arrive out of order', async () => {
+    /** @type {(value?: void) => void} */
+    let release = () => {};
+    const blocked = new Promise((resolve) => {
+      release = resolve;
+    });
+    const absentGit = fakeGit({});
+    const presentGit = fakeGit({
+      config: '[verify]\nscript = "repo-ops/script/verify"\n',
+      blobs: {
+        'repo-ops/config.toml': 'c'.repeat(40),
+        'repo-ops/script/verify': 'd'.repeat(40)
+      }
+    });
+    /** @type {string[]} */
+    const seen = [];
+    onQueueChanged((workspace) => seen.push(workspace));
+
+    const older = refreshRepoOpsDisplay({
+      workspace: '/repo',
+      repo: '/repo',
+      base: 'main',
+      sha: 'a'.repeat(40),
+      gitRun: async (args) => {
+        await blocked;
+        return absentGit(args);
+      }
+    });
+    const newer = refreshRepoOpsDisplay({
+      workspace: '/repo',
+      repo: '/repo',
+      base: 'main',
+      sha: 'b'.repeat(40),
+      gitRun: presentGit
+    });
+
+    await newer;
+    release();
+    await older;
+
+    expect(repoOpsDisplayFor('/repo')).toMatchObject({
+      status: 'resolved',
+      base_sha: 'b'.repeat(40),
+      verify: { script: 'repo-ops/script/verify' }
+    });
+    expect(seen).toEqual(['/repo']);
+  });
+
   test('caches a resolved declaration for the workspace', async () => {
     await refreshRepoOpsDisplay({
       workspace: '/repo',

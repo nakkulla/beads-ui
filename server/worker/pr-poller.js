@@ -162,7 +162,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
- *   repoOperations?: { hasConfig: (sha: string) => Promise<any>, ensureVerify: (candidate: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any },
+ *   repoOperations?: { hasConfig: (sha: string) => Promise<any>, ensureVerify: (candidate: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any, refreshDisplay?: (input: { base: string|null, sha: string|null }) => Promise<any> },
  *   onMerged?: (bead_id: string, merge_sha: string, refs?: { head_ref: string|null, pr_url: string|null }) => Promise<unknown>,
  *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
@@ -389,14 +389,36 @@ export function createPrPoller(deps) {
     if (!repo_operations || typeof deps.resolveBase !== 'function') {
       return { verify: null };
     }
+    const operations = repo_operations;
+    /**
+     * @param {string} reason
+     */
+    async function failBaseResolution(reason) {
+      try {
+        await operations.refreshDisplay?.({ base: null, sha: null });
+      } catch (err) {
+        log('repo-ops display invalidation failed for %s: %o', bead_id, err);
+      }
+      deps.observations.record(workspace, bead_id, {
+        error: reason,
+        pr,
+        review_receipt: {
+          state: review_receipt_state,
+          head_sha: pr.head_sha
+        }
+      });
+      return { verify: null };
+    }
     let pinned;
     try {
       pinned = await deps.resolveBase();
     } catch {
-      return { verify: null };
+      return failBaseResolution('base_unresolved:git_error');
     }
     if (!pinned.ok || typeof pinned.base_oid !== 'string') {
-      return { verify: null };
+      return failBaseResolution(
+        `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'base_sha_unobserved'}`
+      );
     }
     const policy = await repo_operations.hasConfig(pinned.base_oid);
     if (!policy.ok || typeof policy.verify_script_path !== 'string') {

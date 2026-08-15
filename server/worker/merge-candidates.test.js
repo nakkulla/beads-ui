@@ -373,6 +373,65 @@ describe('worker/merge-candidates — completion repair intake', () => {
     expect(result).toEqual([]);
   });
 
+  test('excludes a worker conflict when repo-ops policy is invalid', () => {
+    getWorkerRuntime().prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'CONFLICTING',
+        merge_state_status: 'DIRTY',
+        head_ref: 'UI-1',
+        head_sha: 'a'.repeat(40),
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+    });
+
+    const result = mergeQueueCandidates(
+      WS,
+      {
+        pr_wait: [{ bead_id: 'UI-1' }],
+        attempts: {},
+        cleanup_failed: {}
+      },
+      verifyPolicy('invalid')
+    );
+
+    expect(result).toEqual([]);
+  });
+
+  test.each(['absent', 'present'])(
+    'keeps a worker conflict when repo-ops policy is %s',
+    (declaration_state) => {
+      getWorkerRuntime().prObservations.record(WS, 'UI-1', {
+        pr: {
+          number: 1,
+          url: 'https://github.com/o/r/pull/1',
+          state: 'OPEN',
+          mergeable: 'CONFLICTING',
+          merge_state_status: 'DIRTY',
+          head_ref: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          base_ref: 'main'
+        },
+        review_receipt: { state: 'current', head_sha: 'a'.repeat(40) }
+      });
+
+      const result = mergeQueueCandidates(
+        WS,
+        {
+          pr_wait: [{ bead_id: 'UI-1' }],
+          attempts: {},
+          cleanup_failed: {}
+        },
+        verifyPolicy(/** @type {'absent'|'present'} */ (declaration_state))
+      );
+
+      expect(result).toEqual([{ bead_id: 'UI-1', external: false }]);
+    }
+  );
+
   test('includes a worker-owned verified Adapter regression', () => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {

@@ -423,9 +423,10 @@ export function createPrActions(deps) {
    *
    * @param {Queue} q
    * @param {string} bead_id
+   * @param {import('./target-base.js').TargetBaseResult} [declaration]
    * @returns {Promise<{ ok: true, base: string, source: 'attempt'|'declaration' }|{ ok: false, reason: string }>}
    */
-  async function expectedBaseFor(q, bead_id) {
+  async function expectedBaseFor(q, bead_id, declaration = undefined) {
     const attempts = q && q.attempts ? Object.values(q.attempts) : [];
     /** @type {{ base: string, at: number }|null} */
     let best = null;
@@ -447,16 +448,18 @@ export function createPrActions(deps) {
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'base_unresolved:no_resolver' };
     }
-    /** @type {import('./target-base.js').TargetBaseResult} */
-    let resolved;
-    try {
-      // `force`: the merge is IRREVERSIBLE, so its expected base may not come
-      // from the scan path's short-lived memo. A declaration that changed since
-      // the last scan would otherwise be compared against a stale expectation
-      // (implementation review 2026-07-30).
-      resolved = await deps.resolveBase({ force: true });
-    } catch {
-      return { ok: false, reason: 'base_unresolved:git_error' };
+    /** @type {import('./target-base.js').TargetBaseResult|undefined} */
+    let resolved = declaration;
+    if (!resolved) {
+      try {
+        // `force`: the merge is IRREVERSIBLE, so its expected base may not come
+        // from the scan path's short-lived memo. A declaration that changed since
+        // the last scan would otherwise be compared against a stale expectation
+        // (implementation review 2026-07-30).
+        resolved = await deps.resolveBase({ force: true });
+      } catch {
+        return { ok: false, reason: 'base_unresolved:git_error' };
+      }
     }
     if (!resolved.ok) {
       return { ok: false, reason: `base_unresolved:${resolved.step}` };
@@ -479,10 +482,16 @@ export function createPrActions(deps) {
    * @param {Queue} q
    * @param {string} bead_id
    * @param {string|null|undefined} observed_base_ref
+   * @param {{ ok: true, base: string, source: 'attempt'|'declaration' }} [expected_input]
    * @returns {Promise<{ ok: true, base: string }|{ ok: false, reason: string }>}
    */
-  async function baseGate(q, bead_id, observed_base_ref) {
-    const expected = await expectedBaseFor(q, bead_id);
+  async function baseGate(
+    q,
+    bead_id,
+    observed_base_ref,
+    expected_input = undefined
+  ) {
+    const expected = expected_input || (await expectedBaseFor(q, bead_id));
     if (!expected.ok) {
       return expected;
     }
@@ -607,9 +616,10 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {number} number
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean }|{ error: string }>}
+   * @param {import('./target-base.js').TargetBaseResult} [base_pin]
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean }|{ error: string }>}
    */
-  async function gateNow(bead_id, number) {
+  async function gateNow(bead_id, number, base_pin) {
     const observed = await observeNow(bead_id, number);
     if ('error' in observed) {
       return observed;
@@ -619,11 +629,13 @@ export function createPrActions(deps) {
       if (!repo_operations) {
         return { error: 'repo_operations_unavailable' };
       }
-      let pinned;
-      try {
-        pinned = await deps.resolveBase?.({ force: true });
-      } catch {
-        return { error: 'base_unresolved:git_error' };
+      let pinned = base_pin;
+      if (!pinned) {
+        try {
+          pinned = await deps.resolveBase?.({ force: true });
+        } catch {
+          return { error: 'base_unresolved:git_error' };
+        }
       }
       if (!pinned?.ok || typeof pinned.base_oid !== 'string') {
         return {
@@ -660,6 +672,7 @@ export function createPrActions(deps) {
         return {
           pr,
           verdict: preliminary,
+          target_base: pinned.base,
           base_sha: pinned.base_oid,
           repo_operations: true,
           verify_operation_id: null,
@@ -680,6 +693,7 @@ export function createPrActions(deps) {
         return {
           pr,
           verdict: preliminary,
+          target_base: pinned.base,
           base_sha: pinned.base_oid,
           repo_operations: true,
           verify_operation_id: null,
@@ -699,6 +713,7 @@ export function createPrActions(deps) {
               }
             }
           ),
+          target_base: pinned.base,
           base_sha: pinned.base_oid,
           repo_operations: true,
           verify_operation_id:
@@ -738,6 +753,7 @@ export function createPrActions(deps) {
             expected_key
           }
         }),
+        target_base: pinned.base,
         base_sha: pinned.base_oid,
         repo_operations: true,
         verify_operation_id: ensured.operation_id,
@@ -778,10 +794,6 @@ export function createPrActions(deps) {
     if (!ref || typeof ref.number !== 'number') {
       return { ok: false, reason: 'pr_ref_unknown' };
     }
-    const expected = await expectedBaseFor(q, bead_id);
-    if (!expected.ok) {
-      return { ok: false, reason: expected.reason };
-    }
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'base_unresolved:no_resolver' };
     }
@@ -794,6 +806,10 @@ export function createPrActions(deps) {
     if (!pinned.ok) {
       return { ok: false, reason: `base_unresolved:${pinned.step}` };
     }
+    const expected = await expectedBaseFor(q, bead_id, pinned);
+    if (!expected.ok) {
+      return { ok: false, reason: expected.reason };
+    }
     if (pinned.base !== expected.base) {
       return {
         ok: false,
@@ -803,11 +819,11 @@ export function createPrActions(deps) {
     if (typeof pinned.base_oid !== 'string' || pinned.base_oid.length === 0) {
       return { ok: false, reason: 'base_sha_unobserved' };
     }
-    const gated = await gateNow(bead_id, ref.number);
+    const gated = await gateNow(bead_id, ref.number, pinned);
     if ('error' in gated) {
       return { ok: false, reason: gated.error };
     }
-    const base_ok = await baseGate(q, bead_id, gated.pr.base_ref);
+    const base_ok = await baseGate(q, bead_id, gated.pr.base_ref, expected);
     if (!base_ok.ok) {
       return { ok: false, reason: base_ok.reason };
     }
@@ -820,16 +836,27 @@ export function createPrActions(deps) {
     }
     const entry = deps.observations.get(workspace, bead_id);
     const verify = entry?.verify;
+    const authority =
+      gated.pr.state === 'OPEN'
+        ? { target_base: gated.target_base, base_sha: gated.base_sha }
+        : { target_base: pinned.base, base_sha: pinned.base_oid };
+    if (
+      authority.target_base !== expected.base ||
+      typeof authority.base_sha !== 'string' ||
+      authority.base_sha.length === 0
+    ) {
+      return { ok: false, reason: 'base_authority_unobserved' };
+    }
     return {
       ok: true,
-      target_base: expected.base,
-      base_sha: pinned.base_oid,
+      target_base: authority.target_base,
+      base_sha: authority.base_sha,
       subject: {
         role,
         bead_id,
         pr_url: gated.pr.url,
         head_sha: gated.pr.head_sha,
-        base_sha: pinned.base_oid,
+        base_sha: authority.base_sha,
         merged_sha: gated.pr.state === 'MERGED' ? gated.pr.merged_sha : null
       },
       verdict: gated.verdict,

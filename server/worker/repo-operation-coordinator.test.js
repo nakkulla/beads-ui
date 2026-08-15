@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
+import { __resetQueueEventsForTest, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import {
@@ -31,6 +32,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-operation-coord-'));
   process.env.XDG_STATE_HOME = path.join(root, 'state');
   __resetRepoOpsDisplayForTest();
+  __resetQueueEventsForTest();
 });
 
 afterEach(() => {
@@ -221,6 +223,36 @@ describe('RepoOperation coordinator', () => {
       verify_script_path: null,
       verify_timeout_ms: null
     });
+  });
+
+  test('keeps the latest-started hasConfig display after out-of-order completion', async () => {
+    /** @type {(value?: void) => void} */
+    let release = () => {};
+    const blocked = new Promise((resolve) => {
+      release = resolve;
+    });
+    const baseGit = gitForVerify({ verify: true });
+    let first_call = true;
+    const gitRun = vi.fn(async (args) => {
+      if (first_call) {
+        first_call = false;
+        await blocked;
+      }
+      return baseGit(args);
+    });
+    const { coordinator } = coordinatorFor({ gitRun });
+    /** @type {string[]} */
+    const seen = [];
+    onQueueChanged((workspace) => seen.push(workspace));
+
+    const older = coordinator.hasConfig(BASE);
+    const newer = coordinator.hasConfig(HEAD);
+    await newer;
+    release();
+    await older;
+
+    expect(repoOpsDisplayFor(root).base_sha).toBe(HEAD);
+    expect(seen).toEqual([root]);
   });
 
   test('creates no operation when verify is absent', async () => {

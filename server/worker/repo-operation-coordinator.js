@@ -19,6 +19,7 @@ import {
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
+  beginRepoOpsDisplayResolution,
   recordRepoOpsResolution,
   refreshRepoOpsDisplay
 } from './repo-ops-display.js';
@@ -124,6 +125,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
    */
   async function resolveEffectiveTracked(input) {
+    const display_generation = beginRepoOpsDisplayResolution(deps.workspace);
     /** @type {any} */
     const result = await resolveEffectiveRepoOps(input);
     if (!result || typeof result !== 'object') {
@@ -133,7 +135,8 @@ export function createRepoOperationCoordinator(deps) {
       recordRepoOpsResolution({
         workspace: deps.workspace,
         resolution: result,
-        base_sha: null
+        base_sha: null,
+        generation: display_generation
       });
       return result;
     }
@@ -149,7 +152,8 @@ export function createRepoOperationCoordinator(deps) {
       recordRepoOpsResolution({
         workspace: deps.workspace,
         resolution,
-        base_sha
+        base_sha,
+        generation: display_generation
       });
     }
     return result;
@@ -1468,6 +1472,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} sha
    */
   async function hasConfig(sha) {
+    const display_generation = beginRepoOpsDisplayResolution(deps.workspace);
     const resolved = await resolveRepoOps({
       repo: deps.repo,
       sha,
@@ -1477,14 +1482,16 @@ export function createRepoOperationCoordinator(deps) {
       recordRepoOpsResolution({
         workspace: deps.workspace,
         resolution: resolved,
-        base_sha: sha
+        base_sha: sha,
+        generation: display_generation
       });
       return resolved;
     }
     recordRepoOpsResolution({
       workspace: deps.workspace,
       resolution: resolved,
-      base_sha: sha
+      base_sha: sha,
+      generation: display_generation
     });
     return {
       ok: true,
