@@ -33,7 +33,10 @@ beads-ui는 dotfiles가 소유한 repo operation automation policy의 **소비�
 operation 레코드도 없다. 그래서 해결 버튼이 렌더될 대상 자체가 없다
 (`UI-f17c`). 별도로 `completion-repair-policy.js`의
 `isRepairableCleanupFailure`는 `step=post_merge_verify`만 인정하는 legacy
-allowlist로 남아 있다.
+allowlist로 남아 있고, 소비자가 둘이다 — `merge-candidates.js`의 `repairable`
+판정과, `completion-intent.js`가 cleanup failure를 `cleanup_repairable`과
+`cleanup_red`로 가르는 분기다. 후자의 `cleanup_red`는 계약이 없앤 "사람이 직접
+고치는" 종착이 코드에 남아 있는 자리다.
 
 UI 층에서는 `app/views/worker/repo-ops-timeline.js`가 budget 소진 시
 (`remaining <= 0`) 해결 버튼을 `disabled`로 만들고 `수동으로 해결하세요`를
@@ -82,6 +85,7 @@ UI 층에서는 `app/views/worker/repo-ops-timeline.js`가 budget 소진 시
 | `app/views/worker/exec-defaults-dialog.js` | 3목록 → 사다리 구조 | 수정 |
 | `server/worker/completion-repair-policy.js` | legacy allowlist | **삭제** |
 | `server/worker/merge-candidates.js` | 위 allowlist 호출부 | 사다리 판정으로 교체 |
+| `server/worker/completion-intent.js` | 같은 allowlist로 `cleanup_repairable`/`cleanup_red`를 가르는 분기 | 사다리 판정으로 교체 |
 | `app/protocol.md` | `repo_operation_policy` shape 문서 | v2 shape로 갱신 |
 
 새 모듈을 두는 이유는 판정의 소비자가 셋이기 때문이다. coordinator의 자동
@@ -116,13 +120,42 @@ guard는 아티팩트를 잘못 갱신한 사고에 대한 방어선이다.
 겸하고 있고, `other`는 "eligible 목록에 없음"을 뜻한다. v2에는 목록 자체가
 없으므로 두 책임을 분리한다.
 
-- `isRepairEligible(operation)` — `superseded_by`와 `dismissed`가 아닌 **모든
-  terminal failure에 `true`**. allowlist 조회가 사라진다.
+- `isRepairEligible(operation)` — `superseded_by`가 아닌 **모든 terminal
+  failure에 `true`**. allowlist 조회가 사라진다. `superseded_by`는 후속
+  operation이 그 실패를 대체했다는 사실이므로 제외가 맞지만, `dismissed`는
+  제외 조건이 아니다(§3.3-1).
 - `classifyRepoOperationFailure(operation)` — 표시·packet용 토큰만 낸다.
-  `interrupted === true`면 `interrupted_without_terminal_exit`, script 실패면
-  `verify_script_failure`/`deploy_script_failure`, **그 외에는
-  `failure.code`를 그대로 반환**한다.
+  `interrupted === true`면 `interrupted_without_terminal_exit`,
+  `failure.code ∈ {script_failed, timeout}`이면
+  `verify_script_failure`/`deploy_script_failure`, **그 외에는 `failure.code`를
+  그대로 반환**한다.
 - `scriptRetryApplicable(operation)` — §3.4의 적용 조건.
+
+**표시 토큰과 retry 자격은 다른 축이다.** 위 분류는 사람이 읽을 라벨을 고르는
+것이고, retry 자격은 §3.4의 invocation 증거가 정한다. 둘은 일치하지 않는다 —
+예컨대 `interrupted_without_terminal_exit`는 표시 토큰이 하나지만 spawn 흔적
+유무에 따라 retry 자격이 갈리고, `verify_candidate_mismatch`는 표시 토큰이
+같은 채로 두 단계에서 발생한다. 이 둘을 한 함수에 묶었던 것이 `other`를 낳은
+구조적 원인이므로, 다시 묶지 않는다.
+
+**3.3-1 `dismissed`의 재정의.** `dismissRepoOperation`은 표시 플래그만 세운다 —
+레코드는 `failed` 상태 그대로이고 정리 커서도 전진하지 않는다. 따라서 dismissed
+실패는 여전히 unresolved terminal failure이며, 여기서 해결 입구를 없애면 계약의
+`resolution_entry_surface: every_unresolved_terminal_failure_regardless_of_record_surface`와
+`manual_human_fix: absent`를 함께 위반한다. 사람이 ✕를 눌렀다는 사실이 실패를
+고치지는 않는다.
+
+dismissal의 원래 의도(조용히 접수해 `해결 필요` 집계에서 뺀다)는 유지하되,
+효과를 **자동 단계 제외로 한정**한다.
+
+| 축 | dismissed의 효과 |
+| --- | --- |
+| `해결 필요` 집계 | 빠진다 (기존 동작 유지) |
+| 자동 사다리(`script_retry`, `auto_repair_session`) | 대상에서 빠진다 — 사람이 접수한 실패를 자동이 다시 열지 않는다 |
+| `user_triggered_session` | **유지된다** — 해결 버튼은 계속 렌더되고 동작한다 |
+
+이는 workspace 토글 OFF(`off_semantics`)와 같은 모양이므로 어휘가 일관된다.
+UI에서 dismissed 행은 `접수됨` 칩을 유지한 채 해결 버튼을 함께 보여준다.
 
 fallback 토큰을 새로 만들지 않는 것이 핵심이다. `other`를 다른 이름으로
 되살리면 이번에 없애는 사각지대가 그대로 재생산된다. UI는 알려진 세 토큰에
@@ -131,13 +164,31 @@ fallback 토큰을 새로 만들지 않는 것이 핵심이다. `other`를 다�
 
 ### 3.4 `script_retry` 상태 머신
 
-**적용 조건.** `failure.code ∈ {script_failed, timeout}`일 때만 성립한다. 이 두
-코드만 runner marker에서 나온 "스크립트를 실제로 실행하고 실패"다. 나머지
-실패는 스크립트 실행 전이거나(`base_fetch_failed`,
-`repo_ops_worktree_unowned`) 실행 후 정렬 검사 실패(`verify_candidate_mismatch`,
-`deploy_worktree_residue`)여서 같은 명령을 다시 돌릴 대상이 없다. 계약 §3.6의
-정규화 표도 이 넷을 `auto_repair_session` 직행으로 명시한다. 적용되지 않는
-subject는 `script_retry: not_applicable` 증거를 남기고 즉시 2단계로 내려간다.
+**적용 조건은 계약의 `script_identity_present` 하나다.** 실패 코드로 된 예외
+목록을 만들지 않는다 — 코드별 allowlist는 이번에 없애는 사각지대를 다른
+이름으로 재생산하고, 계약에 없는 disposition을 소비자가 발명하는 일이다.
+
+`script_identity`는 **실제 runner invocation 증거**에서만 만들어진다. 레코드의
+`script_blob_sha`는 operation prerecord 시점에 결정되므로 spawn 이전에 실패한
+subject에도 존재하며, 그 필드의 존재를 identity로 읽으면 pre-spawn 실패까지
+재시도 대상이 된다. 판정 기준은 `startRepoOperation`이 성공해 남긴 흔적이다:
+`started_at`과 `log_path`가 모두 있으면 script가 실제로 spawn되었고, 그때만
+`script_identity = script_blob_sha + script_mode`가 성립한다.
+
+이 기준은 계약 §3.6의 정규화 표와 일치한다. 관측된 다섯 건은 모두 spawn 이전
+실패(`base_fetch_failed`, `repo_ops_worktree_unowned`, materialize 단계의
+`verify_candidate_mismatch`)여서 `started_at`이 없고, 표가 명시한 대로
+`not_applicable`로 2단계에 직행한다. 반대로 `interrupted_without_terminal_exit`는
+spawn 이후 중단일 수 있으므로 흔적이 있으면 identity가 성립한다 — 실패 코드로
+잘라냈다면 이 경우를 잘못 배제했을 것이다.
+
+`verify_candidate_mismatch`는 코드 상 두 곳에서 난다: verify 후보 materialize
+실패(spawn 이전)와 exit 0 이후 정렬 검사 실패(spawn 이후)다. 같은 코드가 두
+단계에서 나오는 것이 바로 코드 기반 판정이 성립하지 않는 이유이며,
+invocation 증거 기준은 두 경우를 자동으로 옳게 가른다.
+
+적용되지 않는 subject는 `script_retry: not_applicable` 증거를 남기고 즉시
+2단계로 내려간다.
 
 **상태 어휘.** `RepoOperation.state`에 `retry_pending`을 추가한다:
 `queued|running|succeeded|failed|repairing|retry_pending`.
@@ -150,11 +201,11 @@ retry_pending --자격 남음--> [소비 기록] --> queued --> running --> 정�
 retry_pending --자격 소진--> failed      (보존한 first_failure로 terminal)
 ```
 
-**소비 키.** `(attempt_id, target_sha, script_identity)`를 operation 레코드의
-`retry.consumed_key`에 durable하게 쓴다. `script_identity`는 레코드에 이미 있는
-`script_blob_sha`와 `script_mode`를 결합한 값이다. 소비 기록 시점은 **재실행
-spawn 직전**이지 `retry_pending` 진입 시점이 아니다. 이 순서가 계약 §3.3의
-재시작 복구 규칙을 그대로 만족시킨다.
+**소비 키.** 위에서 성립한 `script_identity`를 써서
+`(attempt_id, target_sha, script_identity)`를 operation 레코드의
+`retry.consumed_key`에 durable하게 쓴다. 소비 기록 시점은 **재실행 spawn
+직전**이지 `retry_pending` 진입 시점이 아니다. 이 순서가 계약 §3.3의 재시작
+복구 규칙을 그대로 만족시킨다.
 
 - 재시작이 `retry_pending` 기록과 소비 기록 사이에 일어나면 자격이 남아 있으므로
   재시도를 실행한다.
@@ -169,9 +220,32 @@ spawn 직전**이지 `retry_pending` 진입 시점이 아니다. 이 순서가 �
 없으면 간헐 실패가 조용히 초록불이 되며, 그것은 `baseline_failure_ignore`
 금지가 막으려는 결과와 같다.
 
-**레코드 스키마.** `RepoOperation.schema`는 `1`을 유지하고 `retry`를 optional로
-정규화한다(부재 시 기본값). `normalizeRepoOperation`은 `schema !== 1`인 레코드를
-거부하므로, 값을 올리면 기존 durable 레코드의 관측 이력이 전부 사라진다.
+**자동이 비활성인 경우.** decoder guard가 `supported=false`이거나 workspace
+`auto_repair`가 OFF면 script 실패는 `retry_pending`으로 가지 **않는다**.
+`retry_pending`은 자동 재시도를 기다리는 상태인데 그 자동이 꺼져 있으면 아무도
+그 상태를 해소하지 않고, 사용자 해결 버튼은 `failed` 상태에만 붙으므로 트리거
+없는 정지가 된다. 이 경우 실패는 곧바로 terminal `failed`로 정착하고
+`ladder_stage = 'user_triggered_session'`을 durable하게 기록하며, 자동이 막힌
+이유(`schema_unsupported` 또는 `auto_repair_off`)를 앞 단계 결과로 남겨 packet에
+실린다. 이미 실행 중인 세션은 이 전이가 건드리지 않는다.
+
+**레코드 스키마와 legacy 호환.** `RepoOperation.schema`는 `1`을 유지하고
+`retry`를 optional로 정규화한다. `normalizeRepoOperation`은 `schema !== 1`인
+레코드를 거부하므로, 값을 올리면 기존 durable 레코드의 관측 이력이 전부
+사라진다.
+
+`retry` 부재를 일률적으로 "자격 미소비"로 기본화하지는 않는다. 상태별로 나눈다.
+
+| 기존 레코드 | `retry` 정규화 |
+| --- | --- |
+| `state=failed`, `retry` 부재 | 자격 **소진**으로 읽는다. v1에서 이미 terminal로 정착한 실패이므로 재시도 자격을 새로 주면 terminal 안정성과 계약의 `timing: before_terminal_settlement`를 함께 깬다. 곧바로 2단계 입구를 갖는다 |
+| `state=succeeded`, `retry` 부재 | 해당 없음. `absorbed` 증거 없이 성공한 것으로 읽는다 |
+| `state ∈ {queued, running}`, `retry` 부재 | 자격 미소비. 앞으로 날 script 실패만 `retry_pending` 자격을 만든다 |
+| `retry`가 있으나 malformed | fail-closed — 자격 소진으로 읽고 2단계로 보낸다 |
+
+전이가 `running → retry_pending` 하나뿐이므로 이미 `failed`인 레코드가 자격을
+되찾는 경로는 구조적으로 없지만, 정규화 규칙을 명시해 두어야 `retry` 부재를
+미소비로 읽는 구현이 나중에 그 경로를 여는 것을 막는다.
 
 **chain 정합.** `retry_pending`은 비terminal이므로
 `completion_chain.identity: first_terminal_failure_operation`이 그대로 성립한다.
@@ -184,11 +258,21 @@ chain은 재시도가 끝나 terminal이 확정된 뒤에 열린다.
 가능성이 높고, guard를 순진하게 적용하면 그 반복이 최초 `auto_repair_session`을
 삼킨다.
 
-현재 `reproducedWithoutNewEvidence`는 같은 fingerprint와 같은 evidence key를 가진
-다른 레코드의 `auto_used > 0`을 조건으로 하므로 이미 "chain 자동 세션 소비
-이후"에만 참이 된다. 이 판정은 유지하되, `retry_pending` 재실행이 만든 레코드가
-그 비교 대상에 끼지 않도록 재시도는 별도 레코드를 만들지 않고 같은 operation
-안에서 일어난다(§3.4).
+현재 `reproducedWithoutNewEvidence`는 이 요구를 만족하지 **못한다**. 그 함수는
+같은 `repo_id`의 다른 어떤 레코드든 fingerprint와 evidence key가 같고
+`auto_used > 0`이면 참을 반환하며, **`chain_id`를 전혀 검사하지 않는다**.
+따라서 과거의 다른 chain이 자동 세션을 쓴 적이 있으면, 같은 fingerprint를 가진
+독립된 새 chain의 **최초** 자동 세션까지 억제된다. 이는 계약 §3.4가 명시적으로
+금지한 경로다.
+
+guard를 현재 subject의 chain에 결속하도록 고친다.
+
+- 비교 대상을 같은 `chain_id`를 가진 레코드로 한정한다.
+- 그 chain의 자동 세션이 이미 소비되었는지(`ladder_stage`가
+  `auto_repair_session`을 지났는지)를 durable 상태로 먼저 확인하고, 소비 이후의
+  자동 재진입에만 guard를 적용한다.
+- `retry_pending` 재실행은 별도 레코드를 만들지 않고 같은 operation 안에서
+  일어나므로(§3.4) 비교 대상에 끼지 않는다.
 
 자동 세션 실패 후 사용자 단계로의 전이는 durable하게 기록된다
 (`repair.ladder_stage = 'user_triggered_session'`). 기록이 없으면 재시작 후
@@ -201,8 +285,14 @@ chain은 재시도가 끝나 terminal이 확정된 뒤에 열린다.
 
 | 출처 | subject id | owner_bead | script identity |
 | --- | --- | --- | --- |
-| `repo_operations[id]`, `state=failed`, `superseded_by`·`dismissed` 아님 | `op:<operation_id>` | `repair.owner_bead` | 있으면 사용 |
-| `cleanup_failed[bead_id]` 중 결속된 operation subject가 없는 행 | `cleanup:<bead_id>` | `bead_id` | 없음 → `not_applicable` |
+| `repo_operations[id]`, `state=failed`, `superseded_by` 없음 | `op:<operation_id>` | `repair.owner_bead` | 있으면 사용 |
+| `cleanup_failed[bead_id]` 중 정리 커서를 멈춘 채 결속된 operation subject가 없는 행 | `cleanup:<bead_id>` | `bead_id` | 없음 → `not_applicable` |
+
+계약의 `resolution_subject`는
+`unresolved_terminal_failure_blocking_cleanup_cursor`다. `cleanup_failed`의 모든
+행이 아니라 **정리 커서가 그 행에서 멈춰 있는** 행만 subject가 된다. 판정은
+기존 `CLEANUP_STEPS` 커서 위치를 그대로 읽으며, 이 저장소가 새 판정을 발명하지
+않는다.
 
 **중복 방지.** 같은 bead에 결속된 operation subject가 이미 있으면 그 bead의
 `cleanup_failed` 행은 subject로 승격하지 않는다. operation 레코드가 더 구체적인
@@ -224,14 +314,28 @@ durable 마이그레이션은 하지 않는다. 이미 정지한 다섯 건은 �
 chain은 곧바로 `user_triggered_session` 입구를 가지므로, 어느 경우든 트리거 없는
 정지 상태로 남지 않는다.
 
-`completion-repair-policy.js`의 `isRepairableCleanupFailure`는 삭제하고
-`merge-candidates.js`의 호출부를 사다리 판정으로 교체한다. legacy allowlist가
-남아 있으면 이번에 없애는 사각지대가 그 파일에 그대로 살아남는다.
+`completion-repair-policy.js`의 `isRepairableCleanupFailure`는 삭제한다.
+소비자는 둘이다.
+
+- `merge-candidates.js` — merge candidate의 `repairable` 판정에 쓴다.
+- `completion-intent.js` — 같은 allowlist로 cleanup failure를
+  `cleanup_repairable`과 `cleanup_red`로 가른다. `cleanup_red`는 별도
+  `needs_human` 계열 경로로 흐른다.
+
+두 호출부 모두 사다리 판정으로 교체한다. `completion-intent.js`를 남겨두면
+import가 깨질 뿐 아니라, 계약이 없앤 "사람이 직접 고치는" 종착이
+`cleanup_red` 경로로 그대로 살아남는다. `cleanup_red`는 폐기하고 모든
+unresolved cleanup failure가 `cleanup_repairable`과 같은 통합 subject로
+흐르게 한다. `CompletionFactState` 어휘에서 `cleanup_red`가 사라지므로
+`completion-intent.test.js`의 해당 기대도 함께 교체한다.
 
 ### 3.7 UI
 
-**타임라인.** 해결 버튼의 `?disabled=${spent}`를 제거한다. 부제는 남은 자동
-횟수를 계속 보여주되 문구가 바뀐다.
+**타임라인.** 해결 버튼의 `?disabled=${spent}`를 제거한다.
+`operationActionsTemplate`은 현재 `dismissed`면 액션 블록 전체를 반환하지 않는데,
+§3.3-1에 따라 dismissed 행도 해결 버튼을 갖는다. 조기 반환 조건에서 `dismissed`를
+빼고 `superseded_by`만 남긴다. 부제는 남은 자동 횟수를 계속 보여주되 문구가
+바뀐다.
 
 | 상태 | 부제 |
 | --- | --- |
@@ -300,26 +404,65 @@ ladder: {
 
 ## 5. Test scope
 
-RED-GREEN seam은 `server/worker/resolution-ladder.test.js`(신설)다.
+순수 판정과 상태 전이와 UI 동작이 각각 다른 파일에서 깨질 수 있으므로 seam을
+세 층으로 나눈다. 어느 한 층만으로는 핵심 요구가 빠져도 전부 통과할 수 있다.
+
+**층 1 — `server/worker/resolution-ladder.test.js` (신설).** 순수 판정.
 
 - 실패 코드 5종(`script_failed`, `timeout`, `verify_candidate_mismatch`,
-  `base_fetch_failed`, `repo_ops_worktree_unowned`)이 전부 `repair_eligible=true`이고
-  분류가 `other`를 내지 않음
-- `script_retry`가 앞 둘에만 적용되고 나머지는 `not_applicable` 증거를 남김
-- 같은 소비 키로 두 번째 재시도 자격이 없음 (재시작 시뮬레이션 포함)
-- `retry_pending`으로 중단된 레코드가 자격 유무에 따라 재시도 또는 terminal
-  정착으로 갈림
+  `base_fetch_failed`, `repo_ops_worktree_unowned`)이 전부
+  `repair_eligible=true`이고 분류가 `other`를 내지 않음
+- `script_identity`가 `started_at`+`log_path` 흔적에서만 성립하고, 같은
+  `verify_candidate_mismatch`라도 spawn 이전 레코드는 `not_applicable`,
+  spawn 이후 레코드는 identity 성립으로 갈림
+- `interrupted_without_terminal_exit`가 흔적이 있으면 identity를 가짐
+- `dismissed` 레코드가 자동 단계에서는 빠지고 `user_triggered_session`
+  입구는 유지함
 - `cleanup_failed(step=repo_operations)` 행이 subject로 정규화되어
-  `auto_repair_session` 입구를 가짐
+  `auto_repair_session` 입구를 갖고, 같은 bead에 operation subject가 있으면
+  승격하지 않음
+- fingerprint guard가 **다른** chain의 최초 자동 세션을 억제하지 않고, 같은
+  chain의 자동 세션 소비 이후 재진입만 사용자 단계로 내림
 - `schema_version=1` 아티팩트에서 자동 단계는 거부되고 사용자 트리거는 허용됨
+- legacy 정규화 표(§3.4)의 네 행이 각각 기대한 자격으로 읽힘
 
-기존 `server/worker/repo-operation-policy.test.js`는 v1 토큰(`eligible` 3종,
-`whole_command_retry`)과 digest를 직접 고정하므로 재핀 시점에 진짜 RED가 된다.
-이 테스트를 v2 구조로 갱신한다.
+**층 2 — coordinator/store 전이.** `repo-operation-coordinator.test.js`와
+`repo-operation-store.test.js`를 확장한다. 순수 함수가 옳아도 전이 순서가
+틀리면 at-most-once가 깨지므로 이 층이 따로 필요하다.
 
-`server/worker/repo-operation-repair.test.js`와
-`server/worker/repo-operation-protocol.test.js`는 사다리 전이와 새 투영 shape를
-반영하도록 갱신한다.
+- 소비 기록이 **spawn 직전**에 일어남을 순서로 고정
+- crash point별 복구: ① `retry_pending` 기록 후 소비 전 중단 → 재시도 실행
+  ② 소비 후 spawn 전 중단 → 보존한 `first_failure`로 terminal 정착
+  ③ spawn 후 결과 전 중단 → terminal 정착
+- 재시도 성공 시 `retry.absorbed` 증거가 남고 `succeeded`가 됨
+- 자동 비활성(`supported=false` / `auto_repair=OFF`)에서 script 실패가
+  `retry_pending`을 거치지 않고 곧바로 `failed` +
+  `ladder_stage=user_triggered_session`으로 정착하고, 실행 중인 세션은
+  영향받지 않음
+- packet에 앞 단계 결과와 `prior_fingerprints`가 실림
+
+**층 3 — UI 동작.** `app/views/worker/repo-ops-timeline.test.js`,
+`app/views/worker/repo-operations.test.js`,
+`app/views/worker/exec-defaults-dialog.test.js`를 확장한다.
+
+- budget 소진 후에도 해결 버튼이 활성이고 `수동으로 해결` 문구가 없음
+- dismissed 행이 `접수됨` 칩과 해결 버튼을 함께 보여줌
+- cleanup 행에 `정리 재개`와 해결 버튼이 함께 렌더됨
+- `retry_pending` 상태 칩이 `재시도 중`으로 나옴
+- 설정 화면이 사다리 3단을 순서대로 렌더하고, `schema_version≠2`에서 스키마
+  불일치 표시로 대체됨
+
+**RED 순서.** 기존 `server/worker/repo-operation-policy.test.js`는 v1 digest와
+v1 토큰을 정확히 기대하므로 **현재 상태에서 통과한다**. 아티팩트를 먼저 재핀한
+뒤 실패하는 것은 변경의 일부가 만든 compatibility failure이지 pre-change RED가
+아니다. 진짜 RED는 위 세 층의 새 기대를 **먼저** 쓰는 것이며, 그 다음에 재핀과
+구현이 GREEN으로 만든다. `repo-operation-policy.test.js`는 재핀과 같은 배치에서
+v2 구조로 갱신한다.
+
+`server/worker/repo-operation-repair.test.js`,
+`server/worker/repo-operation-protocol.test.js`,
+`server/worker/completion-intent.test.js`는 사다리 전이, 새 투영 shape,
+`cleanup_red` 폐기를 반영하도록 갱신한다.
 
 ## 6. 검증
 
@@ -332,16 +475,21 @@ RED-GREEN seam은 `server/worker/resolution-ladder.test.js`(신설)다.
   `resolution_ladder` 3단계 순서를 readback으로 확인
 - provenance의 `source_commit`·`source_blob_sha`·`sha256`이 dotfiles 최신
   아티팩트와 정확히 일치함을 확인
-- 저장소 전체 검색으로 `수동으로 해결` 계열 문구와 `other` 분류 토큰이 남지
-  않음을 확인
+- 저장소 전체 검색으로 `수동으로 해결` 계열 문구, `other` 분류 토큰,
+  `isRepairableCleanupFailure`, `cleanup_red`가 남지 않음을 확인
 - 머지 후 `repo-ops/config.toml` 배포 operation이 terminal success에 도달하고,
   프로세스 경로·포트·HTTP 응답을 확인
 
 ## 7. 위험과 완화
 
 **`retry_pending`이 기존 durable 레코드를 깨뜨린다.** `RepoOperation.schema`를
-`1`로 유지하고 `retry`를 optional로 정규화한다. 기존 레코드는 `retry` 부재로
-읽히며 재시도 자격이 미소비 상태로 시작한다.
+`1`로 유지하고 `retry`를 optional로 정규화하되, 부재를 일률적으로 미소비로 읽지
+않는다. §3.4의 상태별 정규화 표가 이미 terminal인 v1 실패에 재시도 자격이 새로
+생기는 경로를 막는다.
+
+**자동이 꺼진 상태에서 실패가 갇힌다.** `retry_pending`은 자동 재시도를
+기다리는 상태이므로 자동이 비활성일 때는 아예 진입하지 않는다(§3.4). 그 경우
+실패는 곧바로 terminal로 정착해 사용자 해결 버튼이 붙는 `failed` 상태가 된다.
 
 **재시도가 간헐 실패를 감춘다.** durable 소비 키로 1회에 묶고, 재시도로 통과한
 건은 `retry.absorbed` 증거를 남긴다. 증거 없이 통과시키는 것은
