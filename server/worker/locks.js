@@ -90,7 +90,7 @@ export function createLockManager() {
     /**
      * Serialize durable RepoOperation execution for a repository. This lock is
      * acquired before the narrower topology lock, which is used only around
-     * worktree add/remove.
+     * worktree add/remove and deploy-target fetch/ref resolution.
      *
      * @param {string} repo
      * @returns {Promise<Release>}

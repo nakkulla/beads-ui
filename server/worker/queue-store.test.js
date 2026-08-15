@@ -3410,7 +3410,9 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
       detail: 'install_failed',
       failure_code: 'adapter_regression',
       retryable: false,
-      retry_count: 0
+      retry_count: 0,
+      fetch_failure: 'nonzero',
+      elapsed_ms: 37
     });
 
     expect(createQueueStore().load(WS).cleanup_failed['UI-1']).toMatchObject({
@@ -3419,7 +3421,72 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
       detail: 'install_failed',
       failure_code: 'adapter_regression',
       retryable: false,
-      retry_count: 0
+      retry_count: 0,
+      fetch_failure: 'nonzero',
+      elapsed_ms: 37
+    });
+  });
+
+  test('preserves fetch diagnostics through RepoOperation retry copies and reload', () => {
+    const store = createQueueStore();
+    store.ensureRepoOperation(WS, {
+      operation_id: 'deploy-fetch',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: 'a'.repeat(40) }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'c'.repeat(40)
+    });
+    const attempt_id =
+      store.snapshot(WS).repo_operations['deploy-fetch'].attempt_id;
+    store.startRepoOperation(WS, {
+      operation_id: 'deploy-fetch',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/deploy-fetch.log',
+      target_sha: 'd'.repeat(40)
+    });
+    store.deferRepoOperationRetry(WS, {
+      operation_id: 'deploy-fetch',
+      attempt_id,
+      exit_code: 1,
+      signal: null,
+      failure: {
+        code: 'repo_ops_fetch_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: 'original script failure',
+        interrupted: false,
+        fetch_failure: 'timeout',
+        elapsed_ms: 60_005
+      }
+    });
+
+    const reloaded = createQueueStore();
+    const retry = reloaded.snapshot(WS).repo_operations['deploy-fetch'].retry;
+
+    expect(retry?.first_failure).toMatchObject({
+      fetch_failure: 'timeout',
+      elapsed_ms: 60_005
+    });
+
+    reloaded.consumeRepoOperationRetry(WS, {
+      operation_id: 'deploy-fetch',
+      attempt_id,
+      consumed_key: ['script', 'blob', 'failure']
+    });
+    reloaded.settleConsumedRepoOperationRetry(WS, {
+      operation_id: 'deploy-fetch'
+    });
+
+    expect(
+      createQueueStore().snapshot(WS).repo_operations['deploy-fetch'].failure
+    ).toMatchObject({
+      code: 'repo_ops_fetch_failed',
+      detail: 'original script failure',
+      fetch_failure: 'timeout',
+      elapsed_ms: 60_005
     });
   });
 

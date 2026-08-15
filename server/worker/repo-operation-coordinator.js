@@ -398,7 +398,7 @@ export function createRepoOperationCoordinator(deps) {
    * @param {string} workspace
    * @param {any} operation
    * @param {string} operation_id
-   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null }} failure
+   * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} failure
    */
   async function settleFailure(workspace, operation, operation_id, failure) {
     const current =
@@ -414,7 +414,14 @@ export function createRepoOperationCoordinator(deps) {
         log_digest
       }),
       detail: failure.detail ?? '',
-      interrupted: failure.interrupted === true
+      interrupted: failure.interrupted === true,
+      ...(failure.fetch_failure === 'timeout' ||
+      failure.fetch_failure === 'nonzero'
+        ? { fetch_failure: failure.fetch_failure }
+        : {}),
+      ...(Number.isFinite(failure.elapsed_ms) && Number(failure.elapsed_ms) >= 0
+        ? { elapsed_ms: Number(failure.elapsed_ms) }
+        : {})
     };
     const queue = deps.store.snapshot(workspace);
     const access = resolutionAccess({
@@ -901,9 +908,25 @@ export function createRepoOperationCoordinator(deps) {
             blocked_reason: code
           });
         } else {
-          await settleFailure(workspace, operation, operation_id, { code });
+          await settleFailure(workspace, operation, operation_id, {
+            code,
+            fetch_failure: rebound.fetch_failure,
+            elapsed_ms: rebound.elapsed_ms
+          });
         }
-        return { ok: false, code, operation_id };
+        return {
+          ok: false,
+          code,
+          operation_id,
+          ...(rebound.fetch_failure
+            ? {
+                fetch_failure: rebound.fetch_failure
+              }
+            : {}),
+          ...(Number.isFinite(rebound.elapsed_ms)
+            ? { elapsed_ms: rebound.elapsed_ms }
+            : {})
+        };
       }
 
       const state =
@@ -1090,13 +1113,46 @@ export function createRepoOperationCoordinator(deps) {
       deps.repo,
       subject.target_base
     );
-    const bound = await deploy_worktree.bindTarget({
-      repo: deps.repo,
-      base: subject.target_base,
-      last_successful_sha: previous_sha
-    });
+    /** @type {{ ok: boolean, code?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} */
+    let bound;
+    if (subject.target_sha === undefined) {
+      bound = await deploy_worktree.bindTarget({
+        repo: deps.repo,
+        base: subject.target_base,
+        last_successful_sha: previous_sha
+      });
+    } else if (
+      typeof subject.target_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(subject.target_sha)
+    ) {
+      bound = { ok: false, code: 'repo_ops_target_unresolved' };
+    } else {
+      const target_sha = subject.target_sha.toLowerCase();
+      if (previous_sha) {
+        const containment = await deps.gitRun(
+          ['merge-base', '--is-ancestor', previous_sha, target_sha],
+          { cwd: deps.repo }
+        );
+        if (containment.code === 1) {
+          bound = { ok: false, code: 'remote_history_not_monotonic' };
+        } else if (containment.code !== 0) {
+          bound = { ok: false, code: 'repo_ops_ancestry_check_failed' };
+        } else {
+          bound = { ok: true, target_sha };
+        }
+      } else {
+        bound = { ok: true, target_sha };
+      }
+    }
     if (!bound.ok || typeof bound.target_sha !== 'string') {
-      return { ok: false, code: bound.code || 'repo_ops_target_unresolved' };
+      return {
+        ok: false,
+        code: bound.code || 'repo_ops_target_unresolved',
+        ...(bound.fetch_failure ? { fetch_failure: bound.fetch_failure } : {}),
+        ...(Number.isFinite(bound.elapsed_ms)
+          ? { elapsed_ms: bound.elapsed_ms }
+          : {})
+      };
     }
     const target_sha = bound.target_sha;
     /** @type {any} */
@@ -1439,6 +1495,7 @@ export function createRepoOperationCoordinator(deps) {
     if (operation.state === 'succeeded') {
       return { state: 'succeeded', operation_id };
     }
+    const failure = operation.failure;
     const operations = Object.entries(
       deps.store.snapshot(deps.workspace).repo_operations
     );
@@ -1473,7 +1530,13 @@ export function createRepoOperationCoordinator(deps) {
       ? {
           state: 'failed',
           operation_id,
-          code: operation.failure?.code || 'repo_operation_failed'
+          code: failure?.code || 'repo_operation_failed',
+          ...(failure?.fetch_failure
+            ? { fetch_failure: failure.fetch_failure }
+            : {}),
+          ...(Number.isFinite(failure?.elapsed_ms)
+            ? { elapsed_ms: failure?.elapsed_ms }
+            : {})
         }
       : { state: operation.state, operation_id };
   }
@@ -1924,7 +1987,13 @@ export function createRepoOperationCoordinator(deps) {
         code,
         fingerprint: failureFingerprint({ code }),
         detail: current_failure.detail || current_failure.reason,
-        interrupted: false
+        interrupted: false,
+        ...(current_failure.fetch_failure
+          ? { fetch_failure: current_failure.fetch_failure }
+          : {}),
+        ...(Number.isFinite(current_failure.elapsed_ms)
+          ? { elapsed_ms: current_failure.elapsed_ms }
+          : {})
       },
       retry: {
         first_failure: null,

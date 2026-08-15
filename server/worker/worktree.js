@@ -3,8 +3,9 @@
  *
  * Each session runs in a dedicated `.worktrees/<bead-id>` created from a pinned
  * base commit and removed on cleanup. All worktree add/remove operations are
- * serialized through the repo git-topology lock (layer 2) so concurrent
- * sessions never race the same repo's ref database. {@link
+ * serialized through the repo git-topology lock (layer 2), together with
+ * deploy-target fetch/ref resolution, so concurrent sessions never race the
+ * same repo's ref database. {@link
  * createWorktreeManager}'s `withTopologyLock` exposes that same lock to the
  * modules that run their own ref-mutating git commands (`pr-actions`'s base
  * sync + branch cleanup, `verify-cmd`'s PR-head fetch).
@@ -663,15 +664,17 @@ export function createWorktreeManager(deps) {
  *
  * Repo-operation serialization is CALLER-owned: the coordinator holds the
  * repo-operation lock across bind, align, spawn, and durable record. This
- * manager takes only the topology lock, and only around `worktree add`.
+ * manager takes the topology lock around ref-changing fetches and worktree
+ * creation.
  *
- * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), journalPath?: (workspace: string) => string }} deps
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), journalPath?: (workspace: string) => string, now?: () => number }} deps
  */
 export function createRepoOpsDeployWorktreeManager(deps) {
   const fs = deps.fs || nodeFs;
   /** @type {GitRunner} */
   const run = deps.run || ((args, options) => runShell('git', args, options));
   const journalPath = deps.journalPath || repoOpsDeployWorktreeJournalPath;
+  const now = deps.now || (() => Date.now());
 
   /**
    * @param {string} repo
@@ -776,27 +779,44 @@ export function createRepoOpsDeployWorktreeManager(deps) {
    * once, and only after a fully-reclaimed pre-execution timeout (exit 124).
    *
    * @param {{ repo: string, base: string, last_successful_sha?: string|null }} input
-   * @returns {Promise<{ ok: boolean, code?: string, target_sha?: string }>}
+   * @returns {Promise<{ ok: boolean, code?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }>}
    */
   async function bindTarget(input) {
     const repo = fs.realpathSync(path.resolve(input.repo));
-    let fetch_result = await run(['fetch', 'origin', input.base], {
-      cwd: repo,
-      timeout_ms: 30_000
-    });
-    if (fetch_result.code === 124) {
-      fetch_result = await run(['fetch', 'origin', input.base], {
-        cwd: repo,
-        timeout_ms: 30_000
-      });
+    let elapsed_ms = 0;
+    const release = await deps.locks.topologyLock(repo);
+    let fetch_result;
+    let target_result;
+    try {
+      /** @returns {Promise<{ code: number, stdout: string, stderr: string }>} */
+      const runFetch = async () => {
+        const started_at = now();
+        const result = await run(['fetch', 'origin', input.base], {
+          cwd: repo,
+          timeout_ms: 30_000
+        });
+        elapsed_ms += Math.max(0, now() - started_at);
+        return result;
+      };
+      fetch_result = await runFetch();
+      if (fetch_result.code === 124) {
+        fetch_result = await runFetch();
+      }
+      if (fetch_result.code !== 0) {
+        return {
+          ok: false,
+          code: 'repo_ops_fetch_failed',
+          fetch_failure: fetch_result.code === 124 ? 'timeout' : 'nonzero',
+          elapsed_ms
+        };
+      }
+      target_result = await run(
+        ['rev-parse', `refs/remotes/origin/${input.base}^{commit}`],
+        { cwd: repo }
+      );
+    } finally {
+      release();
     }
-    if (fetch_result.code !== 0) {
-      return { ok: false, code: 'repo_ops_fetch_failed' };
-    }
-    const target_result = await run(
-      ['rev-parse', `refs/remotes/origin/${input.base}^{commit}`],
-      { cwd: repo }
-    );
     const target_sha =
       target_result.code === 0 ? target_result.stdout.trim().toLowerCase() : '';
     if (!/^[0-9a-f]{40}$/.test(target_sha)) {
@@ -970,7 +990,7 @@ export function createRepoOpsDeployWorktreeManager(deps) {
 
   /**
    * @param {{ repo: string, base: string, workspace?: string, last_successful_sha?: string|null }} input
-   * @returns {Promise<{ ok: boolean, code?: string, path?: string, target_sha?: string }>}
+   * @returns {Promise<{ ok: boolean, code?: string, path?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }>}
    */
   async function ensure(input) {
     const bound = await bindTarget(input);

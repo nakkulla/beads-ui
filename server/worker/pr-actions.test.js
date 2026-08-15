@@ -1715,7 +1715,9 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
 
     expect(result).toMatchObject({ ok: true, reason: null });
     expect(operations.ensureVerify).toHaveBeenCalled();
-    expect(operations.ensureDeploy).toHaveBeenCalled();
+    expect(operations.ensureDeploy).toHaveBeenCalledWith(
+      expect.objectContaining({ target_sha: BASE_SHA })
+    );
     expect(env.runVerify).not.toHaveBeenCalled();
     expect(env.calls).not.toContain('deploy:request');
     expect(env.store.snapshot(WS).done).toEqual(
@@ -1791,6 +1793,34 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
     expect(env.store.snapshot(WS).done).toEqual(
       expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
     );
+  });
+
+  test('records deploy fetch diagnostics on the durable cleanup failure', async () => {
+    const operations = repoOperations({
+      ensureDeploy: vi.fn(async () => ({
+        ok: false,
+        code: 'repo_ops_fetch_failed',
+        fetch_failure: 'timeout',
+        elapsed_ms: 60_123
+      }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'repo_operations',
+      reason: 'repo_ops_fetch_failed'
+    });
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      reason: 'repo_ops_fetch_failed',
+      fetch_failure: 'timeout',
+      elapsed_ms: 60_123
+    });
   });
 });
 

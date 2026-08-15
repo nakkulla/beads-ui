@@ -253,7 +253,7 @@
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
  * stale spec_review receipt, so the badge must not read as a refusal. Every
  * record without the flag is a refusal, exactly as before.
- * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, repair?: { chain_id: string, auto_used: number, attempt_id: string|null, session_id: string|null, mode: 'auto'|'manual'|null, ladder_stage: 'auto_repair_session'|'user_triggered_session' } }>} cleanup_failed -
+ * @property {Record<string, { step: string, reason: string, bd_restore: string|null, at: number, detail: string|null, output_tail?: string, log_path?: string, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number, diagnosis?: { verdict: string, attempt_id: string, consumed: boolean, evidence: string, fix_bead_id?: string, malformed?: boolean }, repair?: { chain_id: string, auto_used: number, attempt_id: string|null, session_id: string|null, mode: 'auto'|'manual'|null, ladder_stage: 'auto_repair_session'|'user_triggered_session' } }>} cleanup_failed -
  * Beads whose post-merge cleanup stopped part-way (worker-phase2 §6). DURABLE
  * on purpose: the PR is already merged and irreversible, the bead is left
  * `resolved`, and nothing retries by itself — so the record that a human must
@@ -362,7 +362,7 @@
  * @property {string|null} log_digest
  * @property {number|null} exit_code
  * @property {string|null} signal
- * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean }|null} failure
+ * @property {{ code: string, fingerprint: string, detail: string, interrupted: boolean, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }|null} failure
  * @property {{ chain_id: string|null, owner_bead: string|null, auto_budget: number, auto_used: number, session_id: string|null, attempt_id: string|null, ladder_stage: 'script_retry'|'auto_repair_session'|'user_triggered_session' }} repair
  * @property {{ first_failure: RepoOperation['failure'], first_fingerprint: string|null, first_failed_at: number|null, consumed_key: [string, string, string]|null, absorbed: { first_failure: NonNullable<RepoOperation['failure']>, first_fingerprint: string, at: number }|null, outcome: 'pending'|'consumed'|'not_applicable'|'absorbed', blocked_reason: string|null }|null} retry
  * @property {string|null} superseded_by
@@ -1588,6 +1588,28 @@ function migrateLegacyStopped(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {RepoOperation['failure']}
+ */
+function normalizeRepoOperationFailure(value) {
+  if (!isRecord(value) || typeof value.code !== 'string') {
+    return null;
+  }
+  return {
+    code: value.code,
+    fingerprint: typeof value.fingerprint === 'string' ? value.fingerprint : '',
+    detail: typeof value.detail === 'string' ? value.detail : '',
+    interrupted: value.interrupted === true,
+    ...(value.fetch_failure === 'timeout' || value.fetch_failure === 'nonzero'
+      ? { fetch_failure: value.fetch_failure }
+      : {}),
+    ...(Number.isFinite(value.elapsed_ms) && Number(value.elapsed_ms) >= 0
+      ? { elapsed_ms: Number(value.elapsed_ms) }
+      : {})
+  };
+}
+
+/**
  * Normalize optional retry evidence without changing RepoOperation schema 1.
  * A malformed object is retained only as a consumed marker so it can never
  * recreate retry eligibility after restart.
@@ -1612,19 +1634,8 @@ function normalizeRepoOperationRetry(value, state, failure) {
       blocked_reason: 'malformed'
     };
   }
-  const first_raw = isRecord(value.first_failure) ? value.first_failure : null;
   const first_failure =
-    first_raw && typeof first_raw.code === 'string'
-      ? {
-          code: first_raw.code,
-          fingerprint:
-            typeof first_raw.fingerprint === 'string'
-              ? first_raw.fingerprint
-              : '',
-          detail: typeof first_raw.detail === 'string' ? first_raw.detail : '',
-          interrupted: first_raw.interrupted === true
-        }
-      : failure;
+    normalizeRepoOperationFailure(value.first_failure) || failure;
   const consumed_key =
     Array.isArray(value.consumed_key) &&
     value.consumed_key.length === 3 &&
@@ -1632,9 +1643,9 @@ function normalizeRepoOperationRetry(value, state, failure) {
       ? /** @type {[string, string, string]} */ ([...value.consumed_key])
       : null;
   const absorbed_raw = isRecord(value.absorbed) ? value.absorbed : null;
-  const absorbed_failure = isRecord(absorbed_raw?.first_failure)
-    ? absorbed_raw.first_failure
-    : null;
+  const absorbed_failure = normalizeRepoOperationFailure(
+    absorbed_raw?.first_failure
+  );
   const absorbed =
     absorbed_raw &&
     absorbed_failure &&
@@ -1642,18 +1653,7 @@ function normalizeRepoOperationRetry(value, state, failure) {
     typeof absorbed_raw.first_fingerprint === 'string' &&
     typeof absorbed_raw.at === 'number'
       ? {
-          first_failure: {
-            code: absorbed_failure.code,
-            fingerprint:
-              typeof absorbed_failure.fingerprint === 'string'
-                ? absorbed_failure.fingerprint
-                : '',
-            detail:
-              typeof absorbed_failure.detail === 'string'
-                ? absorbed_failure.detail
-                : '',
-            interrupted: absorbed_failure.interrupted === true
-          },
+          first_failure: absorbed_failure,
           first_fingerprint: absorbed_raw.first_fingerprint,
           at: absorbed_raw.at
         }
@@ -1741,23 +1741,10 @@ function normalizeRepoOperation(value) {
   const provenance_raw = isRecord(value.bootstrap_provenance)
     ? value.bootstrap_provenance
     : null;
-  const failure_raw = isRecord(value.failure) ? value.failure : null;
   const identity_raw = isRecord(value.process_identity)
     ? value.process_identity
     : null;
-  const failure =
-    failure_raw && typeof failure_raw.code === 'string'
-      ? {
-          code: failure_raw.code,
-          fingerprint:
-            typeof failure_raw.fingerprint === 'string'
-              ? failure_raw.fingerprint
-              : '',
-          detail:
-            typeof failure_raw.detail === 'string' ? failure_raw.detail : '',
-          interrupted: failure_raw.interrupted === true
-        }
-      : null;
+  const failure = normalizeRepoOperationFailure(value.failure);
   const retry = normalizeRepoOperationRetry(value.retry, value.state, failure);
   // `retry_pending` is a NON-TERMINAL state whose only exit needs the preserved
   // first failure: the reconcile either respawns from it or settles it. A record
@@ -2061,6 +2048,18 @@ function normalizeQueue(raw) {
           Number(value.retry_count) >= 0
         ) {
           q.cleanup_failed[bead_id].retry_count = Number(value.retry_count);
+        }
+        if (
+          value.fetch_failure === 'timeout' ||
+          value.fetch_failure === 'nonzero'
+        ) {
+          q.cleanup_failed[bead_id].fetch_failure = value.fetch_failure;
+        }
+        if (
+          Number.isFinite(value.elapsed_ms) &&
+          Number(value.elapsed_ms) >= 0
+        ) {
+          q.cleanup_failed[bead_id].elapsed_ms = Number(value.elapsed_ms);
         }
         if (
           isRecord(value.diagnosis) &&
@@ -4459,7 +4458,7 @@ export function createQueueStore(options = {}) {
      * output (UI-0x54); omit it when the run left no complete log file.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number }} input
+     * @param {{ bead_id: string, step: string, reason: string, bd_restore?: string|null, detail?: string|null, output_tail?: string|null, log_path?: string|null, failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} input
      * @returns {QueueOpResult}
      */
     recordCleanupFailure(workspace, input) {
@@ -4473,7 +4472,9 @@ export function createQueueStore(options = {}) {
         log_path,
         failure_code,
         retryable,
-        retry_count
+        retry_count,
+        fetch_failure,
+        elapsed_ms
       } = input;
       return applyUnconditional(workspace, (next) => {
         if (
@@ -4483,6 +4484,11 @@ export function createQueueStore(options = {}) {
           reason.length === 0 ||
           (failure_code !== undefined &&
             (typeof failure_code !== 'string' || failure_code.length === 0)) ||
+          (fetch_failure !== undefined &&
+            fetch_failure !== 'timeout' &&
+            fetch_failure !== 'nonzero') ||
+          (elapsed_ms !== undefined &&
+            (!Number.isFinite(elapsed_ms) || Number(elapsed_ms) < 0)) ||
           (retry_count !== undefined &&
             (!Number.isInteger(retry_count) || Number(retry_count) < 0))
         ) {
@@ -4512,6 +4518,12 @@ export function createQueueStore(options = {}) {
         }
         if (Number.isInteger(retry_count) && Number(retry_count) >= 0) {
           next.cleanup_failed[bead_id].retry_count = Number(retry_count);
+        }
+        if (fetch_failure === 'timeout' || fetch_failure === 'nonzero') {
+          next.cleanup_failed[bead_id].fetch_failure = fetch_failure;
+        }
+        if (Number.isFinite(elapsed_ms) && Number(elapsed_ms) >= 0) {
+          next.cleanup_failed[bead_id].elapsed_ms = Number(elapsed_ms);
         }
         if (diagnosis) {
           next.cleanup_failed[bead_id].diagnosis = diagnosis;

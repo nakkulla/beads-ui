@@ -1651,6 +1651,7 @@ export function createPrActions(deps) {
         }
         const deployed = await repo_operations.ensureDeploy({
           target_base,
+          target_sha: synced.sha,
           subjects: [{ bead_id, merged_sha: merge_sha }]
         });
         if (!deployed.ok) {
@@ -1658,7 +1659,12 @@ export function createPrActions(deps) {
             bead_id,
             'repo_operations',
             deployed.code || 'repo_operation_failed',
-            base_sync
+            base_sync,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            repoOpsFailureEvidence(deployed)
           );
         }
         if (!deployed.inert && typeof deployed.operation_id === 'string') {
@@ -1671,7 +1677,12 @@ export function createPrActions(deps) {
               bead_id,
               'repo_operations',
               evidence.code || 'repo_operation_failed',
-              base_sync
+              base_sync,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              repoOpsFailureEvidence(evidence)
             );
           }
           if (evidence.state !== 'succeeded') {
@@ -1712,6 +1723,22 @@ export function createPrActions(deps) {
   }
 
   /**
+   * @param {any} value
+   * @returns {{ fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }}
+   */
+  function repoOpsFailureEvidence(value) {
+    return {
+      ...(value?.fetch_failure === 'timeout' ||
+      value?.fetch_failure === 'nonzero'
+        ? { fetch_failure: value.fetch_failure }
+        : {}),
+      ...(Number.isFinite(value?.elapsed_ms) && Number(value.elapsed_ms) >= 0
+        ? { elapsed_ms: Number(value.elapsed_ms) }
+        : {})
+    };
+  }
+
+  /**
    * Record a cleanup stop durably and hand the bead back to a human: it stays
    * in `pr_wait`, bd is left `resolved`, the banner renders off the record, and
    * NOTHING retries on its own.
@@ -1735,7 +1762,7 @@ export function createPrActions(deps) {
    * @param {string} [log_path] - Absolute path to that command's FULL preserved
    * output (UI-0x54), when the run produced a complete log file. A cleanup
    * retry overwrites it with its own run's log.
-   * @param {{ failure_code?: string, retryable?: boolean, retry_count?: number }} [failure_evidence]
+   * @param {{ failure_code?: string, retryable?: boolean, retry_count?: number, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} [failure_evidence]
    * @returns {Promise<{ ok: false, step: string, reason: string, base_sync: BaseSyncOutcome|null }>}
    */
   async function failCleanup(

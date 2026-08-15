@@ -769,6 +769,207 @@ describe('RepoOperation coordinator', () => {
     ]);
   });
 
+  test('adopts a running deploy for the same synced target without another bind or spawn', async () => {
+    const bindTarget = vi.fn(async () => ({ ok: true, target_sha: TARGET }));
+    const start = vi.fn(() => ({
+      ok: true,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log')
+    }));
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'merge-base') {
+        if (args[2] === FINAL && args[3] === APPROVED) {
+          return { code: 1, stdout: '', stderr: '' };
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'show') {
+        return { code: 0, stdout: CONFIG, stderr: '' };
+      }
+      if (args[0] === 'ls-tree') {
+        const entry =
+          args.at(-1) === 'repo-ops/config.toml'
+            ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+            : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+        return { code: 0, stdout: entry, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: 'unexpected' };
+    });
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      },
+      deployWorktree: {
+        bindTarget,
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true })
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'previous',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-old', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const previous = store.snapshot(root).repo_operations.previous;
+    store.startRepoOperation(root, {
+      operation_id: 'previous',
+      attempt_id: previous.attempt_id,
+      process_identity: { pid: 9, pgid: 9, started_at: 1 },
+      log_path: path.join(root, 'previous.log'),
+      target_sha: APPROVED
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'previous',
+      attempt_id: previous.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    const first = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
+    });
+    const second = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-2', merged_sha: FINAL }]
+    });
+    const waiting = await coordinator.deploymentEvidence(second.operation_id, {
+      target_base: 'main',
+      merged_sha: FINAL
+    });
+
+    expect(second).toMatchObject({
+      ok: true,
+      operation_id: first.operation_id,
+      adopted: true
+    });
+    expect(waiting).toMatchObject({ state: 'running' });
+    expect(bindTarget).toHaveBeenCalledOnce();
+    expect(start).toHaveBeenCalledOnce();
+
+    const operation = store.snapshot(root).repo_operations[first.operation_id];
+    store.settleRepoOperation(root, {
+      operation_id: first.operation_id,
+      attempt_id: operation.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    await expect(
+      coordinator.deploymentEvidence(second.operation_id, {
+        target_base: 'main',
+        merged_sha: FINAL
+      })
+    ).resolves.toMatchObject({ state: 'succeeded' });
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  test('returns fetch diagnostics from the initial bind', async () => {
+    const { coordinator } = coordinatorFor({
+      deployWorktree: {
+        bindTarget: async () => ({
+          ok: false,
+          code: 'repo_ops_fetch_failed',
+          fetch_failure: 'timeout',
+          elapsed_ms: 60_001
+        })
+      }
+    });
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }]
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'timeout',
+      elapsed_ms: 60_001
+    });
+  });
+
+  test('settles final rebind fetch diagnostics and returns them as deployment evidence', async () => {
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'merge-base') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'show') {
+        return { code: 0, stdout: CONFIG, stderr: '' };
+      }
+      if (args[0] === 'ls-tree') {
+        const entry =
+          args.at(-1) === 'repo-ops/config.toml'
+            ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+            : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+        return { code: 0, stdout: entry, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: 'unexpected' };
+    });
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployWorktree: {
+        bindTarget: async () => ({
+          ok: false,
+          code: 'repo_ops_fetch_failed',
+          fetch_failure: 'nonzero',
+          elapsed_ms: 28
+        })
+      }
+    });
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+    const operation = store.snapshot(root).repo_operations[result.operation_id];
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'nonzero',
+      elapsed_ms: 28
+    });
+    expect(operation.failure).toMatchObject({
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'nonzero',
+      elapsed_ms: 28
+    });
+    await expect(
+      coordinator.deploymentEvidence(result.operation_id, {
+        target_base: 'main',
+        merged_sha: HEAD
+      })
+    ).resolves.toMatchObject({
+      state: 'failed',
+      fetch_failure: 'nonzero',
+      elapsed_ms: 28
+    });
+  });
+
   test('consumes a valid spool request into a provenance prerecord and receipt', async () => {
     const { store, coordinator } = coordinatorFor();
     spoolRequest(validRequest());
@@ -802,10 +1003,26 @@ describe('RepoOperation coordinator', () => {
     /** @type {string[]} */
     const order = [];
     const { coordinator } = coordinatorFor({
-      deployLock: async () => ({
-        ok: true,
-        release: () => order.push('unlock')
-      }),
+      deployLock: async () => {
+        order.push('lock');
+        return {
+          ok: true,
+          release: () => order.push('unlock')
+        };
+      },
+      deployWorktree: {
+        bindTarget: async () => {
+          order.push('bind');
+          return { ok: true, target_sha: TARGET };
+        },
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        }),
+        verifyCovered: async () => ({ ok: true })
+      },
       runner: {
         start: () => {
           order.push('spawn');
@@ -824,7 +1041,7 @@ describe('RepoOperation coordinator', () => {
 
     await coordinator.reconcile(root);
 
-    expect(order).toEqual(['unlock', 'spawn']);
+    expect(order).toEqual(['bind', 'lock', 'bind', 'unlock', 'spawn']);
   });
 
   test('settles a shared deploy lock timeout as a durable terminal failure', async () => {
@@ -1449,6 +1666,89 @@ describe('RepoOperation coordinator', () => {
     );
     expect(ensureAligned).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
+  });
+
+  test('keeps the first failure when retry final rebind fetch fails', async () => {
+    const bindTarget = vi.fn(async () => ({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'timeout',
+      elapsed_ms: 60_004
+    }));
+    const gitRun = vi.fn(async (args) => {
+      if (args[0] === 'show') {
+        return { code: 0, stdout: CONFIG, stderr: '' };
+      }
+      if (args[0] === 'ls-tree') {
+        const entry =
+          args.at(-1) === 'repo-ops/config.toml'
+            ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
+            : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+        return { code: 0, stdout: entry, stderr: '' };
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployLock: async () => ({ ok: true, release: vi.fn() }),
+      deployWorktree: {
+        bindTarget,
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: vi.fn(),
+        verifyCovered: async () => ({ ok: true })
+      },
+      runner: {
+        start: vi.fn(),
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'retry-fetch',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-old', merged_sha: APPROVED }],
+      effective_base_sha: APPROVED,
+      target_base: 'main',
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const operation = store.snapshot(root).repo_operations['retry-fetch'];
+    store.startRepoOperation(root, {
+      operation_id: 'retry-fetch',
+      attempt_id: operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'retry-fetch.log'),
+      target_sha: APPROVED
+    });
+    store.deferRepoOperationRetry(root, {
+      operation_id: 'retry-fetch',
+      attempt_id: operation.attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: 'original failure',
+        interrupted: false
+      }
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(bindTarget).toHaveBeenCalledOnce();
+    expect(store.snapshot(root).repo_operations['retry-fetch']).toMatchObject({
+      state: 'failed',
+      failure: {
+        code: 'script_failed',
+        detail: 'original failure'
+      },
+      retry: {
+        blocked_reason: 'repo_ops_fetch_failed'
+      }
+    });
   });
 
   test('settles the first failure after restart between consumption and spawn', async () => {

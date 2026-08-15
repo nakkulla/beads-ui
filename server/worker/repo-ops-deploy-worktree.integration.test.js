@@ -88,10 +88,21 @@ describe('RepoOps deploy worktree', () => {
     });
     const manager = createRepoOpsDeployWorktreeManager({
       locks: createLockManager(),
-      run
+      run,
+      now: vi
+        .fn()
+        .mockReturnValueOnce(100)
+        .mockReturnValueOnce(400)
+        .mockReturnValueOnce(500)
+        .mockReturnValueOnce(900)
     });
     const result = await manager.ensure({ repo, base: 'main' });
-    expect(result).toMatchObject({ ok: false, code: 'repo_ops_fetch_failed' });
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'nonzero',
+      elapsed_ms: 700
+    });
     expect(run.mock.calls.filter(([args]) => args[0] === 'fetch')).toHaveLength(
       2
     );
@@ -105,6 +116,71 @@ describe('RepoOps deploy worktree', () => {
     });
     await manager.ensure({ repo, base: 'main' });
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  test('classifies a final fetch timeout and records both attempt durations', async () => {
+    const run = vi.fn(async () => ({ code: 124, stdout: '', stderr: '' }));
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager(),
+      run,
+      now: vi
+        .fn()
+        .mockReturnValueOnce(10)
+        .mockReturnValueOnce(60)
+        .mockReturnValueOnce(80)
+        .mockReturnValueOnce(150)
+    });
+
+    const result = await manager.bindTarget({ repo, base: 'main' });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'timeout',
+      elapsed_ms: 120
+    });
+  });
+
+  test('serializes fetch and remote ref resolution under the topology lock', async () => {
+    /** @type {() => void} */
+    let release_first_fetch = () => {};
+    /** @type {Promise<void>} */
+    const first_fetch = new Promise((resolve) => {
+      release_first_fetch = () => resolve();
+    });
+    let fetch_count = 0;
+    const run = vi.fn(async (args) => {
+      if (args[0] === 'fetch') {
+        fetch_count += 1;
+        if (fetch_count === 1) {
+          await first_fetch;
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 0, stdout: 'a'.repeat(40), stderr: '' };
+    });
+    const manager = createRepoOpsDeployWorktreeManager({
+      locks: createLockManager(),
+      run
+    });
+
+    const first = manager.bindTarget({ repo, base: 'main' });
+    await vi.waitFor(() => expect(fetch_count).toBe(1));
+    const second = manager.bindTarget({ repo, base: 'main' });
+    await Promise.resolve();
+
+    expect(fetch_count).toBe(1);
+    release_first_fetch();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { ok: true, target_sha: 'a'.repeat(40) },
+      { ok: true, target_sha: 'a'.repeat(40) }
+    ]);
+    expect(run.mock.calls.map(([args]) => args[0])).toEqual([
+      'fetch',
+      'rev-parse',
+      'fetch',
+      'rev-parse'
+    ]);
   });
 
   test('refuses an unregistered directory at the deploy path without deleting it', async () => {

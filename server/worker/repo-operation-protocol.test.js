@@ -157,6 +157,24 @@ describe('RepoOperation protocol projection', () => {
     expect(card.failure.detail).toBe('[redacted]');
   });
 
+  test('projects fetch failure classification and elapsed time', () => {
+    const operation = /** @type {any} */ (failedDeployOperation());
+    operation.failure = {
+      ...operation.failure,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'nonzero',
+      elapsed_ms: 42
+    };
+    const decorated = decorateWith({ 'op-1': operation });
+
+    const card = /** @type {any[]} */ (decorated.repo_operations)[0];
+
+    expect(card.failure).toMatchObject({
+      fetch_failure: 'nonzero',
+      elapsed_ms: 42
+    });
+  });
+
   test('classifies a failed deploy script with the pinned contract vocabulary', () => {
     const decorated = decorateWith({ 'op-1': failedDeployOperation() });
 

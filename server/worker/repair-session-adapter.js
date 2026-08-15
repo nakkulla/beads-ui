@@ -250,7 +250,13 @@ export function createRepairSessionAdapter(deps) {
             classification: classifyRepoOperationFailure(operation),
             fingerprint: failure.fingerprint,
             detail: sanitizeOutput(failure.detail),
-            interrupted: failure.interrupted === true
+            interrupted: failure.interrupted === true,
+            ...(failure.fetch_failure
+              ? { fetch_failure: failure.fetch_failure }
+              : {}),
+            ...(Number.isFinite(failure.elapsed_ms)
+              ? { elapsed_ms: failure.elapsed_ms }
+              : {})
           }
         : null,
       log: {

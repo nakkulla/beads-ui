@@ -258,6 +258,33 @@ describe('dispatch packet', () => {
     );
   });
 
+  test('carries fetch diagnostics without stderr text', async () => {
+    const { adapter } = adapterFor();
+
+    const packet = await adapter.buildPacket({
+      workspace: '/ws',
+      operation_id: 'op-1',
+      operation: failedOperation({
+        failure: {
+          code: 'repo_ops_fetch_failed',
+          fingerprint: 'f'.repeat(64),
+          detail: '',
+          interrupted: false,
+          fetch_failure: 'timeout',
+          elapsed_ms: 60_010
+        }
+      }),
+      mode: 'auto',
+      owner_bead: 'UI-a'
+    });
+
+    expect(packet.failure).toMatchObject({
+      fetch_failure: 'timeout',
+      elapsed_ms: 60_010,
+      detail: ''
+    });
+  });
+
   test('carries the spec/plan Test scope', async () => {
     const { adapter } = adapterFor();
 
