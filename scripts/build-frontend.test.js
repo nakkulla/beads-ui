@@ -1,9 +1,25 @@
 import { build } from 'esbuild';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, test } from 'vitest';
 import { createBuildOptions } from './build-frontend.js';
+
+/**
+ * The installed `node_modules` this test run actually resolves through, which
+ * is not always `<cwd>/node_modules`: the Worker runs verification inside a
+ * detached worktree that has no dependencies of its own and resolves upward.
+ * Linking a directory that does not exist there would fail the bundle instead
+ * of exercising the symlink behaviour under test.
+ */
+function installedNodeModules() {
+  const entry = createRequire(import.meta.url).resolve('ms');
+  const marker = `${path.sep}node_modules${path.sep}`;
+  const at = entry.lastIndexOf(marker);
+
+  return entry.slice(0, at + marker.length - 1);
+}
 
 /** @type {string[]} */
 const temporary_roots = [];
@@ -24,7 +40,7 @@ test('keeps symlinked dependencies relative to the checkout in source maps', asy
     "import ms from 'ms'; console.log(ms(1000));\n"
   );
   fs.symlinkSync(
-    path.join(process.cwd(), 'node_modules'),
+    installedNodeModules(),
     path.join(root, 'node_modules'),
     'dir'
   );
