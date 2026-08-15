@@ -18,6 +18,7 @@ import {
   classifyRepoOperationFailure,
   repairSessionProhibitions
 } from './repo-operation-policy.js';
+import { normalizeScriptRetry, scriptIdentity } from './resolution-ladder.js';
 
 /**
  * Patterns whose MATCHED TEXT must never reach a packet, a prompt, or the
@@ -171,6 +172,38 @@ export function createRepairSessionAdapter(deps) {
     const operation = input.operation;
     const failure = operation.failure || null;
     const owner_bead = input.owner_bead;
+    const queue = deps.store.snapshot(input.workspace);
+    const chain_id = operation.repair.chain_id || input.operation_id;
+    const retry = normalizeScriptRetry(operation);
+    // The case that matters most is the retry that FAILED AGAIN: the session
+    // must see the first failure's fingerprint to recognize it is looking at a
+    // reproduction rather than a fresh symptom. Reading only `absorbed` would
+    // carry evidence exactly when the retry succeeded and no session runs, and
+    // drop it on the path that dispatches one.
+    const retry_evidence = operation.retry?.absorbed
+      ? {
+          first_fingerprint: operation.retry.absorbed.first_fingerprint,
+          at: operation.retry.absorbed.at
+        }
+      : operation.retry?.first_fingerprint
+        ? {
+            first_fingerprint: operation.retry.first_fingerprint,
+            at: operation.retry.first_failed_at ?? null
+          }
+        : null;
+    const prior_fingerprints = Object.entries(queue.repo_operations || {})
+      .filter(
+        ([, candidate]) =>
+          (candidate.repair?.chain_id || null) === chain_id &&
+          (candidate.state === 'failed' || candidate.state === 'repairing') &&
+          typeof candidate.failure?.code === 'string' &&
+          typeof candidate.failure?.fingerprint === 'string'
+      )
+      .map(([operation_id, candidate]) => ({
+        operation_id,
+        code: candidate.failure.code,
+        fingerprint: candidate.failure.fingerprint
+      }));
     /** @type {{ review?: any, test_scope?: any }} */
     let facts = {};
     if (owner_bead && deps.beadFacts) {
@@ -188,6 +221,8 @@ export function createRepairSessionAdapter(deps) {
       operation: {
         operation_id: input.operation_id,
         kind: operation.kind,
+        step: operation.step ?? null,
+        reason: operation.reason ?? null,
         repo: deps.repo,
         target_base: operation.target_base,
         target_sha: operation.target_sha,
@@ -195,6 +230,7 @@ export function createRepairSessionAdapter(deps) {
         effective_base_sha: operation.effective_base_sha,
         script_blob_sha: operation.script_blob_sha,
         script_mode: operation.script_mode,
+        script_identity: scriptIdentity(operation),
         script_object_type: operation.script_object_type,
         attempt_id: operation.attempt_id,
         exit_code: operation.exit_code,
@@ -220,12 +256,27 @@ export function createRepairSessionAdapter(deps) {
       log: {
         path: operation.log_path,
         digest: operation.log_digest,
-        tail: logTail(operation.log_path)
+        tail:
+          typeof operation.output_tail === 'string'
+            ? sanitizeOutput(operation.output_tail)
+            : logTail(operation.log_path)
       },
       chain: {
-        chain_id: operation.repair.chain_id || input.operation_id,
+        chain_id,
         auto_budget: operation.repair.auto_budget,
         auto_used: operation.repair.auto_used
+      },
+      ladder: {
+        script_retry:
+          retry.status === 'unconsumed' ? 'not_applicable' : retry.status,
+        script_retry_evidence: retry_evidence,
+        auto_repair_session:
+          operation.repair.auto_used > 0 ? 'consumed' : 'unused',
+        stage:
+          input.mode === 'manual'
+            ? 'user_triggered_session'
+            : 'auto_repair_session',
+        prior_fingerprints
       },
       test_scope: facts.test_scope ?? null,
       review: facts.review ?? null,
@@ -285,6 +336,19 @@ export function createRepairSessionAdapter(deps) {
    */
   async function judge(input) {
     const queue = deps.store.snapshot(input.workspace);
+    if (input.operation_id.startsWith('cleanup:')) {
+      const bead_id = input.operation_id.slice('cleanup:'.length);
+      const failure = queue.cleanup_failed?.[bead_id];
+      if (!failure) {
+        return { verdict: 'chain_closed', evidence: bead_id };
+      }
+      const attempt_id = failure.repair?.attempt_id;
+      const attempt = attempt_id ? queue.attempts?.[attempt_id] : null;
+      if (attempt && attempt.status === 'running') {
+        return { verdict: 'session_running', evidence: attempt_id };
+      }
+      return { verdict: 'unresolved', evidence: null };
+    }
     const operation = queue.repo_operations[input.operation_id];
     if (!operation) {
       return { verdict: 'unresolved', evidence: null };
@@ -326,8 +390,11 @@ export function repairSessionPrompt(packet) {
   const failure = packet.failure || {};
   const lines = [
     `repo operation ${operation.kind} 실패를 진단하고 고쳐라 — operation=${operation.operation_id}, target=${operation.target_base}@${operation.target_sha || '?'}, script blob=${operation.script_blob_sha} mode=${operation.script_mode}.`,
-    `실패 분류=${failure.classification || 'other'}, code=${failure.code || '?'}, exit=${operation.exit_code ?? '?'}, signal=${operation.signal ?? '없음'}, fingerprint=${failure.fingerprint || '?'}.`
+    `실패 분류=${failure.classification || failure.code || '?'}, code=${failure.code || '?'}, exit=${operation.exit_code ?? '?'}, signal=${operation.signal ?? '없음'}, fingerprint=${failure.fingerprint || '?'}.`
   ];
+  if (packet.ladder) {
+    lines.push(`앞 단계 결과: ${JSON.stringify(packet.ladder)}`);
+  }
   if (packet.log && packet.log.path) {
     lines.push(`전체 로그: ${packet.log.path}`);
   }

@@ -61,6 +61,10 @@ import {
   projectRepoOperationPolicy
 } from '../worker/repo-operation-policy.js';
 import { repoOpsDisplayFor } from '../worker/repo-ops-display.js';
+import {
+  normalizeResolutionSubjects,
+  normalizeScriptRetry
+} from '../worker/resolution-ladder.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -1004,7 +1008,14 @@ function projectRepoOperations(operations, attempts) {
         remaining: Math.max(0, raw.repair.auto_budget - raw.repair.auto_used),
         session_id: raw.repair.session_id,
         attempt_id: raw.repair.attempt_id,
-        attempt_status: repair_attempt ? repair_attempt.status : null
+        attempt_status: repair_attempt ? repair_attempt.status : null,
+        ladder_stage: raw.repair.ladder_stage
+      },
+      retry: {
+        status: normalizeScriptRetry(raw).status,
+        first_fingerprint: raw.retry?.first_fingerprint || null,
+        blocked_reason: raw.retry?.blocked_reason || null,
+        absorbed: raw.retry?.absorbed || null
       },
       superseded_by: raw.superseded_by,
       // A human acknowledged this failed row (UI-q0uy §4.6-2). Projected so the
@@ -1075,6 +1086,34 @@ export function decorateQueue(workspace_key, raw_queue) {
     overlaid.attempts
   );
   public_queue.repo_operation_policy = projectRepoOperationPolicy();
+  const resolution_subjects = normalizeResolutionSubjects(overlaid);
+  const cleanup_subjects = new Map(
+    resolution_subjects
+      .filter((subject) => subject.source === 'cleanup')
+      .map((subject) => [subject.bead_id, subject])
+  );
+  public_queue.cleanup_failed = Object.fromEntries(
+    Object.entries(overlaid.cleanup_failed || {}).map(([bead_id, failure]) => {
+      const subject = cleanup_subjects.get(bead_id);
+      if (!subject) {
+        return [bead_id, failure];
+      }
+      const repair = subject.repair || {};
+      return [
+        bead_id,
+        {
+          ...failure,
+          subject_id: subject.subject_id,
+          repair_eligible: true,
+          repair: {
+            ...repair,
+            auto_budget: 1,
+            remaining: Math.max(0, 1 - (repair.auto_used || 0))
+          }
+        }
+      ];
+    })
+  );
   public_queue.discard_operations = publicDiscardOperations(
     overlaid.discard_operations
   );

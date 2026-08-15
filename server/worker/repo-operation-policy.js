@@ -3,8 +3,8 @@
  * (master spec §4.5 / §9.1 / §10).
  *
  * beads-ui is a CONSUMER of that contract, never its author: every list this
- * module hands out — what the Worker does automatically, which failures buy an
- * automatic repair session, what is never automatic — is read from
+ * module hands out — what the Worker does automatically, the resolution ladder,
+ * what is never automatic — is read from
  * `generated/contracts/repo-operation-policy.json`, an exact byte copy of the
  * dotfiles artifact recorded in the sibling provenance file. Nothing here
  * restates a policy sentence, so a contract change lands as a re-pin plus a
@@ -47,12 +47,14 @@ export const REPO_OPERATION_POLICY_PROVENANCE_PATH = path.join(
  * @typedef {Object} RepoOperationPolicy
  * @property {number} schema_version
  * @property {string[]} worker_automatic
- * @property {{ default: boolean, eligible: string[], budget_per_completion_chain: number }} auto_repair
+ * @property {{ default: boolean, scope: string, resolution_subject: string, resolution_ladder: Record<string, unknown>[], manual_human_fix: string }} auto_repair
  * @property {Record<string, string>} completion_chain
+ * @property {string[]} repair_session_packet
+ * @property {string} resolution_entry_surface
  * @property {string[]} never_automatic
  */
 
-/** @type {{ policy: RepoOperationPolicy, provenance: RepoOperationPolicyProvenance, digest: string }|null} */
+/** @type {{ policy: RepoOperationPolicy, provenance: RepoOperationPolicyProvenance, digest: string, supported: boolean }|null} */
 let cached = null;
 
 /**
@@ -73,7 +75,12 @@ export function loadRepoOperationPolicy(deps = {}) {
   const provenance = JSON.parse(
     fs.readFileSync(REPO_OPERATION_POLICY_PROVENANCE_PATH, 'utf8')
   );
-  const loaded = { policy, provenance, digest };
+  const loaded = {
+    policy,
+    provenance,
+    digest,
+    supported: policy.schema_version === 2
+  };
   if (!deps.fs) {
     cached = loaded;
   }
@@ -81,24 +88,12 @@ export function loadRepoOperationPolicy(deps = {}) {
 }
 
 /**
- * The failure classes the contract lets the Worker repair automatically.
- *
- * @returns {string[]}
+ * Whether the pinned artifact has the one schema this consumer understands.
+ * Unknown schemas stop only automatic ladder steps; callers keep operation
+ * execution and the user-triggered session surface alive.
  */
-export function eligibleRepairFailures() {
-  const { policy } = loadRepoOperationPolicy();
-  return Array.isArray(policy.auto_repair?.eligible)
-    ? [...policy.auto_repair.eligible]
-    : [];
-}
-
-/**
- * The automatic budget one completion chain may spend.
- */
-export function repairBudgetPerChain() {
-  const { policy } = loadRepoOperationPolicy();
-  const budget = policy.auto_repair?.budget_per_completion_chain;
-  return Number.isInteger(budget) && budget >= 0 ? budget : 0;
+export function repoOperationPolicySupported() {
+  return loadRepoOperationPolicy().supported;
 }
 
 /**
@@ -116,23 +111,23 @@ export function repairSessionProhibitions() {
 }
 
 /**
- * Classify one settled failure into the contract's eligible-failure vocabulary.
- * Anything outside it stays manual — `other` is not an eligibility token, it is
- * the absence of one.
+ * Classify one settled failure for display and repair packets. Eligibility is a
+ * separate all-terminal-failures decision; unknown codes remain verbatim so a
+ * new runner failure never falls into a hidden catch-all class.
  *
  * @param {{ kind: string, failure: { code: string, interrupted?: boolean }|null }} operation
- * @returns {string} One of the contract's eligible tokens, or `other`.
+ * @returns {string}
  */
 export function classifyRepoOperationFailure(operation) {
   const failure = operation.failure;
   if (!failure || typeof failure.code !== 'string') {
-    return 'other';
+    return '';
   }
   if (failure.interrupted === true) {
     return 'interrupted_without_terminal_exit';
   }
   if (failure.code !== 'script_failed' && failure.code !== 'timeout') {
-    return 'other';
+    return failure.code;
   }
   return operation.kind === 'verify'
     ? 'verify_script_failure'
@@ -140,11 +135,13 @@ export function classifyRepoOperationFailure(operation) {
 }
 
 /**
- * @param {{ kind: string, failure: { code: string, interrupted?: boolean }|null }} operation
+ * @param {{ kind?: string, state?: string, superseded_by?: string|null, failure: { code: string, interrupted?: boolean }|null }} operation
  */
 export function isRepairEligible(operation) {
-  return eligibleRepairFailures().includes(
-    classifyRepoOperationFailure(operation)
+  return (
+    operation.state === 'failed' &&
+    !operation.superseded_by &&
+    typeof operation.failure?.code === 'string'
   );
 }
 
@@ -154,9 +151,14 @@ export function isRepairEligible(operation) {
  * came from. The client renders these tokens; it never decides membership.
  */
 export function projectRepoOperationPolicy() {
-  const { policy, provenance, digest } = loadRepoOperationPolicy();
+  const { policy, provenance, digest, supported } = loadRepoOperationPolicy();
+  /** @type {Record<string, unknown>[]} */
+  const ladder = Array.isArray(policy.auto_repair?.resolution_ladder)
+    ? policy.auto_repair.resolution_ladder
+    : [];
   return {
     schema_version: policy.schema_version,
+    supported,
     source_commit: provenance.source_commit,
     digest,
     worker_automatic: Array.isArray(policy.worker_automatic)
@@ -164,10 +166,24 @@ export function projectRepoOperationPolicy() {
       : [],
     auto_repair: {
       default: policy.auto_repair?.default === true,
-      eligible: eligibleRepairFailures(),
-      budget_per_completion_chain: repairBudgetPerChain()
+      scope: policy.auto_repair?.scope || '',
+      resolution_subject: policy.auto_repair?.resolution_subject || '',
+      resolution_ladder: ladder.map(
+        (entry) =>
+          /** @type {Record<string, unknown>} */ ({
+            ...entry,
+            ...(Array.isArray(entry.consumption_key)
+              ? { consumption_key: [...entry.consumption_key] }
+              : {})
+          })
+      ),
+      manual_human_fix: policy.auto_repair?.manual_human_fix || ''
     },
     completion_chain: { ...(policy.completion_chain || {}) },
+    repair_session_packet: Array.isArray(policy.repair_session_packet)
+      ? [...policy.repair_session_packet]
+      : [],
+    resolution_entry_surface: policy.resolution_entry_surface || '',
     never_automatic: repairSessionProhibitions()
   };
 }

@@ -285,7 +285,7 @@ describe('worker/merge-candidates — completion repair intake', () => {
     'deploy_verify_missing',
     'deploy_failed',
     'managed_pointer_escape'
-  ])('does not mark %s as repair-owned cleanup evidence', (reason) => {
+  ])('marks %s as unified cleanup resolution evidence', (reason) => {
     const runtime = getWorkerRuntime();
     runtime.prObservations.record(WS, 'UI-1', {
       pr: {
@@ -311,7 +311,9 @@ describe('worker/merge-candidates — completion repair intake', () => {
       'resolved'
     );
 
-    expect(result).toEqual([{ bead_id: 'UI-1', external: false }]);
+    expect(result).toEqual([
+      { bead_id: 'UI-1', external: false, repairable: true }
+    ]);
   });
 
   test('seeds an already-merged root with its observed landed SHA', () => {

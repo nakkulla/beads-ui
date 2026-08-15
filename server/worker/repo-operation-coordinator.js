@@ -10,11 +10,11 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveRepairOwner } from './repair-session-adapter.js';
 import {
-  repairEvidenceKey,
-  resolveRepairOwner
-} from './repair-session-adapter.js';
-import { isRepairEligible } from './repo-operation-policy.js';
+  isRepairEligible,
+  repoOperationPolicySupported
+} from './repo-operation-policy.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
@@ -25,6 +25,14 @@ import {
   resolveEffectiveRepoOps,
   resolveRepoOps
 } from './repo-ops-resolver.js';
+import {
+  normalizeResolutionSubjects,
+  normalizeScriptRetry,
+  reproducedWithoutNewEvidence,
+  resolutionAccess,
+  scriptRetryApplicable,
+  scriptRetryConsumptionKey
+} from './resolution-ladder.js';
 import {
   repoOpsSpoolPendingDir,
   repoOpsSpoolProcessedDir
@@ -77,7 +85,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> } }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, policySupported?: () => boolean }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -88,6 +96,7 @@ export function createRepoOperationCoordinator(deps) {
     createRepoOpsDeployWorktreeManager({ locks: deps.locks, run: deps.gitRun });
   const verify_checkout =
     deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
+  const policySupported = deps.policySupported || repoOperationPolicySupported;
 
   /**
    * `resolveEffectiveRepoOps`, plus the display-cache update (UI-q0uy §4.6-1).
@@ -230,7 +239,10 @@ export function createRepoOperationCoordinator(deps) {
   function runningOperationFor(operations, except_operation_id) {
     for (const [operation_id, operation] of Object.entries(operations)) {
       if (operation_id === except_operation_id) continue;
-      if (operation.repo_id === deps.repo && operation.state === 'running') {
+      if (
+        operation.repo_id === deps.repo &&
+        (operation.state === 'running' || operation.state === 'retry_pending')
+      ) {
         return operation_id;
       }
     }
@@ -367,31 +379,73 @@ export function createRepoOperationCoordinator(deps) {
    * @param {{ code: string, detail?: string, interrupted?: boolean, exit_code?: number|null, signal?: string|null }} failure
    */
   async function settleFailure(workspace, operation, operation_id, failure) {
-    const log_digest = operation.log_path
-      ? fileSha256(operation.log_path)
-      : null;
-    const owner_bead = await ownerBead(operation);
+    const current =
+      deps.store.snapshot(workspace).repo_operations[operation_id] || operation;
+    const log_digest = current.log_path ? fileSha256(current.log_path) : null;
+    const owner_bead = await ownerBead(current);
+    const failure_record = {
+      code: failure.code,
+      fingerprint: failureFingerprint({
+        code: failure.code,
+        exit_code: failure.exit_code ?? null,
+        signal: failure.signal ?? null,
+        log_digest
+      }),
+      detail: failure.detail ?? '',
+      interrupted: failure.interrupted === true
+    };
+    const queue = deps.store.snapshot(workspace);
+    const access = resolutionAccess({
+      policy_supported: policySupported(),
+      auto_repair: queue.auto_repair === true,
+      subject: current
+    });
+    if (
+      current.state === 'running' &&
+      current.retry === null &&
+      access.script_retry &&
+      scriptRetryApplicable(current)
+    ) {
+      deps.store.deferRepoOperationRetry(workspace, {
+        operation_id,
+        attempt_id: current.attempt_id,
+        exit_code: failure.exit_code ?? null,
+        signal: failure.signal ?? null,
+        log_digest,
+        owner_bead,
+        failure: failure_record
+      });
+      return 'retry_pending';
+    }
+    const blocked_reason =
+      current.state === 'running' && current.retry === null
+        ? !policySupported()
+          ? 'schema_unsupported'
+          : queue.auto_repair !== true
+            ? 'auto_repair_off'
+            : null
+        : null;
     deps.store.settleRepoOperation(workspace, {
       operation_id,
-      attempt_id: operation.attempt_id,
+      attempt_id: current.attempt_id,
       exit_code: failure.exit_code ?? null,
       signal: failure.signal ?? null,
       log_digest,
       owner_bead,
-      failure: {
-        code: failure.code,
-        fingerprint: failureFingerprint({
-          code: failure.code,
-          exit_code: failure.exit_code ?? null,
-          signal: failure.signal ?? null,
-          log_digest
-        }),
-        detail: failure.detail ?? '',
-        interrupted: failure.interrupted === true
-      }
+      failure: failure_record,
+      ladder_stage: blocked_reason
+        ? 'user_triggered_session'
+        : 'auto_repair_session',
+      retry_outcome:
+        current.retry === null &&
+        (blocked_reason !== null || !scriptRetryApplicable(current))
+          ? 'not_applicable'
+          : undefined,
+      retry_blocked_reason: blocked_reason
     });
     await sweepDescendantCoverage(workspace, operation_id);
     transition.reclaim(workspace, operation_id);
+    return 'failed';
   }
 
   /**
@@ -450,12 +504,17 @@ export function createRepoOperationCoordinator(deps) {
       }
       return;
     }
-    await settleFailure(workspace, operation, operation_id, {
-      code: marker.exit_code === 124 ? 'timeout' : 'script_failed',
-      exit_code: marker.exit_code,
-      signal: marker.signal
-    });
-    if (operation.kind === 'verify') {
+    const disposition = await settleFailure(
+      workspace,
+      operation,
+      operation_id,
+      {
+        code: marker.exit_code === 124 ? 'timeout' : 'script_failed',
+        exit_code: marker.exit_code,
+        signal: marker.signal
+      }
+    );
+    if (operation.kind === 'verify' && disposition !== 'retry_pending') {
       await verify_checkout.cleanup({
         repo: deps.repo,
         path: operation.deploy_worktree
@@ -689,18 +748,104 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Consume retry eligibility immediately before the runner spawn, then bind
+   * the new process to the same operation attempt. A spawn refusal settles the
+   * preserved first failure because the durable key is already consumed.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   * @param {any} operation
+   * @param {{ script_path: string, cwd: string, target_sha: string, timeout_ms: number, target_tree?: string, deploy_worktree?: string, retry?: boolean }} input
+   */
+  async function spawnRecorded(workspace, operation_id, operation, input) {
+    if (input.retry === true) {
+      const consumed_key = scriptRetryConsumptionKey(operation);
+      if (!consumed_key) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation),
+          blocked_reason: 'retry_identity_missing'
+        });
+        return { ok: false, code: 'repo_operation_retry_identity_missing' };
+      }
+      const consumed = deps.store.consumeRepoOperationRetry(workspace, {
+        operation_id,
+        attempt_id: operation.attempt_id,
+        consumed_key
+      });
+      if (!consumed.ok) {
+        return { ok: false, code: 'repo_operation_retry_consume_failed' };
+      }
+    }
+    /** @type {any} */
+    let started;
+    try {
+      started = await runner.start({
+        workspace,
+        operation_id,
+        attempt_id: operation.attempt_id,
+        script_path: input.script_path,
+        cwd: input.cwd,
+        target_sha: input.target_sha,
+        target_base: operation.target_base,
+        timeout_ms: input.timeout_ms
+      });
+    } catch {
+      if (input.retry === true) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation)
+        });
+      }
+      throw new Error('repo_operation_spawn_failed');
+    }
+    if (!started.ok || !started.process_identity) {
+      if (input.retry === true) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation)
+        });
+      } else {
+        await settleFailure(workspace, operation, operation_id, {
+          code: started.code || 'repo_operation_spawn_failed'
+        });
+      }
+      return { ok: false, code: started.code, operation_id };
+    }
+    const running = deps.store.startRepoOperation(workspace, {
+      operation_id,
+      attempt_id: operation.attempt_id,
+      process_identity: started.process_identity,
+      log_path: started.log_path,
+      target_sha: input.target_sha,
+      ...(typeof input.target_tree === 'string'
+        ? { target_tree: input.target_tree }
+        : {}),
+      ...(typeof input.deploy_worktree === 'string'
+        ? { deploy_worktree: input.deploy_worktree }
+        : {})
+    });
+    return running.ok
+      ? { ok: true, operation_id, timeout_ms: input.timeout_ms }
+      : { ok: false, code: 'repo_operation_start_record_failed', operation_id };
+  }
+
+  /**
    * Align, materialize, spawn, and record one already-prerecorded queued
    * operation. Every pre-spawn failure settles durably instead of leaving a
    * silent queued record. Caller holds the repo-operation lock.
    *
    * @param {string} workspace
    * @param {string} operation_id
-   * @param {{ declaration: any, classification: string, target_sha: string }} plan
+   * @param {{ declaration: any, classification: string, target_sha: string, retry?: boolean }} plan
    */
   async function launchRecorded(workspace, operation_id, plan) {
     const operation =
       deps.store.snapshot(workspace).repo_operations[operation_id];
-    if (!operation || operation.state !== 'queued') {
+    if (
+      !operation ||
+      (operation.state !== 'queued' && operation.state !== 'retry_pending')
+    ) {
       return { ok: true, operation_id, adopted: true };
     }
     const aligned = await deploy_worktree.ensureAligned({
@@ -709,9 +854,17 @@ export function createRepoOperationCoordinator(deps) {
       target_sha: plan.target_sha
     });
     if (!aligned.ok || typeof aligned.path !== 'string') {
-      await settleFailure(workspace, operation, operation_id, {
-        code: aligned.code || 'repo_ops_worktree_align_failed'
-      });
+      if (plan.retry === true) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation),
+          blocked_reason: aligned.code || 'repo_ops_worktree_align_failed'
+        });
+      } else {
+        await settleFailure(workspace, operation, operation_id, {
+          code: aligned.code || 'repo_ops_worktree_align_failed'
+        });
+      }
       return { ok: false, code: aligned.code, operation_id };
     }
     let script_path = path.join(aligned.path, plan.declaration.script);
@@ -724,9 +877,17 @@ export function createRepoOperationCoordinator(deps) {
         mode: plan.declaration.mode
       });
       if (!materialized.ok || typeof materialized.path !== 'string') {
-        await settleFailure(workspace, operation, operation_id, {
-          code: 'repo_ops_transition_materialize_failed'
-        });
+        if (plan.retry === true) {
+          deps.store.settleConsumedRepoOperationRetry(workspace, {
+            operation_id,
+            owner_bead: await ownerBead(operation),
+            blocked_reason: 'repo_ops_transition_materialize_failed'
+          });
+        } else {
+          await settleFailure(workspace, operation, operation_id, {
+            code: 'repo_ops_transition_materialize_failed'
+          });
+        }
         return {
           ok: false,
           code: 'repo_ops_transition_materialize_failed',
@@ -735,38 +896,14 @@ export function createRepoOperationCoordinator(deps) {
       }
       script_path = materialized.path;
     }
-    const started = await runner.start({
-      workspace,
-      operation_id,
-      attempt_id: operation.attempt_id,
+    return spawnRecorded(workspace, operation_id, operation, {
       script_path,
       cwd: aligned.path,
       target_sha: plan.target_sha,
-      target_base: operation.target_base,
-      timeout_ms: plan.declaration.timeout_ms
+      timeout_ms: plan.declaration.timeout_ms,
+      deploy_worktree: aligned.path,
+      retry: plan.retry === true
     });
-    if (!started.ok || !started.process_identity) {
-      await settleFailure(workspace, operation, operation_id, {
-        code: started.code || 'repo_operation_spawn_failed'
-      });
-      return { ok: false, code: started.code, operation_id };
-    }
-    const running = deps.store.startRepoOperation(workspace, {
-      operation_id,
-      attempt_id: operation.attempt_id,
-      process_identity: started.process_identity,
-      log_path: started.log_path,
-      target_sha: plan.target_sha,
-      deploy_worktree: aligned.path
-    });
-    if (!running.ok) {
-      return {
-        ok: false,
-        code: 'repo_operation_start_record_failed',
-        operation_id
-      };
-    }
-    return { ok: true, operation_id };
   }
 
   /**
@@ -901,19 +1038,40 @@ export function createRepoOperationCoordinator(deps) {
    * @param {any} operation
    */
   async function launchQueued(workspace, operation_id, operation) {
-    const bound = await deploy_worktree.bindTarget({
-      repo: deps.repo,
-      base: operation.target_base,
-      last_successful_sha: latestSuccessfulDeploySha(
-        deps.store.snapshot(workspace),
-        deps.repo,
-        operation.target_base
-      )
-    });
+    const retry = operation.state === 'retry_pending';
+    // A retry re-runs the SAME command at the SAME target the first attempt
+    // failed at (contract §3.2). Re-binding would resolve the remote's CURRENT
+    // tip, so a base that moved between the two runs would leave the consumed
+    // key pinned to the old SHA while the script executed against a new one —
+    // a different command wearing the first one's retry budget. The pinned SHA
+    // is authority here; its absence fails closed rather than falling back to a
+    // fresh bind.
+    /** @type {{ ok: boolean, code?: string, target_sha?: string }} */
+    const bound = retry
+      ? typeof operation.target_sha === 'string' && operation.target_sha
+        ? { ok: true, target_sha: operation.target_sha }
+        : { ok: false, code: 'repo_ops_retry_target_missing' }
+      : await deploy_worktree.bindTarget({
+          repo: deps.repo,
+          base: operation.target_base,
+          last_successful_sha: latestSuccessfulDeploySha(
+            deps.store.snapshot(workspace),
+            deps.repo,
+            operation.target_base
+          )
+        });
     if (!bound.ok || typeof bound.target_sha !== 'string') {
-      await settleFailure(workspace, operation, operation_id, {
-        code: bound.code || 'repo_ops_target_unresolved'
-      });
+      if (retry) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation),
+          blocked_reason: bound.code || 'repo_ops_target_unresolved'
+        });
+      } else {
+        await settleFailure(workspace, operation, operation_id, {
+          code: bound.code || 'repo_ops_target_unresolved'
+        });
+      }
       return;
     }
     /** @type {any} */
@@ -936,15 +1094,95 @@ export function createRepoOperationCoordinator(deps) {
       declaration.mode !== operation.script_mode ||
       declaration.blob_sha !== operation.script_blob_sha
     ) {
-      await settleFailure(workspace, operation, operation_id, {
-        code: 'repo_ops_policy_drift'
-      });
+      if (retry) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation),
+          blocked_reason: 'repo_ops_policy_drift'
+        });
+      } else {
+        await settleFailure(workspace, operation, operation_id, {
+          code: 'repo_ops_policy_drift'
+        });
+      }
       return;
     }
     await launchRecorded(workspace, operation_id, {
       declaration,
       classification: policy.classification,
-      target_sha: bound.target_sha
+      target_sha: bound.target_sha,
+      retry
+    });
+  }
+
+  /**
+   * Recreate the pinned verify script and respawn it in the still-owned candidate
+   * checkout. The retry key is consumed only after policy/materialization checks
+   * succeed and immediately before the runner invocation.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   * @param {any} operation
+   */
+  async function launchVerifyRetry(workspace, operation_id, operation) {
+    const policy_target = operation.verify_head_sha || operation.target_sha;
+    if (
+      typeof policy_target !== 'string' ||
+      typeof operation.target_sha !== 'string' ||
+      typeof operation.deploy_worktree !== 'string'
+    ) {
+      deps.store.settleConsumedRepoOperationRetry(workspace, {
+        operation_id,
+        owner_bead: await ownerBead(operation),
+        blocked_reason: 'verify_retry_input_missing'
+      });
+      return;
+    }
+    /** @type {any} */
+    const policy = await resolveEffectiveTracked({
+      repo: deps.repo,
+      previous_sha: operation.effective_base_sha,
+      target_sha: policy_target,
+      kind: 'verify',
+      gitRun: deps.gitRun
+    });
+    const declaration = policy.policy?.verify || null;
+    if (
+      !declaration ||
+      declaration.identity_invalid ||
+      declaration.mode !== operation.script_mode ||
+      declaration.blob_sha !== operation.script_blob_sha
+    ) {
+      deps.store.settleConsumedRepoOperationRetry(workspace, {
+        operation_id,
+        owner_bead: await ownerBead(operation),
+        blocked_reason: 'repo_ops_policy_drift'
+      });
+      return;
+    }
+    const script = await transition.materialize({
+      workspace,
+      repo: deps.repo,
+      operation_id,
+      blob_sha: declaration.blob_sha,
+      mode: declaration.mode
+    });
+    if (!script.ok || typeof script.path !== 'string') {
+      deps.store.settleConsumedRepoOperationRetry(workspace, {
+        operation_id,
+        owner_bead: await ownerBead(operation),
+        blocked_reason: 'verify_script_materialize_failed'
+      });
+      return;
+    }
+    await spawnRecorded(workspace, operation_id, operation, {
+      script_path: script.path,
+      cwd: operation.deploy_worktree,
+      target_sha: operation.target_sha,
+      target_tree: operation.target_tree,
+      deploy_worktree: operation.deploy_worktree,
+      timeout_ms: declaration.timeout_ms,
+      retry: true
     });
   }
 
@@ -1098,6 +1336,41 @@ export function createRepoOperationCoordinator(deps) {
     for (const [operation_id, operation] of Object.entries(
       queue.repo_operations
     )) {
+      if (operation.state === 'retry_pending') {
+        const current_queue = deps.store.snapshot(workspace);
+        const access = resolutionAccess({
+          policy_supported: policySupported(),
+          auto_repair: current_queue.auto_repair === true,
+          subject: operation
+        });
+        if (!access.script_retry) {
+          deps.store.settleConsumedRepoOperationRetry(workspace, {
+            operation_id,
+            owner_bead: await ownerBead(operation),
+            ladder_stage: 'user_triggered_session',
+            blocked_reason: !policySupported()
+              ? 'schema_unsupported'
+              : 'auto_repair_off'
+          });
+          continue;
+        }
+        if (normalizeScriptRetry(operation).status !== 'unconsumed') {
+          deps.store.settleConsumedRepoOperationRetry(workspace, {
+            operation_id,
+            owner_bead: await ownerBead(operation)
+          });
+          continue;
+        }
+        const operations_now = current_queue.repo_operations || {};
+        if (!runningOperationFor(operations_now, operation_id)) {
+          if (operation.kind === 'verify') {
+            await launchVerifyRetry(workspace, operation_id, operation);
+          } else {
+            await launchQueued(workspace, operation_id, operation);
+          }
+        }
+        continue;
+      }
       if (operation.state === 'running') {
         const marker = runner.readMarker(
           workspace,
@@ -1112,12 +1385,34 @@ export function createRepoOperationCoordinator(deps) {
           ? runner.processController.probe(operation.process_identity)
           : { state: 'gone' };
         if (state.state === 'gone' || state.state === 'recycled') {
-          await settleFailure(workspace, operation, operation_id, {
-            code: 'interrupted',
-            detail: 'marker_missing',
-            interrupted: true
-          });
-          if (operation.kind === 'verify') {
+          if (operation.retry?.consumed_key) {
+            deps.store.settleConsumedRepoOperationRetry(workspace, {
+              operation_id,
+              owner_bead: await ownerBead(operation)
+            });
+            transition.reclaim(workspace, operation_id);
+          } else {
+            const disposition = await settleFailure(
+              workspace,
+              operation,
+              operation_id,
+              {
+                code: 'interrupted',
+                detail: 'marker_missing',
+                interrupted: true
+              }
+            );
+            if (
+              operation.kind === 'verify' &&
+              disposition !== 'retry_pending'
+            ) {
+              await verify_checkout.cleanup({
+                repo: deps.repo,
+                path: operation.deploy_worktree
+              });
+            }
+          }
+          if (operation.kind === 'verify' && operation.retry?.consumed_key) {
             await verify_checkout.cleanup({
               repo: deps.repo,
               path: operation.deploy_worktree
@@ -1127,6 +1422,13 @@ export function createRepoOperationCoordinator(deps) {
         continue;
       }
       if (operation.state !== 'queued') continue;
+      if (operation.retry?.consumed_key) {
+        deps.store.settleConsumedRepoOperationRetry(workspace, {
+          operation_id,
+          owner_bead: await ownerBead(operation)
+        });
+        continue;
+      }
       // A queued record with a launch handshake belongs to a process spawned
       // by a Worker that died before its queue write: adopt, never respawn.
       const launch = runner.readLaunchMarker(
@@ -1146,11 +1448,18 @@ export function createRepoOperationCoordinator(deps) {
         }
         const probe = runner.processController.probe(launch);
         if (probe.state === 'owned') {
+          // Restore the invocation identity the handshake recorded. Without the
+          // log path and the pinned target this adopted record could not prove a
+          // script ever ran, and its failure would skip the script retry the
+          // contract grants a real invocation (§3.2).
           deps.store.startRepoOperation(workspace, {
             operation_id,
             attempt_id: operation.attempt_id,
             process_identity: launch,
-            log_path: operation.log_path || ''
+            log_path: operation.log_path || launch.log_path || '',
+            ...(operation.target_sha || !launch.target_sha
+              ? {}
+              : { target_sha: launch.target_sha })
           });
         } else {
           await settleFailure(workspace, operation, operation_id, {
@@ -1234,34 +1543,6 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * The same failure reproducing with no new tree/script/environment evidence
-   * (§9.3): identical fingerprint AND identical evidence key on another record.
-   * Such a record buys no further automatic budget and stays manual — including
-   * when it opened its own chain, which is the loop this rule exists to close.
-   *
-   * @param {Record<string, any>} operations
-   * @param {string} operation_id
-   * @param {any} operation
-   */
-  function reproducedWithoutNewEvidence(operations, operation_id, operation) {
-    const fingerprint = operation.failure?.fingerprint;
-    if (typeof fingerprint !== 'string' || fingerprint.length === 0) {
-      return false;
-    }
-    const evidence = repairEvidenceKey(operation);
-    for (const [candidate_id, candidate] of Object.entries(operations)) {
-      if (candidate_id === operation_id) continue;
-      if (candidate.repo_id !== deps.repo) continue;
-      if (candidate.failure?.fingerprint !== fingerprint) continue;
-      if (repairEvidenceKey(candidate) !== evidence) continue;
-      if (candidate.repair.auto_used > 0) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /**
    * Start one repair session for a terminal failure. Caller holds the
    * repo-operation lock.
    *
@@ -1272,23 +1553,21 @@ export function createRepoOperationCoordinator(deps) {
    * new attempt is only ever created after repair evidence exists.
    *
    * @param {string} workspace
-   * @param {string} operation_id
+   * @param {string} requested_subject_id - `op:<operation_id>`,
+   * `cleanup:<bead_id>`, or a bare operation id from a legacy caller.
    * @param {'auto'|'manual'} mode
    */
-  async function startRepairLocked(workspace, operation_id, mode) {
+  async function startRepairLocked(workspace, requested_subject_id, mode) {
     const queue = deps.store.snapshot(workspace);
+    const operation_id = requested_subject_id.startsWith('op:')
+      ? requested_subject_id.slice('op:'.length)
+      : requested_subject_id;
     const operation = queue.repo_operations[operation_id];
-    if (!operation) {
-      return { ok: false, code: 'repo_operation_missing' };
-    }
-    if (operation.state === 'repairing') {
+    if (operation?.state === 'repairing') {
       return { ok: true, operation_id, adopted: true };
     }
-    if (operation.state !== 'failed') {
-      return { ok: false, code: 'repo_operation_not_failed' };
-    }
-    const chain_id = operation.repair.chain_id || operation_id;
-    if (operation.superseded_by) {
+    if (operation?.state === 'failed' && operation.superseded_by) {
+      const chain_id = operation.repair.chain_id || operation_id;
       return {
         ok: false,
         code: chainClosed(queue.repo_operations, chain_id)
@@ -1296,31 +1575,55 @@ export function createRepoOperationCoordinator(deps) {
           : 'repo_operation_superseded'
       };
     }
-    if (chainClosed(queue.repo_operations, chain_id)) {
-      return { ok: false, code: 'repair_chain_closed' };
+    if (operation?.state === 'failed') {
+      const chain_id = operation.repair.chain_id || operation_id;
+      if (chainClosed(queue.repo_operations, chain_id)) {
+        return { ok: false, code: 'repair_chain_closed' };
+      }
     }
+    const normalized = normalizeResolutionSubjects(queue);
+    const subject_id = requested_subject_id.startsWith('cleanup:')
+      ? requested_subject_id
+      : `op:${operation_id}`;
+    const subject = normalized.find(
+      (candidate) => candidate.subject_id === subject_id
+    );
+    if (!subject) {
+      return operation
+        ? { ok: false, code: 'repo_operation_not_failed' }
+        : { ok: false, code: 'repo_operation_missing' };
+    }
+    if (subject.source === 'cleanup') {
+      return startCleanupRepairLocked(workspace, subject, mode);
+    }
+    const chain_id = operation.repair.chain_id || operation_id;
     if (mode === 'auto') {
       // The config disable is not advisory: an automatic dispatch asked for
       // while the flag is off is REFUSED, never downgraded to a manual one.
       if (queue.auto_repair !== true) {
+        deps.store.descendRepoOperationToUser(workspace, { operation_id });
         return { ok: false, code: 'auto_repair_disabled' };
+      }
+      if (!policySupported()) {
+        deps.store.descendRepoOperationToUser(workspace, { operation_id });
+        return { ok: false, code: 'policy_schema_unsupported' };
       }
       if (!isRepairEligible(operation)) {
         return { ok: false, code: 'repair_not_eligible' };
+      }
+      if (operation.dismissed) {
+        deps.store.descendRepoOperationToUser(workspace, { operation_id });
+        return { ok: false, code: 'repair_dismissed' };
       }
       if (
         chainAutoUsed(queue.repo_operations, chain_id) >=
         operation.repair.auto_budget
       ) {
+        deps.store.descendRepoOperationToUser(workspace, { operation_id });
         return { ok: false, code: 'repair_budget_exhausted' };
       }
-      if (
-        reproducedWithoutNewEvidence(
-          queue.repo_operations,
-          operation_id,
-          operation
-        )
-      ) {
+      if (reproducedWithoutNewEvidence(queue.repo_operations, operation_id)) {
+        deps.store.descendRepoOperationToUser(workspace, { operation_id });
         return { ok: false, code: 'repair_fingerprint_repeated' };
       }
     }
@@ -1369,6 +1672,134 @@ export function createRepoOperationCoordinator(deps) {
     return {
       ok: true,
       operation_id,
+      mode,
+      attempt_id: dispatched.attempt_id,
+      session_id: dispatched.session_id ?? null
+    };
+  }
+
+  /**
+   * Dispatch the legacy cleanup surface through the same session Interface.
+   * The synthetic operation is packet input only; durable state remains beside
+   * the cleanup failure it describes.
+   *
+   * @param {string} workspace
+   * @param {any} subject
+   * @param {'auto'|'manual'} mode
+   */
+  async function startCleanupRepairLocked(workspace, subject, mode) {
+    const queue = deps.store.snapshot(workspace);
+    const failure = queue.cleanup_failed[subject.bead_id];
+    if (!failure) {
+      return { ok: false, code: 'repo_operation_missing' };
+    }
+    if (failure.repair?.mode) {
+      return { ok: true, operation_id: subject.subject_id, adopted: true };
+    }
+    if (mode === 'auto') {
+      if (queue.auto_repair !== true) {
+        return { ok: false, code: 'auto_repair_disabled' };
+      }
+      if (!policySupported()) {
+        return { ok: false, code: 'policy_schema_unsupported' };
+      }
+      if ((failure.repair?.auto_used || 0) >= 1) {
+        return { ok: false, code: 'repair_budget_exhausted' };
+      }
+    }
+    if (!deps.repairSession) {
+      return { ok: false, code: 'repair_session_unavailable' };
+    }
+    const row = queue.pr_wait.find(
+      (entry) => entry.bead_id === subject.bead_id
+    );
+    if (!row) {
+      return { ok: false, code: 'repair_owner_unresolved' };
+    }
+    const prerecorded = deps.store.startCleanupRepair(workspace, {
+      bead_id: subject.bead_id,
+      mode
+    });
+    if (!prerecorded.ok) {
+      return { ok: false, code: 'repair_prerecord_failed' };
+    }
+    const current = deps.store.snapshot(workspace);
+    const current_failure = current.cleanup_failed[subject.bead_id];
+    const current_repair = current_failure.repair;
+    // The prerecord above writes `repair`; its absence here means the durable
+    // write did not land, so the dispatch must not proceed on a record whose
+    // chain and budget were never stamped.
+    if (!current_repair) {
+      return { ok: false, code: 'repair_prerecord_failed' };
+    }
+    const code = current_failure.failure_code || current_failure.reason;
+    const synthetic_operation = {
+      kind: 'cleanup',
+      step: current_failure.step,
+      reason: current_failure.reason,
+      subjects: [
+        {
+          bead_id: subject.bead_id,
+          merged_sha: row.merge_sha || ''
+        }
+      ],
+      target_base: null,
+      target_sha: row.merge_sha || null,
+      target_tree: null,
+      effective_base_sha: null,
+      script_blob_sha: null,
+      script_mode: null,
+      attempt_id: subject.subject_id,
+      exit_code: null,
+      signal: null,
+      started_at: null,
+      finished_at: current_failure.at,
+      log_path: current_failure.log_path || null,
+      log_digest: null,
+      output_tail: current_failure.output_tail || '',
+      state: 'repairing',
+      failure: {
+        code,
+        fingerprint: failureFingerprint({ code }),
+        detail: current_failure.detail || current_failure.reason,
+        interrupted: false
+      },
+      retry: {
+        first_failure: null,
+        first_fingerprint: null,
+        consumed_key: null,
+        absorbed: null,
+        outcome: 'not_applicable',
+        blocked_reason: null
+      },
+      repair: {
+        chain_id: current_repair.chain_id,
+        auto_budget: 1,
+        auto_used: current_repair.auto_used,
+        ladder_stage: current_repair.ladder_stage
+      }
+    };
+    const dispatched = await deps.repairSession.dispatch({
+      workspace,
+      operation_id: subject.subject_id,
+      operation: synthetic_operation,
+      mode,
+      owner_bead: subject.bead_id
+    });
+    if (!dispatched.ok || typeof dispatched.attempt_id !== 'string') {
+      deps.store.releaseCleanupRepair(workspace, {
+        bead_id: subject.bead_id
+      });
+      return { ok: false, code: dispatched.reason || 'repair_dispatch_failed' };
+    }
+    deps.store.bindCleanupRepairSession(workspace, {
+      bead_id: subject.bead_id,
+      attempt_id: dispatched.attempt_id,
+      session_id: dispatched.session_id ?? null
+    });
+    return {
+      ok: true,
+      operation_id: subject.subject_id,
       mode,
       attempt_id: dispatched.attempt_id,
       session_id: dispatched.session_id ?? null
@@ -1454,6 +1885,25 @@ export function createRepoOperationCoordinator(deps) {
       }
       if (operation.state !== 'failed') continue;
       await startRepairLocked(workspace, operation_id, 'auto');
+    }
+    const queue = deps.store.snapshot(workspace);
+    for (const subject of normalizeResolutionSubjects(queue)) {
+      if (subject.source !== 'cleanup') {
+        continue;
+      }
+      if (subject.cleanup_failure.repair?.mode) {
+        const judged = await deps.repairSession.judge({
+          workspace,
+          operation_id: subject.subject_id
+        });
+        if (judged.verdict !== 'session_running') {
+          deps.store.releaseCleanupRepair(workspace, {
+            bead_id: subject.bead_id
+          });
+        }
+        continue;
+      }
+      await startRepairLocked(workspace, subject.subject_id, 'auto');
     }
   }
 

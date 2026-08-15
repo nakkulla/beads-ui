@@ -77,7 +77,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, policySupported?: () => boolean }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -120,7 +120,8 @@ function coordinatorFor(overrides = {}) {
       verifyAligned: async () => ({ ok: true })
     }),
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
-    repairSession: /** @type {never} */ (overrides.repairSession)
+    repairSession: /** @type {never} */ (overrides.repairSession),
+    policySupported: overrides.policySupported
   });
   return { store, coordinator };
 }
@@ -552,7 +553,7 @@ describe('RepoOperation coordinator', () => {
     ).toBe('descendant-deploy');
   });
 
-  test('supersedes a late failed deploy without changing repairing or covered rows', async () => {
+  test('keeps a late runner failure pending without changing repairing or covered rows', async () => {
     const runner = {
       start: () => ({ ok: false, code: 'unused' }),
       readMarker: () => ({ exit_code: 2, signal: null }),
@@ -621,7 +622,10 @@ describe('RepoOperation coordinator', () => {
     await coordinator.reconcile(root);
 
     const operations = store.snapshot(root).repo_operations;
-    expect(operations['late-failed'].superseded_by).toBe('descendant-deploy');
+    expect(operations['late-failed']).toMatchObject({
+      state: 'retry_pending',
+      superseded_by: null
+    });
     expect(operations['repairing-deploy']).toMatchObject({
       state: 'repairing',
       superseded_by: null
@@ -976,12 +980,12 @@ describe('RepoOperation coordinator', () => {
     await misaligned.reconcile(root);
 
     expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
-      state: 'failed',
-      failure: { code: 'deploy_worktree_residue' }
+      state: 'retry_pending',
+      retry: { first_failure: { code: 'deploy_worktree_residue' } }
     });
   });
 
-  test('settles a marker-less dead process as interrupted with a fingerprint, without respawning', async () => {
+  test('records a marker-less dead process for one script retry before respawning', async () => {
     /** @type {object[]} */
     const start_calls = [];
     const { store, coordinator } = coordinatorFor({
@@ -1017,10 +1021,10 @@ describe('RepoOperation coordinator', () => {
 
     const settled = store.snapshot(root).repo_operations['op-1'];
     expect(settled).toMatchObject({
-      state: 'failed',
-      failure: { code: 'interrupted', interrupted: true }
+      state: 'retry_pending',
+      retry: { first_failure: { code: 'interrupted', interrupted: true } }
     });
-    expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(settled.retry?.first_fingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(start_calls).toHaveLength(0);
   });
 
@@ -1088,6 +1092,261 @@ describe('RepoOperation coordinator', () => {
     });
     expect(settled.failure?.fingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  test('records retry pending before consuming the retry immediately before respawn', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const runner = {
+      start: vi.fn(() => {
+        order.push('spawn');
+        return {
+          ok: true,
+          process_identity: { pid: 2, pgid: 2, started_at: 2 },
+          log_path: path.join(root, 'operation.log')
+        };
+      }),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({ runner });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
+      state: 'retry_pending',
+      retry: { consumed_key: null }
+    });
+
+    const consume = store.consumeRepoOperationRetry.bind(store);
+    store.consumeRepoOperationRetry = (workspace, input) => {
+      order.push('consume');
+      return consume(workspace, input);
+    };
+    runner.readMarker = /** @type {any} */ (() => null);
+    await coordinator.reconcile(root);
+
+    expect(order).toEqual(['consume', 'spawn']);
+  });
+
+  test('retries after restart between retry-pending and consumption', async () => {
+    const runner = {
+      start: vi.fn(() => ({
+        ok: true,
+        process_identity: { pid: 2, pgid: 2, started_at: 2 },
+        log_path: path.join(root, 'operation.log')
+      })),
+      readMarker: () => ({ exit_code: 2, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({ runner });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+    await coordinator.reconcile(root);
+    runner.readMarker = /** @type {any} */ (() => null);
+
+    await coordinator.reconcile(root);
+
+    expect(runner.start).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(root).repo_operations['op-1'].state).toBe('running');
+  });
+
+  test('settles the first failure after restart between consumption and spawn', async () => {
+    const runner = {
+      start: vi.fn(),
+      readMarker: () => null,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'gone' }) }
+    };
+    const { store, coordinator } = coordinatorFor({ runner });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+    store.deferRepoOperationRetry(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+    store.consumeRepoOperationRetry(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      consumed_key: [attempt_id, TARGET, `${'d'.repeat(40)}:100755`]
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
+      state: 'failed',
+      failure: { code: 'script_failed' }
+    });
+    expect(runner.start).not.toHaveBeenCalled();
+  });
+
+  test('settles after restart between retry spawn and its terminal marker', async () => {
+    const runner = {
+      start: vi.fn(),
+      readMarker: () => null,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'gone' }) }
+    };
+    const { store, coordinator } = coordinatorFor({ runner });
+    store.ensureRepoOperation(root, {
+      operation_id: 'op-1',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+      effective_base_sha: TARGET,
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'd'.repeat(40)
+    });
+    const attempt_id = store.snapshot(root).repo_operations['op-1'].attempt_id;
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+    store.deferRepoOperationRetry(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: 'f'.repeat(64),
+        detail: '',
+        interrupted: false
+      }
+    });
+    store.consumeRepoOperationRetry(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      consumed_key: [attempt_id, TARGET, `${'d'.repeat(40)}:100755`]
+    });
+    store.startRepoOperation(root, {
+      operation_id: 'op-1',
+      attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 2 },
+      log_path: path.join(root, 'operation.log'),
+      target_sha: TARGET
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).repo_operations['op-1'].state).toBe('failed');
+    expect(runner.start).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ['auto_repair_off', false, true],
+    ['schema_unsupported', true, false]
+  ])(
+    'settles directly into the user stage when %s blocks automatic steps',
+    async (reason, auto_repair, supported) => {
+      const runner = {
+        start: vi.fn(),
+        readMarker: () => ({ exit_code: 2, signal: null }),
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      };
+      const { store, coordinator } = coordinatorFor({
+        runner,
+        policySupported: () => supported
+      });
+      store.ensureRepoOperation(root, {
+        operation_id: 'op-1',
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-x', merged_sha: TARGET }],
+        effective_base_sha: TARGET,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+      const attempt_id =
+        store.snapshot(root).repo_operations['op-1'].attempt_id;
+      store.startRepoOperation(root, {
+        operation_id: 'op-1',
+        attempt_id,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'operation.log'),
+        target_sha: TARGET
+      });
+      if (!auto_repair) {
+        store.toggleAutoRepair(root, {
+          expected_revision: store.snapshot(root).revision,
+          on: false
+        });
+      }
+
+      await coordinator.reconcile(root);
+
+      expect(store.snapshot(root).repo_operations['op-1']).toMatchObject({
+        state: 'failed',
+        repair: { ladder_stage: 'user_triggered_session' },
+        retry: { blocked_reason: reason }
+      });
+    }
+  );
 });
 
 describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () => {

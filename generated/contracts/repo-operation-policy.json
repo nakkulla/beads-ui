@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "worker_automatic": [
     "owned_deploy_worktree_fetch_detached_alignment_recreate",
     "recovered_pre_execution_fetch_timeout_retry_once",
@@ -11,29 +11,67 @@
   ],
   "auto_repair": {
     "default": true,
-    "eligible": [
-      "verify_script_failure",
-      "deploy_script_failure",
-      "interrupted_without_terminal_exit"
+    "scope": "all_terminal_failures",
+    "resolution_subject": "unresolved_terminal_failure_blocking_cleanup_cursor",
+    "resolution_ladder": [
+      {
+        "id": "script_retry",
+        "trigger": "automatic",
+        "applies_when": "script_identity_present",
+        "skip_evidence": "script_retry_not_applicable_recorded",
+        "attempts_per_operation_attempt": 1,
+        "consumption_key": [
+          "attempt_id",
+          "target_sha",
+          "script_identity"
+        ],
+        "consumption_durability": "durable_idempotent_across_restart",
+        "timing": "before_terminal_settlement",
+        "pending_state": "retry_pending",
+        "evidence": "flake_absorption_recorded"
+      },
+      {
+        "id": "auto_repair_session",
+        "trigger": "automatic",
+        "attempts": 1,
+        "budget": "per_completion_chain",
+        "fingerprint_guard_applies": "after_chain_auto_session_consumed"
+      },
+      {
+        "id": "user_triggered_session",
+        "trigger": "user_action_only",
+        "sessions_per_user_action": 1,
+        "automatic_reentry": "forbidden",
+        "user_actions": "unbounded"
+      }
     ],
-    "budget_per_completion_chain": 1
+    "manual_human_fix": "absent"
   },
   "completion_chain": {
     "identity": "first_terminal_failure_operation",
     "inheritance": "successor_attempts_and_repair_operations_inherit_chain_and_budget",
     "closure": "chain_operation_terminal_success",
     "coalesced_owner": "latest_merged_sha_subject_then_lexicographic_bead_id",
-    "repeated_fingerprint_without_new_evidence": "manual_only",
-    "off_semantics": "blocks_new_sessions_only_running_session_survives"
+    "repeated_fingerprint_without_new_evidence": "descend_to_user_triggered_session_after_chain_auto_session_consumed",
+    "automatic_to_user_stage_transition": "durably_recorded",
+    "off_semantics": "blocks_automatic_ladder_steps_only_user_triggered_and_running_session_survive"
   },
+  "repair_session_packet": [
+    "exact_failed_input_target_sha_and_script_identity_or_recorded_absence",
+    "sanitized_log_tail_and_full_log_path",
+    "prior_ladder_step_outcomes_and_failure_fingerprints",
+    "never_automatic_prohibitions_verbatim_in_prompt_and_gate",
+    "outcome_judged_by_fresh_git_and_operation_readback"
+  ],
+  "resolution_entry_surface": "every_unresolved_terminal_failure_regardless_of_record_surface",
   "never_automatic": [
-    "whole_command_retry",
+    "bounded_single_script_retry_exceeded",
+    "unbounded_repair_session_retry",
     "baseline_failure_ignore",
     "config_or_script_deletion_to_bypass_gate",
+    "agent_self_report_as_success",
     "credential_entry",
     "destructive_action",
-    "history_rewrite",
-    "agent_self_report_as_success",
-    "unbounded_repair_session_retry"
+    "history_rewrite"
   ]
 }

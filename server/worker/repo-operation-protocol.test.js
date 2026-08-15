@@ -41,6 +41,7 @@ function failedDeployOperation(patch = {}) {
       owner_bead: 'UI-a',
       auto_budget: 1,
       auto_used: 1,
+      ladder_stage: 'user_triggered_session',
       session_id: 'sess-9',
       attempt_id: 'att-9'
     },
@@ -204,7 +205,7 @@ describe('RepoOperation protocol projection', () => {
 
     expect([
       policy.worker_automatic.length,
-      policy.auto_repair.eligible.length,
+      policy.auto_repair.resolution_ladder.length,
       policy.never_automatic.length
     ]).toEqual([7, 3, 8]);
   });
@@ -215,7 +216,7 @@ describe('RepoOperation protocol projection', () => {
     const policy = /** @type {any} */ (decorated.repo_operation_policy);
 
     expect(policy.source_commit).toBe(
-      '23dedc763575689b66ecc32429d1130d5f81b081'
+      '739fb757a965622372b1cd152e4af26237587c8e'
     );
   });
 

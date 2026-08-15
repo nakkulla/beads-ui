@@ -173,21 +173,45 @@ Nothing merges without a human `[머지]` click.
   of the PINNED contract copy `generated/contracts/repo-operation-policy.json`
   (an exact byte copy of the dotfiles artifact, with its source commit and
   digest in the sibling provenance file). Shape:
-  `{ schema_version, source_commit, digest, worker_automatic: string[], auto_repair: { default, eligible: string[], budget_per_completion_chain }, completion_chain: Record<string,string>, never_automatic: string[] }`.
-  The three lists are the §10 vocabulary VERBATIM: list membership is decided by
-  the contract alone, never by server or client code. A client renders each
-  token through a display dictionary and MUST fall back to the raw token, so a
-  contract that gains an entry shows up without a client change.
+  `{ schema_version, supported: boolean, source_commit, digest, worker_automatic: string[], auto_repair: { default, scope, resolution_subject, resolution_ladder: Record<string,unknown>[], manual_human_fix }, completion_chain: Record<string,string>, repair_session_packet: string[], resolution_entry_surface, never_automatic: string[] }`.
+  The lists and the ladder are the contract vocabulary VERBATIM: membership is
+  decided by the contract alone, never by server or client code. A client
+  renders each token through a display dictionary and MUST fall back to the raw
+  token, so a contract that gains an entry shows up without a client change.
+  `supported` is the consumer decoder guard: it is `false` whenever
+  `schema_version` is anything other than `2`, and a client MUST then render the
+  schema-mismatch notice instead of the ladder. `supported: false` stops the
+  AUTOMATIC ladder steps only — the user-triggered resolution entry stays
+  available, which is why a failed card keeps its resolve button either way.
 - The `worker-queue-snapshot` carries `repo_operations` — the operation cards,
   newest `requested_at` first. Each card:
-  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'repairing', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, repair_eligible, repair: { chain_id, owner_bead, auto_budget, auto_used, remaining, session_id, attempt_id, attempt_status }, superseded_by }`.
+  `{ operation_id, kind: 'verify'|'deploy', repo_id, target_base, target_sha, target_tree, effective_base_sha, script_path, script_blob_sha, script_mode, state: 'queued'|'running'|'succeeded'|'failed'|'repairing'|'retry_pending', requested_at, started_at, finished_at, elapsed_ms, exit_code, signal, log_path, log_digest, output_tail, subjects, failure, failure_kind, verify_stage, repair_eligible, repair: { chain_id, owner_bead, auto_budget, auto_used, remaining, session_id, attempt_id, attempt_status, ladder_stage }, retry: { status, first_fingerprint, blocked_reason, absorbed }, dismissed, superseded_by }`.
   `output_tail` and `failure.detail` are SANITIZED (credential-shaped substrings
   redacted) and the tail is bounded — the full log stays behind `log_path`.
-  `failure_kind` is the contract's classification (`verify_script_failure`,
-  `deploy_script_failure`, `interrupted_without_terminal_exit`, or `other`),
-  which is what selects the card's resolve button; there is deliberately no
-  generic retry affordance. A record that cannot be read as a complete operation
-  is DROPPED rather than projected partially.
+  `failure_kind` is a DISPLAY token, not an eligibility verdict: it is
+  `verify_script_failure`, `deploy_script_failure`,
+  `interrupted_without_terminal_exit`, or — for every other failure — the raw
+  `failure.code`. There is no `other` token and no allowlist behind it; under
+  contract v2 every unresolved terminal failure is repair-eligible, so
+  `repair_eligible` is true for any failed card that is not superseded. The
+  token selects the card's resolve button wording, and a client MUST fall back
+  to a generic resolve label for an unknown token; there is deliberately no
+  generic retry affordance. `retry.status` reports the first ladder step's
+  outcome (`unconsumed`, `consumed`, `absorbed`, `not_applicable`) and
+  `repair.ladder_stage` the durable stage the subject has reached. `dismissed`
+  removes a row from the 해결 필요 tally and from the AUTOMATIC ladder steps
+  only — the resolve button stays. A record that cannot be read as a complete
+  operation is DROPPED rather than projected partially.
+- `cleanup_failed` rows that stop the cleanup cursor are OVERLAID at projection
+  time with `subject_id`, `repair_eligible: true`, and a `repair` object, so a
+  failure recorded on that surface has the same resolve entry as an operation
+  card. Before any repair is prerecorded that object carries only `auto_budget`
+  and `remaining`; `chain_id`, `auto_used`, `ladder_stage`, `attempt_id`, and
+  `session_id` appear once the coordinator prerecords a dispatch. A client MUST
+  therefore treat those fields as absent-until-dispatched. No durable state is
+  migrated. A bead that already owns a `failed` or `repairing` operation record
+  is NOT overlaid, because that record owns the bead's resolution and carries
+  the more specific failure facts.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
 - `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when

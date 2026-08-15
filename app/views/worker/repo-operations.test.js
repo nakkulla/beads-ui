@@ -77,9 +77,10 @@ function operationCard(patch = {}) {
 }
 
 const POLICY = {
-  schema_version: 1,
-  source_commit: '23dedc763575689b66ecc32429d1130d5f81b081',
-  digest: '003875ae7c87e10e30cc90cdbce8b75c85b5ca04ed3d2575bd9c4da468c5071a',
+  schema_version: 2,
+  supported: true,
+  source_commit: '739fb757a965622372b1cd152e4af26237587c8e',
+  digest: '08811eb9bc5b0f88f0994be2a273457b9b23efdeed14a0bc9ee29e27210475cd',
   worker_automatic: [
     'owned_deploy_worktree_fetch_detached_alignment_recreate',
     'recovered_pre_execution_fetch_timeout_retry_once',
@@ -91,16 +92,31 @@ const POLICY = {
   ],
   auto_repair: {
     default: true,
-    eligible: [
-      'verify_script_failure',
-      'deploy_script_failure',
-      'interrupted_without_terminal_exit'
-    ],
-    budget_per_completion_chain: 1
+    scope: 'all_terminal_failures',
+    resolution_ladder: [
+      {
+        id: 'script_retry',
+        trigger: 'automatic',
+        applies_when: 'script_identity_present',
+        attempts_per_operation_attempt: 1
+      },
+      {
+        id: 'auto_repair_session',
+        trigger: 'automatic',
+        attempts: 1,
+        budget: 'per_completion_chain'
+      },
+      {
+        id: 'user_triggered_session',
+        trigger: 'user_action_only',
+        sessions_per_user_action: 1,
+        user_actions: 'unbounded'
+      }
+    ]
   },
   completion_chain: {},
   never_automatic: [
-    'whole_command_retry',
+    'bounded_single_script_retry_exceeded',
     'baseline_failure_ignore',
     'config_or_script_deletion_to_bypass_gate',
     'credential_entry',
@@ -294,7 +310,7 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
             detail: '',
             interrupted: false
           },
-          failure_kind: 'other'
+          failure_kind: 'repo_ops_worktree_unowned'
         })
       ]
     });
@@ -358,7 +374,7 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
             detail: '',
             interrupted: false
           },
-          failure_kind: 'other'
+          failure_kind: 'a_future_failure_code'
         })
       ]
     });
@@ -486,7 +502,7 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     expect(labels).not.toContain('재시도');
   });
 
-  test('says what a repair session costs', () => {
+  test('shows the remaining automatic session count', () => {
     const { mount } = mountWorker({
       repo_operations: [
         operationCard({
@@ -497,17 +513,31 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
 
     expect(
       openTimeline(mount).querySelector('.worker-ev__btn-sub')?.textContent
-    ).toBe('repair 세션 1회를 씁니다 · 남음 1/1');
+    ).toBe('자동 해결 1회가 남아 있습니다');
   });
 
-  test('disables the resolve button once the budget is spent', () => {
+  test('does not disable the resolve button once the budget is spent', () => {
     const { mount } = mountWorker({ repo_operations: [operationCard()] });
 
     expect(
       /** @type {HTMLButtonElement} */ (
         openTimeline(mount).querySelector('.worker-repo-op__resolve')
       ).disabled
-    ).toBe(true);
+    ).toBe(false);
+  });
+
+  test('keeps the resolve button active after the automatic budget is spent', () => {
+    const { mount } = mountWorker({ repo_operations: [operationCard()] });
+    const timeline = openTimeline(mount);
+    const button = /** @type {HTMLButtonElement} */ (
+      timeline.querySelector('.worker-repo-op__resolve')
+    );
+
+    expect(button.disabled).toBe(false);
+    expect(timeline.textContent).toContain(
+      '자동 해결을 다 썼습니다 · 눌러서 해결 세션을 엽니다'
+    );
+    expect(timeline.textContent).not.toContain('수동으로 해결');
   });
 
   test('links the repair session attempt', () => {
@@ -560,6 +590,20 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
         (el) => el.textContent
       )
     ).toContain('접수됨');
+  });
+
+  test('keeps a resolve button beside the acknowledged chip', () => {
+    const { mount } = mountWorker({
+      repo_operations: [operationCard({ dismissed: { at: 5, by: 'user' } })]
+    });
+    const timeline = openTimeline(mount);
+
+    expect(
+      Array.from(timeline.querySelectorAll('.worker-ev__st')).map(
+        (element) => element.textContent
+      )
+    ).toContain('접수됨');
+    expect(timeline.querySelector('.worker-repo-op__resolve')).not.toBeNull();
   });
 
   test('marks a superseded failure as 덮임 without action buttons', () => {
@@ -627,6 +671,41 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
         el.getAttribute('data-state')
       )
     ).toEqual(['cleanup_stalled', 'failed']);
+  });
+
+  test('renders cleanup resume and resolve actions together', () => {
+    const { mount } = mountWorker({
+      cleanup_failed: {
+        'UI-cleanup': {
+          step: 'repo_operations',
+          reason: 'verify_cmd_failed',
+          at: 5000,
+          subject_id: 'cleanup:UI-cleanup',
+          repair_eligible: true,
+          repair: { remaining: 0, auto_budget: 1, auto_used: 1 }
+        }
+      }
+    });
+    const timeline = openTimeline(mount);
+
+    expect(timeline.querySelector('.worker-cleanup__resume')).not.toBeNull();
+    expect(timeline.querySelector('.worker-repo-op__resolve')).not.toBeNull();
+  });
+
+  test('renders retry pending with its dedicated chip', () => {
+    const { mount } = mountWorker({
+      repo_operations: [
+        operationCard({
+          state: 'retry_pending',
+          failure: null,
+          finished_at: null
+        })
+      ]
+    });
+
+    expect(
+      openTimeline(mount).querySelector('.worker-ev__st')?.textContent
+    ).toBe('재시도 중');
   });
 
   test('sorts an event with no time to the oldest end', () => {
@@ -781,16 +860,74 @@ describe('자동 해결 workspace setting', () => {
     ).toHaveLength(7);
   });
 
-  test('renders every eligible auto-repair failure the backend sent', () => {
+  test('drops the retired eligible-failure list', () => {
     const { mount } = mountWorker();
 
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelectorAll(
-        '[data-policy="auto-repair-eligible"] .exec-defaults__policy-list li'
-      )
-    ).toHaveLength(3);
+      dialog.querySelector('[data-policy="auto-repair-eligible"]')
+    ).toBeNull();
+  });
+
+  test('renders the three resolution ladder stages in contract order', () => {
+    const { mount } = mountWorker({
+      repo_operation_policy: {
+        ...POLICY,
+        schema_version: 2,
+        supported: true,
+        auto_repair: {
+          default: true,
+          scope: 'all_terminal_failures',
+          resolution_ladder: [
+            {
+              id: 'script_retry',
+              trigger: 'automatic',
+              applies_when: 'script_identity_present',
+              attempts_per_operation_attempt: 1
+            },
+            {
+              id: 'auto_repair_session',
+              trigger: 'automatic',
+              attempts: 1,
+              budget: 'per_completion_chain'
+            },
+            {
+              id: 'user_triggered_session',
+              trigger: 'user_action_only',
+              sessions_per_user_action: 1,
+              user_actions: 'unbounded'
+            }
+          ]
+        }
+      }
+    });
+    const dialog = openSettings(mount);
+
+    expect(
+      Array.from(
+        dialog.querySelectorAll('[data-policy="resolution-ladder"] li')
+      ).map((item) => /** @type {HTMLElement} */ (item).dataset.token)
+    ).toEqual([
+      'script_retry',
+      'auto_repair_session',
+      'user_triggered_session'
+    ]);
+  });
+
+  test('replaces the ladder with a schema mismatch guard', () => {
+    const { mount } = mountWorker({
+      repo_operation_policy: {
+        ...POLICY,
+        schema_version: 1,
+        supported: false
+      }
+    });
+    const dialog = openSettings(mount);
+
+    expect(dialog.textContent).toContain(
+      '계약 스키마 불일치 — 자동 해결이 정지되었습니다 (v1)'
+    );
   });
 
   test('renders every never-automatic entry the backend sent', () => {
@@ -805,7 +942,7 @@ describe('자동 해결 workspace setting', () => {
     ).toHaveLength(8);
   });
 
-  test('keeps each list item bound to its contract token', () => {
+  test('keeps each ladder item bound to its contract token', () => {
     const { mount } = mountWorker();
 
     const dialog = openSettings(mount);
@@ -813,13 +950,13 @@ describe('자동 해결 workspace setting', () => {
     expect(
       Array.from(
         dialog.querySelectorAll(
-          '[data-policy="auto-repair-eligible"] .exec-defaults__policy-list li'
+          '[data-policy="resolution-ladder"] .exec-defaults__policy-list li'
         )
       ).map((item) => /** @type {HTMLElement} */ (item).dataset.token)
     ).toEqual([
-      'verify_script_failure',
-      'deploy_script_failure',
-      'interrupted_without_terminal_exit'
+      'script_retry',
+      'auto_repair_session',
+      'user_triggered_session'
     ]);
   });
 
@@ -842,16 +979,16 @@ describe('자동 해결 workspace setting', () => {
     ).toBe('a_future_contract_entry');
   });
 
-  test('names the completion-chain budget on the eligible list', () => {
+  test('names the ordered resolution ladder', () => {
     const { mount } = mountWorker();
 
     const dialog = openSettings(mount);
 
     expect(
       dialog.querySelector(
-        '[data-policy="auto-repair-eligible"] .exec-defaults__policy-label'
+        '[data-policy="resolution-ladder"] .exec-defaults__policy-label'
       )?.textContent
-    ).toBe('자동 해결 세션 (완료 체인당 최대 1회)');
+    ).toBe('해결 사다리');
   });
 
   test('marks an absent verify stage as 안 함 with no error badge', () => {
@@ -890,7 +1027,7 @@ describe('자동 해결 workspace setting', () => {
         .querySelector('.exec-defaults__policy-count')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
-    ).toBe('자동 7 · 해결 세션 3 (체인당 1회) · 금지 8');
+    ).toBe('자동 7 · 해결 사다리 3 · 금지 8');
   });
 
   test('omits the policy lists when the backend sent none', () => {

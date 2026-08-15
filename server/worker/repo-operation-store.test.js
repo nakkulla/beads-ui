@@ -265,4 +265,155 @@ describe('RepoOperation store', () => {
       reloaded.snapshot(workspace).repo_operations['deploy-a'].dismissed?.by
     ).toBe('user');
   });
+
+  it('records retry pending without consuming the retry key', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.startRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/retry.log',
+      target_sha: sha('d')
+    });
+
+    store.deferRepoOperationRetry(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: sha('e') + sha('e').slice(0, 24),
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    expect(store.snapshot(workspace).repo_operations['deploy-a']).toMatchObject(
+      {
+        state: 'retry_pending',
+        retry: {
+          consumed_key: null,
+          first_failure: { code: 'script_failed' }
+        }
+      }
+    );
+  });
+
+  it('consumes the retry key before returning the operation to queued', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.startRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/retry.log',
+      target_sha: sha('d')
+    });
+    store.deferRepoOperationRetry(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: sha('e') + sha('e').slice(0, 24),
+        detail: '',
+        interrupted: false
+      }
+    });
+
+    store.consumeRepoOperationRetry(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      consumed_key: [attempt_id, sha('d'), `${sha('c')}:100755`]
+    });
+
+    expect(store.snapshot(workspace).repo_operations['deploy-a']).toMatchObject(
+      {
+        state: 'queued',
+        retry: {
+          consumed_key: [attempt_id, sha('d'), `${sha('c')}:100755`]
+        }
+      }
+    );
+  });
+
+  it('records flake absorption when the consumed retry succeeds', () => {
+    const workspace = mkdtempSync(
+      path.join(os.tmpdir(), 'repo-operation-store-')
+    );
+    const store = createQueueStore({
+      filePathFor: (root) => path.join(root, 'queue.json')
+    });
+    prerecord(store, workspace, 'deploy-a');
+    const attempt_id =
+      store.snapshot(workspace).repo_operations['deploy-a'].attempt_id;
+    store.startRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/retry.log',
+      target_sha: sha('d')
+    });
+    const first_fingerprint = sha('e') + sha('e').slice(0, 24);
+    store.deferRepoOperationRetry(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 2,
+      signal: null,
+      failure: {
+        code: 'script_failed',
+        fingerprint: first_fingerprint,
+        detail: '',
+        interrupted: false
+      }
+    });
+    store.consumeRepoOperationRetry(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      consumed_key: [attempt_id, sha('d'), `${sha('c')}:100755`]
+    });
+    store.startRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 2 },
+      log_path: '/tmp/retry.log',
+      target_sha: sha('d')
+    });
+
+    store.settleRepoOperation(workspace, {
+      operation_id: 'deploy-a',
+      attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    expect(store.snapshot(workspace).repo_operations['deploy-a']).toMatchObject(
+      {
+        state: 'succeeded',
+        retry: {
+          absorbed: {
+            first_failure: { code: 'script_failed' },
+            first_fingerprint
+          }
+        }
+      }
+    );
+  });
 });

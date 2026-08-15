@@ -7,8 +7,9 @@
  * before executing.
  */
 import { createHash } from 'node:crypto';
-import { isRepairableCleanupFailure } from './completion-repair-policy.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
+import { repoOperationPolicySupported } from './repo-operation-policy.js';
+import { isCleanupResolutionFailure } from './resolution-ladder.js';
 
 const OUTPUT_TAIL_MAX = 4_000;
 const REASON_MAX = 500;
@@ -55,7 +56,7 @@ export function createCompletionFailureKey(input) {
 }
 
 /**
- * @typedef {'green'|'conflict'|'verify_red'|'pr_owned'|'base_owned'|'repair_created'|'cleanup_repairable'|'cleanup_pending'|'cleanup_red'|'repair_pr_open'|'repair_pr_merged'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
+ * @typedef {'green'|'conflict'|'verify_red'|'pr_owned'|'base_owned'|'repair_created'|'cleanup_repairable'|'cleanup_pending'|'repair_pr_open'|'repair_pr_merged'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
  */
 /**
  * @typedef {{ state: CompletionFactState, reason?: string }} CompletionFact
@@ -111,12 +112,6 @@ export function decideCompletionAction(input) {
     if (fact.state === 'cleanup_pending') {
       return { kind: 'retry_cleanup' };
     }
-    if (fact.state === 'cleanup_red') {
-      return {
-        kind: 'needs_human',
-        reason: fact.reason || 'cleanup_not_repairable'
-      };
-    }
     return null;
   }
   if (intent.phase === 'waiting_repair_pr') {
@@ -139,11 +134,7 @@ export function decideCompletionAction(input) {
   if (intent.phase !== 'gating') {
     return { kind: 'needs_human', reason: 'intent_state_invalid' };
   }
-  if (
-    fact.state === 'cleanup_repairable' ||
-    fact.state === 'cleanup_pending' ||
-    fact.state === 'cleanup_red'
-  ) {
+  if (fact.state === 'cleanup_repairable' || fact.state === 'cleanup_pending') {
     return { kind: 'enter_cleanup' };
   }
   if (
@@ -918,7 +909,7 @@ export function createCompletionActionDriver(deps) {
       base_sha: intent.subject.base_sha,
       evidence: { output_tail: failure.output_tail }
     });
-    if (isRepairableCleanupFailure(failure)) {
+    if (isCleanupResolutionFailure(failure)) {
       return {
         state: 'cleanup_repairable',
         source: 'verify',
@@ -926,12 +917,7 @@ export function createCompletionActionDriver(deps) {
         evidence: failure
       };
     }
-    return {
-      state: 'cleanup_red',
-      reason: `${failure.step || 'cleanup'}:${failure.reason}`,
-      failure_key,
-      evidence: failure
-    };
+    return { state: 'cleanup_pending', reason: 'cleanup_incomplete' };
   }
 
   /**
@@ -1016,12 +1002,21 @@ export function createCompletionActionDriver(deps) {
    * @param {any} fact
    */
   async function startRepair(root_bead_id, kind, fact) {
-    const current = deps.store.snapshot(deps.workspace).completion_intents?.[
-      root_bead_id
-    ];
+    const queue = deps.store.snapshot(deps.workspace);
+    const current = queue.completion_intents?.[root_bead_id];
     const failure_key = fact?.failure_key;
     if (!current || !failure_key) {
       terminalize(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
+      return;
+    }
+    // This is an AUTOMATIC dispatch, so it answers to the same two gates the
+    // RepoOperation ladder answers to: the workspace `auto_repair` toggle and
+    // the pinned policy's decoder guard. Without them a workspace that turned
+    // automation off, or a consumer that cannot read the pinned contract, would
+    // still open sessions from this lane. Neither gate terminalizes the intent —
+    // the failure stays exactly where it is, waiting for the toggle to come back
+    // on or for a user-triggered resolution.
+    if (queue.auto_repair !== true || !repoOperationPolicySupported()) {
       return;
     }
     if (current.repair_sessions_used >= REPAIR_SESSION_CAP) {

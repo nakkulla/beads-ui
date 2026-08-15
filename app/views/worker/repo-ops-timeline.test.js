@@ -1,5 +1,9 @@
+import { render } from 'lit-html';
 import { describe, expect, test } from 'vitest';
-import { timelineEvents } from './repo-ops-timeline.js';
+import {
+  repoOpsTimelineTemplate,
+  timelineEvents
+} from './repo-ops-timeline.js';
 
 /**
  * @param {Record<string, any>} [patch]
@@ -110,5 +114,41 @@ describe('timelineEvents', () => {
     const events = timelineEvents([null, operation()], [undefined]);
 
     expect(events).toHaveLength(1);
+  });
+
+  test('renders retry pending as 재시도 중', () => {
+    const mount = document.createElement('div');
+    const events = timelineEvents(
+      [operation({ state: 'retry_pending', finished_at: null })],
+      []
+    );
+
+    render(repoOpsTimelineTemplate({ events, repo: '/repo' }), mount);
+
+    expect(mount.querySelector('.worker-ev__st')?.textContent).toBe(
+      '재시도 중'
+    );
+  });
+
+  test('offers a resolve entry on an eligible cleanup row', () => {
+    const mount = document.createElement('div');
+    const events = timelineEvents([], [cleanup({ repair_eligible: true })]);
+
+    render(repoOpsTimelineTemplate({ events, repo: '/repo' }), mount);
+
+    expect(
+      mount
+        .querySelector('.worker-repo-op__resolve')
+        ?.getAttribute('data-operation-id')
+    ).toBe('cleanup:UI-a');
+  });
+
+  test('omits the resolve entry on a cleanup row the server did not mark eligible', () => {
+    const mount = document.createElement('div');
+    const events = timelineEvents([], [cleanup()]);
+
+    render(repoOpsTimelineTemplate({ events, repo: '/repo' }), mount);
+
+    expect(mount.querySelector('.worker-repo-op__resolve')).toBeNull();
   });
 });

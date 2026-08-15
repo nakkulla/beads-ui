@@ -15,9 +15,9 @@ import {
  * copy without re-pinning here (or re-pinning without the approved artifact)
  * fails the contract, which is the whole point of the pin.
  */
-const APPROVED_SOURCE_COMMIT = '23dedc763575689b66ecc32429d1130d5f81b081';
+const APPROVED_SOURCE_COMMIT = '739fb757a965622372b1cd152e4af26237587c8e';
 const APPROVED_DIGEST =
-  '003875ae7c87e10e30cc90cdbce8b75c85b5ca04ed3d2575bd9c4da468c5071a';
+  '08811eb9bc5b0f88f0994be2a273457b9b23efdeed14a0bc9ee29e27210475cd';
 
 describe('pinned repo-operation policy contract', () => {
   test('matches the approved artifact digest', () => {
@@ -53,14 +53,16 @@ describe('pinned repo-operation policy contract', () => {
 
     expect({
       worker_automatic: projected.worker_automatic.length,
-      eligible: projected.auto_repair.eligible,
+      resolution_ladder: projected.auto_repair.resolution_ladder.map(
+        (entry) => entry.id
+      ),
       never_automatic: projected.never_automatic.length
     }).toEqual({
       worker_automatic: 7,
-      eligible: [
-        'verify_script_failure',
-        'deploy_script_failure',
-        'interrupted_without_terminal_exit'
+      resolution_ladder: [
+        'script_retry',
+        'auto_repair_session',
+        'user_triggered_session'
       ],
       never_automatic: 8
     });
@@ -75,12 +77,12 @@ describe('pinned repo-operation policy contract', () => {
     ]);
   });
 
-  test('defaults automatic repair on with one budget per chain', () => {
+  test('defaults automatic repair on for all terminal failures', () => {
     const projected = projectRepoOperationPolicy();
 
     expect(projected.auto_repair).toMatchObject({
       default: true,
-      budget_per_completion_chain: 1
+      scope: 'all_terminal_failures'
     });
   });
 
@@ -119,21 +121,63 @@ describe('pinned repo-operation policy contract', () => {
     expect(classified).toBe('interrupted_without_terminal_exit');
   });
 
-  test('leaves a pre-spawn alignment failure outside the eligible set', () => {
+  test('keeps a pre-spawn alignment failure in the terminal failure set', () => {
     const eligible = isRepairEligible({
       kind: 'deploy',
+      state: 'failed',
+      superseded_by: null,
       failure: { code: 'repo_ops_worktree_align_failed', interrupted: false }
     });
 
-    expect(eligible).toBe(false);
+    expect(eligible).toBe(true);
   });
 
   test('treats a script timeout as an eligible script failure', () => {
     const eligible = isRepairEligible({
       kind: 'deploy',
+      state: 'failed',
+      superseded_by: null,
       failure: { code: 'timeout', interrupted: false }
     });
 
     expect(eligible).toBe(true);
+  });
+
+  test.each([1, 7])('marks schema version %s unsupported', (schema_version) => {
+    const fs = {
+      readFileSync: (/** @type {any} */ file, /** @type {any} */ encoding) => {
+        const value = String(file).endsWith('.provenance.json')
+          ? JSON.stringify({
+              source_commit: 'a'.repeat(40),
+              sha256: '',
+              source_path: 'generated/contracts/repo-operation-policy.json'
+            })
+          : JSON.stringify({ schema_version });
+        return encoding ? value : Buffer.from(value);
+      }
+    };
+
+    const loaded = loadRepoOperationPolicy({ fs: /** @type {any} */ (fs) });
+
+    expect(loaded.supported).toBe(false);
+  });
+
+  test('marks schema version 2 supported', () => {
+    const fs = {
+      readFileSync: (/** @type {any} */ file, /** @type {any} */ encoding) => {
+        const value = String(file).endsWith('.provenance.json')
+          ? JSON.stringify({
+              source_commit: 'a'.repeat(40),
+              sha256: '',
+              source_path: 'generated/contracts/repo-operation-policy.json'
+            })
+          : JSON.stringify({ schema_version: 2 });
+        return encoding ? value : Buffer.from(value);
+      }
+    };
+
+    const loaded = loadRepoOperationPolicy({ fs: /** @type {any} */ (fs) });
+
+    expect(loaded.supported).toBe(true);
   });
 });

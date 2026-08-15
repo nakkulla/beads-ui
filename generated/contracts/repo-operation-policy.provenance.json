@@ -1,8 +1,8 @@
 {
   "source_repo": "dotfiles",
   "source_path": "generated/contracts/repo-operation-policy.json",
-  "source_commit": "23dedc763575689b66ecc32429d1130d5f81b081",
-  "source_blob_sha": "1bf4c265870766688b87ea8d4be515e56f518e51",
-  "sha256": "003875ae7c87e10e30cc90cdbce8b75c85b5ca04ed3d2575bd9c4da468c5071a",
-  "bytes": 1295
+  "source_commit": "739fb757a965622372b1cd152e4af26237587c8e",
+  "source_blob_sha": "0f8d0ee704c7262bbfebad90800861ab0d396034",
+  "sha256": "08811eb9bc5b0f88f0994be2a273457b9b23efdeed14a0bc9ee29e27210475cd",
+  "bytes": 2910
 }

@@ -1263,7 +1263,7 @@ describe('worker/completion-intent action driver', () => {
     ['managed_pointer_escape', 'pointer_escape'],
     ['managed_restart_effect_ambiguous', 'restart_effect_ambiguous']
   ])(
-    'keeps %s outside automatic repair ownership',
+    'keeps %s on the unified cleanup resolution path',
     async (reason, failure_code) => {
       const store = seededCompletionStore();
       store.setCompletionSubject(DRIVER_WS, {
@@ -1283,8 +1283,8 @@ describe('worker/completion-intent action driver', () => {
       const fact = await driver.observe('UI-root', current);
 
       expect(fact).toMatchObject({
-        state: 'cleanup_red',
-        reason: `deploy:${reason}`
+        state: 'cleanup_repairable',
+        failure_key: { stage: 'deploy', reason }
       });
     }
   );
@@ -1317,7 +1317,7 @@ describe('worker/completion-intent action driver', () => {
     expect(notifyChanged).not.toHaveBeenCalled();
   });
 
-  test('terminalizes a non-repairable cleanup failure with its evidence', async () => {
+  test('routes a cleanup failure into the unified repair path', async () => {
     const store = seededCompletionStore();
     store.setCompletionSubject(DRIVER_WS, {
       root_bead_id: 'UI-root',
@@ -1339,24 +1339,68 @@ describe('worker/completion-intent action driver', () => {
       intent: current,
       fact
     });
-    if (!action) {
-      throw new Error('cleanup terminal action missing');
-    }
-    await driver.onAction('UI-root', action, current);
-
-    expect(store.snapshot(DRIVER_WS)).toMatchObject({
-      merge_queue: [],
-      completion_intents: {
-        'UI-root': {
-          phase: 'needs_human',
-          terminal_reason: {
-            reason: 'child_sweep:bd_read_failed',
-            stage: 'coordinator',
-            evidence: expect.stringContaining('bd unavailable')
-          }
-        }
-      }
+    expect(fact).toMatchObject({
+      state: 'cleanup_repairable',
+      failure_key: { stage: 'child_sweep', reason: 'bd_read_failed' }
     });
+    expect(action).toEqual({ kind: 'create_repair' });
+  });
+
+  test('opens no automatic repair session while auto_repair is off', async () => {
+    const store = seededCompletionStore();
+    store.setCompletionSubject(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'cleaning',
+      subject: { ...intent().subject, merged_sha: 'c'.repeat(40) }
+    });
+    store.recordCleanupFailure(DRIVER_WS, {
+      bead_id: 'UI-root',
+      step: 'child_sweep',
+      reason: 'bd_read_failed'
+    });
+    store.toggleAutoRepair(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      on: false
+    });
+    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
+    const driver = actionDriver(store, {
+      scheduler: { dispatchCompletionRepair }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', current);
+    await driver.onAction('UI-root', { kind: 'create_repair' }, current);
+
+    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
+  });
+
+  test('leaves the intent untouched when the toggle blocks the dispatch', async () => {
+    const store = seededCompletionStore();
+    store.setCompletionSubject(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'cleaning',
+      subject: { ...intent().subject, merged_sha: 'c'.repeat(40) }
+    });
+    store.recordCleanupFailure(DRIVER_WS, {
+      bead_id: 'UI-root',
+      step: 'child_sweep',
+      reason: 'bd_read_failed'
+    });
+    store.toggleAutoRepair(DRIVER_WS, {
+      expected_revision: store.snapshot(DRIVER_WS).revision,
+      on: false
+    });
+    const driver = actionDriver(store);
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', current);
+    await driver.onAction('UI-root', { kind: 'create_repair' }, current);
+
+    const after = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    expect([after.terminal_reason, after.repair_sessions_used]).toEqual([
+      null,
+      0
+    ]);
   });
 
   test('adopts a journaled create operation without duplicating its repair session', async () => {
