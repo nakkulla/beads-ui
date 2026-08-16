@@ -41,7 +41,6 @@
  */
 import { createHash } from 'node:crypto';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
-import { isWorkerSerial } from '../../app/utils/worker-serial.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
@@ -243,7 +242,11 @@ function staleDispatchPrompt(bead_id, stale) {
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
  * validator so a malformed receipt rejects instead of reading as absent.
- * @property {string[]} [deps] - Dependency ids.
+ * @property {string[]} [deps] - Direct `blocks` blocker ids (UI-04vo §3) —
+ * the lane-ordering edge source. Consumers intersect these with the current
+ * queue membership.
+ * @property {string[]} [blocked_by] - Display-only direct blocker ids for the
+ * wait-reason chip; never a scheduling input beyond `ready`/`blocked`.
  */
 
 /**
@@ -396,34 +399,31 @@ export function createScheduler(deps) {
   /** Beads currently claimed (dispatching or running) — prevents double launch. @type {Set<string>} */
   const claimed = new Set();
   /**
+   * @typedef {{ bead_id: string, lineage_id: string, serial_lane_id: string|null, continuation?: boolean }} LaneLaunchInput
+   */
+  /**
    * @typedef {{
    *   release: () => void,
    *   handoff: () => void,
-   *   revalidate: (input: { bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }) => ({ ok: true, lease: WorkerSerialLease }|{ ok: false, reason: string })
-   * }} WorkerSerialLease
+   *   revalidate: (input: LaneLaunchInput) => ({ ok: true, lease: LaneLaunchLease }|{ ok: false, reason: string })
+   * }} LaneLaunchLease
    */
   /**
-   * The launch coordinator is deliberately process-local.  Queue state remains
-   * the recovery source; reservations only close the await gaps before a
-   * durable attempt exists.
+   * The lane-occupancy launch coordinator is deliberately process-local. Queue
+   * state remains the recovery source; reservations only close the await gaps
+   * before a durable attempt exists.
    *
-   * @type {Map<string, { pending: { bead_id: string, lineage_id: string }|null, refresh_generation: number, refresh_active: boolean, refresh_task: Promise<void>|null, launches: Map<string, { bead_id: string, lineage_id: string, worker_serial: boolean, queue_owned: boolean }> }>} */
+   * @type {Map<string, { launches: Map<string, LaneLaunchInput> }>} */
   const serial_coordinators = new Map();
 
   /**
    * @param {string} workspace
-   * @returns {{ pending: { bead_id: string, lineage_id: string }|null, refresh_generation: number, refresh_active: boolean, refresh_task: Promise<void>|null, launches: Map<string, { bead_id: string, lineage_id: string, worker_serial: boolean, queue_owned: boolean }> }}
+   * @returns {{ launches: Map<string, LaneLaunchInput> }}
    */
   function serialCoordinator(workspace) {
     let coordinator = serial_coordinators.get(workspace);
     if (!coordinator) {
-      coordinator = {
-        pending: null,
-        refresh_generation: 0,
-        refresh_active: false,
-        refresh_task: null,
-        launches: new Map()
-      };
+      coordinator = { launches: new Map() };
       serial_coordinators.set(workspace, coordinator);
     }
     return coordinator;
@@ -1508,18 +1508,14 @@ export function createScheduler(deps) {
   }
 
   /**
-   * The workspace's effective concurrency cap. Merge-serial mode forces 1
-   * without mutating the stored `queue.slots`, so turning it off restores the
-   * prior preference. Otherwise the cap is read from the store on every pass;
-   * an unusable value falls back to the same default `normalizeQueue` applies.
+   * The workspace's effective concurrency cap, read from the store on every
+   * pass; an unusable value falls back to the same default `normalizeQueue`
+   * applies.
    *
-   * @param {{ slots?: unknown, pr_wait_holds_slot?: unknown }} q - Queue snapshot.
+   * @param {{ slots?: unknown }} q - Queue snapshot.
    * @returns {number}
    */
   function slotsOf(q) {
-    if (q.pr_wait_holds_slot === true) {
-      return MIN_SLOTS;
-    }
     const raw = q.slots;
     return typeof raw === 'number' && Number.isInteger(raw) && raw >= MIN_SLOTS
       ? raw
@@ -1680,41 +1676,97 @@ export function createScheduler(deps) {
   }
 
   /**
-   * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string }>, discard_operations?: Record<string, any> }} q
-   * @returns {Array<{ lineage_id: string, worker_serial: boolean }>}
+   * Statuses that RELEASE lane occupancy (UI-04vo §2): merge-and-cleanup
+   * completion (`done` via moveToDone), the unified discard terminal, and the
+   * legacy `stopped` history state. Everything else — running, paused,
+   * `failed`, `orphaned`, `dismissed_at` regardless — keeps the lineage's lane
+   * occupied until the lineage merges or is discarded.
+   *
+   * @type {Set<string>}
    */
-  function activeSerialLineages(q) {
+  const LANE_RELEASING_STATUSES = new Set(['done', 'stopped', 'discarded']);
+
+  /**
+   * Zero-based slot index of a serial lane id, or null for anything else.
+   *
+   * @param {unknown} id
+   */
+  function serialLaneIndexOf(id) {
+    if (typeof id !== 'string') {
+      return null;
+    }
+    const match = /^s([1-5])$/.exec(id);
+    return match ? Number(match[1]) - 1 : null;
+  }
+
+  /**
+   * The serial lane a bead currently waits in, or null when it sits in the
+   * parallel lane (or in no waiting lane at all).
+   *
+   * @param {{ serial_lanes?: Array<{ id: string, entries: Array<{ bead_id: string }> }> }} q
+   * @param {string} bead_id
+   * @returns {string|null}
+   */
+  function waitingLaneOf(q, bead_id) {
+    for (const lane of q.serial_lanes || []) {
+      if (lane.entries.some((entry) => entry.bead_id === bead_id)) {
+        return lane.id;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Per-lane active lineage occupancy (UI-04vo §2), rebuilt from durable state
+   * on every read so a restart reproduces it without a schema field. A lane is
+   * occupied by a lineage while any of these holds for an attempt carrying its
+   * `serial_lane_id`:
+   *
+   *   - a LEAF attempt (nothing resumed from it) in a non-releasing status —
+   *     running, paused, failed, orphaned; `dismissed_at` is a UI hide, never
+   *     a release;
+   *   - the bead sits in durable `pr_wait` (its terminal `done` attempt is the
+   *     lane holder until merge cleanup moves it to Done);
+   *   - a discard operation for the lineage is still in flight.
+   *
+   * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string }>, discard_operations?: Record<string, any> }} q
+   * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
+   */
+  function activeLaneLineages(q) {
     const values = Object.values(q.attempts || {});
-    /** @type {Array<{ lineage_id: string, worker_serial: boolean }>} */
-    const activity = [];
     const resumed = new Set(
       values.map((attempt) => attempt?.resumed_from).filter(Boolean)
     );
+    /** @type {Map<string, Set<string>>} */
+    const lanes = new Map();
+    /**
+     * @param {unknown} lane
+     * @param {string|null} lineage
+     */
+    function occupy(lane, lineage) {
+      if (serialLaneIndexOf(lane) === null || !lineage) {
+        return;
+      }
+      const key = /** @type {string} */ (lane);
+      const set = lanes.get(key) || new Set();
+      set.add(lineage);
+      lanes.set(key, set);
+    }
     for (const attempt of values) {
-      if (!attempt || TERMINAL_ATTEMPT_STATUSES.has(attempt.status)) {
+      if (!attempt || LANE_RELEASING_STATUSES.has(attempt.status)) {
         continue;
       }
-      if (attempt.status === 'paused' && resumed.has(attempt.attempt_id)) {
+      if (resumed.has(attempt.attempt_id)) {
         continue;
       }
-      const lineage = serialLineageId(attempt);
-      if (lineage) {
-        activity.push({
-          lineage_id: lineage,
-          worker_serial: attempt.worker_serial === true
-        });
-      }
+      occupy(attempt.serial_lane_id, serialLineageId(attempt));
     }
     for (const entry of q.pr_wait || []) {
       const attempt = [...values]
         .reverse()
         .find((item) => item?.bead_id === entry?.bead_id);
-      const lineage = serialLineageId(attempt);
-      if (lineage) {
-        activity.push({
-          lineage_id: lineage,
-          worker_serial: attempt?.worker_serial === true
-        });
+      if (attempt) {
+        occupy(attempt.serial_lane_id, serialLineageId(attempt));
       }
     }
     for (const operation of Object.values(q.discard_operations || {})) {
@@ -1727,210 +1779,99 @@ export function createScheduler(deps) {
         [...values]
           .reverse()
           .find((item) => item?.bead_id === operation.bead_id);
-      const lineage = serialLineageId(
-        attempt || { bead_id: operation.bead_id }
-      );
-      if (lineage) {
-        activity.push({
-          lineage_id: lineage,
-          worker_serial: attempt?.worker_serial === true
-        });
+      if (attempt) {
+        occupy(attempt.serial_lane_id, serialLineageId(attempt));
       }
     }
-    return activity;
+    return lanes;
   }
 
   /**
-   * Rebuilds the in-memory fence from queue order.  This deliberately has no
-   * store write: label truth remains authoritative in bd and a restart can
-   * reproduce it without a queue.json schema field.
+   * Whether a serial lane is occupied by any lineage OTHER than `lineage_id`.
+   * A lineage never fences itself: its own resume, repair, and re-dispatch are
+   * the continuations lane inheritance exists for.
    *
-   * @param {string} workspace
+   * @param {Map<string, Set<string>>} occupancy
+   * @param {string} lane_id
+   * @param {string} lineage_id
    */
-  function refreshPendingSerial(workspace) {
-    const coordinator = serialCoordinator(workspace);
-    const refresh_generation = ++coordinator.refresh_generation;
-    coordinator.pending = null;
-    coordinator.refresh_active = true;
-    const task = rebuildPendingSerial(
-      workspace,
-      coordinator,
-      refresh_generation
-    );
-    coordinator.refresh_task = task;
-    return awaitLatestPendingRefresh(workspace, task);
+  function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
+    const occupants = occupancy.get(lane_id);
+    if (!occupants) {
+      return false;
+    }
+    return [...occupants].some((lineage) => lineage !== lineage_id);
   }
 
   /**
-   * Wait for the newest refresh that existed before the synchronous lease
-   * acquire. A superseded caller must never acquire through an unpublished
-   * newer pending fence.
+   * Synchronously judges a launch against the lane fences (UI-04vo §2).
+   * `excluded_token` is the lease being revalidated during queue dispatch, so
+   * it does not fence itself while it remains continuously held. Fail-visible
+   * by contract: every reason surfaces through the admission badge.
    *
    * @param {string} workspace
-   * @param {Promise<void>} task
-   */
-  async function awaitLatestPendingRefresh(workspace, task) {
-    let latest = task;
-    while (true) {
-      await latest;
-      const coordinator = serialCoordinator(workspace);
-      if (coordinator.refresh_task === latest) {
-        return;
-      }
-      latest = /** @type {Promise<void>} */ (coordinator.refresh_task);
-    }
-  }
-
-  /**
-   * Compute a generation's pending candidate locally, then publish it only if
-   * no newer refresh or run pass superseded that generation.
-   *
-   * @param {string} workspace
-   * @param {{ pending: { bead_id: string, lineage_id: string }|null, refresh_generation: number, refresh_active: boolean, refresh_task: Promise<void>|null, launches: Map<string, { bead_id: string, lineage_id: string, worker_serial: boolean, queue_owned: boolean }> }} coordinator
-   * @param {number} refresh_generation
-   */
-  async function rebuildPendingSerial(
-    workspace,
-    coordinator,
-    refresh_generation
-  ) {
-    const q = deps.store.snapshot(workspace);
-    /** @type {{ bead_id: string, lineage_id: string }|null} */
-    let next_pending = null;
-    for (const entry of q.queue || []) {
-      try {
-        const snap = await deps.bd.snapshotBead(entry.bead_id);
-        if (!snap.ready || snap.blocked || isWorkerIneligible(snap.labels)) {
-          continue;
-        }
-        const admission = await checkAdmission(snap);
-        if (refresh_generation !== coordinator.refresh_generation) {
-          return;
-        }
-        const confirmed = await deps.bd.snapshotBead(entry.bead_id);
-        if (refresh_generation !== coordinator.refresh_generation) {
-          return;
-        }
-        const live = deps.store.snapshot(workspace);
-        const active = activeSerialLineages(live);
-        const launches = [...coordinator.launches.values()];
-        const active_nonserial =
-          active.some(
-            (item) =>
-              item.lineage_id === entry.bead_id && item.worker_serial === false
-          ) ||
-          launches.some(
-            (item) =>
-              item.lineage_id === entry.bead_id && item.worker_serial === false
-          );
-        const queued = live.queue.some(
-          /** @param {{ bead_id: string }} item */
-          (item) => item.bead_id === entry.bead_id
-        );
-        if (
-          queued &&
-          confirmed.ready &&
-          !confirmed.blocked &&
-          !isWorkerIneligible(confirmed.labels) &&
-          admission.ok &&
-          isWorkerSerial(confirmed.labels) &&
-          !active_nonserial
-        ) {
-          next_pending = {
-            bead_id: entry.bead_id,
-            lineage_id: entry.bead_id
-          };
-          break;
-        }
-      } catch {
-        // Unreadable entries retain the queue's anti-starvation behavior.
-      }
-    }
-    if (refresh_generation === coordinator.refresh_generation) {
-      coordinator.pending = next_pending;
-      coordinator.refresh_active = false;
-    }
-  }
-
-  /**
-   * Synchronously judges a launch against all fences. `excluded_token` is the
-   * lease being authoritatively reclassified during queue dispatch, so it does
-   * not fence itself while it remains continuously held.
-   *
-   * @param {string} workspace
-   * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} input
+   * @param {LaneLaunchInput} input
    * @param {string|null} [excluded_token]
    * @returns {string|null}
    */
-  function workerSerialLaunchRefusal(workspace, input, excluded_token = null) {
+  function laneLaunchRefusal(workspace, input, excluded_token = null) {
     const coordinator = serialCoordinator(workspace);
     const q = deps.store.snapshot(workspace);
-    const lineage = input.serial_lineage_id || input.bead_id;
-    const active = activeSerialLineages(q);
     const launch_values = [...coordinator.launches.entries()]
       .filter(([token]) => token !== excluded_token)
       .map(([, launch]) => launch);
     if (launch_values.some((item) => item.bead_id === input.bead_id)) {
       return 'bead_running';
     }
-    const has_other_activity =
-      active.some((item) => item.lineage_id !== lineage) ||
-      launch_values.some((item) => item.lineage_id !== lineage);
-    const has_other_serial =
-      active.some(
-        (item) => item.worker_serial && item.lineage_id !== lineage
-      ) ||
+    const lane_id = input.serial_lane_id;
+    if (lane_id === null) {
+      return null;
+    }
+    if (serialLaneIndexOf(lane_id) === null) {
+      return 'serial_lane_invalid';
+    }
+    const occupied_by_other =
+      laneOccupiedByOther(activeLaneLineages(q), lane_id, input.lineage_id) ||
       launch_values.some(
-        (item) => item.worker_serial && item.lineage_id !== lineage
+        (item) =>
+          item.serial_lane_id === lane_id &&
+          item.lineage_id !== input.lineage_id
       );
-    const pending = coordinator.pending;
-    const continuation = input.continuation === true;
-    if (has_other_serial && !(continuation && !has_other_activity)) {
-      return 'worker_serial_active';
+    if (occupied_by_other) {
+      return 'serial_lane_occupied';
     }
-    if (
-      pending &&
-      !(continuation && pending.lineage_id === lineage) &&
-      input.before_pending !== true &&
-      !(
-        input.queue_owned === true &&
-        input.worker_serial === true &&
-        pending.lineage_id === lineage
-      )
-    ) {
-      return 'worker_serial_pending';
-    }
-    if (input.worker_serial && has_other_activity) {
-      return 'worker_serial_pending';
-    }
-    if (input.worker_serial && !continuation && input.queue_owned !== true) {
-      return 'worker_serial_pending';
+    if (input.continuation !== true) {
+      // A fresh dispatch may only take a lane through its head — non-head
+      // entries wait for the exclusive chain in front of them.
+      const index = /** @type {number} */ (serialLaneIndexOf(lane_id));
+      const entries = q.serial_lanes?.[index]?.entries || [];
+      if (entries.length === 0 || entries[0].bead_id !== input.bead_id) {
+        return 'serial_lane_not_head';
+      }
     }
     return null;
   }
 
   /**
-   * Synchronous inspect/acquire half of the launch protocol. No await may be
-   * inserted here: callers invoke it after authoritative preflight and before
-   * their first worktree, metadata, or attempt side effect.
+   * Synchronous inspect/acquire half of the launch protocol
+   * (acquire → revalidate → handoff). No await may be inserted here: callers
+   * invoke it before their first worktree, metadata, or attempt side effect.
    *
    * @param {string} workspace
-   * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} input
-   * @returns {{ ok: true, lease: WorkerSerialLease }|{ ok: false, reason: string }}
+   * @param {LaneLaunchInput} input
+   * @returns {{ ok: true, lease: LaneLaunchLease }|{ ok: false, reason: string }}
    */
-  function acquireWorkerSerialLaunch(workspace, input) {
+  function acquireLaneLaunch(workspace, input) {
     const coordinator = serialCoordinator(workspace);
-    const refusal = workerSerialLaunchRefusal(workspace, input);
+    const refusal = laneLaunchRefusal(workspace, input);
     if (refusal) {
       return { ok: false, reason: refusal };
     }
-    const lineage = input.serial_lineage_id || input.bead_id;
     const token = `${input.bead_id}:${Date.now()}:${coordinator.launches.size}`;
     coordinator.launches.set(token, {
       bead_id: input.bead_id,
-      lineage_id: lineage,
-      worker_serial: input.worker_serial === true,
-      queue_owned: input.queue_owned === true
+      lineage_id: input.lineage_id,
+      serial_lane_id: input.serial_lane_id
     });
     let held = true;
     /** Release the pre-record reservation exactly once. */
@@ -1942,18 +1883,14 @@ export function createScheduler(deps) {
       coordinator.launches.delete(token);
     }
     /**
-     * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} next_input
-     * @returns {{ ok: true, lease: WorkerSerialLease }|{ ok: false, reason: string }}
+     * @param {LaneLaunchInput} next_input
+     * @returns {{ ok: true, lease: LaneLaunchLease }|{ ok: false, reason: string }}
      */
     function revalidate(next_input) {
       if (!held) {
         return { ok: false, reason: 'bead_running' };
       }
-      const next_refusal = workerSerialLaunchRefusal(
-        workspace,
-        next_input,
-        token
-      );
+      const next_refusal = laneLaunchRefusal(workspace, next_input, token);
       if (next_refusal) {
         return { ok: false, reason: next_refusal };
       }
@@ -1961,22 +1898,13 @@ export function createScheduler(deps) {
       if (!launch) {
         return { ok: false, reason: 'bead_running' };
       }
-      launch.lineage_id = next_input.serial_lineage_id || next_input.bead_id;
-      launch.worker_serial = next_input.worker_serial === true;
-      launch.queue_owned = next_input.queue_owned === true;
+      launch.bead_id = next_input.bead_id;
+      launch.lineage_id = next_input.lineage_id;
+      launch.serial_lane_id = next_input.serial_lane_id;
       return { ok: true, lease };
     }
     const lease = { release, handoff: release, revalidate };
     return { ok: true, lease };
-  }
-
-  /**
-   * @param {string} workspace
-   * @param {{ bead_id: string, worker_serial: boolean, serial_lineage_id?: string, continuation?: boolean, queue_owned?: boolean, before_pending?: boolean }} input
-   */
-  async function preflightWorkerSerialLaunch(workspace, input) {
-    await refreshPendingSerial(workspace);
-    return acquireWorkerSerialLaunch(workspace, input);
   }
 
   /**
@@ -3167,7 +3095,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @param {WorkerSerialLease|null} reservation
+   * @param {LaneLaunchLease|null} reservation
    */
   async function dispatch(workspace, bead_id, reservation = null) {
     try {
@@ -3197,23 +3125,25 @@ export function createScheduler(deps) {
         refuseDispatch(workspace, bead_id, 'worker_ineligible');
         return;
       }
-      const serial_input = {
+      // The bead's lane is re-read HERE, at dispatch: a drag between scan and
+      // dispatch moves the head-only judgment with it, and the recorded
+      // `serial_lane_id` snapshot must match the lane the launch actually
+      // consumed.
+      const serial_lane_id = waitingLaneOf(
+        deps.store.snapshot(workspace),
+        bead_id
+      );
+      const lane_input = {
         bead_id,
-        worker_serial: isWorkerSerial(snap.labels),
-        queue_owned: true,
-        before_pending: isWorkerSerial(snap.labels) ? false : true
+        lineage_id: bead_id,
+        serial_lane_id
       };
       const serial_launch = reservation
-        ? reservation.revalidate(serial_input)
-        : acquireWorkerSerialLaunch(workspace, serial_input);
+        ? reservation.revalidate(lane_input)
+        : acquireLaneLaunch(workspace, lane_input);
       if (!serial_launch.ok) {
         reservation?.release();
-        if (serial_launch.reason !== 'worker_serial_pending') {
-          refuseDispatch(workspace, bead_id, serial_launch.reason);
-        } else {
-          claimed.delete(bead_id);
-          requestRescan();
-        }
+        refuseDispatch(workspace, bead_id, serial_launch.reason);
         return;
       }
       reservation = serial_launch.lease;
@@ -3398,7 +3328,7 @@ export function createScheduler(deps) {
           exec_values,
           exec_restore_values,
           spec_review_stale: !!adm.stale,
-          worker_serial: isWorkerSerial(snap.labels),
+          serial_lane_id,
           status: 'running',
           pid: null
         })
@@ -4493,12 +4423,12 @@ export function createScheduler(deps) {
     const exec_restore_values = restore_capture.values;
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
-    let worker_serial = isWorkerSerial(snap.labels);
-    const serial_launch = await preflightWorkerSerialLaunch(workspace, {
+    // External-PR resolution work owns no waiting-lane entry, so it launches
+    // lane-free: only the bead_running fence applies.
+    const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
-      worker_serial,
-      serial_lineage_id: bead_id,
-      continuation: false
+      lineage_id: bead_id,
+      serial_lane_id: null
     });
     if (!serial_launch.ok) {
       return { ok: false, reason: serial_launch.reason };
@@ -4510,12 +4440,10 @@ export function createScheduler(deps) {
       serial_lease.release();
       return { ok: false, reason: 'bd_snapshot_failed' };
     }
-    worker_serial = isWorkerSerial(snap.labels);
     const revalidated = serial_lease.revalidate({
       bead_id,
-      worker_serial,
-      serial_lineage_id: bead_id,
-      continuation: false
+      lineage_id: bead_id,
+      serial_lane_id: null
     });
     if (!revalidated.ok) {
       serial_lease.release();
@@ -4567,7 +4495,6 @@ export function createScheduler(deps) {
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
         exec_values,
         exec_restore_values,
-        worker_serial,
         conflict_resolution: true,
         external_conflict: true,
         started_at: prerecord_started_at,
@@ -5031,10 +4958,10 @@ export function createScheduler(deps) {
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
-    const serial_launch = await preflightWorkerSerialLaunch(workspace, {
+    const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
-      worker_serial: prior.worker_serial === true,
-      serial_lineage_id: serialLineageId(prior) || bead_id,
+      lineage_id: serialLineageId(prior) || bead_id,
+      serial_lane_id: prior.serial_lane_id ?? null,
       continuation: true
     });
     if (!serial_launch.ok) {
@@ -5072,7 +4999,7 @@ export function createScheduler(deps) {
       exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
       exec_values,
       exec_restore_values,
-      worker_serial: prior.worker_serial === true,
+      serial_lane_id: prior.serial_lane_id ?? null,
       resumed_from: attempt_id,
       continuation_mode,
       conflict_resolution: options.conflict_resolution,
@@ -5669,10 +5596,10 @@ export function createScheduler(deps) {
     }
 
     const attempt_id = op.attempt_id;
-    const serial_launch = await preflightWorkerSerialLaunch(workspace, {
+    const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
-      worker_serial: source.worker_serial === true,
-      serial_lineage_id: root_bead_id,
+      lineage_id: root_bead_id,
+      serial_lane_id: source.serial_lane_id ?? null,
       continuation: true
     });
     if (!serial_launch.ok) {
@@ -5720,7 +5647,7 @@ export function createScheduler(deps) {
             exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
             exec_values,
             exec_restore_values,
-            worker_serial: source.worker_serial === true,
+            serial_lane_id: source.serial_lane_id ?? null,
             resumed_from,
             continuation_mode,
             completion_root_id: root_bead_id,
@@ -6045,20 +5972,11 @@ export function createScheduler(deps) {
     if (!q.auto_advance) {
       return;
     }
-    const coordinator = serialCoordinator(workspace);
-    if (coordinator.refresh_active && coordinator.refresh_task) {
-      await awaitLatestPendingRefresh(workspace, coordinator.refresh_task);
-    }
-    const scan_generation = coordinator.refresh_generation;
-    q = deps.store.snapshot(workspace);
-    coordinator.pending = null;
     const paused_beads = leafPausedBeads(q);
     const active_beads = activeBeadIdsFrom(q);
 
     /** @type {Array<{ bead_id: string, snap: BeadSnapshot }>} */
     const to_dispatch = [];
-    /** @type {{ bead_id: string, lineage_id: string }|null} */
-    let pending_candidate = null;
 
     // Occupancy is `claimed`, NOT `running`: a dispatch that has taken its claim
     // but has not spawned yet already owns a slot, and a refusal's re-entrant
@@ -6091,15 +6009,31 @@ export function createScheduler(deps) {
         occupied.add(a.bead_id);
       }
     }
-    if (q.pr_wait_holds_slot === true) {
-      for (const entry of q.pr_wait || []) {
-        if (entry && typeof entry.bead_id === 'string') {
-          occupied.add(entry.bead_id);
-        }
-      }
-    }
     let free = slotsOf(q) - occupied.size;
-    for (const entry of q.queue) {
+    // Candidate order (UI-04vo §2): every parallel-lane entry first, then the
+    // head of each UNOCCUPIED serial lane. Non-head serial entries are never
+    // candidates — the exclusive chain in front of them is what a serial lane
+    // means — and an occupied lane contributes nothing until its lineage
+    // merges, is cleaned up, or is discarded.
+    const lane_occupancy = activeLaneLineages(q);
+    /** @type {Array<{ bead_id: string, serial_lane_id: string|null }>} */
+    const candidates = q.queue.map(
+      (/** @type {{ bead_id: string }} */ entry) => ({
+        bead_id: entry.bead_id,
+        serial_lane_id: /** @type {string|null} */ (null)
+      })
+    );
+    for (const lane of q.serial_lanes || []) {
+      const head = lane.entries[0];
+      if (!head) {
+        continue;
+      }
+      if (laneOccupiedByOther(lane_occupancy, lane.id, head.bead_id)) {
+        continue;
+      }
+      candidates.push({ bead_id: head.bead_id, serial_lane_id: lane.id });
+    }
+    for (const entry of candidates) {
       if (free <= 0) {
         break;
       }
@@ -6141,21 +6075,6 @@ export function createScheduler(deps) {
       if (adm.stale) {
         recordStale(workspace, entry.bead_id);
       }
-      // A runnable serial entry is a queue barrier. Earlier ordinary entries
-      // may drain, but nothing at or behind the barrier is selected in the
-      // same pass. If an earlier ordinary attempt is already active, leave the
-      // serial entry pending until that lineage settles.
-      if (isWorkerSerial(snap.labels)) {
-        pending_candidate = {
-          bead_id: entry.bead_id,
-          lineage_id: entry.bead_id
-        };
-        if (to_dispatch.length > 0 || occupied.size > 0) {
-          break;
-        }
-        to_dispatch.push({ bead_id: entry.bead_id, snap });
-        break;
-      }
       to_dispatch.push({ bead_id: entry.bead_id, snap });
       free -= 1;
     }
@@ -6169,41 +6088,16 @@ export function createScheduler(deps) {
     // queue member, and launching it would both run finished work and delete
     // the `done` row the sweep just wrote. Nothing can move a bead between this
     // read and the claim, so the check is not merely advisory.
-    let live_snapshot = deps.store.snapshot(workspace);
-    if (
-      pending_candidate &&
-      live_snapshot.queue.some(
-        /** @param {{ bead_id: string }} entry */
-        (entry) => entry.bead_id === pending_candidate.bead_id
-      )
-    ) {
-      try {
-        const confirmed = await deps.bd.snapshotBead(pending_candidate.bead_id);
-        live_snapshot = deps.store.snapshot(workspace);
-        if (
-          live_snapshot.queue.some(
-            /** @param {{ bead_id: string }} entry */
-            (entry) => entry.bead_id === pending_candidate.bead_id
-          ) &&
-          confirmed.ready &&
-          !confirmed.blocked &&
-          !isWorkerIneligible(confirmed.labels) &&
-          isWorkerSerial(confirmed.labels)
-        ) {
-          if (coordinator.refresh_generation === scan_generation) {
-            coordinator.pending = pending_candidate;
-          }
-        }
-      } catch {
-        // A pending fence needs an authoritative label read; unreadable means
-        // no in-memory barrier until the next rescan can establish one.
-      }
-    }
-    const live_queue = new Set(
-      live_snapshot.queue.map(
+    const live_snapshot = deps.store.snapshot(workspace);
+    const live_queue = new Set([
+      ...live_snapshot.queue.map(
         (/** @type {{ bead_id: string }} */ e) => e.bead_id
+      ),
+      ...(live_snapshot.serial_lanes || []).flatMap(
+        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
+          lane.entries.map((e) => e.bead_id)
       )
-    );
+    ]);
     const live_active = activeBeadIdsFrom(live_snapshot);
     // `claimed` is re-read here too: the coalescing guard already removes the
     // overlap that let two passes claim one bead, and this is the thin line
@@ -6214,18 +6108,16 @@ export function createScheduler(deps) {
         !claimed.has(d.bead_id) &&
         !live_active.has(d.bead_id)
     );
-    if (coordinator.refresh_generation !== scan_generation) {
-      requestRescan();
-      return;
-    }
-    /** @type {Array<{ bead_id: string, lease: WorkerSerialLease }>} */
+    /** @type {Array<{ bead_id: string, lease: LaneLaunchLease }>} */
     const launches = [];
     for (const d of to_launch) {
-      const reservation = acquireWorkerSerialLaunch(workspace, {
+      // The lane is re-resolved from the LIVE snapshot: a drag during the scan
+      // moves the head-only judgment with the bead, and dispatch revalidates
+      // against its own re-read again.
+      const reservation = acquireLaneLaunch(workspace, {
         bead_id: d.bead_id,
-        worker_serial: isWorkerSerial(d.snap.labels),
-        queue_owned: true,
-        before_pending: !isWorkerSerial(d.snap.labels)
+        lineage_id: d.bead_id,
+        serial_lane_id: waitingLaneOf(live_snapshot, d.bead_id)
       });
       if (!reservation.ok) {
         continue;

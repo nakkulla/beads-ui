@@ -2338,7 +2338,8 @@ export function orderLaneByBlocks(order, edges) {
   for (const id of sorted) {
     let moved_after = null;
     for (const blocker of /** @type {Set<string>} */ (blockers_of.get(id))) {
-      const was_before = Number(index_of.get(id)) < Number(index_of.get(blocker));
+      const was_before =
+        Number(index_of.get(id)) < Number(index_of.get(blocker));
       const now_after =
         Number(sorted_index.get(id)) > Number(sorted_index.get(blocker));
       if (was_before && now_after) {
@@ -3853,6 +3854,9 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt.attempt_id] = makeAttempt({
           ...attempt,
           worker_serial: source.worker_serial === true,
+          // Lane inheritance (UI-04vo §2): a completion-repair successor keeps
+          // its lineage's serial lane so occupancy survives the resume chain.
+          serial_lane_id: source.serial_lane_id ?? null,
           completion_root_id: source.completion_root_id,
           completion_op_id: source.completion_op_id,
           completion_mode: source.completion_mode,
@@ -4962,6 +4966,9 @@ export function createQueueStore(options = {}) {
         }
         const in_lane =
           next.queue.some((e) => e.bead_id === bead_id) ||
+          next.serial_lanes.some((lane) =>
+            lane.entries.some((e) => e.bead_id === bead_id)
+          ) ||
           next.pr_wait.some((e) => e.bead_id === bead_id) ||
           next.done.some((e) => e.bead_id === bead_id);
         if (!in_lane && !Object.hasOwn(next.admission, bead_id)) {

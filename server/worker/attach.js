@@ -233,6 +233,26 @@ export function createLiveBd(config) {
       const blocked = !closed && !ready_ids.has(bead_id);
 
       const route = typeof md.route === 'string' ? md.route : null;
+      // Direct `blocks` blockers (UI-04vo §3). `bd show --json` lists the
+      // issues this bead depends on; only `blocks` edges are scheduling
+      // signals. `ready`/`blocked` judgment itself stays delegated to
+      // `bd ready` above — these ids feed lane ordering and the display-only
+      // wait-reason chip.
+      /** @type {string[]} */
+      const blocks_blockers = [];
+      if (Array.isArray(issue.dependencies)) {
+        for (const dep of issue.dependencies) {
+          if (
+            dep &&
+            typeof dep === 'object' &&
+            /** @type {any} */ (dep).dependency_type === 'blocks' &&
+            typeof (/** @type {any} */ (dep).id) === 'string' &&
+            /** @type {any} */ (dep).id.length > 0
+          ) {
+            blocks_blockers.push(/** @type {any} */ (dep).id);
+          }
+        }
+      }
       // Presence rule for the admission inputs: a malformed spec_review must
       // reach the validator as present-and-invalid, never as absent.
       const spec = resolveSpecId(issue);
@@ -305,7 +325,8 @@ export function createLiveBd(config) {
         spec_id,
         spec_id_conflict: spec.conflict,
         spec_review,
-        deps: []
+        deps: blocks_blockers,
+        blocked_by: blocks_blockers
       };
     }
   };

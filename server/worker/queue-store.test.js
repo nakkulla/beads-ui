@@ -5603,7 +5603,10 @@ describe('worker/queue-store — 직렬 레인 스키마 (UI-04vo seam A)', () =
       expected_revision: 0,
       count: 0
     });
-    const six = store.setSerialLaneCount(WS, { expected_revision: 0, count: 6 });
+    const six = store.setSerialLaneCount(WS, {
+      expected_revision: 0,
+      count: 6
+    });
     const frac = store.setSerialLaneCount(WS, {
       expected_revision: 0,
       count: 2.5

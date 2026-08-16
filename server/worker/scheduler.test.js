@@ -1522,88 +1522,11 @@ describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
-  test('holds a single slot while one durable PR waits', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedPrWait(env.store, 'P1');
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: true
-    });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.scheduler.runningCount()).toBe(0);
-  });
-
-  test('starts one session in merge-serial mode with two configured slots', async () => {
-    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: true
-    });
-    seedQueue(env.store, ['S1', 'S2']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.scheduler.runningCount()).toBe(1);
-    expect(env.scheduler.runningBeads()).toEqual(['S1']);
-  });
-
-  test('blocks both configured slots while one durable PR waits', async () => {
-    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
-    seedPrWait(env.store, 'P1');
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: true
-    });
-    seedQueue(env.store, ['S1', 'S2']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.scheduler.runningCount()).toBe(0);
-  });
-
-  test('restores two-slot dispatch when merge-serial mode turns off', async () => {
-    const env = setup({ config: { S1: {}, S2: {} }, slots: 2 });
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: true
-    });
-    seedQueue(env.store, ['S1', 'S2']);
-    await env.scheduler.tick(WS);
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: false
-    });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.scheduler.runningBeads()).toEqual(['S1', 'S2']);
-  });
-
   test('ignores durable PR waits when slot holding is off', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedPrWait(env.store, 'P1');
     seedQueue(env.store, ['S1']);
 
-    await env.scheduler.tick(WS);
-
-    expect(env.scheduler.runningBeads()).toEqual(['S1']);
-  });
-
-  test('dispatches after the durable PR wait leaves and a tick runs', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    seedPrWait(env.store, 'P1');
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: true
-    });
-    seedQueue(env.store, ['S1']);
-    await env.scheduler.tick(WS);
-    expect(env.scheduler.runningCount()).toBe(0);
-
-    env.store.removeFromPrWait(WS, { bead_id: 'P1' });
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.runningBeads()).toEqual(['S1']);
@@ -8156,119 +8079,7 @@ describe('scheduler usage after a pause or a stop (UI-raqh §1)', () => {
   });
 });
 
-describe('scheduler worker serial snapshots', () => {
-  test('blocks a different manual launch behind a pending serial bead before the first tick', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] }, B1: {} },
-      externalPrs: { B1: {} },
-      slots: 1
-    });
-    seedQueue(env.store, ['S1']);
-
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B1',
-      'main'
-    );
-
-    expect(result).toEqual({ ok: false, reason: 'worker_serial_pending' });
-    expect(env.runner.spawnOrder).toEqual([]);
-  });
-
-  test('blocks a same-ID fresh manual launch without a queue reservation', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] } },
-      externalPrs: { S1: {} },
-      slots: 1
-    });
-    seedQueue(env.store, ['S1']);
-
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'S1',
-      'main'
-    );
-
-    expect(result).toEqual({ ok: false, reason: 'worker_serial_pending' });
-    expect(env.runner.spawnOrder).toEqual([]);
-  });
-
-  test('captures the authoritative worker-serial label at fresh dispatch', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] } },
-      slots: 1
-    });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
-    expect(attempt.worker_serial).toBe(true);
-  });
-
-  test('inherits the serial snapshot when a session resumes', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
-    env.store.appendAttempt(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      attempt: {
-        attempt_id: 'serial-parent',
-        bead_id: 'S1',
-        status: 'failed',
-        repo: '/repo',
-        target_base: 'main',
-        runner: 'claude',
-        session_id: 'session-serial',
-        worker_serial: true
-      }
-    });
-
-    const result = await env.scheduler.resume(WS, 'serial-parent');
-
-    expect(result.ok).toBe(true);
-    expect(
-      env.store.snapshot(WS).attempts[/** @type {string} */ (result.attempt_id)]
-        .worker_serial
-    ).toBe(true);
-  });
-
-  test('drains earlier ordinary work before dispatching a pending serial bead', async () => {
-    const env = setup({
-      config: { S1: {}, S2: { labels: ['worker-serial'] }, S3: {} },
-      slots: 2
-    });
-    seedQueue(env.store, ['S1', 'S2', 'S3']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['S1']);
-  });
-
-  test('keeps a running serial snapshot active after its live label is removed', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] }, S2: {} },
-      slots: 2
-    });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-    env.bd.snapshotBead = vi.fn(async (bead_id) => ({
-      ready: true,
-      blocked: false,
-      repo: '/repo',
-      target_base: 'main',
-      status: 'open',
-      labels: [],
-      ...(bead_id === 'S2' ? { title: null } : {})
-    }));
-    seedQueue(env.store, ['S2']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['S1']);
-  });
-});
-
-describe('scheduler worker serial coordinator races (UI-nrut phase 1)', () => {
+describe('scheduler lane launch reservation releases (UI-nrut phase 1 → UI-04vo)', () => {
   /**
    * @param {any} base_store
    * @returns {any}
@@ -8368,290 +8179,6 @@ describe('scheduler worker serial coordinator races (UI-nrut phase 1)', () => {
     });
   }
 
-  test('clears a pending serial fence when the queued bead loses its label', async () => {
-    /** @type {Record<string, any>} */
-    const config = {
-      B0: {},
-      S1: { labels: ['worker-serial'] },
-      B2: {}
-    };
-    const env = setup({ config, slots: 1, externalPrs: { B2: {} } });
-    seedQueue(env.store, ['B0', 'S1']);
-
-    await env.scheduler.tick(WS);
-    config.S1.labels = [];
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B2',
-      'main'
-    );
-
-    expect(result.ok).toBe(true);
-    expect(env.runner.spawnOrder).toEqual(['B0', 'B2']);
-  });
-
-  test('clears a pending serial fence when the queued bead is dequeued', async () => {
-    const config = {
-      B0: {},
-      S1: { labels: ['worker-serial'] },
-      B2: {}
-    };
-    const env = setup({ config, slots: 1, externalPrs: { B2: {} } });
-    seedQueue(env.store, ['B0', 'S1']);
-
-    await env.scheduler.tick(WS);
-    env.store.remove(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'S1'
-    });
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B2',
-      'main'
-    );
-
-    expect(result.ok).toBe(true);
-    expect(env.runner.spawnOrder).toEqual(['B0', 'B2']);
-  });
-
-  test('does not install a stale pending fence after a delayed serial snapshot loses its queue and label', async () => {
-    /** @type {Record<string, any>} */
-    const config = {
-      S1: { labels: ['worker-serial'] },
-      B2: {}
-    };
-    const env = setup({ config, slots: 1, externalPrs: { B2: {} } });
-    seedQueue(env.store, ['S1']);
-    const snapshot_bead = env.bd.snapshotBead.bind(env.bd);
-    /** @type {() => void} */
-    let mark_snapshot_started = () => {};
-    /** @type {Promise<void>} */
-    const snapshot_started = new Promise((resolve) => {
-      mark_snapshot_started = () => resolve(undefined);
-    });
-    /** @type {() => void} */
-    let release_snapshot = () => {};
-    /** @type {Promise<void>} */
-    const snapshot_release = new Promise((resolve) => {
-      release_snapshot = () => resolve(undefined);
-    });
-    env.bd.snapshotBead = vi.fn(async (bead_id) => {
-      const snap = await snapshot_bead(bead_id);
-      if (bead_id !== 'S1') {
-        return snap;
-      }
-      mark_snapshot_started();
-      await snapshot_release;
-      return snap;
-    });
-
-    const launch = env.scheduler.dispatchExternalConflict(WS, 'B2', 'main');
-    await snapshot_started;
-    config.S1.labels = [];
-    removeQueued(env.store, 'S1');
-    release_snapshot();
-
-    await expect(launch).resolves.toMatchObject({ ok: true });
-    expect(env.runner.spawnOrder).toEqual(['B2']);
-  });
-
-  test('waits for the newest overlapping serial refresh before an older external launch acquires', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] }, B1: {}, B2: {} },
-      slots: 1,
-      externalPrs: { B1: {}, B2: {} }
-    });
-    seedQueue(env.store, ['S1']);
-    const snapshot_bead = env.bd.snapshotBead.bind(env.bd);
-    /** @type {() => void} */
-    let mark_first_started = () => {};
-    /** @type {Promise<void>} */
-    const first_started = new Promise((resolve) => {
-      mark_first_started = () => resolve(undefined);
-    });
-    /** @type {() => void} */
-    let release_first = () => {};
-    /** @type {Promise<void>} */
-    const first_release = new Promise((resolve) => {
-      release_first = () => resolve(undefined);
-    });
-    /** @type {() => void} */
-    let mark_latest_started = () => {};
-    /** @type {Promise<void>} */
-    const latest_started = new Promise((resolve) => {
-      mark_latest_started = () => resolve(undefined);
-    });
-    /** @type {() => void} */
-    let release_latest = () => {};
-    /** @type {Promise<void>} */
-    const latest_release = new Promise((resolve) => {
-      release_latest = () => resolve(undefined);
-    });
-    let serial_reads = 0;
-    env.bd.snapshotBead = vi.fn(async (bead_id) => {
-      const snap = await snapshot_bead(bead_id);
-      if (bead_id !== 'S1') {
-        return snap;
-      }
-      serial_reads += 1;
-      if (serial_reads === 1) {
-        mark_first_started();
-        await first_release;
-      } else if (serial_reads === 2) {
-        mark_latest_started();
-        await latest_release;
-      }
-      return snap;
-    });
-
-    let first_settled = false;
-    const first = env.scheduler.dispatchExternalConflict(WS, 'B1', 'main');
-    first.finally(() => {
-      first_settled = true;
-    });
-    await first_started;
-    const latest = env.scheduler.dispatchExternalConflict(WS, 'B2', 'main');
-    await latest_started;
-    release_first();
-    await flush();
-
-    expect(first_settled).toBe(false);
-    expect(env.runner.spawnOrder).toEqual([]);
-
-    release_latest();
-
-    await expect(first).resolves.toEqual({
-      ok: false,
-      reason: 'worker_serial_pending'
-    });
-    await expect(latest).resolves.toEqual({
-      ok: false,
-      reason: 'worker_serial_pending'
-    });
-    expect(env.runner.spawnOrder).toEqual([]);
-  });
-
-  test('clears a pending serial fence when the queued bead becomes not ready', async () => {
-    /** @type {Record<string, any>} */
-    const config = {
-      B0: {},
-      S1: { labels: ['worker-serial'] },
-      B2: {}
-    };
-    const env = setup({ config, slots: 1, externalPrs: { B2: {} } });
-    seedQueue(env.store, ['B0', 'S1']);
-
-    await env.scheduler.tick(WS);
-    config.S1.ready = false;
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B2',
-      'main'
-    );
-
-    expect(result.ok).toBe(true);
-    expect(env.runner.spawnOrder).toEqual(['B0', 'B2']);
-  });
-
-  test('does not fence an ordinary bead behind an admission-refused serial bead', async () => {
-    const admission = {
-      validate: vi.fn(async (snap) =>
-        snap.labels.includes('worker-serial')
-          ? { ok: false, reason: 'receipt_unreachable' }
-          : { ok: true }
-      )
-    };
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] }, B1: {} },
-      admission,
-      slots: 1
-    });
-    seedQueue(env.store, ['S1', 'B1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B1']);
-    expect(env.store.snapshot(WS).admission.S1).toMatchObject({
-      reason: 'receipt_unreachable'
-    });
-  });
-
-  test('recomputes past an invalid serial bead to the next eligible serial bead', async () => {
-    const admission = {
-      validate: vi.fn(async (snap) =>
-        snap.title === 'invalid'
-          ? { ok: false, reason: 'receipt_unreachable' }
-          : { ok: true }
-      )
-    };
-    const env = setup({
-      config: {
-        S1: { labels: ['worker-serial'], title: 'invalid' },
-        S2: { labels: ['worker-serial'] },
-        B1: {}
-      },
-      admission,
-      slots: 1
-    });
-    seedQueue(env.store, ['S1', 'S2', 'B1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['S2']);
-    expect(env.store.snapshot(WS).admission.S1).toMatchObject({
-      reason: 'receipt_unreachable'
-    });
-  });
-
-  test('blocks a serial start behind a nonserial PR-wait attempt', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] }, B1: {} },
-      slots: 1
-    });
-    seedPrWait(env.store, 'B1');
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
-  });
-
-  test('blocks a serial start behind an active nonserial discard operation', async () => {
-    const env = setup({
-      config: { S1: { labels: ['worker-serial'] }, B1: {} },
-      slots: 1
-    });
-    seedActiveDiscard(env.store, 'B1');
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
-  });
-
-  test('blocks a different manual lineage behind an active serial PR-wait attempt', async () => {
-    const env = setup({
-      config: { S1: {}, B2: {} },
-      slots: 1,
-      externalPrs: { B2: {} }
-    });
-    seedPrWait(env.store, 'S1');
-    env.store.updateAttempt(WS, {
-      attempt_id: 'att-S1',
-      patch: { worker_serial: true }
-    });
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B2',
-      'main'
-    );
-
-    expect(result).toEqual({ ok: false, reason: 'worker_serial_active' });
-    expect(env.runner.spawnOrder).toEqual([]);
-  });
-
   test('permits a same-root completion repair through a different physical bead', async () => {
     const repair_bead_id = 'B1-rcccccccc';
     const env = setup({
@@ -8690,43 +8217,6 @@ describe('scheduler worker serial coordinator races (UI-nrut phase 1)', () => {
       attempt_id: 'same-root-serial-attempt'
     });
     expect(env.runner.spawnOrder).toEqual([repair_bead_id]);
-  });
-
-  test('defers a serial label flip seen only at dispatch without an admission badge', async () => {
-    const env = setup({
-      config: { B1: {}, S1: {} },
-      verifyOk: false,
-      slots: 2
-    });
-    seedQueue(env.store, ['B1', 'S1']);
-    const snapshot_bead = env.bd.snapshotBead.bind(env.bd);
-    let s1_reads = 0;
-    env.bd.snapshotBead = vi.fn(async (bead_id) => {
-      const snap = await snapshot_bead(bead_id);
-      if (bead_id === 'S1') {
-        s1_reads += 1;
-        if (s1_reads >= 2) {
-          return { ...snap, labels: ['worker-serial'] };
-        }
-      }
-      return snap;
-    });
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B1']);
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
-
-    env.runner.finish('B1', { success: true });
-    await flush();
-    await flush();
-    removeQueued(env.store, 'B1');
-    env.store.setAutoAdvance(WS, true);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual(['B1', 'S1']);
-    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
   test('releases a normal queue reservation after an attempt prerecord abort', async () => {
@@ -8990,35 +8480,6 @@ describe('scheduler worker serial coordinator races (UI-nrut phase 1)', () => {
     expect(env.runner.spawnOrder).toEqual(['S2']);
   });
 
-  test('refuses a fresh external launch when its label becomes worker-serial before prerecord', async () => {
-    /** @type {Record<string, any>} */
-    const config = { B1: {} };
-    const env = setup({
-      config,
-      externalPrs: { B1: {} },
-      slots: 1
-    });
-    const snapshot_bead = env.bd.snapshotBead.bind(env.bd);
-    let reads = 0;
-    env.bd.snapshotBead = vi.fn(async (bead_id) => {
-      const snap = await snapshot_bead(bead_id);
-      if (bead_id === 'B1' && ++reads === 2) {
-        return { ...snap, labels: ['worker-serial'] };
-      }
-      return snap;
-    });
-
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B1',
-      'main'
-    );
-
-    expect(result).toEqual({ ok: false, reason: 'worker_serial_pending' });
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-  });
-
   test('releases a REVISE reservation after a child prerecord abort', async () => {
     const base_store = createQueueStore();
     base_store.place(WS, {
@@ -9056,38 +8517,6 @@ describe('scheduler worker serial coordinator races (UI-nrut phase 1)', () => {
     await env.scheduler.tick(WS);
 
     expect(env.runner.spawnOrder).toEqual(['S2']);
-  });
-
-  test('does not retroactively turn a running nonserial snapshot into a serial fence', async () => {
-    /** @type {Record<string, any>} */
-    const config = { B1: {}, B2: {} };
-    const env = setup({ config, slots: 1, externalPrs: { B2: {} } });
-    seedQueue(env.store, ['B1']);
-
-    await env.scheduler.tick(WS);
-    config.B1.labels = ['worker-serial'];
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'B2',
-      'main'
-    );
-
-    expect(result).toEqual({ ok: true, attempt_id: expect.any(String) });
-    expect(env.runner.spawnOrder).toEqual(['B1', 'B2']);
-  });
-
-  test('keeps PR-wait occupancy blocking a queued ordinary launch when the slot hold is enabled', async () => {
-    const env = setup({ config: { B1: {}, B2: {} }, slots: 2 });
-    seedPrWait(env.store, 'B1');
-    env.store.setPrWaitHoldsSlot(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      on: true
-    });
-    seedQueue(env.store, ['B2']);
-
-    await env.scheduler.tick(WS);
-
-    expect(env.runner.spawnOrder).toEqual([]);
   });
 });
 
@@ -11126,5 +10555,257 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     expect(res.ok).toBe(true);
     expect(env.runner.factoryNames).toEqual(['claude']);
     await flush();
+  });
+});
+
+/**
+ * Seed parallel + serial waiting lanes in order and arm auto_advance.
+ *
+ * @param {any} store
+ * @param {{ parallel?: string[], s1?: string[], s2?: string[] }} lanes
+ */
+function seedLanes(store, lanes) {
+  let rev = store.snapshot(WS).revision;
+  for (const [lane, ids] of Object.entries(lanes)) {
+    for (const id of ids || []) {
+      rev = store.place(WS, {
+        expected_revision: rev,
+        bead_id: id,
+        lane: lane === 'parallel' ? undefined : lane
+      }).queue.revision;
+    }
+  }
+  store.setAutoAdvance(WS, true);
+}
+
+describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
+  test('dispatches lane heads and parallel entries concurrently within slots', async () => {
+    const env = setup({
+      config: { P1: {}, A: {}, B: {}, C: {} },
+      slots: 4
+    });
+    seedLanes(env.store, { parallel: ['P1'], s1: ['A', 'B'], s2: ['C'] });
+
+    await env.scheduler.tick(WS);
+
+    expect([...env.runner.spawnOrder].sort()).toEqual(['A', 'C', 'P1']);
+  });
+
+  test('applies the global slots cap across parallel and serial lanes', async () => {
+    const env = setup({
+      config: { P1: {}, A: {}, C: {} },
+      slots: 2
+    });
+    seedLanes(env.store, { parallel: ['P1'], s1: ['A'], s2: ['C'] });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder.length).toBe(2);
+  });
+
+  test('keeps a running lineage occupying its lane across ticks', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+
+    await env.scheduler.tick(WS);
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A']);
+  });
+
+  test('keeps a failed lineage occupying its lane until discard releases it', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('A', {
+      success: false,
+      reason: 'abnormal_exit',
+      exit: 1
+    });
+    await flush();
+    await flush();
+    env.store.remove(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A'
+    });
+    env.store.setAutoAdvance(WS, true);
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A']);
+
+    env.store.discardAttempt(WS, {
+      attempt_id,
+      bead_id: 'A',
+      patch: { status: 'discarded' }
+    });
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A', 'B']);
+  });
+
+  test('keeps a dismissed failed lineage occupying its lane', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+
+    env.runner.finish('A', {
+      success: false,
+      reason: 'abnormal_exit',
+      exit: 1
+    });
+    await flush();
+    await flush();
+    env.store.remove(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      bead_id: 'A'
+    });
+    env.store.dismissAttempt(WS, {
+      attempt_id,
+      expected_revision: env.store.snapshot(WS).revision
+    });
+    env.store.setAutoAdvance(WS, true);
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A']);
+  });
+
+  test('keeps a pr_wait lineage occupying its lane until moveToDone releases it', async () => {
+    const env = setup({ config: { A: {}, B: {} }, slots: 3 });
+    seedLanes(env.store, { s1: ['A', 'B'] });
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('A', { success: true });
+    await flush();
+    await flush();
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).pr_wait.map((e) => e.bead_id)).toEqual(['A']);
+    expect(env.runner.spawnOrder).toEqual(['A']);
+
+    env.store.moveToDone(WS, { bead_id: 'A' });
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A', 'B']);
+  });
+
+  test('rebuilds lane occupancy from durable attempts after a restart', async () => {
+    const store = createQueueStore();
+    const env = setup({
+      config: { B: {}, P1: {} },
+      store,
+      slots: 3,
+      probePid: () => ({ alive: true, started_at: 1_000 })
+    });
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'prior-A',
+        bead_id: 'A',
+        status: 'running',
+        serial_lane_id: 's1',
+        pid: 4242,
+        process_identity: { pid: 4242, pgid: 4242, started_at: 1_000 },
+        started_at: 1_000
+      }
+    });
+    seedLanes(env.store, { parallel: ['P1'], s1: ['B'] });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['P1']);
+  });
+
+  test('records serial_lane_id at dispatch and stops writing worker_serial', async () => {
+    const env = setup({
+      config: { A: { labels: ['worker-serial'] }, P1: {} },
+      slots: 3
+    });
+    seedLanes(env.store, { parallel: ['P1'], s1: ['A'] });
+
+    await env.scheduler.tick(WS);
+
+    const attempts = Object.values(env.store.snapshot(WS).attempts);
+    const lane_attempt = attempts.find((a) => a.bead_id === 'A');
+    const parallel_attempt = attempts.find((a) => a.bead_id === 'P1');
+    expect(lane_attempt?.serial_lane_id).toBe('s1');
+    expect(lane_attempt?.worker_serial).toBe(false);
+    expect(parallel_attempt?.serial_lane_id).toBeNull();
+  });
+
+  test('worker-serial label no longer gates parallel dispatch', async () => {
+    const env = setup({
+      config: { S1: { labels: ['worker-serial'] }, P2: {} },
+      slots: 2
+    });
+    seedLanes(env.store, { parallel: ['S1', 'P2'] });
+
+    await env.scheduler.tick(WS);
+
+    expect([...env.runner.spawnOrder].sort()).toEqual(['P2', 'S1']);
+  });
+
+  test('resume inherits the serial_lane_id of the prior attempt', async () => {
+    const env = setup({ config: { A: {} }, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'lane-parent',
+        bead_id: 'A',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        runner: 'claude',
+        session_id: 'session-lane',
+        serial_lane_id: 's2'
+      }
+    });
+
+    const result = await env.scheduler.resume(WS, 'lane-parent');
+
+    expect(result.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)].serial_lane_id
+    ).toBe('s2');
+  });
+});
+
+describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () => {
+  test('waits on a blocked serial head with a visible reason while other lanes progress', async () => {
+    const env = setup({
+      config: {
+        A: { ready: false, blocked: true, status: 'open' },
+        B: {},
+        C: {}
+      },
+      slots: 3
+    });
+    seedLanes(env.store, { s1: ['A', 'B'], s2: ['C'] });
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['C']);
+    expect(env.store.snapshot(WS).admission['A']?.reason).toBe(
+      'not_ready:open'
+    );
+  });
+
+  test('dispatches the serial head after it turns ready', async () => {
+    const config = {
+      A: { ready: false, blocked: true, status: 'open' }
+    };
+    const env = setup({ config, slots: 2 });
+    seedLanes(env.store, { s1: ['A'] });
+
+    await env.scheduler.tick(WS);
+    expect(env.runner.spawnOrder).toEqual([]);
+
+    config.A.ready = true;
+    config.A.blocked = false;
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['A']);
   });
 });
