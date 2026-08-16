@@ -314,7 +314,7 @@ function buildSystem(opts) {
  * cleanup's ref-mutating git commands serialize exactly as they do in
  * production (worker-phase2 §8).
  *
- * @param {ReturnType<typeof createWorkerRuntime>} runtime
+ * @param {import('../worker/runtime.js').WorkerRuntime} runtime
  */
 function prActionsWorktree(runtime) {
   return {
@@ -1349,7 +1349,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
    * OLD_HEAD while the observed PR head is NEW_HEAD — the exact
    * `review_receipt_stale` state the UI-wv97 incident froze in.
    *
-   * @param {ReturnType<typeof createWorkerRuntime>} runtime
+   * @param {import('../worker/runtime.js').WorkerRuntime} runtime
    */
   function seedStaleReviewed(runtime) {
     runtime.queueStore.appendAttempt(WS, {
@@ -1375,7 +1375,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
   }
 
   /**
-   * @param {ReturnType<typeof createWorkerRuntime>} runtime
+   * @param {import('../worker/runtime.js').WorkerRuntime} runtime
    * @param {{ metadata: Record<string, string>, status: string }} bd_record
    * @param {{ pr_state: string, merged_sha: string, squash_calls: string[] }} world
    */
@@ -1460,7 +1460,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
   }
 
   /**
-   * @param {ReturnType<typeof createWorkerRuntime>} runtime
+   * @param {import('../worker/runtime.js').WorkerRuntime} runtime
    * @param {ReturnType<typeof buildPrActions>} pr_actions
    * @param {{ metadata: Record<string, string>, status: string }} bd_record
    * @param {{ review_calls: any[] }} record
