@@ -7,8 +7,8 @@
 - workflow mode: `standard`
 - 사용자 설계 승인: 2026-08-16
 - 기준 브랜치/SHA: `main` / `a0a8310057a6abc4aae4648680759ca3270ece76`
-- cross-repo 선행 유닛: dotfiles 계약·workflow 스킬 (실행 시작 시 dotfiles
-  워크스페이스에 companion Bead 생성)
+- cross-repo 선행 유닛: dotfiles Bead `dotfiles-7g1c` (별도 PR 유닛; `UI-qeiz`가
+  blocks 의존 — external dependency readback 확인 2026-08-16)
 
 ## 배경과 판정
 
@@ -97,26 +97,30 @@ fail-quiet). `impl_speed`는 기존 규칙대로 현재 사용자의 명시 선�
 effort 순 종속 선택**으로 통일해 제시하되, 오케스트레이션 쪽 런타임 선택은 UI
 그룹핑(모델 목록 필터)일 뿐 새 키를 만들지 않는다.
 
-### B. dotfiles 유닛 (선행)
+### B. dotfiles 유닛 (선행, Bead `dotfiles-7g1c`)
 
-beads-ui는 이 계약의 소비자다. 아래는 dotfiles 쪽 요구사항이며 문구·스키마의
-canonical 정의는 dotfiles `docs/contracts/workflow.{md,yaml}`,
-`docs/contracts/harness.yaml`이 소유한다.
+beads-ui는 이 계약의 소비자다. canonical 정의는 dotfiles가 소유하며, 소유권
+배치는 **durable 어휘·스키마 → `workflow.yaml`**, **기본값·우선순위 →
+`harness.yaml`**, **판정 프로즈 → `workflow.md`**다.
 
-1. `harness.yaml` v7: 우선순위에 workspace kv 층 추가.
-   `workflow_session_defaults` JSON 스키마 정의 — `schema: 1`, 허용 키는 위 표의
-   세션 키 12개(신설 `impl_dispatch` 포함), enum은 기존 metadata 어휘와 동일.
-   `impl_model`/`impl_effort`는 `auto` 리터럴을 허용하며 selector의 exact
-   model/auto·effort/auto 상태에 대응한다.
-2. `workflow.yaml`: `parent_keys`에 `impl_dispatch: {enum: [delegated, main]}`
-   추가, consumer_surface에 kv 키 반영.
-3. `impl_dispatch` 의미: `delegated`(기본)는 기존 runtime matrix 위임, `main`은
-   컨트롤러 직접 구현이며 `exec_receipt=main:user_choice@<sha>`를 기록한다.
-   사용자의 durable 선택이 유효한 main 사유임을 계약 문구로 명시한다.
-4. workflow 스킬 `references/execution.md` selector 절: 해석 시
-   `bd kv get workflow_session_defaults --json`을 읽는 층을 추가한다. bd가 없는
-   워크스페이스나 kv 부재 시 층을 건너뛴다.
-5. 런타임 스킬 복사본(`~/.claude/skills/workflow/resources/*`)과 소비자 동기화.
+1. `workflow.yaml`: `workflow_session_defaults` kv 스키마 정의 — `schema: 1`,
+   허용 키는 위 표의 세션 키 12개(신설
+   `impl_dispatch: {enum: [delegated, main]}` 포함), enum은 기존 metadata
+   어휘와 동일하며 `impl_model`/`impl_effort`는 `auto` 리터럴을 허용한다
+   (selector의 exact model/auto·effort/auto 상태). metadata `parent_keys`와
+   consumer_surface에 `impl_dispatch`와 kv 키를 함께 반영한다.
+2. `harness.yaml` v7: 우선순위 `현재 사용자 > Bead metadata > bd kv > harness
+   기본값`과 기본값만 추가한다. 스키마는 두지 않는다.
+3. `impl_dispatch` 의미(`workflow.md`): `delegated`(기본)는 기존 runtime matrix
+   위임, `main`은 컨트롤러 직접 구현이며 `exec_receipt=main:user_choice@<sha>`를
+   기록한다. 사용자의 durable 선택이 유효한 main 사유임을 계약 문구로 명시한다.
+4. **소비자 갱신 전수 목록**: workflow `SKILL.md`·`references/execution.md`의
+   selector(구현 키 소비), workflow 라우터의 `workflow_mode` 해석, `review`
+   스킬(리뷰 모델·effort 키 소비), `references/plan-review.md`(plan_review 키
+   소비), Claude·Codex 양쪽 런타임 스킬 복사본, 계약 checker
+   (`tests/workflow_skill_contract_test.sh` 등). kv 읽기는
+   `bd kv get workflow_session_defaults --json`이며 bd가 없는 워크스페이스나 kv
+   부재 시 층을 건너뛴다.
 
 ### C. beads-ui 서버·Worker
 
@@ -162,43 +166,87 @@ canonical 정의는 dotfiles `docs/contracts/workflow.{md,yaml}`,
   `핀`(Bead metadata) / `전역`(kv) / `기본`(harness, 값 미표시). 펼치면 편집.
 - 구현 프리셋 quick-apply: 프리셋 선택 → 구현 키 5개를 Bead metadata에 일괄
   기록.
-- 개별 키 편집은 워크플로우/리뷰/구현/Worker 그룹으로 재구성하고 "(기본)"
-  선택 시 핀 해제를 유지한다.
+- 개별 키 편집은 워크플로우/리뷰/구현/Worker 그룹으로 재구성한다.
+- **Bead별 편집기는 모든 세션 키에서 3상태다**: `(기본)`은 metadata 삭제(kv →
+  harness로 통과), 명시값은 literal 기록(kv를 덮음). 특히 `workflow_mode`는
+  `standard`도 literal로 기록해 kv의 `fast_track` 전역 기본값을 Bead가 덮을 수
+  있어야 한다. 명시값 선택을 삭제로 변환하는 기존 동작은
+  `Bead metadata > bd kv` 규칙 위반 결함으로 보고 수정·테스트한다.
 
 ### F. 마이그레이션과 에러 처리
 
-- 서버 시작 시 1회: kv에 `workflow_session_defaults`가 없고 workspace에 기존
-  프리셋 참조(또는 legacy `exec_defaults`)가 있으면 — 세션 키 9개를 kv로,
-  orchestration 3키를 queue 값으로 이전하고, 프리셋들은 구현 키만 남긴 구현
-  프리셋으로 변환한다. 원본 정리는 변환 성공 후에만 수행한다(비파괴, 실패 시
-  다음 시작 때 재시도).
+- 마이그레이션은 서버 시작 시 실행되며 **destination별로 멱등**이다:
+  (a) kv `workflow_session_defaults`의 비어 있는 필드만 기존 preset의 세션 키로
+  채우고, (b) queue의 orchestration 3키가 비어 있을 때만 preset 값으로 채우고,
+  (c) preset 변환은 구현 키만 남긴 사본을 만들어 원본과 병존시킨다. 세
+  destination 모두 쓰기 후 readback이 성공한 다음에만 workspace별 migration
+  완료 표식을 기록하고 `default_exec_preset_id`·legacy `exec_defaults`·원본
+  preset을 정리한다. 완료 표식 이전의 부분 성공 상태에서는 다음 시작에 같은
+  절차가 재실행되며, 채움 전용(fill-only-empty) 규칙이라 중복 실행이 사용자
+  변경을 훼손하지 않는다.
 - kv 값 파싱 실패 → 그 층만 무시 + UI 경고 배너. kv 쓰기 실패 → 저장 실패
   알림 + 편집 상태 유지.
 
+## 적용 순서와 재개 지점
+
+각 단계는 live 검증 통과 후에만 다음으로 진행하며, 실패 시 그 단계에서 멈추고
+같은 단계부터 재개한다. 중단 시점의 상태는 항상 동작 가능하다(새 kv 층은 빈
+층으로 시작하므로 소비자 선행 배포가 안전하다).
+
+1. **dotfiles PR(`dotfiles-7g1c`) 머지** — 검증: 계약 checker
+   (`tests/workflow_skill_contract_test.sh` 등) 통과.
+2. **런타임 스킬 복사본 동기화** — 검증: Claude·Codex 양쪽 런타임 복사본에 kv
+   스키마·selector 층이 존재하고, 실제 세션 1회에서
+   `bd kv get workflow_session_defaults` 경로가 해석에 반영됨을 확인. 이 시점에
+   kv가 비어 있으므로 기존 동작과 동일하다.
+3. **beads-ui Phase 2–4 구현·PR·머지** — 검증: Pre-Handoff Validation 전부.
+4. **머지 후 배포** — 기존 `repo-ops/config.toml [deploy]` operation terminal
+   success. 검증: `.worktrees/.repo-ops-deploy` HEAD가 머지 SHA 이상(descendant),
+   프로세스 경로·포트·HTTP `healthz` 응답이 새 SHA 반영.
+5. **마이그레이션** — 4단계 후 서버 첫 시작에서 수행(F절 멱등 규칙). 실패 시
+   서버는 기존 값으로 계속 동작하고 다음 시작에 재시도한다.
+
+순서 역전(2단계 전 beads-ui 머지) 방지는 `UI-qeiz` → `dotfiles-7g1c` blocks
+의존이 담당한다.
+
 ## Test scope
 
-RED-GREEN seam은 아래 단위다.
+RED-GREEN seam은 아래 단위이며, 각 seam은 **현존하는 테스트 파일**에 변경 전
+실패하는 assertion을 추가하는 것으로 시작한다(괄호는 변경 전 실패 이유).
 
-1. kv 어댑터: get/set 라운드트립, 부재·파싱 실패 시 undefined 반환.
-2. session-defaults WS 핸들러: 유효 payload 저장·readback, enum 위반 거부.
-3. `policy.js` 리팩터: 세션 키 9개가 workspace 층 없이 Bead 층만 해석되는 회귀,
-   orchestration 3키 fail-closed 유지.
-4. `scheduler.js`: spawn 경로에서 9키 metadata 스탬프가 더 이상 발생하지 않음,
-   `workflow_mode=fast_track` 강제 유지.
-5. 마이그레이션: 기존 preset 참조/legacy 맵 → kv+queue 값+구현 프리셋 변환,
-   실패 시 원본 보존과 재시도 가능성.
-6. 프리셋 적용: Bead metadata 일괄 기록 경로와 kv 기록 경로.
-7. UI는 `npm run build` 성공과 기존 테스트 관례를 따른다. 마감 전
-   Pre-Handoff Validation(tsc/test/lint/prettier/build) 전부 통과.
+1. `server/bd.test.js` — bd kv get/set 어댑터: 라운드트립, 부재 시 undefined,
+   파싱 실패 시 undefined+경고. (어댑터 함수 부재로 실패)
+2. `server/ws/exec-settings-mutation.test.js` — session-defaults 조회/변경
+   메시지: 유효 payload 저장·readback, enum 위반 거부, `workflow_mode=standard`
+   literal 기록(3상태 편집 의미). (메시지 타입 부재·삭제 변환 동작으로 실패)
+3. `server/worker/policy.test.js` — 세션 키 9개가 workspace 층 없이 Bead 층만
+   해석되는 회귀, orchestration 3키 fail-closed 유지. (workspace 층이 값을
+   공급해 실패)
+4. `server/worker/scheduler.test.js` — spawn 경로에서 9키 metadata 스탬프
+   미발생, `workflow_mode=fast_track` 강제 유지. (`stamped_keys` 기록 관측으로
+   실패)
+5. `server/worker/queue-store.test.js` — `default_exec_preset_id` 제거와
+   orchestration 3키 직접 값 저장·검증. (필드 부재로 실패)
+6. `server/worker/exec-preset-coordinator.test.js`,
+   `server/exec-preset-store.test.js` — 멱등 마이그레이션: 부분 성공 후 재실행
+   수렴, fill-only-empty, 완료 표식 후에만 원본 정리. (마이그레이션 함수 부재로
+   실패)
+7. `server/ws/exec-preset-apply.test.js` — 구현 프리셋 적용 두 경로(Bead
+   metadata 일괄 기록, kv 기록). (구현 프리셋 형태 미지원으로 실패)
+8. UI 신규 뷰(통합 다이얼로그·이슈 상세 카드)는 기존 view 테스트 관례대로
+   `app/views/` 아래 신규 `*.test.js`를 RED로 추가한다. `npm run build`와
+   Pre-Handoff Validation(tsc/test/lint/prettier/build)은 seam이 아니라 마감
+   검증이다.
 
-dotfiles 유닛은 계약 문서·스킬 갱신으로, 해당 저장소의 계약 checker가 있으면
-통과를 검증한다.
+dotfiles 유닛은 `tests/workflow_skill_contract_test.sh`에 kv 층과
+`impl_dispatch` 어휘 assertion을 추가하는 것을 RED로 시작한다(계약 파일에 키
+부재로 실패).
 
 ## 유닛 분해 (plan 단계 초안)
 
-1. **Phase 1 — dotfiles 계약·스킬** (선행, dotfiles 워크스페이스 companion
-   Bead): harness.yaml v7, workflow.yaml `impl_dispatch`, execution.md selector
-   kv 층, 런타임 복사본 동기화.
+1. **Phase 1 — dotfiles 계약·스킬** (선행, Bead `dotfiles-7g1c`):
+   workflow.yaml kv 스키마·`impl_dispatch`, harness.yaml v7 우선순위,
+   소비자 전수 갱신(B.4), 런타임 복사본 동기화.
 2. **Phase 2 — beads-ui 서버·Worker**: kv 어댑터, WS protocol, policy/scheduler/
    queue-store 리팩터, 프리셋 재편, 마이그레이션.
 3. **Phase 3 — 통합 설정 다이얼로그**: 다이얼로그 신설, 진입점 정리, 표시 탭
