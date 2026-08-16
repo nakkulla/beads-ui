@@ -236,6 +236,28 @@ describe('worker/completion-repair deterministic Bead lineage', () => {
 });
 
 describe('worker/completion-repair pinned ownership probe', () => {
+  test('does not start a raw probe for a durable verify operation subject', async () => {
+    const runVerify = vi.fn();
+    const resolveVerify = vi.fn();
+    const service = createCompletionRepairService({
+      bd: /** @type {any} */ ({}),
+      repo: REPO,
+      hasDurableVerify: () => true,
+      resolveVerify,
+      runVerify
+    });
+
+    const result = await service.probeOwnership({
+      root_bead_id: ROOT,
+      source: 'verify',
+      failure_key: failureKey()
+    });
+
+    expect(result).toEqual({ state: 'repo_operation' });
+    expect(resolveVerify).not.toHaveBeenCalled();
+    expect(runVerify).not.toHaveBeenCalled();
+  });
+
   test('classifies a green pinned base as PR-owned', async () => {
     const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
     const service = createCompletionRepairService({

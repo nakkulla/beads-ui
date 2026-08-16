@@ -19,6 +19,7 @@ import {
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
+  beginRepoOpsDisplayResolution,
   recordRepoOpsResolution,
   refreshRepoOpsDisplay
 } from './repo-ops-display.js';
@@ -101,58 +102,13 @@ export function createRepoOperationCoordinator(deps) {
   const policySupported = deps.policySupported || repoOperationPolicySupported;
 
   /**
-   * `resolveEffectiveRepoOps`, plus the display-cache update (UI-q0uy §4.6-1).
-   * The cache is fed by the resolve this launch ALREADY does — there is no
-   * second resolution anywhere on this path.
-   *
-   * What gets recorded is the declaration the Worker ACTUALLY consumed, which is
-   * the pinned `policy` side except on a bootstrap, where the target tree IS the
-   * policy. Recording the target unconditionally would let a PR head define what
-   * the settings surface claims this repo declares — exactly the inversion
-   * `AGENTS.md` forbids, and on the verify lane `target_sha` is a PR head or
-   * final SHA, never a base at all.
-   *
-   * Two cases record nothing rather than guess:
-   *   - no `previous_sha` on a non-bootstrap resolve: the "previous" policy is
-   *     then a hardcoded default, not a tree read, and recording it would claim
-   *     a proven absence nobody proved;
-   *   - a failed resolve: `resolveEffectiveRepoOps` collapses a previous-side and
-   *     a target-side failure into one shape, so the SHA it failed at is not
-   *     recoverable here. The error is recorded with a null SHA, which the
-   *     settings surface renders as 선언 읽기 실패 with no base claim.
+   * Resolve an operation's historical/effective policy without publishing it
+   * as the current target-base gate authority.
    *
    * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
    */
-  async function resolveEffectiveTracked(input) {
-    /** @type {any} */
-    const result = await resolveEffectiveRepoOps(input);
-    if (!result || typeof result !== 'object') {
-      return result;
-    }
-    if (result.ok === false) {
-      recordRepoOpsResolution({
-        workspace: deps.workspace,
-        resolution: result,
-        base_sha: null
-      });
-      return result;
-    }
-    const bootstrap = result.classification === 'bootstrap';
-    const resolution = bootstrap ? result.target : result.policy;
-    const base_sha = bootstrap ? input.target_sha : input.previous_sha;
-    if (
-      typeof base_sha === 'string' &&
-      resolution &&
-      typeof resolution === 'object' &&
-      'config_blob_sha' in resolution
-    ) {
-      recordRepoOpsResolution({
-        workspace: deps.workspace,
-        resolution,
-        base_sha
-      });
-    }
-    return result;
+  async function resolveEffective(input) {
+    return resolveEffectiveRepoOps(input);
   }
 
   /**
@@ -610,7 +566,7 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function ensureVerifyLocked(candidate) {
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha: candidate.base_sha,
       target_sha: candidate.final_sha || candidate.head_sha,
@@ -699,7 +655,7 @@ export function createRepoOperationCoordinator(deps) {
       inherited.kind === 'verify' &&
       inherited.state === 'succeeded' &&
       inherited.effective_base_sha === candidate.base_sha.toLowerCase() &&
-      inherited.verify_head_sha === candidate.head_sha.toLowerCase() &&
+      inherited.verify_head_shas.includes(candidate.head_sha.toLowerCase()) &&
       inherited.target_tree === materialized.tree_sha.toLowerCase() &&
       inherited.script_object_type === declaration.object_type &&
       inherited.script_mode === declaration.mode &&
@@ -1156,7 +1112,7 @@ export function createRepoOperationCoordinator(deps) {
     }
     const target_sha = bound.target_sha;
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha,
       target_sha,
@@ -1293,7 +1249,7 @@ export function createRepoOperationCoordinator(deps) {
       return;
     }
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha: operation.effective_base_sha,
       target_sha: bound.target_sha,
@@ -1357,7 +1313,7 @@ export function createRepoOperationCoordinator(deps) {
       return;
     }
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha: operation.effective_base_sha,
       target_sha: policy_target,
@@ -1415,16 +1371,26 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} operation_id
+   * @param {string} head_sha
    */
-  function verifyReceipt(operation_id) {
+  function verifyReceipt(operation_id, head_sha) {
     const operation = observe(operation_id);
-    if (!operation || operation.kind !== 'verify') {
+    const bound_head_sha =
+      typeof head_sha === 'string' && /^[0-9a-f]{40}$/i.test(head_sha)
+        ? head_sha.toLowerCase()
+        : null;
+    if (
+      !operation ||
+      operation.kind !== 'verify' ||
+      bound_head_sha === null ||
+      !operation.verify_head_shas.includes(bound_head_sha)
+    ) {
       return null;
     }
     return {
       operation_id,
       effective_base_sha: operation.effective_base_sha,
-      head_sha: operation.verify_head_sha,
+      head_sha: bound_head_sha,
       candidate_tree_sha: operation.target_tree,
       script_object_type: operation.script_object_type,
       script_mode: operation.script_mode,
@@ -1445,9 +1411,17 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} operation_id
-   * @param {{ timeout_ms?: number, poll_ms?: number }} [options]
+   * @param {{ head_sha?: string, timeout_ms?: number, poll_ms?: number }} [options]
    */
   async function waitForTerminal(operation_id, options = {}) {
+    const head_sha = options.head_sha;
+    if (typeof head_sha !== 'string') {
+      return null;
+    }
+    const initial = verifyReceipt(operation_id, head_sha);
+    if (initial === null) {
+      return null;
+    }
     const deadline = Date.now() + (options.timeout_ms ?? 600_000) + 5000;
     const poll_ms = options.poll_ms ?? 100;
     while (Date.now() <= deadline) {
@@ -1457,7 +1431,7 @@ export function createRepoOperationCoordinator(deps) {
         operation &&
         (operation.state === 'succeeded' || operation.state === 'failed')
       ) {
-        return verifyReceipt(operation_id);
+        return verifyReceipt(operation_id, head_sha);
       }
       await new Promise((resolve) => setTimeout(resolve, poll_ms));
     }
@@ -1466,20 +1440,33 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} sha
+   * @param {{ current_target_base?: boolean }} [options]
    */
-  async function hasConfig(sha) {
+  async function hasConfig(sha, options = {}) {
+    const display_generation = options.current_target_base
+      ? beginRepoOpsDisplayResolution(deps.workspace)
+      : null;
     const resolved = await resolveRepoOps({
       repo: deps.repo,
       sha,
       gitRun: deps.gitRun
     });
+    if (display_generation !== null) {
+      recordRepoOpsResolution({
+        workspace: deps.workspace,
+        resolution: resolved,
+        base_sha: sha,
+        generation: display_generation
+      });
+    }
     if (!resolved.ok && resolved.code) {
       return resolved;
     }
     return {
       ok: true,
       present: resolved.config_blob_sha !== null,
-      verify_script_path: resolved.verify?.script ?? null
+      verify_script_path: resolved.verify?.script ?? null,
+      verify_timeout_ms: resolved.verify?.timeout_ms ?? null
     };
   }
 

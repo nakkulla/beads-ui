@@ -11,6 +11,13 @@ let tmp_state;
 const WS = '/tmp/example-workspace/auto-merge';
 const HEAD = 'a'.repeat(40);
 
+/**
+ * @param {'present'|'absent'|'invalid'} declaration_state
+ */
+function verifyPolicy(declaration_state) {
+  return { declaration_state, base_sha: 'b'.repeat(40) };
+}
+
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-am-'));
   process.env.XDG_STATE_HOME = tmp_state;
@@ -67,7 +74,7 @@ function enroller(store, input = {}) {
   const auto = createAutoMerge({
     workspace: WS,
     store,
-    verifyCmdState: () => 'resolved',
+    verifyState: () => verifyPolicy('present'),
     headSha: (bead_id) =>
       input.heads && bead_id in input.heads ? input.heads[bead_id] : HEAD,
     lane: () =>
@@ -203,18 +210,18 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
 
   test('passes an unreadable verify declaration as invalid', () => {
     const store = park(createQueueStore(), ['UI-1']);
-    /** @type {string|null} */
+    /** @type {{ declaration_state: string, base_sha: string|null }|null} */
     let observed_state = null;
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => {
+      verifyState: () => {
         throw new Error('unreadable');
       },
       headSha: () => HEAD,
       lane: () => [{ bead_id: 'UI-1', external: false }],
-      candidates: (_workspace, _queue, verify_cmd_state) => {
-        observed_state = verify_cmd_state;
+      candidates: (_workspace, _queue, verify_state) => {
+        observed_state = verify_state;
         return [];
       },
       notifyChanged: vi.fn(),
@@ -224,7 +231,81 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     const result = auto.enroll();
 
     expect(result.queued).toBe(0);
-    expect(observed_state).toBe('invalid');
+    expect(observed_state).toEqual({
+      declaration_state: 'invalid',
+      base_sha: null
+    });
+  });
+
+  test('does not enroll an old-base verify receipt', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    const runtime = getWorkerRuntime();
+    runtime.prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: HEAD,
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: HEAD }
+    });
+    runtime.prObservations.recordVerify(WS, 'UI-1', {
+      effective_base_sha: 'b'.repeat(40),
+      head_sha: HEAD,
+      ok: true,
+      reason: 'ok',
+      at: 1
+    });
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => ({
+        declaration_state: 'present',
+        base_sha: 'c'.repeat(40)
+      }),
+      headSha: () => HEAD,
+      notifyChanged: vi.fn(),
+      kick: vi.fn(async () => {})
+    });
+
+    const result = auto.enroll();
+
+    expect(result.queued).toBe(0);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('does not enroll a clean row when repo-ops policy is invalid', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    getWorkerRuntime().prObservations.record(WS, 'UI-1', {
+      pr: {
+        number: 1,
+        url: 'https://github.com/o/r/pull/1',
+        state: 'OPEN',
+        mergeable: 'MERGEABLE',
+        merge_state_status: 'CLEAN',
+        head_ref: 'UI-1',
+        head_sha: HEAD,
+        base_ref: 'main'
+      },
+      review_receipt: { state: 'current', head_sha: HEAD }
+    });
+    const auto = createAutoMerge({
+      workspace: WS,
+      store,
+      verifyState: () => verifyPolicy('invalid'),
+      headSha: () => HEAD,
+      notifyChanged: vi.fn(),
+      kick: vi.fn(async () => {})
+    });
+
+    const result = auto.enroll();
+
+    expect(result.queued).toBe(0);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
   test('atomically creates a root completion intent for repairable red', () => {
@@ -243,7 +324,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => 'resolved',
+      verifyState: () => verifyPolicy('present'),
       headSha: () => HEAD,
       lane: () => [{ bead_id: 'UI-1', external: false }],
       candidates: () => [
@@ -296,7 +377,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => 'resolved',
+      verifyState: () => verifyPolicy('present'),
       headSha: () => HEAD,
       lane: () => [{ bead_id: 'UI-1', external: false }],
       candidates: () => [
@@ -345,7 +426,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => 'resolved',
+      verifyState: () => verifyPolicy('present'),
       headSha: () => HEAD,
       lane: () => [{ bead_id: 'UI-1', external: false }],
       candidates: () => [
@@ -385,7 +466,7 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
       const auto = createAutoMerge({
         workspace: WS,
         store,
-        verifyCmdState: () => 'resolved',
+        verifyState: () => verifyPolicy('present'),
         headSha: () => HEAD,
         lane: () => [{ bead_id: 'UI-1', external: false }],
         candidates: () => [{ bead_id: 'UI-1', external: false, kind }],
@@ -425,7 +506,7 @@ describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A
     return createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => 'absent',
+      verifyState: () => verifyPolicy('absent'),
       headSha: () => HEAD,
       notifyChanged: vi.fn(),
       kick: vi.fn(async () => {})
@@ -515,7 +596,7 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => 'resolved',
+      verifyState: () => verifyPolicy('present'),
       headSha: () => HEAD,
       lane: () => [
         { bead_id: 'UI-1', external: false },
@@ -587,7 +668,7 @@ describe('worker/auto-merge — 구독 (UI-yk55 §4.1/§4.3)', () => {
     const auto = createAutoMerge({
       workspace: WS,
       store,
-      verifyCmdState: () => 'resolved',
+      verifyState: () => verifyPolicy('present'),
       headSha: () => HEAD,
       lane: () => {
         throw new Error('boom');

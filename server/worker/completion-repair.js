@@ -172,7 +172,8 @@ function matchesInterruptedCreation(issue, expected) {
  *   },
  *   repo: string,
  *   resolveVerify?: (pin: { sha: string }) => Promise<any>,
- *   runVerify?: (input: any) => Promise<any>
+ *   runVerify?: (input: any) => Promise<any>,
+ *   hasDurableVerify?: (input: { bead_id: string, base_sha: string, subject_sha?: string }) => boolean
  * }} deps
  */
 export function createCompletionRepairService(deps) {
@@ -368,6 +369,15 @@ export function createCompletionRepairService(deps) {
         typeof deps.runVerify !== 'function'
       ) {
         return { state: 'undecidable', reason: 'verify_probe_unavailable' };
+      }
+      if (
+        deps.hasDurableVerify?.({
+          bead_id: root_bead_id,
+          base_sha: failure_key.base_sha,
+          subject_sha: failure_key.subject_sha
+        }) === true
+      ) {
+        return { state: 'repo_operation' };
       }
       let resolved;
       try {

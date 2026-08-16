@@ -1,15 +1,26 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createActivityStore } from './activity-store.js';
+import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createPrPoller, resolvePrRef } from './pr-poller.js';
 import { __resetQueueEventsForTest } from './queue-events.js';
+import {
+  __resetRepoOpsDisplayForTest,
+  recordRepoOpsDisplay,
+  refreshRepoOpsDisplay,
+  repoOpsDisplayFor,
+  repoOpsVerifyPolicy,
+  repoOpsVerifyReceiptState
+} from './repo-ops-display.js';
 
 const SHA = 'a'.repeat(40);
 const NEW_SHA = 'c'.repeat(40);
+const BASE_SHA = 'b'.repeat(40);
 const PR_URL = 'https://github.com/o/r/pull/304';
 
 afterEach(() => {
   __resetQueueEventsForTest();
+  __resetRepoOpsDisplayForTest();
 });
 
 /**
@@ -69,6 +80,43 @@ function queueOf(input = {}) {
 }
 
 /**
+ * @param {{ verify_script_path?: string|null, receipt?: any }} [input]
+ */
+function repoOperations(input = {}) {
+  const receipt = {
+    state: 'succeeded',
+    head_sha: SHA,
+    ok: true,
+    reason: 'ok',
+    effective_base_sha: BASE_SHA,
+    candidate_tree_sha: 'd'.repeat(40),
+    script_object_type: 'blob',
+    script_mode: '100755',
+    script_blob_sha: 'e'.repeat(40)
+  };
+  return {
+    hasConfig: vi.fn(async () => ({
+      ok: true,
+      present: true,
+      verify_script_path:
+        input.verify_script_path === undefined
+          ? 'repo-ops/script/verify'
+          : input.verify_script_path
+    })),
+    ensureVerify: vi.fn(async (/** @type {any} */ input) => {
+      void input;
+      return {
+        ok: true,
+        operation_id: 'verify-op',
+        timeout_ms: 1000
+      };
+    }),
+    waitForTerminal: vi.fn(async () => input.receipt ?? receipt),
+    verifyReceipt: vi.fn(() => input.receipt ?? receipt)
+  };
+}
+
+/**
  * @param {{
  *   queue?: any,
  *   detail?: any,
@@ -76,8 +124,8 @@ function queueOf(input = {}) {
  *   observations?: any,
  *   activity?: any,
  *   readIssue?: any,
- *   resolveVerify?: any,
- *   runVerify?: any,
+ *   resolveBase?: any,
+ *   repoOperations?: any,
  *   onMerged?: any,
  *   onDeployment?: any,
  *   onDiscardObservation?: any,
@@ -128,8 +176,10 @@ function makePoller(input = {}) {
       input.readIssue ?? (async () => ({ metadata: { route: 'quick_fix' } })),
     activity,
     getSubscriberCount: () => input.subscribers ?? 1,
-    resolveVerify: input.resolveVerify ?? (async () => ({ state: 'absent' })),
-    runVerify: input.runVerify,
+    resolveBase:
+      input.resolveBase ??
+      (async () => ({ ok: true, base: 'main', base_oid: BASE_SHA })),
+    repoOperations: input.repoOperations,
     onMerged: input.onMerged,
     onDiscardObservation: input.onDiscardObservation,
     external: input.external,
@@ -483,133 +533,163 @@ describe('worker/pr-poller — observation errors fail closed', () => {
 });
 
 describe('worker/pr-poller — optional verification binding (§5)', () => {
-  const RESOLVED = /** @type {const} */ ({
-    state: 'resolved',
-    source: 'declaration',
-    value: { cmd: ['npm', 'test'], timeout_ms: 1000 }
-  });
+  test.each([
+    [
+      'throws',
+      async () => {
+        throw new Error('fetch failed');
+      },
+      'base_unresolved:git_error'
+    ],
+    [
+      'fails',
+      async () => ({ ok: false, step: 'declaration_missing' }),
+      'base_unresolved:declaration_missing'
+    ],
+    [
+      'omits its SHA',
+      async () => ({ ok: true, base: 'main' }),
+      'base_unresolved:base_sha_unobserved'
+    ]
+  ])(
+    'invalidates cached advisory authority when base resolution %s',
+    async (_case, resolveBase, expected_error) => {
+      const observations = createPrObservationStore();
+      observations.record('/ws', 'UI-1', {
+        pr: detailOf(),
+        review_receipt: { state: 'current', head_sha: SHA }
+      });
+      observations.recordVerify('/ws', 'UI-1', {
+        head_sha: SHA,
+        effective_base_sha: BASE_SHA,
+        ok: true,
+        reason: 'ok',
+        at: 1
+      });
+      recordRepoOpsDisplay('/ws', {
+        status: 'absent',
+        source_path: 'repo-ops/config.toml',
+        base_ref: 'main',
+        base_sha: BASE_SHA,
+        verify: null,
+        deploy: null,
+        error_code: null
+      });
+      const operations = /** @type {any} */ (repoOperations());
+      operations.refreshDisplay = vi.fn((input) =>
+        refreshRepoOpsDisplay({
+          workspace: '/ws',
+          repo: '/repo',
+          base: input.base,
+          sha: input.sha,
+          gitRun: vi.fn()
+        })
+      );
+      const { poller } = makePoller({
+        observations,
+        repoOperations: operations,
+        resolveBase
+      });
 
-  test('runs the verification pinned to the observed head sha', async () => {
-    const runVerify = vi.fn(async () => ({
-      ok: true,
-      reason: 'ok',
-      exit: 0
-    }));
+      await poller.tick();
+
+      const entry = observations.get('/ws', 'UI-1');
+      const policy = repoOpsVerifyPolicy(repoOpsDisplayFor('/ws'));
+      expect(policy.declaration_state).toBe('invalid');
+      expect(entry?.error).toBe(expected_error);
+      expect(
+        evaluateMergeGate(entry, {
+          review_receipt_state: observedReviewReceiptState(entry),
+          verify_receipt_state: repoOpsVerifyReceiptState(policy, entry?.verify)
+        })
+      ).toMatchObject({ enabled: false, tier: 'undecidable' });
+      expect(operations.ensureVerify).not.toHaveBeenCalled();
+      expect(operations.waitForTerminal).not.toHaveBeenCalled();
+    }
+  );
+
+  test('starts the durable verification pinned to base and head', async () => {
+    const operations = repoOperations();
     const { poller, observations } = makePoller({
-      resolveVerify: async () => RESOLVED,
-      runVerify
+      repoOperations: operations
     });
 
     await poller.tick();
 
-    expect(runVerify).toHaveBeenCalledWith(
+    expect(operations.ensureVerify).toHaveBeenCalledWith(
       expect.objectContaining({
-        sha: SHA,
+        base_sha: BASE_SHA,
+        head_sha: SHA,
         pr_number: 304,
-        cmd: ['npm', 'test']
+        script_path: 'repo-ops/script/verify'
       })
     );
+    expect(operations.waitForTerminal).toHaveBeenCalledWith('verify-op', {
+      head_sha: SHA,
+      timeout_ms: 1000
+    });
     expect(observations.get('/ws', 'UI-1')?.verify).toMatchObject({
       head_sha: SHA,
       ok: true
     });
   });
 
-  test('resolves the declaration for every open PR', async () => {
-    const resolveVerify = vi.fn(async () => RESOLVED);
-    const { poller } = makePoller({
-      resolveVerify,
-      runVerify: vi.fn()
-    });
+  test('resolves pinned repo policy for every open PR', async () => {
+    const operations = repoOperations();
+    const { poller } = makePoller({ repoOperations: operations });
 
     await poller.tick();
 
-    expect(resolveVerify).toHaveBeenCalled();
+    expect(operations.hasConfig).toHaveBeenCalledWith(BASE_SHA, {
+      current_target_base: true
+    });
   });
 
-  test('does not run a verification without a resolved verify_cmd', async () => {
-    const runVerify = vi.fn();
-    const { poller } = makePoller({
-      resolveVerify: async () => ({ state: 'absent' }),
-      runVerify
+  test('does not create an operation without a verify declaration', async () => {
+    const operations = repoOperations({ verify_script_path: null });
+    const { poller, observations } = makePoller({
+      repoOperations: operations
     });
 
     await poller.tick();
 
-    expect(runVerify).not.toHaveBeenCalled();
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'UI-1')?.verify).toBeNull();
+    expect(observations.get('/ws', 'UI-1')?.error).toBeNull();
   });
 
-  test('does not re-run when a result for the current head already exists', async () => {
-    const observations = createPrObservationStore();
-    observations.recordVerify('/ws', 'UI-1', {
-      head_sha: SHA,
-      ok: true,
-      reason: 'ok',
-      at: 1
-    });
-    const runVerify = vi.fn();
-    const { poller } = makePoller({
-      observations,
-      resolveVerify: async () => RESOLVED,
-      runVerify
-    });
+  test('adopts the same deterministic operation on a repeated observation', async () => {
+    const operations = repoOperations();
+    const { poller } = makePoller({ repoOperations: operations });
 
     await poller.tick();
-
-    expect(runVerify).not.toHaveBeenCalled();
-  });
-
-  test('re-runs when the head sha advanced past the recorded green', async () => {
-    const observations = createPrObservationStore();
-    observations.recordVerify('/ws', 'UI-1', {
-      head_sha: SHA,
-      ok: true,
-      reason: 'ok',
-      at: 1
-    });
-    const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
-    const { poller } = makePoller({
-      observations,
-      detail: { state: 'ok', data: detailOf({ head_sha: NEW_SHA }) },
-      resolveVerify: async () => RESOLVED,
-      runVerify
-    });
-
     await poller.tick();
 
-    expect(runVerify).toHaveBeenCalledWith(
-      expect.objectContaining({ sha: NEW_SHA })
+    expect(operations.ensureVerify).toHaveBeenCalledTimes(2);
+    expect(operations.ensureVerify.mock.calls[0][0]).toEqual(
+      operations.ensureVerify.mock.calls[1][0]
     );
-    expect(observations.get('/ws', 'UI-1')?.verify?.head_sha).toBe(NEW_SHA);
   });
 
-  test('re-runs after a restart cache miss instead of passing', async () => {
-    const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
+  test('uses a new candidate when the head advances', async () => {
+    const operations = repoOperations({
+      receipt: {
+        state: 'succeeded',
+        head_sha: NEW_SHA,
+        ok: true,
+        reason: 'ok'
+      }
+    });
     const { poller } = makePoller({
-      observations: createPrObservationStore(),
-      resolveVerify: async () => RESOLVED,
-      runVerify
+      detail: { state: 'ok', data: detailOf({ head_sha: NEW_SHA }) },
+      repoOperations: operations
     });
 
     await poller.tick();
 
-    expect(runVerify).toHaveBeenCalledTimes(1);
-  });
-
-  test('a fresh observation pass does not erase the recorded verification', async () => {
-    const observations = createPrObservationStore();
-    const runVerify = vi.fn(async () => ({ ok: true, reason: 'ok', exit: 0 }));
-    const { poller } = makePoller({
-      observations,
-      resolveVerify: async () => RESOLVED,
-      runVerify
-    });
-
-    await poller.tick();
-    await poller.tick();
-
-    expect(runVerify).toHaveBeenCalledTimes(1);
-    expect(observations.get('/ws', 'UI-1')?.verify?.ok).toBe(true);
+    expect(operations.ensureVerify).toHaveBeenCalledWith(
+      expect.objectContaining({ head_sha: NEW_SHA })
+    );
   });
 });
 
@@ -701,14 +781,13 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
       release = resolve;
     });
     const activity = createActivityStore();
+    const operations = {
+      ...repoOperations(),
+      waitForTerminal: () => gate
+    };
     const { poller } = makePoller({
       activity,
-      resolveVerify: async () => ({
-        state: 'resolved',
-        source: 'declaration',
-        value: { cmd: ['npm', 'test'], timeout_ms: 1000 }
-      }),
-      runVerify: () => gate.then(() => ({ ok: true, reason: 'ok', exit: 0 }))
+      repoOperations: operations
     });
 
     const pass = poller.tick();
@@ -730,14 +809,13 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
       release = resolve;
     });
     const activity = createActivityStore();
+    const operations = {
+      ...repoOperations(),
+      waitForTerminal: () => gate
+    };
     const { poller } = makePoller({
       activity,
-      resolveVerify: async () => ({
-        state: 'resolved',
-        source: 'declaration',
-        value: { cmd: ['npm', 'test'], timeout_ms: 1000 }
-      }),
-      runVerify: () => gate.then(() => ({ ok: true, reason: 'ok', exit: 0 }))
+      repoOperations: operations
     });
     const first = poller.tick();
     await Promise.resolve();

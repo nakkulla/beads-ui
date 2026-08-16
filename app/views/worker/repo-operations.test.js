@@ -991,20 +991,6 @@ describe('자동 해결 workspace setting', () => {
     ).toBe('해결 사다리');
   });
 
-  test('marks an absent verify stage as 안 함 with no error badge', () => {
-    const { mount } = mountWorker({ workspace_info: { verify_cmd: null } });
-
-    const dialog = openSettings(mount);
-    const group = /** @type {HTMLElement} */ (
-      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
-    );
-
-    expect([
-      group.querySelector('.exec-defaults__vd-badge--absent')?.textContent,
-      group.querySelector('.exec-defaults__vd-badge--error')
-    ]).toEqual(['안 함', null]);
-  });
-
   test('collapses the three policy lists by default', () => {
     const { mount } = mountWorker();
 
@@ -1153,7 +1139,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     expect(dialog.querySelectorAll('.exec-defaults__vd-cmd')).toHaveLength(0);
   });
 
-  test('falls back to the legacy display only on a proven absence', () => {
+  test('shows no legacy display on a proven absence', () => {
     const { mount } = mountWorker({
       workspace_info: {
         verify_cmd: null,
@@ -1165,17 +1151,17 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
 
     expect(
       dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
-  test('falls back to the legacy display on a snapshot without the field', () => {
+  test('shows no legacy display on a snapshot without repo ops', () => {
     const { mount } = mountWorker({ workspace_info: { verify_cmd: null } });
 
     const dialog = openSettings(mount);
 
     expect(
       dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
   test('says the declaration is still being read while pending', () => {

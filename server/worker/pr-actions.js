@@ -44,7 +44,6 @@
  *
  * @import { Queue } from './queue-store.js'
  * @import { PrDetail } from './gh.js'
- * @import { ResolvedVerifyCmd } from './verify-cmd.js'
  */
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
@@ -183,9 +182,9 @@ function authoritativeMergeSha(pr) {
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
- *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<import('./verify-cmd.js').VerifyResolution>,
+ *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
- *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any, hasConfig: (sha: string) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
+ *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
  *   requeryDelayMs?: number,
@@ -196,7 +195,6 @@ function authoritativeMergeSha(pr) {
 export function createPrActions(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
-  const now = deps.now || (() => Date.now());
   const sleep =
     deps.sleep ||
     ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
@@ -209,7 +207,7 @@ export function createPrActions(deps) {
     deps.resolveVerify ||
     (() =>
       Promise.resolve(
-        /** @type {import('./verify-cmd.js').VerifyResolution} */ ({
+        /** @type {any} */ ({
           state: 'absent'
         })
       ));
@@ -425,9 +423,10 @@ export function createPrActions(deps) {
    *
    * @param {Queue} q
    * @param {string} bead_id
+   * @param {import('./target-base.js').TargetBaseResult} [declaration]
    * @returns {Promise<{ ok: true, base: string, source: 'attempt'|'declaration' }|{ ok: false, reason: string }>}
    */
-  async function expectedBaseFor(q, bead_id) {
+  async function expectedBaseFor(q, bead_id, declaration = undefined) {
     const attempts = q && q.attempts ? Object.values(q.attempts) : [];
     /** @type {{ base: string, at: number }|null} */
     let best = null;
@@ -449,16 +448,18 @@ export function createPrActions(deps) {
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'base_unresolved:no_resolver' };
     }
-    /** @type {import('./target-base.js').TargetBaseResult} */
-    let resolved;
-    try {
-      // `force`: the merge is IRREVERSIBLE, so its expected base may not come
-      // from the scan path's short-lived memo. A declaration that changed since
-      // the last scan would otherwise be compared against a stale expectation
-      // (implementation review 2026-07-30).
-      resolved = await deps.resolveBase({ force: true });
-    } catch {
-      return { ok: false, reason: 'base_unresolved:git_error' };
+    /** @type {import('./target-base.js').TargetBaseResult|undefined} */
+    let resolved = declaration;
+    if (!resolved) {
+      try {
+        // `force`: the merge is IRREVERSIBLE, so its expected base may not come
+        // from the scan path's short-lived memo. A declaration that changed since
+        // the last scan would otherwise be compared against a stale expectation
+        // (implementation review 2026-07-30).
+        resolved = await deps.resolveBase({ force: true });
+      } catch {
+        return { ok: false, reason: 'base_unresolved:git_error' };
+      }
     }
     if (!resolved.ok) {
       return { ok: false, reason: `base_unresolved:${resolved.step}` };
@@ -481,10 +482,16 @@ export function createPrActions(deps) {
    * @param {Queue} q
    * @param {string} bead_id
    * @param {string|null|undefined} observed_base_ref
+   * @param {{ ok: true, base: string, source: 'attempt'|'declaration' }} [expected_input]
    * @returns {Promise<{ ok: true, base: string }|{ ok: false, reason: string }>}
    */
-  async function baseGate(q, bead_id, observed_base_ref) {
-    const expected = await expectedBaseFor(q, bead_id);
+  async function baseGate(
+    q,
+    bead_id,
+    observed_base_ref,
+    expected_input = undefined
+  ) {
+    const expected = expected_input || (await expectedBaseFor(q, bead_id));
     if (!expected.ok) {
       return expected;
     }
@@ -609,156 +616,42 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {number} number
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean }|{ error: string }>}
+   * @param {import('./target-base.js').TargetBaseResult} [base_pin]
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean }|{ error: string }>}
    */
-  async function gateNow(bead_id, number) {
+  async function gateNow(bead_id, number, base_pin) {
     const observed = await observeNow(bead_id, number);
     if ('error' in observed) {
       return observed;
     }
     const pr = observed.pr;
-    if (repo_operations && pr.state === 'OPEN') {
-      let pinned;
-      try {
-        pinned = await deps.resolveBase?.({ force: true });
-      } catch {
-        return { error: 'base_unresolved:git_error' };
+    if (pr.state === 'OPEN') {
+      if (!repo_operations) {
+        return { error: 'repo_operations_unavailable' };
+      }
+      let pinned = base_pin;
+      if (!pinned) {
+        try {
+          pinned = await deps.resolveBase?.({ force: true });
+        } catch {
+          return { error: 'base_unresolved:git_error' };
+        }
       }
       if (!pinned?.ok || typeof pinned.base_oid !== 'string') {
         return {
           error: `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'no_resolver'}`
         };
       }
-      const config = await repo_operations.hasConfig(pinned.base_oid);
+      const config = await repo_operations.hasConfig(pinned.base_oid, {
+        current_target_base: true
+      });
       if (!config.ok) {
         return { error: config.code || 'repo_ops_config_invalid' };
       }
-      if (config.present) {
-        const review_receipt_state = await readReviewReceiptState(
-          bead_id,
-          pr.head_sha
-        );
-        deps.observations.record(workspace, bead_id, {
-          error: null,
-          pr,
-          review_receipt: {
-            state: review_receipt_state,
-            head_sha: pr.head_sha
-          }
-        });
-        const preliminary = evaluateMergeGate(
-          deps.observations.get(workspace, bead_id),
-          {
-            review_receipt_state,
-            verify_receipt_state: {
-              declaration_state: 'absent',
-              receipt: null
-            }
-          }
-        );
-        if (!preliminary.enabled) {
-          return {
-            pr,
-            verdict: preliminary,
-            base_sha: pinned.base_oid,
-            repo_operations: true,
-            verify_operation_id: null,
-            verify_attempted: false
-          };
-        }
-        const ensured = await repo_operations.ensureVerify({
-          repo,
-          origin: 'origin',
-          target_base: pinned.base,
-          base_sha: pinned.base_oid,
-          head_sha: pr.head_sha,
-          bead_id,
-          pr_number: number,
-          script_path: config.verify_script_path
-        });
-        if (ensured.inert) {
-          return {
-            pr,
-            verdict: preliminary,
-            base_sha: pinned.base_oid,
-            repo_operations: true,
-            verify_operation_id: null,
-            verify_attempted: false
-          };
-        }
-        if (!ensured.ok || typeof ensured.operation_id !== 'string') {
-          return {
-            pr,
-            verdict: evaluateMergeGate(
-              deps.observations.get(workspace, bead_id),
-              {
-                review_receipt_state,
-                verify_receipt_state: {
-                  declaration_state: 'invalid',
-                  receipt: null
-                }
-              }
-            ),
-            base_sha: pinned.base_oid,
-            repo_operations: true,
-            verify_operation_id:
-              typeof ensured.operation_id === 'string'
-                ? ensured.operation_id
-                : null,
-            verify_attempted: true
-          };
-        }
-        const receipt =
-          (await repo_operations.waitForTerminal(ensured.operation_id, {
-            timeout_ms: ensured.timeout_ms
-          })) || repo_operations.verifyReceipt(ensured.operation_id);
-        if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
-          deps.observations.recordVerify(workspace, bead_id, receipt);
-        }
-        const expected_key = receipt
-          ? {
-              effective_base_sha: receipt.effective_base_sha,
-              head_sha: receipt.head_sha,
-              candidate_tree_sha: receipt.candidate_tree_sha,
-              script_object_type: receipt.script_object_type,
-              script_mode: receipt.script_mode,
-              script_blob_sha: receipt.script_blob_sha
-            }
-          : null;
-        return {
-          pr,
-          verdict: evaluateMergeGate(
-            deps.observations.get(workspace, bead_id),
-            {
-              review_receipt_state,
-              verify_receipt_state: {
-                declaration_state: 'present',
-                receipt:
-                  receipt?.state === 'succeeded' || receipt?.state === 'failed'
-                    ? receipt
-                    : null,
-                expected_key
-              }
-            }
-          ),
-          base_sha: pinned.base_oid,
-          repo_operations: true,
-          verify_operation_id: ensured.operation_id,
-          verify_attempted: true
-        };
-      }
-    }
-    // Pre-merge context: the resolver pins rung 1 to the fetched remote
-    // target-base tip, so a PR cannot define the command that judges it
-    // (UI-kfl4 §4.1). `force` because this is the AUTHORITATIVE click-time
-    // gate — a memoized pin could still name the base as it stood before a
-    // declaration landed on it, which is the one place that matters.
-    const resolved = await resolveVerify({ force: true });
-    const review_receipt_state =
-      pr.state === 'OPEN'
-        ? await readReviewReceiptState(bead_id, pr.head_sha)
-        : 'current';
-    if (pr.state === 'OPEN') {
+      const review_receipt_state = await readReviewReceiptState(
+        bead_id,
+        pr.head_sha
+      );
       deps.observations.record(workspace, bead_id, {
         error: null,
         pr,
@@ -767,66 +660,119 @@ export function createPrActions(deps) {
           head_sha: pr.head_sha
         }
       });
-    }
-    let entry = deps.observations.get(workspace, bead_id);
-    let verdict = evaluateMergeGate(entry, {
-      review_receipt_state,
-      verify_receipt_state: {
-        declaration_state: resolved.state === 'resolved' ? 'present' : 'absent',
-        receipt: entry?.verify || null
-      }
-    });
-    const cached_flaky_failure =
-      verdict.reason === 'verify_cmd_failed' &&
-      entry?.verify?.head_sha === pr.head_sha &&
-      entry.verify.ok === false;
-    if (
-      resolved.state === 'resolved' &&
-      !verdict.enabled &&
-      verdict.tier === 'verify' &&
-      (verdict.reason === 'verify_missing' ||
-        verdict.reason === 'verify_sha_stale' ||
-        cached_flaky_failure)
-    ) {
-      /** @type {{ ok: boolean, reason: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }} */
-      let r;
-      try {
-        r = await runVerify({
-          repo,
-          bead_id,
-          sha: pr.head_sha,
-          pr_number: number,
-          cmd: resolved.value.cmd,
-          timeout_ms: resolved.value.timeout_ms,
-          retry_flaky: true
-        });
-      } catch (err) {
-        log('click-time verification threw for %s: %o', bead_id, err);
-        r = { ok: false, reason: 'verify_cmd_spawn_error' };
-      }
-      if (r.ok && Array.isArray(r.attempts) && r.attempts.length === 2) {
-        await appendVerifyFlakeNote(bead_id, 'merge_gate', r.attempts);
-      }
-      deps.observations.recordVerify(workspace, bead_id, {
-        head_sha: pr.head_sha,
-        ok: !!r.ok,
-        reason: r.reason,
-        at: now(),
-        ...(typeof r.output_tail === 'string'
-          ? { output_tail: r.output_tail.slice(-4000) }
-          : {}),
-        ...(typeof r.log_path === 'string' ? { log_path: r.log_path } : {})
-      });
-      entry = deps.observations.get(workspace, bead_id);
-      verdict = evaluateMergeGate(entry, {
-        review_receipt_state,
-        verify_receipt_state: {
-          declaration_state: 'present',
-          receipt: entry?.verify || null
+      const preliminary = evaluateMergeGate(
+        deps.observations.get(workspace, bead_id),
+        {
+          review_receipt_state,
+          verify_receipt_state: {
+            declaration_state: 'absent',
+            receipt: null
+          }
         }
+      );
+      if (!preliminary.enabled || !config.verify_script_path) {
+        return {
+          pr,
+          verdict: preliminary,
+          target_base: pinned.base,
+          base_sha: pinned.base_oid,
+          repo_operations: true,
+          verify_operation_id: null,
+          verify_attempted: false
+        };
+      }
+      const ensured = await repo_operations.ensureVerify({
+        repo,
+        origin: 'origin',
+        target_base: pinned.base,
+        base_sha: pinned.base_oid,
+        head_sha: pr.head_sha,
+        bead_id,
+        pr_number: number,
+        script_path: config.verify_script_path
       });
+      if (ensured.inert) {
+        return {
+          pr,
+          verdict: preliminary,
+          target_base: pinned.base,
+          base_sha: pinned.base_oid,
+          repo_operations: true,
+          verify_operation_id: null,
+          verify_attempted: false
+        };
+      }
+      if (!ensured.ok || typeof ensured.operation_id !== 'string') {
+        return {
+          pr,
+          verdict: evaluateMergeGate(
+            deps.observations.get(workspace, bead_id),
+            {
+              review_receipt_state,
+              verify_receipt_state: {
+                declaration_state: 'invalid',
+                receipt: null
+              }
+            }
+          ),
+          target_base: pinned.base,
+          base_sha: pinned.base_oid,
+          repo_operations: true,
+          verify_operation_id:
+            typeof ensured.operation_id === 'string'
+              ? ensured.operation_id
+              : null,
+          verify_attempted: true
+        };
+      }
+      const receipt =
+        (await repo_operations.waitForTerminal(ensured.operation_id, {
+          head_sha: pr.head_sha,
+          timeout_ms: ensured.timeout_ms
+        })) || repo_operations.verifyReceipt(ensured.operation_id, pr.head_sha);
+      if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
+        deps.observations.recordVerify(workspace, bead_id, receipt);
+      }
+      const expected_key = receipt
+        ? {
+            effective_base_sha: receipt.effective_base_sha,
+            head_sha: receipt.head_sha,
+            candidate_tree_sha: receipt.candidate_tree_sha,
+            script_object_type: receipt.script_object_type,
+            script_mode: receipt.script_mode,
+            script_blob_sha: receipt.script_blob_sha
+          }
+        : null;
+      return {
+        pr,
+        verdict: evaluateMergeGate(deps.observations.get(workspace, bead_id), {
+          review_receipt_state,
+          verify_receipt_state: {
+            declaration_state: 'present',
+            receipt:
+              receipt?.state === 'succeeded' || receipt?.state === 'failed'
+                ? receipt
+                : null,
+            expected_key
+          }
+        }),
+        target_base: pinned.base,
+        base_sha: pinned.base_oid,
+        repo_operations: true,
+        verify_operation_id: ensured.operation_id,
+        verify_attempted: true
+      };
     }
-    return { pr, verdict };
+    return {
+      pr,
+      verdict: evaluateMergeGate(deps.observations.get(workspace, bead_id), {
+        review_receipt_state: 'current',
+        verify_receipt_state: {
+          declaration_state: 'absent',
+          receipt: null
+        }
+      })
+    };
   }
 
   /**
@@ -851,10 +797,6 @@ export function createPrActions(deps) {
     if (!ref || typeof ref.number !== 'number') {
       return { ok: false, reason: 'pr_ref_unknown' };
     }
-    const expected = await expectedBaseFor(q, bead_id);
-    if (!expected.ok) {
-      return { ok: false, reason: expected.reason };
-    }
     if (typeof deps.resolveBase !== 'function') {
       return { ok: false, reason: 'base_unresolved:no_resolver' };
     }
@@ -867,6 +809,10 @@ export function createPrActions(deps) {
     if (!pinned.ok) {
       return { ok: false, reason: `base_unresolved:${pinned.step}` };
     }
+    const expected = await expectedBaseFor(q, bead_id, pinned);
+    if (!expected.ok) {
+      return { ok: false, reason: expected.reason };
+    }
     if (pinned.base !== expected.base) {
       return {
         ok: false,
@@ -876,11 +822,11 @@ export function createPrActions(deps) {
     if (typeof pinned.base_oid !== 'string' || pinned.base_oid.length === 0) {
       return { ok: false, reason: 'base_sha_unobserved' };
     }
-    const gated = await gateNow(bead_id, ref.number);
+    const gated = await gateNow(bead_id, ref.number, pinned);
     if ('error' in gated) {
       return { ok: false, reason: gated.error };
     }
-    const base_ok = await baseGate(q, bead_id, gated.pr.base_ref);
+    const base_ok = await baseGate(q, bead_id, gated.pr.base_ref, expected);
     if (!base_ok.ok) {
       return { ok: false, reason: base_ok.reason };
     }
@@ -893,16 +839,27 @@ export function createPrActions(deps) {
     }
     const entry = deps.observations.get(workspace, bead_id);
     const verify = entry?.verify;
+    const authority =
+      gated.pr.state === 'OPEN'
+        ? { target_base: gated.target_base, base_sha: gated.base_sha }
+        : { target_base: pinned.base, base_sha: pinned.base_oid };
+    if (
+      authority.target_base !== expected.base ||
+      typeof authority.base_sha !== 'string' ||
+      authority.base_sha.length === 0
+    ) {
+      return { ok: false, reason: 'base_authority_unobserved' };
+    }
     return {
       ok: true,
-      target_base: expected.base,
-      base_sha: pinned.base_oid,
+      target_base: authority.target_base,
+      base_sha: authority.base_sha,
       subject: {
         role,
         bead_id,
         pr_url: gated.pr.url,
         head_sha: gated.pr.head_sha,
-        base_sha: pinned.base_oid,
+        base_sha: authority.base_sha,
         merged_sha: gated.pr.state === 'MERGED' ? gated.pr.merged_sha : null
       },
       verdict: gated.verdict,
@@ -1023,12 +980,9 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Step 2 — the repo's own post-merge verification, run against the MERGED base
-   * commit in a detached worktree. A repo that requires none (no declaration and
-   * no configured `verify_cmd`) has nothing to run, which is a pass, not a skip
-   * that hides a failure — but a declaration that cannot be READ is a failure,
-   * because "we could not tell" must never be recorded as "nothing to check"
-   * (UI-kfl4 §4.2).
+   * Step 2 — compatibility verification from the exact pinned repository
+   * declaration, run against the MERGED base in a detached worktree. An absent
+   * `[verify]` lane is inert; an unreadable or invalid declaration fails closed.
    *
    * The resolution is pinned to `base_sha` — the merged base this step verifies
    * — so the commands come from the same commit as the code they run against.
@@ -1041,6 +995,12 @@ export function createPrActions(deps) {
     const resolved = await resolveVerify({ sha: base_sha });
     if (resolved.state === 'absent') {
       return { ok: true };
+    }
+    if (resolved.state !== 'resolved') {
+      return {
+        ok: false,
+        reason: resolved.reason || 'repo_ops_config_invalid'
+      };
     }
     /** @type {{ ok: boolean, reason: string, detail?: string, output_tail?: string, log_path?: string, attempts?: { reason: string, log_path?: string }[] }} */
     let r;
@@ -1551,7 +1511,9 @@ export function createPrActions(deps) {
       });
       markStep(bead_id, 'repo_operations');
       const config = repo_operations
-        ? await repo_operations.hasConfig(synced.sha)
+        ? await repo_operations.hasConfig(synced.sha, {
+            current_target_base: true
+          })
         : { ok: true, present: false };
       if (!config.ok) {
         return failCleanup(
@@ -1633,8 +1595,13 @@ export function createPrActions(deps) {
           if (!verified.inert && typeof verified.operation_id === 'string') {
             const receipt =
               (await repo_operations.waitForTerminal(verified.operation_id, {
+                head_sha: verified_head_sha,
                 timeout_ms: verified.timeout_ms
-              })) || repo_operations.verifyReceipt(verified.operation_id);
+              })) ||
+              repo_operations.verifyReceipt(
+                verified.operation_id,
+                verified_head_sha
+              );
             if (!receipt || receipt.state !== 'succeeded') {
               return failCleanup(
                 bead_id,

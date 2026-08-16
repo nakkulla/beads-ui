@@ -147,7 +147,6 @@ describe('main', () => {
         workspaces: []
       },
       poll_interval_seconds: 30,
-      worker_verify: {},
       worker_notify: { enabled: false, cmd: ['discord'] },
       runner_overrides: {}
     });

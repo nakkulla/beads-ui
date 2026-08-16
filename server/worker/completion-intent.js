@@ -1296,6 +1296,9 @@ export function createCompletionActionDriver(deps) {
         source: fact.source,
         failure_key: fact.failure_key
       });
+      if (ownership.state === 'repo_operation') {
+        return;
+      }
       if (ownership.state === 'pr_owned') {
         await startRepair(root_bead_id, 'resume_root', fact);
       } else if (ownership.state === 'base_owned') {
