@@ -58,10 +58,8 @@ function transport(overrides = {}) {
     }),
     worktree: {
       exists: () => true,
-      pathFor: (
-        /** @type {string} */ _repo,
-        /** @type {string} */ bead_id
-      ) => `${REPO}/.worktrees/${bead_id}`
+      pathFor: (/** @type {string} */ _repo, /** @type {string} */ bead_id) =>
+        `${REPO}/.worktrees/${bead_id}`
     },
     gitRun: async (/** @type {string[]} */ args) => {
       calls.git.push(args);
@@ -177,9 +175,7 @@ describe('worker/head-review-transport — lineage', () => {
     });
 
     expect(lin).toEqual({ queue_owned: true });
-    expect(
-      calls.git.some((args) => args.includes('--is-ancestor'))
-    ).toBe(true);
+    expect(calls.git.some((args) => args.includes('--is-ancestor'))).toBe(true);
   });
 
   test('treats a failed ancestry probe as external drift', async () => {

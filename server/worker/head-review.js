@@ -138,7 +138,13 @@ export function createHeadReview(deps) {
    * @param {HeadReview['state']} expected_state
    * @param {Record<string, unknown>} patch
    */
-  function transition(queue_bead_id, authority_id, head_sha, expected_state, patch) {
+  function transition(
+    queue_bead_id,
+    authority_id,
+    head_sha,
+    expected_state,
+    patch
+  ) {
     try {
       return deps.store.setHeadReviewState(workspace, {
         bead_id: queue_bead_id,
@@ -163,11 +169,23 @@ export function createHeadReview(deps) {
    * @param {string} reason
    * @returns {EnsureApprovedResult}
    */
-  function failJournal(queue_bead_id, authority_id, head_sha, expected_state, reason) {
-    const ok = transition(queue_bead_id, authority_id, head_sha, expected_state, {
-      state: 'failed',
-      failure_reason: reason
-    });
+  function failJournal(
+    queue_bead_id,
+    authority_id,
+    head_sha,
+    expected_state,
+    reason
+  ) {
+    const ok = transition(
+      queue_bead_id,
+      authority_id,
+      head_sha,
+      expected_state,
+      {
+        state: 'failed',
+        failure_reason: reason
+      }
+    );
     return { state: ok ? 'failed' : 'gone', reason };
   }
 
@@ -249,13 +267,15 @@ export function createHeadReview(deps) {
           ? receipt.head_sha.toLowerCase()
           : null;
 
-      if (!deps.store.beginHeadReview(workspace, {
-        bead_id: queue_bead_id,
-        authority_id: authority.id,
-        head_sha,
-        reviewer,
-        effort
-      }).ok) {
+      if (
+        !deps.store.beginHeadReview(workspace, {
+          bead_id: queue_bead_id,
+          authority_id: authority.id,
+          head_sha,
+          reviewer,
+          effort
+        }).ok
+      ) {
         // Either the entry moved under us or a same-head journal appeared —
         // re-read and adopt it on the next pass.
         const current = queuedEntry(queue_bead_id)?.head_review ?? null;
@@ -295,11 +315,17 @@ export function createHeadReview(deps) {
         receipt.actor !== 'skipped' &&
         receipt.actor !== 'self'
       ) {
-        const ok = transition(queue_bead_id, authority.id, head_sha, 'pending', {
-          state: 'approved',
-          approval_source: 'existing_current',
-          receipt: receipt.raw
-        });
+        const ok = transition(
+          queue_bead_id,
+          authority.id,
+          head_sha,
+          'pending',
+          {
+            state: 'approved',
+            approval_source: 'existing_current',
+            receipt: receipt.raw
+          }
+        );
         return ok
           ? { state: 'approved', reason: null }
           : { state: 'gone', reason: null };
@@ -502,10 +528,7 @@ export function createHeadReview(deps) {
     } catch (err) {
       log('head-review post-write observation threw: %o', err);
     }
-    if (
-      typeof post_head !== 'string' ||
-      post_head.toLowerCase() !== head_sha
-    ) {
+    if (typeof post_head !== 'string' || post_head.toLowerCase() !== head_sha) {
       return failJournal(
         queue_bead_id,
         authority.id,
@@ -582,8 +605,7 @@ export function createHeadReview(deps) {
       );
     }
     const new_head =
-      typeof repaired.head_sha === 'string' &&
-      SHA40_RE.test(repaired.head_sha)
+      typeof repaired.head_sha === 'string' && SHA40_RE.test(repaired.head_sha)
         ? repaired.head_sha.toLowerCase()
         : null;
     if (new_head === null || new_head === head_sha) {

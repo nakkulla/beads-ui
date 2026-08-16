@@ -15,10 +15,7 @@
  * lineage and receipt from authoritative reads.
  */
 import { REVIEW_EFFORTS, REVIEW_STEP_MODELS } from './exec-enums.js';
-import {
-  DEFAULT_REVIEWER,
-  DEFAULT_REVIEW_EFFORT
-} from './head-review.js';
+import { DEFAULT_REVIEWER, DEFAULT_REVIEW_EFFORT } from './head-review.js';
 
 /**
  * The one structured-verdict channel between a review session and the Worker.
@@ -131,7 +128,8 @@ export function createHeadReviewTransport(deps) {
   async function selectReviewer(bead_id) {
     const md = await metadataOf(bead_id);
     const raw_model =
-      typeof md.impl_review_model === 'string' && md.impl_review_model.length > 0
+      typeof md.impl_review_model === 'string' &&
+      md.impl_review_model.length > 0
         ? md.impl_review_model
         : DEFAULT_REVIEWER;
     const raw_effort =
@@ -229,12 +227,7 @@ export function createHeadReviewTransport(deps) {
         }
       }
       const ancestry = await deps.gitRun(
-        [
-          'merge-base',
-          '--is-ancestor',
-          input.prior_head_sha,
-          input.head_sha
-        ],
+        ['merge-base', '--is-ancestor', input.prior_head_sha, input.head_sha],
         { cwd: deps.repo }
       );
       if (ancestry.code !== 0) {
@@ -266,7 +259,8 @@ export function createHeadReviewTransport(deps) {
     const events = Array.isArray(verdict?.events) ? verdict.events : [];
     return events
       .filter(
-        (/** @type {any} */ e) => e?.kind === 'text' && typeof e.text === 'string'
+        (/** @type {any} */ e) =>
+          e?.kind === 'text' && typeof e.text === 'string'
       )
       .map((/** @type {any} */ e) => e.text)
       .join('\n');

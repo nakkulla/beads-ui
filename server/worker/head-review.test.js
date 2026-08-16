@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { createQueueStore } from './queue-store.js';
 import { createHeadReview, reviewAttemptId } from './head-review.js';
+import { createQueueStore } from './queue-store.js';
 
 /** @type {string} */
 let tmp_state;

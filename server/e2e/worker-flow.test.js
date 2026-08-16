@@ -1501,8 +1501,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
         pr_actions.merge(bead_id, { allow_conflict_resolution: false }),
       probeMergeability: (/** @type {string} */ bead_id) =>
         pr_actions.probeMergeability(bead_id),
-      observePr: (/** @type {string} */ bead_id) =>
-        pr_actions.prState(bead_id),
+      observePr: (/** @type {string} */ bead_id) => pr_actions.prState(bead_id),
       headReview: head_review,
       headSha: () => NEW_HEAD,
       setResolutionPollTimer: () => 1
@@ -1606,8 +1605,7 @@ describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', 
         pr_actions.merge(bead_id, { allow_conflict_resolution: false }),
       probeMergeability: (/** @type {string} */ bead_id) =>
         pr_actions.probeMergeability(bead_id),
-      observePr: (/** @type {string} */ bead_id) =>
-        pr_actions.prState(bead_id),
+      observePr: (/** @type {string} */ bead_id) => pr_actions.prState(bead_id),
       headReview: head_review,
       headSha: () => NEW_HEAD,
       setResolutionPollTimer: () => 1

@@ -8419,29 +8419,24 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     ['pending', 'implementation review 대기', false],
     ['reviewing', 'implementation review 중', true],
     ['revising', 'review 수정 중 · 1회', true]
-  ])(
-    'renders the %s head-review badge (UI-58w8 §7)',
-    (state, label, live) => {
-      const { mount } = mountLane(
-        laneOf(['RD-1'], {
-          merge_queue: [headReviewEntry(state)],
-          merge_queue_state: { active: null, failures: {} }
-        })
-      );
+  ])('renders the %s head-review badge (UI-58w8 §7)', (state, label, live) => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [headReviewEntry(state)],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
 
-      const row = rowOf(mount, 'RD-1');
-      const badge = /** @type {HTMLElement} */ (
-        Array.from(row.querySelectorAll('.worker-mini__badge')).find(
-          (element) => (element.textContent || '').includes(label)
-        )
-      );
+    const row = rowOf(mount, 'RD-1');
+    const badge = /** @type {HTMLElement} */ (
+      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
+        (element.textContent || '').includes(label)
+      )
+    );
 
-      expect(badge).toBeDefined();
-      expect(badge.classList.contains('worker-mini__badge--activity')).toBe(
-        live
-      );
-    }
-  );
+    expect(badge).toBeDefined();
+    expect(badge.classList.contains('worker-mini__badge--activity')).toBe(live);
+  });
 
   test('renders a failed head review as an alert naming the sanitized reason', () => {
     const { mount } = mountLane(

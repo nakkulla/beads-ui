@@ -1157,18 +1157,19 @@ function normalizeHeadReview(value, authority) {
     typeof value.effort !== 'string' ||
     value.effort.length === 0 ||
     (value.repair_rounds !== 0 && value.repair_rounds !== 1) ||
-    ![
-      null,
-      'existing_current',
-      'external_review',
-      'bounded_repair'
-    ].includes(/** @type {any} */ (approval_source)) ||
+    ![null, 'existing_current', 'external_review', 'bounded_repair'].includes(
+      /** @type {any} */ (approval_source)
+    ) ||
     typeof value.updated_at !== 'number' ||
     !Number.isFinite(value.updated_at)
   ) {
     return null;
   }
-  const nullable = ['review_attempt_id', 'findings_digest', 'repair_attempt_id'];
+  const nullable = [
+    'review_attempt_id',
+    'findings_digest',
+    'repair_attempt_id'
+  ];
   if (
     nullable.some(
       (key) => value[key] !== null && typeof value[key] !== 'string'
@@ -1188,8 +1189,9 @@ function normalizeHeadReview(value, authority) {
     findings_digest: /** @type {string|null} */ (value.findings_digest),
     repair_attempt_id: /** @type {string|null} */ (value.repair_attempt_id),
     repair_rounds: /** @type {0|1} */ (value.repair_rounds),
-    approval_source:
-      /** @type {HeadReview['approval_source']} */ (approval_source),
+    approval_source: /** @type {HeadReview['approval_source']} */ (
+      approval_source
+    ),
     receipt: value.receipt,
     failure_reason: value.failure_reason,
     updated_at: value.updated_at
@@ -4998,7 +5000,7 @@ export function createQueueStore(options = {}) {
      * - re-click after a `failed` review, or a legacy authority-less entry →
      *   the current slot is atomically replaced with a NEW authority bound to
      *   the freshly observed head/base; every late result of the old attempt
-     *   then fails its `authority_id` CAS and is a no-op
+     *   then fails its `authority_id` CAS and is a no-op.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean }> }} input
@@ -5035,9 +5037,7 @@ export function createQueueStore(options = {}) {
             delete next.auto_merge_skips[bead_id];
             changed += 1;
           }
-          const existing = next.merge_queue.find(
-            (e) => e.bead_id === bead_id
-          );
+          const existing = next.merge_queue.find((e) => e.bead_id === bead_id);
           if (existing) {
             const review = existing.head_review ?? null;
             if (
@@ -5090,9 +5090,7 @@ export function createQueueStore(options = {}) {
      */
     beginHeadReview(workspace, input) {
       return applyUnconditional(workspace, (next) => {
-        const entry = next.merge_queue.find(
-          (e) => e.bead_id === input.bead_id
-        );
+        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
         if (
           !entry ||
           !entry.authority ||
@@ -5148,9 +5146,7 @@ export function createQueueStore(options = {}) {
      */
     setHeadReviewState(workspace, input) {
       return applyUnconditional(workspace, (next) => {
-        const entry = next.merge_queue.find(
-          (e) => e.bead_id === input.bead_id
-        );
+        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
         const review = entry ? (entry.head_review ?? null) : null;
         if (
           !entry ||

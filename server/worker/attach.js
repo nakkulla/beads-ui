@@ -48,8 +48,8 @@ import {
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
-import { createHeadReview } from './head-review.js';
 import { createHeadReviewTransport } from './head-review-transport.js';
+import { createHeadReview } from './head-review.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';

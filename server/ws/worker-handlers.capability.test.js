@@ -41,8 +41,6 @@ describe('decorateQueue manual continuation capability (UI-58w8 §8)', () => {
 
     expect(off.auto_merge).toBe(false);
     expect(on.auto_merge).toBe(true);
-    expect(off.manual_merge_continuation).toEqual(
-      on.manual_merge_continuation
-    );
+    expect(off.manual_merge_continuation).toEqual(on.manual_merge_continuation);
   });
 });
