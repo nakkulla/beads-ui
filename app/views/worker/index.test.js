@@ -222,13 +222,10 @@ function drag(mount, bead_id, pane_id) {
       `.worker-mini[data-bead-id="${bead_id}"], .worker-card[data-bead-id="${bead_id}"]`
     )
   );
-  const mini =
-    row.dataset.lane === 'queue'
-      ? /** @type {HTMLElement} */ (row.querySelector('.worker-mini__grip'))
-      : row;
+  row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
   const ds = new Event('dragstart', { bubbles: true });
   Object.defineProperty(ds, 'dataTransfer', { value: dt });
-  mini.dispatchEvent(ds);
+  row.dispatchEvent(ds);
 
   const pane = /** @type {HTMLElement} */ (mount.querySelector(`#${pane_id}`));
   const drop = new Event('drop', { bubbles: true, cancelable: true });
@@ -3170,7 +3167,7 @@ describe('waiting execution mode controls (UI-nrut)', () => {
     expect(mount.querySelector('.worker-bulk')).toBeNull();
   });
 
-  test('starts queue reorder only from the queue grip', async () => {
+  test('starts queue reorder from the row body', async () => {
     const transport = vi
       .fn()
       .mockResolvedValue(reply(queueOf({ revision: 4 })));
@@ -3196,31 +3193,16 @@ describe('waiting execution mode controls (UI-nrut)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="B"]')
     );
+    row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     const rowDrag = new Event('dragstart', { bubbles: true });
     Object.defineProperty(rowDrag, 'dataTransfer', { value: dataTransfer });
     row.dispatchEvent(rowDrag);
     const pane = /** @type {HTMLElement} */ (
       mount.querySelector('#worker-pane-queue')
     );
-    const rejectedDrop = new Event('drop', { bubbles: true, cancelable: true });
-    Object.defineProperty(rejectedDrop, 'dataTransfer', {
-      value: dataTransfer
-    });
-    pane.dispatchEvent(rejectedDrop);
-    await flush();
-    expect(transport).not.toHaveBeenCalled();
-
-    const grip = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__grip')
-    );
-    const gripDrag = new Event('dragstart', { bubbles: true });
-    Object.defineProperty(gripDrag, 'dataTransfer', { value: dataTransfer });
-    grip.dispatchEvent(gripDrag);
-    const acceptedDrop = new Event('drop', { bubbles: true, cancelable: true });
-    Object.defineProperty(acceptedDrop, 'dataTransfer', {
-      value: dataTransfer
-    });
-    pane.dispatchEvent(acceptedDrop);
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
+    pane.dispatchEvent(drop);
     await flush();
 
     expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
@@ -3228,6 +3210,51 @@ describe('waiting execution mode controls (UI-nrut)', () => {
       to_index: 2,
       expected_revision: 3
     });
+  });
+
+  test('cancels a drag that starts on an interactive row child', async () => {
+    const transport = vi.fn();
+    const { mount } = mountExecution(
+      {
+        revision: 3,
+        queue: [
+          { bead_id: 'A', added_at: 1 },
+          { bead_id: 'B', added_at: 2 }
+        ]
+      },
+      transport
+    );
+    let stored = '';
+    const dataTransfer = {
+      getData: () => stored,
+      setData: (/** @type {string} */ _type, /** @type {string} */ value) => {
+        stored = value;
+      },
+      effectAllowed: '',
+      dropEffect: ''
+    };
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="B"]')
+    );
+    const checkbox = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__select')
+    );
+    checkbox.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const rowDrag = new Event('dragstart', { bubbles: true, cancelable: true });
+    Object.defineProperty(rowDrag, 'dataTransfer', { value: dataTransfer });
+    row.dispatchEvent(rowDrag);
+
+    expect(rowDrag.defaultPrevented).toBe(true);
+
+    const pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue')
+    );
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
+    pane.dispatchEvent(drop);
+    await flush();
+
+    expect(transport).not.toHaveBeenCalled();
   });
 
   test('keeps waiting-row controls out of the detail click boundary', () => {
