@@ -5486,9 +5486,11 @@ export function createScheduler(deps) {
     if (intent.active_op !== null && !replaces_create) {
       return { ok: false, reason: 'completion_op_in_flight' };
     }
+    const expected_subject_sha =
+      intent.subject?.merged_sha || intent.subject?.head_sha;
     if (
-      intent.subject?.head_sha &&
-      intent.subject.head_sha !== op.failure_key.subject_sha
+      expected_subject_sha &&
+      expected_subject_sha !== op.failure_key.subject_sha
     ) {
       return { ok: false, reason: 'completion_subject_sha_stale' };
     }

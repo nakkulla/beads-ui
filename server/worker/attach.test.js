@@ -9,6 +9,7 @@ import {
   createLiveBd,
   createWorkerAttachment,
   initWorkerRuntime,
+  retryWorkerCleanup,
   stopWorkerAttempt,
   tickWorkerQueue
 } from './attach.js';
@@ -227,6 +228,87 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('routes a stranded cleanup retry through the real attachment to Done', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {Record<string, string>} */
+    const statuses = { 'UI-root': 'resolved' };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        listChildren: async () => [],
+        setStatus: async (
+          /** @type {string} */ id,
+          /** @type {string} */ status
+        ) => {
+          statuses[id] = status;
+        },
+        readStatus: async (/** @type {string} */ id) => statuses[id]
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+    const store = runtime.queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        repo: WS,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done' }
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'parent_close_failed',
+        stage: 'cleanup',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 1
+      }
+    });
+    store.recordCleanupFailure(WS, {
+      bead_id: 'UI-root',
+      step: 'parent_close',
+      reason: 'bd_close_failed'
+    });
+    __registerWorkerAttachmentForTest(WS, att);
+
+    const result = await retryWorkerCleanup(WS, 'UI-root');
+
+    expect(result).toMatchObject({ ok: true, step: null, reason: null });
+    expect(store.snapshot(WS)).toMatchObject({
+      pr_wait: [],
+      cleanup_failed: {},
+      done: [{ bead_id: 'UI-root' }],
+      completion_intents: {
+        'UI-root': { phase: 'completed', terminal_reason: null }
+      }
+    });
   });
 
   test('wires the completion action driver into the default coordinator', async () => {

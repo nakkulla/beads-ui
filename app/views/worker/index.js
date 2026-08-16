@@ -1113,6 +1113,8 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const merge_pending = new Set();
+  /** @type {Set<string>} Beads with one manual cleanup retry in flight. */
+  const cleanup_pending = new Set();
   /**
    * Beads whose REVISE-disposition click is in flight (UI-hs11 §3.5). It covers
    * the same gap `merge_pending` covers — the window between the click and the
@@ -1572,6 +1574,36 @@ export function createWorkerView(mount_element, options = {}) {
       'error',
       2400
     );
+  }
+
+  /**
+   * Retry the canonical post-merge cleanup once under the current queue CAS.
+   * A conflict is adopted but never retried automatically: another explicit
+   * click against the fresh snapshot is the authorization boundary.
+   *
+   * @param {string} bead_id
+   */
+  async function retryCleanup(bead_id) {
+    if (!transport || !bead_id || cleanup_pending.has(bead_id)) {
+      return;
+    }
+    cleanup_pending.add(bead_id);
+    doRender();
+    try {
+      const res = /** @type {any} */ (
+        await transport('worker-cleanup-retry', {
+          bead_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+      if (res && !res.retried && !res.conflict && res.reason) {
+        showToast(`정리 재개 거부: ${res.reason}`, 'error', 2400);
+      }
+    } finally {
+      cleanup_pending.delete(bead_id);
+      doRender();
+    }
   }
 
   /**
@@ -2845,7 +2877,7 @@ export function createWorkerView(mount_element, options = {}) {
             // The server's own progress wins; the local pending only covers the
             // window before the first snapshot carrying it arrives.
             pr_activity[e.bead_id] ||
-              (merge_pending.has(e.bead_id)
+              (merge_pending.has(e.bead_id) || cleanup_pending.has(e.bead_id)
                 ? { activity: null, merge_progress: { step: 'merging' } }
                 : null),
             conflict_sessions.get(e.bead_id) || null,
@@ -3934,7 +3966,7 @@ export function createWorkerView(mount_element, options = {}) {
     if (cleanupResume) {
       const bead_id = cleanupResume.dataset.beadId;
       if (bead_id) {
-        void queueMerge(bead_id);
+        void retryCleanup(bead_id);
       }
       return;
     }
@@ -4043,7 +4075,12 @@ export function createWorkerView(mount_element, options = {}) {
       target?.closest?.('.worker-mini__merge')
     );
     if (mergeBtn) {
-      void queueMerge(mergeBtn.dataset.beadId || '');
+      const bead_id = mergeBtn.dataset.beadId || '';
+      if (currentQueue().cleanup_failed?.[bead_id]) {
+        void retryCleanup(bead_id);
+      } else {
+        void queueMerge(bead_id);
+      }
       return;
     }
     const mergeCancelBtn = /** @type {HTMLElement|null} */ (
