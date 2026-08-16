@@ -333,27 +333,30 @@ describe('ws worker-queue channel', () => {
     ]);
   });
 
-  test('sets a workspace preset reference with both queue and preset revisions', async () => {
+  test('stores the workspace orchestration defaults under the queue revision', async () => {
     const sock = fakeSocket();
-    await send(sock, 'p1', 'exec-preset-create', {
-      expected_revision: 0,
-      name: '기본',
-      settings: {}
-    });
-    const preset = replyFor(sock, 'p1').payload.presets[0];
 
-    await send(sock, 'q1', 'worker-queue-set-default-exec-preset', {
-      preset_id: preset.id,
-      expected_queue_revision: 0,
-      expected_preset_revision: 1
+    await send(sock, 'q1', 'worker-queue-set-orchestration-defaults', {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet', orchestration_effort: 'high' }
     });
 
     expect(replyFor(sock, 'q1').payload).toMatchObject({
       applied: true,
       conflict: false,
-      queue: { default_exec_preset_id: preset.id },
-      presets: { revision: 1 }
+      queue: { orchestration_model: 'sonnet', orchestration_effort: 'high' }
     });
+  });
+
+  test('rejects a session key on the orchestration-defaults route', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'q2', 'worker-queue-set-orchestration-defaults', {
+      expected_revision: 0,
+      values: { spec_review_model: 'codex' }
+    });
+
+    expect(replyFor(sock, 'q2').payload.applied).toBe(false);
   });
 
   test('subscribe emits an initial queue snapshot', async () => {
@@ -669,7 +672,7 @@ describe('ws worker-queue channel', () => {
       'worker-queue-place',
       'worker-queue-reorder',
       'worker-queue-remove',
-      'worker-queue-set-default-exec-preset',
+      'worker-queue-set-orchestration-defaults',
       'worker-queue-set-pr-wait-hold',
       'worker-merge-queue-add',
       'worker-merge-queue-add-all',

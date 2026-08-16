@@ -7,6 +7,7 @@ import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { WORKER_SERIAL_LABEL } from '../../app/utils/worker-serial.js';
 import { tickWorkerQueue } from '../worker/attach.js';
 import {
+  WORKFLOW_MODES,
   execSettingEnums,
   validateImplSettings
 } from '../worker/exec-enums.js';
@@ -128,11 +129,10 @@ export async function handleUpdateAssignee(ws, req) {
 /**
  * Allowed values per exec-preference key for the per-bead detail-panel edit
  * surface: the 12 workspace-global keys from the shared exec-enums single source
- * PLUS `workflow_mode` (per-bead only — its only stored value is `fast_track`;
- * `standard`/empty is recorded as key removal). The 12-key table stays canonical
- * in exec-enums.js; only the extra per-bead `workflow_mode` is synthesized here
- * so this edit surface's behavior is unchanged. `orchestration_model` uses the
- * catalog union across runners; the client narrows by chosen runner for UX.
+ * PLUS `workflow_mode`, whose BOTH values are storable. The 12-key table stays
+ * canonical in exec-enums.js; only the extra `workflow_mode` is synthesized
+ * here. `orchestration_model` uses the catalog union across runners; the client
+ * narrows by chosen runner for UX.
  *
  * Built per call, not per module load: the base table is catalog-derived and the
  * catalog is read from `config.toml` at first use.
@@ -140,14 +140,17 @@ export async function handleUpdateAssignee(ws, req) {
  * @returns {Record<string, ReadonlyArray<string>>}
  */
 function execSettingEnumsForBead() {
-  return { ...execSettingEnums(), workflow_mode: ['fast_track'] };
+  return { ...execSettingEnums(), workflow_mode: WORKFLOW_MODES };
 }
 
 /**
- * Build the `bd update` argv for a single exec-setting change. A `standard`/
- * empty `workflow_mode`, or any empty value, is translated to `--unset-metadata`
- * (key removal) rather than storing the literal — matching the contract that
- * absence = standard/default.
+ * Build the `bd update` argv for a single exec-setting change.
+ *
+ * Every per-bead session-key editor is THREE-STATE (spec §E): an explicit value
+ * is written as a literal and only the empty value — the editor's `(기본)`
+ * choice — removes the key. `workflow_mode=standard` is therefore a literal
+ * write, not a deletion: `Bead metadata > bd kv` requires a bead to be able to
+ * override a `fast_track` workspace default, which a deletion cannot express.
  *
  * @param {string} id
  * @param {string} key
@@ -155,9 +158,7 @@ function execSettingEnumsForBead() {
  * @returns {string[]}
  */
 export function buildExecSettingsArgs(id, key, value) {
-  const is_unset =
-    value === '' || (key === 'workflow_mode' && value === 'standard');
-  if (is_unset) {
+  if (value === '') {
     return ['update', id, '--unset-metadata', key];
   }
   return ['update', id, '--set-metadata', `${key}=${value}`];
@@ -207,10 +208,7 @@ function validateExecSetting(key, value) {
     return `unknown exec-setting key: ${key}`;
   }
   if (value === '') {
-    return null; // unset — always allowed
-  }
-  if (key === 'workflow_mode' && value === 'standard') {
-    return null; // standard — mapped to unset
+    return null; // `(기본)` — the ONLY per-bead deletion
   }
   const allowed = enums[key];
   if (!allowed.includes(value)) {

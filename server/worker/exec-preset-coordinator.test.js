@@ -1,8 +1,7 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createQueueStore } from './queue-store.js';
@@ -10,13 +9,6 @@ import { createQueueStore } from './queue-store.js';
 /** @type {string} */
 let tmp_dir;
 const WORKSPACE = '/tmp/coordinator-workspace';
-
-function migrationDigest() {
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify([['orchestration_model', 'sol']]))
-    .digest('hex');
-}
 
 beforeEach(() => {
   tmp_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-coordinator-'));
@@ -27,7 +19,9 @@ afterEach(() => {
 });
 
 /**
- * @param {{ queue?: Record<string, unknown>, preset?: Record<string, unknown> }} [options]
+ * Build a coordinator over real queue + preset stores plus an in-memory kv.
+ *
+ * @param {{ queue?: Record<string, unknown>, preset?: Record<string, unknown>, kv?: Record<string, unknown>, kvFailOn?: 'read'|'write'|null, randomUUID?: () => string }} [options]
  */
 function createFixture(options = {}) {
   const queue_file = path.join(tmp_dir, 'queue.json');
@@ -39,13 +33,10 @@ function createFixture(options = {}) {
     fs.writeFileSync(preset_file, JSON.stringify(options.preset));
   }
   const queueStore = createQueueStore({ filePathFor: () => queue_file });
+  let next_id = 0;
   const presetStore = createExecPresetStore({
     filePath: preset_file,
-    randomUUID: () => 'migration-preset',
-    settingEnums: () => ({
-      orchestration_model: ['sol'],
-      orchestration_speed: ['default', 'fast']
-    })
+    randomUUID: options.randomUUID || (() => `copy-${++next_id}`)
   });
   const discover = () => ({
     complete: true,
@@ -55,221 +46,86 @@ function createFixture(options = {}) {
         display_name: '작업 공간',
         status: /** @type {'ok'} */ ('ok'),
         queue_file,
-        raw: JSON.parse(fs.readFileSync(queue_file, 'utf8'))
+        raw: fs.existsSync(queue_file)
+          ? JSON.parse(fs.readFileSync(queue_file, 'utf8'))
+          : null
       }
     ]
   });
-  return {
+  /** @type {Record<string, unknown>|undefined} */
+  let kv_value = options.kv;
+  const kvGet = vi.fn(async () =>
+    options.kvFailOn === 'read'
+      ? { ok: false, error: 'kv down' }
+      : { ok: true, value: kv_value }
+  );
+  const kvSet = vi.fn(
+    async (
+      /** @type {any} */ _ws,
+      /** @type {any} */ _key,
+      /** @type {any} */ value
+    ) => {
+      if (options.kvFailOn === 'write') {
+        return { ok: false, error: 'kv read-only' };
+      }
+      kv_value = value;
+      return { ok: true };
+    }
+  );
+  const coordinator = createExecPresetCoordinator({
     queueStore,
     presetStore,
     discover,
-    coordinator: createExecPresetCoordinator({
-      queueStore,
-      presetStore,
-      discover,
-      workspaceKeyFor: () => 'workspace-key',
-      workspaceNameFor: () => '작업 공간'
-    })
-  };
-}
-
-/**
- * @param {Partial<import('./scheduler.js').BeadSnapshot>} [over]
- */
-function beadSnapshot(over = {}) {
+    workspaceKeyFor: () => 'workspace-key',
+    kvGet,
+    kvSet
+  });
   return {
-    ready: true,
-    blocked: false,
-    repo: '/repo',
-    target_base: 'main',
-    ...over
+    coordinator,
+    queueStore,
+    presetStore,
+    queue_file,
+    kvGet,
+    kvSet,
+    kvValue: () => kv_value
   };
 }
 
-describe('exec-preset coordinator legacy migration', () => {
-  test('preserves orchestration speed in a selected preset dispatch snapshot', () => {
+describe('exec-preset-coordinator implementation presets', () => {
+  test('hides a legacy 12-key preset from the applicable snapshot', () => {
     const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
       preset: {
-        revision: 7,
+        revision: 1,
         presets: [
           {
-            id: 'preset-1',
-            name: 'Fast 기본',
-            settings: {
-              orchestration_model: 'sol',
-              orchestration_speed: 'fast'
-            },
+            id: 'legacy-1',
+            name: '옛 프리셋',
+            settings: { orchestration_model: 'sol', impl_model: 'sol' },
+            origin: { kind: 'user' }
+          },
+          {
+            id: 'impl-1',
+            name: '구현 프리셋',
+            settings: { impl_dispatch: 'main' },
             origin: { kind: 'user' }
           }
         ]
       }
     });
 
-    const resolved = fixture.coordinator.resolveForDispatch(
-      WORKSPACE,
-      beadSnapshot()
-    );
+    const snapshot = fixture.coordinator.snapshot();
 
-    expect(resolved).toMatchObject({
-      ok: true,
-      settings: { orchestration_speed: 'fast' },
-      exec: { orchestration_speed: 'fast' }
-    });
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['impl-1']);
   });
 
-  test('carries an illegal model-specific speed from a selected preset', () => {
+  test('marks an implementation preset whose model left the catalog incompatible', () => {
     const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
       preset: {
-        revision: 7,
+        revision: 1,
         presets: [
           {
-            id: 'preset-1',
-            name: 'Claude Fast',
-            settings: {
-              orchestration_model: 'opus',
-              orchestration_speed: 'fast'
-            },
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    const resolved = fixture.coordinator.resolveForDispatch(
-      WORKSPACE,
-      beadSnapshot()
-    );
-
-    expect(resolved).toMatchObject({
-      ok: true,
-      settings: {
-        orchestration_model: 'opus',
-        orchestration_speed: 'fast'
-      },
-      exec: {
-        orchestration_model: 'opus',
-        orchestration_speed: 'fast',
-        invalid_reason: 'illegal_orchestration_speed'
-      }
-    });
-  });
-
-  test('resolves one frozen preset snapshot with bead precedence and preset stamps', () => {
-    const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
-      preset: {
-        revision: 7,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
-            settings: {
-              orchestration_model: 'sol',
-              spec_review_model: 'codex'
-            },
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    const resolved = fixture.coordinator.resolveForDispatch(
-      WORKSPACE,
-      beadSnapshot({
-        model: 'opus'
-      })
-    );
-
-    if (!resolved.ok) {
-      throw new Error(resolved.reason);
-    }
-
-    expect(resolved).toMatchObject({
-      ok: true,
-      preset_id: 'preset-1',
-      preset_revision: 7,
-      settings: {
-        orchestration_model: 'sol',
-        spec_review_model: 'codex'
-      },
-      exec: {
-        orchestration_model: 'opus',
-        spec_review_model: 'codex',
-        stamped_keys: ['spec_review_model']
-      }
-    });
-    expect(Object.isFrozen(resolved.settings)).toBe(true);
-    expect(Object.isFrozen(resolved.exec)).toBe(true);
-  });
-
-  test('rejects a missing selected preset before dispatch', () => {
-    const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'gone' },
-      preset: { revision: 7, presets: [] }
-    });
-
-    expect(
-      fixture.coordinator.resolveForDispatch(WORKSPACE, beadSnapshot())
-    ).toEqual({
-      ok: false,
-      reason: 'default_exec_preset_missing'
-    });
-  });
-
-  test('keeps a resolved snapshot pinned while the next resolution reads an updated preset', () => {
-    const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
-      preset: {
-        revision: 7,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
-            settings: {},
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    const first = fixture.coordinator.resolveForDispatch(
-      WORKSPACE,
-      beadSnapshot()
-    );
-    fixture.coordinator.update({
-      expected_revision: 7,
-      id: 'preset-1',
-      name: '갱신됨',
-      settings: { orchestration_model: 'sol' }
-    });
-    const next = fixture.coordinator.resolveForDispatch(
-      WORKSPACE,
-      beadSnapshot()
-    );
-
-    expect(first).toMatchObject({
-      ok: true,
-      preset_revision: 7,
-      exec: { orchestration_model: 'opus' }
-    });
-    expect(next).toMatchObject({
-      ok: true,
-      preset_revision: 8,
-      exec: { orchestration_model: 'sol' }
-    });
-  });
-
-  test('rejects an incompatible selected preset before dispatch', () => {
-    const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
-      preset: {
-        revision: 7,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
+            id: 'impl-1',
+            name: '구현 프리셋',
             settings: { impl_runtime: 'claude', impl_model: 'terra' },
             origin: { kind: 'user' }
           }
@@ -277,523 +133,321 @@ describe('exec-preset coordinator legacy migration', () => {
       }
     });
 
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets[0].compatible).toBe(false);
+    expect(snapshot.presets[0].incompatibility_reason).toBe(
+      'provider_model_mismatch'
+    );
+  });
+
+  test('accepts the auto literal as a compatible implementation preset', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'impl-1',
+            name: '자동',
+            settings: {
+              impl_dispatch: 'delegated',
+              impl_runtime: 'inherit',
+              impl_model: 'auto',
+              impl_effort: 'auto'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    expect(fixture.coordinator.snapshot().presets[0].compatible).toBe(true);
+  });
+});
+
+describe('exec-preset-coordinator resolveForDispatch', () => {
+  test('supplies the queue orchestration values as the workspace layer', () => {
+    const fixture = createFixture();
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet', orchestration_effort: 'high' }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {})
+    );
+
+    expect(resolved.ok).toBe(true);
+    expect(resolved.settings).toEqual({
+      orchestration_model: 'sonnet',
+      orchestration_effort: 'high'
+    });
+    expect(resolved.exec.orchestration_model).toBe('sonnet');
+  });
+
+  test('never produces a stamped key', () => {
+    const fixture = createFixture();
+    fixture.queueStore.setOrchestrationDefaults(WORKSPACE, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' }
+    });
+
+    const resolved = /** @type {any} */ (
+      fixture.coordinator.resolveForDispatch(WORKSPACE, {})
+    );
+
+    expect(resolved.exec.stamped_keys).toEqual([]);
+  });
+});
+
+describe('exec-preset-coordinator session-defaults migration (spec §F)', () => {
+  /**
+   * @param {Record<string, unknown>} [extra]
+   */
+  function legacyQueue(extra = {}) {
+    return {
+      revision: 4,
+      exec_defaults: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        spec_review_model: 'codex',
+        impl_runtime: 'claude'
+      },
+      ...extra
+    };
+  }
+
+  test('fills the empty kv session keys from the legacy defaults', async () => {
+    const fixture = createFixture({ queue: legacyQueue() });
+
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(true);
+    expect(fixture.kvValue()).toMatchObject({
+      schema: 1,
+      spec_review_model: 'codex',
+      impl_runtime: 'claude'
+    });
+  });
+
+  test('never writes an orchestration key into the kv session layer', async () => {
+    const fixture = createFixture({ queue: legacyQueue() });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(fixture.kvValue()).not.toHaveProperty('orchestration_model');
+  });
+
+  test('leaves a kv key the user already chose untouched (fill-only-empty)', async () => {
+    const fixture = createFixture({
+      queue: legacyQueue(),
+      kv: { schema: 1, spec_review_model: 'fable' }
+    });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(fixture.kvValue()).toMatchObject({ spec_review_model: 'fable' });
+  });
+
+  test('fills the empty queue orchestration values from the legacy defaults', async () => {
+    const fixture = createFixture({ queue: legacyQueue() });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    const queue = fixture.queueStore.snapshot(WORKSPACE);
+    expect(queue.orchestration_model).toBe('sonnet');
+    expect(queue.orchestration_effort).toBe('high');
+  });
+
+  test('leaves an orchestration value the user already chose untouched', async () => {
+    const fixture = createFixture({
+      queue: legacyQueue({ orchestration_model: 'opus' })
+    });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(fixture.queueStore.snapshot(WORKSPACE).orchestration_model).toBe(
+      'opus'
+    );
+  });
+
+  test('creates the implementation copy of a legacy 12-key preset', async () => {
+    const fixture = createFixture({
+      queue: legacyQueue(),
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'legacy-1',
+            name: '옛 프리셋',
+            settings: {
+              orchestration_model: 'sonnet',
+              impl_runtime: 'claude',
+              impl_model: 'haiku'
+            },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    const presets = fixture.coordinator.snapshot().presets;
+    expect(presets).toHaveLength(1);
+    expect(presets[0].settings).toEqual({
+      impl_runtime: 'claude',
+      impl_model: 'haiku'
+    });
+    expect(presets[0].origin).toEqual({
+      kind: 'legacy-preset-copy',
+      source_preset_id: 'legacy-1'
+    });
+  });
+
+  test('writes the completion marker and clears the legacy fields', async () => {
+    const fixture = createFixture({ queue: legacyQueue() });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    const queue = fixture.queueStore.snapshot(WORKSPACE);
+    expect(queue.session_defaults_migration).toMatchObject({ version: 1 });
+    const persisted = JSON.parse(fs.readFileSync(fixture.queue_file, 'utf8'));
+    expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(false);
+  });
+
+  test('deletes the legacy 12-key original only after every workspace succeeded', async () => {
+    const fixture = createFixture({
+      queue: legacyQueue(),
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'legacy-1',
+            name: '옛 프리셋',
+            settings: { orchestration_model: 'sonnet', impl_model: 'haiku' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
     expect(
-      fixture.coordinator.resolveForDispatch(WORKSPACE, beadSnapshot())
-    ).toEqual({
-      ok: false,
-      reason: 'default_exec_preset_incompatible'
-    });
+      fixture.presetStore.snapshot().presets.map((preset) => preset.id)
+    ).not.toContain('legacy-1');
   });
 
-  test.each([
-    ['unknown orchestration model', { orchestration_model: 'removed-model' }],
-    ['illegal review model', { impl_review_model: 'removed-reviewer' }],
-    ['illegal review effort', { impl_review_effort: 'max' }]
-  ])(
-    'marks %s incompatible in snapshots and rejects selection and dispatch',
-    (_, settings) => {
-      const fixture = createFixture({
-        queue: { revision: 2, default_exec_preset_id: 'preset-1' },
-        preset: {
-          revision: 7,
-          presets: [
-            {
-              id: 'preset-1',
-              name: '기본',
-              settings,
-              origin: { kind: 'user' }
-            }
-          ]
-        }
-      });
-
-      expect(fixture.coordinator.snapshot().presets[0].compatible).toBe(false);
-      expect(
-        fixture.coordinator.setDefaultExecPreset(WORKSPACE, {
-          preset_id: 'preset-1',
-          expected_queue_revision: 2,
-          expected_preset_revision: 7
-        })
-      ).toMatchObject({
-        applied: false,
-        reason: 'default_exec_preset_incompatible'
-      });
-      expect(
-        fixture.coordinator.resolveForDispatch(WORKSPACE, beadSnapshot())
-      ).toEqual({ ok: false, reason: 'default_exec_preset_incompatible' });
-    }
-  );
-
-  test('migrates legacy defaults in ordered durable steps and is restart-idempotent', () => {
-    const first = createFixture({
-      queue: { revision: 4, exec_defaults: { orchestration_model: 'sol' } }
-    });
-
-    const migrated = first.coordinator.migrateWorkspace(WORKSPACE);
-
-    expect(migrated).toMatchObject({ ok: true, migrated: true });
-    expect(first.queueStore.snapshot(WORKSPACE)).toMatchObject({
-      default_exec_preset_id: 'migration-preset'
-    });
-    const durable = first.presetStore.snapshot();
-    expect(durable.presets[0]).toMatchObject({
-      id: 'migration-preset',
-      origin: {
-        kind: 'workspace-exec-defaults',
-        workspace_key: 'workspace-key'
-      }
-    });
-
-    const restarted = createFixture();
-    expect(restarted.coordinator.migrateWorkspace(WORKSPACE)).toMatchObject({
-      ok: true,
-      migrated: false
-    });
-    expect(restarted.presetStore.snapshot().presets).toHaveLength(1);
-  });
-
-  test('blocks delete when any durable queue is unreadable', () => {
+  test('writes no marker and keeps the source when the kv write fails', async () => {
     const fixture = createFixture({
-      queue: { revision: 0 },
+      queue: legacyQueue(),
+      kvFailOn: 'write'
+    });
+
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(false);
+    expect(
+      fixture.queueStore.snapshot(WORKSPACE).session_defaults_migration
+    ).toBe(null);
+    const persisted = JSON.parse(fs.readFileSync(fixture.queue_file, 'utf8'));
+    expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(true);
+  });
+
+  test('keeps the legacy original when a workspace pass failed', async () => {
+    const fixture = createFixture({
+      queue: legacyQueue(),
+      kvFailOn: 'write',
       preset: {
         revision: 1,
         presets: [
           {
-            id: 'preset-1',
-            name: '기본',
-            settings: {},
+            id: 'legacy-1',
+            name: '옛 프리셋',
+            settings: { orchestration_model: 'sonnet', impl_model: 'haiku' },
             origin: { kind: 'user' }
           }
         ]
       }
     });
-    const unreadable = () => ({ complete: false, states: [] });
-    const coordinator = createExecPresetCoordinator({
-      queueStore: fixture.queueStore,
-      presetStore: fixture.presetStore,
-      discover: unreadable
-    });
 
-    const result = coordinator.delete({ expected_revision: 1, id: 'preset-1' });
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
 
-    expect(result).toMatchObject({
-      applied: false,
-      conflict: false,
-      reason: 'reference_scan_incomplete'
-    });
-    expect(fixture.presetStore.snapshot().presets).toHaveLength(1);
+    expect(
+      fixture.presetStore.snapshot().presets.map((preset) => preset.id)
+    ).toContain('legacy-1');
   });
 
-  test('reports incomplete reference scans without a false reference count', () => {
+  test('re-converges on the next start after a partial pass', async () => {
+    const failing = createFixture({ queue: legacyQueue(), kvFailOn: 'write' });
+    await failing.coordinator.migrateWorkspaces([WORKSPACE]);
+    failing.queueStore.__clearCacheForTest();
+
+    const resumed = createFixture();
+    const result = await resumed.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(true);
+    expect(resumed.kvValue()).toMatchObject({ spec_review_model: 'codex' });
+    expect(
+      resumed.queueStore.snapshot(WORKSPACE).session_defaults_migration
+    ).toMatchObject({ version: 1 });
+  });
+
+  test('skips a workspace that already carries the completion marker', async () => {
     const fixture = createFixture({
-      queue: { revision: 0 },
-      preset: {
-        revision: 1,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
-            settings: { impl_model: 'unknown-model' },
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-    const coordinator = createExecPresetCoordinator({
-      queueStore: fixture.queueStore,
-      presetStore: fixture.presetStore,
-      discover: () => ({ complete: false, states: [] })
+      queue: legacyQueue({
+        session_defaults_migration: { version: 1, at: 1 }
+      })
     });
 
-    expect(coordinator.snapshot()).toMatchObject({
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(fixture.kvSet).not.toHaveBeenCalled();
+  });
+
+  test('does nothing for a workspace with no legacy fields', async () => {
+    const fixture = createFixture({ queue: { revision: 2 } });
+
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(true);
+    expect(fixture.kvSet).not.toHaveBeenCalled();
+    expect(
+      fixture.queueStore.snapshot(WORKSPACE).session_defaults_migration
+    ).toBe(null);
+  });
+
+  test('reuses the implementation copy rather than duplicating it on a re-run', async () => {
+    const preset = {
       revision: 1,
       presets: [
         {
-          id: 'preset-1',
-          compatible: false,
-          incompatibility_reason: 'unknown_impl_model',
-          reference_scan_complete: false,
-          reference_count: null,
-          reference_summary: []
+          id: 'legacy-1',
+          name: '옛 프리셋',
+          settings: { orchestration_model: 'sonnet', impl_model: 'haiku' },
+          origin: { kind: 'user' }
         }
       ]
-    });
-  });
-
-  test('marks linked runtime and model mismatches incompatible in snapshots', () => {
-    const fixture = createFixture({
-      queue: { revision: 0 },
-      preset: {
-        revision: 1,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
-            settings: { impl_runtime: 'claude', impl_model: 'terra' },
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    expect(fixture.coordinator.snapshot().presets[0]).toMatchObject({
-      compatible: false,
-      incompatibility_reason: 'provider_model_mismatch'
-    });
-  });
-
-  test('closes the startup barrier when preset normalization cannot load without legacy defaults', () => {
-    const fixture = createFixture({ queue: { revision: 0 } });
-    let snapshots = 0;
-    const presetStore = {
-      ...fixture.presetStore,
-      snapshot() {
-        snapshots += 1;
-        throw new Error('normalization readback failed');
-      }
     };
-    const coordinator = createExecPresetCoordinator({
-      queueStore: fixture.queueStore,
-      presetStore,
-      discover: () => ({ complete: true, states: [] })
+    const failing = createFixture({
+      queue: legacyQueue(),
+      preset,
+      kvFailOn: 'write'
     });
+    await failing.coordinator.migrateWorkspaces([WORKSPACE]);
+    failing.queueStore.__clearCacheForTest();
 
-    expect(coordinator.migrateWorkspaces([WORKSPACE])).toEqual({
-      ok: false,
-      step: 'preset_store_normalization',
-      outcomes: []
-    });
-    expect(snapshots).toBe(1);
-  });
+    const resumed = createFixture();
+    await resumed.coordinator.migrateWorkspaces([WORKSPACE]);
 
-  test('returns authoritative queue and preset snapshots for a stale dual CAS', () => {
-    const fixture = createFixture({
-      queue: { revision: 2 },
-      preset: {
-        revision: 3,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
-            settings: {},
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    const result = fixture.coordinator.setDefaultExecPreset(WORKSPACE, {
-      preset_id: 'preset-1',
-      expected_queue_revision: 1,
-      expected_preset_revision: 2
-    });
-
-    expect(result).toMatchObject({
-      applied: false,
-      conflict: true,
-      queue: { revision: 2 },
-      presets: { revision: 3 }
-    });
-  });
-
-  test('preserves legacy defaults when a partial reference does not match its migration origin', () => {
-    const fixture = createFixture({
-      queue: {
-        revision: 2,
-        default_exec_preset_id: 'wrong-preset',
-        exec_defaults: { orchestration_model: 'sol' }
-      },
-      preset: {
-        revision: 1,
-        presets: [
-          {
-            id: 'wrong-preset',
-            name: '사용자 기본',
-            settings: { orchestration_model: 'sol' },
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    const result = fixture.coordinator.migrateWorkspace(WORKSPACE);
-
-    expect(result).toEqual({ ok: false, step: 'legacy_reference_mismatch' });
-    expect(fixture.queueStore.snapshot(WORKSPACE)).toMatchObject({
-      default_exec_preset_id: 'wrong-preset',
-      exec_defaults: { orchestration_model: 'sol' }
-    });
-  });
-
-  test('hides a pending migration preset until legacy clear has read back', () => {
-    const fixture = createFixture({
-      queue: {
-        revision: 2,
-        default_exec_preset_id: 'migration-preset',
-        exec_defaults: { orchestration_model: 'sol' }
-      },
-      preset: {
-        revision: 1,
-        presets: [
-          {
-            id: 'migration-preset',
-            name: '이전 기본값',
-            settings: { orchestration_model: 'sol' },
-            origin: {
-              kind: 'workspace-exec-defaults',
-              workspace_key: 'workspace-key',
-              source_digest: migrationDigest()
-            }
-          }
-        ]
-      }
-    });
-
-    expect(fixture.coordinator.snapshot().presets).toEqual([]);
-  });
-
-  test('returns annotated snapshot after creating a preset', () => {
-    const fixture = createFixture({ queue: { revision: 0 } });
-
-    const result = fixture.coordinator.create({
-      expected_revision: 0,
-      name: '기본',
-      settings: {}
-    });
-
-    expect(result).toMatchObject({
-      applied: true,
-      presets: [
-        {
-          id: 'migration-preset',
-          reference_count: 0,
-          reference_summary: []
-        }
-      ]
-    });
-  });
-
-  test('keeps referenced workspace impact in an annotated update response', () => {
-    const fixture = createFixture({
-      queue: { revision: 2, default_exec_preset_id: 'preset-1' },
-      preset: {
-        revision: 1,
-        presets: [
-          {
-            id: 'preset-1',
-            name: '기본',
-            settings: {},
-            origin: { kind: 'user' }
-          }
-        ]
-      }
-    });
-
-    const result = fixture.coordinator.update({
-      expected_revision: 1,
-      id: 'preset-1',
-      name: '수정됨',
-      settings: {}
-    });
-
-    expect(result).toMatchObject({
-      applied: true,
-      presets: [
-        {
-          id: 'preset-1',
-          reference_count: 1,
-          reference_summary: [
-            { workspace_key: 'workspace-key', display_name: '작업 공간' }
-          ]
-        }
-      ]
-    });
-  });
-
-  test('removes the legacy key from the durable queue after migration', () => {
-    const fixture = createFixture({
-      queue: { revision: 0, exec_defaults: { orchestration_model: 'sol' } }
-    });
-
-    fixture.coordinator.migrateWorkspace(WORKSPACE);
-
-    expect(
-      JSON.parse(fs.readFileSync(path.join(tmp_dir, 'queue.json'), 'utf8'))
-    ).not.toHaveProperty('exec_defaults');
-  });
-
-  test('fails closed on unknown raw legacy defaults without mutating queue or presets', () => {
-    const fixture = createFixture({
-      queue: {
-        revision: 4,
-        exec_defaults: { orchestration_model: 'removed-model' }
-      }
-    });
-
-    expect(fixture.coordinator.migrateWorkspace(WORKSPACE)).toEqual({
-      ok: false,
-      step: 'legacy_incompatible'
-    });
-    expect(fixture.queueStore.snapshot(WORKSPACE)).toMatchObject({
-      revision: 4,
-      exec_defaults: {}
-    });
-    expect(
-      JSON.parse(fs.readFileSync(path.join(tmp_dir, 'queue.json'), 'utf8'))
-    ).toMatchObject({
-      revision: 4,
-      exec_defaults: { orchestration_model: 'removed-model' }
-    });
-    expect(fixture.presetStore.snapshot().presets).toEqual([]);
-  });
-
-  test('fails closed when raw discovery cannot read the target legacy queue', () => {
-    const fixture = createFixture({
-      queue: { revision: 4, exec_defaults: { orchestration_model: 'sol' } }
-    });
-    const coordinator = createExecPresetCoordinator({
-      queueStore: fixture.queueStore,
-      presetStore: fixture.presetStore,
-      discover: () => ({
-        complete: false,
-        states: [
-          {
-            workspace_key: 'workspace-key',
-            display_name: '작업 공간',
-            status: 'unreadable',
-            queue_file: path.join(tmp_dir, 'queue.json'),
-            raw: null
-          }
-        ]
-      }),
-      workspaceKeyFor: () => 'workspace-key'
-    });
-
-    expect(coordinator.migrateWorkspace(WORKSPACE)).toEqual({
-      ok: false,
-      step: 'legacy_discovery_incomplete'
-    });
-    expect(fixture.queueStore.snapshot(WORKSPACE).revision).toBe(4);
-    expect(fixture.presetStore.snapshot().presets).toEqual([]);
-  });
-
-  test('skips migration when a complete raw scan has no target queue state', () => {
-    const fixture = createFixture();
-    const coordinator = createExecPresetCoordinator({
-      queueStore: fixture.queueStore,
-      presetStore: fixture.presetStore,
-      discover: () => ({ complete: true, states: [] }),
-      workspaceKeyFor: () => 'workspace-key'
-    });
-
-    expect(coordinator.migrateWorkspace(WORKSPACE)).toEqual({
-      ok: true,
-      migrated: false
-    });
-    expect(fixture.presetStore.snapshot().presets).toEqual([]);
-  });
-
-  test('preserves migratable values across every ordered failure boundary and converges on restart', () => {
-    const steps = [
-      'preset_persist',
-      'preset_readback',
-      'queue_reference_persist',
-      'queue_reference_readback',
-      'legacy_clear',
-      'queue_clear_readback'
-    ];
-    for (const step of steps) {
-      fs.rmSync(tmp_dir, { recursive: true, force: true });
-      fs.mkdirSync(tmp_dir, { recursive: true });
-      const fixture = createFixture({
-        queue: { revision: 0, exec_defaults: { orchestration_model: 'sol' } }
-      });
-      let snapshots = 0;
-      const presetStore = {
-        ...fixture.presetStore,
-        /** @param {{ name: string, settings: Record<string, string>, workspace_key: string, source_digest: string }} input */
-        createOrReuseMigration(input) {
-          if (step === 'preset_persist') {
-            throw new Error('disk full');
-          }
-          return fixture.presetStore.createOrReuseMigration(input);
-        },
-        snapshot() {
-          if (step === 'preset_readback') {
-            return { revision: 0, presets: [] };
-          }
-          return fixture.presetStore.snapshot();
-        }
-      };
-      const queueStore = {
-        ...fixture.queueStore,
-        /**
-         * @param {string} workspace - Workspace key.
-         * @param {{ expected_revision: number, preset_id: string|null }} input - CAS input.
-         */
-        setDefaultExecPresetId(workspace, input) {
-          if (step === 'queue_reference_persist') {
-            return {
-              ok: false,
-              conflict: false,
-              queue: fixture.queueStore.snapshot(workspace)
-            };
-          }
-          return fixture.queueStore.setDefaultExecPresetId(workspace, input);
-        },
-        /** @param {string} workspace */
-        snapshot(workspace) {
-          snapshots += 1;
-          if (step === 'queue_reference_readback' && snapshots === 2) {
-            throw new Error('readback unavailable');
-          }
-          if (step === 'queue_clear_readback' && snapshots === 3) {
-            throw new Error('readback unavailable');
-          }
-          return fixture.queueStore.snapshot(workspace);
-        },
-        /**
-         * @param {string} workspace - Workspace key.
-         * @param {{ expected_revision: number }} input - CAS input.
-         */
-        clearLegacyExecDefaults(workspace, input) {
-          if (step === 'legacy_clear') {
-            return {
-              ok: false,
-              conflict: false,
-              queue: fixture.queueStore.snapshot(workspace)
-            };
-          }
-          return fixture.queueStore.clearLegacyExecDefaults(workspace, input);
-        }
-      };
-      const coordinator = createExecPresetCoordinator({
-        queueStore,
-        presetStore,
-        discover: fixture.discover,
-        workspaceKeyFor: () => 'workspace-key',
-        workspaceNameFor: () => '작업 공간'
-      });
-
-      expect(coordinator.migrateWorkspace(WORKSPACE)).toMatchObject({
-        ok: false,
-        step
-      });
-      const failed_queue = fixture.queueStore.snapshot(WORKSPACE);
-      const legacy_defaults = Object.hasOwn(failed_queue, 'exec_defaults')
-        ? failed_queue.exec_defaults
-        : {};
-      expect(
-        fixture.presetStore.snapshot().presets.length > 0 ||
-          legacy_defaults.orchestration_model === 'sol'
-      ).toBe(true);
-
-      expect(fixture.coordinator.migrateWorkspace(WORKSPACE)).toMatchObject({
-        ok: true
-      });
-      expect(
-        fixture.queueStore.snapshot(WORKSPACE).default_exec_preset_id
-      ).toBe('migration-preset');
-    }
+    const copies = resumed.presetStore
+      .snapshot()
+      .presets.filter(
+        (entry) =>
+          entry.origin.kind === 'legacy-preset-copy' &&
+          entry.origin.source_preset_id === 'legacy-1'
+      );
+    expect(copies).toHaveLength(1);
   });
 });

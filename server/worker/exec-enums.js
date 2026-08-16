@@ -6,14 +6,15 @@
  * impl_runtime / impl_model / impl_effort target).
  *
  * Consumed by:
- *   - queue-store.js: workspace-global default validation + persistence
- *     normalize (`exec_defaults`), and the `setExecDefault` mutation enum.
+ *   - queue-store.js: the three orchestration values' validation and normalize
+ *     (`setOrchestrationDefaults`).
  *   - policy.js: dispatch resolution (`resolveExecSettings`).
  *   - ws/mutation-handlers.js: the per-bead detail-panel edit surface, which
  *     synthesizes the extra `workflow_mode` key on top of these 12.
  *
- * `workflow_mode` is intentionally NOT part of this table — it is a per-bead
- * metadata key only, never a workspace-global default (spec 비-목표).
+ * `workflow_mode` is intentionally NOT part of this table: it is a SESSION key,
+ * so its vocabulary lives in {@link sessionDefaultEnums} beside the other 11
+ * `bd kv` keys rather than in the worker launcher's table.
  *
  * The runner axis is retired (worker-phase1 §4): the runner is DERIVED from the
  * resolved model through the catalog's globally-unique model names, so there is
@@ -67,6 +68,172 @@ export const REVIEW_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 
 /** Implementation runtime choices from the workflow contract. */
 export const IMPL_RUNTIMES = ['inherit', 'claude', 'codex'];
+
+/**
+ * `impl_dispatch` — whether the controller delegates the implementation leg or
+ * implements it itself. Consumed by the workflow selector, never by the worker
+ * launcher (dotfiles `workflow.yaml metadata.parent_keys`).
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const IMPL_DISPATCHES = ['delegated', 'main'];
+
+/**
+ * `impl_speed` vocabulary. Fixed by contract rather than catalog-derived: it is
+ * a selector-level choice, not an orchestration CLI flag.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const IMPL_SPEEDS = ['default', 'fast'];
+
+/**
+ * `workflow_mode` vocabulary. Both values are storable per bead: `standard` is
+ * a LITERAL, not an absence, because a bead must be able to override a
+ * `fast_track` workspace default (spec §E).
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const WORKFLOW_MODES = ['standard', 'fast_track'];
+
+/**
+ * The `auto` literal accepted by `impl_model` and `impl_effort`: the selector's
+ * model/auto · effort/auto state, meaning "assign a tier from the task", not a
+ * missing value.
+ */
+export const AUTO_LITERAL = 'auto';
+
+/**
+ * The 12 session keys that resolve through `bd kv workflow_session_defaults`
+ * (dotfiles `workflow.yaml workspace_kv_defaults.allowed_keys`). Disjoint from
+ * the three `orchestration_*` keys, whose only consumer is the worker launcher
+ * and whose workspace storage is the queue state.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const SESSION_DEFAULT_KEYS = [
+  'workflow_mode',
+  'spec_review_model',
+  'spec_review_effort',
+  'plan_review_model',
+  'plan_review_effort',
+  'impl_review_model',
+  'impl_review_effort',
+  'impl_dispatch',
+  'impl_runtime',
+  'impl_model',
+  'impl_effort',
+  'impl_speed'
+];
+
+/**
+ * The five keys an implementation preset carries (spec §C.6). A preset holding
+ * any other key is a legacy 12-key preset awaiting migration.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const IMPL_PRESET_KEYS = [
+  'impl_dispatch',
+  'impl_runtime',
+  'impl_model',
+  'impl_effort',
+  'impl_speed'
+];
+
+/**
+ * The three orchestration keys stored directly as workspace queue values.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const ORCHESTRATION_KEYS = [
+  'orchestration_model',
+  'orchestration_effort',
+  'orchestration_speed'
+];
+
+/**
+ * Allowed values per session-default key. `impl_model`/`impl_effort` add the
+ * `auto` literal to their catalog vocabulary; every other key reuses the
+ * existing metadata enum so the kv layer cannot diverge from the pin layer.
+ *
+ * @param {ResolvedCatalog} [catalog]
+ * @returns {Record<string, ReadonlyArray<string>>}
+ */
+export function sessionDefaultEnums(catalog = runtimeCatalog()) {
+  const base = execSettingEnums(catalog);
+  return {
+    workflow_mode: WORKFLOW_MODES,
+    spec_review_model: REVIEW_STEP_MODELS,
+    spec_review_effort: REVIEW_EFFORTS,
+    plan_review_model: PLAN_REVIEW_MODELS,
+    plan_review_effort: REVIEW_EFFORTS,
+    impl_review_model: REVIEW_STEP_MODELS,
+    impl_review_effort: REVIEW_EFFORTS,
+    impl_dispatch: IMPL_DISPATCHES,
+    impl_runtime: IMPL_RUNTIMES,
+    impl_model: [AUTO_LITERAL, ...base.impl_model],
+    impl_effort: [AUTO_LITERAL, ...base.impl_effort],
+    impl_speed: IMPL_SPEEDS
+  };
+}
+
+/**
+ * Allowed values per implementation-preset key — the session enums narrowed to
+ * the five preset keys.
+ *
+ * @param {ResolvedCatalog} [catalog]
+ * @returns {Record<string, ReadonlyArray<string>>}
+ */
+export function implPresetEnums(catalog = runtimeCatalog()) {
+  const enums = sessionDefaultEnums(catalog);
+  /** @type {Record<string, ReadonlyArray<string>>} */
+  const narrowed = {};
+  for (const key of IMPL_PRESET_KEYS) {
+    narrowed[key] = enums[key];
+  }
+  return narrowed;
+}
+
+/**
+ * Validate one implementation preset's five keys.
+ *
+ * The `auto` literal is a SELECTOR STATE, not a catalog model or effort, so it
+ * is removed before the runtime/model/effort coherence check — otherwise
+ * `impl_model: 'auto'` would read as an unknown model. `impl_dispatch: 'main'`
+ * likewise suspends coherence: a controller-implemented unit has no delegation
+ * target to be coherent with.
+ *
+ * @param {Record<string, unknown>} settings
+ * @param {{ catalog?: ResolvedCatalog }} [options]
+ * @returns {{ ok: true }|{ ok: false, reason: string }}
+ */
+export function validateImplPresetSettings(settings, options = {}) {
+  const catalog = options.catalog ?? runtimeCatalog();
+  const enums = implPresetEnums(catalog);
+  for (const [key, value] of Object.entries(settings)) {
+    if (!IMPL_PRESET_KEYS.includes(key)) {
+      return { ok: false, reason: `unknown_impl_preset_key:${key}` };
+    }
+    if (typeof value !== 'string' || !enums[key].includes(value)) {
+      return { ok: false, reason: `invalid_${key}` };
+    }
+  }
+  if (settings.impl_dispatch === 'main') {
+    return { ok: true };
+  }
+  /** @type {Record<string, unknown>} */
+  const coherence_input = {};
+  for (const key of ['impl_runtime', 'impl_model', 'impl_effort']) {
+    const value = settings[key];
+    if (typeof value === 'string' && value !== AUTO_LITERAL) {
+      coherence_input[key] = value;
+    }
+  }
+  const coherence = validateImplSettings(coherence_input, {
+    catalog,
+    active_writer: false
+  });
+  return coherence.ok ? { ok: true } : { ok: false, reason: coherence.reason };
+}
 
 /**
  * Canonical execution-setting key order shared by persistence, mutations, and
