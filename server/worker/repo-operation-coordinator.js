@@ -264,6 +264,53 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * What a later success must contain to cover a failed deploy record: the
+   * target it bound, or — when it died before binding one — every subject
+   * commit it was created to deploy.
+   *
+   * `effective_base_sha` is deliberately NOT a fallback. It names the commit
+   * deployed BEFORE this record, so a record that failed pre-bind would be
+   * covered by the very success that preceded it, and the merge it existed to
+   * deploy would be marked delivered while its cleanup still reports the
+   * failure — a row that can never converge.
+   *
+   * @param {any} operation
+   * @returns {string[]} Refs that must all be contained, empty when unprovable.
+   */
+  function coverageRefsOf(operation) {
+    if (typeof operation.target_sha === 'string' && operation.target_sha) {
+      return [operation.target_sha];
+    }
+    /** @type {any[]} */
+    const subjects = Array.isArray(operation.subjects)
+      ? operation.subjects
+      : [];
+    /** @type {string[]} */
+    const merged = subjects
+      .map((subject) => subject?.merged_sha)
+      .filter(
+        (merged_sha) => typeof merged_sha === 'string' && merged_sha.length > 0
+      );
+    return merged.length > 0 && merged.length === subjects.length ? merged : [];
+  }
+
+  /**
+   * @param {string[]} refs
+   * @param {string} descendant_sha
+   */
+  async function coversEvery(refs, descendant_sha) {
+    if (refs.length === 0) {
+      return false;
+    }
+    for (const ref of refs) {
+      if (!(await isCoveredByDescendant(ref, descendant_sha))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Durably cover failed deploy rows when terminal settlement proves a
    * successful descendant, regardless of which row settled last.
    *
@@ -296,10 +343,8 @@ export function createRepoOperationCoordinator(deps) {
           ) {
             continue;
           }
-          const ancestor_ref = failed.target_sha ?? failed.effective_base_sha;
           if (
-            typeof ancestor_ref !== 'string' ||
-            !(await isCoveredByDescendant(ancestor_ref, settled.target_sha))
+            !(await coversEvery(coverageRefsOf(failed), settled.target_sha))
           ) {
             continue;
           }
@@ -317,8 +362,8 @@ export function createRepoOperationCoordinator(deps) {
       if (settled.superseded_by) {
         return;
       }
-      const ancestor_ref = settled.target_sha ?? settled.effective_base_sha;
-      if (typeof ancestor_ref !== 'string') {
+      const refs = coverageRefsOf(settled);
+      if (refs.length === 0) {
         return;
       }
       for (const [succeeded_id, succeeded] of Object.entries(
@@ -329,7 +374,7 @@ export function createRepoOperationCoordinator(deps) {
           succeeded.repo_id !== settled.repo_id ||
           succeeded.state !== 'succeeded' ||
           typeof succeeded.target_sha !== 'string' ||
-          !(await isCoveredByDescendant(ancestor_ref, succeeded.target_sha))
+          !(await coversEvery(refs, succeeded.target_sha))
         ) {
           continue;
         }

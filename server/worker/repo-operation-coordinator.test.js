@@ -665,7 +665,7 @@ describe('RepoOperation coordinator', () => {
     ).toBe('descendant-deploy');
   });
 
-  test('uses effective base sha to supersede a failed deploy without a target sha', async () => {
+  test('supersedes a failed deploy without a target sha when its subjects are carried', async () => {
     const runner = {
       start: () => ({ ok: false, code: 'unused' }),
       readMarker: () => ({ exit_code: 0, signal: null }),
@@ -714,6 +714,63 @@ describe('RepoOperation coordinator', () => {
     expect(
       store.snapshot(root).repo_operations['failed-deploy'].superseded_by
     ).toBe('descendant-deploy');
+  });
+
+  test('refuses to supersede a pre-bind failure a success only precedes', async () => {
+    const runner = {
+      start: () => ({ ok: false, code: 'unused' }),
+      readMarker: () => ({ exit_code: 0, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: vi.fn(async (/** @type {string[]} */ args) => ({
+        // Only a commit contains itself: the deployed base does not carry the
+        // merge the failed record existed to deploy.
+        code: args[0] === 'merge-base' && args[2] === args[3] ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      }))
+    });
+    for (const operation_id of ['failed-deploy', 'base-deploy']) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [
+          {
+            bead_id: 'UI-1',
+            merged_sha: operation_id === 'failed-deploy' ? FINAL : HEAD
+          }
+        ],
+        effective_base_sha: HEAD,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+    }
+    const failed = store.snapshot(root).repo_operations['failed-deploy'];
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const base = store.snapshot(root).repo_operations['base-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'base-deploy',
+      attempt_id: base.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'base.log'),
+      target_sha: HEAD
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['failed-deploy'].superseded_by
+    ).toBe(null);
   });
 
   test('keeps a late runner failure pending without changing repairing or covered rows', async () => {
