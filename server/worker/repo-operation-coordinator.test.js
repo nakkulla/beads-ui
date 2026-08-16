@@ -1128,6 +1128,51 @@ describe('RepoOperation coordinator', () => {
     });
   });
 
+  test('launches a first attempt on a local pinned target without re-fetching', async () => {
+    const bindTarget = vi.fn(async () => ({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: /** @type {const} */ ('nonzero'),
+      elapsed_ms: 57_774
+    }));
+    const resolvable = gitForBootstrap();
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) =>
+      args[0] === 'rev-parse'
+        ? { code: 0, stdout: TARGET, stderr: '' }
+        : resolvable(args)
+    );
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployWorktree: {
+        bindTarget,
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        })
+      }
+    });
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    expect(bindTarget).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true });
+    expect(
+      store.snapshot(root).repo_operations[result.operation_id]
+    ).toMatchObject({ state: 'running', target_sha: TARGET });
+  });
+
   test('consumes a valid spool request into a provenance prerecord and receipt', async () => {
     const { store, coordinator } = coordinatorFor();
     spoolRequest(validRequest());
