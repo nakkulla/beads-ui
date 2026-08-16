@@ -1,14 +1,10 @@
 /**
  * Independent PRE-MERGE verification runner (worker-phase2 §5).
  *
- * Runs the workspace-configured `verify_cmd` (argv array, NO shell) inside a
- * clean detached worktree pinned to an exact commit. The MECHANISM is unchanged
- * from the retired post-merge runner (worker-autorun-policy §4); only the pin
- * moved: it used to be the observed merge SHA AFTER an unattended merge, and is
- * now the PR's head SHA BEFORE a human merge click, so the command stands in
- * for CI on repos that have none. Owned by the WORKER process — the session
- * cannot influence it — and returns THREE distinct failure reasons so the
- * observation record can tell them apart:
+ * Runs an explicit argv supplied by a caller that already resolved a pinned
+ * repository declaration. This module selects no policy and has no config
+ * fallback. The command runs inside a clean detached worktree pinned to an
+ * exact commit and returns three distinct failure reasons:
  *
  *   - `verify_cmd_timeout`     — the deadline hit (tracked by a flag here;
  *     `runShell` overloads a timeout kill onto the exit code, so this module
@@ -20,7 +16,7 @@
  * {@link runVerifyAtSha} adds the two SETUP outcomes that only exist now that
  * the pin is a remote PR head rather than a commit the worker just produced
  * (`verify_sha_unavailable` / `verify_worktree_failed`); the three run outcomes
- * above are untouched, as is the `[worker.verify."<abs>"]` config schema.
+ * above are untouched.
  */
 import { spawn } from 'node:child_process';
 import nodeFs from 'node:fs';
@@ -33,79 +29,6 @@ import { deployLogDir, verifyLogDir } from './state-paths.js';
 export { errorDetail } from './error-detail.js';
 
 const log = debug('worker:verify-cmd');
-
-/**
- * Last-resort verify_cmd timeout, mirroring config.js's own
- * DEFAULT_VERIFY_TIMEOUT_MS. Normalization belongs to `normalizeWorkerVerify`
- * in config.js; this only guards a map injected past that contract.
- *
- * @type {number}
- */
-const DEFAULT_VERIFY_TIMEOUT_MS = 600000;
-
-/**
- * @typedef {Object} ResolvedVerifyCmd
- * @property {string[]} cmd - The verify argv (spawned WITHOUT a shell).
- * @property {number} timeout_ms - Deadline in ms.
- */
-
-/**
- * Resolve a repo's verify command from the ONE place it can be defined: an
- * explicit `[worker.verify."<abs>"]` section in `config.toml` (UI-uk6d). The
- * repo-root toolchain probe of worker-attempt-resume-verify-autodetect §2.2 is
- * retired — a guessed command is not the repo's canonical verification
- * (`External/beads` had to override the probe's `go test ./...`, which fails on
- * the ICU cgo build, with `make test`), and a wrong guess buys either false
- * trust when green or a false block when red.
- *
- * A null return means the workspace has no local verification signal, which
- * drops the merge gate to its third tier ("검증 신호 없음") when the repo also
- * reports no CI (worker-phase2 §5) — an intended outcome, since the merge click
- * is then the human judgement.
- *
- * @param {string} repo - Absolute (or resolvable) target repo root.
- * @param {Record<string, { cmd: string[], timeout_ms: number }>|null|undefined} config_map
- * The normalized `[worker.verify]` config sections keyed by resolved path.
- * @returns {ResolvedVerifyCmd|null}
- */
-export function resolveVerifyCmd(repo, config_map) {
-  const key = path.resolve(String(repo || ''));
-  const configured = config_map ? config_map[key] : null;
-  if (
-    configured &&
-    Array.isArray(configured.cmd) &&
-    configured.cmd.length > 0
-  ) {
-    return {
-      cmd: configured.cmd.slice(),
-      timeout_ms:
-        typeof configured.timeout_ms === 'number' && configured.timeout_ms > 0
-          ? configured.timeout_ms
-          : DEFAULT_VERIFY_TIMEOUT_MS
-    };
-  }
-  return null;
-}
-
-/**
- * The resolution shape the pre-merge lane reads. Since the retired repository
- * deployment provider was removed, `[worker.verify."<abs>"]` config is the only
- * source left, so a resolution is either that command or nothing.
- *
- * @typedef {{ state: 'resolved', source: 'config', value: ResolvedVerifyCmd }|{ state: 'absent' }} VerifyResolution
- */
-
-/**
- * @param {string} repo
- * @param {Record<string, { cmd: string[], timeout_ms: number }>|null|undefined} config_map
- * @returns {VerifyResolution}
- */
-export function resolveConfiguredVerify(repo, config_map) {
-  const configured = resolveVerifyCmd(repo, config_map);
-  return configured
-    ? { state: 'resolved', source: 'config', value: configured }
-    : { state: 'absent' };
-}
 
 /**
  * Rolling capture window for the verify command's own output (UI-qult §1). The

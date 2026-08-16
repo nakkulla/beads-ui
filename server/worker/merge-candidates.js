@@ -16,6 +16,7 @@
  * @import { Queue } from './queue-store.js'
  */
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
+import { repoOpsVerifyReceiptState } from './repo-ops-display.js';
 import { isCleanupResolutionFailure } from './resolution-ladder.js';
 import { getWorkerRuntime } from './runtime.js';
 
@@ -166,10 +167,10 @@ export function overlaidPrWait(workspace_key, queue) {
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue - The OVERLAID snapshot (external rows
  * included), i.e. what the lane actually renders.
- * @param {'resolved'|'absent'|'invalid'} verify_cmd_state
+ * @param {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }} verify_policy
  * @returns {Array<{ bead_id: string, external: boolean, repairable?: boolean }>}
  */
-export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
+export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
   const lane = Array.isArray(queue.pr_wait)
     ? /** @type {any[]} */ (queue.pr_wait)
     : [];
@@ -197,15 +198,10 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
     const record = observed[bead_id] || null;
     const gate = evaluateMergeGate(record, {
       review_receipt_state: observedReviewReceiptState(record),
-      verify_receipt_state: {
-        declaration_state:
-          verify_cmd_state === 'resolved'
-            ? 'present'
-            : verify_cmd_state === 'invalid'
-              ? 'invalid'
-              : 'absent',
-        receipt: record?.verify || null
-      }
+      verify_receipt_state: repoOpsVerifyReceiptState(
+        verify_policy,
+        record?.verify || null
+      )
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';
@@ -221,7 +217,9 @@ export function mergeQueueCandidates(workspace_key, queue, verify_cmd_state) {
     }
     const eligible =
       gate.enabled === true ||
-      (conflicting && !external) ||
+      (conflicting &&
+        !external &&
+        verify_policy.declaration_state !== 'invalid') ||
       (!!cleanup_failed[bead_id] && merged_tier) ||
       repairable;
     if (!eligible) {

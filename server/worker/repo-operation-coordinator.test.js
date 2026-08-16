@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
+import { __resetQueueEventsForTest, onQueueChanged } from './queue-events.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import {
@@ -18,6 +19,7 @@ const TARGET = 'b'.repeat(40);
 const APPROVED = 'e'.repeat(40);
 const BASE = '1'.repeat(40);
 const HEAD = '2'.repeat(40);
+const ADVANCED_HEAD = '8'.repeat(40);
 const TREE = '3'.repeat(40);
 const FINAL = '6'.repeat(40);
 const FINAL_TREE = '7'.repeat(40);
@@ -31,6 +33,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'repo-operation-coord-'));
   process.env.XDG_STATE_HOME = path.join(root, 'state');
   __resetRepoOpsDisplayForTest();
+  __resetQueueEventsForTest();
 });
 
 afterEach(() => {
@@ -218,7 +221,62 @@ describe('RepoOperation coordinator', () => {
     expect(result).toEqual({
       ok: true,
       present: true,
-      verify_script_path: null
+      verify_script_path: null,
+      verify_timeout_ms: null
+    });
+  });
+
+  test('keeps the latest-started hasConfig display after out-of-order completion', async () => {
+    /** @type {(value?: void) => void} */
+    let release = () => {};
+    const blocked = new Promise((resolve) => {
+      release = resolve;
+    });
+    const baseGit = gitForVerify({ verify: true });
+    let first_call = true;
+    const gitRun = vi.fn(async (args) => {
+      if (first_call) {
+        first_call = false;
+        await blocked;
+      }
+      return baseGit(args);
+    });
+    const { coordinator } = coordinatorFor({ gitRun });
+    /** @type {string[]} */
+    const seen = [];
+    onQueueChanged((workspace) => seen.push(workspace));
+
+    const older = coordinator.hasConfig(BASE, { current_target_base: true });
+    const newer = coordinator.hasConfig(HEAD, { current_target_base: true });
+    await newer;
+    release();
+    await older;
+
+    expect(repoOpsDisplayFor(root).base_sha).toBe(HEAD);
+    expect(seen).toEqual([root]);
+  });
+
+  test('keeps an invalid current-base display through historical and effective lookups', async () => {
+    const gitRun = vi.fn(async (args) => {
+      const revision = String(args[1]).split(':')[0];
+      if (args[0] === 'show' && revision === HEAD) {
+        return { code: 0, stdout: '[verify', stderr: '' };
+      }
+      return { code: args[0] === 'ls-tree' ? 0 : 128, stdout: '', stderr: '' };
+    });
+    const { coordinator } = coordinatorFor({
+      gitRun,
+      verifyCheckout: { materialize: vi.fn() }
+    });
+
+    await coordinator.hasConfig(HEAD, { current_target_base: true });
+    await coordinator.hasConfig(BASE);
+    await coordinator.ensureVerify(verifyCandidate());
+
+    expect(repoOpsDisplayFor(root)).toMatchObject({
+      status: 'error',
+      base_sha: HEAD,
+      error_code: 'repo_ops_config_invalid'
     });
   });
 
@@ -334,6 +392,106 @@ describe('RepoOperation coordinator', () => {
       script_blob_sha: '5'.repeat(40),
       state: 'running'
     });
+  });
+
+  test('adopts one deterministic verify operation across concurrent callers', async () => {
+    const runner = {
+      start: vi.fn(async () => ({
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'verify.log')
+      })),
+      readMarker: () => null,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      runner,
+      verifyCheckout: {
+        materialize: vi.fn(async () => ({
+          ok: true,
+          path: root,
+          tree_sha: TREE
+        })),
+        verify: vi.fn(async () => ({ ok: true })),
+        cleanup: vi.fn(async () => {})
+      }
+    });
+
+    const [poller_result, click_result] = await Promise.all([
+      coordinator.ensureVerify(verifyCandidate()),
+      coordinator.ensureVerify(verifyCandidate())
+    ]);
+
+    expect(poller_result).toMatchObject({ ok: true });
+    expect(click_result).toMatchObject({ ok: true });
+    expect(poller_result.operation_id).toBe(click_result.operation_id);
+    expect(runner.start).toHaveBeenCalledTimes(1);
+  });
+
+  test('binds a same-tree head advance to an adopted verify operation', async () => {
+    /** @type {{ exit_code: number, signal: null }|null} */
+    let marker = null;
+    const runner = {
+      start: vi.fn(async () => ({
+        ok: true,
+        process_identity: { pid: 1, pgid: 1, started_at: 1 },
+        log_path: path.join(root, 'verify.log')
+      })),
+      readMarker: () => marker,
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      runner,
+      verifyCheckout: {
+        materialize: vi.fn(async () => ({
+          ok: true,
+          path: root,
+          tree_sha: TREE
+        })),
+        verify: vi.fn(async () => ({ ok: true })),
+        cleanup: vi.fn(async () => {})
+      }
+    });
+    const initial = await coordinator.ensureVerify(verifyCandidate());
+
+    const adopted = await coordinator.ensureVerify(
+      verifyCandidate({ head_sha: ADVANCED_HEAD })
+    );
+    marker = { exit_code: 0, signal: null };
+    await coordinator.reconcile(root);
+
+    expect(adopted).toMatchObject({
+      ok: true,
+      adopted: true,
+      operation_id: initial.operation_id
+    });
+    expect(
+      store.snapshot(root).repo_operations[initial.operation_id]
+        .verify_head_shas
+    ).toEqual([HEAD, ADVANCED_HEAD]);
+    expect(coordinator.verifyReceipt(initial.operation_id, HEAD)).toMatchObject(
+      { state: 'succeeded', head_sha: HEAD }
+    );
+    expect(
+      await coordinator.waitForTerminal(initial.operation_id, {
+        head_sha: ADVANCED_HEAD,
+        timeout_ms: 0
+      })
+    ).toMatchObject({ state: 'succeeded', head_sha: ADVANCED_HEAD });
+    expect(
+      coordinator.verifyReceipt(initial.operation_id, '9'.repeat(40))
+    ).toBeNull();
+    expect(
+      await coordinator.waitForTerminal(initial.operation_id, {
+        head_sha: '9'.repeat(40),
+        timeout_ms: 0
+      })
+    ).toBeNull();
+    expect(runner.start).toHaveBeenCalledTimes(1);
   });
 
   test('inherits an exact candidate receipt and runs a different final tree once', async () => {
@@ -507,7 +665,7 @@ describe('RepoOperation coordinator', () => {
     ).toBe('descendant-deploy');
   });
 
-  test('uses effective base sha to supersede a failed deploy without a target sha', async () => {
+  test('supersedes a failed deploy without a target sha when its subjects are carried', async () => {
     const runner = {
       start: () => ({ ok: false, code: 'unused' }),
       readMarker: () => ({ exit_code: 0, signal: null }),
@@ -556,6 +714,63 @@ describe('RepoOperation coordinator', () => {
     expect(
       store.snapshot(root).repo_operations['failed-deploy'].superseded_by
     ).toBe('descendant-deploy');
+  });
+
+  test('refuses to supersede a pre-bind failure a success only precedes', async () => {
+    const runner = {
+      start: () => ({ ok: false, code: 'unused' }),
+      readMarker: () => ({ exit_code: 0, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: vi.fn(async (/** @type {string[]} */ args) => ({
+        // Only a commit contains itself: the deployed base does not carry the
+        // merge the failed record existed to deploy.
+        code: args[0] === 'merge-base' && args[2] === args[3] ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      }))
+    });
+    for (const operation_id of ['failed-deploy', 'base-deploy']) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [
+          {
+            bead_id: 'UI-1',
+            merged_sha: operation_id === 'failed-deploy' ? FINAL : HEAD
+          }
+        ],
+        effective_base_sha: HEAD,
+        target_base: 'main',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+    }
+    const failed = store.snapshot(root).repo_operations['failed-deploy'];
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const base = store.snapshot(root).repo_operations['base-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'base-deploy',
+      attempt_id: base.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'base.log'),
+      target_sha: HEAD
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['failed-deploy'].superseded_by
+    ).toBe(null);
   });
 
   test('keeps a late runner failure pending without changing repairing or covered rows', async () => {
@@ -968,6 +1183,51 @@ describe('RepoOperation coordinator', () => {
       fetch_failure: 'nonzero',
       elapsed_ms: 28
     });
+  });
+
+  test('launches a first attempt on a local pinned target without re-fetching', async () => {
+    const bindTarget = vi.fn(async () => ({
+      ok: false,
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: /** @type {const} */ ('nonzero'),
+      elapsed_ms: 57_774
+    }));
+    const resolvable = gitForBootstrap();
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) =>
+      args[0] === 'rev-parse'
+        ? { code: 0, stdout: TARGET, stderr: '' }
+        : resolvable(args)
+    );
+    const { store, coordinator } = coordinatorFor({
+      gitRun,
+      deployWorktree: {
+        bindTarget,
+        readState: async () => ({ ok: true, head: null, clean: true }),
+        ensureAligned: async () => ({
+          ok: true,
+          path: path.join(root, '.worktrees', '.repo-ops-deploy'),
+          target_sha: TARGET
+        })
+      }
+    });
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    expect(bindTarget).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ ok: true });
+    expect(
+      store.snapshot(root).repo_operations[result.operation_id]
+    ).toMatchObject({ state: 'running', target_sha: TARGET });
   });
 
   test('consumes a valid spool request into a provenance prerecord and receipt', async () => {
@@ -1968,17 +2228,15 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
     });
   });
 
-  test('fills the display cache from the resolve a launch already did', async () => {
+  test('does not publish a bootstrap operation lookup as current-base policy', async () => {
     const { coordinator } = coordinatorFor();
     spoolRequest(validRequest());
 
     await coordinator.reconcile(root);
 
-    // A bootstrap is the one classification where the TARGET tree is the policy.
     expect(repoOpsDisplayFor(root)).toMatchObject({
-      status: 'resolved',
-      base_sha: TARGET,
-      deploy: { script: 'repo-ops/script/deploy' }
+      status: 'pending',
+      base_sha: null
     });
   });
 
@@ -2006,7 +2264,7 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
     expect(repoOpsDisplayFor(root).base_sha).not.toBe(HEAD);
   });
 
-  test('records the pinned previous base as the declaration base', async () => {
+  test('does not publish a historical previous-base lookup', async () => {
     const { coordinator } = coordinatorFor({
       gitRun: gitForVerify({ verify: true }),
       verifyCheckout: { materialize: vi.fn(async () => ({ ok: false })) }
@@ -2014,10 +2272,13 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
 
     await coordinator.ensureVerify(verifyCandidate());
 
-    expect(repoOpsDisplayFor(root).base_sha).toBe(BASE);
+    expect(repoOpsDisplayFor(root)).toMatchObject({
+      status: 'pending',
+      base_sha: null
+    });
   });
 
-  test('records a failed resolve without claiming a base SHA', async () => {
+  test('does not publish a failed effective lookup', async () => {
     const { coordinator } = coordinatorFor({
       gitRun: async () => ({ code: 128, stdout: '', stderr: 'boom' }),
       verifyCheckout: { materialize: vi.fn(async () => ({ ok: false })) }
@@ -2025,10 +2286,10 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
 
     await coordinator.ensureVerify(verifyCandidate());
 
-    expect([
-      repoOpsDisplayFor(root).status,
-      repoOpsDisplayFor(root).base_sha
-    ]).toEqual(['error', null]);
+    expect(repoOpsDisplayFor(root)).toMatchObject({
+      status: 'pending',
+      base_sha: null
+    });
   });
 
   test('records an unresolvable base as an error, not an absence', async () => {

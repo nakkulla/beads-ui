@@ -492,7 +492,6 @@ export function discardReceiptTemplate(item) {
  */
 export function miniRow(item) {
   const draggable = item.draggable && !item.done;
-  const queue_reorderable = draggable && item.lane === 'queue';
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
@@ -511,20 +510,11 @@ export function miniRow(item) {
         .checked=${item.selected === true}
       />`
     : '';
-  const grip = queue_reorderable
-    ? html`<button
-        type="button"
-        class="worker-mini__grip"
-        draggable="true"
-        data-bead-id=${item.id}
-        aria-label=${`${item.id} 순서 변경`}
-        title="순서 변경"
-      >
-        ⠿
-      </button>`
-    : draggable
-      ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
-      : '';
+  // 장식 핸들이다: 드래그는 행 전체(`.worker-mini[draggable="true"]`)에서
+  // 시작하고, 인터랙티브 자식 제외는 드래그 컨트롤러가 판정한다.
+  const grip = draggable
+    ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
+    : '';
   const serial_el =
     item.worker_serial === true
       ? html`<span class="worker-mini__serial">머지까지 단독</span>`
@@ -717,7 +707,7 @@ export function miniRow(item) {
       ? ' worker-mini--external'
       : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
-    draggable=${draggable && !queue_reorderable ? 'true' : 'false'}
+    draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
   >

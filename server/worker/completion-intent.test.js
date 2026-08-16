@@ -393,6 +393,54 @@ describe('worker/completion-intent decisions', () => {
 });
 
 describe('worker/completion-intent action driver', () => {
+  test('binds a verify failure key to the gate subject base authority', async () => {
+    const store = seededCompletionStore();
+    const base_sha = '1'.repeat(40);
+    const subject = { ...intent().subject, base_sha };
+    store.setCompletionSubject(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'gating',
+      subject
+    });
+    const driver = actionDriver(store, {
+      prActions: {
+        completionGate: vi.fn(async () => redGate({ base_sha, subject }))
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    const fact = await driver.observe('UI-root', current);
+
+    expect(fact).toMatchObject({
+      state: 'verify_red',
+      failure_key: { base_sha },
+      gated: { base_sha, subject: { base_sha } }
+    });
+  });
+
+  test('keeps a repo-operation-owned verify intent active', async () => {
+    const store = seededCompletionStore();
+    const dispatchCompletionRepair = vi.fn();
+    const ensureLinkedBead = vi.fn();
+    const driver = actionDriver(store, {
+      completionRepair: {
+        probeOwnership: vi.fn(async () => ({ state: 'repo_operation' })),
+        ensureLinkedBead
+      },
+      scheduler: { dispatchCompletionRepair }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.observe('UI-root', current);
+    await driver.onAction('UI-root', { kind: 'probe' }, current);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({ phase: 'gating', active_op: null });
+    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
+    expect(ensureLinkedBead).not.toHaveBeenCalled();
+  });
+
   test('dispatches a PR-owned failure through the root resume path', async () => {
     const store = seededCompletionStore();
     const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));

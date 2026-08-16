@@ -163,7 +163,7 @@ describe('done lane row', () => {
 });
 
 describe('waiting row execution mode', () => {
-  test('renders a selectable serial waiting row with an accessible grip', () => {
+  test('renders a selectable serial waiting row with a decorative grip', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
@@ -181,9 +181,11 @@ describe('waiting row execution mode', () => {
     expect(row.querySelector('.worker-mini__serial')?.textContent).toContain(
       '머지까지 단독'
     );
+    // 드래그는 행 전체에서 시작하므로 grip은 장식 핸들이다.
+    expect(row.getAttribute('draggable')).toBe('true');
     expect(
-      row.querySelector('.worker-mini__grip')?.getAttribute('aria-label')
-    ).toBe('UI-x1 순서 변경');
+      row.querySelector('.worker-mini__grip')?.getAttribute('aria-hidden')
+    ).toBe('true');
   });
 });
 

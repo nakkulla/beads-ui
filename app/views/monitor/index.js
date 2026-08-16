@@ -324,8 +324,7 @@ export function createMonitorView(mount_element, options) {
               : payload
           );
         }
-      : undefined,
-    getWorkspacePath: () => exec_target || undefined
+      : undefined
   });
 
   /** @type {null | (() => void)} */

@@ -1197,8 +1197,7 @@ export function createWorkerView(mount_element, options = {}) {
   const exec_defaults_dialog = createExecDefaultsDialog(console_el, {
     queueStore,
     presetStore: execPresetStore,
-    transport,
-    getWorkspacePath
+    transport
   });
 
   /**
@@ -1950,7 +1949,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2921,9 +2920,6 @@ export function createWorkerView(mount_element, options = {}) {
       auto_excluded: pr_wait_entries
         .map((/** @type {any} */ e) => e.bead_id)
         .filter((/** @type {string} */ id) => autoSkipReason(id) !== null),
-      // 자동 머지 경고 문구의 근거 (UI-yk55 §6): verify 선언이 없는
-      // 워크스페이스는 추가 검증 영수증 없이 자격을 얻을 수 있음을 버튼이 말해야 한다.
-      verify_cmd_present: !!(q.workspace_info || {}).verify_cmd,
       declared_base,
       done: done_rows,
       token_total,
@@ -3340,9 +3336,7 @@ export function createWorkerView(mount_element, options = {}) {
     return html`<button
       type="button"
       class="worker-merge-all"
-      title=${m.verify_cmd_present
-        ? '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다'
-        : '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다 — 이 워크스페이스는 verify 선언이 없어 추가 검증 없이 머지됩니다'}
+      title="켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다"
     >
       ▶ 자동 머지${count > 0 ? ` ${count}` : ''}
     </button>`;
@@ -3516,21 +3510,43 @@ export function createWorkerView(mount_element, options = {}) {
 
   // --- Native drag/drop (no library), mirroring board.js conventions. ---
   /**
+   * The last pointerdown target. dragstart retargets to the draggable ancestor
+   * (the row), so the press target is the only way to tell a row-body drag from
+   * one that started on an interactive child (checkbox, button, link).
+   *
+   * @type {Element|null}
+   */
+  let press_target = null;
+
+  /**
+   * @param {PointerEvent} ev
+   */
+  function onPointerDown(ev) {
+    press_target = ev.target instanceof Element ? ev.target : null;
+  }
+
+  /**
    * @param {DragEvent} ev
    */
   function onDragStart(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
-    const grip = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__grip')
+    const el = /** @type {HTMLElement|null} */ (
+      target?.closest?.(
+        '.worker-mini[draggable="true"], .worker-card[draggable="true"]'
+      )
     );
-    const el = grip
-      ? /** @type {HTMLElement|null} */ (
-          grip.closest('.worker-mini[data-lane="queue"]')
-        )
-      : /** @type {HTMLElement|null} */ (
-          target?.closest?.('.worker-card[draggable="true"]')
-        );
     if (!el) {
+      return;
+    }
+    // 인터랙티브 자식에서 시작한 드래그는 행 이동이 아니라 오조작이다 — 상태
+    // 없는 유령 드래그가 남지 않도록 취소한다 (#124가 grip 전용화로 지키던
+    // 체크박스 보호를, 행 전체 드래그로 되돌리면서 이 판정으로 유지).
+    if (
+      press_target &&
+      el.contains(press_target) &&
+      press_target.closest('input, button, a')
+    ) {
+      ev.preventDefault();
       return;
     }
     const bead_id = el.dataset.beadId || '';
@@ -4248,6 +4264,10 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  mount_element.addEventListener(
+    'pointerdown',
+    /** @type {any} */ (onPointerDown)
+  );
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
   mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
@@ -4296,6 +4316,10 @@ export function createWorkerView(mount_element, options = {}) {
           /* ignore */
         }
       }
+      mount_element.removeEventListener(
+        'pointerdown',
+        /** @type {any} */ (onPointerDown)
+      );
       mount_element.removeEventListener(
         'dragstart',
         /** @type {any} */ (onDragStart)
