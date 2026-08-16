@@ -1184,9 +1184,9 @@ function normalizeHeadReview(value, authority) {
     state: /** @type {HeadReview['state']} */ (state),
     reviewer: value.reviewer,
     effort: value.effort,
-    review_attempt_id: value.review_attempt_id,
-    findings_digest: value.findings_digest,
-    repair_attempt_id: value.repair_attempt_id,
+    review_attempt_id: /** @type {string|null} */ (value.review_attempt_id),
+    findings_digest: /** @type {string|null} */ (value.findings_digest),
+    repair_attempt_id: /** @type {string|null} */ (value.repair_attempt_id),
     repair_rounds: /** @type {0|1} */ (value.repair_rounds),
     approval_source:
       /** @type {HeadReview['approval_source']} */ (approval_source),
@@ -5843,7 +5843,7 @@ export function createQueueStore(options = {}) {
      * every other scheduler/driver write).
      *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, target_base?: string, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {

@@ -48,6 +48,8 @@ import {
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
+import { createHeadReview } from './head-review.js';
+import { createHeadReviewTransport } from './head-review-transport.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -370,6 +372,7 @@ export function defaultProbePid(pid) {
  *   repairSession?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
+ *   headReview?: any,
  *   notify?: any,
  *   reviseDisposition?: any,
  *   mergeQueue?: any,
@@ -1019,6 +1022,35 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions.resumeMigratedClosure(bead_id)
     });
 
+  // The manual-continuation head-review machine (UI-58w8 §2–§4): live effect
+  // adapters bound to the SAME bd/gh/runner/worktree surfaces every other
+  // Worker effect uses, so its receipts and observations can never come from
+  // a different view of the world than the merge gate's.
+  const headReviewTransport = createHeadReviewTransport({
+    workspace: keyFor(workspace_root),
+    repo,
+    bd,
+    makeRunner,
+    worktree,
+    gitRun,
+    probeHead: async (/** @type {string} */ bead_id) => {
+      if (!prActions) {
+        return null;
+      }
+      const probe = await prActions.probeMergeability(bead_id);
+      return probe.head_sha || null;
+    },
+    log
+  });
+  const headReview =
+    options.headReview ||
+    createHeadReview({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      ...headReviewTransport,
+      log
+    });
+
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -1064,6 +1096,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           queue_bead_id,
           subject_bead_id
         ),
+      headReview,
       onCompletionResult: (
         /** @type {string} */ root_bead_id,
         /** @type {string} */ subject_bead_id,

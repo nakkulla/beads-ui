@@ -88,7 +88,7 @@ export function findingsDigest(findings) {
  * @typedef {Object} HeadReviewDeps
  * @property {string} workspace
  * @property {ReturnType<typeof import('./queue-store.js').createQueueStore>} store
- * @property {(bead_id: string) => Promise<{ ok: boolean, reviewer: string, effort: string, reason?: string }>} selectReviewer -
+ * @property {(bead_id: string) => Promise<{ ok: boolean, reviewer?: string, effort?: string, reason?: string }>} selectReviewer -
  * Resolve the background reviewer. On `ok:false` the raw selected labels are
  * still returned so the failure journal names what was selected.
  * @property {(bead_id: string) => Promise<{ actor: string, head_sha: string, raw: string }|null>} readReceipt -
@@ -96,14 +96,14 @@ export function findingsDigest(findings) {
  * @property {(bead_id: string, input: { prior_head_sha: string, head_sha: string, target_base: string }) => Promise<{ queue_owned: boolean, reason?: string }>} lineage -
  * Prove the head mutation is queue-owned: prior head ancestry, target base,
  * remote containment. Anything unprovable returns `queue_owned:false`.
- * @property {(packet: Record<string, unknown>) => Promise<{ ok: true, verdict: 'APPROVE'|'REVISE', findings?: unknown[] }|{ ok: false, reason: string }>} runReview -
+ * @property {(packet: Record<string, unknown>) => Promise<{ ok: boolean, verdict?: string, findings?: unknown[], reason?: string }>} runReview -
  * Run (or adopt, keyed by `attempt_id`) one read-only review attempt to its
  * terminal structured verdict. Anything malformed returns `ok:false`.
  * @property {(bead_id: string, receipt: string) => Promise<{ ok: boolean, readback: string|null, reason?: string }>} writeReceipt -
  * Write `impl_review` and read it back from the same authority.
  * @property {(bead_id: string) => Promise<string|null>} observeHead - Fresh
  * authoritative PR head observation (post-write drift check).
- * @property {(packet: Record<string, unknown>) => Promise<{ ok: true, head_sha: string }|{ ok: false, reason: string }>} runRepair -
+ * @property {(packet: Record<string, unknown>) => Promise<{ ok: boolean, head_sha?: string, reason?: string }>} runRepair -
  * Run the single bounded repair-controller attempt: apply the findings batch,
  * validate, push, self-review the exact delta, record the receipt. Returns
  * the pushed head; the driver independently verifies lineage and readback.
@@ -262,7 +262,7 @@ export function createHeadReview(deps) {
         if (!current || current.head_sha !== head_sha) {
           return { state: 'gone', reason: null };
         }
-        journal = current;
+        journal = /** @type {HeadReview} */ (current);
       } else {
         journal = /** @type {HeadReview} */ (
           queuedEntry(queue_bead_id)?.head_review ?? null
@@ -327,6 +327,9 @@ export function createHeadReview(deps) {
       }
     }
 
+    if (journal === null) {
+      return { state: 'gone', reason: null };
+    }
     const attempt_id = reviewAttemptId(authority.id, head_sha);
 
     if (journal.state === 'pending') {
@@ -544,7 +547,7 @@ export function createHeadReview(deps) {
     head_sha,
     findings
   ) {
-    /** @type {{ ok: true, head_sha: string }|{ ok: false, reason: string }} */
+    /** @type {{ ok: boolean, head_sha?: string, reason?: string }} */
     let repaired = { ok: false, reason: 'repair_failed' };
     try {
       repaired = await deps.runRepair({
