@@ -227,44 +227,44 @@ SHA를 비교하도록 복원하는 것이다.
 
 ## Test scope
 
-RED-GREEN seam은 다음으로 고정한다.
+### 실제 RED seams
 
-### UI와 protocol
+다음 assertions는 current base에서 새 mutation이 없거나 잘못된 SHA를 비교하므로 변경 전
+실패해야 한다.
 
-- `[정리 재개]` 클릭이 `worker-cleanup-retry`와 current `expected_revision`을 전송하고
-  `worker-merge-queue-add`를 전송하지 않는다.
-- protocol request type과 authenticated connection dispatch가 새 mutation을 수용한다.
-- duplicate click은 local pending 동안 두 번째 mutation을 만들지 않는다.
+1. `app/views/worker/index.test.js`와 `app/protocol.test.js`: `[정리 재개]` 클릭이
+   `worker-cleanup-retry`와 current `expected_revision`을 전송하고
+   `worker-merge-queue-add`를 전송하지 않는다. 같은 cleanup action이 pending인 동안 두 번째
+   click은 추가 mutation을 만들지 않는다.
+2. `server/ws.worker-queue.test.js`: authenticated dispatch가 새 request를 수용한다. stale
+   `expected_revision`은 `conflict:true`와 current queue를 반환하며 attachment adapter를 전혀
+   호출하지 않고, current revision은 adapter를 정확히 한 번 호출해 latest queue를 reply와
+   fanout에 사용한다. no attachment와 thrown action은 fail-closed response로 남는다.
+3. `server/ws.worker-queue.test.js`와 `server/worker/attach.test.js`의 real-attachment fixture:
+   `pr_wait + cleanup_failed + completion_intent.phase=needs_human` 행이 새 mutation을 통해 merge
+   queue driver를 거치지 않고 canonical retry에 도달해 Done, intent `completed`,
+   `cleanup_failed`/`pr_wait` 제거로 수렴한다.
+4. `server/worker/scheduler.test.js`: intent의 `head_sha`와 `merged_sha`가 다른 post-merge
+   fixture에서 failure key subject가 merge SHA면 admission이 성공한다.
 
-### Handler와 attachment
+위 네 seam은 기존 helper를 직접 호출해 이미 green인 test로 대체할 수 없다. 새 wire entry부터
+canonical owner 또는 scheduler admission까지 실제 연결을 통과해야 한다.
 
-- stale `expected_revision`은 `conflict:true`와 current queue를 반환하며 attachment adapter와
-  `prActions.retryCleanup()`을 호출하지 않는다.
-- current revision은 adapter를 통해 canonical retry를 한 번만 호출하고 latest queue를 reply와
-  fanout에 사용한다.
-- no attachment와 thrown action은 fail-closed response로 남는다.
+### Preservation regressions
 
-### Cleanup lifecycle
+다음은 current base에서 이미 만족되는 guard 또는 helper behavior다. RED 증거로 세지 않고 새
+entry와 SHA 변경이 기존 계약을 훼손하지 않았다는 GREEN regression으로만 유지한다.
 
-- `pr_wait + cleanup_failed + completion_intent.phase=needs_human` fixture에서 manual mutation이
-  merge queue driver를 통하지 않고 cleanup을 실행해 Done, intent `completed`,
-  `cleanup_failed`/`pr_wait` 제거에 도달한다.
-- `[verify]`가 없는 fixture는 신규 verify repo operation, verify process 또는 verify log를
-  만들지 않는다.
-- successful deployed descendant coverage fixture는 deploy request를 재실행하지 않고 merge SHA
-  coverage로 closure한다.
-- 실제 cleanup failure fixture는 current step/reason을 남기고 Done으로 이동하지 않는다.
-- 기존 merge queue driver는 `intent.phase !== merging`에서 계속 중단한다. manual mutation이
-  이 guard를 약화시키지 않는다.
-
-### Completion SHA
-
-- intent의 `head_sha`와 `merged_sha`가 다른 post-merge fixture에서 failure key subject가 merge
-  SHA면 admission이 성공한다.
-- 같은 fixture에서 failure key가 neither merge nor fallback head이면
-  `completion_subject_sha_stale`로 거부한다.
-- merge SHA가 없는 pre-merge fixture는 head SHA 비교를 유지한다.
-- base SHA와 digest mismatch regression test는 그대로 fail closed한다.
+- `server/worker/pr-actions.test.js`: `[verify]`가 없는 fixture는 신규 verify repo operation,
+  verify process 또는 verify log를 만들지 않는다.
+- `server/worker/pr-actions.test.js`: successful deployed descendant coverage는 deploy request를
+  재실행하지 않고 merge SHA coverage로 closure한다.
+- `server/worker/pr-actions.test.js`: 실제 cleanup failure는 current step/reason을 남기고 Done으로
+  이동하지 않으며 기존 `retryCleanup()` lock과 eligibility guard를 유지한다.
+- `server/worker/merge-queue.test.js`: `intent.phase !== merging`이면 기존 merge queue driver는
+  계속 중단한다.
+- `server/worker/scheduler.test.js`: merge SHA가 없는 intent는 head SHA를 비교하고, subject/base
+  SHA와 digest mismatch는 계속 fail closed한다.
 
 ### Verification bundle
 
@@ -294,23 +294,39 @@ beads-ui의 `[deploy]`는 merged service deployment와 restart를 커버하지�
 이 두 mutation과 durable readback은 현재 Bead에 남는 required no-PR residue다.
 
 따라서 spec gate close 시 `UI-bwpk`에 `worker-ineligible`을 기록한다. shared runtime 배포와
-두 행의 Done 수렴까지 모두 검증한 뒤에만 label을 제거한다. 이를 별도 background worker,
-startup sweep 또는 deploy script 안의 cross-workspace mutation으로 바꾸지 않는다.
+두 행의 Done 수렴까지 모두 검증한 뒤, parent close 전에 label을 제거하고 `bd show --json`으로
+readback한다. 이를 별도 background worker, startup sweep 또는 deploy script 안의
+cross-workspace mutation으로 바꾸지 않는다.
 
 ### 적용 순서
 
 1. non-empty PR을 만들고 현재 head에 결속된 required review receipts를 기록한다.
-2. `pr-finish`로 merge한 뒤 repo operation이 terminal success에 도달할 때까지 기다린다.
-3. 공유 detached deploy worktree가 merged SHA를 포함하는지 확인하고 `bdui-shared restart` 후
-   process path, listening port, HTTP response를 검증한다.
-4. active repo operation이 없는 시점에 실제 UI mutation으로 `dotfiles-3vb8`과
-   `beads-yvf`를 각각 한 번 재시도한다.
-5. 각 workspace에서 retry 전후 repo operation/log inventory를 비교해 새 verify operation과
-   verify log가 없음을 확인한다.
-6. `dotfiles-3vb8`은 latest successful deploy SHA가 merge SHA를 포함한다는 ancestry evidence를
-   확인한다.
-7. 두 행 모두 `cleanup_failed`와 `pr_wait`에서 사라지고 Done으로 이동하며 completion intent가
-   completed인지 durable `queue.json`과 Beads readback으로 확인한다.
+   `UI-bwpk`의 `worker-ineligible`과 `resolved` 상태를 `bd show --json`으로 확인한다.
+2. controller가 하나의 `pr-finish` merge window를 시작해 pinned head를 merge하고 containment를
+   증명한다. fetched previous-base `[deploy]`를 따라 canonical deploy를 정확히 한 번 실행한다.
+3. deploy operation의 terminal success, detached deploy worktree의 target-or-descendant HEAD와
+   tracked-clean, live process source path/SHA, listening port, HTTP response를 검증한다. deploy
+   script가 이미 `bdui-shared restart`와 health identity를 소유하므로 별도 두 번째 restart는
+   실행하지 않는다.
+4. `pr-finish`의 `Sweep and close`에 들어가기 전에 멈춘다. dotfiles와 Beads workspace에 active
+   repo operation이 없음을 확인하고, 각 행의 queue revision과 repo operation/log inventory를
+   baseline으로 기록한다.
+5. 최신 revision으로 `dotfiles-3vb8`에 `worker-cleanup-retry`를 한 번 보내고 즉시 durable row,
+   completion intent와 operation/log delta를 readback한다. stale CAS면 side effect가 없음을
+   확인한 뒤 최신 snapshot에서 한 번 다시 명시적으로 실행한다. 다른 failure면 merge/deploy
+   evidence를 보존한 채 parent를 닫지 않고 중단한다.
+6. 같은 절차로 `beads-yvf`를 처리한다. 이미 Done인 행은 resume 시 재실행하지 않는다.
+7. 두 workspace 모두 새 verify operation/process/log가 없고, `cleanup_failed`와 `pr_wait`에서
+   사라졌으며 Done과 intent `completed`에 도달했는지 확인한다. `dotfiles-3vb8`은 latest
+   successful deploy SHA가 merge SHA를 포함한다는 ancestry evidence도 함께 readback한다.
+8. 모든 residue가 끝난 뒤에만 `UI-bwpk`의 `worker-ineligible`을 제거하고 같은 write의 결과를
+   `bd show --json`으로 확인한다.
+9. 그 다음에만 같은 `pr-finish` merge window의 child sweep, owned worktree/branch cleanup,
+   parent close를 재개하고 `UI-bwpk`가 closed인지 readback한다.
+
+중간 중단은 rerunnable하다. merge/deploy evidence는 그대로 채택하고, Done으로 수렴한 행은
+건너뛰며, 아직 실패한 행부터 재개한다. 두 행 중 하나라도 남아 있거나 label 제거 readback이
+실패하면 `UI-bwpk`는 `worker-ineligible` 상태로 열어 두고 sweep/parent close를 진행하지 않는다.
 
 `UI-f17c`와 `UI-cfzq`는 이미 Done이므로 mutation을 재실행하지 않는다. 새 verify/fetch failure가
 생기지 않았다는 현재 evidence와 회귀 test로 stale 판정을 마감한다.
@@ -323,3 +339,5 @@ startup sweep 또는 deploy script 안의 cross-workspace mutation으로 바꾸�
 4. no-verify와 descendant coverage가 focused tests에서 증명된다.
 5. 전체 validation과 shared runtime deployment가 통과한다.
 6. `dotfiles-3vb8`과 `beads-yvf`가 새 verify log 없이 Done으로 수렴한다.
+7. 두 durable readback 뒤 `worker-ineligible` 제거가 확인되고, 그 뒤에만 `pr-finish`가
+   `UI-bwpk`를 close한다.
