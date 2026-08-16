@@ -287,6 +287,18 @@ git diff --check
 
 ## Rollout과 durable row 정리
 
+### Current-Bead Worker eligibility
+
+beads-ui의 `[deploy]`는 merged service deployment와 restart를 커버하지만, 배포 뒤
+`dotfiles-3vb8`과 `beads-yvf`에 보내야 하는 두 explicit cleanup mutation은 수행하지 않는다.
+이 두 mutation과 durable readback은 현재 Bead에 남는 required no-PR residue다.
+
+따라서 spec gate close 시 `UI-bwpk`에 `worker-ineligible`을 기록한다. shared runtime 배포와
+두 행의 Done 수렴까지 모두 검증한 뒤에만 label을 제거한다. 이를 별도 background worker,
+startup sweep 또는 deploy script 안의 cross-workspace mutation으로 바꾸지 않는다.
+
+### 적용 순서
+
 1. non-empty PR을 만들고 현재 head에 결속된 required review receipts를 기록한다.
 2. `pr-finish`로 merge한 뒤 repo operation이 terminal success에 도달할 때까지 기다린다.
 3. 공유 detached deploy worktree가 merged SHA를 포함하는지 확인하고 `bdui-shared restart` 후
