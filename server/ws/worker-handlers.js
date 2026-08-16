@@ -54,6 +54,7 @@ import {
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import { orderLaneByBlocks } from '../worker/queue-store.js';
 import { sanitizeOutput } from '../worker/repair-session-adapter.js';
 import {
   classifyRepoOperationFailure,
@@ -72,6 +73,7 @@ import {
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
+import { activeLaneLineages } from '../worker/scheduler.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
   normalizeUsageLegs,
@@ -523,9 +525,68 @@ function beadLabelsFor(workspace_key, queue) {
 }
 
 /**
+ * Direct `blocks` blocker ids for every bead the lanes render (UI-04vo §3).
+ * Partial like labels: an absent key is unknown, never "no blockers".
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
- * @param {'titlesFor'|'timesFor'|'labelsFor'} method
+ * @returns {Record<string, string[]>}
+ */
+function beadBlockedByFor(workspace_key, queue) {
+  return beadDecorationFor(workspace_key, queue, 'blockedByFor');
+}
+
+/**
+ * Per-serial-lane derived display state (UI-04vo §3/§5): current occupancy
+ * lineages plus the topological correction the server would apply to the
+ * lane's waiting order. Recomputed on EVERY snapshot from durable state and
+ * the blocked-by cache — never persisted, so it can never go stale relative
+ * to what it was derived from.
+ *
+ * @param {Record<string, any>} raw_queue - Normalized queue (pre-projection).
+ * @param {Record<string, string[]>} blocked_by_map
+ * @returns {Record<string, { occupied_by: string[], order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }>}
+ */
+function laneStatesFor(raw_queue, blocked_by_map) {
+  /** @type {Record<string, { occupied_by: string[], order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }>} */
+  const out = {};
+  const occupancy = activeLaneLineages(raw_queue);
+  const lanes = Array.isArray(raw_queue.serial_lanes)
+    ? raw_queue.serial_lanes
+    : [];
+  for (const lane of lanes) {
+    if (!lane || typeof lane.id !== 'string' || !Array.isArray(lane.entries)) {
+      continue;
+    }
+    /** @type {string[]} */
+    const order_ids = lane.entries
+      .map((/** @type {any} */ entry) => entry?.bead_id)
+      .filter((/** @type {unknown} */ id) => typeof id === 'string');
+    const members = new Set(order_ids);
+    /** @type {{ blocker: string, blockee: string }[]} */
+    const edges = [];
+    for (const id of order_ids) {
+      for (const blocker of blocked_by_map[id] || []) {
+        if (members.has(blocker)) {
+          edges.push({ blocker, blockee: id });
+        }
+      }
+    }
+    const topo = orderLaneByBlocks(order_ids, edges);
+    out[lane.id] = {
+      occupied_by: [...(occupancy.get(lane.id) || [])],
+      order: topo.order,
+      corrections: topo.corrections,
+      cycle: topo.cycle
+    };
+  }
+  return out;
+}
+
+/**
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {'titlesFor'|'timesFor'|'labelsFor'|'blockedByFor'} method
  * @returns {any}
  */
 function beadDecorationFor(workspace_key, queue, method) {
@@ -551,9 +612,15 @@ function beadDecorationFor(workspace_key, queue, method) {
   }
   /** @type {string[]} */
   const ids = [];
-  for (const lane of ['queue', 'pr_wait', 'done']) {
-    const entries = Array.isArray(queue[lane])
-      ? /** @type {any[]} */ (queue[lane])
+  const decorated_lanes = [
+    ...['queue', 'pr_wait', 'done'].map((lane) => queue[lane]),
+    ...(Array.isArray(queue.serial_lanes)
+      ? /** @type {any[]} */ (queue.serial_lanes).map((lane) => lane?.entries)
+      : [])
+  ];
+  for (const lane_entries of decorated_lanes) {
+    const entries = Array.isArray(lane_entries)
+      ? /** @type {any[]} */ (lane_entries)
       : [];
     for (const entry of entries) {
       const bead_id = entry && entry.bead_id;
@@ -1175,6 +1242,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     runner_catalog = null;
   }
+  const bead_blocked_by = beadBlockedByFor(workspace_key, queue);
   return {
     ...queue,
     runner_catalog,
@@ -1205,6 +1273,12 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Normalized labels for the same queue/pr_wait/done ids. Partial cache
     // hits only: a missing key is intentionally unknown to the Phase 3 view.
     bead_labels: beadLabelsFor(workspace_key, queue),
+    // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
+    // wait-reason chip and lane topological corrections read from this.
+    bead_blocked_by,
+    // Per-serial-lane occupancy + topological correction, derived fresh from
+    // this snapshot (UI-04vo §5). Never persisted.
+    lane_states: laneStatesFor(overlaid, bead_blocked_by),
     // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
     // §3.1). Non-persisted, partial and advisory — see the projection.
     revise_parked: reviseParkedFor(workspace_key, queue),
@@ -1694,10 +1768,12 @@ function revisionOf(payload) {
 }
 
 /**
- * Handle `worker-queue-place`. Payload: `{ bead_id, index?, expected_revision }`.
- *
- * There is ONE waiting lane now (worker-phase2 §3), so the payload carries no
- * `lane`; a stale client that still sends one is simply placed in `queue`.
+ * Handle `worker-queue-place`. Payload:
+ * `{ bead_id, lane?: 'parallel'|'s1'..'s5', index?, expected_revision }`
+ * (UI-04vo §5). New entry and cross-lane move share this op — the store
+ * removes the bead from its origin lane before inserting. An absent lane (or
+ * a legacy value like `'serial'`) lands in the parallel lane; an out-of-range
+ * serial slot is rejected by the store CAS layer.
  *
  * Queue entry is admission-gated (worker-autorun-policy §1): a live attachment
  * applies the full validator, while an inactive workspace still performs an
@@ -1756,6 +1832,10 @@ export async function handleWorkerQueuePlace(ws, req) {
   let result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
+    lane:
+      typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane)
+        ? p.lane
+        : undefined,
     index: typeof p.index === 'number' ? p.index : undefined
   });
   if (result.ok) {
@@ -1790,7 +1870,8 @@ export async function handleWorkerQueuePlace(ws, req) {
 
 /**
  * Handle `worker-queue-reorder`. Payload:
- * `{ bead_id, to_index, expected_revision }`.
+ * `{ bead_id, lane?: 'parallel'|'s1'..'s5', to_index, expected_revision }`
+ * (UI-04vo §5). An absent lane keeps the legacy parallel-lane meaning.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -1812,6 +1893,10 @@ export function handleWorkerQueueReorder(ws, req) {
   const result = queueStore().reorder(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
+    lane:
+      typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane)
+        ? p.lane
+        : undefined,
     to_index: p.to_index
   });
   replyMutation(ws, req, key, result);
@@ -2083,18 +2168,25 @@ export function handleWorkerQueueSetSlots(ws, req) {
 }
 
 /**
- * Handle the merge-serial `worker-queue-set-pr-wait-hold` toggle.
- * Payload: `{ on: boolean, expected_revision }`.
+ * Handle `worker-queue-set-serial-lane-count` (UI-04vo §5).
+ * Payload: `{ count: number, expected_revision }`. The store returns truncated
+ * lanes' waiting entries to the parallel tail; a value outside 1..5 is a
+ * bad_request before any store call.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerQueueSetPrWaitHold(ws, req) {
+export function handleWorkerQueueSetSerialLaneCount(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
-  if (typeof p.on !== 'boolean') {
+  if (
+    typeof p.count !== 'number' ||
+    !Number.isInteger(p.count) ||
+    p.count < 1 ||
+    p.count > 5
+  ) {
     ws.send(
       JSON.stringify(
-        makeError(req, 'bad_request', 'payload requires { on: boolean }')
+        makeError(req, 'bad_request', 'payload requires { count: 1..5 }')
       )
     );
     return;
@@ -2103,14 +2195,15 @@ export function handleWorkerQueueSetPrWaitHold(ws, req) {
   if (key === null) {
     return;
   }
-  const result = queueStore().setPrWaitHoldsSlot(key, {
+  const result = queueStore().setSerialLaneCount(key, {
     expected_revision: revisionOf(p),
-    on: p.on
+    count: p.count
   });
   replyMutation(ws, req, key, result);
   if (result.ok) {
+    // Entries returned to the parallel lane may be immediately dispatchable.
     Promise.resolve(tickWorkerQueue(key)).catch((err) => {
-      log('worker tick after pr_wait hold toggle failed for %s: %o', key, err);
+      log('worker tick after lane count change failed for %s: %o', key, err);
     });
   }
 }

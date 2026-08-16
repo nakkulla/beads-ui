@@ -353,6 +353,147 @@ function staleDispatchPrompt(bead_id, stale) {
  */
 
 /**
+ * @param {any} attempt
+ * @returns {string|null}
+ */
+function serialLineageId(attempt) {
+  if (!attempt || typeof attempt.bead_id !== 'string') {
+    return null;
+  }
+  return typeof attempt.completion_root_id === 'string'
+    ? attempt.completion_root_id
+    : attempt.bead_id;
+}
+
+/**
+ * Statuses that RELEASE lane occupancy (UI-04vo §2): merge-and-cleanup
+ * completion (`done` via moveToDone), the unified discard terminal, and the
+ * legacy `stopped` history state. Everything else — running, paused,
+ * `failed`, `orphaned`, `dismissed_at` regardless — keeps the lineage's lane
+ * occupied until the lineage merges or is discarded.
+ *
+ * @type {Set<string>}
+ */
+const LANE_RELEASING_STATUSES = new Set(['done', 'stopped', 'discarded']);
+
+/**
+ * Zero-based slot index of a serial lane id, or null for anything else.
+ *
+ * @param {unknown} id
+ */
+function serialLaneIndexOf(id) {
+  if (typeof id !== 'string') {
+    return null;
+  }
+  const match = /^s([1-5])$/.exec(id);
+  return match ? Number(match[1]) - 1 : null;
+}
+
+/**
+ * The serial lane a bead currently waits in, or null when it sits in the
+ * parallel lane (or in no waiting lane at all).
+ *
+ * @param {{ serial_lanes?: Array<{ id: string, entries: Array<{ bead_id: string }> }> }} q
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+function waitingLaneOf(q, bead_id) {
+  for (const lane of q.serial_lanes || []) {
+    if (lane.entries.some((entry) => entry.bead_id === bead_id)) {
+      return lane.id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Per-lane active lineage occupancy (UI-04vo §2), rebuilt from durable state
+ * on every read so a restart reproduces it without a schema field. A lane is
+ * occupied by a lineage while any of these holds for an attempt carrying its
+ * `serial_lane_id`:
+ *
+ *   - a LEAF attempt (nothing resumed from it) in a non-releasing status —
+ *     running, paused, failed, orphaned; `dismissed_at` is a UI hide, never
+ *     a release;
+ *   - the bead sits in durable `pr_wait` (its terminal `done` attempt is the
+ *     lane holder until merge cleanup moves it to Done);
+ *   - a discard operation for the lineage is still in flight.
+ *
+ * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string }>, discard_operations?: Record<string, any> }} q
+ * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
+ */
+export function activeLaneLineages(q) {
+  const values = Object.values(q.attempts || {});
+  const resumed = new Set(
+    values.map((attempt) => attempt?.resumed_from).filter(Boolean)
+  );
+  /** @type {Map<string, Set<string>>} */
+  const lanes = new Map();
+  /**
+   * @param {unknown} lane
+   * @param {string|null} lineage
+   */
+  function occupy(lane, lineage) {
+    if (serialLaneIndexOf(lane) === null || !lineage) {
+      return;
+    }
+    const key = /** @type {string} */ (lane);
+    const set = lanes.get(key) || new Set();
+    set.add(lineage);
+    lanes.set(key, set);
+  }
+  for (const attempt of values) {
+    if (!attempt || LANE_RELEASING_STATUSES.has(attempt.status)) {
+      continue;
+    }
+    if (resumed.has(attempt.attempt_id)) {
+      continue;
+    }
+    occupy(attempt.serial_lane_id, serialLineageId(attempt));
+  }
+  for (const entry of q.pr_wait || []) {
+    const attempt = [...values]
+      .reverse()
+      .find((item) => item?.bead_id === entry?.bead_id);
+    if (attempt) {
+      occupy(attempt.serial_lane_id, serialLineageId(attempt));
+    }
+  }
+  for (const operation of Object.values(q.discard_operations || {})) {
+    if (!operation || operation.phase === 'done') {
+      continue;
+    }
+    const attempt =
+      (typeof operation.attempt_id === 'string' &&
+        q.attempts?.[operation.attempt_id]) ||
+      [...values]
+        .reverse()
+        .find((item) => item?.bead_id === operation.bead_id);
+    if (attempt) {
+      occupy(attempt.serial_lane_id, serialLineageId(attempt));
+    }
+  }
+  return lanes;
+}
+
+/**
+ * Whether a serial lane is occupied by any lineage OTHER than `lineage_id`.
+ * A lineage never fences itself: its own resume, repair, and re-dispatch are
+ * the continuations lane inheritance exists for.
+ *
+ * @param {Map<string, Set<string>>} occupancy
+ * @param {string} lane_id
+ * @param {string} lineage_id
+ */
+export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
+  const occupants = occupancy.get(lane_id);
+  if (!occupants) {
+    return false;
+  }
+  return [...occupants].some((lineage) => lineage !== lineage_id);
+}
+
+/**
  * Build the auto-advance state machine over the queue store.
  *
  * @param {SchedulerDeps} deps
@@ -1662,146 +1803,6 @@ export function createScheduler(deps) {
     return out;
   }
 
-  /**
-   * @param {any} attempt
-   * @returns {string|null}
-   */
-  function serialLineageId(attempt) {
-    if (!attempt || typeof attempt.bead_id !== 'string') {
-      return null;
-    }
-    return typeof attempt.completion_root_id === 'string'
-      ? attempt.completion_root_id
-      : attempt.bead_id;
-  }
-
-  /**
-   * Statuses that RELEASE lane occupancy (UI-04vo §2): merge-and-cleanup
-   * completion (`done` via moveToDone), the unified discard terminal, and the
-   * legacy `stopped` history state. Everything else — running, paused,
-   * `failed`, `orphaned`, `dismissed_at` regardless — keeps the lineage's lane
-   * occupied until the lineage merges or is discarded.
-   *
-   * @type {Set<string>}
-   */
-  const LANE_RELEASING_STATUSES = new Set(['done', 'stopped', 'discarded']);
-
-  /**
-   * Zero-based slot index of a serial lane id, or null for anything else.
-   *
-   * @param {unknown} id
-   */
-  function serialLaneIndexOf(id) {
-    if (typeof id !== 'string') {
-      return null;
-    }
-    const match = /^s([1-5])$/.exec(id);
-    return match ? Number(match[1]) - 1 : null;
-  }
-
-  /**
-   * The serial lane a bead currently waits in, or null when it sits in the
-   * parallel lane (or in no waiting lane at all).
-   *
-   * @param {{ serial_lanes?: Array<{ id: string, entries: Array<{ bead_id: string }> }> }} q
-   * @param {string} bead_id
-   * @returns {string|null}
-   */
-  function waitingLaneOf(q, bead_id) {
-    for (const lane of q.serial_lanes || []) {
-      if (lane.entries.some((entry) => entry.bead_id === bead_id)) {
-        return lane.id;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Per-lane active lineage occupancy (UI-04vo §2), rebuilt from durable state
-   * on every read so a restart reproduces it without a schema field. A lane is
-   * occupied by a lineage while any of these holds for an attempt carrying its
-   * `serial_lane_id`:
-   *
-   *   - a LEAF attempt (nothing resumed from it) in a non-releasing status —
-   *     running, paused, failed, orphaned; `dismissed_at` is a UI hide, never
-   *     a release;
-   *   - the bead sits in durable `pr_wait` (its terminal `done` attempt is the
-   *     lane holder until merge cleanup moves it to Done);
-   *   - a discard operation for the lineage is still in flight.
-   *
-   * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string }>, discard_operations?: Record<string, any> }} q
-   * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
-   */
-  function activeLaneLineages(q) {
-    const values = Object.values(q.attempts || {});
-    const resumed = new Set(
-      values.map((attempt) => attempt?.resumed_from).filter(Boolean)
-    );
-    /** @type {Map<string, Set<string>>} */
-    const lanes = new Map();
-    /**
-     * @param {unknown} lane
-     * @param {string|null} lineage
-     */
-    function occupy(lane, lineage) {
-      if (serialLaneIndexOf(lane) === null || !lineage) {
-        return;
-      }
-      const key = /** @type {string} */ (lane);
-      const set = lanes.get(key) || new Set();
-      set.add(lineage);
-      lanes.set(key, set);
-    }
-    for (const attempt of values) {
-      if (!attempt || LANE_RELEASING_STATUSES.has(attempt.status)) {
-        continue;
-      }
-      if (resumed.has(attempt.attempt_id)) {
-        continue;
-      }
-      occupy(attempt.serial_lane_id, serialLineageId(attempt));
-    }
-    for (const entry of q.pr_wait || []) {
-      const attempt = [...values]
-        .reverse()
-        .find((item) => item?.bead_id === entry?.bead_id);
-      if (attempt) {
-        occupy(attempt.serial_lane_id, serialLineageId(attempt));
-      }
-    }
-    for (const operation of Object.values(q.discard_operations || {})) {
-      if (!operation || operation.phase === 'done') {
-        continue;
-      }
-      const attempt =
-        (typeof operation.attempt_id === 'string' &&
-          q.attempts?.[operation.attempt_id]) ||
-        [...values]
-          .reverse()
-          .find((item) => item?.bead_id === operation.bead_id);
-      if (attempt) {
-        occupy(attempt.serial_lane_id, serialLineageId(attempt));
-      }
-    }
-    return lanes;
-  }
-
-  /**
-   * Whether a serial lane is occupied by any lineage OTHER than `lineage_id`.
-   * A lineage never fences itself: its own resume, repair, and re-dispatch are
-   * the continuations lane inheritance exists for.
-   *
-   * @param {Map<string, Set<string>>} occupancy
-   * @param {string} lane_id
-   * @param {string} lineage_id
-   */
-  function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
-    const occupants = occupancy.get(lane_id);
-    if (!occupants) {
-      return false;
-    }
-    return [...occupants].some((lineage) => lineage !== lineage_id);
-  }
 
   /**
    * Synchronously judges a launch against the lane fences (UI-04vo §2).

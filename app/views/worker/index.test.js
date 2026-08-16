@@ -838,7 +838,7 @@ describe('views/worker', () => {
 
     expect(titles).toEqual([
       '후보 · Board 연동',
-      '대기',
+      '병렬 대기',
       '실행 중 · 슬롯 2',
       'PR 대기',
       '완료 · 오늘 0'
@@ -2877,473 +2877,6 @@ describe('views/worker', () => {
     });
 
     expect(mount.querySelector('.worker-banner--failure')).toBeNull();
-  });
-});
-
-describe('waiting execution mode controls (UI-nrut)', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '<div id="m"></div>';
-    window.localStorage.clear();
-  });
-
-  /**
-   * @param {any} [over]
-   * @param {any} [transport]
-   * @param {(id: string) => void} [gotoIssue]
-   * @returns {{ mount: HTMLElement, queueStore: ReturnType<typeof createWorkerQueueStore> }}
-   */
-  function mountExecution(over = {}, transport = vi.fn(), gotoIssue) {
-    const stores = createTestIssueStores();
-    seed(stores, 'tab:worker:ready', [
-      {
-        id: 'A',
-        title: 'live labels win',
-        status: 'open',
-        labels: [],
-        updated_at: 200,
-        metadata: { spec_id: 'S' }
-      }
-    ]);
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({
-        queue: [
-          { bead_id: 'B', added_at: 1 },
-          { bead_id: 'C', added_at: 2 },
-          { bead_id: 'A', added_at: 3 }
-        ],
-        bead_labels: {
-          A: ['worker-serial'],
-          B: [],
-          C: ['worker-serial']
-        },
-        bead_times: {
-          A: { updated_at: 100 }
-        },
-        ...over
-      })
-    );
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    createWorkerView(mount, {
-      issueStores: stores,
-      queueStore,
-      transport,
-      gotoIssue
-    });
-    return { mount, queueStore };
-  }
-
-  /**
-   * @param {HTMLElement} mount
-   * @param {string} id
-   */
-  function selectWaitingRow(mount, id) {
-    const checkbox = /** @type {HTMLInputElement} */ (
-      mount.querySelector(
-        `.worker-mini[data-bead-id="${id}"] .worker-mini__select`
-      )
-    );
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-  }
-
-  test('uses newer live issue labels over partial server labels and leaves missing labels unknown', () => {
-    const { mount } = mountExecution({
-      queue: [
-        { bead_id: 'A', added_at: 1 },
-        { bead_id: 'MISSING', added_at: 2 }
-      ],
-      bead_labels: { A: ['worker-serial'] }
-    });
-
-    expect(
-      mount.querySelector('.worker-mini[data-bead-id="A"] .worker-mini__serial')
-    ).toBeNull();
-    expect(
-      mount.querySelector(
-        '.worker-mini[data-bead-id="MISSING"] .worker-mini__serial'
-      )?.textContent
-    ).toContain('실행 방식 확인 중');
-  });
-
-  test('keeps newer mutation-confirmed labels over stale live issue labels', () => {
-    const { mount } = mountExecution({
-      queue: [{ bead_id: 'A', added_at: 1 }],
-      bead_labels: { A: ['worker-serial'] },
-      bead_times: { A: { updated_at: 300 } }
-    });
-
-    expect(
-      mount.querySelector('.worker-mini[data-bead-id="A"] .worker-mini__serial')
-        ?.textContent
-    ).toContain('머지까지 단독');
-  });
-
-  test('applies known selected changes in queue order and clears the selection', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({ id: 'B', labels: ['worker-serial'] })
-      .mockResolvedValueOnce({ id: 'A', labels: ['worker-serial'] });
-    const { mount } = mountExecution({}, transport);
-    selectWaitingRow(mount, 'A');
-    selectWaitingRow(mount, 'B');
-
-    const mode = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('.worker-bulk__mode')
-    );
-    mode.value = 'serial';
-    mode.dispatchEvent(new Event('change', { bubbles: true }));
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-bulk__apply')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenNthCalledWith(1, 'label-add', {
-      id: 'B',
-      label: 'worker-serial'
-    });
-    expect(transport).toHaveBeenNthCalledWith(2, 'label-add', {
-      id: 'A',
-      label: 'worker-serial'
-    });
-    expect(mount.querySelector('.worker-bulk')).toBeNull();
-    expect(document.querySelector('.toast')?.textContent).toBe(
-      '2개 실행 방식 변경'
-    );
-  });
-
-  test('retains only failed rows after independent bulk mutation failures', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({ id: 'B', labels: ['worker-serial'] })
-      .mockResolvedValueOnce([]);
-    const { mount } = mountExecution({}, transport);
-    selectWaitingRow(mount, 'B');
-    selectWaitingRow(mount, 'A');
-    const mode = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('.worker-bulk__mode')
-    );
-    mode.value = 'serial';
-    mode.dispatchEvent(new Event('change', { bubbles: true }));
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-bulk__apply')
-    ).click();
-    await flush();
-
-    expect(
-      /** @type {HTMLInputElement} */ (
-        mount.querySelector(
-          '.worker-mini[data-bead-id="B"] .worker-mini__select'
-        )
-      ).checked
-    ).toBe(false);
-    expect(
-      /** @type {HTMLInputElement} */ (
-        mount.querySelector(
-          '.worker-mini[data-bead-id="A"] .worker-mini__select'
-        )
-      ).checked
-    ).toBe(true);
-    expect(document.querySelector('.toast')?.textContent).toContain(
-      '2개 중 1개 변경 · 1개 실패 (A)'
-    );
-  });
-
-  test('retains a row when the label readback contradicts the requested mode', async () => {
-    const transport = vi.fn().mockResolvedValue({ id: 'B', labels: [] });
-    const { mount } = mountExecution({}, transport);
-    selectWaitingRow(mount, 'B');
-    const mode = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('.worker-bulk__mode')
-    );
-    mode.value = 'serial';
-    mode.dispatchEvent(new Event('change', { bubbles: true }));
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-bulk__apply')
-    ).click();
-    await flush();
-
-    expect(
-      /** @type {HTMLInputElement} */ (
-        mount.querySelector(
-          '.worker-mini[data-bead-id="B"] .worker-mini__select'
-        )
-      ).checked
-    ).toBe(true);
-    expect(document.querySelector('.toast')?.textContent).toContain(
-      '1개 중 0개 변경 · 1개 실패 (B)'
-    );
-  });
-
-  test('prevents a second bulk apply while the first batch is in flight', async () => {
-    /** @type {(value: any) => void} */
-    let resolveMutation = () => {};
-    const pending = new Promise((resolve) => {
-      resolveMutation = resolve;
-    });
-    const transport = vi.fn().mockReturnValue(pending);
-    const { mount } = mountExecution({}, transport);
-    selectWaitingRow(mount, 'B');
-    const mode = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('.worker-bulk__mode')
-    );
-    mode.value = 'serial';
-    mode.dispatchEvent(new Event('change', { bubbles: true }));
-    const apply = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-bulk__apply')
-    );
-    apply.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    apply.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('.worker-bulk__apply')
-      ).disabled
-    ).toBe(true);
-    expect(
-      /** @type {HTMLSelectElement} */ (
-        mount.querySelector('.worker-bulk__mode')
-      ).disabled
-    ).toBe(true);
-
-    resolveMutation({ id: 'B', labels: ['worker-serial'] });
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(1);
-  });
-
-  test('clears a no-op selection without sending a label mutation', async () => {
-    const transport = vi.fn();
-    const { mount } = mountExecution({}, transport);
-    selectWaitingRow(mount, 'C');
-    const mode = /** @type {HTMLSelectElement} */ (
-      mount.querySelector('.worker-bulk__mode')
-    );
-    mode.value = 'serial';
-    mode.dispatchEvent(new Event('change', { bubbles: true }));
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-bulk__apply')
-    ).click();
-    await flush();
-
-    expect(transport).not.toHaveBeenCalled();
-    expect(mount.querySelector('.worker-bulk')).toBeNull();
-    expect(document.querySelector('.toast')?.textContent).toBe(
-      '이미 같은 실행 방식입니다'
-    );
-  });
-
-  test('blocks unknown selected rows instead of treating them as ordinary no-ops', () => {
-    const transport = vi.fn();
-    const { mount } = mountExecution(
-      {
-        queue: [{ bead_id: 'UNKNOWN', added_at: 1 }],
-        bead_labels: {}
-      },
-      transport
-    );
-    selectWaitingRow(mount, 'UNKNOWN');
-
-    expect(
-      /** @type {HTMLButtonElement} */ (
-        mount.querySelector('.worker-bulk__apply')
-      ).disabled
-    ).toBe(true);
-    expect(transport).not.toHaveBeenCalled();
-  });
-
-  test('prunes selection when a selected bead leaves the queue', () => {
-    const { mount, queueStore } = mountExecution();
-    selectWaitingRow(mount, 'B');
-
-    queueStore.set(
-      queueOf({
-        queue: [{ bead_id: 'A', added_at: 1 }],
-        bead_labels: { A: [] }
-      })
-    );
-
-    expect(mount.querySelector('.worker-bulk')).toBeNull();
-  });
-
-  test('starts queue reorder from the row body', async () => {
-    const transport = vi
-      .fn()
-      .mockResolvedValue(reply(queueOf({ revision: 4 })));
-    const { mount } = mountExecution(
-      {
-        revision: 3,
-        queue: [
-          { bead_id: 'A', added_at: 1 },
-          { bead_id: 'B', added_at: 2 }
-        ]
-      },
-      transport
-    );
-    let stored = '';
-    const dataTransfer = {
-      getData: () => stored,
-      setData: (/** @type {string} */ _type, /** @type {string} */ value) => {
-        stored = value;
-      },
-      effectAllowed: '',
-      dropEffect: ''
-    };
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="B"]')
-    );
-    row.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-    const rowDrag = new Event('dragstart', { bubbles: true });
-    Object.defineProperty(rowDrag, 'dataTransfer', { value: dataTransfer });
-    row.dispatchEvent(rowDrag);
-    const pane = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-queue')
-    );
-    const drop = new Event('drop', { bubbles: true, cancelable: true });
-    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
-    pane.dispatchEvent(drop);
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-reorder', {
-      bead_id: 'B',
-      to_index: 2,
-      expected_revision: 3
-    });
-  });
-
-  test('cancels a drag that starts on an interactive row child', async () => {
-    const transport = vi.fn();
-    const { mount } = mountExecution(
-      {
-        revision: 3,
-        queue: [
-          { bead_id: 'A', added_at: 1 },
-          { bead_id: 'B', added_at: 2 }
-        ]
-      },
-      transport
-    );
-    let stored = '';
-    const dataTransfer = {
-      getData: () => stored,
-      setData: (/** @type {string} */ _type, /** @type {string} */ value) => {
-        stored = value;
-      },
-      effectAllowed: '',
-      dropEffect: ''
-    };
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="B"]')
-    );
-    const checkbox = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__select')
-    );
-    checkbox.dispatchEvent(new Event('pointerdown', { bubbles: true }));
-    const rowDrag = new Event('dragstart', { bubbles: true, cancelable: true });
-    Object.defineProperty(rowDrag, 'dataTransfer', { value: dataTransfer });
-    row.dispatchEvent(rowDrag);
-
-    expect(rowDrag.defaultPrevented).toBe(true);
-
-    const pane = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-pane-queue')
-    );
-    const drop = new Event('drop', { bubbles: true, cancelable: true });
-    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
-    pane.dispatchEvent(drop);
-    await flush();
-
-    expect(transport).not.toHaveBeenCalled();
-  });
-
-  test('keeps waiting-row controls out of the detail click boundary', () => {
-    const gotoIssue = vi.fn();
-    const { mount } = mountExecution(
-      {
-        queue: [{ bead_id: 'C', added_at: 1 }],
-        bead_labels: { C: ['worker-serial'] }
-      },
-      vi.fn(),
-      gotoIssue
-    );
-    const row = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-mini[data-bead-id="C"]')
-    );
-    /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__select')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__serial')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__grip')
-    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
-
-    expect(gotoIssue).not.toHaveBeenCalled();
-  });
-
-  test('shows serial wait reason and a serial PR-wait hint without the global hold', () => {
-    const { mount } = mountExecution({
-      queue: [{ bead_id: 'SERIAL', added_at: 1 }],
-      bead_labels: { SERIAL: ['worker-serial'] },
-      attempts: {
-        active: { attempt_id: 'active', bead_id: 'OTHER', status: 'running' },
-        serial: {
-          attempt_id: 'serial',
-          bead_id: 'PR-1',
-          status: 'done',
-          worker_serial: true
-        }
-      },
-      pr_wait: [{ bead_id: 'PR-1', added_at: 1 }],
-      auto_merge: false,
-      pr_wait_holds_slot: false
-    });
-
-    expect(
-      mount.querySelector(
-        '.worker-mini[data-bead-id="SERIAL"] .worker-mini__reason'
-      )?.textContent
-    ).toContain('다른 작업 종료 대기 · 머지까지 단독');
-    expect(
-      mount.querySelector('.worker-pr-wait-hint--serial')?.textContent
-    ).toContain('단독 실행 작업의 PR 머지·정리');
-  });
-
-  test('does not show serial busy for terminal attempt history', () => {
-    const { mount } = mountExecution({
-      queue: [{ bead_id: 'SERIAL', added_at: 1 }],
-      bead_labels: { SERIAL: ['worker-serial'] },
-      attempts: Object.fromEntries(
-        ['done', 'failed', 'orphaned', 'stopped', 'discarded'].map((status) => [
-          status,
-          { attempt_id: status, bead_id: `OLD-${status}`, status }
-        ])
-      )
-    });
-
-    expect(
-      mount.querySelector(
-        '.worker-mini[data-bead-id="SERIAL"] .worker-mini__reason'
-      )
-    ).toBeNull();
-  });
-
-  test('shows serial busy for a different active discard operation', () => {
-    const { mount } = mountExecution({
-      queue: [{ bead_id: 'SERIAL', added_at: 1 }],
-      bead_labels: { SERIAL: ['worker-serial'] },
-      discard_operations: {
-        active: { bead_id: 'OTHER', phase: 'signaled' }
-      }
-    });
-
-    expect(
-      mount.querySelector(
-        '.worker-mini[data-bead-id="SERIAL"] .worker-mini__reason'
-      )?.textContent
-    ).toContain('다른 작업 종료 대기 · 머지까지 단독');
   });
 });
 
@@ -6678,257 +6211,6 @@ describe('worker toolbar automation controls (UI-jk7z)', () => {
   });
 });
 
-describe('PR 대기 슬롯 점유 토글 (UI-mh3x)', () => {
-  beforeEach(() => {
-    document.body.innerHTML = '<div id="m"></div>';
-  });
-
-  /**
-   * @param {Record<string, any>} over
-   */
-  function mountHold(over) {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf(over));
-    const transport = vi
-      .fn()
-      .mockResolvedValue(reply(queueOf({ ...over, pr_wait_holds_slot: true })));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-    return { mount, transport };
-  }
-
-  test('renders the slot-hold toggle from the queue snapshot', () => {
-    const { mount } = mountHold({ pr_wait_holds_slot: true });
-
-    expect(
-      /** @type {HTMLInputElement} */ (
-        mount.querySelector('.worker-pr-wait-hold')
-      ).checked
-    ).toBe(true);
-  });
-
-  test('shows merge-serial mode wording', () => {
-    const { mount } = mountHold({ pr_wait_holds_slot: true });
-
-    expect(mount.textContent).toContain('머지까지 순차 실행');
-  });
-
-  test('shows one disabled effective slot while preserving a larger setting', () => {
-    const { mount } = mountHold({ pr_wait_holds_slot: true, slots: 3 });
-    const input = /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-slots__input')
-    );
-
-    expect(input.value).toBe('1');
-    expect(input.disabled).toBe(true);
-  });
-
-  test('restores the configured slot value when merge-serial mode turns off', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(
-      queueOf({ pr_wait_holds_slot: true, slots: 3, revision: 2 })
-    );
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport: vi.fn()
-    });
-
-    queueStore.set(
-      queueOf({ pr_wait_holds_slot: false, slots: 3, revision: 3 })
-    );
-
-    const input = /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-slots__input')
-    );
-    expect(input.value).toBe('3');
-    expect(input.disabled).toBe(false);
-  });
-
-  test('sends the slot-hold mutation when clicked', async () => {
-    const { mount, transport } = mountHold({ pr_wait_holds_slot: false });
-
-    /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-pr-wait-hold')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith('worker-queue-set-pr-wait-hold', {
-      on: true,
-      expected_revision: 1
-    });
-  });
-
-  test('updates the slot-hold toggle from a later queue snapshot', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ pr_wait_holds_slot: false }));
-    const transport = vi.fn().mockResolvedValue({
-      applied: true,
-      conflict: false,
-      queue: queueOf({ revision: 2, pr_wait_holds_slot: true })
-    });
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-pr-wait-hold')
-    ).click();
-    await flush();
-
-    queueStore.set(queueOf({ revision: 3, pr_wait_holds_slot: false }));
-
-    expect(
-      /** @type {HTMLInputElement} */ (
-        mount.querySelector('.worker-pr-wait-hold')
-      ).checked
-    ).toBe(false);
-  });
-
-  test('retries one slot-hold conflict with the adopted revision', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ pr_wait_holds_slot: false }));
-    const transport = vi
-      .fn()
-      .mockResolvedValueOnce({
-        applied: false,
-        conflict: true,
-        queue: queueOf({ revision: 2, pr_wait_holds_slot: false })
-      })
-      .mockResolvedValueOnce({
-        applied: true,
-        conflict: false,
-        queue: queueOf({ revision: 3, pr_wait_holds_slot: true })
-      });
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      transport
-    });
-
-    /** @type {HTMLInputElement} */ (
-      mount.querySelector('.worker-pr-wait-hold')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenNthCalledWith(
-      2,
-      'worker-queue-set-pr-wait-hold',
-      { on: true, expected_revision: 2 }
-    );
-    expect(transport).toHaveBeenCalledTimes(2);
-  });
-
-  test('shows the hold hint when the waiting queue is slot-blocked', () => {
-    const { mount } = mountHold({
-      auto_advance: true,
-      auto_merge: false,
-      pr_wait_holds_slot: true,
-      slots: 1,
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
-    });
-
-    expect(mount.querySelector('.worker-pr-wait-hint')?.textContent).toContain(
-      'PR 머지 대기 중'
-    );
-  });
-
-  test('shows the hold hint with two configured slots', () => {
-    const { mount } = mountHold({
-      auto_advance: true,
-      auto_merge: false,
-      pr_wait_holds_slot: true,
-      slots: 2,
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
-    });
-
-    expect(mount.querySelector('.worker-pr-wait-hint')?.textContent).toContain(
-      'PR 머지 대기 중'
-    );
-  });
-
-  test('does not count a failed tile as an occupied live slot', () => {
-    const hold = {
-      auto_advance: true,
-      auto_merge: false,
-      pr_wait_holds_slot: true,
-      slots: 2,
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
-    };
-    const { mount } = mountHold({
-      ...hold,
-      attempts: {
-        failed: {
-          attempt_id: 'failed',
-          bead_id: 'FAILED',
-          status: 'failed',
-          finished_at: 1
-        }
-      }
-    });
-    const with_failed =
-      mount.querySelector('.worker-pr-wait-hint')?.textContent || '';
-
-    document.body.innerHTML = '<div id="m"></div>';
-    const baseline = mountHold(hold).mount;
-    const without_failed =
-      baseline.querySelector('.worker-pr-wait-hint')?.textContent || '';
-
-    expect(with_failed).toBe(without_failed);
-  });
-
-  test('hides the hold hint when automatic progress is off', () => {
-    const { mount } = mountHold({
-      auto_advance: false,
-      auto_merge: false,
-      pr_wait_holds_slot: true,
-      slots: 1,
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
-    });
-
-    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
-  });
-
-  test('hides the hold hint for external PR rows only', () => {
-    const { mount } = mountHold({
-      auto_advance: true,
-      auto_merge: false,
-      pr_wait_holds_slot: true,
-      slots: 1,
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      pr_wait: [{ bead_id: 'RD-2', added_at: 1, external: true }]
-    });
-
-    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
-  });
-
-  test('hides the hold hint while automatic merge is on', () => {
-    const { mount } = mountHold({
-      auto_advance: true,
-      auto_merge: true,
-      pr_wait_holds_slot: true,
-      slots: 1,
-      queue: [{ bead_id: 'RD-1', added_at: 1 }],
-      pr_wait: [{ bead_id: 'RD-2', added_at: 1 }]
-    });
-
-    expect(mount.querySelector('.worker-pr-wait-hint')).toBe(null);
-  });
-});
-
 describe('target base 칩과 예외 배지 (UI-j6wa §3)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
@@ -9247,5 +8529,353 @@ describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {
     expect(
       mount.querySelector('.rtile .worker-mini__meta')?.textContent
     ).toContain('생성');
+  });
+});
+
+describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {any} over
+   */
+  function laneQueue(over = {}) {
+    return queueOf({
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {
+        s1: { occupied_by: [], order: [], corrections: [], cycle: false },
+        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+      },
+      ...over
+    });
+  }
+
+  test('renders serial lane cards with rows and an empty drop target', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      laneQueue({
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'A', added_at: 1 }] },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {
+          s1: { occupied_by: [], order: ['A'], corrections: [], cycle: false },
+          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+        }
+      })
+    );
+
+    const s1 = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1')
+    );
+    expect(s1).not.toBeNull();
+    expect(
+      s1.querySelector('.worker-mini[data-bead-id="A"][data-lane="s1"]')
+    ).not.toBeNull();
+    const s2 = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s2')
+    );
+    expect(s2?.textContent).toContain('비어 있음');
+  });
+
+  test('drags a parallel row into a serial lane through worker-queue-place', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const transport = vi.fn(async () => reply(laneQueue()));
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport
+    });
+    queueStore.set(laneQueue({ queue: [{ bead_id: 'A', added_at: 1 }] }));
+
+    drag(mount, 'A', 'worker-pane-lane-s1');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-place',
+      expect.objectContaining({ bead_id: 'A', lane: 's1' })
+    );
+  });
+
+  test('reorders within a serial lane through worker-queue-reorder', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const transport = vi.fn(async () => reply(laneQueue()));
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport
+    });
+    queueStore.set(
+      laneQueue({
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [
+              { bead_id: 'A', added_at: 1 },
+              { bead_id: 'B', added_at: 2 }
+            ]
+          },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: [],
+            order: ['A', 'B'],
+            corrections: [],
+            cycle: false
+          },
+          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+        }
+      })
+    );
+
+    drag(mount, 'A', 'worker-pane-lane-s1');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-reorder',
+      expect.objectContaining({ bead_id: 'A', lane: 's1' })
+    );
+  });
+
+  test('renders occupancy ghost row and badge for a held lane', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      laneQueue({
+        attempts: {
+          x1: {
+            attempt_id: 'x1',
+            bead_id: 'X',
+            status: 'failed',
+            serial_lane_id: 's1'
+          }
+        },
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'B', added_at: 1 }] },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: ['X'],
+            order: ['B'],
+            corrections: [],
+            cycle: false
+          },
+          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+        }
+      })
+    );
+
+    const s1 = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s1')
+    );
+    expect(s1.textContent).toContain('실패 · 점유 유지');
+    expect(
+      s1.querySelector('.worker-mini--ghost[data-bead-id="X"]')
+    ).not.toBeNull();
+  });
+
+  test('renders the serial lane count dropdown and sends the mutation', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const transport = vi.fn(async () => reply(laneQueue()));
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport
+    });
+    queueStore.set(laneQueue());
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.worker-serial-lane-count')
+    );
+    expect(select).not.toBeNull();
+    select.value = '3';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-set-serial-lane-count',
+      expect.objectContaining({ count: 3 })
+    );
+  });
+
+  test('renders correction chip and cycle warning from lane_states', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      laneQueue({
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [
+              { bead_id: 'A', added_at: 1 },
+              { bead_id: 'B', added_at: 2 }
+            ]
+          },
+          { id: 's2', entries: [{ bead_id: 'C', added_at: 3 }] }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: [],
+            order: ['A', 'B'],
+            corrections: [{ bead_id: 'B', after: 'A' }],
+            cycle: false
+          },
+          s2: { occupied_by: [], order: ['C'], corrections: [], cycle: true }
+        }
+      })
+    );
+
+    const row_b = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="B"]')
+    );
+    expect(row_b.textContent).toContain('🔗 A 뒤');
+    const s2 = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-lane-s2')
+    );
+    expect(s2.textContent).toContain('순환');
+  });
+
+  test('renders a blocks wait-reason chip for a blocked serial head', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      laneQueue({
+        admission: { A: { reason: 'not_ready:open', at: 1 } },
+        bead_blocked_by: { A: ['UI-x'] },
+        serial_lanes: [
+          { id: 's1', entries: [{ bead_id: 'A', added_at: 1 }] },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {
+          s1: { occupied_by: [], order: ['A'], corrections: [], cycle: false },
+          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A"]')
+    );
+    expect(row.textContent).toContain('⏸ UI-x 완료 대기');
+  });
+
+  test('retires the bulk selection and pr-wait-hold surfaces', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+    queueStore.set(laneQueue({ queue: [{ bead_id: 'A', added_at: 1 }] }));
+
+    expect(mount.querySelector('.worker-mini__select')).toBeNull();
+    expect(mount.querySelector('.worker-bulk')).toBeNull();
+    expect(mount.querySelector('.worker-pr-wait-hold')).toBeNull();
+  });
+
+  test('cancels a drag that starts on an interactive row child', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const transport = vi.fn();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport
+    });
+    queueStore.set(
+      laneQueue({
+        queue: [{ bead_id: 'A', added_at: 1 }],
+        revise_parked: { A: { notes_tail: 'finding' } }
+      })
+    );
+    let stored = '';
+    const dataTransfer = {
+      getData: () => stored,
+      setData: (/** @type {string} */ _type, /** @type {string} */ value) => {
+        stored = value;
+      },
+      effectAllowed: '',
+      dropEffect: ''
+    };
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A"]')
+    );
+    const button = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__revise-fix')
+    );
+    button.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    const rowDrag = new Event('dragstart', { bubbles: true, cancelable: true });
+    Object.defineProperty(rowDrag, 'dataTransfer', { value: dataTransfer });
+    row.dispatchEvent(rowDrag);
+
+    expect(rowDrag.defaultPrevented).toBe(true);
+
+    const pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-queue')
+    );
+    const drop = new Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', { value: dataTransfer });
+    pane.dispatchEvent(drop);
+    await flush();
+
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('renders a legacy worker-serial label as a display-only strikethrough chip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    queueStore.set(
+      laneQueue({
+        queue: [{ bead_id: 'A', added_at: 1 }],
+        bead_labels: { A: ['worker-serial'] }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A"]')
+    );
+    expect(row.querySelector('.worker-mini__serial--legacy')).not.toBeNull();
   });
 });

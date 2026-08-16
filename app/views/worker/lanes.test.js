@@ -162,30 +162,59 @@ describe('done lane row', () => {
   });
 });
 
-describe('waiting row execution mode', () => {
-  test('renders a selectable serial waiting row with a decorative grip', () => {
+describe('waiting row (UI-04vo 직렬 레인)', () => {
+  test('renders no bulk checkbox and keeps the decorative grip', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
-      draggable: true,
-      selectable: true,
-      selected: true,
-      worker_serial: true
+      draggable: true
     });
 
-    expect(row.classList.contains('worker-mini--selected')).toBe(true);
-    expect(row.querySelector('.worker-mini__select')).not.toBeNull();
-    expect(
-      row.querySelector('.worker-mini__select')?.getAttribute('aria-label')
-    ).toBe('UI-x1 선택');
-    expect(row.querySelector('.worker-mini__serial')?.textContent).toContain(
-      '머지까지 단독'
-    );
+    expect(row.querySelector('.worker-mini__select')).toBeNull();
     // 드래그는 행 전체에서 시작하므로 grip은 장식 핸들이다.
     expect(row.getAttribute('draggable')).toBe('true');
     expect(
       row.querySelector('.worker-mini__grip')?.getAttribute('aria-hidden')
     ).toBe('true');
+  });
+
+  test('renders a legacy worker-serial chip as display-only residue', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      worker_serial: true
+    });
+
+    const chip = row.querySelector('.worker-mini__serial');
+    expect(chip?.classList.contains('worker-mini__serial--legacy')).toBe(true);
+    expect(chip?.textContent).toContain('worker-serial');
+  });
+
+  test('renders a serial-lane row with its sequence number', () => {
+    const row = renderRow({
+      lane: 's1',
+      done: false,
+      draggable: true,
+      seq: 2
+    });
+
+    expect(row.getAttribute('data-lane')).toBe('s1');
+    expect(row.querySelector('.worker-mini__seq')?.textContent).toBe('2');
+  });
+
+  test('renders a ghost occupancy row dimmed and undraggable', () => {
+    const row = renderRow({
+      lane: 's1',
+      done: false,
+      draggable: false,
+      ghost: true,
+      badges: ['실패 · 점유 유지']
+    });
+
+    expect(row.classList.contains('worker-mini--ghost')).toBe(true);
+    expect(row.getAttribute('draggable')).toBe('false');
+    expect(row.textContent).toContain('실패 · 점유 유지');
   });
 });
 

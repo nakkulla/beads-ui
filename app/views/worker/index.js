@@ -57,10 +57,7 @@ import {
   sumAttemptUsage
 } from '../../utils/token-usage.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
-import {
-  WORKER_SERIAL_LABEL,
-  isWorkerSerial
-} from '../../utils/worker-serial.js';
+import { isWorkerSerial } from '../../utils/worker-serial.js';
 import { createReorderController } from '../reorder.js';
 import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import {
@@ -101,14 +98,8 @@ const CLOSED_KEY = 'tab:worker:closed';
  */
 const MIN_SLOTS = 1;
 
-/** @type {Set<string>} Scheduler terminal attempt statuses. */
-const TERMINAL_ATTEMPT_STATUSES = new Set([
-  'done',
-  'failed',
-  'orphaned',
-  'stopped',
-  'discarded'
-]);
+/** Fixed upper bound of the serial-lane dropdown (UI-04vo §1). */
+const SERIAL_LANE_MAX = 5;
 
 /**
  * @param {any} issue
@@ -1125,14 +1116,6 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
-  /** @type {Set<string>} Browser-local waiting-row execution-mode selection. */
-  const selected_queue_ids = new Set();
-  /** @type {'ordinary'|'serial'} */
-  let selected_execution_mode = 'ordinary';
-  /** @type {boolean} Whether a sequential execution-mode batch is running. */
-  let execution_mode_pending = false;
-  /** @type {Map<string, boolean|null>} Latest tri-state execution mode by bead. */
-  const worker_serial_by_id = new Map();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -1209,9 +1192,10 @@ export function createWorkerView(mount_element, options = {}) {
         revision: 0,
         auto_advance: false,
         auto_merge: false,
-        pr_wait_holds_slot: false,
         slots: MIN_SLOTS,
         queue: [],
+        serial_lanes: [],
+        serial_lane_count: 0,
         pr_wait: [],
         done: []
       }
@@ -1250,51 +1234,49 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Place a bead into the waiting queue at an index, retrying ONCE on a CAS
-   * conflict.
+   * Place a bead into a waiting lane at an index, retrying ONCE on a CAS
+   * conflict (UI-04vo §5). New entry and cross-lane move share this op.
    *
    * @param {string} bead_id
+   * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
    * @param {number} index
    */
-  async function placeBead(bead_id, index) {
+  async function placeBead(bead_id, lane, index) {
     if (!transport) {
       return;
     }
-    const res = await transport('worker-queue-place', {
+    const payload = () => ({
       bead_id,
+      ...(lane === 'parallel' ? {} : { lane }),
       index,
       expected_revision: currentRevision()
     });
+    const res = await transport('worker-queue-place', payload());
     adopt(res);
     if (res && res.conflict) {
-      await transport('worker-queue-place', {
-        bead_id,
-        index,
-        expected_revision: currentRevision()
-      }).then(adopt);
+      await transport('worker-queue-place', payload()).then(adopt);
     }
   }
 
   /**
    * @param {string} bead_id
+   * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
    * @param {number} to_index
    */
-  async function reorderBead(bead_id, to_index) {
+  async function reorderBead(bead_id, lane, to_index) {
     if (!transport) {
       return;
     }
-    const res = await transport('worker-queue-reorder', {
+    const payload = () => ({
       bead_id,
+      ...(lane === 'parallel' ? {} : { lane }),
       to_index,
       expected_revision: currentRevision()
     });
+    const res = await transport('worker-queue-reorder', payload());
     adopt(res);
     if (res && res.conflict) {
-      await transport('worker-queue-reorder', {
-        bead_id,
-        to_index,
-        expected_revision: currentRevision()
-      }).then(adopt);
+      await transport('worker-queue-reorder', payload()).then(adopt);
     }
   }
 
@@ -1315,90 +1297,6 @@ export function createWorkerView(mount_element, options = {}) {
         bead_id,
         expected_revision: currentRevision()
       }).then(adopt);
-    }
-  }
-
-  /**
-   * Apply the selected execution mode one Bead at a time. Generic label replies
-   * are `bd show` objects; the app transport turns rejected mutations into `[]`,
-   * so only a matching issue id and requested label truth is a successful write.
-   */
-  async function applyExecutionMode() {
-    if (!transport || execution_mode_pending) {
-      return;
-    }
-    const entries = Array.isArray(currentQueue().queue)
-      ? currentQueue().queue
-      : [];
-    const ids = entries
-      .map((/** @type {any} */ entry) => entry.bead_id)
-      .filter((/** @type {any} */ id) => selected_queue_ids.has(id));
-    if (ids.length === 0) {
-      return;
-    }
-    if (
-      ids.some((/** @type {string} */ id) => {
-        const state = worker_serial_by_id.get(id);
-        return state !== true && state !== false;
-      })
-    ) {
-      showToast('실행 방식 확인 중', 'warning');
-      return;
-    }
-    const desired_serial = selected_execution_mode === 'serial';
-    const mutations = ids.filter(
-      (/** @type {string} */ id) =>
-        worker_serial_by_id.get(id) !== desired_serial
-    );
-    if (mutations.length === 0) {
-      selected_queue_ids.clear();
-      doRender();
-      showToast('이미 같은 실행 방식입니다', 'info');
-      return;
-    }
-    execution_mode_pending = true;
-    doRender();
-    /** @type {string[]} */
-    const failed_ids = [];
-    let changed = 0;
-    try {
-      for (const id of mutations) {
-        const result = await Promise.resolve(
-          transport(desired_serial ? 'label-add' : 'label-remove', {
-            id,
-            label: WORKER_SERIAL_LABEL
-          })
-        ).catch(() => []);
-        const issue = Array.isArray(result) ? result[0] : result;
-        const labels = issue && typeof issue === 'object' ? issue.labels : null;
-        if (
-          issue &&
-          typeof issue === 'object' &&
-          issue.id === id &&
-          Array.isArray(labels) &&
-          isWorkerSerial(labels) === desired_serial
-        ) {
-          changed += 1;
-        } else {
-          failed_ids.push(id);
-        }
-      }
-      if (failed_ids.length === 0) {
-        selected_queue_ids.clear();
-        showToast(`${changed}개 실행 방식 변경`, 'success');
-        return;
-      }
-      selected_queue_ids.clear();
-      for (const id of failed_ids) {
-        selected_queue_ids.add(id);
-      }
-      showToast(
-        `${mutations.length}개 중 ${changed}개 변경 · ${failed_ids.length}개 실패 (${failed_ids.join(', ')})`,
-        'error'
-      );
-    } finally {
-      execution_mode_pending = false;
-      doRender();
     }
   }
 
@@ -1925,31 +1823,50 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Toggle serial dispatch through the durable PR-wait lifecycle.
+   * Resize the fixed serial-lane set (UI-04vo §1), under the same CAS
+   * discipline. A shrink that returns waiting entries to the parallel lane is
+   * announced with a snackbar so the move is never silent.
    *
-   * @param {boolean} on
+   * @param {number} count
    */
-  async function setPrWaitHoldsSlot(on) {
-    if (!transport) {
+  async function setSerialLaneCount(count) {
+    if (
+      !transport ||
+      !Number.isInteger(count) ||
+      count < 1 ||
+      count > SERIAL_LANE_MAX
+    ) {
       return;
     }
-    const res = await transport('worker-queue-set-pr-wait-hold', {
-      on,
+    const before = currentQueue();
+    const truncated = (
+      Array.isArray(before.serial_lanes) ? before.serial_lanes : []
+    )
+      .slice(count)
+      .reduce(
+        (/** @type {number} */ sum, /** @type {any} */ lane) =>
+          sum + (Array.isArray(lane?.entries) ? lane.entries.length : 0),
+        0
+      );
+    const payload = () => ({
+      count,
       expected_revision: currentRevision()
     });
+    let res = await transport('worker-queue-set-serial-lane-count', payload());
     adopt(res);
     if (res && res.conflict) {
-      await transport('worker-queue-set-pr-wait-hold', {
-        on,
-        expected_revision: currentRevision()
-      }).then(adopt);
+      res = await transport('worker-queue-set-serial-lane-count', payload());
+      adopt(res);
+    }
+    if (res && res.applied && truncated > 0) {
+      showToast(`직렬 레인 축소 — ${truncated}개 항목이 병렬 대기로 이동`);
     }
   }
 
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], serial_lanes: Array<{ id: string, index: number, rows: any[], occupied: boolean, badge: string, cycle: boolean }>, serial_lane_count: number, pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2011,10 +1928,6 @@ export function createWorkerView(mount_element, options = {}) {
       idToTitle.set(it.id, it.title || it.id);
     }
 
-    // Server decoration is a partial source, so a missing key remains unknown.
-    // A confirmed mutation refresh can be newer than the live Ready/Blocked
-    // snapshot; only a provably newer live issue may overwrite that cache row.
-    worker_serial_by_id.clear();
     /** @type {Record<string, any>} */
     const bead_times =
       q.bead_times &&
@@ -2028,35 +1941,30 @@ export function createWorkerView(mount_element, options = {}) {
       !Array.isArray(q.bead_labels)
         ? q.bead_labels
         : {};
+    // 표시 전용 legacy worker-serial 잔재 (UI-04vo §4): 스케줄링 소비는 은퇴
+    // 했고, 라벨이 남아 있는 행만 취소선 chip을 위해 표시한다. 라벨 진실은
+    // 서버 데코레이션 우선, 없으면 live 이슈로 보충 (fail-quiet).
+    /** @type {Map<string, boolean>} */
+    const legacy_serial_by_id = new Map();
     for (const [bead_id, labels] of Object.entries(bead_labels)) {
       if (Array.isArray(labels)) {
-        worker_serial_by_id.set(bead_id, isWorkerSerial(labels));
+        legacy_serial_by_id.set(bead_id, isWorkerSerial(labels));
       }
     }
     for (const issue of [...ready, ...blocked]) {
       const labels = /** @type {any} */ (issue).labels;
-      if (!Array.isArray(labels)) {
-        continue;
-      }
-      if (!worker_serial_by_id.has(issue.id)) {
-        worker_serial_by_id.set(issue.id, isWorkerSerial(labels));
-        continue;
-      }
-      const decorated_times = bead_times[issue.id];
-      const decorated_updated_ms = coerceTimestampMs(
-        decorated_times && typeof decorated_times === 'object'
-          ? decorated_times.updated_at
-          : null
-      );
-      const live_updated_ms = coerceTimestampMs(issue.updated_at);
-      if (
-        live_updated_ms !== null &&
-        decorated_updated_ms !== null &&
-        live_updated_ms > decorated_updated_ms
-      ) {
-        worker_serial_by_id.set(issue.id, isWorkerSerial(labels));
+      if (Array.isArray(labels) && !legacy_serial_by_id.has(issue.id)) {
+        legacy_serial_by_id.set(issue.id, isWorkerSerial(labels));
       }
     }
+    // 직접 blocks blocker (UI-04vo §3) — 대기 사유 chip의 표시 전용 소스.
+    /** @type {Record<string, string[]>} */
+    const bead_blocked_by =
+      q.bead_blocked_by &&
+      typeof q.bead_blocked_by === 'object' &&
+      !Array.isArray(q.bead_blocked_by)
+        ? q.bead_blocked_by
+        : {};
 
     // 생성·수정 시각 (UI-d7pw §4.3). 후보/Ready/Blocked bead는 구독 이슈가
     // 이미 들고 있고, 대기/PR 대기/완료 bead는 서버가 `bead_times`로 실어
@@ -2134,16 +2042,14 @@ export function createWorkerView(mount_element, options = {}) {
       })
     );
     const queue_entries = /** @type {any[]} */ (q.queue || []);
-    const queue_ids = new Set(
-      queue_entries.map((/** @type {any} */ entry) => entry.bead_id)
-    );
-    for (const id of selected_queue_ids) {
-      if (!queue_ids.has(id)) {
-        selected_queue_ids.delete(id);
-      }
-    }
     const queued = new Set([
       ...queue_entries.map((/** @type {any} */ e) => e.bead_id),
+      ...(Array.isArray(q.serial_lanes) ? q.serial_lanes : []).flatMap(
+        (/** @type {any} */ lane) =>
+          (Array.isArray(lane?.entries) ? lane.entries : []).map(
+            (/** @type {any} */ e) => e.bead_id
+          )
+      ),
       ...pr_wait_entries.map((/** @type {any} */ e) => e.bead_id),
       ...q.done.map((/** @type {any} */ e) => e.bead_id)
     ]);
@@ -2272,58 +2178,53 @@ export function createWorkerView(mount_element, options = {}) {
 
     /**
      * @param {any[]} entries
-     * @param {'queue'|'done'} lane
+     * @param {'queue'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
      * @returns {any[]}
      */
     const toRows = (entries, lane) =>
-      entries.map((/** @type {any} */ e) => {
-        const parked = lane === 'queue' ? revise_parked[e.bead_id] : null;
-        const projected_discard =
-          lane === 'queue'
-            ? discardProjection(discard_operations, e.bead_id)
-            : null;
+      entries.map((/** @type {any} */ e, /** @type {number} */ entry_index) => {
+        const waiting_lane = lane !== 'done';
+        const serial_lane = lane !== 'done' && lane !== 'queue';
+        const parked = waiting_lane ? revise_parked[e.bead_id] : null;
+        const projected_discard = waiting_lane
+          ? discardProjection(discard_operations, e.bead_id)
+          : null;
         const discard = projected_discard?.operation ? projected_discard : null;
         const worker_serial =
-          lane === 'queue'
-            ? worker_serial_by_id.has(e.bead_id)
-              ? worker_serial_by_id.get(e.bead_id) || false
-              : null
-            : false;
-        const serial_busy =
-          worker_serial === true &&
-          (Object.values(q.attempts || {}).some(
-            (/** @type {any} */ attempt) =>
-              attempt &&
-              attempt.bead_id !== e.bead_id &&
-              !TERMINAL_ATTEMPT_STATUSES.has(attempt.status)
-          ) ||
-            pr_wait_entries.some(
-              (/** @type {any} */ entry) => entry.bead_id !== e.bead_id
-            ) ||
-            Object.values(discard_operations).some(
-              (/** @type {any} */ operation) =>
-                operation &&
-                operation.bead_id !== e.bead_id &&
-                operation.phase !== 'done'
-            ));
-        const reason_parts = lane === 'done' ? [] : [admissionBadge(e.bead_id)];
-        if (serial_busy) {
-          reason_parts.unshift('다른 작업 종료 대기 · 머지까지 단독');
-        }
+          waiting_lane && legacy_serial_by_id.get(e.bead_id) === true;
+        const admission_reason = waiting_lane
+          ? admissionBadge(e.bead_id)
+          : null;
+        const reason_parts = waiting_lane ? [admission_reason] : [];
+        // 대기 사유 chip (UI-04vo §4): blocked로 스킵된 행에 직접 blocker를
+        // 보여준다. blocker 목록은 표시 전용이고 판정은 서버 스캔의 durable
+        // admission 기록이다.
+        const blockers = bead_blocked_by[e.bead_id] || [];
+        const raw_admission =
+          q.admission && typeof q.admission === 'object'
+            ? q.admission[e.bead_id]
+            : null;
+        /** @type {string[]} */
+        const wait_badges =
+          waiting_lane &&
+          blockers.length > 0 &&
+          typeof raw_admission?.reason === 'string' &&
+          raw_admission.reason.startsWith('not_ready')
+            ? [`⏸ ${blockers.join(', ')} 완료 대기 (blocks)`]
+            : [];
         return {
           id: e.bead_id,
           title: idToTitle.get(e.bead_id) || e.bead_id,
           reason: reason_parts.filter(Boolean).join(' · '),
-          draggable: lane !== 'done' && !discard,
+          draggable: waiting_lane && !discard,
           done: lane === 'done',
           lane,
-          selectable: lane === 'queue',
-          selected: lane === 'queue' && selected_queue_ids.has(e.bead_id),
+          seq: serial_lane ? entry_index + 1 : undefined,
           worker_serial,
           discard,
           // 파킹 행은 처분 대기 카드다 (§3.5): 뱃지 + 버튼 2개. 뱃지는 사람의
           // 결정을 기다리는 상태이므로 alert 색을 쓴다.
-          badges: parked ? ['⏸ REVISE 파킹'] : [],
+          badges: [...wait_badges, ...(parked ? ['⏸ REVISE 파킹'] : [])],
           alert: !!parked,
           revise_action: !!parked,
           revise_enabled:
@@ -2691,7 +2592,7 @@ export function createWorkerView(mount_element, options = {}) {
         : typeof q.slots === 'number'
           ? q.slots
           : MIN_SLOTS;
-    const slots = q.pr_wait_holds_slot === true ? MIN_SLOTS : configured_slots;
+    const slots = configured_slots;
     const over_cap = live_count > slots;
 
     // 완료 레인은 최신순 + 기간 필터 (UI-d7pw §3). `q.done`은 append 순서라
@@ -2840,6 +2741,104 @@ export function createWorkerView(mount_element, options = {}) {
           ? formatUsageTotalWithCost(token_sum)
           : null;
 
+    // 직렬 레인 뷰모델 (UI-04vo §4). 레인 파생 상태(lane_states)는 서버가
+    // 스냅샷마다 다시 계산해 보낸다 — 구버전 서버에서는 둘 다 없어서 카드가
+    // 그려지지 않는다 (fail-quiet).
+    /** @type {Record<string, any>} */
+    const lane_states_raw =
+      q.lane_states &&
+      typeof q.lane_states === 'object' &&
+      !Array.isArray(q.lane_states)
+        ? q.lane_states
+        : {};
+    const serial_lanes_raw = Array.isArray(q.serial_lanes)
+      ? q.serial_lanes
+      : [];
+    /**
+     * Ghost 행 배지: 점유 lineage의 현재 상태 문구 (UI-04vo §4).
+     *
+     * @param {string} bead_id
+     */
+    const occupantBadge = (bead_id) => {
+      if (
+        pr_wait_entries.some((/** @type {any} */ e) => e.bead_id === bead_id)
+      ) {
+        return 'PR 대기 · 점유';
+      }
+      const list = /** @type {any[]} */ (attempts).filter(
+        (a) => a && a.bead_id === bead_id
+      );
+      const status = list.length > 0 ? list[list.length - 1].status : null;
+      if (status === 'failed' || status === 'orphaned') {
+        return '실패 · 점유 유지';
+      }
+      if (status === 'paused') {
+        return '일시정지 · 점유';
+      }
+      return '실행 중 · 점유';
+    };
+    const serial_lanes = serial_lanes_raw
+      .filter(
+        (/** @type {any} */ lane) =>
+          lane && typeof lane.id === 'string' && Array.isArray(lane.entries)
+      )
+      .map((/** @type {any} */ lane, /** @type {number} */ lane_index) => {
+        const state = lane_states_raw[lane.id] || {};
+        /** @type {Map<string, string>} */
+        const correction_after = new Map(
+          (Array.isArray(state.corrections) ? state.corrections : [])
+            .filter(
+              (/** @type {any} */ c) =>
+                c &&
+                typeof c.bead_id === 'string' &&
+                typeof c.after === 'string'
+            )
+            .map((/** @type {any} */ c) => [c.bead_id, c.after])
+        );
+        const rows = toRows(
+          lane.entries.filter(
+            (/** @type {any} */ e) => !active_bead_ids.has(e.bead_id)
+          ),
+          lane.id
+        ).map((/** @type {any} */ row) =>
+          correction_after.has(row.id)
+            ? {
+                ...row,
+                badges: [
+                  `🔗 ${correction_after.get(row.id)} 뒤 (blocks 자동)`,
+                  ...row.badges
+                ]
+              }
+            : row
+        );
+        const occupied_by = Array.isArray(state.occupied_by)
+          ? state.occupied_by.filter(
+              (/** @type {any} */ id) => typeof id === 'string'
+            )
+          : [];
+        const ghost_rows = occupied_by.map((/** @type {string} */ bead_id) => ({
+          id: bead_id,
+          title: idToTitle.get(bead_id) || bead_id,
+          draggable: false,
+          lane: lane.id,
+          ghost: true,
+          badges: [occupantBadge(bead_id)]
+        }));
+        return {
+          id: lane.id,
+          index: lane_index + 1,
+          rows: [...ghost_rows, ...rows],
+          occupied: occupied_by.length > 0,
+          badge:
+            occupied_by.length > 0 ? occupantBadge(occupied_by[0]) : '대기',
+          cycle: state.cycle === true
+        };
+      });
+    const serial_lane_count =
+      typeof q.serial_lane_count === 'number'
+        ? q.serial_lane_count
+        : serial_lanes.length;
+
     return {
       queue: q,
       idToTitle,
@@ -2862,6 +2861,8 @@ export function createWorkerView(mount_element, options = {}) {
         ),
         'queue'
       ),
+      serial_lanes,
+      serial_lane_count,
       // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
       // the PR is open and waiting for the human merge click. 완료 carries only
       // what actually merged and finished cleanup.
@@ -2982,21 +2983,23 @@ export function createWorkerView(mount_element, options = {}) {
           min=${MIN_SLOTS}
           step="1"
           .value=${String(m.slots)}
-          ?disabled=${m.queue.pr_wait_holds_slot === true}
-          title=${m.queue.pr_wait_holds_slot === true
-            ? '머지까지 순차 실행 중 — 해제하면 저장된 동시 실행 수로 돌아갑니다'
-            : '동시에 실행할 세션 수 (최소 1 = 순차 실행)'}
+          title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
       /></label>
       <label
-        class="worker-tgl"
-        title="각 이슈가 PR 머지·정리를 마칠 때까지 다음 이슈를 시작하지 않습니다"
-      >
-        <input
-          type="checkbox"
-          class="worker-pr-wait-hold"
-          .checked=${m.queue.pr_wait_holds_slot === true}
-        />
-        머지까지 순차 실행
+        class="worker-tgl worker-serial-lanes"
+        title="고정 직렬 레인 수 (1~5). 축소 시 잘린 레인의 대기 항목은 병렬 대기로 돌아갑니다"
+        >직렬 레인
+        <select class="worker-serial-lane-count" aria-label="직렬 레인 수">
+          ${Array.from({ length: SERIAL_LANE_MAX }, (_, i) => i + 1).map(
+            (n) =>
+              html`<option
+                value=${String(n)}
+                ?selected=${m.serial_lane_count === n}
+              >
+                ${n}
+              </option>`
+          )}
+        </select>
       </label>
       <button
         type="button"
@@ -3188,100 +3191,34 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Waiting-row execution-mode controls. The selection remains browser-local;
-   * only the label mutations cross the transport boundary.
+   * One serial lane card (UI-04vo §4): `직렬 N` header + 점유 배지, sequence
+   * rows (ghost occupant first), and an always-droppable body — an empty lane
+   * is a fixed drop target rather than nothing.
    *
-   * @returns {import('lit-html').TemplateResult|string}
+   * @param {ReturnType<typeof buildModel>['serial_lanes'][number]} lane
+   * @returns {import('lit-html').TemplateResult}
    */
-  function executionModeControlsTemplate() {
-    if (selected_queue_ids.size === 0) {
-      return '';
-    }
-    const selection = Array.from(selected_queue_ids);
-    const has_unknown = selection.some((id) => {
-      const state = worker_serial_by_id.get(id);
-      return state !== true && state !== false;
+  function serialLaneTemplate(lane) {
+    const badge = html`<span
+      class="worker-lane__badge${lane.occupied
+        ? ' worker-lane__badge--held'
+        : ''}"
+      >${lane.badge}</span
+    >`;
+    const cycle_warning = lane.cycle
+      ? html`<div class="worker-lane__cycle">
+          ⚠ blocks 순환 감지 — 자동 정렬을 생략했습니다
+        </div>`
+      : '';
+    return paneTemplate({
+      id: `worker-pane-lane-${lane.id}`,
+      lane: /** @type {any} */ (lane.id),
+      title: `직렬 ${lane.index}`,
+      items: lane.rows,
+      empty: '비어 있음 — 행을 여기로 드래그',
+      header_control: badge,
+      controls: /** @type {any} */ (cycle_warning)
     });
-    return html`<div
-      class="worker-bulk"
-      role="group"
-      aria-label="실행 방식 일괄 변경"
-    >
-      <span class="worker-bulk__count">${selection.length}개 선택</span>
-      <select
-        class="worker-bulk__mode"
-        aria-label="실행 방식"
-        .value=${selected_execution_mode}
-        ?disabled=${execution_mode_pending}
-      >
-        <option value="ordinary">일반 병렬</option>
-        <option value="serial">🔒 머지까지 단독</option>
-      </select>
-      <button
-        type="button"
-        class="worker-bulk__apply"
-        ?disabled=${has_unknown || execution_mode_pending}
-        title=${has_unknown
-          ? '선택한 작업의 실행 방식을 확인하는 중입니다'
-          : execution_mode_pending
-            ? '실행 방식 변경 중입니다'
-            : '선택한 작업에 적용'}
-      >
-        적용
-      </button>
-      <span class="worker-bulk__hint">선택한 대기 작업에만 적용됩니다</span>
-    </div>`;
-  }
-
-  /**
-   * Explain why automatic progress is paused behind a durable PR wait.
-   *
-   * @param {ReturnType<typeof buildModel>} m
-   * @returns {import('lit-html').TemplateResult|undefined}
-   */
-  function prWaitHoldHintTemplate(m) {
-    const durable_pr_wait = (m.queue.pr_wait || []).filter(
-      (/** @type {any} */ entry) =>
-        entry && entry.external !== true && typeof entry.bead_id === 'string'
-    );
-    const occupied = new Set(
-      m.running
-        .filter((/** @type {any} */ row) => !row.paused && row.failed !== true)
-        .map((/** @type {any} */ row) => row.bead_id)
-    );
-    for (const entry of durable_pr_wait) {
-      occupied.add(entry.bead_id);
-    }
-    const shows_global_hint = !(
-      m.queue.pr_wait_holds_slot !== true ||
-      m.queue.auto_advance !== true ||
-      m.queue.auto_merge === true ||
-      durable_pr_wait.length === 0 ||
-      m.waiting.length === 0 ||
-      occupied.size < m.slots
-    );
-    const serial_pr_wait = m.pr_wait.some(
-      (/** @type {any} */ row) => row.worker_serial === true
-    );
-    if (
-      !shows_global_hint &&
-      !(serial_pr_wait && m.queue.auto_merge !== true)
-    ) {
-      return undefined;
-    }
-    return html`${shows_global_hint
-      ? html`<div class="worker-stat worker-pr-wait-hint">
-          PR 머지 대기 중 — 다음 이슈는 머지·정리 완료 후 시작됩니다 (자동 머지
-          꺼짐)
-        </div>`
-      : ''}${serial_pr_wait && m.queue.auto_merge !== true
-      ? html`<div
-          class="worker-stat worker-pr-wait-hint worker-pr-wait-hint--serial"
-        >
-          단독 실행 작업의 PR 머지·정리가 끝날 때까지 다음 작업이 시작되지
-          않습니다 (자동 머지 꺼짐)
-        </div>`
-      : ''}`;
   }
 
   /**
@@ -3366,16 +3303,14 @@ export function createWorkerView(mount_element, options = {}) {
         ${paneTemplate({
           id: 'worker-pane-queue',
           lane: 'queue',
-          title: '대기',
+          title: '병렬 대기',
           items: m.waiting,
           empty: '드래그 또는 [대기로 ↴]로 배치',
-          controls: html`${executionModeControlsTemplate()}${prWaitHoldHintTemplate(
-            m
-          )}`,
           collapsible: true,
           collapsed: lane_collapse.queue,
           preview: stripPreview(m.waiting)
         })}
+        ${m.serial_lanes.map((lane) => serialLaneTemplate(lane))}
         ${candidate_pane}
         ${paneTemplate({
           id: 'worker-pane-done',
@@ -3394,16 +3329,16 @@ export function createWorkerView(mount_element, options = {}) {
     }
     return html`<div class="worker-lanes">
       ${candidate_pane}
-      ${paneTemplate({
-        id: 'worker-pane-queue',
-        lane: 'queue',
-        title: '대기',
-        items: m.waiting,
-        empty: '드래그로 배치',
-        controls: html`${executionModeControlsTemplate()}${prWaitHoldHintTemplate(
-          m
-        )}`
-      })}
+      <div class="worker-wait">
+        ${paneTemplate({
+          id: 'worker-pane-queue',
+          lane: 'queue',
+          title: '병렬 대기',
+          items: m.waiting,
+          empty: '드래그로 배치'
+        })}
+        ${m.serial_lanes.map((lane) => serialLaneTemplate(lane))}
+      </div>
       ${paneTemplate({
         id: 'worker-pane-running',
         lane: 'running',
@@ -3572,11 +3507,12 @@ export function createWorkerView(mount_element, options = {}) {
     if (!pane) {
       return;
     }
-    // Only the two panes a drop actually mutates accept one. 실행 중/PR 대기/완료
-    // are observation columns — the server puts beads there — so they must not
+    // Only the panes a drop actually mutates accept one — the candidate feed,
+    // the parallel waiting lane, and the serial lanes. 실행 중/PR 대기/완료 are
+    // observation columns — the server puts beads there — so they must not
     // light up as drop targets and then silently swallow the drag.
     const lane = pane.dataset.lane || '';
-    if (lane !== 'candidate' && lane !== 'queue') {
+    if (lane !== 'candidate' && lane !== 'queue' && !/^s[1-5]$/.test(lane)) {
       return;
     }
     ev.preventDefault();
@@ -3668,6 +3604,11 @@ export function createWorkerView(mount_element, options = {}) {
         index = i;
       }
     }
+    // ghost 점유 행은 대기 entries의 구성원이 아니므로 서버 인덱스에서 뺀다.
+    index = Math.max(
+      0,
+      index - pane.querySelectorAll('.worker-mini--ghost').length
+    );
     // 접힌 스트립은 행을 하나도 그리지 않으므로 위 계산이 0(=큐 맨 앞)을 낸다.
     // 스트립에 떨어뜨린 사람이 원한 것은 "대기에 넣기"이지 "다음으로 실행"이
     // 아니므로, 버튼과 같은 큐 말미 의미로 맞춘다 (UI-58y2 §모바일 3).
@@ -3681,17 +3622,23 @@ export function createWorkerView(mount_element, options = {}) {
         reorderCandidates(bead_id, over);
         return;
       }
-      // Moving a queued bead back to candidates removes it from the queue.
-      if (from_lane === 'queue') {
+      // Moving a waiting bead back to candidates removes it from the queue.
+      if (from_lane === 'queue' || /^s[1-5]$/.test(from_lane)) {
         void removeBead(bead_id);
       }
       return;
     }
-    if (to_lane === 'queue') {
-      if (from_lane === 'queue') {
-        void reorderBead(bead_id, index);
+    // 병렬(`queue`) ↔ 직렬(`s1`..`s5`) 공용 드롭 (UI-04vo §4): 같은 레인 안은
+    // reorder, 레인이 다르면 place가 원 레인 제거 + 삽입을 한 번에 한다. ghost
+    // 점유 행은 draggable=false라 여기 도달하지 않는다.
+    if (to_lane === 'queue' || /^s[1-5]$/.test(to_lane)) {
+      const target_lane = /** @type {any} */ (
+        to_lane === 'queue' ? 'parallel' : to_lane
+      );
+      if (from_lane === to_lane) {
+        void reorderBead(bead_id, target_lane, index);
       } else {
-        void placeBead(bead_id, index);
+        void placeBead(bead_id, target_lane, index);
       }
     }
   }
@@ -3745,27 +3692,16 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {Event} ev
    */
   function onChange(ev) {
-    const selection = /** @type {HTMLInputElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-mini__select')
+    const lane_count_select = /** @type {HTMLSelectElement|null} */ (
+      /** @type {HTMLElement} */ (ev.target)?.closest?.(
+        '.worker-serial-lane-count'
+      )
     );
-    if (selection) {
-      const id = selection.dataset.beadId || '';
-      if (id) {
-        if (selection.checked) {
-          selected_queue_ids.add(id);
-        } else {
-          selected_queue_ids.delete(id);
-        }
-        doRender();
+    if (lane_count_select) {
+      const parsed = Number.parseInt(lane_count_select.value, 10);
+      if (Number.isFinite(parsed)) {
+        void setSerialLaneCount(parsed).then(doRender);
       }
-      return;
-    }
-    const mode_select = /** @type {HTMLSelectElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-bulk__mode')
-    );
-    if (mode_select) {
-      selected_execution_mode =
-        mode_select.value === 'serial' ? 'serial' : 'ordinary';
       return;
     }
     const blocked_tgl = /** @type {HTMLInputElement|null} */ (
@@ -3798,13 +3734,6 @@ export function createWorkerView(mount_element, options = {}) {
           sort_select.value || CANDIDATE_SORT_DEFAULT
         )
       );
-      return;
-    }
-    const hold_toggle = /** @type {HTMLInputElement|null} */ (
-      /** @type {HTMLElement} */ (ev.target)?.closest?.('.worker-pr-wait-hold')
-    );
-    if (hold_toggle) {
-      void setPrWaitHoldsSlot(hold_toggle.checked);
       return;
     }
     const input = /** @type {HTMLInputElement|null} */ (
@@ -3919,20 +3848,7 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function onClick(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
-    const bulk_apply = /** @type {HTMLButtonElement|null} */ (
-      target?.closest?.('.worker-bulk__apply')
-    );
-    if (bulk_apply) {
-      if (!bulk_apply.disabled) {
-        void applyExecutionMode();
-      }
-      return;
-    }
-    if (
-      target?.closest?.(
-        '.worker-mini__select, .worker-mini__serial, .worker-mini__grip'
-      )
-    ) {
+    if (target?.closest?.('.worker-mini__serial, .worker-mini__grip')) {
       return;
     }
     // Clicks inside the exec-defaults dialog are owned by its own handlers.
@@ -4069,7 +3985,7 @@ export function createWorkerView(mount_element, options = {}) {
       // 클릭을 막아 주더라도, 적재 경로가 자격을 스스로 확인해야 드래그와
       // 같은 규율이 된다.
       if (id && !place_btn.disabled) {
-        void placeBead(id, queueTailIndex());
+        void placeBead(id, 'parallel', queueTailIndex());
       }
       return;
     }

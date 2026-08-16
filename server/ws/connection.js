@@ -91,7 +91,7 @@ import {
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetDefaultExecPreset,
-  handleWorkerQueueSetPrWaitHold,
+  handleWorkerQueueSetSerialLaneCount,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
   handleWorkerRepoOperationDismiss,
@@ -518,8 +518,8 @@ export async function handleMessage(ws, data) {
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
       return;
-    case 'worker-queue-set-pr-wait-hold':
-      handleWorkerQueueSetPrWaitHold(ws, req);
+    case 'worker-queue-set-serial-lane-count':
+      handleWorkerQueueSetSerialLaneCount(ws, req);
       return;
     case 'worker-queue-set-default-exec-preset':
       handleWorkerQueueSetDefaultExecPreset(ws, req);

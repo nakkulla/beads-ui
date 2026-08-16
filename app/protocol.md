@@ -141,11 +141,17 @@ Nothing merges without a human `[머지]` click.
   (which fetches) stays on the dispatch path and never runs for this key, so a
   `declared_base` string means "declared", never "verified". Consumers
   fail-quiet on the key being absent (older server).
-- `worker-queue-place` payload: `{ bead_id, index?, expected_revision }` — a
-  successful placement also kicks the live dispatch loop (`tick`), so an
-  auto_advance-ON queue with a free slot starts the bead without waiting for
-  another trigger.
-- `worker-queue-reorder` payload: `{ bead_id, to_index, expected_revision }`
+- `worker-queue-place` payload:
+  `{ bead_id, lane?: 'parallel' | 's1'..'s5', index?, expected_revision }` —
+  new entry and cross-lane move share this op (UI-04vo §5): the server removes
+  the bead from its origin lane before inserting. An absent `lane` (or a
+  legacy value) lands in the parallel lane; a serial slot beyond the configured
+  count is rejected without a write. A successful placement also kicks the
+  live dispatch loop (`tick`), so an auto_advance-ON queue with a free slot
+  starts the bead without waiting for another trigger.
+- `worker-queue-reorder` payload:
+  `{ bead_id, lane?: 'parallel' | 's1'..'s5', to_index, expected_revision }` —
+  reorders within one lane; cross-lane moves go through `worker-queue-place`.
 - `worker-queue-toggle` payload: `{ on, expected_revision }` — persists the
   legacy independent `auto_advance` surface and, on turn-ON, kicks the live
   dispatch loop (`tick`).
@@ -214,9 +220,16 @@ Nothing merges without a human `[머지]` click.
   the more specific failure facts.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
-- `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when
-  enabled, forces the effective concurrency cap to 1 through PR merge cleanup
-  while preserving the stored `slots` preference for later restoration.
+- `worker-queue-set-serial-lane-count` payload: `{ count, expected_revision }`
+  — resizes the fixed serial-lane set (1..5, UI-04vo §1). Truncated lanes
+  return their waiting entries to the parallel tail; active lineages are
+  untouched. The retired `worker-queue-set-pr-wait-hold` toggle is no longer a
+  route — serial lanes carry the hold-until-merge meaning now.
+- `worker-queue-snapshot` additionally carries `serial_lanes` /
+  `serial_lane_count` (durable), plus the non-persisted `bead_blocked_by`
+  (direct `blocks` blocker ids, partial cache) and `lane_states` — per serial
+  lane `{ occupied_by, order, corrections, cycle }` derived fresh on every
+  snapshot from durable occupancy and blocks edges.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
 - `worker-attempt-pause` payload: `{ attempt_id }` — pauses (⏸) a running
   attempt while preserving its resumable state. Reply

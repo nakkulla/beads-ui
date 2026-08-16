@@ -25,8 +25,8 @@
  * @property {string|null} [head_ref] - Branch identity retained for deferred cleanup.
  * @property {string|null} [pr_url] - PR URL retained for deferred notification.
  * @property {boolean} [external] - Durable external origin: a promoted
- *   externally-merged row keeps this after the registry overlay yields, so
- *   failure-resume eligibility ([정리]) still classifies it as external.
+ * externally-merged row keeps this after the registry overlay yields, so
+ * failure-resume eligibility ([정리]) still classifies it as external.
  */
 /**
  * @typedef {Object} SerialLane
