@@ -6,7 +6,8 @@ import {
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
   createQueueStore,
-  makeAttempt
+  makeAttempt,
+  orderLaneByBlocks
 } from './queue-store.js';
 import {
   deployLogDir,
@@ -314,15 +315,6 @@ describe('worker/queue-store', () => {
 
     expect(result.conflict).toBe(true);
     expect(store.snapshot(WS)).toEqual(before);
-  });
-
-  test('defaults pr_wait_holds_slot off for a legacy queue', () => {
-    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify({ revision: 4 }));
-
-    const q = createQueueStore().snapshot(WS);
-
-    expect(q.pr_wait_holds_slot).toBe(false);
   });
 
   test('preserves unknown legacy queue and row fields through a mutation', () => {
@@ -1760,32 +1752,6 @@ describe('worker/queue-store', () => {
     expect(result.ok).toBe(true);
     expect(result.queue.done).toEqual([]);
     expect(result.queue.completion_intents['UI-root']).toBeUndefined();
-  });
-
-  test('persists pr_wait_holds_slot through a cold load', () => {
-    const store = createQueueStore();
-
-    const r = store.setPrWaitHoldsSlot(WS, {
-      expected_revision: 0,
-      on: true
-    });
-
-    expect(r.ok).toBe(true);
-    expect(createQueueStore().snapshot(WS).pr_wait_holds_slot).toBe(true);
-  });
-
-  test('rejects a stale pr_wait_holds_slot revision without writing', () => {
-    const store = createQueueStore();
-    store.setPrWaitHoldsSlot(WS, { expected_revision: 0, on: true });
-    const before = fs.readFileSync(queueFilePath(WS), 'utf8');
-
-    const r = store.setPrWaitHoldsSlot(WS, {
-      expected_revision: 0,
-      on: false
-    });
-
-    expect(r.conflict).toBe(true);
-    expect(fs.readFileSync(queueFilePath(WS), 'utf8')).toBe(before);
   });
 
   test('re-placing a queued bead moves it without duplicating it', () => {
@@ -5385,5 +5351,396 @@ describe('worker/queue-store — legacy migration stamp (master spec §11)', () 
       version: 1,
       results: { 'UI-mig': { subject_sha: SUBJECT } }
     });
+  });
+});
+
+describe('worker/queue-store — 직렬 레인 스키마 (UI-04vo seam A)', () => {
+  test('defaults to two empty fixed serial lanes', () => {
+    const store = createQueueStore();
+
+    const q = store.snapshot(WS);
+
+    expect(q.serial_lane_count).toBe(2);
+    expect(q.serial_lanes).toEqual([
+      { id: 's1', entries: [] },
+      { id: 's2', entries: [] }
+    ]);
+  });
+
+  test('normalizes stored serial lanes onto the stored count with fixed ids', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.serial_lane_count = 3;
+    raw.serial_lanes = [{ id: 's2', entries: [{ bead_id: 'B', added_at: 1 }] }];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.serial_lane_count).toBe(3);
+    expect(loaded.serial_lanes.map((l) => l.id)).toEqual(['s1', 's2', 's3']);
+    expect(loaded.serial_lanes[1].entries.map((e) => e.bead_id)).toEqual(['B']);
+    expect(loaded.serial_lanes[0].entries).toEqual([]);
+    expect(loaded.serial_lanes[2].entries).toEqual([]);
+  });
+
+  test('falls back to the default count when the stored value is unusable', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.serial_lane_count = 9;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.serial_lane_count).toBe(2);
+    expect(loaded.serial_lanes).toHaveLength(2);
+  });
+
+  test('drops pr_wait_holds_slot on load instead of round-tripping it', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.pr_wait_holds_slot = true;
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect('pr_wait_holds_slot' in loaded).toBe(false);
+  });
+
+  test('enforces single membership across parallel and serial lanes on load', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.queue = [
+      { bead_id: 'A', added_at: 1 },
+      { bead_id: 'B', added_at: 2 }
+    ];
+    raw.serial_lane_count = 2;
+    raw.serial_lanes = [
+      {
+        id: 's1',
+        entries: [
+          { bead_id: 'B', added_at: 3 },
+          { bead_id: 'C', added_at: 4 }
+        ]
+      },
+      {
+        id: 's2',
+        entries: [
+          { bead_id: 'C', added_at: 5 },
+          { bead_id: 'D', added_at: 6 }
+        ]
+      }
+    ];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual(['A', 'B']);
+    expect(loaded.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual(['C']);
+    expect(loaded.serial_lanes[1].entries.map((e) => e.bead_id)).toEqual(['D']);
+  });
+
+  test('returns entries of lanes beyond the stored count to the parallel tail', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.serial_lane_count = 1;
+    raw.serial_lanes = [
+      { id: 's1', entries: [{ bead_id: 'B', added_at: 1 }] },
+      { id: 's3', entries: [{ bead_id: 'X', added_at: 2 }] }
+    ];
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.serial_lanes).toHaveLength(1);
+    expect(loaded.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual(['B']);
+    expect(loaded.queue.map((e) => e.bead_id)).toEqual(['A', 'X']);
+  });
+
+  test('place moves a bead into a serial lane and out of its origin lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+
+    const r = store.place(WS, {
+      expected_revision: 1,
+      bead_id: 'A',
+      lane: 's1'
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.queue).toEqual([]);
+    expect(r.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'A'
+    ]);
+  });
+
+  test('place without a lane lands in the parallel lane', () => {
+    const store = createQueueStore();
+
+    const r = store.place(WS, { expected_revision: 0, bead_id: 'A' });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['A']);
+    expect(r.queue.serial_lanes.every((l) => l.entries.length === 0)).toBe(
+      true
+    );
+  });
+
+  test('place inserts at an index inside a serial lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A', lane: 's1' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B', lane: 's1' });
+
+    const r = store.place(WS, {
+      expected_revision: 2,
+      bead_id: 'C',
+      lane: 's1',
+      index: 1
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'A',
+      'C',
+      'B'
+    ]);
+  });
+
+  test('place rejects an unknown lane and a lane beyond the configured count', () => {
+    const store = createQueueStore();
+
+    const unknown = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 'nope'
+    });
+    const beyond = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's3'
+    });
+
+    expect(unknown.ok).toBe(false);
+    expect(unknown.conflict).toBe(false);
+    expect(beyond.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(0);
+  });
+
+  test('reorder reorders within a serial lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A', lane: 's2' });
+    store.place(WS, { expected_revision: 1, bead_id: 'B', lane: 's2' });
+    store.place(WS, { expected_revision: 2, bead_id: 'C', lane: 's2' });
+
+    const r = store.reorder(WS, {
+      expected_revision: 3,
+      bead_id: 'C',
+      lane: 's2',
+      to_index: 0
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.serial_lanes[1].entries.map((e) => e.bead_id)).toEqual([
+      'C',
+      'A',
+      'B'
+    ]);
+  });
+
+  test('reorder rejects a bead absent from the target lane', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+
+    const r = store.reorder(WS, {
+      expected_revision: 1,
+      bead_id: 'A',
+      lane: 's1',
+      to_index: 0
+    });
+
+    expect(r.ok).toBe(false);
+    expect(r.conflict).toBe(false);
+    expect(store.snapshot(WS).queue.map((e) => e.bead_id)).toEqual(['A']);
+  });
+
+  test('setSerialLaneCount grows the lane set with empty lanes', () => {
+    const store = createQueueStore();
+
+    const r = store.setSerialLaneCount(WS, { expected_revision: 0, count: 4 });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.serial_lane_count).toBe(4);
+    expect(r.queue.serial_lanes.map((l) => l.id)).toEqual([
+      's1',
+      's2',
+      's3',
+      's4'
+    ]);
+    expect(createQueueStore().load(WS).serial_lane_count).toBe(4);
+  });
+
+  test('setSerialLaneCount returns truncated waiting entries to the parallel tail', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'A' });
+    store.place(WS, { expected_revision: 1, bead_id: 'X', lane: 's2' });
+    store.place(WS, { expected_revision: 2, bead_id: 'Y', lane: 's2' });
+
+    const r = store.setSerialLaneCount(WS, { expected_revision: 3, count: 1 });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.serial_lanes).toHaveLength(1);
+    expect(r.queue.queue.map((e) => e.bead_id)).toEqual(['A', 'X', 'Y']);
+  });
+
+  test('setSerialLaneCount rejects values outside 1..5 and non-integers', () => {
+    const store = createQueueStore();
+
+    const zero = store.setSerialLaneCount(WS, {
+      expected_revision: 0,
+      count: 0
+    });
+    const six = store.setSerialLaneCount(WS, { expected_revision: 0, count: 6 });
+    const frac = store.setSerialLaneCount(WS, {
+      expected_revision: 0,
+      count: 2.5
+    });
+
+    expect(zero.ok).toBe(false);
+    expect(six.ok).toBe(false);
+    expect(frac.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(0);
+  });
+
+  test('retires the setPrWaitHoldsSlot mutator', () => {
+    const store = createQueueStore();
+
+    expect('setPrWaitHoldsSlot' in store).toBe(false);
+  });
+
+  test('makeAttempt normalizes serial_lane_id and keeps legacy worker_serial round-trip', () => {
+    const laned = makeAttempt({
+      attempt_id: 'a1',
+      bead_id: 'UI-a',
+      serial_lane_id: 's2'
+    });
+    const legacy = makeAttempt({
+      attempt_id: 'a2',
+      bead_id: 'UI-b',
+      worker_serial: true
+    });
+    const malformed = makeAttempt({
+      attempt_id: 'a3',
+      bead_id: 'UI-c',
+      serial_lane_id: /** @type {any} */ (7)
+    });
+
+    expect(laned.serial_lane_id).toBe('s2');
+    expect(legacy.serial_lane_id).toBeNull();
+    expect(legacy.worker_serial).toBe(true);
+    expect(malformed.serial_lane_id).toBeNull();
+  });
+
+  test('settles a legacy in-progress worker_serial attempt as a lane-less attempt on load', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'SEED' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.attempts = {
+      legacy: {
+        attempt_id: 'legacy',
+        bead_id: 'UI-legacy',
+        status: 'running',
+        worker_serial: true
+      }
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+
+    const loaded = createQueueStore().load(WS);
+
+    expect(loaded.attempts.legacy.serial_lane_id).toBeNull();
+    expect(loaded.attempts.legacy.worker_serial).toBe(true);
+  });
+});
+
+describe('worker/queue-store — blocks topological 보정 (UI-04vo seam C)', () => {
+  test('keeps an order that already satisfies its blocks edges', () => {
+    const result = orderLaneByBlocks(
+      ['A', 'B', 'C'],
+      [{ blocker: 'A', blockee: 'B' }]
+    );
+
+    expect(result.order).toEqual(['A', 'B', 'C']);
+    expect(result.corrections).toEqual([]);
+    expect(result.cycle).toBe(false);
+  });
+
+  test('moves a blockee after its blocker and records the correction', () => {
+    const result = orderLaneByBlocks(
+      ['B', 'A', 'C'],
+      [{ blocker: 'A', blockee: 'B' }]
+    );
+
+    expect(result.order).toEqual(['A', 'B', 'C']);
+    expect(result.corrections).toEqual([{ bead_id: 'B', after: 'A' }]);
+    expect(result.cycle).toBe(false);
+  });
+
+  test('breaks ties by user order across independent chains', () => {
+    const result = orderLaneByBlocks(
+      ['D', 'B', 'A', 'C'],
+      [
+        { blocker: 'A', blockee: 'B' },
+        { blocker: 'C', blockee: 'D' }
+      ]
+    );
+
+    expect(result.order).toEqual(['A', 'B', 'C', 'D']);
+    expect(result.corrections).toEqual([
+      { bead_id: 'B', after: 'A' },
+      { bead_id: 'D', after: 'C' }
+    ]);
+  });
+
+  test('ignores edges that reference ids outside the lane', () => {
+    const result = orderLaneByBlocks(
+      ['B', 'A'],
+      [
+        { blocker: 'X', blockee: 'B' },
+        { blocker: 'A', blockee: 'Y' }
+      ]
+    );
+
+    expect(result.order).toEqual(['B', 'A']);
+    expect(result.corrections).toEqual([]);
+    expect(result.cycle).toBe(false);
+  });
+
+  test('returns the input order untouched and flags a cycle', () => {
+    const result = orderLaneByBlocks(
+      ['A', 'B', 'C'],
+      [
+        { blocker: 'A', blockee: 'B' },
+        { blocker: 'B', blockee: 'A' }
+      ]
+    );
+
+    expect(result.order).toEqual(['A', 'B', 'C']);
+    expect(result.corrections).toEqual([]);
+    expect(result.cycle).toBe(true);
+  });
+
+  test('is recomputable purely from order and edges without mutating inputs', () => {
+    const order = ['B', 'A'];
+    const edges = [{ blocker: 'A', blockee: 'B' }];
+
+    const first = orderLaneByBlocks(order, edges);
+    const second = orderLaneByBlocks(order, edges);
+
+    expect(first).toEqual(second);
+    expect(order).toEqual(['B', 'A']);
+    expect(edges).toEqual([{ blocker: 'A', blockee: 'B' }]);
   });
 });
