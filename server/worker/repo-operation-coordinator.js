@@ -264,6 +264,53 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * What a later success must contain to cover a failed deploy record: the
+   * target it bound, or — when it died before binding one — every subject
+   * commit it was created to deploy.
+   *
+   * `effective_base_sha` is deliberately NOT a fallback. It names the commit
+   * deployed BEFORE this record, so a record that failed pre-bind would be
+   * covered by the very success that preceded it, and the merge it existed to
+   * deploy would be marked delivered while its cleanup still reports the
+   * failure — a row that can never converge.
+   *
+   * @param {any} operation
+   * @returns {string[]} Refs that must all be contained, empty when unprovable.
+   */
+  function coverageRefsOf(operation) {
+    if (typeof operation.target_sha === 'string' && operation.target_sha) {
+      return [operation.target_sha];
+    }
+    /** @type {any[]} */
+    const subjects = Array.isArray(operation.subjects)
+      ? operation.subjects
+      : [];
+    /** @type {string[]} */
+    const merged = subjects
+      .map((subject) => subject?.merged_sha)
+      .filter(
+        (merged_sha) => typeof merged_sha === 'string' && merged_sha.length > 0
+      );
+    return merged.length > 0 && merged.length === subjects.length ? merged : [];
+  }
+
+  /**
+   * @param {string[]} refs
+   * @param {string} descendant_sha
+   */
+  async function coversEvery(refs, descendant_sha) {
+    if (refs.length === 0) {
+      return false;
+    }
+    for (const ref of refs) {
+      if (!(await isCoveredByDescendant(ref, descendant_sha))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Durably cover failed deploy rows when terminal settlement proves a
    * successful descendant, regardless of which row settled last.
    *
@@ -296,10 +343,8 @@ export function createRepoOperationCoordinator(deps) {
           ) {
             continue;
           }
-          const ancestor_ref = failed.target_sha ?? failed.effective_base_sha;
           if (
-            typeof ancestor_ref !== 'string' ||
-            !(await isCoveredByDescendant(ancestor_ref, settled.target_sha))
+            !(await coversEvery(coverageRefsOf(failed), settled.target_sha))
           ) {
             continue;
           }
@@ -317,8 +362,8 @@ export function createRepoOperationCoordinator(deps) {
       if (settled.superseded_by) {
         return;
       }
-      const ancestor_ref = settled.target_sha ?? settled.effective_base_sha;
-      if (typeof ancestor_ref !== 'string') {
+      const refs = coverageRefsOf(settled);
+      if (refs.length === 0) {
         return;
       }
       for (const [succeeded_id, succeeded] of Object.entries(
@@ -329,7 +374,7 @@ export function createRepoOperationCoordinator(deps) {
           succeeded.repo_id !== settled.repo_id ||
           succeeded.state !== 'succeeded' ||
           typeof succeeded.target_sha !== 'string' ||
-          !(await isCoveredByDescendant(ancestor_ref, succeeded.target_sha))
+          !(await coversEvery(refs, succeeded.target_sha))
         ) {
           continue;
         }
@@ -846,15 +891,41 @@ export function createRepoOperationCoordinator(deps) {
       return { ok: false, code: acquired.code, operation_id };
     }
     try {
-      const rebound = await deploy_worktree.bindTarget({
-        repo: deps.repo,
-        base: operation.target_base,
-        last_successful_sha: latestSuccessfulDeploySha(
-          deps.store.snapshot(workspace),
-          deps.repo,
-          operation.target_base
-        )
-      });
+      const previous_sha = latestSuccessfulDeploySha(
+        deps.store.snapshot(workspace),
+        deps.repo,
+        operation.target_base
+      );
+      // A retry re-binds for real: the contract lets a target that moved while
+      // the first attempt failed supersede this record (§3.2), and that verdict
+      // needs the remote. A FIRST attempt is different — its caller pinned the
+      // target from a fetch that already happened, everything below runs on
+      // `plan.target_sha` rather than on what a rebind resolves, and re-fetching
+      // it only lets a transient network failure kill a deploy whose target is
+      // already in this repository. The monotonicity check the rebind owned
+      // stays, now measured against the pinned target itself. A target this
+      // repository cannot resolve still needs the remote.
+      const present =
+        plan.retry === true
+          ? { code: 1, stdout: '', stderr: '' }
+          : await deps.gitRun(
+              [
+                'rev-parse',
+                '--verify',
+                '--quiet',
+                `${plan.target_sha}^{commit}`
+              ],
+              { cwd: deps.repo }
+            );
+      /** @type {{ ok: boolean, code?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} */
+      const rebound =
+        present.code === 0
+          ? await bindPinnedTarget(plan.target_sha, previous_sha)
+          : await deploy_worktree.bindTarget({
+              repo: deps.repo,
+              base: operation.target_base,
+              last_successful_sha: previous_sha
+            });
       if (!rebound.ok || typeof rebound.target_sha !== 'string') {
         const code = rebound.code || 'repo_ops_target_unresolved';
         if (plan.retry === true) {
@@ -1060,6 +1131,37 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Monotonicity check for a target SHA the caller already pinned, without
+   * touching the remote: the fetch that produced it has already happened, so
+   * re-resolving it here would only replace a decided target with the remote's
+   * CURRENT tip.
+   *
+   * @param {unknown} pinned_sha
+   * @param {string|null} previous_sha
+   * @returns {Promise<{ ok: boolean, code?: string, target_sha?: string }>}
+   */
+  async function bindPinnedTarget(pinned_sha, previous_sha) {
+    if (typeof pinned_sha !== 'string' || !/^[0-9a-f]{40}$/i.test(pinned_sha)) {
+      return { ok: false, code: 'repo_ops_target_unresolved' };
+    }
+    const target_sha = pinned_sha.toLowerCase();
+    if (!previous_sha) {
+      return { ok: true, target_sha };
+    }
+    const containment = await deps.gitRun(
+      ['merge-base', '--is-ancestor', previous_sha, target_sha],
+      { cwd: deps.repo }
+    );
+    if (containment.code === 1) {
+      return { ok: false, code: 'remote_history_not_monotonic' };
+    }
+    if (containment.code !== 0) {
+      return { ok: false, code: 'repo_ops_ancestry_check_failed' };
+    }
+    return { ok: true, target_sha };
+  }
+
+  /**
    * @param {any} subject
    */
   async function ensureDeployLocked(subject) {
@@ -1077,28 +1179,8 @@ export function createRepoOperationCoordinator(deps) {
         base: subject.target_base,
         last_successful_sha: previous_sha
       });
-    } else if (
-      typeof subject.target_sha !== 'string' ||
-      !/^[0-9a-f]{40}$/i.test(subject.target_sha)
-    ) {
-      bound = { ok: false, code: 'repo_ops_target_unresolved' };
     } else {
-      const target_sha = subject.target_sha.toLowerCase();
-      if (previous_sha) {
-        const containment = await deps.gitRun(
-          ['merge-base', '--is-ancestor', previous_sha, target_sha],
-          { cwd: deps.repo }
-        );
-        if (containment.code === 1) {
-          bound = { ok: false, code: 'remote_history_not_monotonic' };
-        } else if (containment.code !== 0) {
-          bound = { ok: false, code: 'repo_ops_ancestry_check_failed' };
-        } else {
-          bound = { ok: true, target_sha };
-        }
-      } else {
-        bound = { ok: true, target_sha };
-      }
+      bound = await bindPinnedTarget(subject.target_sha, previous_sha);
     }
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       return {
