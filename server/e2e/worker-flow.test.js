@@ -29,6 +29,7 @@ import {
   createCompletionIntentCoordinator,
   decideCompletionAction
 } from '../worker/completion-intent.js';
+import { createHeadReview } from '../worker/head-review.js';
 import { createMergeQueue } from '../worker/merge-queue.js';
 import { createPrActions } from '../worker/pr-actions.js';
 import { createPrObservationStore } from '../worker/pr-observations.js';
@@ -1336,6 +1337,293 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       (attempt) => attempt.bead_id === repair_bead_id
     );
     expect(repair_attempts).toHaveLength(1);
+  });
+});
+
+describe('worker e2e — manual continuation under auto_merge=false (UI-58w8)', () => {
+  const OLD_HEAD = 'a'.repeat(40);
+  const NEW_HEAD = 'b'.repeat(40);
+
+  /**
+   * A pr_wait bead with a spec-backed record whose `impl_review` is bound to
+   * OLD_HEAD while the observed PR head is NEW_HEAD — the exact
+   * `review_receipt_stale` state the UI-wv97 incident froze in.
+   *
+   * @param {ReturnType<typeof createWorkerRuntime>} runtime
+   */
+  function seedStaleReviewed(runtime) {
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-M2',
+        bead_id: 'M2',
+        repo: repo_dir,
+        target_base: 'main',
+        finished_at: 1,
+        verify_result: {
+          ok: true,
+          pr_url: 'https://github.com/o/r/pull/1',
+          pr_number: 1
+        }
+      }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'M2',
+      attempt_id: 'att-M2',
+      patch: { status: 'done', finished_at: 1 }
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createWorkerRuntime>} runtime
+   * @param {{ metadata: Record<string, string>, status: string }} bd_record
+   * @param {{ pr_state: string, merged_sha: string, squash_calls: string[] }} world
+   */
+  function buildPrActions(runtime, bd_record, world) {
+    return createPrActions({
+      workspace: WS,
+      repo: repo_dir,
+      store: runtime.queueStore,
+      observations: createPrObservationStore(),
+      gh: {
+        prDetail: async (
+          /** @type {string} */ _repo,
+          /** @type {number} */ number
+        ) => ({
+          state: 'ok',
+          data: {
+            number,
+            url: 'https://github.com/o/r/pull/1',
+            state: world.pr_state,
+            mergeable: 'MERGEABLE',
+            merge_state_status: 'CLEAN',
+            base_ref: 'main',
+            head_ref: 'M2',
+            head_sha: NEW_HEAD,
+            merged_sha: world.pr_state === 'MERGED' ? world.merged_sha : null
+          }
+        }),
+        mergeSquash: async () => {
+          world.squash_calls.push(NEW_HEAD);
+          world.pr_state = 'MERGED';
+          return { state: 'ok', data: { merged: true } };
+        },
+        updateBranch: async () => ({ state: 'error', reason: 'unexpected' }),
+        closePr: async () => ({ state: 'error', reason: 'unexpected' })
+      },
+      bd: {
+        setStatus: async (
+          /** @type {string} */ _id,
+          /** @type {string} */ status
+        ) => {
+          bd_record.status = status;
+        },
+        readStatus: async () => bd_record.status,
+        unsetMetadata: async () => {},
+        readMetadata: async () => null,
+        readIssue: async (/** @type {string} */ id) => ({
+          id,
+          status: bd_record.status,
+          spec_id: 'docs/spec.md',
+          metadata: bd_record.metadata
+        }),
+        listChildren: async () => []
+      },
+      worktree: prActionsWorktree(runtime),
+      gitRun,
+      scheduler: {
+        resolveConflict: async () => ({ ok: false, reason: 'unexpected' }),
+        dispatchExternalConflict: async () => ({
+          ok: false,
+          reason: 'unexpected'
+        }),
+        tick: async () => {}
+      },
+      resolveVerify: async () => ({ state: 'absent' }),
+      resolveBase: /** @type {any} */ (
+        async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: world.merged_sha,
+          declared: false,
+          remote: 'origin',
+          remote_ref: 'refs/remotes/origin/main',
+          local_only: false
+        })
+      ),
+      repoOperations: /** @type {any} */ ({
+        hasConfig: async () => ({ ok: true, present: false })
+      }),
+      requeryDelayMs: 0,
+      sleep: async () => {}
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createWorkerRuntime>} runtime
+   * @param {ReturnType<typeof buildPrActions>} pr_actions
+   * @param {{ metadata: Record<string, string>, status: string }} bd_record
+   * @param {{ review_calls: any[] }} record
+   */
+  function buildManualDriver(runtime, pr_actions, bd_record, record) {
+    const head_review = createHeadReview({
+      workspace: WS,
+      store: runtime.queueStore,
+      selectReviewer: async () => ({
+        ok: true,
+        reviewer: 'codex',
+        effort: 'xhigh'
+      }),
+      readReceipt: async () => {
+        const raw = bd_record.metadata.impl_review || '';
+        const m = /^([^@\s]+)@([0-9a-f]{40})$/i.exec(raw);
+        return m ? { actor: m[1], head_sha: m[2].toLowerCase(), raw } : null;
+      },
+      lineage: async () => ({ queue_owned: true }),
+      runReview: async (/** @type {any} */ packet) => {
+        record.review_calls.push(packet);
+        return { ok: true, verdict: 'APPROVE' };
+      },
+      writeReceipt: async (
+        /** @type {string} */ _bead_id,
+        /** @type {string} */ receipt
+      ) => {
+        bd_record.metadata.impl_review = receipt;
+        return { ok: true, readback: receipt };
+      },
+      observeHead: async () => NEW_HEAD,
+      runRepair: async () => ({ ok: false, reason: 'unexpected' })
+    });
+    return createMergeQueue({
+      workspace: WS,
+      store: runtime.queueStore,
+      merge: (/** @type {string} */ bead_id) =>
+        pr_actions.merge(bead_id, { allow_conflict_resolution: false }),
+      probeMergeability: (/** @type {string} */ bead_id) =>
+        pr_actions.probeMergeability(bead_id),
+      observePr: (/** @type {string} */ bead_id) =>
+        pr_actions.prState(bead_id),
+      headReview: head_review,
+      headSha: () => NEW_HEAD,
+      setResolutionPollTimer: () => 1
+    });
+  }
+
+  test('manual click → stale receipt → automatic review → exactly-once merge', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {{ metadata: Record<string, string>, status: string }} */
+    const bd_record = {
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${OLD_HEAD}`,
+        impl_review: `codex@${OLD_HEAD}`
+      },
+      status: 'resolved'
+    };
+    seedStaleReviewed(runtime);
+    const merged = await gitRun(['rev-parse', 'main'], { cwd: repo_dir });
+    /** @type {{ pr_state: string, merged_sha: string, squash_calls: string[] }} */
+    const world = {
+      pr_state: 'OPEN',
+      merged_sha: merged.stdout.trim(),
+      squash_calls: []
+    };
+    const pr_actions = buildPrActions(runtime, bd_record, world);
+    /** @type {{ review_calls: any[] }} */
+    const record = { review_calls: [] };
+    const mq = buildManualDriver(runtime, pr_actions, bd_record, record);
+    const enqueue = runtime.queueStore.enqueueMergeManual(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'M2', head_sha: NEW_HEAD, target_base: 'main' }]
+    });
+    expect(enqueue.ok).toBe(true);
+    expect(runtime.queueStore.snapshot(WS).auto_merge).toBe(false);
+
+    await mq.kick();
+
+    // Exactly one automatic review of the moved head, receipt written and
+    // bound, then exactly one pinned-head squash merge — under a FALSE global
+    // toggle throughout.
+    expect(record.review_calls).toHaveLength(1);
+    expect(record.review_calls[0].head_sha).toBe(NEW_HEAD);
+    expect(bd_record.metadata.impl_review).toBe(`codex@${NEW_HEAD}`);
+    expect(world.squash_calls).toEqual([NEW_HEAD]);
+    expect(runtime.queueStore.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('cancel during the review makes the late approval a no-op', async () => {
+    const runtime = createWorkerRuntime();
+    /** @type {{ metadata: Record<string, string>, status: string }} */
+    const bd_record = {
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${OLD_HEAD}`,
+        impl_review: `codex@${OLD_HEAD}`
+      },
+      status: 'resolved'
+    };
+    seedStaleReviewed(runtime);
+    const merged = await gitRun(['rev-parse', 'main'], { cwd: repo_dir });
+    /** @type {{ pr_state: string, merged_sha: string, squash_calls: string[] }} */
+    const world = {
+      pr_state: 'OPEN',
+      merged_sha: merged.stdout.trim(),
+      squash_calls: []
+    };
+    const pr_actions = buildPrActions(runtime, bd_record, world);
+    const head_review = createHeadReview({
+      workspace: WS,
+      store: runtime.queueStore,
+      selectReviewer: async () => ({
+        ok: true,
+        reviewer: 'codex',
+        effort: 'xhigh'
+      }),
+      readReceipt: async () => null,
+      lineage: async () => ({ queue_owned: true }),
+      runReview: async () => {
+        // The user clicks [취소] while the reviewer is still out.
+        runtime.queueStore.cancelMerge(WS, {
+          expected_revision: runtime.queueStore.snapshot(WS).revision,
+          bead_id: 'M2'
+        });
+        return { ok: true, verdict: 'APPROVE' };
+      },
+      writeReceipt: async (
+        /** @type {string} */ _bead_id,
+        /** @type {string} */ receipt
+      ) => {
+        bd_record.metadata.impl_review = receipt;
+        return { ok: true, readback: receipt };
+      },
+      observeHead: async () => NEW_HEAD,
+      runRepair: async () => ({ ok: false, reason: 'unexpected' })
+    });
+    const mq = createMergeQueue({
+      workspace: WS,
+      store: runtime.queueStore,
+      merge: (/** @type {string} */ bead_id) =>
+        pr_actions.merge(bead_id, { allow_conflict_resolution: false }),
+      probeMergeability: (/** @type {string} */ bead_id) =>
+        pr_actions.probeMergeability(bead_id),
+      observePr: (/** @type {string} */ bead_id) =>
+        pr_actions.prState(bead_id),
+      headReview: head_review,
+      headSha: () => NEW_HEAD,
+      setResolutionPollTimer: () => 1
+    });
+    runtime.queueStore.enqueueMergeManual(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [{ bead_id: 'M2', head_sha: NEW_HEAD, target_base: 'main' }]
+    });
+
+    await mq.kick();
+
+    // The cancelled authority's late approval writes no receipt and merges
+    // nothing; the queue stays empty.
+    expect(world.squash_calls).toEqual([]);
+    expect(bd_record.metadata.impl_review).toBe(`codex@${OLD_HEAD}`);
+    expect(runtime.queueStore.snapshot(WS).merge_queue).toEqual([]);
   });
 });
 
