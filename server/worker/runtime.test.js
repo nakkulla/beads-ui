@@ -29,7 +29,15 @@ describe('worker/runtime status', () => {
     rt.queueStore.setAutoAdvance(WS, true);
     rt.setRunningCountProvider(() => 2);
 
-    expect(rt.status(WS)).toEqual({ auto_advance: true, running_count: 2 });
+    expect(rt.status(WS)).toEqual({
+      auto_advance: true,
+      running_count: 2,
+      auto_merge: false,
+      manual_merge_continuation: {
+        schema_version: 1,
+        head_review_projection: true
+      }
+    });
   });
 
   test('omits the retired breaker_tripped field', () => {
@@ -37,8 +45,32 @@ describe('worker/runtime status', () => {
 
     const status = rt.status(WS);
 
-    expect(status).toEqual({ auto_advance: false, running_count: 0 });
+    expect(status).toEqual({
+      auto_advance: false,
+      running_count: 0,
+      auto_merge: false,
+      manual_merge_continuation: {
+        schema_version: 1,
+        head_review_projection: true
+      }
+    });
     expect('breaker_tripped' in status).toBe(false);
+  });
+
+  test('reads auto_merge from the actual queue store, independent of the capability', () => {
+    const rt = createWorkerRuntime();
+    rt.queueStore.toggleAutoMerge(WS, {
+      expected_revision: rt.queueStore.snapshot(WS).revision,
+      on: true
+    });
+
+    const status = rt.status(WS);
+
+    expect(status.auto_merge).toBe(true);
+    expect(status.manual_merge_continuation).toEqual({
+      schema_version: 1,
+      head_review_projection: true
+    });
   });
 
   test('exposes no breaker or token registry', () => {

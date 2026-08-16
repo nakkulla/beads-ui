@@ -1721,6 +1721,67 @@ export async function kickWorkerMergeQueue(workspace_root) {
 }
 
 /**
+ * Queue a manual [머지] click as a durable per-item continuation authority
+ * (UI-58w8 §1). The authority binds the head/base THIS click observed, so the
+ * identity comes from one fresh authoritative probe — never a cached badge —
+ * and an unreadable identity makes NO queue effect at all. A blocked probe
+ * (stale receipt, conflict) still queues: resolving those is exactly what the
+ * authority authorizes. Without an attachment there is nothing to observe
+ * through, which is the same unreadable-identity refusal.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, expected_revision: number }} input
+ * @returns {Promise<import('./queue-store.js').QueueOpResult & { reason?: string }>}
+ */
+export async function enqueueWorkerManualMerge(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const store = getWorkerRuntime().queueStore;
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.prActions) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: 'no_attachment',
+      queue: store.snapshot(key)
+    };
+  }
+  /** @type {any} */
+  let probe = null;
+  try {
+    probe = await att.prActions.probeMergeability(input.bead_id);
+  } catch (err) {
+    log('manual merge probe failed for %s: %o', input.bead_id, err);
+  }
+  const head_sha =
+    probe && typeof probe.head_sha === 'string' && probe.head_sha.length > 0
+      ? probe.head_sha
+      : null;
+  const target_base =
+    probe && typeof probe.base_ref === 'string' && probe.base_ref.length > 0
+      ? probe.base_ref
+      : null;
+  if (head_sha === null || target_base === null) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: 'pr_identity_unreadable',
+      queue: store.snapshot(key)
+    };
+  }
+  return store.enqueueMergeManual(key, {
+    expected_revision: input.expected_revision,
+    entries: [
+      {
+        bead_id: input.bead_id,
+        head_sha,
+        target_base,
+        external: probe.external === true
+      }
+    ]
+  });
+}
+
+/**
  * Run the SHARED enrollment step (UI-yk55 §4.2): judge the lane, apply the
  * exclusion filter, persist, fan out, and wake the driver. Both the lane's
  * toggle and `worker-merge-queue-add-all` come through here, which is what keeps

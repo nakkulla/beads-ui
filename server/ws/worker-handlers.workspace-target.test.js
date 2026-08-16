@@ -44,6 +44,14 @@ vi.mock('../worker/attach.js', () => {
   return {
     checkWorkerQueueAdmission: rec(() => Promise.resolve({ ok: true })),
     discardWorkerPr: rec(() => Promise.resolve({ ok: true })),
+    enqueueWorkerManualMerge: rec(() =>
+      Promise.resolve({
+        ok: false,
+        conflict: false,
+        reason: 'no_attachment',
+        queue: { revision: 0, merge_queue: [] }
+      })
+    ),
     enrollWorkerMergeCandidates: rec(() => ({
       applied: false,
       conflict: false,

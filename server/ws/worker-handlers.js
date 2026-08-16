@@ -33,6 +33,7 @@ import {
   checkWorkerQueueAdmission,
   discardWorkerBead,
   dismissWorkerRepoOperation,
+  enqueueWorkerManualMerge,
   enrollWorkerMergeCandidates,
   kickWorkerMergeQueue,
   observeWorkerPrs,
@@ -54,6 +55,7 @@ import {
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
+import { MANUAL_MERGE_CONTINUATION } from '../worker/queue-store.js';
 import { sanitizeOutput } from '../worker/repair-session-adapter.js';
 import {
   classifyRepoOperationFailure,
@@ -1177,6 +1179,11 @@ export function decorateQueue(workspace_key, raw_queue) {
   }
   return {
     ...queue,
+    // The manual-continuation capability (UI-58w8 §8): a read-only projection
+    // of the queue schema's own constant, independent of the `auto_merge`
+    // boolean the queue itself carries — the snapshot never authors a second
+    // meaning for either.
+    manual_merge_continuation: MANUAL_MERGE_CONTINUATION,
     runner_catalog,
     // The workspace's declared base (UI-j6wa §3), non-persisted like every
     // other decoration here. Display only — nothing dispatches on it.
@@ -2421,7 +2428,7 @@ function replyMergeQueue(ws, req, workspace_key, result, extra = {}) {
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerMergeQueueAdd(ws, req) {
+export async function handleWorkerMergeQueueAdd(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   if (typeof p.bead_id !== 'string' || p.bead_id.length === 0) {
     ws.send(
@@ -2471,22 +2478,17 @@ export function handleWorkerMergeQueueAdd(ws, req) {
     });
     return;
   }
-  // An EXTERNAL row is a wire-only synthesis (UI-7agi §2), so the store cannot
-  // check its lane membership — the overlay that created it vouches for it here.
-  const overlaid = withExternalPrWait(
-    key,
-    /** @type {any} */ (queueStore().snapshot(key))
-  );
-  const lane = Array.isArray(overlaid.pr_wait)
-    ? /** @type {any[]} */ (overlaid.pr_wait)
-    : [];
-  const row = lane.find((e) => e && e.bead_id === p.bead_id) || null;
-  const before = Array.isArray(overlaid.merge_queue)
-    ? /** @type {any[]} */ (overlaid.merge_queue).length
-    : 0;
-  const result = queueStore().enqueueMerge(key, {
-    expected_revision: revisionOf(p),
-    entries: [{ bead_id: p.bead_id, external: !!row && row.external === true }]
+  const before_queue = /** @type {any} */ (queueStore().snapshot(key))
+    .merge_queue;
+  const before = Array.isArray(before_queue) ? before_queue.length : 0;
+  // The click IS the item's durable continuation authority (UI-58w8 §1), so
+  // it binds the head/base one fresh authoritative probe returns; an
+  // unreadable identity replies as a refusal with no queue effect. The
+  // external-row vouching moved with it: the probe's own lane membership read
+  // is the overlay-aware one.
+  const result = await enqueueWorkerManualMerge(key, {
+    bead_id: p.bead_id,
+    expected_revision: revisionOf(p)
   });
   // The write also APPLIES when it only dropped an auto-merge exclusion for an
   // already-queued row (UI-yk55 §3.2), so the count comes from the queue itself
@@ -2498,7 +2500,10 @@ export function handleWorkerMergeQueueAdd(ws, req) {
       : before;
   replyMergeQueue(ws, req, key, result, {
     bead_id: p.bead_id,
-    queued: Math.max(0, after - before)
+    queued: Math.max(0, after - before),
+    ...(typeof (/** @type {any} */ (result).reason) === 'string'
+      ? { reason: /** @type {any} */ (result).reason }
+      : {})
   });
 }
 

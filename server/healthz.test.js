@@ -50,7 +50,12 @@ describe('GET /healthz', () => {
     expect(body.checks.db).toBe(true);
     expect(body.checks.worker).toEqual({
       auto_advance: false,
-      running_count: 0
+      running_count: 0,
+      auto_merge: false,
+      manual_merge_continuation: {
+        schema_version: 1,
+        head_review_projection: true
+      }
     });
   });
 

@@ -351,7 +351,19 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     expect(result.applied).toBe(true);
     expect(queue.revision).toBe(before + 1);
     expect(queue.merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 0,
+        resolution: null,
+        authority: {
+          id: expect.any(String),
+          source: 'automatic',
+          granted_at: expect.any(Number),
+          requested_head_sha: HEAD,
+          target_base: 'main'
+        },
+        head_review: null
+      }
     ]);
     expect(queue.completion_intents['UI-1']).toMatchObject({
       target_base: 'main',

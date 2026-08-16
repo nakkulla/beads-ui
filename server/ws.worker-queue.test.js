@@ -1777,7 +1777,20 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       process.cwd(),
       /** @type {any} */ ({
         scheduler: { tick: vi.fn(), stop: vi.fn() },
-        prActions: { merge: vi.fn(), discard: vi.fn() },
+        prActions: {
+          merge: vi.fn(),
+          discard: vi.fn(),
+          // The click-time authoritative identity read the manual authority
+          // binds (UI-58w8 §1).
+          probeMergeability: vi.fn(async () => ({
+            ok: true,
+            kind: 'clean',
+            reason: null,
+            head_sha: 'f'.repeat(40),
+            base_ref: 'main',
+            external: false
+          }))
+        },
         mergeQueue: {
           kick,
           state: () => ({ active: state.active ?? null, failures: {} })
@@ -1805,7 +1818,19 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       queued: 1
     });
     expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([
-      { bead_id: 'UI-1', resolution_rounds: 0, resolution: null }
+      {
+        bead_id: 'UI-1',
+        resolution_rounds: 0,
+        resolution: null,
+        authority: {
+          id: expect.any(String),
+          source: 'manual',
+          granted_at: expect.any(Number),
+          requested_head_sha: 'f'.repeat(40),
+          target_base: 'main'
+        },
+        head_review: null
+      }
     ]);
     expect(kick).toHaveBeenCalled();
   });
@@ -2488,12 +2513,15 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
     });
 
-    // The placement is durable regardless: it is resumed by whatever driver
-    // starts next, exactly like a queue that survived a restart.
-    expect(replyFor(sock, 'm1').payload.applied).toBe(true);
-    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue.length).toBe(
-      1
-    );
+    // A manual click IS a continuation authority (UI-58w8 §1), and an
+    // authority needs the head/base the click observed — without an
+    // attachment there is nothing to observe through, so the click refuses
+    // instead of queuing an identity-less entry.
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      reason: 'no_attachment'
+    });
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
   });
 });
 
