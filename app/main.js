@@ -509,6 +509,11 @@ export function bootstrap(root_element) {
      * kept: releasing that one leaves the lane empty, and nothing else would
      * ask again (the re-entry that raced it was skipped by the pending guard).
      */
+    // The unified settings dialog edits worker-queue state (orchestration,
+    // slots), so the queue channel must be live while it is open — including
+    // from the Monitor view, whose route alone would not hold it.
+    let settings_dialog_open = false;
+
     function syncSubscriptionsToView() {
       const state = store.getState();
       ensureBoardSubscriptions(state.view === 'board');
@@ -517,6 +522,7 @@ export function bootstrap(root_element) {
       ensureWorkerQueueChannel(
         state.view === 'board' ||
           state.view === 'worker' ||
+          settings_dialog_open ||
           Boolean(state.selected_id)
       );
     }
@@ -1391,6 +1397,10 @@ export function bootstrap(root_element) {
       queueStore: worker_queue_store,
       implPresetStore: exec_preset_store,
       transport: (type, payload) => tracked_send(type, payload),
+      onOpenChange: (open) => {
+        settings_dialog_open = open;
+        syncSubscriptionsToView();
+      },
       labelOptions: () => {
         /** @type {Set<string>} */
         const seen = new Set();
@@ -1541,7 +1551,10 @@ export function bootstrap(root_element) {
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(s.view === 'monitor');
       ensureWorkerQueueChannel(
-        s.view === 'board' || s.view === 'worker' || Boolean(s.selected_id)
+        s.view === 'board' ||
+          s.view === 'worker' ||
+          settings_dialog_open ||
+          Boolean(s.selected_id)
       );
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();

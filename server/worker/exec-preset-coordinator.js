@@ -365,9 +365,59 @@ export function createExecPresetCoordinator(options) {
    * @param {{ legacy_ids?: string[] }} [shared] - Legacy preset ids already
    * copied in this pass, so the per-workspace cleanup can drop them.
    */
+  /**
+   * Remove the legacy queue fields and CONFIRM their absence by readback.
+   * Idempotent: a queue with no legacy fields left succeeds immediately.
+   *
+   * @param {string} workspace
+   * @param {{ legacy_ids?: string[] }} shared
+   * @returns {{ ok: boolean, step?: string }}
+   */
+  function finalizeLegacyCleanup(workspace, shared) {
+    const snapshot = /** @type {Record<string, unknown>} */ (
+      /** @type {unknown} */ (queueStore.snapshot(workspace))
+    );
+    const has_legacy =
+      Object.hasOwn(snapshot, 'default_exec_preset_id') ||
+      Object.hasOwn(snapshot, 'exec_defaults');
+    if (has_legacy) {
+      try {
+        queueStore.clearLegacyExecFields(workspace, {
+          expected_revision: /** @type {any} */ (snapshot).revision
+        });
+      } catch {
+        return { ok: false, step: 'legacy_cleanup_write' };
+      }
+      const readback = /** @type {Record<string, unknown>} */ (
+        /** @type {unknown} */ (queueStore.snapshot(workspace))
+      );
+      if (
+        Object.hasOwn(readback, 'default_exec_preset_id') ||
+        Object.hasOwn(readback, 'exec_defaults')
+      ) {
+        return { ok: false, step: 'legacy_cleanup_readback' };
+      }
+    }
+    if (Array.isArray(shared.legacy_ids) && shared.legacy_ids.length > 0) {
+      presetStore.deletePresets(shared.legacy_ids);
+    }
+    return { ok: true };
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {{ legacy_ids?: string[] }} [shared]
+   */
   async function migrateWorkspace(workspace, shared = {}) {
     const queue = queueStore.snapshot(workspace);
     if (queue.session_defaults_migration) {
+      // The marker proves the FILLS completed, not the cleanup: a crash
+      // between the marker write and the legacy-field removal must not leave
+      // the residue behind forever, so cleanup re-runs until readback-clean.
+      const cleaned = finalizeLegacyCleanup(workspace, shared);
+      if (!cleaned.ok) {
+        return { ok: false, step: cleaned.step };
+      }
       return { ok: true, migrated: false };
     }
     const source = legacySourceFor(workspace);
@@ -399,12 +449,11 @@ export function createExecPresetCoordinator(options) {
     }
 
     // Source cleanup is strictly after the marker, so a crash between them
-    // simply re-runs the (idempotent) fills.
-    queueStore.clearLegacyExecFields(workspace, {
-      expected_revision: queueStore.snapshot(workspace).revision
-    });
-    if (Array.isArray(shared.legacy_ids) && shared.legacy_ids.length > 0) {
-      presetStore.deletePresets(shared.legacy_ids);
+    // simply re-runs the fills; the cleanup itself is readback-confirmed and,
+    // when interrupted, re-runs on the next start through the marker branch.
+    const cleaned = finalizeLegacyCleanup(workspace, shared);
+    if (!cleaned.ok) {
+      return { ok: false, step: cleaned.step };
     }
     return { ok: true, migrated: true };
   }

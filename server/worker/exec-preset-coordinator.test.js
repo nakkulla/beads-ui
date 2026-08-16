@@ -406,6 +406,26 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(fixture.kvSet).not.toHaveBeenCalled();
   });
 
+  test('re-runs the legacy cleanup when the marker exists but residue remains', async () => {
+    // A crash between the marker write and clearLegacyExecFields leaves the
+    // marker plus the legacy fields; the next pass must still converge.
+    const fixture = createFixture({
+      queue: legacyQueue({
+        session_defaults_migration: { version: 1, at: 1 }
+      })
+    });
+
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(true);
+    const snapshot = /** @type {Record<string, unknown>} */ (
+      /** @type {unknown} */ (fixture.queueStore.snapshot(WORKSPACE))
+    );
+    expect(Object.hasOwn(snapshot, 'default_exec_preset_id')).toBe(false);
+    expect(Object.hasOwn(snapshot, 'exec_defaults')).toBe(false);
+    expect(fixture.kvSet).not.toHaveBeenCalled();
+  });
+
   test('does nothing for a workspace with no legacy fields', async () => {
     const fixture = createFixture({ queue: { revision: 2 } });
 

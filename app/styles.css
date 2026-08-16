@@ -6967,6 +6967,17 @@ html[data-theme='dark'] {
   text-align: center;
 }
 
+.settings-dialog__preset-name {
+  min-width: 0;
+  max-width: 170px;
+  padding: var(--sp-4) var(--sp-9);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+}
+
 .settings-dialog__preset-bar {
   display: flex;
   gap: var(--sp-8);
@@ -7223,6 +7234,11 @@ html[data-theme='dark'] {
 
 .detail-summary__gate--stale .detail-summary__gate-pill {
   color: var(--accent-warn);
+}
+
+.detail-summary__gate--current .detail-summary__gate-pill {
+  border-color: var(--stage-plan-dim);
+  color: var(--text-secondary);
 }
 
 .detail-summary__gate-sha {

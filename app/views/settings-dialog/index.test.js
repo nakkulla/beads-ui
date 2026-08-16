@@ -329,3 +329,119 @@ describe('createSettingsDialog display tab', () => {
     expect(pill).not.toBe(null);
   });
 });
+
+describe('createSettingsDialog implementation presets', () => {
+  const PRESETS = {
+    revision: 4,
+    presets: [
+      {
+        id: 'p1',
+        name: '기본 위임',
+        settings: { impl_runtime: 'codex', impl_model: 'sol' }
+      }
+    ]
+  };
+
+  test('creates a preset from the current 구현 values', async () => {
+    const calls = /** @type {any[]} */ ([]);
+    const transport = vi.fn(async (type, payload) => {
+      calls.push([type, payload]);
+      if (type === 'get-session-defaults') {
+        return { values: { impl_runtime: 'codex' }, warnings: [] };
+      }
+      if (type === 'impl-preset-create') {
+        return {
+          applied: true,
+          revision: 5,
+          presets: [{ id: 'new', name: '새 조합', settings: {} }]
+        };
+      }
+      return { values: {}, warnings: [] };
+    });
+    const { root, dialog } = mount({ transport, presets: PRESETS });
+    dialog.open('session');
+    await settle();
+
+    const name = /** @type {HTMLInputElement} */ (
+      root.querySelector('.settings-dialog__preset-name')
+    );
+    name.value = '새 조합';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-preset-save]')
+    ).click();
+    await settle();
+
+    const create = calls.find(([type]) => type === 'impl-preset-create');
+    expect(create[1]).toEqual({
+      expected_revision: 4,
+      name: '새 조합',
+      settings: { impl_runtime: 'codex' }
+    });
+    dialog.destroy();
+  });
+
+  test('updates the selected preset keeping its name', async () => {
+    const calls = /** @type {any[]} */ ([]);
+    const transport = vi.fn(async (type, payload) => {
+      calls.push([type, payload]);
+      if (type === 'get-session-defaults') {
+        return { values: { impl_runtime: 'codex' }, warnings: [] };
+      }
+      if (type === 'impl-preset-update') {
+        return { applied: true, revision: 5, presets: PRESETS.presets };
+      }
+      return { values: {}, warnings: [] };
+    });
+    const { root, dialog } = mount({ transport, presets: PRESETS });
+    dialog.open('session');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[aria-label="구현 프리셋"]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-preset-save]')
+    ).click();
+    await settle();
+
+    const update = calls.find(([type]) => type === 'impl-preset-update');
+    expect(update[1]).toEqual({
+      expected_revision: 4,
+      id: 'p1',
+      name: '기본 위임',
+      settings: { impl_runtime: 'codex' }
+    });
+    dialog.destroy();
+  });
+
+  test('deletes the selected preset', async () => {
+    const calls = /** @type {any[]} */ ([]);
+    const transport = vi.fn(async (type, payload) => {
+      calls.push([type, payload]);
+      if (type === 'impl-preset-delete') {
+        return { applied: true, revision: 5, presets: [] };
+      }
+      return { values: {}, warnings: [] };
+    });
+    const { root, dialog } = mount({ transport, presets: PRESETS });
+    dialog.open('session');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[aria-label="구현 프리셋"]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-preset-delete]')
+    ).click();
+    await settle();
+
+    const del = calls.find(([type]) => type === 'impl-preset-delete');
+    expect(del[1]).toEqual({ expected_revision: 4, id: 'p1' });
+    dialog.destroy();
+  });
+});

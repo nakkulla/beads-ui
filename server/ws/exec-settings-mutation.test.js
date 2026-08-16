@@ -179,16 +179,88 @@ describe('handleUpdateExecSettings', () => {
     ['impl_model', 'terra'],
     ['impl_effort', 'high'],
     ['impl_runtime', '']
-  ])('rejects generic %s mutations before calling bd', async (key, value) => {
+  ])(
+    'routes an EXACT %s to the atomic implementation-target mutation',
+    async (key, value) => {
+      const { ws, sent } = fakeWs();
+      await handleUpdateExecSettings(ws, {
+        id: 'r3d',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value }
+      });
+
+      expect(runBdInWorkspace).not.toHaveBeenCalled();
+      expect(sent[0].error.message).toContain('update-impl-target');
+    }
+  );
+
+  test.each([
+    ['impl_dispatch', 'delegated'],
+    ['impl_dispatch', 'main'],
+    ['impl_speed', 'default'],
+    ['impl_speed', 'fast']
+  ])('writes the session key %s=%s as a literal', async (key, value) => {
     const { ws, sent } = fakeWs();
     await handleUpdateExecSettings(ws, {
-      id: 'r3d',
+      id: 'r3e',
       type: 'update-exec-settings',
       payload: { id: 'UI-1', key, value }
     });
 
+    expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+      'update',
+      'UI-1',
+      '--set-metadata',
+      `${key}=${value}`
+    ]);
+    expect(sent[0].ok).toBe(true);
+  });
+
+  test.each([
+    ['impl_model', 'auto'],
+    ['impl_effort', 'auto']
+  ])(
+    'preserves the %s auto literal instead of routing or dropping it',
+    async (key) => {
+      const { ws, sent } = fakeWs();
+      await handleUpdateExecSettings(ws, {
+        id: 'r3f',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value: 'auto' }
+      });
+
+      expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+        'update',
+        'UI-1',
+        '--set-metadata',
+        `${key}=auto`
+      ]);
+      expect(sent[0].ok).toBe(true);
+    }
+  );
+
+  test('rejects an out-of-enum impl_dispatch without shelling bd', async () => {
+    const { ws, sent } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3g',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'impl_dispatch', value: 'sideways' }
+    });
+
     expect(runBdInWorkspace).not.toHaveBeenCalled();
-    expect(sent[0].error.message).toContain('update-impl-target');
+    expect(sent[0].error.code).toBe('bad_request');
+  });
+
+  test('the auto literal is not accepted for impl_runtime', async () => {
+    const { ws, sent } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3h',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'impl_runtime', value: 'auto' }
+    });
+
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].ok).toBe(false);
   });
 
   test('unknown key is rejected', async () => {
@@ -239,6 +311,26 @@ describe('handleUpdateImplTarget', () => {
       })
     );
     expect(runBdJsonInWorkspace).toHaveBeenCalledTimes(1);
+    expect(sent[0].ok).toBe(true);
+  });
+
+  test.each([
+    [{ impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' }],
+    [{ impl_runtime: 'inherit', impl_model: 'auto', impl_effort: 'high' }]
+  ])('accepts an auto implementation target %o', async (payload) => {
+    const { ws, sent } = fakeWs();
+
+    await handleUpdateImplTarget(ws, {
+      id: 'target-auto',
+      type: 'update-impl-target',
+      payload: { id: 'UI-1', ...payload }
+    });
+
+    expect(runBdInWorkspace).toHaveBeenCalledOnce();
+    expect(runBdInWorkspace).toHaveBeenCalledWith(
+      ws,
+      buildImplTargetArgs('UI-1', payload)
+    );
     expect(sent[0].ok).toBe(true);
   });
 

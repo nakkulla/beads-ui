@@ -281,11 +281,29 @@ export function effectiveSettingsCardTemplate(model, handlers) {
  * @returns {string}
  */
 export function summaryLine(effective) {
-  const mode = effective.workflow_mode || 'standard';
-  const dispatch = effective.impl_dispatch === 'main' ? '메인' : '위임';
-  const target = effective.impl_runtime || 'inherit';
-  const model = effective.impl_model || 'auto';
-  return `${mode} · ${dispatch} ${target} · ${model}`;
+  // Only pin/kv-confirmed values appear: naming a concrete fallback here would
+  // duplicate a harness default into this repo (spec 비-목표). An unresolved
+  // key reads `기본` — the value itself lives in the dotfiles contract.
+  /** @type {string[]} */
+  const parts = [];
+  if (typeof effective.workflow_mode === 'string') {
+    parts.push(String(effective.workflow_mode));
+  }
+  if (effective.impl_dispatch === 'main') {
+    parts.push('메인');
+  } else if (effective.impl_dispatch === 'delegated') {
+    const target =
+      typeof effective.impl_runtime === 'string'
+        ? ` ${effective.impl_runtime}`
+        : '';
+    parts.push(`위임${target}`);
+  } else if (typeof effective.impl_runtime === 'string') {
+    parts.push(`위임 ${effective.impl_runtime}`);
+  }
+  if (typeof effective.impl_model === 'string') {
+    parts.push(String(effective.impl_model));
+  }
+  return parts.length > 0 ? parts.join(' · ') : '기본';
 }
 
 /**
@@ -349,10 +367,13 @@ export function summaryHeaderTemplate(data) {
             ? String(metadata[stage.receipt])
             : '';
         const stage_state = stages[stage.id];
-        const on = receipt_value.length > 0 || stage_state?.done === true;
+        // The server's stage decoration speaks `fill`: 'full' is a completed
+        // stage, 'dim' an in-progress one (workflow-enrich chips vocabulary).
+        const on = receipt_value.length > 0 || stage_state?.fill === 'full';
+        const current = !on && stage_state?.fill === 'dim';
         const stale = stage_state?.stale === true;
         return html`<span
-          class=${`detail-summary__gate${on ? ' detail-summary__gate--on' : ''}${stale ? ' detail-summary__gate--stale' : ''}`}
+          class=${`detail-summary__gate${on ? ' detail-summary__gate--on' : ''}${current ? ' detail-summary__gate--current' : ''}${stale ? ' detail-summary__gate--stale' : ''}`}
           data-gate=${stage.id}
         >
           <span class="detail-summary__gate-pill">${stage.label}</span>

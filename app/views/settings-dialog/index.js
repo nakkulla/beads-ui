@@ -25,6 +25,7 @@ import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,
+  IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
   PLAN_REVIEW_MODELS,
@@ -67,7 +68,8 @@ function isRecord(value) {
  *   queueStore?: { get: () => any },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
- *   notify?: (message: string) => void
+ *   notify?: (message: string) => void,
+ *   onOpenChange?: (open: boolean) => void
  * }} options
  */
 export function createSettingsDialog(mount_element, options) {
@@ -107,6 +109,8 @@ export function createSettingsDialog(mount_element, options) {
 
   /** @type {string} */
   let preset_choice = '';
+  /** Draft name for saving the current 구현 group as a preset. */
+  let preset_name_draft = '';
 
   // The worker system prompt: read-only, server-assembled. It moved here with
   // the retired exec-defaults dialog so the surface is not lost (UI-rxp3 §4).
@@ -252,6 +256,105 @@ export function createSettingsDialog(mount_element, options) {
       );
     }
     doRender();
+  }
+
+  /**
+   * The current 구현 group values as preset settings (only the five
+   * implementation keys, empty values dropped).
+   *
+   * @returns {Record<string, string>}
+   */
+  function implDraftSettings() {
+    /** @type {Record<string, string>} */
+    const settings = {};
+    for (const key of IMPL_PRESET_KEYS) {
+      const value = session_draft[key];
+      if (typeof value === 'string' && value.length > 0) {
+        settings[key] = value;
+      }
+    }
+    return settings;
+  }
+
+  /**
+   * Save the current 구현 group as an implementation preset: create when no
+   * preset is selected, update the selected one otherwise. Conflicts notify
+   * and re-render — the store snapshot arrives through the presets fanout.
+   */
+  async function onSavePreset() {
+    const state = presetState();
+    if (!state) {
+      return;
+    }
+    const settings = implDraftSettings();
+    if (Object.keys(settings).length === 0) {
+      notify('저장할 구현 값이 없습니다 — 먼저 구현 그룹을 선택하세요');
+      return;
+    }
+    const selected = (state.presets || []).find(
+      (/** @type {any} */ preset) => preset.id === preset_choice
+    );
+    const name = preset_name_draft.trim() || (selected ? selected.name : '');
+    if (!name) {
+      notify('프리셋 이름을 입력하세요');
+      return;
+    }
+    try {
+      const res = selected
+        ? await transport('impl-preset-update', {
+            expected_revision: state.revision,
+            id: selected.id,
+            name,
+            settings
+          })
+        : await transport('impl-preset-create', {
+            expected_revision: state.revision,
+            name,
+            settings
+          });
+      if (res && res.applied) {
+        preset_name_draft = '';
+        if (!selected && Array.isArray(res.presets)) {
+          const created = res.presets.find(
+            (/** @type {any} */ preset) => preset.name === name
+          );
+          preset_choice = created ? created.id : preset_choice;
+        }
+        doRender();
+      } else {
+        notify('프리셋 저장 실패: 다른 곳에서 방금 변경되었습니다');
+        doRender();
+      }
+    } catch (err) {
+      notify(
+        `프리셋 저장 실패: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /** Delete the selected implementation preset. */
+  async function onDeletePreset() {
+    const state = presetState();
+    if (!state || preset_choice.length === 0) {
+      return;
+    }
+    try {
+      const res = await transport('impl-preset-delete', {
+        expected_revision: state.revision,
+        id: preset_choice
+      });
+      if (res && res.applied) {
+        preset_choice = '';
+        doRender();
+      } else {
+        notify('프리셋 삭제 실패: 다른 곳에서 방금 변경되었습니다');
+        doRender();
+      }
+    } catch (err) {
+      notify(
+        `프리셋 삭제 실패: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   /** Apply the chosen implementation preset as the workspace kv default. */
@@ -650,6 +753,37 @@ export function createSettingsDialog(mount_element, options) {
                 >
                   전역 기본값으로 적용
                 </button>
+                <input
+                  type="text"
+                  class="settings-dialog__preset-name"
+                  placeholder=${preset_choice
+                    ? '이름 (비우면 유지)'
+                    : '새 프리셋 이름'}
+                  aria-label="프리셋 이름"
+                  .value=${live(preset_name_draft)}
+                  @input=${(/** @type {Event} */ ev) => {
+                    preset_name_draft = String(
+                      /** @type {HTMLInputElement} */ (ev.target).value
+                    );
+                  }}
+                />
+                <button
+                  type="button"
+                  class="settings-dialog__btn"
+                  data-preset-save
+                  @click=${onSavePreset}
+                >
+                  ${preset_choice ? '갱신' : '저장'}
+                </button>
+                <button
+                  type="button"
+                  class="settings-dialog__btn"
+                  data-preset-delete
+                  ?disabled=${preset_choice.length === 0}
+                  @click=${onDeletePreset}
+                >
+                  삭제
+                </button>
               </div>
             `}
       </section>
@@ -950,6 +1084,7 @@ export function createSettingsDialog(mount_element, options) {
 
   const onDialogClose = () => {
     is_open = false;
+    options.onOpenChange?.(false);
   };
   dialog.addEventListener('close', onDialogClose);
   dialog.addEventListener('cancel', onDialogClose);
@@ -986,6 +1121,7 @@ export function createSettingsDialog(mount_element, options) {
       return;
     }
     is_open = true;
+    options.onOpenChange?.(true);
     active_tab = tab_id;
     prefix_draft = '';
     worker_draft = {};
@@ -1003,6 +1139,7 @@ export function createSettingsDialog(mount_element, options) {
       return;
     }
     is_open = false;
+    options.onOpenChange?.(false);
     if (typeof dialog.close === 'function') {
       dialog.close();
     } else {

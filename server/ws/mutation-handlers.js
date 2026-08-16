@@ -7,8 +7,9 @@ import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { WORKER_SERIAL_LABEL } from '../../app/utils/worker-serial.js';
 import { tickWorkerQueue } from '../worker/attach.js';
 import {
-  WORKFLOW_MODES,
+  AUTO_LITERAL,
   execSettingEnums,
+  sessionDefaultEnums,
   validateImplSettings
 } from '../worker/exec-enums.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
@@ -127,20 +128,23 @@ export async function handleUpdateAssignee(ws, req) {
 }
 
 /**
- * Allowed values per exec-preference key for the per-bead detail-panel edit
- * surface: the 12 workspace-global keys from the shared exec-enums single source
- * PLUS `workflow_mode`, whose BOTH values are storable. The 12-key table stays
- * canonical in exec-enums.js; only the extra `workflow_mode` is synthesized
- * here. `orchestration_model` uses the catalog union across runners; the client
- * narrows by chosen runner for UX.
+ * Allowed values per exec-preference key for the per-bead edit surface: the
+ * three orchestration keys PLUS the 12 SESSION keys.
  *
- * Built per call, not per module load: the base table is catalog-derived and the
+ * The session half comes from {@link sessionDefaultEnums}, which is the same
+ * table the `bd kv` layer validates against — a Bead pin and a workspace default
+ * must accept exactly the same vocabulary, or a value that is settable globally
+ * could not be pinned (and vice versa). That is what brings `impl_dispatch`,
+ * `impl_speed`, both `workflow_mode` values, and the `auto` literal on
+ * `impl_model`/`impl_effort` into this surface.
+ *
+ * Built per call, not per module load: both tables are catalog-derived and the
  * catalog is read from `config.toml` at first use.
  *
  * @returns {Record<string, ReadonlyArray<string>>}
  */
 function execSettingEnumsForBead() {
-  return { ...execSettingEnums(), workflow_mode: WORKFLOW_MODES };
+  return { ...execSettingEnums(), ...sessionDefaultEnums() };
 }
 
 /**
@@ -200,12 +204,20 @@ export function buildImplTargetArgs(id, target) {
  * @returns {string | null}
  */
 function validateExecSetting(key, value) {
-  if (['impl_runtime', 'impl_model', 'impl_effort'].includes(key)) {
-    return 'implementation target must be updated with update-impl-target';
-  }
   const enums = execSettingEnumsForBead();
   if (!Object.prototype.hasOwnProperty.call(enums, key)) {
     return `unknown exec-setting key: ${key}`;
+  }
+  // An EXACT implementation target is coupled: a model only has meaning with
+  // its runtime and a legal effort, so both setting and CLEARING one leg must
+  // go through the atomic group write — clearing `impl_runtime` alone would
+  // orphan an exact model. `auto` is outside that coupling: it names a selector
+  // STATE rather than a catalog model or effort, so it is an ordinary literal.
+  if (
+    LINKED_IMPL_KEYS.includes(key) &&
+    !(value === AUTO_LITERAL && key !== 'impl_runtime')
+  ) {
+    return 'implementation target must be updated with update-impl-target';
   }
   if (value === '') {
     return null; // `(기본)` — the ONLY per-bead deletion
@@ -214,13 +226,29 @@ function validateExecSetting(key, value) {
   if (!allowed.includes(value)) {
     return `invalid value for ${key}: ${value}`;
   }
-  if (key === 'impl_model' || key === 'impl_runtime' || key === 'impl_effort') {
-    const coherence = validateImplSettings({ [key]: value });
-    if (!coherence.ok) {
-      return coherence.reason;
+  return null;
+}
+
+/** The three coupled implementation keys, written atomically when exact. */
+const LINKED_IMPL_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
+
+/**
+ * Drop the `auto` literals before a catalog coherence check. `auto` is the
+ * selector's model/auto · effort/auto state; feeding it to
+ * {@link validateImplSettings} would read as an unknown model.
+ *
+ * @param {Record<string, string>} target
+ * @returns {Record<string, string>}
+ */
+function exactImplValues(target) {
+  /** @type {Record<string, string>} */
+  const exact = {};
+  for (const [key, value] of Object.entries(target)) {
+    if (value && value !== AUTO_LITERAL) {
+      exact[key] = value;
     }
   }
-  return null;
+  return exact;
 }
 
 /**
@@ -307,12 +335,11 @@ export async function handleUpdateImplTarget(ws, req) {
     );
     return;
   }
+  // Coherence is judged over the EXACT values only: `auto` names a selector
+  // state, not a catalog model or effort, so it neither constrains nor is
+  // constrained by the runtime (spec §A `impl_model`/`impl_effort` auto).
   const coherence = validateImplSettings(
-    {
-      ...(impl_runtime ? { impl_runtime } : {}),
-      ...(impl_model ? { impl_model } : {}),
-      ...(impl_effort ? { impl_effort } : {})
-    },
+    exactImplValues({ impl_runtime, impl_model, impl_effort }),
     {
       ...(typeof orchestration_runtime === 'string'
         ? { controller_runtime: orchestration_runtime }

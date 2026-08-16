@@ -28,10 +28,14 @@ const BASE_ISSUE = {
 
 /**
  * @param {HTMLElement} mount
- * @param {{ metadata?: Record<string, unknown>, session_defaults?: Record<string, string>, queue?: Record<string, unknown>, presets?: any, transport?: any }} [options]
+ * @param {{ metadata?: Record<string, unknown>, session_defaults?: Record<string, string>, queue?: Record<string, unknown>, presets?: any, transport?: any, workflow?: Record<string, unknown> }} [options]
  */
 function seed(mount, options = {}) {
-  const issue = { ...BASE_ISSUE, metadata: options.metadata || {} };
+  const issue = {
+    ...BASE_ISSUE,
+    metadata: options.metadata || {},
+    ...(options.workflow ? { workflow: options.workflow } : {})
+  };
   const issueStores = createSubscriptionIssueStores();
   const queueStore = createWorkerQueueStore();
   queueStore.set(
@@ -129,6 +133,28 @@ describe('detail summary header', () => {
     expect(
       mount.querySelector('.detail-summary__chip--receipt')?.textContent
     ).toContain('main:user_choice');
+    panel.destroy();
+  });
+
+  test("lights a gate from the server stage's fill vocabulary", async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        stages: { impl: { fill: 'full' }, pr: { fill: 'dim' } }
+      }
+    });
+    await settle();
+
+    expect(
+      mount
+        .querySelector('[data-gate="impl"]')
+        ?.classList.contains('detail-summary__gate--on')
+    ).toBe(true);
+    expect(
+      mount
+        .querySelector('[data-gate="pr"]')
+        ?.classList.contains('detail-summary__gate--current')
+    ).toBe(true);
     panel.destroy();
   });
 
