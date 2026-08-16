@@ -50,11 +50,14 @@ function seedLane() {
  * @param {any} probe
  */
 function registerAttachment(probe) {
-  __registerWorkerAttachmentForTest(WS, {
-    prActions: {
-      probeMergeability: async () => probe
-    }
-  });
+  __registerWorkerAttachmentForTest(
+    WS,
+    /** @type {any} */ ({
+      prActions: {
+        probeMergeability: async () => probe
+      }
+    })
+  );
 }
 
 describe('worker/attach — enqueueWorkerManualMerge (UI-58w8 §1)', () => {

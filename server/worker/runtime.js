@@ -126,7 +126,7 @@ export function createWorkerRuntime() {
     },
     /**
      * @param {string} root_dir
-     * @returns {{ auto_advance: boolean, running_count: number }}
+     * @returns {{ auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }}
      */
     status(root_dir) {
       let auto_advance = false;
