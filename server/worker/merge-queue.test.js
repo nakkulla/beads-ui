@@ -2020,6 +2020,222 @@ describe('worker/merge-queue — 자동 머지 제외 기록 (UI-yk55 §3)', () 
   });
 });
 
+describe('worker/merge-queue — manual continuation authority (UI-58w8)', () => {
+  const MANUAL_HEAD = 'a'.repeat(40);
+  const MOVED_HEAD = 'b'.repeat(40);
+
+  /**
+   * @param {string[]} bead_ids
+   */
+  function seedManual(bead_ids) {
+    const store = createQueueStore();
+    for (const bead_id of bead_ids) {
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: `att-${bead_id}`,
+          bead_id,
+          repo: WS,
+          target_base: 'main',
+          base_oid: 'b'.repeat(40),
+          runner: 'claude'
+        }
+      });
+      store.moveToPrWait(WS, {
+        bead_id,
+        attempt_id: `att-${bead_id}`,
+        patch: { status: 'done', finished_at: 1 }
+      });
+    }
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: bead_ids.map((bead_id) => ({
+        bead_id,
+        head_sha: MANUAL_HEAD,
+        target_base: 'main'
+      }))
+    });
+    return store;
+  }
+
+  /**
+   * @param {any} queue_store
+   * @param {string} bead_id
+   * @param {string} attempt_id
+   */
+  function dispatchResolution(queue_store, bead_id, attempt_id) {
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: {
+        attempt_id,
+        bead_id,
+        status: 'running',
+        conflict_resolution: true,
+        started_at: 0
+      }
+    });
+    return () =>
+      queue_store.updateAttempt(WS, {
+        attempt_id,
+        patch: { status: 'done', finished_at: 2 }
+      });
+  }
+
+  test('merges a ready manual item while auto_merge is off', async () => {
+    const store = seedManual(['UI-1']);
+    const finish = dispatchResolution(store, 'UI-1', 'res-1');
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100
+    });
+    finish();
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    expect(store.snapshot(WS).auto_merge).toBe(false);
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('routes a manual review-stale refusal through head review and merges after approval', async () => {
+    const store = seedManual(['UI-1']);
+    /** @type {any[]} */
+    const ensure_calls = [];
+    let approved = false;
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () =>
+        approved
+          ? {
+              ok: true,
+              kind: 'clean',
+              reason: null,
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            }
+          : {
+              ok: false,
+              kind: 'blocked',
+              reason: 'review_receipt_stale',
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              external: false
+            },
+      headReview: {
+        ensureApproved: async (
+          /** @type {string} */ queue_bead_id,
+          /** @type {string} */ subject_bead_id,
+          /** @type {any} */ observed
+        ) => {
+          ensure_calls.push({ queue_bead_id, subject_bead_id, observed });
+          approved = true;
+          return { state: 'approved', reason: null };
+        }
+      }
+    });
+
+    await mq.kick();
+
+    expect(ensure_calls).toEqual([
+      {
+        queue_bead_id: 'UI-1',
+        subject_bead_id: 'UI-1',
+        observed: { head_sha: MOVED_HEAD, base_ref: 'main' }
+      }
+    ]);
+    expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('keeps a manual item queued with its failure when head review fails', async () => {
+    const store = seedManual(['UI-1']);
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'review_receipt_stale',
+        head_sha: MOVED_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      headReview: {
+        ensureApproved: async () => {
+          const authority_id =
+            store.snapshot(WS).merge_queue[0].authority?.id || '';
+          store.beginHeadReview(WS, {
+            bead_id: 'UI-1',
+            authority_id,
+            head_sha: MOVED_HEAD,
+            reviewer: 'codex',
+            effort: 'xhigh'
+          });
+          store.setHeadReviewState(WS, {
+            bead_id: 'UI-1',
+            authority_id,
+            head_sha: MOVED_HEAD,
+            expected_state: 'pending',
+            patch: { state: 'failed', failure_reason: 'transport_unavailable' }
+          });
+          return { state: 'failed', reason: 'transport_unavailable' };
+        }
+      }
+    });
+
+    await mq.kick();
+    // A second pass must not re-drive the failed item — only a fresh click may.
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue).toHaveLength(1);
+    expect(store.snapshot(WS).merge_queue[0].head_review?.state).toBe('failed');
+    expect(mq.state().failures['UI-1']).toBe('transport_unavailable');
+  });
+
+  test('does not route a legacy authority-less entry through head review', async () => {
+    const store = seed(['UI-1']);
+    /** @type {any[]} */
+    const ensure_calls = [];
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'review_receipt_stale',
+        head_sha: MOVED_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      headReview: {
+        ensureApproved: async (/** @type {any} */ input) => {
+          ensure_calls.push(input);
+          return { state: 'approved', reason: null };
+        }
+      }
+    });
+
+    await mq.kick();
+
+    expect(ensure_calls).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+});
+
 describe('worker/merge-queue — halt only where an observation can arrive (UI-wwby §3)', () => {
   const HEAD = 'a'.repeat(40);
 

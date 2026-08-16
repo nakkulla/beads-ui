@@ -106,6 +106,7 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
+ *   headReview?: { ensureApproved: (queue_bead_id: string, subject_bead_id: string, observed: { head_sha: string, base_ref: string|null }) => Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }> },
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -224,7 +225,12 @@ export function createMergeQueue(deps) {
     }
     return (
       lane.find(
-        (/** @type {any} */ entry) => entry.resolution?.state !== 'yielded'
+        (/** @type {any} */ entry) =>
+          entry.resolution?.state !== 'yielded' &&
+          // A terminal head-review failure waits for a human re-click
+          // (UI-58w8 §1) — driving it again would spin the drain, and
+          // dequeuing it would erase the failure the user must see.
+          entry.head_review?.state !== 'failed'
       ) || null
     );
   }
@@ -273,6 +279,20 @@ export function createMergeQueue(deps) {
     const q = snapshot();
     const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
     return lane.find((/** @type {any} */ e) => e.bead_id === bead_id) || null;
+  }
+
+  /**
+   * Whether a queue item carries a live manual continuation authority
+   * (UI-58w8 §1). A manual click is that item's own completion authority, so
+   * the global `auto_merge` toggle — which owns automatic ENROLMENT only —
+   * must not pause it. Provenance is the durable record, never a guess from
+   * when the toggle changed; a legacy authority-less entry answers false and
+   * keeps the old pause behaviour.
+   *
+   * @param {string} bead_id
+   */
+  function manualContinuation(bead_id) {
+    return queuedEntry(bead_id)?.authority?.source === 'manual';
   }
 
   /**
@@ -822,7 +842,11 @@ export function createMergeQueue(deps) {
         return true;
       }
       if (resolution.state === 'ready') {
-        return lineage.state !== 'terminal' || q.auto_merge === true;
+        return (
+          lineage.state !== 'terminal' ||
+          q.auto_merge === true ||
+          entry.authority?.source === 'manual'
+        );
       }
       if (lineage.state === 'terminal') {
         return true;
@@ -856,7 +880,11 @@ export function createMergeQueue(deps) {
           return { kind: 'failed' };
         }
         if (!restored.attempt_id) {
-          if (entry.resolution_rounds > 0 && snapshot()?.auto_merge !== true) {
+          if (
+            entry.resolution_rounds > 0 &&
+            snapshot()?.auto_merge !== true &&
+            !manualContinuation(queue_bead_id)
+          ) {
             halted = true;
             return { kind: 'paused' };
           }
@@ -900,7 +928,7 @@ export function createMergeQueue(deps) {
           );
           return { kind: 'failed' };
         }
-        if (q.auto_merge !== true) {
+        if (q.auto_merge !== true && !manualContinuation(queue_bead_id)) {
           halted = true;
           return { kind: 'paused' };
         }
@@ -1059,7 +1087,11 @@ export function createMergeQueue(deps) {
     subject_bead_id,
     ready_attempt_id
   ) {
-    if (ready_attempt_id && snapshot()?.auto_merge !== true) {
+    if (
+      ready_attempt_id &&
+      snapshot()?.auto_merge !== true &&
+      !manualContinuation(queue_bead_id)
+    ) {
       halted = true;
       return null;
     }
@@ -1088,7 +1120,11 @@ export function createMergeQueue(deps) {
         reason: 'mergeability_probe_error'
       };
     }
-    if (ready_attempt_id && snapshot()?.auto_merge !== true) {
+    if (
+      ready_attempt_id &&
+      snapshot()?.auto_merge !== true &&
+      !manualContinuation(queue_bead_id)
+    ) {
       halted = true;
       return null;
     }
@@ -1108,7 +1144,8 @@ export function createMergeQueue(deps) {
         ok: false,
         action: probe.continuation === 'verify' ? 'verify_blocked' : 'refused',
         reason: probe.reason || 'mergeability_probe_blocked',
-        head_sha: probe.head_sha || null
+        head_sha: probe.head_sha || null,
+        base_ref: probe.base_ref || null
       };
     }
     if (probe.kind !== 'dirty') {
@@ -1547,6 +1584,47 @@ export function createMergeQueue(deps) {
           result.reason === 'mergeability_identity_changed')
       ) {
         continue;
+      }
+
+      if (
+        action === 'refused' &&
+        (result.reason === 'review_receipt_stale' ||
+          result.reason === 'review_receipt_missing') &&
+        manualContinuation(bead_id) &&
+        typeof deps.headReview?.ensureApproved === 'function'
+      ) {
+        // Manual continuation (UI-58w8 §2): a queue-owned head mutation left
+        // the receipt stale, so the head-review machine re-acquires a CURRENT
+        // review instead of this being a terminal refusal.
+        /** @type {{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }} */
+        let review = { state: 'failed', reason: 'head_review_error' };
+        try {
+          review = await deps.headReview.ensureApproved(bead_id, bead_id, {
+            head_sha: result.head_sha || '',
+            base_ref: result.base_ref || null
+          });
+        } catch (err) {
+          log('merge queue head review threw for %s: %o', bead_id, err);
+        }
+        if (review.state === 'approved') {
+          notify();
+          continue;
+        }
+        if (review.state === 'failed') {
+          // Terminal needs-human: the item KEEPS its queue slot and its
+          // journal — a re-click issues the fresh authority that may retry.
+          fail(bead_id, review.reason || 'head_review_failed');
+          notify();
+          return;
+        }
+        if (review.state === 'halted') {
+          halted = true;
+          halted_on_head = bead_id;
+          notify();
+          return;
+        }
+        // 'gone': cancelled or superseded under us — nothing left to drive.
+        return;
       }
 
       failAndDequeue(bead_id, (result && result.reason) || 'refused');

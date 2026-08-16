@@ -107,6 +107,8 @@ export const CLEANUP_STEPS = [
  * did to the local checkout, when a cleanup ran.
  * @property {string|null} [attempt_id] - The resolution attempt, when dispatched.
  * @property {string|null} [head_sha] - The sha the decision was taken on.
+ * @property {string|null} [base_ref] - The base the decision was taken on,
+ * when the refusal came from a mergeability probe that observed one.
  * @property {Record<string, unknown>|null} [continuation_mismatch]
  */
 
