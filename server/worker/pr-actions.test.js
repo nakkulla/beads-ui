@@ -1650,7 +1650,9 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
     const result = await env.actions.merge(BEAD);
 
     expect(result).toMatchObject({ ok: true, reason: null });
-    expect(operations.hasConfig).toHaveBeenNthCalledWith(1, 'a'.repeat(40));
+    expect(operations.hasConfig).toHaveBeenNthCalledWith(1, 'a'.repeat(40), {
+      current_target_base: true
+    });
     expect(operations.ensureVerify).toHaveBeenCalledWith(
       expect.objectContaining({
         base_sha: 'a'.repeat(40),
@@ -1700,6 +1702,10 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
       action: 'verify_blocked',
       reason: 'verify_cmd_failed',
       head_sha: 'a'.repeat(40)
+    });
+    expect(operations.waitForTerminal).toHaveBeenCalledWith('verify-1', {
+      head_sha: 'a'.repeat(40),
+      timeout_ms: 100
     });
   });
 

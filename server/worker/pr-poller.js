@@ -162,7 +162,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
- *   repoOperations?: { hasConfig: (sha: string) => Promise<any>, ensureVerify: (candidate: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any, refreshDisplay?: (input: { base: string|null, sha: string|null }) => Promise<any> },
+ *   repoOperations?: { hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, ensureVerify: (candidate: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, refreshDisplay?: (input: { base: string|null, sha: string|null }) => Promise<any> },
  *   onMerged?: (bead_id: string, merge_sha: string, refs?: { head_ref: string|null, pr_url: string|null }) => Promise<unknown>,
  *   onDiscardObservation?: (bead_id: string) => Promise<unknown>,
  *   external?: {
@@ -420,7 +420,9 @@ export function createPrPoller(deps) {
         `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'base_sha_unobserved'}`
       );
     }
-    const policy = await repo_operations.hasConfig(pinned.base_oid);
+    const policy = await repo_operations.hasConfig(pinned.base_oid, {
+      current_target_base: true
+    });
     if (!policy.ok || typeof policy.verify_script_path !== 'string') {
       return { verify: null };
     }
@@ -565,8 +567,9 @@ export function createPrPoller(deps) {
       }
       const receipt =
         (await repo_operations.waitForTerminal(ensured.operation_id, {
+          head_sha,
           timeout_ms: ensured.timeout_ms
-        })) || repo_operations.verifyReceipt(ensured.operation_id);
+        })) || repo_operations.verifyReceipt(ensured.operation_id, head_sha);
       if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
         deps.observations.recordVerify(workspace, bead_id, receipt);
       }

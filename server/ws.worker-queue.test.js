@@ -1927,6 +1927,35 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     ).toEqual(['UI-1', 'UI-2']);
   });
 
+  test('add-all leaves a green row out when repo-ops policy is invalid', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    const invalid_repo_ops = {
+      status: 'error',
+      source_path: 'repo-ops/config.toml',
+      base_ref: 'main',
+      base_sha: 'b'.repeat(40),
+      verify: null,
+      deploy: null,
+      error_code: 'repo_ops_config_invalid'
+    };
+    recordRepoOpsDisplay('', /** @type {any} */ (invalid_repo_ops));
+    recordRepoOpsDisplay(process.cwd(), /** @type {any} */ (invalid_repo_ops));
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-queue-add-all', {
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: false,
+      queued: 0
+    });
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
+  });
+
   test('the auto-merge toggle persists the flag and enrolls what is eligible', async () => {
     parkInPrWait('UI-1');
     observeGreen('UI-1');

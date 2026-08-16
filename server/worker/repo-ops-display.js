@@ -4,12 +4,15 @@
  *
  * `resolveRepoOps` is a pure async function over a git tree, but `decorateQueue`
  * runs on every snapshot push and cannot await git. So the server owns one small
- * per-workspace cache instead, filled from exactly two places:
+ * per-workspace cache instead, filled only from current target-base reads:
  *
  *   (a) workspace attach/reconnect — one resolve at the last known `origin/<base>`
  *       tip, and
- *   (b) the coordinator — every time it already resolved a declaration for an
- *       operation, its result lands here too. No duplicate resolve exists.
+ *   (b) poller, click-time, and synced-current cleanup policy reads that
+ *       explicitly identify their SHA as the current target base.
+ *
+ * Historical compatibility and effective operation-policy lookups stay pure:
+ * publishing either would let an old SHA supersede the current merge gate.
  *
  * The four states matter to every consumer: only `absent` proves there is no
  * declaration. `pending` and `error` remain explicit so advisory gates and the
@@ -72,7 +75,8 @@ export function repoOpsDisplayFor(workspace) {
 }
 
 /**
- * Issue a workspace-local publication token when an async resolution starts.
+ * Issue a workspace-local publication token when an async current-base
+ * resolution starts.
  * Later-started requests supersede earlier ones regardless of completion order.
  *
  * @param {string} workspace

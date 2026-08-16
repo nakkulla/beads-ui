@@ -1120,7 +1120,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           return (
             row.kind === 'verify' &&
             row.effective_base_sha === input.base_sha?.toLowerCase() &&
-            row.verify_head_sha === input.subject_sha?.toLowerCase() &&
+            Array.isArray(row.verify_head_shas) &&
+            row.verify_head_shas.includes(input.subject_sha?.toLowerCase()) &&
             Array.isArray(row.subjects) &&
             row.subjects.some(
               (/** @type {any} */ subject) => subject?.bead_id === input.bead_id

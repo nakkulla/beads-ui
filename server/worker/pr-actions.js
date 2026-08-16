@@ -184,7 +184,7 @@ function authoritativeMergeSha(pr) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
- *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string) => any, hasConfig: (sha: string) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
+ *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
  *   requeryDelayMs?: number,
@@ -642,7 +642,9 @@ export function createPrActions(deps) {
           error: `base_unresolved:${pinned && 'step' in pinned ? pinned.step : 'no_resolver'}`
         };
       }
-      const config = await repo_operations.hasConfig(pinned.base_oid);
+      const config = await repo_operations.hasConfig(pinned.base_oid, {
+        current_target_base: true
+      });
       if (!config.ok) {
         return { error: config.code || 'repo_ops_config_invalid' };
       }
@@ -725,8 +727,9 @@ export function createPrActions(deps) {
       }
       const receipt =
         (await repo_operations.waitForTerminal(ensured.operation_id, {
+          head_sha: pr.head_sha,
           timeout_ms: ensured.timeout_ms
-        })) || repo_operations.verifyReceipt(ensured.operation_id);
+        })) || repo_operations.verifyReceipt(ensured.operation_id, pr.head_sha);
       if (receipt?.state === 'succeeded' || receipt?.state === 'failed') {
         deps.observations.recordVerify(workspace, bead_id, receipt);
       }
@@ -1508,7 +1511,9 @@ export function createPrActions(deps) {
       });
       markStep(bead_id, 'repo_operations');
       const config = repo_operations
-        ? await repo_operations.hasConfig(synced.sha)
+        ? await repo_operations.hasConfig(synced.sha, {
+            current_target_base: true
+          })
         : { ok: true, present: false };
       if (!config.ok) {
         return failCleanup(
@@ -1590,8 +1595,13 @@ export function createPrActions(deps) {
           if (!verified.inert && typeof verified.operation_id === 'string') {
             const receipt =
               (await repo_operations.waitForTerminal(verified.operation_id, {
+                head_sha: verified_head_sha,
                 timeout_ms: verified.timeout_ms
-              })) || repo_operations.verifyReceipt(verified.operation_id);
+              })) ||
+              repo_operations.verifyReceipt(
+                verified.operation_id,
+                verified_head_sha
+              );
             if (!receipt || receipt.state !== 'succeeded') {
               return failCleanup(
                 bead_id,

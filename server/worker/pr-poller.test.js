@@ -624,6 +624,10 @@ describe('worker/pr-poller — optional verification binding (§5)', () => {
         script_path: 'repo-ops/script/verify'
       })
     );
+    expect(operations.waitForTerminal).toHaveBeenCalledWith('verify-op', {
+      head_sha: SHA,
+      timeout_ms: 1000
+    });
     expect(observations.get('/ws', 'UI-1')?.verify).toMatchObject({
       head_sha: SHA,
       ok: true
@@ -636,7 +640,9 @@ describe('worker/pr-poller — optional verification binding (§5)', () => {
 
     await poller.tick();
 
-    expect(operations.hasConfig).toHaveBeenCalledWith(BASE_SHA);
+    expect(operations.hasConfig).toHaveBeenCalledWith(BASE_SHA, {
+      current_target_base: true
+    });
   });
 
   test('does not create an operation without a verify declaration', async () => {
