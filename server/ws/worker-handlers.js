@@ -40,6 +40,7 @@ import {
   reconcileWorkerRepoOperations,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
+  retryWorkerCleanup,
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationRepair,
@@ -2969,6 +2970,71 @@ export async function handleWorkerReviseFix(ws, req) {
  */
 export async function handleWorkerReviseApprove(ws, req) {
   await handleReviseDisposition(ws, req, reviseApproveWorkerBead);
+}
+
+/**
+ * Handle `worker-cleanup-retry`. Payload: `{ bead_id, expected_revision }`.
+ * The queue revision is checked before attachment lookup so a stale click has
+ * no action-side effects. The attachment remains a thin route to the canonical
+ * `prActions.retryCleanup()` owner.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleWorkerCleanupRetry(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (typeof p.bead_id !== 'string' || p.bead_id.trim().length === 0) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { bead_id: string }')
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const current = /** @type {any} */ (queueStore().snapshot(key));
+  if (revisionOf(p) !== current.revision) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          bead_id: p.bead_id,
+          retried: false,
+          conflict: true,
+          pending: false,
+          cleanup_step: null,
+          reason: null,
+          queue: decorateQueue(key, current)
+        })
+      )
+    );
+    return;
+  }
+  /** @type {{ ok: boolean, pending?: boolean, step?: string|null, reason?: string|null }} */
+  let result = { ok: false, reason: 'no_attachment' };
+  try {
+    result = await retryWorkerCleanup(key, p.bead_id);
+  } catch (err) {
+    log('worker cleanup retry failed for %s/%s: %o', key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  const latest = /** @type {any} */ (queueStore().snapshot(key));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        retried: result.ok === true,
+        conflict: false,
+        pending: result.pending === true,
+        cleanup_step: result.step || null,
+        reason: result.ok ? null : result.reason || null,
+        queue: decorateQueue(key, latest)
+      })
+    )
+  );
+  fanout(key, latest);
 }
 
 /**

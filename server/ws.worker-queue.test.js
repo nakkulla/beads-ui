@@ -7,7 +7,8 @@ import { MESSAGE_TYPES } from '../app/protocol.js';
 import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
-  __setUnattachedAdmissionCheckForTest
+  __setUnattachedAdmissionCheckForTest,
+  createWorkerAttachment
 } from './worker/attach.js';
 import {
   __resetRepoOpsDisplayForTest,
@@ -1452,6 +1453,266 @@ describe('ws worker REVISE disposition (UI-hs11 §3.2)', () => {
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
 
     expect(queueSnapshots(sock).at(-1).revise_parked).toEqual({});
+  });
+});
+
+describe('ws worker cleanup retry', () => {
+  /**
+   * @param {any} retryCleanup
+   */
+  function registerCleanupRetry(retryCleanup) {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: { retryCleanup }
+      })
+    );
+  }
+
+  test('rejects a stale revision with the current queue before acting', async () => {
+    const retryCleanup = vi.fn();
+    registerCleanupRetry(retryCleanup);
+    const sock = fakeSocket();
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: 'UI-1',
+      expected_revision: 99
+    });
+
+    expect(retryCleanup).not.toHaveBeenCalled();
+    expect(replyFor(sock, 'c1').payload).toMatchObject({
+      bead_id: 'UI-1',
+      retried: false,
+      conflict: true,
+      pending: false,
+      cleanup_step: null,
+      reason: null,
+      queue: { revision: 0 }
+    });
+  });
+
+  test('calls the attachment once and replies and fans out the latest queue', async () => {
+    const store = getWorkerRuntime().queueStore;
+    const retryCleanup = vi.fn(async () => {
+      store.setAutoAdvance('', true);
+      return { ok: true, pending: false, step: null, reason: null };
+    });
+    registerCleanupRetry(retryCleanup);
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    const current_revision = store.snapshot('').revision;
+    expect(retryCleanup).toHaveBeenCalledTimes(1);
+    expect(retryCleanup).toHaveBeenCalledWith('UI-1');
+    expect(replyFor(sock, 'c1').payload).toMatchObject({
+      bead_id: 'UI-1',
+      retried: true,
+      conflict: false,
+      pending: false,
+      cleanup_step: null,
+      reason: null,
+      queue: { revision: current_revision }
+    });
+    expect(queueSnapshots(sock)).toHaveLength(1);
+    expect(queueSnapshots(sock)[0].revision).toBe(current_revision);
+  });
+
+  test('fails closed and fans out when no attachment is registered', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'c1').payload).toMatchObject({
+      bead_id: 'UI-1',
+      retried: false,
+      conflict: false,
+      pending: false,
+      cleanup_step: null,
+      reason: 'no_attachment',
+      queue: { revision: 0 }
+    });
+    expect(queueSnapshots(sock)).toHaveLength(1);
+  });
+
+  test('fails closed when the attachment action is unavailable', async () => {
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {any} */ ({
+        scheduler: { tick: vi.fn(), stop: vi.fn() },
+        prActions: {}
+      })
+    );
+    const sock = fakeSocket();
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'c1').payload).toMatchObject({
+      retried: false,
+      conflict: false,
+      reason: 'no_attachment',
+      queue: { revision: 0 }
+    });
+  });
+
+  test('collapses a thrown action and still fans out the latest queue', async () => {
+    registerCleanupRetry(async () => {
+      throw new Error('boom');
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: 'UI-1',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'c1').payload).toMatchObject({
+      retried: false,
+      conflict: false,
+      reason: 'error',
+      queue: { revision: 0 }
+    });
+    expect(queueSnapshots(sock)).toHaveLength(1);
+  });
+
+  test('rejects an empty bead id', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: '',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'c1').error.code).toBe('bad_request');
+  });
+
+  test('carries a stranded real attachment row through canonical cleanup to Done', async () => {
+    const runtime = getWorkerRuntime();
+    /** @type {Record<string, string>} */
+    const statuses = { 'UI-root': 'resolved' };
+    const attachment = createWorkerAttachment(process.cwd(), {
+      runtime,
+      bd: {
+        snapshotBead: async () => ({
+          ready: true,
+          blocked: false,
+          repo: process.cwd(),
+          target_base: 'main',
+          status: 'resolved',
+          deps: []
+        }),
+        listChildren: async () => [],
+        setStatus: async (
+          /** @type {string} */ id,
+          /** @type {string} */ status
+        ) => {
+          statuses[id] = status;
+        },
+        readStatus: async (/** @type {string} */ id) => statuses[id],
+        readMetadata: async () => null
+      },
+      worktree: {
+        removeByBranch: async () => ({
+          ok: true,
+          removed: false,
+          reason: null
+        }),
+        withTopologyLock: async (
+          /** @type {string} */ _repo,
+          /** @type {any} */ run
+        ) => run()
+      },
+      verify: {
+        verifyPrSubmitted: async () => ({
+          ok: true,
+          reason: 'ok',
+          pr_url: 'https://github.com/o/r/pull/1'
+        })
+      },
+      spawn_impl: vi.fn()
+    });
+    const store = runtime.queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'att-root',
+        bead_id: 'UI-root',
+        repo: process.cwd(),
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait('', {
+      bead_id: 'UI-root',
+      attempt_id: 'att-root',
+      patch: { status: 'done' }
+    });
+    store.enqueueCompletionIntent('', {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: 'c'.repeat(40)
+      }
+    });
+    store.terminalizeCompletionIntent('', {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'parent_close_failed',
+        stage: 'cleanup',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 1
+      }
+    });
+    store.recordCleanupFailure('', {
+      bead_id: 'UI-root',
+      step: 'parent_close',
+      reason: 'bd_close_failed'
+    });
+    __registerWorkerAttachmentForTest(process.cwd(), attachment);
+    const sock = fakeSocket();
+
+    await send(sock, 'c1', 'worker-cleanup-retry', {
+      bead_id: 'UI-root',
+      expected_revision: store.snapshot('').revision
+    });
+
+    expect(replyFor(sock, 'c1').payload).toMatchObject({
+      retried: true,
+      conflict: false,
+      pending: false,
+      queue: {
+        cleanup_failed: {},
+        done: [{ bead_id: 'UI-root' }],
+        completion_status: {
+          'UI-root': { phase: 'completed', terminal_reason: null }
+        }
+      }
+    });
+    expect(store.snapshot('').pr_wait).toEqual([]);
   });
 });
 

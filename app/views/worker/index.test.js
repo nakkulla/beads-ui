@@ -4414,6 +4414,79 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     ]);
   });
 
+  test('sends one cleanup retry with the current revision while pending', () => {
+    const transport = vi.fn(() => new Promise(() => {}));
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'child_sweep', reason: 'x', at: 1 }),
+      transport
+    );
+    const btn = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+
+    btn.click();
+    btn.click();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledWith('worker-cleanup-retry', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+    expect(transport).not.toHaveBeenCalledWith(
+      'worker-merge-queue-add',
+      expect.anything()
+    );
+  });
+
+  test('adopts a cleanup conflict without automatically retrying it', async () => {
+    const queue = mergedWithCleanup({
+      step: 'child_sweep',
+      reason: 'x',
+      at: 1
+    });
+    const transport = vi.fn(async () => ({
+      retried: false,
+      conflict: true,
+      queue: { ...queue, revision: 2 }
+    }));
+    const { mount, queueStore } = mountWith(queue, transport);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).click();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(queueStore.get()?.revision).toBe(2);
+  });
+
+  test('sends one timeline cleanup retry with the current revision while pending', () => {
+    const transport = vi.fn(() => new Promise(() => {}));
+    const { mount } = mountWith(
+      mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 }),
+      transport
+    );
+    openTimeline(mount);
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-cleanup__resume')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-cleanup__resume')
+    ).click();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledWith('worker-cleanup-retry', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+    expect(transport).not.toHaveBeenCalledWith(
+      'worker-merge-queue-add',
+      expect.anything()
+    );
+  });
+
   test('offers a timeline link instead of a locked merge action', () => {
     const { mount } = mountWith(
       mergedWithCleanup({ step: 'repo_operations', reason: 'x', at: 1 })

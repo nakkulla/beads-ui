@@ -77,6 +77,12 @@ describe('server/protocol', () => {
     expect(res).toBe(true);
   });
 
+  test('isMessageType returns true for worker-cleanup-retry', () => {
+    const res = isMessageType('worker-cleanup-retry');
+
+    expect(res).toBe(true);
+  });
+
   test('isMessageType returns false for unknown type', () => {
     const res = isMessageType('not-a-type');
 
