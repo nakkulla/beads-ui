@@ -106,6 +106,8 @@ canonical 정의는 dotfiles `docs/contracts/workflow.{md,yaml}`,
 1. `harness.yaml` v7: 우선순위에 workspace kv 층 추가.
    `workflow_session_defaults` JSON 스키마 정의 — `schema: 1`, 허용 키는 위 표의
    세션 키 12개(신설 `impl_dispatch` 포함), enum은 기존 metadata 어휘와 동일.
+   `impl_model`/`impl_effort`는 `auto` 리터럴을 허용하며 selector의 exact
+   model/auto·effort/auto 상태에 대응한다.
 2. `workflow.yaml`: `parent_keys`에 `impl_dispatch: {enum: [delegated, main]}`
    추가, consumer_surface에 kv 키 반영.
 3. `impl_dispatch` 의미: `delegated`(기본)는 기존 runtime matrix 위임, `main`은
@@ -138,9 +140,13 @@ canonical 정의는 dotfiles `docs/contracts/workflow.{md,yaml}`,
 - 진입점 하나: 내비 바 ⚙ → 통합 설정 다이얼로그. 기존 표시 설정 버튼과
   메인 앱 Worker 화면의 ⚙(전역 실행 설정 진입점)는 제거한다.
 - **세션 탭**: 워크플로우 모드(standard/fast_track 세그먼트), 리뷰 게이트 3행
-  (spec/plan/impl — 모델+effort 쌍), 구현 그룹(위임/메인, runtime, 모델,
-  effort, 속도 — runtime 선택에 따라 모델 목록 종속), 구현 프리셋
-  선택/저장/삭제와 "전역 기본값으로 적용".
+  (spec/plan/impl — 모델+effort 쌍), 구현 그룹, 구현 프리셋 선택/저장/삭제와
+  "전역 기본값으로 적용".
+- **구현 그룹 구조**: 실행 방식(위임/메인) → 위임 대상(inherit/claude/codex)
+  → 모델·effort(각각 `자동` 포함, 목록은 위임 대상에 종속) → 속도. `메인`
+  선택 시 위임 대상 이하 행은 비활성화된다(컨트롤러 직접 구현). `자동`은
+  selector의 model/auto·effort/auto 상태로, 작업 성격에 따른 티어 배정을
+  뜻한다.
 - **Worker 탭**: 오케스트레이션 런타임(claude/codex) → 모델 → effort → 속도
   순 종속 선택과 slots. 런타임은 모델 목록 필터일 뿐 저장 키는 기존
   `orchestration_model`이며 실행 클라이언트는 모델 카탈로그에서 유도된다.
