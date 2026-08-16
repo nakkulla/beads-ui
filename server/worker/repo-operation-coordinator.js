@@ -19,6 +19,7 @@ import {
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { createRepoOperationTransitionLauncher } from './repo-operation-transition.js';
 import {
+  beginRepoOpsDisplayResolution,
   recordRepoOpsResolution,
   refreshRepoOpsDisplay
 } from './repo-ops-display.js';
@@ -101,58 +102,13 @@ export function createRepoOperationCoordinator(deps) {
   const policySupported = deps.policySupported || repoOperationPolicySupported;
 
   /**
-   * `resolveEffectiveRepoOps`, plus the display-cache update (UI-q0uy §4.6-1).
-   * The cache is fed by the resolve this launch ALREADY does — there is no
-   * second resolution anywhere on this path.
-   *
-   * What gets recorded is the declaration the Worker ACTUALLY consumed, which is
-   * the pinned `policy` side except on a bootstrap, where the target tree IS the
-   * policy. Recording the target unconditionally would let a PR head define what
-   * the settings surface claims this repo declares — exactly the inversion
-   * `AGENTS.md` forbids, and on the verify lane `target_sha` is a PR head or
-   * final SHA, never a base at all.
-   *
-   * Two cases record nothing rather than guess:
-   *   - no `previous_sha` on a non-bootstrap resolve: the "previous" policy is
-   *     then a hardcoded default, not a tree read, and recording it would claim
-   *     a proven absence nobody proved;
-   *   - a failed resolve: `resolveEffectiveRepoOps` collapses a previous-side and
-   *     a target-side failure into one shape, so the SHA it failed at is not
-   *     recoverable here. The error is recorded with a null SHA, which the
-   *     settings surface renders as 선언 읽기 실패 with no base claim.
+   * Resolve an operation's historical/effective policy without publishing it
+   * as the current target-base gate authority.
    *
    * @param {{ repo: string, previous_sha: string|null, target_sha: string, kind?: 'verify'|'deploy', gitRun: any }} input
    */
-  async function resolveEffectiveTracked(input) {
-    /** @type {any} */
-    const result = await resolveEffectiveRepoOps(input);
-    if (!result || typeof result !== 'object') {
-      return result;
-    }
-    if (result.ok === false) {
-      recordRepoOpsResolution({
-        workspace: deps.workspace,
-        resolution: result,
-        base_sha: null
-      });
-      return result;
-    }
-    const bootstrap = result.classification === 'bootstrap';
-    const resolution = bootstrap ? result.target : result.policy;
-    const base_sha = bootstrap ? input.target_sha : input.previous_sha;
-    if (
-      typeof base_sha === 'string' &&
-      resolution &&
-      typeof resolution === 'object' &&
-      'config_blob_sha' in resolution
-    ) {
-      recordRepoOpsResolution({
-        workspace: deps.workspace,
-        resolution,
-        base_sha
-      });
-    }
-    return result;
+  async function resolveEffective(input) {
+    return resolveEffectiveRepoOps(input);
   }
 
   /**
@@ -308,6 +264,53 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * What a later success must contain to cover a failed deploy record: the
+   * target it bound, or — when it died before binding one — every subject
+   * commit it was created to deploy.
+   *
+   * `effective_base_sha` is deliberately NOT a fallback. It names the commit
+   * deployed BEFORE this record, so a record that failed pre-bind would be
+   * covered by the very success that preceded it, and the merge it existed to
+   * deploy would be marked delivered while its cleanup still reports the
+   * failure — a row that can never converge.
+   *
+   * @param {any} operation
+   * @returns {string[]} Refs that must all be contained, empty when unprovable.
+   */
+  function coverageRefsOf(operation) {
+    if (typeof operation.target_sha === 'string' && operation.target_sha) {
+      return [operation.target_sha];
+    }
+    /** @type {any[]} */
+    const subjects = Array.isArray(operation.subjects)
+      ? operation.subjects
+      : [];
+    /** @type {string[]} */
+    const merged = subjects
+      .map((subject) => subject?.merged_sha)
+      .filter(
+        (merged_sha) => typeof merged_sha === 'string' && merged_sha.length > 0
+      );
+    return merged.length > 0 && merged.length === subjects.length ? merged : [];
+  }
+
+  /**
+   * @param {string[]} refs
+   * @param {string} descendant_sha
+   */
+  async function coversEvery(refs, descendant_sha) {
+    if (refs.length === 0) {
+      return false;
+    }
+    for (const ref of refs) {
+      if (!(await isCoveredByDescendant(ref, descendant_sha))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Durably cover failed deploy rows when terminal settlement proves a
    * successful descendant, regardless of which row settled last.
    *
@@ -340,10 +343,8 @@ export function createRepoOperationCoordinator(deps) {
           ) {
             continue;
           }
-          const ancestor_ref = failed.target_sha ?? failed.effective_base_sha;
           if (
-            typeof ancestor_ref !== 'string' ||
-            !(await isCoveredByDescendant(ancestor_ref, settled.target_sha))
+            !(await coversEvery(coverageRefsOf(failed), settled.target_sha))
           ) {
             continue;
           }
@@ -361,8 +362,8 @@ export function createRepoOperationCoordinator(deps) {
       if (settled.superseded_by) {
         return;
       }
-      const ancestor_ref = settled.target_sha ?? settled.effective_base_sha;
-      if (typeof ancestor_ref !== 'string') {
+      const refs = coverageRefsOf(settled);
+      if (refs.length === 0) {
         return;
       }
       for (const [succeeded_id, succeeded] of Object.entries(
@@ -373,7 +374,7 @@ export function createRepoOperationCoordinator(deps) {
           succeeded.repo_id !== settled.repo_id ||
           succeeded.state !== 'succeeded' ||
           typeof succeeded.target_sha !== 'string' ||
-          !(await isCoveredByDescendant(ancestor_ref, succeeded.target_sha))
+          !(await coversEvery(refs, succeeded.target_sha))
         ) {
           continue;
         }
@@ -610,7 +611,7 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function ensureVerifyLocked(candidate) {
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha: candidate.base_sha,
       target_sha: candidate.final_sha || candidate.head_sha,
@@ -699,7 +700,7 @@ export function createRepoOperationCoordinator(deps) {
       inherited.kind === 'verify' &&
       inherited.state === 'succeeded' &&
       inherited.effective_base_sha === candidate.base_sha.toLowerCase() &&
-      inherited.verify_head_sha === candidate.head_sha.toLowerCase() &&
+      inherited.verify_head_shas.includes(candidate.head_sha.toLowerCase()) &&
       inherited.target_tree === materialized.tree_sha.toLowerCase() &&
       inherited.script_object_type === declaration.object_type &&
       inherited.script_mode === declaration.mode &&
@@ -890,15 +891,41 @@ export function createRepoOperationCoordinator(deps) {
       return { ok: false, code: acquired.code, operation_id };
     }
     try {
-      const rebound = await deploy_worktree.bindTarget({
-        repo: deps.repo,
-        base: operation.target_base,
-        last_successful_sha: latestSuccessfulDeploySha(
-          deps.store.snapshot(workspace),
-          deps.repo,
-          operation.target_base
-        )
-      });
+      const previous_sha = latestSuccessfulDeploySha(
+        deps.store.snapshot(workspace),
+        deps.repo,
+        operation.target_base
+      );
+      // A retry re-binds for real: the contract lets a target that moved while
+      // the first attempt failed supersede this record (§3.2), and that verdict
+      // needs the remote. A FIRST attempt is different — its caller pinned the
+      // target from a fetch that already happened, everything below runs on
+      // `plan.target_sha` rather than on what a rebind resolves, and re-fetching
+      // it only lets a transient network failure kill a deploy whose target is
+      // already in this repository. The monotonicity check the rebind owned
+      // stays, now measured against the pinned target itself. A target this
+      // repository cannot resolve still needs the remote.
+      const present =
+        plan.retry === true
+          ? { code: 1, stdout: '', stderr: '' }
+          : await deps.gitRun(
+              [
+                'rev-parse',
+                '--verify',
+                '--quiet',
+                `${plan.target_sha}^{commit}`
+              ],
+              { cwd: deps.repo }
+            );
+      /** @type {{ ok: boolean, code?: string, target_sha?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }} */
+      const rebound =
+        present.code === 0
+          ? await bindPinnedTarget(plan.target_sha, previous_sha)
+          : await deploy_worktree.bindTarget({
+              repo: deps.repo,
+              base: operation.target_base,
+              last_successful_sha: previous_sha
+            });
       if (!rebound.ok || typeof rebound.target_sha !== 'string') {
         const code = rebound.code || 'repo_ops_target_unresolved';
         if (plan.retry === true) {
@@ -1104,6 +1131,37 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * Monotonicity check for a target SHA the caller already pinned, without
+   * touching the remote: the fetch that produced it has already happened, so
+   * re-resolving it here would only replace a decided target with the remote's
+   * CURRENT tip.
+   *
+   * @param {unknown} pinned_sha
+   * @param {string|null} previous_sha
+   * @returns {Promise<{ ok: boolean, code?: string, target_sha?: string }>}
+   */
+  async function bindPinnedTarget(pinned_sha, previous_sha) {
+    if (typeof pinned_sha !== 'string' || !/^[0-9a-f]{40}$/i.test(pinned_sha)) {
+      return { ok: false, code: 'repo_ops_target_unresolved' };
+    }
+    const target_sha = pinned_sha.toLowerCase();
+    if (!previous_sha) {
+      return { ok: true, target_sha };
+    }
+    const containment = await deps.gitRun(
+      ['merge-base', '--is-ancestor', previous_sha, target_sha],
+      { cwd: deps.repo }
+    );
+    if (containment.code === 1) {
+      return { ok: false, code: 'remote_history_not_monotonic' };
+    }
+    if (containment.code !== 0) {
+      return { ok: false, code: 'repo_ops_ancestry_check_failed' };
+    }
+    return { ok: true, target_sha };
+  }
+
+  /**
    * @param {any} subject
    */
   async function ensureDeployLocked(subject) {
@@ -1121,28 +1179,8 @@ export function createRepoOperationCoordinator(deps) {
         base: subject.target_base,
         last_successful_sha: previous_sha
       });
-    } else if (
-      typeof subject.target_sha !== 'string' ||
-      !/^[0-9a-f]{40}$/i.test(subject.target_sha)
-    ) {
-      bound = { ok: false, code: 'repo_ops_target_unresolved' };
     } else {
-      const target_sha = subject.target_sha.toLowerCase();
-      if (previous_sha) {
-        const containment = await deps.gitRun(
-          ['merge-base', '--is-ancestor', previous_sha, target_sha],
-          { cwd: deps.repo }
-        );
-        if (containment.code === 1) {
-          bound = { ok: false, code: 'remote_history_not_monotonic' };
-        } else if (containment.code !== 0) {
-          bound = { ok: false, code: 'repo_ops_ancestry_check_failed' };
-        } else {
-          bound = { ok: true, target_sha };
-        }
-      } else {
-        bound = { ok: true, target_sha };
-      }
+      bound = await bindPinnedTarget(subject.target_sha, previous_sha);
     }
     if (!bound.ok || typeof bound.target_sha !== 'string') {
       return {
@@ -1156,7 +1194,7 @@ export function createRepoOperationCoordinator(deps) {
     }
     const target_sha = bound.target_sha;
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha,
       target_sha,
@@ -1293,7 +1331,7 @@ export function createRepoOperationCoordinator(deps) {
       return;
     }
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha: operation.effective_base_sha,
       target_sha: bound.target_sha,
@@ -1357,7 +1395,7 @@ export function createRepoOperationCoordinator(deps) {
       return;
     }
     /** @type {any} */
-    const policy = await resolveEffectiveTracked({
+    const policy = await resolveEffective({
       repo: deps.repo,
       previous_sha: operation.effective_base_sha,
       target_sha: policy_target,
@@ -1415,16 +1453,26 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} operation_id
+   * @param {string} head_sha
    */
-  function verifyReceipt(operation_id) {
+  function verifyReceipt(operation_id, head_sha) {
     const operation = observe(operation_id);
-    if (!operation || operation.kind !== 'verify') {
+    const bound_head_sha =
+      typeof head_sha === 'string' && /^[0-9a-f]{40}$/i.test(head_sha)
+        ? head_sha.toLowerCase()
+        : null;
+    if (
+      !operation ||
+      operation.kind !== 'verify' ||
+      bound_head_sha === null ||
+      !operation.verify_head_shas.includes(bound_head_sha)
+    ) {
       return null;
     }
     return {
       operation_id,
       effective_base_sha: operation.effective_base_sha,
-      head_sha: operation.verify_head_sha,
+      head_sha: bound_head_sha,
       candidate_tree_sha: operation.target_tree,
       script_object_type: operation.script_object_type,
       script_mode: operation.script_mode,
@@ -1445,9 +1493,17 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} operation_id
-   * @param {{ timeout_ms?: number, poll_ms?: number }} [options]
+   * @param {{ head_sha?: string, timeout_ms?: number, poll_ms?: number }} [options]
    */
   async function waitForTerminal(operation_id, options = {}) {
+    const head_sha = options.head_sha;
+    if (typeof head_sha !== 'string') {
+      return null;
+    }
+    const initial = verifyReceipt(operation_id, head_sha);
+    if (initial === null) {
+      return null;
+    }
     const deadline = Date.now() + (options.timeout_ms ?? 600_000) + 5000;
     const poll_ms = options.poll_ms ?? 100;
     while (Date.now() <= deadline) {
@@ -1457,7 +1513,7 @@ export function createRepoOperationCoordinator(deps) {
         operation &&
         (operation.state === 'succeeded' || operation.state === 'failed')
       ) {
-        return verifyReceipt(operation_id);
+        return verifyReceipt(operation_id, head_sha);
       }
       await new Promise((resolve) => setTimeout(resolve, poll_ms));
     }
@@ -1466,20 +1522,33 @@ export function createRepoOperationCoordinator(deps) {
 
   /**
    * @param {string} sha
+   * @param {{ current_target_base?: boolean }} [options]
    */
-  async function hasConfig(sha) {
+  async function hasConfig(sha, options = {}) {
+    const display_generation = options.current_target_base
+      ? beginRepoOpsDisplayResolution(deps.workspace)
+      : null;
     const resolved = await resolveRepoOps({
       repo: deps.repo,
       sha,
       gitRun: deps.gitRun
     });
+    if (display_generation !== null) {
+      recordRepoOpsResolution({
+        workspace: deps.workspace,
+        resolution: resolved,
+        base_sha: sha,
+        generation: display_generation
+      });
+    }
     if (!resolved.ok && resolved.code) {
       return resolved;
     }
     return {
       ok: true,
       present: resolved.config_blob_sha !== null,
-      verify_script_path: resolved.verify?.script ?? null
+      verify_script_path: resolved.verify?.script ?? null,
+      verify_timeout_ms: resolved.verify?.timeout_ms ?? null
     };
   }
 

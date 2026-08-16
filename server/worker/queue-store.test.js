@@ -3409,6 +3409,100 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
     });
   });
 
+  test('normalizes a legacy verify head into the binding set', () => {
+    const initial_head_sha = 'a'.repeat(40);
+    const store = createQueueStore();
+    store.ensureRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      repo_id: WS,
+      kind: 'verify',
+      subjects: [{ bead_id: 'UI-1', merged_sha: initial_head_sha }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      target_tree: 'c'.repeat(40),
+      verify_head_sha: initial_head_sha,
+      script_mode: '100755',
+      script_blob_sha: 'e'.repeat(40)
+    });
+    const operation = store.snapshot(WS).repo_operations['verify-same-tree'];
+    store.startRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      attempt_id: operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/verify-same-tree.log'
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      attempt_id: operation.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    const queue_path = queueFilePath(WS);
+    const legacy = JSON.parse(fs.readFileSync(queue_path, 'utf8'));
+    delete legacy.repo_operations['verify-same-tree'].verify_head_shas;
+    fs.writeFileSync(queue_path, JSON.stringify(legacy));
+
+    expect(
+      createQueueStore().snapshot(WS).repo_operations['verify-same-tree']
+    ).toMatchObject({
+      verify_head_sha: initial_head_sha,
+      verify_head_shas: [initial_head_sha],
+      state: 'succeeded'
+    });
+  });
+
+  test('extends verify head bindings on a terminal operation', () => {
+    const initial_head_sha = 'a'.repeat(40);
+    const advanced_head_sha = 'd'.repeat(40);
+    const store = createQueueStore();
+    store.ensureRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      repo_id: WS,
+      kind: 'verify',
+      subjects: [{ bead_id: 'UI-1', merged_sha: initial_head_sha }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      target_tree: 'c'.repeat(40),
+      verify_head_sha: initial_head_sha,
+      script_mode: '100755',
+      script_blob_sha: 'e'.repeat(40)
+    });
+    const operation = store.snapshot(WS).repo_operations['verify-same-tree'];
+    store.startRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      attempt_id: operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: '/tmp/verify-same-tree.log'
+    });
+    store.settleRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      attempt_id: operation.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    store.ensureRepoOperation(WS, {
+      operation_id: 'verify-same-tree',
+      repo_id: WS,
+      kind: 'verify',
+      subjects: [{ bead_id: 'UI-2', merged_sha: advanced_head_sha }],
+      effective_base_sha: 'b'.repeat(40),
+      target_base: 'main',
+      target_tree: 'c'.repeat(40),
+      verify_head_sha: advanced_head_sha,
+      script_mode: '100755',
+      script_blob_sha: 'e'.repeat(40)
+    });
+
+    expect(
+      store.snapshot(WS).repo_operations['verify-same-tree']
+    ).toMatchObject({
+      verify_head_sha: initial_head_sha,
+      verify_head_shas: [initial_head_sha, advanced_head_sha],
+      state: 'succeeded'
+    });
+  });
+
   test('stores the verify output tail on a cleanup failure (UI-qult §1)', () => {
     const store = createQueueStore();
     seedPrWait(store);

@@ -349,6 +349,7 @@
  * @property {string|null} target_sha
  * @property {string|null} target_tree
  * @property {string|null} verify_head_sha
+ * @property {string[]} verify_head_shas
  * @property {string|null} deploy_worktree
  * @property {string} script_object_type
  * @property {string|null} script_path - Declared repo-relative script path, for
@@ -1767,6 +1768,16 @@ function normalizeRepoOperation(value) {
     : null;
   const failure = normalizeRepoOperationFailure(value.failure);
   const retry = normalizeRepoOperationRetry(value.retry, value.state, failure);
+  /** @type {string[]} */
+  const verify_head_shas = [];
+  for (const head_sha of [
+    value.verify_head_sha,
+    ...(Array.isArray(value.verify_head_shas) ? value.verify_head_shas : [])
+  ]) {
+    if (isSha(head_sha) && !verify_head_shas.includes(head_sha.toLowerCase())) {
+      verify_head_shas.push(head_sha.toLowerCase());
+    }
+  }
   // `retry_pending` is a NON-TERMINAL state whose only exit needs the preserved
   // first failure: the reconcile either respawns from it or settles it. A record
   // in that state with no usable retry evidence can do neither, so it would sit
@@ -1803,6 +1814,7 @@ function normalizeRepoOperation(value) {
     verify_head_sha: isSha(value.verify_head_sha)
       ? value.verify_head_sha.toLowerCase()
       : null,
+    verify_head_shas,
     deploy_worktree:
       typeof value.deploy_worktree === 'string' ? value.deploy_worktree : null,
     script_object_type:
@@ -2722,6 +2734,15 @@ export function createQueueStore(options = {}) {
               });
             }
           }
+          if (
+            existing.kind === 'verify' &&
+            isSha(input.verify_head_sha) &&
+            !existing.verify_head_shas.includes(
+              input.verify_head_sha.toLowerCase()
+            )
+          ) {
+            existing.verify_head_shas.push(input.verify_head_sha.toLowerCase());
+          }
           if (existing.state !== 'queued') {
             return true;
           }
@@ -2759,6 +2780,9 @@ export function createQueueStore(options = {}) {
           verify_head_sha: isSha(input.verify_head_sha)
             ? input.verify_head_sha.toLowerCase()
             : null,
+          verify_head_shas: isSha(input.verify_head_sha)
+            ? [input.verify_head_sha.toLowerCase()]
+            : [],
           deploy_worktree:
             typeof input.deploy_worktree === 'string'
               ? input.deploy_worktree

@@ -154,6 +154,18 @@ workspaces = ["/repo-a"]
     });
   });
 
+  test('ignores legacy worker verify config', () => {
+    process.env.BDUI_CONFIG_PATH = writeTomlFixture(`
+[worker.verify."/repo-a"]
+cmd = ["npm", "test"]
+timeout_ms = 900
+`);
+
+    const config = getConfig();
+
+    expect('worker_verify' in config).toBe(false);
+  });
+
   test('defaults poll_interval_seconds to 30 when config file is missing', () => {
     process.env.BDUI_CONFIG_PATH = missingConfigPath();
 

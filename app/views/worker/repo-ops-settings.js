@@ -12,49 +12,13 @@
 import { html } from 'lit-html';
 
 /**
- * Render a timeout in the unit the dialog shows it in (minutes above a minute,
- * seconds below it). An unusable value renders as '' so the caller drops it.
- *
- * @param {unknown} timeout_ms
- * @returns {string}
- */
-function formatTimeout(timeout_ms) {
-  if (typeof timeout_ms !== 'number' || !Number.isFinite(timeout_ms)) {
-    return '';
-  }
-  if (timeout_ms <= 0) {
-    return '';
-  }
-  if (timeout_ms < 60000) {
-    return `${Math.round(timeout_ms / 1000)}초`;
-  }
-  const minutes = timeout_ms / 60000;
-  return `${Number.isInteger(minutes) ? minutes : Math.round(minutes * 10) / 10}분`;
-}
-
-/**
- * Join an argv array the way the dialog displays it. A non-argv value (a legacy
- * or malformed record) renders as '' so the row falls back to its absent form.
- *
- * @param {unknown} cmd
- * @returns {string}
- */
-function formatCmd(cmd) {
-  if (!Array.isArray(cmd)) {
-    return '';
-  }
-  return cmd.filter((part) => typeof part === 'string').join(' ');
-}
-
-/**
  * Build the Worker screen's repo-operation settings section.
  *
- * @param {{ queueStore: QueueStore, transport?: (type: any, payload?: unknown) => Promise<any>, getWorkspacePath?: () => (string|undefined), onChanged?: () => void }} options
+ * @param {{ queueStore: QueueStore, transport?: (type: any, payload?: unknown) => Promise<any>, onChanged?: () => void }} options
  */
 export function createRepoOpsSettings(options) {
   const queueStore = options.queueStore;
   const transport = options.transport;
-  const getWorkspacePath = options.getWorkspacePath;
   const doRender = options.onChanged || (() => {});
 
   /** @returns {any} */
@@ -97,41 +61,6 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * The verify row: what the merge gate runs before merging. The command can
-   * only come from config (UI-uk6d), so unset it names the section a user has
-   * to write.
-   *
-   * @param {any} verify_cmd
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function verifyGroup(verify_cmd) {
-    const cmd_text = verify_cmd ? formatCmd(verify_cmd.cmd) : '';
-    const timeout_text = verify_cmd ? formatTimeout(verify_cmd.timeout_ms) : '';
-    const workspace_path =
-      (getWorkspacePath && getWorkspacePath()) || '<workspace 경로>';
-    return html`<div class="worker-repo-ops__vd-group" data-vd="verify">
-      <div class="worker-repo-ops__vd-label">머지 전 검증 (verify)</div>
-      ${cmd_text
-        ? html`<div class="worker-repo-ops__vd-line">
-            <span class="worker-repo-ops__vd-cmd">${cmd_text}</span>
-            ${badge('config', 'config')}
-            ${timeout_text
-              ? html`<span class="worker-repo-ops__vd-meta"
-                  >timeout ${timeout_text}</span
-                >`
-              : ''}
-          </div>`
-        : html`<div class="worker-repo-ops__vd-line worker-repo-ops__vd-absent">
-            ${badge('absent', '안 함')} 검증 없음 —
-            <span class="worker-repo-ops__vd-cmd"
-              >[worker.verify."${workspace_path}"]</span
-            >
-            섹션으로 정의
-          </div>`}
-    </div>`;
-  }
-
-  /**
    * Format a timeout for display. `10분` reads; `600000` does not.
    *
    * @param {unknown} timeout_ms
@@ -148,14 +77,6 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * The 저장소 작업 선언 card (UI-q0uy §4.5): what the WORKER actually consumes —
-   * `repo-ops/config.toml` read from a pinned base SHA — rather than the legacy
-   * path the old rows read, which is why this repo's `[deploy]` was invisible.
-   *
-   * @param {any} repo_ops
-   * @returns {import('lit-html').TemplateResult}
-   */
-  /**
    * The timeout badge for one declared lane, or nothing when the declaration
    * carries no readable timeout — an empty badge is a shape with no fact in it.
    *
@@ -168,6 +89,9 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
+   * The 저장소 작업 선언 card (UI-q0uy §4.5): `repo-ops/config.toml` read from
+   * the pinned base SHA consumed by the Worker.
+   *
    * @param {any} repo_ops
    * @returns {import('lit-html').TemplateResult}
    */
@@ -216,10 +140,8 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
-   * The declaration surface. Only a PROVEN absence (`absent`, or a snapshot from
-   * a server that predates the field) falls back to the legacy verify row —
-   * `pending` and `error` say what they are, so a repo that HAS a declaration
-   * never quietly reads as one that does not (§4.5/§4.6-1).
+   * The repository declaration surface and its explicit resolution state
+   * (UI-wv97: the legacy verify fallback row is retired).
    *
    * @param {any} info
    * @returns {import('lit-html').TemplateResult}
@@ -227,7 +149,10 @@ export function createRepoOpsSettings(options) {
   function verifyDeploySection(info) {
     const repo_ops =
       info.repo_ops && typeof info.repo_ops === 'object' ? info.repo_ops : null;
-    if (repo_ops && repo_ops.status === 'resolved') {
+    if (
+      repo_ops &&
+      (repo_ops.status === 'resolved' || repo_ops.status === 'absent')
+    ) {
       return repoOpsDeclarationSection(repo_ops);
     }
     if (
@@ -254,12 +179,13 @@ export function createRepoOpsSettings(options) {
         </div>
       </section>`;
     }
-    return html`<section class="worker-repo-ops__vd">
-      <p class="worker-repo-ops__vd-title">
-        검증 설정
-        <span class="worker-repo-ops__vd-ro">읽기 전용 — config에서 정의</span>
-      </p>
-      ${verifyGroup(info.verify_cmd)}
+    // 선언 상태를 아직 모르는 스냅샷: repo-ops 확인 중으로만 말한다 — legacy
+    // verify fallback은 UI-wv97에서 폐기됐다.
+    return html`<section class="worker-repo-ops__vd" data-seam="repo-ops">
+      <p class="worker-repo-ops__vd-title">저장소 작업 선언</p>
+      <div class="worker-repo-ops__vd-line worker-repo-ops__vd-absent">
+        선언 확인 중
+      </div>
     </section>`;
   }
 

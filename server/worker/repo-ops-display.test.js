@@ -5,7 +5,8 @@ import {
   projectRepoOpsDisplay,
   recordRepoOpsResolution,
   refreshRepoOpsDisplay,
-  repoOpsDisplayFor
+  repoOpsDisplayFor,
+  repoOpsVerifyState
 } from './repo-ops-display.js';
 
 const SHA = 'a'.repeat(40);
@@ -49,6 +50,21 @@ describe('repoOpsDisplayFor', () => {
     const display = repoOpsDisplayFor('/repo');
 
     expect([display.verify, display.deploy]).toEqual([null, null]);
+  });
+});
+
+describe('repoOpsVerifyState', () => {
+  test.each([
+    [
+      { status: 'resolved', verify: { script: 'repo-ops/script/verify' } },
+      'present'
+    ],
+    [{ status: 'resolved', verify: null }, 'absent'],
+    [{ status: 'absent', verify: null }, 'absent'],
+    [{ status: 'pending', verify: null }, 'invalid'],
+    [{ status: 'error', verify: null }, 'invalid']
+  ])('maps repo-ops display to verify gate state', (display, expected) => {
+    expect(repoOpsVerifyState(/** @type {any} */ (display))).toBe(expected);
   });
 });
 
@@ -107,6 +123,54 @@ describe('projectRepoOpsDisplay', () => {
 });
 
 describe('refreshRepoOpsDisplay', () => {
+  test('keeps the latest-started resolution when completions arrive out of order', async () => {
+    /** @type {(value?: void) => void} */
+    let release = () => {};
+    const blocked = new Promise((resolve) => {
+      release = resolve;
+    });
+    const absentGit = fakeGit({});
+    const presentGit = fakeGit({
+      config: '[verify]\nscript = "repo-ops/script/verify"\n',
+      blobs: {
+        'repo-ops/config.toml': 'c'.repeat(40),
+        'repo-ops/script/verify': 'd'.repeat(40)
+      }
+    });
+    /** @type {string[]} */
+    const seen = [];
+    onQueueChanged((workspace) => seen.push(workspace));
+
+    const older = refreshRepoOpsDisplay({
+      workspace: '/repo',
+      repo: '/repo',
+      base: 'main',
+      sha: 'a'.repeat(40),
+      gitRun: async (args) => {
+        await blocked;
+        return absentGit(args);
+      }
+    });
+    const newer = refreshRepoOpsDisplay({
+      workspace: '/repo',
+      repo: '/repo',
+      base: 'main',
+      sha: 'b'.repeat(40),
+      gitRun: presentGit
+    });
+
+    await newer;
+    release();
+    await older;
+
+    expect(repoOpsDisplayFor('/repo')).toMatchObject({
+      status: 'resolved',
+      base_sha: 'b'.repeat(40),
+      verify: { script: 'repo-ops/script/verify' }
+    });
+    expect(seen).toEqual(['/repo']);
+  });
+
   test('caches a resolved declaration for the workspace', async () => {
     await refreshRepoOpsDisplay({
       workspace: '/repo',

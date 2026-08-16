@@ -25,8 +25,8 @@
  * message body, starting with the transition and the bead on line one, and the
  * embed's colour bar is given up for it.
  *
- * Config is read per call (`worker.notify`), matching `worker.verify`: toggling
- * notifications does not need a server restart.
+ * Notification config is read per call, so toggling it does not need a server
+ * restart.
  */
 import { spawn } from 'node:child_process';
 import path from 'node:path';

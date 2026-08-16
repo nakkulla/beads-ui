@@ -111,7 +111,7 @@ Nothing merges without a human `[머지]` click.
   queue (`revision`, `auto_advance`, `slots`, `pr_wait_holds_slot`, `queue[]`,
   `pr_wait[]`, `done[]`, `attempts`, `admission`, `cleanup_failed`,
   `exec_defaults`) plus four server-decorated, NON-persisted keys:
-  `workspace_info: { verify_cmd, slots }`, `pr_observations` (per-`pr_wait` PR
+  `workspace_info: { slots, repo_ops }`, `pr_observations` (per-`pr_wait` PR
   state + merge-gate verdict, memory cache only), `bead_titles`
   (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
   only), and `declared_base`. `bead_titles` is PARTIAL: only titles already

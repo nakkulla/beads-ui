@@ -1197,7 +1197,6 @@ export function createWorkerView(mount_element, options = {}) {
   const repo_ops_settings = createRepoOpsSettings({
     queueStore,
     transport,
-    getWorkspacePath,
     onChanged: () => doRender()
   });
 
@@ -1950,7 +1949,7 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], verify_cmd_present: boolean, declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -2921,9 +2920,6 @@ export function createWorkerView(mount_element, options = {}) {
       auto_excluded: pr_wait_entries
         .map((/** @type {any} */ e) => e.bead_id)
         .filter((/** @type {string} */ id) => autoSkipReason(id) !== null),
-      // 자동 머지 경고 문구의 근거 (UI-yk55 §6): verify 선언이 없는
-      // 워크스페이스는 추가 검증 영수증 없이 자격을 얻을 수 있음을 버튼이 말해야 한다.
-      verify_cmd_present: !!(q.workspace_info || {}).verify_cmd,
       declared_base,
       done: done_rows,
       token_total,
@@ -3331,9 +3327,7 @@ export function createWorkerView(mount_element, options = {}) {
     return html`<button
       type="button"
       class="worker-merge-all"
-      title=${m.verify_cmd_present
-        ? '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다'
-        : '켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다 — 이 워크스페이스는 verify 선언이 없어 추가 검증 없이 머지됩니다'}
+      title="켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다"
     >
       ▶ 자동 머지${count > 0 ? ` ${count}` : ''}
     </button>`;

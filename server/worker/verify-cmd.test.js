@@ -4,11 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { deployLogDir, verifyLogDir } from './state-paths.js';
-import {
-  resolveVerifyCmd,
-  runVerifyAtSha,
-  runVerifyCmd
-} from './verify-cmd.js';
+import { runVerifyAtSha, runVerifyCmd } from './verify-cmd.js';
 
 /**
  * Every run through `runVerifyAtSha` writes a full-output log (UI-0x54), so the
@@ -204,20 +200,6 @@ describe('worker/verify-cmd — failure output tail (UI-qult §1)', () => {
 
     expect(r.reason).toBe('verify_cmd_spawn_error');
     expect(r.output_tail).toBeUndefined();
-  });
-});
-
-describe('worker/verify-cmd resolution — config sections only (UI-uk6d)', () => {
-  test('resolve: a config section yields its cmd and timeout', () => {
-    const config = { '/repo': { cmd: ['npm', 'run', 'all'], timeout_ms: 900 } };
-
-    const r = resolveVerifyCmd('/repo', config);
-
-    expect(r).toEqual({ cmd: ['npm', 'run', 'all'], timeout_ms: 900 });
-  });
-
-  test('resolve: no config section → null even for a probeable toolchain', () => {
-    expect(resolveVerifyCmd(process.cwd(), {})).toBeNull();
   });
 });
 
