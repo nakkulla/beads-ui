@@ -3516,21 +3516,43 @@ export function createWorkerView(mount_element, options = {}) {
 
   // --- Native drag/drop (no library), mirroring board.js conventions. ---
   /**
+   * The last pointerdown target. dragstart retargets to the draggable ancestor
+   * (the row), so the press target is the only way to tell a row-body drag from
+   * one that started on an interactive child (checkbox, button, link).
+   *
+   * @type {Element|null}
+   */
+  let press_target = null;
+
+  /**
+   * @param {PointerEvent} ev
+   */
+  function onPointerDown(ev) {
+    press_target = ev.target instanceof Element ? ev.target : null;
+  }
+
+  /**
    * @param {DragEvent} ev
    */
   function onDragStart(ev) {
     const target = /** @type {HTMLElement} */ (ev.target);
-    const grip = /** @type {HTMLElement|null} */ (
-      target?.closest?.('.worker-mini__grip')
+    const el = /** @type {HTMLElement|null} */ (
+      target?.closest?.(
+        '.worker-mini[draggable="true"], .worker-card[draggable="true"]'
+      )
     );
-    const el = grip
-      ? /** @type {HTMLElement|null} */ (
-          grip.closest('.worker-mini[data-lane="queue"]')
-        )
-      : /** @type {HTMLElement|null} */ (
-          target?.closest?.('.worker-card[draggable="true"]')
-        );
     if (!el) {
+      return;
+    }
+    // 인터랙티브 자식에서 시작한 드래그는 행 이동이 아니라 오조작이다 — 상태
+    // 없는 유령 드래그가 남지 않도록 취소한다 (#124가 grip 전용화로 지키던
+    // 체크박스 보호를, 행 전체 드래그로 되돌리면서 이 판정으로 유지).
+    if (
+      press_target &&
+      el.contains(press_target) &&
+      press_target.closest('input, button, a')
+    ) {
+      ev.preventDefault();
       return;
     }
     const bead_id = el.dataset.beadId || '';
@@ -4248,6 +4270,10 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  mount_element.addEventListener(
+    'pointerdown',
+    /** @type {any} */ (onPointerDown)
+  );
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
   mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
@@ -4296,6 +4322,10 @@ export function createWorkerView(mount_element, options = {}) {
           /* ignore */
         }
       }
+      mount_element.removeEventListener(
+        'pointerdown',
+        /** @type {any} */ (onPointerDown)
+      );
       mount_element.removeEventListener(
         'dragstart',
         /** @type {any} */ (onDragStart)
