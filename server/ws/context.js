@@ -2,7 +2,13 @@
  * @import { WebSocket, WebSocketServer } from 'ws'
  * @import { MessageType } from '../../app/protocol.js'
  */
-import { getGitUserName, runBd, runBdJson } from '../bd.js';
+import {
+  getGitUserName,
+  kvGetJson,
+  kvSetJson,
+  runBd,
+  runBdJson
+} from '../bd.js';
 import { debug } from '../logging.js';
 import { SubscriptionRegistry } from '../subscriptions.js';
 
@@ -185,6 +191,33 @@ export function runBdJsonInWorkspace(ws, args, options = undefined) {
     ...(options || {}),
     cwd: root_dir
   });
+}
+
+/**
+ * Read a `bd kv` JSON entry in the connection's selected workspace.
+ *
+ * @param {WebSocket} ws
+ * @param {string} key
+ * @returns {ReturnType<typeof kvGetJson>}
+ */
+export function kvGetJsonInWorkspace(ws, key) {
+  const root_dir = getConnWorkspace(ws)?.root_dir;
+  return root_dir ? kvGetJson(key, { cwd: root_dir }) : kvGetJson(key);
+}
+
+/**
+ * Write a `bd kv` JSON entry in the connection's selected workspace.
+ *
+ * @param {WebSocket} ws
+ * @param {string} key
+ * @param {Record<string, unknown>} value
+ * @returns {ReturnType<typeof kvSetJson>}
+ */
+export function kvSetJsonInWorkspace(ws, key, value) {
+  const root_dir = getConnWorkspace(ws)?.root_dir;
+  return root_dir
+    ? kvSetJson(key, value, { cwd: root_dir })
+    : kvSetJson(key, value);
 }
 
 /**

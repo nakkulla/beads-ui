@@ -318,7 +318,7 @@ describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
 
   // 파이프라인이 빈 workspace는 무거운 배열에 없다 — CAS 토큰은 그룹이
   // `workspaces_state`에서 받아 헤더에 실어 두는 것 말고는 도달할 길이 없다.
-  test('carries the empty repo own revision on all four group controls', () => {
+  test('carries the empty repo own revision on all three group controls', () => {
     const lanes = buildLanes(
       [],
       [state({ root_dir: WS_B, name: 'repo-b', revision: 42, slots: 3 })]
@@ -328,18 +328,16 @@ describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
 
     const controls = Array.from(
       mount.querySelectorAll(
-        '.mon-ctl--advance, .mon-ctl--merge-auto, .mon-slots__input, .mon-ctl--exec'
+        '.mon-ctl--advance, .mon-ctl--merge-auto, .mon-slots__input'
       )
     );
-    expect(controls).toHaveLength(4);
+    expect(controls).toHaveLength(3);
     expect(controls.map((el) => el.getAttribute('data-revision'))).toEqual([
-      '42',
       '42',
       '42',
       '42'
     ]);
     expect(controls.map((el) => el.getAttribute('data-root-dir'))).toEqual([
-      WS_B,
       WS_B,
       WS_B,
       WS_B
@@ -1523,7 +1521,7 @@ describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
 });
 
 describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
-  test('labels all four group controls and keeps their CAS attributes', () => {
+  test('labels all three group controls and keeps their CAS attributes', () => {
     const lanes = buildLanes(
       [],
       [
@@ -1542,7 +1540,7 @@ describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
       Array.from(mount.querySelectorAll('.mon-ctl__label')).map((el) =>
         el.textContent?.trim()
       )
-    ).toEqual(['자동화', '머지', '슬롯', '설정']);
+    ).toEqual(['자동화', '머지', '슬롯']);
     const advance = mount.querySelector('.mon-ctl--advance');
     expect(advance?.getAttribute('data-on')).toBe('true');
     expect(advance?.getAttribute('data-revision')).toBe('9');
@@ -1561,8 +1559,7 @@ describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
     for (const selector of [
       '.mon-ctl--advance',
       '.mon-ctl--merge-auto',
-      '.mon-ctl--slots',
-      '.mon-ctl--exec'
+      '.mon-ctl--slots'
     ]) {
       expect(
         mount.querySelector(

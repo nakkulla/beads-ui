@@ -13,6 +13,7 @@ function setupShell() {
     <header>
       <div id="workspace-picker"></div>
       <nav id="top-nav"></nav>
+      <button id="display-settings-btn" type="button">⚙</button>
       <div id="header-loading" hidden></div>
     </header>
     <main id="app"></main>
@@ -114,7 +115,7 @@ describe('main exec-preset subscription lifecycle', () => {
     expect(
       CLIENT.sent.filter(
         (/** @type {{ type: string }} */ message) =>
-          message.type === 'subscribe-exec-presets'
+          message.type === 'subscribe-impl-presets'
       )
     ).toHaveLength(1);
 
@@ -127,13 +128,13 @@ describe('main exec-preset subscription lifecycle', () => {
     expect(
       CLIENT.sent.filter(
         (/** @type {{ type: string }} */ message) =>
-          message.type === 'subscribe-exec-presets'
+          message.type === 'subscribe-impl-presets'
       )
     ).toHaveLength(1);
     expect(
       CLIENT.sent.some(
         (/** @type {{ type: string }} */ message) =>
-          message.type === 'unsubscribe-exec-presets'
+          message.type === 'unsubscribe-impl-presets'
       )
     ).toBe(false);
 
@@ -144,7 +145,7 @@ describe('main exec-preset subscription lifecycle', () => {
     expect(
       CLIENT.sent.filter(
         (/** @type {{ type: string }} */ message) =>
-          message.type === 'subscribe-exec-presets'
+          message.type === 'subscribe-impl-presets'
       )
     ).toHaveLength(2);
   });
@@ -183,68 +184,20 @@ describe('main exec-preset subscription lifecycle', () => {
     ).toHaveLength(0);
   });
 
-  test('opens the Worker-owned global settings dialog from an empty detail preset state', async () => {
+  test('opens the unified settings dialog from the nav-bar ⚙', async () => {
     bootstrap(setupShell());
     await settle();
-    CLIENT.trigger('exec-presets-snapshot', { revision: 0, presets: [] });
-    window.location.hash = '#/board?issue=UI-1';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await settle();
 
     /** @type {HTMLButtonElement} */ (
-      document.querySelector('[data-open-exec-presets]')
+      document.getElementById('display-settings-btn')
     ).click();
     await settle();
 
-    expect(document.getElementById('detail-panel')?.hidden).toBe(true);
-    expect(document.getElementById('worker-root')?.hidden).toBe(false);
-    expect(
-      document
-        .querySelector('#worker-root #worker-exec-defaults-dialog')
-        ?.hasAttribute('open')
-    ).toBe(true);
-  });
-
-  test('shows the same preset snapshot in Worker and Monitor dialogs', async () => {
-    bootstrap(setupShell());
-    await settle();
-    CLIENT.trigger('exec-presets-snapshot', {
-      revision: 1,
-      presets: [{ id: 'p1', name: '공용 개발', settings: {} }]
-    });
-
-    window.location.hash = '#/worker';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await settle();
-    /** @type {HTMLButtonElement} */ (
-      document.querySelector('#worker-root .worker-exec-defaults-btn')
-    ).click();
-    expect(
-      document.querySelector('#worker-root [data-preset-id="p1"]')?.textContent
-    ).toContain('공용 개발');
-
-    CLIENT.trigger('monitor-pipeline-snapshot', {
-      workspaces: [],
-      workspaces_state: [
-        {
-          root_dir: '/repo-a',
-          name: 'repo-a',
-          revision: 1,
-          slots: 1,
-          exec_defaults: {},
-          runner_catalog: { runners: {} }
-        }
-      ]
-    });
-    window.location.hash = '#/monitor';
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
-    await settle();
-    /** @type {HTMLButtonElement} */ (
-      document.querySelector('#monitor-root .mon-ctl--exec')
-    ).click();
-
-    expect(
-      document.querySelector('#monitor-root [data-preset-id="p1"]')?.textContent
-    ).toContain('공용 개발');
+    const dialog = document.getElementById('settings-dialog');
+    expect(dialog).not.toBe(null);
+    expect(dialog?.hasAttribute('open')).toBe(true);
+    expect(dialog?.querySelector('[role="tab"][data-tab="session"]')).not.toBe(
+      null
+    );
   });
 });

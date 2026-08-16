@@ -113,7 +113,7 @@ watchRegistry(
   { debounce_ms: 500 }
 );
 
-server.listen(config.port, config.host, () => {
+server.listen(config.port, config.host, async () => {
   const runtime = publishRuntimeIdentity({ server });
   if (!runtime.ok) {
     process.exitCode = 1;
@@ -141,7 +141,7 @@ server.listen(config.port, config.host, () => {
   }
   try {
     const migration =
-      getWorkerRuntime().execPresetCoordinator.migrateWorkspaces(
+      await getWorkerRuntime().execPresetCoordinator.migrateWorkspaces(
         Array.from(worker_roots)
       );
     if (!migration.ok) {

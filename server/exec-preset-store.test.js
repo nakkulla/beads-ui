@@ -37,8 +37,8 @@ describe('exec-preset-store defaults', () => {
             id: 'preset-1',
             name: ' Legacy ',
             settings: {
-              orchestration_model: 'removed-model',
-              orchestration_effort: 4,
+              impl_model: 'removed-model',
+              impl_effort: 4,
               unknown_key: 'drop-me'
             }
           },
@@ -56,21 +56,25 @@ describe('exec-preset-store defaults', () => {
         {
           id: 'preset-1',
           name: 'Legacy',
-          settings: { orchestration_model: 'removed-model' },
+          settings: { impl_model: 'removed-model' },
           origin: { kind: 'user' }
         }
       ]
     });
   });
 
-  test('persists normalized legacy origin and inferred implementation runtime once', () => {
+  test('persists a normalized legacy entry once', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     fs.writeFileSync(
       file_path,
       JSON.stringify({
         revision: 3,
         presets: [
-          { id: 'legacy', name: '기존', settings: { impl_model: 'terra' } }
+          {
+            id: 'legacy',
+            name: ' 기존 ',
+            settings: { impl_model: 'terra', unknown_key: 'drop-me' }
+          }
         ]
       })
     );
@@ -85,8 +89,9 @@ describe('exec-preset-store defaults', () => {
       presets: [
         {
           id: 'legacy',
+          name: '기존',
           origin: { kind: 'user' },
-          settings: { impl_model: 'terra', impl_runtime: 'codex' }
+          settings: { impl_model: 'terra' }
         }
       ]
     });
@@ -99,7 +104,11 @@ describe('exec-preset-store defaults', () => {
     const legacy = {
       revision: 7,
       presets: [
-        { id: 'legacy', name: '기존', settings: { impl_model: 'terra' } }
+        {
+          id: 'legacy',
+          name: ' 기존 ',
+          settings: { impl_model: 'terra', unknown_key: 'drop-me' }
+        }
       ]
     };
     fs.writeFileSync(file_path, JSON.stringify(legacy));
@@ -126,7 +135,11 @@ describe('exec-preset-store defaults', () => {
       JSON.stringify({
         revision: 3,
         presets: [
-          { id: 'legacy', name: '기존', settings: { impl_model: 'terra' } }
+          {
+            id: 'legacy',
+            name: ' 기존 ',
+            settings: { impl_model: 'terra', unknown_key: 'drop-me' }
+          }
         ]
       })
     );
@@ -151,7 +164,7 @@ describe('exec-preset-store defaults', () => {
 });
 
 describe('exec-preset-store CRUD', () => {
-  test('reuses a legacy migration across restart after resolving a user-name collision', () => {
+  test('reuses an implementation copy across restart after resolving a name collision', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     const ids = ['user-preset', 'migration-preset'];
     const store = createExecPresetStore({
@@ -161,21 +174,19 @@ describe('exec-preset-store CRUD', () => {
     store.create({
       expected_revision: 0,
       name: '이전 기본값 · 작업 공간',
-      settings: { orchestration_model: 'sol' }
+      settings: { impl_model: 'sol' }
     });
 
-    const first = store.createOrReuseMigration({
+    const first = store.createOrReuseImplCopy({
       name: '이전 기본값 · 작업 공간',
-      settings: { orchestration_model: 'sol' },
-      workspace_key: 'workspace-12345678',
-      source_digest: 'legacy-defaults-digest'
+      settings: { impl_model: 'sol' },
+      source_preset_id: 'legacy-preset-1'
     });
     const restarted = createExecPresetStore({ filePath: file_path });
-    const resumed = restarted.createOrReuseMigration({
+    const resumed = restarted.createOrReuseImplCopy({
       name: '이전 기본값 · 작업 공간',
-      settings: { orchestration_model: 'sol' },
-      workspace_key: 'workspace-12345678',
-      source_digest: 'legacy-defaults-digest'
+      settings: { impl_model: 'sol' },
+      source_preset_id: 'legacy-preset-1'
     });
 
     expect(first).toMatchObject({
@@ -183,7 +194,7 @@ describe('exec-preset-store CRUD', () => {
       reused: false,
       preset: {
         id: 'migration-preset',
-        name: '이전 기본값 · 작업 공간 · 12345678'
+        name: '이전 기본값 · 작업 공간 2'
       }
     });
     expect(resumed).toMatchObject({
@@ -200,15 +211,15 @@ describe('exec-preset-store CRUD', () => {
       filePath: file_path,
       randomUUID: () => 'preset-1',
       settingEnums: () => ({
-        orchestration_model: ['sol'],
-        orchestration_speed: ['default', 'fast']
+        impl_model: ['sol'],
+        impl_speed: ['default', 'fast']
       })
     });
 
     const result = store.create({
       expected_revision: 0,
       name: '  기본 개발  ',
-      settings: { orchestration_model: 'sol', orchestration_speed: 'fast' }
+      settings: { impl_model: 'sol', impl_speed: 'fast' }
     });
 
     expect(result).toEqual({
@@ -220,8 +231,8 @@ describe('exec-preset-store CRUD', () => {
           id: 'preset-1',
           name: '기본 개발',
           settings: {
-            orchestration_model: 'sol',
-            orchestration_speed: 'fast'
+            impl_model: 'sol',
+            impl_speed: 'fast'
           },
           origin: { kind: 'user' }
         }
@@ -239,27 +250,27 @@ describe('exec-preset-store CRUD', () => {
       filePath: path.join(tmp_dir, 'exec-presets.json'),
       randomUUID: () => String(ids.shift()),
       settingEnums: () => ({
-        orchestration_model: ['sol', 'terra'],
-        orchestration_effort: ['high'],
-        orchestration_speed: ['default', 'fast']
+        impl_model: ['sol', 'terra'],
+        impl_effort: ['high'],
+        impl_speed: ['default', 'fast']
       })
     });
     store.create({
       expected_revision: 0,
       name: '첫째',
-      settings: { orchestration_model: 'sol', orchestration_speed: 'default' }
+      settings: { impl_model: 'sol', impl_speed: 'default' }
     });
     store.create({
       expected_revision: 1,
       name: '둘째',
-      settings: { orchestration_effort: 'high' }
+      settings: { impl_effort: 'high' }
     });
 
     const result = store.update({
       expected_revision: 2,
       id: 'preset-1',
       name: '수정됨',
-      settings: { orchestration_model: 'terra', orchestration_speed: 'fast' }
+      settings: { impl_model: 'terra', impl_speed: 'fast' }
     });
 
     expect(result.presets.map((preset) => preset.id)).toEqual([
@@ -269,7 +280,7 @@ describe('exec-preset-store CRUD', () => {
     expect(result.presets[0]).toEqual({
       id: 'preset-1',
       name: '수정됨',
-      settings: { orchestration_model: 'terra', orchestration_speed: 'fast' },
+      settings: { impl_model: 'terra', impl_speed: 'fast' },
       origin: { kind: 'user' }
     });
     expect(
@@ -378,7 +389,7 @@ describe('exec-preset-store CRUD', () => {
     const incompatible = store.create({
       expected_revision: 0,
       name: '비호환',
-      settings: { orchestration_model: 'removed-model' }
+      settings: { impl_model: 'removed-model' }
     });
     const unknown = store.create({
       expected_revision: 0,
@@ -416,17 +427,17 @@ describe('exec-preset-store CRUD', () => {
     const good = createExecPresetStore({
       filePath: file_path,
       randomUUID: () => 'preset-1',
-      settingEnums: () => ({ orchestration_model: ['sol', 'terra'] })
+      settingEnums: () => ({ impl_model: ['sol', 'terra'] })
     });
     good.create({
       expected_revision: 0,
       name: '원본',
-      settings: { orchestration_model: 'sol' }
+      settings: { impl_model: 'sol' }
     });
     const before = fs.readFileSync(file_path, 'utf8');
     const failing = createExecPresetStore({
       filePath: file_path,
-      settingEnums: () => ({ orchestration_model: ['sol', 'terra'] }),
+      settingEnums: () => ({ impl_model: ['sol', 'terra'] }),
       fs: /** @type {any} */ ({
         readFileSync: fs.readFileSync,
         mkdirSync: fs.mkdirSync,
@@ -443,7 +454,7 @@ describe('exec-preset-store CRUD', () => {
         expected_revision: 1,
         id: 'preset-1',
         name: '변경',
-        settings: { orchestration_model: 'terra' }
+        settings: { impl_model: 'terra' }
       })
     ).toThrow(/disk full/);
 

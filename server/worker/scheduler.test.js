@@ -4,9 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createExecPresetStore } from '../exec-preset-store.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
-import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { install as guardHookInstall } from './guard-hook.js';
 import { resolveExecSettings } from './policy.js';
 import { createQueueStore } from './queue-store.js';
@@ -523,7 +521,14 @@ function setup(opts) {
         settings: {},
         exec: resolveExecSettings({
           bead,
-          defaults: store.snapshot(workspace).exec_defaults
+          defaults: {
+            orchestration_model:
+              store.snapshot(workspace).orchestration_model ?? undefined,
+            orchestration_effort:
+              store.snapshot(workspace).orchestration_effort ?? undefined,
+            orchestration_speed:
+              store.snapshot(workspace).orchestration_speed ?? undefined
+          }
         })
       };
     }
@@ -1460,14 +1465,16 @@ describe('scheduler completion repair dispatch', () => {
  * @param {Record<string, string>} defaults
  */
 function seedExecDefaults(store, defaults) {
-  let rev = store.snapshot(WS).revision;
-  for (const [key, value] of Object.entries(defaults)) {
-    rev = store.setExecDefault(WS, {
-      expected_revision: rev,
-      key,
-      value
-    }).queue.revision;
+  const values = Object.fromEntries(
+    Object.entries(defaults).filter(([key]) => key.startsWith('orchestration_'))
+  );
+  if (Object.keys(values).length === 0) {
+    return;
   }
+  store.setOrchestrationDefaults(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    values
+  });
 }
 
 describe('scheduler slot policy (single scan, worker-phase2 §3)', () => {
@@ -3089,16 +3096,13 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     );
   });
 
-  test('pre-records the immutable preset provenance before the first metadata stamp', async () => {
+  test('pre-records the immutable preset provenance before the workflow_mode write', async () => {
     /** @type {any} */
     let env;
     const resolveForDispatch = vi.fn((/** @type {string} */ _ws, bead) => {
       const exec = resolveExecSettings({
         bead,
-        defaults: {
-          orchestration_model: 'sonnet',
-          spec_review_model: 'codex'
-        }
+        defaults: { orchestration_model: 'sonnet' }
       });
       return {
         ok: true,
@@ -3124,10 +3128,10 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
             expect(attempt).toMatchObject({
               exec_default_preset_id: 'preset-1',
               exec_default_preset_revision: 7,
-              exec_stamped_keys: ['orchestration_model', 'spec_review_model'],
+              exec_stamped_keys: null,
               exec_values: {
                 orchestration_model: 'sonnet',
-                spec_review_model: 'codex'
+                spec_review_model: null
               }
             });
           }
@@ -3147,135 +3151,10 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       exec_default_preset_revision: 7,
       exec_values: {
         orchestration_model: 'sonnet',
-        spec_review_model: 'codex'
+        spec_review_model: null
       }
     });
     expect(Object.keys(attempt.exec_values)).toEqual(EXEC_SETTING_KEYS);
-  });
-
-  test('applies a shared preset update only to a later workspace dispatch while the active Attempt stays pinned', async () => {
-    const second_workspace = `${WS}-second`;
-    const store = createQueueStore();
-    const presetStore = createExecPresetStore({
-      filePath: path.join(tmp_state, 'exec-presets.json'),
-      randomUUID: () => 'shared-preset'
-    });
-    presetStore.create({
-      expected_revision: 0,
-      name: '공유 기본값',
-      settings: { orchestration_model: 'sol' }
-    });
-    const coordinator = createExecPresetCoordinator({
-      queueStore: store,
-      presetStore,
-      discover: () => ({
-        complete: true,
-        states: [
-          {
-            workspace_key: WS,
-            display_name: '첫 작업 공간',
-            status: 'ok',
-            queue_file: path.join(tmp_state, 'first-queue.json'),
-            raw: store.snapshot(WS)
-          },
-          {
-            workspace_key: second_workspace,
-            display_name: '둘째 작업 공간',
-            status: 'ok',
-            queue_file: path.join(tmp_state, 'second-queue.json'),
-            raw: store.snapshot(second_workspace)
-          }
-        ]
-      })
-    });
-
-    expect(
-      coordinator.setDefaultExecPreset(WS, {
-        preset_id: 'shared-preset',
-        expected_queue_revision: 0,
-        expected_preset_revision: 1
-      }).applied
-    ).toBe(true);
-    expect(
-      coordinator.setDefaultExecPreset(second_workspace, {
-        preset_id: 'shared-preset',
-        expected_queue_revision: 0,
-        expected_preset_revision: 1
-      }).applied
-    ).toBe(true);
-    expect(coordinator.snapshot().presets[0].reference_count).toBe(2);
-
-    const first = setup({
-      store,
-      config: { S1: { model: null, effort: null } },
-      slots: 1,
-      execPresetCoordinator: coordinator
-    });
-    const second = setup({
-      store,
-      config: { S2: { model: null, effort: null } },
-      slots: 1,
-      execPresetCoordinator: coordinator
-    });
-    seedQueue(store, ['S1']);
-    let second_revision = store.snapshot(second_workspace).revision;
-    second_revision = store.setSlots(second_workspace, {
-      expected_revision: second_revision,
-      slots: 1
-    }).queue.revision;
-    store.place(second_workspace, {
-      expected_revision: second_revision,
-      bead_id: 'S2'
-    });
-    store.setAutoAdvance(second_workspace, true);
-
-    await first.scheduler.tick(WS);
-
-    const active_attempt = Object.values(store.snapshot(WS).attempts)[0];
-    const queue_revisions_before_update = {
-      first: store.snapshot(WS).revision,
-      second: store.snapshot(second_workspace).revision
-    };
-    expect(active_attempt).toMatchObject({
-      status: 'running',
-      exec_default_preset_id: 'shared-preset',
-      exec_default_preset_revision: 1,
-      exec_values: { orchestration_model: 'sol' }
-    });
-
-    expect(
-      coordinator.update({
-        expected_revision: 1,
-        id: 'shared-preset',
-        name: '공유 기본값',
-        settings: { orchestration_model: 'terra' }
-      }).applied
-    ).toBe(true);
-
-    expect(store.snapshot(WS).revision).toBe(
-      queue_revisions_before_update.first
-    );
-    expect(store.snapshot(second_workspace).revision).toBe(
-      queue_revisions_before_update.second
-    );
-
-    await second.scheduler.tick(second_workspace);
-
-    const fresh_attempt = Object.values(
-      store.snapshot(second_workspace).attempts
-    )[0];
-    expect(fresh_attempt).toMatchObject({
-      status: 'running',
-      exec_default_preset_id: 'shared-preset',
-      exec_default_preset_revision: 2,
-      exec_values: { orchestration_model: 'terra' }
-    });
-    expect(
-      store.snapshot(WS).attempts[active_attempt.attempt_id]
-    ).toMatchObject({
-      exec_default_preset_revision: 1,
-      exec_values: { orchestration_model: 'sol' }
-    });
   });
 
   test('refuses before metadata or runner launch when normal attempt prerecord fails', async () => {
@@ -3306,7 +3185,7 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
-  test('global-only exec settings reach spawn + stamp bead metadata + durable exec_stamped_keys, then revert on termination', async () => {
+  test('workspace orchestration defaults reach spawn without stamping bead metadata', async () => {
     // Bead leaves runner/model/effort UNSET; the workspace global fills them.
     const env = setup({
       config: { S1: { runner: null, model: null, effort: null } },
@@ -3316,7 +3195,6 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       // termination path reverts workflow_mode AND the exec stamps.
     });
     seedExecDefaults(env.store, {
-      spec_review_model: 'opus',
       orchestration_model: 'sol',
       orchestration_effort: 'high',
       orchestration_speed: 'fast'
@@ -3334,51 +3212,30 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     expect(a.model).toBe('sol');
     expect(a.effort).toBe('high');
     expect(a.speed).toBe('fast');
-    // Durable stamp list recorded on the attempt (survives restart/orphan).
-    expect(a.exec_stamped_keys).toEqual([
+    // Nothing is copied onto the Bead any more (spec §C.4).
+    expect(a.exec_stamped_keys).toBe(null);
+    for (const key of [
       'orchestration_model',
       'orchestration_effort',
-      'orchestration_speed',
-      'spec_review_model'
-    ]);
+      'orchestration_speed'
+    ]) {
+      expect(calledMeta(env.bd, 'S1', 'setMetadata', key)).toBe(false);
+    }
 
-    // Bead metadata was stamped with the three global-filled keys.
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
-      true
-    );
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
-      true
-    );
-    expect(
-      calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_effort')
-    ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_speed')).toBe(
-      true
-    );
-
-    // Termination (success) reverts every stamped key + workflow_mode.
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
     expect(env.store.snapshot(WS).pr_wait.map((e) => e.bead_id)).toContain(
       'S1'
     );
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
+    // workflow_mode still reverts; there is no exec stamp left to revert.
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
       true
     );
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
-    ).toBe(true);
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_effort')
-    ).toBe(true);
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_speed')
-    ).toBe(true);
   });
 
-  test('a bead-SET key beats the global and is never stamped/reverted', async () => {
-    // Bead pins spec_review_model=opus; impl_model is unset (global fills it).
+  test('a bead session pin is used as-is and never stamped/reverted', async () => {
+    // Bead pins spec_review_model=opus; no workspace layer supplies it now.
     const env = setup({
       config: {
         S1: {
@@ -3391,20 +3248,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
       slots: 1,
       verifyOk: true
     });
-    seedExecDefaults(env.store, {
-      spec_review_model: 'codex',
-      impl_model: 'haiku'
-    });
     seedQueue(env.store, ['S1']);
     await env.scheduler.tick(WS);
 
     const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
     const a = /** @type {any} */ (env.store.snapshot(WS).attempts[attempt_id]);
-    // A global exact model gets its inferred provider stamp too; the bead-set
-    // spec_review_model is not stamped (it is the bead's own value).
-    expect(a.exec_stamped_keys).toEqual(['impl_runtime', 'impl_model']);
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_runtime')).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'impl_model')).toBe(true);
+    expect(a.exec_stamped_keys).toBe(null);
     expect(calledMeta(env.bd, 'S1', 'setMetadata', 'spec_review_model')).toBe(
       false
     );
@@ -3412,10 +3261,6 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_runtime')).toBe(
-      true
-    );
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'impl_model')).toBe(true);
     expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
       false
     );
@@ -3463,105 +3308,9 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
     );
   });
 
-  test('a partial exec-stamp failure unsets the already-stamped keys, fails the attempt, releases the claim', async () => {
-    // orchestration_model stamps OK; orchestration_effort's stamp throws → break.
-    const env = setup({
-      config: {
-        S1: {
-          model: null,
-          effort: null,
-          throwOnSetKey: 'orchestration_effort'
-        }
-      },
-      slots: 1
-    });
-    seedExecDefaults(env.store, {
-      spec_review_model: 'opus',
-      orchestration_model: 'sonnet',
-      orchestration_effort: 'high'
-    });
-    seedQueue(env.store, ['S1']);
-
-    await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
-
-    // No session started; the attempt is recorded failed with the exec cause.
-    expect(env.scheduler.isRunning('S1')).toBe(false);
-    const a = /** @type {any} */ (
-      Object.values(env.store.snapshot(WS).attempts).find(
-        (/** @type {any} */ x) => x.bead_id === 'S1'
-      )
-    );
-    expect(a.status).toBe('failed');
-    expect(a.cause).toBe('exec_stamp_failed');
-    // The durable stamp list was recorded BEFORE the first metadata write.
-    expect(a.exec_stamped_keys).toEqual([
-      'orchestration_model',
-      'orchestration_effort'
-    ]);
-
-    // The one key that WAS stamped is cleaned up; workflow_mode reverted too.
-    expect(calledMeta(env.bd, 'S1', 'setMetadata', 'orchestration_model')).toBe(
-      true
-    );
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
-    ).toBe(true);
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_effort')
-    ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
-      false
-    );
-    expect(
-      env.bd.calls.some(
-        (/** @type {any} */ c) =>
-          c.method === 'unsetMetadata' &&
-          c.bead_id === 'S1' &&
-          c.key === 'workflow_mode'
-      )
-    ).toBe(true);
-
-    // The dispatch failed in isolation: auto_advance intact.
-    expect(env.store.snapshot(WS).auto_advance).toBe(true);
-  });
-
-  test('refuses before a metadata overlay when restore capture cannot read a key', async () => {
-    // worker_runner set+readback OK; orchestration_model's SET succeeds but its
-    // confirming READBACK throws → the key is NOT in the confirmed list, yet the
-    // durable exec_stamped_keys must still drive the cleanup so the metadata
-    // that WAS written is unset (idempotent for the never-written effort key).
-    const env = setup({
-      config: {
-        S1: {
-          runner: null,
-          model: null,
-          effort: null,
-          throwOnReadKey: 'orchestration_model'
-        }
-      },
-      slots: 1
-    });
-    seedExecDefaults(env.store, {
-      spec_review_model: 'opus',
-      orchestration_model: 'sonnet',
-      orchestration_effort: 'high'
-    });
-    seedQueue(env.store, ['S1']);
-
-    await expect(env.scheduler.tick(WS)).resolves.toBeUndefined();
-
-    expect(env.scheduler.isRunning('S1')).toBe(false);
-    expect(env.store.snapshot(WS).attempts).toEqual({});
-    expect(env.store.snapshot(WS).admission.S1.reason).toBe(
-      'exec_restore_capture_failed'
-    );
-    expect(env.bd.calls).toEqual([]);
-    expect(env.store.snapshot(WS).auto_advance).toBe(true);
-  });
-
-  test('a success reverts the exec stamps AND workflow_mode', async () => {
-    // Every success leaves the bead open for a human merge click, so BOTH the
-    // exec stamps and workflow_mode revert — no policy branch remains.
+  test('a success reverts workflow_mode and leaves exec metadata untouched', async () => {
+    // Every success leaves the bead open for a human merge click, so
+    // workflow_mode reverts. No exec key was written, so none is unset.
     const env = setup({
       config: { S1: { runner: null, model: null, effort: null } },
       slots: 1,
@@ -3581,18 +3330,12 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
 
     const snap = env.store.snapshot(WS);
     expect(snap.pr_wait.map((e) => e.bead_id)).toContain('S1');
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'spec_review_model')).toBe(
+    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
       true
     );
     expect(
       calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_model')
-    ).toBe(true);
-    expect(
-      calledMeta(env.bd, 'S1', 'unsetMetadata', 'orchestration_effort')
-    ).toBe(true);
-    expect(calledMeta(env.bd, 'S1', 'unsetMetadata', 'workflow_mode')).toBe(
-      true
-    );
+    ).toBe(false);
   });
 });
 
@@ -3946,43 +3689,6 @@ describe('scheduler resume (spec §1)', () => {
     });
   });
 
-  test('refuses when current settings drift during restore capture', async () => {
-    let drifted = false;
-    /** @type {Record<string, any>} */
-    const config = {
-      B1: {
-        model: null,
-        effort: null,
-        onRead: () => {
-          if (!drifted) {
-            drifted = true;
-            config.B1.model = 'opus';
-          }
-        }
-      }
-    };
-    const env = setup({ config, slots: 1 });
-    seedExecDefaults(env.store, { orchestration_model: 'sol' });
-    seedAttempt(env.store, 'capture-drift', resumablePrior());
-    const mismatch = await env.scheduler.resume(WS, 'capture-drift');
-
-    const stale = await env.scheduler.resume(WS, 'capture-drift', {
-      continuation: 'fresh_current',
-      decision_token: mismatch.continuation_mismatch.decision_token
-    });
-
-    expect(stale).toEqual({
-      ok: false,
-      reason: 'continuation_settings_changed'
-    });
-    expect(env.runner.spawnOrder).toEqual([]);
-    expect(
-      Object.values(env.store.snapshot(WS).attempts).some(
-        (/** @type {any} */ attempt) => attempt.resumed_from === 'capture-drift'
-      )
-    ).toBe(false);
-  });
-
   test('binds the relaunch prerecord to the revalidated queue revision', async () => {
     const store = createQueueStore();
     const guardHook = {
@@ -4120,7 +3826,7 @@ describe('scheduler resume (spec §1)', () => {
     expect(child.merge_sha).toBe(null);
   });
 
-  test('re-stamps workflow_mode + exec from the current resolution', async () => {
+  test('re-stamps workflow_mode and re-resolves exec without stamping it', async () => {
     const env = setup({ config: { B1: { model: null } }, slots: 1 });
     seedExecDefaults(env.store, { orchestration_model: 'sol' });
     seedAttempt(
@@ -4137,7 +3843,7 @@ describe('scheduler resume (spec §1)', () => {
     );
     const res = await env.scheduler.resume(WS, 'anc');
     expect(res.ok).toBe(true);
-    // fast_track re-stamped, and the exec key comes from today's resolution.
+    // fast_track re-stamped; the exec key is resolved but never written.
     expect(
       env.bd.calls.some(
         (c) =>
@@ -4149,16 +3855,12 @@ describe('scheduler resume (spec §1)', () => {
     ).toBe(true);
     expect(
       env.bd.calls.some(
-        (c) =>
-          c.method === 'setMetadata' &&
-          c.bead_id === 'B1' &&
-          c.key === 'orchestration_model' &&
-          c.value === 'sol'
+        (c) => c.method === 'setMetadata' && c.key === 'orchestration_model'
       )
-    ).toBe(true);
+    ).toBe(false);
     const child =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(child.exec_stamped_keys).toEqual(['orchestration_model']);
+    expect(child.exec_stamped_keys).toBe(null);
     expect(child).toMatchObject({
       exec_default_preset_id: null,
       exec_default_preset_revision: null,
@@ -4713,14 +4415,13 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
-  test('stamps the globally-filled exec keys and records them on the attempt', async () => {
+  test('launches on the workspace orchestration values without stamping them', async () => {
     const env = extEnv({
       bead: { model: null, effort: null },
       defaults: {
         orchestration_model: 'sol',
         orchestration_effort: 'high',
-        orchestration_speed: 'fast',
-        spec_review_model: 'opus'
+        orchestration_speed: 'fast'
       }
     });
 
@@ -4728,96 +4429,17 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
 
     const a =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(a.exec_stamped_keys).toEqual([
-      'orchestration_model',
-      'orchestration_effort',
-      'orchestration_speed',
-      'spec_review_model'
-    ]);
+    expect(a.exec_stamped_keys).toBe(null);
     expect(a.model).toBe('sol');
     expect(a.speed).toBe('fast');
     expect(env.runner.settingsFor('X1').model).toBe('sol');
     expect(env.runner.settingsFor('X1').speed).toBe('fast');
-  });
-
-  test('restores metadata that appeared after the external bead snapshot', async () => {
-    const env = extEnv({
-      bead: { model: null },
-      defaults: { orchestration_model: 'sol' }
-    });
-    env.bd.calls.push({
-      method: 'setMetadata',
-      bead_id: 'X1',
-      key: 'orchestration_model',
-      value: 'user-late'
-    });
-
-    const result = await env.scheduler.dispatchExternalConflict(
-      WS,
-      'X1',
-      'main'
-    );
-    env.runner.finish('X1', { success: true });
-    await flush();
-    await flush();
-
     expect(
-      env.store.snapshot(WS).attempts[/** @type {string} */ (result.attempt_id)]
-        .exec_restore_values
-    ).toEqual({ orchestration_model: 'user-late' });
-    expect(
-      env.bd.calls.filter(
-        (call) =>
-          call.method === 'setMetadata' && call.key === 'orchestration_model'
+      env.bd.calls.some(
+        (/** @type {any} */ c) =>
+          c.method === 'setMetadata' && c.key === 'orchestration_model'
       )
-    ).toEqual([
-      {
-        method: 'setMetadata',
-        bead_id: 'X1',
-        key: 'orchestration_model',
-        value: 'user-late'
-      },
-      {
-        method: 'setMetadata',
-        bead_id: 'X1',
-        key: 'orchestration_model',
-        value: 'sol'
-      },
-      {
-        method: 'setMetadata',
-        bead_id: 'X1',
-        key: 'orchestration_model',
-        value: 'user-late'
-      }
-    ]);
-  });
-
-  test('restores every written stamp when one exec key fails to stamp', async () => {
-    const env = extEnv({
-      bead: { model: null, effort: null, throwOnSetKey: 'spec_review_model' },
-      defaults: {
-        orchestration_model: 'sonnet',
-        orchestration_effort: 'high',
-        spec_review_model: 'opus'
-      }
-    });
-
-    const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
-
-    expect(res).toEqual({ ok: false, reason: 'exec_stamp_failed' });
-    for (const key of [
-      'orchestration_model',
-      'orchestration_effort',
-      'spec_review_model',
-      'workflow_mode'
-    ]) {
-      expect(env.bd.calls).toContainEqual({
-        method: 'unsetMetadata',
-        bead_id: 'X1',
-        key
-      });
-    }
-    expect(env.runner.spawnOrder).toEqual([]);
+    ).toBe(false);
   });
 
   test('closes a successful live resolution without touching the durable lane', async () => {
@@ -7456,9 +7078,9 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
       release = () => resolve(undefined);
     });
     const env = setup({
-      // `model: null` leaves the bead's exec setting absent so the global
-      // default fills and STAMPS it — an await that lands after the durable
-      // pre-record (status `running`, pid null) and before the spawn.
+      // The `workflow_mode=fast_track` write lands after the durable
+      // pre-record (status `running`, pid null) and before the spawn, so
+      // gating it holds the dispatch exactly in that window.
       config: { S1: { model: null } },
       slots: 1,
       probePid: () => ({ alive: false, started_at: null })
@@ -7471,7 +7093,7 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
       /** @type {string} */ key,
       /** @type {string} */ value
     ) => {
-      if (key === 'orchestration_model') {
+      if (key === 'workflow_mode') {
         await gate;
       }
       return setMetadata(bead_id, key, value);
@@ -7783,27 +7405,6 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
       repo: '/repo',
       cause_detail: null
     });
-    expect(notify.attemptStarted).not.toHaveBeenCalled();
-  });
-
-  test('pushes attemptFailed from the dispatch exec_stamp_failed path', async () => {
-    const notify = makeFakeNotify();
-    const env = setup({
-      config: {
-        S1: { model: null, effort: null, throwOnSetKey: 'orchestration_model' }
-      },
-      slots: 1,
-      notify
-    });
-    seedExecDefaults(env.store, { orchestration_model: 'sonnet' });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    expect(notify.attemptFailed).toHaveBeenCalledTimes(1);
-    expect(notify.attemptFailed.mock.calls[0][0].cause).toBe(
-      'exec_stamp_failed'
-    );
     expect(notify.attemptStarted).not.toHaveBeenCalled();
   });
 
@@ -9669,23 +9270,6 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
   });
 
-  test('removes the hook when an exec stamp fails', async () => {
-    const env = setup({
-      config: { S1: { model: null, throwOnSetKey: 'orchestration_model' } },
-      slots: 1
-    });
-    seedExecDefaults(env.store, { orchestration_model: 'opus' });
-    seedQueue(env.store, ['S1']);
-
-    await env.scheduler.tick(WS);
-
-    const a = /** @type {any} */ (
-      Object.values(env.store.snapshot(WS).attempts)[0]
-    );
-    expect(a.cause).toBe('exec_stamp_failed');
-    expect(fs.existsSync(guardHookDir(WS, 'S1-1000-1'))).toBe(false);
-  });
-
   test('removes the hook when the spawn throws', async () => {
     const env = setup({
       config: { S1: {} },
@@ -11042,32 +10626,23 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
     await flush();
   });
 
-  test('uses current preset stamps when the external conflict has no source session', async () => {
+  test('uses the current workspace orchestration model when the external conflict has no source session', async () => {
     const env = extRunnerEnv({ model: null, effort: null });
     seedSettledAttempt(env.store, 'prev-1', {
       runner: 'codex',
       model: 'sol',
       effort: 'high'
     });
-    env.store.setExecDefault(WS, {
+    env.store.setOrchestrationDefaults(WS, {
       expected_revision: env.store.snapshot(WS).revision,
-      key: 'orchestration_model',
-      value: 'sonnet'
-    });
-    env.store.setExecDefault(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      key: 'spec_review_model',
-      value: 'opus'
+      values: { orchestration_model: 'sonnet' }
     });
 
     const res = await env.scheduler.dispatchExternalConflict(WS, 'X1', 'main');
 
     const a =
       env.store.snapshot(WS).attempts[/** @type {string} */ (res.attempt_id)];
-    expect(a.exec_stamped_keys).toEqual([
-      'orchestration_model',
-      'spec_review_model'
-    ]);
+    expect(a.exec_stamped_keys).toBe(null);
     expect(a.model).toBe('sonnet');
     await flush();
   });

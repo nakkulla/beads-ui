@@ -1,35 +1,31 @@
 /**
- * Authority boundary for global execution presets and workspace references.
+ * Authority boundary for global IMPLEMENTATION presets and the workspace
+ * session-defaults migration (spec §C.6, §F).
  *
  * The preset store remains a persistence primitive and queue-store remains a
  * queue persistence primitive. This coordinator is the only place allowed to
- * couple their revisions, inspect durable references, or run legacy migration.
+ * couple their revisions or run the migration.
+ *
+ * @import { ExecPreset } from '../exec-preset-store.js'
  */
-import crypto from 'node:crypto';
 import {
-  EXEC_SETTING_KEYS,
+  SESSION_DEFAULTS_KV_KEY,
+  normalizeSessionDefaults
+} from '../session-defaults.js';
+import {
+  IMPL_PRESET_KEYS,
+  ORCHESTRATION_KEYS,
+  SESSION_DEFAULT_KEYS,
   execSettingEnums,
-  validateExecSettings
+  implPresetEnums,
+  validateImplPresetSettings
 } from './exec-enums.js';
 import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
 
 /**
- * @typedef {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }} DispatchResolution
+ * @typedef {{ ok: true, preset_id: null, preset_revision: null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }} DispatchResolution
  */
-
-/**
- * @param {Record<string, string>} settings
- */
-function sourceDigest(settings) {
-  const ordered = Object.keys(settings)
-    .sort()
-    .map((key) => [key, settings[key]]);
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify(ordered))
-    .digest('hex');
-}
 
 /**
  * @param {unknown} value
@@ -40,141 +36,77 @@ function isRecord(value) {
 }
 
 /**
- * @param {unknown} raw
- * @returns {Record<string, string>|null}
+ * A preset is LEGACY while it still carries any key outside the five
+ * implementation keys — i.e. it predates spec §C.6 and awaits migration.
+ *
+ * @param {ExecPreset} preset
+ * @returns {boolean}
  */
-function normalizeLegacySettings(raw) {
-  if (!isRecord(raw)) {
-    return null;
-  }
-  const enums = execSettingEnums();
+function isLegacyPreset(preset) {
+  return Object.keys(preset.settings).some(
+    (key) => !IMPL_PRESET_KEYS.includes(key)
+  );
+}
+
+/**
+ * Project a legacy 12-key preset onto the five implementation keys.
+ *
+ * @param {Record<string, string>} settings
+ * @returns {Record<string, string>}
+ */
+function implSubsetOf(settings) {
   /** @type {Record<string, string>} */
-  const settings = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (!EXEC_SETTING_KEYS.includes(key) || typeof value !== 'string') {
-      return null;
+  const subset = {};
+  for (const key of IMPL_PRESET_KEYS) {
+    if (typeof settings[key] === 'string') {
+      subset[key] = settings[key];
     }
-    const allowed = enums[key];
-    if (!Array.isArray(allowed) || !allowed.includes(value)) {
-      return null;
-    }
-    settings[key] = value;
   }
-  const coherence = validateExecSettings(settings, { active_writer: false });
-  if (!coherence.ok) {
-    return null;
-  }
-  if (coherence.inferred && typeof coherence.impl_runtime === 'string') {
-    settings.impl_runtime = coherence.impl_runtime;
-  }
-  return settings;
+  return subset;
 }
 
 /**
- * @param {ReturnType<typeof discoverQueueStates>} discovered
- * @param {string} preset_id
- */
-function referencesFor(discovered, preset_id) {
-  if (!discovered.complete) {
-    return { complete: false, references: [] };
-  }
-  const references = discovered.states.filter(
-    (state) =>
-      state.status === 'ok' && state.raw?.default_exec_preset_id === preset_id
-  );
-  return { complete: true, references };
-}
-
-/**
- * @param {Record<string, string>} first
- * @param {Record<string, string>} second
- */
-function sameSettings(first, second) {
-  const first_keys = Object.keys(first).sort();
-  const second_keys = Object.keys(second).sort();
-  return (
-    first_keys.length === second_keys.length &&
-    first_keys.every(
-      (key, index) => key === second_keys[index] && first[key] === second[key]
-    )
-  );
-}
-
-/**
- * @param {ReturnType<typeof discoverQueueStates>} discovered
- * @param {import('../exec-preset-store.js').ExecPreset} preset
- */
-function migrationIsComplete(discovered, preset) {
-  if (preset.origin.kind !== 'workspace-exec-defaults') {
-    return true;
-  }
-  const origin = preset.origin;
-  const state = discovered.states.find(
-    (entry) => entry.workspace_key === origin.workspace_key
-  );
-  return (
-    state?.status === 'ok' &&
-    state.raw?.default_exec_preset_id === preset.id &&
-    !Object.hasOwn(state.raw, 'exec_defaults')
-  );
-}
-
-/**
- * @param {{ queueStore: ReturnType<typeof import('./queue-store.js').createQueueStore>, presetStore: ReturnType<typeof import('../exec-preset-store.js').createExecPresetStore>, discover?: () => ReturnType<typeof discoverQueueStates>, workspaceKeyFor?: (workspace: string) => string, workspaceNameFor?: (workspace: string) => string }} options
+ * @param {{
+ *   queueStore: ReturnType<typeof import('./queue-store.js').createQueueStore>,
+ *   presetStore: ReturnType<typeof import('../exec-preset-store.js').createExecPresetStore>,
+ *   discover?: () => ReturnType<typeof discoverQueueStates>,
+ *   workspaceKeyFor?: (workspace: string) => string,
+ *   kvGet?: (workspace: string, key: string) => Promise<{ ok: boolean, value?: Record<string, unknown>, warning?: string, error?: string }>,
+ *   kvSet?: (workspace: string, key: string, value: Record<string, unknown>) => Promise<{ ok: boolean, error?: string }>
+ * }} options
  */
 export function createExecPresetCoordinator(options) {
   const queueStore = options.queueStore;
   const presetStore = options.presetStore;
   const discover = options.discover || (() => discoverQueueStates());
   const workspaceKeyFor = options.workspaceKeyFor || ((workspace) => workspace);
-  const workspaceNameFor =
-    options.workspaceNameFor || ((workspace) => workspace);
+  const kvGet = options.kvGet;
+  const kvSet = options.kvSet;
 
   /**
-   * @param {string} preset_id
-   */
-  function referenceInfo(preset_id) {
-    return referencesFor(discover(), preset_id);
-  }
-
-  /**
-   * Return the preset snapshot annotated with reference and migration-pending
-   * information. Pending presets exist durably but cannot be edited/deleted or
-   * selected until their queue reference is read back.
+   * Every APPLICABLE preset: the implementation-shaped ones. A legacy 12-key
+   * preset is hidden rather than deleted — it stays readable to the migration
+   * until its copy has been read back.
    */
   function snapshot() {
     const state = presetStore.snapshot();
-    const discovered = discover();
     return {
       revision: state.revision,
       presets: state.presets
+        .filter((preset) => !isLegacyPreset(preset))
         .map((preset) => {
-          const references = referencesFor(discovered, preset.id);
-          const pending = !migrationIsComplete(discovered, preset);
-          const coherence = validateExecSettings(preset.settings, {
-            active_writer: false
-          });
+          const coherence = validateImplPresetSettings(preset.settings);
           return {
             ...preset,
             compatible: coherence.ok,
-            incompatibility_reason: coherence.ok ? null : coherence.reason,
-            migration_pending: pending,
-            reference_scan_complete: references.complete,
-            reference_count: references.complete
-              ? references.references.length
-              : null,
-            reference_summary: references.references.map((entry) => ({
-              workspace_key: entry.workspace_key,
-              display_name: entry.display_name
-            }))
+            incompatibility_reason: coherence.ok ? null : coherence.reason
           };
         })
-        .filter((preset) => !preset.migration_pending)
     };
   }
 
   /**
-   * @param {{ applied: boolean, conflict: boolean, revision: number, presets: import('../exec-preset-store.js').ExecPreset[] }} result
+   * @param {{ applied: boolean, conflict: boolean, revision: number, presets: ExecPreset[] }} result
    */
   function annotated(result) {
     const current = snapshot();
@@ -182,80 +114,9 @@ export function createExecPresetCoordinator(options) {
   }
 
   /**
-   * @param {string} workspace
-   * @param {{ preset_id: string|null, expected_queue_revision: number, expected_preset_revision: number }} input
-   */
-  function setDefaultExecPreset(workspace, input) {
-    const queue = queueStore.snapshot(workspace);
-    const presets = snapshot();
-    if (
-      input?.expected_queue_revision !== queue.revision ||
-      input?.expected_preset_revision !== presets.revision
-    ) {
-      return { applied: false, conflict: true, queue, presets };
-    }
-    if (input.preset_id !== null && typeof input.preset_id !== 'string') {
-      return {
-        applied: false,
-        conflict: false,
-        reason: 'invalid',
-        queue,
-        presets
-      };
-    }
-    if (typeof input.preset_id === 'string') {
-      const selected = presets.presets.find(
-        (preset) => preset.id === input.preset_id
-      );
-      if (!selected) {
-        return {
-          applied: false,
-          conflict: false,
-          reason: 'default_exec_preset_missing',
-          queue,
-          presets
-        };
-      }
-      if (selected.migration_pending) {
-        return {
-          applied: false,
-          conflict: false,
-          reason: 'default_exec_preset_pending',
-          queue,
-          presets
-        };
-      }
-      const coherence = validateExecSettings(selected.settings, {
-        active_writer: false
-      });
-      if (!coherence.ok) {
-        return {
-          applied: false,
-          conflict: false,
-          reason: 'default_exec_preset_incompatible',
-          queue,
-          presets
-        };
-      }
-    }
-    const result = queueStore.setDefaultExecPresetId(workspace, {
-      expected_revision: queue.revision,
-      preset_id: input.preset_id
-    });
-    return {
-      applied: result.ok,
-      conflict: result.conflict,
-      queue: result.queue,
-      presets: snapshot(),
-      ...(result.ok ? {} : { reason: 'queue_write_failed' })
-    };
-  }
-
-  /**
-   * Resolve the selected workspace preset exactly once for a dispatch. This is
-   * the boundary that turns the mutable preset/reference stores into an
-   * immutable launch snapshot; every later dispatch step consumes this object
-   * rather than reading either store again.
+   * Resolve the workspace launch settings for one dispatch. The workspace layer
+   * is now the queue's own three orchestration values (spec §C.5) — there is no
+   * preset reference to read, and no session key is supplied here at all.
    *
    * @param {string} workspace
    * @param {any} bead_snapshot
@@ -263,34 +124,14 @@ export function createExecPresetCoordinator(options) {
    */
   function resolveForDispatch(workspace, bead_snapshot) {
     const queue = queueStore.snapshot(workspace);
-    const preset_id = queue.default_exec_preset_id;
     /** @type {Record<string, string>} */
-    let settings = {};
-    /** @type {number|null} */
-    let preset_revision = null;
-
-    if (preset_id !== null) {
-      const state = presetStore.snapshot();
-      const preset = state.presets.find((entry) => entry.id === preset_id);
-      if (!preset) {
-        return /** @type {DispatchResolution} */ ({
-          ok: false,
-          reason: 'default_exec_preset_missing'
-        });
+    const settings = {};
+    for (const key of ORCHESTRATION_KEYS) {
+      const value = /** @type {Record<string, unknown>} */ (queue)[key];
+      if (typeof value === 'string') {
+        settings[key] = value;
       }
-      const coherence = validateExecSettings(preset.settings, {
-        active_writer: false
-      });
-      if (!coherence.ok) {
-        return /** @type {DispatchResolution} */ ({
-          ok: false,
-          reason: 'default_exec_preset_incompatible'
-        });
-      }
-      settings = { ...preset.settings };
-      preset_revision = state.revision;
     }
-
     const raw_exec = resolveExecSettings({
       bead: bead_snapshot,
       defaults: settings
@@ -301,8 +142,10 @@ export function createExecPresetCoordinator(options) {
     });
     return Object.freeze({
       ok: true,
-      preset_id,
-      preset_revision,
+      // No preset is referenced any more; the provenance fields stay so an
+      // attempt record written before this change keeps the same shape.
+      preset_id: null,
+      preset_revision: null,
       settings: Object.freeze(settings),
       exec
     });
@@ -313,214 +156,338 @@ export function createExecPresetCoordinator(options) {
    */
   function deletePreset(input) {
     const current = snapshot();
-    const internal = presetStore.snapshot();
     const preset = current.presets.find((entry) => entry.id === input?.id);
     if (!preset) {
-      if (internal.presets.some((entry) => entry.id === input?.id)) {
-        return {
-          applied: false,
-          conflict: false,
-          reason: 'migration_pending',
-          ...current
-        };
-      }
       return { applied: false, conflict: false, reason: 'invalid', ...current };
-    }
-    const info = referenceInfo(preset.id);
-    if (!info.complete) {
-      return {
-        applied: false,
-        conflict: false,
-        reason: 'reference_scan_incomplete',
-        ...current
-      };
-    }
-    if (info.references.length > 0) {
-      return {
-        applied: false,
-        conflict: false,
-        reason: 'preset_referenced',
-        references: info.references.map((entry) => ({
-          workspace_key: entry.workspace_key,
-          display_name: entry.display_name
-        })),
-        ...current
-      };
-    }
-    if (preset.migration_pending) {
-      return {
-        applied: false,
-        conflict: false,
-        reason: 'migration_pending',
-        ...current
-      };
     }
     return annotated(presetStore.delete(input));
   }
 
   /**
-   * Perform the ordered, restart-idempotent migration for one workspace.
+   * Fill the kv session layer's EMPTY fields from one legacy settings map.
+   * Fill-only-empty is what makes a re-run harmless: a value the user has since
+   * chosen is never overwritten.
    *
    * @param {string} workspace
+   * @param {Record<string, string>} legacy_settings
+   * @returns {Promise<{ ok: boolean, step?: string }>}
    */
-  function migrateWorkspace(workspace) {
-    const workspace_key = workspaceKeyFor(workspace);
-    const discovered = discover();
-    const durable_state = discovered.states.find(
-      (state) => state.workspace_key === workspace_key
-    );
-    if (!discovered.complete) {
-      return { ok: false, step: 'legacy_discovery_incomplete' };
+  async function fillKvSessionDefaults(workspace, legacy_settings) {
+    if (!kvGet || !kvSet) {
+      return { ok: false, step: 'kv_unavailable' };
     }
-    if (!durable_state) {
-      return { ok: true, migrated: false };
-    }
-    if (durable_state.status === 'absent') {
-      return { ok: true, migrated: false };
-    }
-    if (durable_state.status !== 'ok' || !durable_state.raw) {
-      return { ok: false, step: 'legacy_discovery_incomplete' };
-    }
-    if (!Object.hasOwn(durable_state.raw, 'exec_defaults')) {
-      return { ok: true, migrated: false };
-    }
-    const raw_legacy_defaults = durable_state.raw.exec_defaults;
-    if (!isRecord(raw_legacy_defaults)) {
-      return { ok: false, step: 'legacy_incompatible' };
-    }
-    const legacy_defaults = /** @type {Record<string, string>} */ (
-      raw_legacy_defaults
-    );
-    const settings = normalizeLegacySettings(legacy_defaults);
-    if (!settings) {
-      return { ok: false, step: 'legacy_incompatible' };
-    }
-    if (Object.keys(legacy_defaults).length === 0) {
-      return { ok: true, migrated: false };
-    }
-    const initial = queueStore.snapshot(workspace);
-    if (initial.default_exec_preset_id !== null) {
-      const expected_origin = {
-        workspace_key,
-        source_digest: sourceDigest(settings)
-      };
-      const referenced = presetStore
-        .snapshot()
-        .presets.find((preset) => preset.id === initial.default_exec_preset_id);
+    const enums = execSettingEnums();
+    /** @type {Record<string, string>} */
+    const candidates = {};
+    for (const key of SESSION_DEFAULT_KEYS) {
+      const value = legacy_settings[key];
+      const allowed = enums[key];
       if (
-        !referenced ||
-        referenced.origin.kind !== 'workspace-exec-defaults' ||
-        referenced.origin.workspace_key !== expected_origin.workspace_key ||
-        referenced.origin.source_digest !== expected_origin.source_digest ||
-        !sameSettings(referenced.settings, settings)
+        typeof value === 'string' &&
+        Array.isArray(allowed) &&
+        allowed.includes(value)
       ) {
-        return { ok: false, step: 'legacy_reference_mismatch' };
+        candidates[key] = value;
       }
-      let clear;
-      try {
-        clear = queueStore.clearLegacyExecDefaults(workspace, {
-          expected_revision: initial.revision
-        });
-      } catch {
-        return { ok: false, step: 'legacy_clear' };
+    }
+    const read = await kvGet(workspace, SESSION_DEFAULTS_KV_KEY);
+    if (!read.ok) {
+      return { ok: false, step: 'kv_read' };
+    }
+    const current = normalizeSessionDefaults(read.value).values;
+    /** @type {Record<string, unknown>} */
+    const next = isRecord(read.value) ? { ...read.value } : {};
+    next.schema = 1;
+    let changed = false;
+    for (const [key, value] of Object.entries(candidates)) {
+      if (!Object.hasOwn(current, key)) {
+        next[key] = value;
+        changed = true;
       }
-      return clear.ok
-        ? { ok: true, migrated: true }
-        : { ok: false, step: 'legacy_clear' };
     }
-    let created;
-    try {
-      created = presetStore.createOrReuseMigration({
-        name: `이전 기본값 · ${workspaceNameFor(workspace)}`,
-        settings,
-        workspace_key,
-        source_digest: sourceDigest(settings)
-      });
-    } catch {
-      return { ok: false, step: 'preset_persist' };
+    if (!changed) {
+      return { ok: true };
     }
-    if (!('preset' in created)) {
-      return { ok: false, step: 'preset_persist' };
+    const written = await kvSet(workspace, SESSION_DEFAULTS_KV_KEY, next);
+    if (!written.ok) {
+      return { ok: false, step: 'kv_write' };
     }
-    let readback;
-    try {
-      readback = presetStore
-        .snapshot()
-        .presets.find((preset) => preset.id === created.preset.id);
-    } catch {
-      return { ok: false, step: 'preset_readback' };
+    const readback = await kvGet(workspace, SESSION_DEFAULTS_KV_KEY);
+    if (!readback.ok) {
+      return { ok: false, step: 'kv_readback' };
     }
-    if (!readback) {
-      return { ok: false, step: 'preset_readback' };
+    const confirmed = normalizeSessionDefaults(readback.value).values;
+    for (const key of Object.keys(candidates)) {
+      if (!Object.hasOwn(confirmed, key)) {
+        return { ok: false, step: 'kv_readback' };
+      }
     }
-    let referenced;
-    try {
-      referenced = queueStore.setDefaultExecPresetId(workspace, {
-        expected_revision: initial.revision,
-        preset_id: readback.id
-      });
-    } catch {
-      return { ok: false, step: 'queue_reference_persist' };
-    }
-    if (!referenced.ok) {
-      return { ok: false, step: 'queue_reference_persist' };
-    }
-    let reference_readback;
-    try {
-      reference_readback = queueStore.snapshot(workspace);
-    } catch {
-      return { ok: false, step: 'queue_reference_readback' };
-    }
-    if (reference_readback.default_exec_preset_id !== readback.id) {
-      return { ok: false, step: 'queue_reference_readback' };
-    }
-    let cleared;
-    try {
-      cleared = queueStore.clearLegacyExecDefaults(workspace, {
-        expected_revision: reference_readback.revision
-      });
-    } catch {
-      return { ok: false, step: 'legacy_clear' };
-    }
-    if (!cleared.ok) {
-      return { ok: false, step: 'legacy_clear' };
-    }
-    let final;
-    try {
-      final = queueStore.snapshot(workspace);
-    } catch {
-      return { ok: false, step: 'queue_clear_readback' };
-    }
-    if (
-      final.default_exec_preset_id !== readback.id ||
-      (Object.hasOwn(final, 'exec_defaults') &&
-        Object.keys(final.exec_defaults).length !== 0)
-    ) {
-      return { ok: false, step: 'queue_clear_readback' };
-    }
-    return { ok: true, migrated: true, preset_id: readback.id };
+    return { ok: true };
   }
 
   /**
-   * Startup barrier: complete every registered workspace migration before a
-   * scheduler is attached. One failure remains explicit so callers can keep
-   * dispatch closed rather than silently falling back through unsafe legacy
-   * state.
+   * Fill the queue's EMPTY orchestration values from one legacy settings map.
+   *
+   * @param {string} workspace
+   * @param {Record<string, string>} legacy_settings
+   * @returns {{ ok: boolean, step?: string }}
+   */
+  function fillQueueOrchestration(workspace, legacy_settings) {
+    const queue = queueStore.snapshot(workspace);
+    /** @type {Record<string, string|null>} */
+    const patch = {};
+    for (const key of ORCHESTRATION_KEYS) {
+      const value = legacy_settings[key];
+      const current = /** @type {Record<string, unknown>} */ (queue)[key];
+      if (typeof value === 'string' && current === null) {
+        patch[key] = value;
+      }
+    }
+    if (Object.keys(patch).length === 0) {
+      return { ok: true };
+    }
+    let result;
+    try {
+      result = queueStore.setOrchestrationDefaults(workspace, {
+        expected_revision: queue.revision,
+        values: patch
+      });
+    } catch {
+      return { ok: false, step: 'queue_orchestration_write' };
+    }
+    if (!result.ok) {
+      return { ok: false, step: 'queue_orchestration_write' };
+    }
+    const readback = queueStore.snapshot(workspace);
+    for (const [key, value] of Object.entries(patch)) {
+      if (/** @type {Record<string, unknown>} */ (readback)[key] !== value) {
+        return { ok: false, step: 'queue_orchestration_readback' };
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Create the implementation-key copy of every legacy preset and read each one
+   * back. Server-global, so it runs once per migration pass rather than per
+   * workspace.
+   *
+   * @returns {{ ok: boolean, step?: string, legacy_ids: string[] }}
+   */
+  function copyLegacyPresets() {
+    const state = presetStore.snapshot();
+    const legacy = state.presets.filter(isLegacyPreset);
+    /** @type {string[]} */
+    const legacy_ids = [];
+    for (const preset of legacy) {
+      legacy_ids.push(preset.id);
+      const settings = implSubsetOf(preset.settings);
+      let created;
+      try {
+        created = presetStore.createOrReuseImplCopy({
+          name: preset.name,
+          settings,
+          source_preset_id: preset.id
+        });
+      } catch {
+        return { ok: false, step: 'preset_copy_persist', legacy_ids };
+      }
+      if (!('preset' in created)) {
+        return { ok: false, step: 'preset_copy_persist', legacy_ids };
+      }
+      const readback = presetStore
+        .snapshot()
+        .presets.find((entry) => entry.id === created.preset.id);
+      if (!readback) {
+        return { ok: false, step: 'preset_copy_readback', legacy_ids };
+      }
+    }
+    return { ok: true, legacy_ids };
+  }
+
+  /**
+   * Read the legacy source for one workspace: the settings its retired preset
+   * reference (or raw `exec_defaults` map) supplied. Read from the RAW queue
+   * file, because `queue-store` no longer normalizes either field.
+   *
+   * @param {string} workspace
+   * @returns {{ ok: boolean, step?: string, settings?: Record<string, string>, present?: boolean }}
+   */
+  function legacySourceFor(workspace) {
+    const workspace_key = workspaceKeyFor(workspace);
+    const discovered = discover();
+    if (!discovered.complete) {
+      return { ok: false, step: 'legacy_discovery_incomplete' };
+    }
+    const state = discovered.states.find(
+      (entry) => entry.workspace_key === workspace_key
+    );
+    if (!state || state.status === 'absent') {
+      return { ok: true, present: false };
+    }
+    if (state.status !== 'ok' || !state.raw) {
+      return { ok: false, step: 'legacy_discovery_incomplete' };
+    }
+    const raw = state.raw;
+    /** @type {Record<string, string>} */
+    const settings = {};
+    if (isRecord(raw.exec_defaults)) {
+      for (const [key, value] of Object.entries(raw.exec_defaults)) {
+        if (typeof value === 'string') {
+          settings[key] = value;
+        }
+      }
+    }
+    if (typeof raw.default_exec_preset_id === 'string') {
+      const referenced = presetStore
+        .snapshot()
+        .presets.find((entry) => entry.id === raw.default_exec_preset_id);
+      if (referenced) {
+        // The referenced preset is the more specific source: it is what dispatch
+        // actually used, so it overlays the raw map rather than the reverse.
+        Object.assign(settings, referenced.settings);
+      }
+    }
+    const present =
+      Object.hasOwn(raw, 'exec_defaults') ||
+      Object.hasOwn(raw, 'default_exec_preset_id');
+    return { ok: true, present, settings };
+  }
+
+  /**
+   * Run the spec §F migration for one workspace: fill the kv session layer, the
+   * queue's orchestration values, and the implementation-preset copies, each
+   * fill-only-empty. The completion marker and the source cleanup happen ONLY
+   * after all three destinations read back; a partial pass leaves no marker and
+   * re-converges on the next start.
+   *
+   * @param {string} workspace
+   * @param {{ legacy_ids?: string[] }} [shared] - Legacy preset ids already
+   * copied in this pass, so the per-workspace cleanup can drop them.
+   */
+  /**
+   * Remove the legacy queue fields and CONFIRM their absence by readback.
+   * Idempotent: a queue with no legacy fields left succeeds immediately.
+   *
+   * @param {string} workspace
+   * @param {{ legacy_ids?: string[] }} shared
+   * @returns {{ ok: boolean, step?: string }}
+   */
+  function finalizeLegacyCleanup(workspace, shared) {
+    const snapshot = /** @type {Record<string, unknown>} */ (
+      /** @type {unknown} */ (queueStore.snapshot(workspace))
+    );
+    const has_legacy =
+      Object.hasOwn(snapshot, 'default_exec_preset_id') ||
+      Object.hasOwn(snapshot, 'exec_defaults');
+    if (has_legacy) {
+      try {
+        queueStore.clearLegacyExecFields(workspace, {
+          expected_revision: /** @type {any} */ (snapshot).revision
+        });
+      } catch {
+        return { ok: false, step: 'legacy_cleanup_write' };
+      }
+      const readback = /** @type {Record<string, unknown>} */ (
+        /** @type {unknown} */ (queueStore.snapshot(workspace))
+      );
+      if (
+        Object.hasOwn(readback, 'default_exec_preset_id') ||
+        Object.hasOwn(readback, 'exec_defaults')
+      ) {
+        return { ok: false, step: 'legacy_cleanup_readback' };
+      }
+    }
+    if (Array.isArray(shared.legacy_ids) && shared.legacy_ids.length > 0) {
+      presetStore.deletePresets(shared.legacy_ids);
+    }
+    return { ok: true };
+  }
+
+  /**
+   * @param {string} workspace
+   * @param {{ legacy_ids?: string[] }} [shared]
+   */
+  async function migrateWorkspace(workspace, shared = {}) {
+    const queue = queueStore.snapshot(workspace);
+    if (queue.session_defaults_migration) {
+      // The marker proves the FILLS completed, not the cleanup: a crash
+      // between the marker write and the legacy-field removal must not leave
+      // the residue behind forever, so cleanup re-runs until readback-clean.
+      const cleaned = finalizeLegacyCleanup(workspace, shared);
+      if (!cleaned.ok) {
+        return { ok: false, step: cleaned.step };
+      }
+      return { ok: true, migrated: false };
+    }
+    const source = legacySourceFor(workspace);
+    if (!source.ok) {
+      return { ok: false, step: source.step };
+    }
+    if (!source.present) {
+      return { ok: true, migrated: false };
+    }
+    const settings = source.settings || {};
+
+    const kv_filled = await fillKvSessionDefaults(workspace, settings);
+    if (!kv_filled.ok) {
+      return { ok: false, step: kv_filled.step };
+    }
+    const queue_filled = fillQueueOrchestration(workspace, settings);
+    if (!queue_filled.ok) {
+      return { ok: false, step: queue_filled.step };
+    }
+
+    const marked = queueStore.markSessionDefaultsMigrated(workspace, {
+      expected_revision: queueStore.snapshot(workspace).revision
+    });
+    if (!marked.ok) {
+      return { ok: false, step: 'marker_write' };
+    }
+    if (!queueStore.snapshot(workspace).session_defaults_migration) {
+      return { ok: false, step: 'marker_readback' };
+    }
+
+    // Source cleanup is strictly after the marker, so a crash between them
+    // simply re-runs the fills; the cleanup itself is readback-confirmed and,
+    // when interrupted, re-runs on the next start through the marker branch.
+    const cleaned = finalizeLegacyCleanup(workspace, shared);
+    if (!cleaned.ok) {
+      return { ok: false, step: cleaned.step };
+    }
+    return { ok: true, migrated: true };
+  }
+
+  /**
+   * Startup barrier: migrate every registered workspace. The preset copies are
+   * server-global, so they are created ONCE up front and only deleted after
+   * every workspace's marker is written.
    *
    * @param {string[]} workspaces
    */
-  function migrateWorkspaces(workspaces) {
-    /** @type {Array<{ workspace: string, result: ReturnType<typeof migrateWorkspace> }>} */
+  async function migrateWorkspaces(workspaces) {
+    /** @type {Array<{ workspace: string, result: any }>} */
     const outcomes = [];
     try {
       presetStore.snapshot();
     } catch {
       return { ok: false, step: 'preset_store_normalization', outcomes };
     }
-    for (const workspace of workspaces) {
-      outcomes.push({ workspace, result: migrateWorkspace(workspace) });
+    const copied = copyLegacyPresets();
+    if (!copied.ok) {
+      return { ok: false, step: copied.step, outcomes };
     }
-    return { ok: outcomes.every((outcome) => outcome.result.ok), outcomes };
+    for (const workspace of workspaces) {
+      outcomes.push({
+        workspace,
+        result: await migrateWorkspace(workspace, {})
+      });
+    }
+    const all_ok = outcomes.every((outcome) => outcome.result.ok);
+    if (all_ok && copied.legacy_ids.length > 0) {
+      presetStore.deletePresets(copied.legacy_ids);
+    }
+    return { ok: all_ok, outcomes };
   }
 
   return {
@@ -538,21 +505,17 @@ export function createExecPresetCoordinator(options) {
         return {
           applied: false,
           conflict: false,
-          reason: presetStore
-            .snapshot()
-            .presets.some((preset) => preset.id === input.id)
-            ? 'migration_pending'
-            : 'invalid',
+          reason: 'invalid',
           ...snapshot()
         };
       }
       return annotated(presetStore.update(input));
     },
     delete: deletePreset,
-    setDefaultExecPreset,
     resolveForDispatch,
     migrateWorkspace,
     migrateWorkspaces,
-    referenceInfo
+    /** Enum table the WS layer validates an apply against. */
+    presetEnums: () => implPresetEnums()
   };
 }
