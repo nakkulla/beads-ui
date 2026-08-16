@@ -1764,6 +1764,22 @@ export async function discardWorkerPr(workspace_root, bead_id) {
 }
 
 /**
+ * Retry one human-authorized post-merge cleanup through the canonical PR
+ * actions owner. Missing attachment wiring fails closed.
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ * @returns {Promise<{ ok: boolean, pending?: boolean, step?: string|null, reason?: string|null }>}
+ */
+export async function retryWorkerCleanup(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof att.prActions?.retryCleanup !== 'function') {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.prActions.retryCleanup(bead_id);
+}
+
+/**
  * Start or reuse one durable unified discard operation.
  *
  * @param {string} workspace_root

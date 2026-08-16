@@ -791,6 +791,43 @@ describe('scheduler completion repair dispatch', () => {
     ).toBe(1);
   });
 
+  test('admits a post-merge failure whose subject matches the merged sha', async () => {
+    const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
+    seedCompletionIntent(env.store);
+    const merged_sha = 'e'.repeat(40);
+    env.store.setCompletionSubject(WS, {
+      root_bead_id: 'B1',
+      phase: 'gating',
+      subject: {
+        role: 'root',
+        bead_id: 'B1',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: COMPLETION_FAILURE.subject_sha,
+        base_sha: COMPLETION_FAILURE.base_sha,
+        merged_sha
+      }
+    });
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'post-merge-op',
+        kind: 'resume_root',
+        failure_key: { ...COMPLETION_FAILURE, subject_sha: merged_sha },
+        attempt_id: 'post-merge-attempt',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    expect(result).toEqual({ ok: true, attempt_id: 'post-merge-attempt' });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      completion_repair: {
+        subject_sha: merged_sha
+      }
+    });
+  });
+
   test('falls back to a fresh same-Bead session only with owned worktree proof', async () => {
     const env = setup({ config: { B1: {} }, gitRun: ownedGit(), slots: 1 });
     seedCompletionIntent(env.store);
