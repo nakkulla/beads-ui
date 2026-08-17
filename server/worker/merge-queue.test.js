@@ -2344,6 +2344,67 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(merge).toHaveBeenCalledTimes(1);
   });
 
+  test('leaves a completion root to its own saga even under a manual authority', async () => {
+    const store = seedManual(['UI-root']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: MANUAL_HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: MANUAL_HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    /** @type {any[]} */
+    const ensure_calls = [];
+    const merge = vi.fn(async () => ({
+      ok: true,
+      action: 'merged',
+      reason: null
+    }));
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: true,
+        kind: 'clean',
+        reason: null,
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      headReview: {
+        ensureApproved: async (/** @type {any} */ input) => {
+          ensure_calls.push(input);
+          return { state: 'approved', reason: null };
+        }
+      },
+      onCompletionResult: async () => {}
+    });
+
+    await mq.kick();
+
+    // The completion saga owns its own gating and has no disposition for a
+    // head-review result — the two machines must not interleave.
+    expect(ensure_calls).toEqual([]);
+    expect(merge).toHaveBeenCalledTimes(1);
+  });
+
   test('does not update the base of a legacy authority-less BEHIND row', async () => {
     const store = seed(['UI-1']);
     const updateBase = vi.fn(async () => ({ ok: true, reason: null }));

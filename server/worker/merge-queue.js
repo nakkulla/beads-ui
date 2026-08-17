@@ -1191,6 +1191,10 @@ export function createMergeQueue(deps) {
       if (
         probe.kind === 'clean' &&
         manualContinuation(queue_bead_id) &&
+        // A completion root runs its OWN gating saga with its own repair
+        // budget (`processCompletionItem`), and that loop has no disposition
+        // for a head-review result. The two machines stay separate.
+        completionIntent(queue_bead_id) === null &&
         typeof deps.headReview?.ensureApproved === 'function'
       ) {
         const review = await ensureHeadReview(queue_bead_id, subject_bead_id, {
