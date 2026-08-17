@@ -433,6 +433,30 @@ describe('worker/head-review-transport — review runs', () => {
     expect(calls.spawn).toHaveLength(0);
   });
 
+  test('adopts rather than respawns when the spawn window crashed', async () => {
+    /** @type {number} */
+    let spawns = 0;
+    const { t } = transport({
+      makeRunner: (/** @type {string} */ name) => ({
+        name,
+        spawn: () => {
+          spawns += 1;
+          // The process starts, writes its log, and the worker dies before
+          // recording the terminal result.
+          throw Object.assign(new Error('worker died'), { after_spawn: true });
+        }
+      })
+    });
+
+    await t.runReview(reviewPacket());
+    const again = await t.runReview(reviewPacket());
+
+    // The prerecorded marker is what stops a SECOND process for the same
+    // attempt; an unrecoverable adoption fails closed instead.
+    expect(spawns).toBe(1);
+    expect(again).toMatchObject({ ok: false });
+  });
+
   test('returns a recorded terminal result instead of re-running an attempt', async () => {
     const { t, calls } = transport();
     await t.runReview(reviewPacket());

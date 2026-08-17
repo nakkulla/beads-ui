@@ -1084,6 +1084,10 @@ export function createMergeQueue(deps) {
    * @returns {Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>}
    */
   async function ensureHeadReview(queue_bead_id, subject_bead_id, observed) {
+    // A vouched mutation vouches for exactly ONE binding: the caller clears it
+    // right after this call, so a later external push cannot inherit the
+    // resolver's or the base update's provenance.
+
     /** @type {{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }} */
     let review = { state: 'failed', reason: 'head_review_error' };
     try {
@@ -1103,16 +1107,18 @@ export function createMergeQueue(deps) {
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {string|null} ready_attempt_id
-   * @param {string|null} [manual_mutation] - Queue-owned mutation evidence
-   * this drain can vouch for (`resolver:<attempt>` / `base_update`), for the
-   * manual head-review lineage proof.
+   * @param {{ mutation: string|null }} [vouched] - The queue-owned mutation
+   * evidence this drain can vouch for (`resolver:<attempt>` / `base_update`).
+   * A HOLDER, not a value: whichever site binds it consumes it, so one
+   * resolver push or base update vouches for exactly one head-review binding
+   * and never for a later external push.
    * @returns {Promise<MergeClickResult|null>}
    */
   async function runLatestMerge(
     queue_bead_id,
     subject_bead_id,
     ready_attempt_id,
-    manual_mutation = null
+    vouched = { mutation: null }
   ) {
     if (
       ready_attempt_id &&
@@ -1191,8 +1197,9 @@ export function createMergeQueue(deps) {
           head_sha: probe.head_sha || '',
           base_ref: probe.base_ref || null,
           head_ref: probe.head_ref || null,
-          mutation: manual_mutation
+          mutation: vouched.mutation
         });
+        vouched.mutation = null;
         if (review.state !== 'approved') {
           return {
             ok: false,
@@ -1508,8 +1515,8 @@ export function createMergeQueue(deps) {
     // Queue-owned mutation evidence THIS drain can vouch for (UI-58w8 §2):
     // a consumed ready resolution or the driver's own base update. It never
     // survives a restart on purpose — an unprovable move fails closed.
-    /** @type {string|null} */
-    let manual_mutation = null;
+    /** @type {{ mutation: string|null }} */
+    const vouched = { mutation: null };
     // The base update is attempted at most once per turn, so a PR that stays
     // BEHIND cannot loop the driver against the GitHub API.
     let base_update_attempted = false;
@@ -1534,13 +1541,13 @@ export function createMergeQueue(deps) {
         return;
       }
       if (resolution.kind === 'ready' && resolution.attempt_id) {
-        manual_mutation = `resolver:${resolution.attempt_id}`;
+        vouched.mutation = `resolver:${resolution.attempt_id}`;
       }
       const result = await runLatestMerge(
         bead_id,
         bead_id,
         resolution.kind === 'ready' ? resolution.attempt_id || null : null,
-        manual_mutation
+        vouched
       );
       if (!result) {
         return;
@@ -1672,7 +1679,7 @@ export function createMergeQueue(deps) {
           log('merge queue base update threw for %s: %o', bead_id, err);
         }
         if (updated.ok) {
-          manual_mutation = 'base_update';
+          vouched.mutation = 'base_update';
           notify();
           continue;
         }
@@ -1694,8 +1701,9 @@ export function createMergeQueue(deps) {
           head_sha: result.head_sha || '',
           base_ref: result.base_ref || null,
           head_ref: result.head_ref || null,
-          mutation: manual_mutation
+          mutation: vouched.mutation
         });
+        vouched.mutation = null;
         if (review.state === 'approved') {
           notify();
           continue;

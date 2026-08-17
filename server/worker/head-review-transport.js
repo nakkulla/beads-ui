@@ -506,6 +506,19 @@ export function createHeadReviewTransport(deps) {
       'head-review-attempts',
       `${String(input.attempt_id).replace(/[^A-Za-z0-9._-]/g, '_')}.log.jsonl`
     );
+    // Prerecord BEFORE the spawn (UI-58w8 §6): a crash between spawn and the
+    // post-spawn write would otherwise leave no record at all, and the next
+    // pass would start a SECOND process for the same attempt. With this
+    // marker the next pass adopts instead — and an adoption that cannot
+    // recover a result fails closed rather than re-running.
+    writeMarker(input.attempt_id, {
+      attempt_id: input.attempt_id,
+      pid: null,
+      runner: mapped.runner,
+      log_path,
+      started_at: now(),
+      terminal: null
+    });
     /** @type {any} */
     let handle;
     try {
@@ -622,15 +635,14 @@ export function createHeadReviewTransport(deps) {
       return false;
     }
     try {
+      // The group only: the runner spawns detached process groups, and
+      // signalling a bare pid would risk hitting an unrelated process that
+      // reused it. A failed stop is not an error here — the journal CAS, not
+      // this signal, is what makes a late result a no-op.
       process.kill(-pid, 'SIGTERM');
       return true;
     } catch {
-      try {
-        process.kill(pid, 'SIGTERM');
-        return true;
-      } catch {
-        return false;
-      }
+      return false;
     }
   }
 

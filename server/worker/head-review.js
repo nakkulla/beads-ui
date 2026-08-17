@@ -324,18 +324,23 @@ export function createHeadReview(deps) {
         );
       }
 
-      // Enqueue-time shortcut (§2): an ordinary receipt that is ALREADY
-      // current for the requested head binds as `existing_current` — but only
-      // a real external actor's receipt. `skipped` is not evidence and a
-      // journal-less `self` is exactly the independent write this gate exists
-      // to refuse; both fall through to a real review.
+      // Enqueue-time binding (§2): the ordinary workflow receipt that is
+      // ALREADY current for the head this click pinned binds as
+      // `existing_current` — the same receipt the ordinary merge gate trusts,
+      // now recorded in the journal rather than consumed bare. Only `skipped`
+      // is refused: it is authority to proceed, never review evidence.
+      //
+      // This binding is available ONLY before any queue-owned head mutation
+      // (`head_sha === authority.requested_head_sha`). After a mutation the
+      // receipt must come from a review attempt this journal recorded, which
+      // is what stops an independently written `self@<current-head>` from
+      // reaching the merge gate (§5).
       if (
         journal.state === 'pending' &&
         head_sha === authority.requested_head_sha &&
         receipt_head === head_sha &&
         receipt !== null &&
-        receipt.actor !== 'skipped' &&
-        receipt.actor !== 'self'
+        receipt.actor !== 'skipped'
       ) {
         const ok = transition(
           queue_bead_id,

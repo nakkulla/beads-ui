@@ -160,8 +160,8 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     });
   });
 
-  test('refuses a journal-less self receipt and reviews instead', async () => {
-    const { driver, calls } = harness({
+  test('binds an ordinary self receipt current for the clicked head', async () => {
+    const { store, driver, calls } = harness({
       readReceipt: async () => ({
         actor: 'self',
         head_sha: OLD_HEAD,
@@ -175,8 +175,41 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
       base_ref: 'main'
     });
 
+    // The ordinary workflow's controller self-review IS the receipt the
+    // ordinary merge gate trusts; binding it costs no external review.
     expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(0);
+    expect(journalOf(store)).toMatchObject({
+      approval_source: 'existing_current',
+      receipt: `self@${OLD_HEAD}`
+    });
+  });
+
+  test('refuses a self receipt that only appeared after a head mutation', async () => {
+    const { store, driver, calls } = harness({
+      // The head moved to NEW_HEAD, and a `self@NEW_HEAD` receipt exists that
+      // no recorded review attempt produced.
+      readReceipt: async () => ({
+        actor: 'self',
+        head_sha: NEW_HEAD,
+        raw: `self@${NEW_HEAD}`
+      })
+    });
+
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'resolver:res-1'
+    });
+
+    expect(result.state).toBe('approved');
+    // It did NOT ride the independent receipt in — a real review ran and its
+    // own receipt is what the journal binds.
     expect(calls.review).toHaveLength(1);
+    expect(journalOf(store)).toMatchObject({
+      approval_source: 'external_review',
+      receipt: `codex@${NEW_HEAD}`
+    });
   });
 
   test('refuses a skipped receipt and reviews instead', async () => {
