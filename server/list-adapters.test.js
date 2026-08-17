@@ -579,7 +579,7 @@ describe('list adapters for subscription types', () => {
 
   test('uses one legacy dependency fallback generation with provenance parity', async () => {
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson: /** @type {any} */ (runBdJsonProjected),
+      runBdJsonProjected: /** @type {any} */ (runBdJsonProjected),
       dependency_mode: 'legacy-dependency-fallback'
     });
     __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);

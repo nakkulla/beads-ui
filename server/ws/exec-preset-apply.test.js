@@ -11,7 +11,24 @@ const triggerMutationRefreshOnce = vi.fn();
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
 
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('../bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./context.js', () => ({
+  readbackFailureDetail: (/** @type {string} */ reason) => ({
+    phase: 'readback',
+    write_applied: true,
+    retry_safe: false,
+    reason
+  }),
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
     runBdInWorkspace(ws, args),
   runBdJsonProjectedInWorkspace: (
@@ -342,6 +359,11 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
       payload: { preset_id, expected_revision: 1 }
     });
 
-    expect(sent[sent.length - 1].error.code).toBe('kv_readback_failed');
+    expect(sent[sent.length - 1].error.code).toBe('bd_readback_failed');
+    expect(sent[sent.length - 1].error.details).toMatchObject({
+      phase: 'readback',
+      write_applied: true,
+      retry_safe: false
+    });
   });
 });

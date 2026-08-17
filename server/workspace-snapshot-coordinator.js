@@ -1,4 +1,5 @@
-import { runBdJsonProjected as defaultRunBdJson } from './bd.js';
+import { isBdProtocolFailure } from './bd-json.js';
+import { runBdJsonProjected as defaultRunBdJsonProjected } from './bd.js';
 import { normalizeIssueList } from './list-adapters.js';
 import { debug } from './logging.js';
 
@@ -55,11 +56,12 @@ const log = debug('workspace-snapshot');
  * Build a per-workspace raw snapshot coordinator. This module owns generation
  * atomicity only; projection and WebSocket publication remain consumers.
  *
- * @param {{ cwd?: string, runBdJson?: typeof defaultRunBdJson, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, dependency_mode?: 'embedded-dependencies'|'legacy-dependency-fallback', resolveDependencyMode?: () => Promise<'embedded-dependencies'|'legacy-dependency-fallback'>, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
+ * @param {{ cwd?: string, runBdJsonProjected?: typeof defaultRunBdJsonProjected, now?: () => number, retry_base_ms?: number, retry_max_ms?: number, dependency_mode?: 'embedded-dependencies'|'legacy-dependency-fallback', resolveDependencyMode?: () => Promise<'embedded-dependencies'|'legacy-dependency-fallback'>, setTimeout?: typeof globalThis.setTimeout, clearTimeout?: typeof globalThis.clearTimeout, telemetry?: (event: WorkspaceSnapshotTelemetry) => void }} [options]
  */
 export function createWorkspaceSnapshotCoordinator(options = {}) {
   const cwd = options.cwd;
-  const runBdJson = options.runBdJson || defaultRunBdJson;
+  const runBdJsonProjected =
+    options.runBdJsonProjected || defaultRunBdJsonProjected;
   const now = options.now || (() => Date.now());
   const set_timeout = options.setTimeout || globalThis.setTimeout;
   const clear_timeout = options.clearTimeout || globalThis.clearTimeout;
@@ -299,7 +301,11 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       const raw_ready = ready_result.ok === true ? ready_result.data : null;
       if (!Array.isArray(raw_all)) {
         return recordFailure(
-          snapshotError('validation', 'bd list returned a non-array payload'),
+          snapshotError(
+            'validation',
+            'bd list returned a non-array payload',
+            true
+          ),
           {
             cause,
             generation,
@@ -315,7 +321,8 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         return recordFailure(
           snapshotError(
             'validation',
-            'bd ready --explain returned an invalid payload'
+            'bd ready --explain returned an invalid payload',
+            true
           ),
           {
             cause,
@@ -378,7 +385,8 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
           return recordFailure(
             snapshotError(
               'validation',
-              'bd dep list returned a non-array payload'
+              'bd dep list returned a non-array payload',
+              true
             ),
             {
               cause,
@@ -504,7 +512,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
       retry_attempt: state.retry_attempt,
       backoff_ms: delay
     });
-    if (state.snapshot === null) {
+    // A protocol fault never degrades to a stale success: serving the previous
+    // generation would report a compatibility break as ordinary staleness and
+    // let effect gates keep running on data this build can no longer read.
+    if (state.snapshot === null || error.protocol_failure === true) {
       return { ok: false, error, stale: false, fresh: false };
     }
     return {
@@ -548,7 +559,7 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     const command_started_at = now();
     const command_family = COMMAND_FAMILY_BY_STAGE[command_stage];
     try {
-      const result = await runBdJson(command_family, args, { cwd });
+      const result = await runBdJsonProjected(command_family, args, { cwd });
       emitTelemetry('command-complete', {
         cause,
         generation,
@@ -678,7 +689,7 @@ function logTelemetry(event) {
 }
 
 /**
- * @typedef {{ code: 'workspace_snapshot_error', stage: string, message: string, details?: Record<string, unknown> }} SnapshotError
+ * @typedef {{ code: 'workspace_snapshot_error', stage: string, message: string, protocol_failure?: boolean, details?: Record<string, unknown> }} SnapshotError
  */
 
 /**
@@ -742,7 +753,8 @@ function commandError(stage, result) {
       stage,
       isRecord(error) && typeof error.code === 'string'
         ? String(error.code)
-        : `bd ${stage} failed`
+        : `bd ${stage} failed`,
+      isBdProtocolFailure(result)
     );
   }
   return null;
@@ -773,8 +785,13 @@ function commandExit(result) {
  * @param {string} message
  * @returns {SnapshotError}
  */
-function snapshotError(stage, message) {
-  return { code: 'workspace_snapshot_error', stage, message };
+function snapshotError(stage, message, protocol_failure = false) {
+  return {
+    code: 'workspace_snapshot_error',
+    stage,
+    message,
+    ...(protocol_failure ? { protocol_failure: true } : {})
+  };
 }
 
 /**

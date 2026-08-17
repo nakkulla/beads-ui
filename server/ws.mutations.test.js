@@ -4,6 +4,17 @@ import { projectedResponse } from './__fixtures__/bd-json/projected.js';
 import { runBd, runBdJsonProjected } from './bd.js';
 import { attachWsServer, handleMessage } from './ws.js';
 
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn(), runBd: vi.fn() }));
 
 // Ensure clean mock state for each test

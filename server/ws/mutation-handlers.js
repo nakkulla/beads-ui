@@ -17,6 +17,7 @@ import {
   getConnWorkspace,
   getGitUserNameInWorkspace,
   log,
+  readbackFailureDetail,
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
@@ -124,12 +125,12 @@ export async function handleUpdateAssignee(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -318,12 +319,12 @@ export async function handleUpdateExecSettings(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -407,7 +408,8 @@ export async function handleUpdateImplTarget(ws, req) {
         makeError(
           req,
           'bd_readback_failed',
-          err instanceof Error ? err.message : String(err)
+          err instanceof Error ? err.message : String(err),
+          readbackFailureDetail('bd_readback_threw')
         )
       )
     );
@@ -417,12 +419,12 @@ export async function handleUpdateImplTarget(ws, req) {
     triggerMutationRefreshOnce(ws);
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -510,12 +512,12 @@ export async function handleUpdateWorkflowMeta(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -571,12 +573,12 @@ export async function handleUpdateStatus(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -648,12 +650,12 @@ export async function handleUpdatePriority(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -729,12 +731,12 @@ export async function handleEditText(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -841,12 +843,12 @@ export async function handleDepAdd(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -902,12 +904,12 @@ export async function handleDepRemove(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -962,12 +964,12 @@ export async function handleLabelAdd(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -1023,12 +1025,12 @@ export async function handleLabelRemove(ws, req) {
     // The write already landed; replaying it could apply the change twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -1126,12 +1128,12 @@ export async function handleAddComment(ws, req) {
     // a retryable write: replaying it would post the comment twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', comments.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: comments.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          comments.error.message,
+          readbackFailureDetail(comments.error.code)
+        )
       )
     );
     return;

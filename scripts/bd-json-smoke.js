@@ -685,6 +685,111 @@ async function runSmokeBody() {
       `Board count differs between modes: ${evidence.board_bare_count} vs ${evidence.board_enveloped_count}`
     );
 
+    // Worker metadata consumer, in both modes. The Board proves the read
+    // projection; this proves the consumer the scheduler and cleanup actually
+    // depend on reads the same issue either way.
+    const { createBdMetadata } =
+      await import('../server/worker/bd-metadata.js');
+    /**
+     * @param {boolean} envelope
+     */
+    const readWorkerIssue = async (envelope) => {
+      const previous = process.env.BD_JSON_ENVELOPE;
+      if (envelope) {
+        process.env.BD_JSON_ENVELOPE = '1';
+      } else {
+        delete process.env.BD_JSON_ENVELOPE;
+      }
+      try {
+        const meta = createBdMetadata({
+          cwd: workspace,
+          requireCapability: async () => ({ ok: true })
+        });
+        return await meta.readIssue(issue_id);
+      } finally {
+        if (previous === undefined) {
+          delete process.env.BD_JSON_ENVELOPE;
+        } else {
+          process.env.BD_JSON_ENVELOPE = previous;
+        }
+      }
+    };
+
+    const worker_bare = await readWorkerIssue(false);
+    const worker_enveloped = await readWorkerIssue(true);
+    evidence.worker_issue_id = worker_bare && worker_bare.id;
+    check(
+      failures,
+      canonicalJson(worker_bare) === canonicalJson(worker_enveloped),
+      'Worker metadata read differs between modes'
+    );
+    check(
+      failures,
+      Boolean(worker_bare && worker_bare.id === issue_id),
+      'Worker metadata read did not return the requested issue'
+    );
+
+    // Health capability, in both modes. `/healthz` is what the deploy gate
+    // reads, so its diagnostics must be green against a real bd.
+    const { bdHealthSnapshot, resolveBdWorkspaceIdentity } =
+      await import('../server/bd-capability.js');
+    const { runBdJson } = await import('../server/bd.js');
+    /**
+     * @param {boolean} envelope
+     */
+    const readHealth = async (envelope) => {
+      const previous = process.env.BD_JSON_ENVELOPE;
+      if (envelope) {
+        process.env.BD_JSON_ENVELOPE = '1';
+      } else {
+        delete process.env.BD_JSON_ENVELOPE;
+      }
+      try {
+        const identity = resolveBdWorkspaceIdentity({ root_dir: workspace });
+        return await bdHealthSnapshot({
+          primary_workspace: identity.ok ? identity.data : undefined,
+          run_json: runBdJson,
+          cwd: workspace
+        });
+      } finally {
+        if (previous === undefined) {
+          delete process.env.BD_JSON_ENVELOPE;
+        } else {
+          process.env.BD_JSON_ENVELOPE = previous;
+        }
+      }
+    };
+
+    const health_bare = await readHealth(false);
+    const health_enveloped = await readHealth(true);
+    evidence.health_bare_ok = health_bare.ok;
+    evidence.health_enveloped_ok = health_enveloped.ok;
+    evidence.health_version = health_bare.diagnostics.version;
+    evidence.health_producer_capabilities =
+      health_bare.diagnostics.producer_capabilities;
+    check(
+      failures,
+      health_bare.ok === true,
+      'health diagnostics red in default mode'
+    );
+    check(
+      failures,
+      health_enveloped.ok === true,
+      'health diagnostics red in envelope mode'
+    );
+    check(
+      failures,
+      canonicalJson(health_bare.diagnostics.consumer_supported_formats) ===
+        canonicalJson(['bare', 'envelope_v2']),
+      'health did not report both consumer supported formats'
+    );
+    check(
+      failures,
+      typeof health_bare.diagnostics.version === 'string' &&
+        String(health_bare.diagnostics.version).length > 0,
+      'health reported no bd version'
+    );
+
     return { ok: failures.length === 0, failures, evidence };
   } finally {
     if (server && server.pid) {

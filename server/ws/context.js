@@ -2,12 +2,12 @@
  * @import { WebSocket, WebSocketServer } from 'ws'
  * @import { MessageType } from '../../app/protocol.js'
  */
+import { requireBdJsonCapabilityForWorkspace } from '../bd-effect-gate.js';
 import {
   getGitUserName,
   kvGetJson,
   kvSetJson,
   runBd,
-  runBdJson,
   runBdJsonProjected
 } from '../bd.js';
 import { debug } from '../logging.js';
@@ -162,33 +162,26 @@ export function setConnWorkspace(ws, wsObj) {
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
-export function runBdInWorkspace(ws, args, options = undefined) {
+export async function runBdInWorkspace(ws, args, options = undefined) {
   const root_dir = getConnWorkspace(ws)?.root_dir;
+
+  // Every WS bd write goes through this one door, so the workspace effect gate
+  // belongs here: a workspace whose bd JSON this build cannot read must not be
+  // written to, and no handler can reach bd without passing this check.
+  const allowed = await requireBdJsonCapabilityForWorkspace('write', root_dir);
+  if (allowed.ok !== true) {
+    return {
+      code: 1,
+      stdout: '',
+      stderr: `bd write refused: ${allowed.error.code}`
+    };
+  }
+
   if (!root_dir) {
     return options === undefined ? runBd(args) : runBd(args, options);
   }
 
   return runBd(args, {
-    ...(options || {}),
-    cwd: root_dir
-  });
-}
-
-/**
- * Run bd JSON commands in the connection's selected workspace when available.
- *
- * @param {WebSocket} ws
- * @param {string[]} args
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
- * @returns {ReturnType<typeof runBdJson>}
- */
-export function runBdJsonInWorkspace(ws, args, options = undefined) {
-  const root_dir = getConnWorkspace(ws)?.root_dir;
-  if (!root_dir) {
-    return options === undefined ? runBdJson(args) : runBdJson(args, options);
-  }
-
-  return runBdJson(args, {
     ...(options || {}),
     cwd: root_dir
   });
@@ -221,6 +214,24 @@ export function runBdJsonProjectedInWorkspace(
 }
 
 /**
+ * The detail every post-write readback failure carries.
+ *
+ * The write already landed, so a client that retries would apply it twice —
+ * `retry_safe: false` is the whole point of naming this separately from an
+ * ordinary write failure.
+ *
+ * @param {string} reason - Stable failure code.
+ */
+export function readbackFailureDetail(reason) {
+  return {
+    phase: 'readback',
+    write_applied: true,
+    retry_safe: false,
+    reason
+  };
+}
+
+/**
  * Read a `bd kv` JSON entry in the connection's selected workspace.
  *
  * @param {WebSocket} ws
@@ -240,8 +251,12 @@ export function kvGetJsonInWorkspace(ws, key) {
  * @param {Record<string, unknown>} value
  * @returns {ReturnType<typeof kvSetJson>}
  */
-export function kvSetJsonInWorkspace(ws, key, value) {
+export async function kvSetJsonInWorkspace(ws, key, value) {
   const root_dir = getConnWorkspace(ws)?.root_dir;
+  const allowed = await requireBdJsonCapabilityForWorkspace('kv', root_dir);
+  if (allowed.ok !== true) {
+    return { ok: false, error: `bd write refused: ${allowed.error.code}` };
+  }
   return root_dir
     ? kvSetJson(key, value, { cwd: root_dir })
     : kvSetJson(key, value);

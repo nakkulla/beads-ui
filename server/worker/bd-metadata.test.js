@@ -47,9 +47,13 @@ function asProjected(fake) {
  * @param {any} [deps]
  */
 function createBdMetadata(deps = {}) {
-  return createBdMetadataModule(
-    deps.runJson ? { ...deps, runJson: asProjected(deps.runJson) } : deps
-  );
+  return createBdMetadataModule({
+    // The effect gate is exercised by its own tests below; every other test
+    // states an open gate explicitly rather than reaching the live bd.
+    requireCapability: async () => ({ ok: true }),
+    ...deps,
+    ...(deps.runJson ? { runJson: asProjected(deps.runJson) } : {})
+  });
 }
 
 describe('worker/bd-metadata argv contract', () => {
@@ -556,5 +560,50 @@ describe('worker/bd-metadata one-write disposition update (UI-hs11)', () => {
     await expect(broken.readIssue('UI-1')).rejects.toThrow(
       /bd_json_shape_invalid/
     );
+  });
+});
+
+describe('bd write effect gate', () => {
+  test('refuses a write while the workspace protocol gate is red', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const md = createBdMetadata({
+      run,
+      requireCapability: async () => ({
+        ok: false,
+        error: { code: 'bd_json_shape_invalid', message: 'bad shape' }
+      })
+    });
+
+    await expect(md.setMetadata('UI-1', 'route', 'full_plan')).rejects.toThrow(
+      /bd write refused: bd_json_shape_invalid/
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('refuses every mutator, not just the first one', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const md = createBdMetadata({
+      run,
+      requireCapability: async () => ({
+        ok: false,
+        error: { code: 'bd_workspace_identity_unresolved', message: 'no id' }
+      })
+    });
+
+    await expect(md.unsetMetadata('UI-1', 'route')).rejects.toThrow(/refused/);
+    await expect(md.setStatus('UI-1', 'closed')).rejects.toThrow(/refused/);
+    await expect(md.updateFields('UI-1', { status: 'open' })).rejects.toThrow(
+      /refused/
+    );
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  test('lets a write through once the gate is green', async () => {
+    const run = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const md = createBdMetadata({ run });
+
+    await md.setMetadata('UI-1', 'route', 'full_plan');
+
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });

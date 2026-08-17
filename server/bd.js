@@ -8,6 +8,7 @@ import {
   BD_JSON_INVALID,
   BD_JSON_SHAPE_INVALID,
   bdJsonFailure,
+  describeJsonType,
   normalizeBdComments,
   normalizeBdDependencyRows,
   normalizeBdIssue,
@@ -158,8 +159,9 @@ function runBdUnlocked(args, options = {}) {
 
     /**
      * A killed child closes with a null exit code, which `Number(code || 0)`
-     * would read as a clean 0. `timed_out` keeps that from looking like an
-     * empty successful run to the JSON boundary.
+     * would read as a clean 0. Every caller checks `code`, so the timeout is
+     * normalized to a non-zero exit HERE rather than at one boundary: a probe
+     * or a `kv` read must not see a timed-out run as an empty success.
      *
      * @param {number | string | null} code
      */
@@ -167,8 +169,9 @@ function runBdUnlocked(args, options = {}) {
       if (timer) {
         clearTimeout(timer);
       }
+      const exit_code = Number(code || 0);
       resolve({
-        code: Number(code || 0),
+        code: timed_out && exit_code === 0 ? 124 : exit_code,
         stdout: out_chunks.join(''),
         stderr: err_chunks.join(''),
         timed_out
@@ -557,65 +560,112 @@ function bdCommandFamily(args) {
  */
 export async function kvGetJson(key, options = {}) {
   const result = await runBd(['kv', 'get', key, '--json'], options);
+  const workspace_key = observationWorkspaceKey('kv', options.cwd);
+
+  /**
+   * Record the protocol observation and return the failure.
+   *
+   * @param {{ ok: false, error: BdJsonError }} failure
+   * @returns {KvGetResult}
+   */
+  const protocolFailure = (failure) => {
+    log('bd kv get protocol failure (key=%s): %s', key, failure.error.code);
+    recordBdProtocolObservation({
+      workspace_key,
+      command_family: 'kv',
+      result: failure
+    });
+    return { ok: false, error: failure.error.code };
+  };
 
   // The transport envelope is stripped BEFORE the exit code is judged: under
   // `BD_JSON_ENVELOPE=1` the `{found,value}` record sits inside `data`, and
   // reading `found` off the outer object would report a stored key as absent.
+  /**
+   * An ordinary CLI failure, reported with bd's own message.
+   *
+   * @returns {KvGetResult}
+   */
+  const cliFailure = () => ({
+    ok: false,
+    error: stderrTail(result.stderr) || `bd kv get exited ${result.code}`
+  });
+
   /** @type {unknown} */
   let payload;
-  /** @type {boolean} */
-  let json_readable = true;
   try {
     payload = JSON.parse(result.stdout || 'null');
   } catch {
-    payload = undefined;
-    json_readable = false;
-  }
-
-  if (json_readable) {
-    const transport = normalizeBdJsonTransport(payload);
-    if (!transport.ok) {
-      // A schema/shape the consumer does not understand is a compatibility
-      // failure, not a skippable value: it must not be softened into the
-      // `kv_value_unparsable` warning that means "present but unusable value".
-      log(
-        'bd kv get transport rejected (key=%s): %s',
-        key,
-        transport.error.code
-      );
-      return { ok: false, error: transport.error.code };
+    // Order matters: bd that already failed is an ordinary CLI failure whose
+    // message the caller needs. Only garbage printed on a SUCCESSFUL run is a
+    // protocol fault, and neither is ever "the key is absent" — bd reports
+    // absence with a well-formed `{found: false}` record.
+    if (result.code !== 0) {
+      return cliFailure();
     }
-    payload = transport.data;
+    return protocolFailure(
+      bdJsonFailure(BD_JSON_INVALID, 'bd kv get returned invalid JSON', {
+        command_family: 'kv'
+      })
+    );
   }
 
-  const parsed =
-    payload && typeof payload === 'object' && !Array.isArray(payload)
-      ? /** @type {Record<string, unknown>} */ (payload)
-      : undefined;
+  const transport = normalizeBdJsonTransport(payload);
+  if (!transport.ok) {
+    return protocolFailure(transport);
+  }
+
+  const record =
+    transport.data &&
+    typeof transport.data === 'object' &&
+    !Array.isArray(transport.data)
+      ? /** @type {Record<string, unknown>} */ (transport.data)
+      : null;
+  if (record === null || typeof record.found !== 'boolean') {
+    if (result.code !== 0) {
+      return cliFailure();
+    }
+    // A payload without a boolean `found` on a successful run is a shape this
+    // consumer does not understand; softening it to absent would hide a stored
+    // value.
+    return protocolFailure(
+      bdJsonFailure(
+        BD_JSON_SHAPE_INVALID,
+        'bd kv get payload has no boolean found flag',
+        {
+          command_family: 'kv',
+          expected: 'boolean found',
+          actual: describeJsonType(
+            record === null ? transport.data : record.found
+          )
+        }
+      )
+    );
+  }
+
+  recordBdProtocolObservation({
+    workspace_key,
+    command_family: 'kv',
+    result: { ok: true }
+  });
+
   // An ABSENT key is a successful read of "no layer": bd prints a valid
-  // `{found: false}` envelope but exits 1, so the envelope is authoritative
-  // over the exit code here.
-  if (parsed && parsed.found === false) {
+  // `{found: false}` record but exits 1, so the record is authoritative over
+  // the exit code here.
+  if (record.found === false) {
     return { ok: true, value: undefined };
   }
   if (result.code !== 0) {
-    return {
-      ok: false,
-      error: stderrTail(result.stderr) || `bd kv get exited ${result.code}`
-    };
+    return cliFailure();
   }
-  if (!parsed) {
-    log('bd kv get returned invalid JSON (key=%s)', key);
-    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
-  }
-  const record = parsed;
+
   const raw_value = record.value;
-  if (record.found !== true || typeof raw_value !== 'string') {
+  if (typeof raw_value !== 'string' || raw_value.length === 0) {
     return { ok: true, value: undefined };
   }
-  if (raw_value.length === 0) {
-    return { ok: true, value: undefined };
-  }
+  // From here the record itself is well formed; only its stored VALUE can be
+  // unusable, which is the one case the workspace-defaults layer skips with a
+  // warning rather than failing the read.
   /** @type {unknown} */
   let decoded;
   try {

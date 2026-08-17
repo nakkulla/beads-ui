@@ -29,6 +29,7 @@ import {
 import {
   kvGetJsonInWorkspace,
   kvSetJsonInWorkspace,
+  readbackFailureDetail,
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
@@ -325,7 +326,8 @@ export async function handleApplyImplPreset(ws, req) {
         makeError(
           req,
           'bd_readback_failed',
-          err instanceof Error ? err.message : String(err)
+          err instanceof Error ? err.message : String(err),
+          readbackFailureDetail('bd_readback_threw')
         )
       )
     );
@@ -337,12 +339,12 @@ export async function handleApplyImplPreset(ws, req) {
     // write failure: replaying the update could apply it twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.error.message, {
-          phase: 'readback',
-          write_applied: true,
-          retry_safe: false,
-          reason: shown.error.code
-        })
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
@@ -427,8 +429,9 @@ export async function handleApplyImplPresetGlobal(ws, req) {
       JSON.stringify(
         makeError(
           req,
-          'kv_readback_failed',
-          readback.error || 'bd kv get failed'
+          'bd_readback_failed',
+          readback.error || 'bd kv get failed',
+          readbackFailureDetail('kv_readback_failed')
         )
       )
     );
@@ -444,8 +447,9 @@ export async function handleApplyImplPresetGlobal(ws, req) {
         JSON.stringify(
           makeError(
             req,
-            'kv_readback_failed',
-            `session default did not persist: ${key}`
+            'bd_readback_failed',
+            `session default did not persist: ${key}`,
+            readbackFailureDetail('kv_readback_mismatch')
           )
         )
       );

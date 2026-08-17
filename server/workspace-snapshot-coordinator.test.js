@@ -92,7 +92,7 @@ describe('workspace snapshot coordinator', () => {
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
       cwd: '/workspace/a',
-      runBdJson: /** @type {any} */ (runBdJson)
+      runBdJsonProjected: /** @type {any} */ (runBdJson)
     });
 
     const cold_request = coordinator.request('cold-subscribe');
@@ -145,7 +145,7 @@ describe('workspace snapshot coordinator', () => {
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
       cwd: '/workspace/telemetry',
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       telemetry
     });
 
@@ -194,7 +194,7 @@ describe('workspace snapshot coordinator', () => {
         })
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson: /** @type {any} */ (runBdJson)
+      runBdJsonProjected: /** @type {any} */ (runBdJson)
     });
 
     const first = coordinator.request('watcher');
@@ -236,7 +236,7 @@ describe('workspace snapshot coordinator', () => {
       ...successfulGeneration([{ id: 'A', dependencies: [] }])
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       telemetry
     });
 
@@ -268,10 +268,10 @@ describe('workspace snapshot coordinator', () => {
       successfulGeneration([{ id: 'B', dependencies: [] }])
     );
     const first = createWorkspaceSnapshotCoordinator({
-      runBdJson: first_runner
+      runBdJsonProjected: first_runner
     });
     const second = createWorkspaceSnapshotCoordinator({
-      runBdJson: second_runner
+      runBdJsonProjected: second_runner
     });
 
     await Promise.all([
@@ -291,7 +291,9 @@ describe('workspace snapshot coordinator', () => {
       { code: 0, stdoutJson: [{ id: 'B', dependencies: [] }] },
       { code: 2, stderr: 'ready failed' }
     ]);
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
 
     await coordinator.request('cold-subscribe');
     const refresh = await coordinator.request('poll');
@@ -305,7 +307,9 @@ describe('workspace snapshot coordinator', () => {
 
   test('returns a structured error before any snapshot exists', async () => {
     const runBdJson = createRunner([{ code: 2, stderr: 'list failed' }]);
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
 
     const result = await coordinator.request('cold-subscribe');
 
@@ -325,7 +329,7 @@ describe('workspace snapshot coordinator', () => {
       ...successfulGeneration([{ id: 'B', dependencies: [] }])
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       now: () => now,
       retry_base_ms: 100,
       telemetry
@@ -375,7 +379,7 @@ describe('workspace snapshot coordinator', () => {
       ...successfulGeneration([{ id: 'B', dependencies: [] }])
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       now: () => now,
       retry_base_ms: 100
     });
@@ -409,7 +413,7 @@ describe('workspace snapshot coordinator', () => {
       ...successfulGeneration([{ id: 'B', dependencies: [] }])
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       retry_base_ms: 100,
       setTimeout: /** @type {typeof globalThis.setTimeout} */ (
         /** @type {unknown} */ (set_timeout)
@@ -447,7 +451,7 @@ describe('workspace snapshot coordinator', () => {
       ...successfulGeneration([{ id: 'B', dependencies: [] }])
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       retry_base_ms: 100,
       setTimeout: /** @type {typeof globalThis.setTimeout} */ (
         /** @type {unknown} */ (set_timeout)
@@ -483,7 +487,7 @@ describe('workspace snapshot coordinator', () => {
       ...successfulGeneration([{ id: 'B', dependencies: [] }])
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       retry_base_ms: 100,
       clearTimeout: /** @type {typeof globalThis.clearTimeout} */ (
         /** @type {unknown} */ (clear_timeout)
@@ -514,7 +518,7 @@ describe('workspace snapshot coordinator', () => {
         })
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson: /** @type {any} */ (runBdJson)
+      runBdJsonProjected: /** @type {any} */ (runBdJson)
     });
 
     const request = coordinator.request('poll');
@@ -569,7 +573,9 @@ describe('workspace snapshot coordinator', () => {
         ]
       })
     );
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
 
     const result = await coordinator.request('cold-subscribe');
 
@@ -587,7 +593,9 @@ describe('workspace snapshot coordinator', () => {
         ready: [{ id: 'MISSING' }]
       })
     );
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
 
     const result = await coordinator.request('cold-subscribe');
 
@@ -606,7 +614,9 @@ describe('workspace snapshot coordinator', () => {
         }
       ])
     );
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
 
     const result = await coordinator.request('cold-subscribe');
 
@@ -628,7 +638,7 @@ describe('workspace snapshot coordinator', () => {
       }
     ]);
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson,
+      runBdJsonProjected: runBdJson,
       dependency_mode: 'legacy-dependency-fallback'
     });
 
@@ -656,7 +666,9 @@ describe('workspace snapshot coordinator', () => {
     const runBdJson = createRunner(
       successfulGeneration([{ id: 'A' }, { id: 'B' }])
     );
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
 
     const result = await coordinator.request('cold-subscribe');
 

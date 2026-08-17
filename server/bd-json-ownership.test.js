@@ -34,6 +34,25 @@ const BD_STDOUT_PARSE_ALLOWLIST = ['server/bd.js'];
  *
  * @type {string[]}
  */
+const RAW_RUNNER_ALLOWLIST = [
+  // The capability probe and the effect gate need the un-projected runner: the
+  // probe IS what decides which shapes this build understands, so it cannot ask
+  // the projected path for permission first.
+  'scripts/bd-json-smoke.js',
+  'server/bd-effect-gate.js',
+  'server/bd.js',
+  'server/health.js'
+];
+
+/**
+ * Production files allowed to call a `normalizeBd*` projector directly.
+ *
+ * Consumers must go through `runBdJsonProjected`, the single owner of protocol
+ * observation; calling a projector directly records no observation and would
+ * leave a shape failure invisible to `/healthz` and the effect preflight.
+ *
+ * @type {string[]}
+ */
 const DIRECT_PROJECTOR_ALLOWLIST = [
   // The disposable smoke is the one caller that MUST project by hand: it runs
   // real bd in both producer modes and compares the two raw payloads, which is
@@ -148,6 +167,12 @@ describe('bd JSON ownership', () => {
     const files = filesMatching(/\bnormalizeBd[A-Za-z]*\(/);
 
     expect(files).toEqual(DIRECT_PROJECTOR_ALLOWLIST);
+  });
+
+  test('only the boundary and its probes use the un-projected runner', () => {
+    const files = filesMatching(/\brunBdJson\b(?!Projected)/);
+
+    expect(files).toEqual(RAW_RUNNER_ALLOWLIST);
   });
 
   test('the retired show unwrapper is gone from the bd module', () => {

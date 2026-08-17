@@ -1,3 +1,4 @@
+import { isBdProtocolFailure } from './bd-json.js';
 import { runBdJsonProjected } from './bd.js';
 import {
   applyClosedIssuesFilter,
@@ -193,10 +194,17 @@ export async function fetchListForSubscription(spec, options = {}) {
       /** @type {any} */ (result.items),
       options.cwd
     );
-    result.items = await enrichIssuesProvenance(
-      /** @type {any} */ (result.items),
-      options.cwd
-    );
+    try {
+      result.items = await enrichIssuesProvenance(
+        /** @type {any} */ (result.items),
+        options.cwd
+      );
+    } catch (err) {
+      if (err instanceof BdProtocolError) {
+        return bdCommandFailure({ ok: false, error: err.bd_error });
+      }
+      throw err;
+    }
   }
   return result;
 }
@@ -479,7 +487,7 @@ async function enrichIssuesProvenance(items, cwd) {
       // An ordinary optional dependency CLI failure stays fail-quiet display
       // policy; a schema or shape failure is a compatibility fault and must
       // reach the subscription instead of silently dropping provenance.
-      if (isProtocolFailure(res)) {
+      if (isBdProtocolFailure(res)) {
         throw new BdProtocolError(res.error);
       }
       log('bd dep list failed for provenance code=%s', res?.error?.code);
@@ -487,6 +495,11 @@ async function enrichIssuesProvenance(items, cwd) {
     }
     from_by_id = collectProvenanceEdges(res.data, ids);
   } catch (err) {
+    if (err instanceof BdProtocolError) {
+      // Ordinary provenance failures stay fail-quiet; a protocol fault is a
+      // compatibility fault and must fail the subscription instead.
+      throw err;
+    }
     log('bd dep list invocation failed for provenance: %o', err);
     return items;
   }
@@ -599,15 +612,15 @@ async function fetchListForSubscriptionRaw(spec, options = {}) {
   }
 
   try {
-    const command_family =
-      String(spec.type) === 'issue-detail' ? 'show' : 'list';
-    const res = await runBdJsonProjected(command_family, args, {
-      cwd: options.cwd
+    const is_detail = String(spec.type) === 'issue-detail';
+    const res = await runBdJsonProjected(is_detail ? 'show' : 'list', args, {
+      cwd: options.cwd,
+      ...(is_detail ? { expected_id: String(spec.params?.id ?? '') } : {})
     });
     if (!res || res.ok !== true) {
       if (
         String(spec.type) === 'resolved-issues' &&
-        !isProtocolFailure(res) &&
+        !isBdProtocolFailure(res) &&
         isUnsupportedResolvedStatus(res?.error?.message || '')
       ) {
         return { ok: true, items: [] };
@@ -835,22 +848,6 @@ function bdCommandFailure(res) {
       }
     }
   };
-}
-
-/**
- * True when a failed result is a bd JSON protocol fault rather than an ordinary
- * CLI failure. Protocol faults must never be softened into an empty view.
- *
- * @param {any} res
- */
-function isProtocolFailure(res) {
-  const code = res && res.error ? res.error.code : '';
-  return (
-    code === 'bd_json_invalid' ||
-    code === 'bd_json_envelope_invalid' ||
-    code === 'bd_json_schema_unsupported' ||
-    code === 'bd_json_shape_invalid'
-  );
 }
 
 /**

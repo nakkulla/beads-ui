@@ -19,6 +19,17 @@ import { decorateQueue } from './ws/worker-handlers.js';
 // Only `runBdJsonProjected` is faked — the title cache's fill is the single
 // under test, and everything else the ws layer imports from `bd.js` must stay
 // real so this exercises the production wiring.
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', async (importOriginal) => {
   /** @type {any} */
   const actual = await importOriginal();

@@ -13,6 +13,17 @@ import { setConnWorkspace } from './ws/context.js';
 
 // The display-policy channel never touches bd; mock it so the module graph
 // resolves without a real bd CLI.
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', () => ({ runBd: vi.fn(), runBdJson: vi.fn() }));
 
 /** @type {string} */

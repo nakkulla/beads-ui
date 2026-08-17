@@ -100,7 +100,9 @@ describe('workspace snapshot Phase 3 consumer reuse', () => {
         stdoutJson: { ready: [], blocked: [] }
       });
     });
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
     __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
     const cache = createRunnableCache();
     const metadata = createBdMetadata({

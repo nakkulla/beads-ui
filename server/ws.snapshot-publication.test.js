@@ -15,6 +15,17 @@ import {
 import { setConnWorkspace } from './ws/context.js';
 import { triggerMutationRefreshOnce } from './ws/refresh.js';
 
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn(), runBd: vi.fn() }));
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];

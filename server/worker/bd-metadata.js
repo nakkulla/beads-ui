@@ -19,11 +19,13 @@
  * so this module is proven via an injected runner that captures argv (never a
  * real bd process).
  */
+import { requireBdJsonCapabilityForWorkspace } from '../bd-effect-gate.js';
 import { runBd, runBdJsonProjected } from '../bd.js';
 
 /**
  * @param {{
  *   run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>,
+ *   requireCapability?: (command_family: string) => Promise<{ ok: true } | { ok: false, error: { code: string } }>,
  *   runJson?: typeof runBdJsonProjected,
  *   cwd?: string,
  *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, fresh?: boolean, snapshot?: { generation?: number, all?: unknown[] } }>
@@ -44,10 +46,32 @@ import { runBd, runBdJsonProjected } from '../bd.js';
  * }}
  */
 export function createBdMetadata(deps = {}) {
-  const run = deps.run || ((args, options) => runBd(args, options));
+  const run_unguarded = deps.run || ((args, options) => runBd(args, options));
   const runJson = deps.runJson || runBdJsonProjected;
   const cwd = deps.cwd;
   const opts = cwd ? { cwd } : undefined;
+  const requireCapability =
+    deps.requireCapability ||
+    ((command_family) =>
+      requireBdJsonCapabilityForWorkspace(command_family, cwd));
+
+  /**
+   * Every bd WRITE goes through this wrapper, which is the workspace effect
+   * gate: a workspace whose bd JSON protocol this build cannot read must not
+   * receive writes, and routing all writers through one door is what keeps a
+   * new mutator from quietly bypassing the gate.
+   *
+   * @param {string[]} args
+   * @param {any} [options]
+   * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+   */
+  const run = async (args, options) => {
+    const allowed = await requireCapability('write');
+    if (allowed.ok !== true) {
+      throw new Error(`bd write refused: ${allowed.error.code}`);
+    }
+    return run_unguarded(args, options);
+  };
   const requestSnapshot =
     typeof deps.requestSnapshot === 'function' ? deps.requestSnapshot : null;
 

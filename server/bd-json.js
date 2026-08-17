@@ -89,6 +89,31 @@ export function bdJsonFailure(code, message, details) {
 }
 
 /**
+ * True when a failed result is a bd JSON protocol fault rather than an ordinary
+ * CLI failure.
+ *
+ * The distinction decides policy everywhere downstream: an ordinary failure may
+ * be negative-cached or displayed fail-quiet, a protocol fault may not — caching
+ * it would hide a compatibility break behind a normal-looking empty result.
+ *
+ * @param {unknown} result
+ * @returns {boolean}
+ */
+export function isBdProtocolFailure(result) {
+  if (!result || typeof result !== 'object') {
+    return false;
+  }
+  const error = /** @type {{ error?: { code?: unknown } }} */ (result).error;
+  const code = error && typeof error.code === 'string' ? error.code : '';
+  return (
+    code === BD_JSON_INVALID ||
+    code === BD_JSON_ENVELOPE_INVALID ||
+    code === BD_JSON_SCHEMA_UNSUPPORTED ||
+    code === BD_JSON_SHAPE_INVALID
+  );
+}
+
+/**
  * Describe a value's top-level type for bounded diagnostics.
  *
  * @param {unknown} value

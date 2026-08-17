@@ -15,6 +15,17 @@ import { setConnWorkspace } from './ws/context.js';
 
 // update-status runs bd; mock it so the prune-on-close path resolves without a
 // real bd CLI. The ui-order channel itself never touches bd.
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', () => ({ runBd: vi.fn(), runBdJsonProjected: vi.fn() }));
 
 /** @type {string} */

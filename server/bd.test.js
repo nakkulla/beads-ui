@@ -323,6 +323,44 @@ describe('kvGetJson', () => {
     expect(res.warning).toBe('kv_value_unparsable');
   });
 
+  test('fails closed on invalid JSON at exit zero instead of reading absent', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('not-json', '', 0));
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: false, error: 'bd_json_invalid' });
+  });
+
+  test('fails closed on a payload without a boolean found flag', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ key: 'k', value: '{}' }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: false, error: 'bd_json_shape_invalid' });
+  });
+
+  test('fails closed on an unsupported envelope schema', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ schema_version: 3, data: {} }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: false, error: 'bd_json_schema_unsupported' });
+  });
+
+  test('keeps the exit-1 absent record a successful empty read', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: false }), '', 1)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: true, value: undefined });
+  });
+
   test('propagates a bd failure to the caller', async () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'db locked', 3));
 
