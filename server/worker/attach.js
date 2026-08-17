@@ -48,6 +48,8 @@ import {
 } from './completion-intent.js';
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
+import { createHeadReviewTransport } from './head-review-transport.js';
+import { createHeadReview } from './head-review.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
@@ -391,6 +393,7 @@ export function defaultProbePid(pid) {
  *   repairSession?: any,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
+ *   headReview?: any,
  *   notify?: any,
  *   reviseDisposition?: any,
  *   mergeQueue?: any,
@@ -1040,6 +1043,51 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         prActions.resumeMigratedClosure(bead_id)
     });
 
+  // The manual-continuation head-review machine (UI-58w8 §2–§4): live effect
+  // adapters bound to the SAME bd/gh/runner/worktree surfaces every other
+  // Worker effect uses, so its receipts and observations can never come from
+  // a different view of the world than the merge gate's.
+  const headReviewTransport = createHeadReviewTransport({
+    workspace: keyFor(workspace_root),
+    repo,
+    bd,
+    makeRunner,
+    worktree,
+    gitRun,
+    probeHead: async (/** @type {string} */ bead_id) => {
+      if (!prActions) {
+        return null;
+      }
+      const probe = await prActions.probeMergeability(bead_id);
+      return probe.head_sha || null;
+    },
+    // Unique-writer fence for the repair round: an ordinary session that owns
+    // this bead's worktree must finish first.
+    beadSessionActive: (/** @type {string} */ bead_id) => {
+      try {
+        const attempts =
+          runtime.queueStore.snapshot(keyFor(workspace_root)).attempts || {};
+        return Object.values(attempts).some(
+          (/** @type {any} */ attempt) =>
+            attempt &&
+            attempt.bead_id === bead_id &&
+            attempt.status === 'running'
+        );
+      } catch {
+        return true;
+      }
+    },
+    log
+  });
+  const headReview =
+    options.headReview ||
+    createHeadReview({
+      workspace: keyFor(workspace_root),
+      store: runtime.queueStore,
+      ...headReviewTransport,
+      log
+    });
+
   // The sequential merge driver (UI-5v7d §2). It is the ONLY caller of
   // `prActions.merge()` for a queued item, so it is built with the same actions
   // instance every click routes into — a click queues, this merges. Started by
@@ -1085,6 +1133,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           queue_bead_id,
           subject_bead_id
         ),
+      headReview,
+      updateBase: (/** @type {string} */ bead_id) =>
+        prActions.updateBase(bead_id),
       onCompletionResult: (
         /** @type {string} */ root_bead_id,
         /** @type {string} */ subject_bead_id,
@@ -1224,6 +1275,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    headReviewTransport,
     discardCoordinator,
     mergeQueue,
     autoMerge,
@@ -1730,6 +1782,114 @@ export async function kickWorkerMergeQueue(workspace_root) {
     return;
   }
   await att.mergeQueue.kick();
+}
+
+/**
+ * Best-effort stop of a cancelled item's recorded review/repair attempts
+ * (UI-58w8 §1). Cancel semantics only — the authority discard is the queue
+ * mutation the caller already made, and every late result of these attempts
+ * fails its journal CAS whether or not the processes die here.
+ *
+ * @param {string} workspace_root
+ * @param {{ review_attempt_id?: string|null, repair_attempt_id?: string|null }} input
+ */
+export function stopWorkerHeadReviewAttempts(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  const transport = att && att.headReviewTransport;
+  if (!transport || typeof transport.stopAttempt !== 'function') {
+    return;
+  }
+  for (const attempt_id of [input.review_attempt_id, input.repair_attempt_id]) {
+    if (typeof attempt_id === 'string' && attempt_id.length > 0) {
+      try {
+        transport.stopAttempt(attempt_id);
+      } catch (err) {
+        log('head-review stop failed for %s: %o', attempt_id, err);
+      }
+    }
+  }
+}
+
+/**
+ * Whether a queue item's [머지] click may NOT be cancelled right now. Only an
+ * actual merge effect in flight (the GitHub API window) locks the item; the
+ * review/repair continuation phases are cancellable — that is exactly what
+ * discards the authority and makes their late results no-ops (UI-58w8 §1).
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ */
+export function workerMergeEffectInFlight(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prActions) {
+    return false;
+  }
+  try {
+    return att.prActions.isInFlight(bead_id) === true;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Queue a manual [머지] click as a durable per-item continuation authority
+ * (UI-58w8 §1). The authority binds the head/base THIS click observed, so the
+ * identity comes from one fresh authoritative probe — never a cached badge —
+ * and an unreadable identity makes NO queue effect at all. A blocked probe
+ * (stale receipt, conflict) still queues: resolving those is exactly what the
+ * authority authorizes. Without an attachment there is nothing to observe
+ * through, which is the same unreadable-identity refusal.
+ *
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, expected_revision: number }} input
+ * @returns {Promise<import('./queue-store.js').QueueOpResult & { reason?: string }>}
+ */
+export async function enqueueWorkerManualMerge(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const store = getWorkerRuntime().queueStore;
+  const att = ATTACHMENTS.get(key);
+  if (!att || !att.prActions) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: 'no_attachment',
+      queue: store.snapshot(key)
+    };
+  }
+  /** @type {any} */
+  let probe = null;
+  try {
+    probe = await att.prActions.probeMergeability(input.bead_id);
+  } catch (err) {
+    log('manual merge probe failed for %s: %o', input.bead_id, err);
+  }
+  const head_sha =
+    probe && typeof probe.head_sha === 'string' && probe.head_sha.length > 0
+      ? probe.head_sha
+      : null;
+  const target_base =
+    probe && typeof probe.base_ref === 'string' && probe.base_ref.length > 0
+      ? probe.base_ref
+      : null;
+  if (head_sha === null || target_base === null) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: 'pr_identity_unreadable',
+      queue: store.snapshot(key)
+    };
+  }
+  return store.enqueueMergeManual(key, {
+    expected_revision: input.expected_revision,
+    entries: [
+      {
+        bead_id: input.bead_id,
+        head_sha,
+        target_base,
+        external: probe.external === true
+      }
+    ]
+  });
 }
 
 /**

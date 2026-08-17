@@ -23,7 +23,7 @@ import { createLockManager } from './locks.js';
 import { ANALYZER_RUNNERS } from './parallel-analysis-runner.js';
 import { createParallelAnalysisStore } from './parallel-analysis-store.js';
 import { createPrObservationStore } from './pr-observations.js';
-import { createQueueStore } from './queue-store.js';
+import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
 import { runtimeCatalog } from './runner/index.js';
@@ -48,7 +48,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {ReturnType<typeof createParallelAnalysisStore>} parallelAnalysis
  * @property {(fn: () => number) => void} setRunningCountProvider
- * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
+ * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
 
 /**
@@ -160,16 +160,29 @@ export function createWorkerRuntime() {
     },
     /**
      * @param {string} root_dir
-     * @returns {{ auto_advance: boolean, running_count: number }}
+     * @returns {{ auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }}
      */
     status(root_dir) {
       let auto_advance = false;
+      let auto_merge = false;
       try {
-        auto_advance = !!queueStore.snapshot(root_dir).auto_advance;
+        const snapshot = queueStore.snapshot(root_dir);
+        auto_advance = !!snapshot.auto_advance;
+        auto_merge = snapshot.auto_merge === true;
       } catch {
         auto_advance = false;
+        auto_merge = false;
       }
-      return { auto_advance, running_count: runningCount() };
+      // `auto_merge` and the manual-continuation capability are INDEPENDENT
+      // fields by contract (UI-58w8 §8): the toggle is workspace state from
+      // the actual queue store, the capability is the queue schema's own
+      // constant — health never authors a meaning of its own.
+      return {
+        auto_advance,
+        running_count: runningCount(),
+        auto_merge,
+        manual_merge_continuation: MANUAL_MERGE_CONTINUATION
+      };
     }
   };
 }

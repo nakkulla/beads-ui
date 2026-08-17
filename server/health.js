@@ -1,5 +1,6 @@
 import { runBd } from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
+import { MANUAL_MERGE_CONTINUATION } from './worker/queue-store.js';
 import { getWorkerRuntime } from './worker/runtime.js';
 
 /**
@@ -67,7 +68,7 @@ async function runProbe(fn) {
 }
 
 /**
- * @typedef {{ auto_advance: boolean, running_count: number }} WorkerStatus
+ * @typedef {{ auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: { schema_version: number, head_review_projection: boolean } }} WorkerStatus
  */
 
 /**
@@ -85,7 +86,12 @@ export function defaultWorkerStatus(root_dir) {
   try {
     return getWorkerRuntime().status(root_dir);
   } catch {
-    return { auto_advance: false, running_count: 0 };
+    return {
+      auto_advance: false,
+      running_count: 0,
+      auto_merge: false,
+      manual_merge_continuation: MANUAL_MERGE_CONTINUATION
+    };
   }
 }
 

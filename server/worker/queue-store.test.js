@@ -4607,6 +4607,255 @@ describe('worker/queue-store — merge queue (UI-5v7d §1)', () => {
   });
 });
 
+describe('worker/queue-store — manual merge continuation authority', () => {
+  function manualStore() {
+    const ids = ['authority-1', 'authority-2', 'authority-3'];
+    const store = createQueueStore({
+      now: () => 123,
+      randomUUID: () => /** @type {string} */ (ids.shift())
+    });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-UI-1', bead_id: 'UI-1' }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    return store;
+  }
+
+  test('records manual authority only with authoritative head and target base', () => {
+    const store = manualStore();
+
+    const unreadable = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: null, target_base: null }]
+    });
+    const queued = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main'
+        }
+      ]
+    });
+
+    expect(unreadable.ok).toBe(false);
+    expect(queued.queue.merge_queue[0]).toMatchObject({
+      authority: {
+        id: 'authority-1',
+        source: 'manual',
+        granted_at: 123,
+        requested_head_sha: 'a'.repeat(40),
+        target_base: 'main'
+      },
+      head_review: null
+    });
+  });
+
+  test('keeps manual authority when auto merge turns off', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main'
+        }
+      ]
+    });
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: false,
+      clear_waiting: true
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].authority?.source).toBe('manual');
+  });
+
+  test('CAS rejects a late review result from a cancelled authority', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main'
+        }
+      ]
+    });
+    store.beginHeadReview(WS, {
+      bead_id: 'UI-1',
+      authority_id: 'authority-1',
+      head_sha: 'b'.repeat(40),
+      reviewer: 'codex',
+      effort: 'xhigh'
+    });
+    store.cancelMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-1'
+    });
+
+    const late = store.setHeadReviewState(WS, {
+      bead_id: 'UI-1',
+      authority_id: 'authority-1',
+      head_sha: 'b'.repeat(40),
+      expected_state: 'pending',
+      patch: { state: 'failed', failure_reason: 'late' }
+    });
+
+    expect(late.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('records automatic source when the auto enroller queues a row', () => {
+    const store = manualStore();
+
+    const r = store.enqueueMergeAuto(WS, {
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main'
+        }
+      ],
+      present_ids: ['UI-1']
+    });
+
+    expect(r.queue.merge_queue[0].authority).toMatchObject({
+      source: 'automatic',
+      requested_head_sha: 'a'.repeat(40),
+      target_base: 'main'
+    });
+  });
+
+  test('reuses the nonterminal authority on a duplicate manual click', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    const dup = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'b'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    expect(dup.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue[0].authority?.id).toBe('authority-1');
+  });
+
+  test('issues a new authority on re-click after a failed review', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    store.beginHeadReview(WS, {
+      bead_id: 'UI-1',
+      authority_id: 'authority-1',
+      head_sha: 'b'.repeat(40),
+      reviewer: 'codex',
+      effort: 'xhigh'
+    });
+    store.setHeadReviewState(WS, {
+      bead_id: 'UI-1',
+      authority_id: 'authority-1',
+      head_sha: 'b'.repeat(40),
+      expected_state: 'pending',
+      patch: { state: 'failed', failure_reason: 'transport_unavailable' }
+    });
+
+    const reclick = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'c'.repeat(40), target_base: 'main' }
+      ]
+    });
+    const late = store.setHeadReviewState(WS, {
+      bead_id: 'UI-1',
+      authority_id: 'authority-1',
+      head_sha: 'b'.repeat(40),
+      expected_state: 'failed',
+      patch: { state: 'approved' }
+    });
+
+    expect(reclick.ok).toBe(true);
+    expect(late.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: {
+        id: 'authority-2',
+        source: 'manual',
+        requested_head_sha: 'c'.repeat(40)
+      },
+      head_review: null
+    });
+  });
+
+  test('attaches a fresh manual authority to a legacy authority-less entry', () => {
+    const store = manualStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1' }]
+    });
+
+    expect(store.snapshot(WS).merge_queue[0].authority).toBeUndefined();
+
+    const reclick = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+
+    expect(reclick.ok).toBe(true);
+    expect(store.snapshot(WS).merge_queue[0].authority?.source).toBe('manual');
+  });
+
+  test('persists authority and head review across a cold reload', () => {
+    const store = manualStore();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: 'UI-1', head_sha: 'a'.repeat(40), target_base: 'main' }
+      ]
+    });
+    store.beginHeadReview(WS, {
+      bead_id: 'UI-1',
+      authority_id: 'authority-1',
+      head_sha: 'b'.repeat(40),
+      reviewer: 'codex',
+      effort: 'xhigh'
+    });
+
+    store.__clearCacheForTest();
+
+    expect(store.snapshot(WS).merge_queue[0]).toMatchObject({
+      authority: { id: 'authority-1', source: 'manual' },
+      head_review: {
+        authority_id: 'authority-1',
+        head_sha: 'b'.repeat(40),
+        state: 'pending',
+        reviewer: 'codex',
+        effort: 'xhigh',
+        repair_rounds: 0
+      }
+    });
+  });
+});
+
 describe('worker/queue-store — merge queue lane coupling (UI-5v7d)', () => {
   test('re-entering pr_wait keeps the queue entry and its consumed rounds', () => {
     // The scheduler's `moveToPrWait` is how a finished conflict-resolution

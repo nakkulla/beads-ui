@@ -342,9 +342,17 @@ export function codexSpec(catalog_entry, options = {}) {
       args.push('-c', `service_tier="${speed}"`);
       // Unattended: no approval prompt can appear, and the user's codex hooks
       // (features.hooks) stay off so a worker session fires none of them.
-      args.push('--dangerously-bypass-approvals-and-sandbox');
+      // A review-mode attempt gets codex's native read-only sandbox instead of
+      // the writable bypass (UI-58w8 §3) — the reviewer cannot mutate the
+      // checkout even if its prompt contract were ignored.
+      if (s.mode === 'review') {
+        args.push('--sandbox', 'read-only');
+      } else {
+        args.push('--dangerously-bypass-approvals-and-sandbox');
+      }
       args.push('--disable', 'hooks');
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
+        review: s.mode === 'review',
         fast_track: !!s.fast_track,
         pr_submit: !s.disposition,
         disposition: !!s.disposition,

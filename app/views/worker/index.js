@@ -580,6 +580,49 @@ function resolutionView(resolution) {
 }
 
 /**
+ * Turn the optional manual-continuation review journal into one badge
+ * (UI-58w8 §7). `approved` shows nothing of its own — the ordinary merge gate
+ * badge already reports that state — and a legacy entry without the optional
+ * field stays invisible (fail-quiet, the workflow-contract consumer rule).
+ * Only `reviewing`/`revising` are live: those are the states with an actual
+ * running attempt behind them.
+ *
+ * @param {{ state?: string, failure_reason?: string|null }|null|undefined} head_review
+ * @returns {{ badge: string, live: boolean, alert: boolean }|null}
+ */
+export function headReviewView(head_review) {
+  if (!head_review || typeof head_review !== 'object') {
+    return null;
+  }
+  switch (head_review.state) {
+    case 'pending':
+      return { badge: 'implementation review 대기', live: false, alert: false };
+    case 'reviewing':
+      return { badge: 'implementation review 중', live: true, alert: false };
+    case 'revising':
+      return { badge: 'review 수정 중 · 1회', live: true, alert: false };
+    case 'failed': {
+      const raw =
+        typeof head_review.failure_reason === 'string'
+          ? head_review.failure_reason
+          : '';
+      // eslint-disable-next-line no-control-regex
+      const reason = raw.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, 120);
+      return {
+        badge:
+          reason.trim().length > 0
+            ? `review 자동 진행 실패: ${reason.trim()}`
+            : 'review 자동 진행 실패',
+        live: false,
+        alert: true
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
  * The base-exception badge text for one attempt, or null when there is no
  * exception to report (UI-j6wa §3).
  *
@@ -737,7 +780,7 @@ function completionView(completion) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, head_review?: any, authority?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -754,6 +797,9 @@ function completionView(completion) {
  * @param {Record<string, any>} [discard_operations] - UI-safe durable discard projection.
  * the durable journal itself never reaches the client (UI-x9tu §10).
  * @param {boolean} [worker_serial] - Durable attempt execution mode.
+ * @param {boolean} [auto_merge_on] - The workspace's global auto-merge toggle
+ * (UI-58w8 §1). Read only to tell whether an AUTOMATIC enrolment still has a
+ * driver behind it; it never gates a manual authority's continuation.
  * @returns {any}
  */
 function prWaitRow(
@@ -771,7 +817,8 @@ function prWaitRow(
   base_exception = null,
   completion = null,
   discard_operations = {},
-  worker_serial = false
+  worker_serial = false,
+  auto_merge_on = false
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -786,6 +833,27 @@ function prWaitRow(
   const resolution = resolutionView(
     merge_queue ? merge_queue.resolution : null
   );
+  const head_review = headReviewView(
+    merge_queue ? merge_queue.head_review : null
+  );
+  const journal = (merge_queue && merge_queue.head_review) || null;
+  const authority = (merge_queue && merge_queue.authority) || null;
+  // The continuation phases have a live or pending attempt behind them, and
+  // cancelling one is exactly what discards the authority (UI-58w8 §1) — the
+  // merge EFFECT is the only thing a click may not interrupt.
+  const continuation_phase =
+    !!journal && ['pending', 'reviewing', 'revising'].includes(journal.state);
+  // A queued row the driver will NOT carry forward on its own: a terminal
+  // review failure, a legacy entry with no authority, or an automatic
+  // enrolment sitting under a global toggle that is off. For all three the
+  // way forward is a fresh [머지] click, which the server re-validates from a
+  // new authoritative observation before issuing a new manual authority.
+  const needs_reclick =
+    queued &&
+    !queue_active &&
+    (journal?.state === 'failed' ||
+      !authority ||
+      (authority.source === 'automatic' && !auto_merge_on));
   /** @type {string[]} */
   const badges = [];
   if (external) {
@@ -810,6 +878,11 @@ function prWaitRow(
   );
   if (conflict_badge) {
     badges.push(conflict_badge);
+  }
+  // 수동 머지 continuation의 review 진행/실패 상태 (UI-58w8 §7). 기존
+  // '충돌 해소 완료 · 재검증 대기'만으로는 자동 진행 여부를 구분할 수 없다.
+  if (head_review) {
+    badges.push(head_review.badge);
   }
   if (substituted.label) {
     badges.push(substituted.label);
@@ -918,31 +991,46 @@ function prWaitRow(
           null
         : resolution?.live || conflict_session === 'running'
           ? conflict_badge
-          : substituted.live
-            ? substituted.label
-            : null,
+          : head_review?.live
+            ? // A running review/repair attempt is live server work
+              // (UI-58w8 §7); pending/failed are settled states.
+              head_review.badge
+            : substituted.live
+              ? substituted.label
+              : null,
     usage,
     alert:
       (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) ||
       !!cleanup_failed ||
       !!queue_failure ||
+      !!(head_review && head_review.alert) ||
       !!(recovery && recovery.alert),
     // A queued row has nothing to click but [취소]: the merge is the driver's
     // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
+    // The exception is a row the driver will not carry forward on its own
+    // (UI-58w8 §1) — there the click IS the recovery path, and the server
+    // re-validates the PR identity before issuing a new manual authority.
     merge_action: repo_operations_action_blocked
       ? false
-      : !queued || continuation_required,
+      : !queued || continuation_required || needs_reclick,
     // 머지 액션이 저장소 작업 단계에서 잠긴 카드 (§4.4): 잠금 사유를 문장으로
     // 반복하는 대신, 그 사유가 실제로 적혀 있는 타임라인으로 데려간다.
     timeline_action: repo_operations_action_blocked,
     cancel_action: queued && !continuation_required,
-    cancel_enabled: !queue_active && !(recovery && recovery.lock_actions),
+    // 리뷰/수정 continuation 중에도 [취소]는 열려 있어야 한다 (UI-58w8 §1):
+    // 그 클릭이 authority를 폐기해 늦게 끝난 reviewer/repair 결과를 no-op으로
+    // 만드는 유일한 수단이고, 잠겨야 하는 것은 되돌릴 수 없는 머지 효과뿐이다.
+    cancel_enabled:
+      (!queue_active || continuation_phase) &&
+      !(recovery && recovery.lock_actions),
     cancel_title:
       recovery && recovery.lock_actions
         ? '자동복구 중 — 중단하려면 상단 자동 머지 중단을 사용하세요'
-        : queue_active
+        : queue_active && !continuation_phase
           ? '머지 진행 중 — 취소할 수 없습니다'
-          : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
+          : continuation_phase
+            ? 'review 진행을 취소하고 머지 권한을 폐기합니다'
+            : '머지 큐에서 이 항목을 뺍니다 (다시 [머지]로 넣을 수 있습니다)',
     discard,
     discard_action: discard.action,
     merge_step,
@@ -961,7 +1049,15 @@ function prWaitRow(
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
       !repo_operations_action_blocked &&
-      (enabled || conflicting || cleanup_retry || external_cleanup),
+      // A re-click recovery stays clickable on a CLOSED gate on purpose
+      // (UI-58w8 §1): stale receipt and BEHIND are exactly the gates the new
+      // authority's continuation exists to carry, and the server re-observes
+      // the PR before it issues one.
+      (enabled ||
+        conflicting ||
+        cleanup_retry ||
+        external_cleanup ||
+        needs_reclick),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
@@ -974,7 +1070,9 @@ function prWaitRow(
         ? '정리 재개'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
-          : undefined,
+          : needs_reclick
+            ? '다시 머지'
+            : undefined,
     merge_title: discard_blocks_merge
       ? discard.error
         ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
@@ -2584,11 +2682,17 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_resolutions = new Map();
     /** @type {Map<string, any>} */
     const merge_continuations = new Map();
+    /** @type {Map<string, any>} */
+    const merge_head_reviews = new Map();
+    /** @type {Map<string, any>} */
+    const merge_authorities = new Map();
     merge_queue.forEach((/** @type {any} */ e, /** @type {number} */ i) => {
       if (e && typeof e.bead_id === 'string') {
         merge_positions.set(e.bead_id, i + 1);
         merge_resolutions.set(e.bead_id, e.resolution);
         merge_continuations.set(e.bead_id, e.continuation_action || null);
+        merge_head_reviews.set(e.bead_id, e.head_review || null);
+        merge_authorities.set(e.bead_id, e.authority || null);
       }
     });
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
@@ -2939,7 +3043,9 @@ export function createWorkerView(mount_element, options = {}) {
               active: merge_state.active === e.bead_id,
               failure: merge_failures[e.bead_id] || null,
               resolution: merge_resolutions.get(e.bead_id),
-              continuation_action: merge_continuations.get(e.bead_id)
+              continuation_action: merge_continuations.get(e.bead_id),
+              head_review: merge_head_reviews.get(e.bead_id) || null,
+              authority: merge_authorities.get(e.bead_id) || null
             },
             // Also overlay-only (UI-w0hi §3): a durable row has no field here and
             // must keep the pre-existing behaviour, so absence reads as present.
@@ -2960,7 +3066,8 @@ export function createWorkerView(mount_element, options = {}) {
               ? q.discard_operations
               : {},
             attempt_by_id.get(last_attempt_by_bead.get(e.bead_id) || '')
-              ?.worker_serial === true
+              ?.worker_serial === true,
+            q.auto_merge === true
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
