@@ -57,7 +57,7 @@ export function isGroupEligible(group) {
  * Validate one analyzer result against its pinned snapshot and bundle.
  *
  * @param {{ result: unknown, snapshot: { digest: string, target_ids: string[] }, manifest: { files: Array<{ path: string }> }, readBundleFile: (p: string) => string|null }} input
- * @returns {{ ok: true, result: any } | { ok: false, reason: string, detail?: string }}
+ * @returns {{ ok: boolean, result?: any, reason?: string, detail?: string }}
  */
 export function validateAnalysisResult(input) {
   const { result, snapshot, manifest, readBundleFile } = input;

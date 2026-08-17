@@ -1318,10 +1318,14 @@ export function onWorkerSnapshotRefresh(listener) {
 /**
  * Push the current queue snapshot to every subscriber of a workspace.
  *
+ * Exported since UI-04vo: the analysis submit path converges through the same
+ * queue CAS and must publish the result on the SAME channel, rather than
+ * growing a second push with its own decoration.
+ *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
  */
-function fanout(workspace_key, queue) {
+export function fanout(workspace_key, queue) {
   const decorated = decorateQueue(workspace_key, queue);
   for (const sub of subscribersFor(workspace_key)) {
     emitWorkerQueueSnapshot(sub.ws, sub.client_id, workspace_key, decorated);

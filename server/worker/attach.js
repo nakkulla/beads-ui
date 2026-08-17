@@ -1243,6 +1243,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     repoOperationMigration,
     repo,
     resolveBase,
+    // Exposed so the analyzer can read PINNED blobs through the attachment's
+    // own runner rather than constructing a second git seam (UI-04vo §7).
+    gitRun,
     workspace: workspace_root
   };
 }
@@ -1537,6 +1540,27 @@ export async function checkWorkerQueueAdmission(workspace_root, bead_id) {
     return unattachedAdmissionCheck(workspace_root, bead_id);
   }
   return att.admission.check(bead_id);
+}
+
+/**
+ * The read-only inputs the parallelism analyzer needs from a live attachment
+ * (UI-04vo §6): the pinned-base resolver and the git runner it reads blobs
+ * with. Null without an attachment — an inactive workspace has no base to pin,
+ * and the analyzer must refuse rather than analyze an unpinned tree.
+ *
+ * @param {string} workspace_root
+ * @returns {{ repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, gitRun: (args: string[], options?: any) => Promise<any> }|null}
+ */
+export function workerAnalysisContext(workspace_root) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof att.resolveBase !== 'function') {
+    return null;
+  }
+  return {
+    repo: att.repo,
+    resolveBase: att.resolveBase,
+    gitRun: att.gitRun
+  };
 }
 
 /**

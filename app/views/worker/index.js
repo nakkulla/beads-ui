@@ -73,6 +73,7 @@ import {
   cleanupStepLabel,
   mergeStepView
 } from './merge-steps.js';
+import { createParallelAnalysisDialog } from './parallel-analysis-dialog.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -1008,7 +1009,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, execPresetStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, execPresetStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
  * @returns {{ load: () => void, openExecDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1016,6 +1017,7 @@ export function createWorkerView(mount_element, options = {}) {
     transport,
     issueStores,
     queueStore,
+    analysisStore,
     execPresetStore,
     sessionLogStore,
     uiOrderStore,
@@ -1182,6 +1184,16 @@ export function createWorkerView(mount_element, options = {}) {
     presetStore: execPresetStore,
     transport
   });
+
+  // 병렬성 분석 다이얼로그 (UI-04vo §9). Absent `analysisStore` (older wiring)
+  // simply never opens — the control-bar button stays out of the bar.
+  const parallel_analysis_dialog = analysisStore
+    ? createParallelAnalysisDialog(console_el, {
+        queueStore,
+        analysisStore,
+        transport
+      })
+    : null;
 
   /**
    * @returns {any} Current queue snapshot (or an empty shape).
@@ -1957,6 +1969,39 @@ export function createWorkerView(mount_element, options = {}) {
         legacy_serial_by_id.set(issue.id, isWorkerSerial(labels));
       }
     }
+    // 분석 추천 overlay (UI-04vo §4). last-good 결과에서 파생하고, 서버가
+    // 찍어 준 `eligible` 그룹만 chip을 얻는다 — 이 화면은 자격을 다시 계산하지
+    // 않는다. 이미 한 직렬 레인에 함께 있는 그룹은 추천할 것이 없으므로 뺀다.
+    /** @type {Map<string, string[]>} */
+    const recommendation_by_id = new Map();
+    const analysis_groups = analysisStore?.get()?.last_good?.result?.groups;
+    for (const group of Array.isArray(analysis_groups) ? analysis_groups : []) {
+      if (group?.eligible !== true || !Array.isArray(group.members)) {
+        continue;
+      }
+      const lanes_of = group.members.map((/** @type {string} */ bead_id) => {
+        const lane = (Array.isArray(q.serial_lanes) ? q.serial_lanes : []).find(
+          (/** @type {any} */ entry_lane) =>
+            entry_lane.entries.some(
+              (/** @type {any} */ e) => e.bead_id === bead_id
+            )
+        );
+        return lane ? lane.id : null;
+      });
+      const settled =
+        lanes_of.every((/** @type {string|null} */ lane) => lane !== null) &&
+        new Set(lanes_of).size === 1;
+      if (settled) {
+        continue;
+      }
+      for (const bead_id of group.members) {
+        recommendation_by_id.set(
+          bead_id,
+          group.members.filter((/** @type {string} */ id) => id !== bead_id)
+        );
+      }
+    }
+
     // 직접 blocks blocker (UI-04vo §3) — 대기 사유 chip의 표시 전용 소스.
     /** @type {Record<string, string[]>} */
     const bead_blocked_by =
@@ -2212,6 +2257,12 @@ export function createWorkerView(mount_element, options = {}) {
           raw_admission.reason.startsWith('not_ready')
             ? [`⏸ ${blockers.join(', ')} 완료 대기 (blocks)`]
             : [];
+        const recommended = waiting_lane
+          ? recommendation_by_id.get(e.bead_id)
+          : undefined;
+        if (recommended && recommended.length > 0) {
+          wait_badges.push(`✳ serial 권장 · ${recommended.join(', ')}와`);
+        }
         return {
           id: e.bead_id,
           title: idToTitle.get(e.bead_id) || e.bead_id,
@@ -3001,6 +3052,15 @@ export function createWorkerView(mount_element, options = {}) {
           )}
         </select>
       </label>
+      ${analysisStore
+        ? html`<button
+            type="button"
+            class="worker-analysis-btn"
+            title="대기 이슈의 병렬 실행 가능성을 분석해 직렬 그룹을 제안합니다 (클릭할 때만 실행)"
+          >
+            ✳ 병렬성 분석
+          </button>`
+        : ''}
       <button
         type="button"
         class="worker-exec-defaults-btn"
@@ -3859,6 +3919,10 @@ export function createWorkerView(mount_element, options = {}) {
       exec_defaults_dialog.open();
       return;
     }
+    if (target?.closest?.('.worker-analysis-btn')) {
+      parallel_analysis_dialog?.open();
+      return;
+    }
     if (
       target?.closest?.('.worker-repo-strip') ||
       target?.closest?.('.worker-mini__timeline')
@@ -4262,6 +4326,11 @@ export function createWorkerView(mount_element, options = {}) {
       drawer_overlay_el.hidden = true;
       try {
         exec_defaults_dialog.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        parallel_analysis_dialog?.destroy();
       } catch {
         /* ignore */
       }

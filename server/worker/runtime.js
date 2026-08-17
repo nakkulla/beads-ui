@@ -20,6 +20,7 @@ import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
+import { createParallelAnalysisStore } from './parallel-analysis-store.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
@@ -43,6 +44,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createRunnableCache>} runnableCache
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createSessionLog>} sessionLog
+ * @property {ReturnType<typeof createParallelAnalysisStore>} parallelAnalysis
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number }} status
  */
@@ -102,6 +104,11 @@ export function createWorkerRuntime() {
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
   const sessionLog = createSessionLog();
+  // Process-wide parallelism-analysis store (UI-04vo §9): server-global
+  // settings, the per-workspace last-good cache, and the single-flight job
+  // registry. Process memory is what makes single-flight true across every
+  // connection, and what makes an on-disk job marker an orphan after a restart.
+  const parallelAnalysis = createParallelAnalysisStore();
   /** @type {() => number} */
   let runningCount = () => 0;
 
@@ -118,6 +125,7 @@ export function createWorkerRuntime() {
     runnableCache,
     reviseParked,
     sessionLog,
+    parallelAnalysis,
     /**
      * @param {() => number} fn
      */

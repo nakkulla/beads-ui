@@ -8879,3 +8879,198 @@ describe('worker 직렬 레인 UI (UI-04vo seam E)', () => {
     expect(row.querySelector('.worker-mini__serial--legacy')).not.toBeNull();
   });
 });
+
+describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @param {any} over
+   */
+  function analysisQueue(over = {}) {
+    return queueOf({
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [] },
+        { id: 's2', entries: [] }
+      ],
+      lane_states: {
+        s1: { occupied_by: [], order: [], corrections: [], cycle: false },
+        s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+      },
+      ...over
+    });
+  }
+
+  /**
+   * @param {any} over
+   */
+  function analysisStoreOf(over = {}) {
+    const listeners = new Set();
+    let state = {
+      settings: {
+        revision: 1,
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high'
+      },
+      job: null,
+      last_good: {
+        identity_digest: 'd'.repeat(64),
+        at: 1000,
+        result: {
+          schema_version: 2,
+          snapshot_digest: 'd'.repeat(64),
+          issues: [],
+          groups: [
+            {
+              members: ['A', 'B'],
+              order: ['A', 'B'],
+              confidence: 'high',
+              categories: ['schema_or_migration'],
+              reason: '같은 스키마',
+              evidence: [],
+              eligible: true
+            }
+          ]
+        }
+      },
+      ...over
+    };
+    return {
+      get: () => state,
+      /** @param {any} next */
+      set(next) {
+        state = next;
+        for (const fn of listeners) {
+          fn();
+        }
+      },
+      /** @param {() => void} fn */
+      subscribe(fn) {
+        listeners.add(fn);
+        return () => listeners.delete(fn);
+      }
+    };
+  }
+
+  test('renders the analysis button in the control bar', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysisStoreOf(),
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+
+    expect(mount.querySelector('.worker-analysis-btn')).not.toBeNull();
+  });
+
+  test('clicking the analysis button opens the dialog', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysisStoreOf(),
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    ).click();
+
+    const dialog = /** @type {HTMLDialogElement} */ (
+      mount.querySelector('#worker-parallel-analysis-dialog')
+    );
+    expect(dialog.hasAttribute('open') || dialog.open).toBe(true);
+  });
+
+  test('renders a serial recommendation chip on an eligible parallel row', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysisStoreOf(),
+      transport: vi.fn()
+    });
+    queueStore.set(
+      analysisQueue({
+        queue: [
+          { bead_id: 'A', added_at: 1 },
+          { bead_id: 'B', added_at: 2 }
+        ]
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A"]')
+    );
+    expect(row.textContent).toContain('✳ serial 권장');
+    expect(row.textContent).toContain('B');
+  });
+
+  test('renders no recommendation chip for an ineligible group', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf();
+    analysis.get().last_good.result.groups[0].eligible = false;
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue({ queue: [{ bead_id: 'A', added_at: 1 }] }));
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A"]')
+    );
+    expect(row.textContent).not.toContain('serial 권장');
+  });
+
+  test('drops the recommendation chip once the group is already in a lane', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysisStoreOf(),
+      transport: vi.fn()
+    });
+    queueStore.set(
+      analysisQueue({
+        queue: [],
+        serial_lanes: [
+          {
+            id: 's1',
+            entries: [
+              { bead_id: 'A', added_at: 1 },
+              { bead_id: 'B', added_at: 2 }
+            ]
+          },
+          { id: 's2', entries: [] }
+        ],
+        lane_states: {
+          s1: {
+            occupied_by: [],
+            order: ['A', 'B'],
+            corrections: [],
+            cycle: false
+          },
+          s2: { occupied_by: [], order: [], corrections: [], cycle: false }
+        }
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="A"]')
+    );
+    expect(row.textContent).not.toContain('serial 권장');
+  });
+});

@@ -114,7 +114,7 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
     const input = runInput();
 
     const handle = runAnalysis({ ...input, spawn_impl: spawn });
-    const outcome = await handle.done;
+    const outcome = /** @type {any} */ (await handle.done);
 
     expect(outcome.ok).toBe(true);
     const payload = captured.stdin.join('');
@@ -171,12 +171,14 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
     const { spawn, captured } = makeAnalysisSpawn({ autoClose: false });
     const killGroup = vi.fn();
 
-    const outcome = await runAnalysis({
-      ...runInput(),
-      spawn_impl: spawn,
-      killGroup,
-      timeout_ms: 15
-    }).done;
+    const outcome = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput(),
+        spawn_impl: spawn,
+        killGroup,
+        timeout_ms: 15
+      }).done
+    );
 
     expect(outcome.ok).toBe(false);
     expect(outcome.reason).toBe('timeout');
@@ -194,7 +196,7 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
     });
 
     handle.cancel();
-    const outcome = await handle.done;
+    const outcome = /** @type {any} */ (await handle.done);
 
     expect(outcome.ok).toBe(false);
     expect(outcome.reason).toBe('cancelled');
@@ -208,14 +210,18 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
   test('refuses a runner without a tool-free capability instead of falling back', async () => {
     const { spawn, captured } = makeAnalysisSpawn({ stdout: RESULT });
 
-    const codex = await runAnalysis({
-      ...runInput({ runner: 'codex' }),
-      spawn_impl: spawn
-    }).done;
-    const unknown = await runAnalysis({
-      ...runInput({ runner: 'gemini' }),
-      spawn_impl: spawn
-    }).done;
+    const codex = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput({ runner: 'codex' }),
+        spawn_impl: spawn
+      }).done
+    );
+    const unknown = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput({ runner: 'gemini' }),
+        spawn_impl: spawn
+      }).done
+    );
 
     expect(codex.ok).toBe(false);
     expect(codex.reason).toBe('capability_missing');

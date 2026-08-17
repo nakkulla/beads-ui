@@ -931,6 +931,21 @@ function normalizeSlots(value) {
   return value >= MIN_SLOTS ? value : null;
 }
 
+/**
+ * Attempt statuses that no longer own their bead. Mirrors the scheduler's set;
+ * kept here because the submit path must judge "is this bead free to move"
+ * inside the same mutation that moves it.
+ *
+ * @type {Set<string>}
+ */
+const TERMINAL_ATTEMPT_STATUSES = new Set([
+  'done',
+  'failed',
+  'orphaned',
+  'stopped',
+  'discarded'
+]);
+
 /** @type {number} */
 const MIN_SERIAL_LANE_COUNT = 1;
 /** @type {number} */
@@ -2863,6 +2878,91 @@ export function createQueueStore(options = {}) {
         next.serial_lane_count = value;
         return true;
       });
+    },
+
+    /**
+     * Move an analysis-recommended group into one serial lane in a SINGLE CAS
+     * (UI-04vo §9). All-or-nothing by construction: every membership,
+     * activity, lane, and size check runs on the same clone the write lands
+     * on, and one failure rejects the whole mutation without a revision bump —
+     * there is no partial application and no second write to undo.
+     *
+     * Placement appends after the lane's existing entries in submit order, and
+     * the blocks correction ({@link orderLaneByBlocks}) is the FINAL order:
+     * a user-submitted sequence never overrides a hard dependency.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, lane: string, ordered_bead_ids: string[], blocks_edges?: { blocker: string, blockee: string }[] }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    applySerialGroup(workspace, input) {
+      const { expected_revision, lane, ordered_bead_ids } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        const index = serialLaneIndex(lane);
+        if (index === null || index >= next.serial_lane_count) {
+          reason = 'lane_invalid';
+          return false;
+        }
+        if (!Array.isArray(ordered_bead_ids) || ordered_bead_ids.length < 2) {
+          reason = 'group_size';
+          return false;
+        }
+        if (new Set(ordered_bead_ids).size !== ordered_bead_ids.length) {
+          reason = 'duplicate_member';
+          return false;
+        }
+        const active = new Set();
+        for (const attempt of Object.values(next.attempts)) {
+          if (!TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))) {
+            active.add(attempt.bead_id);
+          }
+        }
+        for (const entry of next.pr_wait) {
+          active.add(entry.bead_id);
+        }
+        for (const operation of Object.values(next.discard_operations)) {
+          if (operation.phase !== 'done') {
+            active.add(operation.bead_id);
+          }
+        }
+        for (const bead_id of ordered_bead_ids) {
+          const queued =
+            next.queue.some((e) => e.bead_id === bead_id) ||
+            next.serial_lanes.some((entry_lane) =>
+              entry_lane.entries.some((e) => e.bead_id === bead_id)
+            );
+          if (!queued) {
+            reason = 'member_absent';
+            return false;
+          }
+          if (active.has(bead_id)) {
+            reason = 'member_active';
+            return false;
+          }
+        }
+        const added_at = now();
+        for (const bead_id of ordered_bead_ids) {
+          removeFromLanes(next, bead_id);
+        }
+        const target = next.serial_lanes[index];
+        for (const bead_id of ordered_bead_ids) {
+          target.entries.push(makeQueueEntry(bead_id, added_at));
+        }
+        const topo = orderLaneByBlocks(
+          target.entries.map((e) => e.bead_id),
+          Array.isArray(input.blocks_edges) ? input.blocks_edges : []
+        );
+        if (!topo.cycle) {
+          const by_id = new Map(target.entries.map((e) => [e.bead_id, e]));
+          target.entries = topo.order.map(
+            (bead_id) => /** @type {QueueEntry} */ (by_id.get(bead_id))
+          );
+        }
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
     },
 
     /**

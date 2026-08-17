@@ -19,6 +19,15 @@ export const ANALYSIS_PROMPT_VERSION = 2;
 /** @type {number} Hard wall-clock cap for one analysis run. */
 export const ANALYSIS_TIMEOUT_MS = 300_000;
 
+/**
+ * One run's outcome envelope. Deliberately ONE shape rather than a
+ * discriminated union: every consumer checks `ok` and then reads the field it
+ * needs, and a union forces a cast at each of those reads without making any
+ * of them safer.
+ *
+ * @typedef {{ ok: boolean, result?: any, reason?: string, diagnostic?: string }} AnalysisOutcome
+ */
+
 /** @type {number} Diagnostic cap — stderr is never stored beyond this. */
 const DIAGNOSTIC_MAX = 200;
 
@@ -104,7 +113,7 @@ export function buildAnalysisPayload(input) {
  * `cancel()` kills the whole process group.
  *
  * @param {{ runner: string, model: string, effort?: string, bundle_dir: string, manifest: any, snapshot: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number }} input
- * @returns {{ done: Promise<{ ok: true, result: any } | { ok: false, reason: string, diagnostic?: string }>, cancel: () => void }}
+ * @returns {{ done: Promise<AnalysisOutcome>, cancel: () => void }}
  */
 export function runAnalysis(input) {
   const spawn_impl = input.spawn_impl || node_spawn;
@@ -141,7 +150,7 @@ export function runAnalysis(input) {
     let stdout = '';
     let stderr_tail = '';
     /**
-     * @param {{ ok: true, result: any } | { ok: false, reason: string, diagnostic?: string }} outcome
+     * @param {AnalysisOutcome} outcome
      */
     function settle(outcome) {
       if (settled) {

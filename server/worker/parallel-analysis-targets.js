@@ -205,7 +205,7 @@ function laneOverlayOf(queue) {
  * partial identity.
  *
  * @param {{ workspace: string, issues: any[], queue: any, base: { ref: string, sha: string|null }, gitRun: (args: string[]) => Promise<{ code: number, stdout: string }> }} input
- * @returns {Promise<{ ok: true, snapshot: any } | { ok: false, reason: string }>}
+ * @returns {Promise<{ ok: boolean, snapshot?: any, reason?: string }>}
  */
 export async function collectAnalysisSnapshot(input) {
   const { workspace, issues, queue, base, gitRun } = input;

@@ -4581,6 +4581,167 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
+/* 병렬성 분석 다이얼로그 (UI-04vo §9). exec-defaults 다이얼로그와 같은 셸
+   토큰을 쓰되 클래스는 분리한다 — 두 화면이 서로의 레이아웃을 상속하면
+   한쪽 변경이 다른 쪽을 조용히 바꾼다. */
+.pa {
+  width: min(760px, 92vw);
+  max-height: 84vh;
+  padding: 0;
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-10);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.pa__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-7) var(--sp-8);
+  border-bottom: 1px solid var(--border-card);
+}
+
+.pa__title {
+  font-weight: 600;
+}
+
+.pa__close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.pa__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  padding: var(--sp-8);
+  overflow-y: auto;
+}
+
+.pa-settings,
+.pa-meta,
+.pa-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+  font-size: var(--fs-chip);
+  color: var(--text-secondary);
+}
+
+.pa-settings__unset {
+  color: var(--accent-warn);
+}
+
+.pa-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-7);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+}
+
+.pa-group__head,
+.pa-group__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+}
+
+.pa-group__confidence,
+.pa-group__category {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  font-size: var(--fs-caption);
+}
+
+.pa-group__applied {
+  color: var(--stage-plan-on);
+}
+
+.pa-group__weak {
+  color: var(--accent-warn);
+}
+
+.pa-group__reason {
+  margin: 0;
+  font-size: var(--fs-small);
+}
+
+.pa-group__members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.pa-member {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  font-size: var(--fs-small);
+}
+
+.pa-member__seq {
+  min-width: 1.2em;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.pa-member__active {
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
+}
+
+.pa-member__up,
+.pa-member__down,
+.pa-member__exclude {
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.pa-group__evidence {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+}
+
+.pa-group__submit {
+  margin-left: auto;
+  padding: var(--sp-3) var(--sp-6);
+  border: 1px solid var(--stage-plan-on);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  color: var(--stage-plan-on);
+  cursor: pointer;
+}
+
+.pa-group__submit:disabled {
+  border-color: var(--border-card);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.pa-empty {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-small);
+}
+
 /* 직렬 레인 스택 (UI-04vo §4): 병렬 대기 pane 아래 레인 카드들을 세로로
    쌓는 한 flex 컬럼. */
 .worker-wait {
