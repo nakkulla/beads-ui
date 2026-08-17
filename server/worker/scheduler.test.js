@@ -10192,7 +10192,6 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     const env = setup({ config: { A: {}, B: {} }, slots: 3 });
     seedLanes(env.store, { s1: ['A', 'B'] });
     await env.scheduler.tick(WS);
-    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
 
     env.runner.finish('A', {
       success: false,
@@ -10201,23 +10200,28 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     });
     await flush();
     await flush();
-    env.store.remove(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'A'
-    });
     env.store.setAutoAdvance(WS, true);
     await env.scheduler.tick(WS);
 
-    expect(env.runner.spawnOrder).toEqual(['A']);
+    // The failed lineage still holds s1, so the NEXT entry stays put. Its own
+    // bead may retry — that is the same lineage continuing, not the next item.
+    expect(env.runner.spawnOrder).not.toContain('B');
 
-    env.store.discardAttempt(WS, {
-      attempt_id,
-      bead_id: 'A',
-      patch: { status: 'discarded' }
-    });
+    // Discard the WHOLE lineage: the mid-step tick retried A, so its lane is
+    // held by the newest attempt, not the one that first failed.
+    for (const attempt of Object.values(env.store.snapshot(WS).attempts)) {
+      if (attempt.bead_id === 'A') {
+        env.store.discardAttempt(WS, {
+          attempt_id: attempt.attempt_id,
+          bead_id: 'A',
+          patch: { status: 'discarded' }
+        });
+      }
+    }
+    env.store.setAutoAdvance(WS, true);
     await env.scheduler.tick(WS);
 
-    expect(env.runner.spawnOrder).toEqual(['A', 'B']);
+    expect(env.runner.spawnOrder).toContain('B');
   });
 
   test('keeps a dismissed failed lineage occupying its lane', async () => {
@@ -10233,10 +10237,6 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     });
     await flush();
     await flush();
-    env.store.remove(WS, {
-      expected_revision: env.store.snapshot(WS).revision,
-      bead_id: 'A'
-    });
     env.store.dismissAttempt(WS, {
       attempt_id,
       expected_revision: env.store.snapshot(WS).revision
@@ -10244,7 +10244,8 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     env.store.setAutoAdvance(WS, true);
     await env.scheduler.tick(WS);
 
-    expect(env.runner.spawnOrder).toEqual(['A']);
+    // `dismissed_at` hides the failure banner; it never releases the lane.
+    expect(env.runner.spawnOrder).not.toContain('B');
   });
 
   test('keeps a pr_wait lineage occupying its lane until moveToDone releases it', async () => {

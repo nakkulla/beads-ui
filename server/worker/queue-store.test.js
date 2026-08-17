@@ -5822,3 +5822,160 @@ describe('worker/queue-store — 분석 제출 단일 CAS (UI-04vo seam J)', () 
     expect(r.reason).toBe('duplicate_member');
   });
 });
+
+describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo 구현 리뷰 1)', () => {
+  test('moving a failed bead to another lane moves its lane occupancy with it', () => {
+    const store = createQueueStore();
+    let rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    rev = store.place(WS, {
+      expected_revision: rev,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const moved = store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'A',
+      lane: 's2'
+    });
+
+    expect(moved.ok).toBe(true);
+    expect(moved.queue.attempts.a1.serial_lane_id).toBe('s2');
+  });
+
+  test('removing a bead from the waiting area clears its lane occupancy', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'failed',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const removed = store.remove(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'A'
+    });
+
+    expect(removed.ok).toBe(true);
+    expect(removed.queue.attempts.a1.serial_lane_id).toBeNull();
+  });
+
+  test('keeps a released attempt lane snapshot as history', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    store.appendAttempt(WS, {
+      expected_revision: rev,
+      attempt: {
+        attempt_id: 'a1',
+        bead_id: 'A',
+        status: 'done',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const moved = store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'A',
+      lane: 's2'
+    });
+
+    expect(moved.queue.attempts.a1.serial_lane_id).toBe('s1');
+  });
+
+  test('place applies the blocks correction to the durable lane order', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+
+    const placed = store.place(WS, {
+      expected_revision: rev,
+      bead_id: 'A',
+      lane: 's1',
+      blocks_edges: [{ blocker: 'A', blockee: 'B' }]
+    });
+
+    expect(placed.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'A',
+      'B'
+    ]);
+  });
+
+  test('reorder cannot leave a blocker behind its blockee', () => {
+    const store = createQueueStore();
+    let rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    rev = store.place(WS, {
+      expected_revision: rev,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+
+    const reordered = store.reorder(WS, {
+      expected_revision: rev,
+      bead_id: 'B',
+      lane: 's1',
+      to_index: 0,
+      blocks_edges: [{ blocker: 'A', blockee: 'B' }]
+    });
+
+    expect(
+      reordered.queue.serial_lanes[0].entries.map((e) => e.bead_id)
+    ).toEqual(['A', 'B']);
+  });
+
+  test('a blocks cycle leaves the user order untouched', () => {
+    const store = createQueueStore();
+    const rev = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+
+    const placed = store.place(WS, {
+      expected_revision: rev,
+      bead_id: 'A',
+      lane: 's1',
+      blocks_edges: [
+        { blocker: 'A', blockee: 'B' },
+        { blocker: 'B', blockee: 'A' }
+      ]
+    });
+
+    expect(placed.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'B',
+      'A'
+    ]);
+  });
+});

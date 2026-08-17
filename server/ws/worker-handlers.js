@@ -525,6 +525,45 @@ function beadLabelsFor(workspace_key, queue) {
 }
 
 /**
+ * The `blocks` edges among a serial lane's members plus one incoming bead —
+ * the authoritative ordering input a lane mutation must apply (UI-04vo §3).
+ * Edges naming a bead outside that set carry no in-lane ordering signal.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue - Normalized queue snapshot.
+ * @param {unknown} lane
+ * @param {string} bead_id
+ * @returns {{ blocker: string, blockee: string }[]}
+ */
+function laneBlocksEdges(workspace_key, queue, lane, bead_id) {
+  if (typeof lane !== 'string' || !/^s[1-5]$/.test(lane)) {
+    return [];
+  }
+  const entries = (
+    Array.isArray(queue.serial_lanes) ? queue.serial_lanes : []
+  ).find((/** @type {any} */ entry_lane) => entry_lane?.id === lane)?.entries;
+  const members = new Set(
+    (Array.isArray(entries) ? entries : []).map(
+      (/** @type {any} */ entry) => entry.bead_id
+    )
+  );
+  members.add(bead_id);
+  const blocked_by = beadBlockedByFor(workspace_key, {
+    queue: [...members].map((id) => ({ bead_id: id }))
+  });
+  /** @type {{ blocker: string, blockee: string }[]} */
+  const edges = [];
+  for (const blockee of members) {
+    for (const blocker of blocked_by[blockee] || []) {
+      if (members.has(blocker)) {
+        edges.push({ blocker, blockee });
+      }
+    }
+  }
+  return edges;
+}
+
+/**
  * Direct `blocks` blocker ids for every bead the lanes render (UI-04vo §3).
  * Partial like labels: an absent key is unknown, never "no blockers".
  *
@@ -538,10 +577,15 @@ function beadBlockedByFor(workspace_key, queue) {
 
 /**
  * Per-serial-lane derived display state (UI-04vo §3/§5): current occupancy
- * lineages plus the topological correction the server would apply to the
- * lane's waiting order. Recomputed on EVERY snapshot from durable state and
- * the blocked-by cache — never persisted, so it can never go stale relative
- * to what it was derived from.
+ * lineages, the lane's order, and which positions `blocks` DETERMINES.
+ *
+ * The order itself is corrected where it is written (the lane mutators), so by
+ * the time a snapshot renders there is nothing left to move. What the reader
+ * still needs is WHY a row sits where it does, so `corrections` reports the
+ * in-lane blocks constraint for each member that has one — `after` names the
+ * blocker it must follow. Recomputed on EVERY snapshot from durable state and
+ * the blocked-by cache; never persisted, so it cannot go stale relative to
+ * what it was derived from.
  *
  * @param {Record<string, any>} raw_queue - Normalized queue (pre-projection).
  * @param {Record<string, string[]>} blocked_by_map
@@ -573,10 +617,29 @@ function laneStatesFor(raw_queue, blocked_by_map) {
       }
     }
     const topo = orderLaneByBlocks(order_ids, edges);
+    const position_of = new Map(topo.order.map((id, at) => [id, at]));
+    /** @type {{ bead_id: string, after: string }[]} */
+    const corrections = [];
+    if (!topo.cycle) {
+      for (const bead_id of topo.order) {
+        const blockers = edges
+          .filter((edge) => edge.blockee === bead_id)
+          .map((edge) => edge.blocker);
+        if (blockers.length === 0) {
+          continue;
+        }
+        const last = blockers.reduce((latest, blocker) =>
+          Number(position_of.get(blocker)) > Number(position_of.get(latest))
+            ? blocker
+            : latest
+        );
+        corrections.push({ bead_id, after: last });
+      }
+    }
     out[lane.id] = {
       occupied_by: [...(occupancy.get(lane.id) || [])],
       order: topo.order,
-      corrections: topo.corrections,
+      corrections,
       cycle: topo.cycle
     };
   }
@@ -1833,14 +1896,19 @@ export async function handleWorkerQueuePlace(ws, req) {
     fanout(key, snap);
     return;
   }
+  const place_lane =
+    typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane) ? p.lane : undefined;
   let result = queueStore().place(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    lane:
-      typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane)
-        ? p.lane
-        : undefined,
-    index: typeof p.index === 'number' ? p.index : undefined
+    lane: place_lane,
+    index: typeof p.index === 'number' ? p.index : undefined,
+    blocks_edges: laneBlocksEdges(
+      key,
+      queueStore().snapshot(key),
+      place_lane,
+      p.bead_id
+    )
   });
   if (result.ok) {
     // A successful (admission-passed) placement clears any prior refusal —
@@ -1894,14 +1962,19 @@ export function handleWorkerQueueReorder(ws, req) {
   if (key === null) {
     return;
   }
+  const reorder_lane =
+    typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane) ? p.lane : undefined;
   const result = queueStore().reorder(key, {
     expected_revision: revisionOf(p),
     bead_id: p.bead_id,
-    lane:
-      typeof p.lane === 'string' && /^s[1-5]$/.test(p.lane)
-        ? p.lane
-        : undefined,
-    to_index: p.to_index
+    lane: reorder_lane,
+    to_index: p.to_index,
+    blocks_edges: laneBlocksEdges(
+      key,
+      queueStore().snapshot(key),
+      reorder_lane,
+      p.bead_id
+    )
   });
   replyMutation(ws, req, key, result);
 }

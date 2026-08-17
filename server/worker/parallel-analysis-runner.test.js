@@ -167,6 +167,53 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
     expect(String(outcome.diagnostic || '').length).toBeLessThanOrEqual(200);
   });
 
+  test('forwards the selected effort to the model request', () => {
+    const argv = claudeAnalysisArgv('opus', 'high');
+
+    expect(argv[argv.indexOf('--effort') + 1]).toBe('high');
+    expect(claudeAnalysisArgv('opus')).not.toContain('--effort');
+  });
+
+  test('settles a cancel only once the child actually closes', async () => {
+    const { spawn, captured } = makeAnalysisSpawn({ autoClose: false });
+    let settled = false;
+    const handle = runAnalysis({
+      ...runInput(),
+      spawn_impl: spawn,
+      killGroup: vi.fn(),
+      kill_grace_ms: 5_000
+    });
+    void handle.done.then(() => {
+      settled = true;
+    });
+
+    handle.cancel();
+    await new Promise((res) => setTimeout(res, 10));
+    expect(settled).toBe(false);
+
+    captured.children[0].emit('close', null, 'SIGKILL');
+    const outcome = /** @type {any} */ (await handle.done);
+
+    expect(outcome.reason).toBe('cancelled');
+  });
+
+  test('reports a process group that outlives its grace window', async () => {
+    const { spawn } = makeAnalysisSpawn({ autoClose: false });
+
+    const outcome = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput(),
+        spawn_impl: spawn,
+        killGroup: vi.fn(),
+        timeout_ms: 5,
+        kill_grace_ms: 10
+      }).done
+    );
+
+    expect(outcome.reason).toBe('timeout');
+    expect(String(outcome.diagnostic)).toContain('grace window');
+  });
+
   test('kills the process group on timeout', async () => {
     const { spawn, captured } = makeAnalysisSpawn({ autoClose: false });
     const killGroup = vi.fn();
@@ -176,7 +223,8 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
         ...runInput(),
         spawn_impl: spawn,
         killGroup,
-        timeout_ms: 15
+        timeout_ms: 15,
+        kill_grace_ms: 10
       }).done
     );
 

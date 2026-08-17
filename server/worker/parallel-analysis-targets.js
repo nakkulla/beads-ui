@@ -23,6 +23,27 @@ export const PROMPT_SCHEMA_VERSION = 2;
 const RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 
 /**
+ * The ONLY plan shape the analyzer will bundle (UI-04vo §7: "safe `docs/**.md`
+ * plan"). `plan_path` is Bead metadata, so without this allowlist a Bead could
+ * name any tracked file — a config or a source file — and have it materialized
+ * into the sanitized bundle as a "plan". A path outside the allowlist is
+ * treated as no plan at all; the spec alone still identifies the target.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function safePlanPath(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  const safe =
+    /^docs\/[A-Za-z0-9._/-]+\.md$/.test(trimmed) &&
+    !trimmed.split('/').includes('..');
+  return safe ? trimmed : null;
+}
+
+/**
  * @param {unknown} value
  * @returns {value is Record<string, any>}
  */
@@ -115,10 +136,7 @@ export function qualifyTargets(issues) {
       title: typeof issue.title === 'string' ? issue.title : null,
       route: md.route,
       spec_id,
-      plan_path:
-        md.route === 'full_plan' && typeof md.plan_path === 'string'
-          ? md.plan_path.trim() || null
-          : null,
+      plan_path: md.route === 'full_plan' ? safePlanPath(md.plan_path) : null,
       deps: deps
         .filter(
           (d) =>

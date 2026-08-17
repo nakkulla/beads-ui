@@ -16,6 +16,7 @@
  */
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -30,7 +31,15 @@ import { validateAnalysisResult } from '../worker/parallel-analysis-validator.js
 import { makeFixtureSpawn } from '../worker/runner/fixture-spawn.js';
 import { createRunner } from '../worker/runner/index.js';
 import { createWorkerRuntime } from '../worker/runtime.js';
+import { getWorkerRuntime } from '../worker/runtime.js';
 import { createScheduler } from '../worker/scheduler.js';
+import {
+  __resetRegistriesForTest,
+  __resetWorkerQueueForTest,
+  attachWsServer,
+  handleMessage
+} from '../ws.js';
+import { __setAnalysisDepsForTest } from '../ws/worker-parallel-analysis-handlers.js';
 
 const execFileAsync = promisify(execFile);
 const FIXTURES = path.resolve(process.cwd(), 'server/worker/__fixtures__');
@@ -432,6 +441,125 @@ describe('worker lanes e2e — 분석 → 편집 → 제출 → dispatch (UI-04v
     expect(scheduler.isRunning('UI-b')).toBe(false);
     expect(scheduler.isRunning('UI-c')).toBe(true);
     expect(store.snapshot(WS).admission['UI-a']?.reason).toContain('not_ready');
+  });
+});
+
+describe('worker lanes e2e — WS 경계 통과 분석·제출 (UI-04vo seam K)', () => {
+  test('drives start and submit through the real ws handlers', async () => {
+    const runtime = getWorkerRuntime();
+    __resetRegistriesForTest();
+    __resetWorkerQueueForTest();
+    attachWsServer(createServer(), { path: '/ws' });
+    const ws_workspace = process.cwd();
+    const store = runtime.queueStore;
+    let rev = store.snapshot(ws_workspace).revision;
+    for (const id of ['UI-a', 'UI-b']) {
+      rev = store.place(ws_workspace, {
+        expected_revision: rev,
+        bead_id: id
+      }).queue.revision;
+    }
+    runtime.parallelAnalysis.updateSettings({
+      expected_revision: runtime.parallelAnalysis.readSettings().revision,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high'
+    });
+    __setAnalysisDepsForTest({
+      listIssues: async () => [issueOf('UI-a'), issueOf('UI-b')],
+      analysisContext: () => ({
+        repo: repo_dir,
+        resolveBase: async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: base_sha
+        }),
+        gitRun: repoGitRun
+      }),
+      runAnalysis: (/** @type {any} */ run_input) => {
+        analyzer_calls += 1;
+        return {
+          done: Promise.resolve({
+            ok: true,
+            result: {
+              schema_version: 2,
+              snapshot_digest: run_input.snapshot.digest,
+              issues: [],
+              groups: [
+                {
+                  members: ['UI-a', 'UI-b'],
+                  order: ['UI-a', 'UI-b'],
+                  confidence: 'high',
+                  categories: ['schema_or_migration'],
+                  reason: '같은 마이그레이션',
+                  evidence: [
+                    {
+                      path: 'docs/UI-a.md',
+                      artifact_kind: 'spec',
+                      locator: 'queue.json'
+                    }
+                  ]
+                }
+              ]
+            }
+          }),
+          cancel: () => {}
+        };
+      }
+    });
+
+    /** @type {string[]} */
+    const sent = [];
+    const sock = /** @type {any} */ ({
+      readyState: 1,
+      OPEN: 1,
+      /** @param {string} msg */
+      send(msg) {
+        sent.push(String(msg));
+      }
+    });
+    /**
+     * @param {string} id
+     * @param {string} type
+     * @param {Record<string, unknown>} [payload]
+     */
+    const send = (id, type, payload) =>
+      handleMessage(sock, Buffer.from(JSON.stringify({ id, type, payload })));
+    /** @param {string} id */
+    const replyFor = (id) =>
+      sent.map((raw) => JSON.parse(raw)).find((m) => m.id === id);
+
+    await send('s1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+    await send('r1', 'worker-parallel-analysis-start', {});
+    expect(replyFor('r1').payload.applied).toBe(true);
+    expect(analyzer_calls).toBe(1);
+
+    const snapshot = sent
+      .map((raw) => JSON.parse(raw))
+      .filter((m) => m.type === 'worker-parallel-analysis-snapshot')
+      .at(-1);
+    const digest = snapshot.payload.last_good.identity_digest;
+    expect(snapshot.payload.last_good.result.groups[0].eligible).toBe(true);
+
+    await send('sub1', 'worker-parallel-analysis-submit', {
+      snapshot_digest: digest,
+      group_index: 0,
+      lane: 's1',
+      ordered_bead_ids: ['UI-b', 'UI-a'],
+      expected_revision: store.snapshot(ws_workspace).revision
+    });
+
+    expect(replyFor('sub1').payload.applied).toBe(true);
+    const after = store.snapshot(ws_workspace);
+    expect(after.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'UI-b',
+      'UI-a'
+    ]);
+    expect(after.queue).toEqual([]);
+
+    __setAnalysisDepsForTest(null);
+    __resetRegistriesForTest();
+    __resetWorkerQueueForTest();
   });
 });
 

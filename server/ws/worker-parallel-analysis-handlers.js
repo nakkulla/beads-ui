@@ -328,18 +328,35 @@ export async function handleParallelAnalysisStart(ws, req) {
     snapshot,
     gitRun: built.gitRun
   });
-  const job = store.startJob(key, {
-    identity,
-    start: () =>
-      (TEST_DEPS ? TEST_DEPS.runAnalysis : realRunAnalysis)({
-        runner: String(settings.runner),
-        model: String(settings.model),
-        effort: String(settings.effort),
-        bundle_dir: bundle.dir,
-        manifest: bundle.manifest,
-        snapshot
-      })
-  });
+  const job = /** @type {any} */ (
+    store.startJob(key, {
+      identity,
+      start: () =>
+        (TEST_DEPS ? TEST_DEPS.runAnalysis : realRunAnalysis)({
+          runner: String(settings.runner),
+          model: String(settings.model),
+          effort: String(settings.effort),
+          bundle_dir: bundle.dir,
+          manifest: bundle.manifest,
+          snapshot
+        })
+    })
+  );
+  if (job.ok === false) {
+    // Another identity is mid-flight: serving its result under this identity
+    // would cache a run the caller never asked for (UI-04vo §9).
+    bundle.cleanup();
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          reason: job.reason,
+          job_id: job.job_id
+        })
+      )
+    );
+    return;
+  }
   fanout(key);
   // The bundle outlives the run: evidence locators are checked against the
   // materialized bytes the model was actually given, so cleanup happens only

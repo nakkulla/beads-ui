@@ -958,6 +958,21 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'discarded'
 ]);
 
+/**
+ * Statuses that RELEASE a serial lane (UI-04vo §2). Deliberately NARROWER than
+ * {@link TERMINAL_ATTEMPT_STATUSES}: a `failed`/`orphaned` lineage keeps its
+ * lane until it merges-and-cleans or is discarded, so those two are absent
+ * here even though they are terminal for membership purposes. Mirrors the
+ * scheduler's set — the two must agree or occupancy would mean two things.
+ *
+ * @type {Set<string>}
+ */
+const LANE_RELEASING_ATTEMPT_STATUSES = new Set([
+  'done',
+  'stopped',
+  'discarded'
+]);
+
 /** @type {number} */
 const MIN_SERIAL_LANE_COUNT = 1;
 /** @type {number} */
@@ -2420,6 +2435,67 @@ function waitingLaneEntries(q, lane) {
 }
 
 /**
+ * Rebind a bead's lineage to the waiting lane it now sits in (UI-04vo §2).
+ *
+ * A bead stays in its lane for the whole life of its attempt, so occupancy and
+ * placement normally agree. They can only disagree when a human MOVES a bead
+ * whose lineage is still holding a lane — dragging a failed bead to another
+ * lane, or out of the waiting area entirely. Without this rebind the old lane
+ * would stay occupied by an attempt whose bead has left, and nothing could ever
+ * release it: the release events (merge cleanup, discard) fire against the
+ * bead's CURRENT work, not the abandoned record.
+ *
+ * Only non-releasing attempts are rebound — a `done`/`stopped`/`discarded`
+ * record is history and its lane snapshot stays as it was.
+ *
+ * @param {Queue} q
+ * @param {string} bead_id
+ * @param {string|null} lane_id - New lane, or null when leaving serial lanes.
+ */
+function rebindLineageLane(q, bead_id, lane_id) {
+  for (const attempt of Object.values(q.attempts)) {
+    if (
+      attempt.bead_id === bead_id &&
+      !LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status))
+    ) {
+      attempt.serial_lane_id = lane_id;
+    }
+  }
+}
+
+/**
+ * Apply the blocks correction to one serial lane's durable order (UI-04vo §3).
+ *
+ * The correction has to land on the STORED order, not only on the snapshot
+ * projection: head selection reads `entries[0]`, so a lane whose blocker sits
+ * behind its blockee would pick a permanently blocked head and stall forever.
+ * A cycle disables the correction (fail-visible in the UI) rather than
+ * inventing an order.
+ *
+ * @param {Queue} q
+ * @param {unknown} lane
+ * @param {{ blocker: string, blockee: string }[]|undefined} blocks_edges
+ */
+function applyLaneBlocksOrder(q, lane, blocks_edges) {
+  const index = serialLaneIndex(lane);
+  if (index === null || index >= q.serial_lane_count) {
+    return;
+  }
+  const target = q.serial_lanes[index];
+  const topo = orderLaneByBlocks(
+    target.entries.map((e) => e.bead_id),
+    Array.isArray(blocks_edges) ? blocks_edges : []
+  );
+  if (topo.cycle) {
+    return;
+  }
+  const by_id = new Map(target.entries.map((e) => [e.bead_id, e]));
+  target.entries = topo.order.map(
+    (bead_id) => /** @type {QueueEntry} */ (by_id.get(bead_id))
+  );
+}
+
+/**
  * Remove a bead from every lane (used for two-way moves + dedupe).
  *
  * The merge queue goes with them (UI-5v7d §1): a merge turn only means anything
@@ -2819,7 +2895,7 @@ export function createQueueStore(options = {}) {
      * count is REJECTED without a write.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, lane?: string, index?: number }} input
+     * @param {{ expected_revision: number, bead_id: string, lane?: string, index?: number, blocks_edges?: { blocker: string, blockee: string }[] }} input
      * @returns {QueueOpResult}
      */
     place(workspace, input) {
@@ -2840,6 +2916,12 @@ export function createQueueStore(options = {}) {
           0,
           makeQueueEntry(bead_id, now())
         );
+        rebindLineageLane(
+          next,
+          bead_id,
+          serialLaneIndex(lane) === null ? null : String(lane)
+        );
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
         return true;
       });
     },
@@ -2849,7 +2931,7 @@ export function createQueueStore(options = {}) {
      * the named lane is REJECTED — cross-lane moves go through {@link place}.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, lane?: string, to_index: number }} input
+     * @param {{ expected_revision: number, bead_id: string, lane?: string, to_index: number, blocks_edges?: { blocker: string, blockee: string }[] }} input
      * @returns {QueueOpResult}
      */
     reorder(workspace, input) {
@@ -2865,6 +2947,7 @@ export function createQueueStore(options = {}) {
         }
         const [entry] = arr.splice(from, 1);
         arr.splice(clampIndex(to_index, arr.length), 0, entry);
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
         return true;
       });
     },
@@ -2973,17 +3056,9 @@ export function createQueueStore(options = {}) {
         const target = next.serial_lanes[index];
         for (const bead_id of ordered_bead_ids) {
           target.entries.push(makeQueueEntry(bead_id, added_at));
+          rebindLineageLane(next, bead_id, String(lane));
         }
-        const topo = orderLaneByBlocks(
-          target.entries.map((e) => e.bead_id),
-          Array.isArray(input.blocks_edges) ? input.blocks_edges : []
-        );
-        if (!topo.cycle) {
-          const by_id = new Map(target.entries.map((e) => [e.bead_id, e]));
-          target.entries = topo.order.map(
-            (bead_id) => /** @type {QueueEntry} */ (by_id.get(bead_id))
-          );
-        }
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
         return true;
       });
       return reason === null ? result : { ...result, reason };
@@ -3825,6 +3900,7 @@ export function createQueueStore(options = {}) {
       const { expected_revision, bead_id } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         removeFromLanes(next, bead_id);
+        rebindLineageLane(next, bead_id, null);
         delete next.admission[bead_id];
         // A bead the user pulled out of every lane carries no pending cleanup
         // banner either — the record describes a lane member (§6).

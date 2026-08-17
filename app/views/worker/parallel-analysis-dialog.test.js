@@ -346,6 +346,56 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     ).toBe(true);
   });
 
+  test('marks a group stale and blocks submit when a member left the queue', () => {
+    const { mount } = mountDialog({
+      queue: queueOf({
+        queue: [
+          { bead_id: 'UI-a', added_at: 1 },
+          { bead_id: 'UI-c', added_at: 3 }
+        ]
+      })
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector('.pa-group[data-group-index="0"]')
+    );
+    expect(card.textContent).toContain('stale');
+    expect(card.textContent).toContain('UI-b');
+    expect(
+      /** @type {HTMLButtonElement} */ (card.querySelector('.pa-group__submit'))
+        .disabled
+    ).toBe(true);
+  });
+
+  test('cancel stays clickable while a start request is still in flight', async () => {
+    /** @type {(v: any) => void} */
+    let resolveStart = () => {};
+    const transport = vi.fn((/** @type {string} */ type) =>
+      type === 'worker-parallel-analysis-start'
+        ? new Promise((res) => {
+            resolveStart = res;
+          })
+        : Promise.resolve({ cancelled: true })
+    );
+    const { mount } = mountDialog({
+      analysis: analysisOf({ job: { job_id: 'job-1', identity: 'i1' } }),
+      transport
+    });
+
+    /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
+    await flush();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-cancel')
+    ).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-parallel-analysis-cancel',
+      expect.objectContaining({ job_id: 'job-1' })
+    );
+    resolveStart({ applied: false, reason: 'cancelled' });
+  });
+
   test('renders the parallel_ok and uncertain summary', () => {
     const analysis = analysisOf();
     analysis.last_good.result.issues = [

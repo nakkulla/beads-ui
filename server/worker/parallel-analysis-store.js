@@ -204,15 +204,24 @@ export function createParallelAnalysisStore(options = {}) {
     },
 
     /**
-     * Start (or join) the workspace's single-flight job.
+     * Start the workspace's single-flight job, or JOIN the active one when it
+     * is computing the SAME identity.
+     *
+     * Identity equality is what makes joining safe: the joiner adopts the
+     * runner's result, and a result produced under one model/effort must never
+     * be validated and cached as another's. A different identity is refused
+     * (`job_active`) rather than silently served the wrong run.
      *
      * @param {string} workspace
      * @param {{ identity: string, start: () => { done: Promise<any>, cancel: () => void } }} input
-     * @returns {{ job_id: string, done: Promise<any>, joined?: true }}
+     * @returns {{ job_id: string, done?: Promise<any>, joined?: true, ok?: false, reason?: string }}
      */
     startJob(workspace, input) {
       const active = jobs.get(workspace);
       if (active) {
+        if (active.identity !== input.identity) {
+          return { ok: false, reason: 'job_active', job_id: active.job_id };
+        }
         return { job_id: active.job_id, done: active.done, joined: true };
       }
       const job_id = `analysis-${now()}-${++job_seq}`;

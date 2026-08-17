@@ -181,6 +181,23 @@ describe('parallel-analysis job lifecycle (UI-04vo seam G)', () => {
     expect(third.joined).toBeUndefined();
   });
 
+  test('refuses a concurrent start for a different identity', () => {
+    const store = createParallelAnalysisStore();
+    const start = vi.fn(() => ({
+      done: new Promise(() => {}),
+      cancel: vi.fn()
+    }));
+    store.startJob(WS, { identity: 'i1', start });
+
+    const other = /** @type {any} */ (
+      store.startJob(WS, { identity: 'i2', start })
+    );
+
+    expect(other.ok).toBe(false);
+    expect(other.reason).toBe('job_active');
+    expect(start).toHaveBeenCalledTimes(1);
+  });
+
   test('cancel kills the active job and preserves the last-good cache', async () => {
     const store = createParallelAnalysisStore();
     store.saveLastGood(WS, {

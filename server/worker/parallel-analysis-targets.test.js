@@ -149,6 +149,43 @@ describe('parallel-analysis target qualification (UI-04vo seam F)', () => {
     expect(reasons['UI-inel']).toBe('worker_ineligible');
     expect(reasons['UI-child']).toBe('phase_child');
   });
+
+  test('bundles a plan only from the safe docs markdown allowlist', () => {
+    const result = qualifyTargets([
+      issueOf({
+        id: 'UI-safe',
+        metadata: {
+          route: 'full_plan',
+          spec_id: 'docs/spec.md',
+          spec_review: RECEIPT,
+          plan_path: 'docs/plans/p.md'
+        }
+      }),
+      issueOf({
+        id: 'UI-source',
+        metadata: {
+          route: 'full_plan',
+          spec_id: 'docs/spec.md',
+          spec_review: RECEIPT,
+          plan_path: 'server/worker/queue-store.js'
+        }
+      }),
+      issueOf({
+        id: 'UI-escape',
+        metadata: {
+          route: 'full_plan',
+          spec_id: 'docs/spec.md',
+          spec_review: RECEIPT,
+          plan_path: 'docs/../.git/config'
+        }
+      })
+    ]);
+
+    const by_id = Object.fromEntries(result.targets.map((t) => [t.id, t]));
+    expect(by_id['UI-safe'].plan_path).toBe('docs/plans/p.md');
+    expect(by_id['UI-source'].plan_path).toBeNull();
+    expect(by_id['UI-escape'].plan_path).toBeNull();
+  });
 });
 
 describe('parallel-analysis snapshot (UI-04vo seam F)', () => {

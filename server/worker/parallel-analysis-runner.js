@@ -16,6 +16,15 @@ import path from 'node:path';
 /** @type {number} Analyzer prompt contract version (rides the stdin payload). */
 export const ANALYSIS_PROMPT_VERSION = 2;
 
+/**
+ * Providers with a tool-free structured-output transport. Membership is the
+ * capability gate: nothing outside this set may run, and nothing falls back
+ * onto a provider that is in it (UI-04vo §7).
+ *
+ * @type {Set<string>}
+ */
+export const ANALYZER_RUNNERS = new Set(['claude']);
+
 /** @type {number} Hard wall-clock cap for one analysis run. */
 export const ANALYSIS_TIMEOUT_MS = 300_000;
 
@@ -32,14 +41,29 @@ export const ANALYSIS_TIMEOUT_MS = 300_000;
 const DIAGNOSTIC_MAX = 200;
 
 /**
+ * How long a kill waits for the child to actually close before the outcome
+ * settles anyway. Cancel/timeout must MEASURE the process group going away
+ * rather than assume the signal worked (UI-04vo §7), but a child that ignores
+ * SIGKILL must not hang the caller forever either.
+ *
+ * @type {number}
+ */
+const KILL_GRACE_MS = 2_000;
+
+/**
  * The FIXED tool-free Claude argv (UI-04vo §7): print mode, an empty tool
  * set, safe mode, strict MCP config (no server sneaks in), user-only setting
  * sources, and no session persistence.
  *
+ * The selected effort is forwarded too: it is part of the cache identity, so a
+ * run that ignored it would make the identity describe something the model was
+ * never told.
+ *
  * @param {string} model
+ * @param {string} [effort]
  * @returns {string[]}
  */
-export function claudeAnalysisArgv(model) {
+export function claudeAnalysisArgv(model, effort) {
   return [
     '--print',
     '--tools',
@@ -51,6 +75,7 @@ export function claudeAnalysisArgv(model) {
     '--no-session-persistence',
     '--model',
     model,
+    ...(effort ? ['--effort', effort] : []),
     '--output-format',
     'text'
   ];
@@ -112,7 +137,7 @@ export function buildAnalysisPayload(input) {
  * Run one analysis. Returns a handle whose `done` resolves with the outcome;
  * `cancel()` kills the whole process group.
  *
- * @param {{ runner: string, model: string, effort?: string, bundle_dir: string, manifest: any, snapshot: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number }} input
+ * @param {{ runner: string, model: string, effort?: string, bundle_dir: string, manifest: any, snapshot: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number, kill_grace_ms?: number }} input
  * @returns {{ done: Promise<AnalysisOutcome>, cancel: () => void }}
  */
 export function runAnalysis(input) {
@@ -132,7 +157,7 @@ export function runAnalysis(input) {
     });
   // Capability gate BEFORE any spawn (UI-04vo §7): only providers with a
   // tool-free structured-output transport may run; nothing falls back.
-  if (input.runner !== 'claude') {
+  if (!ANALYZER_RUNNERS.has(input.runner)) {
     return {
       done: Promise.resolve({ ok: false, reason: 'capability_missing' }),
       cancel() {}
@@ -141,11 +166,15 @@ export function runAnalysis(input) {
   /** @type {(() => void)|null} */
   let cancel_run = null;
   const done = new Promise((resolve) => {
-    const child = spawn_impl('claude', claudeAnalysisArgv(input.model), {
-      cwd: input.bundle_dir,
-      detached: true,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const child = spawn_impl(
+      'claude',
+      claudeAnalysisArgv(input.model, input.effort),
+      {
+        cwd: input.bundle_dir,
+        detached: true,
+        stdio: ['pipe', 'pipe', 'pipe']
+      }
+    );
     let settled = false;
     let stdout = '';
     let stderr_tail = '';
@@ -158,20 +187,48 @@ export function runAnalysis(input) {
       }
       settled = true;
       clearTimeout(timer);
+      if (grace_timer) {
+        clearTimeout(grace_timer);
+        grace_timer = null;
+      }
       resolve(outcome);
     }
-    const timer = setTimeout(() => {
-      if (typeof child.pid === 'number') {
-        killGroup(child.pid);
+    /** @type {NodeJS.Timeout|null} */
+    let grace_timer = null;
+    /**
+     * Kill the group, then settle only once the child's `close` proves it is
+     * gone — or the grace window expires, which is itself reported.
+     *
+     * @param {string} reason
+     */
+    function killAndSettle(reason) {
+      if (settled || grace_timer) {
+        return;
       }
-      settle({ ok: false, reason: 'timeout' });
-    }, timeout_ms);
-    cancel_run = () => {
-      if (typeof child.pid === 'number') {
-        killGroup(child.pid);
+      if (typeof child.pid !== 'number') {
+        settle({ ok: false, reason });
+        return;
       }
-      settle({ ok: false, reason: 'cancelled' });
-    };
+      killGroup(child.pid);
+      pending_kill_reason = reason;
+      grace_timer = setTimeout(
+        () => {
+          grace_timer = null;
+          settle({
+            ok: false,
+            reason,
+            diagnostic: 'process group did not close within the grace window'
+          });
+        },
+        typeof input.kill_grace_ms === 'number'
+          ? input.kill_grace_ms
+          : KILL_GRACE_MS
+      );
+    }
+    /** @type {string|null} Reason a kill is waiting on `close`. */
+    let pending_kill_reason = null;
+    const timer = setTimeout(() => killAndSettle('timeout'), timeout_ms);
+    cancel_run = () => killAndSettle('cancelled');
     child.on('error', () => {
       settle({ ok: false, reason: 'spawn_failed' });
     });
@@ -185,6 +242,11 @@ export function runAnalysis(input) {
       }
     });
     child.on('close', (code) => {
+      if (pending_kill_reason !== null) {
+        // The kill landed and the child is measurably gone.
+        settle({ ok: false, reason: pending_kill_reason });
+        return;
+      }
       if (code !== 0) {
         settle({
           ok: false,

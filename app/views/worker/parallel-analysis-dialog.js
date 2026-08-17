@@ -61,7 +61,13 @@ export function createParallelAnalysisDialog(mount_element, options) {
   const drafts = new Map();
   /** @type {Map<number, string>} Per-group target lane selection. */
   const lane_choice = new Map();
-  /** @type {boolean} Whether a start/submit request is in flight. */
+  /**
+   * Whether a start/submit request is in flight. Cancel is deliberately NOT
+   * gated on it: `start` stays pending for the whole analysis, so gating cancel
+   * on it would disable the button exactly while the run it cancels is alive.
+   *
+   * @type {boolean}
+   */
   let pending = false;
 
   /**
@@ -126,6 +132,20 @@ export function createParallelAnalysisDialog(mount_element, options) {
       }
     }
     return out;
+  }
+
+  /**
+   * Members of a drafted group that have LEFT the waiting area since the
+   * analysis ran (UI-04vo §9 stale). The server refuses such a submit anyway;
+   * showing it here is what stops the reader from clicking a button that can
+   * only fail. Artifact-level drift stays server-side — re-deriving the pinned
+   * snapshot on every push would put a `bd list` + git read on the fanout path.
+   *
+   * @param {string[]} order
+   * @returns {string[]}
+   */
+  function departedMembers(order) {
+    return order.filter((bead_id) => laneOf(bead_id) === null);
   }
 
   /**
@@ -247,10 +267,10 @@ export function createParallelAnalysisDialog(mount_element, options) {
 
   async function cancelAnalysis() {
     const job = currentAnalysis().job;
-    if (!job) {
+    if (!transport || !job) {
       return;
     }
-    await sendAnalysis('worker-parallel-analysis-cancel', {
+    await transport('worker-parallel-analysis-cancel', {
       job_id: job.job_id
     });
   }
@@ -467,6 +487,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
     const order = draftOf(index, group);
     const active = activeBeadIds();
     const blocked_members = order.filter((id) => active.has(id));
+    const departed = departedMembers(order);
     const applied = alreadyApplied(order);
     const lanes = Array.isArray(currentQueue().serial_lanes)
       ? currentQueue().serial_lanes
@@ -476,6 +497,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
       group.eligible !== true ||
       order.length < 2 ||
       blocked_members.length > 0 ||
+      departed.length > 0 ||
       applied ||
       pending;
     return html`<section class="pa-group" data-group-index=${String(index)}>
@@ -491,6 +513,11 @@ export function createParallelAnalysisDialog(mount_element, options) {
         ${group.eligible === true
           ? ''
           : html`<span class="pa-group__weak">근거 부족 — 제출 불가</span>`}
+        ${departed.length > 0
+          ? html`<span class="pa-group__stale"
+              >stale — ${departed.join(', ')} 대기 영역 이탈</span
+            >`
+          : ''}
       </header>
       <p class="pa-group__reason">${group.reason}</p>
       <ol class="pa-group__members">
