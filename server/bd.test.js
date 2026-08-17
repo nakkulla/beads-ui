@@ -182,11 +182,33 @@ describe('runBdJson', () => {
     expect(Array.isArray(res.stdoutJson)).toBe(true);
   });
 
-  test('invalid JSON yields stderr message with code 0', async () => {
-    mockedSpawn.mockReturnValueOnce(makeFakeProc('not-json', '', 0));
+  test('unwraps schema v2 envelope output', async () => {
+    const issue_rows = [{ id: 'UI-1' }];
+    const json = JSON.stringify({ schema_version: 2, data: issue_rows });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(json, '', 0));
+
     const res = await runBdJson(['list', '--json']);
-    expect(res.code).toBe(0);
-    expect(res.stderr).toContain('Invalid JSON');
+
+    expect(res).toMatchObject({
+      ok: true,
+      data: issue_rows,
+      protocol: { format: 'envelope', schema_version: 2 },
+      code: 0,
+      stdoutJson: issue_rows
+    });
+  });
+
+  test('rejects invalid JSON at exit zero', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('not-json', '', 0));
+
+    const res = await runBdJson(['list', '--json']);
+
+    expect(res).toMatchObject({
+      ok: false,
+      error: { code: 'bd_json_invalid' }
+    });
+    expect(res.code).not.toBe(0);
+    expect(res.stdoutJson).toBeUndefined();
   });
 
   test('non-zero exit returns code and stderr', async () => {
@@ -210,6 +232,23 @@ describe('kvGetJson', () => {
 
     expect(res.ok).toBe(true);
     expect(res.value).toEqual({ schema: 1, workflow_mode: 'fast_track' });
+  });
+
+  test('returns a stored JSON value from a schema v2 envelope', async () => {
+    const stored_value = { schema: 1, workflow_mode: 'fast_track' };
+    const payload = JSON.stringify({
+      schema_version: 2,
+      data: {
+        found: true,
+        key: 'workflow_session_defaults',
+        value: JSON.stringify(stored_value)
+      }
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(payload, '', 0));
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: true, value: stored_value });
   });
 
   test('calls bd kv get with the json flag', async () => {

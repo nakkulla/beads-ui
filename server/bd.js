@@ -1,6 +1,40 @@
 import { spawn } from 'node:child_process';
+import {
+  recordBdProtocolObservation,
+  resolveBdWorkspaceIdentity
+} from './bd-capability.js';
+import {
+  BD_EXIT_ERROR,
+  BD_JSON_INVALID,
+  bdJsonFailure,
+  normalizeBdJsonTransport
+} from './bd-json.js';
 import { resolveDbPath } from './db.js';
 import { debug } from './logging.js';
+
+/**
+ * @import { BdJsonError, BdProtocol } from './bd-json.js'
+ */
+
+/**
+ * Transitional result of {@link runBdJson}.
+ *
+ * At runtime this is always exactly one of the two discriminated shapes:
+ * `{ok: true, data, protocol}` or `{ok: false, error}`. The declared type keeps
+ * the discriminants optional only so the consumers that still read the
+ * compatibility fields (`code`, `stdoutJson`, `stderr`) keep type-checking
+ * across the Phase 1/Phase 2 boundary. UI-jl9v Phase 2 replaces this typedef
+ * with the strict discriminated union once every consumer is migrated.
+ *
+ * @typedef {Object} BdJsonTransitionalResult
+ * @property {boolean} [ok]
+ * @property {unknown} [data]
+ * @property {BdProtocol} [protocol]
+ * @property {BdJsonError} [error]
+ * @property {number} code
+ * @property {unknown} [stdoutJson]
+ * @property {string} [stderr]
+ */
 
 const log = debug('bd');
 /** @type {Promise<void>} */
@@ -58,7 +92,7 @@ export function getBdBin() {
  *
  * @param {string[]} args - Arguments to pass (e.g., ["list", "--json"]).
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
- * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ * @returns {Promise<{ code: number, stdout: string, stderr: string, timed_out?: boolean }>}
  */
 export function runBd(args, options = {}) {
   return withBdRunQueue(async () => runBdUnlocked(args, options));
@@ -69,7 +103,7 @@ export function runBd(args, options = {}) {
  *
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
- * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ * @returns {Promise<{ code: number, stdout: string, stderr: string, timed_out?: boolean }>}
  */
 function runBdUnlocked(args, options = {}) {
   const bin = getBdBin();
@@ -119,14 +153,20 @@ function runBdUnlocked(args, options = {}) {
 
     /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timer;
+    let timed_out = false;
     if (options.timeout_ms && options.timeout_ms > 0) {
       timer = setTimeout(() => {
+        timed_out = true;
         child.kill('SIGKILL');
       }, options.timeout_ms);
       timer.unref?.();
     }
 
     /**
+     * A killed child closes with a null exit code, which `Number(code || 0)`
+     * would read as a clean 0. `timed_out` keeps that from looking like an
+     * empty successful run to the JSON boundary.
+     *
      * @param {number | string | null} code
      */
     const finish = (code) => {
@@ -136,7 +176,8 @@ function runBdUnlocked(args, options = {}) {
       resolve({
         code: Number(code || 0),
         stdout: out_chunks.join(''),
-        stderr: err_chunks.join('')
+        stderr: err_chunks.join(''),
+        timed_out
       });
     };
 
@@ -336,14 +377,34 @@ export function stderrTail(text) {
 }
 
 /**
- * Run `bd` and parse JSON from stdout if exit code is 0.
+ * Run `bd` with a JSON flag and normalize the transport envelope.
+ *
+ * The result is discriminated: a JSON protocol failure is never a success, even
+ * when bd exited 0. `code` and `stdoutJson` are additive compatibility fields
+ * that keep the not-yet-migrated consumers working across the Phase 1/Phase 2
+ * boundary; they are removed once every consumer reads the discriminated shape
+ * (UI-jl9v Phase 2) and must not be treated as part of the final API.
  *
  * @param {string[]} args - Must include flags that cause JSON to be printed (e.g., `--json`).
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
- * @returns {Promise<{ code: number, stdoutJson?: unknown, stderr?: string }>}
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean, command_family?: string }} [options]
+ * @returns {Promise<BdJsonTransitionalResult>}
  */
 export async function runBdJson(args, options = {}) {
+  const command_family = options.command_family || bdCommandFamily(args);
   const result = await runBd(args, options);
+
+  if (result.timed_out === true) {
+    log('bd timed out (args=%o)', args);
+    return withJsonFailureCompat(
+      bdJsonFailure(BD_EXIT_ERROR, 'bd did not finish before its timeout', {
+        command_family,
+        timed_out: true,
+        exit_code: result.code
+      }),
+      result.stderr
+    );
+  }
+
   if (result.code !== 0) {
     log(
       'bd exited with code %d (args=%o) stderr=%s',
@@ -351,17 +412,148 @@ export async function runBdJson(args, options = {}) {
       args,
       result.stderr
     );
-    return { code: result.code, stderr: result.stderr };
+    return withJsonFailureCompat(
+      bdJsonFailure(BD_EXIT_ERROR, `bd exited with code ${result.code}`, {
+        command_family,
+        exit_code: result.code
+      }),
+      result.stderr,
+      result.code
+    );
   }
+
   /** @type {unknown} */
   let parsed;
   try {
     parsed = JSON.parse(result.stdout || 'null');
   } catch (err) {
     log('bd returned invalid JSON (args=%o): %o', args, err);
-    return { code: 0, stderr: 'Invalid JSON from bd' };
+    return withJsonFailureCompat(
+      bdJsonFailure(BD_JSON_INVALID, 'bd returned invalid JSON', {
+        command_family
+      }),
+      'Invalid JSON from bd'
+    );
   }
-  return { code: 0, stdoutJson: parsed };
+
+  const transport = normalizeBdJsonTransport(parsed);
+  if (!transport.ok) {
+    log('bd JSON transport rejected (args=%o): %s', args, transport.error.code);
+    return withJsonFailureCompat(transport, transport.error.message);
+  }
+
+  return {
+    ok: true,
+    data: transport.data,
+    protocol: transport.protocol,
+    code: 0,
+    stdoutJson: transport.data
+  };
+}
+
+/**
+ * Run `bd` with a JSON flag, project the payload for its command family, and
+ * record the observation.
+ *
+ * This is the single owner of protocol observation: both the transport result
+ * and the typed projection result are recorded before the value reaches a
+ * consumer, so a shape failure cannot stay invisible to `/healthz` or to the
+ * workspace's effect preflight.
+ *
+ * @param {string} command_family
+ * @param {string[]} args
+ * @param {(value: unknown) => { ok: true, data: any } | { ok: false, error: BdJsonError }} projector
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
+ * @returns {Promise<{ ok: true, data: any, protocol: BdProtocol } | { ok: false, error: BdJsonError }>}
+ */
+export async function runBdJsonProjected(
+  command_family,
+  args,
+  projector,
+  options = {}
+) {
+  const workspace_key = observationWorkspaceKey(command_family, options.cwd);
+  const transport = await runBdJson(args, { ...options, command_family });
+
+  if (transport.ok !== true || transport.protocol === undefined) {
+    const error =
+      transport.error ||
+      bdJsonFailure(BD_EXIT_ERROR, 'bd JSON call did not produce a payload', {
+        command_family
+      }).error;
+    recordBdProtocolObservation({
+      workspace_key,
+      command_family,
+      result: { ok: false, error }
+    });
+    return { ok: false, error };
+  }
+
+  const projected = projector(transport.data);
+  recordBdProtocolObservation({
+    workspace_key,
+    command_family,
+    result: projected
+  });
+  if (!projected.ok) {
+    return { ok: false, error: projected.error };
+  }
+
+  return { ok: true, data: projected.data, protocol: transport.protocol };
+}
+
+/**
+ * Resolve the observation scope for a call.
+ *
+ * `version` describes the binary rather than a workspace, so it is recorded
+ * process-wide; everything else is scoped to the workspace it read.
+ *
+ * @param {string} command_family
+ * @param {string} [cwd]
+ * @returns {string | undefined}
+ */
+function observationWorkspaceKey(command_family, cwd) {
+  if (command_family === 'version') {
+    return undefined;
+  }
+  const identity = resolveBdWorkspaceIdentity({
+    root_dir: cwd || process.cwd()
+  });
+  return identity.ok ? identity.data.workspace_key : undefined;
+}
+
+/**
+ * Derive a bounded command family label from bd arguments, for diagnostics.
+ *
+ * @param {string[]} args
+ * @returns {string}
+ */
+function bdCommandFamily(args) {
+  for (const arg of args) {
+    if (!arg.startsWith('-')) {
+      return arg;
+    }
+  }
+  return 'unknown';
+}
+
+/**
+ * Attach the temporary compatibility fields to a JSON failure.
+ *
+ * `code` is deliberately non-zero even when bd itself exited 0: a consumer that
+ * still checks `code` must not read a protocol failure as success.
+ *
+ * @param {{ ok: false, error: BdJsonError }} failure
+ * @param {string} [stderr]
+ * @param {number} [exit_code]
+ */
+function withJsonFailureCompat(failure, stderr, exit_code) {
+  return {
+    ok: /** @type {false} */ (false),
+    error: failure.error,
+    code: exit_code && exit_code !== 0 ? exit_code : 1,
+    stderr: stderr || failure.error.message
+  };
 }
 
 /**
@@ -385,16 +577,40 @@ export async function runBdJson(args, options = {}) {
  */
 export async function kvGetJson(key, options = {}) {
   const result = await runBd(['kv', 'get', key, '--json'], options);
+
+  // The transport envelope is stripped BEFORE the exit code is judged: under
+  // `BD_JSON_ENVELOPE=1` the `{found,value}` record sits inside `data`, and
+  // reading `found` off the outer object would report a stored key as absent.
   /** @type {unknown} */
-  let envelope;
+  let payload;
+  /** @type {boolean} */
+  let json_readable = true;
   try {
-    envelope = JSON.parse(result.stdout || 'null');
+    payload = JSON.parse(result.stdout || 'null');
   } catch {
-    envelope = undefined;
+    payload = undefined;
+    json_readable = false;
   }
+
+  if (json_readable) {
+    const transport = normalizeBdJsonTransport(payload);
+    if (!transport.ok) {
+      // A schema/shape the consumer does not understand is a compatibility
+      // failure, not a skippable value: it must not be softened into the
+      // `kv_value_unparsable` warning that means "present but unusable value".
+      log(
+        'bd kv get transport rejected (key=%s): %s',
+        key,
+        transport.error.code
+      );
+      return { ok: false, error: transport.error.code };
+    }
+    payload = transport.data;
+  }
+
   const parsed =
-    envelope && typeof envelope === 'object' && !Array.isArray(envelope)
-      ? /** @type {Record<string, unknown>} */ (envelope)
+    payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? /** @type {Record<string, unknown>} */ (payload)
       : undefined;
   // An ABSENT key is a successful read of "no layer": bd prints a valid
   // `{found: false}` envelope but exits 1, so the envelope is authoritative
