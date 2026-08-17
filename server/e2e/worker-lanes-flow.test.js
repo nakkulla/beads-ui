@@ -434,3 +434,85 @@ describe('worker lanes e2e — 분석 → 편집 → 제출 → dispatch (UI-04v
     expect(store.snapshot(WS).admission['UI-a']?.reason).toContain('not_ready');
   });
 });
+
+describe('worker lanes — 은퇴 심볼 부재 (UI-04vo Phase 9)', () => {
+  /**
+   * Active runtime sources only: the legacy-drop entry in `normalizeQueue`'s
+   * known-field list and the migration tests that prove the drop are the two
+   * places a retired name is still allowed to appear.
+   *
+   * @returns {string[]}
+   */
+  function activeRuntimeFiles() {
+    /** @type {string[]} */
+    const out = [];
+    /**
+     * @param {string} dir
+     */
+    function walk(dir) {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === '__fixtures__') {
+            continue;
+          }
+          walk(abs);
+          continue;
+        }
+        if (
+          entry.name.endsWith('.js') &&
+          !entry.name.endsWith('.test.js') &&
+          !entry.name.includes('bundle')
+        ) {
+          out.push(abs);
+        }
+      }
+    }
+    walk(path.resolve(process.cwd(), 'server'));
+    walk(path.resolve(process.cwd(), 'app'));
+    return out;
+  }
+
+  test('no active runtime source consumes a retired worker-serial symbol', () => {
+    const retired = [
+      'workerSerialLaunchRefusal',
+      'preflightWorkerSerialLaunch',
+      'acquireWorkerSerialLaunch',
+      'activeSerialLineages',
+      'rebuildPendingSerial',
+      'refreshPendingSerial',
+      'convergeWorkerSerialLabel',
+      'setPrWaitHoldsSlot',
+      'worker-queue-set-pr-wait-hold'
+    ];
+    /** @type {string[]} */
+    const offenders = [];
+    for (const file of activeRuntimeFiles()) {
+      const source = fs.readFileSync(file, 'utf8');
+      for (const symbol of retired) {
+        if (source.includes(symbol)) {
+          offenders.push(`${path.relative(process.cwd(), file)}: ${symbol}`);
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  test('pr_wait_holds_slot survives only as the legacy-drop key', () => {
+    /** @type {string[]} */
+    const offenders = [];
+    for (const file of activeRuntimeFiles()) {
+      const source = fs.readFileSync(file, 'utf8');
+      if (!source.includes('pr_wait_holds_slot')) {
+        continue;
+      }
+      if (file.endsWith(path.join('server', 'worker', 'queue-store.js'))) {
+        continue;
+      }
+      offenders.push(path.relative(process.cwd(), file));
+    }
+
+    expect(offenders).toEqual([]);
+  });
+});

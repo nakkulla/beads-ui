@@ -466,9 +466,7 @@ export function activeLaneLineages(q) {
     const attempt =
       (typeof operation.attempt_id === 'string' &&
         q.attempts?.[operation.attempt_id]) ||
-      [...values]
-        .reverse()
-        .find((item) => item?.bead_id === operation.bead_id);
+      [...values].reverse().find((item) => item?.bead_id === operation.bead_id);
     if (attempt) {
       occupy(attempt.serial_lane_id, serialLineageId(attempt));
     }
@@ -1802,7 +1800,6 @@ export function createScheduler(deps) {
     }
     return out;
   }
-
 
   /**
    * Synchronously judges a launch against the lane fences (UI-04vo §2).
