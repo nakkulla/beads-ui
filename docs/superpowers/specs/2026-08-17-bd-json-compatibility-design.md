@@ -655,9 +655,11 @@ Production/test targets: 새 `scripts/bd-json-smoke.js`, 새 `scripts/bd-json-sm
 1. `mkdtemp` 아래 temp root, temp Git workspace, temp HOME/XDG/config/runtime을 만든다.
 2. inherited `BEADS_DB`, bd server/socket/port override, `BD_JSON_ENVELOPE`를 제거하고 `BD_BIN`과
    `dolt` executable을 read-only로 resolve한다.
-3. temp data dir와 temp Unix socket으로 `dolt sql-server --port=-1`을 시작하고 bounded
-   readiness를 확인한다. shared port `13307`과 live `.beads/metadata.json`은 읽거나 사용하지
-   않는다.
+3. temp data dir와 temp Unix socket으로 `dolt sql-server`를 시작하고 bounded
+   readiness를 확인한다. 설치된 dolt는 TCP listener를 끌 수 없으므로(`--port=-1`과
+   `--port 0` 모두 거부) 실행 직전에 비어 있음을 확인한 loopback ephemeral 포트를
+   pin하고, shared port `13307`과 live `.beads/metadata.json`은 읽거나 사용하지 않는다.
+   bd는 temp Unix socket으로만 접속한다.
 4. temp workspace 안에서만 explicit
    `bd init --server --external --server-socket <socket> --non-interactive --skip-agents --skip-hooks`
    를 실행한다.
@@ -669,9 +671,12 @@ Production/test targets: 새 `scripts/bd-json-smoke.js`, 새 `scripts/bd-json-sm
 preflight가 executable, temp ownership, socket path, cwd isolation 중 하나라도 확인하지 못하면
 live fallback 없이 smoke를 거부한다.
 
-Deterministic RED: 먼저 test-only smoke harness와 package command를 추가해 current production
-adapter를 실행한다. disposable issue의 default Board count와 envelope Board count가 달라 equality
-assertion에서 실패해야 하며, executable/env 조건으로 skip한 결과는 RED evidence가 아니다.
+Deterministic RED: 이 seam의 RED는 **Phase 1의 compatibility bridge가 존재하기 전에만**
+재현된다. bridge가 `stdoutJson`에 unwrap된 payload를 넣는 순간 미이행 소비자까지
+envelope-정상이 되어 default/envelope Board count 불일치가 사라지기 때문이다. Phase 1이
+이미 seal된 뒤 이 seam을 작성하면 유효한 RED를 만들 수 없으므로, 그때는 green
+regression guard로 착지시키고 RED 부재를 실행 기록과 완료 보고서에 명시한다.
+executable/env 조건으로 skip한 결과는 어느 경우에도 RED evidence가 아니다.
 
 ```bash
 npx vitest run scripts/bd-json-smoke.test.js
@@ -751,6 +756,8 @@ label은 추가하지 않는다.
 ## 12. 수용 기준
 
 - 기본 bare와 `BD_JSON_ENVELOPE=1`의 list/show/comments/kv가 같은 normalized data를 만든다.
+  bare object는 `schema_version`을 자기 필드로 갖고 envelope는 그 마커를 바깥 wrapper로
+  옮기므로, parity는 **top-level transport marker를 제외한 동일성**을 뜻한다.
 - unknown schema/shape/invalid JSON은 empty/absent/success로 오인되지 않고 stable error로
   fail-closed한다.
 - snapshot coordinator/Board/detail/Worker admission/cache/attach/metadata/mutation/comments가
