@@ -93,7 +93,7 @@ export function findingsDigest(findings) {
  * still returned so the failure journal names what was selected.
  * @property {(bead_id: string) => Promise<{ actor: string, head_sha: string, raw: string }|null>} readReceipt -
  * Authoritative current `impl_review` receipt (Beads read), parsed.
- * @property {(bead_id: string, input: { prior_head_sha: string, head_sha: string, target_base: string }) => Promise<{ queue_owned: boolean, reason?: string }>} lineage -
+ * @property {(bead_id: string, input: { prior_head_sha: string, head_sha: string, target_base: string, head_ref?: string|null, mutation?: string|null }) => Promise<{ queue_owned: boolean, reason?: string }>} lineage -
  * Prove the head mutation is queue-owned: prior head ancestry, target base,
  * remote containment. Anything unprovable returns `queue_owned:false`.
  * @property {(packet: Record<string, unknown>) => Promise<{ ok: boolean, verdict?: string, findings?: unknown[], reason?: string }>} runReview -
@@ -103,7 +103,7 @@ export function findingsDigest(findings) {
  * Write `impl_review` and read it back from the same authority.
  * @property {(bead_id: string) => Promise<string|null>} observeHead - Fresh
  * authoritative PR head observation (post-write drift check).
- * @property {(packet: Record<string, unknown>) => Promise<{ ok: boolean, head_sha?: string, reason?: string }>} runRepair -
+ * @property {(packet: Record<string, unknown>) => Promise<{ ok: boolean, head_sha?: string, self_review?: string, reason?: string }>} runRepair -
  * Run the single bounded repair-controller attempt: apply the findings batch,
  * validate, push, self-review the exact delta, record the receipt. Returns
  * the pushed head; the driver independently verifies lineage and readback.
@@ -195,9 +195,12 @@ export function createHeadReview(deps) {
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
-   * @param {{ head_sha: string, base_ref: string|null }} observed - The head
-   * identity the caller's authoritative probe just returned; this machine
-   * never acts on a cached one.
+   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null }} observed - The
+   * head identity the caller's authoritative probe just returned — never
+   * a cached one — plus the queue-owned mutation evidence the caller can
+   * vouch for (`resolver:<attempt_id>` after a consumed ready resolution,
+   * `base_update` after the driver's own branch update). A moved head with no
+   * vouched mutation is treated as external (fail closed).
    * @returns {Promise<EnsureApprovedResult>}
    */
   async function ensureApproved(queue_bead_id, subject_bead_id, observed) {
@@ -224,6 +227,23 @@ export function createHeadReview(deps) {
     }
     if (journal && journal.state === 'approved') {
       if (journal.head_sha === head_sha) {
+        // The journal alone is not enough: the Beads receipt must STILL read
+        // back as the exact approved value — an independently rewritten
+        // receipt after approval must not ride an old journal into a merge.
+        const current = await deps.readReceipt(subject_bead_id);
+        if (
+          current === null ||
+          current.raw !== journal.receipt ||
+          current.head_sha.toLowerCase() !== head_sha
+        ) {
+          return failJournal(
+            queue_bead_id,
+            authority.id,
+            head_sha,
+            'approved',
+            'receipt_readback_mismatch'
+          );
+        }
         return { state: 'approved', reason: null };
       }
       // A queue-owned mutation moved past an approved head — the approval is
@@ -246,7 +266,9 @@ export function createHeadReview(deps) {
       const lin = await deps.lineage(subject_bead_id, {
         prior_head_sha: journal.head_sha,
         head_sha,
-        target_base: authority.target_base
+        target_base: authority.target_base,
+        head_ref: observed.head_ref ?? null,
+        mutation: observed.mutation ?? null
       });
       if (!lin.queue_owned) {
         return failJournal(
@@ -339,7 +361,9 @@ export function createHeadReview(deps) {
         const lin = await deps.lineage(subject_bead_id, {
           prior_head_sha: prior_head,
           head_sha,
-          target_base: authority.target_base
+          target_base: authority.target_base,
+          head_ref: observed.head_ref ?? null,
+          mutation: observed.mutation ?? null
         });
         if (!lin.queue_owned) {
           return failJournal(
@@ -570,7 +594,7 @@ export function createHeadReview(deps) {
     head_sha,
     findings
   ) {
-    /** @type {{ ok: boolean, head_sha?: string, reason?: string }} */
+    /** @type {{ ok: boolean, head_sha?: string, self_review?: string, reason?: string }} */
     let repaired = { ok: false, reason: 'repair_failed' };
     try {
       repaired = await deps.runRepair({
@@ -617,10 +641,23 @@ export function createHeadReview(deps) {
         'repair_head_unchanged'
       );
     }
+    if (repaired.self_review !== 'APPROVE') {
+      // A repair session's plain completion is not evidence (§4): the
+      // structured exact-delta self-review verdict must come back APPROVE.
+      return failJournal(
+        queue_bead_id,
+        authority.id,
+        head_sha,
+        'revising',
+        'repair_self_review_missing'
+      );
+    }
     const lin = await deps.lineage(subject_bead_id, {
       prior_head_sha: head_sha,
       head_sha: new_head,
-      target_base: authority.target_base
+      target_base: authority.target_base,
+      head_ref: null,
+      mutation: `repair:${journal.repair_attempt_id}`
     });
     if (!lin.queue_owned) {
       return failJournal(

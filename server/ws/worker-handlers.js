@@ -45,7 +45,9 @@ import {
   reviseApproveWorkerBead,
   reviseFixWorkerBead,
   startWorkerRepoOperationRepair,
+  stopWorkerHeadReviewAttempts,
   tickWorkerQueue,
+  workerMergeEffectInFlight,
   workerMergeQueueState,
   workerSlots,
   workerWorktreeExists
@@ -2709,7 +2711,23 @@ export function handleWorkerMergeQueueRemove(ws, req) {
     }
     return;
   }
-  if (state && state.active === p.bead_id) {
+  // Only an actual merge EFFECT in flight (the GitHub API window) locks the
+  // item. The head-review continuation phases stay cancellable (UI-58w8 §1):
+  // the cancel is what discards the authority, and every late review/repair
+  // result then fails its journal CAS.
+  const entry_journal = /** @type {any} */ (
+    queueStore().snapshot(key)
+  ).merge_queue?.find(
+    (/** @type {any} */ e) => e?.bead_id === p.bead_id
+  )?.head_review;
+  const continuation_phase =
+    !!entry_journal &&
+    ['pending', 'reviewing', 'revising'].includes(entry_journal.state);
+  if (
+    state &&
+    state.active === p.bead_id &&
+    (!continuation_phase || workerMergeEffectInFlight(key, p.bead_id))
+  ) {
     ws.send(
       JSON.stringify(
         makeOk(req, {
@@ -2743,6 +2761,14 @@ export function handleWorkerMergeQueueRemove(ws, req) {
   );
   if (result.ok) {
     fanout(key, /** @type {any} */ (result.queue));
+    if (continuation_phase) {
+      // Best-effort stop request to the recorded attempts — never a safety
+      // input, the CAS above already made their late results no-ops.
+      stopWorkerHeadReviewAttempts(key, {
+        review_attempt_id: entry_journal.review_attempt_id ?? null,
+        repair_attempt_id: entry_journal.repair_attempt_id ?? null
+      });
+    }
   }
 }
 

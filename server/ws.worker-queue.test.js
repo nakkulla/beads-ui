@@ -1780,6 +1780,9 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
         prActions: {
           merge: vi.fn(),
           discard: vi.fn(),
+          // Whether an irreversible merge EFFECT is running — the only thing
+          // that may refuse a [취소] (UI-58w8 §1).
+          isInFlight: () => false,
           // The click-time authoritative identity read the manual authority
           // binds (UI-58w8 §1).
           probeMergeability: vi.fn(async () => ({
@@ -2363,6 +2366,43 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
       reason: 'merge_active'
     });
     expect(store.snapshot('').merge_queue.length).toBe(1);
+  });
+
+  test('cancels an item held by a running head review (UI-58w8 §1)', async () => {
+    parkInPrWait('UI-1');
+    registerDriver({ active: 'UI-1' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const store = getWorkerRuntime().queueStore;
+    await send(sock, 'm1', 'worker-merge-queue-add', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+    const authority_id = store.snapshot('').merge_queue[0].authority?.id || '';
+    store.beginHeadReview('', {
+      bead_id: 'UI-1',
+      authority_id,
+      head_sha: 'f'.repeat(40),
+      reviewer: 'codex',
+      effort: 'xhigh'
+    });
+    store.setHeadReviewState('', {
+      bead_id: 'UI-1',
+      authority_id,
+      head_sha: 'f'.repeat(40),
+      expected_state: 'pending',
+      patch: { state: 'reviewing', review_attempt_id: 'review:x' }
+    });
+
+    await send(sock, 'm2', 'worker-merge-queue-remove', {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot('').revision
+    });
+
+    // The driver holds the item while the reviewer is out, but cancelling IS
+    // how the authority is discarded — only the merge effect itself locks it.
+    expect(replyFor(sock, 'm2').payload.applied).toBe(true);
+    expect(store.snapshot('').merge_queue).toEqual([]);
   });
 
   test('add-all leaves out an EXTERNAL conflicting row even on a green gate', async () => {

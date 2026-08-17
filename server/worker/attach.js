@@ -1040,6 +1040,22 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       const probe = await prActions.probeMergeability(bead_id);
       return probe.head_sha || null;
     },
+    // Unique-writer fence for the repair round: an ordinary session that owns
+    // this bead's worktree must finish first.
+    beadSessionActive: (/** @type {string} */ bead_id) => {
+      try {
+        const attempts =
+          runtime.queueStore.snapshot(keyFor(workspace_root)).attempts || {};
+        return Object.values(attempts).some(
+          (/** @type {any} */ attempt) =>
+            attempt &&
+            attempt.bead_id === bead_id &&
+            attempt.status === 'running'
+        );
+      } catch {
+        return true;
+      }
+    },
     log
   });
   const headReview =
@@ -1097,6 +1113,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           subject_bead_id
         ),
       headReview,
+      updateBase: (/** @type {string} */ bead_id) =>
+        prActions.updateBase(bead_id),
       onCompletionResult: (
         /** @type {string} */ root_bead_id,
         /** @type {string} */ subject_bead_id,
@@ -1236,6 +1254,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     reconciler,
     prPoller,
     prActions,
+    headReviewTransport,
     discardCoordinator,
     mergeQueue,
     autoMerge,
@@ -1718,6 +1737,53 @@ export async function kickWorkerMergeQueue(workspace_root) {
     return;
   }
   await att.mergeQueue.kick();
+}
+
+/**
+ * Best-effort stop of a cancelled item's recorded review/repair attempts
+ * (UI-58w8 §1). Cancel semantics only — the authority discard is the queue
+ * mutation the caller already made, and every late result of these attempts
+ * fails its journal CAS whether or not the processes die here.
+ *
+ * @param {string} workspace_root
+ * @param {{ review_attempt_id?: string|null, repair_attempt_id?: string|null }} input
+ */
+export function stopWorkerHeadReviewAttempts(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  const transport = att && att.headReviewTransport;
+  if (!transport || typeof transport.stopAttempt !== 'function') {
+    return;
+  }
+  for (const attempt_id of [input.review_attempt_id, input.repair_attempt_id]) {
+    if (typeof attempt_id === 'string' && attempt_id.length > 0) {
+      try {
+        transport.stopAttempt(attempt_id);
+      } catch (err) {
+        log('head-review stop failed for %s: %o', attempt_id, err);
+      }
+    }
+  }
+}
+
+/**
+ * Whether a queue item's [머지] click may NOT be cancelled right now. Only an
+ * actual merge effect in flight (the GitHub API window) locks the item; the
+ * review/repair continuation phases are cancellable — that is exactly what
+ * discards the authority and makes their late results no-ops (UI-58w8 §1).
+ *
+ * @param {string} workspace_root
+ * @param {string} bead_id
+ */
+export function workerMergeEffectInFlight(workspace_root, bead_id) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || !att.prActions) {
+    return false;
+  }
+  try {
+    return att.prActions.isInFlight(bead_id) === true;
+  } catch {
+    return true;
+  }
 }
 
 /**

@@ -5040,8 +5040,13 @@ export function createQueueStore(options = {}) {
           const existing = next.merge_queue.find((e) => e.bead_id === bead_id);
           if (existing) {
             const review = existing.head_review ?? null;
+            // Only a duplicate click on the SAME nonterminal MANUAL authority
+            // reuses it. An automatic enrolment is not the user's click — the
+            // click promotes it to a fresh manual authority, exactly like a
+            // legacy or failed slot (UI-58w8 §1).
             if (
               existing.authority &&
+              existing.authority.source === 'manual' &&
               !(review !== null && review.state === 'failed')
             ) {
               continue;

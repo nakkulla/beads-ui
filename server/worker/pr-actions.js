@@ -93,7 +93,7 @@ export const CLEANUP_STEPS = [
 /**
  * @typedef {Object} MergeClickResult
  * @property {boolean} ok - Whether the click accomplished what it set out to.
- * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'verify_blocked'|'refused'} action
+ * @property {'merged'|'updated_and_merged'|'already_merged'|'cleanup_pending'|'merge_unconfirmed'|'conflict_resolution'|'verify_blocked'|'head_review'|'refused'} action
  * What the click actually DID — never just "succeeded": a dispatched conflict
  * resolution is a legitimate outcome that merged nothing, and
  * `cleanup_pending` is a landed merge whose RepoOperation has not reached a
@@ -109,6 +109,9 @@ export const CLEANUP_STEPS = [
  * @property {string|null} [head_sha] - The sha the decision was taken on.
  * @property {string|null} [base_ref] - The base the decision was taken on,
  * when the refusal came from a mergeability probe that observed one.
+ * @property {string|null} [head_ref] - The PR head ref the probe observed.
+ * @property {'failed'|'gone'|'halted'} [review_state] - The head-review
+ * machine's non-approved outcome, when `action` is `head_review`.
  * @property {Record<string, unknown>|null} [continuation_mismatch]
  */
 
@@ -119,6 +122,7 @@ export const CLEANUP_STEPS = [
  * @property {string|null} reason
  * @property {string|null} head_sha
  * @property {string|null} base_ref
+ * @property {string|null} [head_ref]
  * @property {boolean} external
  * @property {'verify'} [continuation]
  */
@@ -1853,6 +1857,7 @@ export function createPrActions(deps) {
       reason: /** @type {string|null} */ (null),
       head_sha: observed.pr.head_sha,
       base_ref: observed.pr.base_ref || null,
+      head_ref: observed.pr.head_ref || null,
       external: is_external
     };
     if (observed.pr.state === 'MERGED') {
@@ -2720,9 +2725,56 @@ export function createPrActions(deps) {
     return { ok: true, reason: null };
   }
 
+  /**
+   * Update a BEHIND PR's branch from its base — the queue-owned base-update
+   * mutation of the manual continuation (UI-58w8 §2). Effect-only: the caller
+   * re-observes the PR afterwards, and the moved head goes through the same
+   * head-review path a resolver push does.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, reason: string|null }>}
+   */
+  async function updateBase(bead_id) {
+    const q = deps.store.snapshot(workspace);
+    const member = await laneMembership(q, bead_id);
+    if (!member.ok) {
+      return { ok: false, reason: member.reason };
+    }
+    const ref = resolvePrRef(
+      q,
+      bead_id,
+      member.external === true
+        ? { pr_url: member.pr_url, pr_number: parsePrNumber(member.pr_url) }
+        : null
+    );
+    if (!ref) {
+      return { ok: false, reason: 'pr_ref_unknown' };
+    }
+    /** @type {any} */
+    let updated;
+    try {
+      updated = await deps.gh.updateBranch(repo, ref.number);
+    } catch (err) {
+      log('base update failed for %s: %o', bead_id, err);
+      return { ok: false, reason: 'update_branch_failed' };
+    }
+    if (!updated || updated.state !== 'ok') {
+      return {
+        ok: false,
+        reason:
+          updated && typeof updated.reason === 'string'
+            ? updated.reason
+            : 'update_branch_failed'
+      };
+    }
+    notifyChanged(workspace);
+    return { ok: true, reason: null };
+  }
+
   return {
     merge,
     probeMergeability,
+    updateBase,
     dispatchConflict,
     discard,
     isInFlight: (/** @type {string} */ bead_id) => in_flight.has(bead_id),

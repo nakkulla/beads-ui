@@ -97,7 +97,7 @@ function harness(overrides = {}) {
     },
     runRepair: async (/** @type {any} */ packet) => {
       calls.repair.push(packet);
-      return { ok: true, head_sha: REPAIR_HEAD };
+      return { ok: true, head_sha: REPAIR_HEAD, self_review: 'APPROVE' };
     },
     ...overrides
   };
@@ -329,6 +329,62 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     expect(calls.lineage).toHaveLength(0);
   });
 
+  test('re-verifies the Beads receipt behind an already approved journal', async () => {
+    let receipt = /** @type {any} */ (null);
+    const { store, driver } = harness({
+      readReceipt: async () => receipt,
+      writeReceipt: async (
+        /** @type {string} */ _bead_id,
+        /** @type {string} */ written
+      ) => {
+        receipt = {
+          actor: 'codex',
+          head_sha: NEW_HEAD,
+          raw: written
+        };
+        return { ok: true, readback: written };
+      }
+    });
+    await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'resolver:res-1'
+    });
+    expect(journalOf(store)?.state).toBe('approved');
+
+    // Something rewrote the receipt after the approval landed.
+    receipt = { actor: 'self', head_sha: NEW_HEAD, raw: `self@${NEW_HEAD}` };
+    const again = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(again).toMatchObject({
+      state: 'failed',
+      reason: 'receipt_readback_mismatch'
+    });
+    expect(journalOf(store)).toMatchObject({ state: 'failed' });
+  });
+
+  test('passes the caller-vouched mutation evidence into the lineage probe', async () => {
+    const { driver, calls } = harness();
+
+    await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      head_ref: 'UI-1',
+      mutation: 'resolver:res-1'
+    });
+
+    expect(calls.lineage).toHaveLength(1);
+    expect(calls.lineage[0]).toMatchObject({
+      prior_head_sha: OLD_HEAD,
+      head_sha: NEW_HEAD,
+      head_ref: 'UI-1',
+      mutation: 'resolver:res-1'
+    });
+  });
+
   test('returns gone without a receipt write when cancelled mid-review', async () => {
     /** @type {any} */
     let harness_ref = null;
@@ -383,7 +439,7 @@ describe('worker/head-review — bounded repair (UI-58w8 seam 3)', () => {
       },
       runRepair: async (/** @type {any} */ packet) => {
         repair_receipts.push(packet);
-        return { ok: true, head_sha: REPAIR_HEAD };
+        return { ok: true, head_sha: REPAIR_HEAD, self_review: 'APPROVE' };
       }
     });
 
@@ -452,7 +508,11 @@ describe('worker/head-review — bounded repair (UI-58w8 seam 3)', () => {
 
   test('fails when the repair leaves the head unchanged', async () => {
     const { store, driver } = reviseHarness({
-      runRepair: async () => ({ ok: true, head_sha: NEW_HEAD })
+      runRepair: async () => ({
+        ok: true,
+        head_sha: NEW_HEAD,
+        self_review: 'APPROVE'
+      })
     });
 
     const result = await driver.ensureApproved('UI-1', 'UI-1', {
@@ -481,7 +541,11 @@ describe('worker/head-review — bounded repair (UI-58w8 seam 3)', () => {
           ? { queue_owned: false, reason: 'external_head_drift' }
           : { queue_owned: true };
       },
-      runRepair: async () => ({ ok: true, head_sha: REPAIR_HEAD })
+      runRepair: async () => ({
+        ok: true,
+        head_sha: REPAIR_HEAD,
+        self_review: 'APPROVE'
+      })
     });
 
     const result = await driver.ensureApproved('UI-1', 'UI-1', {
@@ -496,9 +560,30 @@ describe('worker/head-review — bounded repair (UI-58w8 seam 3)', () => {
     });
   });
 
+  test('fails when the repair returns no structured self-review', async () => {
+    const { store, driver } = reviseHarness({
+      runRepair: async () => ({ ok: true, head_sha: REPAIR_HEAD })
+    });
+
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(result.state).toBe('failed');
+    expect(journalOf(store)).toMatchObject({
+      state: 'failed',
+      failure_reason: 'repair_self_review_missing'
+    });
+  });
+
   test('fails when the repair receipt does not read back', async () => {
     const { store, driver } = reviseHarness({
-      runRepair: async () => ({ ok: true, head_sha: REPAIR_HEAD }),
+      runRepair: async () => ({
+        ok: true,
+        head_sha: REPAIR_HEAD,
+        self_review: 'APPROVE'
+      }),
       readReceipt: async () => null
     });
 

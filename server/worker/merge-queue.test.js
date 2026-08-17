@@ -2148,14 +2148,223 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
 
     await mq.kick();
 
-    expect(ensure_calls).toEqual([
-      {
-        queue_bead_id: 'UI-1',
-        subject_bead_id: 'UI-1',
-        observed: { head_sha: MOVED_HEAD, base_ref: 'main' }
-      }
-    ]);
+    // Two bindings, one merge: the stale refusal routes into head review, and
+    // the CLEAN gate that follows still binds the approved journal before the
+    // merge — a manual item never merges on a bare metadata receipt.
+    expect(ensure_calls).toHaveLength(2);
+    expect(ensure_calls[0]).toMatchObject({
+      queue_bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      observed: { head_sha: MOVED_HEAD, base_ref: 'main' }
+    });
     expect(merge).toHaveBeenCalledTimes(1);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('binds the head-review journal before merging an already CLEAN manual item', async () => {
+    const store = seedManual(['UI-1']);
+    /** @type {any[]} */
+    const ensure_calls = [];
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: true,
+        kind: 'clean',
+        reason: null,
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      }),
+      headReview: {
+        ensureApproved: async (
+          /** @type {string} */ queue_bead_id,
+          /** @type {string} */ subject_bead_id,
+          /** @type {any} */ observed
+        ) => {
+          ensure_calls.push({ queue_bead_id, subject_bead_id, observed });
+          return { state: 'approved', reason: null };
+        }
+      }
+    });
+
+    await mq.kick();
+
+    expect(ensure_calls).toHaveLength(1);
+    expect(merge).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not merge a CLEAN manual item whose journal binding fails', async () => {
+    const store = seedManual(['UI-1']);
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: true,
+        kind: 'clean',
+        reason: null,
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      headReview: {
+        ensureApproved: async () => ({
+          state: 'failed',
+          reason: 'receipt_readback_mismatch'
+        })
+      }
+    });
+
+    await mq.kick();
+
+    expect(merge).not.toHaveBeenCalled();
+    expect(store.snapshot(WS).merge_queue).toHaveLength(1);
+    expect(mq.state().failures['UI-1']).toBe('receipt_readback_mismatch');
+  });
+
+  test('updates a BEHIND manual item and reviews the moved head', async () => {
+    const store = seedManual(['UI-1']);
+    let updated = false;
+    /** @type {any[]} */
+    const ensure_calls = [];
+    const updateBase = vi.fn(async () => {
+      updated = true;
+      return { ok: true, reason: null };
+    });
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    let reviewed = false;
+    const mq = driver(store, {
+      merge,
+      updateBase,
+      probeMergeability: async () => {
+        if (!updated) {
+          return {
+            ok: false,
+            kind: 'blocked',
+            reason: 'base_behind',
+            head_sha: MANUAL_HEAD,
+            base_ref: 'main',
+            head_ref: 'UI-1',
+            external: false
+          };
+        }
+        return reviewed
+          ? {
+              ok: true,
+              kind: 'clean',
+              reason: null,
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              head_ref: 'UI-1',
+              external: false
+            }
+          : {
+              ok: false,
+              kind: 'blocked',
+              reason: 'review_receipt_stale',
+              head_sha: MOVED_HEAD,
+              base_ref: 'main',
+              head_ref: 'UI-1',
+              external: false
+            };
+      },
+      headReview: {
+        ensureApproved: async (
+          /** @type {string} */ queue_bead_id,
+          /** @type {string} */ subject_bead_id,
+          /** @type {any} */ observed
+        ) => {
+          ensure_calls.push({ queue_bead_id, subject_bead_id, observed });
+          reviewed = true;
+          return { state: 'approved', reason: null };
+        }
+      }
+    });
+
+    await mq.kick();
+
+    expect(updateBase).toHaveBeenCalledTimes(1);
+    // The moved head is reviewed as a queue-owned base update, not guessed at.
+    expect(ensure_calls[0].observed).toMatchObject({
+      head_sha: MOVED_HEAD,
+      mutation: 'base_update'
+    });
+    expect(merge).toHaveBeenCalledTimes(1);
+  });
+
+  test('vouches for a resolver push as the queue-owned mutation', async () => {
+    const store = seedManual(['UI-1']);
+    const finish = dispatchResolution(store, 'UI-1', 'res-1');
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100
+    });
+    finish();
+    /** @type {any[]} */
+    const ensure_calls = [];
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: true,
+        kind: 'clean',
+        reason: null,
+        head_sha: MOVED_HEAD,
+        base_ref: 'main',
+        head_ref: 'UI-1',
+        external: false
+      }),
+      headReview: {
+        ensureApproved: async (
+          /** @type {string} */ _q,
+          /** @type {string} */ _s,
+          /** @type {any} */ observed
+        ) => {
+          ensure_calls.push(observed);
+          return { state: 'approved', reason: null };
+        }
+      }
+    });
+
+    await mq.kick();
+
+    expect(ensure_calls[0]).toMatchObject({ mutation: 'resolver:res-1' });
+    expect(merge).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not update the base of a legacy authority-less BEHIND row', async () => {
+    const store = seed(['UI-1']);
+    const updateBase = vi.fn(async () => ({ ok: true, reason: null }));
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      updateBase,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'base_behind',
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      })
+    });
+
+    await mq.kick();
+
+    expect(updateBase).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
