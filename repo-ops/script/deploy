@@ -120,7 +120,53 @@ try {
 } catch {
   resolved = null;
 }
-process.stdout.write(resolved === expect_root ? "ok" : "source_repo_mismatch");
+if (resolved !== expect_root) {
+  process.stdout.write("source_repo_mismatch");
+  process.exit(0);
+}
+// Identity alone would let a bd JSON compatibility regression deploy green:
+// the process is the right code, but it can no longer read what bd emits. The
+// same body must therefore also show a healthy bd protocol boundary.
+const diagnostics = body.diagnostics;
+const bd = diagnostics && typeof diagnostics === "object" ? diagnostics.bd : null;
+if (!bd || typeof bd !== "object") {
+  process.stdout.write("bd_diagnostics_missing");
+  process.exit(0);
+}
+if (typeof bd.version !== "string" || bd.version.length === 0) {
+  process.stdout.write("bd_diagnostics_version_missing");
+  process.exit(0);
+}
+const observations = bd.producer_observations;
+if (!observations || typeof observations !== "object") {
+  process.stdout.write("bd_diagnostics_observations_missing");
+  process.exit(0);
+}
+for (const mode of ["default", "envelope_opt_in"]) {
+  const observed = observations[mode];
+  if (!observed || typeof observed !== "object" || typeof observed.format !== "string") {
+    process.stdout.write("bd_diagnostics_observation_unhealthy");
+    process.exit(0);
+  }
+}
+const supported = Array.isArray(bd.consumer_supported_formats) ? bd.consumer_supported_formats : [];
+for (const required of ["bare", "envelope_v2"]) {
+  if (!supported.includes(required)) {
+    process.stdout.write("bd_consumer_support_missing");
+    process.exit(0);
+  }
+}
+const workspace_probe = bd.workspace_probe;
+if (!workspace_probe || typeof workspace_probe !== "object" || workspace_probe.ok !== true) {
+  process.stdout.write("bd_workspace_probe_red");
+  process.exit(0);
+}
+const failures = bd.active_protocol_failures;
+if (!failures || typeof failures !== "object" || failures.workspace_count !== 0) {
+  process.stdout.write("bd_protocol_failure_active");
+  process.exit(0);
+}
+process.stdout.write("ok");
 '
 }
 

@@ -1,10 +1,22 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { getGitUserName, runBd, runBdJson } from './bd.js';
+import { projectedResponse } from './__fixtures__/bd-json/projected.js';
+import { getGitUserName, runBd, runBdJsonProjected } from './bd.js';
 import { handleMessage } from './ws.js';
+
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
 
 vi.mock('./bd.js', () => ({
   runBd: vi.fn(),
-  runBdJson: vi.fn(),
+  runBdJsonProjected: vi.fn(),
   getGitUserName: vi.fn()
 }));
 
@@ -26,24 +38,26 @@ describe('get-comments handler', () => {
   });
 
   test('returns comments array on success', async () => {
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const comments = [
       {
-        id: 1,
+        id: '1',
         issue_id: 'UI-1',
         author: 'alice',
         text: 'First comment',
         created_at: '2025-01-01T00:00:00Z'
       },
       {
-        id: 2,
+        id: '2',
         issue_id: 'UI-1',
         author: 'bob',
         text: 'Second comment',
         created_at: '2025-01-02T00:00:00Z'
       }
     ];
-    rj.mockResolvedValueOnce({ code: 0, stdoutJson: comments });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, { code: 0, stdoutJson: comments })
+    );
 
     const ws = makeStubSocket();
     await handleMessage(
@@ -63,7 +77,11 @@ describe('get-comments handler', () => {
     expect(reply.payload).toEqual(comments);
 
     // Verify bd was called with correct args
-    expect(rj).toHaveBeenCalledWith(['comments', 'UI-1', '--json']);
+    expect(rj).toHaveBeenCalledWith(
+      'comments',
+      ['comments', 'UI-1', '--json'],
+      expect.objectContaining({ expected_issue_id: 'UI-1' })
+    );
   });
 
   test('returns error when issue id missing', async () => {
@@ -86,8 +104,10 @@ describe('get-comments handler', () => {
   });
 
   test('returns error when bd command fails', async () => {
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
-    rj.mockResolvedValueOnce({ code: 1, stderr: 'Issue not found' });
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, { code: 1, stderr: 'Issue not found' })
+    );
 
     const ws = makeStubSocket();
     await handleMessage(
@@ -116,7 +136,7 @@ describe('add-comment handler', () => {
   test('adds comment with git author and returns updated comments', async () => {
     const gitUser = /** @type {import('vitest').Mock} */ (getGitUserName);
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
 
     // Mock git config user.name
     gitUser.mockResolvedValueOnce('Test User');
@@ -125,14 +145,16 @@ describe('add-comment handler', () => {
     // Mock bd comments --json (returns updated list)
     const updatedComments = [
       {
-        id: 1,
+        id: '1',
         issue_id: 'UI-1',
         author: 'Test User',
         text: 'New comment',
         created_at: '2025-01-01T00:00:00Z'
       }
     ];
-    rj.mockResolvedValueOnce({ code: 0, stdoutJson: updatedComments });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, { code: 0, stdoutJson: updatedComments })
+    );
 
     const ws = makeStubSocket();
     await handleMessage(
@@ -164,14 +186,16 @@ describe('add-comment handler', () => {
   test('adds comment without author when git user name is empty', async () => {
     const gitUser = /** @type {import('vitest').Mock} */ (getGitUserName);
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
 
     // Mock empty git user name
     gitUser.mockResolvedValueOnce('');
     // Mock bd comment command
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
     // Mock bd comments --json
-    rj.mockResolvedValueOnce({ code: 0, stdoutJson: [] });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, { code: 0, stdoutJson: [] })
+    );
 
     const ws = makeStubSocket();
     await handleMessage(

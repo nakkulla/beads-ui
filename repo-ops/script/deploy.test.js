@@ -5,6 +5,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -313,5 +314,269 @@ describe('repo-ops/script/deploy', () => {
     ]) {
       expect(text).not.toContain(retired);
     }
+  });
+});
+
+/**
+ * Extract the health probe the adapter really runs.
+ *
+ * The other tests shadow `node` with a fake that prints a canned verdict, which
+ * proves the script reacts to a verdict but never that the probe reaches the
+ * right one. These tests run the embedded program itself.
+ *
+ * @returns {string}
+ */
+function embeddedHealthProbe() {
+  const text = fs.readFileSync(ADAPTER, 'utf8');
+  const start = text.indexOf("node --input-type=module -e '");
+  if (start < 0) {
+    throw new Error('the adapter no longer embeds a node health probe');
+  }
+  const body_start = text.indexOf(
+    "'",
+    start + 'node --input-type=module -e'.length
+  );
+  const body_end = text.indexOf("\n'", body_start);
+  if (body_end < 0) {
+    throw new Error('the embedded health probe is not single-quoted');
+  }
+  return text.slice(body_start + 1, body_end + 1);
+}
+
+/**
+ * Serve one health body and run the real probe against it.
+ *
+ * @param {unknown} body - Parsed JSON body, or null to answer 503.
+ * @param {{ expect_sha?: string, expect_root?: string }} [options]
+ * @returns {Promise<string>}
+ */
+async function runHealthProbe(body, options = {}) {
+  const probe_source = embeddedHealthProbe();
+  const root = fs.realpathSync(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-'))
+  );
+  created_roots.push(root);
+  const expect_root = options.expect_root ?? root;
+
+  const server = http.createServer((_req, res) => {
+    if (body === null) {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end('{}');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (address === null || typeof address === 'string') {
+    server.close();
+    throw new Error('probe fixture server did not bind');
+  }
+
+  try {
+    // The probe must run asynchronously: `spawnSync` would block this process's
+    // event loop, leaving the fixture server unable to answer its own fetch.
+    return await new Promise((resolve, reject) => {
+      const child = spawn(
+        process.execPath,
+        ['--input-type=module', '-e', probe_source],
+        {
+          env: {
+            ...process.env,
+            REPO_OPS_HEALTH_URL: `http://127.0.0.1:${address.port}/healthz`,
+            REPO_OPS_EXPECT_SHA: options.expect_sha ?? 'a'.repeat(40),
+            REPO_OPS_EXPECT_ROOT: expect_root
+          }
+        }
+      );
+      /** @type {string[]} */
+      const out = [];
+      /** @type {string[]} */
+      const err = [];
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => out.push(String(chunk)));
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => err.push(String(chunk)));
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`health probe exited ${code}: ${err.join('')}`));
+          return;
+        }
+        resolve(out.join(''));
+      });
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+/**
+ * A health body whose runtime identity matches and whose bd diagnostics are
+ * green.
+ *
+ * @param {string} root
+ * @param {Record<string, unknown>} [diagnostics_bd]
+ */
+function healthyBody(root, diagnostics_bd) {
+  return {
+    ok: true,
+    checks: { bd: true, db: true },
+    runtime: { source_sha: 'a'.repeat(40), source_repo: root },
+    diagnostics: {
+      bd: diagnostics_bd ?? {
+        version: '1.2.0-fork.1',
+        producer_observations: {
+          default: { format: 'bare', schema_version: null },
+          envelope_opt_in: { format: 'envelope', schema_version: 2 }
+        },
+        producer_capabilities: ['envelope_v2', 'legacy_bare'],
+        consumer_supported_formats: ['bare', 'envelope_v2'],
+        workspace_probe: { ok: true },
+        active_protocol_failures: { workspace_count: 0, families: [] },
+        error: null
+      }
+    }
+  };
+}
+
+describe('repo-ops/script/deploy health probe', () => {
+  test('accepts matching identity with green bd diagnostics', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+
+    const verdict = await runHealthProbe(healthyBody(root), {
+      expect_root: root
+    });
+
+    expect(verdict).toBe('ok');
+  });
+
+  test('rejects a body whose bd diagnostics are missing', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root);
+    delete body.diagnostics;
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).not.toBe('ok');
+    expect(verdict).toContain('bd_diagnostics');
+  });
+
+  test('rejects an active bd protocol failure', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root, {
+      version: '1.2.0-fork.1',
+      producer_observations: {
+        default: { format: 'bare', schema_version: null },
+        envelope_opt_in: { format: 'envelope', schema_version: 2 }
+      },
+      producer_capabilities: ['envelope_v2', 'legacy_bare'],
+      consumer_supported_formats: ['bare', 'envelope_v2'],
+      workspace_probe: { ok: true },
+      active_protocol_failures: { workspace_count: 1, families: ['list'] },
+      error: 'bd_protocol_failure_active'
+    });
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).not.toBe('ok');
+  });
+
+  test('rejects a red workspace probe', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root, {
+      version: '1.2.0-fork.1',
+      producer_observations: {
+        default: { format: 'bare', schema_version: null },
+        envelope_opt_in: { format: 'envelope', schema_version: 2 }
+      },
+      producer_capabilities: ['envelope_v2', 'legacy_bare'],
+      consumer_supported_formats: ['bare', 'envelope_v2'],
+      workspace_probe: { ok: false },
+      active_protocol_failures: { workspace_count: 0, families: [] },
+      error: null
+    });
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).not.toBe('ok');
+  });
+
+  test('rejects a body missing envelope_v2 consumer support', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root, {
+      version: '1.2.0-fork.1',
+      producer_observations: {
+        default: { format: 'bare', schema_version: null },
+        envelope_opt_in: { format: 'envelope', schema_version: 2 }
+      },
+      producer_capabilities: ['legacy_bare'],
+      consumer_supported_formats: ['bare'],
+      workspace_probe: { ok: true },
+      active_protocol_failures: { workspace_count: 0, families: [] },
+      error: null
+    });
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).not.toBe('ok');
+  });
+
+  test('rejects an empty bd version', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root, {
+      version: '',
+      producer_observations: {
+        default: { format: 'bare', schema_version: null },
+        envelope_opt_in: { format: 'envelope', schema_version: 2 }
+      },
+      producer_capabilities: ['envelope_v2', 'legacy_bare'],
+      consumer_supported_formats: ['bare', 'envelope_v2'],
+      workspace_probe: { ok: true },
+      active_protocol_failures: { workspace_count: 0, families: [] },
+      error: null
+    });
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).not.toBe('ok');
+  });
+
+  test('still rejects a source_sha mismatch', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root);
+    body.runtime.source_sha = 'b'.repeat(40);
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).toBe('source_sha_mismatch');
+  });
+
+  test('still reports an unreachable endpoint', async () => {
+    const verdict = await runHealthProbe(null);
+
+    expect(verdict).toBe('unreachable');
   });
 });

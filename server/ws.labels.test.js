@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { runBd, runBdJson } from './bd.js';
+import { projectedResponse } from './__fixtures__/bd-json/projected.js';
+import { runBd, runBdJsonProjected } from './bd.js';
 import {
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest
@@ -11,9 +12,20 @@ import {
 import { handleMessage } from './ws.js';
 import { setConnWorkspace } from './ws/context.js';
 
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', () => ({
   runBd: vi.fn(),
-  runBdJson: vi.fn()
+  runBdJsonProjected: vi.fn()
 }));
 
 function makeStubSocket() {
@@ -32,7 +44,7 @@ afterEach(() => {
   __resetWorkerAttachmentsForTest();
   __resetWorkerRuntimeForTest();
   vi.mocked(runBd).mockReset();
-  vi.mocked(runBdJson).mockReset();
+  vi.mocked(runBdJsonProjected).mockReset();
 });
 
 /**
@@ -70,12 +82,14 @@ describe('ws labels handlers', () => {
 
   test('label-add runs bd and replies with show', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', labels: ['frontend'] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', labels: ['frontend'] }
+      })
+    );
 
     const ws = makeStubSocket();
     await handleMessage(
@@ -98,12 +112,14 @@ describe('ws labels handlers', () => {
 
   test('label-remove runs bd and replies with show', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', labels: [] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', labels: [] }
+      })
+    );
 
     const ws = makeStubSocket();
     await handleMessage(
@@ -126,15 +142,17 @@ describe('ws labels handlers', () => {
 
   test('label-add refreshes the cache and ticks after confirmed worker-serial readback', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '직렬', labels: ['worker-serial'] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '직렬', labels: ['worker-serial'] }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -157,15 +175,17 @@ describe('ws labels handlers', () => {
 
   test('label-remove ticks after confirmed worker-serial absence', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '일반', labels: ['frontend'] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '일반', labels: ['frontend'] }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -188,15 +208,17 @@ describe('ws labels handlers', () => {
 
   test('does not tick for a non-serial label', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '제목', labels: ['frontend'] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '제목', labels: ['frontend'] }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -217,15 +239,17 @@ describe('ws labels handlers', () => {
 
   test('does not tick when the serial readback disagrees with the write', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '제목', labels: [] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '제목', labels: [] }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -246,19 +270,21 @@ describe('ws labels handlers', () => {
 
   test('does not tick when the serial readback names a different bead', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: {
-        id: 'UI-other',
-        title: '다른 Bead',
-        labels: ['worker-serial']
-      }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: {
+          id: 'UI-other',
+          title: '다른 Bead',
+          labels: ['worker-serial']
+        }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -276,15 +302,17 @@ describe('ws labels handlers', () => {
 
   test('does not tick remove when the readback omits labels', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '제목' }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '제목' }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -302,15 +330,17 @@ describe('ws labels handlers', () => {
 
   test('does not tick remove when the readback labels are malformed', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '제목', labels: 'frontend' }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '제목', labels: 'frontend' }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -328,7 +358,7 @@ describe('ws labels handlers', () => {
 
   test('ticks after cache projection refresh throws', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
@@ -339,10 +369,12 @@ describe('ws labels handlers', () => {
       throw new Error('cache unavailable');
     });
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', title: '직렬', labels: ['worker-serial'] }
-    });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', title: '직렬', labels: ['worker-serial'] }
+      })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),
@@ -381,12 +413,14 @@ describe('ws labels handlers', () => {
 
   test('does not tick when the serial label readback fails', async () => {
     const rb = /** @type {import('vitest').Mock} */ (runBd);
-    const rj = /** @type {import('vitest').Mock} */ (runBdJson);
+    const rj = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     const tick = vi.fn(async () => {});
     const ws = makeStubSocket();
     registerSerialWorkspace(ws, tick);
     rb.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    rj.mockResolvedValueOnce({ code: 1, stderr: 'readback failed' });
+    rj.mockResolvedValueOnce(
+      projectedResponse(null, { code: 1, stderr: 'readback failed' })
+    );
 
     await handleMessage(
       /** @type {any} */ (ws),

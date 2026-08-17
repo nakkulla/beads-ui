@@ -44,12 +44,23 @@ function row(patch = {}) {
  */
 function fakeBd(rows_by_workspace) {
   return vi.fn(
-    async (/** @type {string[]} */ _args, /** @type {any} */ options) => {
+    async (
+      /** @type {string} */ _family,
+      /** @type {string[]} */ _args,
+      /** @type {any} */ options
+    ) => {
       const rows = rows_by_workspace[String(options && options.cwd)];
       if (!rows) {
-        return { code: 1, stderr: 'not a workspace' };
+        return {
+          ok: false,
+          error: { code: 'bd_exit_error', message: 'not a workspace' }
+        };
       }
-      return { code: 0, stdoutJson: rows };
+      return {
+        ok: true,
+        protocol: { format: 'bare', schema_version: null },
+        data: rows
+      };
     }
   );
 }
@@ -160,8 +171,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
   test('restores a runnable bead after the label is removed and cache refreshes', async () => {
     let labels = ['worker-ineligible'];
     const runJson = vi.fn(async () => ({
-      code: 0,
-      stdoutJson: [row({ labels })]
+      ok: true,
+      protocol: { format: 'bare', schema_version: null },
+      data: [row({ labels })]
     }));
     const cache = createRunnableCache({ runJson });
     expect(await warm(cache, WS_A)).toEqual([]);
@@ -499,8 +511,12 @@ describe('runnable cache TTL (UI-qrfo §4)', () => {
     let readable = true;
     const runJson = vi.fn(async () =>
       readable
-        ? { code: 0, stdoutJson: [row()] }
-        : { code: 1, stderr: 'bd boom' }
+        ? {
+            ok: true,
+            protocol: { format: 'bare', schema_version: null },
+            data: [row()]
+          }
+        : { ok: false, error: { code: 'bd_exit_error', message: 'bd boom' } }
     );
     const cache = createRunnableCache({
       runJson,

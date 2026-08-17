@@ -1,6 +1,35 @@
 import { spawn } from 'node:child_process';
+import {
+  recordBdProtocolObservation,
+  resolveBdWorkspaceIdentity
+} from './bd-capability.js';
+import {
+  BD_EXIT_ERROR,
+  BD_JSON_INVALID,
+  BD_JSON_SHAPE_INVALID,
+  bdJsonFailure,
+  describeJsonType,
+  normalizeBdComments,
+  normalizeBdDependencyRows,
+  normalizeBdIssue,
+  normalizeBdIssueList,
+  normalizeBdJsonTransport,
+  normalizeBdReadyExplain,
+  normalizeBdReadyRows,
+  normalizeBdVersionCapability
+} from './bd-json.js';
 import { resolveDbPath } from './db.js';
 import { debug } from './logging.js';
+
+/**
+ * @import { BdJsonError, BdProtocol } from './bd-json.js'
+ */
+
+/**
+ * Result of {@link runBdJson}: exactly one of the two discriminated shapes.
+ *
+ * @typedef {{ ok: true, data: unknown, protocol: BdProtocol } | { ok: false, error: BdJsonError }} BdJsonResult
+ */
 
 const log = debug('bd');
 /** @type {Promise<void>} */
@@ -58,7 +87,7 @@ export function getBdBin() {
  *
  * @param {string[]} args - Arguments to pass (e.g., ["list", "--json"]).
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
- * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ * @returns {Promise<{ code: number, stdout: string, stderr: string, timed_out?: boolean }>}
  */
 export function runBd(args, options = {}) {
   return withBdRunQueue(async () => runBdUnlocked(args, options));
@@ -69,7 +98,7 @@ export function runBd(args, options = {}) {
  *
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean }} [options]
- * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+ * @returns {Promise<{ code: number, stdout: string, stderr: string, timed_out?: boolean }>}
  */
 function runBdUnlocked(args, options = {}) {
   const bin = getBdBin();
@@ -119,24 +148,33 @@ function runBdUnlocked(args, options = {}) {
 
     /** @type {ReturnType<typeof setTimeout> | undefined} */
     let timer;
+    let timed_out = false;
     if (options.timeout_ms && options.timeout_ms > 0) {
       timer = setTimeout(() => {
+        timed_out = true;
         child.kill('SIGKILL');
       }, options.timeout_ms);
       timer.unref?.();
     }
 
     /**
+     * A killed child closes with a null exit code, which `Number(code || 0)`
+     * would read as a clean 0. Every caller checks `code`, so the timeout is
+     * normalized to a non-zero exit HERE rather than at one boundary: a probe
+     * or a `kv` read must not see a timed-out run as an empty success.
+     *
      * @param {number | string | null} code
      */
     const finish = (code) => {
       if (timer) {
         clearTimeout(timer);
       }
+      const exit_code = Number(code || 0);
       resolve({
-        code: Number(code || 0),
+        code: timed_out && exit_code === 0 ? 124 : exit_code,
         stdout: out_chunks.join(''),
-        stderr: err_chunks.join('')
+        stderr: err_chunks.join(''),
+        timed_out
       });
     };
 
@@ -336,14 +374,32 @@ export function stderrTail(text) {
 }
 
 /**
- * Run `bd` and parse JSON from stdout if exit code is 0.
+ * Run `bd` with a JSON flag and normalize the transport envelope.
+ *
+ * The result is discriminated: a JSON protocol failure is never a success, even
+ * when bd exited 0.
  *
  * @param {string[]} args - Must include flags that cause JSON to be printed (e.g., `--json`).
- * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
- * @returns {Promise<{ code: number, stdoutJson?: unknown, stderr?: string }>}
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean, command_family?: string }} [options]
+ * @returns {Promise<BdJsonResult>}
  */
 export async function runBdJson(args, options = {}) {
+  const command_family = options.command_family || bdCommandFamily(args);
   const result = await runBd(args, options);
+
+  if (result.timed_out === true) {
+    log('bd timed out (args=%o)', args);
+    return bdJsonFailure(
+      BD_EXIT_ERROR,
+      'bd did not finish before its timeout',
+      {
+        command_family,
+        timed_out: true,
+        exit_code: result.code
+      }
+    );
+  }
+
   if (result.code !== 0) {
     log(
       'bd exited with code %d (args=%o) stderr=%s',
@@ -351,17 +407,136 @@ export async function runBdJson(args, options = {}) {
       args,
       result.stderr
     );
-    return { code: result.code, stderr: result.stderr };
+    return bdJsonFailure(
+      BD_EXIT_ERROR,
+      stderrTail(result.stderr) || `bd exited with code ${result.code}`,
+      { command_family, exit_code: result.code }
+    );
   }
+
   /** @type {unknown} */
   let parsed;
   try {
     parsed = JSON.parse(result.stdout || 'null');
   } catch (err) {
     log('bd returned invalid JSON (args=%o): %o', args, err);
-    return { code: 0, stderr: 'Invalid JSON from bd' };
+    return bdJsonFailure(BD_JSON_INVALID, 'bd returned invalid JSON', {
+      command_family
+    });
   }
-  return { code: 0, stdoutJson: parsed };
+
+  const transport = normalizeBdJsonTransport(parsed);
+  if (!transport.ok) {
+    log('bd JSON transport rejected (args=%o): %s', args, transport.error.code);
+    return transport;
+  }
+
+  return { ok: true, data: transport.data, protocol: transport.protocol };
+}
+
+/**
+ * Command family to typed projector. The family a caller declares IS the shape
+ * contract it gets, which is what keeps `docs/bd-json-compatibility.md` and the
+ * code from drifting apart.
+ *
+ * @type {Record<string, (value: unknown, options: { expected_id?: string, expected_issue_id?: string }) => { ok: true, data: any } | { ok: false, error: BdJsonError }>}
+ */
+const BD_PROJECTORS = {
+  list: (value) => normalizeBdIssueList(value),
+  show: (value, options) =>
+    normalizeBdIssue(value, { expected_id: options.expected_id }),
+  ready: (value) => normalizeBdReadyRows(value),
+  'ready-explain': (value) => normalizeBdReadyExplain(value),
+  dep: (value) => normalizeBdDependencyRows(value),
+  comments: (value, options) =>
+    normalizeBdComments(value, {
+      expected_issue_id: options.expected_issue_id
+    }),
+  version: (value) => normalizeBdVersionCapability(value)
+};
+
+/**
+ * Run `bd` with a JSON flag, project the payload for its command family, and
+ * record the observation.
+ *
+ * This is the single owner of protocol observation: both the transport result
+ * and the typed projection result are recorded before the value reaches a
+ * consumer, so a shape failure cannot stay invisible to `/healthz` or to the
+ * workspace's effect preflight.
+ *
+ * @param {string} command_family - A key of the projector table.
+ * @param {string[]} args
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, sandbox?: boolean, expected_id?: string, expected_issue_id?: string }} [options]
+ * @returns {Promise<{ ok: true, data: any, protocol: BdProtocol } | { ok: false, error: BdJsonError }>}
+ */
+export async function runBdJsonProjected(command_family, args, options = {}) {
+  const projector = BD_PROJECTORS[command_family];
+  if (projector === undefined) {
+    return bdJsonFailure(
+      BD_JSON_SHAPE_INVALID,
+      `no typed projector is declared for the ${command_family} command family`,
+      { command_family }
+    );
+  }
+
+  const workspace_key = observationWorkspaceKey(command_family, options.cwd);
+  const transport = await runBdJson(args, { ...options, command_family });
+
+  if (transport.ok !== true) {
+    recordBdProtocolObservation({
+      workspace_key,
+      command_family,
+      result: transport
+    });
+    return transport;
+  }
+
+  const projected = projector(transport.data, options);
+  recordBdProtocolObservation({
+    workspace_key,
+    command_family,
+    result: projected
+  });
+  if (!projected.ok) {
+    return { ok: false, error: projected.error };
+  }
+
+  return { ok: true, data: projected.data, protocol: transport.protocol };
+}
+
+/**
+ * Resolve the observation scope for a call.
+ *
+ * `version` describes the binary rather than a workspace, so it is recorded
+ * process-wide; everything else is scoped to the workspace it read.
+ *
+ * @param {string} command_family
+ * @param {string} [cwd]
+ * @returns {string | undefined}
+ */
+function observationWorkspaceKey(command_family, cwd) {
+  if (command_family === 'version') {
+    return undefined;
+  }
+  const identity = resolveBdWorkspaceIdentity({
+    root_dir: cwd || process.cwd()
+  });
+  return identity.ok ? identity.data.workspace_key : undefined;
+}
+
+/**
+ * Derive a bounded command family label from bd arguments, for diagnostics.
+ *
+ * @param {string[]} args
+ * @returns {string}
+ */
+function bdCommandFamily(args) {
+  for (const arg of args) {
+    if (!arg.startsWith('-')) {
+      return arg;
+    }
+  }
+  return 'unknown';
 }
 
 /**
@@ -385,41 +560,112 @@ export async function runBdJson(args, options = {}) {
  */
 export async function kvGetJson(key, options = {}) {
   const result = await runBd(['kv', 'get', key, '--json'], options);
+  const workspace_key = observationWorkspaceKey('kv', options.cwd);
+
+  /**
+   * Record the protocol observation and return the failure.
+   *
+   * @param {{ ok: false, error: BdJsonError }} failure
+   * @returns {KvGetResult}
+   */
+  const protocolFailure = (failure) => {
+    log('bd kv get protocol failure (key=%s): %s', key, failure.error.code);
+    recordBdProtocolObservation({
+      workspace_key,
+      command_family: 'kv',
+      result: failure
+    });
+    return { ok: false, error: failure.error.code };
+  };
+
+  // The transport envelope is stripped BEFORE the exit code is judged: under
+  // `BD_JSON_ENVELOPE=1` the `{found,value}` record sits inside `data`, and
+  // reading `found` off the outer object would report a stored key as absent.
+  /**
+   * An ordinary CLI failure, reported with bd's own message.
+   *
+   * @returns {KvGetResult}
+   */
+  const cliFailure = () => ({
+    ok: false,
+    error: stderrTail(result.stderr) || `bd kv get exited ${result.code}`
+  });
+
   /** @type {unknown} */
-  let envelope;
+  let payload;
   try {
-    envelope = JSON.parse(result.stdout || 'null');
+    payload = JSON.parse(result.stdout || 'null');
   } catch {
-    envelope = undefined;
+    // Order matters: bd that already failed is an ordinary CLI failure whose
+    // message the caller needs. Only garbage printed on a SUCCESSFUL run is a
+    // protocol fault, and neither is ever "the key is absent" — bd reports
+    // absence with a well-formed `{found: false}` record.
+    if (result.code !== 0) {
+      return cliFailure();
+    }
+    return protocolFailure(
+      bdJsonFailure(BD_JSON_INVALID, 'bd kv get returned invalid JSON', {
+        command_family: 'kv'
+      })
+    );
   }
-  const parsed =
-    envelope && typeof envelope === 'object' && !Array.isArray(envelope)
-      ? /** @type {Record<string, unknown>} */ (envelope)
-      : undefined;
+
+  const transport = normalizeBdJsonTransport(payload);
+  if (!transport.ok) {
+    return protocolFailure(transport);
+  }
+
+  const record =
+    transport.data &&
+    typeof transport.data === 'object' &&
+    !Array.isArray(transport.data)
+      ? /** @type {Record<string, unknown>} */ (transport.data)
+      : null;
+  if (record === null || typeof record.found !== 'boolean') {
+    if (result.code !== 0) {
+      return cliFailure();
+    }
+    // A payload without a boolean `found` on a successful run is a shape this
+    // consumer does not understand; softening it to absent would hide a stored
+    // value.
+    return protocolFailure(
+      bdJsonFailure(
+        BD_JSON_SHAPE_INVALID,
+        'bd kv get payload has no boolean found flag',
+        {
+          command_family: 'kv',
+          expected: 'boolean found',
+          actual: describeJsonType(
+            record === null ? transport.data : record.found
+          )
+        }
+      )
+    );
+  }
+
+  recordBdProtocolObservation({
+    workspace_key,
+    command_family: 'kv',
+    result: { ok: true }
+  });
+
   // An ABSENT key is a successful read of "no layer": bd prints a valid
-  // `{found: false}` envelope but exits 1, so the envelope is authoritative
-  // over the exit code here.
-  if (parsed && parsed.found === false) {
+  // `{found: false}` record but exits 1, so the record is authoritative over
+  // the exit code here.
+  if (record.found === false) {
     return { ok: true, value: undefined };
   }
   if (result.code !== 0) {
-    return {
-      ok: false,
-      error: stderrTail(result.stderr) || `bd kv get exited ${result.code}`
-    };
+    return cliFailure();
   }
-  if (!parsed) {
-    log('bd kv get returned invalid JSON (key=%s)', key);
-    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
-  }
-  const record = parsed;
+
   const raw_value = record.value;
-  if (record.found !== true || typeof raw_value !== 'string') {
+  if (typeof raw_value !== 'string' || raw_value.length === 0) {
     return { ok: true, value: undefined };
   }
-  if (raw_value.length === 0) {
-    return { ok: true, value: undefined };
-  }
+  // From here the record itself is well formed; only its stored VALUE can be
+  // unusable, which is the one case the workspace-defaults layer skips with a
+  // warning rather than failing the read.
   /** @type {unknown} */
   let decoded;
   try {
@@ -454,20 +700,4 @@ export async function kvSetJson(key, value, options = {}) {
     };
   }
   return { ok: true };
-}
-
-/**
- * Unwrap a `bd show <id> --json` payload to the single issue object. bd emits
- * a single-item array (observed live) or a bare object depending on version;
- * both shapes must normalize before any field access — reading `.metadata` off
- * the array shape silently yields undefined.
- *
- * @param {unknown} value
- * @returns {Record<string, unknown>|null}
- */
-export function unwrapShowJson(value) {
-  const first = Array.isArray(value) ? value[0] : value;
-  return first && typeof first === 'object' && !Array.isArray(first)
-    ? /** @type {Record<string, unknown>} */ (first)
-    : null;
 }

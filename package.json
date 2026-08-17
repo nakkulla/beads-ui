@@ -23,6 +23,7 @@
     "build": "node scripts/build-frontend.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "smoke:bd-json": "node scripts/bd-json-smoke.js",
     "tsc": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint --ext .js .",
     "prettier:write": "prettier --write .",

@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  normalizeBdDependencyRows,
+  normalizeBdIssueList,
+  normalizeBdReadyExplain,
+  normalizeBdVersionCapability
+} from './bd-json.js';
 import { fetchListForSubscription } from './list-adapters.js';
 import { createBdMetadata } from './worker/bd-metadata.js';
 import { createRunnableCache } from './worker/runnable-cache.js';
@@ -26,6 +32,43 @@ async function settle() {
   }
 }
 
+/**
+ * Adapt a transport-shaped `bd --json` response to the projected runner
+ * contract, through the SAME projectors production uses.
+ *
+ * @param {string} command_family
+ * @param {any} raw
+ * @returns {any}
+ */
+function asProjectedResponse(command_family, raw) {
+  if (!raw || raw.code !== 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'bd_exit_error',
+        message: String((raw && raw.stderr) || 'bd failed'),
+        details: { exit_code: raw ? raw.code : null }
+      }
+    };
+  }
+  const projected =
+    command_family === 'ready-explain'
+      ? normalizeBdReadyExplain(raw.stdoutJson)
+      : command_family === 'dep'
+        ? normalizeBdDependencyRows(raw.stdoutJson)
+        : command_family === 'version'
+          ? normalizeBdVersionCapability(raw.stdoutJson)
+          : normalizeBdIssueList(raw.stdoutJson);
+  if (!projected.ok) {
+    return projected;
+  }
+  return {
+    ok: true,
+    protocol: { format: 'bare', schema_version: null },
+    data: projected.data
+  };
+}
+
 describe('workspace snapshot Phase 3 consumer reuse', () => {
   test('shares one supported generation across Board, Worker, and Monitor', async () => {
     const rows = [
@@ -48,13 +91,18 @@ describe('workspace snapshot Phase 3 consumer reuse', () => {
         metadata: { pr_url: 'https://github.com/o/r/pull/7' }
       }
     ];
-    const runBdJson = vi.fn(async (args) => {
+    const runBdJson = vi.fn(async (command_family, args) => {
       if (args[0] === 'list') {
-        return { code: 0, stdoutJson: rows };
+        return asProjectedResponse('list', { code: 0, stdoutJson: rows });
       }
-      return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+      return asProjectedResponse('ready-explain', {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      });
     });
-    const coordinator = createWorkspaceSnapshotCoordinator({ runBdJson });
+    const coordinator = createWorkspaceSnapshotCoordinator({
+      runBdJsonProjected: runBdJson
+    });
     __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
     const cache = createRunnableCache();
     const metadata = createBdMetadata({

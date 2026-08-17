@@ -177,23 +177,52 @@ describe('runBdJson', () => {
   test('parses valid JSON output', async () => {
     const json = JSON.stringify([{ id: 'UI-1' }]);
     mockedSpawn.mockReturnValueOnce(makeFakeProc(json, '', 0));
+
     const res = await runBdJson(['list', '--json']);
-    expect(res.code).toBe(0);
-    expect(Array.isArray(res.stdoutJson)).toBe(true);
+
+    expect(res).toEqual({
+      ok: true,
+      data: [{ id: 'UI-1' }],
+      protocol: { format: 'bare', schema_version: null }
+    });
   });
 
-  test('invalid JSON yields stderr message with code 0', async () => {
+  test('unwraps schema v2 envelope output', async () => {
+    const issue_rows = [{ id: 'UI-1' }];
+    const json = JSON.stringify({ schema_version: 2, data: issue_rows });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(json, '', 0));
+
+    const res = await runBdJson(['list', '--json']);
+
+    expect(res).toEqual({
+      ok: true,
+      data: issue_rows,
+      protocol: { format: 'envelope', schema_version: 2 }
+    });
+  });
+
+  test('rejects invalid JSON at exit zero', async () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('not-json', '', 0));
+
     const res = await runBdJson(['list', '--json']);
-    expect(res.code).toBe(0);
-    expect(res.stderr).toContain('Invalid JSON');
+
+    expect(res).toMatchObject({
+      ok: false,
+      error: { code: 'bd_json_invalid' }
+    });
+    expect('data' in res).toBe(false);
   });
 
-  test('non-zero exit returns code and stderr', async () => {
+  test('non-zero exit fails with the exit code in its details', async () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'oops', 2));
+
     const res = await runBdJson(['list', '--json']);
-    expect(res.code).toBe(2);
-    expect(res.stderr).toContain('oops');
+
+    expect(res).toMatchObject({
+      ok: false,
+      error: { code: 'bd_exit_error', details: { exit_code: 2 } }
+    });
+    expect(res.ok === false && res.error.message).toContain('oops');
   });
 });
 
@@ -210,6 +239,23 @@ describe('kvGetJson', () => {
 
     expect(res.ok).toBe(true);
     expect(res.value).toEqual({ schema: 1, workflow_mode: 'fast_track' });
+  });
+
+  test('returns a stored JSON value from a schema v2 envelope', async () => {
+    const stored_value = { schema: 1, workflow_mode: 'fast_track' };
+    const payload = JSON.stringify({
+      schema_version: 2,
+      data: {
+        found: true,
+        key: 'workflow_session_defaults',
+        value: JSON.stringify(stored_value)
+      }
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(payload, '', 0));
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: true, value: stored_value });
   });
 
   test('calls bd kv get with the json flag', async () => {
@@ -275,6 +321,44 @@ describe('kvGetJson', () => {
 
     expect(res.value).toBeUndefined();
     expect(res.warning).toBe('kv_value_unparsable');
+  });
+
+  test('fails closed on invalid JSON at exit zero instead of reading absent', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('not-json', '', 0));
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: false, error: 'bd_json_invalid' });
+  });
+
+  test('fails closed on a payload without a boolean found flag', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ key: 'k', value: '{}' }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: false, error: 'bd_json_shape_invalid' });
+  });
+
+  test('fails closed on an unsupported envelope schema', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ schema_version: 3, data: {} }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: false, error: 'bd_json_schema_unsupported' });
+  });
+
+  test('keeps the exit-1 absent record a successful empty read', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: false }), '', 1)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res).toEqual({ ok: true, value: undefined });
   });
 
   test('propagates a bd failure to the caller', async () => {

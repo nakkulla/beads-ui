@@ -17,8 +17,9 @@ import {
   getConnWorkspace,
   getGitUserNameInWorkspace,
   log,
+  readbackFailureDetail,
   runBdInWorkspace,
-  runBdJsonInWorkspace
+  runBdJsonProjectedInWorkspace
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 import { pruneUiOrderForClose } from './ui-order-handlers.js';
@@ -112,14 +113,29 @@ export async function handleUpdateAssignee(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -291,14 +307,29 @@ export async function handleUpdateExecSettings(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -362,7 +393,14 @@ export async function handleUpdateImplTarget(ws, req) {
   }
   let shown;
   try {
-    shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
+    shown = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', id, '--json'],
+      {
+        expected_id: id
+      }
+    );
   } catch (err) {
     triggerMutationRefreshOnce(ws);
     ws.send(
@@ -370,31 +408,28 @@ export async function handleUpdateImplTarget(ws, req) {
         makeError(
           req,
           'bd_readback_failed',
-          err instanceof Error ? err.message : String(err)
+          err instanceof Error ? err.message : String(err),
+          readbackFailureDetail('bd_readback_threw')
         )
       )
     );
     return;
   }
-  const raw_issue = Array.isArray(shown.stdoutJson)
-    ? shown.stdoutJson[0]
-    : shown.stdoutJson;
-  if (
-    shown.code !== 0 ||
-    !raw_issue ||
-    typeof raw_issue !== 'object' ||
-    Array.isArray(raw_issue) ||
-    typeof (/** @type {any} */ (raw_issue).id) !== 'string'
-  ) {
+  if (shown.ok !== true) {
     triggerMutationRefreshOnce(ws);
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.stderr || 'bd show failed')
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
       )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, raw_issue)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   triggerMutationRefreshOnce(ws);
 }
 
@@ -465,14 +500,29 @@ export async function handleUpdateWorkflowMeta(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -511,14 +561,29 @@ export async function handleUpdateStatus(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   // A WS-originated close drops the bead's manual rank so it never lingers in
   // the order map (spec §2; scope: WS closes only). No-op when it had no rank.
   if (status === 'closed') {
@@ -573,14 +638,29 @@ export async function handleUpdatePriority(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -639,14 +719,29 @@ export async function handleEditText(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -736,14 +831,29 @@ export async function handleDepAdd(ws, req) {
     return;
   }
   const id = typeof view_id === 'string' && view_id.length > 0 ? view_id : a;
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -782,14 +892,29 @@ export async function handleDepRemove(ws, req) {
     return;
   }
   const id = typeof view_id === 'string' && view_id.length > 0 ? view_id : a;
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -827,15 +952,30 @@ export async function handleLabelAdd(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
-  convergeWorkerSerialLabel(ws, id, label.trim(), true, shown.stdoutJson);
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
+  convergeWorkerSerialLabel(ws, id, label.trim(), true, shown.data);
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -873,15 +1013,30 @@ export async function handleLabelRemove(ws, req) {
     );
     return;
   }
-  const shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
-  if (shown.code !== 0) {
+  const shown = await runBdJsonProjectedInWorkspace(
+    ws,
+    'show',
+    ['show', id, '--json'],
+    {
+      expected_id: id
+    }
+  );
+  if (shown.ok !== true) {
+    // The write already landed; replaying it could apply the change twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', shown.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          shown.error.message,
+          readbackFailureDetail(shown.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, shown.stdoutJson)));
-  convergeWorkerSerialLabel(ws, id, label.trim(), false, shown.stdoutJson);
+  ws.send(JSON.stringify(makeOk(req, shown.data)));
+  convergeWorkerSerialLabel(ws, id, label.trim(), false, shown.data);
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -903,14 +1058,23 @@ export async function handleGetComments(ws, req) {
     );
     return;
   }
-  const res = await runBdJsonInWorkspace(ws, ['comments', id, '--json']);
-  if (res.code !== 0) {
+  const res = await runBdJsonProjectedInWorkspace(
+    ws,
+    'comments',
+    ['comments', id, '--json'],
+    { expected_issue_id: id }
+  );
+  if (res.ok !== true) {
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(req, 'bd_error', res.error.message, {
+          reason: res.error.code
+        })
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, res.stdoutJson || [])));
+  ws.send(JSON.stringify(makeOk(req, res.data)));
 }
 
 /**
@@ -953,14 +1117,28 @@ export async function handleAddComment(ws, req) {
   }
 
   // Return updated comments list
-  const comments = await runBdJsonInWorkspace(ws, ['comments', id, '--json']);
-  if (comments.code !== 0) {
+  const comments = await runBdJsonProjectedInWorkspace(
+    ws,
+    'comments',
+    ['comments', id, '--json'],
+    { expected_issue_id: id }
+  );
+  if (comments.ok !== true) {
+    // The comment write already landed, so a readback failure must not read as
+    // a retryable write: replaying it would post the comment twice.
     ws.send(
-      JSON.stringify(makeError(req, 'bd_error', comments.stderr || 'bd failed'))
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          comments.error.message,
+          readbackFailureDetail(comments.error.code)
+        )
+      )
     );
     return;
   }
-  ws.send(JSON.stringify(makeOk(req, comments.stdoutJson || [])));
+  ws.send(JSON.stringify(makeOk(req, comments.data)));
 }
 
 /**

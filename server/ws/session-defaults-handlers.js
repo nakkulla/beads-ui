@@ -17,7 +17,12 @@ import {
   normalizeSessionDefaults,
   validateSessionDefaultsPatch
 } from '../session-defaults.js';
-import { kvGetJsonInWorkspace, kvSetJsonInWorkspace, log } from './context.js';
+import {
+  kvGetJsonInWorkspace,
+  kvSetJsonInWorkspace,
+  log,
+  readbackFailureDetail
+} from './context.js';
 
 /**
  * Read the kv layer and normalize it for one reply.
@@ -94,7 +99,16 @@ export async function handleSetSessionDefaults(ws, req) {
 
   const after = await readSessionDefaults(ws);
   if (!after.ok) {
-    ws.send(JSON.stringify(makeError(req, 'kv_readback_failed', after.error)));
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bd_readback_failed',
+          after.error,
+          readbackFailureDetail('kv_readback_failed')
+        )
+      )
+    );
     return;
   }
   for (const [key, value] of Object.entries(validated.patch)) {
@@ -106,8 +120,9 @@ export async function handleSetSessionDefaults(ws, req) {
         JSON.stringify(
           makeError(
             req,
-            'kv_readback_failed',
-            `session default did not persist: ${key}`
+            'bd_readback_failed',
+            `session default did not persist: ${key}`,
+            readbackFailureDetail('kv_readback_mismatch')
           )
         )
       );

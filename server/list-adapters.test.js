@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { runBdJson } from './bd.js';
+import {
+  normalizeBdDependencyRows,
+  normalizeBdIssue,
+  normalizeBdIssueList,
+  normalizeBdReadyExplain,
+  normalizeBdVersionCapability
+} from './bd-json.js';
+import { runBdJsonProjected } from './bd.js';
 import {
   fetchListForSubscription,
   mapSubscriptionToBdArgs
@@ -11,14 +18,68 @@ import {
   __setWorkspaceSnapshotCoordinatorFactoryForTest
 } from './workspace-snapshot-runtime.js';
 
-vi.mock('./bd.js', () => ({ runBdJson: vi.fn() }));
+vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn() }));
 vi.mock('./workflow-enrich.js', () => ({
   enrichIssuesWorkflow: vi.fn((items) => items)
 }));
 
+/**
+ * Infer which command family produced a transport-shaped fixture.
+ *
+ * @param {any} raw
+ */
+function inferFamily(raw) {
+  const payload = raw && raw.stdoutJson;
+  if (Array.isArray(payload)) {
+    return 'list';
+  }
+  if (payload && typeof payload === 'object') {
+    return Array.isArray(payload.blocked) ? 'ready-explain' : 'show';
+  }
+  return 'list';
+}
+
+/**
+ * Adapt a transport-shaped `bd --json` response to the projected runner
+ * contract, through the SAME projectors production uses.
+ *
+ * @param {any} raw
+ * @returns {any}
+ */
+function asProjectedResponse(raw, command_family = inferFamily(raw)) {
+  if (!raw || raw.code !== 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'bd_exit_error',
+        message: String((raw && raw.stderr) || 'bd failed'),
+        details: { exit_code: raw ? raw.code : null }
+      }
+    };
+  }
+  const projected =
+    command_family === 'ready-explain'
+      ? normalizeBdReadyExplain(raw.stdoutJson)
+      : command_family === 'dep'
+        ? normalizeBdDependencyRows(raw.stdoutJson)
+        : command_family === 'version'
+          ? normalizeBdVersionCapability(raw.stdoutJson)
+          : command_family === 'show'
+            ? normalizeBdIssue(raw.stdoutJson)
+            : normalizeBdIssueList(raw.stdoutJson);
+  if (!projected.ok) {
+    return projected;
+  }
+  return {
+    ok: true,
+    protocol: { format: 'bare', schema_version: null },
+    data: projected.data
+  };
+}
+
 describe('list adapters for subscription types', () => {
   beforeEach(() => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
     __resetWorkspaceSnapshotRuntimeForTest();
   });
 
@@ -142,23 +203,25 @@ describe('list adapters for subscription types', () => {
   });
 
   test('fetchListForSubscription returns normalized items (Date.parse)', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
-      code: 0,
-      stdoutJson: [
-        {
-          id: 'A-1',
-          updated_at: '2024-01-01T00:00:00.000Z',
-          closed_at: null,
-          extra: 'x'
-        },
-        {
-          id: 'A-2',
-          updated_at: '2024-01-01T00:00:01.000Z',
-          closed_at: '2024-01-01T00:00:05.000Z'
-        },
-        { id: 3, updated_at: 'not-a-date' }
-      ]
-    });
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockResolvedValue(
+      asProjectedResponse({
+        code: 0,
+        stdoutJson: [
+          {
+            id: 'A-1',
+            updated_at: '2024-01-01T00:00:00.000Z',
+            closed_at: null,
+            extra: 'x'
+          },
+          {
+            id: 'A-2',
+            updated_at: '2024-01-01T00:00:01.000Z',
+            closed_at: '2024-01-01T00:00:05.000Z'
+          },
+          { id: '3', updated_at: 'not-a-date' }
+        ]
+      })
+    );
     const res = await fetchListForSubscription({ type: 'all-issues' });
     expect(res.ok).toBe(true);
     if (res.ok) {
@@ -173,7 +236,7 @@ describe('list adapters for subscription types', () => {
         updated_at: Date.parse('2024-01-01T00:00:01.000Z'),
         closed_at: Date.parse('2024-01-01T00:00:05.000Z')
       });
-      // id coerced to string, closed_at defaults to null
+      // An unparsable timestamp becomes 0 and closed_at defaults to null.
       expect(res.items[2]).toMatchObject({
         id: '3',
         updated_at: 0,
@@ -182,40 +245,60 @@ describe('list adapters for subscription types', () => {
     }
   });
 
-  test('returns stored and dependency-blocked issues for blocked subscription', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson)
-      .mockResolvedValueOnce({
+  test('fails closed when bd returns a row without a string id', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockResolvedValue(
+      asProjectedResponse({
         code: 0,
-        stdoutJson: [
-          {
-            id: 'S-1',
-            title: 'stored blocked',
-            status: 'blocked',
-            updated_at: '2024-01-01T00:00:00.000Z'
-          }
-        ]
+        stdoutJson: [{ id: 'A-1' }, { id: 3 }]
       })
-      .mockResolvedValueOnce({
-        code: 0,
-        stdoutJson: {
-          ready: [],
-          blocked: [
+    );
+
+    const res = await fetchListForSubscription({ type: 'all-issues' });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.details?.reason).toBe('bd_json_shape_invalid');
+    }
+  });
+
+  test('returns stored and dependency-blocked issues for blocked subscription', async () => {
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected)
+      .mockResolvedValueOnce(
+        asProjectedResponse({
+          code: 0,
+          stdoutJson: [
             {
-              id: 'D-1',
-              title: 'dependency blocked',
-              status: 'open',
-              updated_at: '2024-01-01T00:00:01.000Z',
-              blocked_by: [{ id: 'D-0', status: 'in_progress' }]
+              id: 'S-1',
+              title: 'stored blocked',
+              status: 'blocked',
+              updated_at: '2024-01-01T00:00:00.000Z'
             }
-          ],
-          summary: { total_ready: 0, total_blocked: 1 }
-        }
-      });
+          ]
+        })
+      )
+      .mockResolvedValueOnce(
+        asProjectedResponse({
+          code: 0,
+          stdoutJson: {
+            ready: [],
+            blocked: [
+              {
+                id: 'D-1',
+                title: 'dependency blocked',
+                status: 'open',
+                updated_at: '2024-01-01T00:00:01.000Z',
+                blocked_by: [{ id: 'D-0', status: 'in_progress' }]
+              }
+            ],
+            summary: { total_ready: 0, total_blocked: 1 }
+          }
+        })
+      );
 
     const res = await fetchListForSubscription({ type: 'blocked-issues' });
 
     // stored list + dependency explain + the provenance batch dep list.
-    expect(runBdJson).toHaveBeenCalledTimes(3);
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(3);
     expect(res.ok).toBe(true);
     if (res.ok) {
       expect(res.items.map((it) => it.id)).toEqual(['S-1', 'D-1']);
@@ -228,10 +311,12 @@ describe('list adapters for subscription types', () => {
   });
 
   test('fetchListForSubscription surfaces bd error', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
-      code: 2,
-      stderr: 'boom'
-    });
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockResolvedValue(
+      asProjectedResponse({
+        code: 2,
+        stderr: 'boom'
+      })
+    );
     const res = await fetchListForSubscription({ type: 'all-issues' });
     expect(res.ok).toBe(false);
     if (!res.ok) {
@@ -242,11 +327,13 @@ describe('list adapters for subscription types', () => {
   });
 
   test('fetchListForSubscription treats unsupported resolved status as empty', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValue({
-      code: 1,
-      stderr:
-        'invalid status "resolved" (valid: open, in_progress, blocked, deferred, closed)'
-    });
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockResolvedValue(
+      asProjectedResponse({
+        code: 1,
+        stderr:
+          'invalid status "resolved" (valid: open, in_progress, blocked, deferred, closed)'
+      })
+    );
 
     const res = await fetchListForSubscription({ type: 'resolved-issues' });
 
@@ -268,54 +355,54 @@ describe('list adapters for subscription types', () => {
   });
 
   test('projects concurrent list specs from one workspace snapshot generation', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-      async (args) => {
-        if (args[0] === 'version') {
-          return supportedVersion();
-        }
-        if (args[0] === 'list') {
-          return {
-            code: 0,
-            stdoutJson: [
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'OPEN-1',
+              status: 'open',
+              dependencies: [
+                { type: 'discovered-from', depends_on_id: 'ROOT-1' }
+              ]
+            },
+            {
+              id: 'BLOCKED-1',
+              status: 'blocked',
+              metadata: { blocked_reason: 'external wait' },
+              dependencies: []
+            },
+            {
+              id: 'CLOSED-1',
+              status: 'closed',
+              closed_at: '2026-08-03T00:00:00.000Z',
+              dependencies: []
+            }
+          ]
+        });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: {
+            ready: [{ id: 'OPEN-1' }],
+            blocked: [
               {
                 id: 'OPEN-1',
-                status: 'open',
-                dependencies: [
-                  { type: 'discovered-from', depends_on_id: 'ROOT-1' }
-                ]
-              },
-              {
-                id: 'BLOCKED-1',
-                status: 'blocked',
-                metadata: { blocked_reason: 'external wait' },
-                dependencies: []
-              },
-              {
-                id: 'CLOSED-1',
-                status: 'closed',
-                closed_at: '2026-08-03T00:00:00.000Z',
-                dependencies: []
+                blocked_by: [{ id: 'UPSTREAM-1' }]
               }
             ]
-          };
-        }
-        if (args[0] === 'ready') {
-          return {
-            code: 0,
-            stdoutJson: {
-              ready: [{ id: 'OPEN-1' }],
-              blocked: [
-                {
-                  id: 'OPEN-1',
-                  blocked_by: [{ id: 'UPSTREAM-1' }]
-                }
-              ]
-            }
-          };
-        }
-        throw new Error(`unexpected command: ${args.join(' ')}`);
+          }
+        });
       }
-    );
+      throw new Error(`unexpected command: ${args.join(' ')}`);
+    });
 
     const options = { cwd: '/workspace-a', workspace_snapshot: true };
     const [all, ready, blocked] = await Promise.all([
@@ -324,9 +411,9 @@ describe('list adapters for subscription types', () => {
       fetchListForSubscription({ type: 'blocked-issues' }, options)
     ]);
 
-    expect(snapshotCommandCalls(/** @type {any} */ (runBdJson))).toHaveLength(
-      2
-    );
+    expect(
+      snapshotCommandCalls(/** @type {any} */ (runBdJsonProjected))
+    ).toHaveLength(2);
     expect(all.ok && all.items.map((item) => item.id)).toEqual([
       'OPEN-1',
       'BLOCKED-1'
@@ -355,73 +442,73 @@ describe('list adapters for subscription types', () => {
 
   test('preserves normalized projection parity across all snapshot list specs', async () => {
     const since = Date.parse('2026-08-03T00:00:00.000Z');
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-      async (args) => {
-        if (args[0] === 'version') {
-          return supportedVersion();
-        }
-        if (args[0] === 'list') {
-          return {
-            code: 0,
-            stdoutJson: [
-              { id: 'OPEN-1', status: 'open', dependencies: [] },
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            { id: 'OPEN-1', status: 'open', dependencies: [] },
+            {
+              id: 'BLOCKED-1',
+              status: 'blocked',
+              metadata: { blocked_reason: 'external wait' },
+              dependencies: []
+            },
+            { id: 'RUNNING-1', status: 'in_progress', dependencies: [] },
+            { id: 'RESOLVED-1', status: 'resolved', dependencies: [] },
+            { id: 'DEFERRED-1', status: 'deferred', dependencies: [] },
+            {
+              id: 'CLOSED-OLD',
+              status: 'closed',
+              closed_at: '2026-08-02T23:59:59.000Z',
+              dependencies: []
+            },
+            {
+              id: 'CLOSED-BOUNDARY',
+              status: 'closed',
+              closed_at: '2026-08-03T00:00:00.000Z',
+              dependencies: []
+            },
+            {
+              id: 'CLOSED-NEW',
+              status: 'closed',
+              closed_at: '2026-08-04T00:00:00.000Z',
+              dependencies: []
+            }
+          ]
+        });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: {
+            ready: [
               {
-                id: 'BLOCKED-1',
-                status: 'blocked',
-                metadata: { blocked_reason: 'external wait' },
-                dependencies: []
-              },
-              { id: 'RUNNING-1', status: 'in_progress', dependencies: [] },
-              { id: 'RESOLVED-1', status: 'resolved', dependencies: [] },
-              { id: 'DEFERRED-1', status: 'deferred', dependencies: [] },
+                id: 'OPEN-1',
+                updated_at: '2026-08-03T00:00:01.000Z',
+                created_at: '2026-08-01T00:00:00.000Z',
+                ready_extra: true
+              }
+            ],
+            blocked: [
               {
-                id: 'CLOSED-OLD',
-                status: 'closed',
-                closed_at: '2026-08-02T23:59:59.000Z',
-                dependencies: []
-              },
-              {
-                id: 'CLOSED-BOUNDARY',
-                status: 'closed',
-                closed_at: '2026-08-03T00:00:00.000Z',
-                dependencies: []
-              },
-              {
-                id: 'CLOSED-NEW',
-                status: 'closed',
-                closed_at: '2026-08-04T00:00:00.000Z',
-                dependencies: []
+                id: 'OPEN-1',
+                updated_at: '2026-08-03T00:00:02.000Z',
+                created_at: '2026-08-01T00:00:00.000Z',
+                blocked_by: [{ id: 'EXTERNAL-1' }],
+                blocked_extra: true
               }
             ]
-          };
-        }
-        if (args[0] === 'ready') {
-          return {
-            code: 0,
-            stdoutJson: {
-              ready: [
-                {
-                  id: 'OPEN-1',
-                  updated_at: '2026-08-03T00:00:01.000Z',
-                  created_at: '2026-08-01T00:00:00.000Z',
-                  ready_extra: true
-                }
-              ],
-              blocked: [
-                {
-                  id: 'OPEN-1',
-                  updated_at: '2026-08-03T00:00:02.000Z',
-                  created_at: '2026-08-01T00:00:00.000Z',
-                  blocked_by: [{ id: 'EXTERNAL-1' }],
-                  blocked_extra: true
-                }
-              ]
-            }
-          };
-        }
-        throw new Error(`unexpected command: ${args.join(' ')}`);
+          }
+        });
       }
-    );
+      throw new Error(`unexpected command: ${args.join(' ')}`);
+    });
 
     const options = { cwd: '/workspace-parity', workspace_snapshot: true };
     const [all, ready, blocked, running, resolved, deferred, closed] =
@@ -438,9 +525,9 @@ describe('list adapters for subscription types', () => {
         )
       ]);
 
-    expect(snapshotCommandCalls(/** @type {any} */ (runBdJson))).toHaveLength(
-      2
-    );
+    expect(
+      snapshotCommandCalls(/** @type {any} */ (runBdJsonProjected))
+    ).toHaveLength(2);
     expect(all.ok && all.items.map((item) => item.id)).toEqual([
       'OPEN-1',
       'BLOCKED-1',
@@ -492,26 +579,31 @@ describe('list adapters for subscription types', () => {
 
   test('uses one legacy dependency fallback generation with provenance parity', async () => {
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson: /** @type {typeof runBdJson} */ (runBdJson),
+      runBdJsonProjected: /** @type {any} */ (runBdJsonProjected),
       dependency_mode: 'legacy-dependency-fallback'
     });
     __setWorkspaceSnapshotCoordinatorFactoryForTest(() => coordinator);
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-      async (args) => {
-        if (args[0] === 'version') {
-          return supportedVersion();
-        }
-        if (args[0] === 'list') {
-          return {
-            code: 0,
-            stdoutJson: [{ id: 'FOLLOWUP-1', status: 'open' }]
-          };
-        }
-        if (args[0] === 'ready') {
-          return { code: 0, stdoutJson: { ready: [], blocked: [] } };
-        }
-        if (args[0] === 'dep') {
-          return {
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
+      }
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [{ id: 'FOLLOWUP-1', status: 'open' }]
+        });
+      }
+      if (args[0] === 'ready') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: { ready: [], blocked: [] }
+        });
+      }
+      if (args[0] === 'dep') {
+        return asProjectedResponse(
+          {
             code: 0,
             stdoutJson: [
               {
@@ -520,49 +612,53 @@ describe('list adapters for subscription types', () => {
                 type: 'discovered-from'
               }
             ]
-          };
-        }
-        throw new Error(`unexpected command: ${args.join(' ')}`);
+          },
+          'dep'
+        );
       }
-    );
+      throw new Error(`unexpected command: ${args.join(' ')}`);
+    });
 
     const result = await fetchListForSubscription(
       { type: 'all-issues' },
       { cwd: '/workspace-legacy', workspace_snapshot: true }
     );
 
-    expect(runBdJson).toHaveBeenCalledTimes(3);
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(3);
     expect(result.ok && result.items).toEqual([
       expect.objectContaining({ id: 'FOLLOWUP-1', from_id: 'ROOT-1' })
     ]);
   });
 
   test('omits malformed embedded provenance ids without fabricating a value', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-      async (args) => {
-        if (args[0] === 'version') {
-          return supportedVersion();
-        }
-        if (args[0] === 'list') {
-          return {
-            code: 0,
-            stdoutJson: [
-              {
-                id: 'FOLLOWUP-1',
-                status: 'open',
-                dependencies: [
-                  {
-                    type: 'discovered-from',
-                    depends_on_id: { id: 'ROOT-1' }
-                  }
-                ]
-              }
-            ]
-          };
-        }
-        return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
       }
-    );
+      if (args[0] === 'list') {
+        return asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'FOLLOWUP-1',
+              status: 'open',
+              dependencies: [
+                {
+                  type: 'discovered-from',
+                  depends_on_id: { id: 'ROOT-1' }
+                }
+              ]
+            }
+          ]
+        });
+      }
+      return asProjectedResponse({
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      });
+    });
 
     const result = await fetchListForSubscription(
       { type: 'all-issues' },
@@ -611,17 +707,20 @@ describe('list adapters for subscription types', () => {
       id: `READY-${index + 1}`,
       blocked_by: []
     }));
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-      async (args) => {
-        if (args[0] === 'version') {
-          return supportedVersion();
-        }
-        if (args[0] === 'list') {
-          return { code: 0, stdoutJson: rows };
-        }
-        return { code: 0, stdoutJson: { ready, blocked } };
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return supportedVersion();
       }
-    );
+      if (args[0] === 'list') {
+        return asProjectedResponse({ code: 0, stdoutJson: rows });
+      }
+      return asProjectedResponse({
+        code: 0,
+        stdoutJson: { ready, blocked }
+      });
+    });
     const options = { cwd: '/workspace-caps', workspace_snapshot: true };
     const [
       all,
@@ -659,25 +758,28 @@ describe('list adapters for subscription types', () => {
  * @returns {{ code: number, stdoutJson: { version: string, commit: string } }}
  */
 function supportedVersion() {
-  return {
-    code: 0,
-    stdoutJson: {
-      version: '1.2.0-fork.1',
-      commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
-    }
-  };
+  return asProjectedResponse(
+    {
+      code: 0,
+      stdoutJson: {
+        version: '1.2.0-fork.1',
+        commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
+      }
+    },
+    'version'
+  );
 }
 
 /**
- * @param {{ mock: { calls: Array<[string[]]> } }} runner
+ * @param {{ mock: { calls: Array<[string, string[]]> } }} runner
  */
 function snapshotCommandCalls(runner) {
-  return runner.mock.calls.filter(([args]) => args[0] !== 'version');
+  return runner.mock.calls.filter(([, args]) => args[0] !== 'version');
 }
 
 describe('blocked-issues blocked_info derivation', () => {
   beforeEach(() => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
   });
 
   /**
@@ -685,13 +787,17 @@ describe('blocked-issues blocked_info derivation', () => {
    * @param {unknown[]} dependency_blocked
    */
   function mockBlockedSources(stored, dependency_blocked) {
-    /** @type {import('vitest').Mock} */ (runBdJson)
-      .mockResolvedValueOnce({ code: 0, stdoutJson: stored })
-      .mockResolvedValueOnce({
-        code: 0,
-        stdoutJson: { ready: [], blocked: dependency_blocked }
-      })
-      .mockResolvedValueOnce({ code: 0, stdoutJson: [] });
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected)
+      .mockResolvedValueOnce(
+        asProjectedResponse({ code: 0, stdoutJson: stored })
+      )
+      .mockResolvedValueOnce(
+        asProjectedResponse({
+          code: 0,
+          stdoutJson: { ready: [], blocked: dependency_blocked }
+        })
+      )
+      .mockResolvedValueOnce(asProjectedResponse({ code: 0, stdoutJson: [] }));
   }
 
   /**
@@ -812,7 +918,7 @@ describe('closed-issues range filtering before enrichment', () => {
   const SINCE = Date.parse('2026-08-03T00:00:00.000Z');
 
   beforeEach(() => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
     /** @type {import('vitest').Mock} */ (enrichIssuesWorkflow).mockClear();
   });
 
@@ -820,15 +926,17 @@ describe('closed-issues range filtering before enrichment', () => {
    * Two closed issues, one inside the `since` range and one outside it.
    */
   function mockClosedListThenDeps() {
-    /** @type {import('vitest').Mock} */ (runBdJson)
-      .mockResolvedValueOnce({
-        code: 0,
-        stdoutJson: [
-          { id: 'C-1', closed_at: '2026-08-03T01:00:00.000Z' },
-          { id: 'C-2', closed_at: '2026-08-01T01:00:00.000Z' }
-        ]
-      })
-      .mockResolvedValueOnce({ code: 0, stdoutJson: [] });
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected)
+      .mockResolvedValueOnce(
+        asProjectedResponse({
+          code: 0,
+          stdoutJson: [
+            { id: 'C-1', closed_at: '2026-08-03T01:00:00.000Z' },
+            { id: 'C-2', closed_at: '2026-08-01T01:00:00.000Z' }
+          ]
+        })
+      )
+      .mockResolvedValueOnce(asProjectedResponse({ code: 0, stdoutJson: [] }));
   }
 
   test('keeps out-of-range issues out of workflow enrichment', async () => {
@@ -853,7 +961,7 @@ describe('closed-issues range filtering before enrichment', () => {
     });
 
     expect(
-      /** @type {import('vitest').Mock} */ (runBdJson).mock.calls[1][0]
+      /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock.calls[1][1]
     ).toEqual(['dep', 'list', 'C-1', '--json']);
   });
 
@@ -879,7 +987,7 @@ describe('closed-issues range filtering before enrichment', () => {
 
 describe('from_id provenance derivation', () => {
   beforeEach(() => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
   });
 
   /**
@@ -887,9 +995,11 @@ describe('from_id provenance derivation', () => {
    * @param {unknown} dep_result
    */
   function mockListThenDeps(issues, dep_result) {
-    /** @type {import('vitest').Mock} */ (runBdJson)
-      .mockResolvedValueOnce({ code: 0, stdoutJson: issues })
-      .mockResolvedValueOnce(dep_result);
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected)
+      .mockResolvedValueOnce(
+        asProjectedResponse({ code: 0, stdoutJson: issues })
+      )
+      .mockResolvedValueOnce(asProjectedResponse(dep_result, 'dep'));
   }
 
   test('attaches the discovered-from origin from a batch payload', async () => {
@@ -943,7 +1053,7 @@ describe('from_id provenance derivation', () => {
     await fetchListForSubscription({ type: 'all-issues' });
 
     expect(
-      /** @type {import('vitest').Mock} */ (runBdJson).mock.calls[1][0]
+      /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock.calls[1][1]
     ).toEqual(['dep', 'list', 'A-1', 'A-2', '--json']);
   });
 
@@ -1016,8 +1126,10 @@ describe('from_id provenance derivation', () => {
   });
 
   test('leaves issues untouched when the dep list call throws', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson)
-      .mockResolvedValueOnce({ code: 0, stdoutJson: [{ id: 'A-1' }] })
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected)
+      .mockResolvedValueOnce(
+        asProjectedResponse({ code: 0, stdoutJson: [{ id: 'A-1' }] })
+      )
       .mockRejectedValueOnce(new Error('spawn failed'));
 
     const res = await fetchListForSubscription({ type: 'all-issues' });
@@ -1027,13 +1139,17 @@ describe('from_id provenance derivation', () => {
   });
 
   test('skips the dep list call for an empty list', async () => {
-    /** @type {import('vitest').Mock} */ (runBdJson).mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: []
-    });
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockResolvedValueOnce(
+      asProjectedResponse({
+        code: 0,
+        stdoutJson: []
+      })
+    );
 
     await fetchListForSubscription({ type: 'all-issues' });
 
-    expect(runBdJson).toHaveBeenCalledTimes(1);
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(1);
   });
 });

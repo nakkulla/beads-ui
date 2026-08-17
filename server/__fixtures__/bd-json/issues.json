@@ -1,0 +1,36 @@
+{
+  "native_spec_id": {
+    "id": "UI-native",
+    "title": "native spec_id issue",
+    "status": "open",
+    "spec_id": "docs/specs/native.md",
+    "metadata": {}
+  },
+  "legacy_metadata_spec_id": {
+    "id": "UI-legacy",
+    "title": "legacy metadata spec_id issue",
+    "status": "open",
+    "metadata": { "spec_id": "docs/specs/legacy.md" }
+  },
+  "equal_dual_spec_id": {
+    "id": "UI-equal",
+    "title": "equal dual spec_id issue",
+    "status": "open",
+    "spec_id": "docs/specs/same.md",
+    "metadata": { "spec_id": "docs/specs/same.md" }
+  },
+  "conflicting_dual_spec_id": {
+    "id": "UI-conflict",
+    "title": "conflicting dual spec_id issue",
+    "status": "open",
+    "spec_id": "docs/specs/native.md",
+    "metadata": { "spec_id": "docs/specs/legacy.md" }
+  },
+  "additive_unknown_fields": {
+    "id": "UI-additive",
+    "title": "issue carrying fields this adapter does not know",
+    "status": "open",
+    "future_field": { "nested": [1, 2, 3] },
+    "schema_version": 2
+  }
+}
