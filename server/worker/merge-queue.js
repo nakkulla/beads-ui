@@ -100,12 +100,14 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  *   workspace: string,
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
- *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, external: boolean, continuation?: 'verify' }>,
+ *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify' }>,
  *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
+ *   headReview?: { ensureApproved: (queue_bead_id: string, subject_bead_id: string, observed: { head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null }) => Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }> },
+ *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null }>,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -224,7 +226,12 @@ export function createMergeQueue(deps) {
     }
     return (
       lane.find(
-        (/** @type {any} */ entry) => entry.resolution?.state !== 'yielded'
+        (/** @type {any} */ entry) =>
+          entry.resolution?.state !== 'yielded' &&
+          // A terminal head-review failure waits for a human re-click
+          // (UI-58w8 §1) — driving it again would spin the drain, and
+          // dequeuing it would erase the failure the user must see.
+          entry.head_review?.state !== 'failed'
       ) || null
     );
   }
@@ -273,6 +280,20 @@ export function createMergeQueue(deps) {
     const q = snapshot();
     const lane = q && Array.isArray(q.merge_queue) ? q.merge_queue : [];
     return lane.find((/** @type {any} */ e) => e.bead_id === bead_id) || null;
+  }
+
+  /**
+   * Whether a queue item carries a live manual continuation authority
+   * (UI-58w8 §1). A manual click is that item's own completion authority, so
+   * the global `auto_merge` toggle — which owns automatic ENROLMENT only —
+   * must not pause it. Provenance is the durable record, never a guess from
+   * when the toggle changed; a legacy authority-less entry answers false and
+   * keeps the old pause behaviour.
+   *
+   * @param {string} bead_id
+   */
+  function manualContinuation(bead_id) {
+    return queuedEntry(bead_id)?.authority?.source === 'manual';
   }
 
   /**
@@ -822,7 +843,11 @@ export function createMergeQueue(deps) {
         return true;
       }
       if (resolution.state === 'ready') {
-        return lineage.state !== 'terminal' || q.auto_merge === true;
+        return (
+          lineage.state !== 'terminal' ||
+          q.auto_merge === true ||
+          entry.authority?.source === 'manual'
+        );
       }
       if (lineage.state === 'terminal') {
         return true;
@@ -856,7 +881,11 @@ export function createMergeQueue(deps) {
           return { kind: 'failed' };
         }
         if (!restored.attempt_id) {
-          if (entry.resolution_rounds > 0 && snapshot()?.auto_merge !== true) {
+          if (
+            entry.resolution_rounds > 0 &&
+            snapshot()?.auto_merge !== true &&
+            !manualContinuation(queue_bead_id)
+          ) {
             halted = true;
             return { kind: 'paused' };
           }
@@ -900,7 +929,7 @@ export function createMergeQueue(deps) {
           );
           return { kind: 'failed' };
         }
-        if (q.auto_merge !== true) {
+        if (q.auto_merge !== true && !manualContinuation(queue_bead_id)) {
           halted = true;
           return { kind: 'paused' };
         }
@@ -1046,20 +1075,56 @@ export function createMergeQueue(deps) {
   }
 
   /**
+   * Route one manual item through the head-review machine and shape its
+   * non-approved outcome as a driver-level result (UI-58w8 §2).
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation: string|null }} observed
+   * @returns {Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>}
+   */
+  async function ensureHeadReview(queue_bead_id, subject_bead_id, observed) {
+    // A vouched mutation vouches for exactly ONE binding: the caller clears it
+    // right after this call, so a later external push cannot inherit the
+    // resolver's or the base update's provenance.
+
+    /** @type {{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }} */
+    let review = { state: 'failed', reason: 'head_review_error' };
+    try {
+      review = await /** @type {NonNullable<typeof deps.headReview>} */ (
+        deps.headReview
+      ).ensureApproved(queue_bead_id, subject_bead_id, observed);
+    } catch (err) {
+      log('merge queue head review threw for %s: %o', queue_bead_id, err);
+    }
+    return review;
+  }
+
+  /**
    * Re-probe before every effect. A ready resolution is charged exactly once
    * after the probe and before the selected merge/update/resolver action.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {string|null} ready_attempt_id
+   * @param {{ mutation: string|null }} [vouched] - The queue-owned mutation
+   * evidence this drain can vouch for (`resolver:<attempt>` / `base_update`).
+   * A HOLDER, not a value: whichever site binds it consumes it, so one
+   * resolver push or base update vouches for exactly one head-review binding
+   * and never for a later external push.
    * @returns {Promise<MergeClickResult|null>}
    */
   async function runLatestMerge(
     queue_bead_id,
     subject_bead_id,
-    ready_attempt_id
+    ready_attempt_id,
+    vouched = { mutation: null }
   ) {
-    if (ready_attempt_id && snapshot()?.auto_merge !== true) {
+    if (
+      ready_attempt_id &&
+      snapshot()?.auto_merge !== true &&
+      !manualContinuation(queue_bead_id)
+    ) {
       halted = true;
       return null;
     }
@@ -1088,7 +1153,11 @@ export function createMergeQueue(deps) {
         reason: 'mergeability_probe_error'
       };
     }
-    if (ready_attempt_id && snapshot()?.auto_merge !== true) {
+    if (
+      ready_attempt_id &&
+      snapshot()?.auto_merge !== true &&
+      !manualContinuation(queue_bead_id)
+    ) {
       halted = true;
       return null;
     }
@@ -1108,10 +1177,43 @@ export function createMergeQueue(deps) {
         ok: false,
         action: probe.continuation === 'verify' ? 'verify_blocked' : 'refused',
         reason: probe.reason || 'mergeability_probe_blocked',
-        head_sha: probe.head_sha || null
+        head_sha: probe.head_sha || null,
+        base_ref: probe.base_ref || null,
+        head_ref: probe.head_ref || null
       };
     }
     if (probe.kind !== 'dirty') {
+      // A manual item never merges on a bare metadata receipt (UI-58w8 §5):
+      // even a CLEAN gate must first bind an approved head-review journal to
+      // the exact authority/head, so the review machine runs BEFORE the merge
+      // — for a current receipt this is the `existing_current` binding, for a
+      // moved head the automatic reviewer.
+      if (
+        probe.kind === 'clean' &&
+        manualContinuation(queue_bead_id) &&
+        // A completion root runs its OWN gating saga with its own repair
+        // budget (`processCompletionItem`), and that loop has no disposition
+        // for a head-review result. The two machines stay separate.
+        completionIntent(queue_bead_id) === null &&
+        typeof deps.headReview?.ensureApproved === 'function'
+      ) {
+        const review = await ensureHeadReview(queue_bead_id, subject_bead_id, {
+          head_sha: probe.head_sha || '',
+          base_ref: probe.base_ref || null,
+          head_ref: probe.head_ref || null,
+          mutation: vouched.mutation
+        });
+        vouched.mutation = null;
+        if (review.state !== 'approved') {
+          return {
+            ok: false,
+            action: 'head_review',
+            reason: review.reason || review.state,
+            review_state: review.state,
+            head_sha: probe.head_sha || null
+          };
+        }
+      }
       return runMerge(subject_bead_id);
     }
     if (effective_rounds >= round_cap) {
@@ -1414,6 +1516,15 @@ export function createMergeQueue(deps) {
       }
     }
 
+    // Queue-owned mutation evidence THIS drain can vouch for (UI-58w8 §2):
+    // a consumed ready resolution or the driver's own base update. It never
+    // survives a restart on purpose — an unprovable move fails closed.
+    /** @type {{ mutation: string|null }} */
+    const vouched = { mutation: null };
+    // The base update is attempted at most once per turn, so a PR that stays
+    // BEHIND cannot loop the driver against the GitHub API.
+    let base_update_attempted = false;
+
     while (!stopped && !halted) {
       if (!queuedEntry(bead_id)) {
         return;
@@ -1433,10 +1544,14 @@ export function createMergeQueue(deps) {
       ) {
         return;
       }
+      if (resolution.kind === 'ready' && resolution.attempt_id) {
+        vouched.mutation = `resolver:${resolution.attempt_id}`;
+      }
       const result = await runLatestMerge(
         bead_id,
         bead_id,
-        resolution.kind === 'ready' ? resolution.attempt_id || null : null
+        resolution.kind === 'ready' ? resolution.attempt_id || null : null,
+        vouched
       );
       if (!result) {
         return;
@@ -1547,6 +1662,96 @@ export function createMergeQueue(deps) {
           result.reason === 'mergeability_identity_changed')
       ) {
         continue;
+      }
+
+      if (
+        action === 'refused' &&
+        result.reason === 'base_behind' &&
+        manualContinuation(bead_id) &&
+        typeof deps.updateBase === 'function' &&
+        !base_update_attempted
+      ) {
+        // Queue-owned base update (UI-58w8 §2): the manual authority carries
+        // a BEHIND PR through `updateBranch`, and the moved head then takes
+        // the SAME head-review path a resolver push does.
+        base_update_attempted = true;
+        /** @type {{ ok: boolean, reason?: string|null }} */
+        let updated = { ok: false, reason: 'update_branch_failed' };
+        try {
+          updated = await deps.updateBase(bead_id);
+        } catch (err) {
+          log('merge queue base update threw for %s: %o', bead_id, err);
+        }
+        if (updated.ok) {
+          vouched.mutation = 'base_update';
+          notify();
+          continue;
+        }
+        failAndDequeue(bead_id, updated.reason || 'update_branch_failed');
+        return;
+      }
+
+      if (
+        action === 'refused' &&
+        (result.reason === 'review_receipt_stale' ||
+          result.reason === 'review_receipt_missing') &&
+        manualContinuation(bead_id) &&
+        typeof deps.headReview?.ensureApproved === 'function'
+      ) {
+        // Manual continuation (UI-58w8 §2): a queue-owned head mutation left
+        // the receipt stale, so the head-review machine re-acquires a CURRENT
+        // review instead of this being a terminal refusal.
+        const review = await ensureHeadReview(bead_id, bead_id, {
+          head_sha: result.head_sha || '',
+          base_ref: result.base_ref || null,
+          head_ref: result.head_ref || null,
+          mutation: vouched.mutation
+        });
+        vouched.mutation = null;
+        if (review.state === 'approved') {
+          notify();
+          continue;
+        }
+        if (review.state === 'failed') {
+          // Terminal needs-human: the item KEEPS its queue slot and its
+          // journal — a re-click issues the fresh authority that may retry.
+          // The drain ENDS rather than returning to the same head: a failed
+          // journal that did not persist would otherwise be re-driven in a
+          // tight loop, which is the one thing a terminal state must not do.
+          fail(bead_id, review.reason || 'head_review_failed');
+          halted = true;
+          notify();
+          return;
+        }
+        if (review.state === 'halted') {
+          halted = true;
+          halted_on_head = bead_id;
+          notify();
+          return;
+        }
+        // 'gone': cancelled or superseded under us — nothing left to drive.
+        return;
+      }
+
+      if (action === 'head_review') {
+        const review_state = /** @type {any} */ (result).review_state;
+        if (review_state === 'approved') {
+          notify();
+          continue;
+        }
+        if (review_state === 'failed') {
+          fail(bead_id, result.reason || 'head_review_failed');
+          halted = true;
+          notify();
+          return;
+        }
+        if (review_state === 'halted') {
+          halted = true;
+          halted_on_head = bead_id;
+          notify();
+          return;
+        }
+        return;
       }
 
       failAndDequeue(bead_id, (result && result.reason) || 'refused');

@@ -195,6 +195,19 @@ export function repairDirective(repair) {
 }
 
 /**
+ * The read-only review contract (UI-58w8 §3). A review-mode session replaces
+ * the writable Worker contract entirely: no PR-submit directive, no guard
+ * exemptions — reading and one structured verdict are the whole task.
+ */
+export const REVIEW_PREAMBLE = [
+  '## read-only review 세션',
+  '',
+  '- 이 세션은 implementation review 전용이다. 파일 수정·commit·push·PR 생성·머지·Beads 쓰기를 모두 금지한다.',
+  '- 허용되는 것은 읽기(git fetch/diff/log, 파일 읽기)와 요구된 구조화 verdict 판정뿐이다.',
+  '- 결론은 지시된 구조화 verdict 라인으로만 반환하라.'
+].join('\n');
+
+/**
  * The default task prompt for a first dispatch: the bead id plus the instruction
  * to run it through the contract-native flow. It lives here rather than only in
  * the adapter because the scheduler builds ON it when a dispatch carries extra
@@ -227,10 +240,18 @@ export function defaultTaskPrompt(bead_id) {
  * against, so a shape that opens none is told no base either.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, target_base?: string|null, repair?: { mode: 'resume_root'|'dispatch_repair', stage: string, reason: string, subject_sha: string, base_sha: string, result_digest: string, log_path?: string|null } }} [options]
+ * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, review?: boolean, target_base?: string|null, repair?: { mode: 'resume_root'|'dispatch_repair', stage: string, reason: string, subject_sha: string, base_sha: string, result_digest: string, log_path?: string|null } }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
+  if (options.review === true) {
+    // Review mode is not a variation of the writable contract — it IS its own
+    // contract (UI-58w8 §3), so none of the writable directives apply.
+    return {
+      system_prompt: [UNATTENDED_PREAMBLE, REVIEW_PREAMBLE].join('\n\n'),
+      task_prompt: String(base_prompt ?? '')
+    };
+  }
   const pr_submit = options.pr_submit !== false;
   const disposition = options.disposition === true;
   const parts = [UNATTENDED_PREAMBLE];

@@ -8124,6 +8124,56 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
         (b) => b.textContent
       )
     ).toContain('머지 대기 #2');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        waiting.querySelector('.worker-mini__merge-cancel')
+      ).disabled
+    ).toBe(false);
+    // These rows carry no `authority`, i.e. they predate the manual
+    // continuation runtime — the driver never continues them on its own, so
+    // the re-click that creates one is the way forward (UI-58w8 §1).
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        waiting.querySelector('.worker-mini__merge')
+      ).textContent
+    ).toContain('다시 머지');
+  });
+
+  test('a queued row under a live manual authority still swaps 머지 for 취소', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1', 'RD-2'], {
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            resolution_rounds: 0,
+            authority: {
+              id: 'authority-1',
+              source: 'manual',
+              granted_at: 1,
+              requested_head_sha: 'a'.repeat(40),
+              target_base: 'main'
+            },
+            head_review: null
+          },
+          {
+            bead_id: 'RD-2',
+            resolution_rounds: 0,
+            authority: {
+              id: 'authority-2',
+              source: 'manual',
+              granted_at: 1,
+              requested_head_sha: 'a'.repeat(40),
+              target_base: 'main'
+            },
+            head_review: null
+          }
+        ],
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const waiting = rowOf(mount, 'RD-2');
+
     expect(waiting.querySelector('.worker-mini__merge')).toBe(null);
     expect(
       /** @type {HTMLButtonElement} */ (
@@ -8269,6 +8319,178 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     expect(text).not.toContain('충돌 해소 계속 중');
     expect(text).not.toContain('충돌 해소 완료');
     expect(text).toContain('머지 대기 #1');
+  });
+
+  /**
+   * @param {string} state
+   * @param {Record<string, unknown>} [extra]
+   */
+  function headReviewEntry(state, extra = {}) {
+    return {
+      bead_id: 'RD-1',
+      resolution_rounds: 0,
+      authority: {
+        id: 'authority-1',
+        source: 'manual',
+        granted_at: 1,
+        requested_head_sha: 'a'.repeat(40),
+        target_base: 'main'
+      },
+      head_review: {
+        authority_id: 'authority-1',
+        head_sha: 'b'.repeat(40),
+        state,
+        reviewer: 'codex',
+        effort: 'xhigh',
+        review_attempt_id: null,
+        findings_digest: null,
+        repair_attempt_id: null,
+        repair_rounds: 0,
+        approval_source: null,
+        receipt: null,
+        failure_reason: null,
+        updated_at: 2,
+        ...extra
+      }
+    };
+  }
+
+  test.each([
+    ['pending', 'implementation review 대기', false],
+    ['reviewing', 'implementation review 중', true],
+    ['revising', 'review 수정 중 · 1회', true]
+  ])('renders the %s head-review badge (UI-58w8 §7)', (state, label, live) => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [headReviewEntry(state)],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    const badge = /** @type {HTMLElement} */ (
+      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
+        (element.textContent || '').includes(label)
+      )
+    );
+
+    expect(badge).toBeDefined();
+    expect(badge.classList.contains('worker-mini__badge--activity')).toBe(live);
+  });
+
+  test('renders a failed head review as an alert naming the sanitized reason', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [
+          headReviewEntry('failed', {
+            failure_reason: 'transport_unavailable'
+          })
+        ],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+    const badge = /** @type {HTMLElement} */ (
+      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
+        (element.textContent || '').includes('review 자동 진행 실패')
+      )
+    );
+
+    expect(badge).toBeDefined();
+    expect(badge.textContent).toContain('transport_unavailable');
+    expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
+  });
+
+  test('omits head-review UI on a legacy entry without the optional fields', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const text = rowOf(mount, 'RD-1').textContent || '';
+
+    expect(text).not.toContain('implementation review');
+    expect(text).not.toContain('review 자동 진행 실패');
+  });
+
+  test('offers a re-click on a terminally failed head review', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [
+          headReviewEntry('failed', {
+            failure_reason: 'transport_unavailable'
+          })
+        ],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+    );
+
+    expect(button).not.toBe(null);
+    expect(button.disabled).toBe(false);
+    expect(button.textContent).toContain('다시 머지');
+  });
+
+  test('keeps 취소 enabled while a review or repair is running', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [headReviewEntry('reviewing')],
+        // The driver holds this item while the reviewer is out.
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const cancel = /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel')
+    );
+
+    expect(cancel).not.toBe(null);
+    expect(cancel.disabled).toBe(false);
+  });
+
+  test('keeps 취소 disabled while the merge effect itself runs', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [
+          headReviewEntry('approved', {
+            approval_source: 'external_review',
+            receipt: `codex@${'b'.repeat(40)}`
+          })
+        ],
+        merge_queue_state: { active: 'RD-1', failures: {} }
+      })
+    );
+
+    const cancel = /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge-cancel')
+    );
+
+    expect(cancel.disabled).toBe(true);
+  });
+
+  test('an approved head review adds no badge of its own', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [
+          headReviewEntry('approved', {
+            approval_source: 'external_review',
+            receipt: `codex@${'b'.repeat(40)}`
+          })
+        ],
+        merge_queue_state: { active: null, failures: {} }
+      })
+    );
+
+    const text = rowOf(mount, 'RD-1').textContent || '';
+
+    expect(text).not.toContain('implementation review');
+    expect(text).not.toContain('review 수정 중');
   });
 
   test('the active item shows no position badge and cannot be cancelled', () => {

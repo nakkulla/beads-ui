@@ -403,7 +403,33 @@
  * @property {ResolutionWait|InvalidResolutionWait|null} resolution - Durable
  * binding between this queue item and one exact conflict-resolution attempt.
  * @property {{ subject_bead_id: string, mismatch: Record<string, unknown>, continuation: 'prior_session'|'fresh_current'|null, decision_token: Record<string, unknown>|null }|null} [continuation_action]
+ * @property {MergeAuthority|null} [authority]
+ * @property {HeadReview|null} [head_review]
  * A cross-runner resolver decision that must survive restart.
+ */
+/**
+ * @typedef {Object} MergeAuthority
+ * @property {string} id
+ * @property {'manual'|'automatic'} source
+ * @property {number} granted_at
+ * @property {string} requested_head_sha
+ * @property {string} target_base
+ */
+/**
+ * @typedef {Object} HeadReview
+ * @property {string} authority_id
+ * @property {string} head_sha
+ * @property {'pending'|'reviewing'|'revising'|'approved'|'failed'} state
+ * @property {string} reviewer
+ * @property {string} effort
+ * @property {string|null} review_attempt_id
+ * @property {string|null} findings_digest
+ * @property {string|null} repair_attempt_id
+ * @property {0|1} repair_rounds
+ * @property {null|'existing_current'|'external_review'|'bounded_repair'} approval_source
+ * @property {string|null} receipt
+ * @property {string|null} failure_reason
+ * @property {number} updated_at
  */
 /**
  * @typedef {'waiting'|'yielded'|'ready'} ResolutionWaitState
@@ -495,6 +521,7 @@
  * @property {string} [reason] - Why a non-conflict rejection happened, for the
  * ops that distinguish causes; absent when there is nothing to distinguish.
  */
+import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
@@ -1092,6 +1119,106 @@ function normalizeResolutionWait(value) {
   };
 }
 
+const SHA40_RE = /^[0-9a-f]{40}$/i;
+
+/** Queue-owned runtime capability projected by health and Worker snapshots. */
+export const MANUAL_MERGE_CONTINUATION = Object.freeze({
+  schema_version: 1,
+  head_review_projection: true
+});
+
+/**
+ * @param {unknown} value
+ * @returns {MergeAuthority|null}
+ */
+function normalizeMergeAuthority(value) {
+  if (
+    !isRecord(value) ||
+    typeof value.id !== 'string' ||
+    value.id.length === 0 ||
+    (value.source !== 'manual' && value.source !== 'automatic') ||
+    typeof value.granted_at !== 'number' ||
+    !Number.isFinite(value.granted_at) ||
+    typeof value.requested_head_sha !== 'string' ||
+    !SHA40_RE.test(value.requested_head_sha) ||
+    typeof value.target_base !== 'string' ||
+    value.target_base.length === 0
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    source: value.source,
+    granted_at: value.granted_at,
+    requested_head_sha: value.requested_head_sha.toLowerCase(),
+    target_base: value.target_base
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @param {MergeAuthority|null} authority
+ * @returns {HeadReview|null}
+ */
+function normalizeHeadReview(value, authority) {
+  if (!authority || !isRecord(value)) {
+    return null;
+  }
+  const state = value.state;
+  const approval_source = value.approval_source;
+  if (
+    value.authority_id !== authority.id ||
+    typeof value.head_sha !== 'string' ||
+    !SHA40_RE.test(value.head_sha) ||
+    !['pending', 'reviewing', 'revising', 'approved', 'failed'].includes(
+      String(state)
+    ) ||
+    typeof value.reviewer !== 'string' ||
+    value.reviewer.length === 0 ||
+    typeof value.effort !== 'string' ||
+    value.effort.length === 0 ||
+    (value.repair_rounds !== 0 && value.repair_rounds !== 1) ||
+    ![null, 'existing_current', 'external_review', 'bounded_repair'].includes(
+      /** @type {any} */ (approval_source)
+    ) ||
+    typeof value.updated_at !== 'number' ||
+    !Number.isFinite(value.updated_at)
+  ) {
+    return null;
+  }
+  const nullable = [
+    'review_attempt_id',
+    'findings_digest',
+    'repair_attempt_id'
+  ];
+  if (
+    nullable.some(
+      (key) => value[key] !== null && typeof value[key] !== 'string'
+    ) ||
+    (value.receipt !== null && typeof value.receipt !== 'string') ||
+    (value.failure_reason !== null && typeof value.failure_reason !== 'string')
+  ) {
+    return null;
+  }
+  return {
+    authority_id: authority.id,
+    head_sha: value.head_sha.toLowerCase(),
+    state: /** @type {HeadReview['state']} */ (state),
+    reviewer: value.reviewer,
+    effort: value.effort,
+    review_attempt_id: /** @type {string|null} */ (value.review_attempt_id),
+    findings_digest: /** @type {string|null} */ (value.findings_digest),
+    repair_attempt_id: /** @type {string|null} */ (value.repair_attempt_id),
+    repair_rounds: /** @type {0|1} */ (value.repair_rounds),
+    approval_source: /** @type {HeadReview['approval_source']} */ (
+      approval_source
+    ),
+    receipt: value.receipt,
+    failure_reason: value.failure_reason,
+    updated_at: value.updated_at
+  };
+}
+
 /**
  * Normalize the durable merge queue: entry order is the FIFO order, a bead may
  * appear once, a missing/unusable `resolution_rounds` reads as 0, and every
@@ -1118,6 +1245,8 @@ function normalizeMergeQueue(arr) {
     const continuation_action = normalizeContinuationAction(
       raw.continuation_action
     );
+    const authority = normalizeMergeAuthority(raw.authority);
+    const head_review = normalizeHeadReview(raw.head_review, authority);
     out.push({
       bead_id: raw.bead_id,
       resolution_rounds:
@@ -1127,7 +1256,8 @@ function normalizeMergeQueue(arr) {
           ? Math.floor(raw.resolution_rounds)
           : 0,
       resolution: normalizeResolutionWait(raw.resolution),
-      ...(continuation_action === null ? {} : { continuation_action })
+      ...(continuation_action === null ? {} : { continuation_action }),
+      ...(authority === null ? {} : { authority, head_review })
     });
   }
   return out;
@@ -2404,12 +2534,44 @@ function completeIntentForDone(q, bead_id) {
  * connections (and thus all clients dragging concurrently) observe one coherent
  * in-memory revision, making the CAS authoritative in-process.
  *
- * @param {{ now?: () => number, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs') }} [options]
+ * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs') }} [options]
  */
 export function createQueueStore(options = {}) {
   const now = options.now || (() => Date.now());
+  const randomUUID = options.randomUUID || (() => nodeCrypto.randomUUID());
   const filePathFor = options.filePathFor || queueFilePath;
   const fs = options.fs || nodeFs;
+
+  /**
+   * Provenance fields for a row the automatic enroller queues. An automatic
+   * authority exists so the driver can tell enrolment provenance apart from a
+   * manual click — a row whose head or base the enroller could not read gets
+   * no authority at all and behaves like a legacy entry.
+   *
+   * @param {unknown} head_sha
+   * @param {unknown} target_base
+   * @returns {{ authority: MergeAuthority, head_review: null }|{}}
+   */
+  function automaticAuthorityFields(head_sha, target_base) {
+    if (
+      typeof head_sha !== 'string' ||
+      !SHA40_RE.test(head_sha) ||
+      typeof target_base !== 'string' ||
+      target_base.length === 0
+    ) {
+      return {};
+    }
+    return {
+      authority: {
+        id: randomUUID(),
+        source: 'automatic',
+        granted_at: now(),
+        requested_head_sha: head_sha.toLowerCase(),
+        target_base
+      },
+      head_review: null
+    };
+  }
 
   /** @type {Map<string, Queue>} */
   const cache = new Map();
@@ -4867,6 +5029,214 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Queue a manual [머지] click as a durable per-item continuation authority
+     * (UI-58w8 §1). Unlike {@link enqueueMerge}, the caller must have read the
+     * authoritative PR head and target base FIRST: a row whose identity could
+     * not be read makes no queue effect at all, because an authority granted on
+     * a guess is exactly the stale-evidence merge the journal exists to block.
+     *
+     * Authority lifecycle per row:
+     * - new entry → fresh `authority` (source `manual`), empty review journal
+     * - duplicate click on a nonterminal current authority → reuse, no new id
+     *   and no budget reset
+     * - re-click after a `failed` review, or a legacy authority-less entry →
+     *   the current slot is atomically replaced with a NEW authority bound to
+     *   the freshly observed head/base; every late result of the old attempt
+     *   then fails its `authority_id` CAS and is a no-op.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, entries: Array<{ bead_id: string, head_sha?: string|null, target_base?: string|null, external?: boolean }> }} input
+     * @returns {QueueOpResult}
+     */
+    enqueueMergeManual(workspace, input) {
+      const { expected_revision, entries } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        if (!Array.isArray(entries) || entries.length === 0) {
+          return false;
+        }
+        let changed = 0;
+        for (const entry of entries) {
+          const bead_id = entry && entry.bead_id;
+          if (typeof bead_id !== 'string' || bead_id.length === 0) {
+            continue;
+          }
+          const head_sha =
+            typeof entry.head_sha === 'string' && SHA40_RE.test(entry.head_sha)
+              ? entry.head_sha.toLowerCase()
+              : null;
+          const target_base =
+            typeof entry.target_base === 'string' &&
+            entry.target_base.length > 0
+              ? entry.target_base
+              : null;
+          if (!head_sha || !target_base) {
+            continue;
+          }
+          if (!enqueueMember(next, bead_id, entry.external === true)) {
+            continue;
+          }
+          if (next.auto_merge_skips[bead_id]) {
+            delete next.auto_merge_skips[bead_id];
+            changed += 1;
+          }
+          const existing = next.merge_queue.find((e) => e.bead_id === bead_id);
+          if (existing) {
+            const review = existing.head_review ?? null;
+            // Only a duplicate click on the SAME nonterminal MANUAL authority
+            // reuses it. An automatic enrolment is not the user's click — the
+            // click promotes it to a fresh manual authority, exactly like a
+            // legacy or failed slot (UI-58w8 §1).
+            if (
+              existing.authority &&
+              existing.authority.source === 'manual' &&
+              !(review !== null && review.state === 'failed')
+            ) {
+              continue;
+            }
+            existing.authority = {
+              id: randomUUID(),
+              source: 'manual',
+              granted_at: now(),
+              requested_head_sha: head_sha,
+              target_base
+            };
+            existing.head_review = null;
+            changed += 1;
+            continue;
+          }
+          insertRunnableMergeEntry(next, {
+            bead_id,
+            resolution_rounds: 0,
+            resolution: null,
+            authority: {
+              id: randomUUID(),
+              source: 'manual',
+              granted_at: now(),
+              requested_head_sha: head_sha,
+              target_base
+            },
+            head_review: null
+          });
+          changed += 1;
+        }
+        return changed > 0;
+      });
+    },
+
+    /**
+     * Prerecord one head-bound review journal BEFORE any reviewer dispatch
+     * (UI-58w8 §2/§6). Driver-owned, no CAS. Refuses a journal for the same
+     * head twice (restart adoption reads the existing journal instead) and a
+     * terminal `failed` journal (only a re-click's new authority reopens it).
+     * A repair budget already consumed under this authority carries over —
+     * `repair_rounds` never resets within one authority.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, authority_id: string, head_sha: string, reviewer: string, effort: string }} input
+     * @returns {QueueOpResult}
+     */
+    beginHeadReview(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
+        if (
+          !entry ||
+          !entry.authority ||
+          entry.authority.id !== input.authority_id ||
+          typeof input.head_sha !== 'string' ||
+          !SHA40_RE.test(input.head_sha) ||
+          typeof input.reviewer !== 'string' ||
+          input.reviewer.length === 0 ||
+          typeof input.effort !== 'string' ||
+          input.effort.length === 0
+        ) {
+          return false;
+        }
+        const head_sha = input.head_sha.toLowerCase();
+        const review = entry.head_review ?? null;
+        if (review !== null) {
+          if (review.head_sha === head_sha || review.state === 'failed') {
+            return false;
+          }
+        }
+        entry.head_review = {
+          authority_id: entry.authority.id,
+          head_sha,
+          state: 'pending',
+          reviewer: input.reviewer,
+          effort: input.effort,
+          review_attempt_id: null,
+          findings_digest: null,
+          repair_attempt_id: null,
+          repair_rounds: review === null ? 0 : review.repair_rounds,
+          approval_source: null,
+          receipt: null,
+          failure_reason: null,
+          updated_at: now()
+        };
+        return true;
+      });
+    },
+
+    /**
+     * Transition one head-review journal under a triple CAS: exact authority
+     * id, exact journal head, exact current state. Everything a cancelled or
+     * superseded attempt reports late fails this CAS and is a no-op — that is
+     * the property that makes stop-success irrelevant to merge safety.
+     *
+     * The patched journal is re-validated through the same normalizer the
+     * cold-load path uses, so no transition can persist a shape a restart
+     * would silently drop.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, authority_id: string, head_sha: string, expected_state: 'pending'|'reviewing'|'revising'|'approved'|'failed', patch: Record<string, unknown> }} input
+     * @returns {QueueOpResult}
+     */
+    setHeadReviewState(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
+        const review = entry ? (entry.head_review ?? null) : null;
+        if (
+          !entry ||
+          !entry.authority ||
+          review === null ||
+          entry.authority.id !== input.authority_id ||
+          review.authority_id !== input.authority_id ||
+          typeof input.head_sha !== 'string' ||
+          review.head_sha !== input.head_sha.toLowerCase() ||
+          review.state !== input.expected_state ||
+          !isRecord(input.patch)
+        ) {
+          return false;
+        }
+        const allowed = [
+          'state',
+          'head_sha',
+          'review_attempt_id',
+          'findings_digest',
+          'repair_attempt_id',
+          'repair_rounds',
+          'approval_source',
+          'receipt',
+          'failure_reason'
+        ];
+        /** @type {Record<string, unknown>} */
+        const candidate = { ...review };
+        for (const key of allowed) {
+          if (Object.hasOwn(input.patch, key)) {
+            candidate[key] = input.patch[key];
+          }
+        }
+        candidate.updated_at = now();
+        const normalized = normalizeHeadReview(candidate, entry.authority);
+        if (normalized === null) {
+          return false;
+        }
+        entry.head_review = normalized;
+        return true;
+      });
+    },
+
+    /**
      * Persist a cross-runner decision before the background driver releases its
      * queue turn. The token is rebound to this write's resulting revision.
      *
@@ -5516,7 +5886,7 @@ export function createQueueStore(options = {}) {
      * every other scheduler/driver write).
      *
      * @param {string} workspace
-     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
+     * @param {{ expected_revision?: number|null, entries: Array<{ bead_id: string, external?: boolean, head_sha: string, target_base?: string, completion?: { source_attempt_id: string, target_base: string, subject: CompletionSubject } }>, present_ids?: string[] }} input
      * @returns {QueueOpResult}
      */
     enqueueMergeAuto(workspace, input) {
@@ -5616,7 +5986,11 @@ export function createQueueStore(options = {}) {
               insertRunnableMergeEntry(next, {
                 bead_id,
                 resolution_rounds: 0,
-                resolution: null
+                resolution: null,
+                ...automaticAuthorityFields(
+                  entry.head_sha,
+                  entry.completion.target_base
+                )
               });
             }
             if (next.auto_merge_skips[bead_id]) {
@@ -5645,7 +6019,8 @@ export function createQueueStore(options = {}) {
           insertRunnableMergeEntry(next, {
             bead_id,
             resolution_rounds: 0,
-            resolution: null
+            resolution: null,
+            ...automaticAuthorityFields(entry.head_sha, entry.target_base)
           });
           changed += 1;
         }
@@ -5675,8 +6050,14 @@ export function createQueueStore(options = {}) {
       return applyMutation(workspace, expected_revision, (next) => {
         next.auto_merge = !!on;
         if (clear_waiting) {
+          // A manual authority is the user's own click — the global toggle
+          // owns automatic enrolment only, so it must not sweep those rows
+          // (UI-58w8 §1).
           next.merge_queue = next.merge_queue.filter(
-            (e) => e.bead_id === (keep || null) || e.resolution !== null
+            (e) =>
+              e.bead_id === (keep || null) ||
+              e.resolution !== null ||
+              e.authority?.source === 'manual'
           );
         }
         return true;
