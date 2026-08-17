@@ -74,7 +74,10 @@ field가 transport envelope 후보를 표시하고, 그때만 integer `schema_ve
 8. 이전 attempt(head `d2865d93`)는 폐기하고 현 base에서 전면 재작업한다.
 9. merge 후 bd JSON 호환성 green의 증명은 `repo-ops/script/deploy`의 health probe
    확장으로 수행한다. 폐기된 managed-self-deploy receipt 표면은 되살리지 않는다.
-10. 구현은 위임 없이 controller(main agent)가 직접 수행한다(`impl_dispatch=main`).
+10. (2026-08-17 최초 확정) 구현은 위임 없이 controller가 직접 수행한다.
+    (2026-08-18 사용자 갱신) 위임이 가능한 단위는 Codex(gpt)에 위임해도 된다.
+    따라서 실행 runtime은 Phase별 execution hint와 workflow selector가 결정하며,
+    cross-file 통합·full diff·verification·gate 판단은 controller가 계속 소유한다.
 
 ## 3. 범위와 소유권
 
