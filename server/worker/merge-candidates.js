@@ -328,3 +328,24 @@ export function observedHeadSha(workspace_key, bead_id) {
     return null;
   }
 }
+
+/**
+ * The base ref the poller last OBSERVED on a bead's PR (UI-58w8 §1). Read from
+ * the same cache entry as {@link observedHeadSha} so an enrolled row's
+ * authority names the head and the base of ONE observation; an entry the cache
+ * cannot answer for yields null and the row is enrolled without an authority,
+ * exactly as a legacy row is.
+ *
+ * @param {string} workspace_key
+ * @param {string} bead_id
+ * @returns {string|null}
+ */
+export function observedBaseRef(workspace_key, bead_id) {
+  try {
+    const entry = getWorkerRuntime().prObservations.get(workspace_key, bead_id);
+    const base = entry && entry.pr ? entry.pr.base_ref : null;
+    return typeof base === 'string' && base.length > 0 ? base : null;
+  } catch {
+    return null;
+  }
+}

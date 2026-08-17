@@ -64,7 +64,7 @@ function park(store, bead_ids) {
  * own suite).
  *
  * @param {any} store
- * @param {{ eligible?: string[], lane?: string[], heads?: Record<string, string|null>, subscribe?: any }} [input]
+ * @param {{ eligible?: string[], lane?: string[], heads?: Record<string, string|null>, bases?: Record<string, string|null>, subscribe?: any }} [input]
  */
 function enroller(store, input = {}) {
   const notifyChanged = vi.fn();
@@ -87,6 +87,8 @@ function enroller(store, input = {}) {
         bead_id,
         external: false
       })),
+    baseRef: (bead_id) =>
+      input.bases && bead_id in input.bases ? input.bases[bead_id] : 'main',
     completionSeed: (_workspace, _queue, bead_id) => ({
       source_attempt_id: `att-${bead_id}`,
       target_base: 'main',
@@ -139,6 +141,31 @@ describe('worker/auto-merge — 편입 (UI-yk55 §4.2)', () => {
     // this shape exists to prevent.
     expect(notifyChanged).toHaveBeenCalledWith(WS);
     expect(kick).toHaveBeenCalled();
+  });
+
+  test('records an automatic authority from the observed head and base', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    const { auto } = enroller(store);
+
+    auto.enroll();
+
+    // `source=automatic` is a durable contract (UI-58w8 §1), so the enroller
+    // must supply the observed base alongside the head — an entry missing
+    // either identity is enrolled with no authority at all.
+    expect(store.snapshot(WS).merge_queue[0].authority).toMatchObject({
+      source: 'automatic',
+      requested_head_sha: HEAD,
+      target_base: 'main'
+    });
+  });
+
+  test('enrolls without an authority when the observed base is unreadable', () => {
+    const store = park(createQueueStore(), ['UI-1']);
+    const { auto } = enroller(store, { bases: { 'UI-1': null } });
+
+    auto.enroll();
+
+    expect(store.snapshot(WS).merge_queue[0].authority).toBeUndefined();
   });
 
   test('does not queue a row whose head SHA cannot be read', () => {

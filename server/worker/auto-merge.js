@@ -27,6 +27,7 @@
 import {
   completionIntentSeed,
   mergeQueueCandidates,
+  observedBaseRef,
   observedHeadSha,
   overlaidPrWait
 } from './merge-candidates.js';
@@ -39,6 +40,7 @@ import {
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   verifyState: () => { declaration_state: 'present'|'absent'|'invalid', base_sha: string|null },
  *   headSha?: (bead_id: string) => string|null,
+ *   baseRef?: (bead_id: string) => string|null,
  *   candidates?: (workspace: string, queue: Record<string, unknown>, verify_policy: { declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }) => Array<{ bead_id: string, external: boolean, repairable?: boolean }>,
  *   lane?: (workspace: string, queue: Record<string, unknown>) => Array<{ bead_id: string, external: boolean }>,
  *   completionSeed?: (workspace: string, queue: Record<string, unknown>, bead_id: string) => { source_attempt_id: string, target_base: string, subject: any }|null,
@@ -54,6 +56,11 @@ export function createAutoMerge(deps) {
   const headSha =
     deps.headSha ||
     ((/** @type {string} */ bead_id) => observedHeadSha(workspace, bead_id));
+  // The observed base of the SAME cache entry the head came from: an
+  // automatic authority names one observation's head AND base (UI-58w8 §1).
+  const baseRef =
+    deps.baseRef ||
+    ((/** @type {string} */ bead_id) => observedBaseRef(workspace, bead_id));
   const candidates = deps.candidates || mergeQueueCandidates;
   const lane = deps.lane || overlaidPrWait;
   const completionSeed = deps.completionSeed || completionIntentSeed;
@@ -90,7 +97,7 @@ export function createAutoMerge(deps) {
     } catch {
       verify_policy = { declaration_state: 'invalid', base_sha: null };
     }
-    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
+    /** @type {Array<{ bead_id: string, external: boolean, head_sha: string, target_base?: string, completion?: { source_attempt_id: string, target_base: string, subject: any } }>} */
     const entries = [];
     for (const c of candidates(workspace, overlaid, verify_policy)) {
       const head_sha = headSha(c.bead_id);
@@ -108,7 +115,12 @@ export function createAutoMerge(deps) {
         entries.push({ ...c, head_sha, completion });
         continue;
       }
-      entries.push({ ...c, head_sha });
+      const target_base = baseRef(c.bead_id);
+      entries.push({
+        ...c,
+        head_sha,
+        ...(target_base === null ? {} : { target_base })
+      });
     }
     const before = Array.isArray(snapshot.merge_queue)
       ? snapshot.merge_queue.length
