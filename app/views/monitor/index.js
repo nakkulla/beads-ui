@@ -23,7 +23,6 @@ import {
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
-import { createExecDefaultsDialog } from '../worker/exec-defaults-dialog.js';
 import {
   discardCompletionMessage,
   discardConfirmationMessage,
@@ -203,7 +202,6 @@ export function createMonitorView(mount_element, options) {
   const gotoIssue = options.gotoIssue;
   const pipelineStore = options.pipelineStore;
   const transport = options.transport;
-  const execPresetStore = options.execPresetStore;
   const getWorkspacePath = options.getWorkspacePath;
   const switchWorkspace = options.switchWorkspace;
   const nowFn = options.now || (() => Date.now());
@@ -241,91 +239,12 @@ export function createMonitorView(mount_element, options) {
   let lanes = buildLanes(null, null);
 
   /**
-   * 실행 기본값 다이얼로그가 지금 보고 있는 레포. 다이얼로그는 workspace 하나를
-   * 전제로 만들어졌으므로, 모니터는 대상만 바꿔 끼우고 어댑터 store가 그 레포의
-   * 값을 돌려준다.
-   *
-   * @type {string|null}
-   */
-  let exec_target = null;
-  /**
    * mutation 응답이 실어 온 권위 있는 queue. 다음 집계 push가 오기 전까지 그
-   * 레포의 다이얼로그가 읽는 값이자, CAS 재시도가 쓰는 revision이다.
+   * 레포의 화면이 읽는 값이자, CAS 재시도가 쓰는 revision이다.
    *
    * @type {Map<string, any>}
    */
   const exec_adopted = new Map();
-  /** @type {Set<() => void>} */
-  const exec_listeners = new Set();
-
-  /**
-   * @param {string} root_dir
-   * @returns {any|null}
-   */
-  function groupOf(root_dir) {
-    return lanes.queue_groups.find((g) => g.root_dir === root_dir) || null;
-  }
-
-  const exec_store = {
-    get() {
-      if (!exec_target) {
-        return { revision: 0, exec_defaults: {}, default_exec_preset_id: null };
-      }
-      const adopted = exec_adopted.get(exec_target);
-      if (adopted) {
-        return adopted;
-      }
-      const group = groupOf(exec_target);
-      const workspaces =
-        pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
-      const workspace = (Array.isArray(workspaces) ? workspaces : []).find(
-        (w) => w && w.root_dir === exec_target
-      );
-      return {
-        revision: group ? group.revision : 0,
-        exec_defaults: group ? group.exec_defaults : {},
-        default_exec_preset_id: group ? group.default_exec_preset_id : null,
-        runner_catalog: group ? group.runner_catalog : null,
-        workspace_info: workspace ? workspace.workspace_info : undefined
-      };
-    },
-    /** @param {any} q */
-    set(q) {
-      if (exec_target) {
-        exec_adopted.set(exec_target, q);
-      }
-      for (const fn of Array.from(exec_listeners)) {
-        fn();
-      }
-    },
-    /** @param {() => void} fn */
-    subscribe(fn) {
-      exec_listeners.add(fn);
-      return () => exec_listeners.delete(fn);
-    }
-  };
-
-  const exec_defaults_dialog = createExecDefaultsDialog(mount_element, {
-    queueStore: exec_store,
-    presetStore: execPresetStore,
-    // 다이얼로그는 workspace를 모른다 — 대상 레포는 전송 경로가 실어 준다.
-    transport: transport
-      ? (/** @type {any} */ type, /** @type {any} */ payload) => {
-          const workspace_scoped =
-            type === 'worker-queue-set-default-exec-preset' ||
-            type === 'get-worker-system-prompt';
-          return transport(
-            type,
-            workspace_scoped
-              ? {
-                  .../** @type {Record<string, unknown>} */ (payload || {}),
-                  root_dir: exec_target
-                }
-              : payload
-          );
-        }
-      : undefined
-  });
 
   /** @type {null | (() => void)} */
   let unsubscribe_pipeline = null;
@@ -1107,17 +1026,6 @@ export function createMonitorView(mount_element, options) {
       );
       return;
     }
-    const exec = /** @type {HTMLElement|null} */ (
-      target.closest('.mon-ctl--exec')
-    );
-    if (exec) {
-      ev.preventDefault();
-      exec_target = exec.getAttribute('data-root-dir') || null;
-      exec_adopted.delete(exec_target || '');
-      exec_defaults_dialog.open();
-      return;
-    }
-
     const card = /** @type {HTMLElement|null} */ (target.closest('.mon-card'));
     if (!card) {
       return;
@@ -1186,9 +1094,6 @@ export function createMonitorView(mount_element, options) {
         // 새 스냅샷이 권위다 — mutation 응답으로 임시 채택했던 queue는 버린다.
         exec_adopted.clear();
         doRender();
-        for (const fn of Array.from(exec_listeners)) {
-          fn();
-        }
       } catch {
         // ignore
       }
@@ -1254,8 +1159,6 @@ export function createMonitorView(mount_element, options) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('dragend', onDragEnd);
-      exec_defaults_dialog.destroy();
-      exec_listeners.clear();
       mount_element.replaceChildren();
     }
   };

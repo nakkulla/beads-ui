@@ -341,19 +341,22 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     expect(out.map((w) => w.root_dir)).toEqual([WS_A, WS_B]);
   });
 
-  test('carries the CAS revision and exec defaults of each workspace', () => {
+  test('carries the CAS revision of each workspace', () => {
     const out = buildState({
       workspaces: [WS_A],
-      queues: {
-        [WS_A]: snapshot({
-          revision: 7,
-          exec_defaults: { orchestration_model: 'opus' }
-        })
-      }
+      queues: { [WS_A]: snapshot({ revision: 7 }) }
     });
 
     expect(out[0].revision).toBe(7);
-    expect(out[0].exec_defaults).toEqual({ orchestration_model: 'opus' });
+  });
+
+  test('carries no retired exec-defaults map', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot({ revision: 7 }) }
+    });
+
+    expect(Object.hasOwn(out[0], 'exec_defaults')).toBe(false);
   });
 
   test('decorates every workspace control state with the runtime catalog', () => {
@@ -425,15 +428,6 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     });
 
     expect(out.map((w) => w.root_dir)).toEqual([WS_B]);
-  });
-
-  test('defaults a workspace that reports no exec defaults to an empty map', () => {
-    const out = buildState({
-      workspaces: [WS_A],
-      queues: { [WS_A]: snapshot({ exec_defaults: undefined }) }
-    });
-
-    expect(out[0].exec_defaults).toEqual({});
   });
 });
 

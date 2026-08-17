@@ -1,11 +1,16 @@
 /**
- * Server-global worker execution preset persistence.
+ * Server-global IMPLEMENTATION preset persistence (spec §C.6).
+ *
+ * A preset now carries only the five implementation keys
+ * (`impl_dispatch/runtime/model/effort/speed`). The retired 12-key shape is
+ * still READ so the spec §F migration can copy it; such a preset is reported as
+ * `legacy: true` and is never offered as an editable or applicable preset.
  *
  * @typedef {Object} ExecPreset
  * @property {string} id
  * @property {string} name
  * @property {Record<string, string>} settings
- * @property {{ kind: 'user' }|{ kind: 'workspace-exec-defaults', workspace_key: string, source_digest: string }} origin
+ * @property {{ kind: 'user' }|{ kind: 'workspace-exec-defaults', workspace_key: string, source_digest: string }|{ kind: 'legacy-preset-copy', source_preset_id: string }} origin
  */
 /**
  * @typedef {Object} ExecPresetState
@@ -17,8 +22,9 @@ import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
   EXEC_SETTING_KEYS,
-  execSettingEnums,
-  validateImplSettings
+  IMPL_PRESET_KEYS,
+  implPresetEnums,
+  validateImplPresetSettings
 } from './worker/exec-enums.js';
 import { execPresetsFilePath } from './worker/state-paths.js';
 
@@ -63,7 +69,10 @@ function normalizeState(raw) {
   if (!Array.isArray(raw.presets)) {
     return state;
   }
-  const known_keys = new Set(EXEC_SETTING_KEYS);
+  // Both shapes are retained on load: the five implementation keys are the
+  // active vocabulary, and the retired 12 stay readable until the spec §F
+  // migration has copied and removed them.
+  const known_keys = new Set([...EXEC_SETTING_KEYS, ...IMPL_PRESET_KEYS]);
   for (const entry of raw.presets) {
     if (!isRecord(entry)) {
       continue;
@@ -84,27 +93,27 @@ function normalizeState(raw) {
     }
     const origin =
       isRecord(entry.origin) &&
-      entry.origin.kind === 'workspace-exec-defaults' &&
-      typeof entry.origin.workspace_key === 'string' &&
-      entry.origin.workspace_key.length > 0 &&
-      typeof entry.origin.source_digest === 'string' &&
-      entry.origin.source_digest.length > 0
+      entry.origin.kind === 'legacy-preset-copy' &&
+      typeof entry.origin.source_preset_id === 'string' &&
+      entry.origin.source_preset_id.length > 0
         ? {
-            kind: /** @type {'workspace-exec-defaults'} */ (
-              'workspace-exec-defaults'
-            ),
-            workspace_key: entry.origin.workspace_key,
-            source_digest: entry.origin.source_digest
+            kind: /** @type {'legacy-preset-copy'} */ ('legacy-preset-copy'),
+            source_preset_id: entry.origin.source_preset_id
           }
-        : { kind: /** @type {'user'} */ ('user') };
-    const coherence = validateImplSettings(settings, { active_writer: false });
-    if (
-      coherence.ok &&
-      coherence.inferred &&
-      typeof coherence.impl_runtime === 'string'
-    ) {
-      settings.impl_runtime = coherence.impl_runtime;
-    }
+        : isRecord(entry.origin) &&
+            entry.origin.kind === 'workspace-exec-defaults' &&
+            typeof entry.origin.workspace_key === 'string' &&
+            entry.origin.workspace_key.length > 0 &&
+            typeof entry.origin.source_digest === 'string' &&
+            entry.origin.source_digest.length > 0
+          ? {
+              kind: /** @type {'workspace-exec-defaults'} */ (
+                'workspace-exec-defaults'
+              ),
+              workspace_key: entry.origin.workspace_key,
+              source_digest: entry.origin.source_digest
+            }
+          : { kind: /** @type {'user'} */ ('user') };
     state.presets.push({ id, name, settings, origin });
   }
   return state;
@@ -117,7 +126,7 @@ export function createExecPresetStore(options = {}) {
   const file_path = options.filePath || execPresetsFilePath();
   const fs = options.fs || nodeFs;
   const randomUUID = options.randomUUID || (() => crypto.randomUUID());
-  const settingEnums = options.settingEnums || (() => execSettingEnums());
+  const settingEnums = options.settingEnums || (() => implPresetEnums());
   /** @type {ExecPresetState|null} */
   let cache = null;
 
@@ -206,7 +215,7 @@ export function createExecPresetStore(options = {}) {
       }
       normalized_settings[key] = value;
     }
-    if (!validateImplSettings(normalized_settings).ok) {
+    if (!validateImplPresetSettings(normalized_settings).ok) {
       return null;
     }
     return { name: trimmed_name, settings: normalized_settings };
@@ -322,27 +331,27 @@ export function createExecPresetStore(options = {}) {
     },
 
     /**
-     * Create or reuse a deterministic preset for one legacy workspace state.
-     * The migration coordinator serializes this startup-only operation; origin
-     * is its idempotency key, so a failed later queue write cannot duplicate it.
+     * Create or reuse the implementation-key copy of one legacy 12-key preset
+     * (spec §F.c). `source_preset_id` is the idempotency key, so re-running a
+     * migration that stopped before its completion marker never duplicates the
+     * copy, and the copy COEXISTS with its source until cleanup.
      *
-     * @param {{ name: string, settings: Record<string, string>, workspace_key: string, source_digest: string }} input
+     * @param {{ name: string, settings: Record<string, string>, source_preset_id: string }} input
      */
-    createOrReuseMigration(input) {
+    createOrReuseImplCopy(input) {
       const normalized = normalizeMutation(input?.name, input?.settings);
-      const workspace_key =
-        typeof input?.workspace_key === 'string' ? input.workspace_key : '';
-      const source_digest =
-        typeof input?.source_digest === 'string' ? input.source_digest : '';
+      const source_preset_id =
+        typeof input?.source_preset_id === 'string'
+          ? input.source_preset_id
+          : '';
       const current = ensureLoaded();
-      if (!normalized || !workspace_key || !source_digest) {
+      if (!normalized || !source_preset_id) {
         return rejected(current, false, 'invalid');
       }
       const existing = current.presets.find(
         (preset) =>
-          preset.origin.kind === 'workspace-exec-defaults' &&
-          preset.origin.workspace_key === workspace_key &&
-          preset.origin.source_digest === source_digest
+          preset.origin.kind === 'legacy-preset-copy' &&
+          preset.origin.source_preset_id === source_preset_id
       );
       if (existing) {
         return {
@@ -355,33 +364,22 @@ export function createExecPresetStore(options = {}) {
         };
       }
       const next = clone(current);
-      const suffix = workspace_key.slice(-8);
       let name = normalized.name;
-      if (
-        next.presets.some(
-          (preset) => preset.name.toLowerCase() === name.toLowerCase()
-        )
-      ) {
-        name = `${normalized.name} · ${suffix}`;
-      }
       let ordinal = 2;
       while (
         next.presets.some(
           (preset) => preset.name.toLowerCase() === name.toLowerCase()
         )
       ) {
-        name = `${normalized.name} · ${suffix}-${ordinal++}`;
+        name = `${normalized.name} ${ordinal++}`;
       }
       const preset = {
         id: randomUUID(),
         name,
         settings: normalized.settings,
         origin: {
-          kind: /** @type {'workspace-exec-defaults'} */ (
-            'workspace-exec-defaults'
-          ),
-          workspace_key,
-          source_digest
+          kind: /** @type {'legacy-preset-copy'} */ ('legacy-preset-copy'),
+          source_preset_id
         }
       };
       next.presets.push(preset);
@@ -394,6 +392,37 @@ export function createExecPresetStore(options = {}) {
         conflict: false,
         revision: next.revision,
         preset: clone(preset),
+        presets: clone(next.presets)
+      };
+    },
+
+    /**
+     * Delete presets by id without a CAS guard. Migration-only cleanup of the
+     * retired 12-key originals, run after the completion marker.
+     *
+     * @param {string[]} ids
+     */
+    deletePresets(ids) {
+      const current = ensureLoaded();
+      const removing = new Set(Array.isArray(ids) ? ids : []);
+      const remaining = current.presets.filter(
+        (preset) => !removing.has(preset.id)
+      );
+      if (remaining.length === current.presets.length) {
+        return {
+          applied: false,
+          conflict: false,
+          revision: current.revision,
+          presets: clone(current.presets)
+        };
+      }
+      const next = { revision: current.revision + 1, presets: remaining };
+      persist(next);
+      cache = next;
+      return {
+        applied: true,
+        conflict: false,
+        revision: next.revision,
         presets: clone(next.presets)
       };
     }

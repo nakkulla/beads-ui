@@ -11,9 +11,15 @@ import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
 import {
+  effectiveSettingsCardTemplate,
+  summaryHeaderTemplate
+} from './effective-settings-view.js';
+import {
+  buildImplPresetApplyPayload,
+  buildThreeStatePayload
+} from './effective-settings.js';
+import {
   EXEC_KEYS,
-  execSettingRows,
-  execSettingsTemplate,
   modelRunnerOf,
   normalizeImplTarget
 } from './exec-settings.js';
@@ -82,6 +88,15 @@ export function createDetailPanel(mount_element, options) {
   let exec_local = {};
   let selected_preset_id = '';
   let applying_preset = false;
+  let effective_expanded = false;
+  /**
+   * The workspace `bd kv` session defaults — the `전역` layer of the card. Read
+   * once per opened issue; an unreadable layer stays empty and every key falls
+   * through to `기본` rather than showing a guess (spec §E/§F).
+   *
+   * @type {Record<string, string>}
+   */
+  let session_defaults = {};
 
   // Inline edit state. These live in the closure (not derived from `current`),
   // so an incoming subscription push re-render never wipes an open editor or the
@@ -552,29 +567,38 @@ export function createDetailPanel(mount_element, options) {
    */
   function execDefaults() {
     const q = queueStore ? queueStore.get() : null;
-    const preset_id = q && q.default_exec_preset_id;
-    const preset =
-      typeof preset_id === 'string'
-        ? execPresetState()?.presets.find((entry) => entry.id === preset_id)
-        : null;
-    return preset && preset.compatible !== false && preset.settings
-      ? preset.settings
-      : {};
+    /** @type {Record<string, any>} */
+    const values = { ...session_defaults };
+    for (const key of [
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]) {
+      const value = q && /** @type {any} */ (q)[key];
+      if (typeof value === 'string') {
+        values[key] = value;
+      }
+    }
+    return values;
   }
 
-  /** @returns {string} */
-  function execDefaultSourceName() {
-    const q = queueStore ? queueStore.get() : null;
-    const preset_id = q && q.default_exec_preset_id;
-    const preset =
-      typeof preset_id === 'string'
-        ? execPresetState()?.presets.find((entry) => entry.id === preset_id)
-        : null;
-    return preset &&
-      preset.compatible !== false &&
-      typeof preset.name === 'string'
-      ? preset.name
-      : '';
+  /** Read the workspace session defaults for the card's `전역` layer. */
+  async function loadSessionDefaults() {
+    if (!transport) {
+      return;
+    }
+    try {
+      const res = /** @type {any} */ (
+        await Promise.resolve(transport('get-session-defaults', {}))
+      );
+      session_defaults =
+        res && res.values && typeof res.values === 'object' ? res.values : {};
+    } catch {
+      // Fail-quiet: an unreadable workspace layer shows as `기본`, never as a
+      // fabricated value.
+      session_defaults = {};
+    }
+    doRender();
   }
 
   /**
@@ -629,33 +653,16 @@ export function createDetailPanel(mount_element, options) {
     };
   }
 
-  /** @param {any} preset */
+  /**
+   * Whether a preset cannot be applied. The COORDINATOR is the judge — it
+   * annotates each preset against the live catalog, so the client never
+   * re-derives a verdict that could disagree with the write boundary.
+   *
+   * @param {any} preset
+   * @returns {boolean}
+   */
   function presetIsIncompatible(preset) {
-    const settings =
-      preset && preset.settings && typeof preset.settings === 'object'
-        ? preset.settings
-        : {};
-    /** @param {string} key */
-    const valueOf = (key) => {
-      if (typeof settings[key] === 'string') {
-        return settings[key];
-      }
-      return key === 'impl_runtime' && typeof settings.impl_model === 'string'
-        ? modelRunnerOf(runnerCatalog(), settings.impl_model) || ''
-        : '';
-    };
-    return execSettingRows({
-      selectedOf: valueOf,
-      effectiveOf: valueOf,
-      runner_catalog: runnerCatalog()
-    }).some((row) =>
-      row.groups.some((group) =>
-        group.options.some(
-          (option) =>
-            option.value === row.selected && option.label.endsWith('(비호환)')
-        )
-      )
-    );
+    return preset?.compatible === false;
   }
 
   /** @param {any} res */
@@ -670,7 +677,7 @@ export function createDetailPanel(mount_element, options) {
     }
   }
 
-  async function applyExecPreset() {
+  async function applyImplPreset() {
     const state = execPresetState();
     const preset = state?.presets.find(
       (candidate) => candidate.id === selected_preset_id
@@ -690,11 +697,10 @@ export function createDetailPanel(mount_element, options) {
     try {
       const res = /** @type {any} */ (
         await Promise.resolve(
-          transport('apply-exec-preset', {
-            id: current_id,
-            preset_id: preset.id,
-            expected_revision: state.revision
-          })
+          transport(
+            'apply-impl-preset',
+            buildImplPresetApplyPayload(current_id, preset.id, state.revision)
+          )
         )
       );
       if (res && res.conflict) {
@@ -712,7 +718,7 @@ export function createDetailPanel(mount_element, options) {
         for (const key of EXEC_KEYS) {
           delete exec_local[key];
         }
-        showToast('실행 프리셋을 적용했습니다.', 'success', 2400);
+        showToast('구현 프리셋을 적용했습니다.', 'success', 2400);
         return;
       }
       if (res && res.error === 'bd_readback_failed') {
@@ -722,7 +728,7 @@ export function createDetailPanel(mount_element, options) {
           4000
         );
       } else {
-        showToast('실행 프리셋 적용 실패', 'error', 4000);
+        showToast('구현 프리셋 적용 실패', 'error', 4000);
       }
     } catch (err) {
       if (
@@ -736,72 +742,12 @@ export function createDetailPanel(mount_element, options) {
           4000
         );
       } else {
-        showToast('실행 프리셋 적용 실패', 'error', 4000);
+        showToast('구현 프리셋 적용 실패', 'error', 4000);
       }
     } finally {
       applying_preset = false;
       doRender();
     }
-  }
-
-  function execPresetPanelTemplate() {
-    const state = execPresetState();
-    if (state && state.presets.length === 0) {
-      return html`<section class="detail-exec-presets">
-        <div class="detail-section-label">실행 프리셋</div>
-        <p>전역 실행 설정에서 프리셋을 추가하세요.</p>
-        <button
-          type="button"
-          data-open-exec-presets
-          @click=${() => options.onOpenExecPresets?.()}
-        >
-          전역 실행 설정 열기
-        </button>
-      </section>`;
-    }
-    const presets = state ? state.presets : [];
-    const selected = presets.find((preset) => preset.id === selected_preset_id);
-    const incompatible = selected ? presetIsIncompatible(selected) : false;
-    return html`<section class="detail-exec-presets">
-      <div class="detail-section-label">실행 프리셋</div>
-      <div class="detail-exec-presets__controls">
-        <select
-          data-exec-preset-select
-          aria-label="실행 프리셋"
-          ?disabled=${state === null || applying_preset}
-          @change=${(/** @type {Event} */ ev) => {
-            selected_preset_id = /** @type {HTMLSelectElement} */ (ev.target)
-              .value;
-            doRender();
-          }}
-        >
-          <option value="" ?selected=${selected_preset_id === ''}>
-            ${state === null ? '불러오는 중…' : '프리셋 선택'}
-          </option>
-          ${presets.map((preset) => {
-            const preset_incompatible = presetIsIncompatible(preset);
-            return html`<option
-              value=${preset.id}
-              ?selected=${preset.id === selected_preset_id}
-            >
-              ${preset.name}${preset_incompatible ? ' (비호환)' : ''}
-            </option>`;
-          })}
-        </select>
-        <button
-          type="button"
-          data-apply-exec-preset
-          ?disabled=${state === null ||
-          !selected ||
-          incompatible ||
-          applying_preset}
-          @click=${() => void applyExecPreset()}
-        >
-          12개 설정 적용
-        </button>
-      </div>
-      <p>적용하면 현재 이슈 실행 설정 전체를 교체합니다.</p>
-    </section>`;
   }
 
   /** @type {null | (() => void)} */
@@ -908,8 +854,17 @@ export function createDetailPanel(mount_element, options) {
     if (!transport || !current_id) {
       return;
     }
+    // THREE-STATE (spec §E): an explicit choice is a literal write and only the
+    // editor's `(기본)` — carried here as an empty value — deletes the key.
     void Promise.resolve(
-      transport('update-exec-settings', { id: current_id, key, value })
+      transport(
+        'update-exec-settings',
+        buildThreeStatePayload(
+          current_id,
+          key,
+          value.length === 0 ? null : value
+        )
+      )
     ).catch(() => {
       showToast('실행 설정 변경 실패', 'error');
     });
@@ -1219,10 +1174,6 @@ export function createDetailPanel(mount_element, options) {
   }
 
   const artifact_handlers = { onCopyPath, onOpenDoc };
-  const exec_handlers = {
-    onChange: onExecChange,
-    onImplTargetChange
-  };
 
   /**
    * Normalize a bd dependency edge to a target id.
@@ -1744,6 +1695,40 @@ export function createDetailPanel(mount_element, options) {
             ${id}
           </button>
           ${titleTemplate(title, total_usage)}
+          ${summaryHeaderTemplate(effective)}
+          ${effectiveSettingsCardTemplate(
+            {
+              metadata: effective.metadata,
+              workspace_values: execDefaults(),
+              catalog: runnerCatalog(),
+              expanded: effective_expanded,
+              presets: execPresetState()?.presets || [],
+              preset_id: selected_preset_id,
+              preset_busy: applying_preset
+            },
+            {
+              onToggle: () => {
+                effective_expanded = !effective_expanded;
+                doRender();
+              },
+              onEdit: (key, value) => {
+                if (
+                  key === 'impl_runtime' ||
+                  key === 'impl_model' ||
+                  key === 'impl_effort'
+                ) {
+                  onImplTargetChange(key, value ?? '');
+                  return;
+                }
+                onExecChange(key, value ?? '');
+              },
+              onPresetSelect: (id) => {
+                selected_preset_id = id;
+                doRender();
+              },
+              onPresetApply: () => void applyImplPreset()
+            }
+          )}
           ${propsTemplate(status, priority_val)} ${timesTemplate(data)}
           ${descTemplate(description)}
           ${commentsTemplate(comments, comment_handlers, {
@@ -1755,14 +1740,6 @@ export function createDetailPanel(mount_element, options) {
           ${notesTemplate(data)} ${labelsTemplate(data)} ${depsTemplate(data)}
           ${workflowTemplate(data)} ${workflowMetaTemplate(data)}
           ${artifactsTemplate(data, artifact_handlers)}
-          ${execPresetPanelTemplate()}
-          ${execSettingsTemplate(
-            effective,
-            exec_handlers,
-            execDefaults(),
-            runnerCatalog(),
-            execDefaultSourceName()
-          )}
           ${taskPromptTemplate(
             {
               expanded: prompt_expanded,
@@ -1793,6 +1770,7 @@ export function createDetailPanel(mount_element, options) {
       if (id !== current_id) {
         exec_local = {};
         selected_preset_id = '';
+        effective_expanded = false;
         resetEditors();
         resetComments();
         resetTaskPrompt();
@@ -1800,6 +1778,7 @@ export function createDetailPanel(mount_element, options) {
       current_id = id;
       current = null;
       refreshFromStore();
+      void loadSessionDefaults();
     },
     clear() {
       current_id = null;

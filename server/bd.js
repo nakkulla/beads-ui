@@ -365,6 +365,98 @@ export async function runBdJson(args, options = {}) {
 }
 
 /**
+ * @typedef {Object} KvGetResult
+ * @property {boolean} ok - False only when `bd` itself failed; an absent or
+ * unparsable value is a successful read of "no usable layer".
+ * @property {Record<string, unknown>|undefined} [value] - The decoded JSON
+ * object, or undefined when the key is absent or its value is unusable.
+ * @property {string} [warning] - Stable warning code for a present-but-unusable
+ * value. The workspace-defaults layer is not an explicit pin, so a broken value
+ * is skipped rather than failing the read (spec §A/F).
+ * @property {string} [error] - Present when `ok` is false.
+ */
+
+/**
+ * Read one `bd kv` entry whose value is a JSON object.
+ *
+ * @param {string} key
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @returns {Promise<KvGetResult>}
+ */
+export async function kvGetJson(key, options = {}) {
+  const result = await runBd(['kv', 'get', key, '--json'], options);
+  /** @type {unknown} */
+  let envelope;
+  try {
+    envelope = JSON.parse(result.stdout || 'null');
+  } catch {
+    envelope = undefined;
+  }
+  const parsed =
+    envelope && typeof envelope === 'object' && !Array.isArray(envelope)
+      ? /** @type {Record<string, unknown>} */ (envelope)
+      : undefined;
+  // An ABSENT key is a successful read of "no layer": bd prints a valid
+  // `{found: false}` envelope but exits 1, so the envelope is authoritative
+  // over the exit code here.
+  if (parsed && parsed.found === false) {
+    return { ok: true, value: undefined };
+  }
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: stderrTail(result.stderr) || `bd kv get exited ${result.code}`
+    };
+  }
+  if (!parsed) {
+    log('bd kv get returned invalid JSON (key=%s)', key);
+    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
+  }
+  const record = parsed;
+  const raw_value = record.value;
+  if (record.found !== true || typeof raw_value !== 'string') {
+    return { ok: true, value: undefined };
+  }
+  if (raw_value.length === 0) {
+    return { ok: true, value: undefined };
+  }
+  /** @type {unknown} */
+  let decoded;
+  try {
+    decoded = JSON.parse(raw_value);
+  } catch {
+    log('bd kv value is not JSON (key=%s)', key);
+    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    return { ok: true, value: undefined, warning: 'kv_value_unparsable' };
+  }
+  return { ok: true, value: /** @type {Record<string, unknown>} */ (decoded) };
+}
+
+/**
+ * Write one `bd kv` entry as a JSON object value.
+ *
+ * @param {string} key
+ * @param {Record<string, unknown>} value
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function kvSetJson(key, value, options = {}) {
+  const result = await runBd(
+    ['kv', 'set', key, JSON.stringify(value)],
+    options
+  );
+  if (result.code !== 0) {
+    return {
+      ok: false,
+      error: stderrTail(result.stderr) || `bd kv set exited ${result.code}`
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Unwrap a `bd show <id> --json` payload to the single issue object. bd emits
  * a single-item array (observed live) or a bare object depending on version;
  * both shapes must normalize before any field access — reading `.metadata` off

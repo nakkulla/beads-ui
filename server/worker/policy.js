@@ -1,15 +1,19 @@
 /**
- * Worker exec settings — resolution order (worker-global-exec-defaults §3).
+ * Worker exec settings — resolution order.
  *
- * The 12 exec keys (orchestration_model / orchestration_effort /
- * orchestration_speed, the three
- * `*_review_model` + `*_review_effort` step pairs, and the linked
- * impl_runtime / impl_model / impl_effort target)
- * resolve bead metadata > workspace global (queue store) > final fallback.
- * Invalid orchestration values fail closed, invalid review values fall
- * through, and an invalid linked implementation target blocks dispatch instead
- * of silently demoting. The
- * final fallback is `opus` for orchestration_model
+ * The three ORCHESTRATION keys (orchestration_model / orchestration_effort /
+ * orchestration_speed) resolve bead metadata > workspace queue value > final
+ * fallback, and invalid values fail closed. Their only consumer is this
+ * launcher, which passes them as CLI flags.
+ *
+ * The nine SESSION keys (the three `*_review_model` + `*_review_effort` step
+ * pairs and the linked impl_runtime / impl_model / impl_effort target) resolve
+ * from bead metadata ALONE here. Their workspace layer moved to
+ * `bd kv workflow_session_defaults`, which the session's own workflow skill
+ * reads (spec §A) — so an interactive session gets the same defaults a Worker
+ * session does, and no stale copy of a default is written onto a Bead. An
+ * invalid linked implementation target still blocks dispatch instead of
+ * silently demoting. The final fallback is `opus` for orchestration_model
  * (worker-orchestration-model-default-opus), `default` for orchestration_speed,
  * and unset for the other 10 keys.
  *
@@ -80,29 +84,18 @@ function isEnum(allowed, value) {
 }
 
 /**
- * Pick a runner-independent enum value across the [bead, global] hierarchy.
- * A key whose bead value is ABSENT (not present as any string) but resolves
- * from the global default is pushed to `stamped_keys` — a bead-SET key (even
- * one skipped as an invalid value) is never a stamp/revert target (spec §3).
+ * Pick a runner-independent SESSION enum value. Only the Bead layer is read:
+ * the workspace default for every session key now lives in `bd kv`
+ * (`workflow_session_defaults`) and is resolved by the session's own workflow
+ * skill, not by the worker (spec §A/§C.3). A value the Bead does not carry
+ * simply passes through to the layers below this process.
  *
  * @param {ReadonlyArray<string>} allowed
  * @param {unknown} beadVal
- * @param {unknown} globalVal
- * @param {string} stampKey - The metadata key name recorded in stamped_keys.
- * @param {string[]} stamped_keys - Accumulator, mutated in place.
  * @returns {string|undefined}
  */
-function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
-  if (isEnum(allowed, beadVal)) {
-    return /** @type {string} */ (beadVal);
-  }
-  if (isEnum(allowed, globalVal)) {
-    if (typeof beadVal !== 'string') {
-      stamped_keys.push(stampKey);
-    }
-    return /** @type {string} */ (globalVal);
-  }
-  return undefined;
+function pickBead(allowed, beadVal) {
+  return isEnum(allowed, beadVal) ? /** @type {string} */ (beadVal) : undefined;
 }
 
 /**
@@ -110,22 +103,17 @@ function pickLayered(allowed, beadVal, globalVal, stampKey, stamped_keys) {
  * Bead or workspace value as absent. Dispatch must stop rather than silently
  * changing a requested model, effort, or speed to a lower-precedence value.
  *
+ * The three orchestration keys keep their workspace layer: their only consumer
+ * is this launcher, which passes them as CLI flags, so the value never needs to
+ * reach the Bead's metadata.
+ *
  * @param {ReadonlyArray<string>} allowed
  * @param {unknown} beadVal
  * @param {unknown} globalVal
  * @param {string|undefined} fallback
- * @param {string} stampKey
- * @param {string[]} stamped_keys
  * @returns {{ value: string|undefined, invalid: boolean }}
  */
-function pickOuterFailClosed(
-  allowed,
-  beadVal,
-  globalVal,
-  fallback,
-  stampKey,
-  stamped_keys
-) {
+function pickOuterFailClosed(allowed, beadVal, globalVal, fallback) {
   if (beadVal !== undefined) {
     return {
       value: isEnum(allowed, beadVal) ? beadVal : fallback,
@@ -136,28 +124,9 @@ function pickOuterFailClosed(
     if (!isEnum(allowed, globalVal)) {
       return { value: fallback, invalid: true };
     }
-    stamped_keys.push(stampKey);
     return { value: globalVal, invalid: false };
   }
   return { value: fallback, invalid: false };
-}
-
-/**
- * Pick a linked implementation setting without silently demoting an explicit
- * invalid value. Coherence validation runs after all three values resolve.
- *
- * @param {unknown} beadVal
- * @param {unknown} globalVal
- * @returns {{ value: unknown, source: 'bead'|'global'|'absent' }}
- */
-function pickImplLayered(beadVal, globalVal) {
-  if (typeof beadVal === 'string') {
-    return { value: beadVal, source: 'bead' };
-  }
-  if (typeof globalVal === 'string') {
-    return { value: globalVal, source: 'global' };
-  }
-  return { value: undefined, source: 'absent' };
 }
 
 /**
@@ -213,16 +182,7 @@ function normalizeImplLayer(layer, catalog) {
  * @typedef {{
  *   orchestration_model?: unknown,
  *   orchestration_effort?: unknown,
- *   orchestration_speed?: unknown,
- *   spec_review_model?: unknown,
- *   spec_review_effort?: unknown,
- *   impl_review_model?: unknown,
- *   impl_review_effort?: unknown,
- *   plan_review_model?: unknown,
- *   plan_review_effort?: unknown,
- *   impl_runtime?: unknown,
- *   impl_model?: unknown,
- *   impl_effort?: unknown
+ *   orchestration_speed?: unknown
  * }} ExecDefaultsLayer
  */
 
@@ -230,7 +190,9 @@ function normalizeImplLayer(layer, catalog) {
  * Resolve the 12 exec settings for one dispatch, plus the runner they imply
  * (worker-global-exec-defaults; worker-multi-provider-runner §C; dotfiles-mqcj).
  *
- * Order is bead metadata > workspace-global default > final fallback.
+ * The three orchestration keys resolve bead metadata > workspace queue value >
+ * final fallback; the nine session keys resolve from bead metadata alone and
+ * pass through to the session's own `bd kv` / harness layers when absent.
  * `orchestration_model` alone has a hardcoded final fallback (`opus`) and
  * therefore never resolves to undefined; speed finally falls back to `default`
  * and the other 10 keys still end at unset.
@@ -245,18 +207,13 @@ function normalizeImplLayer(layer, catalog) {
  * picks — their consumer is the workflow skill inside the session, not the
  * worker launcher — with `plan_review_model` on the narrower vocabulary.
  *
- * `stamped_keys` is the list of METADATA key names whose bead value was absent
- * and whose resolved value came from the workspace-global default — i.e. the
- * exact keys dispatch should stamp onto the bead metadata (and revert on
- * terminate). Order is FIXED and mirrors the pick order below:
- * orchestration_model, orchestration_effort, orchestration_speed,
- * spec_review_model,
- * spec_review_effort, plan_review_model, plan_review_effort, impl_review_model,
- * impl_review_effort, impl_runtime, impl_model, impl_effort.
+ * `stamped_keys` is always EMPTY: no dispatch copies a resolved default onto a
+ * Bead any more. It is retained so terminal cleanup of attempts recorded before
+ * this change still reverts their durable stamps.
  *
  * The `bead` argument uses the BeadSnapshot field names (`model`/`effort` for
- * orchestration, the metadata name for everything else); `defaults` uses the
- * exec_defaults metadata key names throughout.
+ * orchestration, the metadata name for everything else); `defaults` carries the
+ * three orchestration values stored on the workspace queue.
  *
  * @param {{
  *   bead?: ExecBeadLayer | null,
@@ -287,16 +244,22 @@ export function resolveExecSettings(input) {
   const defaults = (input && input.defaults) || {};
   const catalog = (input && input.catalog) || defaultCatalog();
   const model_names = Object.keys(catalog.model_index);
-  /** @type {string[]} */
+  /**
+   * Always empty. The pre-spawn stamp existed only to deliver workspace
+   * defaults for the nine session keys into Bead metadata; `bd kv` now reaches
+   * interactive and Worker sessions alike, so nothing is copied onto a Bead at
+   * dispatch (spec §C.4). The field itself stays so attempts recorded before
+   * this change still revert their durable stamps.
+   *
+   * @type {string[]}
+   */
   const stamped_keys = [];
 
   const model_pick = pickOuterFailClosed(
     model_names,
     bead.model,
     defaults.orchestration_model,
-    ORCHESTRATION_MODEL_FALLBACK,
-    'orchestration_model',
-    stamped_keys
+    ORCHESTRATION_MODEL_FALLBACK
   );
   const orchestration_model = model_pick.value ?? ORCHESTRATION_MODEL_FALLBACK;
   const runner = modelRunner(catalog, orchestration_model) ?? RUNNER_FALLBACK;
@@ -306,9 +269,7 @@ export function resolveExecSettings(input) {
         modelOrchestrationEfforts(catalog, orchestration_model),
         bead.effort,
         defaults.orchestration_effort,
-        undefined,
-        'orchestration_effort',
-        stamped_keys
+        undefined
       );
   const orchestration_effort = effort_pick.value;
   const speed_pick = model_pick.invalid
@@ -317,9 +278,7 @@ export function resolveExecSettings(input) {
         modelSpeedTiers(catalog, orchestration_model),
         bead.orchestration_speed,
         defaults.orchestration_speed,
-        'default',
-        'orchestration_speed',
-        stamped_keys
+        'default'
       );
   const orchestration_speed = speed_pick.invalid
     ? typeof bead.orchestration_speed === 'string'
@@ -328,108 +287,40 @@ export function resolveExecSettings(input) {
         ? defaults.orchestration_speed
         : 'default'
     : (speed_pick.value ?? 'default');
-  const spec_review_model = pickLayered(
+  const spec_review_model = pickBead(
     REVIEW_STEP_MODELS,
-    bead.spec_review_model,
-    defaults.spec_review_model,
-    'spec_review_model',
-    stamped_keys
+    bead.spec_review_model
   );
-  const spec_review_effort = pickLayered(
-    REVIEW_EFFORTS,
-    bead.spec_review_effort,
-    defaults.spec_review_effort,
-    'spec_review_effort',
-    stamped_keys
-  );
-  const plan_review_model = pickLayered(
+  const spec_review_effort = pickBead(REVIEW_EFFORTS, bead.spec_review_effort);
+  const plan_review_model = pickBead(
     PLAN_REVIEW_MODELS,
-    bead.plan_review_model,
-    defaults.plan_review_model,
-    'plan_review_model',
-    stamped_keys
+    bead.plan_review_model
   );
-  const plan_review_effort = pickLayered(
-    REVIEW_EFFORTS,
-    bead.plan_review_effort,
-    defaults.plan_review_effort,
-    'plan_review_effort',
-    stamped_keys
-  );
-  const impl_review_model = pickLayered(
+  const plan_review_effort = pickBead(REVIEW_EFFORTS, bead.plan_review_effort);
+  const impl_review_model = pickBead(
     REVIEW_STEP_MODELS,
-    bead.impl_review_model,
-    defaults.impl_review_model,
-    'impl_review_model',
-    stamped_keys
+    bead.impl_review_model
   );
-  const impl_review_effort = pickLayered(
-    REVIEW_EFFORTS,
-    bead.impl_review_effort,
-    defaults.impl_review_effort,
-    'impl_review_effort',
-    stamped_keys
-  );
+  const impl_review_effort = pickBead(REVIEW_EFFORTS, bead.impl_review_effort);
   const bead_impl = normalizeImplLayer(bead, catalog);
-  const defaults_impl = normalizeImplLayer(defaults, catalog);
-  const impl_runtime_pick = pickImplLayered(
-    bead_impl.values.impl_runtime,
-    defaults_impl.values.impl_runtime
-  );
-  const impl_model_pick = pickImplLayered(
-    bead_impl.values.impl_model,
-    defaults_impl.values.impl_model
-  );
-  const impl_effort_pick = pickImplLayered(
-    bead_impl.values.impl_effort,
-    defaults_impl.values.impl_effort
-  );
-  const impl_validation = validateImplSettings(
-    {
-      ...(impl_runtime_pick.value === undefined
-        ? {}
-        : { impl_runtime: impl_runtime_pick.value }),
-      ...(impl_model_pick.value === undefined
-        ? {}
-        : { impl_model: impl_model_pick.value }),
-      ...(impl_effort_pick.value === undefined
-        ? {}
-        : { impl_effort: impl_effort_pick.value })
-    },
-    { catalog, active_writer: false, controller_runtime: runner }
-  );
+  const impl_validation = validateImplSettings(bead_impl.values, {
+    catalog,
+    active_writer: false,
+    controller_runtime: runner
+  });
   const impl_runtime = impl_validation.ok
     ? impl_validation.impl_runtime
     : undefined;
   const impl_runtime_inferred =
-    impl_validation.ok &&
-    ((impl_runtime_pick.source === 'bead' && bead_impl.inferred) ||
-      (impl_runtime_pick.source === 'global' && defaults_impl.inferred) ||
-      impl_validation.inferred);
+    impl_validation.ok && (bead_impl.inferred || impl_validation.inferred);
   const impl_model =
-    impl_validation.ok && typeof impl_model_pick.value === 'string'
-      ? impl_model_pick.value
+    impl_validation.ok && typeof bead_impl.values.impl_model === 'string'
+      ? bead_impl.values.impl_model
       : undefined;
   const impl_effort =
-    impl_validation.ok && typeof impl_effort_pick.value === 'string'
-      ? impl_effort_pick.value
+    impl_validation.ok && typeof bead_impl.values.impl_effort === 'string'
+      ? bead_impl.values.impl_effort
       : undefined;
-
-  if (impl_runtime_pick.source === 'global') {
-    stamped_keys.push('impl_runtime');
-  } else if (
-    impl_validation.ok &&
-    impl_validation.inferred &&
-    impl_model_pick.source === 'global'
-  ) {
-    stamped_keys.push('impl_runtime');
-  }
-  if (impl_model_pick.source === 'global') {
-    stamped_keys.push('impl_model');
-  }
-  if (impl_effort_pick.source === 'global') {
-    stamped_keys.push('impl_effort');
-  }
 
   return {
     orchestration_model,

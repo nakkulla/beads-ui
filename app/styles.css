@@ -2567,93 +2567,13 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
-/* 전역 실행 설정 ⚙ 버튼 + 다이얼로그 (worker-global-exec-defaults §4) */
-.worker-exec-defaults-btn {
-  padding: 1px var(--sp-6);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-6);
-  background: var(--bg-panel);
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-  line-height: 1.4;
-  cursor: pointer;
-}
-
-.worker-exec-defaults-btn:hover {
-  color: var(--text-primary);
-  border-color: var(--border-route);
-}
-
-.exec-defaults {
-  /* Fit narrow (<360px) devices without side clipping: cap at 720px but never
-     exceed the viewport minus a 16px gutter each side (§1.5). */
-  width: min(720px, calc(100vw - 32px));
-  padding: 0;
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-panel);
-  background: var(--bg-panel);
-  color: var(--text-primary);
-}
-
-.exec-defaults__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--sp-10) var(--sp-12);
-  border-bottom: 1px solid var(--border-panel);
-}
-
-.exec-defaults__title {
-  color: var(--text-title);
-  font-size: var(--fs-body);
-  font-weight: 600;
-}
-
-.exec-defaults__close {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: var(--fs-body);
-  cursor: pointer;
-}
-
-.exec-defaults__body {
-  padding: var(--sp-12);
-  max-height: min(78vh, 820px);
-  overflow-y: auto;
-}
-
-.exec-defaults__hint {
-  margin: 0 0 var(--sp-10);
-  color: var(--text-dim);
-  font-size: var(--fs-chip-lg);
-}
-
-.exec-defaults__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sp-8);
-}
-
-.exec-defaults__row + .exec-defaults__row {
-  margin-top: var(--sp-8);
-}
-
-.exec-defaults__k {
-  color: var(--text-secondary);
-  font-size: var(--fs-chip-lg);
-}
-
-.exec-defaults__workspace,
-.exec-defaults__vd,
-.exec-defaults__sp {
+.worker-repo-ops__vd,
+.settings-dialog__sp {
   margin-top: var(--sp-14);
   padding-top: var(--sp-10);
   border-top: 1px solid var(--border-panel);
 }
 
-.exec-defaults__workspace h3,
 .exec-presets__heading h3 {
   margin: 0;
   color: var(--text-title);
@@ -2740,41 +2660,14 @@ html[data-theme='dark'] {
   margin-top: var(--sp-10);
 }
 
-.exec-defaults__sel {
-  flex: 0 1 auto;
-  min-width: 120px;
-  max-width: 100%;
-  padding: var(--sp-2) var(--sp-6);
-  border-radius: var(--r-6);
-  border: 1px solid var(--border-chip);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font-size: var(--fs-body);
-}
-
-/* A `self`/`skip` review step dispatches no separate leg, so its effort is
-   inert — the gate must read as a gate (mqcj §4.4). */
-.exec-defaults__sel:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-/* Runner derived from the selected model — a label, not a control. */
-.exec-defaults__runner {
-  flex: 0 0 auto;
-  font-family: var(--font-mono, monospace);
-  font-size: var(--fs-chip);
-  color: var(--text-muted);
-}
-
 /* Read-only 검증·배포 설정 section (worker-deploy-hook §4): display only —
    the commands are defined in config.toml, which is the security boundary, so
    this block styles no interactive control. */
-.exec-defaults__vd {
+.worker-repo-ops__vd {
   margin-top: var(--sp-14);
 }
 
-.exec-defaults__vd-title {
+.worker-repo-ops__vd-title {
   display: flex;
   align-items: center;
   gap: var(--sp-6);
@@ -2784,7 +2677,7 @@ html[data-theme='dark'] {
   font-weight: 600;
 }
 
-.exec-defaults__vd-ro {
+.worker-repo-ops__vd-ro {
   padding: 0 var(--sp-6);
   border-radius: var(--r-9);
   border: 1px solid var(--border-chip);
@@ -2793,17 +2686,17 @@ html[data-theme='dark'] {
   font-weight: 400;
 }
 
-.exec-defaults__vd-group + .exec-defaults__vd-group {
+.worker-repo-ops__vd-group + .worker-repo-ops__vd-group {
   margin-top: var(--sp-10);
 }
 
-.exec-defaults__vd-label {
+.worker-repo-ops__vd-label {
   margin-bottom: var(--sp-3);
   color: var(--text-muted);
   font-size: var(--fs-small);
 }
 
-.exec-defaults__vd-line {
+.worker-repo-ops__vd-line {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -2812,7 +2705,7 @@ html[data-theme='dark'] {
   font-size: var(--fs-body-sm);
 }
 
-.exec-defaults__vd-cmd {
+.worker-repo-ops__vd-cmd {
   padding: var(--sp-1) var(--sp-6);
   border-radius: var(--r-4);
   background: var(--bg-card);
@@ -2822,7 +2715,7 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
-.exec-defaults__vd-badge {
+.worker-repo-ops__vd-badge {
   display: inline-block;
   padding: 0 var(--sp-7);
   border-radius: var(--r-9);
@@ -2833,37 +2726,37 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
-.exec-defaults__vd-badge--config {
+.worker-repo-ops__vd-badge--config {
   border-color: var(--border-route);
   color: var(--chip-route);
 }
 
-.exec-defaults__vd-badge--deployer {
+.worker-repo-ops__vd-badge--deployer {
   border-color: var(--border-route);
   color: var(--chip-route);
 }
 
 /* An absent verify/deploy stage is a NEUTRAL fact, never an error: the badge
    reads `안 함` in the same muted chip as every other declaration note. */
-.exec-defaults__vd-badge--absent {
+.worker-repo-ops__vd-badge--absent {
   border-color: var(--border-chip);
   color: var(--chip-neutral);
 }
 
-.exec-defaults__repair {
+.worker-repo-ops__repair {
   display: grid;
   gap: var(--sp-6);
   padding-top: var(--sp-8);
 }
 
-.exec-defaults__repair-toggle {
+.worker-repo-ops__repair-toggle {
   display: flex;
   align-items: center;
   gap: var(--sp-6);
   font-size: var(--fs-body-sm);
 }
 
-.exec-defaults__repair-state {
+.worker-repo-ops__repair-state {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-8);
@@ -2871,17 +2764,17 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
-.exec-defaults__policy {
+.worker-repo-ops__policy {
   display: grid;
   gap: var(--sp-6);
 }
 
-.exec-defaults__policy-label {
+.worker-repo-ops__policy-label {
   color: var(--text-secondary);
   font-size: var(--fs-caption);
 }
 
-.exec-defaults__policy-list {
+.worker-repo-ops__policy-list {
   margin: 0;
   padding-left: var(--sp-14);
   color: var(--text-secondary);
@@ -3316,13 +3209,13 @@ html[data-theme='dark'] {
 }
 
 /* ==== 설정: 저장소 작업 선언 (UI-q0uy §4.5) ==== */
-.exec-defaults__vd-src {
+.worker-repo-ops__vd-src {
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
 }
 
-.exec-defaults__lane {
+.worker-repo-ops__lane {
   display: grid;
   grid-template-columns: 108px 1fr;
   gap: var(--sp-4) var(--sp-14);
@@ -3330,13 +3223,13 @@ html[data-theme='dark'] {
   border-bottom: 1px solid var(--border-kv-row);
 }
 
-.exec-defaults__lane-k {
+.worker-repo-ops__lane-k {
   padding-top: 1px;
   color: var(--text-muted);
   font-size: var(--fs-body-sm);
 }
 
-.exec-defaults__lane-v {
+.worker-repo-ops__lane-v {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -3345,40 +3238,40 @@ html[data-theme='dark'] {
   font-size: var(--fs-body-sm);
 }
 
-.exec-defaults__lane-d {
+.worker-repo-ops__lane-d {
   grid-column: 2;
   color: var(--text-dim);
   font-size: var(--fs-caption);
 }
 
-.exec-defaults__policy summary {
+.worker-repo-ops__policy summary {
   color: var(--text-secondary);
   font-size: var(--fs-body-sm);
   font-weight: 600;
   cursor: pointer;
 }
 
-.exec-defaults__policy-count {
+.worker-repo-ops__policy-count {
   color: var(--text-dim);
   font-weight: 400;
   font-size: var(--fs-caption);
 }
 
-.exec-defaults__vd-badge--fail {
+.worker-repo-ops__vd-badge--fail {
   border-color: var(--border-danger);
   color: var(--accent-danger);
 }
 
-.exec-defaults__vd-meta {
+.worker-repo-ops__vd-meta {
   color: var(--text-muted);
   font-size: var(--fs-chip-lg);
 }
 
-.exec-defaults__vd-absent {
+.worker-repo-ops__vd-absent {
   color: var(--text-dim);
 }
 
-.exec-defaults__vd-absent .exec-defaults__vd-cmd {
+.worker-repo-ops__vd-absent .worker-repo-ops__vd-cmd {
   border: 1px dashed var(--border-chip);
   background: none;
   color: var(--text-muted);
@@ -6759,13 +6652,13 @@ html[data-theme='dark'] {
 }
 
 /* ⚙ dialog worker system-prompt section. */
-.exec-defaults__sp {
+.settings-dialog__sp {
   margin-top: var(--sp-14);
   padding-top: var(--sp-10);
   border-top: 1px solid var(--border-panel);
 }
 
-.exec-defaults__sp-toggle {
+.settings-dialog__sp-toggle {
   margin-left: auto;
   padding: 0 var(--sp-7);
   border: 1px solid var(--border-chip);
@@ -6776,11 +6669,11 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.exec-defaults__sp-variant + .exec-defaults__sp-variant {
+.settings-dialog__sp-variant + .settings-dialog__sp-variant {
   margin-top: var(--sp-12);
 }
 
-.exec-defaults__sp-cond {
+.settings-dialog__sp-cond {
   margin-bottom: var(--sp-4);
   color: var(--text-dim);
   font-size: var(--fs-caption);
@@ -6810,4 +6703,768 @@ html[data-theme='dark'] {
 
 .continuation-dialog button {
   margin: 0.25rem 0.35rem 0 0;
+}
+
+/* ============================================================================
+   통합 설정 다이얼로그 (spec §D) — 좌측 레일이 소유권 경계다: 세션 = 모든
+   세션의 전역 기본값(bd kv), Worker = 이 워크스페이스의 오케스트레이션 값,
+   표시 = 라벨/칩 정책.
+   ========================================================================== */
+.settings-dialog {
+  display: grid;
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-10);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+.settings-dialog__container {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  min-height: min(460px, 100%);
+  max-height: inherit;
+}
+
+.settings-dialog__rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-14) var(--sp-8);
+  border-right: 1px solid var(--border-panel);
+  background: var(--bg-drawer);
+}
+
+.settings-dialog__rail-title {
+  padding: var(--sp-2) var(--sp-10) var(--sp-12);
+  color: var(--text-title);
+  font-size: var(--fs-small);
+  font-weight: 650;
+}
+
+.settings-dialog__tab {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  width: 100%;
+  padding: var(--sp-7) var(--sp-10);
+  border: 0;
+  border-radius: var(--r-6);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-body-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.settings-dialog__tab:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.settings-dialog__tab[aria-selected='true'] {
+  background: var(--bg-card);
+  color: var(--text-title);
+  box-shadow: inset 2px 0 0 var(--layer-global);
+}
+
+.settings-dialog__glyph {
+  width: 14px;
+  text-align: center;
+  opacity: 0.85;
+}
+
+.settings-dialog__close {
+  margin-top: auto;
+  padding: var(--sp-5) var(--sp-10);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.settings-dialog__panes {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.settings-dialog__pane {
+  display: none;
+  min-width: 0;
+  padding: var(--sp-16) var(--sp-16) var(--sp-16);
+}
+
+.settings-dialog__pane--active {
+  display: block;
+}
+
+.settings-dialog__pane-head h2 {
+  margin: 0;
+  color: var(--text-title);
+  font-size: var(--fs-body-lg);
+  font-weight: 650;
+}
+
+.settings-dialog__pane-sub {
+  margin: var(--sp-4) 0 var(--sp-16);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__banner {
+  margin-bottom: var(--sp-12);
+  padding: var(--sp-8) var(--sp-10);
+  border: 1px solid var(--border-warn);
+  border-radius: var(--r-7);
+  color: var(--accent-warn);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__group {
+  margin-bottom: var(--sp-14);
+  padding: var(--sp-12) var(--sp-14) var(--sp-14);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-card);
+}
+
+.settings-dialog__group-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  margin-bottom: var(--sp-10);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.settings-dialog__hint {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.settings-dialog__hint-block {
+  margin: 0 0 var(--sp-8);
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.settings-dialog__row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: var(--sp-10);
+  align-items: center;
+  padding: var(--sp-5) 0;
+}
+
+.settings-dialog__row + .settings-dialog__row {
+  border-top: 1px solid var(--border-kv-row);
+}
+
+/* `메인`은 컨트롤러 직접 구현이므로 위임 대상 이하가 뜻을 잃는다. */
+.settings-dialog__row--off {
+  opacity: 0.38;
+}
+
+.settings-dialog__row-label {
+  color: var(--text-secondary);
+  font-size: var(--fs-body-sm);
+}
+
+.settings-dialog__controls {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.settings-dialog__controls select {
+  padding: var(--sp-4) var(--sp-9);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-drawer);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__unset {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* 리뷰 게이트 행의 stage 색 점 — 게이트 어휘를 카드 스텝퍼와 공유한다. */
+.settings-dialog__stage-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: var(--sp-6);
+  border-radius: 50%;
+  vertical-align: middle;
+}
+
+.settings-dialog__seg {
+  display: inline-flex;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-drawer);
+}
+
+.settings-dialog__seg button {
+  padding: var(--sp-3) var(--sp-10);
+  border: 0;
+  border-radius: var(--r-4);
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.settings-dialog__seg button[aria-pressed='true'] {
+  background: var(--bg-card);
+  color: var(--text-title);
+  box-shadow: inset 0 0 0 1px var(--border-card);
+}
+
+.settings-dialog__stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-drawer);
+}
+
+.settings-dialog__stepper button {
+  width: 26px;
+  padding: var(--sp-2) 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--fs-body-lg);
+  cursor: pointer;
+}
+
+.settings-dialog__stepper-value {
+  min-width: 30px;
+  padding: var(--sp-2) 0;
+  border-left: 1px solid var(--border-kv-row);
+  border-right: 1px solid var(--border-kv-row);
+  color: var(--text-title);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-body-sm);
+  text-align: center;
+}
+
+.settings-dialog__preset-name {
+  min-width: 0;
+  max-width: 170px;
+  padding: var(--sp-4) var(--sp-9);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__preset-bar {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--sp-9) var(--sp-10);
+  border: 1px dashed var(--border-chip);
+  border-radius: var(--r-7);
+  background: var(--bg-drawer);
+}
+
+.settings-dialog__btn {
+  padding: var(--sp-4) var(--sp-12);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-drawer);
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+  cursor: pointer;
+}
+
+.settings-dialog__btn:hover {
+  border-color: var(--border-card);
+  color: var(--text-title);
+}
+
+.settings-dialog__btn--primary {
+  border-color: var(--stage-plan-dim);
+  color: var(--stage-plan-on);
+}
+
+.settings-dialog__note {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+  padding: var(--sp-8) var(--sp-10);
+  border: 1px solid var(--border-info);
+  border-radius: var(--r-7);
+  background: var(--bg-gate-pill);
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__empty {
+  padding: var(--sp-10) 0;
+  color: var(--text-dim);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__pills,
+.settings-dialog__prefixes,
+.settings-dialog__toggles {
+  display: flex;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+}
+
+.settings-dialog__pill {
+  padding: var(--sp-2) var(--sp-9);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  background: var(--bg-drawer);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.settings-dialog__pill--hidden_exact,
+.settings-dialog__pill--hidden_prefix {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+
+.settings-dialog__prefix {
+  display: inline-flex;
+  gap: var(--sp-4);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+}
+
+.settings-dialog__prefix-remove {
+  border: 0;
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.settings-dialog__prefix-add {
+  display: flex;
+  gap: var(--sp-6);
+  margin-top: var(--sp-8);
+}
+
+.settings-dialog__prefix-input {
+  padding: var(--sp-4) var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: var(--bg-drawer);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+}
+
+.settings-dialog__toggle {
+  display: inline-flex;
+  gap: var(--sp-5);
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: var(--fs-small);
+}
+
+@media (max-width: 640px) {
+  .settings-dialog {
+    width: calc(100vw - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .settings-dialog__container {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .settings-dialog__rail {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-panel);
+  }
+
+  .settings-dialog__rail-title {
+    padding: var(--sp-2) var(--sp-8);
+  }
+
+  .settings-dialog__close {
+    margin-top: 0;
+    margin-left: auto;
+  }
+
+  /* 좁은 화면에서는 라벨을 컨트롤 위로 쌓아 값 영역을 전폭으로 쓴다. */
+  .settings-dialog__row {
+    grid-template-columns: 1fr;
+    gap: var(--sp-3);
+    padding: var(--sp-7) 0;
+  }
+
+  /* 가로 레일에서는 탭이 내용 폭만 차지해야 한 줄에 놓인다. */
+  .settings-dialog__tab {
+    width: auto;
+  }
+}
+
+/* 터치 표적: 좁은 화면·coarse 포인터에서 컨트롤을 키운다. */
+@media (any-pointer: coarse), (max-width: 640px) {
+  .settings-dialog__tab {
+    padding: var(--sp-9) var(--sp-12);
+  }
+
+  .settings-dialog__controls select,
+  .settings-dialog__seg button {
+    padding: var(--sp-7) var(--sp-12);
+    font-size: var(--fs-body-sm);
+  }
+
+  .settings-dialog__stepper button {
+    width: 34px;
+    padding: var(--sp-6) 0;
+  }
+
+  .detail-effective__edit {
+    padding: var(--sp-5) var(--sp-9);
+    font-size: var(--fs-small);
+  }
+}
+
+/* ============================================================================
+   이슈 상세 — 요약 헤더 + 유효 실행 설정 카드 (spec §E)
+   ========================================================================== */
+.detail-summary {
+  margin: var(--sp-8) 0 var(--sp-4);
+}
+
+.detail-summary__chips {
+  display: flex;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+}
+
+.detail-summary__chip {
+  padding: var(--sp-2) var(--sp-9);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  text-decoration: none;
+}
+
+.detail-summary__chip--status {
+  border-color: var(--border-tile-run);
+  color: var(--accent-success);
+}
+
+.detail-summary__chip--route {
+  border-color: var(--border-route);
+  color: var(--chip-route);
+}
+
+.detail-summary__chip--mode {
+  border-color: var(--border-ft);
+  color: var(--chip-ft);
+}
+
+.detail-summary__chip--pr {
+  border-color: var(--border-pr);
+  color: var(--chip-pr);
+}
+
+.detail-summary__chip--receipt {
+  font-family: var(--font-mono, monospace);
+}
+
+.detail-summary__gates {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+  margin-top: var(--sp-10);
+  overflow-x: auto;
+}
+
+.detail-summary__gate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  align-items: center;
+  min-width: 72px;
+}
+
+.detail-summary__gate-pill {
+  padding: var(--sp-3) var(--sp-10);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+.detail-summary__gate--on .detail-summary__gate-pill {
+  border-color: currentcolor;
+  color: var(--stage-spec-on);
+}
+
+.detail-summary__gate--stale .detail-summary__gate-pill {
+  color: var(--accent-warn);
+}
+
+.detail-summary__gate--current .detail-summary__gate-pill {
+  border-color: var(--stage-plan-dim);
+  color: var(--text-secondary);
+}
+
+.detail-summary__gate-sha {
+  color: var(--text-dim);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-label-tiny);
+}
+
+.detail-effective {
+  margin-top: var(--sp-14);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.detail-effective__head {
+  display: flex;
+  gap: var(--sp-6) var(--sp-10);
+  align-items: center;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: var(--sp-10) var(--sp-12);
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.detail-effective__t {
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.detail-effective__summary {
+  color: var(--text-primary);
+  font-size: var(--fs-body-sm);
+}
+
+.detail-effective__counts {
+  display: flex;
+  gap: var(--sp-5);
+  margin-left: auto;
+}
+
+.detail-effective__count {
+  padding: var(--sp-1) var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-9);
+  font-size: var(--fs-caption);
+}
+
+.detail-effective__count--pin {
+  border-color: var(--layer-pin-border);
+  color: var(--layer-pin);
+}
+
+.detail-effective__count--global {
+  border-color: var(--layer-global-border);
+  color: var(--layer-global);
+}
+
+.detail-effective__chev {
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+.detail-effective--open .detail-effective__chev {
+  transform: rotate(90deg);
+}
+
+.detail-effective__body {
+  border-top: 1px solid var(--border-kv-row);
+}
+
+.detail-effective__subhead {
+  padding: var(--sp-7) var(--sp-12) var(--sp-3);
+  color: var(--text-dim);
+  font-size: var(--fs-label-tiny);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.detail-effective__row {
+  display: grid;
+  grid-template-columns: 14px 130px minmax(0, 1fr) auto auto;
+  gap: 0 var(--sp-10);
+  align-items: center;
+  padding: var(--sp-6) var(--sp-12);
+  border-top: 1px solid var(--border-kv-row);
+}
+
+.detail-effective__k {
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+}
+
+.detail-effective__v {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-effective__v--dim {
+  color: var(--text-dim);
+}
+
+/* 시그니처: 해석 층 레일 — 세 눈금 중 값을 공급하는 층만 켜진다. */
+.detail-layer-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: center;
+}
+
+.detail-layer-rail i {
+  width: 5px;
+  height: 5px;
+  border-radius: 1.5px;
+  background: var(--border-panel);
+}
+
+.detail-layer-rail--pin i:nth-child(1) {
+  background: var(--layer-pin);
+}
+
+.detail-layer-rail--global i:nth-child(2) {
+  background: var(--layer-global);
+}
+
+.detail-layer-rail--base i:nth-child(3) {
+  background: var(--layer-base);
+}
+
+.detail-effective__badge {
+  padding: var(--sp-1) var(--sp-7);
+  border-radius: var(--r-4);
+  font-size: var(--fs-label-tiny);
+  letter-spacing: 0.06em;
+}
+
+.detail-effective__badge--pin {
+  border: 1px solid var(--layer-pin-border);
+  background: var(--layer-pin-bg);
+  color: var(--layer-pin);
+}
+
+.detail-effective__badge--global {
+  border: 1px solid var(--layer-global-border);
+  background: var(--layer-global-bg);
+  color: var(--layer-global);
+}
+
+.detail-effective__badge--base {
+  border: 1px dashed var(--border-chip);
+  color: var(--text-dim);
+}
+
+.detail-effective__edit {
+  padding: var(--sp-2) var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: var(--bg-drawer);
+  color: var(--text-primary);
+  font-size: var(--fs-chip);
+}
+
+.detail-effective__foot {
+  display: flex;
+  gap: var(--sp-8);
+  align-items: center;
+  flex-wrap: wrap;
+  padding: var(--sp-10) var(--sp-12);
+  border-top: 1px solid var(--border-kv-row);
+}
+
+.detail-effective__hint {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+/* Worker 화면 인라인 운영 설정 (검증·배포 선언 + auto_repair) — 접힘 기본. */
+.worker-repo-ops-settings {
+  margin-top: var(--sp-10);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-8);
+  background: var(--bg-drawer);
+}
+
+.worker-repo-ops-settings__summary {
+  padding: var(--sp-7) var(--sp-10);
+  color: var(--text-muted);
+  font-size: var(--fs-small);
+  cursor: pointer;
+  user-select: none;
+}
+
+.worker-repo-ops-settings__summary:hover {
+  color: var(--text-primary);
+}
+
+.worker-repo-ops-settings[open] > .worker-repo-ops-settings__summary {
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-kv-row);
+}
+
+.worker-repo-ops-settings > section {
+  padding: var(--sp-4) var(--sp-10) var(--sp-8);
+}
+
+/* 좁은 화면: 유효 설정 카드의 키 열을 좁혀 값·배지·편집이 한 줄에 들어가게. */
+@media (max-width: 640px) {
+  .detail-effective__row {
+    grid-template-columns: 14px 84px minmax(0, 1fr) auto auto;
+    gap: 0 var(--sp-6);
+    padding: var(--sp-6) var(--sp-8);
+  }
+
+  .detail-effective__k {
+    font-size: var(--fs-body-sm);
+  }
 }

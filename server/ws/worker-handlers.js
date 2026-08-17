@@ -2125,31 +2125,32 @@ export function handleWorkerQueueSetPrWaitHold(ws, req) {
 }
 
 /**
- * Set or unset the workspace's global preset reference. Both the queue and
- * preset revision must match the client snapshot; a stale pair returns both
- * authoritative snapshots and never retries on the server.
+ * Store the workspace's three orchestration defaults as values (spec §C.5).
+ * There is no preset reference any more, so this is a plain CAS-guarded queue
+ * mutation with the queue's own revision.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
-export function handleWorkerQueueSetDefaultExecPreset(ws, req) {
-  const payload = /** @type {any} */ (req.payload || {});
-  const workspace_key = mutationWorkspaceOf(ws, req);
-  if (workspace_key === null) {
+export function handleWorkerQueueSetOrchestrationDefaults(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (!p.values || typeof p.values !== 'object' || Array.isArray(p.values)) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload requires { values: object }')
+      )
+    );
     return;
   }
-  const result = getWorkerRuntime().execPresetCoordinator.setDefaultExecPreset(
-    workspace_key,
-    {
-      preset_id: payload.preset_id ?? null,
-      expected_queue_revision: payload.expected_queue_revision,
-      expected_preset_revision: payload.expected_preset_revision
-    }
-  );
-  ws.send(JSON.stringify(makeOk(req, result)));
-  if (result.applied) {
-    fanout(workspace_key, /** @type {any} */ (result.queue));
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
   }
+  const result = queueStore().setOrchestrationDefaults(key, {
+    expected_revision: revisionOf(p),
+    values: p.values
+  });
+  replyMutation(ws, req, key, result);
 }
 
 /**

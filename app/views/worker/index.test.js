@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { createExecPresetStore } from '../../data/exec-preset-store.js';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
@@ -703,8 +702,8 @@ describe('views/worker', () => {
       mount.querySelector('select[data-policy-key="drift_policy"]')
     ).toBeNull();
     expect(mount.querySelector('.worker-verifycmd')).toBeNull();
-    // The ⚙ exec-defaults button survives.
-    expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBeNull();
+    // The repo-operation declaration lives in its own inline section.
+    expect(mount.querySelector('.worker-repo-ops-settings')).not.toBeNull();
   });
 
   test('renders one waiting lane, with no serial or parallel pane (worker-phase2 §3)', () => {
@@ -2444,120 +2443,11 @@ describe('views/worker', () => {
    * @returns {HTMLElement}
    */
   function openExecDefaults(mount) {
-    const btn = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-exec-defaults-btn')
-    );
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    // The repo-operation settings are INLINE on the Worker screen now.
     return /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-exec-defaults-dialog')
+      mount.querySelector('.worker-repo-ops-settings')
     );
   }
-
-  test('the ⚙ button carries aria-haspopup and opens the global exec-defaults dialog', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore: createWorkerQueueStore(),
-      transport: vi.fn()
-    });
-
-    const btn = /** @type {HTMLElement} */ (
-      mount.querySelector('.worker-exec-defaults-btn')
-    );
-    expect(btn).not.toBeNull();
-    expect(btn.getAttribute('aria-haspopup')).toBe('dialog');
-
-    // Closed until the ⚙ is clicked.
-    const before = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-exec-defaults-dialog')
-    );
-    expect(before?.hasAttribute('open')).toBe(false);
-
-    const dialog = openExecDefaults(mount);
-    expect(dialog.hasAttribute('open')).toBe(true);
-    expect(dialog.querySelector('[data-exec-presets]')).not.toBeNull();
-    expect(dialog.querySelector('[data-workspace-preset-select]')).toBeNull();
-    expect(dialog.querySelectorAll('.exec-defaults__row')).toHaveLength(0);
-  });
-
-  test('assigning a workspace default via the preset card sends both current revisions', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 3 }));
-    const execPresetStore = createExecPresetStore();
-    execPresetStore.set({
-      revision: 7,
-      presets: [{ id: 'p1', name: '개발', settings: {} }]
-    });
-    const transport = vi.fn().mockResolvedValue({
-      applied: true,
-      queue: queueOf({ revision: 4, default_exec_preset_id: 'p1' }),
-      presets: {
-        revision: 7,
-        presets: [{ id: 'p1', name: '개발', settings: {} }]
-      }
-    });
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      execPresetStore,
-      transport
-    });
-
-    const dialog = openExecDefaults(mount);
-    /** @type {HTMLButtonElement} */ (
-      dialog.querySelector('[data-workspace-preset-assign="p1"]')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenCalledWith(
-      'worker-queue-set-default-exec-preset',
-      {
-        preset_id: 'p1',
-        expected_queue_revision: 3,
-        expected_preset_revision: 7
-      }
-    );
-  });
-
-  test('adopts both authoritative snapshots after a dual CAS conflict', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ revision: 3 }));
-    const execPresetStore = createExecPresetStore();
-    execPresetStore.set({
-      revision: 7,
-      presets: [{ id: 'p1', name: '초안', settings: {} }]
-    });
-    const transport = vi.fn().mockResolvedValue({
-      applied: false,
-      conflict: true,
-      queue: queueOf({ revision: 4 }),
-      presets: {
-        revision: 8,
-        presets: [{ id: 'p2', name: '최신', settings: {} }]
-      }
-    });
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore,
-      execPresetStore,
-      transport
-    });
-
-    const dialog = openExecDefaults(mount);
-    /** @type {HTMLButtonElement} */ (
-      dialog.querySelector('[data-workspace-preset-assign="p1"]')
-    ).click();
-    await flush();
-
-    expect(transport).toHaveBeenCalledTimes(1);
-    expect(queueStore.get()?.revision).toBe(4);
-    expect(execPresetStore.get()?.revision).toBe(8);
-    expect(
-      dialog.querySelector('[data-preset-id="p2"]')?.textContent
-    ).toContain('최신');
-  });
 
   /**
    * Open the ⚙ dialog over a queue snapshot carrying the given workspace info.
@@ -2598,10 +2488,10 @@ describe('views/worker', () => {
     const lane = /** @type {HTMLElement} */ (
       dialog.querySelector('[data-lane="verify"]')
     );
-    expect(lane.querySelector('.exec-defaults__vd-cmd')?.textContent).toBe(
+    expect(lane.querySelector('.worker-repo-ops__vd-cmd')?.textContent).toBe(
       'repo-ops/script/verify'
     );
-    expect(lane.querySelector('.exec-defaults__vd-badge')?.textContent).toBe(
+    expect(lane.querySelector('.worker-repo-ops__vd-badge')?.textContent).toBe(
       'timeout 10분'
     );
   });
@@ -2622,7 +2512,7 @@ describe('views/worker', () => {
     });
 
     const section = /** @type {HTMLElement} */ (
-      dialog.querySelector('.exec-defaults__vd')
+      dialog.querySelector('.worker-repo-ops__vd')
     );
     expect(
       section.querySelectorAll('input, select, textarea, button').length
@@ -2641,8 +2531,8 @@ describe('views/worker', () => {
 
     const dialog = openExecDefaults(mount);
 
-    expect(dialog.querySelector('.exec-defaults__vd')).not.toBeNull();
-    expect(dialog.querySelector('.exec-defaults__vd')?.textContent).toContain(
+    expect(dialog.querySelector('.worker-repo-ops__vd')).not.toBeNull();
+    expect(dialog.querySelector('.worker-repo-ops__vd')?.textContent).toContain(
       '선언 확인 중'
     );
   });
@@ -7202,9 +7092,9 @@ describe('mobile sticky ribbon (UI-58y2)', () => {
       mount.querySelector('.worker-ribbon')
     );
     expect(ribbon.querySelector('.worker-slots__input')).toBe(null);
-    expect(ribbon.querySelector('.worker-exec-defaults-btn')).toBe(null);
+    expect(ribbon.querySelector('.worker-repo-ops-settings')).toBe(null);
     expect(mount.querySelector('.worker-slots__input')).not.toBe(null);
-    expect(mount.querySelector('.worker-exec-defaults-btn')).not.toBe(null);
+    expect(mount.querySelector('.worker-repo-ops-settings')).not.toBe(null);
   });
 
   test('leaves the failure banner outside the ribbon', () => {

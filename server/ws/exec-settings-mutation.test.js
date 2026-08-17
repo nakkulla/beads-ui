@@ -4,12 +4,21 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 const runBdInWorkspace = vi.fn();
 const runBdJsonInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
+const kvGetJsonInWorkspace = vi.fn();
+const kvSetJsonInWorkspace = vi.fn();
 
 vi.mock('./context.js', () => ({
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {any} */ args) =>
     runBdInWorkspace(ws, args),
   runBdJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ args) =>
     runBdJsonInWorkspace(ws, args),
+  kvGetJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ key) =>
+    kvGetJsonInWorkspace(ws, key),
+  kvSetJsonInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {any} */ key,
+    /** @type {any} */ value
+  ) => kvSetJsonInWorkspace(ws, key, value),
   getGitUserNameInWorkspace: () => Promise.resolve(''),
   log: () => {}
 }));
@@ -24,6 +33,9 @@ const {
   handleUpdateExecSettings,
   handleUpdateImplTarget
 } = await import('./mutation-handlers.js');
+
+const { handleGetSessionDefaults, handleSetSessionDefaults } =
+  await import('./session-defaults-handlers.js');
 
 /**
  * @returns {{ ws: any, sent: any[] }}
@@ -46,12 +58,12 @@ describe('buildExecSettingsArgs', () => {
     );
   });
 
-  test('workflow_mode=standard produces --unset-metadata (never stores literal)', () => {
+  test('workflow_mode=standard produces --set-metadata so a bead overrides the kv default', () => {
     expect(buildExecSettingsArgs('UI-1', 'workflow_mode', 'standard')).toEqual([
       'update',
       'UI-1',
-      '--unset-metadata',
-      'workflow_mode'
+      '--set-metadata',
+      'workflow_mode=standard'
     ]);
   });
 
@@ -77,7 +89,7 @@ describe('handleUpdateExecSettings', () => {
     });
   });
 
-  test('standard workflow_mode calls bd with --unset-metadata (argv capture)', async () => {
+  test('standard workflow_mode calls bd with --set-metadata (argv capture)', async () => {
     const { ws, sent } = fakeWs();
     await handleUpdateExecSettings(ws, {
       id: 'r1',
@@ -87,10 +99,25 @@ describe('handleUpdateExecSettings', () => {
     expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
       'update',
       'UI-1',
+      '--set-metadata',
+      'workflow_mode=standard'
+    ]);
+    expect(sent[0].ok).toBe(true);
+  });
+
+  test('an empty value is the only per-bead deletion (3-state editor)', async () => {
+    const { ws } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r1b',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'workflow_mode', value: '' }
+    });
+    expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+      'update',
+      'UI-1',
       '--unset-metadata',
       'workflow_mode'
     ]);
-    expect(sent[0].ok).toBe(true);
   });
 
   test('fast_track workflow_mode calls bd with --set-metadata', async () => {
@@ -152,16 +179,88 @@ describe('handleUpdateExecSettings', () => {
     ['impl_model', 'terra'],
     ['impl_effort', 'high'],
     ['impl_runtime', '']
-  ])('rejects generic %s mutations before calling bd', async (key, value) => {
+  ])(
+    'routes an EXACT %s to the atomic implementation-target mutation',
+    async (key, value) => {
+      const { ws, sent } = fakeWs();
+      await handleUpdateExecSettings(ws, {
+        id: 'r3d',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value }
+      });
+
+      expect(runBdInWorkspace).not.toHaveBeenCalled();
+      expect(sent[0].error.message).toContain('update-impl-target');
+    }
+  );
+
+  test.each([
+    ['impl_dispatch', 'delegated'],
+    ['impl_dispatch', 'main'],
+    ['impl_speed', 'default'],
+    ['impl_speed', 'fast']
+  ])('writes the session key %s=%s as a literal', async (key, value) => {
     const { ws, sent } = fakeWs();
     await handleUpdateExecSettings(ws, {
-      id: 'r3d',
+      id: 'r3e',
       type: 'update-exec-settings',
       payload: { id: 'UI-1', key, value }
     });
 
+    expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+      'update',
+      'UI-1',
+      '--set-metadata',
+      `${key}=${value}`
+    ]);
+    expect(sent[0].ok).toBe(true);
+  });
+
+  test.each([
+    ['impl_model', 'auto'],
+    ['impl_effort', 'auto']
+  ])(
+    'preserves the %s auto literal instead of routing or dropping it',
+    async (key) => {
+      const { ws, sent } = fakeWs();
+      await handleUpdateExecSettings(ws, {
+        id: 'r3f',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value: 'auto' }
+      });
+
+      expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+        'update',
+        'UI-1',
+        '--set-metadata',
+        `${key}=auto`
+      ]);
+      expect(sent[0].ok).toBe(true);
+    }
+  );
+
+  test('rejects an out-of-enum impl_dispatch without shelling bd', async () => {
+    const { ws, sent } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3g',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'impl_dispatch', value: 'sideways' }
+    });
+
     expect(runBdInWorkspace).not.toHaveBeenCalled();
-    expect(sent[0].error.message).toContain('update-impl-target');
+    expect(sent[0].error.code).toBe('bad_request');
+  });
+
+  test('the auto literal is not accepted for impl_runtime', async () => {
+    const { ws, sent } = fakeWs();
+    await handleUpdateExecSettings(ws, {
+      id: 'r3h',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key: 'impl_runtime', value: 'auto' }
+    });
+
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].ok).toBe(false);
   });
 
   test('unknown key is rejected', async () => {
@@ -212,6 +311,26 @@ describe('handleUpdateImplTarget', () => {
       })
     );
     expect(runBdJsonInWorkspace).toHaveBeenCalledTimes(1);
+    expect(sent[0].ok).toBe(true);
+  });
+
+  test.each([
+    [{ impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' }],
+    [{ impl_runtime: 'inherit', impl_model: 'auto', impl_effort: 'high' }]
+  ])('accepts an auto implementation target %o', async (payload) => {
+    const { ws, sent } = fakeWs();
+
+    await handleUpdateImplTarget(ws, {
+      id: 'target-auto',
+      type: 'update-impl-target',
+      payload: { id: 'UI-1', ...payload }
+    });
+
+    expect(runBdInWorkspace).toHaveBeenCalledOnce();
+    expect(runBdInWorkspace).toHaveBeenCalledWith(
+      ws,
+      buildImplTargetArgs('UI-1', payload)
+    );
     expect(sent[0].ok).toBe(true);
   });
 
@@ -300,4 +419,260 @@ describe('handleUpdateImplTarget', () => {
       expect(sent[0].error.code).toBe('bd_readback_failed');
     }
   );
+});
+
+describe('handleGetSessionDefaults', () => {
+  beforeEach(() => {
+    kvGetJsonInWorkspace.mockReset();
+    kvSetJsonInWorkspace.mockReset();
+  });
+
+  test('returns the stored session-default values', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, workflow_mode: 'fast_track', impl_dispatch: 'main' }
+    });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g1',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].ok).toBe(true);
+    expect(sent[0].payload.values).toEqual({
+      workflow_mode: 'fast_track',
+      impl_dispatch: 'main'
+    });
+  });
+
+  test('reports an absent kv key as an empty layer without warning', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: undefined });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g2',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].payload.values).toEqual({});
+    expect(sent[0].payload.warnings).toEqual([]);
+  });
+
+  test('surfaces a kv parse failure as a warning the banner can render', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: undefined,
+      warning: 'kv_value_unparsable'
+    });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g3',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].ok).toBe(true);
+    expect(sent[0].payload.warnings).toContain('kv_value_unparsable');
+  });
+
+  test('drops an out-of-enum key and warns instead of failing the layer', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, workflow_mode: 'bogus', impl_dispatch: 'delegated' }
+    });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g4',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].payload.values).toEqual({ impl_dispatch: 'delegated' });
+    expect(sent[0].payload.warnings).toContain('invalid_value:workflow_mode');
+  });
+
+  test('propagates a bd read failure as an error reply', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: false, error: 'db locked' });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g5',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].ok).toBe(false);
+    expect(sent[0].error.code).toBe('kv_read_failed');
+  });
+});
+
+describe('handleSetSessionDefaults', () => {
+  beforeEach(() => {
+    kvGetJsonInWorkspace.mockReset();
+    kvSetJsonInWorkspace.mockReset();
+  });
+
+  test('writes a valid patch and replies with the readback values', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, workflow_mode: 'fast_track' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's1',
+      type: 'set-session-defaults',
+      payload: { values: { workflow_mode: 'fast_track' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      { schema: 1, workflow_mode: 'fast_track' }
+    );
+    expect(sent[0].ok).toBe(true);
+    expect(sent[0].payload.values).toEqual({ workflow_mode: 'fast_track' });
+  });
+
+  test('re-reads before writing so a concurrent key survives last-write-wins', async () => {
+    const { ws } = fakeWs();
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_dispatch: 'main' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_dispatch: 'main', workflow_mode: 'standard' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's2',
+      type: 'set-session-defaults',
+      payload: { values: { workflow_mode: 'standard' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      { schema: 1, impl_dispatch: 'main', workflow_mode: 'standard' }
+    );
+  });
+
+  test('removes a key when its requested value is null', async () => {
+    const { ws } = fakeWs();
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, workflow_mode: 'fast_track' }
+      })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's3',
+      type: 'set-session-defaults',
+      payload: { values: { workflow_mode: null } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      { schema: 1 }
+    );
+  });
+
+  test('rejects an out-of-enum value without writing', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 's4',
+      type: 'set-session-defaults',
+      payload: { values: { impl_dispatch: 'sideways' } }
+    });
+
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].ok).toBe(false);
+    expect(sent[0].error.code).toBe('bad_request');
+  });
+
+  test('rejects a key outside the 12 contract keys without writing', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 's5',
+      type: 'set-session-defaults',
+      payload: { values: { orchestration_model: 'opus' } }
+    });
+
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].error.code).toBe('bad_request');
+  });
+
+  test('accepts the auto literal for impl_model and impl_effort', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_model: 'auto', impl_effort: 'auto' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's6',
+      type: 'set-session-defaults',
+      payload: { values: { impl_model: 'auto', impl_effort: 'auto' } }
+    });
+
+    expect(sent[0].ok).toBe(true);
+    expect(sent[0].payload.values).toEqual({
+      impl_model: 'auto',
+      impl_effort: 'auto'
+    });
+  });
+
+  test('replies with an error when the kv write fails', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({
+      ok: false,
+      error: 'read-only db'
+    });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's7',
+      type: 'set-session-defaults',
+      payload: { values: { workflow_mode: 'standard' } }
+    });
+
+    expect(sent[0].ok).toBe(false);
+    expect(sent[0].error.code).toBe('kv_write_failed');
+  });
+
+  test('replies with an error when the readback does not confirm the write', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's8',
+      type: 'set-session-defaults',
+      payload: { values: { workflow_mode: 'fast_track' } }
+    });
+
+    expect(sent[0].ok).toBe(false);
+    expect(sent[0].error.code).toBe('kv_readback_failed');
+  });
 });

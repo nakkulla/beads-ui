@@ -44,52 +44,92 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('workspace global fills every key and stamps all 12 in contract order when the bead is bare', () => {
+  test('workspace global fills only the three orchestration keys when the bead is bare', () => {
     const r = resolveExecSettings({
       bead: {},
       defaults: {
         orchestration_model: 'sonnet',
         orchestration_effort: 'high',
-        orchestration_speed: 'default',
-        spec_review_model: 'opus',
-        spec_review_effort: 'high',
-        plan_review_model: 'fable',
-        plan_review_effort: 'xhigh',
-        impl_review_model: 'self',
-        impl_review_effort: 'low',
-        impl_runtime: 'claude',
-        impl_model: 'sonnet',
-        impl_effort: 'medium'
+        orchestration_speed: 'default'
       }
     });
     expect(r).toMatchObject({
       orchestration_model: 'sonnet',
       orchestration_effort: 'high',
-      orchestration_speed: 'default',
-      spec_review_model: 'opus',
-      spec_review_effort: 'high',
-      plan_review_model: 'fable',
-      plan_review_effort: 'xhigh',
-      impl_review_model: 'self',
-      impl_review_effort: 'low',
-      impl_runtime: 'claude',
-      impl_model: 'sonnet',
-      impl_effort: 'medium'
+      orchestration_speed: 'default'
     });
-    expect(r.stamped_keys).toEqual([
-      'orchestration_model',
-      'orchestration_effort',
-      'orchestration_speed',
-      'spec_review_model',
-      'spec_review_effort',
-      'plan_review_model',
-      'plan_review_effort',
-      'impl_review_model',
-      'impl_review_effort',
-      'impl_runtime',
-      'impl_model',
-      'impl_effort'
-    ]);
+  });
+
+  test('ignores every session key offered by the workspace layer (bd kv owns them)', () => {
+    const r = resolveExecSettings(
+      /** @type {any} */ ({
+        bead: {},
+        defaults: {
+          orchestration_model: 'sonnet',
+          spec_review_model: 'opus',
+          spec_review_effort: 'high',
+          plan_review_model: 'fable',
+          plan_review_effort: 'xhigh',
+          impl_review_model: 'self',
+          impl_review_effort: 'low',
+          impl_runtime: 'claude',
+          impl_model: 'sonnet',
+          impl_effort: 'medium'
+        }
+      })
+    );
+
+    expect(r.spec_review_model).toBe(undefined);
+    expect(r.spec_review_effort).toBe(undefined);
+    expect(r.plan_review_model).toBe(undefined);
+    expect(r.plan_review_effort).toBe(undefined);
+    expect(r.impl_review_model).toBe(undefined);
+    expect(r.impl_review_effort).toBe(undefined);
+    expect(r.impl_runtime).toBe(undefined);
+    expect(r.impl_model).toBe(undefined);
+    expect(r.impl_effort).toBe(undefined);
+  });
+
+  test('stamps nothing even when the workspace layer supplies every orchestration key', () => {
+    const r = resolveExecSettings({
+      bead: {},
+      defaults: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        orchestration_speed: 'default'
+      }
+    });
+
+    expect(r.stamped_keys).toEqual([]);
+  });
+
+  test('resolves the nine session keys from the bead layer alone', () => {
+    const r = resolveExecSettings({
+      bead: {
+        spec_review_model: 'skip',
+        spec_review_effort: 'low',
+        plan_review_model: 'fable',
+        plan_review_effort: 'medium',
+        impl_review_model: 'codex',
+        impl_review_effort: 'xhigh',
+        impl_runtime: 'claude',
+        impl_model: 'haiku',
+        impl_effort: 'high'
+      },
+      defaults: {}
+    });
+
+    expect(r).toMatchObject({
+      spec_review_model: 'skip',
+      spec_review_effort: 'low',
+      plan_review_model: 'fable',
+      plan_review_effort: 'medium',
+      impl_review_model: 'codex',
+      impl_review_effort: 'xhigh',
+      impl_runtime: 'claude',
+      impl_model: 'haiku',
+      impl_effort: 'high'
+    });
   });
 
   test('bead metadata beats the workspace global and stamps nothing', () => {
@@ -109,16 +149,7 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
       },
       defaults: {
         orchestration_model: 'opus',
-        orchestration_effort: 'high',
-        spec_review_model: 'opus',
-        spec_review_effort: 'high',
-        plan_review_model: 'fable',
-        plan_review_effort: 'xhigh',
-        impl_review_model: 'self',
-        impl_review_effort: 'low',
-        impl_runtime: 'codex',
-        impl_model: 'sonnet',
-        impl_effort: 'medium'
+        orchestration_effort: 'high'
       }
     });
     expect(r).toMatchObject({
@@ -159,10 +190,9 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     });
     expect(bead_pinned.plan_review_model).toBe(undefined);
 
-    const global_only = resolveExecSettings({
-      bead: {},
-      defaults: { plan_review_model: 'opus' }
-    });
+    const global_only = resolveExecSettings(
+      /** @type {any} */ ({ bead: {}, defaults: { plan_review_model: 'opus' } })
+    );
     expect(global_only.plan_review_model).toBe(undefined);
     expect(global_only.stamped_keys).toEqual([]);
   });
@@ -202,11 +232,13 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('infers a Bead model runtime before a preset runtime can fill it', () => {
-    const r = resolveExecSettings({
-      bead: { impl_model: 'terra' },
-      defaults: { impl_runtime: 'claude' }
-    });
+  test('infers a Bead model runtime and ignores a workspace runtime', () => {
+    const r = resolveExecSettings(
+      /** @type {any} */ ({
+        bead: { impl_model: 'terra' },
+        defaults: { impl_runtime: 'claude' }
+      })
+    );
 
     expect(r.impl_runtime).toBe('codex');
     expect(r.impl_runtime_inferred).toBe(true);
@@ -214,40 +246,35 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('stamps a runtime inferred from a preset model-only target', () => {
-    const r = resolveExecSettings({
-      bead: {},
-      defaults: { impl_model: 'terra' }
-    });
+  test('ignores a workspace-layer implementation model entirely', () => {
+    const r = resolveExecSettings(
+      /** @type {any} */ ({ bead: {}, defaults: { impl_model: 'terra' } })
+    );
 
-    expect(r.impl_runtime).toBe('codex');
-    expect(r.impl_runtime_inferred).toBe(true);
-    expect(r.stamped_keys).toEqual(['impl_runtime', 'impl_model']);
+    expect(r.impl_runtime).toBe(undefined);
+    expect(r.impl_model).toBe(undefined);
+    expect(r.stamped_keys).toEqual([]);
   });
 
-  test('rejects invalid implementation targets after layer normalization', () => {
+  test('rejects an invalid implementation target on the bead layer', () => {
     const r = resolveExecSettings({
-      bead: { impl_model: 'terra' },
-      defaults: { impl_effort: 'max' }
+      bead: { impl_model: 'terra', impl_effort: 'max' },
+      defaults: {}
     });
 
     expect(r.invalid_reason).toBe('illegal_impl_effort');
   });
 
-  test('explicit inherit blocks a lower runtime and resolves against the controller', () => {
+  test('explicit inherit resolves an exact model against the controller runtime', () => {
     const r = resolveExecSettings({
-      bead: { impl_runtime: 'inherit' },
-      defaults: {
-        orchestration_model: 'sol',
-        impl_runtime: 'claude',
-        impl_model: 'terra'
-      }
+      bead: { impl_runtime: 'inherit', impl_model: 'terra' },
+      defaults: { orchestration_model: 'sol' }
     });
 
     expect(r.impl_runtime).toBe('inherit');
     expect(r.impl_model).toBe('terra');
     expect(r.invalid_reason).toBe(undefined);
-    expect(r.stamped_keys).toEqual(['orchestration_model', 'impl_model']);
+    expect(r.stamped_keys).toEqual([]);
   });
 
   test('rejects mismatched or unknown implementation targets instead of silently falling through', () => {
@@ -255,23 +282,25 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
       bead: { impl_runtime: 'claude', impl_model: 'terra' },
       defaults: {}
     });
-    const unknown = resolveExecSettings({
-      bead: { impl_model: 'removed-model' },
-      defaults: { impl_model: 'sonnet' }
-    });
+    const unknown = resolveExecSettings(
+      /** @type {any} */ ({
+        bead: { impl_model: 'removed-model' },
+        defaults: { impl_model: 'sonnet' }
+      })
+    );
 
     expect(mismatch.invalid_reason).toBe('provider_model_mismatch');
     expect(unknown.invalid_reason).toBe('unknown_impl_model');
   });
 
-  test('a per-step review effort outside the fixed 4 falls through to the global', () => {
+  test('a per-step review effort outside the fixed 4 resolves to unset', () => {
     const r = resolveExecSettings({
       bead: { spec_review_effort: 'max' },
-      defaults: { spec_review_effort: 'high' }
+      defaults: {}
     });
 
-    expect(r.spec_review_effort).toBe('high');
-    // The bead SET the key, so it is not a stamp/revert target.
+    // Fail-quiet: the key passes through to the session's own kv/harness layer.
+    expect(r.spec_review_effort).toBe(undefined);
     expect(r.stamped_keys).toEqual([]);
   });
 
@@ -299,14 +328,14 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(global_only.stamped_keys).toEqual([]);
   });
 
-  test('a global model still beats the fallback and is stamped', () => {
+  test('a global model still beats the fallback and stamps nothing', () => {
     const r = resolveExecSettings({
       bead: {},
       defaults: { orchestration_model: 'sonnet' }
     });
 
     expect(r.orchestration_model).toBe('sonnet');
-    expect(r.stamped_keys).toEqual(['orchestration_model']);
+    expect(r.stamped_keys).toEqual([]);
   });
 
   test('a bead model beats both the global and the fallback without stamping', () => {
@@ -333,14 +362,14 @@ describe('worker/policy resolveExecSettings (bead > global > final fallback)', (
     expect(r.stamped_keys).toEqual([]);
   });
 
-  test('keys resolve independently across bead and global layers', () => {
+  test('session and orchestration keys resolve independently of one another', () => {
     const r = resolveExecSettings({
       bead: { spec_review_model: 'skip' },
-      defaults: { impl_model: 'haiku' }
+      defaults: { orchestration_model: 'haiku' }
     });
     expect(r.spec_review_model).toBe('skip');
-    expect(r.impl_model).toBe('haiku');
-    expect(r.stamped_keys).toEqual(['impl_runtime', 'impl_model']);
+    expect(r.orchestration_model).toBe('haiku');
+    expect(r.stamped_keys).toEqual([]);
   });
 
   test('fails closed for explicit invalid outer model, effort, and speed in precedence order', () => {
@@ -417,7 +446,7 @@ describe('worker/policy runner derivation from the model catalog', () => {
 
     expect(r.orchestration_model).toBe('terra');
     expect(r.runner).toBe('codex');
-    expect(r.stamped_keys).toEqual(['orchestration_model']);
+    expect(r.stamped_keys).toEqual([]);
   });
 
   test('blocks an unknown model before it can run the display fallback', () => {
