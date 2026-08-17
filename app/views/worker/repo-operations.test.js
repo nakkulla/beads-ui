@@ -164,14 +164,14 @@ function mountWorker(over = {}, transport = vi.fn()) {
 }
 
 /**
+ * The repo-operation settings now live INLINE on the Worker screen (spec
+ * 비-목표), so there is no dialog to open — the section is simply there.
+ *
  * @param {HTMLElement} mount
  */
 function openSettings(mount) {
-  /** @type {HTMLElement} */ (
-    mount.querySelector('.worker-exec-defaults-btn')
-  ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
   return /** @type {HTMLElement} */ (
-    mount.querySelector('#worker-exec-defaults-dialog')
+    mount.querySelector('.worker-repo-ops-settings')
   );
 }
 
@@ -756,7 +756,7 @@ describe('자동 해결 workspace setting', () => {
 
     expect(
       /** @type {HTMLInputElement} */ (
-        dialog.querySelector('.exec-defaults__repair-input')
+        dialog.querySelector('.worker-repo-ops__repair-input')
       ).checked
     ).toBe(true);
   });
@@ -777,7 +777,7 @@ describe('자동 해결 workspace setting', () => {
     const dialog = openSettings(mount);
 
     const input = /** @type {HTMLInputElement} */ (
-      dialog.querySelector('.exec-defaults__repair-input')
+      dialog.querySelector('.worker-repo-ops__repair-input')
     );
     input.checked = false;
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -794,7 +794,7 @@ describe('자동 해결 workspace setting', () => {
     const dialog = openSettings(mount);
 
     const input = /** @type {HTMLInputElement} */ (
-      dialog.querySelector('.exec-defaults__repair-input')
+      dialog.querySelector('.worker-repo-ops__repair-input')
     );
     input.checked = false;
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -855,7 +855,7 @@ describe('자동 해결 workspace setting', () => {
 
     expect(
       dialog.querySelectorAll(
-        '[data-policy="worker-automatic"] .exec-defaults__policy-list li'
+        '[data-policy="worker-automatic"] .worker-repo-ops__policy-list li'
       )
     ).toHaveLength(7);
   });
@@ -937,7 +937,7 @@ describe('자동 해결 workspace setting', () => {
 
     expect(
       dialog.querySelectorAll(
-        '[data-policy="never-automatic"] .exec-defaults__policy-list li'
+        '[data-policy="never-automatic"] .worker-repo-ops__policy-list li'
       )
     ).toHaveLength(8);
   });
@@ -950,7 +950,7 @@ describe('자동 해결 workspace setting', () => {
     expect(
       Array.from(
         dialog.querySelectorAll(
-          '[data-policy="resolution-ladder"] .exec-defaults__policy-list li'
+          '[data-policy="resolution-ladder"] .worker-repo-ops__policy-list li'
         )
       ).map((item) => /** @type {HTMLElement} */ (item).dataset.token)
     ).toEqual([
@@ -973,7 +973,7 @@ describe('자동 해결 workspace setting', () => {
     expect(
       dialog
         .querySelector(
-          '[data-policy="never-automatic"] .exec-defaults__policy-list li'
+          '[data-policy="never-automatic"] .worker-repo-ops__policy-list li'
         )
         ?.textContent?.trim()
     ).toBe('a_future_contract_entry');
@@ -986,7 +986,7 @@ describe('자동 해결 workspace setting', () => {
 
     expect(
       dialog.querySelector(
-        '[data-policy="resolution-ladder"] .exec-defaults__policy-label'
+        '[data-policy="resolution-ladder"] .worker-repo-ops__policy-label'
       )?.textContent
     ).toBe('해결 사다리');
   });
@@ -1010,7 +1010,7 @@ describe('자동 해결 workspace setting', () => {
 
     expect(
       dialog
-        .querySelector('.exec-defaults__policy-count')
+        .querySelector('.worker-repo-ops__policy-count')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
     ).toBe('자동 7 · 해결 사다리 3 · 금지 8');
@@ -1021,7 +1021,7 @@ describe('자동 해결 workspace setting', () => {
 
     const dialog = openSettings(mount);
 
-    expect(dialog.querySelector('.exec-defaults__policy')).toBeNull();
+    expect(dialog.querySelector('.worker-repo-ops__policy')).toBeNull();
   });
 });
 
@@ -1049,7 +1049,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
 
     const dialog = openSettings(mount);
 
-    expect(dialog.querySelector('.exec-defaults__vd-src')?.textContent).toBe(
+    expect(dialog.querySelector('.worker-repo-ops__vd-src')?.textContent).toBe(
       `repo-ops/config.toml @ main@${'a'.repeat(7)}`
     );
   });
@@ -1062,7 +1062,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('[data-lane="deploy"] .exec-defaults__vd-cmd')
+      dialog.querySelector('[data-lane="deploy"] .worker-repo-ops__vd-cmd')
         ?.textContent
     ).toBe('repo-ops/script/deploy');
   });
@@ -1075,7 +1075,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('[data-lane="deploy"] .exec-defaults__vd-badge')
+      dialog.querySelector('[data-lane="deploy"] .worker-repo-ops__vd-badge')
         ?.textContent
     ).toBe('timeout 10분');
   });
@@ -1088,7 +1088,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('[data-lane="deploy"] .exec-defaults__lane-d')
+      dialog.querySelector('[data-lane="deploy"] .worker-repo-ops__lane-d')
         ?.textContent
     ).toContain('.worktrees/.repo-ops-deploy');
   });
@@ -1102,7 +1102,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
 
     expect(
       dialog
-        .querySelector('[data-lane="verify"] .exec-defaults__lane-v')
+        .querySelector('[data-lane="verify"] .worker-repo-ops__lane-v')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
     ).toBe('선언 없음verify 없이 판정');
@@ -1121,7 +1121,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('[data-lane="verify"] .exec-defaults__vd-cmd')
+      dialog.querySelector('[data-lane="verify"] .worker-repo-ops__vd-cmd')
         ?.textContent
     ).toBe('repo-ops/script/verify');
   });
@@ -1136,7 +1136,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
 
     const dialog = openSettings(mount);
 
-    expect(dialog.querySelectorAll('.exec-defaults__vd-cmd')).toHaveLength(0);
+    expect(dialog.querySelectorAll('.worker-repo-ops__vd-cmd')).toHaveLength(0);
   });
 
   test('shows no legacy display on a proven absence', () => {
@@ -1150,7 +1150,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
+      dialog.querySelector('.worker-repo-ops__vd-group[data-vd="verify"]')
     ).toBeNull();
   });
 
@@ -1160,7 +1160,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
+      dialog.querySelector('.worker-repo-ops__vd-group[data-vd="verify"]')
     ).toBeNull();
   });
 
@@ -1211,7 +1211,7 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     const dialog = openSettings(mount);
 
     expect(
-      dialog.querySelector('.exec-defaults__vd-group[data-vd="verify"]')
+      dialog.querySelector('.worker-repo-ops__vd-group[data-vd="verify"]')
     ).toBeNull();
   });
 });

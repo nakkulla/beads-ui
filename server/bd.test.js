@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   getBdBin,
   getGitUserName,
+  kvGetJson,
+  kvSetJson,
   runBd,
   runBdJson,
   runShell,
@@ -192,6 +194,140 @@ describe('runBdJson', () => {
     const res = await runBdJson(['list', '--json']);
     expect(res.code).toBe(2);
     expect(res.stderr).toContain('oops');
+  });
+});
+
+describe('kvGetJson', () => {
+  test('returns the parsed object for a stored JSON value', async () => {
+    const payload = JSON.stringify({
+      found: true,
+      key: 'workflow_session_defaults',
+      value: JSON.stringify({ schema: 1, workflow_mode: 'fast_track' })
+    });
+    mockedSpawn.mockReturnValueOnce(makeFakeProc(payload, '', 0));
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.ok).toBe(true);
+    expect(res.value).toEqual({ schema: 1, workflow_mode: 'fast_track' });
+  });
+
+  test('calls bd kv get with the json flag', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: false, value: '' }), '', 0)
+    );
+
+    await kvGetJson('workflow_session_defaults');
+
+    const args = mockedSpawn.mock.calls[0][1];
+    expect(args.slice(-4)).toEqual([
+      'kv',
+      'get',
+      'workflow_session_defaults',
+      '--json'
+    ]);
+  });
+
+  test('returns undefined value when the key is absent', async () => {
+    // Real bd prints the `{found: false}` envelope AND exits 1 for a missing
+    // key — the envelope is authoritative over the exit code.
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: false, value: '' }), '', 1)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.ok).toBe(true);
+    expect(res.value).toBeUndefined();
+    expect(res.warning).toBeUndefined();
+  });
+
+  test('returns undefined value when the key is absent with exit 0', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: false, value: '' }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.ok).toBe(true);
+    expect(res.value).toBeUndefined();
+    expect(res.warning).toBeUndefined();
+  });
+
+  test('returns undefined value plus a warning when the value is unparsable', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: true, value: 'not-json{' }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.ok).toBe(true);
+    expect(res.value).toBeUndefined();
+    expect(res.warning).toBe('kv_value_unparsable');
+  });
+
+  test('returns undefined value plus a warning when the value is not an object', async () => {
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(JSON.stringify({ found: true, value: '[1,2]' }), '', 0)
+    );
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.value).toBeUndefined();
+    expect(res.warning).toBe('kv_value_unparsable');
+  });
+
+  test('propagates a bd failure to the caller', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'db locked', 3));
+
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('db locked');
+  });
+});
+
+describe('kvSetJson', () => {
+  test('writes the value as a JSON string argument', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('', '', 0));
+
+    const res = await kvSetJson('workflow_session_defaults', {
+      schema: 1,
+      workflow_mode: 'standard'
+    });
+
+    expect(res.ok).toBe(true);
+    expect(mockedSpawn.mock.calls[0][1].slice(-3)).toEqual([
+      'set',
+      'workflow_session_defaults',
+      JSON.stringify({ schema: 1, workflow_mode: 'standard' })
+    ]);
+  });
+
+  test('round-trips a written value through kvGetJson', async () => {
+    const written = { schema: 1, impl_dispatch: 'main' };
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('', '', 0));
+    mockedSpawn.mockReturnValueOnce(
+      makeFakeProc(
+        JSON.stringify({ found: true, value: JSON.stringify(written) }),
+        '',
+        0
+      )
+    );
+
+    await kvSetJson('workflow_session_defaults', written);
+    const res = await kvGetJson('workflow_session_defaults');
+
+    expect(res.value).toEqual(written);
+  });
+
+  test('propagates a bd write failure to the caller', async () => {
+    mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'read-only db', 1));
+
+    const res = await kvSetJson('workflow_session_defaults', { schema: 1 });
+
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('read-only db');
   });
 });
 

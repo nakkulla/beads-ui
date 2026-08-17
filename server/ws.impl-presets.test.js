@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { MESSAGE_TYPES } from '../app/protocol.js';
 import { attachWsServer, handleMessage } from './ws.js';
 import {
-  __resetExecPresetsForTest,
-  detachExecPresets
+  __resetImplPresetsForTest,
+  detachImplPresets
 } from './ws/exec-preset-handlers.js';
 
 /** @type {string} */
@@ -50,34 +50,34 @@ function replyFor(socket, id) {
 function snapshots(socket) {
   return socket.sent
     .map((raw) => JSON.parse(raw))
-    .filter((msg) => msg.type === 'exec-presets-snapshot')
+    .filter((msg) => msg.type === 'impl-presets-snapshot')
     .map((msg) => msg.payload);
 }
 
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-wspreset-'));
   process.env.XDG_STATE_HOME = tmp_state;
-  __resetExecPresetsForTest();
+  __resetImplPresetsForTest();
   attachWsServer(createServer(), { path: '/ws' });
 });
 
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
-  __resetExecPresetsForTest();
+  __resetImplPresetsForTest();
   fs.rmSync(tmp_state, { recursive: true, force: true });
 });
 
-describe('ws exec-preset channel', () => {
+describe('ws impl-preset channel', () => {
   test('registers the complete preset protocol vocabulary', () => {
     expect(MESSAGE_TYPES).toEqual(
       expect.arrayContaining([
-        'subscribe-exec-presets',
-        'unsubscribe-exec-presets',
-        'exec-presets-snapshot',
-        'exec-preset-create',
-        'exec-preset-update',
-        'exec-preset-delete',
-        'apply-exec-preset'
+        'subscribe-impl-presets',
+        'unsubscribe-impl-presets',
+        'impl-presets-snapshot',
+        'impl-preset-create',
+        'impl-preset-update',
+        'impl-preset-delete',
+        'apply-impl-preset'
       ])
     );
   });
@@ -85,13 +85,13 @@ describe('ws exec-preset channel', () => {
   test('subscribes and emits an initial server-global snapshot', async () => {
     const socket = fakeSocket();
 
-    await send(socket, 's1', 'subscribe-exec-presets', { id: 'exec:presets' });
+    await send(socket, 's1', 'subscribe-impl-presets', { id: 'exec:presets' });
 
-    expect(MESSAGE_TYPES).toContain('subscribe-exec-presets');
+    expect(MESSAGE_TYPES).toContain('subscribe-impl-presets');
     expect(replyFor(socket, 's1').ok).toBe(true);
     expect(snapshots(socket)).toEqual([
       {
-        type: 'exec-presets-snapshot',
+        type: 'impl-presets-snapshot',
         id: 'exec:presets',
         revision: 0,
         presets: []
@@ -102,12 +102,12 @@ describe('ws exec-preset channel', () => {
   test('creates a preset and fans the authoritative snapshot to subscribers', async () => {
     const first = fakeSocket();
     const second = fakeSocket();
-    await send(first, 's1', 'subscribe-exec-presets', { id: 'exec:first' });
-    await send(second, 's2', 'subscribe-exec-presets', { id: 'exec:second' });
+    await send(first, 's1', 'subscribe-impl-presets', { id: 'exec:first' });
+    await send(second, 's2', 'subscribe-impl-presets', { id: 'exec:second' });
     first.sent = [];
     second.sent = [];
 
-    await send(first, 'c1', 'exec-preset-create', {
+    await send(first, 'c1', 'impl-preset-create', {
       expected_revision: 0,
       name: '기본 개발',
       settings: {}
@@ -130,21 +130,21 @@ describe('ws exec-preset channel', () => {
 
   test('updates and deletes a preset with full-state replies', async () => {
     const socket = fakeSocket();
-    await send(socket, 's1', 'subscribe-exec-presets');
-    await send(socket, 'c1', 'exec-preset-create', {
+    await send(socket, 's1', 'subscribe-impl-presets');
+    await send(socket, 'c1', 'impl-preset-create', {
       expected_revision: 0,
       name: '원본',
       settings: {}
     });
     const created = replyFor(socket, 'c1').payload.presets[0];
 
-    await send(socket, 'u1', 'exec-preset-update', {
+    await send(socket, 'u1', 'impl-preset-update', {
       expected_revision: 1,
       id: created.id,
       name: '수정',
       settings: {}
     });
-    await send(socket, 'd1', 'exec-preset-delete', {
+    await send(socket, 'd1', 'impl-preset-delete', {
       expected_revision: 2,
       id: created.id
     });
@@ -161,9 +161,9 @@ describe('ws exec-preset channel', () => {
   test('returns a conflict snapshot to the requester without fanout', async () => {
     const first = fakeSocket();
     const second = fakeSocket();
-    await send(first, 's1', 'subscribe-exec-presets');
-    await send(second, 's2', 'subscribe-exec-presets');
-    await send(first, 'c1', 'exec-preset-create', {
+    await send(first, 's1', 'subscribe-impl-presets');
+    await send(second, 's2', 'subscribe-impl-presets');
+    await send(first, 'c1', 'impl-preset-create', {
       expected_revision: 0,
       name: '현재',
       settings: {}
@@ -171,7 +171,7 @@ describe('ws exec-preset channel', () => {
     first.sent = [];
     second.sent = [];
 
-    await send(second, 'c2', 'exec-preset-create', {
+    await send(second, 'c2', 'impl-preset-create', {
       expected_revision: 0,
       name: '오래된 요청',
       settings: {}
@@ -190,14 +190,14 @@ describe('ws exec-preset channel', () => {
     const broken = fakeSocket();
     const healthy = fakeSocket();
     const requester = fakeSocket();
-    await send(broken, 's1', 'subscribe-exec-presets');
-    await send(healthy, 's2', 'subscribe-exec-presets');
+    await send(broken, 's1', 'subscribe-impl-presets');
+    await send(healthy, 's2', 'subscribe-impl-presets');
     broken.send = () => {
       throw new Error('socket closed');
     };
     healthy.sent = [];
 
-    await send(requester, 'c1', 'exec-preset-create', {
+    await send(requester, 'c1', 'impl-preset-create', {
       expected_revision: 0,
       name: '프리셋',
       settings: {}
@@ -210,15 +210,15 @@ describe('ws exec-preset channel', () => {
   test('deduplicates resubscribe and removes subscriptions on unsubscribe or close', async () => {
     const first = fakeSocket();
     const second = fakeSocket();
-    await send(first, 's1', 'subscribe-exec-presets', { id: 'same' });
-    await send(first, 's2', 'subscribe-exec-presets', { id: 'same' });
-    await send(second, 's3', 'subscribe-exec-presets', { id: 'second' });
-    await send(first, 'x1', 'unsubscribe-exec-presets', { id: 'same' });
-    detachExecPresets(/** @type {any} */ (second));
+    await send(first, 's1', 'subscribe-impl-presets', { id: 'same' });
+    await send(first, 's2', 'subscribe-impl-presets', { id: 'same' });
+    await send(second, 's3', 'subscribe-impl-presets', { id: 'second' });
+    await send(first, 'x1', 'unsubscribe-impl-presets', { id: 'same' });
+    detachImplPresets(/** @type {any} */ (second));
     first.sent = [];
     second.sent = [];
 
-    await send(first, 'c1', 'exec-preset-create', {
+    await send(first, 'c1', 'impl-preset-create', {
       expected_revision: 0,
       name: '새 프리셋',
       settings: {}

@@ -2,17 +2,27 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { EXEC_SETTING_KEYS } from '../worker/exec-enums.js';
+import { MESSAGE_TYPES } from '../../app/protocol.js';
+import { IMPL_PRESET_KEYS } from '../worker/exec-enums.js';
 
 const runBdInWorkspace = vi.fn();
 const runBdJsonInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
+const kvGetJsonInWorkspace = vi.fn();
+const kvSetJsonInWorkspace = vi.fn();
 
 vi.mock('./context.js', () => ({
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
     runBdInWorkspace(ws, args),
   runBdJsonInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
-    runBdJsonInWorkspace(ws, args)
+    runBdJsonInWorkspace(ws, args),
+  kvGetJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ key) =>
+    kvGetJsonInWorkspace(ws, key),
+  kvSetJsonInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {any} */ key,
+    /** @type {any} */ value
+  ) => kvSetJsonInWorkspace(ws, key, value)
 }));
 
 vi.mock('./refresh.js', () => ({
@@ -20,10 +30,11 @@ vi.mock('./refresh.js', () => ({
 }));
 
 const {
-  __resetExecPresetsForTest,
-  buildApplyExecPresetArgs,
-  handleApplyExecPreset,
-  handleExecPresetCreate
+  __resetImplPresetsForTest,
+  buildApplyImplPresetArgs,
+  handleApplyImplPreset,
+  handleApplyImplPresetGlobal,
+  handleImplPresetCreate
 } = await import('./exec-preset-handlers.js');
 
 /** @type {string} */
@@ -50,9 +61,9 @@ function fakeWs() {
  * @param {Record<string, string>} [settings]
  */
 function seedPreset(ws, sent, settings = {}) {
-  handleExecPresetCreate(ws, {
+  handleImplPresetCreate(ws, {
     id: 'create',
-    type: 'exec-preset-create',
+    type: 'impl-preset-create',
     payload: { expected_revision: 0, name: '프리셋', settings }
   });
   return sent[0].payload.presets[0].id;
@@ -61,22 +72,47 @@ function seedPreset(ws, sent, settings = {}) {
 beforeEach(() => {
   tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-apply-preset-'));
   process.env.XDG_STATE_HOME = tmp_state;
-  __resetExecPresetsForTest();
+  __resetImplPresetsForTest();
   runBdInWorkspace.mockReset();
   runBdJsonInWorkspace.mockReset();
   triggerMutationRefreshOnce.mockReset();
+  kvGetJsonInWorkspace.mockReset();
+  kvSetJsonInWorkspace.mockReset();
 });
 
 afterEach(() => {
   delete process.env.XDG_STATE_HOME;
-  __resetExecPresetsForTest();
+  __resetImplPresetsForTest();
   fs.rmSync(tmp_state, { recursive: true, force: true });
 });
 
-describe('buildApplyExecPresetArgs', () => {
-  test('replaces all 12 metadata keys in canonical order with one update argv', () => {
-    const args = buildApplyExecPresetArgs('UI-1', {
-      orchestration_model: 'sol',
+describe('retired 12-key preset protocol', () => {
+  test.each([
+    'exec-preset-create',
+    'exec-preset-update',
+    'exec-preset-delete',
+    'apply-exec-preset',
+    'subscribe-exec-presets',
+    'unsubscribe-exec-presets',
+    'worker-queue-set-default-exec-preset'
+  ])('no longer accepts %s as a message type', (type) => {
+    expect(MESSAGE_TYPES).not.toContain(type);
+  });
+
+  test('exposes no legacy 12-key handler from the preset channel', async () => {
+    const handlers = await import('./exec-preset-handlers.js');
+
+    expect(/** @type {any} */ (handlers).handleApplyExecPreset).toBeUndefined();
+    expect(
+      /** @type {any} */ (handlers).buildApplyExecPresetArgs
+    ).toBeUndefined();
+  });
+});
+
+describe('buildApplyImplPresetArgs', () => {
+  test('writes every implementation key in canonical order with one update argv', () => {
+    const args = buildApplyImplPresetArgs('UI-1', {
+      impl_dispatch: 'delegated',
       impl_effort: 'high'
     });
 
@@ -84,247 +120,223 @@ describe('buildApplyExecPresetArgs', () => {
       'update',
       'UI-1',
       '--set-metadata',
-      'orchestration_model=sol',
-      '--unset-metadata',
-      'orchestration_effort',
-      '--set-metadata',
-      'orchestration_speed=default',
-      '--unset-metadata',
-      'spec_review_model',
-      '--unset-metadata',
-      'spec_review_effort',
-      '--unset-metadata',
-      'plan_review_model',
-      '--unset-metadata',
-      'plan_review_effort',
-      '--unset-metadata',
-      'impl_review_model',
-      '--unset-metadata',
-      'impl_review_effort',
+      'impl_dispatch=delegated',
       '--unset-metadata',
       'impl_runtime',
       '--unset-metadata',
       'impl_model',
       '--set-metadata',
-      'impl_effort=high'
+      'impl_effort=high',
+      '--unset-metadata',
+      'impl_speed'
     ]);
   });
 
-  test('defaults omitted orchestration speed to Standard', () => {
-    const args = buildApplyExecPresetArgs('UI-1', {});
+  test('names exactly the five implementation keys and no orchestration key', () => {
+    const args = buildApplyImplPresetArgs('UI-1', {});
 
-    expect(args).toContain('orchestration_speed=default');
-    expect(args).not.toContain('orchestration_speed');
-  });
-
-  test('preserves explicit fast orchestration speed', () => {
-    const args = buildApplyExecPresetArgs('UI-1', {
-      orchestration_speed: 'fast'
-    });
-
-    expect(args).toContain('orchestration_speed=fast');
-    expect(args).not.toContain('orchestration_speed=default');
-  });
-
-  test('preserves explicit default orchestration speed', () => {
-    const args = buildApplyExecPresetArgs('UI-1', {
-      orchestration_speed: 'default'
-    });
-
-    expect(args).toContain('orchestration_speed=default');
-    expect(args).not.toContain('orchestration_speed=fast');
-  });
-
-  test('sets all 12 keys when the preset defines every value', () => {
-    const settings = Object.fromEntries(
-      EXEC_SETTING_KEYS.map((key) => [key, `${key}-value`])
-    );
-
-    const args = buildApplyExecPresetArgs('UI-1', settings);
-
-    expect(args.filter((value) => value === '--set-metadata')).toHaveLength(12);
-    expect(args).not.toContain('--unset-metadata');
+    const named = args.filter((arg) => arg.startsWith('impl_'));
+    expect(named).toEqual([...IMPL_PRESET_KEYS]);
+    expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
   });
 });
 
-describe('handleApplyExecPreset', () => {
-  test('applies one update, normalizes readback, and refreshes once', async () => {
+describe('handleApplyImplPreset (Bead metadata path)', () => {
+  test('pins the preset onto the bead and replies with the readback issue', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent);
-    sent.length = 0;
+    const preset_id = seedPreset(ws, sent, {
+      impl_dispatch: 'delegated',
+      impl_runtime: 'inherit'
+    });
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
     runBdJsonInWorkspace.mockResolvedValue({
       code: 0,
-      stdoutJson: [{ id: 'UI-1', metadata: {} }]
+      stdoutJson: { id: 'UI-1', metadata: { impl_dispatch: 'delegated' } }
     });
 
-    await handleApplyExecPreset(ws, {
+    await handleApplyImplPreset(ws, {
       id: 'apply',
-      type: 'apply-exec-preset',
+      type: 'apply-impl-preset',
       payload: { id: 'UI-1', preset_id, expected_revision: 1 }
-    });
-
-    expect(runBdInWorkspace).toHaveBeenCalledOnce();
-    expect(runBdInWorkspace.mock.calls[0][1]).toEqual(
-      buildApplyExecPresetArgs('UI-1', {})
-    );
-    expect(runBdJsonInWorkspace).toHaveBeenCalledWith(ws, [
-      'show',
-      'UI-1',
-      '--json'
-    ]);
-    expect(triggerMutationRefreshOnce).toHaveBeenCalledOnce();
-    expect(sent.at(-1)).toMatchObject({
-      ok: true,
-      payload: {
-        applied: true,
-        conflict: false,
-        revision: 1,
-        issue: { id: 'UI-1', metadata: {} }
-      }
-    });
-  });
-
-  test('returns a stale-revision conflict without calling bd', async () => {
-    const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent);
-    sent.length = 0;
-
-    await handleApplyExecPreset(ws, {
-      id: 'apply',
-      type: 'apply-exec-preset',
-      payload: { id: 'UI-1', preset_id, expected_revision: 0 }
-    });
-
-    expect(sent[0].payload).toMatchObject({
-      applied: false,
-      conflict: true,
-      revision: 1
-    });
-    expect(runBdInWorkspace).not.toHaveBeenCalled();
-  });
-
-  test('rejects a missing preset without calling bd', async () => {
-    const { ws, sent } = fakeWs();
-
-    await handleApplyExecPreset(ws, {
-      id: 'apply',
-      type: 'apply-exec-preset',
-      payload: { id: 'UI-1', preset_id: 'missing', expected_revision: 0 }
-    });
-
-    expect(sent[0].error.code).toBe('exec_preset_missing');
-    expect(runBdInWorkspace).not.toHaveBeenCalled();
-  });
-
-  test('rejects an incompatible loaded preset without calling bd', async () => {
-    const file_path = path.join(tmp_state, 'bdui', 'exec-presets.json');
-    fs.mkdirSync(path.dirname(file_path), { recursive: true });
-    fs.writeFileSync(
-      file_path,
-      JSON.stringify({
-        revision: 4,
-        presets: [
-          {
-            id: 'legacy',
-            name: '과거 모델',
-            settings: { orchestration_model: 'removed-model' }
-          }
-        ]
-      })
-    );
-    __resetExecPresetsForTest();
-    const { ws, sent } = fakeWs();
-
-    await handleApplyExecPreset(ws, {
-      id: 'apply',
-      type: 'apply-exec-preset',
-      payload: {
-        id: 'UI-1',
-        preset_id: 'legacy',
-        expected_revision: 4
-      }
-    });
-
-    expect(sent[0].error.code).toBe('exec_preset_incompatible');
-    expect(runBdInWorkspace).not.toHaveBeenCalled();
-  });
-
-  test('adds the inferred runtime when applying a known model-only legacy preset', async () => {
-    const file_path = path.join(tmp_state, 'bdui', 'exec-presets.json');
-    fs.mkdirSync(path.dirname(file_path), { recursive: true });
-    fs.writeFileSync(
-      file_path,
-      JSON.stringify({
-        revision: 4,
-        presets: [
-          {
-            id: 'legacy',
-            name: '과거 Codex 모델',
-            settings: { impl_model: 'terra', impl_effort: 'high' }
-          }
-        ]
-      })
-    );
-    __resetExecPresetsForTest();
-    const { ws, sent } = fakeWs();
-    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 0,
-      stdoutJson: { id: 'UI-1', metadata: {} }
-    });
-
-    await handleApplyExecPreset(ws, {
-      id: 'apply',
-      type: 'apply-exec-preset',
-      payload: { id: 'UI-1', preset_id: 'legacy', expected_revision: 4 }
     });
 
     expect(runBdInWorkspace).toHaveBeenCalledWith(
       ws,
-      buildApplyExecPresetArgs('UI-1', {
-        impl_runtime: 'codex',
-        impl_model: 'terra',
-        impl_effort: 'high'
+      buildApplyImplPresetArgs('UI-1', {
+        impl_dispatch: 'delegated',
+        impl_runtime: 'inherit'
       })
     );
-    expect(sent.at(-1).ok).toBe(true);
+    const reply = sent[sent.length - 1];
+    expect(reply.ok).toBe(true);
+    expect(reply.payload.applied).toBe(true);
+    expect(reply.payload.issue.id).toBe('UI-1');
   });
 
-  test('reports update failure without readback or refresh', async () => {
+  test('reports a conflict without touching bd when the revision is stale', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent);
-    sent.length = 0;
-    runBdInWorkspace.mockResolvedValue({ code: 1, stderr: 'update failed' });
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
 
-    await handleApplyExecPreset(ws, {
+    await handleApplyImplPreset(ws, {
       id: 'apply',
-      type: 'apply-exec-preset',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id, expected_revision: 0 }
+    });
+
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+    expect(sent[sent.length - 1].payload.conflict).toBe(true);
+  });
+
+  test('errors when the preset id is unknown', async () => {
+    const { ws, sent } = fakeWs();
+    seedPreset(ws, sent, { impl_dispatch: 'main' });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
+      payload: { id: 'UI-1', preset_id: 'nope', expected_revision: 1 }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('impl_preset_missing');
+  });
+
+  test('reports a bd update failure without claiming an apply', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    runBdInWorkspace.mockResolvedValue({ code: 1, stderr: 'bd exploded' });
+
+    await handleApplyImplPreset(ws, {
+      id: 'apply',
+      type: 'apply-impl-preset',
       payload: { id: 'UI-1', preset_id, expected_revision: 1 }
     });
 
-    expect(sent[0].error.code).toBe('bd_update_failed');
-    expect(runBdJsonInWorkspace).not.toHaveBeenCalled();
-    expect(triggerMutationRefreshOnce).not.toHaveBeenCalled();
+    expect(sent[sent.length - 1].error.code).toBe('bd_update_failed');
+  });
+});
+
+describe('handleApplyImplPresetGlobal (bd kv path)', () => {
+  test('writes the five implementation keys into the kv session defaults', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_dispatch: 'delegated',
+      impl_runtime: 'inherit',
+      impl_model: 'auto'
+    });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          impl_dispatch: 'delegated',
+          impl_runtime: 'inherit',
+          impl_model: 'auto'
+        }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1 }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      {
+        schema: 1,
+        impl_dispatch: 'delegated',
+        impl_runtime: 'inherit',
+        impl_model: 'auto'
+      }
+    );
+    expect(sent[sent.length - 1].payload.applied).toBe(true);
   });
 
-  test('reports readback failure and requests one issue refresh', async () => {
+  test('clears a session key the preset does not carry', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent);
-    sent.length = 0;
-    runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 1,
-      stderr: 'readback failed'
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_speed: 'fast' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_dispatch: 'main' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1 }
     });
 
-    await handleApplyExecPreset(ws, {
-      id: 'apply',
-      type: 'apply-exec-preset',
-      payload: { id: 'UI-1', preset_id, expected_revision: 1 }
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      { schema: 1, impl_dispatch: 'main' }
+    );
+  });
+
+  test('leaves a non-implementation session key alone', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, workflow_mode: 'fast_track' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, workflow_mode: 'fast_track', impl_dispatch: 'main' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1 }
     });
 
-    expect(sent[0].error.code).toBe('bd_readback_failed');
-    expect(triggerMutationRefreshOnce).toHaveBeenCalledOnce();
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toMatchObject({
+      workflow_mode: 'fast_track'
+    });
+  });
+
+  test('reports a kv write failure so the dialog can keep its edit state', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({
+      ok: false,
+      error: 'read-only db'
+    });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1 }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('kv_write_failed');
+  });
+
+  test('reports a readback that does not confirm the write', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: { preset_id, expected_revision: 1 }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('kv_readback_failed');
   });
 });

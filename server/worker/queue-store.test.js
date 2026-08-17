@@ -1929,257 +1929,176 @@ describe('worker/queue-store retired policy axis (worker-phase2 §2/§9)', () =>
   });
 });
 
-describe('worker/queue-store exec defaults (worker-global-exec-defaults §1)', () => {
-  test('setExecDefault persists exec_defaults under the revision CAS + unsets', () => {
+describe('worker/queue-store orchestration defaults (spec §C.5)', () => {
+  test('starts a fresh queue with no orchestration default and no legacy preset fields', () => {
     const store = createQueueStore();
-    // Fresh queue starts with no exec defaults.
-    expect(store.snapshot(WS).exec_defaults).toEqual({});
 
-    let r = store.setExecDefault(WS, {
+    const q = store.snapshot(WS);
+
+    expect(q.orchestration_model).toBe(null);
+    expect(q.orchestration_effort).toBe(null);
+    expect(q.orchestration_speed).toBe(null);
+    expect(Object.hasOwn(q, 'default_exec_preset_id')).toBe(false);
+    expect(Object.hasOwn(q, 'exec_defaults')).toBe(false);
+  });
+
+  test('exposes no legacy preset-reference or per-key exec-default mutation', () => {
+    const store = /** @type {any} */ (createQueueStore());
+
+    expect(store.setDefaultExecPresetId).toBeUndefined();
+    expect(store.setExecDefault).toBeUndefined();
+    expect(store.clearLegacyExecDefaults).toBeUndefined();
+  });
+
+  test('setOrchestrationDefaults stores the three values directly under the CAS', () => {
+    const store = createQueueStore();
+
+    const r = store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
-      key: 'spec_review_model',
-      value: 'codex'
-    });
-    expect(r.ok).toBe(true);
-    expect(r.queue.revision).toBe(1);
-    expect(r.queue.exec_defaults).toEqual({ spec_review_model: 'codex' });
-
-    r = store.setExecDefault(WS, {
-      expected_revision: r.queue.revision,
-      key: 'orchestration_model',
-      value: 'sonnet'
-    });
-    expect(r.ok).toBe(true);
-    expect(r.queue.exec_defaults).toEqual({
-      spec_review_model: 'codex',
-      orchestration_model: 'sonnet'
+      values: {
+        orchestration_model: 'sonnet',
+        orchestration_effort: 'high',
+        orchestration_speed: 'fast'
+      }
     });
 
-    // Stale revision → CAS conflict, no write.
-    const stale = store.setExecDefault(WS, {
+    expect(r.ok).toBe(true);
+    expect(r.queue.orchestration_model).toBe('sonnet');
+    expect(r.queue.orchestration_effort).toBe('high');
+    expect(r.queue.orchestration_speed).toBe('fast');
+  });
+
+  test('setOrchestrationDefaults clears a key given null', () => {
+    const store = createQueueStore();
+    const rev = store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
-      key: 'spec_review_model',
-      value: 'opus'
+      values: { orchestration_model: 'sonnet' }
+    }).queue.revision;
+
+    const r = store.setOrchestrationDefaults(WS, {
+      expected_revision: rev,
+      values: { orchestration_model: null }
     });
+
+    expect(r.queue.orchestration_model).toBe(null);
+  });
+
+  test('setOrchestrationDefaults rejects a stale revision without writing', () => {
+    const store = createQueueStore();
+    store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'sonnet' }
+    });
+
+    const stale = store.setOrchestrationDefaults(WS, {
+      expected_revision: 0,
+      values: { orchestration_model: 'opus' }
+    });
+
     expect(stale.ok).toBe(false);
     expect(stale.conflict).toBe(true);
-    expect(store.snapshot(WS).exec_defaults.spec_review_model).toBe('codex');
-
-    // null unsets the key entirely.
-    const unsetNull = store.setExecDefault(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      key: 'spec_review_model',
-      value: null
-    });
-    expect(unsetNull.ok).toBe(true);
-    expect(unsetNull.queue.exec_defaults).toEqual({
-      orchestration_model: 'sonnet'
-    });
-
-    // '' also unsets the key.
-    const unsetEmpty = store.setExecDefault(WS, {
-      expected_revision: unsetNull.queue.revision,
-      key: 'orchestration_model',
-      value: ''
-    });
-    expect(unsetEmpty.ok).toBe(true);
-    expect(unsetEmpty.queue.exec_defaults).toEqual({});
+    expect(store.snapshot(WS).orchestration_model).toBe('sonnet');
   });
 
-  test('the retired worker_runner key is rejected (worker-phase1 §4)', () => {
-    const store = createQueueStore();
-    const r = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'worker_runner',
-      value: 'claude'
-    });
-    expect(r.ok).toBe(false);
-    expect(store.snapshot(WS).exec_defaults).toEqual({});
-  });
-
-  test('setExecDefault rejects unknown keys (incl. workflow_mode) and non-enum values', () => {
-    const store = createQueueStore();
-    // workflow_mode is NOT a workspace-global key (spec 비-목표).
-    const wfMode = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'workflow_mode',
-      value: 'fast_track'
-    });
-    expect(wfMode.ok).toBe(false);
-    expect(wfMode.conflict).toBe(false);
-
-    const nonExecKey = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'merge_policy',
-      value: 'pr_stop'
-    });
-    expect(nonExecKey.ok).toBe(false);
-
-    const badValue = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'orchestration_model',
-      value: 'yolo'
-    });
-    expect(badValue.ok).toBe(false);
-
-    // spec_review_model enum does not include 'sonnet'.
-    const wrongEnum = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'spec_review_model',
-      value: 'sonnet'
-    });
-    expect(wrongEnum.ok).toBe(false);
-
-    // plan_review_model narrows further: no `self`, no `opus`.
-    const planSelf = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'plan_review_model',
-      value: 'self'
-    });
-    expect(planSelf.ok).toBe(false);
-
-    expect(store.snapshot(WS).exec_defaults).toEqual({});
-  });
-
-  test('the retired review_model key is rejected outright (dotfiles-mqcj)', () => {
+  test('setOrchestrationDefaults rejects a non-orchestration key', () => {
     const store = createQueueStore();
 
-    const r = store.setExecDefault(WS, {
+    const r = store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
-      key: 'review_model',
-      value: 'codex'
+      values: /** @type {any} */ ({ spec_review_model: 'codex' })
     });
 
     expect(r.ok).toBe(false);
-    expect(store.snapshot(WS).exec_defaults).toEqual({});
+    expect(store.snapshot(WS).orchestration_model).toBe(null);
   });
 
-  test('accepts a codex short-name model for orchestration_model and impl_model', () => {
+  test('setOrchestrationDefaults rejects a value outside the catalog enum', () => {
     const store = createQueueStore();
 
-    const r = store.setExecDefault(WS, {
+    const r = store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
-      key: 'orchestration_model',
-      value: 'sol'
-    });
-    const impl = store.setExecDefault(WS, {
-      expected_revision: r.queue.revision,
-      key: 'impl_model',
-      value: 'luna'
+      values: { orchestration_model: 'no-such-model' }
     });
 
-    expect(r.ok).toBe(true);
-    expect(impl.ok).toBe(true);
-    expect(impl.queue.exec_defaults).toEqual({
-      orchestration_model: 'sol',
-      impl_model: 'luna'
-    });
+    expect(r.ok).toBe(false);
+    expect(store.snapshot(WS).orchestration_model).toBe(null);
   });
 
-  test('accepts a per-step review effort and a codex-only impl effort', () => {
+  test('orchestration defaults survive a reload', () => {
     const store = createQueueStore();
-
-    const effort = store.setExecDefault(WS, {
+    store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
-      key: 'impl_review_effort',
-      value: 'xhigh'
-    });
-    const implEffort = store.setExecDefault(WS, {
-      expected_revision: effort.queue.revision,
-      key: 'impl_effort',
-      value: 'max'
-    });
-
-    expect(effort.ok).toBe(true);
-    expect(implEffort.ok).toBe(true);
-    expect(implEffort.queue.exec_defaults).toEqual({
-      impl_review_effort: 'xhigh',
-      impl_effort: 'max'
-    });
-  });
-
-  test('exec_defaults survive a reload; invalid persisted keys/values drop in normalize', () => {
-    const store = createQueueStore();
-    const r = store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'spec_review_model',
-      value: 'opus'
-    });
-    store.setExecDefault(WS, {
-      expected_revision: r.queue.revision,
-      key: 'orchestration_effort',
-      value: 'high'
-    });
-    store.setExecDefault(WS, {
-      expected_revision: store.snapshot(WS).revision,
-      key: 'orchestration_speed',
-      value: 'fast'
+      values: { orchestration_model: 'sonnet', orchestration_effort: 'high' }
     });
 
     const restarted = createQueueStore();
-    expect(restarted.load(WS).exec_defaults).toEqual({
-      spec_review_model: 'opus',
-      orchestration_effort: 'high',
-      orchestration_speed: 'fast'
-    });
 
-    // Corrupt the persisted map: unknown key, invalid value, valid survivor.
-    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.exec_defaults = {
-      bogus_key: 'x',
-      orchestration_effort: 'nope',
-      orchestration_speed: 'unknown',
-      spec_review_model: 'opus'
-    };
-    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
-    const again = createQueueStore();
-    expect(again.load(WS).exec_defaults).toEqual({ spec_review_model: 'opus' });
+    expect(restarted.load(WS).orchestration_model).toBe('sonnet');
+    expect(restarted.load(WS).orchestration_effort).toBe('high');
   });
 
-  test('a persisted review_model drops on load with no replacement (dotfiles-mqcj)', () => {
+  test('drops a persisted orchestration value the current catalog rejects', () => {
     const store = createQueueStore();
-    store.setExecDefault(WS, {
+    store.setOrchestrationDefaults(WS, {
       expected_revision: 0,
-      key: 'orchestration_effort',
-      value: 'high'
+      values: { orchestration_model: 'sonnet' }
     });
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.exec_defaults = {
-      review_model: 'codex',
-      orchestration_effort: 'high'
-    };
+    raw.orchestration_model = 'gpt-5.6';
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
-    // The retired key has no enum entry, so it is dropped on load — it is NOT
-    // migrated into the per-step keys (no dual read, no fallback).
-    const loaded = createQueueStore().load(WS);
-    expect(loaded.exec_defaults).toEqual({ orchestration_effort: 'high' });
-    expect(loaded.exec_defaults.spec_review_model).toBeUndefined();
-    expect(loaded.exec_defaults.impl_review_model).toBeUndefined();
+    expect(createQueueStore().load(WS).orchestration_model).toBe(null);
   });
+});
 
-  test('retired/stale exec defaults drop on load (worker-phase1 §3)', () => {
+describe('worker/queue-store session-defaults migration state (spec §F)', () => {
+  test('preserves legacy preset fields so a partial migration can re-converge', () => {
     const store = createQueueStore();
-    store.setExecDefault(WS, {
-      expected_revision: 0,
-      key: 'orchestration_effort',
-      value: 'high'
-    });
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
     const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
-    raw.exec_defaults = {
-      worker_runner: 'ccx',
-      orchestration_model: 'gpt-5.6',
-      orchestration_effort: 'high'
-    };
+    raw.default_exec_preset_id = 'preset-1';
+    raw.exec_defaults = { orchestration_model: 'sonnet' };
     fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
 
-    // The retired key and the codex-era model both vanish; the still-valid
-    // setting survives untouched.
-    expect(createQueueStore().load(WS).exec_defaults).toEqual({
-      orchestration_effort: 'high'
+    const reloaded = createQueueStore();
+    const q = reloaded.snapshot(WS);
+
+    expect(/** @type {any} */ (q).default_exec_preset_id).toBe('preset-1');
+    expect(/** @type {any} */ (q).exec_defaults).toEqual({
+      orchestration_model: 'sonnet'
     });
   });
 
+  test('starts with no migration marker and records one under the CAS', () => {
+    const store = createQueueStore();
+    expect(store.snapshot(WS).session_defaults_migration).toBe(null);
+
+    const r = store.markSessionDefaultsMigrated(WS, { expected_revision: 0 });
+
+    expect(r.ok).toBe(true);
+    expect(r.queue.session_defaults_migration).toMatchObject({ version: 1 });
+  });
+
+  test('clearLegacyExecFields removes both legacy fields after the marker', () => {
+    const store = createQueueStore();
+    store.place(WS, { expected_revision: 0, bead_id: 'UI-1' });
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.default_exec_preset_id = 'preset-1';
+    raw.exec_defaults = { orchestration_model: 'sonnet' };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    const reloaded = createQueueStore();
+    const rev = reloaded.snapshot(WS).revision;
+
+    const r = reloaded.clearLegacyExecFields(WS, { expected_revision: rev });
+
+    expect(r.ok).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    expect(Object.hasOwn(persisted, 'default_exec_preset_id')).toBe(false);
+    expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(false);
+  });
+});
+
+describe('worker/queue-store attempt discard (§2.2)', () => {
   test('discardAttempt writes the state AND clears the lane in ONE revision (§2.2)', () => {
     const store = createQueueStore();
     const rev = store.place(WS, {

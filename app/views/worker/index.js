@@ -59,7 +59,6 @@ import {
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { isWorkerSerial } from '../../utils/worker-serial.js';
 import { createReorderController } from '../reorder.js';
-import { createExecDefaultsDialog } from './exec-defaults-dialog.js';
 import {
   discardCompletionMessage,
   discardConfirmationMessage,
@@ -74,6 +73,7 @@ import {
   mergeStepView
 } from './merge-steps.js';
 import { createParallelAnalysisDialog } from './parallel-analysis-dialog.js';
+import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 import { createTranscriptDrawer } from './transcript-drawer.js';
@@ -1009,8 +1009,8 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, execPresetStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
- * @returns {{ load: () => void, openExecDefaults: () => void, destroy: () => void }}
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
+ * @returns {{ load: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
   const {
@@ -1018,7 +1018,6 @@ export function createWorkerView(mount_element, options = {}) {
     issueStores,
     queueStore,
     analysisStore,
-    execPresetStore,
     sessionLogStore,
     uiOrderStore,
     gotoIssue,
@@ -1177,12 +1176,13 @@ export function createWorkerView(mount_element, options = {}) {
     }
   });
 
-  // Workspace-global exec-defaults dialog (⚙ in the ctrl bar). It owns its own
-  // queueStore subscription so an open dialog re-renders as snapshots arrive.
-  const exec_defaults_dialog = createExecDefaultsDialog(console_el, {
+  // Operational repo-op controls stay INLINE on the Worker screen (spec 비-목표):
+  // the verify/deploy declaration and the `auto_repair` switch are not
+  // preferences, so they did not move into the unified settings dialog.
+  const repo_ops_settings = createRepoOpsSettings({
     queueStore,
-    presetStore: execPresetStore,
-    transport
+    transport,
+    onChanged: () => doRender()
   });
 
   // 병렬성 분석 다이얼로그 (UI-04vo §9). Absent `analysisStore` (older wiring)
@@ -3060,16 +3060,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
             ✳ 병렬성 분석
           </button>`
-        : ''}
-      <button
-        type="button"
-        class="worker-exec-defaults-btn"
-        aria-haspopup="dialog"
-        aria-label="전역 실행 설정"
-        title="전역 실행 설정"
-      >
-        ⚙
-      </button>`;
+        : ''} `;
     const banners = bannersTemplate({ failure: m.failure });
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
@@ -3090,7 +3081,7 @@ export function createWorkerView(mount_element, options = {}) {
           <div class="worker-ctrl__ops">${settings}</div>
           <div class="worker-kpi">${base_chip}</div>
         </div>
-        ${repo_operations}${banners}`;
+        ${repo_operations}${repo_ops_settings.template()}${banners}`;
     }
     // 좌: 조작 / 우: KPI (UI-58y2 데스크톱 §툴바).
     return html`<div class="worker-ctrl">
@@ -3120,7 +3111,7 @@ export function createWorkerView(mount_element, options = {}) {
           >
         </div>
       </div>
-      ${repo_operations}${banners}`;
+      ${repo_operations}${repo_ops_settings.template()}${banners}`;
   }
 
   /**
@@ -3911,12 +3902,8 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.worker-mini__serial, .worker-mini__grip')) {
       return;
     }
-    // Clicks inside the exec-defaults dialog are owned by its own handlers.
-    if (target?.closest?.('#worker-exec-defaults-dialog')) {
-      return;
-    }
-    if (target?.closest?.('.worker-exec-defaults-btn')) {
-      exec_defaults_dialog.open();
+    // Clicks inside the analysis dialog are owned by its own handlers.
+    if (target?.closest?.('#worker-parallel-analysis-dialog')) {
       return;
     }
     if (target?.closest?.('.worker-analysis-btn')) {
@@ -4285,9 +4272,6 @@ export function createWorkerView(mount_element, options = {}) {
     load() {
       doRender();
     },
-    openExecDefaults() {
-      exec_defaults_dialog.open();
-    },
     destroy() {
       for (const off of unsubscribers.splice(0)) {
         try {
@@ -4324,11 +4308,6 @@ export function createWorkerView(mount_element, options = {}) {
         /* ignore */
       }
       drawer_overlay_el.hidden = true;
-      try {
-        exec_defaults_dialog.destroy();
-      } catch {
-        /* ignore */
-      }
       try {
         parallel_analysis_dialog?.destroy();
       } catch {

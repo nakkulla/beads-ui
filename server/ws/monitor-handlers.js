@@ -204,8 +204,7 @@ export function buildMonitorPipeline(options = {}) {
  * things need a repo that has nothing in flight: the master automation toggle's
  * denominator, the waiting lane's group header for an empty queue, and that
  * header's CAS controls — which cannot send `expected_revision` for a workspace
- * the payload never mentions. `exec_defaults` rides along for the same reason:
- * the 실행 기본값 dialog has to draw the current values.
+ * the payload never mentions.
  *
  * Reads the RAW queue snapshot, not the decorated one: the seven fields here are
  * all plain `Queue` state, and the decoration is the expensive part.
@@ -252,11 +251,7 @@ export function buildMonitorWorkspacesState(options = {}) {
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,
       revision: typeof queue.revision === 'number' ? queue.revision : 0,
-      runner_catalog,
-      exec_defaults:
-        queue.exec_defaults && typeof queue.exec_defaults === 'object'
-          ? { ...queue.exec_defaults }
-          : {}
+      runner_catalog
     });
   }
   return out;

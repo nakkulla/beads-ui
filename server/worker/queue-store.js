@@ -237,17 +237,20 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
- * @property {string|null} default_exec_preset_id - The selected server-global
- * preset reference. Queue state never owns a copy of preset settings.
  * @property {SerialLane[]} serial_lanes - Fixed-slot exclusive waiting lanes
  * (`s1`..`s5`). Array order is display order; `entries` order is execution
  * order. Length always equals {@link Queue.serial_lane_count}.
  * @property {number} serial_lane_count - How many serial lanes are active
  * (1..5). Shrinking returns truncated waiting entries to the parallel lane.
- * @property {Record<string, string>} exec_defaults - Workspace-global exec
- * setting defaults (subset of the 5 exec keys; an unset key is absent). Only
- * valid enum values survive normalize. An absent key leaves dispatch on the
- * final fallback: `opus` for orchestration_model, unset for the other 3.
+ * @property {string|null} orchestration_model - Workspace default outer launch
+ * model, stored as a VALUE rather than a preset reference (spec §C.5). Null
+ * leaves dispatch on the hardcoded `opus` fallback.
+ * @property {string|null} orchestration_effort - Workspace default outer effort.
+ * @property {string|null} orchestration_speed - Workspace default outer speed.
+ * @property {{ version: number, at: number }|null} session_defaults_migration -
+ * The per-workspace completion marker for the spec §F migration. Written ONLY
+ * after all three destinations read back, and it is what stops the migration
+ * from re-running on the next start.
  * @property {number} slots - Concurrency cap: how many sessions the scheduler
  * may run at once (worker-phase2 §3). Integer ≥ 1, default 2. `slots = 1` IS
  * the retired serial lane's semantics.
@@ -505,7 +508,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
-import { execSettingEnums } from './exec-enums.js';
+import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
 import {
   consumeUsageReceiptFiles,
@@ -520,6 +523,15 @@ import {
  * @type {number}
  */
 export const DEFAULT_SLOTS = 2;
+
+/**
+ * Schema version of the spec §F session-defaults migration. Stored in the
+ * per-workspace completion marker so a future migration revision can re-run
+ * against a workspace this one already finished.
+ *
+ * @type {number}
+ */
+export const SESSION_DEFAULTS_MIGRATION_VERSION = 1;
 
 /**
  * Lower bound on the concurrency cap. 1 is the retired serial lane: exactly one
@@ -988,6 +1000,11 @@ function serialLaneIndex(id) {
  * is historical opaque data and must round-trip instead of being deleted by an
  * unrelated queue mutation.
  */
+// `default_exec_preset_id` and `exec_defaults` are deliberately ABSENT: they are
+// retired fields whose only remaining reader is the spec §F migration. Leaving
+// them out of this set makes them round-trip as opaque legacy data, so a
+// migration that stops part-way still finds its source on the next start. The
+// migration deletes them itself once its completion marker is written.
 const KNOWN_QUEUE_FIELDS = new Set([
   'revision',
   'auto_advance',
@@ -996,8 +1013,10 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'pr_wait_holds_slot',
   'serial_lanes',
   'serial_lane_count',
-  'default_exec_preset_id',
-  'exec_defaults',
+  'orchestration_model',
+  'orchestration_effort',
+  'orchestration_speed',
+  'session_defaults_migration',
   'slots',
   'queue',
   'serial',
@@ -1042,8 +1061,10 @@ function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
-    default_exec_preset_id: null,
-    exec_defaults: {},
+    orchestration_model: null,
+    orchestration_effort: null,
+    orchestration_speed: null,
+    session_defaults_migration: null,
     slots: DEFAULT_SLOTS,
     queue: [],
     serial_lanes: emptySerialLanes(DEFAULT_SERIAL_LANE_COUNT),
@@ -2049,11 +2070,30 @@ function normalizeQueue(raw) {
   q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
   // `pr_wait_holds_slot` has no destination field: the merge-serial toggle is
   // retired (UI-04vo §1) and the stored flag is DROPPED on load.
-  q.default_exec_preset_id =
-    typeof raw.default_exec_preset_id === 'string' &&
-    raw.default_exec_preset_id.trim().length > 0
-      ? raw.default_exec_preset_id.trim()
-      : null;
+  // Resolved at CALL time, never at module load: the enum table is catalog-
+  // derived and the catalog is a config-file input. A stored value the current
+  // catalog no longer offers drops to null, exactly as the old `exec_defaults`
+  // map did, so dispatch falls back rather than launching an unknown model.
+  const orchestration_enums = execSettingEnums();
+  for (const key of ORCHESTRATION_KEYS) {
+    const value = raw[key];
+    q[key] =
+      typeof value === 'string' && orchestration_enums[key].includes(value)
+        ? value
+        : null;
+  }
+  if (
+    isRecord(raw.session_defaults_migration) &&
+    typeof raw.session_defaults_migration.version === 'number'
+  ) {
+    q.session_defaults_migration = {
+      version: raw.session_defaults_migration.version,
+      at:
+        typeof raw.session_defaults_migration.at === 'number'
+          ? raw.session_defaults_migration.at
+          : 0
+    };
+  }
   // LEGACY MERGE (worker-phase2 §9): a queue.json from the serial/parallel
   // regime has no `queue` key, so its two lanes fold into the single lane —
   // ALL of `serial` first (it was the priority lane), then `parallel`, each
@@ -2131,22 +2171,6 @@ function normalizeQueue(raw) {
   // A legacy queue.json carrying the retired workspace-global `merge_policy` /
   // `drift_policy` simply has no destination field here, so the keys are DROPPED
   // on load without error (worker-phase2 §9).
-  // Retired keys (`worker_runner`, and `review_model` since dotfiles-mqcj) and
-  // values outside the current catalog (the old codex `gpt-5.*` orchestration
-  // models) have no entry here, so they are dropped on load and the setting
-  // falls back to unset (spec §3). A dropped `review_model` is NOT migrated into
-  // the per-step keys — the split contract has no dual read.
-  if (isRecord(raw.exec_defaults)) {
-    // Resolved at CALL time, never at module load: the enum table is catalog-
-    // derived and the catalog is a config-file input.
-    const enums = execSettingEnums();
-    for (const [key, value] of Object.entries(raw.exec_defaults)) {
-      const allowed = enums[key];
-      if (allowed && typeof value === 'string' && allowed.includes(value)) {
-        q.exec_defaults[key] = value;
-      }
-    }
-  }
   if (isRecord(raw.admission)) {
     for (const [bead_id, value] of Object.entries(raw.admission)) {
       if (isRecord(value) && typeof value.reason === 'string') {
@@ -4926,76 +4950,94 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Set the workspace's only durable preset authority under its queue CAS.
+     * Store the three orchestration defaults as VALUES under the queue CAS
+     * (spec §C.5). This replaces both the preset reference and the per-key
+     * `exec_defaults` map: the worker launcher is the only consumer of these
+     * keys, so the workspace holds the value itself rather than pointing at a
+     * shared preset.
+     *
+     * A `null` (or empty) value clears that key. The whole call is rejected —
+     * with no partial write — when any named key is not an orchestration key or
+     * carries a value the current catalog rejects.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, preset_id: string|null }} input
+     * @param {{ expected_revision: number, values: Record<string, string|null> }} input
      * @returns {QueueOpResult}
      */
-    setDefaultExecPresetId(workspace, input) {
-      const { expected_revision, preset_id } = input;
+    setOrchestrationDefaults(workspace, input) {
+      const { expected_revision, values } = input;
       return applyMutation(workspace, expected_revision, (next) => {
-        if (preset_id !== null && typeof preset_id !== 'string') {
+        if (!isRecord(values)) {
           return false;
         }
-        if (typeof preset_id === 'string') {
-          const normalized_id = preset_id.trim();
-          if (normalized_id.length === 0) {
+        const enums = execSettingEnums();
+        /** @type {Record<string, string|null>} */
+        const normalized = {};
+        for (const [key, value] of Object.entries(values)) {
+          if (!ORCHESTRATION_KEYS.includes(key)) {
             return false;
           }
-          next.default_exec_preset_id = normalized_id;
-          return true;
+          if (value === null || value === '') {
+            normalized[key] = null;
+            continue;
+          }
+          if (typeof value !== 'string' || !enums[key].includes(value)) {
+            return false;
+          }
+          normalized[key] = value;
         }
-        next.default_exec_preset_id = null;
+        if (Object.keys(normalized).length === 0) {
+          return false;
+        }
+        const target = /** @type {Record<string, unknown>} */ (
+          /** @type {unknown} */ (next)
+        );
+        for (const [key, value] of Object.entries(normalized)) {
+          target[key] = value;
+        }
         return true;
       });
     },
 
     /**
-     * Retained only for in-process legacy callers while the wire protocol is
-     * removed. New authority is `setDefaultExecPresetId` through the
-     * coordinator; no new handler exposes this method.
-     *
-     * @deprecated
-     * @param {string} workspace
-     * @param {{ expected_revision: number, key: string, value: unknown }} input
-     * @returns {QueueOpResult}
-     */
-    setExecDefault(workspace, input) {
-      const { expected_revision, key, value } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
-        const allowed = execSettingEnums()[key];
-        if (!allowed) {
-          return false;
-        }
-        if (value === null || value === '') {
-          delete next.exec_defaults[key];
-          return true;
-        }
-        if (typeof value !== 'string' || !allowed.includes(value)) {
-          return false;
-        }
-        next.exec_defaults[key] = value;
-        return true;
-      });
-    },
-
-    /**
-     * Clear raw legacy defaults after a preset-reference readback. This is a
-     * migration-only operation, not an active per-key editor.
+     * Record the workspace's session-defaults migration completion marker
+     * (spec §F). Written only after every destination read back, and read on
+     * the next start to skip the whole procedure.
      *
      * @param {string} workspace
      * @param {{ expected_revision: number }} input
      * @returns {QueueOpResult}
      */
-    clearLegacyExecDefaults(workspace, input) {
+    markSessionDefaultsMigrated(workspace, input) {
       return applyMutation(workspace, input.expected_revision, (next) => {
-        if (Object.keys(next.exec_defaults).length === 0) {
-          return false;
-        }
-        const legacy_queue = /** @type {Partial<Queue>} */ (next);
-        delete legacy_queue.exec_defaults;
+        next.session_defaults_migration = {
+          version: SESSION_DEFAULTS_MIGRATION_VERSION,
+          at: Date.now()
+        };
         return true;
+      });
+    },
+
+    /**
+     * Delete the retired `default_exec_preset_id` / `exec_defaults` fields.
+     * Migration-only: it runs AFTER the completion marker, which is what makes
+     * a part-way migration safe to re-run.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number }} input
+     * @returns {QueueOpResult}
+     */
+    clearLegacyExecFields(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        const legacy_queue = /** @type {Record<string, unknown>} */ (
+          /** @type {unknown} */ (next)
+        );
+        const had =
+          Object.hasOwn(legacy_queue, 'default_exec_preset_id') ||
+          Object.hasOwn(legacy_queue, 'exec_defaults');
+        delete legacy_queue.default_exec_preset_id;
+        delete legacy_queue.exec_defaults;
+        return had;
       });
     },
 

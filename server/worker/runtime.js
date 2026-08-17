@@ -13,7 +13,7 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
-import path from 'node:path';
+import { kvGetJson, kvSetJson } from '../bd.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createActivityStore } from './activity-store.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
@@ -60,7 +60,8 @@ export function createWorkerRuntime() {
     queueStore,
     presetStore: createExecPresetStore(),
     workspaceKeyFor: workspaceSlug,
-    workspaceNameFor: (workspace) => path.basename(workspace) || workspace
+    kvGet: (workspace, key) => kvGetJson(key, { cwd: workspace }),
+    kvSet: (workspace, key, value) => kvSetJson(key, value, { cwd: workspace })
   });
   const locks = createLockManager();
   // Process-wide `gh` adapter: the availability probe memoizes per instance, so

@@ -23,13 +23,14 @@ import {
   handleUnsubscribeDisplayPolicy
 } from './display-policy-handlers.js';
 import {
-  detachExecPresets,
-  handleApplyExecPreset,
-  handleExecPresetCreate,
-  handleExecPresetDelete,
-  handleExecPresetUpdate,
-  handleSubscribeExecPresets,
-  handleUnsubscribeExecPresets
+  detachImplPresets,
+  handleApplyImplPreset,
+  handleApplyImplPresetGlobal,
+  handleImplPresetCreate,
+  handleImplPresetDelete,
+  handleImplPresetUpdate,
+  handleSubscribeImplPresets,
+  handleUnsubscribeImplPresets
 } from './exec-preset-handlers.js';
 import {
   detachMonitorPipeline,
@@ -55,6 +56,10 @@ import {
   handleUpdateWorkflowMeta
 } from './mutation-handlers.js';
 import { scheduleListRefresh, setRefreshDebounceMs } from './refresh.js';
+import {
+  handleGetSessionDefaults,
+  handleSetSessionDefaults
+} from './session-defaults-handlers.js';
 import {
   handleSubscribeList,
   handleUnsubscribeList
@@ -90,7 +95,7 @@ import {
   handleWorkerQueuePlace,
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
-  handleWorkerQueueSetDefaultExecPreset,
+  handleWorkerQueueSetOrchestrationDefaults,
   handleWorkerQueueSetSerialLaneCount,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
@@ -279,7 +284,7 @@ export function attachWsServer(http_server, options = {}) {
         detachMonitorPipeline(ws);
         detachUiOrder(ws);
         detachDisplayPolicy(ws);
-        detachExecPresets(ws);
+        detachImplPresets(ws);
       } catch {
         // ignore cleanup errors
       }
@@ -419,6 +424,12 @@ export async function handleMessage(ws, data) {
     case 'update-impl-target':
       await handleUpdateImplTarget(ws, req);
       return;
+    case 'get-session-defaults':
+      await handleGetSessionDefaults(ws, req);
+      return;
+    case 'set-session-defaults':
+      await handleSetSessionDefaults(ws, req);
+      return;
     case 'update-workflow-meta':
       await handleUpdateWorkflowMeta(ws, req);
       return;
@@ -482,23 +493,26 @@ export async function handleMessage(ws, data) {
     case 'unsubscribe-monitor-pipeline':
       handleUnsubscribeMonitorPipeline(ws, req);
       return;
-    case 'subscribe-exec-presets':
-      handleSubscribeExecPresets(ws, req);
+    case 'subscribe-impl-presets':
+      handleSubscribeImplPresets(ws, req);
       return;
-    case 'unsubscribe-exec-presets':
-      handleUnsubscribeExecPresets(ws, req);
+    case 'unsubscribe-impl-presets':
+      handleUnsubscribeImplPresets(ws, req);
       return;
-    case 'exec-preset-create':
-      handleExecPresetCreate(ws, req);
+    case 'impl-preset-create':
+      handleImplPresetCreate(ws, req);
       return;
-    case 'exec-preset-update':
-      handleExecPresetUpdate(ws, req);
+    case 'impl-preset-update':
+      handleImplPresetUpdate(ws, req);
       return;
-    case 'exec-preset-delete':
-      handleExecPresetDelete(ws, req);
+    case 'impl-preset-delete':
+      handleImplPresetDelete(ws, req);
       return;
-    case 'apply-exec-preset':
-      await handleApplyExecPreset(ws, req);
+    case 'apply-impl-preset':
+      await handleApplyImplPreset(ws, req);
+      return;
+    case 'apply-impl-preset-global':
+      await handleApplyImplPresetGlobal(ws, req);
       return;
     case 'monitor-auto-toggle':
       handleMonitorAutoToggle(ws, req);
@@ -551,8 +565,8 @@ export async function handleMessage(ws, data) {
     case 'worker-parallel-analysis-submit':
       await handleParallelAnalysisSubmit(ws, req);
       return;
-    case 'worker-queue-set-default-exec-preset':
-      handleWorkerQueueSetDefaultExecPreset(ws, req);
+    case 'worker-queue-set-orchestration-defaults':
+      handleWorkerQueueSetOrchestrationDefaults(ws, req);
       return;
     case 'worker-queue-remove':
       handleWorkerQueueRemove(ws, req);

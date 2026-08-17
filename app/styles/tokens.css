@@ -63,6 +63,15 @@
   --stage-merge-dim: #2b6b40;
   --stage-merge-on: #4ade80;
 
+  /* --- setting resolution layers (핀 > 전역 > harness 기본) --- */
+  --layer-pin: #2dd4bf;
+  --layer-pin-border: #17695e;
+  --layer-pin-bg: #0f1d1a;
+  --layer-global: #60a5fa;
+  --layer-global-border: #2b5687;
+  --layer-global-bg: #0f1726;
+  --layer-base: #5c6778;
+
   /* --- chip variant colors --- */
   --chip-neutral: #9aa6ba;
   --chip-route: #8ab4f8;

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../data/session-log-store.js';
 import { createWorkerQueueStore } from '../data/worker-queue-store.js';
 import { createDetailPanel } from './detail-panel/index.js';
-import { createExecDefaultsDialog } from './worker/exec-defaults-dialog.js';
+import { createSettingsDialog } from './settings-dialog/index.js';
 import { createTranscriptDrawer } from './worker/transcript-drawer.js';
 
 /**
@@ -271,13 +271,34 @@ describe('transcript drawer sent-prompt panel (UI-rxp3 §5)', () => {
   });
 });
 
-describe('exec-defaults dialog worker system prompt (UI-rxp3 §4)', () => {
+describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
-  test('renders every variant with its selecting condition on expand', async () => {
+  /**
+   * @param {any} transport
+   */
+  function openWorkerTab(transport) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const dialog = createSettingsDialog(mount, {
+      transport,
+      policyStore: { get: () => null, set: () => {} },
+      queueStore: createWorkerQueueStore(),
+      labelOptions: () => [],
+      notify: () => {}
+    });
+    dialog.open();
+    const root = /** @type {HTMLElement} */ (
+      mount.querySelector('#settings-dialog')
+    );
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-tab="worker"]')
+    ).click();
+    return { dialog, root };
+  }
+
+  test('renders every variant with its selecting condition on expand', async () => {
     const transport = vi.fn(async (/** @type {string} */ type) =>
       type === 'get-worker-system-prompt'
         ? {
@@ -298,17 +319,10 @@ describe('exec-defaults dialog worker system prompt (UI-rxp3 §4)', () => {
               }
             ]
           }
-        : {}
+        : { values: {}, warnings: [] }
     );
-    const dialog = createExecDefaultsDialog(mount, {
-      queueStore: createWorkerQueueStore(),
-      transport: /** @type {any} */ (transport)
-    });
+    const { dialog, root } = openWorkerTab(transport);
 
-    dialog.open();
-    const root = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-exec-defaults-dialog')
-    );
     click(seamEl(root, 'system-prompt-toggle'));
     await settle();
 
@@ -323,15 +337,8 @@ describe('exec-defaults dialog worker system prompt (UI-rxp3 §4)', () => {
   });
 
   test('holds no prompt text before the reply arrives', () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const dialog = createExecDefaultsDialog(mount, {
-      queueStore: createWorkerQueueStore(),
-      transport: /** @type {any} */ (vi.fn(async () => ({})))
-    });
-
-    dialog.open();
-    const root = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-exec-defaults-dialog')
+    const { dialog, root } = openWorkerTab(
+      vi.fn(async () => ({ values: {}, warnings: [] }))
     );
 
     expect(seamEl(root, 'system-prompt').textContent).not.toContain(
@@ -341,26 +348,20 @@ describe('exec-defaults dialog worker system prompt (UI-rxp3 §4)', () => {
   });
 
   test('reports a failed fetch in the section only', async () => {
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    const transport = vi.fn(async () => {
-      throw new Error('socket down');
+    const transport = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'get-worker-system-prompt') {
+        throw new Error('socket down');
+      }
+      return { values: {}, warnings: [] };
     });
-    const dialog = createExecDefaultsDialog(mount, {
-      queueStore: createWorkerQueueStore(),
-      transport: /** @type {any} */ (transport)
-    });
+    const { dialog, root } = openWorkerTab(transport);
 
-    dialog.open();
-    const root = /** @type {HTMLElement} */ (
-      mount.querySelector('#worker-exec-defaults-dialog')
-    );
     click(seamEl(root, 'system-prompt-toggle'));
     await settle();
 
     expect(seamEl(root, 'system-prompt').textContent).toContain(
       '불러오지 못했습니다'
     );
-    expect(root.querySelector('.exec-defaults__vd')).toBeTruthy();
     dialog.destroy();
   });
 });

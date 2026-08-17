@@ -23,7 +23,6 @@ import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
-import { createDisplaySettingsDialog } from './views/display-settings-dialog.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import {
   MONITOR_PIPELINE_KEY,
@@ -31,6 +30,7 @@ import {
 } from './views/monitor/index.js';
 import { createTopNav } from './views/nav.js';
 import { createNewIssueDialog } from './views/new-issue-dialog.js';
+import { createSettingsDialog } from './views/settings-dialog/index.js';
 import { createUsageMeter } from './views/usage-meter.js';
 import { createWorkerView } from './views/worker.js';
 import { createWorkspacePicker } from './views/workspace-picker.js';
@@ -248,7 +248,7 @@ export function bootstrap(root_element) {
     const exec_preset_store = createExecPresetStore();
     const session_log_store = createSessionLogStore();
 
-    client.on('exec-presets-snapshot', (payload) => {
+    client.on('impl-presets-snapshot', (payload) => {
       const snapshot = /** @type {any} */ (payload);
       if (
         snapshot &&
@@ -512,6 +512,11 @@ export function bootstrap(root_element) {
      * kept: releasing that one leaves the lane empty, and nothing else would
      * ask again (the re-entry that raced it was skipped by the pending guard).
      */
+    // The unified settings dialog edits worker-queue state (orchestration,
+    // slots), so the queue channel must be live while it is open — including
+    // from the Monitor view, whose route alone would not hold it.
+    let settings_dialog_open = false;
+
     function syncSubscriptionsToView() {
       const state = store.getState();
       ensureBoardSubscriptions(state.view === 'board');
@@ -520,6 +525,7 @@ export function bootstrap(root_element) {
       ensureWorkerQueueChannel(
         state.view === 'board' ||
           state.view === 'worker' ||
+          settings_dialog_open ||
           Boolean(state.selected_id)
       );
     }
@@ -950,13 +956,13 @@ export function bootstrap(root_element) {
       if (exec_presets_unsub) {
         return;
       }
-      void tracked_send('subscribe-exec-presets', {
+      void tracked_send('subscribe-impl-presets', {
         id: EXEC_PRESETS_CLIENT_ID
       }).catch((err) => {
-        log('subscribe-exec-presets failed: %o', err);
+        log('subscribe-impl-presets failed: %o', err);
       });
       exec_presets_unsub = () =>
-        tracked_send('unsubscribe-exec-presets', {
+        tracked_send('unsubscribe-impl-presets', {
           id: EXEC_PRESETS_CLIENT_ID
         });
     }
@@ -1371,10 +1377,13 @@ export function bootstrap(root_element) {
     // and the detail panel could never show it.
     const PROPAGATED_ERROR_TYPES = new Set([
       'get-comments',
-      'exec-preset-create',
-      'exec-preset-update',
-      'exec-preset-delete',
-      'apply-exec-preset'
+      'impl-preset-create',
+      'impl-preset-update',
+      'impl-preset-delete',
+      'apply-impl-preset',
+      'apply-impl-preset-global',
+      'get-session-defaults',
+      'set-session-defaults'
     ]);
 
     /**
@@ -1423,13 +1432,19 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
-    // Display-settings dialog: edits the per-workspace label/metadata policy.
-    // Its label pills are drawn from the labels actually present in the loaded
-    // board data, WITHOUT the policy applied — an already-hidden label has to
-    // stay clickable, otherwise hiding one would be irreversible from the UI.
-    const display_settings_dialog = createDisplaySettingsDialog(root_element, {
+    // Unified settings dialog: ONE nav-bar ⚙ opens 세션 / Worker / 표시
+    // (spec §D). Its label pills are drawn from the labels actually present in
+    // the loaded board data, WITHOUT the policy applied — an already-hidden
+    // label has to stay clickable, otherwise hiding one would be irreversible.
+    const settings_dialog = createSettingsDialog(root_element, {
       policyStore: display_policy_store,
+      queueStore: worker_queue_store,
+      implPresetStore: exec_preset_store,
       transport: (type, payload) => tracked_send(type, payload),
+      onOpenChange: (open) => {
+        settings_dialog_open = open;
+        syncSubscriptionsToView();
+      },
       labelOptions: () => {
         /** @type {Set<string>} */
         const seen = new Set();
@@ -1454,9 +1469,9 @@ export function bootstrap(root_element) {
         document.getElementById('display-settings-btn')
       );
       if (btn_settings) {
-        btn_settings.addEventListener('click', () =>
-          display_settings_dialog.open()
-        );
+        btn_settings.setAttribute('aria-label', '설정');
+        btn_settings.setAttribute('title', '설정');
+        btn_settings.addEventListener('click', () => settings_dialog.open());
       }
     } catch {
       // ignore missing header
@@ -1486,7 +1501,6 @@ export function bootstrap(root_element) {
       issueStores: sub_issue_stores,
       queueStore: worker_queue_store,
       analysisStore: worker_analysis_store,
-      execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
@@ -1540,9 +1554,7 @@ export function bootstrap(root_element) {
         }
       },
       onOpenExecPresets: () => {
-        store.setState({ selected_id: null });
-        router.gotoView('worker');
-        worker_view.openExecDefaults();
+        settings_dialog.open('session');
       }
     });
 
@@ -1583,7 +1595,10 @@ export function bootstrap(root_element) {
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(s.view === 'monitor');
       ensureWorkerQueueChannel(
-        s.view === 'board' || s.view === 'worker' || Boolean(s.selected_id)
+        s.view === 'board' ||
+          s.view === 'worker' ||
+          settings_dialog_open ||
+          Boolean(s.selected_id)
       );
       if (!s.selected_id && s.view === 'board') {
         void board_view.load();

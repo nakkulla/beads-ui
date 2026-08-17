@@ -3393,88 +3393,6 @@ export function createScheduler(deps) {
         return;
       }
 
-      // Stamp each bead-absent, global-filled exec key onto the bead metadata
-      // (set + confirming readback, mirroring the workflow_mode stamp). A bd
-      // failure or a readback mismatch on ANY key fails THIS dispatch only: the
-      // attempted prefix is durably narrowed and unset (including a set that
-      // succeeded but whose readback threw/mismatched), the attempt is recorded
-      // failed, the mode is reverted, the claim released — no queue halt, no
-      // sibling pause.
-      let exec_stamp_ok = true;
-      /** @type {string[]} */
-      const attempted_stamped_keys = [];
-      for (const key of stamped_keys) {
-        const value = /** @type {Record<string, string|null>} */ (
-          /** @type {any} */ (exec)
-        )[key];
-        if (typeof value !== 'string') {
-          exec_stamp_ok = false;
-          break;
-        }
-        attempted_stamped_keys.push(key);
-        try {
-          await deps.bd.setMetadata(bead_id, key, value);
-          const rb = await deps.bd.readMetadata(bead_id, key);
-          if (rb !== value) {
-            log(
-              'exec stamp readback mismatch for %s %s: expected %o, got %o',
-              bead_id,
-              key,
-              value,
-              rb
-            );
-            exec_stamp_ok = false;
-            break;
-          }
-        } catch (err) {
-          log(
-            'exec stamp set/readback failed for %s %s: %o',
-            bead_id,
-            key,
-            err
-          );
-          exec_stamp_ok = false;
-          break;
-        }
-      }
-      if (!exec_stamp_ok) {
-        deps.store.updateAttempt(workspace, {
-          attempt_id,
-          patch: {
-            exec_stamped_keys:
-              attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
-          }
-        });
-        await revertExecStamps(
-          bead_id,
-          attempted_stamped_keys,
-          exec_restore_values
-        );
-        deps.store.updateAttempt(workspace, {
-          attempt_id,
-          patch: {
-            status: 'failed',
-            cause: 'exec_stamp_failed',
-            finished_at: now()
-          }
-        });
-        notifyLifecycle('attemptFailed', {
-          bead_id,
-          cause: 'exec_stamp_failed',
-          repo: snap.repo,
-          cause_detail: null
-        });
-        try {
-          await revertWorkflowMode(bead_id, prior);
-        } catch {
-          // Best-effort: bd may be down; the failed record already reflects it.
-        }
-        removeGuardHook(workspace, attempt_id);
-        claimed.delete(bead_id);
-        notifyChanged(workspace);
-        return;
-      }
-
       await launchSession({
         workspace,
         attempt_id,
@@ -4553,78 +4471,6 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
-    let exec_ok = true;
-    /** @type {string[]} */
-    const attempted_stamped_keys = [];
-    for (const key of stamped_keys) {
-      const value = exec_values?.[key];
-      if (typeof value !== 'string') {
-        continue;
-      }
-      attempted_stamped_keys.push(key);
-      try {
-        await deps.bd.setMetadata(bead_id, key, value);
-        const rb = await deps.bd.readMetadata(bead_id, key);
-        if (rb !== value) {
-          log(
-            'external conflict exec stamp readback mismatch for %s %s: expected %o, got %o',
-            bead_id,
-            key,
-            value,
-            rb
-          );
-          exec_ok = false;
-          break;
-        }
-      } catch (err) {
-        log(
-          'external conflict exec stamp failed for %s %s: %o',
-          bead_id,
-          key,
-          err
-        );
-        exec_ok = false;
-        break;
-      }
-    }
-    if (!exec_ok) {
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          exec_stamped_keys:
-            attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
-        }
-      });
-      await revertExecStamps(
-        bead_id,
-        attempted_stamped_keys,
-        execRestoreValuesOf(workspace, attempt_id)
-      );
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: {
-          status: 'failed',
-          cause: 'exec_stamp_failed',
-          finished_at: now()
-        }
-      });
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: 'exec_stamp_failed',
-        repo,
-        cause_detail: null
-      });
-      try {
-        await revertWorkflowMode(bead_id, prior);
-      } catch {
-        // Best-effort: bd may be down; the failed record already reflects it.
-      }
-      removeGuardHook(workspace, attempt_id);
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
-      return { ok: false, reason: 'exec_stamp_failed' };
-    }
-
     const launched = await launchSession({
       workspace,
       attempt_id,
@@ -5104,71 +4950,6 @@ export function createScheduler(deps) {
       notifyChanged(workspace);
       await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: 'workflow_mode_record_failed' };
-    }
-
-    let exec_ok = true;
-    /** @type {string[]} */
-    const attempted_stamped_keys = [];
-    for (const key of stamped_keys) {
-      const value = exec_values?.[key] ?? null;
-      attempted_stamped_keys.push(key);
-      try {
-        if (typeof value === 'string') {
-          await deps.bd.setMetadata(bead_id, key, value);
-        } else {
-          await deps.bd.unsetMetadata(bead_id, key);
-        }
-        const readback = await deps.bd.readMetadata(bead_id, key);
-        if (
-          (typeof value === 'string' && readback !== value) ||
-          (value === null && typeof readback === 'string')
-        ) {
-          exec_ok = false;
-          break;
-        }
-      } catch (err) {
-        log('resume exec stamp failed for %s %s: %o', bead_id, key, err);
-        exec_ok = false;
-        break;
-      }
-    }
-    if (!exec_ok) {
-      deps.store.updateAttempt(workspace, {
-        attempt_id: new_attempt_id,
-        patch: {
-          exec_stamped_keys:
-            attempted_stamped_keys.length > 0 ? attempted_stamped_keys : null
-        }
-      });
-      await revertExecStamps(
-        bead_id,
-        attempted_stamped_keys,
-        exec_restore_values
-      );
-      deps.store.updateAttempt(workspace, {
-        attempt_id: new_attempt_id,
-        patch: {
-          status: 'failed',
-          cause: 'exec_stamp_failed',
-          finished_at: now()
-        }
-      });
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: 'exec_stamp_failed',
-        repo,
-        cause_detail: null
-      });
-      try {
-        await revertWorkflowMode(bead_id, prior_wf);
-      } catch {
-        // The failed attempt remains the durable recovery evidence.
-      }
-      removeGuardHook(workspace, new_attempt_id);
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
-      await reportCompletionSettlement(workspace, new_attempt_id, null);
-      return { ok: false, reason: 'exec_stamp_failed' };
     }
 
     const wt_path =
@@ -5727,38 +5508,6 @@ export function createScheduler(deps) {
         prior_wf,
         remove_worktree: mode === 'dispatch_repair'
       });
-    }
-
-    /** @type {string[]} */
-    const stamped = [];
-    for (const key of stamped_keys) {
-      const value = exec_values?.[key] ?? null;
-      stamped.push(key);
-      try {
-        if (typeof value === 'string') {
-          await deps.bd.setMetadata(bead_id, key, value);
-        } else {
-          await deps.bd.unsetMetadata(bead_id, key);
-        }
-        const readback = await deps.bd.readMetadata(bead_id, key);
-        if (
-          (typeof value === 'string' && readback !== value) ||
-          (value === null && typeof readback === 'string')
-        ) {
-          throw new Error('readback mismatch');
-        }
-      } catch {
-        return failPreparedCompletion({
-          workspace,
-          attempt_id,
-          bead_id,
-          repo,
-          reason: 'exec_stamp_failed',
-          prior_wf,
-          stamped_keys: stamped,
-          remove_worktree: mode === 'dispatch_repair'
-        });
-      }
     }
 
     const completion_repair = {
