@@ -1,4 +1,4 @@
-import { runBdJson } from './bd.js';
+import { runBdJsonProjected } from './bd.js';
 import {
   applyClosedIssuesFilter,
   closedIssuesSince
@@ -470,12 +470,22 @@ async function enrichIssuesProvenance(items, cwd) {
   /** @type {Map<string, string>} */
   let from_by_id = new Map();
   try {
-    const res = await runBdJson(['dep', 'list', ...ids, '--json'], { cwd });
-    if (!res || res.code !== 0 || !('stdoutJson' in res)) {
-      log('bd dep list failed for provenance code=%s', res?.code);
+    const res = await runBdJsonProjected(
+      'dep',
+      ['dep', 'list', ...ids, '--json'],
+      { cwd }
+    );
+    if (!res || res.ok !== true) {
+      // An ordinary optional dependency CLI failure stays fail-quiet display
+      // policy; a schema or shape failure is a compatibility fault and must
+      // reach the subscription instead of silently dropping provenance.
+      if (isProtocolFailure(res)) {
+        throw new BdProtocolError(res.error);
+      }
+      log('bd dep list failed for provenance code=%s', res?.error?.code);
       return items;
     }
-    from_by_id = collectProvenanceEdges(res.stdoutJson, ids);
+    from_by_id = collectProvenanceEdges(res.data, ids);
   } catch (err) {
     log('bd dep list invocation failed for provenance: %o', err);
     return items;
@@ -589,29 +599,24 @@ async function fetchListForSubscriptionRaw(spec, options = {}) {
   }
 
   try {
-    const res = await runBdJson(args, { cwd: options.cwd });
-    if (!res || res.code !== 0 || !('stdoutJson' in res)) {
+    const command_family =
+      String(spec.type) === 'issue-detail' ? 'show' : 'list';
+    const res = await runBdJsonProjected(command_family, args, {
+      cwd: options.cwd
+    });
+    if (!res || res.ok !== true) {
       if (
         String(spec.type) === 'resolved-issues' &&
-        isUnsupportedResolvedStatus(res?.stderr || '')
+        !isProtocolFailure(res) &&
+        isUnsupportedResolvedStatus(res?.error?.message || '')
       ) {
         return { ok: true, items: [] };
       }
-      log(
-        'bd failed for %o (args=%o) code=%s stderr=%s',
-        spec,
-        args,
-        res?.code,
-        res?.stderr || ''
-      );
+      log('bd failed for %o (args=%o) code=%s', spec, args, res?.error?.code);
       return bdCommandFailure(res);
     }
-    // bd show may return a single object; normalize to an array first
-    const raw = Array.isArray(res.stdoutJson)
-      ? res.stdoutJson
-      : res.stdoutJson && typeof res.stdoutJson === 'object'
-        ? [res.stdoutJson]
-        : [];
+    // `show` projects one issue; the list views project an array.
+    const raw = Array.isArray(res.data) ? res.data : [res.data];
 
     const items = normalizeIssueList(raw);
     return { ok: true, items };
@@ -638,40 +643,34 @@ async function fetchListForSubscriptionRaw(spec, options = {}) {
 async function fetchBlockedIssues(options = {}) {
   const stored_args = mapSubscriptionToBdArgs({ type: 'blocked-issues' });
   try {
-    const stored_res = await runBdJson(stored_args, { cwd: options.cwd });
-    if (!stored_res || stored_res.code !== 0 || !('stdoutJson' in stored_res)) {
+    const stored_res = await runBdJsonProjected('list', stored_args, {
+      cwd: options.cwd
+    });
+    if (!stored_res || stored_res.ok !== true) {
       log(
-        'bd failed for blocked stored issues (args=%o) code=%s stderr=%s',
+        'bd failed for blocked stored issues (args=%o) code=%s',
         stored_args,
-        stored_res?.code,
-        stored_res?.stderr || ''
+        stored_res?.error?.code
       );
       return bdCommandFailure(stored_res);
     }
 
-    const dependency_res = await runBdJson(DEPENDENCY_BLOCKED_ARGS, {
-      cwd: options.cwd
-    });
-    if (
-      !dependency_res ||
-      dependency_res.code !== 0 ||
-      !('stdoutJson' in dependency_res)
-    ) {
+    const dependency_res = await runBdJsonProjected(
+      'ready-explain',
+      DEPENDENCY_BLOCKED_ARGS,
+      { cwd: options.cwd }
+    );
+    if (!dependency_res || dependency_res.ok !== true) {
       log(
-        'bd failed for dependency-blocked issues (args=%o) code=%s stderr=%s',
+        'bd failed for dependency-blocked issues (args=%o) code=%s',
         DEPENDENCY_BLOCKED_ARGS,
-        dependency_res?.code,
-        dependency_res?.stderr || ''
+        dependency_res?.error?.code
       );
       return bdCommandFailure(dependency_res);
     }
 
-    const stored_raw = Array.isArray(stored_res.stdoutJson)
-      ? stored_res.stdoutJson
-      : [];
-    const dependency_raw = extractDependencyBlockedIssues(
-      dependency_res.stdoutJson
-    );
+    const stored_raw = stored_res.data;
+    const dependency_raw = extractDependencyBlockedIssues(dependency_res.data);
     const stored_items = normalizeIssueList(stored_raw);
     const dependency_items = normalizeIssueList(dependency_raw);
     const items = attachBlockedInfo(
@@ -817,18 +816,56 @@ function mergeIssueLists(...lists) {
 /**
  * Convert a failed bd command result to a fetch failure.
  *
- * @param {{ code?: number, stderr?: string } | undefined | null} res
+ * @param {{ ok: false, error: import('./bd-json.js').BdJsonError } | undefined | null} res
  * @returns {FetchListResultFailure}
  */
 function bdCommandFailure(res) {
+  const error = res && res.error ? res.error : null;
   return {
     ok: false,
     error: {
       code: 'bd_error',
-      message: String(res?.stderr || 'bd failed'),
-      details: { exit_code: res?.code ?? -1 }
+      message: String((error && error.message) || 'bd failed'),
+      details: {
+        exit_code:
+          error && error.details && typeof error.details.exit_code === 'number'
+            ? error.details.exit_code
+            : -1,
+        reason: error ? error.code : 'bd_error'
+      }
     }
   };
+}
+
+/**
+ * True when a failed result is a bd JSON protocol fault rather than an ordinary
+ * CLI failure. Protocol faults must never be softened into an empty view.
+ *
+ * @param {any} res
+ */
+function isProtocolFailure(res) {
+  const code = res && res.error ? res.error.code : '';
+  return (
+    code === 'bd_json_invalid' ||
+    code === 'bd_json_envelope_invalid' ||
+    code === 'bd_json_schema_unsupported' ||
+    code === 'bd_json_shape_invalid'
+  );
+}
+
+/**
+ * Raised so a provenance protocol fault escapes the fail-quiet display path and
+ * fails its subscription.
+ */
+class BdProtocolError extends Error {
+  /**
+   * @param {any} error
+   */
+  constructor(error) {
+    super(String((error && error.message) || 'bd protocol failure'));
+    this.name = 'BdProtocolError';
+    this.bd_error = error;
+  }
 }
 
 /**

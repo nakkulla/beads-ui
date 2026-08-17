@@ -30,7 +30,7 @@ import {
   kvGetJsonInWorkspace,
   kvSetJsonInWorkspace,
   runBdInWorkspace,
-  runBdJsonInWorkspace
+  runBdJsonProjectedInWorkspace
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 
@@ -312,7 +312,12 @@ export async function handleApplyImplPreset(ws, req) {
 
   let shown;
   try {
-    shown = await runBdJsonInWorkspace(ws, ['show', id, '--json']);
+    shown = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', id, '--json'],
+      { expected_id: id }
+    );
   } catch (err) {
     triggerMutationRefreshOnce(ws);
     ws.send(
@@ -327,19 +332,17 @@ export async function handleApplyImplPreset(ws, req) {
     return;
   }
   triggerMutationRefreshOnce(ws);
-  const raw_issue = Array.isArray(shown.stdoutJson)
-    ? shown.stdoutJson[0]
-    : shown.stdoutJson;
-  if (
-    shown.code !== 0 ||
-    !raw_issue ||
-    typeof raw_issue !== 'object' ||
-    Array.isArray(raw_issue) ||
-    typeof (/** @type {any} */ (raw_issue).id) !== 'string'
-  ) {
+  if (shown.ok !== true) {
+    // The write already landed, so this is a readback failure, not a retryable
+    // write failure: replaying the update could apply it twice.
     ws.send(
       JSON.stringify(
-        makeError(req, 'bd_readback_failed', shown.stderr || 'bd show failed')
+        makeError(req, 'bd_readback_failed', shown.error.message, {
+          phase: 'readback',
+          write_applied: true,
+          retry_safe: false,
+          reason: shown.error.code
+        })
       )
     );
     return;
@@ -350,7 +353,7 @@ export async function handleApplyImplPreset(ws, req) {
         applied: true,
         conflict: false,
         revision: resolved.revision,
-        issue: raw_issue
+        issue: shown.data
       })
     )
   );

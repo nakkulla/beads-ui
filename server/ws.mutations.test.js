@@ -1,14 +1,15 @@
 import { createServer } from 'node:http';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { runBd, runBdJson } from './bd.js';
+import { projectedResponse } from './__fixtures__/bd-json/projected.js';
+import { runBd, runBdJsonProjected } from './bd.js';
 import { attachWsServer, handleMessage } from './ws.js';
 
-vi.mock('./bd.js', () => ({ runBdJson: vi.fn(), runBd: vi.fn() }));
+vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn(), runBd: vi.fn() }));
 
 // Ensure clean mock state for each test
 beforeEach(() => {
   /** @type {import('vitest').Mock} */ (runBd).mockReset();
-  /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+  /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
 });
 
 function makeStubSocket() {
@@ -57,12 +58,14 @@ describe('ws mutation handlers', () => {
 
     try {
       const mRun = /** @type {import('vitest').Mock} */ (runBd);
-      const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+      const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
       mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-      mJson.mockResolvedValueOnce({
-        code: 0,
-        stdoutJson: { id: 'UI-7', status: 'in_progress' }
-      });
+      mJson.mockResolvedValueOnce(
+        projectedResponse(null, {
+          code: 0,
+          stdoutJson: { id: 'UI-7', status: 'in_progress' }
+        })
+      );
 
       const ws = makeStubSocket();
       wss.clients.add(/** @type {any} */ (ws));
@@ -83,8 +86,9 @@ describe('ws mutation handlers', () => {
         expect.objectContaining({ cwd: '/repo-a' })
       );
       expect(mJson).toHaveBeenCalledWith(
+        'show',
         ['show', 'UI-7', '--json'],
-        expect.objectContaining({ cwd: '/repo-a' })
+        expect.objectContaining({ cwd: '/repo-a', expected_id: 'UI-7' })
       );
     } finally {
       await closeSocketServer(wss, server);
@@ -93,12 +97,14 @@ describe('ws mutation handlers', () => {
 
   test('update-status validates and returns updated issue', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-7', status: 'in_progress' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-7', status: 'in_progress' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r1',
@@ -116,12 +122,14 @@ describe('ws mutation handlers', () => {
 
   test('update-status accepts resolved', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-8', status: 'resolved' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-8', status: 'resolved' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r1-resolved',
@@ -145,12 +153,14 @@ describe('ws mutation handlers', () => {
 
   test('update-status accepts deferred', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-9', status: 'deferred' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-9', status: 'deferred' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r1-deferred',
@@ -190,12 +200,14 @@ describe('ws mutation handlers', () => {
 
   test('update-priority success path', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-7', priority: 1 }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-7', priority: 1 }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r3',
@@ -229,12 +241,14 @@ describe('ws mutation handlers', () => {
 
   test('edit-text title success', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-7', title: 'New' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-7', title: 'New' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r4',
@@ -254,9 +268,11 @@ describe('ws mutation handlers', () => {
 
   test('update-assignee validates and returns updated issue', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-2' } });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, { code: 0, stdoutJson: { id: 'UI-2' } })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'rua',
@@ -277,9 +293,11 @@ describe('ws mutation handlers', () => {
 
   test('update-assignee allows clearing with empty string', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({ code: 0, stdoutJson: { id: 'UI-31' } });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, { code: 0, stdoutJson: { id: 'UI-31' } })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'rua2',
@@ -299,12 +317,14 @@ describe('ws mutation handlers', () => {
 
   test('edit-text acceptance success', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-7', acceptance: 'Done when...' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-7', acceptance: 'Done when...' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r4a',
@@ -329,12 +349,14 @@ describe('ws mutation handlers', () => {
 
   test('edit-text notes success', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-12', notes: 'Some note' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-12', notes: 'Some note' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r4n',
@@ -359,12 +381,14 @@ describe('ws mutation handlers', () => {
 
   test('edit-text description success and flag mapping', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-7', description: 'New desc' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-7', description: 'New desc' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r4b',
@@ -385,12 +409,14 @@ describe('ws mutation handlers', () => {
 
   test('edit-text design success and flag mapping', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-8', design: 'New design' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-8', design: 'New design' }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r4d',
@@ -410,12 +436,14 @@ describe('ws mutation handlers', () => {
 
   test('dep-add returns updated issue (view_id)', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-7', dependencies: [] }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-7', dependencies: [] }
+      })
+    );
     const ws = makeStubSocket();
     const req = {
       id: 'r5',

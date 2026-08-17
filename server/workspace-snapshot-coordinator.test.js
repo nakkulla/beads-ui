@@ -1,8 +1,48 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  normalizeBdDependencyRows,
+  normalizeBdIssueList,
+  normalizeBdReadyExplain
+} from './bd-json.js';
 import { createWorkspaceSnapshotCoordinator } from './workspace-snapshot-coordinator.js';
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
+
+/**
+ * Adapt a transport-shaped `bd --json` response to the projected runner
+ * contract, through the SAME projectors production uses.
+ *
+ * @param {string} command_family
+ * @param {any} raw
+ * @returns {any}
+ */
+function asProjectedResponse(command_family, raw) {
+  if (!raw || raw.code !== 0) {
+    return {
+      ok: false,
+      error: {
+        code: 'bd_exit_error',
+        message: String((raw && raw.stderr) || 'bd failed'),
+        details: { exit_code: raw ? raw.code : null }
+      }
+    };
+  }
+  const projected =
+    command_family === 'ready-explain'
+      ? normalizeBdReadyExplain(raw.stdoutJson)
+      : command_family === 'dep'
+        ? normalizeBdDependencyRows(raw.stdoutJson)
+        : normalizeBdIssueList(raw.stdoutJson);
+  if (!projected.ok) {
+    return projected;
+  }
+  return {
+    ok: true,
+    protocol: { format: 'bare', schema_version: null },
+    data: projected.data
+  };
+}
 
 /**
  * @param {Array<Record<string, unknown>>} all
@@ -25,13 +65,13 @@ function successfulGeneration(all, explain = {}) {
  * @param {Array<unknown>} responses
  */
 function createRunner(responses) {
-  return /** @type {typeof import('./bd.js').runBdJson} */ (
-    vi.fn(async () => {
+  return /** @type {any} */ (
+    vi.fn(async (/** @type {string} */ command_family) => {
       const response = responses.shift();
       if (response instanceof Error) {
         throw response;
       }
-      return /** @type {any} */ (response);
+      return /** @type {any} */ (asProjectedResponse(command_family, response));
     })
   );
 }
@@ -52,7 +92,7 @@ describe('workspace snapshot coordinator', () => {
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
       cwd: '/workspace/a',
-      runBdJson: /** @type {typeof runBdJson} */ (runBdJson)
+      runBdJson: /** @type {any} */ (runBdJson)
     });
 
     const cold_request = coordinator.request('cold-subscribe');
@@ -63,11 +103,18 @@ describe('workspace snapshot coordinator', () => {
     expect(cold_request).toBe(poll_request);
     expect(cold_request).toBe(background_request);
 
-    resolvers[0]({ code: 0, stdoutJson: [{ id: 'A', dependencies: [] }] });
-    resolvers[1]({
-      code: 0,
-      stdoutJson: { ready: [{ id: 'A' }], blocked: [] }
-    });
+    resolvers[0](
+      asProjectedResponse('list', {
+        code: 0,
+        stdoutJson: [{ id: 'A', dependencies: [] }]
+      })
+    );
+    resolvers[1](
+      asProjectedResponse('ready-explain', {
+        code: 0,
+        stdoutJson: { ready: [{ id: 'A' }], blocked: [] }
+      })
+    );
 
     const result = await cold_request;
 
@@ -77,7 +124,7 @@ describe('workspace snapshot coordinator', () => {
     }
     expect(
       /** @type {any} */ (runBdJson).mock.calls.map(
-        (/** @type {any} */ call) => call[0]
+        (/** @type {any} */ call) => call[1]
       )
     ).toEqual([ALL_ARGS, READY_ARGS]);
   });
@@ -147,7 +194,7 @@ describe('workspace snapshot coordinator', () => {
         })
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson: /** @type {typeof runBdJson} */ (runBdJson)
+      runBdJson: /** @type {any} */ (runBdJson)
     });
 
     const first = coordinator.request('watcher');
@@ -158,8 +205,18 @@ describe('workspace snapshot coordinator', () => {
     expect(first).toBe(second);
     expect(first).toBe(third);
 
-    resolvers[0]({ code: 0, stdoutJson: [{ id: 'A', dependencies: [] }] });
-    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[0](
+      asProjectedResponse('list', {
+        code: 0,
+        stdoutJson: [{ id: 'A', dependencies: [] }]
+      })
+    );
+    resolvers[1](
+      asProjectedResponse('ready-explain', {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
 
     await first;
     await Promise.resolve();
@@ -457,22 +514,42 @@ describe('workspace snapshot coordinator', () => {
         })
     );
     const coordinator = createWorkspaceSnapshotCoordinator({
-      runBdJson: /** @type {typeof runBdJson} */ (runBdJson)
+      runBdJson: /** @type {any} */ (runBdJson)
     });
 
     const request = coordinator.request('poll');
     coordinator.signalMutation();
     coordinator.signalMutation();
-    resolvers[0]({ code: 0, stdoutJson: [{ id: 'PRE', dependencies: [] }] });
-    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[0](
+      asProjectedResponse('list', {
+        code: 0,
+        stdoutJson: [{ id: 'PRE', dependencies: [] }]
+      })
+    );
+    resolvers[1](
+      asProjectedResponse('ready-explain', {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
     for (let attempt = 0; attempt < 10 && resolvers.length < 4; attempt += 1) {
       await Promise.resolve();
     }
 
     expect(runBdJson).toHaveBeenCalledTimes(4);
 
-    resolvers[2]({ code: 0, stdoutJson: [{ id: 'POST', dependencies: [] }] });
-    resolvers[3]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[2](
+      asProjectedResponse('list', {
+        code: 0,
+        stdoutJson: [{ id: 'POST', dependencies: [] }]
+      })
+    );
+    resolvers[3](
+      asProjectedResponse('ready-explain', {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
 
     const result = await request;
 
@@ -566,7 +643,7 @@ describe('workspace snapshot coordinator', () => {
         ]
       });
     }
-    expect(/** @type {any} */ (runBdJson).mock.calls[2][0]).toEqual([
+    expect(/** @type {any} */ (runBdJson).mock.calls[2][1]).toEqual([
       'dep',
       'list',
       'A',

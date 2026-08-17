@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { projectedResponse } from '../__fixtures__/bd-json/projected.js';
 
 // Capture the argv passed to the bd runner.
 const runBdInWorkspace = vi.fn();
-const runBdJsonInWorkspace = vi.fn();
+const runBdJsonProjectedInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
@@ -10,8 +11,12 @@ const kvSetJsonInWorkspace = vi.fn();
 vi.mock('./context.js', () => ({
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {any} */ args) =>
     runBdInWorkspace(ws, args),
-  runBdJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ args) =>
-    runBdJsonInWorkspace(ws, args),
+  runBdJsonProjectedInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {any} */ command_family,
+    /** @type {any} */ args,
+    /** @type {any} */ options
+  ) => runBdJsonProjectedInWorkspace(ws, command_family, args, options),
   kvGetJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ key) =>
     kvGetJsonInWorkspace(ws, key),
   kvSetJsonInWorkspace: (
@@ -80,13 +85,15 @@ describe('buildExecSettingsArgs', () => {
 describe('handleUpdateExecSettings', () => {
   beforeEach(() => {
     runBdInWorkspace.mockReset();
-    runBdJsonInWorkspace.mockReset();
+    runBdJsonProjectedInWorkspace.mockReset();
     triggerMutationRefreshOnce.mockReset();
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 0,
-      stdoutJson: { id: 'UI-1', metadata: {} }
-    });
+    runBdJsonProjectedInWorkspace.mockResolvedValue(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', metadata: {} }
+      })
+    );
   });
 
   test('standard workflow_mode calls bd with --set-metadata (argv capture)', async () => {
@@ -278,13 +285,15 @@ describe('handleUpdateExecSettings', () => {
 describe('handleUpdateImplTarget', () => {
   beforeEach(() => {
     runBdInWorkspace.mockReset();
-    runBdJsonInWorkspace.mockReset();
+    runBdJsonProjectedInWorkspace.mockReset();
     triggerMutationRefreshOnce.mockReset();
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 0,
-      stdoutJson: { id: 'UI-1', metadata: {} }
-    });
+    runBdJsonProjectedInWorkspace.mockResolvedValue(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', metadata: {} }
+      })
+    );
   });
 
   test('writes runtime model effort in one update and reads back once', async () => {
@@ -310,7 +319,7 @@ describe('handleUpdateImplTarget', () => {
         impl_effort: 'high'
       })
     );
-    expect(runBdJsonInWorkspace).toHaveBeenCalledTimes(1);
+    expect(runBdJsonProjectedInWorkspace).toHaveBeenCalledTimes(1);
     expect(sent[0].ok).toBe(true);
   });
 
@@ -392,16 +401,21 @@ describe('handleUpdateImplTarget', () => {
 
   test.each([
     ['throws', () => Promise.reject(new Error('readback exploded'))],
-    ['returns nonzero', () => Promise.resolve({ code: 1, stderr: 'nope' })],
+    [
+      'returns nonzero',
+      () =>
+        Promise.resolve(projectedResponse(null, { code: 1, stderr: 'nope' }))
+    ],
     [
       'returns malformed payload',
-      () => Promise.resolve({ code: 0, stdoutJson: [] })
+      () =>
+        Promise.resolve(projectedResponse('show', { code: 0, stdoutJson: [] }))
     ]
   ])(
     'refreshes and reports readback failure when bd show %s',
     async (_, readback) => {
       const { ws, sent } = fakeWs();
-      runBdJsonInWorkspace.mockImplementation(readback);
+      runBdJsonProjectedInWorkspace.mockImplementation(readback);
 
       await handleUpdateImplTarget(ws, {
         id: 'target-readback',

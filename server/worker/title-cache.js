@@ -25,7 +25,7 @@
  */
 import path from 'node:path';
 import { workerLabels } from '../../app/utils/worker-eligibility.js';
-import { runBdJson, unwrapShowJson } from '../bd.js';
+import { runBdJsonProjected } from '../bd.js';
 import { debug } from '../logging.js';
 
 const log = debug('worker:title-cache');
@@ -67,7 +67,7 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * Create a bead title cache. One instance is held process-wide by the worker
  * runtime so every workspace's snapshot decoration shares the fill queue.
  *
- * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJson }} [options]
+ * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJsonProjected }} [options]
  */
 export function createTitleCache(options = {}) {
   const now = options.now || (() => Date.now());
@@ -79,9 +79,7 @@ export function createTitleCache(options = {}) {
     typeof options.positive_ttl_ms === 'number'
       ? options.positive_ttl_ms
       : POSITIVE_TTL_MS;
-  const runJson =
-    options.runJson ||
-    ((args, opts) => runBdJson(args, /** @type {any} */ (opts)));
+  const runJson = options.runJson || runBdJsonProjected;
 
   /** @type {Map<string, Map<string, BeadRecord>>} */
   const titles_by_workspace = new Map();
@@ -202,12 +200,14 @@ export function createTitleCache(options = {}) {
    * @returns {Promise<BeadRecord|null>}
    */
   async function fetchBead(workspace, bead_id) {
-    const r = await runJson(['show', bead_id, '--json'], { cwd: workspace });
-    if (!r || r.code !== 0) {
+    const r = await runJson('show', ['show', bead_id, '--json'], {
+      cwd: workspace,
+      expected_id: bead_id
+    });
+    if (!r || r.ok !== true) {
       return null;
     }
-    const issue = unwrapShowJson(r.stdoutJson);
-    return recordFromIssue(issue);
+    return recordFromIssue(r.data);
   }
 
   /**

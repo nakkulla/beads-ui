@@ -1,5 +1,56 @@
 import { describe, expect, test, vi } from 'vitest';
-import { createBdMetadata } from './bd-metadata.js';
+import { normalizeBdIssue, normalizeBdIssueList } from '../bd-json.js';
+import { createBdMetadata as createBdMetadataModule } from './bd-metadata.js';
+
+/**
+ * Adapt a transport-shaped `bd --json` fake to the projected runner contract.
+ *
+ * The fakes below describe what bd prints — including the single-item-array
+ * `show` shape live bd emits — so they run through the SAME projectors
+ * production uses instead of hand-rolling the post-projection value.
+ *
+ * @param {(args: string[], options?: any) => Promise<any>} fake
+ * @returns {any}
+ */
+function asProjected(fake) {
+  return async (
+    /** @type {string} */ command_family,
+    /** @type {string[]} */ args,
+    /** @type {any} */ options = {}
+  ) => {
+    const raw = await fake(args, options);
+    if (!raw || raw.code !== 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'bd_exit_error',
+          message: String((raw && raw.stderr) || 'bd failed')
+        }
+      };
+    }
+    const projected =
+      command_family === 'show'
+        ? normalizeBdIssue(raw.stdoutJson, { expected_id: options.expected_id })
+        : normalizeBdIssueList(raw.stdoutJson);
+    if (!projected.ok) {
+      return projected;
+    }
+    return {
+      ok: true,
+      protocol: { format: 'bare', schema_version: null },
+      data: projected.data
+    };
+  };
+}
+
+/**
+ * @param {any} [deps]
+ */
+function createBdMetadata(deps = {}) {
+  return createBdMetadataModule(
+    deps.runJson ? { ...deps, runJson: asProjected(deps.runJson) } : deps
+  );
+}
 
 describe('worker/bd-metadata argv contract', () => {
   test('deletes exact explicit IDs with force and without cascade', async () => {
@@ -97,7 +148,7 @@ describe('worker/bd-metadata argv contract', () => {
 
     await expect(
       createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
-    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+    ).rejects.toThrow(/bd show UI-1 failed \(bd_exit_error\)/);
   });
 
   test('readMetadata throws on an unreadable payload', async () => {
@@ -105,7 +156,7 @@ describe('worker/bd-metadata argv contract', () => {
 
     await expect(
       createBdMetadata({ runJson }).readMetadata('UI-1', 'pr_url')
-    ).rejects.toThrow(/unreadable payload/);
+    ).rejects.toThrow(/bd_json_shape_invalid/);
   });
 
   test('readMetadata returns null only for a key that is genuinely absent', async () => {
@@ -130,7 +181,7 @@ describe('worker/bd-metadata readStatus fail-closed', () => {
 
     await expect(
       createBdMetadata({ runJson }).readStatus('UI-1')
-    ).rejects.toThrow(/bd show UI-1 failed \(1\)/);
+    ).rejects.toThrow(/bd show UI-1 failed \(bd_exit_error\)/);
   });
 
   test('throws on an unreadable payload', async () => {
@@ -138,7 +189,7 @@ describe('worker/bd-metadata readStatus fail-closed', () => {
 
     await expect(
       createBdMetadata({ runJson }).readStatus('UI-1')
-    ).rejects.toThrow(/unreadable payload/);
+    ).rejects.toThrow(/bd_json_shape_invalid/);
   });
 
   test('returns the status from a readable payload', async () => {
@@ -284,7 +335,7 @@ describe('worker/bd-metadata child listing (post-merge sweep)', () => {
     // has no children" — that closes the parent over its open leaves.
     await expect(
       createBdMetadata({ runJson }).listChildren('UI-1')
-    ).rejects.toThrow(/non-array payload/);
+    ).rejects.toThrow(/bd_json_shape_invalid/);
   });
 
   test('throws when either selector query exits non-zero', async () => {
@@ -296,7 +347,7 @@ describe('worker/bd-metadata child listing (post-merge sweep)', () => {
 
     await expect(
       createBdMetadata({ runJson }).listChildren('UI-1')
-    ).rejects.toThrow(/--metadata-field parent=UI-1 failed \(1\)/);
+    ).rejects.toThrow(/--metadata-field parent=UI-1 failed \(bd_exit_error\)/);
   });
 });
 
@@ -425,7 +476,7 @@ describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
     }));
 
     await expect(createBdMetadata({ runJson }).scanBeads()).rejects.toThrow(
-      /bd list --all failed \(1\)/
+      /bd list --all failed \(bd_exit_error\)/
     );
   });
 
@@ -436,7 +487,7 @@ describe('worker/bd-metadata scanBeads (UI-7agi §1, UI-m6bg)', () => {
     }));
 
     await expect(createBdMetadata({ runJson }).scanBeads()).rejects.toThrow(
-      /non-array payload/
+      /bd_json_shape_invalid/
     );
   });
 });
@@ -503,7 +554,7 @@ describe('worker/bd-metadata one-write disposition update (UI-hs11)', () => {
       status: 'blocked'
     });
     await expect(broken.readIssue('UI-1')).rejects.toThrow(
-      /unreadable payload/
+      /bd_json_shape_invalid/
     );
   });
 });

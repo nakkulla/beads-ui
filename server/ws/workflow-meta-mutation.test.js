@@ -1,14 +1,19 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { projectedResponse } from '../__fixtures__/bd-json/projected.js';
 
 // Capture the argv passed to the bd runner.
 const runBdInWorkspace = vi.fn();
-const runBdJsonInWorkspace = vi.fn();
+const runBdJsonProjectedInWorkspace = vi.fn();
 
 vi.mock('./context.js', () => ({
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {any} */ args) =>
     runBdInWorkspace(ws, args),
-  runBdJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ args) =>
-    runBdJsonInWorkspace(ws, args),
+  runBdJsonProjectedInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {any} */ command_family,
+    /** @type {any} */ args,
+    /** @type {any} */ options
+  ) => runBdJsonProjectedInWorkspace(ws, command_family, args, options),
   getGitUserNameInWorkspace: () => Promise.resolve(''),
   log: () => {}
 }));
@@ -36,12 +41,14 @@ function fakeWs() {
 describe('handleUpdateWorkflowMeta (worker-autorun-policy §6, 수용 기준 7)', () => {
   beforeEach(() => {
     runBdInWorkspace.mockReset();
-    runBdJsonInWorkspace.mockReset();
+    runBdJsonProjectedInWorkspace.mockReset();
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 0,
-      stdoutJson: { id: 'UI-1', metadata: { route: 'full_plan' } }
-    });
+    runBdJsonProjectedInWorkspace.mockResolvedValue(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', metadata: { route: 'full_plan' } }
+      })
+    );
   });
 
   test('sets an enum value via --set-metadata and replies with the bd show readback', async () => {
@@ -57,11 +64,12 @@ describe('handleUpdateWorkflowMeta (worker-autorun-policy §6, 수용 기준 7)'
       '--set-metadata',
       'route=full_plan'
     ]);
-    expect(runBdJsonInWorkspace).toHaveBeenCalledWith(expect.anything(), [
+    expect(runBdJsonProjectedInWorkspace).toHaveBeenCalledWith(
+      expect.anything(),
       'show',
-      'UI-1',
-      '--json'
-    ]);
+      ['show', 'UI-1', '--json'],
+      expect.objectContaining({ expected_id: 'UI-1' })
+    );
     expect(sent[0].ok).toBe(true);
     expect(sent[0].payload).toEqual({
       id: 'UI-1',

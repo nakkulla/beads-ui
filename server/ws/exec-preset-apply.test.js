@@ -6,7 +6,7 @@ import { MESSAGE_TYPES } from '../../app/protocol.js';
 import { IMPL_PRESET_KEYS } from '../worker/exec-enums.js';
 
 const runBdInWorkspace = vi.fn();
-const runBdJsonInWorkspace = vi.fn();
+const runBdJsonProjectedInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
@@ -14,8 +14,12 @@ const kvSetJsonInWorkspace = vi.fn();
 vi.mock('./context.js', () => ({
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
     runBdInWorkspace(ws, args),
-  runBdJsonInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
-    runBdJsonInWorkspace(ws, args),
+  runBdJsonProjectedInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {string} */ command_family,
+    /** @type {string[]} */ args,
+    /** @type {any} */ options
+  ) => runBdJsonProjectedInWorkspace(ws, command_family, args, options),
   kvGetJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ key) =>
     kvGetJsonInWorkspace(ws, key),
   kvSetJsonInWorkspace: (
@@ -74,7 +78,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   __resetImplPresetsForTest();
   runBdInWorkspace.mockReset();
-  runBdJsonInWorkspace.mockReset();
+  runBdJsonProjectedInWorkspace.mockReset();
   triggerMutationRefreshOnce.mockReset();
   kvGetJsonInWorkspace.mockReset();
   kvSetJsonInWorkspace.mockReset();
@@ -149,9 +153,10 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       impl_runtime: 'inherit'
     });
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 0,
-      stdoutJson: { id: 'UI-1', metadata: { impl_dispatch: 'delegated' } }
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      protocol: { format: 'bare', schema_version: null },
+      data: { id: 'UI-1', metadata: { impl_dispatch: 'delegated' } }
     });
 
     await handleApplyImplPreset(ws, {

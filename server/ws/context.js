@@ -7,7 +7,8 @@ import {
   kvGetJson,
   kvSetJson,
   runBd,
-  runBdJson
+  runBdJson,
+  runBdJsonProjected
 } from '../bd.js';
 import { debug } from '../logging.js';
 import { SubscriptionRegistry } from '../subscriptions.js';
@@ -179,7 +180,7 @@ export function runBdInWorkspace(ws, args, options = undefined) {
  * @param {WebSocket} ws
  * @param {string[]} args
  * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number }} [options]
- * @returns {Promise<{ code: number, stdoutJson?: unknown, stderr?: string }>}
+ * @returns {ReturnType<typeof runBdJson>}
  */
 export function runBdJsonInWorkspace(ws, args, options = undefined) {
   const root_dir = getConnWorkspace(ws)?.root_dir;
@@ -190,6 +191,32 @@ export function runBdJsonInWorkspace(ws, args, options = undefined) {
   return runBdJson(args, {
     ...(options || {}),
     cwd: root_dir
+  });
+}
+
+/**
+ * Run one bd JSON command in the connection's workspace and project it.
+ *
+ * Binding the connection's workspace to the command family is what makes a
+ * protocol failure land on the right effect gate: a broken workspace must not
+ * block writes in a healthy one.
+ *
+ * @param {WebSocket} ws
+ * @param {string} command_family
+ * @param {string[]} args
+ * @param {{ cwd?: string, env?: Record<string, string | undefined>, timeout_ms?: number, expected_id?: string, expected_issue_id?: string }} [options]
+ * @returns {ReturnType<typeof runBdJsonProjected>}
+ */
+export function runBdJsonProjectedInWorkspace(
+  ws,
+  command_family,
+  args,
+  options = undefined
+) {
+  const root_dir = getConnWorkspace(ws)?.root_dir;
+  return runBdJsonProjected(command_family, args, {
+    ...(options || {}),
+    ...(root_dir ? { cwd: root_dir } : {})
   });
 }
 

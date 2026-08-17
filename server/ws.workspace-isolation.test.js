@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { getGitUserName, runBd, runBdJson } from './bd.js';
+import { projectedResponse } from './__fixtures__/bd-json/projected.js';
+import { getGitUserName, runBd, runBdJsonProjected } from './bd.js';
 import { fetchListForSubscription } from './list-adapters.js';
 import { registerWorkspace } from './registry-watcher.js';
 import { signalWorkspaceSnapshotMutation } from './workspace-snapshot-runtime.js';
@@ -22,7 +23,7 @@ const LIST_ITEMS_BY_CWD = new Map();
 
 vi.mock('./bd.js', () => ({
   runBd: vi.fn(),
-  runBdJson: vi.fn(),
+  runBdJsonProjected: vi.fn(),
   getGitUserName: vi.fn()
 }));
 
@@ -53,7 +54,7 @@ beforeEach(() => {
   __resetRegistriesForTest();
   LIST_ITEMS_BY_CWD.clear();
   /** @type {import('vitest').Mock} */ (runBd).mockReset();
-  /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+  /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
   /** @type {import('vitest').Mock} */ (getGitUserName).mockReset();
   /** @type {import('vitest').Mock} */ (fetchListForSubscription).mockClear();
 });
@@ -155,9 +156,11 @@ describe('per-connection workspace isolation', () => {
     const { server, wss, A, B } = await setupTwoWorkspaces();
     try {
       const mRun = /** @type {import('vitest').Mock} */ (runBd);
-      const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+      const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
       mRun.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-      mJson.mockResolvedValue({ code: 0, stdoutJson: { id: 'X-1' } });
+      mJson.mockResolvedValue(
+        projectedResponse(null, { code: 0, stdoutJson: { id: 'X-1' } })
+      );
 
       await send(A, {
         id: 'a-upd',
@@ -229,9 +232,11 @@ describe('per-connection workspace isolation', () => {
     const { server, wss, A, B } = await setupTwoWorkspaces();
     try {
       const mRun = /** @type {import('vitest').Mock} */ (runBd);
-      const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+      const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
       mRun.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
-      mJson.mockResolvedValue({ code: 0, stdoutJson: { id: 'X-2' } });
+      mJson.mockResolvedValue(
+        projectedResponse(null, { code: 0, stdoutJson: { id: 'X-2' } })
+      );
 
       // A switches to /repo-b (a different workspace for A only).
       await send(A, {

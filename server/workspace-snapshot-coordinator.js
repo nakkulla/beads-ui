@@ -1,8 +1,18 @@
-import { runBdJson as defaultRunBdJson } from './bd.js';
+import { runBdJsonProjected as defaultRunBdJson } from './bd.js';
 import { normalizeIssueList } from './list-adapters.js';
 import { debug } from './logging.js';
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
+/**
+ * Snapshot stage to the bd command family whose typed projector owns its shape.
+ *
+ * @type {Record<string, string>}
+ */
+const COMMAND_FAMILY_BY_STAGE = {
+  all: 'list',
+  ready: 'ready-explain',
+  dependencies: 'dep'
+};
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
 const DEFAULT_RETRY_BASE_MS = 1000;
 const DEFAULT_RETRY_MAX_MS = 30000;
@@ -285,8 +295,8 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
         });
       }
 
-      const raw_all = all_result.stdoutJson;
-      const raw_ready = ready_result.stdoutJson;
+      const raw_all = all_result.ok === true ? all_result.data : null;
+      const raw_ready = ready_result.ok === true ? ready_result.data : null;
       if (!Array.isArray(raw_all)) {
         return recordFailure(
           snapshotError('validation', 'bd list returned a non-array payload'),
@@ -361,7 +371,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
             command_exit: commandExit(dependency_result)
           });
         }
-        if (!Array.isArray(dependency_result.stdoutJson)) {
+        if (
+          dependency_result.ok !== true ||
+          !Array.isArray(dependency_result.data)
+        ) {
           return recordFailure(
             snapshotError(
               'validation',
@@ -377,7 +390,10 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
             }
           );
         }
-        dependency_edges = dependency_result.stdoutJson.filter(isRecord);
+        dependency_edges =
+          dependency_result.ok === true
+            ? dependency_result.data.filter(isRecord)
+            : [];
       }
 
       if (request_epoch !== state.request_epoch) {
@@ -530,8 +546,9 @@ export function createWorkspaceSnapshotCoordinator(options = {}) {
     retry_attempt
   ) {
     const command_started_at = now();
+    const command_family = COMMAND_FAMILY_BY_STAGE[command_stage];
     try {
-      const result = await runBdJson(args, { cwd });
+      const result = await runBdJson(command_family, args, { cwd });
       emitTelemetry('command-complete', {
         cause,
         generation,
@@ -719,15 +736,12 @@ function fencedResult(snapshot) {
  * @returns {SnapshotError | null}
  */
 function commandError(stage, result) {
-  if (
-    !isRecord(result) ||
-    result.code !== 0 ||
-    !Object.hasOwn(result, 'stdoutJson')
-  ) {
+  if (!isRecord(result) || result.ok !== true) {
+    const error = isRecord(result) ? result.error : null;
     return snapshotError(
       stage,
-      isRecord(result) && typeof result.stderr === 'string'
-        ? result.stderr || `bd ${stage} failed`
+      isRecord(error) && typeof error.code === 'string'
+        ? String(error.code)
         : `bd ${stage} failed`
     );
   }
@@ -739,8 +753,18 @@ function commandError(stage, result) {
  * @returns {number | null}
  */
 function commandExit(result) {
-  return isRecord(result) && typeof result.code === 'number'
-    ? result.code
+  if (!isRecord(result)) {
+    return null;
+  }
+  if (result.ok === true) {
+    return 0;
+  }
+  // The discriminated result carries bd's own exit code in its bounded details,
+  // so telemetry keeps reporting the process exit rather than a flattened 1.
+  const error = isRecord(result.error) ? result.error : null;
+  const details = error && isRecord(error.details) ? error.details : null;
+  return details && typeof details.exit_code === 'number'
+    ? details.exit_code
     : null;
 }
 

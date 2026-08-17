@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { runBdJson } from './bd.js';
+import { projectedResponse } from './__fixtures__/bd-json/projected.js';
+import { runBdJsonProjected } from './bd.js';
 import {
   __resetWorkspaceSnapshotRuntimeForTest,
   signalWorkspaceSnapshotMutation
@@ -14,7 +15,7 @@ import {
 import { setConnWorkspace } from './ws/context.js';
 import { triggerMutationRefreshOnce } from './ws/refresh.js';
 
-vi.mock('./bd.js', () => ({ runBdJson: vi.fn(), runBd: vi.fn() }));
+vi.mock('./bd.js', () => ({ runBdJsonProjected: vi.fn(), runBd: vi.fn() }));
 
 const ALL_ARGS = ['list', '--json', '--tree=false', '--all', '--limit', '0'];
 const READY_ARGS = ['ready', '--explain', '--limit', '0', '--json'];
@@ -23,24 +24,27 @@ beforeEach(() => {
   vi.useFakeTimers();
   __resetRegistriesForTest();
   __resetWorkspaceSnapshotRuntimeForTest();
-  /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-    async (args) => {
+  /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockImplementation(
+    async (command_family, args) => {
       if (args[0] === 'version') {
-        return {
+        return projectedResponse(null, {
           code: 0,
           stdoutJson: {
             version: '1.2.0-fork.1',
             commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
           }
-        };
+        });
       }
       if (args[0] === 'list') {
-        return {
+        return projectedResponse(null, {
           code: 0,
           stdoutJson: [{ id: 'A', status: 'open', dependencies: [] }]
-        };
+        });
       }
-      return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+      return projectedResponse(null, {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      });
     }
   );
 });
@@ -97,15 +101,15 @@ describe('workspace snapshot publication', () => {
     await subscribeList(ws, 'ready', 'ready-issues');
     await subscribeList(ws, 'progress', 'in-progress-issues');
 
-    /** @type {import('vitest').Mock} */ (runBdJson).mockClear();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockClear();
 
     scheduleListRefresh('watcher');
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(runBdJson).toHaveBeenCalledTimes(2);
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(2);
     expect(
-      /** @type {import('vitest').Mock} */ (runBdJson).mock.calls.map(
-        (call) => call[0]
+      /** @type {import('vitest').Mock} */ (runBdJsonProjected).mock.calls.map(
+        (call) => call[1]
       )
     ).toEqual([ALL_ARGS, READY_ARGS]);
   });
@@ -119,30 +123,38 @@ describe('workspace snapshot publication', () => {
     const ws = makeSocket();
     wss.clients.add(/** @type {any} */ (ws));
     await subscribeList(ws, 'board', 'all-issues');
-    /** @type {import('vitest').Mock} */ (runBdJson).mockClear();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockClear();
     ws.sent = [];
 
     /** @type {Array<(value: unknown) => void>} */
     const resolvers = [];
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolvers.push(resolve);
         })
     );
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolvers.push(resolve);
         })
     );
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolvers.push(resolve);
         })
     );
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementationOnce(
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           resolvers.push(resolve);
@@ -152,20 +164,34 @@ describe('workspace snapshot publication', () => {
     scheduleListRefresh('poll');
     await vi.advanceTimersByTimeAsync(0);
     signalWorkspaceSnapshotMutation(process.cwd());
-    resolvers[0]({
-      code: 0,
-      stdoutJson: [{ id: 'PRE', status: 'open', dependencies: [] }]
-    });
-    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[0](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: [{ id: 'PRE', status: 'open', dependencies: [] }]
+      })
+    );
+    resolvers[1](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
     await vi.advanceTimersByTimeAsync(0);
-    resolvers[2]({
-      code: 0,
-      stdoutJson: [{ id: 'POST', status: 'open', dependencies: [] }]
-    });
-    resolvers[3]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[2](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: [{ id: 'POST', status: 'open', dependencies: [] }]
+      })
+    );
+    resolvers[3](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(runBdJson).toHaveBeenCalledTimes(4);
+    expect(runBdJsonProjected).toHaveBeenCalledTimes(4);
     const upserts = ws.sent
       .map((message) => JSON.parse(message))
       .filter((message) => message.type === 'upsert')
@@ -191,33 +217,38 @@ describe('workspace snapshot publication', () => {
     });
     wss.clients.add(/** @type {any} */ (A));
     wss.clients.add(/** @type {any} */ (B));
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
-      async (args) => {
-        if (args[0] === 'version') {
-          return {
-            code: 0,
-            stdoutJson: {
-              version: '1.2.0-fork.1',
-              commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
-            }
-          };
-        }
-        if (args[0] === 'list') {
-          return {
-            code: 0,
-            stdoutJson: [{ id: 'INITIAL', status: 'open', dependencies: [] }]
-          };
-        }
-        return { code: 0, stdoutJson: { ready: [], blocked: [] } };
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(async (command_family, args) => {
+      if (args[0] === 'version') {
+        return projectedResponse(null, {
+          code: 0,
+          stdoutJson: {
+            version: '1.2.0-fork.1',
+            commit: '6da490c1b54ed410150422380bb91fcf6f910bfa'
+          }
+        });
       }
-    );
+      if (args[0] === 'list') {
+        return projectedResponse(null, {
+          code: 0,
+          stdoutJson: [{ id: 'INITIAL', status: 'open', dependencies: [] }]
+        });
+      }
+      return projectedResponse(null, {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      });
+    });
     await subscribeList(B, 'board', 'all-issues');
-    /** @type {import('vitest').Mock} */ (runBdJson).mockClear();
+    /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockClear();
     B.sent = [];
 
     /** @type {Array<(value: unknown) => void>} */
     const resolvers = [];
-    /** @type {import('vitest').Mock} */ (runBdJson).mockImplementation(
+    /** @type {import('vitest').Mock} */ (
+      runBdJsonProjected
+    ).mockImplementation(
       () =>
         new Promise((resolve) => {
           resolvers.push(resolve);
@@ -230,19 +261,33 @@ describe('workspace snapshot publication', () => {
 
     triggerMutationRefreshOnce(/** @type {any} */ (A), 500);
     scheduleListRefresh('watcher', '/workspace/b');
-    resolvers[0]({
-      code: 0,
-      stdoutJson: [{ id: 'PRE', status: 'open', dependencies: [] }]
-    });
-    resolvers[1]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[0](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: [{ id: 'PRE', status: 'open', dependencies: [] }]
+      })
+    );
+    resolvers[1](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
     await vi.advanceTimersByTimeAsync(0);
     expect(resolvers).toHaveLength(4);
 
-    resolvers[2]({
-      code: 0,
-      stdoutJson: [{ id: 'POST', status: 'open', dependencies: [] }]
-    });
-    resolvers[3]({ code: 0, stdoutJson: { ready: [], blocked: [] } });
+    resolvers[2](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: [{ id: 'POST', status: 'open', dependencies: [] }]
+      })
+    );
+    resolvers[3](
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { ready: [], blocked: [] }
+      })
+    );
     await vi.advanceTimersByTimeAsync(0);
 
     const upserts = B.sent

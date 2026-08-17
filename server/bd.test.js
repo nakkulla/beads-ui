@@ -177,9 +177,14 @@ describe('runBdJson', () => {
   test('parses valid JSON output', async () => {
     const json = JSON.stringify([{ id: 'UI-1' }]);
     mockedSpawn.mockReturnValueOnce(makeFakeProc(json, '', 0));
+
     const res = await runBdJson(['list', '--json']);
-    expect(res.code).toBe(0);
-    expect(Array.isArray(res.stdoutJson)).toBe(true);
+
+    expect(res).toEqual({
+      ok: true,
+      data: [{ id: 'UI-1' }],
+      protocol: { format: 'bare', schema_version: null }
+    });
   });
 
   test('unwraps schema v2 envelope output', async () => {
@@ -189,12 +194,10 @@ describe('runBdJson', () => {
 
     const res = await runBdJson(['list', '--json']);
 
-    expect(res).toMatchObject({
+    expect(res).toEqual({
       ok: true,
       data: issue_rows,
-      protocol: { format: 'envelope', schema_version: 2 },
-      code: 0,
-      stdoutJson: issue_rows
+      protocol: { format: 'envelope', schema_version: 2 }
     });
   });
 
@@ -207,15 +210,19 @@ describe('runBdJson', () => {
       ok: false,
       error: { code: 'bd_json_invalid' }
     });
-    expect(res.code).not.toBe(0);
-    expect(res.stdoutJson).toBeUndefined();
+    expect('data' in res).toBe(false);
   });
 
-  test('non-zero exit returns code and stderr', async () => {
+  test('non-zero exit fails with the exit code in its details', async () => {
     mockedSpawn.mockReturnValueOnce(makeFakeProc('', 'oops', 2));
+
     const res = await runBdJson(['list', '--json']);
-    expect(res.code).toBe(2);
-    expect(res.stderr).toContain('oops');
+
+    expect(res).toMatchObject({
+      ok: false,
+      error: { code: 'bd_exit_error', details: { exit_code: 2 } }
+    });
+    expect(res.ok === false && res.error.message).toContain('oops');
   });
 });
 

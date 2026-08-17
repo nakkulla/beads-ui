@@ -247,7 +247,7 @@ function qualify(row) {
  *   now?: () => number,
  *   positive_ttl_ms?: number,
  *   negative_ttl_ms?: number,
- *   runJson?: (args: string[], options?: { cwd?: string }) => Promise<{ code: number, stdoutJson?: unknown }>,
+ *   runJson?: (command_family: string, args: string[], options?: { cwd?: string }) => Promise<{ ok: boolean, data?: unknown }>,
  *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[] } }>,
  *   subscriberCount?: () => number
  * }} [options]
@@ -328,13 +328,17 @@ export function createRunnableCache(options = {}) {
       rows = result.snapshot.all;
     } else {
       const result = await options.runJson?.(
+        'list',
         ['list', '--status', 'open', '--limit', '1000', '--json'],
         { cwd: workspace }
       );
-      if (!result || result.code !== 0) {
+      // A protocol failure is not "no runnable work": returning null keeps it
+      // out of the cache instead of storing an empty set that would read as a
+      // settled answer.
+      if (!result || result.ok !== true) {
         return null;
       }
-      rows = result.stdoutJson;
+      rows = result.data;
     }
     if (!Array.isArray(rows)) {
       return null;
