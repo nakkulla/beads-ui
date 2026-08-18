@@ -3007,22 +3007,26 @@ describe('ws worker-queue 직렬 레인 (UI-04vo Phase 3)', () => {
   test('routes a lane-aware reorder within a serial lane', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm0', 'worker-queue-set-serial-lane-count', {
+      count: 2,
+      expected_revision: 0
+    });
     await send(sock, 'm1', 'worker-queue-place', {
       bead_id: 'UI-1',
       lane: 's2',
-      expected_revision: 0
+      expected_revision: 1
     });
     await send(sock, 'm2', 'worker-queue-place', {
       bead_id: 'UI-2',
       lane: 's2',
-      expected_revision: 1
+      expected_revision: 2
     });
 
     await send(sock, 'm3', 'worker-queue-reorder', {
       bead_id: 'UI-2',
       lane: 's2',
       to_index: 0,
-      expected_revision: 2
+      expected_revision: 3
     });
 
     const reply = replyFor(sock, 'm3');
@@ -3037,15 +3041,19 @@ describe('ws worker-queue 직렬 레인 (UI-04vo Phase 3)', () => {
   test('routes worker-queue-set-serial-lane-count and returns truncated entries to parallel', async () => {
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm0', 'worker-queue-set-serial-lane-count', {
+      count: 2,
+      expected_revision: 0
+    });
     await send(sock, 'm1', 'worker-queue-place', {
       bead_id: 'UI-x',
       lane: 's2',
-      expected_revision: 0
+      expected_revision: 1
     });
 
     await send(sock, 'm2', 'worker-queue-set-serial-lane-count', {
       count: 1,
-      expected_revision: 1
+      expected_revision: 2
     });
 
     const reply = replyFor(sock, 'm2');
@@ -3119,6 +3127,10 @@ describe('ws worker-queue 직렬 레인 (UI-04vo Phase 3)', () => {
 
   test('snapshot exposes serial lane occupancy from durable attempts', async () => {
     const store = getWorkerRuntime().queueStore;
+    store.setSerialLaneCount(process.cwd(), {
+      expected_revision: store.snapshot(process.cwd()).revision,
+      count: 2
+    });
     store.appendAttempt(process.cwd(), {
       expected_revision: store.snapshot(process.cwd()).revision,
       attempt: {

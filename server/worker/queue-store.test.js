@@ -5523,16 +5523,13 @@ describe('worker/queue-store — legacy migration stamp (master spec §11)', () 
 });
 
 describe('worker/queue-store — 직렬 레인 스키마 (UI-04vo seam A)', () => {
-  test('defaults to two empty fixed serial lanes', () => {
+  test('defaults to one empty fixed serial lane', () => {
     const store = createQueueStore();
 
     const q = store.snapshot(WS);
 
-    expect(q.serial_lane_count).toBe(2);
-    expect(q.serial_lanes).toEqual([
-      { id: 's1', entries: [] },
-      { id: 's2', entries: [] }
-    ]);
+    expect(q.serial_lane_count).toBe(1);
+    expect(q.serial_lanes).toEqual([{ id: 's1', entries: [] }]);
   });
 
   test('normalizes stored serial lanes onto the stored count with fixed ids', () => {
@@ -5561,8 +5558,8 @@ describe('worker/queue-store — 직렬 레인 스키마 (UI-04vo seam A)', () =
 
     const loaded = createQueueStore().load(WS);
 
-    expect(loaded.serial_lane_count).toBe(2);
-    expect(loaded.serial_lanes).toHaveLength(2);
+    expect(loaded.serial_lane_count).toBe(1);
+    expect(loaded.serial_lanes).toHaveLength(1);
   });
 
   test('drops pr_wait_holds_slot on load instead of round-tripping it', () => {
@@ -5700,12 +5697,13 @@ describe('worker/queue-store — 직렬 레인 스키마 (UI-04vo seam A)', () =
 
   test('reorder reorders within a serial lane', () => {
     const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'A', lane: 's2' });
-    store.place(WS, { expected_revision: 1, bead_id: 'B', lane: 's2' });
-    store.place(WS, { expected_revision: 2, bead_id: 'C', lane: 's2' });
+    store.setSerialLaneCount(WS, { expected_revision: 0, count: 2 });
+    store.place(WS, { expected_revision: 1, bead_id: 'A', lane: 's2' });
+    store.place(WS, { expected_revision: 2, bead_id: 'B', lane: 's2' });
+    store.place(WS, { expected_revision: 3, bead_id: 'C', lane: 's2' });
 
     const r = store.reorder(WS, {
-      expected_revision: 3,
+      expected_revision: 4,
       bead_id: 'C',
       lane: 's2',
       to_index: 0
@@ -5753,11 +5751,12 @@ describe('worker/queue-store — 직렬 레인 스키마 (UI-04vo seam A)', () =
 
   test('setSerialLaneCount returns truncated waiting entries to the parallel tail', () => {
     const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'A' });
-    store.place(WS, { expected_revision: 1, bead_id: 'X', lane: 's2' });
-    store.place(WS, { expected_revision: 2, bead_id: 'Y', lane: 's2' });
+    store.setSerialLaneCount(WS, { expected_revision: 0, count: 2 });
+    store.place(WS, { expected_revision: 1, bead_id: 'A' });
+    store.place(WS, { expected_revision: 2, bead_id: 'X', lane: 's2' });
+    store.place(WS, { expected_revision: 3, bead_id: 'Y', lane: 's2' });
 
-    const r = store.setSerialLaneCount(WS, { expected_revision: 3, count: 1 });
+    const r = store.setSerialLaneCount(WS, { expected_revision: 4, count: 1 });
 
     expect(r.ok).toBe(true);
     expect(r.queue.serial_lanes).toHaveLength(1);
@@ -5919,9 +5918,10 @@ describe('worker/queue-store — blocks topological 보정 (UI-04vo seam C)', ()
 describe('worker/queue-store — 분석 제출 단일 CAS (UI-04vo seam J)', () => {
   test('moves every submitted bead into the target lane in one revision', () => {
     const store = createQueueStore();
-    store.place(WS, { expected_revision: 0, bead_id: 'A' });
-    store.place(WS, { expected_revision: 1, bead_id: 'B' });
-    store.place(WS, { expected_revision: 2, bead_id: 'C', lane: 's2' });
+    store.setSerialLaneCount(WS, { expected_revision: 0, count: 2 });
+    store.place(WS, { expected_revision: 1, bead_id: 'A' });
+    store.place(WS, { expected_revision: 2, bead_id: 'B' });
+    store.place(WS, { expected_revision: 3, bead_id: 'C', lane: 's2' });
     const before = store.snapshot(WS).revision;
 
     const r = store.applySerialGroup(WS, {
@@ -6075,8 +6075,12 @@ describe('worker/queue-store — 분석 제출 단일 CAS (UI-04vo seam J)', () 
 describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo 구현 리뷰 1)', () => {
   test('moving a failed bead to another lane moves its lane occupancy with it', () => {
     const store = createQueueStore();
-    let rev = store.place(WS, {
+    let rev = store.setSerialLaneCount(WS, {
       expected_revision: 0,
+      count: 2
+    }).queue.revision;
+    rev = store.place(WS, {
+      expected_revision: rev,
       bead_id: 'A',
       lane: 's1'
     }).queue.revision;
