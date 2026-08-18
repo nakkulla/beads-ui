@@ -126,6 +126,18 @@ describe('prWaitProgress', () => {
     expect(result?.label).toBe('배포 재시도 대기');
   });
 
+  test('keeps a durable failure ahead of work the current stage disowns', () => {
+    const result = prWaitProgress(
+      progressInput({
+        cleanup_cursor: 'base_containment',
+        cleanup_failed: { step: 'repo_operations', reason: 'old failure' },
+        repo_operations: [operation({ state: 'running' })]
+      })
+    );
+
+    expect(result).toMatchObject({ label: '배포 실패', failed: true });
+  });
+
   test('returns to failure after a rerun fails again', () => {
     const result = prWaitProgress(
       progressInput({

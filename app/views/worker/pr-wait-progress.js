@@ -163,18 +163,22 @@ export function prWaitProgress(input) {
   ].includes(
     typeof input.cleanup_cursor === 'string' ? input.cleanup_cursor : ''
   );
+  // 현재 단계 양립성은 cursor와 일시 활동만 증명한다. 남아 있는 실패 기록은
+  // 실패 이름을 구체화하는 보조 근거일 뿐이어서, 그것으로 후보 풀을 열면 이미
+  // 지나간 operation이 현재 진행으로 읽힌다.
   const repo_operations_stage =
     !cursor_after_repo_operations &&
     (input.cleanup_cursor === 'repo_operations' ||
-      transient_progress.step === 'repo_operations' ||
-      cleanup_failed?.step === 'repo_operations');
+      transient_progress.step === 'repo_operations');
   const merge_sha = isMergeSha(input.merge_sha)
     ? /** @type {string} */ (input.merge_sha)
     : null;
 
   /** @type {Record<string, any>[]} */
-  const exact_operations =
-    repo_operations_stage && merge_sha && Array.isArray(input.repo_operations)
+  const bound_operations =
+    !cursor_after_repo_operations &&
+    merge_sha &&
+    Array.isArray(input.repo_operations)
       ? input.repo_operations
           .filter(
             (operation) =>
@@ -184,6 +188,8 @@ export function prWaitProgress(input) {
           )
           .sort(compareOperations)
       : [];
+  /** @type {Record<string, any>[]} */
+  const exact_operations = repo_operations_stage ? bound_operations : [];
 
   const active_operation = exact_operations.find((operation) =>
     ACTIVE_OPERATION_STATES.has(operation.state)
@@ -193,8 +199,8 @@ export function prWaitProgress(input) {
   }
 
   if (cleanup_failed) {
-    if (cleanup_failed.step === 'repo_operations' && exact_operations[0]) {
-      return operationProgress(exact_operations[0], true);
+    if (cleanup_failed.step === 'repo_operations' && bound_operations[0]) {
+      return operationProgress(bound_operations[0], true);
     }
     return null;
   }
