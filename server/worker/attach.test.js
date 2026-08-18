@@ -278,6 +278,43 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
+  test('defaults the attachment git runner cwd to its repository', async () => {
+    const gitRun = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const att = createWorkerAttachment(WS, {
+      repo: '/repo',
+      gitRun,
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+
+    await att.gitRun(['status'], { timeout_ms: 1000 });
+
+    expect(gitRun).toHaveBeenCalledWith(['status'], {
+      cwd: '/repo',
+      timeout_ms: 1000
+    });
+  });
+
+  test('preserves an explicit cwd for the attachment git runner', async () => {
+    const gitRun = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const att = createWorkerAttachment(WS, {
+      repo: '/repo',
+      gitRun,
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+
+    await att.gitRun(['status'], { cwd: '/explicit-repo' });
+
+    expect(gitRun).toHaveBeenCalledWith(['status'], { cwd: '/explicit-repo' });
+  });
+
   test('routes a stranded cleanup retry through the real attachment to Done', async () => {
     const runtime = createWorkerRuntime();
     /** @type {Record<string, string>} */

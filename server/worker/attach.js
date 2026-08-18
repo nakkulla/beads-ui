@@ -406,10 +406,12 @@ export function defaultProbePid(pid) {
 export function createWorkerAttachment(workspace_root, options = {}) {
   const runtime = options.runtime || getWorkerRuntime();
   const repo = options.repo || workspace_root;
-  const gitRun =
+  const baseGitRun =
     options.gitRun ||
     ((/** @type {string[]} */ args, /** @type {any} */ opts) =>
       runShell('git', args, opts));
+  const gitRun = (/** @type {string[]} */ args, /** @type {any} */ opts = {}) =>
+    baseGitRun(args, { ...opts, cwd: opts.cwd ?? repo });
 
   // The ONE base resolution seam (worker-base-scope-alignment §1/§2). The base
   // has exactly one source — the target repo's `docs/agents/repo-ops.toml`
