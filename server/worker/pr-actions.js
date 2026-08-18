@@ -2422,30 +2422,50 @@ export function createPrActions(deps) {
     }
   }
 
-  /** Resume only nonterminal coordinator-owned cleanup rows after restart. */
+  /**
+   * Resume only nonterminal coordinator-owned cleanup rows after restart.
+   *
+   * A row is resumed from where its cursor stopped. The repo-operation half
+   * (`base_containment`, `repo_operations`) replays the whole cleanup; the
+   * closure half (`child_sweep`, `branch_cleanup`, `parent_close`) replays
+   * ONLY the closure, because reaching those cursors is itself the proof that
+   * the repo operations already settled terminally — {@link closeCoveredRow}
+   * is the single entry that owns that half, and each of its steps is
+   * idempotent, so an interrupted step simply runs again.
+   *
+   * Both halves are reachable interrupted: beads-ui deploys itself by
+   * restarting its own service, so a self-deploy can kill the worker mid
+   * cleanup. Such a row records neither success nor failure, which puts it
+   * outside the [정리] click's resume (that one requires a `cleanup_failed`
+   * record) — without this boot resume it would sit in `pr_wait` forever.
+   */
   async function resumeRepoOperations() {
-    if (!repo_operations) {
-      return [];
-    }
     const queue = deps.store.snapshot(workspace);
     const rows = queue.pr_wait.filter(
       (/** @type {any} */ row) =>
-        (row.cleanup_cursor === 'base_containment' ||
-          row.cleanup_cursor === 'repo_operations') &&
+        CLEANUP_STEPS.includes(row.cleanup_cursor) &&
         typeof row.merge_sha === 'string' &&
         !queue.cleanup_failed?.[row.bead_id]
     );
     for (const row of rows) {
+      const closure_only =
+        CLEANUP_STEPS.indexOf(row.cleanup_cursor) >=
+        CLEANUP_STEPS.indexOf('child_sweep');
+      if (!closure_only && !repo_operations) {
+        continue;
+      }
       if (in_flight.has(row.bead_id)) {
         continue;
       }
       in_flight.add(row.bead_id);
       try {
-        await runCleanup(row.bead_id, {
-          merge_sha: row.merge_sha,
-          head_ref: row.head_ref,
-          pr_url: row.pr_url
-        });
+        await (closure_only
+          ? closeCoveredRow(row.bead_id, true)
+          : runCleanup(row.bead_id, {
+              merge_sha: row.merge_sha,
+              head_ref: row.head_ref,
+              pr_url: row.pr_url
+            }));
       } finally {
         in_flight.delete(row.bead_id);
         clearStep(row.bead_id);

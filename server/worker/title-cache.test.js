@@ -14,36 +14,41 @@ function fakeBd(titles, options = {}) {
   const pending = [];
   /** @type {Array<Promise<unknown>>} */
   const calls = [];
-  const runJson = vi.fn((/** @type {string[]} */ args) => {
-    const p = new Promise((resolve) => {
-      const bead_id = args[1];
-      const bead = titles[bead_id];
-      const answer = () => {
-        if (
-          typeof bead !== 'string' &&
-          (!bead || typeof bead.title !== 'string')
-        ) {
-          resolve({ code: 1, stderr: 'not found' });
-          return;
+  const runJson = vi.fn(
+    (/** @type {string} */ _family, /** @type {string[]} */ args) => {
+      const p = new Promise((resolve) => {
+        const bead_id = args[1];
+        const bead = titles[bead_id];
+        const answer = () => {
+          if (
+            typeof bead !== 'string' &&
+            (!bead || typeof bead.title !== 'string')
+          ) {
+            resolve({
+              ok: false,
+              error: { code: 'bd_exit_error', message: 'not found' }
+            });
+            return;
+          }
+          resolve({
+            ok: true,
+            protocol: { format: 'bare', schema_version: null },
+            data:
+              typeof bead === 'string'
+                ? { id: bead_id, title: bead }
+                : { id: bead_id, ...bead }
+          });
+        };
+        if (options.deferred) {
+          pending.push(answer);
+        } else {
+          answer();
         }
-        resolve({
-          code: 0,
-          stdoutJson: [
-            typeof bead === 'string'
-              ? { id: bead_id, title: bead }
-              : { id: bead_id, ...bead }
-          ]
-        });
-      };
-      if (options.deferred) {
-        pending.push(answer);
-      } else {
-        answer();
-      }
-    });
-    calls.push(p);
-    return p;
-  });
+      });
+      calls.push(p);
+      return p;
+    }
+  );
   return {
     runJson,
     release() {
@@ -70,7 +75,9 @@ describe('worker title cache (UI-12k6)', () => {
     const bd = fakeBd({
       'UI-1': { title: '첫 제목', labels: ['worker-serial', 3, 'frontend'] }
     });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     expect(cache.labelsFor('/ws', ['UI-1'])).toEqual({});
 
@@ -83,7 +90,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('keeps an unreadable label projection absent', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     cache.labelsFor('/ws', ['UI-1', 'UI-2']);
 
@@ -103,7 +112,7 @@ describe('worker title cache (UI-12k6)', () => {
           release = resolve;
         })
     );
-    const cache = createTitleCache({ runJson });
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
 
     cache.labelsFor('/ws', ['UI-1']);
     await vi.waitFor(() => expect(runJson).toHaveBeenCalledTimes(1));
@@ -127,7 +136,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('returns nothing on a cold miss and fills asynchronously', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     const first = cache.titlesFor('/ws', ['UI-1']);
 
@@ -140,7 +151,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('calls the filled callback once per fill batch', async () => {
     const bd = fakeBd({ 'UI-1': '제목 1', 'UI-2': '제목 2' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
     const onFilled = vi.fn();
     cache.setOnFilled(onFilled);
 
@@ -156,7 +169,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('does not call the filled callback when nothing lands', async () => {
     const bd = fakeBd({});
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
     const onFilled = vi.fn();
     cache.setOnFilled(onFilled);
 
@@ -170,7 +185,7 @@ describe('worker title cache (UI-12k6)', () => {
     let clock = 1000;
     const bd = fakeBd({});
     const cache = createTitleCache({
-      runJson: bd.runJson,
+      runJson: /** @type {any} */ (bd.runJson),
       negative_ttl_ms: 500,
       now: () => clock
     });
@@ -187,7 +202,7 @@ describe('worker title cache (UI-12k6)', () => {
     let clock = 1000;
     const bd = fakeBd({});
     const cache = createTitleCache({
-      runJson: bd.runJson,
+      runJson: /** @type {any} */ (bd.runJson),
       negative_ttl_ms: 500,
       now: () => clock
     });
@@ -202,7 +217,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('collapses concurrent lookups of the same id into one bd call', async () => {
     const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     cache.titlesFor('/ws', ['UI-1']);
     await vi.waitFor(() => expect(bd.runJson).toHaveBeenCalledTimes(1));
@@ -218,7 +235,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('keys workspaces separately after path resolution', async () => {
     const bd = fakeBd({ 'UI-1': '제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     cache.titlesFor('/ws/a', ['UI-1']);
     await vi.waitFor(() =>
@@ -230,7 +249,9 @@ describe('worker title cache (UI-12k6)', () => {
 
   test('ignores an empty title as unreadable', async () => {
     const bd = fakeBd({ 'UI-1': '' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
     const onFilled = vi.fn();
     cache.setOnFilled(onFilled);
 
@@ -245,7 +266,9 @@ describe('worker title cache (UI-12k6)', () => {
 describe('worker title cache — ensureTitle (UI-vb0t)', () => {
   test('resolves a cold miss by filling it instead of omitting it', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     const title = await cache.ensureTitle('/ws', 'UI-1');
 
@@ -255,7 +278,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('answers a cache hit without touching bd', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     await cache.ensureTitle('/ws', 'UI-1');
     const again = await cache.ensureTitle('/ws', 'UI-1');
@@ -266,7 +291,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('returns null for an unreadable bead', async () => {
     const bd = fakeBd({});
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     const title = await cache.ensureTitle('/ws', 'UI-1');
 
@@ -276,7 +303,7 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
   test('returns null without re-running bd inside the negative TTL', async () => {
     const bd = fakeBd({});
     const cache = createTitleCache({
-      runJson: bd.runJson,
+      runJson: /** @type {any} */ (bd.runJson),
       negative_ttl_ms: 500,
       now: () => 1000
     });
@@ -292,7 +319,7 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
     let clock = 1000;
     const bd = fakeBd({});
     const cache = createTitleCache({
-      runJson: bd.runJson,
+      runJson: /** @type {any} */ (bd.runJson),
       negative_ttl_ms: 500,
       now: () => clock
     });
@@ -306,7 +333,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('shares one bd call with a snapshot lookup already in flight', async () => {
     const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     cache.titlesFor('/ws', ['UI-1']);
     const pending = cache.ensureTitle('/ws', 'UI-1');
@@ -318,7 +347,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('collapses concurrent ensureTitle calls into one bd call', async () => {
     const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     const both = Promise.all([
       cache.ensureTitle('/ws', 'UI-1'),
@@ -333,7 +364,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('fans out once when it joins a snapshot lookup already in flight', async () => {
     const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
     const onFilled = vi.fn();
     cache.setOnFilled(onFilled);
 
@@ -348,7 +381,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('fans out once for concurrent ensureTitle callers', async () => {
     const bd = fakeBd({ 'UI-1': '한 번만' }, { deferred: true });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
     const onFilled = vi.fn();
     cache.setOnFilled(onFilled);
 
@@ -365,7 +400,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('feeds a title it warmed to the snapshot fanout', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
     const onFilled = vi.fn();
     cache.setOnFilled(onFilled);
 
@@ -377,7 +414,9 @@ describe('worker title cache — ensureTitle (UI-vb0t)', () => {
 
   test('returns null for an empty bead id without running bd', async () => {
     const bd = fakeBd({ 'UI-1': '첫 제목' });
-    const cache = createTitleCache({ runJson: bd.runJson });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
 
     const title = await cache.ensureTitle('/ws', '');
 
@@ -394,17 +433,23 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
    * @param {Record<string, any>} beads
    */
   function fakeBeads(beads) {
-    const runJson = vi.fn((/** @type {string[]} */ args) => {
-      const bead_id = args[1];
-      const bead = beads[bead_id];
-      if (!bead) {
-        return Promise.resolve({ code: 1, stderr: 'not found' });
+    const runJson = vi.fn(
+      (/** @type {string} */ _family, /** @type {string[]} */ args) => {
+        const bead_id = args[1];
+        const bead = beads[bead_id];
+        if (!bead) {
+          return Promise.resolve({
+            ok: false,
+            error: { code: 'bd_exit_error', message: 'not found' }
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          protocol: { format: 'bare', schema_version: null },
+          data: { id: bead_id, ...bead }
+        });
       }
-      return Promise.resolve({
-        code: 0,
-        stdoutJson: [{ id: bead_id, ...bead }]
-      });
-    });
+    );
     return runJson;
   }
 
@@ -412,7 +457,7 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     const runJson = fakeBeads({
       'UI-1': { title: 't', created_at: 100, updated_at: 200 }
     });
-    const cache = createTitleCache({ runJson });
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
 
     cache.titlesFor('/ws', ['UI-1']);
     await cache.ensureTitle('/ws', 'UI-1');
@@ -423,7 +468,9 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
   });
 
   test('omits a cold miss from timesFor', () => {
-    const cache = createTitleCache({ runJson: fakeBeads({}) });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (fakeBeads({}))
+    });
 
     expect(cache.timesFor('/ws', ['UI-1'])).toEqual({});
   });
@@ -432,7 +479,7 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     const runJson = fakeBeads({
       'UI-1': { title: 't', created_at: 1, updated_at: 2 }
     });
-    const cache = createTitleCache({ runJson });
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
 
     await cache.ensureTitle('/ws', 'UI-1');
     cache.titlesFor('/ws', ['UI-1']);
@@ -446,7 +493,10 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     const runJson = fakeBeads({
       'UI-1': { title: 't', created_at: 1, updated_at: 2 }
     });
-    const cache = createTitleCache({ runJson, now: () => clock });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (runJson),
+      now: () => clock
+    });
 
     await cache.ensureTitle('/ws', 'UI-1');
     clock += 60_000;
@@ -461,7 +511,10 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
       'UI-1': { title: 'old', created_at: 1, updated_at: 2 }
     };
     const runJson = fakeBeads(beads);
-    const cache = createTitleCache({ runJson, now: () => clock });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (runJson),
+      now: () => clock
+    });
     await cache.ensureTitle('/ws', 'UI-1');
     beads['UI-1'] = { title: 'new', created_at: 1, updated_at: 9 };
     clock += 6 * 60_000;
@@ -481,7 +534,10 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     /** @type {Record<string, any>} */
     const beads = { 'UI-1': { title: 'old', created_at: 1, updated_at: 2 } };
     const runJson = fakeBeads(beads);
-    const cache = createTitleCache({ runJson, now: () => clock });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (runJson),
+      now: () => clock
+    });
     await cache.ensureTitle('/ws', 'UI-1');
     delete beads['UI-1'];
     clock += 6 * 60_000;
@@ -497,7 +553,10 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     /** @type {Record<string, any>} */
     const beads = { 'UI-1': { title: 'old', created_at: 1, updated_at: 2 } };
     const runJson = fakeBeads(beads);
-    const cache = createTitleCache({ runJson, now: () => clock });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (runJson),
+      now: () => clock
+    });
     await cache.ensureTitle('/ws', 'UI-1');
     beads['UI-1'] = { title: 'new', created_at: 1, updated_at: 9 };
     clock += 6 * 60_000;
@@ -512,7 +571,10 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     /** @type {Record<string, any>} */
     const beads = { 'UI-1': { title: 'old', created_at: 1, updated_at: 2 } };
     const runJson = fakeBeads(beads);
-    const cache = createTitleCache({ runJson, now: () => clock });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (runJson),
+      now: () => clock
+    });
     await cache.ensureTitle('/ws', 'UI-1');
     delete beads['UI-1'];
     clock += 6 * 60_000;
@@ -526,7 +588,7 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     const runJson = fakeBeads({
       'UI-1': { title: 't', created_at: {}, updated_at: '2026-07-28' }
     });
-    const cache = createTitleCache({ runJson });
+    const cache = createTitleCache({ runJson: /** @type {any} */ (runJson) });
 
     await cache.ensureTitle('/ws', 'UI-1');
 

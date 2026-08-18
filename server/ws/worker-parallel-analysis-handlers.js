@@ -28,7 +28,7 @@ import {
   validateAnalysisResult
 } from '../worker/parallel-analysis-validator.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
-import { log, runBdJsonInWorkspace } from './context.js';
+import { log, runBdJsonProjectedInWorkspace } from './context.js';
 import { decorateQueue, fanout as fanoutQueue } from './worker-handlers.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
@@ -175,13 +175,13 @@ async function listIssues(ws, workspace) {
     return TEST_DEPS.listIssues(ws, workspace);
   }
   try {
-    const result = await runBdJsonInWorkspace(ws, [
+    const result = await runBdJsonProjectedInWorkspace(ws, 'list', [
       'list',
       '--json',
       '--limit',
       '1000'
     ]);
-    const rows = result && result.stdoutJson;
+    const rows = result && result.ok === true ? result.data : null;
     return Array.isArray(rows) ? rows : [];
   } catch (err) {
     log('parallel analysis issue list failed for %s: %o', workspace, err);

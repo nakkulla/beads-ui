@@ -1,4 +1,8 @@
-import { runBd } from './bd.js';
+import {
+  bdHealthSnapshot,
+  resolveBdWorkspaceIdentity
+} from './bd-capability.js';
+import { runBd, runBdJson } from './bd.js';
 import { resolveWorkspaceDatabase } from './db.js';
 import { MANUAL_MERGE_CONTINUATION } from './worker/queue-store.js';
 import { getWorkerRuntime } from './worker/runtime.js';
@@ -96,22 +100,50 @@ export function defaultWorkerStatus(root_dir) {
 }
 
 /**
+ * Default bd capability probe: the dual-mode producer observation for the
+ * workspace, using the real bd runner.
+ *
+ * @param {string} root_dir
+ * @returns {Promise<{ ok: boolean, diagnostics: Record<string, unknown> }>}
+ */
+export async function defaultBdCapabilityProbe(root_dir) {
+  const identity = resolveBdWorkspaceIdentity({ root_dir });
+  return bdHealthSnapshot({
+    primary_workspace: identity.ok ? identity.data : undefined,
+    run_json: runBdJson,
+    cwd: root_dir
+  });
+}
+
+/**
  * Run readiness checks and compute overall health. `worker` reflects the live
  * Worker subsystem: auto_advance and the running session count.
  *
- * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, worker_status?: () => WorkerStatus, runtime_identity?: () => any }} [options]
- * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus }, runtime: any|null }>}
+ * `checks.bd` stays a boolean and now answers a stronger question than "does
+ * the binary run": a bd whose JSON this server cannot read is not a usable bd,
+ * so an unhealthy protocol boundary turns it false and `/healthz` 503. The
+ * typed detail is additive under `diagnostics.bd`.
+ *
+ * @param {{ root_dir?: string, bd_probe?: HealthProbe, db_probe?: HealthProbe, bd_capability_probe?: (root_dir: string) => Promise<{ ok: boolean, diagnostics: Record<string, unknown> }>, worker_status?: () => WorkerStatus, runtime_identity?: () => any }} [options]
+ * @returns {Promise<{ ok: boolean, checks: { bd: boolean, db: boolean, worker: WorkerStatus }, runtime: any|null, diagnostics: { bd: Record<string, unknown> } }>}
  */
 export async function checkHealth(options = {}) {
   const root_dir = options.root_dir || process.cwd();
   const bd_probe = options.bd_probe || defaultBdProbe;
   const db_probe = options.db_probe || (() => defaultDbProbe(root_dir));
+  const capability_probe =
+    options.bd_capability_probe || defaultBdCapabilityProbe;
 
-  const [bd, db] = await Promise.all([runProbe(bd_probe), runProbe(db_probe)]);
+  const [bd_alive, db, capability] = await Promise.all([
+    runProbe(bd_probe),
+    runProbe(db_probe),
+    runCapabilityProbe(capability_probe, root_dir)
+  ]);
 
   const worker = options.worker_status
     ? options.worker_status()
     : defaultWorkerStatus(root_dir);
+  const bd = bd_alive && capability.ok;
   const checks = { bd, db, worker };
   let runtime = null;
   try {
@@ -119,5 +151,40 @@ export async function checkHealth(options = {}) {
   } catch {
     runtime = null;
   }
-  return { ok: bd && db, checks, runtime };
+  return {
+    ok: bd && db,
+    checks,
+    runtime,
+    diagnostics: { bd: capability.diagnostics }
+  };
+}
+
+/**
+ * Run the capability probe, turning a thrown probe into an explicit red result
+ * rather than an absent diagnostic.
+ *
+ * @param {(root_dir: string) => Promise<{ ok: boolean, diagnostics: Record<string, unknown> }>} probe
+ * @param {string} root_dir
+ */
+async function runCapabilityProbe(probe, root_dir) {
+  try {
+    const result = await probe(root_dir);
+    if (result && typeof result === 'object') {
+      return result;
+    }
+  } catch {
+    // Fall through to the explicit red result below.
+  }
+  return {
+    ok: false,
+    diagnostics: {
+      version: null,
+      producer_observations: null,
+      producer_capabilities: [],
+      consumer_supported_formats: [],
+      workspace_probe: { ok: false },
+      active_protocol_failures: { workspace_count: 0, families: [] },
+      error: 'bd_capability_probe_failed'
+    }
+  };
 }

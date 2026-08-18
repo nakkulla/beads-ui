@@ -29,6 +29,7 @@ import {
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
+import { isBdProtocolFailure } from '../bd-json.js';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
 import {
@@ -247,7 +248,7 @@ function qualify(row) {
  *   now?: () => number,
  *   positive_ttl_ms?: number,
  *   negative_ttl_ms?: number,
- *   runJson?: (args: string[], options?: { cwd?: string }) => Promise<{ code: number, stdoutJson?: unknown }>,
+ *   runJson?: (command_family: string, args: string[], options?: { cwd?: string }) => Promise<{ ok: boolean, data?: unknown }>,
  *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[] } }>,
  *   subscriberCount?: () => number
  * }} [options]
@@ -316,28 +317,32 @@ export function createRunnableCache(options = {}) {
    * on.
    *
    * @param {string} workspace
-   * @returns {Promise<RunnableItem[]|null>}
+   * @returns {Promise<{ items: RunnableItem[]|null, protocol_failure: boolean }>}
    */
   async function fetchRunnable(workspace) {
     let rows;
     if (requestSnapshot) {
       const result = await requestSnapshot(workspace, 'monitor-runnable');
       if (!result.ok || result.stale || !Array.isArray(result.snapshot?.all)) {
-        return null;
+        return { items: null, protocol_failure: false };
       }
       rows = result.snapshot.all;
     } else {
       const result = await options.runJson?.(
+        'list',
         ['list', '--status', 'open', '--limit', '1000', '--json'],
         { cwd: workspace }
       );
-      if (!result || result.code !== 0) {
-        return null;
+      // A protocol failure is not "no runnable work": it is reported so the
+      // caller skips the negative cache entirely, because suppressing the retry
+      // would hide a compatibility break behind an empty queue.
+      if (!result || result.ok !== true) {
+        return { items: null, protocol_failure: isBdProtocolFailure(result) };
       }
-      rows = result.stdoutJson;
+      rows = result.data;
     }
     if (!Array.isArray(rows)) {
-      return null;
+      return { items: null, protocol_failure: false };
     }
     /** @type {RunnableItem[]} */
     const items = [];
@@ -350,7 +355,7 @@ export function createRunnableCache(options = {}) {
         items.push(item);
       }
     }
-    return items;
+    return { items, protocol_failure: false };
   }
 
   /**
@@ -381,13 +386,17 @@ export function createRunnableCache(options = {}) {
     const key = keyOf(workspace);
     const run = (async () => {
       try {
-        const items = await fetchRunnable(workspace);
-        if (items) {
-          records.set(key, { items, at: now() });
+        const fetched = await fetchRunnable(workspace);
+        if (fetched.items) {
+          records.set(key, { items: fetched.items, at: now() });
           failed.delete(key);
           return true;
         }
-        failed.set(key, now() + negative_ttl_ms);
+        // A protocol fault stays retryable: negative-caching it would report a
+        // compatibility break as an empty runnable queue for the whole TTL.
+        if (!fetched.protocol_failure) {
+          failed.set(key, now() + negative_ttl_ms);
+        }
         log('runnable list unreadable for %s', key);
         return false;
       } catch (err) {

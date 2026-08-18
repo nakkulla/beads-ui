@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { runBdJson } from './bd.js';
+import { runBdJsonProjected } from './bd.js';
 import {
   __resetWorkerAttachmentsForTest,
   __setUnattachedAdmissionCheckForTest
@@ -16,13 +16,24 @@ import {
 } from './ws.js';
 import { decorateQueue } from './ws/worker-handlers.js';
 
-// Only `runBdJson` is faked — the title cache's fill is the single `bd` caller
+// Only `runBdJsonProjected` is faked — the title cache's fill is the single
 // under test, and everything else the ws layer imports from `bd.js` must stay
 // real so this exercises the production wiring.
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', async (importOriginal) => {
   /** @type {any} */
   const actual = await importOriginal();
-  return { ...actual, runBdJson: vi.fn() };
+  return { ...actual, runBdJsonProjected: vi.fn() };
 });
 
 /** @type {string} */
@@ -74,23 +85,29 @@ function queueSnapshots(sock) {
  * @param {Record<string, string | { title: string, labels?: unknown }>} titles
  */
 function stubBdTitles(titles) {
-  vi.mocked(runBdJson).mockImplementation(
-    async (/** @type {string[]} */ args) => {
+  vi.mocked(runBdJsonProjected).mockImplementation(
+    async (
+      /** @type {string} */ _command_family,
+      /** @type {string[]} */ args
+    ) => {
       const bead_id = args[1];
       const title = titles[bead_id];
       if (
         typeof title !== 'string' &&
         (!title || typeof title.title !== 'string')
       ) {
-        return { code: 1, stderr: 'not found' };
+        return {
+          ok: false,
+          error: { code: 'bd_exit_error', message: 'not found' }
+        };
       }
       return {
-        code: 0,
-        stdoutJson: [
+        ok: true,
+        protocol: { format: 'bare', schema_version: null },
+        data:
           typeof title === 'string'
             ? { id: bead_id, title }
             : { id: bead_id, ...title }
-        ]
       };
     }
   );
@@ -102,7 +119,7 @@ beforeEach(() => {
   __resetRegistriesForTest();
   __resetWorkerQueueForTest();
   __setUnattachedAdmissionCheckForTest(async () => ({ ok: true }));
-  vi.mocked(runBdJson).mockReset();
+  vi.mocked(runBdJsonProjected).mockReset();
   attachWsServer(createServer(), { path: '/ws' });
 });
 

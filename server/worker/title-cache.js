@@ -25,7 +25,8 @@
  */
 import path from 'node:path';
 import { workerLabels } from '../../app/utils/worker-eligibility.js';
-import { runBdJson, unwrapShowJson } from '../bd.js';
+import { isBdProtocolFailure } from '../bd-json.js';
+import { runBdJsonProjected } from '../bd.js';
 import { debug } from '../logging.js';
 
 const log = debug('worker:title-cache');
@@ -68,7 +69,7 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * Create a bead title cache. One instance is held process-wide by the worker
  * runtime so every workspace's snapshot decoration shares the fill queue.
  *
- * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJson }} [options]
+ * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJsonProjected }} [options]
  */
 export function createTitleCache(options = {}) {
   const now = options.now || (() => Date.now());
@@ -80,9 +81,7 @@ export function createTitleCache(options = {}) {
     typeof options.positive_ttl_ms === 'number'
       ? options.positive_ttl_ms
       : POSITIVE_TTL_MS;
-  const runJson =
-    options.runJson ||
-    ((args, opts) => runBdJson(args, /** @type {any} */ (opts)));
+  const runJson = options.runJson || runBdJsonProjected;
 
   /** @type {Map<string, Map<string, BeadRecord>>} */
   const titles_by_workspace = new Map();
@@ -216,15 +215,20 @@ export function createTitleCache(options = {}) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @returns {Promise<BeadRecord|null>}
+   * @returns {Promise<{ record: BeadRecord|null, protocol_failure: boolean }>}
    */
   async function fetchBead(workspace, bead_id) {
-    const r = await runJson(['show', bead_id, '--json'], { cwd: workspace });
-    if (!r || r.code !== 0) {
-      return null;
+    const r = await runJson('show', ['show', bead_id, '--json'], {
+      cwd: workspace,
+      expected_id: bead_id
+    });
+    if (!r || r.ok !== true) {
+      // A protocol fault is reported separately so the caller does not
+      // negative-cache it: suppressing the retry would hide a compatibility
+      // break behind a bead that simply "has no title".
+      return { record: null, protocol_failure: isBdProtocolFailure(r) };
     }
-    const issue = unwrapShowJson(r.stdoutJson);
-    return recordFromIssue(issue);
+    return { record: recordFromIssue(r.data), protocol_failure: false };
   }
 
   /**
@@ -271,7 +275,8 @@ export function createTitleCache(options = {}) {
       const lane = laneFor(workspace);
       const failed = failedFor(workspace);
       try {
-        const bead = await fetchBead(workspace, bead_id);
+        const fetched = await fetchBead(workspace, bead_id);
+        const bead = fetched.record;
         if (bead) {
           if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
             lane.set(bead_id, bead);
@@ -283,8 +288,12 @@ export function createTitleCache(options = {}) {
         }
         // A refresh that failed must NOT evict what is already cached
         // (UI-d7pw §4.4): dropping a title the reader already sees because `bd`
-        // hiccupped is a regression. Only the retry is suppressed.
-        if ((generationsFor(workspace).get(bead_id) || 0) === generation) {
+        // hiccupped is a regression. Only the retry is suppressed — and not
+        // even that for a protocol fault, which must stay retryable.
+        if (
+          !fetched.protocol_failure &&
+          (generationsFor(workspace).get(bead_id) || 0) === generation
+        ) {
           failed.set(bead_id, now() + negative_ttl_ms);
         }
         log('no title for %s in %s', bead_id, workspace);

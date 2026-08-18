@@ -6,16 +6,37 @@ import { MESSAGE_TYPES } from '../../app/protocol.js';
 import { IMPL_PRESET_KEYS } from '../worker/exec-enums.js';
 
 const runBdInWorkspace = vi.fn();
-const runBdJsonInWorkspace = vi.fn();
+const runBdJsonProjectedInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
 
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('../bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./context.js', () => ({
+  readbackFailureDetail: (/** @type {string} */ reason) => ({
+    phase: 'readback',
+    write_applied: true,
+    retry_safe: false,
+    reason
+  }),
   runBdInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
     runBdInWorkspace(ws, args),
-  runBdJsonInWorkspace: (/** @type {any} */ ws, /** @type {string[]} */ args) =>
-    runBdJsonInWorkspace(ws, args),
+  runBdJsonProjectedInWorkspace: (
+    /** @type {any} */ ws,
+    /** @type {string} */ command_family,
+    /** @type {string[]} */ args,
+    /** @type {any} */ options
+  ) => runBdJsonProjectedInWorkspace(ws, command_family, args, options),
   kvGetJsonInWorkspace: (/** @type {any} */ ws, /** @type {any} */ key) =>
     kvGetJsonInWorkspace(ws, key),
   kvSetJsonInWorkspace: (
@@ -74,7 +95,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   __resetImplPresetsForTest();
   runBdInWorkspace.mockReset();
-  runBdJsonInWorkspace.mockReset();
+  runBdJsonProjectedInWorkspace.mockReset();
   triggerMutationRefreshOnce.mockReset();
   kvGetJsonInWorkspace.mockReset();
   kvSetJsonInWorkspace.mockReset();
@@ -149,9 +170,10 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
       impl_runtime: 'inherit'
     });
     runBdInWorkspace.mockResolvedValue({ code: 0, stderr: '' });
-    runBdJsonInWorkspace.mockResolvedValue({
-      code: 0,
-      stdoutJson: { id: 'UI-1', metadata: { impl_dispatch: 'delegated' } }
+    runBdJsonProjectedInWorkspace.mockResolvedValue({
+      ok: true,
+      protocol: { format: 'bare', schema_version: null },
+      data: { id: 'UI-1', metadata: { impl_dispatch: 'delegated' } }
     });
 
     await handleApplyImplPreset(ws, {
@@ -337,6 +359,11 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
       payload: { preset_id, expected_revision: 1 }
     });
 
-    expect(sent[sent.length - 1].error.code).toBe('kv_readback_failed');
+    expect(sent[sent.length - 1].error.code).toBe('bd_readback_failed');
+    expect(sent[sent.length - 1].error.details).toMatchObject({
+      phase: 'readback',
+      write_applied: true,
+      retry_safe: false
+    });
   });
 });

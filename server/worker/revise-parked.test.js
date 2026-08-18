@@ -28,10 +28,14 @@ function parkedQueue(over = {}) {
 
 /**
  * @param {Record<string, any>} issue
- * @returns {(args: string[], options?: any) => Promise<any>}
+ * @returns {any}
  */
 function bdReturning(issue) {
-  return vi.fn(async () => ({ code: 0, stdoutJson: issue }));
+  return vi.fn(async () => ({
+    ok: true,
+    protocol: { format: 'bare', schema_version: null },
+    data: issue
+  }));
 }
 
 const PARKED_ISSUE = {
@@ -80,7 +84,9 @@ describe('reviseParkedCandidates', () => {
 describe('createReviseParkedStore', () => {
   test('observeFor returns nothing on the first pass and fills asynchronously', async () => {
     const runJson = bdReturning(PARKED_ISSUE);
-    const store = createReviseParkedStore({ runJson });
+    const store = createReviseParkedStore({
+      runJson: /** @type {any} */ (runJson)
+    });
     const filled = vi.fn();
     store.setOnFilled(filled);
 
@@ -100,7 +106,9 @@ describe('createReviseParkedStore', () => {
 
   test('caches a non-parked verdict so the next snapshot re-queries nothing', async () => {
     const runJson = bdReturning({ id: 'UI-1', status: 'open', metadata: {} });
-    const store = createReviseParkedStore({ runJson });
+    const store = createReviseParkedStore({
+      runJson: /** @type {any} */ (runJson)
+    });
 
     store.observeFor('/ws', parkedQueue());
     await vi.waitFor(() => expect(runJson).toHaveBeenCalledTimes(1));
@@ -112,7 +120,7 @@ describe('createReviseParkedStore', () => {
 
   test('verify re-runs the whole judgment and reports the observation', async () => {
     const store = createReviseParkedStore({
-      runJson: bdReturning(PARKED_ISSUE)
+      runJson: /** @type {any} */ (bdReturning(PARKED_ISSUE))
     });
 
     const result = await store.verify('/ws', parkedQueue(), 'UI-1');
@@ -125,11 +133,13 @@ describe('createReviseParkedStore', () => {
 
   test('verify refuses a bead bd no longer reports as parked', async () => {
     const store = createReviseParkedStore({
-      runJson: bdReturning({
-        id: 'UI-1',
-        status: 'open',
-        metadata: { spec_review: 'codex@' + 'b'.repeat(40) }
-      })
+      runJson: /** @type {any} */ (
+        bdReturning({
+          id: 'UI-1',
+          status: 'open',
+          metadata: { spec_review: 'codex@' + 'b'.repeat(40) }
+        })
+      )
     });
 
     const result = await store.verify('/ws', parkedQueue(), 'UI-1');
@@ -139,7 +149,9 @@ describe('createReviseParkedStore', () => {
 
   test('verify refuses a bead that fails conditions 1-2 without querying bd', async () => {
     const runJson = bdReturning(PARKED_ISSUE);
-    const store = createReviseParkedStore({ runJson });
+    const store = createReviseParkedStore({
+      runJson: /** @type {any} */ (runJson)
+    });
 
     const result = await store.verify(
       '/ws',
@@ -153,7 +165,12 @@ describe('createReviseParkedStore', () => {
 
   test('verify reports a bd failure as a refusal, never as a pass', async () => {
     const store = createReviseParkedStore({
-      runJson: vi.fn(async () => ({ code: 1, stderr: 'bd down' }))
+      runJson: /** @type {any} */ (
+        vi.fn(async () => ({
+          ok: false,
+          error: { code: 'bd_exit_error', message: 'bd down' }
+        }))
+      )
     });
 
     const result = await store.verify('/ws', parkedQueue(), 'UI-1');
@@ -163,7 +180,9 @@ describe('createReviseParkedStore', () => {
 
   test('invalidate drops the cached verdict so the next pass re-observes', async () => {
     const runJson = bdReturning(PARKED_ISSUE);
-    const store = createReviseParkedStore({ runJson });
+    const store = createReviseParkedStore({
+      runJson: /** @type {any} */ (runJson)
+    });
     const filled = vi.fn();
     store.setOnFilled(filled);
 

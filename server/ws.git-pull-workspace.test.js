@@ -9,6 +9,17 @@ import {
   handleMessage
 } from './ws.js';
 
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
 vi.mock('./bd.js', () => ({
   runBdJson: vi.fn(),
   runBd: vi.fn(),

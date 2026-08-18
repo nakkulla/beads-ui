@@ -3,7 +3,8 @@ import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { runBd, runBdJson } from './bd.js';
+import { projectedResponse } from './__fixtures__/bd-json/projected.js';
+import { runBd, runBdJsonProjected } from './bd.js';
 import {
   __resetRegistriesForTest,
   __resetUiOrderForTest,
@@ -14,7 +15,18 @@ import { setConnWorkspace } from './ws/context.js';
 
 // update-status runs bd; mock it so the prune-on-close path resolves without a
 // real bd CLI. The ui-order channel itself never touches bd.
-vi.mock('./bd.js', () => ({ runBd: vi.fn(), runBdJson: vi.fn() }));
+// The workspace effect gate has its own tests; these state an open gate rather
+// than probing the live bd binary.
+vi.mock('./bd-effect-gate.js', async (importOriginal) => {
+  /** @type {any} */
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    requireBdJsonCapabilityForWorkspace: async () => ({ ok: true })
+  };
+});
+
+vi.mock('./bd.js', () => ({ runBd: vi.fn(), runBdJsonProjected: vi.fn() }));
 
 /** @type {string} */
 let tmp_state;
@@ -82,7 +94,7 @@ beforeEach(() => {
   __resetRegistriesForTest();
   __resetUiOrderForTest();
   /** @type {import('vitest').Mock} */ (runBd).mockReset();
-  /** @type {import('vitest').Mock} */ (runBdJson).mockReset();
+  /** @type {import('vitest').Mock} */ (runBdJsonProjected).mockReset();
   // Seed DEFAULT_WORKSPACE so bare sockets resolve a deterministic workspace.
   attachWsServer(createServer(), { path: '/ws' });
 });
@@ -190,12 +202,14 @@ describe('ws ui-order channel', () => {
 
   test('closing a bead via update-status prunes it and fans out a fresh snapshot', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-1', status: 'closed' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-1', status: 'closed' }
+      })
+    );
 
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-ui-order', { id: 'ui:order' });
@@ -219,12 +233,14 @@ describe('ws ui-order channel', () => {
 
   test('closing a bead not in the order does not fan out (no-op prune)', async () => {
     const mRun = /** @type {import('vitest').Mock} */ (runBd);
-    const mJson = /** @type {import('vitest').Mock} */ (runBdJson);
+    const mJson = /** @type {import('vitest').Mock} */ (runBdJsonProjected);
     mRun.mockResolvedValueOnce({ code: 0, stdout: '', stderr: '' });
-    mJson.mockResolvedValueOnce({
-      code: 0,
-      stdoutJson: { id: 'UI-404', status: 'closed' }
-    });
+    mJson.mockResolvedValueOnce(
+      projectedResponse(null, {
+        code: 0,
+        stdoutJson: { id: 'UI-404', status: 'closed' }
+      })
+    );
 
     const sock = fakeSocket();
     await send(sock, 's1', 'subscribe-ui-order', { id: 'ui:order' });

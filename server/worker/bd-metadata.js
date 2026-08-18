@@ -19,12 +19,14 @@
  * so this module is proven via an injected runner that captures argv (never a
  * real bd process).
  */
-import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
+import { requireBdJsonCapabilityForWorkspace } from '../bd-effect-gate.js';
+import { runBd, runBdJsonProjected } from '../bd.js';
 
 /**
  * @param {{
  *   run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>,
+ *   requireCapability?: (command_family: string) => Promise<{ ok: true } | { ok: false, error: { code: string } }>,
+ *   runJson?: typeof runBdJsonProjected,
  *   cwd?: string,
  *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, fresh?: boolean, snapshot?: { generation?: number, all?: unknown[] } }>
  * }} [deps]
@@ -44,10 +46,32 @@ import { runBd, runBdJson, unwrapShowJson } from '../bd.js';
  * }}
  */
 export function createBdMetadata(deps = {}) {
-  const run = deps.run || ((args, options) => runBd(args, options));
-  const runJson = deps.runJson || ((args, options) => runBdJson(args, options));
+  const run_unguarded = deps.run || ((args, options) => runBd(args, options));
+  const runJson = deps.runJson || runBdJsonProjected;
   const cwd = deps.cwd;
   const opts = cwd ? { cwd } : undefined;
+  const requireCapability =
+    deps.requireCapability ||
+    ((command_family) =>
+      requireBdJsonCapabilityForWorkspace(command_family, cwd));
+
+  /**
+   * Every bd WRITE goes through this wrapper, which is the workspace effect
+   * gate: a workspace whose bd JSON protocol this build cannot read must not
+   * receive writes, and routing all writers through one door is what keeps a
+   * new mutator from quietly bypassing the gate.
+   *
+   * @param {string[]} args
+   * @param {any} [options]
+   * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
+   */
+  const run = async (args, options) => {
+    const allowed = await requireCapability('write');
+    if (allowed.ok !== true) {
+      throw new Error(`bd write refused: ${allowed.error.code}`);
+    }
+    return run_unguarded(args, options);
+  };
   const requestSnapshot =
     typeof deps.requestSnapshot === 'function' ? deps.requestSnapshot : null;
 
@@ -101,13 +125,16 @@ export function createBdMetadata(deps = {}) {
      * @returns {Promise<string|null>}
      */
     async readMetadata(bead_id, key) {
-      const r = await runJson(['show', bead_id, '--json'], opts);
-      if (r && typeof r.code === 'number' && r.code !== 0) {
+      const r = await runJson('show', ['show', bead_id, '--json'], {
+        ...(opts || {}),
+        expected_id: bead_id
+      });
+      if (!r || r.ok !== true) {
         throw new Error(
-          `bd show ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+          `bd show ${bead_id} failed (${r && r.error ? r.error.code : 'no result'})`
         );
       }
-      const issue = unwrapShowJson(r && r.stdoutJson);
+      const issue = r.data;
       if (!issue || typeof issue !== 'object') {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
@@ -148,13 +175,16 @@ export function createBdMetadata(deps = {}) {
      * @returns {Promise<string|null>}
      */
     async readStatus(bead_id) {
-      const r = await runJson(['show', bead_id, '--json'], opts);
-      if (r && typeof r.code === 'number' && r.code !== 0) {
+      const r = await runJson('show', ['show', bead_id, '--json'], {
+        ...(opts || {}),
+        expected_id: bead_id
+      });
+      if (!r || r.ok !== true) {
         throw new Error(
-          `bd show ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+          `bd show ${bead_id} failed (${r && r.error ? r.error.code : 'no result'})`
         );
       }
-      const issue = unwrapShowJson(r && r.stdoutJson);
+      const issue = r.data;
       if (!issue || typeof issue !== 'object') {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
@@ -174,13 +204,16 @@ export function createBdMetadata(deps = {}) {
      * @returns {Promise<Record<string, any>>}
      */
     async readIssue(bead_id) {
-      const r = await runJson(['show', bead_id, '--json'], opts);
-      if (r && typeof r.code === 'number' && r.code !== 0) {
+      const r = await runJson('show', ['show', bead_id, '--json'], {
+        ...(opts || {}),
+        expected_id: bead_id
+      });
+      if (!r || r.ok !== true) {
         throw new Error(
-          `bd show ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+          `bd show ${bead_id} failed (${r && r.error ? r.error.code : 'no result'})`
         );
       }
-      const issue = unwrapShowJson(r && r.stdoutJson);
+      const issue = r.data;
       if (!issue || typeof issue !== 'object') {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
@@ -198,33 +231,25 @@ export function createBdMetadata(deps = {}) {
      */
     async findIssue(bead_id) {
       const r = await runJson(
+        'list',
         ['list', '--json', '--all', '--limit', '0', '--id', bead_id],
         opts
       );
-      if (r && typeof r.code === 'number' && r.code !== 0) {
+      if (!r || r.ok !== true) {
         throw new Error(
-          `bd list --id ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
+          `bd list --id ${bead_id} failed (${r && r.error ? r.error.code : 'no result'})`
         );
       }
-      if (!Array.isArray(r.stdoutJson)) {
-        throw new Error(
-          `bd list --id ${bead_id} returned an unreadable payload`
-        );
-      }
-      if (r.stdoutJson.length === 0) {
+      const rows = r.data;
+      if (rows.length === 0) {
         return null;
       }
-      if (
-        r.stdoutJson.length !== 1 ||
-        !r.stdoutJson[0] ||
-        typeof r.stdoutJson[0] !== 'object' ||
-        r.stdoutJson[0].id !== bead_id
-      ) {
+      if (rows.length !== 1 || rows[0].id !== bead_id) {
         throw new Error(
           `bd list --id ${bead_id} returned an ambiguous payload`
         );
       }
-      return /** @type {Record<string, any>} */ (r.stdoutJson[0]);
+      return /** @type {Record<string, any>} */ (rows[0]);
     },
 
     /**
@@ -374,22 +399,18 @@ export function createBdMetadata(deps = {}) {
       ];
       for (const selector of selectors) {
         const r = await runJson(
+          'list',
           ['list', '--json', '--all', '--limit', '0', ...selector],
           opts
         );
-        if (r && typeof r.code === 'number' && r.code !== 0) {
+        if (!r || r.ok !== true) {
           throw new Error(
-            `bd list ${selector.join(' ')} failed (${r.code}): ${(
-              r.stderr || ''
-            ).trim()}`
+            `bd list ${selector.join(' ')} failed (${
+              r && r.error ? r.error.code : 'no result'
+            })`
           );
         }
-        const rows = r && r.stdoutJson;
-        if (!Array.isArray(rows)) {
-          throw new Error(
-            `bd list ${selector.join(' ')} returned a non-array payload`
-          );
-        }
+        const rows = r.data;
         for (const raw of rows) {
           if (!raw || typeof raw !== 'object') {
             continue;
@@ -456,19 +477,16 @@ export function createBdMetadata(deps = {}) {
         };
       }
       const r = await runJson(
+        'list',
         ['list', '--json', '--all', '--limit', '0'],
         opts
       );
-      if (r && typeof r.code === 'number' && r.code !== 0) {
+      if (!r || r.ok !== true) {
         throw new Error(
-          `bd list --all failed (${r.code}): ${(r.stderr || '').trim()}`
+          `bd list --all failed (${r && r.error ? r.error.code : 'no result'})`
         );
       }
-      const rows = r && r.stdoutJson;
-      if (!Array.isArray(rows)) {
-        throw new Error('bd list --all returned a non-array payload');
-      }
-      return scanRows(rows);
+      return scanRows(r.data);
     }
   };
 }

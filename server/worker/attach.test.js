@@ -3,6 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  normalizeBdIssue,
+  normalizeBdIssueList,
+  normalizeBdReadyRows
+} from '../bd-json.js';
+import {
   RECONCILE_INTERVAL_SECONDS,
   __registerWorkerAttachmentForTest,
   __resetWorkerAttachmentsForTest,
@@ -202,6 +207,49 @@ function seedQueue(store, id) {
   const rev = store.snapshot(WS).revision;
   store.place(WS, { expected_revision: rev, bead_id: id });
   store.setAutoAdvance(WS, true);
+}
+
+/**
+ * Adapt a transport-shaped `bd --json` fake to the projected runner contract.
+ *
+ * The fakes below describe what bd prints — including the single-item-array
+ * `show` shape live bd emits — so they run through the SAME projectors
+ * production uses instead of hand-rolling the post-projection value.
+ *
+ * @param {(args: string[], options?: any) => Promise<any>} fake
+ * @returns {any}
+ */
+function asProjected(fake) {
+  return async (
+    /** @type {string} */ command_family,
+    /** @type {string[]} */ args,
+    /** @type {any} */ options = {}
+  ) => {
+    const raw = await fake(args, options);
+    if (!raw || raw.code !== 0) {
+      return {
+        ok: false,
+        error: {
+          code: 'bd_exit_error',
+          message: String((raw && raw.stderr) || 'bd failed')
+        }
+      };
+    }
+    const projected =
+      command_family === 'show'
+        ? normalizeBdIssue(raw.stdoutJson, { expected_id: options.expected_id })
+        : command_family === 'ready'
+          ? normalizeBdReadyRows(raw.stdoutJson)
+          : normalizeBdIssueList(raw.stdoutJson);
+    if (!projected.ok) {
+      return projected;
+    }
+    return {
+      ok: true,
+      protocol: { format: 'bare', schema_version: null },
+      data: projected.data
+    };
+  };
 }
 
 describe('worker/attach construction + live loop (F1)', () => {
@@ -969,7 +1017,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-1');
@@ -1000,7 +1048,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-1');
@@ -1033,7 +1081,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
     const snap = await bd.snapshotBead('UI-1');
     expect(snap.route).toBe('spec_backed');
@@ -1058,7 +1106,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-1');
@@ -1080,7 +1128,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-1');
@@ -1118,7 +1166,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
     const snap = await bd.snapshotBead('UI-1');
     expect(snap).toMatchObject({
@@ -1154,7 +1202,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
     const snap = await bd.snapshotBead('UI-2');
     expect(/** @type {any} */ (snap).review_model).toBeUndefined();
@@ -1174,7 +1222,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
     const snap = await bd.snapshotBead('UI-3');
     expect(snap.spec_review_model).toBeUndefined();
@@ -1205,7 +1253,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
     const snap = await bd.snapshotBead('UI-2');
     expect(snap.route).toBe('full_plan');
@@ -1232,7 +1280,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('ilsun/dev'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-3');
@@ -1254,7 +1302,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('ilsun/dev', 'c'.repeat(40)),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-4');
@@ -1277,7 +1325,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: failBase('ref'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-5');
@@ -1312,7 +1360,7 @@ describe('worker/attach createLiveBd bd show parsing', () => {
           local_only: false
         };
       },
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const first = await bd.snapshotBead('UI-6');
@@ -1581,7 +1629,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
   }
 
@@ -1592,7 +1640,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     });
 
     await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
-      /bd show UI-1 failed \(1\)/
+      /bd show UI-1 failed \(bd_exit_error\)/
     );
   });
 
@@ -1603,7 +1651,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     });
 
     await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
-      /unreadable payload/
+      /bd show UI-1 failed \(bd_json_shape_invalid\)/
     );
   });
 
@@ -1616,7 +1664,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     // A bd outage must reach the scheduler as `bd_snapshot_failed`, never as a
     // bead that merely is not in the ready list.
     await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
-      /bd ready failed \(1\)/
+      /bd ready failed \(bd_exit_error\)/
     );
   });
 
@@ -1627,7 +1675,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     });
 
     await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
-      /bd ready returned an unreadable payload/
+      /bd ready failed \(bd_json_shape_invalid\)/
     );
   });
 
@@ -1640,7 +1688,7 @@ describe('worker/attach createLiveBd fail-visible snapshots', () => {
     // An unknown shape read as an empty ready set would report a bd fault as a
     // queue full of not-ready beads.
     await expect(bdWith(runJson).snapshotBead('UI-1')).rejects.toThrow(
-      /bd ready returned an unreadable payload/
+      /bd ready failed \(bd_json_shape_invalid\)/
     );
   });
 
@@ -2166,7 +2214,7 @@ describe('worker/attach blocks edge 수집 (UI-04vo seam C)', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-1');
@@ -2189,7 +2237,7 @@ describe('worker/attach blocks edge 수집 (UI-04vo seam C)', () => {
       cwd: '/ws',
       repo: '/repo',
       resolveBase: okBase('main'),
-      runJson
+      runJson: asProjected(runJson)
     });
 
     const snap = await bd.snapshotBead('UI-1');

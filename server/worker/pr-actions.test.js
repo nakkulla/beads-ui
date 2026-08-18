@@ -1871,6 +1871,68 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
   });
 
+  /**
+   * A row interrupted INSIDE the closure half: the repo operations already
+   * reached terminal success (that is the only way the cursor gets this far),
+   * and the process died before the step could record success or failure — so
+   * there is no `cleanup_failed` entry for the [정리] click to resume from.
+   * beads-ui deploys itself by restarting its own service, so this window is
+   * reachable on every self-deploy.
+   *
+   * @param {any} store
+   * @param {string} cursor
+   */
+  function seedInterruptedClosureRow(store, cursor) {
+    store.setCleanupCursor(WS, {
+      bead_id: BEAD,
+      cursor: 'base_containment',
+      merge_sha: 'c'.repeat(40),
+      head_ref: BEAD,
+      pr_url: 'https://github.com/o/r/pull/305'
+    });
+    // The cursor is monotonic and advances ONE step at a time, exactly as the
+    // live closure walks it — a seed that jumps is silently ignored.
+    for (const step of ['repo_operations', 'child_sweep', 'branch_cleanup']) {
+      store.setCleanupCursor(WS, { bead_id: BEAD, cursor: step });
+      if (step === cursor) {
+        break;
+      }
+    }
+    if (cursor === 'parent_close') {
+      store.setCleanupCursor(WS, { bead_id: BEAD, cursor });
+    }
+    if (store.snapshot(WS).pr_wait[0]?.cleanup_cursor !== cursor) {
+      throw new Error(`seed failed to reach ${cursor}`);
+    }
+  }
+
+  test.each(['child_sweep', 'branch_cleanup', 'parent_close'])(
+    'resumes a row interrupted at %s and takes it out of pr_wait',
+    async (cursor) => {
+      const env = makeActions({
+        ...ON_BASE,
+        repoOperations: coordinatorFor(null)
+      });
+      seedInterruptedClosureRow(env.store, cursor);
+
+      await env.actions.resumeRepoOperations();
+
+      expect(
+        env.store.snapshot(WS).pr_wait.map((/** @type {any} */ e) => e.bead_id)
+      ).toEqual([]);
+    }
+  );
+
+  test('runs no repo operation when resuming a row already past them', async () => {
+    const operations = coordinatorFor(null);
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedInterruptedClosureRow(env.store, 'branch_cleanup');
+
+    await env.actions.resumeRepoOperations();
+
+    expect(operations.ensureDeploy).not.toHaveBeenCalled();
+  });
+
   test('completes the external merged [정리] click when the base declares no verify', async () => {
     const operations = coordinatorFor(null);
     const env = makeActions(externalMergedOptions(operations));

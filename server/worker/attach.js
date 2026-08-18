@@ -32,7 +32,7 @@ import {
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
-import { runBdJson, runShell, unwrapShowJson } from '../bd.js';
+import { runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
@@ -171,12 +171,11 @@ function readyIdSet(arr) {
  * `base_unresolved` instead of thrown, so the refusal names the failing
  * declaration step rather than an incidental `bd_snapshot_failed`.
  *
- * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: (args: string[], options?: any) => Promise<{ code: number, stdoutJson?: any, stderr?: string }>, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>, requestSnapshot?: (workspace: string, cause: string) => Promise<any> }} config
+ * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: typeof runBdJsonProjected, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>, requestSnapshot?: (workspace: string, cause: string) => Promise<any> }} config
  */
 export function createLiveBd(config) {
   const cwd = config.cwd;
-  const runJson =
-    config.runJson || ((args, options) => runBdJson(args, options));
+  const runJson = config.runJson || runBdJsonProjected;
   const meta = createBdMetadata({
     cwd,
     run: config.run,
@@ -191,19 +190,18 @@ export function createLiveBd(config) {
      * @returns {Promise<BeadSnapshot>}
      */
     async snapshotBead(bead_id) {
-      const shown = await runJson(['show', bead_id, '--json'], { cwd });
-      if (shown && typeof shown.code === 'number' && shown.code !== 0) {
+      const shown = await runJson('show', ['show', bead_id, '--json'], {
+        cwd,
+        expected_id: bead_id
+      });
+      if (!shown || shown.ok !== true) {
         throw new Error(
-          `bd show ${bead_id} failed (${shown.code}): ${(
-            shown.stderr || ''
-          ).trim()}`
+          `bd show ${bead_id} failed (${
+            shown && shown.error ? shown.error.code : 'no result'
+          })`
         );
       }
-      const unwrapped = unwrapShowJson(shown && shown.stdoutJson);
-      if (!unwrapped) {
-        throw new Error(`bd show ${bead_id} returned an unreadable payload`);
-      }
-      const issue = /** @type {any} */ (unwrapped);
+      const issue = /** @type {any} */ (shown.data);
       const md =
         issue.metadata && typeof issue.metadata === 'object'
           ? issue.metadata
@@ -211,21 +209,19 @@ export function createLiveBd(config) {
       const status = typeof issue.status === 'string' ? issue.status : '';
       const closed = status === 'closed' || status === 'resolved';
 
-      const readyList = await runJson(['ready', '--limit', '1000', '--json'], {
-        cwd
-      });
-      if (
-        readyList &&
-        typeof readyList.code === 'number' &&
-        readyList.code !== 0
-      ) {
+      const readyList = await runJson(
+        'ready',
+        ['ready', '--limit', '1000', '--json'],
+        { cwd }
+      );
+      if (!readyList || readyList.ok !== true) {
         throw new Error(
-          `bd ready failed (${readyList.code}): ${(
-            readyList.stderr || ''
-          ).trim()}`
+          `bd ready failed (${
+            readyList && readyList.error ? readyList.error.code : 'no result'
+          })`
         );
       }
-      const ready_rows = readyRows(readyList && readyList.stdoutJson);
+      const ready_rows = readyRows(readyList.data);
       if (!ready_rows) {
         throw new Error('bd ready returned an unreadable payload');
       }
@@ -1559,16 +1555,14 @@ export async function tickWorkerQueue(workspace_root) {
  * @returns {Promise<import('./admission.js').AdmissionResult>}
  */
 async function checkUnattachedWorkerAdmission(workspace_root, bead_id) {
-  const shown = await runBdJson(['show', bead_id, '--json'], {
-    cwd: keyFor(workspace_root)
+  const shown = await runBdJsonProjected('show', ['show', bead_id, '--json'], {
+    cwd: keyFor(workspace_root),
+    expected_id: bead_id
   });
-  if (!shown || shown.code !== 0) {
+  if (!shown || shown.ok !== true) {
     return { ok: false, reason: 'bd_snapshot_failed' };
   }
-  const issue = unwrapShowJson(shown.stdoutJson);
-  if (!issue) {
-    return { ok: false, reason: 'bd_snapshot_failed' };
-  }
+  const issue = shown.data;
   return isWorkerIneligible(/** @type {any} */ (issue).labels)
     ? { ok: false, reason: 'worker_ineligible' }
     : { ok: true };

@@ -44,7 +44,7 @@ function escapeBootstrapJson(json) {
 /**
  * Create and configure the Express application.
  *
- * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config?: { default_workspace: string | null }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean> }, runtime_identity?: () => any }} config - Server configuration.
+ * @param {{ host: string, port: number, app_dir: string, root_dir: string, frontend_mode: 'live' | 'static', workspace_config?: { default_workspace: string | null }, health_probes?: { bd_probe?: () => boolean | Promise<boolean>, db_probe?: () => boolean | Promise<boolean>, bd_capability_probe?: (root_dir: string) => Promise<{ ok: boolean, diagnostics: Record<string, unknown> }> }, runtime_identity?: () => any }} config - Server configuration.
  * @returns {Express} Configured Express app instance.
  */
 export function createApp(config) {
@@ -67,6 +67,7 @@ export function createApp(config) {
       root_dir: config.root_dir,
       bd_probe: config.health_probes?.bd_probe,
       db_probe: config.health_probes?.db_probe,
+      bd_capability_probe: config.health_probes?.bd_capability_probe,
       runtime_identity: config.runtime_identity
     });
     res.type('application/json');
