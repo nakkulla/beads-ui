@@ -172,4 +172,25 @@ describe('worker console styles', () => {
     expect(eventRule).toContain('grid-template-columns: 42px 22px 1fr');
     expect(kvRule).toContain('width: auto');
   });
+
+  test('moves a mobile mini-row admission reason below its ID and title', () => {
+    const mediaStart = CSS.indexOf('/* ---------- Worker responsive (<=640px)');
+    const mediaEnd = CSS.indexOf('/* --- board Deferred', mediaStart);
+    const mq = CSS.slice(mediaStart, mediaEnd);
+    const lineRule =
+      mq.match(
+        /#worker-root \.worker-mini__line:has\(> \.worker-mini__reason\)\s*{([^}]*)}/
+      )?.[1] || '';
+    const reasonRule =
+      mq.match(
+        /#worker-root \.worker-mini__line > \.worker-mini__reason\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(lineRule).toContain('flex-wrap: wrap');
+    expect(reasonRule).toContain('flex: 1 0 100%');
+    expect(reasonRule).toContain('margin-left: 0');
+    expect(reasonRule).toContain('min-width: 0');
+    expect(reasonRule).toContain('white-space: normal');
+    expect(reasonRule).toContain('overflow-wrap: anywhere');
+  });
 });
