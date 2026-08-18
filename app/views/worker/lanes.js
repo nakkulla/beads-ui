@@ -555,7 +555,7 @@ export function staleWorkProjection(admission, locked = false) {
  * @property {boolean} [revise_enabled] - Whether the two disposition buttons
  * may be clicked; false while a disposition click of this row is in flight.
  * @property {string} [revise_title] - Tooltip carrying the findings summary.
- * @property {{ label: string, index: number, total: number, percent: number }|null} [merge_step] -
+ * @property {{ step?: string, label: string, index: number, total: number, percent: number, active?: boolean, failed?: boolean }|null} [merge_step] -
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
  * why it is refused.
@@ -695,10 +695,14 @@ export function miniRow(item) {
       // side rail, bottom progress line, step name and n/total. No spinner: the
       // stage counter says more than a spinner can. The total comes from the
       // current merge-progress projection.
-      html`<span class="merge-step"
-        >${merging.label}<span class="merge-step__n"
-          >${merging.index}/${merging.total}</span
-        ></span
+      html`<span
+        class="merge-step${merging.failed ? ' merge-step--failed' : ''}"
+        style=${`--progress: ${merging.percent}%`}
+        >${merging.label}${merging.index > 0
+          ? html`<span class="merge-step__n"
+              >${merging.index}/${merging.total}</span
+            >`
+          : ''}</span
       >`
     : '';
   const merge_el = item.merge_action
@@ -850,7 +854,9 @@ export function miniRow(item) {
       ? ' worker-mini--done'
       : ''}${item.ghost ? ' worker-mini--ghost' : ''}${merging
       ? ' worker-mini--merging'
-      : ''}${item.external ? ' worker-mini--external' : ''}"
+      : ''}${merging?.failed ? ' worker-mini--merge-failed' : ''}${item.external
+      ? ' worker-mini--external'
+      : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}

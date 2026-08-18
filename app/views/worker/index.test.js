@@ -3331,16 +3331,20 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     }
   });
 
-  test('disables 머지 in every refusing tier and renders that tier badge', () => {
+  test('disables or hides 머지 in every refusing tier and renders that tier badge', () => {
     for (const t of REFUSING_TIERS) {
       document.body.innerHTML = '<div id="m"></div>';
       const { mount } = mountWith(queueWithGate({ ...t, base_badge: '최신' }));
 
-      const btn = /** @type {HTMLButtonElement} */ (
+      const btn = /** @type {HTMLButtonElement|null} */ (
         mount.querySelector('.worker-mini__merge')
       );
-      expect(btn.disabled).toBe(true);
-      expect(btn.getAttribute('title')).toContain(t.reason || '정리 진행 중');
+      if (t.tier === 'merged') {
+        expect(btn).toBeNull();
+      } else {
+        expect(btn?.disabled).toBe(true);
+        expect(btn?.getAttribute('title')).toContain(t.reason);
+      }
       expect(mount.querySelectorAll('.worker-mini__badge')).toHaveLength(1);
     }
   });
@@ -3431,8 +3435,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
         .querySelector('.worker-mini__discard')
         ?.getAttribute('data-discard-mode')
     ).toBe('merged');
-    // [머지] stays: on a merged tile it is the cleanup-retry button.
-    expect(row.querySelector('.worker-mini__merge')).not.toBe(null);
+    expect(row.querySelector('.worker-mini__merge')).toBe(null);
   });
 
   test('offers merged discard on a cleanup failure', () => {
@@ -5425,20 +5428,20 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
 });
 
 describe('merge progress — projection (UI-raqh §4)', () => {
-  test('labels the first step as 1 of 6', () => {
+  test('labels the first step as 1 of 7', () => {
     expect(mergeStepView('merging')).toEqual({
       label: '머지 중',
       index: 1,
-      total: 6,
-      percent: 17
+      total: 7,
+      percent: 14
     });
   });
 
-  test('labels the last step as 6 of 6', () => {
+  test('labels the last step as 7 of 7', () => {
     expect(mergeStepView('parent_close')).toMatchObject({
-      label: '부모 close',
-      index: 6,
-      total: 6,
+      label: '부모 close 중',
+      index: 7,
+      total: 7,
       percent: 100
     });
   });
@@ -5453,11 +5456,11 @@ describe('merge progress — projection (UI-raqh §4)', () => {
     ].map((s) => mergeStepView(s)?.label);
 
     expect(labels).toEqual([
-      'base 포함 확인',
+      'base 확인 중',
       '저장소 작업',
-      '자식 정리',
-      '브랜치 정리',
-      '부모 close'
+      '자식 정리 중',
+      '브랜치 정리 중',
+      '부모 close 중'
     ]);
   });
 
@@ -5499,7 +5502,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     queueStore.set(
       queueOf({
         ...queue_over,
-        pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+        pr_wait: [queue_over.pr_wait_entry || { bead_id: 'RD-1', added_at: 1 }],
         pr_observations: {
           'RD-1': {
             pr: {
@@ -5511,7 +5514,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
             verify: null,
             error: null,
             observed_at: 1,
-            gate: GATE_OK
+            gate: queue_over.gate || GATE_OK
           }
         },
         pr_activity: activity ? { 'RD-1': activity } : {}
@@ -5528,26 +5531,156 @@ describe('merge progress — view (UI-raqh §4)', () => {
   test('shows the step name and its position while merging', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'repo_operations', started_at: 1 }
+      merge_progress: { step: 'child_sweep', started_at: 1 }
     });
 
     const step = /** @type {HTMLElement} */ (
       mount.querySelector('.merge-step')
     );
-    expect(step.textContent?.replace(/\s+/g, '')).toBe('저장소작업3/6');
+    expect(step.textContent?.replace(/\s+/g, '')).toBe('자식정리중5/7');
   });
 
   test('marks the row and its progress width', () => {
     const mount = mountRow({
       activity: null,
-      merge_progress: { step: 'repo_operations', started_at: 1 }
+      merge_progress: { step: 'child_sweep', started_at: 1 }
     });
 
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
     expect(row.classList.contains('worker-mini--merging')).toBe(true);
-    expect(row.getAttribute('style')).toContain('--progress: 50%');
+    expect(row.getAttribute('style')).toContain('--progress: 71%');
+  });
+
+  test('shows exact deploy progress beside the merged badge', () => {
+    const merge_sha = 'a'.repeat(40);
+    const mount = mountRow(null, undefined, {
+      gate: {
+        enabled: false,
+        tier: 'merged',
+        gate_badge: '머지됨',
+        base_badge: '머지됨',
+        reason: null
+      },
+      pr_wait_entry: {
+        bead_id: 'RD-1',
+        added_at: 1,
+        merge_sha,
+        cleanup_cursor: 'repo_operations'
+      },
+      repo_operations: [
+        {
+          operation_id: 'deploy-1',
+          kind: 'deploy',
+          state: 'running',
+          requested_at: 1,
+          subjects: [{ bead_id: 'RD-1', merged_sha: merge_sha }],
+          superseded_by: null
+        }
+      ]
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('머지됨');
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포중4/7');
+    expect(row.querySelector('.worker-mini__merge')).toBeNull();
+  });
+
+  test('blocks discard while exact deploy progress is active', () => {
+    const merge_sha = 'a'.repeat(40);
+    const mount = mountRow(null, undefined, {
+      gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' },
+      pr_wait_entry: {
+        bead_id: 'RD-1',
+        added_at: 1,
+        merge_sha,
+        cleanup_cursor: 'repo_operations'
+      },
+      repo_operations: [
+        {
+          operation_id: 'verify-1',
+          kind: 'verify',
+          state: 'running',
+          requested_at: 1,
+          subjects: [{ bead_id: 'RD-1', merged_sha: merge_sha }],
+          superseded_by: null
+        }
+      ]
+    });
+
+    const discard = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__discard')
+    );
+    expect(discard.disabled).toBe(true);
+    expect(discard.title).toContain('정리 진행 중');
+  });
+
+  test('keeps an exact retry ahead of a stale cleanup failure', () => {
+    const merge_sha = 'a'.repeat(40);
+    const mount = mountRow(null, undefined, {
+      gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' },
+      pr_wait_entry: {
+        bead_id: 'RD-1',
+        added_at: 1,
+        merge_sha,
+        cleanup_cursor: 'repo_operations'
+      },
+      cleanup_failed: {
+        'RD-1': { step: 'repo_operations', reason: 'previous failure' }
+      },
+      repo_operations: [
+        {
+          operation_id: 'deploy-2',
+          kind: 'deploy',
+          state: 'retry_pending',
+          requested_at: 2,
+          subjects: [{ bead_id: 'RD-1', merged_sha: merge_sha }],
+          superseded_by: null
+        }
+      ]
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포재시도대기4/7');
+    expect(row.textContent).not.toContain('정리 5단계 중');
+  });
+
+  test('renders an exact verify failure without removing the timeline action', () => {
+    const merge_sha = 'a'.repeat(40);
+    const mount = mountRow(null, undefined, {
+      gate: { enabled: false, tier: 'merged', gate_badge: '머지됨' },
+      pr_wait_entry: {
+        bead_id: 'RD-1',
+        added_at: 1,
+        merge_sha,
+        cleanup_cursor: 'repo_operations'
+      },
+      cleanup_failed: {
+        'RD-1': { step: 'repo_operations', reason: 'verify failed' }
+      },
+      repo_operations: [
+        {
+          operation_id: 'verify-1',
+          kind: 'verify',
+          state: 'failed',
+          requested_at: 1,
+          subjects: [{ bead_id: 'RD-1', merged_sha: merge_sha }],
+          superseded_by: null
+        }
+      ]
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('검증실패3/7');
+    expect(row.querySelector('.merge-step--failed')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__timeline')).not.toBeNull();
   });
 
   test('disables both actions while merging', () => {
@@ -6807,7 +6940,7 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     );
   });
 
-  test('keeps the merge-in-flight discard tooltip on the merge path', () => {
+  test('uses the cleanup discard tooltip after merge reaches base containment', () => {
     const mount = mountBoard({
       gate: CLEAN,
       activity: {
@@ -6817,7 +6950,7 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
     });
 
     expect(button(mount, '.worker-mini__discard').getAttribute('title')).toBe(
-      '머지 진행 중 — 폐기할 수 없습니다'
+      '정리 진행 중 — 폐기할 수 없습니다'
     );
     expect(button(mount, '.worker-mini__merge').textContent?.trim()).toBe(
       '머지'
@@ -7115,10 +7248,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
   test('hides 정리 on a merged external row before a failure is recorded', () => {
     const mount = mountRow(MERGED);
 
-    const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__merge')
-    );
-    expect(btn.disabled).toBe(true);
+    expect(mount.querySelector('.worker-mini__merge')).toBe(null);
   });
 
   test('offers 정리 재개 on a merged external row after a failure', () => {
@@ -7138,10 +7268,7 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
   test('keeps a merged WORKER row quiet — its cleanup runs on its own', () => {
     const mount = mountRow(MERGED, { external: false });
 
-    const btn = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-mini__merge')
-    );
-    expect(btn.disabled).toBe(true);
+    expect(mount.querySelector('.worker-mini__merge')).toBe(null);
   });
 
   test('disables the button on a closed external PR and says 닫힘', () => {

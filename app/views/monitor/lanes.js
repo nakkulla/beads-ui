@@ -43,6 +43,10 @@ import {
   cleanupStalledReason,
   cleanupStepLabel
 } from '../worker/merge-steps.js';
+import {
+  isPrWaitCleanupActive,
+  prWaitProgress
+} from '../worker/pr-wait-progress.js';
 import { formatElapsed } from '../worker/running-grid.js';
 import {
   iconClose,
@@ -393,6 +397,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
+    const pr_activity = objectOf(workspace.pr_activity);
+    const repo_operations = Array.isArray(workspace.repo_operations)
+      ? workspace.repo_operations
+      : [];
     const merge_queue = Array.isArray(workspace.merge_queue)
       ? workspace.merge_queue
       : [];
@@ -490,6 +498,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const active = merge_state.active === bead_id;
       const external = entry.external === true;
       const cleanup = cleanup_failed[bead_id] || null;
+      const activity = objectOf(pr_activity[bead_id]);
+      const merge_step = prWaitProgress({
+        bead_id,
+        merge_sha: entry.merge_sha,
+        cleanup_cursor: entry.cleanup_cursor,
+        merge_progress: activity.merge_progress || null,
+        cleanup_failed: cleanup,
+        repo_operations
+      });
+      const cleanup_active = isPrWaitCleanupActive(merge_step);
       // 아래 네 판정은 Worker 탭 `prWaitRow`와 같은 값이어야 한다 — 모니터가
       // 서버가 거부할 조작을 제시하면 클릭이 실패로만 돌아온다.
       const conflicting = !!gate && gate.base_badge === '충돌';
@@ -507,8 +525,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ['closed_unmerged', 'review', 'undecidable'].includes(gate.tier);
       const discard = discardProjection(discard_operations, bead_id, {
         external,
-        merge_active: active,
+        merge_active: active || merge_step?.step === 'merge',
         merge_queued: queued,
+        cleanup_active,
         merged: !!cleanup || gate?.tier === 'merged'
       });
       const discard_blocks_merge = !!discard.operation;
@@ -519,24 +538,36 @@ export function buildLanes(workspaces, workspaces_state, options) {
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
         external,
         usage: sumAttemptUsage(attempts, bead_id),
+        merge_step,
         // Worker 탭 `prWaitRow`와 같은 문자열이어야 한다 (UI-q0uy §4.4) — 같은
         // 사실을 두 탭이 다르게 적으면 안 된다.
         badges: continuation_required
           ? ['이어하기 선택 필요']
-          : cleanup
-            ? [
-                cleanupStepLabel(cleanup.step)
-                  ? `정리 멈춤 · ${cleanupStepLabel(cleanup.step)}`
-                  : '정리 멈춤'
-              ]
-            : typeof gate?.gate_badge === 'string' && gate.gate_badge.length > 0
-              ? [gate.gate_badge]
-              : [],
-        alert: !!cleanup || gate_alert,
-        reason: cleanup ? cleanupStalledReason(cleanup.step) : 'PR 대기',
+          : merge_step
+            ? [gate?.tier === 'merged' ? '머지됨' : '머지 중']
+            : cleanup
+              ? [
+                  cleanupStepLabel(cleanup.step)
+                    ? `정리 멈춤 · ${cleanupStepLabel(cleanup.step)}`
+                    : '정리 멈춤'
+                ]
+              : typeof gate?.gate_badge === 'string' &&
+                  gate.gate_badge.length > 0
+                ? [gate.gate_badge]
+                : [],
+        alert: merge_step
+          ? merge_step.failed === true
+          : !!cleanup || gate_alert,
+        reason:
+          cleanup && merge_step?.active !== true
+            ? cleanupStalledReason(cleanup.step)
+            : 'PR 대기',
         // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
         // (Worker 탭 [취소]와 같은 규약).
-        merge_action: !queued || continuation_required,
+        merge_action:
+          gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
+            ? false
+            : !queued || continuation_required,
         // 게이트가 열렸거나(enabled), 충돌 해소 세션을 띄우는 클릭이거나,
         // 머지된 뒤의 정리 재시도일 때만 누를 수 있다.
         merge_enabled:
@@ -1148,8 +1179,10 @@ export function monitorQueueRow(item) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function monitorPrCard(item) {
+  const merge_step = item.merge_step || null;
   const has_tail = !!(
     formatUsageTotalWithCost(item.usage) ||
+    merge_step ||
     item.merge_action ||
     item.cancel_action ||
     item.discard_action
@@ -1174,7 +1207,19 @@ export function monitorPrCard(item) {
     </div>
     ${has_tail
       ? html`<div class="mon-c__tail">
-          ${usageChip(item)}
+          ${usageChip(item)}${merge_step
+            ? html`<span
+                class="merge-step${merge_step.failed
+                  ? ' merge-step--failed'
+                  : ''}"
+                style=${`--progress: ${merge_step.percent}%`}
+                >${merge_step.label}${merge_step.index > 0
+                  ? html`<span class="merge-step__n"
+                      >${merge_step.index}/${merge_step.total}</span
+                    >`
+                  : ''}</span
+              >`
+            : ''}
           ${item.merge_action
             ? html`<button
                 type="button"

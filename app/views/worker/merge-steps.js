@@ -1,6 +1,6 @@
 /**
- * The merge/cleanup step vocabulary shared by the lane rows and the repo-ops
- * timeline (UI-q0uy §4.4).
+ * The merge-card and cleanup-cursor vocabularies shared by the lane rows and
+ * the repo-ops timeline (UI-q0uy §4.4, UI-20gk).
  *
  * It lives in its own module because two views need it and neither may import
  * the other: `index.js` renders the in-flight merge progress, and
@@ -11,18 +11,19 @@
  */
 
 /**
- * The merge's six steps in server order (UI-raqh §4). Mirrors `pr-actions.js` —
- * `merging` plus the five `CLEANUP_STEPS`.
+ * The card's fixed semantic positions. Optional verify/deploy declarations do
+ * not renumber later lifecycle work.
  *
  * @type {Array<{ step: string, label: string, index: number }>}
  */
 export const MERGE_STEPS = [
-  { step: 'merging', label: '머지 중', index: 1 },
-  { step: 'base_containment', label: 'base 포함 확인', index: 2 },
-  { step: 'repo_operations', label: '저장소 작업', index: 3 },
-  { step: 'child_sweep', label: '자식 정리', index: 4 },
-  { step: 'branch_cleanup', label: '브랜치 정리', index: 5 },
-  { step: 'parent_close', label: '부모 close', index: 6 }
+  { step: 'merge', label: '머지', index: 1 },
+  { step: 'base', label: 'base', index: 2 },
+  { step: 'verify', label: '검증', index: 3 },
+  { step: 'deploy', label: '배포', index: 4 },
+  { step: 'child', label: '자식', index: 5 },
+  { step: 'branch', label: '브랜치', index: 6 },
+  { step: 'close', label: 'close', index: 7 }
 ];
 
 /**
@@ -31,9 +32,44 @@ export const MERGE_STEPS = [
  *
  * @type {Array<{ step: string, label: string }>}
  */
-export const CLEANUP_STEPS = MERGE_STEPS.filter(
-  (entry) => entry.step !== 'merging'
-).map((entry) => ({ step: entry.step, label: entry.label }));
+export const CLEANUP_STEPS = [
+  { step: 'base_containment', label: 'base 포함 확인' },
+  { step: 'repo_operations', label: '저장소 작업' },
+  { step: 'child_sweep', label: '자식 정리' },
+  { step: 'branch_cleanup', label: '브랜치 정리' },
+  { step: 'parent_close', label: '부모 close' }
+];
+
+/** @type {Record<string, { step: string, label: string }>} */
+const MERGE_PROGRESS_STEPS = {
+  merging: { step: 'merge', label: '머지 중' },
+  base_containment: { step: 'base', label: 'base 확인 중' },
+  child_sweep: { step: 'child', label: '자식 정리 중' },
+  branch_cleanup: { step: 'branch', label: '브랜치 정리 중' },
+  parent_close: { step: 'close', label: '부모 close 중' }
+};
+
+/**
+ * Project one fixed card step with a caller-owned status label.
+ *
+ * @param {string} step
+ * @param {string} label
+ * @returns {{ step: string, label: string, index: number, total: number, percent: number }|null}
+ */
+export function mergeCardStepView(step, label) {
+  const found = MERGE_STEPS.find((entry) => entry.step === step);
+  if (!found) {
+    return null;
+  }
+  const total = MERGE_STEPS.length;
+  return {
+    step: found.step,
+    label,
+    index: found.index,
+    total,
+    percent: Math.round((found.index / total) * 100)
+  };
+}
 
 /**
  * Project a merge step onto what a row draws: its Korean label, its position in
@@ -51,17 +87,23 @@ export function mergeStepView(step) {
   if (typeof step !== 'string' || step.length === 0) {
     return null;
   }
-  const total = 6;
-  const found = MERGE_STEPS.find((s) => s.step === step);
-  if (!found) {
+  const total = MERGE_STEPS.length;
+  if (step === 'repo_operations') {
+    return { label: '저장소 작업', index: 0, total, percent: 0 };
+  }
+  const mapped = MERGE_PROGRESS_STEPS[step];
+  if (!mapped) {
     return { label: step, index: 0, total, percent: 0 };
   }
-  return {
-    label: found.label,
-    index: found.index,
-    total,
-    percent: Math.round((found.index / total) * 100)
-  };
+  const projected = mergeCardStepView(mapped.step, mapped.label);
+  return projected
+    ? {
+        label: projected.label,
+        index: projected.index,
+        total: projected.total,
+        percent: projected.percent
+      }
+    : null;
 }
 
 /**
