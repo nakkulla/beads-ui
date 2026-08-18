@@ -1375,7 +1375,13 @@ export function createDiscardCoordinator(deps, options = {}) {
       repo: source.repo,
       branch: source.branch,
       expected_path: source.worktree,
-      expected_head: source.source_head
+      expected_head: source.source_head,
+      ...(operation.kind === 'stale_work_backup_fresh'
+        ? {
+            expected_base_oid: source.base_oid,
+            expected_status_digest: source.status_digest
+          }
+        : {})
     });
     if (!result.ok) {
       if (result.reason === 'identity_changed') {
@@ -1434,6 +1440,16 @@ export function createDiscardCoordinator(deps, options = {}) {
       base_oid: source.base_oid,
       status_digest: source.status_digest
     };
+    const worktree_already_removed =
+      observed.owned === true &&
+      observed.identity?.worktree_realpath === null &&
+      observed.identity.head_sha === null &&
+      observed.identity.base_oid === source.base_oid &&
+      (observed.identity.branch === null ||
+        observed.identity.branch === source.branch);
+    if (worktree_already_removed) {
+      return { ok: true };
+    }
     if (
       observed.state !== 'unique' ||
       observed.owned !== true ||
@@ -2135,7 +2151,10 @@ export function createDiscardCoordinator(deps, options = {}) {
           operation.bead_id === input.bead_id && operation.phase !== 'done'
       ) ||
       deps.actionInFlight?.(input.bead_id) ||
-      deps.scheduler.activeBeadIds?.(deps.workspace).has(input.bead_id)
+      deps.scheduler.staleWorkActionInFlight?.(
+        deps.workspace,
+        input.bead_id
+      ) === true
     ) {
       return { ok: false, conflict: true, reason: 'action_in_flight' };
     }

@@ -957,6 +957,36 @@ describe('worker/worktree (real git)', () => {
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
+  test('removeByBranch preserves a worktree whose archived status changed', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    fs.writeFileSync(path.join(created.path, 'saved.txt'), 'archived');
+    const observed = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base,
+      preserve: true
+    });
+    fs.writeFileSync(path.join(created.path, 'saved.txt'), 'changed later');
+
+    const result = await wt.removeByBranch({
+      repo,
+      branch: 'UI-1',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: observed.identity.head_sha,
+      expected_base_oid: observed.identity.base_oid,
+      expected_status_digest: observed.identity.status_digest
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'identity_changed'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
   test('removeByBranch reports no removal when no worktree holds the branch', async () => {
     const locks = createLockManager();
     const wt = createWorktreeManager({ locks });

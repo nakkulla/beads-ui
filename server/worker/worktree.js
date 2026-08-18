@@ -377,6 +377,130 @@ function samePathState(left, right) {
 }
 
 /**
+ * Observe the exact dirty-state material bound into a stale-work identity.
+ * Both admission and forced cleanup use this function so the final lock-held
+ * comparison cannot silently omit a file class covered by the archive check.
+ *
+ * @param {GitRunner} run
+ * @param {typeof import('node:fs')} fs
+ * @param {string} wt
+ * @param {{ worktree_realpath: string|null, branch: string|null, head_sha: string|null, base_oid: string|null }} identity
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   status_digest: string,
+ *   parsed: ReturnType<typeof parseStatusV2>,
+ *   staged_paths: string[],
+ *   unstaged_paths: string[],
+ *   special_paths: string[]
+ * }>}
+ */
+async function observeStatusDigest(run, fs, wt, identity) {
+  /** @type {{ ok: boolean, status_digest: string, parsed: ReturnType<typeof parseStatusV2>, staged_paths: string[], unstaged_paths: string[], special_paths: string[] }} */
+  const failed = {
+    ok: false,
+    status_digest: sha256('observe_failed'),
+    parsed: parseStatusV2(''),
+    staged_paths: [],
+    unstaged_paths: [],
+    special_paths: []
+  };
+  const status = await run(
+    ['status', '--porcelain=v2', '-z', '--untracked-files=all'],
+    { cwd: wt }
+  );
+  if (status.code !== 0) {
+    return failed;
+  }
+  const parsed = parseStatusV2(status.stdout);
+  const staged_paths = [...parsed.staged].sort();
+  const unstaged_paths = [...parsed.unstaged].sort();
+  /** @type {string[]} */
+  const special_paths = [];
+  if (parsed.cause === null) {
+    for (const relative_path of unstaged_paths) {
+      try {
+        const stat = fs.lstatSync(path.join(wt, relative_path));
+        if (!stat.isFile() && !stat.isSymbolicLink()) {
+          special_paths.push(relative_path);
+        }
+      } catch {
+        /* path equality below will fail closed if it was not deleted */
+      }
+    }
+  }
+  const [staged_delta, unstaged_delta] =
+    special_paths.length > 0
+      ? [
+          { code: 0, stdout: '', stderr: '' },
+          {
+            code: 0,
+            stdout: JSON.stringify({ special_paths }),
+            stderr: ''
+          }
+        ]
+      : await Promise.all([
+          run(
+            [
+              'diff',
+              '--cached',
+              '--binary',
+              '--full-index',
+              '--no-ext-diff',
+              '--no-textconv',
+              '--'
+            ],
+            { cwd: wt }
+          ),
+          run(
+            [
+              'diff',
+              '--binary',
+              '--full-index',
+              '--no-ext-diff',
+              '--no-textconv',
+              '--'
+            ],
+            { cwd: wt }
+          )
+        ]);
+  if (staged_delta.code !== 0 || unstaged_delta.code !== 0) {
+    return failed;
+  }
+  /** @type {Array<{ path: string, state: WorktreePathState|null, special: boolean }>} */
+  const untracked_states = [];
+  for (const relative_path of [...parsed.untracked].sort()) {
+    const observed = await worktreePathState(run, fs, wt, relative_path);
+    if (!observed.ok) {
+      return failed;
+    }
+    untracked_states.push({
+      path: relative_path,
+      state: observed.state,
+      special: observed.special
+    });
+  }
+  return {
+    ok: true,
+    status_digest: sha256(
+      JSON.stringify({
+        worktree_realpath: identity.worktree_realpath,
+        branch: identity.branch,
+        head_sha: identity.head_sha,
+        base_oid: identity.base_oid,
+        status: status.stdout,
+        staged_delta: staged_delta.stdout,
+        unstaged_delta: unstaged_delta.stdout,
+        untracked_states
+      })
+    ),
+    parsed,
+    staged_paths,
+    unstaged_paths,
+    special_paths
+  };
+}
+
+/**
  * Create a worktree manager bound to a lock manager.
  *
  * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
@@ -386,7 +510,7 @@ function samePathState(left, right) {
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
- *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
@@ -642,7 +766,7 @@ export function createWorktreeManager(deps) {
      * in here — never another manager method, which would take the same
      * non-reentrant lock.
      *
-     * @param {{ repo: string, branch: string, expected_path?: string|null, expected_head?: string|null }} input
+     * @param {{ repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }} input
      * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
      */
     async removeByBranch(input) {
@@ -693,14 +817,54 @@ export function createWorktreeManager(deps) {
         ) {
           return { ok: false, removed: false, reason: 'foreign_worktree' };
         }
-        if (typeof input.expected_head === 'string') {
+        /** @type {string|null} */
+        let head_sha = null;
+        if (
+          typeof input.expected_head === 'string' ||
+          typeof input.expected_status_digest === 'string'
+        ) {
           const head = await run(['rev-parse', 'HEAD'], { cwd: wt });
-          if (head.code !== 0 || head.stdout.trim() !== input.expected_head) {
+          head_sha = head.code === 0 ? head.stdout.trim() : null;
+          if (
+            head_sha === null ||
+            (typeof input.expected_head === 'string' &&
+              head_sha !== input.expected_head)
+          ) {
             return {
               ok: false,
               removed: false,
               reason: 'identity_changed'
             };
+          }
+        }
+        if (typeof input.expected_status_digest === 'string') {
+          if (typeof input.expected_base_oid !== 'string') {
+            return { ok: false, removed: false, reason: 'identity_changed' };
+          }
+          let worktree_realpath;
+          try {
+            worktree_realpath = fs.realpathSync(wt);
+          } catch {
+            return { ok: false, removed: false, reason: 'identity_changed' };
+          }
+          const symbolic = await run(
+            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+            { cwd: wt }
+          );
+          const observed_branch =
+            symbolic.code === 0 ? symbolic.stdout.trim() : null;
+          const status = await observeStatusDigest(run, fs, wt, {
+            worktree_realpath,
+            branch: observed_branch,
+            head_sha,
+            base_oid: input.expected_base_oid
+          });
+          if (
+            observed_branch !== input.branch ||
+            !status.ok ||
+            status.status_digest !== input.expected_status_digest
+          ) {
+            return { ok: false, removed: false, reason: 'identity_changed' };
           }
         }
         const removed = await run(['worktree', 'remove', '--force', wt], {
@@ -920,11 +1084,7 @@ export function createWorktreeManager(deps) {
                     { cwd: wt }
                   )
                 );
-          const status = await run(
-            ['status', '--porcelain=v2', '-z', '--untracked-files=all'],
-            { cwd: wt }
-          );
-          if (head_ahead === null || status.code !== 0) {
+          if (head_ahead === null) {
             return {
               ok: false,
               state: 'unknown',
@@ -947,59 +1107,13 @@ export function createWorktreeManager(deps) {
               paths: { staged: [], unstaged: [] }
             };
           }
-          const parsed = parseStatusV2(status.stdout);
-          const staged_paths = [...parsed.staged].sort();
-          const unstaged_paths = [...parsed.unstaged].sort();
-          /** @type {string[]} */
-          const special_paths = [];
-          if (parsed.cause === null) {
-            for (const relative_path of unstaged_paths) {
-              try {
-                const stat = fs.lstatSync(path.join(wt, relative_path));
-                if (!stat.isFile() && !stat.isSymbolicLink()) {
-                  special_paths.push(relative_path);
-                }
-              } catch {
-                /* path equality below will fail closed if it was not deleted */
-              }
-            }
-          }
-          const [staged_delta, unstaged_delta] =
-            special_paths.length > 0
-              ? [
-                  { code: 0, stdout: '', stderr: '' },
-                  {
-                    code: 0,
-                    stdout: JSON.stringify({ special_paths }),
-                    stderr: ''
-                  }
-                ]
-              : await Promise.all([
-                  run(
-                    [
-                      'diff',
-                      '--cached',
-                      '--binary',
-                      '--full-index',
-                      '--no-ext-diff',
-                      '--no-textconv',
-                      '--'
-                    ],
-                    { cwd: wt }
-                  ),
-                  run(
-                    [
-                      'diff',
-                      '--binary',
-                      '--full-index',
-                      '--no-ext-diff',
-                      '--no-textconv',
-                      '--'
-                    ],
-                    { cwd: wt }
-                  )
-                ]);
-          if (staged_delta.code !== 0 || unstaged_delta.code !== 0) {
+          const status = await observeStatusDigest(run, fs, wt, {
+            worktree_realpath,
+            branch: observed_branch,
+            head_sha,
+            base_oid
+          });
+          if (!status.ok) {
             return {
               ok: false,
               state: 'unknown',
@@ -1022,44 +1136,10 @@ export function createWorktreeManager(deps) {
               paths: { staged: [], unstaged: [] }
             };
           }
-          /** @type {Array<{ path: string, state: WorktreePathState|null, special: boolean }>} */
-          const untracked_states = [];
-          for (const relative_path of [...parsed.untracked].sort()) {
-            const observed = await worktreePathState(
-              run,
-              fs,
-              wt,
-              relative_path
-            );
-            if (!observed.ok) {
-              return {
-                ok: false,
-                state: 'unknown',
-                removed: false,
-                reason: 'observe_failed',
-                cause: 'observe_failed',
-                owned,
-                identity: {
-                  worktree_realpath,
-                  branch: observed_branch,
-                  head_sha,
-                  base_oid,
-                  status_digest: sha256('observe_failed')
-                },
-                summary: {
-                  ...empty_summary,
-                  branch_ahead,
-                  head_ahead
-                },
-                paths: { staged: [], unstaged: [] }
-              };
-            }
-            untracked_states.push({
-              path: relative_path,
-              state: observed.state,
-              special: observed.special
-            });
-          }
+          const parsed = status.parsed;
+          const staged_paths = status.staged_paths;
+          const unstaged_paths = status.unstaged_paths;
+          const special_paths = status.special_paths;
           const summary = {
             staged_count: staged_paths.length,
             unstaged_count: unstaged_paths.length,
@@ -1067,24 +1147,12 @@ export function createWorktreeManager(deps) {
             branch_ahead,
             head_ahead
           };
-          const status_digest = sha256(
-            JSON.stringify({
-              worktree_realpath,
-              branch: observed_branch,
-              head_sha,
-              base_oid,
-              status: status.stdout,
-              staged_delta: staged_delta.stdout,
-              unstaged_delta: unstaged_delta.stdout,
-              untracked_states
-            })
-          );
           const identity = {
             worktree_realpath,
             branch: observed_branch,
             head_sha,
             base_oid,
-            status_digest
+            status_digest: status.status_digest
           };
           if (branch_ahead > 0 || head_ahead > 0) {
             const cause = branch_ahead > 0 ? 'branch_ahead' : 'head_ahead';

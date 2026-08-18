@@ -5818,6 +5818,8 @@ describe('scheduler worktree residue hygiene', () => {
       }
     });
     expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
+    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(false);
     expect(env.worktree.add).not.toHaveBeenCalled();
   });
 
@@ -6267,6 +6269,92 @@ describe('scheduler worktree residue hygiene', () => {
     });
     expect(env.store.snapshot(WS).attempts).toEqual({});
     expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+
+  test('refuses stale continue when waiting authority changes during owner observation', async () => {
+    /** @type {() => void} */
+    let release_remote = () => {};
+    /** @type {() => void} */
+    let mark_remote_started = () => {};
+    const remote_started = new Promise((resolve) => {
+      mark_remote_started = () => resolve(undefined);
+    });
+    const remote_gate = new Promise((resolve) => {
+      release_remote = () => resolve(undefined);
+    });
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      gitRun: vi.fn(async () => {
+        mark_remote_started();
+        await remote_gate;
+        return { code: 0, stdout: '', stderr: '' };
+      })
+    });
+    seedQueue(env.store, ['S1']);
+    seedStaleWorkAdmission(env.store);
+    const pending = env.scheduler.staleWorkContinue(WS, {
+      bead_id: 'S1',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(WS).revision
+    });
+    await remote_started;
+
+    env.store.remove(WS, {
+      bead_id: 'S1',
+      expected_revision: env.store.snapshot(WS).revision
+    });
+    release_remote();
+    const result = await pending;
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+  });
+
+  test('refuses stale recheck when waiting authority changes during owner observation', async () => {
+    /** @type {() => void} */
+    let release_remote = () => {};
+    /** @type {() => void} */
+    let mark_remote_started = () => {};
+    const remote_started = new Promise((resolve) => {
+      mark_remote_started = () => resolve(undefined);
+    });
+    const remote_gate = new Promise((resolve) => {
+      release_remote = () => resolve(undefined);
+    });
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      gitRun: vi.fn(async () => {
+        mark_remote_started();
+        await remote_gate;
+        return { code: 0, stdout: '', stderr: '' };
+      })
+    });
+    seedQueue(env.store, ['S1']);
+    seedStaleWorkAdmission(env.store, { can_recheck: true });
+    const before = env.store.snapshot(WS);
+    const pending = env.scheduler.staleWorkRecheck(WS, {
+      bead_id: 'S1',
+      action_id: 'action-1',
+      expected_revision: before.revision
+    });
+    await remote_started;
+
+    env.store.remove(WS, {
+      bead_id: 'S1',
+      expected_revision: env.store.snapshot(WS).revision
+    });
+    release_remote();
+    const result = await pending;
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(env.worktree.removeIfDiscardable).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts).toEqual(before.attempts);
+    expect(env.store.snapshot(WS).discard_operations).toEqual(
+      before.discard_operations
+    );
   });
 
   test('rechecks base-contained stale work and dispatches in the same action', async () => {
@@ -6984,6 +7072,7 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
 
     expect(env.scheduler.isRunning('S1')).toBe(false);
     expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
+    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(true);
     expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
   });
 
@@ -7108,6 +7197,7 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
     await env.scheduler.tick(WS);
 
     expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(true);
+    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(true);
   });
 
   test('drops a bead whose attempt reached a terminal status', async () => {
@@ -7134,6 +7224,7 @@ describe('scheduler protected bead sets (UI-b8n8 §접근 A)', () => {
     // the active union alone no longer covers the bead — the cleanup fence is
     // the only thing holding the live worktree out of the external registry.
     expect(env.scheduler.activeBeadIds(WS).has('S1')).toBe(false);
+    expect(env.scheduler.staleWorkActionInFlight(WS, 'S1')).toBe(true);
     expect(env.scheduler.externalProtectedBeadIds(WS).has('S1')).toBe(true);
   });
 

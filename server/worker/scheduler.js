@@ -541,7 +541,7 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  *   staleWorkRecheck: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, state?: string, conflict?: boolean }>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
@@ -555,6 +555,7 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  *   reconcile: (workspace: string) => Promise<void>,
  *   sweepClosedQueue: (workspace: string, statuses: Record<string, string>) => void,
  *   activeBeadIds: (workspace: string) => Set<string>,
+ *   staleWorkActionInFlight: (workspace: string, bead_id: string) => boolean,
  *   externalProtectedBeadIds: (workspace: string) => Set<string>,
  *   runningCount: () => number,
  *   runningBeads: () => string[],
@@ -1261,6 +1262,9 @@ export function createScheduler(deps) {
     if (discardActive(queue, { bead_id: input.bead_id })) {
       return { ok: false, reason: 'discard_in_progress', conflict: true };
     }
+    if (staleWorkActionInFlight(workspace, input.bead_id)) {
+      return { ok: false, reason: 'action_in_flight', conflict: true };
+    }
     return { ok: true, queue, stale_work };
   }
 
@@ -1774,6 +1778,43 @@ export function createScheduler(deps) {
    */
   function activeBeadIds(workspace) {
     return activeBeadIdsFrom(deps.store.snapshot(workspace));
+  }
+
+  /**
+   * Fence stale-work actions only on work that can still mutate this Bead.
+   * A dispatch refusal deliberately stays actionable until an external tick
+   * clears it, so it is not part of this narrower union.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @returns {boolean}
+   */
+  function staleWorkActionInFlight(workspace, bead_id) {
+    const queue = deps.store.snapshot(workspace);
+    if (claimed.has(bead_id) || cleanup_pending.has(bead_id)) {
+      return true;
+    }
+    if (discardActive(queue, { bead_id })) {
+      return true;
+    }
+    const attempts = Object.values(queue.attempts || {});
+    const resumed_from = new Set(
+      attempts
+        .map((attempt) => attempt?.resumed_from)
+        .filter((attempt_id) => typeof attempt_id === 'string')
+    );
+    return attempts.some((attempt) => {
+      if (
+        !attempt ||
+        attempt.bead_id !== bead_id ||
+        TERMINAL_ATTEMPT_STATUSES.has(attempt.status)
+      ) {
+        return false;
+      }
+      return !(
+        attempt.status === 'paused' && resumed_from.has(attempt.attempt_id)
+      );
+    });
   }
 
   /**
@@ -3972,6 +4013,10 @@ export function createScheduler(deps) {
     if (owner_reason) {
       return { ok: false, reason: owner_reason, conflict: true };
     }
+    const reauthorized = staleWorkAction(workspace, input, 'continue');
+    if (!reauthorized.ok) {
+      return reauthorized;
+    }
     const candidates = resumableResidueAttempts(
       workspace,
       input.bead_id,
@@ -3988,7 +4033,14 @@ export function createScheduler(deps) {
       candidates
     );
     if (resume_attempt && stale_work.can_resume) {
-      return resume(workspace, resume_attempt.attempt_id);
+      claimed.add(input.bead_id);
+      const resumed = await resume(workspace, resume_attempt.attempt_id, {
+        preclaimed: true
+      });
+      if (!resumed.ok) {
+        claimed.delete(input.bead_id);
+      }
+      return resumed;
     }
     if (!stale_work.can_continue) {
       return { ok: false, reason: 'stale_work_conflict', conflict: true };
@@ -3996,7 +4048,7 @@ export function createScheduler(deps) {
     if (claimed.has(input.bead_id)) {
       return { ok: false, reason: 'bead_running', conflict: true };
     }
-    const before = new Set(Object.keys(authorized.queue.attempts || {}));
+    const before = new Set(Object.keys(reauthorized.queue.attempts || {}));
     claimed.add(input.bead_id);
     await dispatch(workspace, input.bead_id, null, { stale_work });
     const after = deps.store.snapshot(workspace);
@@ -4031,47 +4083,48 @@ export function createScheduler(deps) {
     if (!authorized.ok) {
       return authorized;
     }
-    if (claimed.has(input.bead_id)) {
-      return { ok: false, reason: 'action_in_flight', conflict: true };
+    let snap;
+    try {
+      snap = await deps.bd.snapshotBead(input.bead_id);
+    } catch {
+      return { ok: false, reason: 'bd_snapshot_failed' };
+    }
+    const owner_reason = await staleWorkOwnerReason(
+      workspace,
+      input.bead_id,
+      snap.repo,
+      authorized.stale_work.identity
+    );
+    if (owner_reason) {
+      return { ok: false, reason: owner_reason, conflict: true };
+    }
+    let cut_base = authorized.stale_work.identity.base_oid;
+    if (typeof deps.resolveBase === 'function') {
+      let resolved;
+      try {
+        resolved = await deps.resolveBase({ force: true });
+      } catch {
+        return { ok: false, reason: 'base_unresolved:git_error' };
+      }
+      if (!resolved.ok) {
+        return { ok: false, reason: `base_unresolved:${resolved.step}` };
+      }
+      cut_base = resolved.base_oid;
+    }
+    if (
+      typeof cut_base !== 'string' ||
+      cut_base.length === 0 ||
+      typeof deps.worktree.removeIfDiscardable !== 'function'
+    ) {
+      return { ok: false, reason: 'base_unresolved:missing' };
+    }
+    const reauthorized = staleWorkAction(workspace, input, 'can_recheck');
+    if (!reauthorized.ok) {
+      return reauthorized;
     }
     claimed.add(input.bead_id);
     let release_action_claim = true;
     try {
-      let snap;
-      try {
-        snap = await deps.bd.snapshotBead(input.bead_id);
-      } catch {
-        return { ok: false, reason: 'bd_snapshot_failed' };
-      }
-      const owner_reason = await staleWorkOwnerReason(
-        workspace,
-        input.bead_id,
-        snap.repo,
-        authorized.stale_work.identity
-      );
-      if (owner_reason) {
-        return { ok: false, reason: owner_reason, conflict: true };
-      }
-      let cut_base = authorized.stale_work.identity.base_oid;
-      if (typeof deps.resolveBase === 'function') {
-        let resolved;
-        try {
-          resolved = await deps.resolveBase({ force: true });
-        } catch {
-          return { ok: false, reason: 'base_unresolved:git_error' };
-        }
-        if (!resolved.ok) {
-          return { ok: false, reason: `base_unresolved:${resolved.step}` };
-        }
-        cut_base = resolved.base_oid;
-      }
-      if (
-        typeof cut_base !== 'string' ||
-        cut_base.length === 0 ||
-        typeof deps.worktree.removeIfDiscardable !== 'function'
-      ) {
-        return { ok: false, reason: 'base_unresolved:missing' };
-      }
       /** @type {WorktreeObservation} */
       let observation;
       try {
@@ -4601,7 +4654,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, preclaimed?: boolean }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -4637,7 +4690,7 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'worktree_missing' };
     }
     // bead_running: a live (or store-recorded running) attempt for the same bead.
-    if (claimed.has(bead_id)) {
+    if (claimed.has(bead_id) && continuation.preclaimed !== true) {
       return { ok: false, reason: 'bead_running' };
     }
     for (const a of Object.values(q.attempts || {})) {
@@ -7189,6 +7242,7 @@ export function createScheduler(deps) {
     reconcile,
     sweepClosedQueue,
     activeBeadIds,
+    staleWorkActionInFlight,
     externalProtectedBeadIds,
     runningCount() {
       return running.size;
