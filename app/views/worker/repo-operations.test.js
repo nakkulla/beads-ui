@@ -150,17 +150,19 @@ function queueOf(over = {}) {
 /**
  * @param {Record<string, any>} [over]
  * @param {any} [transport]
+ * @param {Record<string, any>} [view_options]
  */
-function mountWorker(over = {}, transport = vi.fn()) {
+function mountWorker(over = {}, transport = vi.fn(), view_options = {}) {
   const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
   const queueStore = createWorkerQueueStore();
   queueStore.set(/** @type {any} */ (queueOf(over)));
-  createWorkerView(mount, {
+  const view = createWorkerView(mount, {
     issueStores: issueStores(),
     queueStore,
-    transport
+    transport,
+    ...view_options
   });
-  return { mount, queueStore, transport };
+  return { mount, queueStore, transport, view };
 }
 
 /**
@@ -176,6 +178,7 @@ function openSettings(mount) {
 }
 
 beforeEach(() => {
+  vi.unstubAllGlobals();
   document.body.innerHTML = '<div id="m"></div>';
   window.localStorage.clear();
 });
@@ -1042,6 +1045,124 @@ function repoOps(over = {}) {
 }
 
 describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
+  test('opens declared verify and deploy scripts at the pinned base SHA', () => {
+    const fetchImpl = vi.fn(() => new Promise(() => {}));
+    vi.stubGlobal('fetch', fetchImpl);
+    const { mount, view } = mountWorker(
+      {
+        workspace_info: {
+          verify_cmd: null,
+          repo_ops: repoOps({
+            verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 }
+          })
+        }
+      },
+      vi.fn(),
+      { getWorkspacePath: () => '/repo' }
+    );
+    const verify_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-lane="verify"] button.worker-repo-ops__vd-cmd')
+    );
+    const deploy_button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-lane="deploy"] button.worker-repo-ops__vd-cmd')
+    );
+
+    verify_button.click();
+    deploy_button.click();
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      `/api/repo-ops-script?workspace=${encodeURIComponent('/repo')}&lane=verify&base_sha=${'a'.repeat(40)}`
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
+      `/api/repo-ops-script?workspace=${encodeURIComponent('/repo')}&lane=deploy&base_sha=${'a'.repeat(40)}`
+    );
+    expect(
+      document.querySelector('.repo-ops-script-viewer[role="dialog"]')
+    ).not.toBeNull();
+    view.destroy();
+  });
+
+  test('keeps an open script viewer through same-workspace queue renders', () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise(() => {}))
+    );
+    const { mount, queueStore, view } = mountWorker(
+      {
+        workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+      },
+      vi.fn(),
+      { getWorkspacePath: () => '/repo' }
+    );
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-lane="deploy"] button.worker-repo-ops__vd-cmd')
+    ).click();
+
+    queueStore.set(/** @type {any} */ ({ ...queueStore.get(), revision: 4 }));
+
+    expect(document.querySelector('.repo-ops-script-viewer')).not.toBeNull();
+    view.destroy();
+  });
+
+  test('clears script content when the Worker workspace changes', async () => {
+    let workspace = '/repo-a';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          lane: 'deploy',
+          path: 'repo-ops/script/deploy',
+          base_ref: 'main',
+          base_sha: 'a'.repeat(40),
+          content: 'echo old workspace'
+        })
+      })
+    );
+    const { mount, queueStore, view } = mountWorker(
+      {
+        workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+      },
+      vi.fn(),
+      { getWorkspacePath: () => workspace }
+    );
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('[data-lane="deploy"] button.worker-repo-ops__vd-cmd')
+    ).click();
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain('echo old workspace')
+    );
+
+    workspace = '/repo-b';
+    queueStore.set(/** @type {any} */ ({ ...queueStore.get(), revision: 4 }));
+
+    expect(document.querySelector('.repo-ops-script-viewer')).toBeNull();
+    expect(document.body.textContent).not.toContain('echo old workspace');
+    view.destroy();
+  });
+
+  test('renders no click control for an undeclared lane', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    const dialog = openSettings(mount);
+
+    expect(
+      dialog.querySelector(
+        '[data-lane="verify"] button.worker-repo-ops__vd-cmd'
+      )
+    ).toBeNull();
+    expect(
+      dialog.querySelector(
+        '[data-lane="deploy"] button.worker-repo-ops__vd-cmd'
+      )
+    ).not.toBeNull();
+  });
+
   test('names the declaration source with its pinned base', () => {
     const { mount } = mountWorker({
       workspace_info: { verify_cmd: null, repo_ops: repoOps() }

@@ -9,6 +9,7 @@ import { registerWorkspace } from './registry-watcher.js';
 import { claudeUsageHandler } from './routes/claude-usage.js';
 import { codexUsageHandler } from './routes/codex-usage.js';
 import { docHandler } from './routes/doc.js';
+import { repoOpsScriptHandler } from './routes/repo-ops-script.js';
 
 /**
  * Bootstrap config handed to the client in the served HTML. Label visibility is
@@ -83,6 +84,9 @@ export function createApp(config) {
 
   // Serve a markdown document from a registered workspace's docs/ directory.
   app.get('/api/doc', docHandler);
+
+  // Serve one resolver-verified repository-operation script from a pinned blob.
+  app.get('/api/repo-ops-script', repoOpsScriptHandler);
 
   // Fail-quiet Claude Code usage snapshot for the header meter.
   app.get('/api/claude-usage', claudeUsageHandler);

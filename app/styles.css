@@ -2736,6 +2736,220 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
+.worker-repo-ops__vd-cmd--link {
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.worker-repo-ops__vd-cmd--link:hover,
+.worker-repo-ops__vd-cmd--link:focus-visible {
+  color: var(--accent-child);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.worker-repo-ops__vd-cmd--link:focus-visible {
+  outline: 2px solid var(--stage-plan-on);
+  outline-offset: 2px;
+}
+
+/* 고정 base의 검증·배포 blob만 보여주는 Worker 전용 코드 팝업. */
+.repo-ops-script-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.repo-ops-script-viewer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(1px);
+}
+
+.repo-ops-script-viewer__panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: min(860px, 94vw);
+  max-height: 86vh;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  box-shadow: 0 12px 44px rgba(0, 0, 0, 0.48);
+  overflow: hidden;
+}
+
+.repo-ops-script-viewer__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  min-width: 0;
+  padding: var(--sp-6) var(--sp-8);
+  border-bottom: 1px solid var(--border-panel);
+}
+
+.repo-ops-script-viewer__identity {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-7);
+  min-width: 0;
+  font-family: var(--font-mono, monospace);
+}
+
+.repo-ops-script-viewer__path {
+  min-width: 0;
+  color: var(--text-title);
+  font-size: var(--fs-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-ops-script-viewer__ref {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+.repo-ops-script-viewer__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.repo-ops-script-viewer__actions button {
+  padding: var(--sp-2) var(--sp-7);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.repo-ops-script-viewer__actions button:hover {
+  border-color: var(--accent-child);
+  color: var(--accent-child);
+}
+
+.repo-ops-script-viewer__actions button:focus-visible,
+.repo-ops-script-viewer__code:focus-visible {
+  outline: 2px solid var(--stage-plan-on);
+  outline-offset: -2px;
+}
+
+.repo-ops-script-viewer__actions button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.repo-ops-script-viewer__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--pre-bg);
+}
+
+.repo-ops-script-viewer__status {
+  width: 100%;
+  min-height: 120px;
+  padding: var(--sp-14);
+  color: var(--pre-fg);
+  font-size: var(--fs-body-sm);
+}
+
+.repo-ops-script-viewer__status--error {
+  color: var(--accent-danger);
+}
+
+.repo-ops-script-viewer__code {
+  width: 100%;
+  overflow: auto;
+  color: var(--pre-fg);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--fs-small);
+  line-height: 1.65;
+  tab-size: 2;
+  user-select: text;
+}
+
+.repo-ops-script-viewer__row {
+  display: grid;
+  grid-template-columns: 4.25em max-content;
+  width: max-content;
+  min-width: 100%;
+}
+
+.repo-ops-script-viewer__line-number {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  box-sizing: border-box;
+  padding: 0 var(--sp-8) 0 var(--sp-6);
+  border-right: 1px solid color-mix(in srgb, var(--pre-fg) 16%, transparent);
+  background: color-mix(in srgb, var(--pre-bg) 94%, white);
+  color: var(--text-dim);
+  text-align: right;
+  user-select: none;
+}
+
+.repo-ops-script-viewer__code-line {
+  padding: 0 var(--sp-10);
+  color: inherit;
+  font: inherit;
+  white-space: pre;
+}
+
+.repo-ops-script-viewer__token--comment {
+  color: var(--text-dim);
+}
+
+.repo-ops-script-viewer__token--string {
+  color: var(--accent-success);
+}
+
+.repo-ops-script-viewer__token--variable {
+  color: var(--stage-plan-on);
+}
+
+.repo-ops-script-viewer__token--keyword {
+  color: var(--accent-child);
+}
+
+@media (max-width: 640px) {
+  .repo-ops-script-viewer__panel {
+    width: calc(100vw - 12px);
+    max-height: calc(100dvh - 12px);
+    border-radius: var(--r-6);
+  }
+
+  .repo-ops-script-viewer__header {
+    align-items: flex-start;
+    padding: var(--sp-6);
+  }
+
+  .repo-ops-script-viewer__identity {
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .repo-ops-script-viewer__row {
+    grid-template-columns: 3.5em max-content;
+  }
+}
+
 .worker-repo-ops__vd-badge {
   display: inline-block;
   padding: 0 var(--sp-7);
