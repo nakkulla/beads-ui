@@ -2,7 +2,7 @@
 
 - Bead: UI-vkk8 (route: spec_backed)
 - 날짜: 2026-08-18
-- 상태: 설계 승인 대기
+- 상태: 사용자 설계 승인 완료 · spec gate REVISE 지적 5건 반영본
 
 ## 배경과 문제
 
@@ -61,14 +61,28 @@ unit으로 함께 수행한다.
 `server/worker/merge-queue.js`의 드라이브 루프 거부 처리 사다리
 (1658–1757행 부근, `base_behind`·`review_receipt_*` continuation과 같은 블록)에서:
 
-- external로 기록된 큐 항목(큐 entry의 `external` 플래그)이 `refused` +
-  `not_in_pr_wait`로 돌아오면, 이미 wiring된 `deps.prepare()`(external
-  레지스트리 재스캔, `attach.js:1164`)를 호출한 뒤 한 번 재시도한다.
-  `base_update_attempted`와 같은 지역 플래그 관용구(`registry_refresh_attempted`)
-  로 한 번만 허용한다.
+**판별자는 거부 사유 자체다.** `MergeQueueEntry`(`queue-store.js:447`)에는
+`external` 필드가 없다 — `external`은 `enqueueMember`(`queue-store.js:2800`)의
+admission 술어로만 쓰이고 entry에 저장되지 않으므로, entry 플래그로 분기할 수
+없다. 대신 거부 사유 `not_in_pr_wait`가 이미 판별자다: `pr_wait`에 실제로 있는
+worker 행은 이 사유를 낼 수 없기 때문이다(`pr-actions.js:377`). 따라서 durable
+스키마를 새로 만들지 않는다.
+
+- `refused` + `not_in_pr_wait`가 돌아오면, 이미 wiring된
+  `deps.prepare()`(external 레지스트리 재스캔, `attach.js:1164`)를 호출한 뒤
+  **정확히 한 번** 재시도한다. `base_update_attempted`와 같은 지역 플래그
+  관용구(`registry_refresh_attempted`)로 한 항목당 한 번만 허용하며, 이 플래그는
+  항목 처리 진입 시 초기화된다. 재시도가 다시 `not_in_pr_wait`를 내도 세 번째
+  시도는 없다 — 종료성이 플래그로 보장되고 드라이브 루프는 순환하지 않는다.
 - 재시도 후에도 같은 이유로 거부되면 `failAndDequeue` 대신 `fail`(슬롯 유지 +
   실패 기록) + `halted` 종료로 전환한다. head-review 터미널 실패와 같은
-  의미론(`merge-queue.js:1721`)으로, 다음 poller 스캔·재클릭이 이어받는다.
+  의미론(`merge-queue.js:1721`)이다: 슬롯을 지키되 이 드레인은 끝내므로, 실패
+  항목을 같은 head로 다시 몰아가는 tight loop이 생기지 않는다. 다음 poller
+  스캔·재클릭이 이어받는다.
+- 슬롯 유지가 부적절한 경우(폐기되어 `pr_wait`에서 빠진 행 등)도 같은 경로로
+  수렴한다: 재시도가 실패하면 실패 기록과 함께 큐에 남고, 사용자는 [취소]로
+  뺄 수 있으며 closed-queue sweep이 종료 상태를 별도로 정리한다. 터미널
+  dequeue만 하지 않을 뿐, 회복 불가능한 행이 무한히 재시도되지는 않는다.
 - 재시작 보호용 `prepared` 일회 플래그는 변경하지 않는다.
 
 ### 2. 프런트 — [머지] 버튼 활성 확장
@@ -81,8 +95,11 @@ unit으로 함께 수행한다.
   패턴을 따른다:
   - 리뷰 missing/stale → `리뷰 후 머지` — "자동 리뷰 세션 후 승인되면
     머지합니다"
-  - `base_behind` → `base 갱신 후 머지` — "base 자동 갱신 후 머지합니다"
-    (§4 적용 시 재리뷰 없이 승계)
+  - `base_behind` → `base 갱신 후 머지` — "base를 자동 갱신한 뒤 머지합니다"
+    툴팁은 재리뷰 여부를 약속하지 않는다. 게이트가 mergeability를 리뷰 영수증보다
+    먼저 판정하므로(`merge-gate.js:242` vs `:252`), `base_behind` 배지가 붙은 행의
+    영수증 상태는 화면에서 알 수 없다. 갱신 후 §4 결속 조건을 만족하면 승계로
+    바로 머지되고, 만족하지 못하면 외부 리뷰가 뒤따른다.
 - `review_receipt_invalid`, `mergeability_unknown`, 관측 오류는 계속 비활성.
   invalid는 서버 continuation이 없어 큐에 넣으면 터미널 실패한다
   (`merge-queue.js:1696`은 stale/missing만 허용).
@@ -92,16 +109,40 @@ unit으로 함께 수행한다.
 
 ### 3. 프런트 — 카드 상태 표시 단순화
 
-행마다 핵심 상태 배지 **하나**만 표시한다. 우선순위(높은 것이 이김):
+행마다 핵심 상태 배지 **하나**만 표시한다. 이 배지는 하나의 우선순위 resolver가
+결정하며, **현행 배지 입력 전부**가 그 resolver에 빠짐없이 매핑되어야 한다.
+현행 입력(`index.js:858–925`)과 배정은 다음과 같다.
 
-1. **진행 중** — 충돌 해소 중 / 리뷰 진행 중 / base 갱신 중 / 머지 중 등
-   현재 활성 단계. 활성 진행이 있으면 과거 실패 기록보다 앞선다 —
-   재클릭으로 재개된 행에 지난 실패를 계속 보여주지 않는다.
-2. **실패 기록** — `머지 실패 — <한국어 사유>` (원본 reason 코드는 툴팁)
-3. **액션 대기** — 최종 변경 리뷰 필요 / base 갱신 필요 / 충돌 /
-   리뷰 기록 오류(차단, 계약 쪽 정정 대상)
-4. **머지 가능**
-5. **확인 중** — 관측 대기/진행
+| 등급 | 입력 | 배지 |
+| --- | --- | --- |
+| 1 사용자 선택 대기 | `continuation_required` | 이어하기 선택 필요 |
+| 2 진행 중 | `merge_step` / `conflict_badge` / `head_review`(pending·reviewing·revising) / `recovery`(활성) | 머지 중 · 충돌 해소 중 · 충돌 해소 일시정지 · 리뷰 진행 중 · 자동복구 중 |
+| 3 조치 필요(차단) | `cleanup_failed` / `base_exception` / gate `충돌` / `base_behind` / 리뷰 missing·stale / 리뷰 invalid / `head_review`(failed) | 정리 멈춤 · 다른 base 대상 · 충돌 해결 필요 · base 갱신 필요 · 최종 변경 리뷰 필요 · 리뷰 기록 오류 · 리뷰 실패 |
+| 4 실패 기록 | `queue_failure` / `auto_skip` | 머지 실패 — `<한국어 사유>` · 자동 제외 — `<한국어 사유>` |
+| 5 대기 | `머지 대기 #N`(`queued && !queue_active`) | 머지 대기 #N |
+| 6 머지 가능 | gate `enabled` | 머지 가능 |
+| 7 확인 중 | 관측 대기·오류, `activity` 치환 | 확인 중 · 상태 확인 실패 |
+| 종료 | gate `merged` / `closed_unmerged` | 머지됨 · 닫힘 |
+
+등급 배정의 근거:
+
+- `continuation_required`가 최상위인 이유는 그 행이 사용자 선택 없이는 어떤
+  경로로도 진행하지 않기 때문이다. 진행 중 표시가 이를 가리면 행이 멈춘 이유가
+  사라진다.
+- 진행 중이 실패 기록보다 위인 이유는 `queue_failure`가 비-durable(직전 실행
+  기록)이기 때문이다 — 재클릭으로 재개된 행에 지난 실패를 계속 보여주지 않는다.
+  반대로 `cleanup_failed`와 `auto_skip`은 durable하므로 각각 3·4등급에서
+  독립적으로 남는다.
+- 조치 필요가 실패 기록보다 위인 이유는 "무엇을 해야 하는가"가 "무엇이
+  실패했는가"보다 행동 가능하기 때문이다. 두 사실이 함께 있으면 배지는 조치를
+  말하고, 실패 사유는 툴팁에 남는다.
+- `base_exception`은 gate의 base 상태와 다른 축(어디로 머지되는가)이므로 3등급
+  안에서 독립 항목으로 유지한다. 게이트가 녹색이어도 이 행은 조치가 필요하다.
+
+버튼과의 관계: 3등급 각 상태의 기본 버튼은 §2가 정한다(충돌 → [충돌 해소 후
+머지], base 뒤처짐 → [base 갱신 후 머지], 리뷰 missing/stale → [리뷰 후 머지],
+리뷰 invalid·리뷰 실패·정리 멈춤 → 각각 현행 버튼 규칙 유지). 배지와 버튼이
+서로 다른 상태를 가리키면 안 되며, 이 일치는 뷰모델 테스트가 검증한다.
 
 세부 규칙:
 
@@ -161,10 +202,24 @@ beads-ui 소비(`server/worker/head-review.js`):
   적용된다.
 - vouched mutation이 없는 head 이동(authority 발급 후 외부 push)은 현행대로
   fail-closed.
-- 경계 명시: 완화는 **같은 authority 안에서 vouch된 변이**에만 적용된다.
-  이미 stale인 head를 재클릭해 새 authority를 발급한 경우, 그 authority에는
-  vouch된 변이가 없으므로 클릭한 head에 대해 외부 리뷰어를 dispatch한다
-  (첫 리뷰와 같은 취급). lineage 없이 delta의 출처를 증명할 수 없기 때문이다.
+
+**완화의 결속 조건 (모두 만족해야 한다).** 승계·self-review 어느 쪽이든, 아래를
+모두 만족하지 않으면 완화하지 않고 최종 head 전체를 외부 리뷰어에게 보낸다.
+
+1. **출발점이 승인 상태였을 것** — authority 발급 시점의 head
+   (`authority.requested_head_sha`)에 그 head에 결속된 유효한 승인 영수증이
+   있었어야 한다. 발급 시점에 이미 stale·missing이었다면 승계할 승인이 없으므로
+   완화 대상이 아니다. 이 조건이 "이미 stale인 head가 `base_behind`나 충돌로 먼저
+   분류되어 완화 경로에 진입하는" 우회를 막는다.
+2. **변이가 이 authority의 것일 것** — mutation attempt id가 이 authority에서
+   발급된 것이어야 한다(`resolver:<attempt>` / `base_update`).
+3. **결과 head가 정확히 일치할 것** — 변이 실행이 만든 결과 SHA를 기록하고,
+   재-probe로 관측한 head가 그 SHA와 **정확히 같아야** 한다. 다르면 변이 완료와
+   재-probe 사이에 제3의 push가 들어온 것이므로, 미검토 delta가 승계에 편승할 수
+   있다. 이 경우 완화하지 않고 관측된 최종 head 전체를 외부 리뷰한다.
+
+승계 영수증은 이전 승인 head와 결과 head를 함께 기록해, 어떤 승인이 어디로
+승계됐는지 감사 가능해야 한다. 정확한 어휘는 계약 정정에서 확정한다.
 
 명시적 트레이드오프: base 갱신 승계는 "리뷰된 코드 + 새 base 결합"의 semantic
 conflict를 검증하지 않는다. 이 저장소는 CI가 없으므로 그 위험을 수용한다는
@@ -178,10 +233,41 @@ conflict를 검증하지 않는다. 이 저장소는 CI가 없으므로 그 위�
   세션 마커 분리, 실패 문구 매핑과 툴팁 보존.
 - `server/worker/head-review.test.js`(§4, dotfiles 계약 랜딩 후): base_update 승계
   경로가 세션 없이 승인되는 것, resolver self-review verdict 결속, missing은
-  여전히 외부 dispatch.
+  여전히 외부 dispatch. 추가로 완화 결속 조건의 부정 경로 — 발급 시점 head가
+  이미 stale이면 완화하지 않음, 결과 SHA와 관측 head가 다르면 최종 head 전체를
+  외부 리뷰함.
 - Pre-Handoff Validation: `npm run tsc` / `npm test` / `npm run lint` /
   `npm run prettier:write` / `npm run build`(번들 포함).
-- Post-Merge: `bdui-shared restart` 후 프로세스 경로·포트·HTTP 응답 검증.
+
+**dotfiles enclosed foreign unit 검증 (랜딩 전 필수).** 계약 표면을 바꾸므로
+beads-ui 테스트만으로는 불충분하다. dotfiles 랜딩 전에 그 저장소가 소유한
+검증을 통과시킨다:
+
+1. canonical `docs/contracts/workflow.md`와 `workflow.yaml`을 함께 수정한다.
+2. dotfiles가 소유한 workflow 계약 checker(`check-workflow-contract.py` 등
+   해당 저장소의 검사기)와 렌더/테스트를 실행해 통과를 확인한다.
+3. generated v2 projection과 런타임 사본(설치된 스킬 매니페스트가 배포하는
+   복사본)이 canonical과 정합하는지 확인한다 — AGENTS.md가 말하듯 machine
+   consumer는 생성된 projection이다.
+4. 계약 어휘를 실제로 읽는 active consumer(이 완화를 소비하는 스킬·러너)가
+   새 어휘와 어긋나지 않는지 확인한다.
+
+랜딩 후 그 SHA를 확인한 다음에야 beads-ui 소비 코드(§4)와 그 테스트를
+실행한다. 완료 보고서에는 repo, base, 소유 경로, 검증 명령과 결과, fetched
+parent, 랜딩 SHA, 소유 커밋을 기록한다.
+
+**Post-Merge apply 순서.** 배포는 세션이 손으로 `bdui-shared restart`를 실행하는
+것이 아니라, 핀된 base의 `repo-ops/config.toml` `[deploy]`가 가리키는
+`repo-ops/script/deploy`를 저장소 작업 lane이 한 번 실행하는 것이 전부다. 그
+스크립트가 순서와 단계별 확인을 이미 소유한다: 실행 전체 self-flock → 진입
+HEAD가 `REPO_OPS_TARGET_SHA`와 일치 확인 → `npm ci` → `npm run build` →
+`bdui-shared restart` → health probe → 종료 HEAD 일치 및 tracked-clean 확인.
+각 단계는 실패 시 즉시 중단(`set -eu` + `fail`)되므로 중간 중단은 다음 실행이
+같은 target SHA로 처음부터 재개할 수 있는 상태로 남는다. 이 spec은 그 순서를
+복제하지 않고 인용하며, 실패 해결은 v2 사다리
+(`script_retry → auto_repair_session → user_triggered_session`)를 따른다.
+완료 선언은 그 operation이 terminal success에 도달하고 프로세스 경로·포트·HTTP
+응답 검증까지 통과한 다음이다.
 
 ## 범위 밖
 
