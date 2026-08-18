@@ -54,9 +54,10 @@ export function createDiscardCoordinator(deps, options = {}) {
       'worktree_realpath',
       'branch',
       'head_sha',
+      'branch_head_sha',
       'base_oid',
       'status_digest'
-    ].every((key) => expected[key] === observed[key]);
+    ].every((key) => (expected[key] ?? null) === (observed[key] ?? null));
   }
 
   /**
@@ -453,11 +454,38 @@ export function createDiscardCoordinator(deps, options = {}) {
       withTopologyLock: (work) =>
         deps.worktree.withTopologyLock(source.repo, async () => work()),
       createArchive: () =>
-        source.preexisting_absent === true
-          ? typeof deps.archive.createCommittedSource === 'function'
-            ? deps.archive.createCommittedSource({
+        source.residue === 'branch'
+          ? typeof deps.archive.createBranch === 'function'
+            ? deps.archive.createBranch({
+                workspace: deps.workspace,
+                archive_id: operation.operation_id,
+                repo: source.repo,
+                ref: `refs/heads/${source.branch}`,
+                base_oid: source.base_oid,
+                branch_head_sha: source.branch_head_sha
+              })
+            : { ok: false, reason: 'branch_archive_unwired' }
+          : source.preexisting_absent === true
+            ? typeof deps.archive.createCommittedSource === 'function'
+              ? deps.archive.createCommittedSource({
+                  workspace: deps.workspace,
+                  operation_id: operation.operation_id,
+                  source_snapshot: source,
+                  session_log_path: operation.attempt_id
+                    ? deps.sessionLog.pathFor(
+                        deps.workspace,
+                        operation.attempt_id
+                      )
+                    : null
+                })
+              : { ok: false, reason: 'committed_source_archive_unwired' }
+            : deps.archive.create({
                 workspace: deps.workspace,
                 operation_id: operation.operation_id,
+                repo: source.repo,
+                worktree: source.worktree,
+                target_base: source.base_oid || source.target_base,
+                source_head: source.source_head,
                 source_snapshot: source,
                 session_log_path: operation.attempt_id
                   ? deps.sessionLog.pathFor(
@@ -466,19 +494,6 @@ export function createDiscardCoordinator(deps, options = {}) {
                     )
                   : null
               })
-            : { ok: false, reason: 'committed_source_archive_unwired' }
-          : deps.archive.create({
-              workspace: deps.workspace,
-              operation_id: operation.operation_id,
-              repo: source.repo,
-              worktree: source.worktree,
-              target_base: source.base_oid || source.target_base,
-              source_head: source.source_head,
-              source_snapshot: source,
-              session_log_path: operation.attempt_id
-                ? deps.sessionLog.pathFor(deps.workspace, operation.attempt_id)
-                : null
-            })
     });
   }
 
@@ -1422,6 +1437,21 @@ export function createDiscardCoordinator(deps, options = {}) {
         reason: remote.reason || 'remote_branch_owner'
       };
     }
+    if (source.residue === 'branch') {
+      const local = await localRef(source.repo, source.branch);
+      if (!local.ok) {
+        return {
+          ok: false,
+          reason: local.reason || 'local_ref_observe_failed'
+        };
+      }
+      if (local.sha === null) {
+        return { ok: true };
+      }
+      if (local.sha !== source.branch_head_sha) {
+        return { ok: false, reason: 'local_ref_changed' };
+      }
+    }
     let observed;
     try {
       observed = await deps.worktree.removeIfDiscardable({
@@ -1437,9 +1467,21 @@ export function createDiscardCoordinator(deps, options = {}) {
       worktree_realpath: source.worktree,
       branch: source.branch,
       head_sha: source.source_head,
+      branch_head_sha: source.branch_head_sha,
       base_oid: source.base_oid,
       status_digest: source.status_digest
     };
+    if (source.residue === 'branch') {
+      if (
+        observed.state !== 'unique' ||
+        observed.owned !== true ||
+        !observed.identity ||
+        !sameStaleIdentity(expected, observed.identity)
+      ) {
+        return { ok: false, reason: 'worktree_identity_changed' };
+      }
+      return { ok: true };
+    }
     const worktree_already_removed =
       observed.owned === true &&
       observed.identity?.worktree_realpath === null &&
@@ -2002,9 +2044,20 @@ export function createDiscardCoordinator(deps, options = {}) {
         if (!verified.ok) {
           return fail(operation, verified.reason || 'source_verify_failed');
         }
-        const result = await removeWorktree(operation);
+        const result =
+          operation.source_snapshot.residue === 'branch'
+            ? await removeLocalRef(operation)
+            : await removeWorktree(operation);
         if (!result || result.ok === false) {
-          return result || fail(operation, 'worktree_phase_persist_failed');
+          return (
+            result ||
+            fail(
+              operation,
+              operation.source_snapshot.residue === 'branch'
+                ? 'local_ref_phase_persist_failed'
+                : 'worktree_phase_persist_failed'
+            )
+          );
         }
         continue;
       }
@@ -2203,6 +2256,14 @@ export function createDiscardCoordinator(deps, options = {}) {
     ) {
       return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
     }
+    const residue = stale_work.residue === 'branch' ? 'branch' : 'worktree';
+    const branch_head_sha = stale_work.identity.branch_head_sha;
+    if (
+      residue === 'branch' &&
+      (typeof branch_head_sha !== 'string' || branch_head_sha.length === 0)
+    ) {
+      return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
+    }
     const operation_id = makeOperationId();
     const created = deps.store.createDiscardOperation(deps.workspace, {
       expected_revision: input.expected_revision,
@@ -2214,12 +2275,17 @@ export function createDiscardCoordinator(deps, options = {}) {
         process_identity: null,
         source_snapshot: {
           repo: deps.repo,
+          residue,
           worktree: stale_work.identity.worktree_realpath,
           branch,
           source_head: stale_work.identity.head_sha,
+          branch_head_sha,
           base_oid: stale_work.identity.base_oid,
           target_base: resolved.base,
-          local_branch_sha: stale_work.identity.head_sha,
+          local_branch_sha:
+            residue === 'branch'
+              ? branch_head_sha
+              : stale_work.identity.head_sha,
           remote_branch_sha: null,
           identity_digest: stale_work.identity_digest,
           status_digest: stale_work.identity.status_digest

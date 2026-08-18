@@ -414,6 +414,7 @@ export function discardReceiptTemplate(item) {
 
 /**
  * @typedef {Object} StaleWorkView
+ * @property {'worktree'|'branch'} residue
  * @property {'unique'|'unknown'} state
  * @property {string} title
  * @property {string} cause
@@ -431,6 +432,14 @@ const STALE_WORK_CAUSES = {
   untracked_present: '추적되지 않은 파일이 남아 있습니다',
   branch_ahead: '로컬 branch에 고유 commit이 남아 있습니다',
   head_ahead: 'worktree HEAD에 고유 commit이 남아 있습니다',
+  ahead_not_contained:
+    '로컬 branch의 고유 commit이 최신 base에 포함됐음을 증명하지 못했습니다',
+  ahead_merge_commit:
+    '로컬 branch에 자동 정리할 수 없는 merge commit이 남아 있습니다',
+  ahead_submodule_path:
+    '로컬 branch의 고유 commit이 submodule 경로를 변경합니다',
+  archive_failed: '고유 commit 백업을 안전하게 검증하지 못했습니다',
+  ref_delete_failed: '확인된 local branch를 안전하게 삭제하지 못했습니다',
   resume_available: '이어갈 수 있는 이전 Worker session이 있습니다',
   observe_failed: 'Git 상태를 안전하게 확인하지 못했습니다',
   identity_changed: '확인 중 worktree 상태가 바뀌었습니다',
@@ -455,6 +464,7 @@ export function staleWorkProjection(admission, locked = false) {
     return null;
   }
   const stale_work = /** @type {Record<string, unknown>} */ (record.stale_work);
+  const residue = stale_work.residue === 'branch' ? 'branch' : 'worktree';
   const state = stale_work.state === 'unique' ? 'unique' : 'unknown';
   const summary =
     stale_work.summary && typeof stale_work.summary === 'object'
@@ -469,19 +479,28 @@ export function staleWorkProjection(admission, locked = false) {
   const cause_key =
     typeof stale_work.cause === 'string' ? stale_work.cause : 'observe_failed';
   return {
+    residue,
     state,
-    title: state === 'unique' ? '이전 작업 보존됨' : '이전 작업 상태 확인 실패',
+    title:
+      residue === 'branch'
+        ? '이전 브랜치 보존됨'
+        : state === 'unique'
+          ? '이전 작업 보존됨'
+          : '이전 작업 상태 확인 실패',
     cause:
       STALE_WORK_CAUSES[
         /** @type {keyof typeof STALE_WORK_CAUSES} */ (cause_key)
       ] || '안전하게 자동 정리할 수 없는 이전 작업이 남아 있습니다',
-    summary: [
-      `staged ${count('staged_count')}`,
-      `unstaged ${count('unstaged_count')}`,
-      `untracked ${count('untracked_count')}`,
-      `branch ahead ${count('branch_ahead')}`,
-      `HEAD ahead ${count('head_ahead')}`
-    ].join(' · '),
+    summary:
+      residue === 'branch'
+        ? `고유 commit ${count('branch_ahead')}`
+        : [
+            `staged ${count('staged_count')}`,
+            `unstaged ${count('unstaged_count')}`,
+            `untracked ${count('untracked_count')}`,
+            `branch ahead ${count('branch_ahead')}`,
+            `HEAD ahead ${count('head_ahead')}`
+          ].join(' · '),
     action_id:
       typeof stale_work.action_id === 'string' ? stale_work.action_id : '',
     can_resume: stale_work.can_resume === true,

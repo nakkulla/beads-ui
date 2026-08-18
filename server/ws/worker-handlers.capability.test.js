@@ -44,3 +44,92 @@ describe('decorateQueue manual continuation capability (UI-58w8 §8)', () => {
     expect(off.manual_merge_continuation).toEqual(on.manual_merge_continuation);
   });
 });
+
+describe('decorateQueue stale-work residue capability', () => {
+  test('projects branch residue without server-only identity', () => {
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        bareQueue({
+          admission: {
+            'UI-1': {
+              reason: 'worktree_stale_work',
+              at: 1,
+              stale_work: {
+                schema: 1,
+                residue: 'branch',
+                state: 'unique',
+                cause: 'ahead_not_contained',
+                summary: {
+                  staged_count: 0,
+                  unstaged_count: 0,
+                  untracked_count: 0,
+                  branch_ahead: 2,
+                  head_ahead: 0
+                },
+                identity_digest: 'identity-1',
+                action_id: 'action-1',
+                can_resume: false,
+                can_continue: false,
+                can_backup_fresh: true,
+                can_recheck: true,
+                identity: {
+                  worktree_realpath: '/private/repo/.worktrees/UI-1',
+                  branch: 'UI-1',
+                  branch_head_sha: 'a'.repeat(40),
+                  raw_stderr: 'secret path',
+                  file_contents: 'secret contents'
+                }
+              }
+            }
+          }
+        })
+      )
+    );
+
+    expect(out.admission['UI-1'].stale_work).toMatchObject({
+      residue: 'branch',
+      can_resume: false,
+      can_continue: false,
+      can_backup_fresh: true,
+      can_recheck: true
+    });
+    expect(out.admission['UI-1'].stale_work).not.toHaveProperty('identity');
+  });
+
+  test('defaults legacy residue projection to worktree', () => {
+    const out = /** @type {any} */ (
+      decorateQueue(
+        WS,
+        bareQueue({
+          admission: {
+            'UI-1': {
+              reason: 'worktree_stale_work',
+              at: 1,
+              stale_work: {
+                schema: 1,
+                state: 'unknown',
+                cause: 'observe_failed',
+                summary: {
+                  staged_count: 0,
+                  unstaged_count: 0,
+                  untracked_count: 0,
+                  branch_ahead: 0,
+                  head_ahead: 0
+                },
+                identity_digest: 'identity-1',
+                action_id: 'action-1',
+                can_resume: false,
+                can_continue: false,
+                can_backup_fresh: false,
+                can_recheck: true
+              }
+            }
+          }
+        })
+      )
+    );
+
+    expect(out.admission['UI-1'].stale_work.residue).toBe('worktree');
+  });
+});

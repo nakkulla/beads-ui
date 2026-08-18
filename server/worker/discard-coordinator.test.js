@@ -1809,9 +1809,10 @@ describe('worker discard coordinator unmerged lifecycle', () => {
 });
 
 /**
- * @param {{ in_flight?: boolean }} [options]
+ * @param {{ in_flight?: boolean, residue?: 'worktree'|'branch', archive_failure?: boolean, local_ref_failure?: boolean }} [options]
  */
 function setupStaleRecovery(options = {}) {
+  const residue = options.residue || 'worktree';
   const store = createQueueStore({ now: () => 100 });
   store.place(workspace, {
     expected_revision: 0,
@@ -1819,9 +1820,11 @@ function setupStaleRecovery(options = {}) {
     lane: 's1'
   });
   const identity = {
-    worktree_realpath: '/repo/.worktrees/UI-stale',
+    worktree_realpath:
+      residue === 'worktree' ? '/repo/.worktrees/UI-stale' : null,
     branch: 'UI-stale',
-    head_sha: HEAD_SHA,
+    head_sha: residue === 'worktree' ? HEAD_SHA : null,
+    branch_head_sha: residue === 'branch' ? HEAD_SHA : null,
     base_oid: 'a'.repeat(40),
     status_digest: 'status-1'
   };
@@ -1830,31 +1833,73 @@ function setupStaleRecovery(options = {}) {
     reason: 'worktree_stale_work',
     stale_work: {
       schema: 1,
+      residue,
       state: 'unique',
-      cause: 'dirty_unique',
+      cause: residue === 'worktree' ? 'dirty_unique' : 'ahead_not_contained',
       summary: {
         staged_count: 1,
         unstaged_count: 1,
         untracked_count: 1,
-        branch_ahead: 0,
+        branch_ahead: residue === 'branch' ? 1 : 0,
         head_ahead: 0
       },
       identity_digest: 'identity-1',
       action_id: 'action-1',
       can_resume: false,
-      can_continue: true,
+      can_continue: residue === 'worktree',
       can_backup_fresh: true,
-      can_recheck: false,
+      can_recheck: residue === 'branch',
       identity
     }
   });
   /** @type {string[]} */
   const calls = [];
   let local_ref = HEAD_SHA;
-  let worktree_present = true;
+  let local_ref_failure = options.local_ref_failure === true;
+  let worktree_present = residue === 'worktree';
   const worktree = {
-    removeIfDiscardable: vi.fn(async () =>
-      worktree_present
+    removeIfDiscardable: vi.fn(async () => {
+      if (residue === 'branch') {
+        return local_ref
+          ? {
+              ok: false,
+              state: 'unique',
+              cause: 'ahead_not_contained',
+              owned: true,
+              removed: false,
+              identity,
+              summary: {
+                staged_count: 0,
+                unstaged_count: 0,
+                untracked_count: 0,
+                branch_ahead: 1,
+                head_ahead: 0
+              }
+            }
+          : {
+              ok: true,
+              state: 'absent',
+              cause: null,
+              owned: false,
+              removed: false,
+              identity: {
+                worktree_realpath: null,
+                branch: null,
+                head_sha: null,
+                branch_head_sha: null,
+                base_oid: identity.base_oid,
+                status_digest: 'spent-branch'
+              },
+              summary: {
+                staged_count: 0,
+                unstaged_count: 0,
+                untracked_count: 0,
+                branch_ahead: 0,
+                head_ahead: 0
+              }
+            };
+      }
+      return worktree_present
         ? {
             ok: false,
             state: 'unique',
@@ -1880,6 +1925,7 @@ function setupStaleRecovery(options = {}) {
               worktree_realpath: null,
               branch: 'UI-stale',
               head_sha: null,
+              branch_head_sha: null,
               base_oid: identity.base_oid,
               status_digest: 'spent-branch'
             },
@@ -1890,8 +1936,8 @@ function setupStaleRecovery(options = {}) {
               branch_ahead: 0,
               head_ahead: 0
             }
-          }
-    ),
+          };
+    }),
     removeByBranch: vi.fn(
       /** @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>} */
       async () => {
@@ -1913,6 +1959,20 @@ function setupStaleRecovery(options = {}) {
         receipt: {
           path: '/state/archive',
           manifest_sha256: 'a'.repeat(64),
+          verified_at: 200
+        }
+      };
+    }),
+    createBranch: vi.fn(() => {
+      if (options.archive_failure) {
+        return { ok: false, reason: 'archive_create_failed' };
+      }
+      calls.push('archive:branch-verified');
+      return {
+        ok: true,
+        receipt: {
+          path: '/state/branch-archive',
+          manifest_sha256: 'b'.repeat(64),
           verified_at: 200
         }
       };
@@ -1944,6 +2004,10 @@ function setupStaleRecovery(options = {}) {
       }
       if (args[0] === 'update-ref') {
         calls.push('cleanup:local-ref');
+        if (local_ref_failure) {
+          local_ref_failure = false;
+          return { code: 1, stdout: '', stderr: '' };
+        }
         local_ref = '';
       }
       return { code: 0, stdout: '', stderr: '' };
@@ -1977,6 +2041,85 @@ function setupStaleRecovery(options = {}) {
 }
 
 describe('worker discard coordinator stale-work recovery', () => {
+  test('cleans branch-only residue with a verified archive and CAS ref delete', async () => {
+    const env = setupStaleRecovery({ residue: 'branch' });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(env.calls).toEqual([
+      'archive:branch-verified',
+      'cleanup:local-ref',
+      'scheduler:tick'
+    ]);
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+    expect(env.archive.createBranch).toHaveBeenCalledWith({
+      workspace,
+      archive_id: 'stale-work-1',
+      repo: '/repo',
+      ref: 'refs/heads/UI-stale',
+      base_oid: env.identity.base_oid,
+      branch_head_sha: HEAD_SHA
+    });
+  });
+
+  test('runs no cleanup when branch-only archive creation fails', async () => {
+    const env = setupStaleRecovery({
+      residue: 'branch',
+      archive_failure: true
+    });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: false });
+    expect(env.calls).toEqual([]);
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+
+  test('preserves a verified branch archive across cleanup failure and retry', async () => {
+    const env = setupStaleRecovery({
+      residue: 'branch',
+      local_ref_failure: true
+    });
+
+    const first = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const failed_operation =
+      env.store.snapshot(workspace).discard_operations['stale-work-1'];
+    const retried = await env.createCoordinator().retry('stale-work-1');
+    const operation =
+      env.store.snapshot(workspace).discard_operations['stale-work-1'];
+
+    expect(first).toMatchObject({
+      ok: false,
+      reason: 'local_ref_delete_failed'
+    });
+    expect(failed_operation).toMatchObject({
+      phase: 'backup_verified',
+      backup: { path: '/state/branch-archive' },
+      last_error: 'local_ref_delete_failed'
+    });
+    expect(retried).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(env.archive.createBranch).toHaveBeenCalledTimes(1);
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+    expect(operation).toMatchObject({
+      phase: 'done',
+      backup: { path: '/state/branch-archive' },
+      last_error: null
+    });
+  });
+
   test('starts recovery while dispatch refusal remains visible', async () => {
     const env = setupStaleRecovery();
 
