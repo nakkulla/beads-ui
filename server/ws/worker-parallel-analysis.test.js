@@ -124,7 +124,7 @@ function analysisResult(over = {}) {
   };
 }
 
-/** @type {{ runs: number, outcome: any }} */
+/** @type {{ runs: number, outcome: any, model_ids: string[] }} */
 let runner_state;
 
 /**
@@ -155,6 +155,9 @@ function analysisDeps(options = {}) {
     }),
     runAnalysis: (/** @type {any} */ input) => {
       runner_state.runs += 1;
+      if (typeof input.model_id === 'string') {
+        runner_state.model_ids.push(input.model_id);
+      }
       const outcome = runner_state.outcome || {
         ok: true,
         result: {
@@ -171,7 +174,7 @@ function analysisDeps(options = {}) {
  * @param {{ result?: any, outcome?: any }} [options]
  */
 function armAnalysis(options = {}) {
-  runner_state = { runs: 0, outcome: options.outcome || null };
+  runner_state = { runs: 0, outcome: options.outcome || null, model_ids: [] };
   __setAnalysisDepsForTest(analysisDeps(options));
 }
 
@@ -253,6 +256,46 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
 
     expect(runner_state.runs).toBe(1);
     expect(replyFor(sock, 'r2').payload.cached).toBe(true);
+  });
+
+  test('re-runs when the catalog remaps a codex short name to a new model id', async () => {
+    seedQueue();
+    getWorkerRuntime().parallelAnalysis.updateSettings({
+      expected_revision: 1,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh'
+    });
+    const sock = fakeSocket();
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      catalog: {
+        runners: {
+          codex: { models: { sol: { id: 'gpt-codex-old' } } }
+        }
+      },
+      validateSelection: () => true
+    });
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+    const first_identity = replyFor(sock, 'r1').payload.identity;
+    __setAnalysisDepsForTest({
+      ...deps,
+      catalog: {
+        runners: {
+          codex: { models: { sol: { id: 'gpt-codex-new' } } }
+        }
+      },
+      validateSelection: () => true
+    });
+
+    await send(sock, 'r2', 'worker-parallel-analysis-start', {});
+
+    expect(replyFor(sock, 'r2').payload.cached).toBe(false);
+    expect(replyFor(sock, 'r2').payload.identity).not.toBe(first_identity);
+    expect(runner_state.runs).toBe(2);
+    expect(runner_state.model_ids).toEqual(['gpt-codex-old', 'gpt-codex-new']);
   });
 
   test('force re-runs while preserving the previous last-good on failure', async () => {

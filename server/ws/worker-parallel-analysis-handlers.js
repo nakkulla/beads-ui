@@ -20,7 +20,10 @@ import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { workerAnalysisContext } from '../worker/attach.js';
 import { collectAnalysisBundle } from '../worker/parallel-analysis-bundle.js';
-import { runAnalysis as realRunAnalysis } from '../worker/parallel-analysis-runner.js';
+import {
+  analyzerModelId,
+  runAnalysis as realRunAnalysis
+} from '../worker/parallel-analysis-runner.js';
 import { analysisIdentityOf } from '../worker/parallel-analysis-store.js';
 import { collectAnalysisSnapshot } from '../worker/parallel-analysis-targets.js';
 import {
@@ -28,10 +31,7 @@ import {
   validateAnalysisResult
 } from '../worker/parallel-analysis-validator.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
-import {
-  getWorkerRuntime,
-  validateAnalyzerSelection
-} from '../worker/runtime.js';
+import { analyzerSelectionValid, getWorkerRuntime } from '../worker/runtime.js';
 import { log, runBdJsonProjectedInWorkspace } from './context.js';
 import { decorateQueue, fanout as fanoutQueue } from './worker-handlers.js';
 import { targetWorkspaceOf } from './workspace-target.js';
@@ -47,7 +47,7 @@ const SUBSCRIBERS = new Map();
  * present a catalog that no longer carries a model without editing the
  * machine's config file.
  *
- * @type {{ listIssues: (ws: WebSocket, workspace: string) => Promise<any[]>, analysisContext: (workspace: string) => any, runAnalysis: (input: any) => { done: Promise<any>, cancel: () => void }, validateSelection?: (selection: any) => boolean }|null}
+ * @type {{ listIssues: (ws: WebSocket, workspace: string) => Promise<any[]>, analysisContext: (workspace: string) => any, runAnalysis: (input: any) => { done: Promise<any>, cancel: () => void }, validateSelection?: (selection: any) => boolean, catalog?: any }|null}
  */
 let TEST_DEPS = null;
 
@@ -96,6 +96,9 @@ function subscribersFor(key) {
  * @returns {any}
  */
 function analyzerCatalog() {
+  if (TEST_DEPS && Object.hasOwn(TEST_DEPS, 'catalog')) {
+    return TEST_DEPS.catalog;
+  }
   try {
     return runtimeCatalog();
   } catch {
@@ -108,13 +111,14 @@ function analyzerCatalog() {
  * so a test can shrink the catalog without touching the machine's config file.
  *
  * @param {{ runner: string, model: string, effort: string }} selection
+ * @param {any} [catalog]
  * @returns {boolean}
  */
-function selectionRunnable(selection) {
+function selectionRunnable(selection, catalog = analyzerCatalog()) {
   if (TEST_DEPS && typeof TEST_DEPS.validateSelection === 'function') {
     return TEST_DEPS.validateSelection(selection) === true;
   }
-  return validateAnalyzerSelection(selection);
+  return analyzerSelectionValid(catalog, selection);
 }
 
 /**
@@ -335,12 +339,30 @@ export async function handleParallelAnalysisStart(ws, req) {
   const force = /** @type {any} */ (req.payload || {}).force === true;
   const store = analysisStore();
   const settings = store.effectiveSettings();
-  if (!selectionRunnable(settings)) {
+  const catalog = analyzerCatalog();
+  if (!selectionRunnable(settings, catalog)) {
     // Re-validated HERE, not only at save time (UI-yqw9 §2.1): the catalog can
     // move under a stored selection. The refusal happens before the snapshot,
     // the bundle, and any spawn — and never picks a substitute. The reason
     // splits on where the effective selection came from, because the two need
     // different repairs.
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          reason: settings.is_default
+            ? 'settings_missing'
+            : 'settings_incompatible'
+        })
+      )
+    );
+    return;
+  }
+  const model_id =
+    settings.runner === 'codex'
+      ? analyzerModelId(catalog, settings.runner, settings.model)
+      : settings.model;
+  if (!model_id) {
     ws.send(
       JSON.stringify(
         makeOk(req, {
@@ -365,6 +387,7 @@ export async function handleParallelAnalysisStart(ws, req) {
     snapshot,
     runner: settings.runner,
     model: settings.model,
+    model_id,
     effort: settings.effort
   });
   const cache = store.readCache(key);
@@ -390,11 +413,11 @@ export async function handleParallelAnalysisStart(ws, req) {
       start: () =>
         (TEST_DEPS ? TEST_DEPS.runAnalysis : realRunAnalysis)({
           ...selection,
-          // The analyzer expands a catalog SHORT name to the CLI id itself and
-          // uses the catalog as an allowlist; it is handed in rather than
-          // imported so the analyzer never pulls in the write-capable
-          // implementation adapters (UI-yqw9 §1.2).
-          catalog: analyzerCatalog(),
+          model_id,
+          // The analyzer verifies the pinned CLI model id against this same
+          // catalog allowlist before spawning. The cache identity and spawned
+          // model therefore use exactly the same value (UI-yqw9 §1.2).
+          catalog,
           bundle_dir: bundle.dir,
           manifest: bundle.manifest,
           snapshot

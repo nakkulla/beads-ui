@@ -200,6 +200,7 @@ async function runAnalysisPass(input) {
     snapshot: collected.snapshot,
     runner: settings.runner,
     model: settings.model,
+    model_id: settings.model,
     effort: settings.effort
   });
   const cache = analysis.readCache(WS);

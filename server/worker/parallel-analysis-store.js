@@ -48,9 +48,11 @@ function isRecord(value) {
 /**
  * Cache identity for one analysis (UI-04vo §9): the semantic snapshot digest
  * (workspace, base SHA, targets, artifact OIDs, deps, prompt version) plus the
- * exact runner/model/effort the result was produced with.
+ * exact runner/model/effort and resolved execution model id the result was
+ * produced with. The resolved id matters because a catalog restart can remap
+ * the same short model name to a different actual model.
  *
- * @param {{ snapshot: { digest: string }, runner: string|null, model: string|null, effort: string|null }} input
+ * @param {{ snapshot: { digest: string }, runner: string|null, model: string|null, model_id: string|null, effort: string|null }} input
  * @returns {string}
  */
 export function analysisIdentityOf(input) {
@@ -61,6 +63,7 @@ export function analysisIdentityOf(input) {
         input.snapshot?.digest || '',
         input.runner || '',
         input.model || '',
+        input.model_id || '',
         input.effort || ''
       ])
     )

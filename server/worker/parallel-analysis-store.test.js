@@ -182,6 +182,7 @@ describe('parallel-analysis identity + cache (UI-04vo seam G)', () => {
     snapshot: { digest: 'd'.repeat(64) },
     runner: 'claude',
     model: 'opus',
+    model_id: 'opus',
     effort: 'high'
   };
 
@@ -201,6 +202,17 @@ describe('parallel-analysis identity + cache (UI-04vo seam G)', () => {
         snapshot: { digest: 'e'.repeat(64) }
       })
     ).not.toBe(base);
+  });
+
+  test('identity changes when a short model name resolves to a new id', () => {
+    const base = analysisIdentityOf(IDENTITY_INPUT);
+
+    const remapped = analysisIdentityOf({
+      ...IDENTITY_INPUT,
+      model_id: 'claude-opus-next'
+    });
+
+    expect(remapped).not.toBe(base);
   });
 
   test('saves and reloads the last-good result per workspace', () => {

@@ -395,7 +395,7 @@ export function buildAnalysisPayload(input) {
  * Run one analysis. Returns a handle whose `done` resolves with the outcome;
  * `cancel()` kills the whole process group.
  *
- * @param {{ runner: string, model: string, effort?: string, catalog?: any, bundle_dir: string, manifest: any, snapshot: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number, kill_grace_ms?: number }} input
+ * @param {{ runner: string, model: string, model_id?: string, effort?: string, catalog?: any, bundle_dir: string, manifest: any, snapshot: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number, kill_grace_ms?: number }} input
  * @returns {{ done: Promise<AnalysisOutcome>, cancel: () => void }}
  */
 export function runAnalysis(input) {
@@ -428,15 +428,21 @@ export function runAnalysis(input) {
   /** @type {string[]} */
   let argv = [];
   if (input.runner === 'codex') {
-    const model_id = analyzerModelId(input.catalog, 'codex', input.model);
-    if (!model_id) {
+    const catalog_model_id = analyzerModelId(
+      input.catalog,
+      'codex',
+      input.model
+    );
+    const model_id = input.model_id ?? catalog_model_id;
+    if (!model_id || model_id !== catalog_model_id) {
       // The catalog is the analyzer's allowlist: without a verified entry there
-      // is no id to expand, so there is nothing this adapter can run.
+      // is no id to expand, and a caller-pinned id must still match that exact
+      // entry so an identity and its spawned model cannot drift apart.
       return {
         done: Promise.resolve({
           ok: false,
           reason: 'capability_missing',
-          diagnostic: `unknown codex model: ${input.model}`
+          diagnostic: `unknown or changed codex model: ${input.model}`
         }),
         cancel() {}
       };

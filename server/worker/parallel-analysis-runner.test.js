@@ -431,14 +431,18 @@ describe('codex analyzer result channel (UI-yqw9 §1.3)', () => {
 });
 
 describe('codex analyzer run (UI-yqw9 §1)', () => {
-  test('expands the catalog short name to the CLI model id', async () => {
+  test('passes the pinned catalog model id to the CLI', async () => {
     const { spawn, captured } = makeAnalysisSpawn({
       stdout: agentMessage(RESULT)
     });
 
     const outcome = /** @type {any} */ (
       await runAnalysis({
-        ...runInput({ runner: 'codex', model: 'sol' }),
+        ...runInput({
+          runner: 'codex',
+          model: 'sol',
+          model_id: 'gpt-5.6-sol'
+        }),
         catalog: CATALOG,
         spawn_impl: spawn
       }).done
@@ -459,6 +463,27 @@ describe('codex analyzer run (UI-yqw9 §1)', () => {
     const outcome = /** @type {any} */ (
       await runAnalysis({
         ...runInput({ runner: 'codex', model: 'made-up' }),
+        catalog: CATALOG,
+        spawn_impl: spawn
+      }).done
+    );
+
+    expect(outcome.reason).toBe('capability_missing');
+    expect(captured.calls.length).toBe(0);
+  });
+
+  test('refuses a pinned model id that differs from the catalog entry', async () => {
+    const { spawn, captured } = makeAnalysisSpawn({
+      stdout: agentMessage(RESULT)
+    });
+
+    const outcome = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput({
+          runner: 'codex',
+          model: 'sol',
+          model_id: 'gpt-5.6-different'
+        }),
         catalog: CATALOG,
         spawn_impl: spawn
       }).done
