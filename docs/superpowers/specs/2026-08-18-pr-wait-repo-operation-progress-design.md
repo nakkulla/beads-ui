@@ -75,7 +75,10 @@ workflow 계약, repo-ops 설정 형식, 서버 operation 상태 전이는 바�
 
 ### 실패
 
-- 실패 문구가 진행 문구보다 우선한다.
+- exact operation이 `queued`, `running`, `retry_pending`, `repairing`이면 현재 복구
+  작업이므로 남아 있는 `cleanup_failed`보다 우선한다. 재시도가 시작됐는데 계속
+  실패로 보이는 상태를 만들지 않는다.
+- 위 비종료 operation이 없을 때는 실패 문구가 일반 진행 문구보다 우선한다.
 - exact operation을 식별할 수 있으면 `검증 실패 3/7` 또는 `배포 실패 4/7`로
   표시한다.
 - 상세 원인과 재시도·자동 해결 동작은 기존 저장소 작업 타임라인이 계속 담당한다.
@@ -129,18 +132,20 @@ operation은 다음 조건을 모두 만족할 때만 현재 카드의 근거로
 
 공유 projection은 다음 순서로 하나의 카드 상태를 결정한다.
 
-1. `cleanup_failed`
-2. 현재 단계와 결속된 exact repo operation
-3. `pr_activity.merge_progress`
-4. durable `cleanup_cursor`
-5. 기존의 일반 `머지됨` 폴백
+1. 현재 단계와 결속된 exact 비종료 repo operation
+   (`queued`, `running`, `retry_pending`, `repairing`)
+2. `cleanup_failed`
+3. 현재 단계와 결속된 exact 종료 repo operation (`failed`, `succeeded`)
+4. `pr_activity.merge_progress`
+5. durable `cleanup_cursor`
+6. 기존의 일반 `머지됨` 폴백
 
-1번이 `repo_operations` 실패일 때는 2번과 같은 exact subject 결속을 보조 근거로
+2번이 `repo_operations` 실패일 때는 1·3번과 같은 exact subject 결속을 보조 근거로
 사용해 실패 이름만 `검증` 또는 `배포`로 구체화한다. 실패 자체의 근거는 계속
 `cleanup_failed`이며, exact operation이 없다고 실패를 숨기지 않는다.
 
-단, 2번의 succeeded operation은 cursor가 아직 `repo_operations`에 머물러 있을 때만
-표시한다. cursor가 다음 단계로 이동했다면 4번의 더 최신 사실이 이긴다. 이 규칙으로
+단, 3번의 succeeded operation은 cursor가 아직 `repo_operations`에 머물러 있을 때만
+표시한다. cursor가 다음 단계로 이동했다면 5번의 더 최신 사실이 이긴다. 이 규칙으로
 프로세스 재시작 후에는 cursor가 진행 위치를 복원하고, 실행 중에는 exact operation이
 검증과 배포를 구체화한다.
 
@@ -212,8 +217,9 @@ DOM이나 store를 직접 읽지 않는 pure function으로 만들고 대략 다
 - `subjects`가 없거나 현재 `bead_id`·`merge_sha`를 동시에 증명하지 못하면 해당
   operation을 무시한다.
 - 알 수 없는 cursor는 원문을 새 단계로 추측하지 않고 기존 fail-quiet 표시를 쓴다.
-- `cleanup_failed`와 활성 operation이 동시에 보이면 실패를 우선해 사용자가 해결
-  필요 상태를 놓치지 않게 한다.
+- `cleanup_failed`와 exact 비종료 operation이 동시에 보이면 비종료 operation을
+  우선해 재시도·자동 해결의 현재 상태를 보여준다. exact operation이 `failed`이거나
+  비종료 후보가 없을 때는 durable 실패를 우선한다.
 - Worker와 Monitor 중 한쪽 입력이 일시적으로 덜 완전해도 shared projection의 같은
   폴백 규칙을 적용한다.
 
@@ -230,6 +236,9 @@ DOM이나 store를 직접 읽지 않는 pure function으로 만들고 대략 다
 - 다른 Bead, 과거 merge SHA, superseded operation을 무시한다.
 - verify/deploy의 `queued`, `running`, `retry_pending`, `repairing`, `failed`,
   `succeeded` 문구를 각각 반환한다.
+- `cleanup_failed`가 남아 있어도 exact `retry_pending`, `repairing`, 재실행
+  `queued`·`running`을 실패보다 우선하고, 재실행이 다시 `failed`가 되면 실패 표시로
+  돌아간다.
 - `cleanup_cursor`로 서버 재시작 뒤 base·자식·브랜치·close 위치를 복원한다.
 - 후속 cursor가 과거 succeeded operation보다 우선한다.
 - 알 수 없거나 불완전한 입력은 throw 없이 `null` 또는 일반 폴백을 반환한다.
