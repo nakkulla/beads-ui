@@ -6866,7 +6866,6 @@ html[data-theme='dark'] {
    표시 = 라벨/칩 정책.
    ========================================================================== */
 .settings-dialog {
-  display: grid;
   width: min(860px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   padding: 0;
@@ -6875,6 +6874,10 @@ html[data-theme='dark'] {
   border-radius: var(--r-10);
   background: var(--bg-panel);
   color: var(--text-primary);
+}
+
+.settings-dialog[open] {
+  display: grid;
 }
 
 .settings-dialog__container {

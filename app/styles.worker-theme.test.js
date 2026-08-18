@@ -18,6 +18,16 @@ describe('worker console styles', () => {
     expect(markerIndex).toBeGreaterThan(0);
   });
 
+  test('applies the settings dialog grid only while open', () => {
+    const baseRule =
+      CSS.match(/(?:^|\n)\.settings-dialog\s*{([^}]*)}/)?.[1] || '';
+    const openRule =
+      CSS.match(/(?:^|\n)\.settings-dialog\[open\]\s*{([^}]*)}/)?.[1] || '';
+
+    expect(baseRule).not.toContain('display:');
+    expect(openRule).toContain('display: grid');
+  });
+
   test('consumes design tokens (no raw 6-digit hex in the worker block)', () => {
     const hex = workerBlock.match(/#[0-9a-fA-F]{6}\b/g) || [];
     expect(hex).toEqual([]);
