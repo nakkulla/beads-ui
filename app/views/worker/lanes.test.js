@@ -9,7 +9,8 @@ import {
   discardReceiptTemplate,
   formatClock,
   miniRow,
-  repoOpsStripModel
+  repoOpsStripModel,
+  staleWorkProjection
 } from './lanes.js';
 
 /** @type {HTMLElement} */
@@ -216,6 +217,81 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
     expect(row.getAttribute('draggable')).toBe('false');
     expect(row.textContent).toContain('실패 · 점유 유지');
   });
+
+  test('renders stale-work summary and only allowed recovery actions', () => {
+    const stale_work = staleWorkProjection({
+      reason: 'worktree_stale_work',
+      stale_work: {
+        state: 'unique',
+        cause: 'untracked_present',
+        summary: {
+          staged_count: 1,
+          unstaged_count: 2,
+          untracked_count: 3,
+          branch_ahead: 1,
+          head_ahead: 0
+        },
+        action_id: 'opaque-action',
+        can_resume: false,
+        can_continue: true,
+        can_backup_fresh: true,
+        can_recheck: true
+      }
+    });
+
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: false,
+      stale_work
+    });
+
+    expect(row.textContent).toContain('이전 작업 보존됨');
+    expect(row.textContent).toContain('staged 1 · unstaged 2 · untracked 3');
+    expect(row.textContent).toContain('추적되지 않은 파일이 남아 있습니다');
+    expect(row.querySelector('.worker-mini__stale-continue')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__stale-backup')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
+    expect(row.textContent?.replace(/\s+/g, ' ')).toContain(
+      'Git-ignored dependency/build output은 archive에 포함되지 않습니다'
+    );
+    expect(row.textContent).not.toContain('worktree_stale_work');
+    expect(row.getAttribute('draggable')).toBe('false');
+  });
+
+  test('renders unknown stale work with recheck only', () => {
+    const stale_work = staleWorkProjection({
+      reason: 'worktree_stale_work',
+      stale_work: {
+        state: 'unknown',
+        cause: 'observe_failed',
+        summary: {
+          staged_count: 0,
+          unstaged_count: 0,
+          untracked_count: 0,
+          branch_ahead: 0,
+          head_ahead: 0
+        },
+        action_id: 'opaque-action',
+        can_resume: false,
+        can_continue: false,
+        can_backup_fresh: false,
+        can_recheck: true
+      }
+    });
+
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: false,
+      stale_work
+    });
+
+    expect(row.textContent).toContain('이전 작업 상태 확인 실패');
+    expect(row.querySelector('.worker-mini__stale-continue')).toBeNull();
+    expect(row.querySelector('.worker-mini__stale-backup')).toBeNull();
+    expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
+  });
 });
 
 describe('candidate card', () => {
@@ -298,6 +374,49 @@ describe('discard receipts', () => {
     render(discardReceiptTemplate({ discard }), mount);
 
     expect(mount.textContent).toContain('/state/discard-1');
+  });
+
+  test('hides a stale-work archive path while cleanup is still running', () => {
+    const discard = discardProjection(
+      {
+        'stale-work-1': {
+          operation_id: 'stale-work-1',
+          kind: 'stale_work_backup_fresh',
+          bead_id: 'UI-x1',
+          phase: 'backup_verified',
+          last_error: null,
+          backup: { path: '/state/stale-work-1' }
+        }
+      },
+      'UI-x1'
+    );
+
+    render(discardReceiptTemplate({ discard }), mount);
+
+    expect(mount.textContent).not.toContain('/state/stale-work-1');
+    expect(discard.enabled).toBe(false);
+  });
+
+  test('shows stale-work archive and retry only after cleanup failure', () => {
+    const discard = discardProjection(
+      {
+        'stale-work-1': {
+          operation_id: 'stale-work-1',
+          kind: 'stale_work_backup_fresh',
+          bead_id: 'UI-x1',
+          phase: 'backup_verified',
+          last_error: 'worktree_remove_failed',
+          backup: { path: '/state/stale-work-1' }
+        }
+      },
+      'UI-x1'
+    );
+
+    render(discardReceiptTemplate({ discard }), mount);
+
+    expect(mount.textContent).toContain('/state/stale-work-1');
+    expect(discard.label).toBe('백업 정리 재시도');
+    expect(discard.enabled).toBe(true);
   });
 
   test('shows the current revert PR state after a later failure', () => {

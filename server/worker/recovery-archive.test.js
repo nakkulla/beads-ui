@@ -166,7 +166,10 @@ describe('worker recovery archive real-git integration', () => {
     const manifest = JSON.parse(
       fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
     );
-    expect(manifest.excluded).toContain('git-ignored');
+    expect(manifest.excluded).toEqual([
+      'git-ignored',
+      'dependency-build-output'
+    ]);
     expect(
       manifest.files.map((/** @type {any} */ entry) => entry.path)
     ).toEqual(

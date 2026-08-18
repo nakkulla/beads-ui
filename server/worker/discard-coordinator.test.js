@@ -1807,3 +1807,377 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     expect(env.archive.createCommittedSource).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * @param {{ in_flight?: boolean }} [options]
+ */
+function setupStaleRecovery(options = {}) {
+  const store = createQueueStore({ now: () => 100 });
+  store.place(workspace, {
+    expected_revision: 0,
+    bead_id: 'UI-stale',
+    lane: 's1'
+  });
+  const identity = {
+    worktree_realpath: '/repo/.worktrees/UI-stale',
+    branch: 'UI-stale',
+    head_sha: HEAD_SHA,
+    base_oid: 'a'.repeat(40),
+    status_digest: 'status-1'
+  };
+  store.recordAdmission(workspace, {
+    bead_id: 'UI-stale',
+    reason: 'worktree_stale_work',
+    stale_work: {
+      schema: 1,
+      state: 'unique',
+      cause: 'dirty_unique',
+      summary: {
+        staged_count: 1,
+        unstaged_count: 1,
+        untracked_count: 1,
+        branch_ahead: 0,
+        head_ahead: 0
+      },
+      identity_digest: 'identity-1',
+      action_id: 'action-1',
+      can_resume: false,
+      can_continue: true,
+      can_backup_fresh: true,
+      can_recheck: false,
+      identity
+    }
+  });
+  /** @type {string[]} */
+  const calls = [];
+  let local_ref = HEAD_SHA;
+  let worktree_present = true;
+  const worktree = {
+    removeIfDiscardable: vi.fn(async () =>
+      worktree_present
+        ? {
+            ok: false,
+            state: 'unique',
+            cause: 'dirty_unique',
+            owned: true,
+            removed: false,
+            identity,
+            summary: {
+              staged_count: 1,
+              unstaged_count: 1,
+              untracked_count: 1,
+              branch_ahead: 0,
+              head_ahead: 0
+            }
+          }
+        : {
+            ok: true,
+            state: 'discardable',
+            cause: null,
+            owned: true,
+            removed: false,
+            identity: {
+              worktree_realpath: null,
+              branch: 'UI-stale',
+              head_sha: null,
+              base_oid: identity.base_oid,
+              status_digest: 'spent-branch'
+            },
+            summary: {
+              staged_count: 0,
+              unstaged_count: 0,
+              untracked_count: 0,
+              branch_ahead: 0,
+              head_ahead: 0
+            }
+          }
+    ),
+    removeByBranch: vi.fn(
+      /** @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>} */
+      async () => {
+        if (!worktree_present) {
+          return { ok: true, removed: false, reason: null };
+        }
+        calls.push('cleanup:worktree');
+        worktree_present = false;
+        return { ok: true, removed: true, reason: null };
+      }
+    ),
+    withTopologyLock: vi.fn(async (_repo, work) => work())
+  };
+  const archive = {
+    create: vi.fn(() => {
+      calls.push('archive:verified');
+      return {
+        ok: true,
+        receipt: {
+          path: '/state/archive',
+          manifest_sha256: 'a'.repeat(64),
+          verified_at: 200
+        }
+      };
+    })
+  };
+  const scheduler = {
+    activeBeadIds: vi.fn(() => new Set(['UI-stale'])),
+    staleWorkActionInFlight: vi.fn(() => options.in_flight === true),
+    fenceDiscardAttempt: vi.fn(() => true),
+    tick: vi.fn(async () => {
+      calls.push('scheduler:tick');
+    })
+  };
+  const deps = {
+    workspace,
+    repo: '/repo',
+    store,
+    gh: {},
+    bd: {},
+    worktree,
+    gitRun: vi.fn(async (args) => {
+      if (args[0] === 'ls-remote') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-parse') {
+        return local_ref
+          ? { code: 0, stdout: `${local_ref}\n`, stderr: '' }
+          : { code: 1, stdout: '', stderr: '' };
+      }
+      if (args[0] === 'update-ref') {
+        calls.push('cleanup:local-ref');
+        local_ref = '';
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    }),
+    scheduler,
+    archive,
+    processController: {},
+    sessionLog: { pathFor: () => '/state/session.jsonl' },
+    makeOperationId: () => 'stale-work-1',
+    now: () => 300
+  };
+  const coordinator_options = {
+    resolveBase: vi.fn(async () => ({
+      ok: true,
+      base: 'main',
+      base_oid: identity.base_oid
+    }))
+  };
+  const createCoordinator = () =>
+    createDiscardCoordinator(deps, coordinator_options);
+  return {
+    store,
+    identity,
+    calls,
+    worktree,
+    scheduler,
+    archive,
+    createCoordinator,
+    coordinator: createCoordinator()
+  };
+}
+
+describe('worker discard coordinator stale-work recovery', () => {
+  test('starts recovery while dispatch refusal remains visible', async () => {
+    const env = setupStaleRecovery();
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const queue = env.store.snapshot(workspace);
+
+    expect(result).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(env.calls).toEqual([
+      'archive:verified',
+      'cleanup:worktree',
+      'cleanup:local-ref',
+      'scheduler:tick'
+    ]);
+    expect(queue.discard_operations['stale-work-1']).toMatchObject({
+      kind: 'stale_work_backup_fresh',
+      phase: 'done',
+      backup: { path: '/state/archive' }
+    });
+    expect(queue.admission['UI-stale']).toBeUndefined();
+    expect(queue.serial_lanes[0].entries[0].bead_id).toBe('UI-stale');
+    expect(env.scheduler.activeBeadIds).not.toHaveBeenCalled();
+    expect(env.scheduler.staleWorkActionInFlight).toHaveBeenCalledWith(
+      workspace,
+      'UI-stale'
+    );
+    expect(env.scheduler.tick).toHaveBeenCalledTimes(1);
+  });
+
+  test('refuses recovery while a narrow scheduler action is in flight', async () => {
+    const env = setupStaleRecovery({ in_flight: true });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      conflict: true,
+      reason: 'action_in_flight'
+    });
+    expect(env.store.snapshot(workspace).discard_operations).toEqual({});
+    expect(env.archive.create).not.toHaveBeenCalled();
+  });
+
+  test('refuses recovery while a durable discard operation is active', async () => {
+    const env = setupStaleRecovery();
+    env.store.createDiscardOperation(workspace, {
+      expected_revision: env.store.snapshot(workspace).revision,
+      operation: {
+        operation_id: 'other-operation',
+        bead_id: 'UI-stale',
+        source_snapshot: { repo: '/repo', branch: 'UI-stale' }
+      }
+    });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      conflict: true,
+      reason: 'action_in_flight'
+    });
+    expect(env.archive.create).not.toHaveBeenCalled();
+  });
+
+  test('preserves stale work when status changes after archive verification', async () => {
+    const env = setupStaleRecovery();
+    env.worktree.removeByBranch.mockResolvedValueOnce({
+      ok: false,
+      removed: false,
+      reason: 'identity_changed'
+    });
+
+    const result = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'worktree_identity_changed'
+    });
+    expect(env.worktree.removeByBranch).toHaveBeenCalledWith({
+      repo: '/repo',
+      branch: 'UI-stale',
+      expected_path: env.identity.worktree_realpath,
+      expected_head: env.identity.head_sha,
+      expected_base_oid: env.identity.base_oid,
+      expected_status_digest: env.identity.status_digest
+    });
+    expect(env.calls).not.toContain('cleanup:worktree');
+    expect(
+      env.store.snapshot(workspace).discard_operations['stale-work-1']
+    ).toMatchObject({
+      phase: 'backup_verified',
+      last_error: 'worktree_identity_changed'
+    });
+  });
+
+  test('adopts an already removed worktree after restart', async () => {
+    const env = setupStaleRecovery();
+    const original = env.store.advanceDiscardOperation.bind(env.store);
+    let interrupted = false;
+    vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
+      (ws, input) => {
+        if (!interrupted && input.expected_phase === 'backup_verified') {
+          interrupted = true;
+          return { ok: false, conflict: false, queue: env.store.snapshot(ws) };
+        }
+        return original(ws, input);
+      }
+    );
+
+    const first = await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const restarted = env.createCoordinator();
+    const retried = await restarted.retry('stale-work-1');
+
+    expect(first).toMatchObject({ ok: false });
+    expect(retried).toEqual({ ok: true, operation_id: 'stale-work-1' });
+    expect(
+      env.calls.filter((call) => call === 'cleanup:worktree')
+    ).toHaveLength(1);
+    expect(
+      env.store.snapshot(workspace).discard_operations['stale-work-1']
+    ).toMatchObject({ phase: 'done', last_error: null });
+  });
+
+  test('preserves a replacement worktree after restart', async () => {
+    const env = setupStaleRecovery();
+    const original_advance = env.store.advanceDiscardOperation.bind(env.store);
+    let interrupted = false;
+    vi.spyOn(env.store, 'advanceDiscardOperation').mockImplementation(
+      (ws, input) => {
+        if (!interrupted && input.expected_phase === 'backup_verified') {
+          interrupted = true;
+          return { ok: false, conflict: false, queue: env.store.snapshot(ws) };
+        }
+        return original_advance(ws, input);
+      }
+    );
+    const original_observe =
+      env.worktree.removeIfDiscardable.getMockImplementation();
+    let observations = 0;
+    env.worktree.removeIfDiscardable.mockImplementation(async (...args) => {
+      observations += 1;
+      if (observations <= 2 && original_observe) {
+        return original_observe(...args);
+      }
+      return {
+        ok: false,
+        state: 'unique',
+        cause: 'dirty_unique',
+        owned: true,
+        removed: false,
+        identity: {
+          ...env.identity,
+          worktree_realpath: '/repo/.worktrees/UI-stale-replacement',
+          status_digest: 'replacement-status'
+        },
+        summary: {
+          staged_count: 0,
+          unstaged_count: 1,
+          untracked_count: 0,
+          branch_ahead: 0,
+          head_ahead: 0
+        }
+      };
+    });
+
+    await env.coordinator.backupFresh({
+      bead_id: 'UI-stale',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+    const restarted = env.createCoordinator();
+    const retried = await restarted.retry('stale-work-1');
+
+    expect(retried).toMatchObject({
+      ok: false,
+      reason: 'worktree_identity_changed'
+    });
+    expect(
+      env.store.snapshot(workspace).discard_operations['stale-work-1']
+    ).toMatchObject({
+      phase: 'backup_verified',
+      last_error: 'worktree_identity_changed'
+    });
+  });
+});

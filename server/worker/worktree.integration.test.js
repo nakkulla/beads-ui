@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,6 +38,24 @@ function commit(cwd, file, message) {
   fs.writeFileSync(path.join(cwd, file), `${message}\n`);
   git(['add', '.'], cwd);
   git(['commit', '-q', '-m', message], cwd);
+}
+
+/**
+ * @param {(args: string[], cwd: string) => void} [before]
+ */
+function gitRunner(before) {
+  return async (/** @type {string[]} */ args, /** @type {any} */ options) => {
+    before?.(args, options.cwd);
+    const result = spawnSync('git', args, {
+      cwd: options.cwd,
+      encoding: 'utf8'
+    });
+    return {
+      code: result.status ?? 1,
+      stdout: result.stdout || '',
+      stderr: result.stderr || ''
+    };
+  };
 }
 
 beforeEach(() => {
@@ -261,7 +279,12 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: true, removed: true, reason: null });
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'discardable',
+      removed: true,
+      reason: null
+    });
     expect(fs.existsSync(created.path)).toBe(false);
   });
 
@@ -275,7 +298,12 @@ describe('worker/worktree (real git)', () => {
       base: headOf(repo)
     });
 
-    expect(result).toEqual({ ok: true, removed: false, reason: null });
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'absent',
+      removed: false,
+      reason: null
+    });
   });
 
   test('removeIfDiscardable reports no removal when only a spent branch is left', async () => {
@@ -291,11 +319,16 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: true, removed: false, reason: null });
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'discardable',
+      removed: false,
+      reason: null
+    });
     expect(headOf(repo, 'UI-1')).toBe(base);
   });
 
-  test('removeIfDiscardable preserves a dirty worktree', async () => {
+  test('removeIfDiscardable preserves an untracked worktree', async () => {
     const locks = createLockManager();
     const wt = createWorktreeManager({ locks });
     const base = headOf(repo);
@@ -308,8 +341,441 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({ ok: false, removed: false, reason: 'dirty' });
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'untracked_present',
+      summary: { untracked_count: 1 }
+    });
     expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeIfDiscardable reclaims an unstaged tracked blob already contained by base', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const old_base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: old_base });
+    fs.writeFileSync(path.join(repo, 'README.md'), '# published\n');
+    git(['add', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'publish'], repo);
+    const pinned_base = headOf(repo);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# published\n');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: pinned_base
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'base_contained',
+      removed: true,
+      reason: null,
+      summary: { staged_count: 0, unstaged_count: 1, untracked_count: 0 }
+    });
+    expect(result.identity.status_digest).toMatch(/^[0-9a-f]{64}$/);
+    expect(fs.existsSync(created.path)).toBe(false);
+  });
+
+  test('removeIfDiscardable reclaims a staged binary blob already contained by base', async () => {
+    const initial = Buffer.from([0, 1, 2, 3]);
+    const published = Buffer.from([0, 255, 9, 4]);
+    fs.writeFileSync(path.join(repo, 'asset.bin'), initial);
+    git(['add', 'asset.bin'], repo);
+    git(['commit', '-q', '-m', 'binary base'], repo);
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.writeFileSync(path.join(repo, 'asset.bin'), published);
+    git(['add', 'asset.bin'], repo);
+    git(['commit', '-q', '-m', 'publish binary'], repo);
+    const pinned_base = headOf(repo);
+    fs.writeFileSync(path.join(created.path, 'asset.bin'), published);
+    git(['add', 'asset.bin'], created.path);
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: pinned_base
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'base_contained',
+      removed: true,
+      summary: { staged_count: 1, unstaged_count: 0 }
+    });
+  });
+
+  test('removeIfDiscardable preserves a staged blob that differs from base', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# unique\n');
+    git(['add', 'README.md'], created.path);
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'dirty_unique'
+    });
+    expect(fs.readFileSync(path.join(created.path, 'README.md'), 'utf8')).toBe(
+      '# unique\n'
+    );
+  });
+
+  test('removeIfDiscardable reclaims a symlink target already contained by base', async () => {
+    fs.symlinkSync('old-target', path.join(repo, 'current'));
+    git(['add', 'current'], repo);
+    git(['commit', '-q', '-m', 'symlink base'], repo);
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.unlinkSync(path.join(repo, 'current'));
+    fs.symlinkSync('published-target', path.join(repo, 'current'));
+    git(['add', 'current'], repo);
+    git(['commit', '-q', '-m', 'publish symlink'], repo);
+    fs.unlinkSync(path.join(created.path, 'current'));
+    fs.symlinkSync('published-target', path.join(created.path, 'current'));
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'base_contained',
+      removed: true
+    });
+  });
+
+  test('removeIfDiscardable reclaims a deletion already contained by base', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    git(['rm', '-q', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'publish deletion'], repo);
+    fs.unlinkSync(path.join(created.path, 'README.md'));
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: 'base_contained',
+      removed: true
+    });
+  });
+
+  test('removeIfDiscardable preserves a mixed path whose worktree state differs from base', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.writeFileSync(path.join(repo, 'README.md'), '# published\n');
+    git(['add', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'publish'], repo);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# published\n');
+    git(['add', 'README.md'], created.path);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# unique\n');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      reason: 'dirty_unique',
+      summary: { staged_count: 1, unstaged_count: 1 }
+    });
+    expect(fs.readFileSync(path.join(created.path, 'README.md'), 'utf8')).toBe(
+      '# unique\n'
+    );
+  });
+
+  test('removeIfDiscardable preserves rename and typechange states', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const renamed = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    git(['mv', 'README.md', 'RENAMED.md'], renamed.path);
+
+    const rename_result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(rename_result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      reason: 'rename_or_copy'
+    });
+    await wt.remove({ repo, bead_id: 'UI-1' });
+    const changed = await wt.add({
+      repo,
+      bead_id: 'UI-2',
+      base: headOf(repo)
+    });
+    fs.unlinkSync(path.join(changed.path, 'README.md'));
+    fs.symlinkSync('target', path.join(changed.path, 'README.md'));
+
+    const type_result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-2',
+      base: headOf(repo)
+    });
+
+    expect(type_result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      reason: 'typechange_state'
+    });
+  });
+
+  test('removeIfDiscardable preserves a dirty submodule', async () => {
+    const child = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-submodule-'));
+    git(['init', '-q'], child);
+    git(['config', 'user.email', 'test@example.com'], child);
+    git(['config', 'user.name', 'Test'], child);
+    fs.writeFileSync(path.join(child, 'child.txt'), 'base\n');
+    git(['add', 'child.txt'], child);
+    git(['commit', '-q', '-m', 'child base'], child);
+    git(
+      [
+        '-c',
+        'protocol.file.allow=always',
+        'submodule',
+        'add',
+        '-q',
+        child,
+        'sub'
+      ],
+      repo
+    );
+    git(['commit', '-q', '-m', 'add submodule'], repo);
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    git(
+      ['-c', 'protocol.file.allow=always', 'submodule', 'update', '--init'],
+      created.path
+    );
+    fs.writeFileSync(path.join(created.path, 'sub', 'child.txt'), 'dirty\n');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      reason: 'submodule_state'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
+    fs.rmSync(child, { recursive: true, force: true });
+  });
+
+  test('removeIfDiscardable preserves an unsupported special file', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.unlinkSync(path.join(created.path, 'README.md'));
+    execFileSync('mkfifo', [path.join(created.path, 'README.md')]);
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      reason: 'special_file'
+    });
+    expect(fs.lstatSync(path.join(created.path, 'README.md')).isFIFO()).toBe(
+      true
+    );
+  });
+
+  test('removeIfDiscardable preserves residue when identity drifts before restore', async () => {
+    const old_base = headOf(repo);
+    /** @type {string|null} */
+    let worktree_path = null;
+    let status_reads = 0;
+    const run = gitRunner((args) => {
+      if (args[0] === 'status') {
+        status_reads += 1;
+        if (status_reads === 2 && worktree_path !== null) {
+          fs.writeFileSync(path.join(worktree_path, 'README.md'), '# drift\n');
+        }
+      }
+    });
+    const wt = createWorktreeManager({ locks: createLockManager(), run });
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: old_base });
+    worktree_path = created.path;
+    fs.writeFileSync(path.join(repo, 'README.md'), '# published\n');
+    git(['add', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'publish'], repo);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# published\n');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unknown',
+      reason: 'identity_changed'
+    });
+    expect(fs.readFileSync(path.join(created.path, 'README.md'), 'utf8')).toBe(
+      '# drift\n'
+    );
+  });
+
+  test('removeIfDiscardable preserves base-contained residue when restore fails', async () => {
+    const old_base = headOf(repo);
+    let failed = false;
+    const real_run = gitRunner();
+    const run = async (
+      /** @type {string[]} */ args,
+      /** @type {any} */ options
+    ) => {
+      if (args[0] === 'restore' && args.includes('--source=HEAD') && !failed) {
+        failed = true;
+        return { code: 1, stdout: '', stderr: 'injected' };
+      }
+      return real_run(args, options);
+    };
+    const wt = createWorktreeManager({ locks: createLockManager(), run });
+    const created = await wt.add({ repo, bead_id: 'UI-1', base: old_base });
+    fs.writeFileSync(path.join(repo, 'README.md'), '# published\n');
+    git(['add', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'publish'], repo);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# published\n');
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unknown',
+      reason: 'restore_failed'
+    });
+    expect(fs.readFileSync(path.join(created.path, 'README.md'), 'utf8')).toBe(
+      '# published\n'
+    );
+  });
+
+  test('removeIfDiscardable changes the digest when unique tracked contents change', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# unique one\n');
+    const first = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo),
+      preserve: true
+    });
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# unique two\n');
+
+    const second = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo),
+      preserve: true
+    });
+
+    expect(first.state).toBe('unique');
+    expect(second.state).toBe('unique');
+    expect(second.identity.status_digest).not.toBe(
+      first.identity.status_digest
+    );
+  });
+
+  test('removeIfDiscardable restores base-contained residue when remove fails', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const created = await wt.add({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+    fs.writeFileSync(path.join(repo, 'README.md'), '# published\n');
+    git(['add', 'README.md'], repo);
+    git(['commit', '-q', '-m', 'publish'], repo);
+    fs.writeFileSync(path.join(created.path, 'README.md'), '# published\n');
+    git(['worktree', 'lock', created.path], repo);
+
+    const result = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base: headOf(repo)
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unknown',
+      reason: 'remove_failed'
+    });
+    expect(fs.readFileSync(path.join(created.path, 'README.md'), 'utf8')).toBe(
+      '# published\n'
+    );
+    expect(
+      execFileSync('git', ['status', '--porcelain'], {
+        cwd: created.path,
+        encoding: 'utf8'
+      })
+    ).not.toBe('');
   });
 
   test('removeIfDiscardable preserves a branch carrying its own commits', async () => {
@@ -325,8 +791,9 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
+      state: 'unique',
       removed: false,
       reason: 'branch_ahead'
     });
@@ -347,8 +814,9 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
+      state: 'unique',
       removed: false,
       reason: 'branch_ahead'
     });
@@ -371,7 +839,12 @@ describe('worker/worktree (real git)', () => {
     });
 
     expect(headOf(repo, 'UI-1')).toBe(base);
-    expect(result).toEqual({ ok: false, removed: false, reason: 'head_ahead' });
+    expect(result).toMatchObject({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'head_ahead'
+    });
     expect(fs.existsSync(created.path)).toBe(true);
   });
 
@@ -389,8 +862,9 @@ describe('worker/worktree (real git)', () => {
       base
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
+      state: 'unknown',
       removed: false,
       reason: 'remove_failed'
     });
@@ -408,8 +882,9 @@ describe('worker/worktree (real git)', () => {
       base: 'no-such-base'
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       ok: false,
+      state: 'unknown',
       removed: false,
       reason: 'observe_failed'
     });
@@ -472,6 +947,36 @@ describe('worker/worktree (real git)', () => {
       branch: 'UI-1',
       expected_path: fs.realpathSync(created.path),
       expected_head: captured_head
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      removed: false,
+      reason: 'identity_changed'
+    });
+    expect(fs.existsSync(created.path)).toBe(true);
+  });
+
+  test('removeByBranch preserves a worktree whose archived status changed', async () => {
+    const wt = createWorktreeManager({ locks: createLockManager() });
+    const base = headOf(repo);
+    const created = await wt.add({ repo, bead_id: 'UI-1', base });
+    fs.writeFileSync(path.join(created.path, 'saved.txt'), 'archived');
+    const observed = await wt.removeIfDiscardable({
+      repo,
+      bead_id: 'UI-1',
+      base,
+      preserve: true
+    });
+    fs.writeFileSync(path.join(created.path, 'saved.txt'), 'changed later');
+
+    const result = await wt.removeByBranch({
+      repo,
+      branch: 'UI-1',
+      expected_path: fs.realpathSync(created.path),
+      expected_head: observed.identity.head_sha,
+      expected_base_oid: observed.identity.base_oid,
+      expected_status_digest: observed.identity.status_digest
     });
 
     expect(result).toEqual({

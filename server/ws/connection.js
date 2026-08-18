@@ -102,7 +102,10 @@ import {
   handleWorkerRepoOperationDismiss,
   handleWorkerRepoOperationRepair,
   handleWorkerReviseApprove,
-  handleWorkerReviseFix
+  handleWorkerReviseFix,
+  handleWorkerStaleWorkBackupFresh,
+  handleWorkerStaleWorkContinue,
+  handleWorkerStaleWorkRecheck
 } from './worker-handlers.js';
 import {
   handleParallelAnalysisCancel,
@@ -600,6 +603,15 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-discard':
       await handleWorkerDiscard(ws, req);
+      return;
+    case 'worker-stale-work-continue':
+      await handleWorkerStaleWorkContinue(ws, req);
+      return;
+    case 'worker-stale-work-backup-fresh':
+      await handleWorkerStaleWorkBackupFresh(ws, req);
+      return;
+    case 'worker-stale-work-recheck':
+      await handleWorkerStaleWorkRecheck(ws, req);
       return;
     case 'worker-pr-discard':
       await handleWorkerPrDiscard(ws, req);

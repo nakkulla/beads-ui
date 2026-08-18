@@ -615,6 +615,93 @@ describe('views/worker', () => {
     );
   });
 
+  test('renders and sends identity-bound stale-work recovery actions', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        revision: 7,
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
+        admission: {
+          'SQ-1': {
+            reason: 'worktree_stale_work',
+            at: 1,
+            stale_work: {
+              state: 'unique',
+              cause: 'dirty_unique',
+              summary: {
+                staged_count: 1,
+                unstaged_count: 2,
+                untracked_count: 0,
+                branch_ahead: 1,
+                head_ahead: 0
+              },
+              action_id: 'opaque-action',
+              can_resume: false,
+              can_continue: true,
+              can_backup_fresh: true,
+              can_recheck: false
+            }
+          }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    const transport = vi.fn(async () => ({
+      continued: true,
+      conflict: false,
+      queue: queueStore.get()
+    }));
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]'
+      )
+    );
+
+    row
+      .querySelector('.worker-mini__stale-continue')
+      ?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(row.textContent).toContain('이전 작업 보존됨');
+    expect(row.getAttribute('draggable')).toBe('false');
+    expect(transport).toHaveBeenCalledWith('worker-stale-work-continue', {
+      bead_id: 'SQ-1',
+      action_id: 'opaque-action',
+      expected_revision: 7
+    });
+  });
+
+  test('keeps the legacy stale-work badge when optional projection is absent', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'SQ-1', added_at: 0 }],
+        admission: {
+          'SQ-1': { reason: 'worktree_stale_work', at: 1 }
+        },
+        workspace_info: { verify_cmd: null }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector(
+        '#worker-pane-queue .worker-mini[data-bead-id="SQ-1"]'
+      )?.textContent
+    ).toContain('⛔ worktree_stale_work');
+  });
+
   test('renders the base of a spec_missing_at_base refusal apart from the prefix', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

@@ -30,7 +30,9 @@
 import nodeFs from 'node:fs';
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
+  backupFreshWorkerStaleWork,
   checkWorkerQueueAdmission,
+  continueWorkerStaleWork,
   discardWorkerBead,
   dismissWorkerRepoOperation,
   enqueueWorkerManualMerge,
@@ -38,6 +40,7 @@ import {
   kickWorkerMergeQueue,
   observeWorkerPrs,
   pauseWorkerAttempt,
+  recheckWorkerStaleWork,
   reconcileWorkerRepoOperations,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
@@ -114,6 +117,35 @@ function queueStore() {
  * @type {Map<string, Set<{ ws: WebSocket, client_id: string }>>}
  */
 const SUBSCRIBERS = new Map();
+
+/**
+ * @typedef {Object} PublicStaleWorkSummary
+ * @property {number} staged_count
+ * @property {number} unstaged_count
+ * @property {number} untracked_count
+ * @property {number} branch_ahead
+ * @property {number} head_ahead
+ */
+/**
+ * @typedef {Object} PublicStaleWork
+ * @property {1} schema
+ * @property {'unique'|'unknown'} state
+ * @property {string} cause
+ * @property {PublicStaleWorkSummary} summary
+ * @property {string} identity_digest
+ * @property {string} action_id
+ * @property {boolean} can_resume
+ * @property {boolean} can_continue
+ * @property {boolean} can_backup_fresh
+ * @property {boolean} can_recheck
+ */
+/**
+ * @typedef {Object} PublicAdmission
+ * @property {string} reason
+ * @property {number} at
+ * @property {true} [stale]
+ * @property {PublicStaleWork} [stale_work]
+ */
 
 /**
  * The connection's own workspace. Still the answer for the SUBSCRIPTION
@@ -203,6 +235,93 @@ function publicDiscardPr(value) {
 }
 
 /**
+ * Project the optional stale-work diagnostic without its server-only identity
+ * snapshot. Unknown or legacy payloads fail quiet to the existing reason/at
+ * badge contract.
+ *
+ * @param {unknown} value
+ * @returns {PublicStaleWork|null}
+ */
+function publicStaleWork(value) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    /** @type {Record<string, unknown>} */ (value).schema !== 1
+  ) {
+    return null;
+  }
+  const stale_work = /** @type {Record<string, unknown>} */ (value);
+  const summary = /** @type {Record<string, unknown> | undefined} */ (
+    stale_work.summary
+  );
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+    return null;
+  }
+  return {
+    schema: 1,
+    state: stale_work.state === 'unique' ? 'unique' : 'unknown',
+    cause: typeof stale_work.cause === 'string' ? stale_work.cause : 'unknown',
+    summary: {
+      staged_count: Number.isInteger(summary.staged_count)
+        ? /** @type {number} */ (summary.staged_count)
+        : 0,
+      unstaged_count: Number.isInteger(summary.unstaged_count)
+        ? /** @type {number} */ (summary.unstaged_count)
+        : 0,
+      untracked_count: Number.isInteger(summary.untracked_count)
+        ? /** @type {number} */ (summary.untracked_count)
+        : 0,
+      branch_ahead: Number.isInteger(summary.branch_ahead)
+        ? /** @type {number} */ (summary.branch_ahead)
+        : 0,
+      head_ahead: Number.isInteger(summary.head_ahead)
+        ? /** @type {number} */ (summary.head_ahead)
+        : 0
+    },
+    identity_digest:
+      typeof stale_work.identity_digest === 'string'
+        ? stale_work.identity_digest
+        : '',
+    action_id:
+      typeof stale_work.action_id === 'string' ? stale_work.action_id : '',
+    can_resume: stale_work.can_resume === true,
+    can_continue: stale_work.can_continue === true,
+    can_backup_fresh: stale_work.can_backup_fresh === true,
+    can_recheck: stale_work.can_recheck === true
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, PublicAdmission>}
+ */
+function publicAdmissions(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  /** @type {Record<string, PublicAdmission>} */
+  const projected = {};
+  for (const [bead_id, raw] of Object.entries(value)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      continue;
+    }
+    const admission = /** @type {Record<string, unknown>} */ (raw);
+    const stale_work = publicStaleWork(admission.stale_work);
+    projected[bead_id] = {
+      reason:
+        typeof admission.reason === 'string' ? admission.reason : 'unknown',
+      at: Number.isFinite(admission.at)
+        ? /** @type {number} */ (admission.at)
+        : 0,
+      ...(admission.stale === true ? { stale: true } : {}),
+      ...(stale_work === null ? {} : { stale_work })
+    };
+  }
+  return projected;
+}
+
+/**
  * Project only active discard progress. The durable operation also contains
  * source paths, Bead snapshots, session ids, and process identity that are
  * controller evidence, not a websocket contract. The verified archive path is
@@ -227,6 +346,9 @@ function publicDiscardOperations(value) {
     }
     projected[operation_id] = {
       operation_id,
+      ...(operation.kind === 'stale_work_backup_fresh'
+        ? { kind: 'stale_work_backup_fresh' }
+        : {}),
       bead_id: typeof operation.bead_id === 'string' ? operation.bead_id : null,
       attempt_id:
         typeof operation.attempt_id === 'string' ? operation.attempt_id : null,
@@ -1210,6 +1332,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   const completion = completionStatusFor(workspace_key, overlaid);
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
+  public_queue.admission = publicAdmissions(overlaid.admission);
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;
@@ -3047,6 +3170,117 @@ export async function handleWorkerDiscard(ws, req) {
   if (accepted) {
     fanout(key, queue);
   }
+}
+
+/**
+ * @typedef {Object} WorkerStaleActionResult
+ * @property {boolean} ok
+ * @property {boolean} [conflict]
+ * @property {string} [reason]
+ * @property {string} [operation_id]
+ * @property {string} [attempt_id]
+ * @property {string} [state]
+ */
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {(workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<WorkerStaleActionResult>} action
+ * @param {'continued'|'accepted'|'rechecked'} outcome_key
+ */
+async function handleWorkerStaleWorkAction(ws, req, action, outcome_key) {
+  const p = /** @type {Record<string, unknown>} */ (req.payload || {});
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    typeof p.action_id !== 'string' ||
+    p.action_id.length === 0 ||
+    !Number.isInteger(p.expected_revision)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id, action_id, expected_revision }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {WorkerStaleActionResult} */
+  let result;
+  try {
+    result = await action(key, {
+      bead_id: p.bead_id,
+      action_id: p.action_id,
+      expected_revision: Number(p.expected_revision)
+    });
+  } catch (err) {
+    log('%s failed for %s/%s: %o', req.type, key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  const queue = queueStore().snapshot(key);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        [outcome_key]: result.ok === true,
+        operation_id: result.operation_id || null,
+        attempt_id: result.attempt_id || null,
+        state: result.state || null,
+        conflict: result.conflict === true,
+        reason: result.reason || null,
+        queue: decorateQueue(key, queue)
+      })
+    )
+  );
+  if (result.ok === true) {
+    fanout(key, queue);
+  }
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerStaleWorkContinue(ws, req) {
+  return handleWorkerStaleWorkAction(
+    ws,
+    req,
+    continueWorkerStaleWork,
+    'continued'
+  );
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerStaleWorkBackupFresh(ws, req) {
+  return handleWorkerStaleWorkAction(
+    ws,
+    req,
+    backupFreshWorkerStaleWork,
+    'accepted'
+  );
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerStaleWorkRecheck(ws, req) {
+  return handleWorkerStaleWorkAction(
+    ws,
+    req,
+    recheckWorkerStaleWork,
+    'rechecked'
+  );
 }
 
 /**

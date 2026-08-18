@@ -13,6 +13,7 @@
  * This NEVER installs to live runtime dirs (`~/.claude`, shared service dirs) —
  * it only manipulates worktrees inside the target repo.
  */
+import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { runShell } from '../bd.js';
@@ -20,6 +21,49 @@ import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
 
 /**
  * @typedef {(args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>} GitRunner
+ */
+/**
+ * @typedef {'absent'|'discardable'|'base_contained'|'unique'|'unknown'} WorktreeObservationState
+ */
+/**
+ * @typedef {Object} WorktreeIdentity
+ * @property {string|null} worktree_realpath
+ * @property {string|null} branch
+ * @property {string|null} head_sha
+ * @property {string|null} base_oid
+ * @property {string} status_digest
+ */
+/**
+ * @typedef {Object} WorktreeSummary
+ * @property {number} staged_count
+ * @property {number} unstaged_count
+ * @property {number} untracked_count
+ * @property {number} branch_ahead
+ * @property {number} head_ahead
+ */
+/**
+ * @typedef {Object} WorktreeObservation
+ * @property {boolean} ok
+ * @property {WorktreeObservationState} state
+ * @property {boolean} removed
+ * @property {string|null} reason
+ * @property {string|null} cause
+ * @property {boolean} owned
+ * @property {WorktreeIdentity} identity
+ * @property {WorktreeSummary} summary
+ */
+/**
+ * @typedef {Object} WorktreeChangedPaths
+ * @property {string[]} staged
+ * @property {string[]} unstaged
+ */
+/**
+ * @typedef {WorktreeObservation & { paths: WorktreeChangedPaths }} InternalWorktreeObservation
+ */
+/**
+ * @typedef {Object} WorktreePathState
+ * @property {string} mode
+ * @property {string} oid
  */
 
 /**
@@ -129,6 +173,334 @@ function isOwnedWorktree(repo, wt, branch) {
 }
 
 /**
+ * @param {string} value
+ * @returns {string}
+ */
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Parse `git status --porcelain=v2 -z` without interpreting path bytes as
+ * control fields. Rename/copy and unmerged records are deliberately retained
+ * only as a conservative cause: Phase 1 never proves them base-contained.
+ *
+ * @param {string} stdout
+ * @returns {{ staged: Set<string>, unstaged: Set<string>, untracked: Set<string>, cause: string|null }}
+ */
+function parseStatusV2(stdout) {
+  /** @type {Set<string>} */
+  const staged = new Set();
+  /** @type {Set<string>} */
+  const unstaged = new Set();
+  /** @type {Set<string>} */
+  const untracked = new Set();
+  /** @type {string|null} */
+  let cause = null;
+  const records = stdout.split('\0');
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record.length === 0) {
+      continue;
+    }
+    const kind = record[0];
+    if (kind === '?') {
+      untracked.add(record.slice(2));
+      cause = cause || 'untracked_present';
+      continue;
+    }
+    if (kind === '2') {
+      cause = cause || 'rename_or_copy';
+      index += 1;
+      continue;
+    }
+    if (kind === 'u') {
+      cause = cause || 'unmerged_state';
+      continue;
+    }
+    if (kind !== '1') {
+      cause = cause || 'unsupported_status';
+      continue;
+    }
+    const fields = record.split(' ');
+    if (fields.length < 9 || fields[1].length !== 2) {
+      cause = cause || 'unsupported_status';
+      continue;
+    }
+    const xy = fields[1];
+    const sub = fields[2];
+    const relative_path = fields.slice(8).join(' ');
+    if (sub !== 'N...') {
+      cause = cause || 'submodule_state';
+    }
+    if (xy.includes('T')) {
+      cause = cause || 'typechange_state';
+    }
+    if (xy[0] !== '.') {
+      staged.add(relative_path);
+    }
+    if (xy[1] !== '.') {
+      unstaged.add(relative_path);
+    }
+  }
+  return { staged, unstaged, untracked, cause };
+}
+
+/**
+ * @param {GitRunner} run
+ * @param {string} cwd
+ * @param {string} revision
+ * @param {string} relative_path
+ * @returns {Promise<{ ok: boolean, state: WorktreePathState|null }>}
+ */
+async function treePathState(run, cwd, revision, relative_path) {
+  const result = await run(['ls-tree', '-z', revision, '--', relative_path], {
+    cwd
+  });
+  if (result.code !== 0) {
+    return { ok: false, state: null };
+  }
+  if (result.stdout.length === 0) {
+    return { ok: true, state: null };
+  }
+  const match = /^([0-7]{6}) blob ([0-9a-f]{40,64})\t/.exec(result.stdout);
+  return match
+    ? { ok: true, state: { mode: match[1], oid: match[2] } }
+    : { ok: false, state: null };
+}
+
+/**
+ * @param {GitRunner} run
+ * @param {string} cwd
+ * @param {string} relative_path
+ * @returns {Promise<{ ok: boolean, state: WorktreePathState|null }>}
+ */
+async function indexPathState(run, cwd, relative_path) {
+  const result = await run(['ls-files', '--stage', '-z', '--', relative_path], {
+    cwd
+  });
+  if (result.code !== 0) {
+    return { ok: false, state: null };
+  }
+  if (result.stdout.length === 0) {
+    return { ok: true, state: null };
+  }
+  const records = result.stdout.split('\0').filter(Boolean);
+  if (records.length !== 1) {
+    return { ok: false, state: null };
+  }
+  const match = /^([0-7]{6}) ([0-9a-f]{40,64}) 0\t/.exec(records[0]);
+  return match
+    ? { ok: true, state: { mode: match[1], oid: match[2] } }
+    : { ok: false, state: null };
+}
+
+/**
+ * Hash the worktree representation through Git so clean/smudge filters use the
+ * same object identity they would receive on `git add`.
+ *
+ * @param {GitRunner} run
+ * @param {typeof import('node:fs')} fs
+ * @param {string} cwd
+ * @param {string} relative_path
+ * @returns {Promise<{ ok: boolean, state: WorktreePathState|null, special: boolean }>}
+ */
+async function worktreePathState(run, fs, cwd, relative_path) {
+  const absolute_path = path.join(cwd, relative_path);
+  /** @type {import('node:fs').Stats} */
+  let stat;
+  try {
+    stat = fs.lstatSync(absolute_path);
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+      return { ok: true, state: null, special: false };
+    }
+    return { ok: false, state: null, special: false };
+  }
+  if (!stat.isFile() && !stat.isSymbolicLink()) {
+    return { ok: true, state: null, special: true };
+  }
+  if (stat.isSymbolicLink()) {
+    const format = await run(['rev-parse', '--show-object-format'], { cwd });
+    if (
+      format.code !== 0 ||
+      (format.stdout.trim() !== 'sha1' && format.stdout.trim() !== 'sha256')
+    ) {
+      return { ok: false, state: null, special: false };
+    }
+    /** @type {Buffer} */
+    let target;
+    try {
+      target = fs.readlinkSync(absolute_path, { encoding: 'buffer' });
+    } catch {
+      return { ok: false, state: null, special: false };
+    }
+    const header = Buffer.from(`blob ${target.length}\0`);
+    const oid = createHash(format.stdout.trim())
+      .update(header)
+      .update(target)
+      .digest('hex');
+    return {
+      ok: true,
+      state: { mode: '120000', oid },
+      special: false
+    };
+  }
+  const hashed = await run(
+    ['hash-object', `--path=${relative_path}`, '--', relative_path],
+    { cwd }
+  );
+  if (hashed.code !== 0 || !/^[0-9a-f]{40,64}$/i.test(hashed.stdout.trim())) {
+    return { ok: false, state: null, special: false };
+  }
+  const mode = stat.mode & 0o111 ? '100755' : '100644';
+  return {
+    ok: true,
+    state: { mode, oid: hashed.stdout.trim() },
+    special: false
+  };
+}
+
+/**
+ * @param {WorktreePathState|null} left
+ * @param {WorktreePathState|null} right
+ * @returns {boolean}
+ */
+function samePathState(left, right) {
+  return (
+    (left === null && right === null) ||
+    (left !== null &&
+      right !== null &&
+      left.mode === right.mode &&
+      left.oid === right.oid)
+  );
+}
+
+/**
+ * Observe the exact dirty-state material bound into a stale-work identity.
+ * Both admission and forced cleanup use this function so the final lock-held
+ * comparison cannot silently omit a file class covered by the archive check.
+ *
+ * @param {GitRunner} run
+ * @param {typeof import('node:fs')} fs
+ * @param {string} wt
+ * @param {{ worktree_realpath: string|null, branch: string|null, head_sha: string|null, base_oid: string|null }} identity
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   status_digest: string,
+ *   parsed: ReturnType<typeof parseStatusV2>,
+ *   staged_paths: string[],
+ *   unstaged_paths: string[],
+ *   special_paths: string[]
+ * }>}
+ */
+async function observeStatusDigest(run, fs, wt, identity) {
+  /** @type {{ ok: boolean, status_digest: string, parsed: ReturnType<typeof parseStatusV2>, staged_paths: string[], unstaged_paths: string[], special_paths: string[] }} */
+  const failed = {
+    ok: false,
+    status_digest: sha256('observe_failed'),
+    parsed: parseStatusV2(''),
+    staged_paths: [],
+    unstaged_paths: [],
+    special_paths: []
+  };
+  const status = await run(
+    ['status', '--porcelain=v2', '-z', '--untracked-files=all'],
+    { cwd: wt }
+  );
+  if (status.code !== 0) {
+    return failed;
+  }
+  const parsed = parseStatusV2(status.stdout);
+  const staged_paths = [...parsed.staged].sort();
+  const unstaged_paths = [...parsed.unstaged].sort();
+  /** @type {string[]} */
+  const special_paths = [];
+  if (parsed.cause === null) {
+    for (const relative_path of unstaged_paths) {
+      try {
+        const stat = fs.lstatSync(path.join(wt, relative_path));
+        if (!stat.isFile() && !stat.isSymbolicLink()) {
+          special_paths.push(relative_path);
+        }
+      } catch {
+        /* path equality below will fail closed if it was not deleted */
+      }
+    }
+  }
+  const [staged_delta, unstaged_delta] =
+    special_paths.length > 0
+      ? [
+          { code: 0, stdout: '', stderr: '' },
+          {
+            code: 0,
+            stdout: JSON.stringify({ special_paths }),
+            stderr: ''
+          }
+        ]
+      : await Promise.all([
+          run(
+            [
+              'diff',
+              '--cached',
+              '--binary',
+              '--full-index',
+              '--no-ext-diff',
+              '--no-textconv',
+              '--'
+            ],
+            { cwd: wt }
+          ),
+          run(
+            [
+              'diff',
+              '--binary',
+              '--full-index',
+              '--no-ext-diff',
+              '--no-textconv',
+              '--'
+            ],
+            { cwd: wt }
+          )
+        ]);
+  if (staged_delta.code !== 0 || unstaged_delta.code !== 0) {
+    return failed;
+  }
+  /** @type {Array<{ path: string, state: WorktreePathState|null, special: boolean }>} */
+  const untracked_states = [];
+  for (const relative_path of [...parsed.untracked].sort()) {
+    const observed = await worktreePathState(run, fs, wt, relative_path);
+    if (!observed.ok) {
+      return failed;
+    }
+    untracked_states.push({
+      path: relative_path,
+      state: observed.state,
+      special: observed.special
+    });
+  }
+  return {
+    ok: true,
+    status_digest: sha256(
+      JSON.stringify({
+        worktree_realpath: identity.worktree_realpath,
+        branch: identity.branch,
+        head_sha: identity.head_sha,
+        base_oid: identity.base_oid,
+        status: status.stdout,
+        staged_delta: staged_delta.stdout,
+        unstaged_delta: unstaged_delta.stdout,
+        untracked_states
+      })
+    ),
+    parsed,
+    staged_paths,
+    unstaged_paths,
+    special_paths
+  };
+}
+
+/**
  * Create a worktree manager bound to a lock manager.
  *
  * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
@@ -138,8 +510,8 @@ function isOwnedWorktree(repo, wt, branch) {
  *   add: (input: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>,
  *   remove: (input: { repo: string, bead_id: string }) => Promise<{ code: number, stderr: string }>,
  *   observeOwnedByBead: (input: { repo: string, bead_id: string }) => Promise<{ ok: boolean, present: boolean, path: string|null, branch: string|null, head_sha: string|null, reason: string|null }>,
- *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
- *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *   removeByBranch: (input: { repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *   removeIfDiscardable: (input: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>,
  *   addDetached: (input: { repo: string, name: string, sha: string }) => Promise<{ path: string }>,
  *   removeDetached: (input: { repo: string, name: string }) => Promise<{ code: number, stderr: string }>,
  *   withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
@@ -394,7 +766,7 @@ export function createWorktreeManager(deps) {
      * in here — never another manager method, which would take the same
      * non-reentrant lock.
      *
-     * @param {{ repo: string, branch: string, expected_path?: string|null, expected_head?: string|null }} input
+     * @param {{ repo: string, branch: string, expected_path?: string|null, expected_head?: string|null, expected_base_oid?: string|null, expected_status_digest?: string|null }} input
      * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
      */
     async removeByBranch(input) {
@@ -445,14 +817,54 @@ export function createWorktreeManager(deps) {
         ) {
           return { ok: false, removed: false, reason: 'foreign_worktree' };
         }
-        if (typeof input.expected_head === 'string') {
+        /** @type {string|null} */
+        let head_sha = null;
+        if (
+          typeof input.expected_head === 'string' ||
+          typeof input.expected_status_digest === 'string'
+        ) {
           const head = await run(['rev-parse', 'HEAD'], { cwd: wt });
-          if (head.code !== 0 || head.stdout.trim() !== input.expected_head) {
+          head_sha = head.code === 0 ? head.stdout.trim() : null;
+          if (
+            head_sha === null ||
+            (typeof input.expected_head === 'string' &&
+              head_sha !== input.expected_head)
+          ) {
             return {
               ok: false,
               removed: false,
               reason: 'identity_changed'
             };
+          }
+        }
+        if (typeof input.expected_status_digest === 'string') {
+          if (typeof input.expected_base_oid !== 'string') {
+            return { ok: false, removed: false, reason: 'identity_changed' };
+          }
+          let worktree_realpath;
+          try {
+            worktree_realpath = fs.realpathSync(wt);
+          } catch {
+            return { ok: false, removed: false, reason: 'identity_changed' };
+          }
+          const symbolic = await run(
+            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+            { cwd: wt }
+          );
+          const observed_branch =
+            symbolic.code === 0 ? symbolic.stdout.trim() : null;
+          const status = await observeStatusDigest(run, fs, wt, {
+            worktree_realpath,
+            branch: observed_branch,
+            head_sha,
+            base_oid: input.expected_base_oid
+          });
+          if (
+            observed_branch !== input.branch ||
+            !status.ok ||
+            status.status_digest !== input.expected_status_digest
+          ) {
+            return { ok: false, removed: false, reason: 'identity_changed' };
           }
         }
         const removed = await run(['worktree', 'remove', '--force', wt], {
@@ -485,83 +897,549 @@ export function createWorktreeManager(deps) {
      * never `add` / `remove` / `addDetached` / `removeDetached`, which take the
      * same non-reentrant lock.
      *
-     * @param {{ repo: string, bead_id: string, base: string }} input
-     * @returns {Promise<{ ok: boolean, removed: boolean, reason: string|null }>}
+     * @param {{ repo: string, bead_id: string, base: string, preserve?: boolean }} input
+     * @returns {Promise<WorktreeObservation>}
      */
     async removeIfDiscardable(input) {
       const release = await locks.topologyLock(input.repo);
       try {
         const wt = pathFor(input.repo, input.bead_id);
         const branch = branchForBead(input.bead_id);
+        const empty_summary = {
+          staged_count: 0,
+          unstaged_count: 0,
+          untracked_count: 0,
+          branch_ahead: 0,
+          head_ahead: 0
+        };
 
-        let wt_present = false;
-        try {
-          wt_present = fs.existsSync(wt);
-        } catch {
-          return { ok: false, removed: false, reason: 'observe_failed' };
-        }
-
-        const branch_probe = await run(
-          ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
-          { cwd: input.repo }
-        );
-        // `--quiet` reports a missing ref as exit 1; any other nonzero is a
-        // failed observation, not an absence.
-        if (branch_probe.code !== 0 && branch_probe.code !== 1) {
-          return { ok: false, removed: false, reason: 'observe_failed' };
-        }
-        const branch_present = branch_probe.code === 0;
-
-        if (wt_present) {
-          const status = await run(['status', '--porcelain'], { cwd: wt });
-          if (status.code !== 0) {
-            return { ok: false, removed: false, reason: 'observe_failed' };
-          }
-          if (status.stdout.trim().length > 0) {
-            return { ok: false, removed: false, reason: 'dirty' };
-          }
-        }
-
-        if (branch_present) {
-          const branch_ahead = parseCount(
-            await run(['rev-list', '--count', `${input.base}..${branch}`], {
-              cwd: input.repo
-            })
+        /**
+         * Observe one immutable decision snapshot. No file or ref is changed in
+         * this helper; callers may safely surface its bounded summary.
+         *
+         * @returns {Promise<InternalWorktreeObservation>}
+         */
+        async function observe() {
+          const base_probe = await run(
+            ['rev-parse', '--verify', `${input.base}^{commit}`],
+            { cwd: input.repo }
           );
+          if (
+            base_probe.code !== 0 ||
+            !/^[0-9a-f]{40,64}$/i.test(base_probe.stdout.trim())
+          ) {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned: false,
+              identity: {
+                worktree_realpath: null,
+                branch: null,
+                head_sha: null,
+                base_oid: null,
+                status_digest: sha256('observe_failed')
+              },
+              summary: { ...empty_summary },
+              paths: { staged: [], unstaged: [] }
+            };
+          }
+          const base_oid = base_probe.stdout.trim();
+          let wt_present = false;
+          try {
+            wt_present = fs.existsSync(wt);
+          } catch {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned: false,
+              identity: {
+                worktree_realpath: null,
+                branch: null,
+                head_sha: null,
+                base_oid,
+                status_digest: sha256('observe_failed')
+              },
+              summary: { ...empty_summary },
+              paths: { staged: [], unstaged: [] }
+            };
+          }
+          const branch_probe = await run(
+            ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+            { cwd: input.repo }
+          );
+          if (branch_probe.code !== 0 && branch_probe.code !== 1) {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned: false,
+              identity: {
+                worktree_realpath: null,
+                branch: null,
+                head_sha: null,
+                base_oid,
+                status_digest: sha256('observe_failed')
+              },
+              summary: { ...empty_summary },
+              paths: { staged: [], unstaged: [] }
+            };
+          }
+          const branch_present = branch_probe.code === 0;
+          const branch_ahead = branch_present
+            ? parseCount(
+                await run(['rev-list', '--count', `${base_oid}..${branch}`], {
+                  cwd: input.repo
+                })
+              )
+            : 0;
           if (branch_ahead === null) {
-            return { ok: false, removed: false, reason: 'observe_failed' };
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned: false,
+              identity: {
+                worktree_realpath: null,
+                branch: branch_present ? branch : null,
+                head_sha: null,
+                base_oid,
+                status_digest: sha256('observe_failed')
+              },
+              summary: { ...empty_summary },
+              paths: { staged: [], unstaged: [] }
+            };
           }
-          if (branch_ahead > 0) {
-            return { ok: false, removed: false, reason: 'branch_ahead' };
+          if (!wt_present) {
+            const state = branch_present ? 'discardable' : 'absent';
+            const cause = branch_ahead > 0 ? 'branch_ahead' : null;
+            return {
+              ok: cause === null,
+              state: cause === null ? state : 'unique',
+              removed: false,
+              reason: cause,
+              cause,
+              owned: true,
+              identity: {
+                worktree_realpath: null,
+                branch: branch_present ? branch : null,
+                head_sha: null,
+                base_oid,
+                status_digest: sha256(
+                  JSON.stringify({ branch_present, branch_ahead, base_oid })
+                )
+              },
+              summary: { ...empty_summary, branch_ahead },
+              paths: { staged: [], unstaged: [] }
+            };
           }
-        }
 
-        if (wt_present) {
-          // A detached (or re-pointed) HEAD carries commits no branch check can
-          // see — without this, `-B` would strand them as unreachable objects.
-          const head_ahead = parseCount(
-            await run(['rev-list', '--count', `${input.base}..HEAD`], {
-              cwd: wt
-            })
+          /** @type {string|null} */
+          let worktree_realpath = null;
+          try {
+            worktree_realpath = fs.realpathSync(wt);
+          } catch {
+            worktree_realpath = null;
+          }
+          const symbolic = await run(
+            ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+            { cwd: wt }
           );
-          if (head_ahead === null) {
-            return { ok: false, removed: false, reason: 'observe_failed' };
+          const observed_branch =
+            symbolic.code === 0 ? symbolic.stdout.trim() : null;
+          let repo_realpath = input.repo;
+          try {
+            repo_realpath = fs.realpathSync(input.repo);
+          } catch {
+            /* ownership still checks the supplied repo root */
           }
-          if (head_ahead > 0) {
-            return { ok: false, removed: false, reason: 'head_ahead' };
-          }
-          // NEVER `--force`: git's own refusal is the last guard against
-          // removing a worktree whose state the observations above missed.
-          const removed = await run(['worktree', 'remove', wt], {
-            cwd: input.repo
+          const owned =
+            worktree_realpath !== null &&
+            observed_branch === branch &&
+            (isOwnedWorktree(repo_realpath, worktree_realpath, branch) ||
+              isOwnedWorktree(input.repo, worktree_realpath, branch));
+          const head_probe = await run(['rev-parse', '--verify', 'HEAD'], {
+            cwd: wt
           });
-          if (removed.code !== 0) {
-            return { ok: false, removed: false, reason: 'remove_failed' };
+          const head_sha =
+            head_probe.code === 0 &&
+            /^[0-9a-f]{40,64}$/i.test(head_probe.stdout.trim())
+              ? head_probe.stdout.trim()
+              : null;
+          const head_ahead =
+            head_sha === null
+              ? null
+              : parseCount(
+                  await run(
+                    ['rev-list', '--count', `${base_oid}..${head_sha}`],
+                    { cwd: wt }
+                  )
+                );
+          if (head_ahead === null) {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned,
+              identity: {
+                worktree_realpath,
+                branch: observed_branch,
+                head_sha,
+                base_oid,
+                status_digest: sha256('observe_failed')
+              },
+              summary: {
+                ...empty_summary,
+                branch_ahead,
+                head_ahead: head_ahead ?? 0
+              },
+              paths: { staged: [], unstaged: [] }
+            };
           }
-          return { ok: true, removed: true, reason: null };
+          const status = await observeStatusDigest(run, fs, wt, {
+            worktree_realpath,
+            branch: observed_branch,
+            head_sha,
+            base_oid
+          });
+          if (!status.ok) {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned,
+              identity: {
+                worktree_realpath,
+                branch: observed_branch,
+                head_sha,
+                base_oid,
+                status_digest: sha256('observe_failed')
+              },
+              summary: {
+                ...empty_summary,
+                branch_ahead,
+                head_ahead
+              },
+              paths: { staged: [], unstaged: [] }
+            };
+          }
+          const parsed = status.parsed;
+          const staged_paths = status.staged_paths;
+          const unstaged_paths = status.unstaged_paths;
+          const special_paths = status.special_paths;
+          const summary = {
+            staged_count: staged_paths.length,
+            unstaged_count: unstaged_paths.length,
+            untracked_count: parsed.untracked.size,
+            branch_ahead,
+            head_ahead
+          };
+          const identity = {
+            worktree_realpath,
+            branch: observed_branch,
+            head_sha,
+            base_oid,
+            status_digest: status.status_digest
+          };
+          if (branch_ahead > 0 || head_ahead > 0) {
+            const cause = branch_ahead > 0 ? 'branch_ahead' : 'head_ahead';
+            return {
+              ok: false,
+              state: 'unique',
+              removed: false,
+              reason: cause,
+              cause,
+              owned,
+              identity,
+              summary,
+              paths: { staged: staged_paths, unstaged: unstaged_paths }
+            };
+          }
+          if (!owned) {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'ownership_unknown',
+              cause: 'ownership_unknown',
+              owned: false,
+              identity,
+              summary,
+              paths: { staged: staged_paths, unstaged: unstaged_paths }
+            };
+          }
+          if (parsed.cause !== null) {
+            return {
+              ok: false,
+              state: 'unique',
+              removed: false,
+              reason: parsed.cause,
+              cause: parsed.cause,
+              owned,
+              identity,
+              summary,
+              paths: { staged: staged_paths, unstaged: unstaged_paths }
+            };
+          }
+          if (special_paths.length > 0) {
+            return {
+              ok: false,
+              state: 'unique',
+              removed: false,
+              reason: 'special_file',
+              cause: 'special_file',
+              owned,
+              identity,
+              summary,
+              paths: { staged: staged_paths, unstaged: unstaged_paths }
+            };
+          }
+          if (staged_paths.length === 0 && unstaged_paths.length === 0) {
+            return {
+              ok: true,
+              state: 'discardable',
+              removed: false,
+              reason: null,
+              cause: null,
+              owned,
+              identity,
+              summary,
+              paths: { staged: [], unstaged: [] }
+            };
+          }
+          for (const relative_path of staged_paths) {
+            const [base_state, index_state] = await Promise.all([
+              treePathState(run, wt, base_oid, relative_path),
+              indexPathState(run, wt, relative_path)
+            ]);
+            if (!base_state.ok || !index_state.ok) {
+              return {
+                ok: false,
+                state: 'unknown',
+                removed: false,
+                reason: 'observe_failed',
+                cause: 'observe_failed',
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+            if (!samePathState(base_state.state, index_state.state)) {
+              return {
+                ok: false,
+                state: 'unique',
+                removed: false,
+                reason: 'dirty_unique',
+                cause: 'dirty_unique',
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+          }
+          for (const relative_path of unstaged_paths) {
+            const [base_state, worktree_state] = await Promise.all([
+              treePathState(run, wt, base_oid, relative_path),
+              worktreePathState(run, fs, wt, relative_path)
+            ]);
+            if (!base_state.ok || !worktree_state.ok) {
+              return {
+                ok: false,
+                state: 'unknown',
+                removed: false,
+                reason: 'observe_failed',
+                cause: 'observe_failed',
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+            if (worktree_state.special) {
+              return {
+                ok: false,
+                state: 'unique',
+                removed: false,
+                reason: 'special_file',
+                cause: 'special_file',
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+            if (!samePathState(base_state.state, worktree_state.state)) {
+              return {
+                ok: false,
+                state: 'unique',
+                removed: false,
+                reason: 'dirty_unique',
+                cause: 'dirty_unique',
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+          }
+          return {
+            ok: true,
+            state: 'base_contained',
+            removed: false,
+            reason: null,
+            cause: null,
+            owned,
+            identity,
+            summary,
+            paths: { staged: staged_paths, unstaged: unstaged_paths }
+          };
         }
 
-        return { ok: true, removed: false, reason: null };
+        const first = await observe();
+        if (input.preserve === true) {
+          return withoutPaths(first);
+        }
+        if (!first.ok || first.state === 'absent' || !worktreePresent(first)) {
+          return withoutPaths(first);
+        }
+        const second = await observe();
+        if (
+          second.state !== first.state ||
+          JSON.stringify(second.identity) !== JSON.stringify(first.identity)
+        ) {
+          return withoutPaths({
+            ...first,
+            ok: false,
+            state: 'unknown',
+            reason: 'identity_changed',
+            cause: 'identity_changed'
+          });
+        }
+        const changed_paths = [
+          ...new Set([...first.paths.staged, ...first.paths.unstaged])
+        ];
+        if (first.state === 'base_contained') {
+          const restored = await run(
+            [
+              'restore',
+              '--source=HEAD',
+              '--staged',
+              '--worktree',
+              '--',
+              ...changed_paths
+            ],
+            { cwd: wt }
+          );
+          if (restored.code !== 0) {
+            await restoreContainedState(first, changed_paths);
+            return withoutPaths({
+              ...first,
+              ok: false,
+              state: 'unknown',
+              reason: 'restore_failed',
+              cause: 'restore_failed'
+            });
+          }
+          const clean = await observe();
+          if (
+            !clean.ok ||
+            clean.state !== 'discardable' ||
+            clean.summary.branch_ahead !== 0 ||
+            clean.summary.head_ahead !== 0
+          ) {
+            await restoreContainedState(first, changed_paths);
+            return withoutPaths({
+              ...first,
+              ok: false,
+              state: 'unknown',
+              reason: 'restore_failed',
+              cause: 'restore_failed'
+            });
+          }
+        }
+        const removed = await run(['worktree', 'remove', wt], {
+          cwd: input.repo
+        });
+        if (removed.code !== 0) {
+          if (first.state === 'base_contained') {
+            await restoreContainedState(first, changed_paths);
+          }
+          return withoutPaths({
+            ...first,
+            ok: false,
+            state: 'unknown',
+            reason: 'remove_failed',
+            cause: 'remove_failed'
+          });
+        }
+        return withoutPaths({ ...first, removed: true });
+
+        /**
+         * @param {InternalWorktreeObservation} observation
+         * @returns {boolean}
+         */
+        function worktreePresent(observation) {
+          return observation.identity?.worktree_realpath !== null;
+        }
+
+        /**
+         * @param {InternalWorktreeObservation} observation
+         * @returns {WorktreeObservation}
+         */
+        function withoutPaths(observation) {
+          const { paths, ...result } = observation;
+          void paths;
+          return result;
+        }
+
+        /**
+         * Recreate the proven pre-cleanup state if normalize or non-forced
+         * removal fails. Both writes remain exact-path and base-pinned.
+         *
+         * @param {InternalWorktreeObservation} observation
+         * @param {string[]} changed_paths
+         */
+        async function restoreContainedState(observation, changed_paths) {
+          if (observation.paths.staged.length > 0) {
+            await run(
+              [
+                'restore',
+                `--source=${observation.identity.base_oid}`,
+                '--staged',
+                '--',
+                ...observation.paths.staged
+              ],
+              { cwd: wt }
+            );
+          }
+          if (changed_paths.length > 0) {
+            await run(
+              [
+                'restore',
+                `--source=${observation.identity.base_oid}`,
+                '--worktree',
+                '--',
+                ...changed_paths
+              ],
+              { cwd: wt }
+            );
+          }
+        }
       } finally {
         release();
       }

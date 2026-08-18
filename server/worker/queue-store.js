@@ -234,6 +234,43 @@
  * @property {string} completed_at
  */
 /**
+ * @typedef {Object} StaleWorkSummary
+ * @property {number} staged_count
+ * @property {number} unstaged_count
+ * @property {number} untracked_count
+ * @property {number} branch_ahead
+ * @property {number} head_ahead
+ */
+/**
+ * @typedef {Object} StaleWorkIdentity
+ * @property {string|null} worktree_realpath
+ * @property {string|null} branch
+ * @property {string|null} head_sha
+ * @property {string|null} base_oid
+ * @property {string|null} status_digest
+ */
+/**
+ * @typedef {Object} StaleWorkAdmission
+ * @property {1} schema
+ * @property {'unique'|'unknown'} state
+ * @property {string} cause
+ * @property {StaleWorkSummary} summary
+ * @property {string} identity_digest
+ * @property {string} action_id
+ * @property {boolean} can_resume
+ * @property {boolean} can_continue
+ * @property {boolean} can_backup_fresh
+ * @property {boolean} can_recheck
+ * @property {StaleWorkIdentity} [identity]
+ */
+/**
+ * @typedef {Object} AdmissionRecord
+ * @property {string} reason
+ * @property {number} at
+ * @property {true} [stale]
+ * @property {StaleWorkAdmission} [stale_work]
+ */
+/**
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
@@ -261,7 +298,7 @@
  * waiting for a human merge click (worker-phase2 §4).
  * @property {QueueEntry[]} done - Completed today.
  * @property {Record<string, Attempt>} attempts - Attempt records by attempt_id.
- * @property {Record<string, { reason: string, at: number, stale?: true }>} admission -
+ * @property {Record<string, AdmissionRecord>} admission -
  * Auto-run admission observations by bead_id (badge display). Cleared only on a
  * successful dispatch or queue removal — never auto-expired. `stale:true` marks
  * the ONE non-blocking record (UI-dlim §3.4): the bead was ADMITTED with a
@@ -392,6 +429,7 @@
  * @property {string} operation_id
  * @property {string} bead_id
  * @property {string|null} attempt_id
+ * @property {'discard'|'stale_work_backup_fresh'} kind
  * @property {number} requested_at
  * @property {'undecided'|'unmerged'|'merged_revert'} mode
  * @property {string} phase
@@ -951,6 +989,81 @@ function normalizeCompletionIntents(raw) {
  */
 function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Keep the versioned stale-work payload bounded and fail-quiet. `identity` is
+ * server-only authority state; the WebSocket projection removes it.
+ *
+ * @param {unknown} value
+ * @returns {StaleWorkAdmission|null}
+ */
+function normalizeStaleWork(value) {
+  if (
+    !isRecord(value) ||
+    value.schema !== 1 ||
+    (value.state !== 'unique' && value.state !== 'unknown') ||
+    typeof value.cause !== 'string' ||
+    !isRecord(value.summary) ||
+    typeof value.identity_digest !== 'string' ||
+    typeof value.action_id !== 'string'
+  ) {
+    return null;
+  }
+  /** @type {Partial<StaleWorkSummary>} */
+  const summary = {};
+  for (const key of /** @type {(keyof StaleWorkSummary)[]} */ ([
+    'staged_count',
+    'unstaged_count',
+    'untracked_count',
+    'branch_ahead',
+    'head_ahead'
+  ])) {
+    const count = value.summary[key];
+    if (!Number.isInteger(count) || Number(count) < 0) {
+      return null;
+    }
+    summary[key] = Number(count);
+  }
+  /** @type {Omit<StaleWorkAdmission, 'identity'>} */
+  const normalized = {
+    schema: 1,
+    state: value.state,
+    cause: value.cause,
+    summary: /** @type {StaleWorkSummary} */ (summary),
+    identity_digest: value.identity_digest,
+    action_id: value.action_id,
+    can_resume: value.can_resume === true,
+    can_continue: value.can_continue === true,
+    can_backup_fresh: value.can_backup_fresh === true,
+    can_recheck: value.can_recheck === true
+  };
+  if (isRecord(value.identity)) {
+    const identity = {
+      worktree_realpath:
+        typeof value.identity.worktree_realpath === 'string'
+          ? value.identity.worktree_realpath
+          : null,
+      branch:
+        typeof value.identity.branch === 'string'
+          ? value.identity.branch
+          : null,
+      head_sha:
+        typeof value.identity.head_sha === 'string'
+          ? value.identity.head_sha
+          : null,
+      base_oid:
+        typeof value.identity.base_oid === 'string'
+          ? value.identity.base_oid
+          : null,
+      status_digest:
+        typeof value.identity.status_digest === 'string'
+          ? value.identity.status_digest
+          : null
+    };
+    return { ...normalized, identity };
+  }
+  return normalized;
 }
 
 /**
@@ -1660,6 +1773,10 @@ function normalizeDiscardOperation(value, operation_id) {
       typeof value.attempt_id === 'string' && value.attempt_id.length > 0
         ? value.attempt_id
         : null,
+    kind:
+      value.kind === 'stale_work_backup_fresh'
+        ? 'stale_work_backup_fresh'
+        : 'discard',
     requested_at: value.requested_at,
     mode: value.mode,
     phase: value.phase,
@@ -2328,6 +2445,10 @@ function normalizeQueue(raw) {
         if (value.stale === true) {
           q.admission[bead_id].stale = true;
         }
+        const stale_work = normalizeStaleWork(value.stale_work);
+        if (stale_work !== null) {
+          q.admission[bead_id].stale_work = stale_work;
+        }
       }
     }
   }
@@ -2648,6 +2769,16 @@ function removeFromLanes(q, bead_id) {
   // bead that merged, was discarded, or was dragged back out of the lane carries
   // no exclusion into whatever happens to it next.
   delete q.auto_merge_skips[bead_id];
+}
+
+/**
+ * @param {Queue} q
+ * @param {string} bead_id
+ */
+function hasActiveDiscardOperation(q, bead_id) {
+  return Object.values(q.discard_operations).some(
+    (operation) => operation.bead_id === bead_id && operation.phase !== 'done'
+  );
 }
 
 /**
@@ -3066,6 +3197,9 @@ export function createQueueStore(options = {}) {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
+        if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
         if (waitingLaneEntries(next, lane) === null) {
           return false;
         }
@@ -3099,6 +3233,9 @@ export function createQueueStore(options = {}) {
     reorder(workspace, input) {
       const { expected_revision, bead_id, lane, to_index } = input;
       return applyMutation(workspace, expected_revision, (next) => {
+        if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
         const arr = waitingLaneEntries(next, lane);
         if (arr === null) {
           return false;
@@ -4061,6 +4198,9 @@ export function createQueueStore(options = {}) {
     remove(workspace, input) {
       const { expected_revision, bead_id } = input;
       return applyMutation(workspace, expected_revision, (next) => {
+        if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
         removeFromLanes(next, bead_id);
         rebindLineageLane(next, bead_id, null);
         delete next.admission[bead_id];
@@ -4542,7 +4682,7 @@ export function createQueueStore(options = {}) {
      * without minting a second id or bumping the revision.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, operation: { operation_id: string, bead_id: string, attempt_id?: string|null, process_identity?: { pid: number, pgid: number, started_at: number }|null, source_snapshot: Record<string, unknown> } }} input
+     * @param {{ expected_revision: number, operation: { operation_id: string, bead_id: string, attempt_id?: string|null, kind?: 'discard'|'stale_work_backup_fresh', process_identity?: { pid: number, pgid: number, started_at: number }|null, source_snapshot: Record<string, unknown> } }} input
      * @returns {QueueOpResult & { reused?: boolean, operation?: DiscardOperation }}
      */
     createDiscardOperation(workspace, input) {
@@ -4736,7 +4876,9 @@ export function createQueueStore(options = {}) {
           reason = 'phase_mismatch';
           return false;
         }
-        removeFromLanes(next, current.bead_id);
+        if (current.kind !== 'stale_work_backup_fresh') {
+          removeFromLanes(next, current.bead_id);
+        }
         delete next.admission[current.bead_id];
         delete next.cleanup_failed[current.bead_id];
         next.discard_operations[operation_id] = {
@@ -5294,12 +5436,13 @@ export function createQueueStore(options = {}) {
      * same-record no-op guard, so a stale flag flipping is a real change.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, reason: string, stale?: boolean }} input
+     * @param {{ bead_id: string, reason: string, stale?: boolean, stale_work?: unknown }} input
      * @returns {QueueOpResult}
      */
     recordAdmission(workspace, input) {
       const { bead_id, reason } = input;
       const stale = input.stale === true;
+      const stale_work = normalizeStaleWork(input.stale_work);
       return applyUnconditional(workspace, (next) => {
         if (
           typeof bead_id !== 'string' ||
@@ -5313,13 +5456,18 @@ export function createQueueStore(options = {}) {
         if (
           prior &&
           prior.reason === reason &&
-          (prior.stale === true) === stale
+          (prior.stale === true) === stale &&
+          JSON.stringify(prior.stale_work ?? null) ===
+            JSON.stringify(stale_work)
         ) {
           return false;
         }
-        next.admission[bead_id] = stale
-          ? { reason, at: now(), stale: true }
-          : { reason, at: now() };
+        next.admission[bead_id] = {
+          reason,
+          at: now(),
+          ...(stale ? { stale: true } : {}),
+          ...(stale_work === null ? {} : { stale_work })
+        };
         return true;
       });
     },
