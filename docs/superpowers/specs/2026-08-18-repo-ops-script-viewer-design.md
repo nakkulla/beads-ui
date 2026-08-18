@@ -198,7 +198,7 @@ dotfiles의 `docs/contracts/workflow.{md,yaml}`이나 generated contract project
 - route: working tree 파일이 달라도 committed blob 내용을 반환한다.
 - route: client path query를 사용하지 않고 선언에서 찾은 경로만 읽는다.
 - route: 미등록 workspace, 잘못된 lane/SHA, stale display, lane 부재, 초과 크기,
-  NUL content를 각 오류로 거부한다.
+  NUL content, 잘못된 UTF-8 raw blob을 각 오류로 거부한다.
 - viewer: loading 뒤 경로·short SHA·줄 번호·원문을 렌더한다.
 - viewer: HTML 모양의 script 내용도 DOM으로 실행하지 않고 텍스트로 표시한다.
 - viewer: shell token 색상은 원문과 복사 내용을 바꾸지 않는다.
@@ -218,6 +218,32 @@ dotfiles의 `docs/contracts/workflow.{md,yaml}`이나 generated contract project
 - `npm run prettier:write` 후 포맷 diff 확인
 - `npm run build` 및 `app/main.bundle.js`, `app/main.bundle.js.map` 갱신
 
+## 마감과 배포 연속성
+
+이 기능의 source, tests, 정적 bundle은 모두 현재 Bead의 한 PR에 포함한다. 별도
+direct landing이나 interactive-only 잔여 작업은 없다. PR Delivery는 non-empty PR과
+검증 영수증을 전달한 뒤 merge 전에 멈추고, 이후 merge·배포·close는 저장소의 기존
+Worker 또는 `pr-finish` 절차가 수행한다.
+
+머지 이후 적용 순서는 다음으로 고정한다.
+
+1. pinned PR head와 current implementation review를 확인한 뒤 exact head를 merge한다.
+2. fetched previous target-base의 `repo-ops/config.toml`에서 `[deploy]`와 script identity를
+   다시 고정한다. 선언이 없으면 배포 단계를 생략하고, 선언을 해석할 수 없으면
+   fail-closed한다.
+3. 기존 repo-operation executor가 `.worktrees/.repo-ops-deploy`를 merged SHA로 정렬한
+   뒤 선언된 deploy script를 실행한다. 이 저장소의 기존 script가 dependencies,
+   frontend build, `bdui-shared restart`를 담당한다.
+4. deploy operation의 terminal success와 deploy worktree의 merged-SHA containment 및
+   tracked-clean을 확인한다.
+5. 실제 server process가 deploy worktree에서 실행되는지, 의도한 port가 listen
+   중인지, 기본 HTTP health 응답이 성공하는지 확인한 뒤에만 배포 완료로 판정한다.
+
+각 단계의 durable 상태와 재개 의미는 기존 repo-operation/cleanup cursor가 소유한다.
+중간에 세션이나 서버가 종료돼도 성공으로 추정하지 않고, 남은 operation을 재관측해
+기존 `script_retry → auto_repair_session → user_triggered_session` 경로로 재개한다.
+새 viewer 기능은 이 순서나 recovery state를 변경하지 않는다.
+
 ## 수용 기준
 
 1. 저장소 작업 설정에 선언된 검증·배포 경로가 클릭 가능하다는 사실을 hover,
@@ -228,4 +254,5 @@ dotfiles의 `docs/contracts/workflow.{md,yaml}`이나 generated contract project
    보여주지 않는다.
 4. 임의 경로·미등록 workspace·비텍스트·과대 파일은 읽을 수 없다.
 5. 키보드 닫기, 포커스 복원, 모바일 스크롤, 전체 내용 복사가 동작한다.
-6. Pre-Handoff 검증과 정적 번들 생성이 모두 통과한다.
+6. Pre-Handoff 검증과 정적 번들 생성이 모두 통과하고, merge 후에는 위 고정 순서의
+   deploy terminal evidence와 process·port·HTTP live 검증까지 확인해야 완료다.
