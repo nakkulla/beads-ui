@@ -14,12 +14,13 @@ import { html } from 'lit-html';
 /**
  * Build the Worker screen's repo-operation settings section.
  *
- * @param {{ queueStore: QueueStore, transport?: (type: any, payload?: unknown) => Promise<any>, onChanged?: () => void }} options
+ * @param {{ queueStore: QueueStore, transport?: (type: any, payload?: unknown) => Promise<any>, onChanged?: () => void, onOpenScript?: (input: { lane: 'verify'|'deploy', base_sha: string, path: string, base_ref: string }, trigger_element: HTMLElement) => void }} options
  */
 export function createRepoOpsSettings(options) {
   const queueStore = options.queueStore;
   const transport = options.transport;
   const doRender = options.onChanged || (() => {});
+  const onOpenScript = options.onOpenScript;
 
   /** @returns {any} */
   function currentQueue() {
@@ -89,6 +90,34 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
+   * @param {'verify'|'deploy'} lane
+   * @param {any} repo_ops
+   * @param {{ script: string, timeout_ms: number }} declaration
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function laneScriptButton(lane, repo_ops, declaration) {
+    return html`<button
+      type="button"
+      class="worker-repo-ops__vd-cmd worker-repo-ops__vd-cmd--link"
+      .textContent=${declaration.script}
+      @click=${(/** @type {MouseEvent} */ event) => {
+        if (!onOpenScript) {
+          return;
+        }
+        onOpenScript(
+          {
+            lane,
+            base_sha: repo_ops.base_sha,
+            path: declaration.script,
+            base_ref: repo_ops.base_ref
+          },
+          /** @type {HTMLElement} */ (event.currentTarget)
+        );
+      }}
+    ></button>`;
+  }
+
+  /**
    * The 저장소 작업 선언 card (UI-q0uy §4.5): `repo-ops/config.toml` read from
    * the pinned base SHA consumed by the Worker.
    *
@@ -109,9 +138,8 @@ export function createRepoOpsSettings(options) {
         <span class="worker-repo-ops__lane-k">머지 전 검증</span>
         <span class="worker-repo-ops__lane-v"
           >${repo_ops.verify
-            ? html`<code class="worker-repo-ops__vd-cmd"
-                  >${repo_ops.verify.script}</code
-                >${laneTimeoutBadge(repo_ops.verify.timeout_ms)}`
+            ? html`${laneScriptButton('verify', repo_ops, repo_ops.verify)}
+              ${laneTimeoutBadge(repo_ops.verify.timeout_ms)}`
             : html`선언 없음${badge('absent', 'verify 없이 판정')}`}</span
         >
         <span class="worker-repo-ops__lane-d"
@@ -124,9 +152,8 @@ export function createRepoOpsSettings(options) {
         <span class="worker-repo-ops__lane-k">머지 후 배포</span>
         <span class="worker-repo-ops__lane-v"
           >${repo_ops.deploy
-            ? html`<code class="worker-repo-ops__vd-cmd"
-                  >${repo_ops.deploy.script}</code
-                >${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}`
+            ? html`${laneScriptButton('deploy', repo_ops, repo_ops.deploy)}
+              ${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}`
             : html`선언 없음${badge('absent', '배포 없음')}`}</span
         >
         <span class="worker-repo-ops__lane-d"

@@ -71,6 +71,7 @@ import {
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { createParallelAnalysisDialog } from './parallel-analysis-dialog.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
@@ -1430,13 +1431,25 @@ export function createWorkerView(mount_element, options = {}) {
     }
   });
 
+  // The script popup owns its own `document.body` mount, so a Worker re-render
+  // cannot tear the modal down while its fetch is still in flight (UI-k34k).
+  const repo_ops_script_viewer = createRepoOpsScriptViewer({
+    getWorkspacePath: getWorkspacePath || (() => '')
+  });
+  let script_viewer_workspace = getWorkspacePath
+    ? getWorkspacePath() || ''
+    : '';
+
   // Operational repo-op controls stay INLINE on the Worker screen (spec 비-목표):
   // the verify/deploy declaration and the `auto_repair` switch are not
   // preferences, so they did not move into the unified settings dialog.
   const repo_ops_settings = createRepoOpsSettings({
     queueStore,
     transport,
-    onChanged: () => doRender()
+    onChanged: () => doRender(),
+    onOpenScript: (input, trigger_element) => {
+      void repo_ops_script_viewer.open(input, trigger_element);
+    }
   });
 
   // 병렬성 분석 다이얼로그 (UI-04vo §9). Absent `analysisStore` (older wiring)
@@ -4638,6 +4651,13 @@ export function createWorkerView(mount_element, options = {}) {
   if (queueStore) {
     unsubscribers.push(
       queueStore.subscribe(() => {
+        const current_workspace = getWorkspacePath
+          ? getWorkspacePath() || ''
+          : '';
+        if (current_workspace !== script_viewer_workspace) {
+          script_viewer_workspace = current_workspace;
+          repo_ops_script_viewer.close();
+        }
         doRender();
         refreshOpenDrawerMeta();
       })
@@ -4695,6 +4715,11 @@ export function createWorkerView(mount_element, options = {}) {
       drawer_overlay_el.hidden = true;
       try {
         parallel_analysis_dialog?.destroy();
+      } catch {
+        /* ignore */
+      }
+      try {
+        repo_ops_script_viewer.destroy();
       } catch {
         /* ignore */
       }
