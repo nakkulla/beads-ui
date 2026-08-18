@@ -38,7 +38,8 @@ Worker 머지 lane에서 세 가지 결함이 겹쳐 사용자가 처리할 수 
 
 추가로, 재리뷰 정책 자체에 대한 결정이 내려졌다: queue-owned 변이로 head가
 움직인 경우의 재리뷰를 외부 리뷰어 dispatch 없이 처리한다(§4). 이는 dotfiles
-소유 workflow 계약의 정정을 전제로 하는 부분이다.
+소유 workflow 계약의 정정을 동반하며, 그 정정은 이 Bead의 enclosed foreign
+unit으로 함께 수행한다.
 
 ## 확정된 결정
 
@@ -48,8 +49,9 @@ Worker 머지 lane에서 세 가지 결함이 겹쳐 사용자가 처리할 수 
 | 실패 문구 | 한국어 문장 매핑 + 원본 reason 코드는 툴팁, 미매핑 코드는 원문 표시 |
 | 리뷰 필요 행 처리 | 클릭 한 번([리뷰 후 머지]) = 자동 리뷰→머지, 완전 자동화는 범위 밖 |
 | 서버 경쟁 수정 | 드라이버 재시도-한 번 + 실패 시 슬롯 유지 |
-| base 갱신 후 재리뷰 | 리뷰 생략 — lineage 증명으로 영수증 승계 (계약 정정 필요) |
-| 충돌 해소 후 재리뷰 | 해소 세션의 exact-delta self-review로 대체 (계약 정정 필요) |
+| base 갱신 후 재리뷰 | 리뷰 생략 — lineage 증명으로 영수증 승계 (계약 정정 동반) |
+| 충돌 해소 후 재리뷰 | 해소 세션의 exact-delta self-review로 대체 (계약 정정 동반) |
+| 단위 구성 | 하나의 Bead — dotfiles 계약 정정은 enclosed foreign unit, 분리 Bead·proxy 없음 |
 | 리뷰 영수증 missing | 현행 유지 — 외부 리뷰어 dispatch (첫 리뷰이므로 재리뷰 완화 대상 아님) |
 
 ## 설계
@@ -116,16 +118,31 @@ Worker 머지 lane에서 세 가지 결함이 겹쳐 사용자가 처리할 수 
 - 대체된 세부 상태(gate/base/head-review의 나머지)는 카드 툴팁과 타임라인에서
   계속 확인할 수 있어야 한다.
 
-### 4. 재리뷰 정책 완화 (dotfiles 계약 정정 전제)
+### 4. 재리뷰 정책 완화 (dotfiles 계약 정정 동반)
 
-**전제**: 현행 workflow 계약(dotfiles `docs/contracts/workflow.{md,yaml}`)은
-manual merge continuation에서 외부 리뷰어 dispatch만 허용하고 `self`/`skip`
-선택을 터미널 실패로 규정한다. beads-ui는 소비자이므로(AGENTS.md canonical
-소유권), 아래 변경은 **dotfiles 계약 정정 unit이 선행**되어야 하며 그 unit이
-이 packet의 §4 구현을 `blocks`한다. §1–§3은 계약과 무관하므로 dotfiles unit을
-기다리지 않는다.
+현행 workflow 계약(dotfiles `docs/contracts/workflow.{md,yaml}`)은 manual merge
+continuation에서 외부 리뷰어 dispatch만 허용하고 `self`/`skip` 선택을 터미널
+실패로 규정한다. beads-ui는 그 계약의 소비자이므로(AGENTS.md canonical 소유권),
+계약과 소비 코드를 **함께** 바꿔야 한다.
 
-계약 정정 후 beads-ui 소비(`server/worker/head-review.js`):
+**단위 구성**: 이 작업은 두 저장소 unit을 갖는다.
+
+- 호스트 unit: beads-ui (이 Bead의 PR).
+- **enclosed foreign unit: dotfiles** — 계약 정정을 dotfiles에 직접 랜딩하고,
+  workflow `references/execution.md`가 요구하는 repo, base, 소유 경로, 검증,
+  fetched parent, 랜딩 SHA, 소유 커밋을 완료 보고서에 기록한다. 별도 추적
+  Bead나 proxy gate Bead를 만들지 않으며, 선행 unit이 §4를 `blocks`하지도
+  않는다. 순서만 고정한다: dotfiles 계약 정정이 먼저 랜딩되고, 같은 Bead 안에서
+  beads-ui 소비 코드가 뒤따른다.
+- enclosed 직접 랜딩은 required no-PR residue이므로, spec gate 종료 시
+  `worker-ineligible` 라벨을 `spec_review` 영수증과 같은 논리적 쓰기에서
+  판정·기록한다.
+
+dotfiles 계약 정정의 내용은 아래 완화 규칙을 계약 어휘로 표현하는 것이다:
+manual merge continuation에서 queue-owned vouched 변이에 한해 외부 리뷰어
+dispatch 없이 영수증 승계 또는 해소 세션 self-review를 허용한다.
+
+beads-ui 소비(`server/worker/head-review.js`):
 
 - **base 갱신만으로 stale** (vouched `mutation === 'base_update'`): 리뷰어를
   dispatch하지 않는다. 기존 lineage 증명(prior head ancestry + target base)으로
@@ -159,7 +176,7 @@ conflict를 검증하지 않는다. 이 저장소는 CI가 없으므로 그 위�
   시나리오 — prepare 재시도 후 성공, 재시도 실패 시 슬롯 유지·재클릭 재개.
 - Worker 뷰모델 테스트: reason별 버튼 활성/라벨, 단일 상태 배지 우선순위,
   세션 마커 분리, 실패 문구 매핑과 툴팁 보존.
-- `server/worker/head-review.test.js`(§4, dotfiles unit 이후): base_update 승계
+- `server/worker/head-review.test.js`(§4, dotfiles 계약 랜딩 후): base_update 승계
   경로가 세션 없이 승인되는 것, resolver self-review verdict 결속, missing은
   여전히 외부 dispatch.
 - Pre-Handoff Validation: `npm run tsc` / `npm test` / `npm run lint` /
