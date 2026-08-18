@@ -195,4 +195,90 @@ describe('worker console styles', () => {
     expect(reasonRule).toContain('white-space: normal');
     expect(reasonRule).toContain('overflow-wrap: anywhere');
   });
+
+  test('moves a card-head admission reason below PR links and badges', () => {
+    const responsiveMarker = CSS.indexOf(
+      '/* ---------- Worker responsive (<=640px)'
+    );
+    const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
+    const reasonRule =
+      baseWorkerCss.match(
+        /#worker-root \.worker-mini--card \.worker-mini__head > \.worker-mini__reason\s*{([^}]*)}/
+      )?.[1] || '';
+
+    expect(responsiveMarker).toBeGreaterThan(markerIndex);
+    expect(reasonRule).toContain('flex: 1 0 100%');
+    expect(reasonRule).toContain('min-width: 0');
+    expect(reasonRule).toContain('max-width: 100%');
+    expect(reasonRule).toContain('margin-left: 0');
+    expect(reasonRule).toContain('white-space: normal');
+    expect(reasonRule).toContain('overflow-wrap: anywhere');
+  });
+
+  test('wraps every standard mini-row sibling in narrow lanes', () => {
+    const lineRule =
+      workerBlock.match(/(?:^|\n)\.worker-mini__line\s*{([^}]*)}/)?.[1] || '';
+
+    expect(lineRule).toContain('flex-wrap: wrap');
+  });
+
+  test('keeps long mini-row badges readable in a narrow lane', () => {
+    const badgeRule =
+      workerBlock.match(/(?:^|\n)\.worker-mini__badge\s*{([^}]*)}/)?.[1] || '';
+
+    expect(badgeRule).toContain('min-width: 0');
+    expect(badgeRule).toContain('max-width: 100%');
+    expect(badgeRule).toContain('overflow-wrap: anywhere');
+  });
+
+  test('wraps candidate card header items in narrow lanes', () => {
+    const headRule =
+      workerBlock.match(/(?:^|\n)\.worker-card__head\s*{([^}]*)}/)?.[1] || '';
+
+    expect(headRule).toContain('flex-wrap: wrap');
+    expect(headRule).toContain('min-width: 0');
+  });
+
+  test('wraps candidate card footer items in narrow lanes', () => {
+    const footRule =
+      workerBlock.match(/(?:^|\n)\.worker-card__foot\s*{([^}]*)}/)?.[1] || '';
+
+    expect(footRule).toContain('flex-wrap: wrap');
+    expect(footRule).toContain('min-width: 0');
+  });
+
+  test('keeps a candidate reason readable beside or below its action', () => {
+    const reasonRule =
+      workerBlock.match(/(?:^|\n)\.worker-card__reason\s*{([^}]*)}/)?.[1] || '';
+
+    expect(reasonRule).toContain('flex: 1 1 auto');
+    expect(reasonRule).toContain('min-width: 0');
+    expect(reasonRule).toContain('max-width: 100%');
+    expect(reasonRule).toContain('overflow-wrap: anywhere');
+  });
+
+  test('wraps running tile header controls in narrow lanes', () => {
+    const headerRule =
+      workerBlock.match(/(?:^|\n)\.rtile__hd\s*{([^}]*)}/)?.[1] || '';
+
+    expect(headerRule).toContain('flex-wrap: wrap');
+    expect(headerRule).toContain('min-width: 0');
+  });
+
+  test('wraps running tile metadata in narrow lanes', () => {
+    const metaRule =
+      workerBlock.match(/(?:^|\n)\.rtile__meta\s*{([^}]*)}/)?.[1] || '';
+
+    expect(metaRule).toContain('flex-wrap: wrap');
+    expect(metaRule).toContain('min-width: 0');
+  });
+
+  test('keeps running tile metadata readable when it has a long token', () => {
+    const runnerRule =
+      workerBlock.match(/(?:^|\n)\.rtile__runner\s*{([^}]*)}/)?.[1] || '';
+
+    expect(runnerRule).toContain('min-width: 0');
+    expect(runnerRule).toContain('max-width: 100%');
+    expect(runnerRule).toContain('overflow-wrap: anywhere');
+  });
 });

@@ -3377,8 +3377,10 @@ html[data-theme='dark'] {
 
 .rtile__hd {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-6);
+  min-width: 0;
 }
 
 .rtile__dot {
@@ -3391,9 +3393,12 @@ html[data-theme='dark'] {
 }
 
 .rtile__id {
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--font-mono);
   font-size: var(--fs-chip-lg);
   color: var(--text-id-mono);
+  overflow-wrap: anywhere;
 }
 
 .rtile__elapsed {
@@ -3539,17 +3544,20 @@ html[data-theme='dark'] {
 
 .rtile__meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-6);
+  min-width: 0;
   font-size: var(--fs-chip-lg);
   color: var(--text-dim);
 }
 
-/* runner·model은 왼쪽에, 토큰은 오른쪽 끝에 — 타일마다 같은 자리에서 읽힌다. */
+/* runner·model은 왼쪽에, 토큰은 오른쪽 끝에 — 좁은 타일에서는 둘 다 다음 줄로
+   내려가므로 생략하지 않는다. */
 .rtile__runner {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .rtile__meta .worker-usage {
@@ -4700,6 +4708,7 @@ html[data-theme='dark'] {
    감싸고 메타를 형제로 두며, 껍데기만 column으로 뒤집는다. */
 .worker-mini__line {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-6);
   min-width: 0;
@@ -4940,6 +4949,17 @@ html[data-theme='dark'] {
   overflow-wrap: anywhere;
 }
 
+/* PR/revise 카드의 머리도 같은 사유를 담지만 `__line`이 아니다. 긴 중단 사유는
+   PR·뱃지와 폭을 다투지 않고 머리의 다음 줄 전체를 쓴다. */
+#worker-root .worker-mini--card .worker-mini__head > .worker-mini__reason {
+  flex: 1 0 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* PR-wait row surface (worker-phase2 §4/§5): the PR is a LINK, never a button
    — the only action-class button in this lane will be [머지] (Phase 5), and
    putting view and act side by side at the same weight invites misclicks. */
@@ -4956,12 +4976,14 @@ html[data-theme='dark'] {
 }
 
 .worker-mini__badge {
+  min-width: 0;
+  max-width: 100%;
   padding: 0 var(--sp-4);
   border: 1px solid var(--border-card);
   border-radius: var(--r-6);
   color: var(--text-secondary);
   font-size: var(--fs-caption);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .worker-mini__badge--alert {
@@ -5222,6 +5244,7 @@ html[data-theme='dark'] {
   display: flex;
   flex-direction: column;
   gap: var(--sp-5);
+  min-width: 0;
   margin-bottom: var(--sp-5);
   padding: var(--sp-7) var(--sp-9);
   border: 1px solid var(--border-card);
@@ -5232,8 +5255,10 @@ html[data-theme='dark'] {
 
 .worker-card__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-6);
+  min-width: 0;
 }
 
 .worker-card__grip {
@@ -5274,8 +5299,10 @@ html[data-theme='dark'] {
 
 .worker-card__foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-6);
+  min-width: 0;
 }
 
 /* 이유 배지가 없는 카드의 푸터에는 [대기로 ↴]만 남는데, 그 버튼은 coarse
@@ -5286,10 +5313,12 @@ html[data-theme='dark'] {
 }
 
 .worker-card__reason {
-  margin-left: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
   color: var(--accent-warn);
   font-size: var(--fs-caption);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .worker-card__reason--danger {
