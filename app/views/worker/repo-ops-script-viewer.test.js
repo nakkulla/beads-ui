@@ -152,6 +152,42 @@ describe('createRepoOpsScriptViewer', () => {
     viewer.destroy();
   });
 
+  test('leaves a non-shell env shebang uncolored', async () => {
+    const content = '#!/usr/bin/env -S python bash\nif x: # comment\n';
+    const viewer = createRepoOpsScriptViewer({
+      getWorkspacePath: () => '/repo',
+      fetchImpl: vi.fn().mockResolvedValue(successResponse(content))
+    });
+
+    await openDeploy(
+      viewer,
+      /** @type {HTMLElement} */ (document.getElementById('trigger'))
+    );
+
+    expect(
+      document.querySelectorAll('.repo-ops-script-viewer__token').length
+    ).toBe(0);
+    viewer.destroy();
+  });
+
+  test('colors an env-launched shell shebang', async () => {
+    const content = '#!/usr/bin/env bash\nif [ -n "$HOME" ]; then :; fi\n';
+    const viewer = createRepoOpsScriptViewer({
+      getWorkspacePath: () => '/repo',
+      fetchImpl: vi.fn().mockResolvedValue(successResponse(content))
+    });
+
+    await openDeploy(
+      viewer,
+      /** @type {HTMLElement} */ (document.getElementById('trigger'))
+    );
+
+    expect(
+      document.querySelectorAll('.repo-ops-script-viewer__token').length
+    ).toBeGreaterThan(0);
+    viewer.destroy();
+  });
+
   test('closes with Escape', async () => {
     const viewer = createRepoOpsScriptViewer({
       getWorkspacePath: () => '/repo',

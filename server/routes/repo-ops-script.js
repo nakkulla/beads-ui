@@ -170,7 +170,12 @@ export async function repoOpsScriptHandler(request, response) {
 
   let content;
   try {
-    content = new TextDecoder('utf-8', { fatal: true }).decode(blob.content);
+    // `ignoreBOM` keeps a leading U+FEFF in the decoded string: the popup and its
+    // copy must be the blob verbatim, and the default decoder would eat it.
+    content = new TextDecoder('utf-8', {
+      fatal: true,
+      ignoreBOM: true
+    }).decode(blob.content);
   } catch {
     sendError(response, 415, 'unsupported_content');
     return;

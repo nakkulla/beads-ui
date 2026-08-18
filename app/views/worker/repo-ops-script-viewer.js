@@ -39,6 +39,12 @@ function executableName(executable) {
 }
 
 /**
+ * Whether the shebang names one of the shells this viewer can safely tokenize.
+ *
+ * Only the EXECUTOR decides, never a later argument: `#!/usr/bin/env -S python
+ * bash` runs python, so scanning every word would color a python script with
+ * shell rules.
+ *
  * @param {string} content
  */
 function isShellContent(content) {
@@ -51,13 +57,13 @@ function isShellContent(content) {
     return false;
   }
   const direct_name = executableName(words[0]);
-  if (SHELL_NAMES.has(direct_name)) {
-    return true;
-  }
   if (direct_name !== 'env') {
-    return false;
+    return SHELL_NAMES.has(direct_name);
   }
-  return words.slice(1).some((word) => SHELL_NAMES.has(executableName(word)));
+  const target = words
+    .slice(1)
+    .find((word) => !word.startsWith('-') && !word.includes('='));
+  return target !== undefined && SHELL_NAMES.has(executableName(target));
 }
 
 /**

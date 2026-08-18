@@ -192,6 +192,10 @@ beforeAll(() => {
       0x23, 0x21, 0x2f, 0x62, 0x69, 0x6e, 0x2f, 0x73, 0x68, 0x0a, 0xc3, 0x28
     ])
   });
+  commitDeclaration('bom', {
+    verify: null,
+    deploy: Buffer.from('\ufeff#!/bin/sh\necho bom\n', 'utf8')
+  });
   registerWorkspace({
     path: workspace,
     database: path.join(workspace, '.beads')
@@ -350,6 +354,15 @@ describe('GET /api/repo-ops-script', () => {
       status: 415,
       body: { ok: false, error: 'unsupported_content' }
     });
+  });
+
+  test('preserves a leading byte order mark', async () => {
+    await publishDisplay(commits.bom);
+
+    const result = await requestScript(queryFor(commits.bom, 'deploy'));
+
+    expect(result.status).toBe(200);
+    expect(result.body.content).toBe('\ufeff#!/bin/sh\necho bom\n');
   });
 
   test('rejects invalid UTF-8 blob', async () => {
