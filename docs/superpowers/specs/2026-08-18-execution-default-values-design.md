@@ -1,0 +1,389 @@
+# 실행 기본값의 실제 모델·effort와 출처 표시 설계
+
+## 문서 상태
+
+- owning Bead: `UI-vvuy`
+- predecessor: `UI-qeiz` (`discovered-from`)
+- route: `full_plan`
+- workflow mode: `standard`
+- 사용자 설계 승인: 2026-08-18
+- 시각 상호작용 승인: 2026-08-18 Visual Companion 목업 v2
+- 기준 브랜치/SHA: `origin/main` / `1155bdd30309c29e76733ad78a4459d63fcd7e78`
+- canonical prerequisite: dotfiles Bead `dotfiles-wn55` (`UI-vvuy`가 `blocks` 의존)
+
+## 1. 배경과 문제
+
+`UI-qeiz`는 세션 전역 기본값과 Bead별 핀의 우선순위를
+`Bead metadata > bd kv > harness`로 정리했지만, harness 값을 beads-ui에
+복제하지 않는다는 이유로 마지막 층의 값을 숨겼다. 현재 설정 다이얼로그의
+unset option은 `(기본)`만 표시하고, 이슈 상세의 기본층은 `(harness 기본)` 또는
+요약의 `기본`으로만 보인다.
+
+이 동작은 저장 상태는 정확히 표현하지만 사용자가 알고 싶은 실행 결과는 표현하지
+못한다. 특히 아래 네 경우가 모호하다.
+
+1. Worker 오케스트레이션 모델·effort·속도를 비워 두면 무엇이 실행되는지 알 수 없다.
+2. 리뷰·구현 모델과 effort가 harness 기본일 때 실제 모델 ID를 알 수 없다.
+3. unset과 literal `default`가 같은 문구처럼 보여 상속과 명시 고정을 구분하기 어렵다.
+4. 이슈 상세가 모든 설정 행을 기본 노출하면 핵심 상태보다 편집기가 먼저 보인다.
+
+값을 beads-ui에 다시 하드코딩하면 이 문제를 잠시 가릴 수 있지만 canonical owner인
+dotfiles의 `docs/contracts/harness.yaml`과 조용히 어긋나는 두 번째 원본이 된다.
+
+## 2. 사용자 결과
+
+1. Worker 설정과 이슈 상세에서 unset이어도 실제 유효값을 읽을 수 있다.
+2. 각 값은 `핀`, `전역`, `기본` 출처 배지와 함께 표시된다.
+3. 모델은 `5.6-sol` 같은 짧은 실제 ID로 보이고, 전체 ID `gpt-5.6-sol`은 tooltip과
+   접근성 텍스트에 남는다.
+4. 실행 전에 확정할 수 없는 effort는 `auto (실행 시 결정)` 또는
+   `CLI 기본 (미지정)`으로 사실대로 표시된다.
+5. unset은 `기본값 사용 — …`, 명시 값은 `… · 전역 고정` 또는 `핀`으로 구분된다.
+6. 이슈 상세의 유효 실행 설정은 기본으로 접혀 있고, 클릭하면 세부 행과 편집기가
+   펼쳐진다. 다른 이슈로 이동하거나 패널을 다시 열면 다시 접힌 상태다.
+
+## 3. 비목표
+
+- 설정 저장값, selector 우선순위, dispatch runtime·model·effort·speed 의미를 바꾸지
+  않는다.
+- `bd kv workflow_session_defaults` 스키마나 Bead metadata vocabulary를 넓히지 않는다.
+- provider 또는 CLI가 실행 전에 확정하지 않는 effort를 추측하지 않는다.
+- attempt/session history의 기록 형식을 바꾸지 않는다. 실행 후 실제 tuple은 기존 기록을
+  그대로 사용한다.
+- `self`, `skip`, `main`처럼 모델 leg가 없는 선택에 가짜 모델·effort를 붙이지 않는다.
+- frontend 전반의 시각 체계나 설정 다이얼로그 정보 구조를 재설계하지 않는다.
+
+## 4. 소유권과 교차 저장소 유닛
+
+### 4.1 canonical dotfiles 유닛 — `dotfiles-wn55`
+
+사람이 기본값을 편집하는 원본은 계속
+`dotfiles/docs/contracts/harness.yaml` 하나다. dotfiles의 `scripts/render.py`가
+필요한 필드만 `generated/contracts/execution-defaults.json`으로 자동 생성한다.
+JSON은 source가 아니라 machine projection이며 직접 편집하지 않는다.
+
+projection schema와 consumer surface 등록은 dotfiles
+`docs/contracts/workflow.yaml`이 소유한다. renderer·checker·contract test는 다음을
+보장한다.
+
+- projection은 harness 원본에서만 파생된다.
+- 원본 변경 후 generated artifact가 낡으면 검증이 실패한다.
+- 지원 schema가 명시된다.
+- reviewer token, 실제 모델 ID, 기본 effort와 implementation의 동적 effort 의미가
+  손실되지 않는다.
+
+### 4.2 beads-ui 소비 유닛 — `UI-vvuy`
+
+beads-ui는 dotfiles가 생성한 JSON exact bytes와 provenance를
+`generated/contracts/`에 핀한다. 기존 `repo-operation-policy.json` 소비 패턴처럼
+source commit·blob SHA·SHA-256·byte count를 기록하고 검증한다.
+
+beads-ui는 projection 의미를 다시 정의하지 않는다. 지원 schema를 decode하고,
+runtime에 필요한 display projection과 출처를 조합해 클라이언트에 전달한다.
+
+### 4.3 실행 순서
+
+1. `dotfiles-wn55`: canonical schema·renderer·generated artifact·checker를 변경하고
+   검증·PR·merge·runtime copy 동기화를 완료한다.
+2. `UI-vvuy`: exact artifact를 provenance와 함께 핀하고 server·client consumer를
+   구현한다.
+
+`UI-vvuy`의 foreign `blocks` dependency는 dotfiles 유닛이 closed되기 전 beads-ui
+구현 진입을 막는다. 두 저장소는 독립 PR·검증·배포 lifecycle을 유지한다.
+
+## 5. execution-defaults projection
+
+### 5.1 schema v1
+
+projection은 한국어 UI 문구가 아니라 실행 의미를 담는다. v1의 필수 구조는 다음과
+같다.
+
+```json
+{
+  "schema_version": 1,
+  "workflow_mode_default": "standard",
+  "review": {
+    "default": "codex",
+    "reviewers": {
+      "codex": { "model": "gpt-5.6-sol", "effort": "xhigh" },
+      "opus": { "model": "opus", "effort": "high" },
+      "fable": { "model": "fable", "effort": "high" }
+    }
+  },
+  "plan_review": {
+    "standard_recommended": "codex",
+    "fast_track_default": "codex"
+  },
+  "implementation": {
+    "default": {
+      "dispatch": "delegated",
+      "runtime": "codex",
+      "model": "sol",
+      "effort": "auto",
+      "speed": "default"
+    },
+    "model_catalog": {
+      "claude": ["opus", "fable", "sonnet", "haiku"],
+      "codex": {
+        "sol": "gpt-5.6-sol",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-5.6-luna"
+      }
+    },
+    "exact_model_default_effort": {
+      "claude_runner": "high",
+      "codex": "runtime_model_default"
+    },
+    "effort_by_transport": {
+      "claude-native-agent": {
+        "auto": "native-fixed-posture",
+        "explicit": "unsupported",
+        "receipt": "native-fixed-posture"
+      },
+      "implement-claude": {
+        "auto": "claude-runner-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
+      },
+      "codex-native-spawn": {
+        "auto": "provider-tier-or-runtime-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
+      },
+      "implement-codex": {
+        "auto": "provider-tier-or-runtime-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
+      }
+    }
+  }
+}
+```
+
+`effort_by_transport`는 harness의 semantic token을 그대로 투영한다. v1 consumer는
+알려진 token만 display 상태로 바꾸며, unknown token을 추측하지 않는다.
+
+### 5.2 projection에 포함하지 않는 값
+
+Worker 오케스트레이션 fallback은 session harness 값이 아니다. 실제 launcher가
+소유하는 값이므로 dotfiles JSON에 넣지 않는다.
+
+- model: `server/worker/policy.js`의 `ORCHESTRATION_MODEL_FALLBACK`
+- effort: 미지정, runner CLI에 flag를 전달하지 않음
+- speed: launcher fallback literal `default`
+- runtime/model ID: process-wide resolved runner catalog에서 유도
+
+서버가 이 값을 session projection과 합쳐 하나의 read-only wire projection으로 만든다.
+
+## 6. 서버 경계와 데이터 흐름
+
+### 6.1 pinned artifact loader
+
+신규 loader는 exact JSON과 provenance를 읽고 다음 상태를 반환한다.
+
+- `schema_version`
+- `supported`
+- `source_commit`
+- `digest`
+- decoded session default facts
+
+loader는 process lifetime 동안 cache한다. JSON 부재·parse 실패·provenance 불일치·지원하지
+않는 schema를 다른 기본값으로 대체하지 않는다.
+
+### 6.2 Worker snapshot projection
+
+`decorateQueue`는 비영속 필드 `execution_defaults`를 추가한다.
+
+```text
+execution_defaults
+├── supported / schema_version / source_commit / digest
+├── session       # dotfiles pinned artifact에서 decode
+└── orchestration # policy fallback + resolved runner catalog에서 계산
+```
+
+설정 다이얼로그와 이슈 상세는 이미 같은 queue snapshot의 `runner_catalog`를
+소비하므로 이 필드도 같은 채널에서 받는다. queue.json, Bead metadata,
+`workflow_session_defaults`에는 projection을 복사하지 않는다.
+
+오래된 서버가 필드를 보내지 않는 경우 클라이언트는 optional field로 처리한다.
+
+### 6.3 클라이언트 공용 resolver
+
+신규 `app/utils/execution-defaults.js`의 순수 resolver를 설정 다이얼로그와 이슈
+상세가 함께 사용한다. resolver 입력은 다음과 같다.
+
+- Bead metadata pin layer
+- session `bd kv` 또는 Worker queue global layer
+- `execution_defaults`
+- runner catalog
+- 현재 dependent selector 상태
+
+session key의 우선순위는 `pin > global > harness`, Worker key는
+`pin > queue global > launcher fallback`이다. 각 결과는
+`{ value, source, display, full_value, resolution }` 형태로 정규화한다.
+
+`source`는 값을 직접 공급한 층이다. dependent default는 별도 값을 저장하지 않는다.
+예를 들어 `plan_review_model=fable`이 전역이고 `plan_review_effort`가 unset이면 effort는
+`high`, source는 `기본`이다.
+
+## 7. 표시 규칙
+
+### 7.1 모델 ID
+
+- 전체 ID가 `gpt-`로 시작하면 본문에서 prefix만 제거한다.
+  `gpt-5.6-sol` → `5.6-sol`.
+- 그 외 ID는 원문을 유지한다. `opus`, `fable`, `sonnet`을 임의로 바꾸지 않는다.
+- 전체 ID는 `title`, `aria-label` 또는 보조 설명에 남긴다.
+- select의 stored value는 기존 token(`codex`, `sol` 등)을 유지하고 label만 실제 ID로
+  바꾼다.
+
+### 7.2 review effort
+
+- `spec_review_model`과 `impl_review_model`이 unset이면 `review.default`를 사용한다.
+- `plan_review_model`이 unset이면 현재 workflow mode에 맞는 plan default를 사용한다.
+- effort가 pin/global에 없으면 effective reviewer의 preset effort를 사용한다.
+- `self` 또는 `skip`은 외부 reviewer leg가 없으므로 effort를 `해당 없음`으로 표시하고
+  editor를 비활성화한다.
+
+### 7.3 implementation
+
+- 기본은 `delegated · codex · 5.6-sol · auto · default`다.
+- `auto`는 `auto (실행 시 결정)`으로 표시한다. provider tier 또는 runtime model
+  default를 실행 전에 숫자 effort로 추측하지 않는다.
+- `impl_dispatch=main`이면 위임 대상·모델·effort·speed를 실행값으로 주장하지 않는다.
+  요약은 `메인`, 하위 행은 비활성 `해당 없음`으로 표시한다.
+- `impl_runtime=inherit`이고 controller runtime을 알 수 없으면
+  `inherit (실행 시 결정)`으로 표시한다.
+
+### 7.4 Worker orchestration
+
+- 기본 model은 `opus`, runtime은 catalog에서 유도한 `claude`다.
+- effort는 `CLI 기본 (미지정)`이다.
+- speed는 `default (일반)`이다.
+- catalog override가 model ID를 바꾸면 snapshot의 resolved catalog ID를 표시한다.
+
+### 7.5 unset과 literal 값
+
+unset option은 결과와 다음 source를 함께 보여준다.
+
+- 설정 다이얼로그: `기본값 사용 — 5.6-sol`
+- 이슈 상세, global 존재: `기본값 사용 — 5.6-terra (전역)`
+- 이슈 상세, global 부재: `기본값 사용 — 5.6-sol (harness)`
+
+literal `default`는 `default (일반 · 전역 고정)` 또는 `default (일반 · 핀)`으로
+표시한다. 두 option이 현재 같은 실행 결과를 내더라도 이후 canonical default 변경을
+따르는지 여부가 다르므로 합치지 않는다.
+
+## 8. 화면 상호작용
+
+### 8.1 통합 설정 다이얼로그
+
+- 기존 `세션`·`Worker` 탭의 행 구조를 유지한다.
+- bare `(기본)` option을 resolver가 만든 `기본값 사용 — <display>`로 바꾼다.
+- 현재 unset이면 control 옆에 `기본` 배지를 표시한다.
+- projection이 unavailable이면 경고 배너를 표시하고 option은
+  `기본값 확인 불가`로 둔다. 명시값 편집은 유지한다.
+
+### 8.2 이슈 상세
+
+`유효 실행 설정` 카드는 native `<details>/<summary>` disclosure를 사용한다.
+
+- initial state: collapsed
+- collapsed content: 한 줄 유효값 요약, `핀/전역/기본` 개수, chevron
+- expanded content: 그룹별 세부 행, source rail·badge, 편집 controls, 구현 preset
+- 같은 이슈에서 사용자가 펼치거나 접는 동안에는 상태 유지
+- 다른 이슈로 이동, detail panel close/reopen 시 collapsed로 reset
+- keyboard activation과 `aria-expanded`를 지원
+
+상단 요약은 기본층까지 계산한 값을 사용한다. 모든 값이 unset이어도 `기본` 한 단어로
+축약하지 않는다.
+
+## 9. 오류 처리와 호환성
+
+### 9.1 projection 실패
+
+artifact 부재, JSON parse 실패, provenance/digest 불일치, unknown schema는 display
+projection만 unavailable로 만든다. 서버·Worker dispatch와 기존 설정 mutation은 계속
+동작한다.
+
+클라이언트는 아래처럼 fail quiet한다.
+
+- 설정 다이얼로그: warning banner + `기본값 확인 불가`
+- 이슈 상세: source `기본` 유지 + value `기본값 확인 불가`
+- 명시 pin/global 값: 그대로 표시·편집 가능
+- unknown 기본값을 기존 하드코딩 fallback으로 재구성하지 않음
+
+빌드·contract test에서는 pinned artifact나 provenance 오류를 실패로 취급한다. runtime
+fail-quiet는 오래된 배포·부분 장애가 전체 서비스를 닫지 않기 위한 호환 경계다.
+
+### 9.2 unknown 또는 비호환 값
+
+projection의 token을 현재 consumer가 이해하지 못하면 raw token과 `비호환` 경고를
+표시한다. 다른 reviewer/model/effort로 fallback하지 않는다. 이 변경은 display-only이며
+기존 server mutation validator의 fail-closed 규칙을 완화하지 않는다.
+
+## Test scope
+
+아래 seam은 승인된 RED-GREEN 대상이다. 각 구현 phase는 해당 테스트를 먼저 실패시키고
+최소 변경으로 통과시킨다.
+
+### dotfiles `dotfiles-wn55`
+
+1. `tests/execution_defaults_projection_contract_test.py` 신설
+   - harness의 필수 source field와 generated JSON exact equality
+   - `schema_version=1`
+   - reviewer 모델 ID·effort, implementation default·model mapping·dynamic effort token
+2. `tests/rendered_instruction_contract_test.py`
+   - clean render에서 artifact 존재
+   - harness 변경 후 미재생성 상태 검출
+3. 기존 workflow contract checker
+   - consumer projection path·schema 등록
+
+### beads-ui `UI-vvuy`
+
+1. `server/worker/execution-defaults.test.js`
+   - valid artifact/provenance load
+   - digest·schema·parse 실패를 unsupported로 정규화
+   - Worker launcher fallback과 runner catalog ID projection
+2. `server/ws/worker-handlers.runner-catalog.test.js`
+   - queue snapshot에 optional `execution_defaults` projection 포함
+   - 오래된/unsupported payload에서도 snapshot 생성 유지
+3. `app/utils/execution-defaults.test.js` 신설
+   - `pin > global > base`와 reviewer-dependent effort 계산
+   - compact model ID와 full ID 보존
+   - unset과 literal `default` label 구분
+   - `auto`·CLI 기본·해당 없음 상태
+4. `app/views/settings-dialog/session-model.test.js`
+   - resolver 결과를 select option의 stored token과 구체적인 label로 변환
+   - model·effort dependent option 재계산
+5. `app/views/settings-dialog/index.test.js`
+   - 세션·Worker control의 구체적인 default option과 source badge
+   - projection unavailable warning과 명시값 편집 유지
+6. `app/views/detail-panel/effective-settings.test.js`
+   - 기본층이 null이 아니라 structured effective value를 반환
+   - global reviewer + base effort, main/self/skip/inherit 동적 상태
+7. `app/views/detail-panel/effective-card.test.js`
+   - initial collapsed
+   - click/keyboard expand와 세부 설정 노출
+   - issue 전환·panel reopen reset
+   - collapsed summary가 실제 기본값과 source count를 표시
+8. `app/main.worker-queue-sync.test.js`
+   - server가 `execution_defaults`를 생략한 구버전 payload 호환
+
+마감 검증은 worktree에서 Node engine과 dependency readiness를 먼저 확인한 뒤
+`npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`, `npm run build`를
+수행한다. frontend source 변경으로 갱신된 `app/main.bundle.js`와 map을 포함한다.
+
+## 10. 수용 기준
+
+1. unset 상태에서도 Worker·이슈 상세의 실제 기본 모델·effort·speed 또는 정확한 동적
+   결정 상태가 보인다.
+2. 모델 본문은 compact actual ID, 보조 정보는 full ID다.
+3. `핀`, `전역`, `기본` 출처가 유효값과 일치한다.
+4. unset과 literal `default`가 시각·문구·저장 의미에서 구분된다.
+5. 이슈 상세 설정은 기본 collapsed이며 사용자 action으로만 expanded된다.
+6. beads-ui에 harness 기본값의 수동 복제 map이 없다.
+7. projection 오류가 dispatch를 바꾸거나 서버를 중단하지 않고, UI는 값을 추측하지
+   않는다.
+8. dotfiles와 beads-ui의 focused tests, 전체 검증, bundle, PR delivery와 머지 후 공유
+   서비스 배포 검증이 모두 통과한다.
