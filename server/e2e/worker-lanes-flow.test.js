@@ -422,6 +422,10 @@ describe('worker lanes e2e — 분석 → 편집 → 제출 → dispatch (UI-04v
     });
     const store = runtime.queueStore;
     let rev = store.snapshot(WS).revision;
+    rev = store.setSerialLaneCount(WS, {
+      expected_revision: rev,
+      count: 2
+    }).queue.revision;
     rev = store.place(WS, {
       expected_revision: rev,
       bead_id: 'UI-a',

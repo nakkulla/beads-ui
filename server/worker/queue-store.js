@@ -1005,7 +1005,7 @@ const MIN_SERIAL_LANE_COUNT = 1;
 /** @type {number} */
 const MAX_SERIAL_LANE_COUNT = 5;
 /** @type {number} */
-const DEFAULT_SERIAL_LANE_COUNT = 2;
+const DEFAULT_SERIAL_LANE_COUNT = 1;
 
 /**
  * Coerce a candidate serial-lane count, or null when it is not one. Mirrors

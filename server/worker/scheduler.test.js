@@ -10281,6 +10281,17 @@ describe('scheduler runner resolution (worker-multi-provider-runner §C-2)', () 
  */
 function seedLanes(store, lanes) {
   let rev = store.snapshot(WS).revision;
+  // 직렬 레인은 기본 1개다 — 시드가 쓰는 최대 레인까지 먼저 늘리지 않으면
+  // `s2` 이상으로의 place가 조용히 병렬 큐로 떨어진다.
+  const max_serial = Object.entries(lanes)
+    .filter(([lane, ids]) => /^s[1-5]$/.test(lane) && (ids || []).length > 0)
+    .reduce((max, [lane]) => Math.max(max, Number(lane.slice(1))), 0);
+  if (max_serial > 1) {
+    rev = store.setSerialLaneCount(WS, {
+      expected_revision: rev,
+      count: max_serial
+    }).queue.revision;
+  }
   for (const [lane, ids] of Object.entries(lanes)) {
     for (const id of ids || []) {
       rev = store.place(WS, {
