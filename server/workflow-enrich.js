@@ -110,6 +110,35 @@ export function parseExecReceipt(value) {
     : null;
 }
 
+/**
+ * @typedef {Object} PlannedExecution
+ * @property {'delegated'|'main'} kind
+ * @property {string | null} reason
+ */
+
+/**
+ * Parse approved-plan execution ownership for display only. The two metadata
+ * fields form one value, so any invalid combination omits the whole display.
+ *
+ * @param {unknown} kind_value
+ * @param {unknown} reason_value
+ * @returns {PlannedExecution | null}
+ */
+export function parsePlannedExecution(kind_value, reason_value) {
+  if (kind_value === 'delegated') {
+    return reason_value === undefined
+      ? { kind: 'delegated', reason: null }
+      : null;
+  }
+  if (kind_value !== 'main' || typeof reason_value !== 'string') {
+    return null;
+  }
+  if (reason_value.trim().length === 0 || /[\r\n]/.test(reason_value)) {
+    return null;
+  }
+  return { kind: 'main', reason: reason_value };
+}
+
 /** @param {unknown} value */
 export function parseImplEntry(value) {
   if (typeof value !== 'string') {
@@ -720,7 +749,8 @@ function mergeStage(md, status) {
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
- * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, exec_receipt: { kind: string, actor: string, sha: string }|null, impl_entry: { actor: string, sha: string }|null }} chips
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: { kind: string, actor: string, sha: string }|null, impl_entry: { actor: string, sha: string }|null }} chips
+ * @property {PlannedExecution|null} planned_execution
  * @property {{ kind: string, actor: string, sha: string }|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
  */
@@ -750,6 +780,10 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     );
 
   const route = deriveRoute(md);
+  const planned_execution = parsePlannedExecution(
+    md.planned_execution,
+    md.planned_execution_reason
+  );
   const exec_receipt = parseExecReceipt(md.exec_receipt);
   const impl_entry = parseImplEntry(md.impl_entry);
   // Explicit only when the metadata pin itself is a valid enum value — any
@@ -785,6 +819,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     route,
     route_source,
     stages,
+    planned_execution,
     exec_receipt,
     impl_entry,
     chips: {
@@ -792,6 +827,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       route_source,
       fast_track: md.workflow_mode === 'fast_track',
       pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null,
+      planned_execution,
       exec_receipt,
       impl_entry
     }

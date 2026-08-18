@@ -256,7 +256,7 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
-  test('renders parsed execution metadata rows and omits malformed values', () => {
+  test('renders parsed planned and actual execution metadata rows', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seedPanel(
       mount,
@@ -271,6 +271,10 @@ describe('views/detail-panel', () => {
           route: 'spec_backed',
           route_source: 'explicit',
           stages: { spec: {}, impl: {} },
+          planned_execution: {
+            kind: 'main',
+            reason: '직접 통합 필요'
+          },
           exec_receipt: {
             kind: 'delegated',
             actor: 'gpt-5.6-sol',
@@ -288,6 +292,14 @@ describe('views/detail-panel', () => {
       })
     );
 
+    expect(rows).toContainEqual({
+      key: 'planned_execution',
+      value: 'main'
+    });
+    expect(rows).toContainEqual({
+      key: 'planned_execution_reason',
+      value: '직접 통합 필요'
+    });
     expect(rows).toContainEqual({
       key: 'exec_receipt',
       value: `delegated:gpt-5.6-sol@${'a'.repeat(40)}`
@@ -311,6 +323,7 @@ describe('views/detail-panel', () => {
           route: 'spec_backed',
           route_source: 'explicit',
           stages: { spec: {}, impl: {} },
+          planned_execution: null,
           exec_receipt: null,
           impl_entry: null
         }
@@ -320,9 +333,37 @@ describe('views/detail-panel', () => {
     const quiet_keys = Array.from(
       quiet_mount.querySelectorAll('.detail-kv__k')
     ).map((node) => node.textContent?.trim());
+    expect(quiet_keys).not.toContain('planned_execution');
+    expect(quiet_keys).not.toContain('planned_execution_reason');
     expect(quiet_keys).not.toContain('exec_receipt');
     expect(quiet_keys).not.toContain('impl_entry');
     quiet_panel.destroy();
+  });
+
+  test('omits the planned reason row for delegated execution', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: { route: 'spec_backed' },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          stages: { spec: {}, impl: {} },
+          planned_execution: { kind: 'delegated', reason: null }
+        }
+      },
+      vi.fn()
+    );
+
+    const keys = Array.from(mount.querySelectorAll('.detail-kv__k')).map(
+      (node) => node.textContent?.trim()
+    );
+
+    expect(keys).toContain('planned_execution');
+    expect(keys).not.toContain('planned_execution_reason');
+    panel.destroy();
   });
 
   test('title pencil opens an input; save sends edit-text title', async () => {

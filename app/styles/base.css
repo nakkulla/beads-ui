@@ -73,6 +73,14 @@ body {
   color: var(--chip-ft);
   border-color: var(--border-ft);
 }
+.ctl-chip--planned[data-kind='delegated'] {
+  color: var(--chip-route);
+  border-color: var(--border-route);
+}
+.ctl-chip--planned[data-kind='main'] {
+  color: var(--chip-ft);
+  border-color: var(--border-ft);
+}
 .ctl-chip--pr {
   color: var(--chip-pr);
   border-color: var(--border-pr);
@@ -833,8 +841,17 @@ body {
 }
 
 .board-card__roll-child-title {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-card__roll-child-chips {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--sp-3);
   white-space: nowrap;
 }
 

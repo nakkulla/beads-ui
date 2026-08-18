@@ -629,6 +629,105 @@ describe('views/board child integration (Phase 5)', () => {
     expect(rows[0].textContent).toContain('Task 1: child one');
   });
 
+  test('keeps planned and actual execution evidence in folded child rows', async () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      { id: 'PA', title: 'parent alpha', status: 'open', created_at: 100 },
+      {
+        id: 'CH1',
+        title: 'Task 1: before execution',
+        status: 'open',
+        parent: 'PA',
+        metadata: { task_order: '1' },
+        workflow: {
+          chips: {
+            planned_execution: { kind: 'delegated', reason: null },
+            exec_receipt: null
+          }
+        }
+      },
+      {
+        id: 'CH2',
+        title: 'Task 2: matching execution',
+        status: 'open',
+        parent: 'PA',
+        metadata: { task_order: '2' },
+        workflow: {
+          chips: {
+            planned_execution: { kind: 'main', reason: '직접 통합' },
+            exec_receipt: {
+              kind: 'main',
+              actor: '직접 통합',
+              sha: 'a'.repeat(40)
+            }
+          }
+        }
+      },
+      {
+        id: 'CH3',
+        title: 'Task 3: mismatched execution',
+        status: 'open',
+        parent: 'PA',
+        metadata: { task_order: '3' },
+        workflow: {
+          chips: {
+            planned_execution: { kind: 'delegated', reason: null },
+            exec_receipt: {
+              kind: 'main',
+              actor: '국소 수정',
+              sha: 'b'.repeat(40)
+            }
+          }
+        }
+      },
+      {
+        id: 'CH4',
+        title: 'Task 4: malformed execution',
+        status: 'open',
+        parent: 'PA',
+        metadata: {
+          task_order: '4',
+          planned_execution: 'main',
+          planned_execution_reason: ''
+        },
+        workflow: {
+          chips: { planned_execution: null, exec_receipt: null }
+        }
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: stores
+    });
+
+    await view.load();
+
+    const rows = Array.from(
+      mount.querySelectorAll(
+        '#ready-col .board-card[data-issue-id="PA"] .board-card__roll-child'
+      )
+    );
+    expect(rows[0].querySelector('.ctl-chip--planned')?.textContent).toContain(
+      '계획 · 위임'
+    );
+    expect(rows[0].querySelector('.ctl-chip--exec-receipt')).toBeNull();
+    expect(rows[1].querySelector('.ctl-chip--planned')?.textContent).toContain(
+      '계획 · 메인'
+    );
+    expect(
+      rows[1].querySelector('.ctl-chip--exec-receipt')?.textContent
+    ).toContain('실행 · 메인');
+    expect(rows[2].querySelector('.ctl-chip--planned')?.textContent).toContain(
+      '계획 · 위임 → 메인'
+    );
+    expect(
+      rows[2].querySelector('.ctl-chip--exec-receipt')?.textContent
+    ).toContain('실행 · 메인');
+    expect(rows[3].querySelector('.ctl-chip')).toBeNull();
+    view.clear();
+  });
+
   test('a child whose parent is not rendered falls back to a normal card', async () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:board:ready', [

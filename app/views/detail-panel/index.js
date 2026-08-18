@@ -1307,6 +1307,20 @@ export function createDetailPanel(mount_element, options) {
             >
           </div>`
         : ''}
+      ${wf.planned_execution
+        ? html`<div class="detail-kv">
+              <span class="detail-kv__k">planned_execution</span>
+              <span class="detail-kv__v">${wf.planned_execution.kind}</span>
+            </div>
+            ${wf.planned_execution.kind === 'main'
+              ? html`<div class="detail-kv">
+                  <span class="detail-kv__k">planned_execution_reason</span>
+                  <span class="detail-kv__v detail-kv__v--wrap"
+                    >${wf.planned_execution.reason}</span
+                  >
+                </div>`
+              : ''}`
+        : ''}
       ${wf.exec_receipt
         ? html`<div class="detail-kv">
             <span class="detail-kv__k">exec_receipt</span>
