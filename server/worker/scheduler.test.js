@@ -7200,6 +7200,68 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(gated.verifyPrSubmitted).toHaveBeenCalledTimes(1);
   });
 
+  test('skips a candidate whose discard COMPLETED mid-pass', async () => {
+    const gated = gatedVerify();
+    const env = reconcileEnv(
+      { alive: false, started_at: null },
+      { 'UI-1': {}, 'UI-2': {} },
+      { verify: gated.verify }
+    );
+    seedDetachedAttempt(env.store);
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-2', bead_id: 'UI-2' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'att-2',
+      patch: {
+        status: 'running',
+        pid: 4243,
+        started_at: 1000,
+        repo: '/repo',
+        workflow_mode_prior: null
+      }
+    });
+
+    // The whole discard runs inside the window the gate holds open, so by the
+    // time the loop reaches att-2 the operation is `done` again — no longer
+    // `discardActive` — and the attempt already carries its terminal status.
+    const pass = env.scheduler.reconcile(WS);
+    await flush();
+    await env.scheduler.finalizeDiscardAttempt(WS, 'att-2');
+    gated.release();
+    await pass;
+    await drain();
+
+    expect(env.store.snapshot(WS).attempts['att-2'].status).toBe('discarded');
+    expect(env.store.snapshot(WS).attempts['att-2'].cause).toBe(null);
+    expect(gated.verifyPrSubmitted).toHaveBeenCalledTimes(1);
+  });
+
+  test('leaves a legacy cleanup diagnosis an active discard owns unretired', async () => {
+    const env = reconcileEnv({ alive: false, started_at: null });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'legacy-1',
+        bead_id: 'UI-1',
+        cleanup_diagnosis: true,
+        cleanup_diagnosis_result_path: '/legacy-result.json'
+      }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'legacy-1',
+      patch: { status: 'running', pid: null, repo: '/repo' }
+    });
+    seedActiveDiscard(env.store, 'UI-1', 'legacy-1');
+
+    await env.scheduler.reconcile(WS);
+
+    // Retirement is a durable terminal write too, so the discard fence has to
+    // sit ahead of it, not beside the other three.
+    expect(env.store.snapshot(WS).attempts['legacy-1'].status).toBe('running');
+  });
+
   test('refuses discard fencing while a dead-attempt disposition is settling', async () => {
     const gated = gatedVerify();
     const env = reconcileEnv({ alive: false, started_at: null }, undefined, {

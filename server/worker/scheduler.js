@@ -3045,7 +3045,9 @@ export function createScheduler(deps) {
    *     write lands on top of `finalizeDiscardAttempt`'s `discarded` — leaving a
    *     failure banner on work that was in fact discarded cleanly. This fence is
    *     the DURABLE one: unlike the scheduler-local `stopped` set it survives a
-   *     restart, and the operation record exists before the fence is raised.
+   *     restart, and the operation record exists before the fence is raised. It
+   *     is checked FIRST because it also has to cover the legacy-diagnosis
+   *     retirement branch, which the other three fences sit behind.
    *
    * @param {string} workspace
    */
@@ -3070,6 +3072,12 @@ export function createScheduler(deps) {
         if (!a) {
           continue;
         }
+        // AHEAD of the legacy-retirement branch, not beside the other three:
+        // retirement is a durable terminal write of its own, so a discard that
+        // owns a legacy diagnosis attempt must fence that branch too.
+        if (discardActive(q, { bead_id: a.bead_id, attempt_id })) {
+          continue;
+        }
         if (isOrphanedLegacyCleanupDiagnosis(attempt_id, a)) {
           retired.push(attempt_id);
           continue;
@@ -3080,8 +3088,7 @@ export function createScheduler(deps) {
         if (
           running.has(attempt_id) ||
           settling.has(attempt_id) ||
-          claimed.has(a.bead_id) ||
-          discardActive(q, { bead_id: a.bead_id, attempt_id })
+          claimed.has(a.bead_id)
         ) {
           continue;
         }
@@ -3096,21 +3103,32 @@ export function createScheduler(deps) {
         // Re-checked per iteration, not just at selection: each disposition
         // ends in a `tick`, so an earlier one in this same pass may already
         // have re-dispatched the bead of a later candidate. The discard fence
-        // is re-read off a FRESH snapshot for the same reason plus one more —
-        // a discard accepted after this pass selected its candidates is exactly
-        // the race that produced the stale `verify_failed:pr_missing` banner.
+        // and the attempt's own status are re-read off a FRESH snapshot for the
+        // same reason plus one more — a discard that lands after this pass
+        // selected its candidates is exactly the race that produced the stale
+        // `verify_failed:pr_missing` banner. Two dispositions of that discard
+        // have to be caught, and only one of them is still `discardActive`:
+        // an accepted one, and a COMPLETED one whose operation is back to
+        // `phase: 'done'` with the attempt already written `discarded`. The
+        // durable status is what catches the second, so the candidate is
+        // disposed only while it is still `running`, and off the CURRENT
+        // record rather than the one selection captured.
         if (claimed.has(d.attempt.bead_id)) {
           continue;
         }
+        const fresh = deps.store.snapshot(workspace);
+        const current = fresh.attempts?.[d.attempt_id];
         if (
-          discardActive(deps.store.snapshot(workspace), {
-            bead_id: d.attempt.bead_id,
+          !current ||
+          current.status !== 'running' ||
+          discardActive(fresh, {
+            bead_id: current.bead_id,
             attempt_id: d.attempt_id
           })
         ) {
           continue;
         }
-        await disposeDeadAttempt(workspace, d.attempt_id, d.attempt);
+        await disposeDeadAttempt(workspace, d.attempt_id, current);
       }
     } finally {
       reconciling.delete(workspace);
