@@ -5898,6 +5898,45 @@ describe('scheduler worktree residue hygiene', () => {
     expect(env.store.snapshot(WS).attempts).toEqual({});
   });
 
+  test('keeps branch_ahead cause for owned branch-only residue without a worktree', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'branch_ahead',
+      cause: 'branch_ahead',
+      owned: true,
+      identity: {
+        worktree_realpath: null,
+        branch: 'S1',
+        head_sha: null,
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 2,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
+      state: 'unique',
+      cause: 'branch_ahead',
+      can_resume: false,
+      can_continue: false,
+      can_backup_fresh: false,
+      can_recheck: true
+    });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
   test('prefers a matching resumable leaf over automatic reclaim', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     env.store.appendAttempt(WS, {

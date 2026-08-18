@@ -1091,9 +1091,14 @@ export function createScheduler(deps) {
    * @returns {StaleWorkAdmission}
    */
   function staleWorkAdmission(observation, bead_id, resume_attempt) {
+    // Ownership trusts the observation: a branch-only residue (worktree
+    // absent, `worktree_realpath` null) is still worker-owned, and demoting it
+    // to `ownership_unknown` here hid the real cause (e.g. `branch_ahead`) and
+    // disabled every action. Only continue/backup_fresh need a real worktree
+    // path, so they gate on `has_worktree` below.
     const owned =
-      observation?.owned === true &&
-      observation?.identity?.branch === bead_id &&
+      observation?.owned === true && observation?.identity?.branch === bead_id;
+    const has_worktree =
       typeof observation?.identity?.worktree_realpath === 'string';
     const state =
       owned && (observation?.state === 'unique' || resume_attempt !== null)
@@ -1125,8 +1130,10 @@ export function createScheduler(deps) {
     const identity_digest = continuationDigest(identity);
     const capability = {
       can_resume: owned && resume_attempt !== null,
-      can_continue: owned && resume_attempt === null && state === 'unique',
-      can_backup_fresh: owned && resume_attempt === null && state === 'unique',
+      can_continue:
+        owned && has_worktree && resume_attempt === null && state === 'unique',
+      can_backup_fresh:
+        owned && has_worktree && resume_attempt === null && state === 'unique',
       can_recheck: owned
     };
     const action_id = continuationDigest({
