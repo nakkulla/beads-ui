@@ -1,7 +1,7 @@
 # Worker stale worktree 자동 회수와 선택 복구 설계 (UI-8vn1)
 
 - 작성일: 2026-08-18
-- 상태: 사용자 설계 승인 완료, written spec 검토 대기
+- 상태: 사용자 written spec 승인 및 spec gate 보정 완료
 - Bead: `UI-8vn1`
 - route: `full_plan`
 - 실측 계기: `dotfiles-4viq` dispatch pre-flight
@@ -299,9 +299,50 @@ fail-quiet한다. frontend source 변경 후 `app/main.bundle.js`와 source map�
    모두 닫는다.
 10. raw Git stderr와 파일 내용은 UI snapshot이나 알림에 포함하지 않는다.
 
-## 9. Test scope
+## 9. 적용·배포 연속성
 
-### 9.1 RED→GREEN seams
+이 유닛은 Worker runtime behavior와 frontend bundle을 바꾸므로 PR merge만으로
+완료되지 않는다. fetched previous target base의 `repo-ops/config.toml`은
+`[deploy]`로 `repo-ops/script/deploy`와 600000ms timeout을 선언한다. 이 기존
+선언과 script가 merge 이후 적용 순서의 canonical owner이며, 이번 유닛은 새 deploy
+경로나 rollback state를 만들지 않는다.
+
+source, tests, `app/main.bundle.js`와 `app/main.bundle.js.map`은 모두 현재
+beads-ui PR에 포함한다. merge 이후 Worker-owned repo operation은 merge SHA를
+target으로 기존 deploy script를 실행한다. script가 소유하는 고정 순서는 다음과
+같다.
+
+1. 시작 worktree `HEAD == REPO_OPS_TARGET_SHA`를 확인한다.
+2. `npm ci`로 target checkout의 dependency tree를 설치한다.
+3. `npm run build`로 target source에서 frontend runtime copy를 다시 검증·생성한다.
+4. `bdui-shared restart`로 공유 서비스를 재시작한다.
+5. `/healthz`에서 실제 process의 source SHA와 source repo path, bd protocol
+   diagnostics를 확인한다.
+6. 종료 worktree HEAD가 target과 같고 tracked-clean인지 확인한 뒤에만 exit 0한다.
+
+마감 readback은 다음 순서로 적용 완료를 확정한다.
+
+1. 해당 merge를 target 또는 descendant로 포함하는 repo operation이 terminal
+   success인지 확인한다.
+2. `.worktrees/.repo-ops-deploy` HEAD가 merge SHA를 포함하고 tracked-clean인지
+   확인한다.
+3. 실제 server process가 그 deploy worktree에서 실행되는지, canonical port가
+   listening인지, 기본 HTTP health 응답이 정상인지 확인한다.
+
+deploy script가 어느 단계에서든 실패하거나 서버 재시작으로 executor가 끊기면
+terminal success를 기록하지 않는다. 같은 durable repo operation cursor가 기존
+`script_retry → auto_repair_session → user_triggered_session` 복구 사다리와
+authoritative readback을 통해 재개한다. 이 유닛은 별도 backup, rollback 또는
+interactive-only 후처리를 요구하지 않는다.
+
+필수 source·generated artifact는 현재 PR이 운반하고 post-merge live 적용은
+`[deploy]` coverage가 운반한다. dependent Bead, enclosed direct landing,
+interactive-only 또는 다른 required no-PR residue가 없으므로 현재 Bead에는
+`worker-ineligible` label을 두지 않는다.
+
+## 10. Test scope
+
+### 10.1 RED→GREEN seams
 
 1. `server/worker/worktree.integration.test.js`
    - stale branch의 tracked 수정 blob이 pinned base와 같으면
@@ -346,7 +387,7 @@ fail-quiet한다. frontend source 변경 후 `app/main.bundle.js`와 source map�
    - unknown은 recheck만, unique는 continue/backup만 표시한다.
    - optional projection 부재에서 기존 badge가 계속 렌더된다.
 
-### 9.2 회귀 검증
+### 10.2 회귀 검증
 
 - 기존 clean residue 자동 제거, stop cleanup과 `worktree_add_failed` badge.
 - 기존 pause/failed attempt resume와 unified discard archive.
@@ -358,7 +399,7 @@ fail-quiet한다. frontend source 변경 후 `app/main.bundle.js`와 source map�
 - `npm run prettier:write`
 - `npm run build`
 
-## 10. 수용 기준
+## 11. 수용 기준
 
 1. `dotfiles-4viq`와 같은 base-contained tracked residue는 사용자의 선택 없이
    안전하게 회수되고 새 Worker attempt가 시작된다.
@@ -374,8 +415,10 @@ fail-quiet한다. frontend source 변경 후 `app/main.bundle.js`와 source map�
 8. 백업 없는 삭제 action이 없다.
 9. dotfiles workflow metadata·label·status 어휘가 바뀌지 않는다.
 10. focused tests와 전체 pre-handoff validation, frontend bundle 생성이 통과한다.
+11. merge 이후 declared deploy operation이 terminal success이고, deploy worktree
+    SHA·tracked-clean 및 실제 process path·port·HTTP health readback이 통과한다.
 
-## 11. 제외 범위
+## 12. 제외 범위
 
 - semantic patch containment나 patch-id 기반 자동 삭제
 - untracked/ignored/submodule 상태의 자동 중복 판정
@@ -385,7 +428,7 @@ fail-quiet한다. frontend source 변경 후 `app/main.bundle.js`와 source map�
 - Worker 밖의 임의 수동 worktree 정리 도구
 - 백업 없는 destructive cleanup
 
-## 12. 실행 단위 근거
+## 13. 실행 단위 근거
 
 이 변경은 하나의 repository 안이지만 독립 검증 가능한 두 sealable unit을 가진다.
 
