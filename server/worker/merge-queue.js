@@ -86,6 +86,31 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
 ]);
 
 /**
+ * @param {any} q
+ * @returns {{ active: boolean, reason: string|null }}
+ */
+function repairFence(q) {
+  if (q === null) {
+    return { active: true, reason: 'snapshot_unreadable' };
+  }
+  const repo_operations =
+    q && typeof q.repo_operations === 'object' ? q.repo_operations : {};
+  for (const [operation_id, operation] of Object.entries(repo_operations)) {
+    if (operation?.state === 'repairing') {
+      return { active: true, reason: `repo_operation:${operation_id}` };
+    }
+  }
+  const cleanup_failed =
+    q && typeof q.cleanup_failed === 'object' ? q.cleanup_failed : {};
+  for (const [bead_id, failure] of Object.entries(cleanup_failed)) {
+    if (failure?.repair?.mode) {
+      return { active: true, reason: `cleanup:${bead_id}` };
+    }
+  }
+  return { active: false, reason: null };
+}
+
+/**
  * @typedef {Object} MergeQueueState
  * @property {string|null} active - The item the driver is working on right now.
  * @property {Record<string, string>} failures - Why each skipped item failed,
@@ -171,6 +196,8 @@ export function createMergeQueue(deps) {
   let halted_on_head = null;
   /** @type {string|null} */
   let halted_on_completion = null;
+  /** @type {string|null} */
+  let halted_on_repair = null;
   /** @type {{ queue_bead_id: string, subject_bead_id: string }|null} */
   let halted_on_conflict = null;
   let prepared = false;
@@ -1066,6 +1093,9 @@ export function createMergeQueue(deps) {
    * @returns {Promise<MergeClickResult>}
    */
   async function runMerge(bead_id) {
+    if (repairFence(snapshot()).active) {
+      return { ok: false, action: 'refused', reason: 'repair_in_flight' };
+    }
     try {
       return await deps.merge(bead_id);
     } catch (err) {
@@ -1454,6 +1484,12 @@ export function createMergeQueue(deps) {
       ) {
         continue;
       }
+      if (action === 'refused' && result.reason === 'repair_in_flight') {
+        halted = true;
+        halted_on_repair = repairFence(snapshot()).reason || 'repair_in_flight';
+        notify();
+        return;
+      }
       await handoffCompletion(root_bead_id, subject_bead_id, result);
       return;
     }
@@ -1465,6 +1501,17 @@ export function createMergeQueue(deps) {
    * @param {string} bead_id
    */
   async function processItem(bead_id) {
+    const fence = repairFence(snapshot());
+    if (fence.active) {
+      halted = true;
+      halted_on_repair = fence.reason;
+      log(
+        'merge queue: %s halted — repair in flight (%s)',
+        bead_id,
+        fence.reason
+      );
+      return;
+    }
     // A retried item starts clean: the previous reason described a run that is
     // over, and leaving it up would label a live attempt with a dead failure.
     failures.delete(bead_id);
@@ -1754,6 +1801,13 @@ export function createMergeQueue(deps) {
         return;
       }
 
+      if (action === 'refused' && result.reason === 'repair_in_flight') {
+        halted = true;
+        halted_on_repair = repairFence(snapshot()).reason || 'repair_in_flight';
+        notify();
+        return;
+      }
+
       failAndDequeue(bead_id, (result && result.reason) || 'refused');
       return;
     }
@@ -1835,6 +1889,7 @@ export function createMergeQueue(deps) {
         halted = false;
         halted_on_head = null;
         halted_on_completion = null;
+        halted_on_repair = null;
         // A queue resumed after a restart can hold EXTERNAL rows, and those
         // exist only in the in-memory registry the ws overlay reads — empty
         // until something scans bd. Without this, a restored external head
@@ -1929,6 +1984,10 @@ export function createMergeQueue(deps) {
               void requestDrain();
             }
           }
+          if (halted_on_repair && !repairFence(snapshot()).active) {
+            halted_on_repair = null;
+            void requestDrain();
+          }
           if (halted_on_conflict) {
             void requestDrain();
           }
@@ -1948,6 +2007,7 @@ export function createMergeQueue(deps) {
       stopped = true;
       started = false;
       drain_requested = false;
+      halted_on_repair = null;
       halted_on_conflict = null;
       if (unsubscribe) {
         try {
