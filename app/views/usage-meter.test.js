@@ -352,13 +352,16 @@ describe('usage meter rendering', () => {
     expect(mount.querySelector('.usage-meter')).toBeNull();
   });
 
-  test('keeps provider layout and narrow-screen hiding in CSS', () => {
+  test('keeps provider layout and compacts the meter on narrow screens', () => {
     const styles = fs.readFileSync('app/styles.css', 'utf8');
 
     expect(styles).toMatch(/\.usage-meter__group\s*{/);
     expect(styles).toMatch(/\.usage-meter__provider\s*{/);
-    expect(styles).toMatch(
+    expect(styles).not.toMatch(
       /@media \(max-width: 900px\)[\s\S]*?\.usage-meter-mount\s*{[\s\S]*?display: none;/
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 900px\)[\s\S]*?\.usage-meter__track\s*{[\s\S]*?display: none;/
     );
   });
 });

@@ -479,16 +479,6 @@ function blockedReason(issue) {
 }
 
 /**
- * Gate tiers whose badge reports something a HUMAN has to act on rather than
- * something to wait out: the PR was closed without a merge (worker-phase2 §4 —
- * not a completion, the bead stays put), or the observation itself could not be
- * decided (§5 fail-closed).
- *
- * @type {string[]}
- */
-const ALERT_GATE_TIERS = ['closed_unmerged', 'review', 'undecidable'];
-
-/**
  * Poller activity replaces a gate badge ONLY where it changes what the badge
  * MEANS (UI-raqh §3): "관측 대기" while a gh round-trip is actually in flight is
  * 확인중, and "검증 대기" while the suite is actually running is 검증 중.
@@ -531,6 +521,8 @@ export function activityBadge(gate_badge, activity) {
  */
 export function mergeFailureText(reason) {
   switch (reason) {
+    case 'not_in_pr_wait':
+      return 'PR 대기 상태 동기화 실패';
     case 'resolution_round_cap':
       return '충돌 해소 2회 초과';
     case 'resolution_timeout':
@@ -710,7 +702,7 @@ function completionView(completion) {
   }
 
   /** @type {string[]} */
-  const details = [`복구 세션 ${used}/${cap}`];
+  const details = [badge, `복구 세션 ${used}/${cap}`];
   if (completion.head_sha) {
     details.push(`head ${completion.head_sha}`);
   }
@@ -745,6 +737,156 @@ function completionView(completion) {
       repair && typeof repair.pr_url === 'string' ? repair.pr_url : '',
     repair_pr_number: repair_number
   };
+}
+
+/**
+ * Resolve every PR-card status input to one priority-ordered badge. The first
+ * match is the state the user must read or act on now; lower-grade failure
+ * facts remain in its tooltip instead of stacking another badge (UI-vkk8 §3).
+ *
+ * @param {Record<string, any>} input
+ * @returns {{ label: string, title: string, live: boolean, alert: boolean }|null}
+ */
+export function prStatusBadge(input) {
+  const failure_title = input.queue_failure
+    ? `머지 실패 원문: ${input.queue_failure}`
+    : input.auto_skip
+      ? `자동 제외 원문: ${input.auto_skip}`
+      : '';
+  /**
+   * @param {string} label
+   * @param {{ title?: string, live?: boolean, alert?: boolean }} [options]
+   */
+  const badge = (label, options = {}) => {
+    const details = [options.title || '', failure_title].filter(Boolean);
+    return {
+      label,
+      title: details.join('\n'),
+      live: options.live === true,
+      alert: options.alert === true
+    };
+  };
+
+  if (input.continuation_required) {
+    return badge('이어하기 선택 필요', { alert: true });
+  }
+  if (input.merge_step) {
+    return badge('머지 중', { title: input.merge_step.label, live: true });
+  }
+  if (input.conflict_badge) {
+    return badge(input.conflict_badge, {
+      live: input.conflict_live === true
+    });
+  }
+  if (input.head_review && input.head_review.state !== 'failed') {
+    return badge('리뷰 진행 중', {
+      title: input.head_review.badge,
+      live: input.head_review.live === true
+    });
+  }
+  if (input.recovery?.lock_actions) {
+    return badge('자동복구 중', {
+      title: input.recovery.title,
+      live: true
+    });
+  }
+  if (input.cleanup_failed) {
+    return badge(
+      input.cleanup_label ? `정리 멈춤 · ${input.cleanup_label}` : '정리 멈춤',
+      { title: input.cleanup_failed.reason || '', alert: true }
+    );
+  }
+  if (input.base_exception) {
+    return badge('다른 base 대상', {
+      title: input.base_exception,
+      alert: true
+    });
+  }
+  if (input.conflicting) {
+    return badge('충돌 해결 필요', { alert: true });
+  }
+  if (input.gate?.reason === 'base_behind') {
+    return badge('base 갱신 필요', { alert: true });
+  }
+  if (
+    input.gate?.reason === 'review_receipt_missing' ||
+    input.gate?.reason === 'review_receipt_stale'
+  ) {
+    return badge('최종 변경 리뷰 필요', { alert: true });
+  }
+  if (input.gate?.reason === 'review_receipt_invalid') {
+    return badge('리뷰 기록 오류', {
+      title: 'review_receipt_invalid',
+      alert: true
+    });
+  }
+  if (input.head_review?.state === 'failed') {
+    return badge('리뷰 실패', {
+      title: input.head_review.failure_reason || '',
+      alert: true
+    });
+  }
+  if (input.recovery) {
+    return badge(input.recovery.badge, {
+      title: input.recovery.title,
+      alert: true
+    });
+  }
+  if (input.gate?.tier === 'verify' && input.gate.gate_badge === '검증 실패') {
+    return badge('검증 실패', {
+      title: input.gate.reason || '',
+      alert: true
+    });
+  }
+  if (input.queue_failure) {
+    return badge(`머지 실패 — ${mergeFailureText(input.queue_failure)}`, {
+      title: input.queue_failure,
+      alert: true
+    });
+  }
+  if (input.auto_skip) {
+    return badge(`자동 제외 — ${mergeFailureText(input.auto_skip)}`, {
+      title: input.auto_skip,
+      alert: true
+    });
+  }
+  if (input.queued && !input.queue_active) {
+    return badge(`머지 대기 #${input.queue_position}`);
+  }
+  if (input.gate?.enabled === true) {
+    return badge('머지 가능');
+  }
+  if (input.gate?.tier === 'merged') {
+    return badge('머지됨');
+  }
+  if (input.gate?.tier === 'closed_unmerged') {
+    return badge('닫힘', { alert: true });
+  }
+  if (input.activity) {
+    return badge('확인 중', { live: true });
+  }
+  if (
+    input.gate?.tier === 'undecidable' ||
+    input.gate?.reason === 'mergeability_unknown'
+  ) {
+    return badge('상태 확인 실패', {
+      title: input.gate.reason || '',
+      alert: true
+    });
+  }
+  if (
+    input.gate?.tier === 'unobserved' ||
+    input.gate?.tier === 'verify' ||
+    input.gate?.gate_badge === '관측 대기'
+  ) {
+    return badge('확인 중');
+  }
+  return input.gate?.gate_badge
+    ? badge(input.gate.gate_badge, {
+        title: input.gate.reason || '',
+        alert: input.gate.enabled !== true
+      })
+    : null;
 }
 
 /**
@@ -855,11 +997,6 @@ function prWaitRow(
     (journal?.state === 'failed' ||
       !authority ||
       (authority.source === 'automatic' && !auto_merge_on));
-  /** @type {string[]} */
-  const badges = [];
-  if (external) {
-    badges.push('세션');
-  }
   const conflict_badge =
     conflict_session === 'paused'
       ? '충돌 해소 일시정지'
@@ -868,62 +1005,6 @@ function prWaitRow(
         : conflict_session === 'running'
           ? '충돌 해소 중'
           : null;
-  const substituted = activityBadge(
-    external && gate && gate.tier === 'closed_unmerged'
-      ? '닫힘'
-      : (gate && gate.gate_badge) || '',
-    // A resolution session outranks poller activity (UI-dxgz §1): the row has
-    // one live slot, and "what is being done about the conflict" is the state a
-    // reader has to act on, not that a gh round-trip is in flight.
-    conflict_badge ? null : (active && active.activity) || null
-  );
-  if (conflict_badge) {
-    badges.push(conflict_badge);
-  }
-  // 수동 머지 continuation의 review 진행/실패 상태 (UI-58w8 §7). 기존
-  // '충돌 해소 완료 · 재검증 대기'만으로는 자동 진행 여부를 구분할 수 없다.
-  if (head_review) {
-    badges.push(head_review.badge);
-  }
-  if (substituted.label) {
-    badges.push(substituted.label);
-  }
-  if (gate && gate.base_badge && gate.base_badge !== gate.gate_badge) {
-    badges.push(gate.base_badge);
-  }
-  // 이 행의 PR이 선언 base가 아닌 곳을 향하고 있다 (UI-j6wa §3). 게이트의
-  // base_badge(충돌/뒤처짐)와 다른 사실 — 저쪽은 "머지할 수 있는가", 이쪽은
-  // "어디로 머지되는가"다.
-  if (base_exception) {
-    badges.push(base_exception);
-  }
-  // 「어디서 멈췄나」가 「실패했다」보다 행동 가능한 사실이다 (§4.4). 단계를
-  // 모르는 기록은 단계 없이 그대로 말한다 — 추측하지 않는다.
-  if (cleanup_failed) {
-    const stopped = cleanupStepLabel(cleanup_failed.step);
-    badges.push(stopped ? `정리 멈춤 · ${stopped}` : '정리 멈춤');
-  }
-  if (recovery) {
-    badges.push(recovery.badge);
-  }
-  // Its place in line, or why it lost it (UI-5v7d §4). The waiting badge is the
-  // only thing that tells a reader why a row with a green gate is sitting still,
-  // and the failure badge is non-durable — it describes the run that just ended.
-  if (queued && !queue_active) {
-    badges.push(`머지 대기 #${merge_queue.position}`);
-  }
-  if (queue_failure) {
-    badges.push(`일괄 머지 실패: ${mergeFailureText(queue_failure)}`);
-  }
-  if (continuation_required) {
-    badges.push('이어하기 선택 필요');
-  }
-  // 자동 모드가 켜져 있는데 이 행만 서 있는 이유 (UI-yk55 §3.4). 실패 뱃지는
-  // 프로세스가 살아 있는 동안만 남지만 제외 기록은 durable하므로, 재시작 뒤에도
-  // "왜 이 행은 안 도는가"에 답하는 것은 이쪽뿐이다.
-  if (auto_skip) {
-    badges.push(`자동 제외: ${mergeFailureText(auto_skip)}`);
-  }
   const conflicting = !!gate && gate.base_badge === '충돌';
   const enabled = !!gate && gate.enabled === true;
   // A merge in flight owns the row: both buttons go quiet until it settles, so
@@ -943,6 +1024,17 @@ function prWaitRow(
     gate.tier === 'merged';
   const external_cleanup =
     external && !!cleanup_failed && !!gate && gate.tier === 'merged';
+  // A failed journal restores the action surface, but it cannot turn an
+  // otherwise terminal/unknown gate into a server continuation (UI-vkk8 §2).
+  const reclick_continuable =
+    needs_reclick &&
+    (enabled ||
+      conflicting ||
+      gate?.reason === 'base_behind' ||
+      gate?.reason === 'review_receipt_missing' ||
+      gate?.reason === 'review_receipt_stale' ||
+      cleanup_retry ||
+      external_cleanup);
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
   // never recreates one (UI-w0hi 제외), so the button would refuse every time.
   // The badge reports the conflict; the user resolves it in their own session.
@@ -961,9 +1053,41 @@ function prWaitRow(
     !cleanup_retry &&
     !!cleanup_failed &&
     cleanup_failed.step === 'repo_operations';
+  const status_badge = prStatusBadge({
+    continuation_required,
+    merge_step,
+    conflict_badge,
+    conflict_live: resolution?.live === true || conflict_session === 'running',
+    head_review:
+      journal && head_review
+        ? {
+            ...head_review,
+            state: journal.state,
+            failure_reason: journal.failure_reason
+          }
+        : null,
+    recovery,
+    cleanup_failed,
+    cleanup_label: cleanup_failed
+      ? cleanupStepLabel(cleanup_failed.step)
+      : null,
+    base_exception,
+    conflicting,
+    gate,
+    queue_failure,
+    auto_skip,
+    queued,
+    queue_active,
+    queue_position: merge_queue ? merge_queue.position : 0,
+    activity: conflict_badge ? null : (active && active.activity) || null
+  });
+  const rendered_status_badge =
+    status_badge?.live === true && status_badge.title
+      ? html`<span title=${status_badge.title}>${status_badge.label}</span>`
+      : status_badge?.label || null;
   return {
     id: bead_id,
-    title,
+    title: external ? html`${title}<span class="muted"> · 세션</span>` : title,
     reason: cleanup_failed
       ? cleanupStalledReason(cleanup_failed.step)
       : 'PR 대기',
@@ -977,35 +1101,23 @@ function prWaitRow(
     external,
     pr_number: pr && typeof pr.number === 'number' ? pr.number : null,
     pr_url: pr && typeof pr.url === 'string' ? pr.url : '',
-    completion_badge: recovery ? recovery.badge : null,
-    completion_title: recovery ? recovery.title : '',
+    // miniRow already owns a one-badge tooltip seam under these legacy field
+    // names. Reuse it for every resolved status so raw failure codes and hidden
+    // lower-grade facts stay inspectable without another badge (UI-vkk8 §3).
+    completion_badge:
+      status_badge?.live !== true && status_badge?.title
+        ? status_badge.label
+        : null,
+    completion_title: status_badge?.title || '',
     completion_repair_pr_url: recovery ? recovery.repair_pr_url : '',
     completion_repair_pr_number: recovery ? recovery.repair_pr_number : null,
-    badges,
+    badges: rendered_status_badge ? [rendered_status_badge] : [],
     // Which badge (if any) reports live server activity rather than a settled
     // state — the row draws that one with the breathing dot and no colour
     // emphasis, because nobody has to act on it.
-    live_badge:
-      conflict_session === 'paused'
-        ? // A paused resolution session is a settled state, not live work:
-          // the badge shows, the breathing dot does not.
-          null
-        : resolution?.live || conflict_session === 'running'
-          ? conflict_badge
-          : head_review?.live
-            ? // A running review/repair attempt is live server work
-              // (UI-58w8 §7); pending/failed are settled states.
-              head_review.badge
-            : substituted.live
-              ? substituted.label
-              : null,
+    live_badge: status_badge?.live === true ? rendered_status_badge : null,
     usage,
-    alert:
-      (!!gate && ALERT_GATE_TIERS.includes(gate.tier)) ||
-      !!cleanup_failed ||
-      !!queue_failure ||
-      !!(head_review && head_review.alert) ||
-      !!(recovery && recovery.alert),
+    alert: status_badge?.alert === true,
     // A queued row has nothing to click but [취소]: the merge is the driver's
     // now, and a second [머지] would only be a no-op re-queue (UI-5v7d §4).
     // The exception is a row the driver will not carry forward on its own
@@ -1047,6 +1159,7 @@ function prWaitRow(
       !merge_step &&
       !conflict_session &&
       !discard_blocks_merge &&
+      !base_exception &&
       !(recovery && recovery.lock_actions) &&
       !external_conflict_unresolvable &&
       !repo_operations_action_blocked &&
@@ -1056,9 +1169,12 @@ function prWaitRow(
       // the PR before it issues one.
       (enabled ||
         conflicting ||
+        gate?.reason === 'base_behind' ||
+        gate?.reason === 'review_receipt_missing' ||
+        gate?.reason === 'review_receipt_stale' ||
         cleanup_retry ||
         external_cleanup ||
-        needs_reclick),
+        reclick_continuable),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
@@ -1071,9 +1187,14 @@ function prWaitRow(
         ? '정리 재개'
         : conflicting && !merge_step && !cleanup_retry
           ? '충돌 해소 후 머지'
-          : needs_reclick
-            ? '다시 머지'
-            : undefined,
+          : gate?.reason === 'base_behind'
+            ? 'base 갱신 후 머지'
+            : gate?.reason === 'review_receipt_missing' ||
+                gate?.reason === 'review_receipt_stale'
+              ? '리뷰 후 머지'
+              : needs_reclick
+                ? '다시 머지'
+                : undefined,
     merge_title: discard_blocks_merge
       ? discard.error
         ? `폐기 실패: ${discard.error} — [재시도]하거나 상태를 확인하세요`
@@ -1094,13 +1215,18 @@ function prWaitRow(
                     ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
                     : conflicting
                       ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                      : enabled
-                        ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                        : gate && gate.tier === 'merged'
-                          ? // Already merged with no cleanup failure recorded: the cleanup
-                            // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                            '머지됨 — 머지 후 정리 진행 중'
-                          : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                      : gate?.reason === 'base_behind'
+                        ? 'base를 자동 갱신한 뒤 머지합니다'
+                        : gate?.reason === 'review_receipt_missing' ||
+                            gate?.reason === 'review_receipt_stale'
+                          ? '자동 리뷰 세션 후 승인되면 머지합니다'
+                          : enabled
+                            ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                            : gate && gate.tier === 'merged'
+                              ? // Already merged with no cleanup failure recorded: the cleanup
+                                // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                '머지됨 — 머지 후 정리 진행 중'
+                              : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 

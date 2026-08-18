@@ -784,15 +784,75 @@ describe('worker/gh — write operations (worker-phase2 §6)', () => {
   });
 
   test('updates the branch from its base', async () => {
-    const run = makeRun();
+    const result_head_sha = 'b'.repeat(40);
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({
+          id: 'PR_node_304',
+          headRefOid: 'a'.repeat(40)
+        }),
+        stderr: ''
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({
+          data: {
+            updatePullRequestBranch: {
+              pullRequest: { headRefOid: result_head_sha }
+            }
+          }
+        }),
+        stderr: ''
+      });
 
     const r = await makeGh(run).updateBranch('/repo', 304);
 
-    expect(r).toEqual({ state: 'ok', data: true });
-    expect(run).toHaveBeenCalledWith(
-      ['pr', 'update-branch', '304', '--repo', 'o/r'],
+    expect(r).toEqual({ state: 'ok', data: result_head_sha });
+    expect(run).toHaveBeenNthCalledWith(
+      1,
+      ['pr', 'view', '304', '--json', 'id,headRefOid', '--repo', 'o/r'],
       { cwd: '/repo' }
     );
+    expect(run).toHaveBeenNthCalledWith(
+      2,
+      expect.arrayContaining([
+        'api',
+        'graphql',
+        '--hostname',
+        'github.com',
+        '-F',
+        'pullRequestId=PR_node_304',
+        '-F',
+        `expectedHeadOid=${'a'.repeat(40)}`
+      ]),
+      { cwd: '/repo' }
+    );
+  });
+
+  test('rejects a branch update without an authoritative result head', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({
+          id: 'PR_node_304',
+          headRefOid: 'a'.repeat(40)
+        }),
+        stderr: ''
+      })
+      .mockResolvedValueOnce({
+        code: 0,
+        stdout: JSON.stringify({
+          data: { updatePullRequestBranch: { pullRequest: {} } }
+        }),
+        stderr: ''
+      });
+
+    const r = await makeGh(run).updateBranch('/repo', 304);
+
+    expect(r).toEqual({ state: 'error', reason: 'gh_bad_json' });
   });
 
   test('closes a pull request without merging it', async () => {
@@ -832,16 +892,51 @@ describe('worker/gh — explicit --repo from origin', () => {
     await gh.closePr(repo_dir, 304);
   }
 
-  test('passes --repo to every PR operation', async () => {
-    const run = makeRun();
+  test('binds every PR operation to the resolved repository or host', async () => {
+    const run = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'pr' && args[1] === 'view') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            id: 'PR_node_304',
+            headRefOid: 'a'.repeat(40)
+          }),
+          stderr: ''
+        };
+      }
+      if (args[0] === 'api') {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            data: {
+              updatePullRequestBranch: {
+                pullRequest: { headRefOid: 'b'.repeat(40) }
+              }
+            }
+          }),
+          stderr: ''
+        };
+      }
+      return { code: 0, stdout: '[]', stderr: '' };
+    });
 
     await callEveryPrOperation(makeGh(run), '/repo');
 
     const calls = /** @type {any} */ (run).mock.calls;
-    expect(calls).toHaveLength(5);
-    for (const [args] of calls) {
+    expect(calls).toHaveLength(6);
+    /** @type {string[]|null} */
+    let api_args = null;
+    for (const call of calls) {
+      const args = call[0];
+      if (args[0] === 'api') {
+        api_args = args;
+        continue;
+      }
       expect(args.slice(-2)).toEqual(['--repo', 'o/r']);
     }
+    expect(api_args).toEqual(
+      expect.arrayContaining(['--hostname', 'github.com'])
+    );
   });
 
   test('leaves checkAvailability repo-agnostic', async () => {

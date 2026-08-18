@@ -2758,18 +2758,18 @@ export function createPrActions(deps) {
 
   /**
    * Update a BEHIND PR's branch from its base — the queue-owned base-update
-   * mutation of the manual continuation (UI-58w8 §2). Effect-only: the caller
-   * re-observes the PR afterwards, and the moved head goes through the same
-   * head-review path a resolver push does.
+   * mutation of the manual continuation (UI-58w8 §2). The returned SHA is the
+   * mutation response's authoritative result identity; the caller re-observes
+   * the PR separately and requires exact equality before §4 may relax review.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, reason: string|null }>}
+   * @returns {Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>}
    */
   async function updateBase(bead_id) {
     const q = deps.store.snapshot(workspace);
     const member = await laneMembership(q, bead_id);
     if (!member.ok) {
-      return { ok: false, reason: member.reason };
+      return { ok: false, reason: member.reason, result_head_sha: null };
     }
     const ref = resolvePrRef(
       q,
@@ -2779,7 +2779,7 @@ export function createPrActions(deps) {
         : null
     );
     if (!ref) {
-      return { ok: false, reason: 'pr_ref_unknown' };
+      return { ok: false, reason: 'pr_ref_unknown', result_head_sha: null };
     }
     /** @type {any} */
     let updated;
@@ -2787,19 +2787,33 @@ export function createPrActions(deps) {
       updated = await deps.gh.updateBranch(repo, ref.number);
     } catch (err) {
       log('base update failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'update_branch_failed' };
+      return {
+        ok: false,
+        reason: 'update_branch_failed',
+        result_head_sha: null
+      };
     }
-    if (!updated || updated.state !== 'ok') {
+    if (
+      !updated ||
+      updated.state !== 'ok' ||
+      typeof updated.data !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(updated.data)
+    ) {
       return {
         ok: false,
         reason:
           updated && typeof updated.reason === 'string'
             ? updated.reason
-            : 'update_branch_failed'
+            : 'update_branch_failed',
+        result_head_sha: null
       };
     }
     notifyChanged(workspace);
-    return { ok: true, reason: null };
+    return {
+      ok: true,
+      reason: null,
+      result_head_sha: updated.data.toLowerCase()
+    };
   }
 
   return {

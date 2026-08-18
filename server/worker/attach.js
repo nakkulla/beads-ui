@@ -1144,6 +1144,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           subject_bead_id
         ),
       headReview,
+      // Preserve the mutation response as one object: `result_head_sha` is
+      // authoritative only at this effect boundary (UI-vkk8 §4).
       updateBase: (/** @type {string} */ bead_id) =>
         prActions.updateBase(bead_id),
       onCompletionResult: (

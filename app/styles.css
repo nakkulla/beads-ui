@@ -463,6 +463,31 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
+/* 좁은 화면에서는 막대만 접고 provider·창 라벨·%는 남긴다. 헤더가 감당할 수
+   있는 폭까지 줄이는 것이 목적이므로, 어느 창의 몇 %인지 읽을 수 없게 만드는
+   축약은 하지 않는다. */
+@media (max-width: 900px) {
+  .usage-meter {
+    gap: var(--sp-8);
+  }
+
+  .usage-meter__group {
+    gap: var(--sp-5);
+  }
+
+  .usage-meter__group + .usage-meter__group {
+    padding-left: var(--sp-8);
+  }
+
+  .usage-meter__window {
+    gap: var(--sp-4);
+  }
+
+  .usage-meter__track {
+    display: none;
+  }
+}
+
 .header-loading {
   display: inline-flex;
   align-items: center;
@@ -1475,10 +1500,6 @@ input.inline-edit:focus {
 
 /* Responsive: stack panels on narrow screens */
 @media (max-width: 900px) {
-  .usage-meter-mount {
-    display: none;
-  }
-
   .app-shell {
     height: auto;
   }

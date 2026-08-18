@@ -25,6 +25,7 @@ afterEach(() => {
 const OLD_HEAD = 'a'.repeat(40);
 const NEW_HEAD = 'b'.repeat(40);
 const REPAIR_HEAD = 'c'.repeat(40);
+const PRIOR_HEAD = 'd'.repeat(40);
 
 /**
  * One manual-authority queue entry plus a head-review driver whose effect
@@ -113,6 +114,223 @@ function journalOf(store) {
 }
 
 describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => {
+  test('carries a base-update approval without a reviewer session', async () => {
+    const { store, driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      })
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.select).toHaveLength(0);
+    expect(calls.review).toHaveLength(0);
+    expect(calls.write_receipt).toEqual([
+      {
+        bead_id: 'UI-1',
+        receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
+      }
+    ]);
+    expect(journalOf(store)).toMatchObject({
+      state: 'approved',
+      receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
+    });
+  });
+
+  test('carries a prior carry without nesting its receipt vocabulary', async () => {
+    const prior_receipt = `carry:codex:${PRIOR_HEAD}@${OLD_HEAD}`;
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: prior_receipt
+      })
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.write_receipt).toEqual([
+      {
+        bead_id: 'UI-1',
+        receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
+      }
+    ]);
+  });
+
+  test('carries a resolver self-review as normalized self', async () => {
+    const prior_receipt = `resolver-self:res-0:${PRIOR_HEAD}@${OLD_HEAD}`;
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'self',
+        head_sha: OLD_HEAD,
+        raw: prior_receipt
+      })
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.write_receipt).toEqual([
+      {
+        bead_id: 'UI-1',
+        receipt: `carry:self:${OLD_HEAD}@${NEW_HEAD}`
+      }
+    ]);
+  });
+
+  test('binds the resolver session self-review verdict', async () => {
+    const receipt = `resolver-self:res-1:${OLD_HEAD}@${NEW_HEAD}`;
+    let receipt_reads = 0;
+    const { store, driver, calls } = harness({
+      readReceipt: async () => {
+        receipt_reads += 1;
+        return receipt_reads === 1
+          ? {
+              actor: 'codex',
+              head_sha: OLD_HEAD,
+              raw: `codex@${OLD_HEAD}`
+            }
+          : {
+              actor: 'self',
+              head_sha: NEW_HEAD,
+              raw: receipt
+            };
+      }
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'resolver:res-1',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.select).toHaveLength(0);
+    expect(calls.review).toHaveLength(0);
+    expect(calls.write_receipt).toHaveLength(0);
+    expect(journalOf(store)).toMatchObject({ state: 'approved', receipt });
+  });
+
+  test('dispatches externally when the approval was missing at authority grant', async () => {
+    const { store, driver, calls } = harness({ readReceipt: async () => null });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(1);
+    expect(journalOf(store)).toMatchObject({
+      approval_source: 'external_review',
+      receipt: `codex@${NEW_HEAD}`
+    });
+  });
+
+  test('dispatches externally when the starting approval is stale', async () => {
+    const { store, driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: REPAIR_HEAD,
+        raw: `codex@${REPAIR_HEAD}`
+      })
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(1);
+    expect(journalOf(store)?.approval_source).toBe('external_review');
+  });
+
+  test('reviews the full observed head when the mutation result mismatches', async () => {
+    const { store, driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      }),
+      observeHead: async () => REPAIR_HEAD
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: REPAIR_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(1);
+    expect(calls.review[0].head_sha).toBe(REPAIR_HEAD);
+    expect(journalOf(store)).toMatchObject({
+      approval_source: 'external_review',
+      receipt: `codex@${REPAIR_HEAD}`
+    });
+  });
+
   test('dispatches the reviewer exactly once and approves with a bound receipt', async () => {
     const { store, driver, calls } = harness();
 

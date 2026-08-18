@@ -22,13 +22,55 @@
  *   a fresh authority (a re-click).
  * - Approval requires the receipt to be WRITTEN and READ BACK for the exact
  *   journal head, with no head drift across the write. `skipped@<head>` and a
- *   journal-less `self@<head>` never approve, whatever SHA they carry.
+ *   journal-less `self@<head>` never approve, whatever SHA they carry. The
+ *   UI-vkk8 §4 exception binds only a same-authority mutation whose separately
+ *   recorded result SHA matches the re-probe exactly.
  *
  * @import { HeadReview } from './queue-store.js'
  */
 import nodeCrypto from 'node:crypto';
 
 const SHA40_RE = /^[0-9a-f]{40}$/i;
+const ORDINARY_RECEIPT_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)@([0-9a-f]{40})$/i;
+const CARRY_RECEIPT_RE =
+  /^carry:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
+const RESOLVER_RECEIPT_RE =
+  /^resolver-self:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
+
+/**
+ * Parse exactly the workflow contract's three implementation-review receipt
+ * forms and collapse derived forms to the reviewer identity another carry may
+ * name. Reserved prefixes never fall through to the ordinary grammar, so a
+ * malformed or nested derived receipt fails closed (UI-vkk8 §4).
+ *
+ * @param {unknown} raw
+ * @returns {{ actor: string, head_sha: string, raw: string }|null}
+ */
+export function parseReviewReceipt(raw) {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const carry = CARRY_RECEIPT_RE.exec(raw);
+  if (carry) {
+    return { actor: carry[1], head_sha: carry[3].toLowerCase(), raw };
+  }
+  const resolver = RESOLVER_RECEIPT_RE.exec(raw);
+  if (resolver) {
+    return { actor: 'self', head_sha: resolver[3].toLowerCase(), raw };
+  }
+  if (raw.startsWith('carry:') || raw.startsWith('resolver-self:')) {
+    return null;
+  }
+  const ordinary = ORDINARY_RECEIPT_RE.exec(raw);
+  if (!ordinary) {
+    return null;
+  }
+  return {
+    actor: ordinary[1],
+    head_sha: ordinary[2].toLowerCase(),
+    raw
+  };
+}
 
 /**
  * Harness implementation-gate defaults, projected here as a consumer. The
@@ -190,12 +232,241 @@ export function createHeadReview(deps) {
   }
 
   /**
+   * @param {{ actor: string, head_sha: string, raw: string }|null} receipt
+   * @param {string} head_sha
+   */
+  function validApproval(receipt, head_sha) {
+    const parsed = receipt ? parseReviewReceipt(receipt.raw) : null;
+    return (
+      receipt !== null &&
+      parsed !== null &&
+      parsed.actor !== 'skipped' &&
+      parsed.actor !== 'skip' &&
+      receipt.actor === parsed.actor &&
+      receipt.head_sha.toLowerCase() === parsed.head_sha &&
+      parsed.head_sha === head_sha
+    );
+  }
+
+  /**
+   * Snapshot the approval that exists when a manual queue item first enters
+   * its authority-owned drain. The snapshot is deliberately caller-local: a
+   * restart or later item entry cannot recreate grant-time evidence and must
+   * fall back to external review (UI-vkk8 §4).
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @returns {Promise<{ actor: string, head_sha: string, raw: string }|null>}
+   */
+  async function captureStartingApproval(queue_bead_id, subject_bead_id) {
+    const authority = queuedEntry(queue_bead_id)?.authority ?? null;
+    if (!authority || authority.source !== 'manual') {
+      return null;
+    }
+    const authority_id = authority.id;
+    const requested_head_sha = authority.requested_head_sha.toLowerCase();
+    const receipt = await deps.readReceipt(subject_bead_id);
+    const current = queuedEntry(queue_bead_id)?.authority ?? null;
+    if (
+      !current ||
+      current.id !== authority_id ||
+      current.requested_head_sha.toLowerCase() !== requested_head_sha ||
+      !validApproval(receipt, requested_head_sha)
+    ) {
+      return null;
+    }
+    return receipt;
+  }
+
+  /**
+   * Open or adopt the pending journal slot used by a no-dispatch relaxation.
+   * `reviewer` records the prior approval actor; it is not background reviewer
+   * selection (UI-vkk8 §4).
+   *
+   * @param {string} queue_bead_id
+   * @param {{ id: string }} authority
+   * @param {string} head_sha
+   * @param {string} reviewer
+   * @returns {HeadReview|null}
+   */
+  function relaxedJournal(queue_bead_id, authority, head_sha, reviewer) {
+    const current = queuedEntry(queue_bead_id)?.head_review ?? null;
+    if (current && current.head_sha === head_sha) {
+      return /** @type {HeadReview} */ (current);
+    }
+    deps.store.beginHeadReview(workspace, {
+      bead_id: queue_bead_id,
+      authority_id: authority.id,
+      head_sha,
+      reviewer,
+      effort: DEFAULT_REVIEW_EFFORT
+    });
+    const opened = queuedEntry(queue_bead_id)?.head_review ?? null;
+    return opened && opened.head_sha === head_sha
+      ? /** @type {HeadReview} */ (opened)
+      : null;
+  }
+
+  /**
+   * Try the contract's same-authority no-dispatch paths. `null` means one of
+   * the three bindings was absent, so the caller continues into external
+   * full-head review. A resolver with a valid starting approval but without an
+   * exact APPROVE receipt is terminal under existing failure semantics.
+   *
+   * @param {string} queue_bead_id
+   * @param {string} subject_bead_id
+   * @param {{ id: string, requested_head_sha: string, target_base: string }} authority
+   * @param {string} head_sha
+   * @param {{ head_ref?: string|null, mutation?: string|null, mutation_result_sha?: string|null, starting_approval?: { actor: string, head_sha: string, raw: string }|null }} observed
+   * @returns {Promise<EnsureApprovedResult|null>}
+   */
+  async function relaxQueueMutation(
+    queue_bead_id,
+    subject_bead_id,
+    authority,
+    head_sha,
+    observed
+  ) {
+    const prior_head_sha = authority.requested_head_sha.toLowerCase();
+    const mutation =
+      typeof observed.mutation === 'string' ? observed.mutation : null;
+    const result_head_sha =
+      typeof observed.mutation_result_sha === 'string' &&
+      SHA40_RE.test(observed.mutation_result_sha)
+        ? observed.mutation_result_sha.toLowerCase()
+        : null;
+    const resolver_attempt = mutation?.startsWith('resolver:')
+      ? mutation.slice('resolver:'.length)
+      : null;
+    if (
+      head_sha === prior_head_sha ||
+      result_head_sha === null ||
+      (mutation !== 'base_update' && !resolver_attempt) ||
+      head_sha !== result_head_sha
+    ) {
+      return null;
+    }
+
+    const starting_approval = observed.starting_approval ?? null;
+    if (!validApproval(starting_approval, prior_head_sha)) {
+      return null;
+    }
+    const receipt = resolver_attempt
+      ? await deps.readReceipt(subject_bead_id)
+      : null;
+    const resolver_receipt = resolver_attempt
+      ? `resolver-self:${resolver_attempt}:${prior_head_sha}@${result_head_sha}`
+      : null;
+    const resolver_approved =
+      resolver_receipt !== null && receipt?.raw === resolver_receipt;
+    const lin = await deps.lineage(subject_bead_id, {
+      prior_head_sha,
+      head_sha,
+      target_base: authority.target_base,
+      head_ref: observed.head_ref ?? null,
+      mutation
+    });
+    if (!lin.queue_owned) {
+      return null;
+    }
+
+    const reviewer =
+      /** @type {NonNullable<ReturnType<typeof parseReviewReceipt>>} */ (
+        parseReviewReceipt(starting_approval?.raw)
+      ).actor;
+    const journal = relaxedJournal(
+      queue_bead_id,
+      authority,
+      head_sha,
+      reviewer
+    );
+    if (!journal || journal.state !== 'pending') {
+      return { state: 'gone', reason: null };
+    }
+
+    if (resolver_attempt) {
+      if (!resolver_approved || resolver_receipt === null) {
+        return failJournal(
+          queue_bead_id,
+          authority.id,
+          head_sha,
+          'pending',
+          'resolver_self_review_not_approved'
+        );
+      }
+      const post_head = await deps.observeHead(subject_bead_id);
+      if (
+        typeof post_head !== 'string' ||
+        post_head.toLowerCase() !== result_head_sha
+      ) {
+        return failJournal(
+          queue_bead_id,
+          authority.id,
+          head_sha,
+          'pending',
+          'head_drift_during_receipt'
+        );
+      }
+      const ok = transition(queue_bead_id, authority.id, head_sha, 'pending', {
+        state: 'approved',
+        approval_source: 'existing_current',
+        receipt: resolver_receipt
+      });
+      return ok
+        ? { state: 'approved', reason: null }
+        : { state: 'gone', reason: null };
+    }
+
+    const carry_receipt = `carry:${reviewer}:${prior_head_sha}@${result_head_sha}`;
+    let written = { ok: false, readback: /** @type {string|null} */ (null) };
+    try {
+      written = await deps.writeReceipt(subject_bead_id, carry_receipt);
+    } catch (err) {
+      log(
+        'head-review carry receipt write threw for %s: %o',
+        subject_bead_id,
+        err
+      );
+    }
+    if (!written.ok || written.readback !== carry_receipt) {
+      return failJournal(
+        queue_bead_id,
+        authority.id,
+        head_sha,
+        'pending',
+        'receipt_readback_mismatch'
+      );
+    }
+    const post_head = await deps.observeHead(subject_bead_id);
+    if (
+      typeof post_head !== 'string' ||
+      post_head.toLowerCase() !== result_head_sha
+    ) {
+      return failJournal(
+        queue_bead_id,
+        authority.id,
+        head_sha,
+        'pending',
+        'head_drift_during_receipt'
+      );
+    }
+    const ok = transition(queue_bead_id, authority.id, head_sha, 'pending', {
+      state: 'approved',
+      approval_source: 'existing_current',
+      receipt: carry_receipt
+    });
+    return ok
+      ? { state: 'approved', reason: null }
+      : { state: 'gone', reason: null };
+  }
+
+  /**
    * Drive one manual-authority queue item's head-review journal to `approved`
    * or a terminal disposition for the CURRENT observed head.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
-   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null }} observed - The
+   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null, mutation_result_sha?: string|null, starting_approval?: { actor: string, head_sha: string, raw: string }|null }} observed - The
    * head identity the caller's authoritative probe just returned — never
    * a cached one — plus the queue-owned mutation evidence the caller can
    * vouch for (`resolver:<attempt_id>` after a consumed ready resolution,
@@ -233,6 +504,7 @@ export function createHeadReview(deps) {
         const current = await deps.readReceipt(subject_bead_id);
         if (
           current === null ||
+          !validApproval(current, head_sha) ||
           current.raw !== journal.receipt ||
           current.head_sha.toLowerCase() !== head_sha
         ) {
@@ -248,6 +520,17 @@ export function createHeadReview(deps) {
       }
       // A queue-owned mutation moved past an approved head — the approval is
       // consumed and a fresh journal takes over below.
+    }
+
+    const relaxed = await relaxQueueMutation(
+      queue_bead_id,
+      subject_bead_id,
+      authority,
+      head_sha,
+      observed
+    );
+    if (relaxed !== null) {
+      return relaxed;
     }
 
     const selection = await deps.selectReviewer(subject_bead_id);
@@ -284,9 +567,13 @@ export function createHeadReview(deps) {
 
     if (!journal) {
       const receipt = await deps.readReceipt(subject_bead_id);
+      const parsed_receipt = receipt ? parseReviewReceipt(receipt.raw) : null;
       const receipt_head =
-        receipt && SHA40_RE.test(receipt.head_sha)
-          ? receipt.head_sha.toLowerCase()
+        receipt &&
+        parsed_receipt &&
+        receipt.actor === parsed_receipt.actor &&
+        receipt.head_sha.toLowerCase() === parsed_receipt.head_sha
+          ? parsed_receipt.head_sha
           : null;
 
       if (
@@ -338,9 +625,8 @@ export function createHeadReview(deps) {
       if (
         journal.state === 'pending' &&
         head_sha === authority.requested_head_sha &&
-        receipt_head === head_sha &&
         receipt !== null &&
-        receipt.actor !== 'skipped'
+        validApproval(receipt, head_sha)
       ) {
         const ok = transition(
           queue_bead_id,
@@ -700,5 +986,5 @@ export function createHeadReview(deps) {
       : { state: 'gone', reason: null };
   }
 
-  return { ensureApproved };
+  return { captureStartingApproval, ensureApproved };
 }

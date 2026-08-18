@@ -18,7 +18,9 @@
  * WRITE operations (`mergeSquash` / `updateBranch` / `closePr`, worker-phase2
  * §6) live here for the same reason: this module is the only place that spawns
  * `gh`, so mocking it is what keeps "no test ever merges anything" structural
- * rather than a convention.
+ * rather than a convention. `updateBranch` is the one write with a payload:
+ * its GraphQL mutation returns the authoritative result head SHA that the
+ * manual-continuation review binding requires (UI-vkk8 §4).
  *
  * ---------------------------------------------------------------------------
  * WHY EVERY PR OPERATION PASSES AN EXPLICIT `--repo`
@@ -147,6 +149,10 @@ const PR_DETAIL_FIELDS =
 /** The immutable original-PR evidence required before building a revert. */
 const REVERT_SOURCE_FIELDS =
   'number,url,state,baseRefName,baseRefOid,headRefName,headRefOid,mergeCommit,commits,files';
+
+/** The mutation response is the authoritative base-update result identity. */
+const UPDATE_BRANCH_MUTATION =
+  'mutation UpdateBranch($pullRequestId: ID!, $expectedHeadOid: GitObjectID!) { updatePullRequestBranch(input: { pullRequestId: $pullRequestId, expectedHeadOid: $expectedHeadOid, updateMethod: MERGE }) { pullRequest { headRefOid } } }';
 
 /**
  * Derive gh's `--repo` value from a git remote URL. Handles the three forms
@@ -942,19 +948,82 @@ export function createGh(deps = {}) {
      * never a rebase: a rebase would need a force-push, which the push-safety
      * rules forbid, and the squash merge discards the merge commit anyway.
      *
+     * The ordinary `gh pr update-branch` command prints only a status line even
+     * though its GraphQL mutation receives the updated pull request. Invoke the
+     * same mutation directly so the caller can bind the returned `headRefOid`;
+     * a later `pr view` would be only an observation and could already include
+     * a third-party push (UI-vkk8 §4 condition 3).
+     *
      * @param {string} repo_dir - Repo root the command runs in (`cwd`).
      * @param {number} number - The PR whose branch is behind its base.
-     * @returns {Promise<GhResult<true>>}
+     * @returns {Promise<GhResult<string>>}
      */
     async updateBranch(repo_dir, number) {
       const repo = await resolveRepo(repo_dir);
       if (repo === null) {
         return { state: 'error', reason: 'origin_unresolvable' };
       }
-      return runVoid(
-        ['pr', 'update-branch', String(number), '--repo', repo],
+      const identity = await runJson(
+        [
+          'pr',
+          'view',
+          String(number),
+          '--json',
+          'id,headRefOid',
+          '--repo',
+          repo
+        ],
         repo_dir
       );
+      if (
+        identity.state !== 'ok' ||
+        !identity.data ||
+        typeof identity.data !== 'object' ||
+        Array.isArray(identity.data)
+      ) {
+        return identity.state === 'error'
+          ? identity
+          : { state: 'error', reason: 'gh_bad_json' };
+      }
+      const current = /** @type {Record<string, unknown>} */ (identity.data);
+      if (
+        typeof current.id !== 'string' ||
+        current.id.length === 0 ||
+        typeof current.headRefOid !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(current.headRefOid)
+      ) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      const repo_parts = repo.split('/');
+      const hostname = repo_parts.length === 3 ? repo_parts[0] : 'github.com';
+      const mutation = await runJson(
+        [
+          'api',
+          'graphql',
+          '--hostname',
+          hostname,
+          '-f',
+          `query=${UPDATE_BRANCH_MUTATION}`,
+          '-F',
+          `pullRequestId=${current.id}`,
+          '-F',
+          `expectedHeadOid=${current.headRefOid}`
+        ],
+        repo_dir
+      );
+      if (mutation.state !== 'ok') {
+        return mutation;
+      }
+      const payload = /** @type {any} */ (mutation.data);
+      const result_head_sha =
+        payload?.data?.updatePullRequestBranch?.pullRequest?.headRefOid;
+      if (
+        typeof result_head_sha !== 'string' ||
+        !/^[0-9a-f]{40}$/i.test(result_head_sha)
+      ) {
+        return { state: 'error', reason: 'gh_bad_json' };
+      }
+      return { state: 'ok', data: result_head_sha.toLowerCase() };
     },
 
     /**
