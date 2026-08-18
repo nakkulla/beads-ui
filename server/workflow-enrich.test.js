@@ -11,6 +11,7 @@ import {
   parseExecReceipt,
   parseImplEntry,
   parsePlanReceipt,
+  parsePlannedExecution,
   parseReceipt
 } from './workflow-enrich.js';
 
@@ -100,6 +101,137 @@ describe('parseReceipt', () => {
 });
 
 describe('execution metadata display projection', () => {
+  test('parses delegated planned execution with an exact shape', () => {
+    const planned_execution = parsePlannedExecution('delegated', undefined);
+
+    expect(planned_execution).toEqual({ kind: 'delegated', reason: null });
+  });
+
+  test('parses main planned execution with its exact reason', () => {
+    const planned_execution = parsePlannedExecution('main', '복잡한 계약 변경');
+
+    expect(planned_execution).toEqual({
+      kind: 'main',
+      reason: '복잡한 계약 변경'
+    });
+  });
+
+  test('returns null when planned execution is absent', () => {
+    const planned_execution = parsePlannedExecution(undefined, undefined);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('returns null for an unknown planned execution kind', () => {
+    const planned_execution = parsePlannedExecution('worker', undefined);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test.each([
+    ['array', ['main']],
+    ['object', { kind: 'main' }],
+    ['number', 1],
+    ['boolean', true]
+  ])('returns null for a %s planned execution value', (_name, value) => {
+    const planned_execution = parsePlannedExecution(value, undefined);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test.each([
+    ['array', ['reason']],
+    ['object', { reason: 'reason' }],
+    ['number', 1],
+    ['boolean', true]
+  ])('returns null for a %s main reason value', (_name, value) => {
+    const planned_execution = parsePlannedExecution('main', value);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('returns null when delegated carries a reason', () => {
+    const planned_execution = parsePlannedExecution('delegated', '불필요');
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('returns null when delegated carries a non-string reason', () => {
+    const planned_execution = parsePlannedExecution('delegated', null);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('returns null when main has no reason', () => {
+    const planned_execution = parsePlannedExecution('main', undefined);
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('returns null when main has an empty reason', () => {
+    const planned_execution = parsePlannedExecution('main', '   ');
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('returns null when main has a multiline reason', () => {
+    const planned_execution = parsePlannedExecution('main', '첫 줄\n둘째 줄');
+
+    expect(planned_execution).toBeNull();
+  });
+
+  test('keeps existing enrichment when planned execution is malformed', () => {
+    const workflow = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'in_progress',
+        metadata: {
+          route: 'spec_backed',
+          planned_execution: 'main',
+          planned_execution_reason: '',
+          exec_receipt: `delegated:gpt-5.6-sol@${'a'.repeat(40)}`
+        }
+      },
+      null,
+      null
+    );
+
+    expect(workflow.route).toBe('spec_backed');
+    expect(workflow.stages.impl.fill).toBe('dim');
+    expect(workflow.exec_receipt).toEqual({
+      kind: 'delegated',
+      actor: 'gpt-5.6-sol',
+      sha: 'a'.repeat(40)
+    });
+    expect(workflow.planned_execution).toBeNull();
+    expect(workflow.chips.planned_execution).toBeNull();
+  });
+
+  test.each([
+    ['delegated', undefined, { kind: 'delegated', reason: null }],
+    ['main', '직접 통합', { kind: 'main', reason: '직접 통합' }]
+  ])(
+    'exposes %s planned execution on both enrichment surfaces',
+    (kind, reason, expected) => {
+      const workflow = enrichIssueWorkflow(
+        {
+          id: 'UI-1',
+          metadata: {
+            planned_execution: kind,
+            ...(reason === undefined
+              ? {}
+              : { planned_execution_reason: reason })
+          }
+        },
+        null,
+        null
+      );
+
+      expect(workflow.planned_execution).toEqual(expected);
+      expect(workflow.chips.planned_execution).toEqual(expected);
+    }
+  );
+
   test('parses delegated and main execution receipts', () => {
     expect(parseExecReceipt(`delegated:gpt-5.6-sol@${'a'.repeat(40)}`)).toEqual(
       {

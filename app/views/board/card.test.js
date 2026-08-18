@@ -607,6 +607,97 @@ describe('views/board/card display policy', () => {
     ]);
   });
 
+  test.each([
+    ['delegated', null, '계획 · 위임'],
+    ['main', '국소 수정', '계획 · 메인']
+  ])(
+    'renders %s planned execution before an actual receipt',
+    (kind, reason, label) => {
+      const m = mountCard(
+        {
+          id: 'UI-1',
+          workflow: {
+            chips: { planned_execution: { kind, reason } }
+          }
+        },
+        makeCtx()
+      );
+
+      expect(chipTexts(m, '.ctl-chip--planned')).toEqual([label]);
+      expect(m.querySelector('.ctl-chip--exec-receipt')).toBeNull();
+    }
+  );
+
+  test('renders matching planned and actual execution chips together', () => {
+    const receipt = {
+      kind: 'delegated',
+      actor: 'gpt-5.6-sol',
+      sha: 'a'.repeat(40)
+    };
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        workflow: {
+          chips: {
+            planned_execution: { kind: 'delegated', reason: null },
+            exec_receipt: receipt
+          }
+        }
+      },
+      makeCtx()
+    );
+
+    expect(chipTexts(m, '.ctl-chip--planned')).toEqual(['계획 · 위임']);
+    expect(chipTexts(m, '.ctl-chip--exec-receipt')).toEqual([
+      'exec gpt-5.6-sol · aaaaaaa'
+    ]);
+  });
+
+  test('renders a visible planned-to-actual mismatch with raw evidence', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        workflow: {
+          chips: {
+            planned_execution: { kind: 'main', reason: '직접 통합 필요' },
+            exec_receipt: {
+              kind: 'delegated',
+              actor: 'gpt-5.6-sol',
+              sha: 'b'.repeat(40)
+            }
+          }
+        }
+      },
+      makeCtx()
+    );
+
+    const planned_chip = /** @type {HTMLElement} */ (
+      m.querySelector('.ctl-chip--planned')
+    );
+    expect(planned_chip.textContent?.trim()).toBe('계획 · 메인 → 위임');
+    expect(planned_chip.title).toContain('직접 통합 필요');
+    expect(planned_chip.title).toContain('planned_execution main');
+    expect(planned_chip.title).toContain(
+      `exec_receipt delegated:gpt-5.6-sol@${'b'.repeat(40)}`
+    );
+  });
+
+  test('does not parse malformed raw planned metadata on the card', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        metadata: {
+          planned_execution: 'main',
+          planned_execution_reason: ''
+        },
+        workflow: { chips: {} }
+      },
+      makeCtx()
+    );
+
+    expect(m.querySelector('.ctl-chip--planned')).toBeNull();
+  });
+
   test('omits absent execution metadata chips', () => {
     const m = mountCard(
       { id: 'UI-1', workflow: { chips: {} } },

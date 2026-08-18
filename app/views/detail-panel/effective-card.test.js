@@ -136,6 +136,92 @@ describe('detail summary header', () => {
     panel.destroy();
   });
 
+  test('renders planned main execution beside its actual receipt', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { exec_receipt: `main:국소 수정@${'a'.repeat(40)}` },
+      workflow: {
+        planned_execution: { kind: 'main', reason: '직접 통합 필요' },
+        exec_receipt: {
+          kind: 'main',
+          actor: '국소 수정',
+          sha: 'a'.repeat(40)
+        }
+      }
+    });
+
+    await settle();
+
+    const planned_chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-summary__chip--planned')
+    );
+    expect(planned_chip.textContent?.trim()).toBe('계획 · 메인');
+    expect(planned_chip.title).toContain('직접 통합 필요');
+    expect(
+      mount.querySelector('.detail-summary__chip--receipt')
+    ).not.toBeNull();
+    panel.destroy();
+  });
+
+  test('renders the same visible mismatch and tooltip as the board', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { exec_receipt: `delegated:gpt-5.6-sol@${'b'.repeat(40)}` },
+      workflow: {
+        planned_execution: { kind: 'main', reason: '직접 통합 필요' },
+        exec_receipt: {
+          kind: 'delegated',
+          actor: 'gpt-5.6-sol',
+          sha: 'b'.repeat(40)
+        }
+      }
+    });
+
+    await settle();
+
+    const planned_chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-summary__chip--planned')
+    );
+    expect(planned_chip.textContent?.trim()).toBe('계획 · 메인 → 위임');
+    expect(planned_chip.title).toBe(
+      `planned_execution main:직접 통합 필요 · exec_receipt delegated:gpt-5.6-sol@${'b'.repeat(40)}`
+    );
+    panel.destroy();
+  });
+
+  test('omits malformed normalized planned execution from the summary', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: {
+        planned_execution: 'main',
+        planned_execution_reason: ''
+      },
+      workflow: {
+        planned_execution: null,
+        exec_receipt: null
+      }
+    });
+
+    await settle();
+
+    expect(mount.querySelector('.detail-summary__chip--planned')).toBeNull();
+    panel.destroy();
+  });
+
+  test('preserves the summary chip layout without workflow metadata', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+
+    await settle();
+
+    const chips = mount.querySelectorAll('.detail-summary__chips > *');
+    expect(chips).toHaveLength(1);
+    expect(chips[0].classList.contains('detail-summary__chip--status')).toBe(
+      true
+    );
+    panel.destroy();
+  });
+
   test("lights a gate from the server stage's fill vocabulary", async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {

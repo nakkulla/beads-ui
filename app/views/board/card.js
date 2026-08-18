@@ -32,6 +32,7 @@ import { stepperTemplate } from './stepper.js';
  * @property {'explicit'|'derived'} [route_source]
  * @property {boolean} [fast_track]
  * @property {{ number: number | null } | null} [pr]
+ * @property {{ kind: 'delegated'|'main', reason: string | null } | null} [planned_execution]
  * @property {{ kind: string, actor: string, sha: string } | null} [exec_receipt]
  * @property {{ actor: string, sha: string } | null} [impl_entry]
  */
@@ -44,7 +45,7 @@ import { stepperTemplate } from './stepper.js';
  */
 
 /**
- * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, created_at?: number | string }} BoardCardChild
+ * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, workflow?: { chips?: BoardCardChips }, created_at?: number | string }} BoardCardChild
  */
 
 /**
@@ -163,6 +164,104 @@ function blockedChips(blocked_info) {
 }
 
 /**
+ * @typedef {Object} PlannedExecutionPresentation
+ * @property {'delegated'|'main'} kind
+ * @property {string} label
+ * @property {string} title
+ */
+
+/**
+ * Korean display label for normalized execution ownership.
+ *
+ * @param {unknown} kind
+ * @returns {string | null}
+ */
+function executionKindLabel(kind) {
+  if (kind === 'delegated') {
+    return '위임';
+  }
+  if (kind === 'main') {
+    return '메인';
+  }
+  return null;
+}
+
+/**
+ * Shared planned/actual label and tooltip formatter for cards, folded rows,
+ * and the detail summary. Inputs are normalized workflow objects, never raw
+ * metadata strings.
+ *
+ * @param {{ kind: string, reason: string | null } | null | undefined} planned_execution
+ * @param {{ kind: string, actor: string, sha: string } | null | undefined} exec_receipt
+ * @returns {PlannedExecutionPresentation | null}
+ */
+export function formatPlannedExecution(planned_execution, exec_receipt) {
+  if (!planned_execution) {
+    return null;
+  }
+  const planned_label = executionKindLabel(planned_execution.kind);
+  const reason = planned_execution.reason;
+  const valid_reason =
+    planned_execution.kind === 'delegated'
+      ? reason === null
+      : typeof reason === 'string' &&
+        reason.trim().length > 0 &&
+        !/[\r\n]/.test(reason);
+  if (!planned_label || !valid_reason) {
+    return null;
+  }
+  const actual_label = executionKindLabel(exec_receipt?.kind);
+  const mismatch =
+    actual_label !== null && exec_receipt?.kind !== planned_execution.kind;
+  const label = `계획 · ${planned_label}${mismatch ? ` → ${actual_label}` : ''}`;
+  const planned_summary = `planned_execution ${planned_execution.kind}${typeof reason === 'string' ? `:${reason}` : ''}`;
+  const actual_summary = exec_receipt
+    ? ` · exec_receipt ${exec_receipt.kind}:${exec_receipt.actor}@${exec_receipt.sha}`
+    : '';
+  return {
+    kind: /** @type {'delegated'|'main'} */ (planned_execution.kind),
+    label,
+    title: `${planned_summary}${actual_summary}`
+  };
+}
+
+/**
+ * @param {{ kind: string, reason: string | null } | null | undefined} planned_execution
+ * @param {{ kind: string, actor: string, sha: string } | null | undefined} exec_receipt
+ * @returns {TemplateResult | null}
+ */
+function plannedExecutionChip(planned_execution, exec_receipt) {
+  const presentation = formatPlannedExecution(planned_execution, exec_receipt);
+  return presentation
+    ? html`<span
+        class="ctl-chip ctl-chip--planned"
+        data-kind=${presentation.kind}
+        title=${presentation.title}
+        >${presentation.label}</span
+      >`
+    : null;
+}
+
+/**
+ * @param {{ kind: string, actor: string, sha: string } | null | undefined} exec_receipt
+ * @returns {TemplateResult | null}
+ */
+function compactExecutionChip(exec_receipt) {
+  if (!exec_receipt) {
+    return null;
+  }
+  const label = executionKindLabel(exec_receipt.kind);
+  if (!label) {
+    return null;
+  }
+  return html`<span
+    class="ctl-chip ctl-chip--exec-receipt"
+    title=${`exec_receipt ${exec_receipt.kind}:${exec_receipt.actor}@${exec_receipt.sha}`}
+    >${`실행 · ${label}`}</span
+  >`;
+}
+
+/**
  * Card chips row: route · ⚡fast_track · PR #n · labels · ↩ provenance ·
  * blocked reason. The PR chip is present only when a pr_url produced one
  * server-side, keeping it in agreement with the stepper PR cell. Labels render
@@ -200,6 +299,13 @@ function chipsTemplate(issue, ctx) {
         >${`PR${n != null ? ` #${n}` : ''}`}</span
       >`
     );
+  }
+  const planned_chip = plannedExecutionChip(
+    chips.planned_execution,
+    chips.exec_receipt
+  );
+  if (planned_chip) {
+    items.push(planned_chip);
   }
   if (chips.exec_receipt) {
     const receipt = chips.exec_receipt;
@@ -372,6 +478,18 @@ function rollTemplate(issue, ctx) {
                   <span class="board-card__roll-child-title"
                     >${c.title || c.id}</span
                   >
+                  ${formatPlannedExecution(
+                    c.workflow?.chips?.planned_execution,
+                    c.workflow?.chips?.exec_receipt
+                  )
+                    ? html`<span class="board-card__roll-child-chips">
+                        ${plannedExecutionChip(
+                          c.workflow?.chips?.planned_execution,
+                          c.workflow?.chips?.exec_receipt
+                        )}
+                        ${compactExecutionChip(c.workflow?.chips?.exec_receipt)}
+                      </span>`
+                    : ''}
                 </button>`
             )}
           </div>`

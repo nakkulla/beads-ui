@@ -7360,6 +7360,16 @@ html[data-theme='dark'] {
   font-family: var(--font-mono, monospace);
 }
 
+.detail-summary__chip.ctl-chip--planned[data-kind='delegated'] {
+  color: var(--chip-route);
+  border-color: var(--border-route);
+}
+
+.detail-summary__chip.ctl-chip--planned[data-kind='main'] {
+  color: var(--chip-ft);
+  border-color: var(--border-ft);
+}
+
 .detail-summary__gates {
   display: flex;
   gap: var(--sp-8);

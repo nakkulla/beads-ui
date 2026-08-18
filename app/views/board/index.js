@@ -18,7 +18,7 @@ import { filterBarTemplate } from './filter-bar.js';
  * enough to render (title/status) and to order with `cmpChildOrder`
  * (metadata.task_order / title / created_at).
  *
- * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, created_at?: number | string, updated_at?: number | string }} ChildRow
+ * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, workflow?: Record<string, any>, created_at?: number | string, updated_at?: number | string }} ChildRow
  */
 
 /**
@@ -439,6 +439,7 @@ export function createBoardView(mount_element, options) {
         title: it.title,
         status: it.status,
         metadata: /** @type {any} */ (it).metadata,
+        workflow: /** @type {any} */ (it).workflow,
         created_at: it.created_at,
         updated_at: it.updated_at
       });

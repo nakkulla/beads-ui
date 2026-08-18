@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { formatPlannedExecution } from '../board/card.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,
@@ -328,6 +329,10 @@ export function summaryHeaderTemplate(data) {
   const pr_url = typeof metadata.pr_url === 'string' ? metadata.pr_url : '';
   const receipt =
     typeof metadata.exec_receipt === 'string' ? metadata.exec_receipt : '';
+  const planned_execution = formatPlannedExecution(
+    workflow.planned_execution,
+    workflow.exec_receipt
+  );
   return html`<section class="detail-summary" data-seam="detail-summary">
     <div class="detail-summary__chips">
       <span class="detail-summary__chip detail-summary__chip--status"
@@ -350,6 +355,14 @@ export function summaryHeaderTemplate(data) {
             target="_blank"
             rel="noreferrer"
             >PR</a
+          >`
+        : ''}
+      ${planned_execution
+        ? html`<span
+            class="detail-summary__chip detail-summary__chip--planned ctl-chip--planned"
+            data-kind=${planned_execution.kind}
+            title=${planned_execution.title}
+            >${planned_execution.label}</span
           >`
         : ''}
       ${receipt
