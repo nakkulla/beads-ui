@@ -60,12 +60,14 @@ const log = debug('worker:scheduler');
  * @property {string|null} worktree_realpath
  * @property {string|null} branch
  * @property {string|null} head_sha
+ * @property {string|null} [branch_head_sha]
  * @property {string|null} base_oid
  * @property {string|null} status_digest
  */
 /**
  * @typedef {Object} StaleWorkAdmission
  * @property {1} schema
+ * @property {'worktree'|'branch'} residue
  * @property {'unique'|'unknown'} state
  * @property {string} cause
  * @property {WorktreeSummary} summary
@@ -1091,15 +1093,11 @@ export function createScheduler(deps) {
    * @returns {StaleWorkAdmission}
    */
   function staleWorkAdmission(observation, bead_id, resume_attempt) {
-    // Ownership trusts the observation: a branch-only residue (worktree
-    // absent, `worktree_realpath` null) is still worker-owned, and demoting it
-    // to `ownership_unknown` here hid the real cause (e.g. `branch_ahead`) and
-    // disabled every action. Only continue/backup_fresh need a real worktree
-    // path, so they gate on `has_worktree` below.
     const owned =
       observation?.owned === true && observation?.identity?.branch === bead_id;
     const has_worktree =
       typeof observation?.identity?.worktree_realpath === 'string';
+    const residue = has_worktree ? 'worktree' : 'branch';
     const state =
       owned && (observation?.state === 'unique' || resume_attempt !== null)
         ? 'unique'
@@ -1124,17 +1122,19 @@ export function createScheduler(deps) {
       worktree_realpath: null,
       branch: null,
       head_sha: null,
+      branch_head_sha: null,
       base_oid: null,
       status_digest: null
     };
     const identity_digest = continuationDigest(identity);
     const capability = {
-      can_resume: owned && resume_attempt !== null,
-      can_continue:
-        owned && has_worktree && resume_attempt === null && state === 'unique',
-      can_backup_fresh:
-        owned && has_worktree && resume_attempt === null && state === 'unique',
-      can_recheck: owned
+      can_resume:
+        owned && has_worktree && state === 'unique' && resume_attempt !== null,
+      can_continue: owned && has_worktree && state === 'unique',
+      can_backup_fresh: owned && state === 'unique',
+      can_recheck:
+        owned &&
+        (state === 'unknown' || (residue === 'branch' && state === 'unique'))
     };
     const action_id = continuationDigest({
       identity_digest,
@@ -1143,6 +1143,7 @@ export function createScheduler(deps) {
     });
     return {
       schema: 1,
+      residue,
       state,
       cause,
       summary,
@@ -1162,12 +1163,13 @@ export function createScheduler(deps) {
       'worktree_realpath',
       'branch',
       'head_sha',
+      'branch_head_sha',
       'base_oid',
       'status_digest'
     ].every(
       (key) =>
-        expected[/** @type {keyof StaleWorkIdentity} */ (key)] ===
-        observed[/** @type {keyof StaleWorkIdentity} */ (key)]
+        (expected[/** @type {keyof StaleWorkIdentity} */ (key)] ?? null) ===
+        (observed[/** @type {keyof StaleWorkIdentity} */ (key)] ?? null)
     );
   }
 
@@ -1194,6 +1196,7 @@ export function createScheduler(deps) {
         worktree_realpath: expected.worktree_realpath,
         branch: expected.branch,
         head_sha: expected.head_sha,
+        branch_head_sha: expected.branch_head_sha,
         base_oid: cut_base,
         status_digest:
           expected.status_digest || continuationDigest({ expected, cut_base })

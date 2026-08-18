@@ -3793,8 +3793,9 @@ describe('worker/queue-store skip-reason recording', () => {
     const store = createQueueStore();
     const stale_work = {
       schema: 1,
+      residue: 'branch',
       state: 'unique',
-      cause: 'dirty_unique',
+      cause: 'ahead_not_contained',
       summary: {
         staged_count: 1,
         unstaged_count: 0,
@@ -3809,9 +3810,10 @@ describe('worker/queue-store skip-reason recording', () => {
       can_backup_fresh: true,
       can_recheck: true,
       identity: {
-        worktree_realpath: '/private/repo/.worktrees/UI-1',
+        worktree_realpath: null,
         branch: 'UI-1',
-        head_sha: 'b'.repeat(40),
+        head_sha: null,
+        branch_head_sha: 'e'.repeat(40),
         base_oid: 'c'.repeat(40),
         status_digest: 'd'.repeat(64)
       }
@@ -3827,10 +3829,43 @@ describe('worker/queue-store skip-reason recording', () => {
     expect(reloaded.admission['UI-1'].stale_work).toEqual(stale_work);
   });
 
+  test('defaults a legacy stale-work residue to worktree', () => {
+    const store = createQueueStore();
+    const stale_work = {
+      schema: 1,
+      state: 'unique',
+      cause: 'dirty_unique',
+      summary: {
+        staged_count: 1,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      },
+      identity_digest: 'a'.repeat(64),
+      action_id: 'action-1',
+      can_resume: false,
+      can_continue: true,
+      can_backup_fresh: true,
+      can_recheck: false
+    };
+
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'worktree_stale_work',
+      stale_work
+    });
+
+    expect(store.snapshot(WS).admission['UI-1'].stale_work).toMatchObject({
+      residue: 'worktree'
+    });
+  });
+
   test('no-ops an unchanged stale-work snapshot without bumping revision', () => {
     const store = createQueueStore();
     const stale_work = {
       schema: 1,
+      residue: 'branch',
       state: 'unknown',
       cause: 'observe_failed',
       summary: {
@@ -3845,7 +3880,15 @@ describe('worker/queue-store skip-reason recording', () => {
       can_resume: false,
       can_continue: false,
       can_backup_fresh: false,
-      can_recheck: true
+      can_recheck: true,
+      identity: {
+        worktree_realpath: null,
+        branch: 'UI-1',
+        head_sha: null,
+        branch_head_sha: 'b'.repeat(40),
+        base_oid: 'c'.repeat(40),
+        status_digest: 'd'.repeat(64)
+      }
     };
     store.recordAdmission(WS, {
       bead_id: 'UI-1',

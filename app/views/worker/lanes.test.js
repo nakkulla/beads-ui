@@ -331,6 +331,48 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
     expect(row.querySelector('.worker-mini__stale-backup')).toBeNull();
     expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
   });
+
+  test('renders branch residue with commit count and allowed actions', () => {
+    const stale_work = staleWorkProjection({
+      reason: 'worktree_stale_work',
+      stale_work: {
+        residue: 'branch',
+        state: 'unique',
+        cause: 'ahead_not_contained',
+        summary: {
+          staged_count: 4,
+          unstaged_count: 3,
+          untracked_count: 2,
+          branch_ahead: 5,
+          head_ahead: 0
+        },
+        action_id: 'opaque-action',
+        can_resume: false,
+        can_continue: false,
+        can_backup_fresh: true,
+        can_recheck: true
+      }
+    });
+
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: false,
+      stale_work
+    });
+
+    expect(row.textContent).toContain('이전 브랜치 보존됨');
+    expect(row.textContent).toContain('고유 commit 5');
+    expect(row.textContent).not.toContain('staged 4');
+    expect(row.textContent).not.toContain('unstaged 3');
+    expect(row.textContent).not.toContain('untracked 2');
+    expect(row.textContent).toContain(
+      '로컬 branch의 고유 commit이 최신 base에 포함됐음을 증명하지 못했습니다'
+    );
+    expect(row.querySelector('.worker-mini__stale-continue')).toBeNull();
+    expect(row.querySelector('.worker-mini__stale-backup')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__stale-recheck')).not.toBeNull();
+  });
 });
 
 describe('candidate card', () => {

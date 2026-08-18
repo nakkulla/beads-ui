@@ -76,6 +76,98 @@ function input(operation_id) {
 }
 
 describe('worker recovery archive real-git integration', () => {
+  test('archives a branch-only commit range without worktree artifacts', () => {
+    const base_oid = git(['rev-parse', 'HEAD']);
+    git(['checkout', '-b', 'UI-1']);
+    write(path.join(repo, 'branch-only.txt'), 'branch-only\n');
+    git(['add', 'branch-only.txt']);
+    git(['commit', '-m', 'branch-only']);
+    const branch_head_sha = git(['rev-parse', 'HEAD']);
+    const archive = createRecoveryArchive({ now: () => 5000 });
+
+    const result = archive.createBranch({
+      workspace,
+      archive_id: 'auto-reclaim-UI-1',
+      repo,
+      ref: 'refs/heads/UI-1',
+      base_oid,
+      branch_head_sha
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      return;
+    }
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(result.receipt.path, 'manifest.json'), 'utf8')
+    );
+    expect(manifest).toMatchObject({
+      mode: 'branch-only',
+      source_snapshot: {
+        repo,
+        ref: 'refs/heads/UI-1',
+        base_oid,
+        branch_head_sha
+      },
+      excluded: [
+        'worktree-patch',
+        'index-patch',
+        'untracked-files',
+        'submodule-and-special-file-checks'
+      ],
+      files: []
+    });
+    expect(manifest.artifacts).toHaveLength(1);
+    expect(manifest.artifacts[0]).toMatchObject({
+      path: 'commits.bundle',
+      kind: 'bundle'
+    });
+    expect(
+      git([
+        'bundle',
+        'list-heads',
+        path.join(result.receipt.path, 'commits.bundle')
+      ])
+    ).toContain(`${branch_head_sha} refs/heads/UI-1`);
+    expect(archive.verify(result.receipt.path)).toEqual({
+      ok: true,
+      receipt: result.receipt
+    });
+  });
+
+  test('fails a branch-only archive when bundle verification fails', () => {
+    const base_oid = git(['rev-parse', 'HEAD']);
+    git(['checkout', '-b', 'UI-1']);
+    write(path.join(repo, 'branch-only.txt'), 'branch-only\n');
+    git(['add', 'branch-only.txt']);
+    git(['commit', '-m', 'branch-only']);
+    const branch_head_sha = git(['rev-parse', 'HEAD']);
+    const archive = createRecoveryArchive({
+      now: () => 5000,
+      git(cwd, args) {
+        if (args[0] === 'bundle' && args[1] === 'verify') {
+          throw new Error('injected');
+        }
+        return execFileSync('git', args, { cwd, encoding: null });
+      }
+    });
+
+    const result = archive.createBranch({
+      workspace,
+      archive_id: 'auto-reclaim-verify-failed',
+      repo,
+      ref: 'refs/heads/UI-1',
+      base_oid,
+      branch_head_sha
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: 'bundle_create_failed' });
+    expect(
+      fs.existsSync(discardBackupDir(workspace, 'auto-reclaim-verify-failed'))
+    ).toBe(false);
+    expect(git(['rev-parse', 'refs/heads/UI-1'])).toBe(branch_head_sha);
+  });
+
   test('records a checksum-verified committed-source archive for absent cleanup residue', () => {
     const session_log_path = path.join(tmp, 'absent-session.jsonl');
     write(session_log_path, '{"type":"result"}\n');

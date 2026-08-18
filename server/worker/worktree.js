@@ -30,6 +30,7 @@ import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
  * @property {string|null} worktree_realpath
  * @property {string|null} branch
  * @property {string|null} head_sha
+ * @property {string|null} [branch_head_sha]
  * @property {string|null} base_oid
  * @property {string} status_digest
  */
@@ -58,7 +59,7 @@ import { repoOpsDeployWorktreeJournalPath } from './state-paths.js';
  * @property {string[]} unstaged
  */
 /**
- * @typedef {WorktreeObservation & { paths: WorktreeChangedPaths }} InternalWorktreeObservation
+ * @typedef {WorktreeObservation & { paths: WorktreeChangedPaths, ahead_contained?: boolean }} InternalWorktreeObservation
  */
 /**
  * @typedef {Object} WorktreePathState
@@ -263,7 +264,10 @@ async function treePathState(run, cwd, revision, relative_path) {
   if (result.stdout.length === 0) {
     return { ok: true, state: null };
   }
-  const match = /^([0-7]{6}) blob ([0-9a-f]{40,64})\t/.exec(result.stdout);
+  const match =
+    /^([0-7]{6}) (?:blob|tree|commit) ([0-9a-f]{40,64})\t[^\0]*\0$/.exec(
+      result.stdout
+    );
   return match
     ? { ok: true, state: { mode: match[1], oid: match[2] } }
     : { ok: false, state: null };
@@ -374,6 +378,68 @@ function samePathState(left, right) {
       left.mode === right.mode &&
       left.oid === right.oid)
   );
+}
+
+/**
+ * @param {GitRunner} run
+ * @param {string} cwd
+ * @param {string} base_oid
+ * @param {string} ref
+ * @returns {Promise<{ ok: boolean, contained: boolean, cause: string|null }>}
+ */
+async function observeAheadContainment(run, cwd, base_oid, ref) {
+  const merge_count = parseCount(
+    await run(['rev-list', '--count', '--merges', `${base_oid}..${ref}`], {
+      cwd
+    })
+  );
+  if (merge_count === null) {
+    return { ok: false, contained: false, cause: 'observe_failed' };
+  }
+  if (merge_count > 0) {
+    return { ok: true, contained: false, cause: 'ahead_merge_commit' };
+  }
+  const merge_base_result = await run(['merge-base', base_oid, ref], { cwd });
+  const merge_base = merge_base_result.stdout.trim();
+  if (merge_base_result.code !== 0 || !/^[0-9a-f]{40,64}$/i.test(merge_base)) {
+    return { ok: false, contained: false, cause: 'observe_failed' };
+  }
+  const paths_result = await run(
+    ['diff', '--name-only', '-z', '--no-renames', merge_base, ref, '--'],
+    { cwd }
+  );
+  if (
+    paths_result.code !== 0 ||
+    (paths_result.stdout.length > 0 && !paths_result.stdout.endsWith('\0'))
+  ) {
+    return { ok: false, contained: false, cause: 'observe_failed' };
+  }
+  const paths = paths_result.stdout.split('\0').filter(Boolean);
+  for (const relative_path of paths) {
+    const [merge_base_state, ref_state, base_state] = await Promise.all([
+      treePathState(run, cwd, merge_base, relative_path),
+      treePathState(run, cwd, ref, relative_path),
+      treePathState(run, cwd, base_oid, relative_path)
+    ]);
+    if (!merge_base_state.ok || !ref_state.ok || !base_state.ok) {
+      return { ok: false, contained: false, cause: 'observe_failed' };
+    }
+    if (
+      merge_base_state.state?.mode === '160000' ||
+      ref_state.state?.mode === '160000' ||
+      base_state.state?.mode === '160000'
+    ) {
+      return {
+        ok: true,
+        contained: false,
+        cause: 'ahead_submodule_path'
+      };
+    }
+    if (!samePathState(ref_state.state, base_state.state)) {
+      return { ok: true, contained: false, cause: 'ahead_not_contained' };
+    }
+  }
+  return { ok: true, contained: true, cause: null };
 }
 
 /**
@@ -503,7 +569,7 @@ async function observeStatusDigest(run, fs, wt, identity) {
 /**
  * Create a worktree manager bound to a lock manager.
  *
- * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs') }} deps
+ * @param {{ locks: { topologyLock: (repo: string) => Promise<() => void> }, run?: GitRunner, fs?: typeof import('node:fs'), createBranchArchive?: (input: { archive_id: string, repo: string, ref: string, base_oid: string, branch_head_sha: string }) => { ok: boolean, reason?: string }|Promise<{ ok: boolean, reason?: string }> }} deps
  * @returns {{
  *   pathFor: (repo: string, bead_id: string) => string,
  *   exists: (repo: string, bead_id: string) => boolean,
@@ -522,6 +588,7 @@ export function createWorktreeManager(deps) {
   /** @type {GitRunner} */
   const run = deps.run || ((args, options) => runShell('git', args, options));
   const fs = deps.fs || nodeFs;
+  const createBranchArchive = deps.createBranchArchive;
 
   /**
    * @param {string} repo
@@ -939,6 +1006,7 @@ export function createWorktreeManager(deps) {
                 worktree_realpath: null,
                 branch: null,
                 head_sha: null,
+                branch_head_sha: null,
                 base_oid: null,
                 status_digest: sha256('observe_failed')
               },
@@ -962,6 +1030,7 @@ export function createWorktreeManager(deps) {
                 worktree_realpath: null,
                 branch: null,
                 head_sha: null,
+                branch_head_sha: null,
                 base_oid,
                 status_digest: sha256('observe_failed')
               },
@@ -985,6 +1054,7 @@ export function createWorktreeManager(deps) {
                 worktree_realpath: null,
                 branch: null,
                 head_sha: null,
+                branch_head_sha: null,
                 base_oid,
                 status_digest: sha256('observe_failed')
               },
@@ -993,6 +1063,32 @@ export function createWorktreeManager(deps) {
             };
           }
           const branch_present = branch_probe.code === 0;
+          const branch_head_sha = branch_present
+            ? branch_probe.stdout.trim()
+            : null;
+          if (
+            branch_present &&
+            !/^[0-9a-f]{40,64}$/i.test(branch_head_sha ?? '')
+          ) {
+            return {
+              ok: false,
+              state: 'unknown',
+              removed: false,
+              reason: 'observe_failed',
+              cause: 'observe_failed',
+              owned: false,
+              identity: {
+                worktree_realpath: null,
+                branch,
+                head_sha: null,
+                branch_head_sha: null,
+                base_oid,
+                status_digest: sha256('observe_failed')
+              },
+              summary: { ...empty_summary },
+              paths: { staged: [], unstaged: [] }
+            };
+          }
           const branch_ahead = branch_present
             ? parseCount(
                 await run(['rev-list', '--count', `${base_oid}..${branch}`], {
@@ -1012,6 +1108,7 @@ export function createWorktreeManager(deps) {
                 worktree_realpath: null,
                 branch: branch_present ? branch : null,
                 head_sha: null,
+                branch_head_sha,
                 base_oid,
                 status_digest: sha256('observe_failed')
               },
@@ -1021,25 +1118,50 @@ export function createWorktreeManager(deps) {
           }
           if (!wt_present) {
             const state = branch_present ? 'discardable' : 'absent';
-            const cause = branch_ahead > 0 ? 'branch_ahead' : null;
+            /** @type {string|null} */
+            let cause = branch_ahead > 0 ? 'branch_ahead' : null;
+            let ahead_contained = false;
+            let observation_ok = cause === null;
+            if (branch_ahead > 0 && createBranchArchive) {
+              const containment = await observeAheadContainment(
+                run,
+                input.repo,
+                base_oid,
+                `refs/heads/${branch}`
+              );
+              cause = containment.cause;
+              ahead_contained = containment.contained;
+              observation_ok = containment.ok && containment.contained;
+            }
             return {
-              ok: cause === null,
-              state: cause === null ? state : 'unique',
+              ok: observation_ok,
+              state: observation_ok
+                ? state
+                : cause === 'observe_failed'
+                  ? 'unknown'
+                  : 'unique',
               removed: false,
               reason: cause,
               cause,
-              owned: true,
+              owned: branch_present && branch === branchForBead(input.bead_id),
               identity: {
                 worktree_realpath: null,
                 branch: branch_present ? branch : null,
                 head_sha: null,
+                branch_head_sha,
                 base_oid,
                 status_digest: sha256(
-                  JSON.stringify({ branch_present, branch_ahead, base_oid })
+                  JSON.stringify({
+                    branch_present,
+                    branch_head_sha,
+                    branch_ahead,
+                    base_oid
+                  })
                 )
               },
               summary: { ...empty_summary, branch_ahead },
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [] },
+              ahead_contained
             };
           }
 
@@ -1096,6 +1218,7 @@ export function createWorktreeManager(deps) {
                 worktree_realpath,
                 branch: observed_branch,
                 head_sha,
+                branch_head_sha,
                 base_oid,
                 status_digest: sha256('observe_failed')
               },
@@ -1125,6 +1248,7 @@ export function createWorktreeManager(deps) {
                 worktree_realpath,
                 branch: observed_branch,
                 head_sha,
+                branch_head_sha,
                 base_oid,
                 status_digest: sha256('observe_failed')
               },
@@ -1151,22 +1275,61 @@ export function createWorktreeManager(deps) {
             worktree_realpath,
             branch: observed_branch,
             head_sha,
+            branch_head_sha,
             base_oid,
             status_digest: status.status_digest
           };
-          if (branch_ahead > 0 || head_ahead > 0) {
-            const cause = branch_ahead > 0 ? 'branch_ahead' : 'head_ahead';
+          if (
+            head_ahead > 0 &&
+            (observed_branch !== branch || head_sha !== branch_head_sha)
+          ) {
             return {
               ok: false,
               state: 'unique',
               removed: false,
-              reason: cause,
-              cause,
+              reason: 'head_ahead',
+              cause: 'head_ahead',
               owned,
               identity,
               summary,
               paths: { staged: staged_paths, unstaged: unstaged_paths }
             };
+          }
+          let ahead_contained = false;
+          if (branch_ahead > 0) {
+            if (!createBranchArchive) {
+              return {
+                ok: false,
+                state: 'unique',
+                removed: false,
+                reason: 'branch_ahead',
+                cause: 'branch_ahead',
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+            const containment = await observeAheadContainment(
+              run,
+              wt,
+              base_oid,
+              `refs/heads/${branch}`
+            );
+            if (!containment.ok || !containment.contained) {
+              return {
+                ok: false,
+                state: containment.ok ? 'unique' : 'unknown',
+                removed: false,
+                reason: containment.cause,
+                cause: containment.cause,
+                owned,
+                identity,
+                summary,
+                paths: { staged: staged_paths, unstaged: unstaged_paths }
+              };
+            }
+            ahead_contained = true;
           }
           if (!owned) {
             return {
@@ -1217,7 +1380,8 @@ export function createWorktreeManager(deps) {
               owned,
               identity,
               summary,
-              paths: { staged: [], unstaged: [] }
+              paths: { staged: [], unstaged: [] },
+              ahead_contained
             };
           }
           for (const relative_path of staged_paths) {
@@ -1306,7 +1470,8 @@ export function createWorktreeManager(deps) {
             owned,
             identity,
             summary,
-            paths: { staged: staged_paths, unstaged: unstaged_paths }
+            paths: { staged: staged_paths, unstaged: unstaged_paths },
+            ahead_contained
           };
         }
 
@@ -1314,8 +1479,41 @@ export function createWorktreeManager(deps) {
         if (input.preserve === true) {
           return withoutPaths(first);
         }
-        if (!first.ok || first.state === 'absent' || !worktreePresent(first)) {
+        if (!first.ok || first.state === 'absent') {
           return withoutPaths(first);
+        }
+        const has_worktree = worktreePresent(first);
+        const has_contained_ahead_ref =
+          first.ahead_contained === true &&
+          first.summary.branch_ahead > 0 &&
+          typeof first.identity.branch_head_sha === 'string';
+        if (!has_worktree && !has_contained_ahead_ref) {
+          return withoutPaths(first);
+        }
+        if (has_contained_ahead_ref) {
+          let archived;
+          try {
+            archived = await createBranchArchive?.({
+              archive_id: `auto-reclaim-${branch}-${first.identity.base_oid?.slice(0, 12)}-${first.identity.branch_head_sha?.slice(0, 12)}`,
+              repo: input.repo,
+              ref: `refs/heads/${branch}`,
+              base_oid: /** @type {string} */ (first.identity.base_oid),
+              branch_head_sha: /** @type {string} */ (
+                first.identity.branch_head_sha
+              )
+            });
+          } catch {
+            archived = { ok: false, reason: 'archive_failed' };
+          }
+          if (!archived?.ok) {
+            return withoutPaths({
+              ...first,
+              ok: false,
+              state: 'unknown',
+              reason: 'archive_failed',
+              cause: 'archive_failed'
+            });
+          }
         }
         const second = await observe();
         if (
@@ -1356,11 +1554,20 @@ export function createWorktreeManager(deps) {
             });
           }
           const clean = await observe();
+          const working_delta_gone =
+            clean.summary.staged_count === 0 &&
+            clean.summary.unstaged_count === 0 &&
+            clean.summary.untracked_count === 0;
+          const ahead_still_contained =
+            first.ahead_contained === true
+              ? clean.ahead_contained === true
+              : clean.summary.branch_ahead === 0 &&
+                clean.summary.head_ahead === 0;
           if (
             !clean.ok ||
             clean.state !== 'discardable' ||
-            clean.summary.branch_ahead !== 0 ||
-            clean.summary.head_ahead !== 0
+            !working_delta_gone ||
+            !ahead_still_contained
           ) {
             await restoreContainedState(first, changed_paths);
             return withoutPaths({
@@ -1372,20 +1579,43 @@ export function createWorktreeManager(deps) {
             });
           }
         }
-        const removed = await run(['worktree', 'remove', wt], {
-          cwd: input.repo
-        });
-        if (removed.code !== 0) {
-          if (first.state === 'base_contained') {
-            await restoreContainedState(first, changed_paths);
-          }
-          return withoutPaths({
-            ...first,
-            ok: false,
-            state: 'unknown',
-            reason: 'remove_failed',
-            cause: 'remove_failed'
+        if (has_worktree) {
+          const removed = await run(['worktree', 'remove', wt], {
+            cwd: input.repo
           });
+          if (removed.code !== 0) {
+            if (first.state === 'base_contained') {
+              await restoreContainedState(first, changed_paths);
+            }
+            return withoutPaths({
+              ...first,
+              ok: false,
+              state: 'unknown',
+              reason: 'remove_failed',
+              cause: 'remove_failed'
+            });
+          }
+        }
+        if (has_contained_ahead_ref) {
+          const deleted = await run(
+            [
+              'update-ref',
+              '-d',
+              `refs/heads/${branch}`,
+              /** @type {string} */ (first.identity.branch_head_sha)
+            ],
+            { cwd: input.repo }
+          );
+          if (deleted.code !== 0) {
+            return withoutPaths({
+              ...first,
+              ok: false,
+              state: 'unknown',
+              removed: has_worktree,
+              reason: 'ref_delete_failed',
+              cause: 'ref_delete_failed'
+            });
+          }
         }
         return withoutPaths({ ...first, removed: true });
 
@@ -1402,8 +1632,9 @@ export function createWorktreeManager(deps) {
          * @returns {WorktreeObservation}
          */
         function withoutPaths(observation) {
-          const { paths, ...result } = observation;
+          const { paths, ahead_contained, ...result } = observation;
           void paths;
+          void ahead_contained;
           return result;
         }
 

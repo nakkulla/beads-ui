@@ -246,12 +246,14 @@
  * @property {string|null} worktree_realpath
  * @property {string|null} branch
  * @property {string|null} head_sha
+ * @property {string|null} branch_head_sha
  * @property {string|null} base_oid
  * @property {string|null} status_digest
  */
 /**
  * @typedef {Object} StaleWorkAdmission
  * @property {1} schema
+ * @property {'worktree'|'branch'} residue
  * @property {'unique'|'unknown'} state
  * @property {string} cause
  * @property {StaleWorkSummary} summary
@@ -1028,6 +1030,7 @@ function normalizeStaleWork(value) {
   /** @type {Omit<StaleWorkAdmission, 'identity'>} */
   const normalized = {
     schema: 1,
+    residue: value.residue === 'branch' ? 'branch' : 'worktree',
     state: value.state,
     cause: value.cause,
     summary: /** @type {StaleWorkSummary} */ (summary),
@@ -1051,6 +1054,10 @@ function normalizeStaleWork(value) {
       head_sha:
         typeof value.identity.head_sha === 'string'
           ? value.identity.head_sha
+          : null,
+      branch_head_sha:
+        typeof value.identity.branch_head_sha === 'string'
+          ? value.identity.branch_head_sha
           : null,
       base_oid:
         typeof value.identity.base_oid === 'string'
