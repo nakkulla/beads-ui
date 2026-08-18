@@ -3,18 +3,13 @@
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
 import { makeError, makeOk } from '../../app/protocol.js';
-import { workerLabels } from '../../app/utils/worker-eligibility.js';
-import { WORKER_SERIAL_LABEL } from '../../app/utils/worker-serial.js';
-import { tickWorkerQueue } from '../worker/attach.js';
 import {
   AUTO_LITERAL,
   execSettingEnums,
   sessionDefaultEnums,
   validateImplSettings
 } from '../worker/exec-enums.js';
-import { getWorkerRuntime } from '../worker/runtime.js';
 import {
-  getConnWorkspace,
   getGitUserNameInWorkspace,
   log,
   readbackFailureDetail,
@@ -31,52 +26,6 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'resolved',
   'closed'
 ]);
-
-/**
- * Converge the cache and scheduler only after an exact `worker-serial` label
- * mutation has a successful readback proving the requested truth. The generic
- * label reply and subscription refresh stay unchanged for every other case.
- *
- * @param {WebSocket} ws
- * @param {string} requested_bead_id
- * @param {string} label
- * @param {boolean} expected_present
- * @param {unknown} shown
- */
-function convergeWorkerSerialLabel(
-  ws,
-  requested_bead_id,
-  label,
-  expected_present,
-  shown
-) {
-  if (label !== WORKER_SERIAL_LABEL) {
-    return;
-  }
-  const raw_issue = Array.isArray(shown) ? shown[0] : shown;
-  if (!raw_issue || typeof raw_issue !== 'object' || Array.isArray(raw_issue)) {
-    return;
-  }
-  const issue = /** @type {any} */ (raw_issue);
-  if (issue.id !== requested_bead_id || !Array.isArray(issue.labels)) {
-    return;
-  }
-  const present = workerLabels(issue.labels).includes(WORKER_SERIAL_LABEL);
-  if (present !== expected_present) {
-    return;
-  }
-  const workspace = getConnWorkspace(ws)?.root_dir || '';
-  if (workspace.length === 0) {
-    return;
-  }
-  try {
-    getWorkerRuntime().titleCache.refreshFromIssue(workspace, issue);
-  } catch {
-    // Queue enforcement remains authoritative even if UI projection refreshes
-    // fail, so the scheduler tick must still run below.
-  }
-  void Promise.resolve(tickWorkerQueue(workspace)).catch(() => {});
-}
 
 /**
  * @param {WebSocket} ws
@@ -975,7 +924,6 @@ export async function handleLabelAdd(ws, req) {
     return;
   }
   ws.send(JSON.stringify(makeOk(req, shown.data)));
-  convergeWorkerSerialLabel(ws, id, label.trim(), true, shown.data);
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
@@ -1036,7 +984,6 @@ export async function handleLabelRemove(ws, req) {
     return;
   }
   ws.send(JSON.stringify(makeOk(req, shown.data)));
-  convergeWorkerSerialLabel(ws, id, label.trim(), false, shown.data);
   try {
     triggerMutationRefreshOnce(ws);
   } catch {

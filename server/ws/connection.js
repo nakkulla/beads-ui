@@ -96,7 +96,7 @@ import {
   handleWorkerQueueRemove,
   handleWorkerQueueReorder,
   handleWorkerQueueSetOrchestrationDefaults,
-  handleWorkerQueueSetPrWaitHold,
+  handleWorkerQueueSetSerialLaneCount,
   handleWorkerQueueSetSlots,
   handleWorkerQueueToggle,
   handleWorkerRepoOperationDismiss,
@@ -104,6 +104,15 @@ import {
   handleWorkerReviseApprove,
   handleWorkerReviseFix
 } from './worker-handlers.js';
+import {
+  handleParallelAnalysisCancel,
+  handleParallelAnalysisSettingsUpdate,
+  handleParallelAnalysisSnapshot,
+  handleParallelAnalysisStart,
+  handleParallelAnalysisSubmit,
+  handleSubscribeParallelAnalysis,
+  handleUnsubscribeParallelAnalysis
+} from './worker-parallel-analysis-handlers.js';
 import {
   handleGetWorkspace,
   handleGitPullWorkspace,
@@ -532,8 +541,29 @@ export async function handleMessage(ws, data) {
     case 'worker-queue-set-slots':
       handleWorkerQueueSetSlots(ws, req);
       return;
-    case 'worker-queue-set-pr-wait-hold':
-      handleWorkerQueueSetPrWaitHold(ws, req);
+    case 'worker-queue-set-serial-lane-count':
+      handleWorkerQueueSetSerialLaneCount(ws, req);
+      return;
+    case 'subscribe-worker-parallel-analysis':
+      handleSubscribeParallelAnalysis(ws, req);
+      return;
+    case 'unsubscribe-worker-parallel-analysis':
+      handleUnsubscribeParallelAnalysis(ws, req);
+      return;
+    case 'worker-parallel-analysis-snapshot':
+      handleParallelAnalysisSnapshot(ws, req);
+      return;
+    case 'worker-parallel-analysis-start':
+      await handleParallelAnalysisStart(ws, req);
+      return;
+    case 'worker-parallel-analysis-cancel':
+      handleParallelAnalysisCancel(ws, req);
+      return;
+    case 'worker-parallel-analysis-settings-update':
+      handleParallelAnalysisSettingsUpdate(ws, req);
+      return;
+    case 'worker-parallel-analysis-submit':
+      await handleParallelAnalysisSubmit(ws, req);
       return;
     case 'worker-queue-set-orchestration-defaults':
       handleWorkerQueueSetOrchestrationDefaults(ws, req);

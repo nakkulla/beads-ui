@@ -406,9 +406,10 @@ export function discardReceiptTemplate(item) {
  * @property {string} title - Bead title (falls back to id).
  * @property {string} [reason] - Candidate reason chip (spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged.
- * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'} lane -
+ * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
  * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
  * every repo into five lanes (UI-qrfo §8); the Worker console never sets them.
+ * `s1`..`s5` are the fixed serial waiting lanes (UI-04vo §1).
  * @property {string} [workspace_name] - Owning workspace name. Present only on
  * the monitor tab, where a card's repo is a coordinate rather than context
  * (UI-qrfo §8) — absent, no badge is drawn and the Worker console renders
@@ -472,9 +473,11 @@ export function discardReceiptTemplate(item) {
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
- * @property {boolean} [selectable] - Waiting queue row exposes a bulk checkbox.
- * @property {boolean} [selected] - Browser-local bulk selection state.
- * @property {boolean|null} [worker_serial] - Projected execution mode; null is unknown.
+ * @property {boolean} [ghost] - Serial-lane occupancy row (UI-04vo §4): the
+ * lineage holding the lane, drawn dimmed and never draggable.
+ * @property {number} [seq] - 1-based execution order number in a serial lane.
+ * @property {boolean} [worker_serial] - Legacy `worker-serial` label residue:
+ * renders a display-only strikethrough chip. Never a scheduling input.
  */
 
 /**
@@ -501,28 +504,28 @@ export function miniRow(item) {
   // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
   const two_line = item.lane === 'done' && !card;
   const done_at_label = two_line ? formatRelativeTime(item.done_at) : '';
-  const select_el = item.selectable
-    ? html`<input
-        class="worker-mini__select"
-        type="checkbox"
-        data-bead-id=${item.id}
-        aria-label=${`${item.id} 선택`}
-        .checked=${item.selected === true}
-      />`
-    : '';
   // 장식 핸들이다: 드래그는 행 전체(`.worker-mini[draggable="true"]`)에서
   // 시작하고, 인터랙티브 자식 제외는 드래그 컨트롤러가 판정한다.
   const grip = draggable
     ? html`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`
     : '';
+  // 직렬 레인 실행 순번 (UI-04vo §4).
+  const seq_el =
+    typeof item.seq === 'number'
+      ? html`<span class="worker-mini__seq" aria-hidden="true"
+          >${item.seq}</span
+        >`
+      : '';
+  // 표시 전용 취소선 잔재 (UI-04vo §4): 라벨 정리는 사용자/워크플로 몫이고,
+  // 스케줄링은 이 라벨을 더 이상 소비하지 않는다.
   const serial_el =
     item.worker_serial === true
-      ? html`<span class="worker-mini__serial">머지까지 단독</span>`
-      : item.worker_serial === null
-        ? html`<span class="worker-mini__serial worker-mini__serial--unknown"
-            >실행 방식 확인 중</span
-          >`
-        : '';
+      ? html`<span
+          class="worker-mini__serial worker-mini__serial--legacy"
+          title="legacy worker-serial 라벨 잔재 — 스케줄링에 사용되지 않습니다"
+          >worker-serial</span
+        >`
+      : '';
   // 레포 뱃지는 값이 있을 때만 그린다 (UI-qrfo §8) — Worker 탭 행은 이 필드를
   // 싣지 않으므로 렌더가 그대로다.
   const repo_el = item.workspace_name
@@ -699,13 +702,13 @@ export function miniRow(item) {
     item.revise_action
   );
   return html`<div
-    class="worker-mini${card ? ' worker-mini--card' : ''}${item.selected
-      ? ' worker-mini--selected'
-      : ''}${draggable ? '' : ' worker-mini--static'}${item.done
+    class="worker-mini${card ? ' worker-mini--card' : ''}${draggable
+      ? ''
+      : ' worker-mini--static'}${item.done
       ? ' worker-mini--done'
-      : ''}${merging ? ' worker-mini--merging' : ''}${item.external
-      ? ' worker-mini--external'
-      : ''}"
+      : ''}${item.ghost ? ' worker-mini--ghost' : ''}${merging
+      ? ' worker-mini--merging'
+      : ''}${item.external ? ' worker-mini--external' : ''}"
     style=${merging ? `--progress: ${merging.percent}%` : ''}
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
@@ -728,7 +731,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${select_el}${grip}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
+              ${grip}${seq_el}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}</div>
             ${has_foot
@@ -745,7 +748,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${select_el}${grip}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
+              ${grip}${seq_el}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
             ${discardReceiptTemplate(item)} ${timesMeta(item)}`}
   </div>`;
@@ -848,7 +851,7 @@ export function candidateCard(item) {
  * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
  * actually running, which is the only lane whose header dot breathes.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {

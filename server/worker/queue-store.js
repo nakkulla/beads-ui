@@ -29,6 +29,11 @@
  * failure-resume eligibility ([정리]) still classifies it as external.
  */
 /**
+ * @typedef {Object} SerialLane
+ * @property {string} id - Fixed slot id (`s1`..`s5`); never user-named.
+ * @property {QueueEntry[]} entries - Waiting members in execution order.
+ */
+/**
  * Per-attempt record container (spec §5.2). Phase 9 persists the shape; Phase 10
  * fills the runtime fields at dispatch time. Runtime fields default to null.
  *
@@ -204,8 +209,12 @@
  * (`worker-handlers.js`), and the UI fetches them on demand.
  * @property {string|null} completion_root_id - Root completion intent that
  * owns this repair attempt; null for ordinary sessions.
- * @property {boolean} worker_serial - Whether this attempt's lineage was
- * authoritatively classified as `worker-serial` at its first dispatch.
+ * @property {boolean} worker_serial - RETIRED legacy flag from the global
+ * `worker-serial` mutex regime. Round-trips for history; nothing consumes it
+ * for scheduling and no new dispatch writes it.
+ * @property {string|null} serial_lane_id - Serial lane (`s1`..`s5`) this
+ * attempt's lineage occupies, snapshotted at dispatch; null for parallel-lane
+ * work. Successor attempts of the same lineage inherit it.
  * @property {string|null} completion_op_id - Journal operation paired with the
  * attempt before spawn.
  * @property {'resume_root'|'dispatch_repair'|null} completion_mode - Repair
@@ -228,9 +237,11 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
- * @property {boolean} pr_wait_holds_slot - Whether dispatch runs serially until
- * each durable PR wait leaves through merge cleanup or discard. The legacy key
- * name remains stable; the stored `slots` preference is not overwritten.
+ * @property {SerialLane[]} serial_lanes - Fixed-slot exclusive waiting lanes
+ * (`s1`..`s5`). Array order is display order; `entries` order is execution
+ * order. Length always equals {@link Queue.serial_lane_count}.
+ * @property {number} serial_lane_count - How many serial lanes are active
+ * (1..5). Shrinking returns truncated waiting entries to the parallel lane.
  * @property {string|null} orchestration_model - Workspace default outer launch
  * model, stored as a VALUE rather than a preset reference (spec §C.5). Null
  * leaves dispatch on the hardcoded `opus` fallback.
@@ -960,6 +971,73 @@ function normalizeSlots(value) {
 }
 
 /**
+ * Attempt statuses that no longer own their bead. Mirrors the scheduler's set;
+ * kept here because the submit path must judge "is this bead free to move"
+ * inside the same mutation that moves it.
+ *
+ * @type {Set<string>}
+ */
+const TERMINAL_ATTEMPT_STATUSES = new Set([
+  'done',
+  'failed',
+  'orphaned',
+  'stopped',
+  'discarded'
+]);
+
+/**
+ * Statuses that RELEASE a serial lane (UI-04vo §2). Deliberately NARROWER than
+ * {@link TERMINAL_ATTEMPT_STATUSES}: a `failed`/`orphaned` lineage keeps its
+ * lane until it merges-and-cleans or is discarded, so those two are absent
+ * here even though they are terminal for membership purposes. Mirrors the
+ * scheduler's set — the two must agree or occupancy would mean two things.
+ *
+ * @type {Set<string>}
+ */
+const LANE_RELEASING_ATTEMPT_STATUSES = new Set([
+  'done',
+  'stopped',
+  'discarded'
+]);
+
+/** @type {number} */
+const MIN_SERIAL_LANE_COUNT = 1;
+/** @type {number} */
+const MAX_SERIAL_LANE_COUNT = 5;
+/** @type {number} */
+const DEFAULT_SERIAL_LANE_COUNT = 2;
+
+/**
+ * Coerce a candidate serial-lane count, or null when it is not one. Mirrors
+ * {@link normalizeSlots}: `setSerialLaneCount` REJECTS null without a write,
+ * `normalize` falls back to {@link DEFAULT_SERIAL_LANE_COUNT}.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function normalizeSerialLaneCount(value) {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    return null;
+  }
+  return value >= MIN_SERIAL_LANE_COUNT && value <= MAX_SERIAL_LANE_COUNT
+    ? value
+    : null;
+}
+
+/**
+ * Zero-based slot index of a serial lane id, or null for anything else.
+ *
+ * @param {unknown} id
+ */
+function serialLaneIndex(id) {
+  if (typeof id !== 'string') {
+    return null;
+  }
+  const match = /^s([1-5])$/.exec(id);
+  return match ? Number(match[1]) - 1 : null;
+}
+
+/**
  * Queue properties this module actively normalizes. Any other top-level field
  * is historical opaque data and must round-trip instead of being deleted by an
  * unrelated queue mutation.
@@ -972,7 +1050,11 @@ function normalizeSlots(value) {
 const KNOWN_QUEUE_FIELDS = new Set([
   'revision',
   'auto_advance',
+  // Legacy-drop key: the merge-serial toggle retired by the serial-lane regime
+  // (UI-04vo). Listed so it is DROPPED on load instead of round-tripping.
   'pr_wait_holds_slot',
+  'serial_lanes',
+  'serial_lane_count',
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed',
@@ -1002,19 +1084,33 @@ const KNOWN_QUEUE_FIELDS = new Set([
 ]);
 
 /**
+ * @param {number} count
+ * @returns {SerialLane[]}
+ */
+function emptySerialLanes(count) {
+  /** @type {SerialLane[]} */
+  const lanes = [];
+  for (let i = 0; i < count; i += 1) {
+    lanes.push({ id: `s${i + 1}`, entries: [] });
+  }
+  return lanes;
+}
+
+/**
  * @returns {Queue}
  */
 function emptyQueue() {
   return {
     revision: 0,
     auto_advance: false,
-    pr_wait_holds_slot: false,
     orchestration_model: null,
     orchestration_effort: null,
     orchestration_speed: null,
     session_defaults_migration: null,
     slots: DEFAULT_SLOTS,
     queue: [],
+    serial_lanes: emptySerialLanes(DEFAULT_SERIAL_LANE_COUNT),
+    serial_lane_count: DEFAULT_SERIAL_LANE_COUNT,
     pr_wait: [],
     done: [],
     attempts: {},
@@ -1705,6 +1801,10 @@ export function makeAttempt(fields) {
         ? fields.completion_root_id
         : null,
     worker_serial: fields.worker_serial === true,
+    serial_lane_id:
+      serialLaneIndex(fields.serial_lane_id) !== null
+        ? /** @type {string} */ (fields.serial_lane_id)
+        : null,
     completion_op_id:
       typeof fields.completion_op_id === 'string'
         ? fields.completion_op_id
@@ -2113,7 +2213,8 @@ function normalizeQueue(raw) {
       ? Math.max(0, Math.floor(raw.revision))
       : 0;
   q.slots = normalizeSlots(raw.slots) ?? DEFAULT_SLOTS;
-  q.pr_wait_holds_slot = raw.pr_wait_holds_slot === true;
+  // `pr_wait_holds_slot` has no destination field: the merge-serial toggle is
+  // retired (UI-04vo §1) and the stored flag is DROPPED on load.
   // Resolved at CALL time, never at module load: the enum table is catalog-
   // derived and the catalog is a config-file input. A stored value the current
   // catalog no longer offers drops to null, exactly as the old `exec_defaults`
@@ -2153,6 +2254,52 @@ function normalizeQueue(raw) {
   // (worker-phase2 §9 — never rewrite a queue the user built).
   q.pr_wait = normalizeLane(raw.pr_wait);
   q.done = normalizeLane(raw.done);
+  // Serial lanes (UI-04vo §1). Single-membership invariant across the waiting
+  // area: the parallel lane wins first, then lanes in slot order. Entries of a
+  // lane beyond the stored count (crash or hand-edit residue) RETURN to the
+  // parallel tail rather than being dropped — the migration must not lose
+  // beads.
+  q.serial_lane_count =
+    normalizeSerialLaneCount(raw.serial_lane_count) ??
+    DEFAULT_SERIAL_LANE_COUNT;
+  /** @type {Map<string, QueueEntry[]>} */
+  const stored_lanes = new Map();
+  /** @type {QueueEntry[]} */
+  const orphan_entries = [];
+  if (Array.isArray(raw.serial_lanes)) {
+    for (const lane of raw.serial_lanes) {
+      if (!isRecord(lane)) {
+        continue;
+      }
+      const index = serialLaneIndex(lane.id);
+      const entries = normalizeLane(lane.entries);
+      if (
+        index !== null &&
+        index < q.serial_lane_count &&
+        !stored_lanes.has(String(lane.id))
+      ) {
+        stored_lanes.set(String(lane.id), entries);
+      } else {
+        orphan_entries.push(...entries);
+      }
+    }
+  }
+  const lane_members = new Set(q.queue.map((e) => e.bead_id));
+  q.serial_lanes = emptySerialLanes(q.serial_lane_count);
+  for (const lane of q.serial_lanes) {
+    for (const entry of stored_lanes.get(lane.id) || []) {
+      if (!lane_members.has(entry.bead_id)) {
+        lane_members.add(entry.bead_id);
+        lane.entries.push(entry);
+      }
+    }
+  }
+  for (const entry of orphan_entries) {
+    if (!lane_members.has(entry.bead_id)) {
+      lane_members.add(entry.bead_id);
+      q.queue.push(entry);
+    }
+  }
   if (isRecord(raw.attempts)) {
     for (const [key, value] of Object.entries(raw.attempts)) {
       if (isRecord(value) && typeof value.bead_id === 'string') {
@@ -2321,6 +2468,164 @@ function clampIndex(index, length) {
 }
 
 /**
+ * Stable topological correction of one serial lane's order under `blocks`
+ * edges (UI-04vo §3). Pure and deterministic: recomputable from any snapshot,
+ * never stored. The user order is preserved as far as the edges allow — the
+ * next emitted bead is always the earliest user-ordered bead whose in-lane
+ * blockers have all been emitted. Edges naming ids outside `order` carry no
+ * ordering signal. A cycle disables correction entirely (fail-visible at the
+ * caller): the input order returns unchanged with `cycle: true`.
+ *
+ * @param {string[]} order - User-ordered bead ids of one lane.
+ * @param {{ blocker: string, blockee: string }[]} edges - Direct blocks edges.
+ * @returns {{ order: string[], corrections: { bead_id: string, after: string }[], cycle: boolean }}
+ */
+export function orderLaneByBlocks(order, edges) {
+  const index_of = new Map(order.map((id, index) => [id, index]));
+  /** @type {Map<string, Set<string>>} */
+  const blockers_of = new Map(order.map((id) => [id, new Set()]));
+  for (const edge of edges) {
+    if (
+      edge.blocker !== edge.blockee &&
+      index_of.has(edge.blocker) &&
+      index_of.has(edge.blockee)
+    ) {
+      /** @type {Set<string>} */ (blockers_of.get(edge.blockee)).add(
+        edge.blocker
+      );
+    }
+  }
+  const emitted = new Set();
+  /** @type {string[]} */
+  const sorted = [];
+  while (sorted.length < order.length) {
+    const next = order.find((id) => {
+      if (emitted.has(id)) {
+        return false;
+      }
+      for (const blocker of /** @type {Set<string>} */ (blockers_of.get(id))) {
+        if (!emitted.has(blocker)) {
+          return false;
+        }
+      }
+      return true;
+    });
+    if (next === undefined) {
+      return { order: [...order], corrections: [], cycle: true };
+    }
+    emitted.add(next);
+    sorted.push(next);
+  }
+  /** @type {{ bead_id: string, after: string }[]} */
+  const corrections = [];
+  const sorted_index = new Map(sorted.map((id, index) => [id, index]));
+  for (const id of sorted) {
+    let moved_after = null;
+    for (const blocker of /** @type {Set<string>} */ (blockers_of.get(id))) {
+      const was_before =
+        Number(index_of.get(id)) < Number(index_of.get(blocker));
+      const now_after =
+        Number(sorted_index.get(id)) > Number(sorted_index.get(blocker));
+      if (was_before && now_after) {
+        if (
+          moved_after === null ||
+          Number(sorted_index.get(blocker)) >
+            Number(sorted_index.get(moved_after))
+        ) {
+          moved_after = blocker;
+        }
+      }
+    }
+    if (moved_after !== null) {
+      corrections.push({ bead_id: id, after: moved_after });
+    }
+  }
+  return { order: sorted, corrections, cycle: false };
+}
+
+/**
+ * Resolve a waiting-lane name to its live entries array, or null when the
+ * name is unknown or points at a serial slot beyond the configured count. An
+ * absent/`'parallel'` lane is the parallel queue, so stale lane-less clients
+ * keep working.
+ *
+ * @param {Queue} q
+ * @param {unknown} lane
+ * @returns {QueueEntry[]|null}
+ */
+function waitingLaneEntries(q, lane) {
+  if (lane === undefined || lane === null || lane === 'parallel') {
+    return q.queue;
+  }
+  const index = serialLaneIndex(lane);
+  if (index === null || index >= q.serial_lane_count) {
+    return null;
+  }
+  return q.serial_lanes[index].entries;
+}
+
+/**
+ * Rebind a bead's lineage to the waiting lane it now sits in (UI-04vo §2).
+ *
+ * A bead stays in its lane for the whole life of its attempt, so occupancy and
+ * placement normally agree. They can only disagree when a human MOVES a bead
+ * whose lineage is still holding a lane — dragging a failed bead to another
+ * lane, or out of the waiting area entirely. Without this rebind the old lane
+ * would stay occupied by an attempt whose bead has left, and nothing could ever
+ * release it: the release events (merge cleanup, discard) fire against the
+ * bead's CURRENT work, not the abandoned record.
+ *
+ * Only non-releasing attempts are rebound — a `done`/`stopped`/`discarded`
+ * record is history and its lane snapshot stays as it was.
+ *
+ * @param {Queue} q
+ * @param {string} bead_id
+ * @param {string|null} lane_id - New lane, or null when leaving serial lanes.
+ */
+function rebindLineageLane(q, bead_id, lane_id) {
+  for (const attempt of Object.values(q.attempts)) {
+    if (
+      attempt.bead_id === bead_id &&
+      !LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status))
+    ) {
+      attempt.serial_lane_id = lane_id;
+    }
+  }
+}
+
+/**
+ * Apply the blocks correction to one serial lane's durable order (UI-04vo §3).
+ *
+ * The correction has to land on the STORED order, not only on the snapshot
+ * projection: head selection reads `entries[0]`, so a lane whose blocker sits
+ * behind its blockee would pick a permanently blocked head and stall forever.
+ * A cycle disables the correction (fail-visible in the UI) rather than
+ * inventing an order.
+ *
+ * @param {Queue} q
+ * @param {unknown} lane
+ * @param {{ blocker: string, blockee: string }[]|undefined} blocks_edges
+ */
+function applyLaneBlocksOrder(q, lane, blocks_edges) {
+  const index = serialLaneIndex(lane);
+  if (index === null || index >= q.serial_lane_count) {
+    return;
+  }
+  const target = q.serial_lanes[index];
+  const topo = orderLaneByBlocks(
+    target.entries.map((e) => e.bead_id),
+    Array.isArray(blocks_edges) ? blocks_edges : []
+  );
+  if (topo.cycle) {
+    return;
+  }
+  const by_id = new Map(target.entries.map((e) => [e.bead_id, e]));
+  target.entries = topo.order.map(
+    (bead_id) => /** @type {QueueEntry} */ (by_id.get(bead_id))
+  );
+}
+
+/**
  * Remove a bead from every lane (used for two-way moves + dedupe).
  *
  * The merge queue goes with them (UI-5v7d §1): a merge turn only means anything
@@ -2333,6 +2638,9 @@ function clampIndex(index, length) {
  */
 function removeFromLanes(q, bead_id) {
   q.queue = q.queue.filter((e) => e.bead_id !== bead_id);
+  for (const lane of q.serial_lanes) {
+    lane.entries = lane.entries.filter((e) => e.bead_id !== bead_id);
+  }
   q.pr_wait = q.pr_wait.filter((e) => e.bead_id !== bead_id);
   q.done = q.done.filter((e) => e.bead_id !== bead_id);
   q.merge_queue = q.merge_queue.filter((e) => e.bead_id !== bead_id);
@@ -2361,6 +2669,9 @@ function removeFromLanes(q, bead_id) {
 function enqueueMember(q, bead_id, external) {
   const in_other_lane =
     q.queue.some((e) => e.bead_id === bead_id) ||
+    q.serial_lanes.some((lane) =>
+      lane.entries.some((e) => e.bead_id === bead_id)
+    ) ||
     q.done.some((e) => e.bead_id === bead_id);
   if (in_other_lane) {
     return false;
@@ -2739,55 +3050,180 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Place a bead into the waiting `queue` at an index, removing it from every
-     * other lane (dedupe). CAS-guarded.
-     *
-     * There is no `lane` input any more: with the serial/parallel split gone
-     * (worker-phase2 §3) the only placeable lane is `queue`, so an argument
-     * with one legal value would be pure ceremony — and a stale client that
-     * still sends `lane:'serial'` now simply lands in the one queue instead of
-     * being rejected.
+     * Place a bead into a waiting lane at an index, removing it from every
+     * other lane (single-membership invariant). CAS-guarded. `lane` names the
+     * parallel lane (`'parallel'`, or absent for stale clients) or an active
+     * serial lane (`'s1'`..); an unknown lane or a slot beyond the configured
+     * count is REJECTED without a write.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, index?: number }} input
+     * @param {{ expected_revision: number, bead_id: string, lane?: string, index?: number, blocks_edges?: { blocker: string, blockee: string }[] }} input
      * @returns {QueueOpResult}
      */
     place(workspace, input) {
-      const { expected_revision, bead_id, index } = input;
+      const { expected_revision, bead_id, lane, index } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
+        if (waitingLaneEntries(next, lane) === null) {
+          return false;
+        }
         removeFromLanes(next, bead_id);
-        const arr = next.queue;
+        const arr = /** @type {QueueEntry[]} */ (
+          waitingLaneEntries(next, lane)
+        );
         arr.splice(
           clampIndex(index ?? arr.length, arr.length),
           0,
           makeQueueEntry(bead_id, now())
         );
+        rebindLineageLane(
+          next,
+          bead_id,
+          serialLaneIndex(lane) === null ? null : String(lane)
+        );
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
         return true;
       });
     },
 
     /**
-     * Reorder a bead within the waiting `queue`. CAS-guarded.
+     * Reorder a bead within one waiting lane. CAS-guarded. A bead absent from
+     * the named lane is REJECTED — cross-lane moves go through {@link place}.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, bead_id: string, to_index: number }} input
+     * @param {{ expected_revision: number, bead_id: string, lane?: string, to_index: number, blocks_edges?: { blocker: string, blockee: string }[] }} input
      * @returns {QueueOpResult}
      */
     reorder(workspace, input) {
-      const { expected_revision, bead_id, to_index } = input;
+      const { expected_revision, bead_id, lane, to_index } = input;
       return applyMutation(workspace, expected_revision, (next) => {
-        const arr = next.queue;
+        const arr = waitingLaneEntries(next, lane);
+        if (arr === null) {
+          return false;
+        }
         const from = arr.findIndex((e) => e.bead_id === bead_id);
         if (from < 0) {
           return false;
         }
         const [entry] = arr.splice(from, 1);
         arr.splice(clampIndex(to_index, arr.length), 0, entry);
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
         return true;
       });
+    },
+
+    /**
+     * Resize the fixed serial-lane set (UI-04vo §1). CAS-guarded. Truncated
+     * lanes RETURN their waiting entries to the parallel tail in lane order —
+     * shrinking never loses beads. Active lineages are untouched: occupancy
+     * lives on attempts, not on waiting entries.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, count: unknown }} input
+     * @returns {QueueOpResult}
+     */
+    setSerialLaneCount(workspace, input) {
+      const { expected_revision, count } = input;
+      return applyMutation(workspace, expected_revision, (next) => {
+        const value = normalizeSerialLaneCount(count);
+        if (value === null) {
+          return false;
+        }
+        if (value < next.serial_lanes.length) {
+          const removed = next.serial_lanes.slice(value);
+          next.serial_lanes = next.serial_lanes.slice(0, value);
+          for (const lane of removed) {
+            next.queue.push(...lane.entries);
+          }
+        }
+        while (next.serial_lanes.length < value) {
+          next.serial_lanes.push({
+            id: `s${next.serial_lanes.length + 1}`,
+            entries: []
+          });
+        }
+        next.serial_lane_count = value;
+        return true;
+      });
+    },
+
+    /**
+     * Move an analysis-recommended group into one serial lane in a SINGLE CAS
+     * (UI-04vo §9). All-or-nothing by construction: every membership,
+     * activity, lane, and size check runs on the same clone the write lands
+     * on, and one failure rejects the whole mutation without a revision bump —
+     * there is no partial application and no second write to undo.
+     *
+     * Placement appends after the lane's existing entries in submit order, and
+     * the blocks correction ({@link orderLaneByBlocks}) is the FINAL order:
+     * a user-submitted sequence never overrides a hard dependency.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, lane: string, ordered_bead_ids: string[], blocks_edges?: { blocker: string, blockee: string }[] }} input
+     * @returns {QueueOpResult & { reason?: string }}
+     */
+    applySerialGroup(workspace, input) {
+      const { expected_revision, lane, ordered_bead_ids } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyMutation(workspace, expected_revision, (next) => {
+        const index = serialLaneIndex(lane);
+        if (index === null || index >= next.serial_lane_count) {
+          reason = 'lane_invalid';
+          return false;
+        }
+        if (!Array.isArray(ordered_bead_ids) || ordered_bead_ids.length < 2) {
+          reason = 'group_size';
+          return false;
+        }
+        if (new Set(ordered_bead_ids).size !== ordered_bead_ids.length) {
+          reason = 'duplicate_member';
+          return false;
+        }
+        const active = new Set();
+        for (const attempt of Object.values(next.attempts)) {
+          if (!TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))) {
+            active.add(attempt.bead_id);
+          }
+        }
+        for (const entry of next.pr_wait) {
+          active.add(entry.bead_id);
+        }
+        for (const operation of Object.values(next.discard_operations)) {
+          if (operation.phase !== 'done') {
+            active.add(operation.bead_id);
+          }
+        }
+        for (const bead_id of ordered_bead_ids) {
+          const queued =
+            next.queue.some((e) => e.bead_id === bead_id) ||
+            next.serial_lanes.some((entry_lane) =>
+              entry_lane.entries.some((e) => e.bead_id === bead_id)
+            );
+          if (!queued) {
+            reason = 'member_absent';
+            return false;
+          }
+          if (active.has(bead_id)) {
+            reason = 'member_active';
+            return false;
+          }
+        }
+        const added_at = now();
+        for (const bead_id of ordered_bead_ids) {
+          removeFromLanes(next, bead_id);
+        }
+        const target = next.serial_lanes[index];
+        for (const bead_id of ordered_bead_ids) {
+          target.entries.push(makeQueueEntry(bead_id, added_at));
+          rebindLineageLane(next, bead_id, String(lane));
+        }
+        applyLaneBlocksOrder(next, lane, input.blocks_edges);
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
     },
 
     /**
@@ -3616,22 +4052,6 @@ export function createQueueStore(options = {}) {
     },
 
     /**
-     * Toggle merge-serial dispatch through the durable PR-wait lifecycle. The
-     * flag is durable because the wait routinely spans server restarts.
-     *
-     * @param {string} workspace
-     * @param {{ expected_revision: number, on: boolean }} input
-     * @returns {QueueOpResult}
-     */
-    setPrWaitHoldsSlot(workspace, input) {
-      const { expected_revision, on } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
-        next.pr_wait_holds_slot = !!on;
-        return true;
-      });
-    },
-
-    /**
      * Remove a bead from all placement lanes. CAS-guarded.
      *
      * @param {string} workspace
@@ -3642,6 +4062,7 @@ export function createQueueStore(options = {}) {
       const { expected_revision, bead_id } = input;
       return applyMutation(workspace, expected_revision, (next) => {
         removeFromLanes(next, bead_id);
+        rebindLineageLane(next, bead_id, null);
         delete next.admission[bead_id];
         // A bead the user pulled out of every lane carries no pending cleanup
         // banner either — the record describes a lane member (§6).
@@ -3795,6 +4216,9 @@ export function createQueueStore(options = {}) {
         next.attempts[attempt.attempt_id] = makeAttempt({
           ...attempt,
           worker_serial: source.worker_serial === true,
+          // Lane inheritance (UI-04vo §2): a completion-repair successor keeps
+          // its lineage's serial lane so occupancy survives the resume chain.
+          serial_lane_id: source.serial_lane_id ?? null,
           completion_root_id: source.completion_root_id,
           completion_op_id: source.completion_op_id,
           completion_mode: source.completion_mode,
@@ -4922,6 +5346,9 @@ export function createQueueStore(options = {}) {
         }
         const in_lane =
           next.queue.some((e) => e.bead_id === bead_id) ||
+          next.serial_lanes.some((lane) =>
+            lane.entries.some((e) => e.bead_id === bead_id)
+          ) ||
           next.pr_wait.some((e) => e.bead_id === bead_id) ||
           next.done.some((e) => e.bead_id === bead_id);
         if (!in_lane && !Object.hasOwn(next.admission, bead_id)) {

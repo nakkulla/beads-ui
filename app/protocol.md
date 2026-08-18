@@ -96,11 +96,14 @@ surface without a local fs event.
 
 Per-workspace subscription + CAS-guarded mutations + a whole-queue push.
 
-There is ONE waiting lane. The retired serial/parallel split is replaced by a
-single `queue` plus a `slots` concurrency cap (`slots: 1` is the old serial
-meaning), and completion is decided by the SERVER OBSERVING an open PR, not by
-the session's self-report — so a bead moves `queue` → `pr_wait` → `done`.
-Nothing merges without a human `[머지]` click.
+The waiting area is the parallel lane (`queue`) plus fixed-slot serial lanes
+(`serial_lanes`, UI-04vo §1): a serial lane runs a lane-scoped exclusive chain —
+the next entry waits until the previous lineage merges-and-cleans or is
+discarded — while lanes run concurrently with each other and with the parallel
+lane under one shared `slots` cap (`slots: 1` is still a global sequential
+override). Completion is decided by the SERVER OBSERVING an open PR, not by the
+session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` →
+`done`. Nothing merges without a human `[머지]` click.
 
 - `subscribe-worker-queue` / `unsubscribe-worker-queue` payload: `{ id }`.
 - `worker-queue-snapshot` (push) payload:
@@ -108,22 +111,22 @@ Nothing merges without a human `[머지]` click.
   workspace this snapshot describes (envelope addressing, not part of `queue`),
   so a client that already repointed to another workspace can drop a snapshot
   from a subscription the server has not torn down yet; the rest is the full
-  queue (`revision`, `auto_advance`, `slots`, `pr_wait_holds_slot`, `queue[]`,
-  `pr_wait[]`, `done[]`, `attempts`, `admission`, `cleanup_failed`,
-  `exec_defaults`) plus four server-decorated, NON-persisted keys:
-  `workspace_info: { slots, repo_ops }`, `pr_observations` (per-`pr_wait` PR
-  state + merge-gate verdict, memory cache only), `bead_titles`
-  (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done` beads, memory cache
-  only), and `declared_base`. `bead_titles` is PARTIAL: only titles already
-  cached travel, a miss simply has no entry and arrives in a later snapshot once
-  the server's async lookup fills it. Consumers fail-quiet on the whole key
-  being absent (older server) and on a missing entry — both fall back to
-  displaying the bead id. `bead_labels` is likewise a non-persisted partial
-  `Record<bead_id, string[]>` for the same `queue`/`pr_wait`/`done` beads. Its
-  arrays are normalized from the same async `bd show` fill as titles and times;
-  no entry means label truth is unknown (not an empty array), including when an
-  older server omits the whole key. It is UI projection only and never Worker
-  scheduler authority.
+  queue (`revision`, `auto_advance`, `slots`, `serial_lanes[]`,
+  `serial_lane_count`, `queue[]`, `pr_wait[]`, `done[]`, `attempts`,
+  `admission`, `cleanup_failed`, `exec_defaults`) plus the server-decorated,
+  NON-persisted keys: `workspace_info: { slots, repo_ops }`, `pr_observations`
+  (per-`pr_wait` PR state + merge-gate verdict, memory cache only),
+  `bead_titles` (`Record<bead_id, title>` for the `queue`/`pr_wait`/`done`
+  beads, memory cache only), and `declared_base`. `bead_titles` is PARTIAL: only
+  titles already cached travel, a miss simply has no entry and arrives in a
+  later snapshot once the server's async lookup fills it. Consumers fail-quiet
+  on the whole key being absent (older server) and on a missing entry — both
+  fall back to displaying the bead id. `bead_labels` is likewise a non-persisted
+  partial `Record<bead_id, string[]>` for the same `queue`/`pr_wait`/`done`
+  beads. Its arrays are normalized from the same async `bd show` fill as titles
+  and times; no entry means label truth is unknown (not an empty array),
+  including when an older server omits the whole key. It is UI projection only
+  and never Worker scheduler authority.
 - A RUNNING attempt inside `attempts` additionally carries the non-persisted
   `last_event_at` (epoch ms) — when the server last saw a session-log line for
   that attempt (UI-53es §1). It is what the monitor row's live heartbeat reads;
@@ -141,11 +144,17 @@ Nothing merges without a human `[머지]` click.
   (which fetches) stays on the dispatch path and never runs for this key, so a
   `declared_base` string means "declared", never "verified". Consumers
   fail-quiet on the key being absent (older server).
-- `worker-queue-place` payload: `{ bead_id, index?, expected_revision }` — a
-  successful placement also kicks the live dispatch loop (`tick`), so an
-  auto_advance-ON queue with a free slot starts the bead without waiting for
-  another trigger.
-- `worker-queue-reorder` payload: `{ bead_id, to_index, expected_revision }`
+- `worker-queue-place` payload:
+  `{ bead_id, lane?: 'parallel' | 's1'..'s5', index?, expected_revision }` — new
+  entry and cross-lane move share this op (UI-04vo §5): the server removes the
+  bead from its origin lane before inserting. An absent `lane` (or a legacy
+  value) lands in the parallel lane; a serial slot beyond the configured count
+  is rejected without a write. A successful placement also kicks the live
+  dispatch loop (`tick`), so an auto_advance-ON queue with a free slot starts
+  the bead without waiting for another trigger.
+- `worker-queue-reorder` payload:
+  `{ bead_id, lane?: 'parallel' | 's1'..'s5', to_index, expected_revision }` —
+  reorders within one lane; cross-lane moves go through `worker-queue-place`.
 - `worker-queue-toggle` payload: `{ on, expected_revision }` — persists the
   legacy independent `auto_advance` surface and, on turn-ON, kicks the live
   dispatch loop (`tick`).
@@ -214,9 +223,17 @@ Nothing merges without a human `[머지]` click.
   the more specific failure facts.
 - `worker-queue-set-slots` payload: `{ slots, expected_revision }` — the
   concurrency cap (lower bound 1).
-- `worker-queue-set-pr-wait-hold` payload: `{ on, expected_revision }` — when
-  enabled, forces the effective concurrency cap to 1 through PR merge cleanup
-  while preserving the stored `slots` preference for later restoration.
+
+- `worker-queue-set-serial-lane-count` payload: `{ count, expected_revision }` —
+  resizes the fixed serial-lane set (1..5, UI-04vo §1). Truncated lanes return
+  their waiting entries to the parallel tail; active lineages are untouched. The
+  retired `worker-queue-set-pr-wait-hold` toggle is no longer a route — serial
+  lanes carry the hold-until-merge meaning now.
+- `worker-queue-snapshot` additionally carries `serial_lanes` /
+  `serial_lane_count` (durable), plus the non-persisted `bead_blocked_by`
+  (direct `blocks` blocker ids, partial cache) and `lane_states` — per serial
+  lane `{ occupied_by, order, corrections, cycle }` derived fresh on every
+  snapshot from durable occupancy and blocks edges.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
 - `worker-attempt-pause` payload: `{ attempt_id }` — pauses (⏸) a running
   attempt while preserving its resumable state. Reply
@@ -286,6 +303,39 @@ Nothing merges without a human `[머지]` click.
 
 Every queue mutation replies `{ applied, conflict, queue }`; a stale
 `expected_revision` yields `conflict:true` + the current queue for re-sync.
+
+## Parallelism-analysis channel (UI-04vo §5/§9)
+
+Per-workspace subscription for the read-only analyzer. The analyzer runs ONLY on
+an explicit start: queue placement, reorder, and auto-advance never call a
+model.
+
+- `subscribe-worker-parallel-analysis` / `unsubscribe-worker-parallel-analysis`
+  payload: `{ id }`.
+- `worker-parallel-analysis-snapshot` (push) payload:
+  `{ type, id, root_dir, settings: { revision, runner, model, effort }, job: { job_id, identity }|null, last_good: { identity_digest, at, result }|null }`.
+  `result` is the VALIDATED schema-v2 result; each group carries the server's
+  `eligible` stamp, and no consumer recomputes that judgment.
+- `worker-parallel-analysis-start` payload: `{ force? }` — reply
+  `{ applied, cached?, identity?, reason? }`. An identical identity (snapshot
+  digest + runner/model/effort) is a cache hit that spawns nothing; `force`
+  re-runs while PRESERVING the previous last-good until a new success. Cancel,
+  timeout, a non-zero exit, and an invalid/unvalidatable result all reply
+  `applied:false` and leave the cache untouched.
+- `worker-parallel-analysis-cancel` payload: `{ job_id }` — reply
+  `{ cancelled }`; kills the process group and keeps last-good.
+- `worker-parallel-analysis-settings-update` payload:
+  `{ expected_revision, runner, model, effort }` — CAS; only a selection that
+  passes the catalog+probe validation is stored.
+- `worker-parallel-analysis-submit` payload:
+  `{ snapshot_digest, group_index, lane, ordered_bead_ids, expected_revision }`
+  — the client's draft is an INPUT, never an authority. The server re-derives
+  the pinned snapshot, re-checks the digest, re-judges group eligibility with
+  the same function the validator stamped, verifies every id is a current,
+  inactive member of that group, and converges through ONE queue CAS with the
+  blocks correction as the final order. Reply
+  `{ applied, conflict, reason, queue }`; any refusal is all-or-nothing and
+  changes neither the queue, nor bd, nor the repository.
 
 ## Session-log (transcript) channel (spec §5.6)
 

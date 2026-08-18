@@ -552,38 +552,6 @@ describe('ws worker-queue channel', () => {
     expect(reply.error.code).toBe('action_retired');
   });
 
-  test('routes the PR-wait slot toggle, persists it, ticks, and broadcasts', async () => {
-    const tick = vi.fn(async () => {});
-    __registerWorkerAttachmentForTest(process.cwd(), {
-      // @ts-expect-error minimal fake attachment
-      scheduler: { tick }
-    });
-    const sock = fakeSocket();
-    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
-    sock.sent = [];
-
-    await send(sock, 'hold-1', 'worker-queue-set-pr-wait-hold', {
-      on: true,
-      expected_revision: 0
-    });
-
-    const reply = replyFor(sock, 'hold-1');
-    expect(reply.payload.queue.pr_wait_holds_slot).toBe(true);
-    expect(queueSnapshots(sock).at(-1).pr_wait_holds_slot).toBe(true);
-    expect(tick).toHaveBeenCalledWith(process.cwd());
-  });
-
-  test('rejects a non-boolean PR-wait slot toggle payload', async () => {
-    const sock = fakeSocket();
-
-    await send(sock, 'hold-bad', 'worker-queue-set-pr-wait-hold', {
-      on: 'yes',
-      expected_revision: 0
-    });
-
-    expect(replyFor(sock, 'hold-bad').error.code).toBe('bad_request');
-  });
-
   test('worker-attempt-pause reaches the scheduler and its refusal carries a reason (worker-phase1 §5)', async () => {
     const pause = vi
       .fn()
@@ -690,7 +658,7 @@ describe('ws worker-queue channel', () => {
       'worker-queue-reorder',
       'worker-queue-remove',
       'worker-queue-set-orchestration-defaults',
-      'worker-queue-set-pr-wait-hold',
+      'worker-queue-set-serial-lane-count',
       'worker-merge-queue-add',
       'worker-merge-queue-add-all',
       'worker-merge-queue-remove',
@@ -3012,5 +2980,160 @@ describe('ws worker-queue subscription addressing', () => {
     });
 
     expect(queueSnapshotPayloads(sock).at(-1).root_dir).toBe(WS_A.root_dir);
+  });
+});
+
+describe('ws worker-queue 직렬 레인 (UI-04vo Phase 3)', () => {
+  test('routes a lane-aware place into a serial lane', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-1',
+      lane: 's1',
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'm1');
+    expect(reply.payload.applied).toBe(true);
+    expect(
+      reply.payload.queue.serial_lanes[0].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    ).toEqual(['UI-1']);
+    expect(reply.payload.queue.queue).toEqual([]);
+  });
+
+  test('routes a lane-aware reorder within a serial lane', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-1',
+      lane: 's2',
+      expected_revision: 0
+    });
+    await send(sock, 'm2', 'worker-queue-place', {
+      bead_id: 'UI-2',
+      lane: 's2',
+      expected_revision: 1
+    });
+
+    await send(sock, 'm3', 'worker-queue-reorder', {
+      bead_id: 'UI-2',
+      lane: 's2',
+      to_index: 0,
+      expected_revision: 2
+    });
+
+    const reply = replyFor(sock, 'm3');
+    expect(reply.payload.applied).toBe(true);
+    expect(
+      reply.payload.queue.serial_lanes[1].entries.map(
+        (/** @type {any} */ e) => e.bead_id
+      )
+    ).toEqual(['UI-2', 'UI-1']);
+  });
+
+  test('routes worker-queue-set-serial-lane-count and returns truncated entries to parallel', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-x',
+      lane: 's2',
+      expected_revision: 0
+    });
+
+    await send(sock, 'm2', 'worker-queue-set-serial-lane-count', {
+      count: 1,
+      expected_revision: 1
+    });
+
+    const reply = replyFor(sock, 'm2');
+    expect(reply.payload.applied).toBe(true);
+    expect(reply.payload.queue.serial_lanes).toHaveLength(1);
+    expect(
+      reply.payload.queue.queue.map((/** @type {any} */ e) => e.bead_id)
+    ).toEqual(['UI-x']);
+    expect(queueSnapshots(sock).at(-1).serial_lane_count).toBe(1);
+  });
+
+  test('rejects a non-integer serial lane count payload', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'bad', 'worker-queue-set-serial-lane-count', {
+      count: 'two',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'bad').error.code).toBe('bad_request');
+  });
+
+  test('retires the worker-queue-set-pr-wait-hold message type', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'gone', 'worker-queue-set-pr-wait-hold', {
+      on: true,
+      expected_revision: 0
+    });
+
+    const reply = replyFor(sock, 'gone');
+    expect(reply.ok).toBe(false);
+  });
+
+  test('snapshot derives per-lane corrections from blocks edges', async () => {
+    const cache = getWorkerRuntime().titleCache;
+    cache.refreshFromIssue(process.cwd(), {
+      id: 'UI-a',
+      title: 'blocker',
+      labels: [],
+      dependencies: []
+    });
+    cache.refreshFromIssue(process.cwd(), {
+      id: 'UI-b',
+      title: 'blockee',
+      labels: [],
+      dependencies: [{ id: 'UI-a', dependency_type: 'blocks' }]
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-queue-place', {
+      bead_id: 'UI-b',
+      lane: 's1',
+      expected_revision: 0
+    });
+
+    await send(sock, 'm2', 'worker-queue-place', {
+      bead_id: 'UI-a',
+      lane: 's1',
+      expected_revision: 1
+    });
+
+    const snap = queueSnapshots(sock).at(-1);
+    expect(snap.bead_blocked_by['UI-b']).toEqual(['UI-a']);
+    expect(snap.lane_states.s1.cycle).toBe(false);
+    expect(snap.lane_states.s1.corrections).toEqual([
+      { bead_id: 'UI-b', after: 'UI-a' }
+    ]);
+    expect(snap.lane_states.s1.order).toEqual(['UI-a', 'UI-b']);
+  });
+
+  test('snapshot exposes serial lane occupancy from durable attempts', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt(process.cwd(), {
+      expected_revision: store.snapshot(process.cwd()).revision,
+      attempt: {
+        attempt_id: 'att-lane',
+        bead_id: 'UI-run',
+        status: 'running',
+        serial_lane_id: 's1'
+      }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    const snap = queueSnapshots(sock).at(-1);
+    expect(snap.lane_states.s1.occupied_by).toEqual(['UI-run']);
+    expect(snap.lane_states.s2.occupied_by).toEqual([]);
   });
 });

@@ -2188,3 +2188,61 @@ describe('worker/attach — legacy state migration (master spec §11)', () => {
     expect(typeof att.repoOperationMigration.run).toBe('function');
   });
 });
+
+describe('worker/attach blocks edge 수집 (UI-04vo seam C)', () => {
+  test('snapshotBead collects direct blocks blockers into deps and blocked_by', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: {
+            id: 'UI-1',
+            status: 'open',
+            metadata: {},
+            dependencies: [
+              { id: 'UI-blocker', dependency_type: 'blocks' },
+              { id: 'UI-soft', dependency_type: 'related' },
+              { id: 'UI-parent', dependency_type: 'parent-child' },
+              { dependency_type: 'blocks' }
+            ]
+          }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(snap.deps).toEqual(['UI-blocker']);
+    expect(snap.blocked_by).toEqual(['UI-blocker']);
+  });
+
+  test('snapshotBead leaves deps and blocked_by empty without dependencies', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: { id: 'UI-1', status: 'open', metadata: {} }
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(snap.deps).toEqual([]);
+    expect(snap.blocked_by).toEqual([]);
+  });
+});

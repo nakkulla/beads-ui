@@ -20,10 +20,13 @@ import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
+import { ANALYZER_RUNNERS } from './parallel-analysis-runner.js';
+import { createParallelAnalysisStore } from './parallel-analysis-store.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
 import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
+import { runtimeCatalog } from './runner/index.js';
 import { createSessionLog } from './session-log.js';
 import { workspaceSlug } from './state-paths.js';
 import { createTitleCache } from './title-cache.js';
@@ -43,6 +46,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createRunnableCache>} runnableCache
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createSessionLog>} sessionLog
+ * @property {ReturnType<typeof createParallelAnalysisStore>} parallelAnalysis
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
@@ -103,6 +107,34 @@ export function createWorkerRuntime() {
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
   const sessionLog = createSessionLog();
+  // Process-wide parallelism-analysis store (UI-04vo §9): server-global
+  // settings, the per-workspace last-good cache, and the single-flight job
+  // registry. Process memory is what makes single-flight true across every
+  // connection, and what makes an on-disk job marker an orphan after a restart.
+  const parallelAnalysis = createParallelAnalysisStore({
+    // Only a selection the catalog offers AND a tool-free analyzer can execute
+    // may be stored (UI-04vo §7). Without this the settings could name a model
+    // the runner would refuse at spawn time, and the cache identity would
+    // describe a run that can never happen.
+    validateSelection: (selection) => {
+      if (!ANALYZER_RUNNERS.has(selection.runner)) {
+        return false;
+      }
+      let catalog;
+      try {
+        catalog = runtimeCatalog();
+      } catch {
+        return false;
+      }
+      const runner = catalog?.runners?.[selection.runner];
+      return (
+        !!runner &&
+        Object.hasOwn(runner.models || {}, selection.model) &&
+        Array.isArray(runner.efforts) &&
+        runner.efforts.includes(selection.effort)
+      );
+    }
+  });
   /** @type {() => number} */
   let runningCount = () => 0;
 
@@ -119,6 +151,7 @@ export function createWorkerRuntime() {
     runnableCache,
     reviseParked,
     sessionLog,
+    parallelAnalysis,
     /**
      * @param {() => number} fn
      */

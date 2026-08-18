@@ -186,15 +186,15 @@ describe('worker-queue snapshot workspace guard', () => {
     await settle();
 
     // `queueSnapshotFor` intentionally omits bead_labels: an older server must
-    // leave execution mode unknown without dropping the queue snapshot.
+    // leave the legacy chip unrendered without dropping the queue snapshot
+    // (UI-04vo — the label is display-only residue now).
     CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
     await settle();
 
     expect(waitingRowCount()).toBe(1);
     expect(
       document.querySelector('#worker-pane-queue .worker-mini__serial')
-        ?.textContent
-    ).toContain('실행 방식 확인 중');
+    ).toBeNull();
   });
 
   test('applies the bootstrap snapshot that arrives before a workspace is known', async () => {

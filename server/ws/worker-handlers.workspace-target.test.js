@@ -133,9 +133,9 @@ const MUTATIONS = [
     payload: { slots: 2, expected_revision: 0 }
   },
   {
-    action: 'worker-queue-set-pr-wait-hold',
-    run: handlers.handleWorkerQueueSetPrWaitHold,
-    payload: { on: true, expected_revision: 0 }
+    action: 'worker-queue-set-serial-lane-count',
+    run: handlers.handleWorkerQueueSetSerialLaneCount,
+    payload: { count: 3, expected_revision: 0 }
   },
   {
     action: 'worker-queue-remove',

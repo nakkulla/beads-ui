@@ -4474,47 +4474,216 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
-/* Waiting-queue execution-mode controls (UI-nrut Phase 3). */
-.worker-bulk {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sp-6);
-  margin-bottom: var(--sp-6);
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
-}
-
-.worker-bulk__count {
-  color: var(--stage-plan-on);
-  font-variant-numeric: tabular-nums;
-}
-
-.worker-bulk__mode,
-.worker-bulk__apply {
+/* 병렬성 분석 다이얼로그 (UI-04vo §9). exec-defaults 다이얼로그와 같은 셸
+   토큰을 쓰되 클래스는 분리한다 — 두 화면이 서로의 레이아웃을 상속하면
+   한쪽 변경이 다른 쪽을 조용히 바꾼다. */
+.pa {
+  width: min(760px, 92vw);
+  max-height: 84vh;
+  padding: 0;
   border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
+  border-radius: var(--r-10);
   background: var(--bg-card);
   color: var(--text-primary);
-  font: inherit;
 }
 
-.worker-bulk__mode {
-  padding: var(--sp-3) var(--sp-5);
+.pa__header {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-7) var(--sp-8);
+  border-bottom: 1px solid var(--border-card);
 }
 
-.worker-bulk__apply {
-  padding: var(--sp-3) var(--sp-6);
+.pa__title {
+  font-weight: 600;
+}
+
+.pa__close {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
   cursor: pointer;
 }
 
-.worker-bulk__apply:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.pa__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-7);
+  padding: var(--sp-8);
+  overflow-y: auto;
 }
 
-.worker-bulk__hint {
+.pa-settings,
+.pa-meta,
+.pa-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+  font-size: var(--fs-chip);
+  color: var(--text-secondary);
+}
+
+.pa-settings__unset {
+  color: var(--accent-warn);
+}
+
+.pa-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-7);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+}
+
+.pa-group__head,
+.pa-group__foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+}
+
+.pa-group__confidence,
+.pa-group__category {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  font-size: var(--fs-caption);
+}
+
+.pa-group__applied {
+  color: var(--stage-plan-on);
+}
+
+.pa-group__weak {
+  color: var(--accent-warn);
+}
+
+.pa-group__reason {
+  margin: 0;
+  font-size: var(--fs-small);
+}
+
+.pa-group__members {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.pa-member {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  font-size: var(--fs-small);
+}
+
+.pa-member__seq {
+  min-width: 1.2em;
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.pa-member__active {
+  color: var(--accent-warn);
+  font-size: var(--fs-caption);
+}
+
+.pa-member__up,
+.pa-member__down,
+.pa-member__exclude {
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.pa-group__evidence {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+}
+
+.pa-group__submit {
+  margin-left: auto;
+  padding: var(--sp-3) var(--sp-6);
+  border: 1px solid var(--stage-plan-on);
+  border-radius: var(--r-6);
+  background: var(--bg-card);
+  color: var(--stage-plan-on);
+  cursor: pointer;
+}
+
+.pa-group__submit:disabled {
+  border-color: var(--border-card);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+.pa-empty {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--fs-small);
+}
+
+/* 직렬 레인 스택 (UI-04vo §4): 병렬 대기 pane 아래 레인 카드들을 세로로
+   쌓는 한 flex 컬럼. */
+.worker-wait {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  min-width: 0;
+  min-height: 0;
+}
+
+.worker-wait > .worker-pane {
+  min-height: 0;
+}
+
+.worker-lane__badge {
+  margin-left: auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  color: var(--text-dim);
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+.worker-lane__badge--held {
+  border-color: var(--accent-warn);
+  color: var(--accent-warn);
+}
+
+.worker-lane__cycle {
+  margin-bottom: var(--sp-6);
+  color: var(--accent-warn);
+  font-size: var(--fs-chip);
+}
+
+/* 점유 lineage의 ghost 행 (UI-04vo §4): 실행·PR 대기·실패 유지 중인 자리를
+   흐리게 보여만 준다 — 드래그 대상이 아니다. */
+.worker-mini--ghost {
+  opacity: 0.5;
+  border-style: dashed;
+  cursor: default;
+}
+
+.worker-mini__seq {
+  flex: 0 0 auto;
+  min-width: 1.2em;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 /* 완료 레인 기간 선택 스트립 (UI-d7pw §3.3). 후보 필터 스트립과 톤은 같지만
@@ -4653,11 +4822,6 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.worker-mini--selected {
-  border-color: var(--stage-plan-on);
-  background: color-mix(in srgb, var(--stage-plan-on) 8%, var(--bg-card));
-}
-
 /* PR 대기 다단 카드 (UI-k59y §1): 부속 요소가 가장 많은 레인이라 한 줄에
    욱여넣으면 제목이 먼저 희생된다. 머리(ID·PR·뱃지·reason) / 제목 / 꼬리
    (usage·진행·행동)로 나눠 각 줄이 자기 폭을 갖는다. */
@@ -4718,12 +4882,6 @@ html[data-theme='dark'] {
   outline-offset: 2px;
 }
 
-.worker-mini__select {
-  flex: 0 0 auto;
-  margin: 0;
-  accent-color: var(--stage-plan-on);
-}
-
 .worker-mini__serial {
   flex: 0 0 auto;
   padding: 0 var(--sp-4);
@@ -4734,9 +4892,10 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
-.worker-mini__serial--unknown {
-  border-color: var(--accent-warn);
-  color: var(--accent-warn);
+.worker-mini__serial--legacy {
+  border-color: var(--border-card);
+  color: var(--text-dim);
+  text-decoration: line-through;
 }
 
 /* 제목이 줄바꿈을 얻은 뒤(UI-k59y §2) 한 줄 행의 shrink 대상이 ID로 옮겨붙는다
@@ -5737,10 +5896,6 @@ html[data-theme='dark'] {
 }
 
 @media (any-pointer: coarse), (max-width: 640px) {
-  .worker-bulk__hint {
-    display: none;
-  }
-
   .worker-card__foot--actions-only {
     display: flex;
   }

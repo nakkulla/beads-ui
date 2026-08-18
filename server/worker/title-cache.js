@@ -61,6 +61,7 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
  * @property {string[]} labels
+ * @property {string[]} blocked_by
  * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
  */
 
@@ -180,11 +181,27 @@ export function createTitleCache(options = {}) {
     if (title.length === 0) {
       return null;
     }
+    /** @type {string[]} */
+    const blocked_by = [];
+    if (raw_issue && Array.isArray(raw_issue.dependencies)) {
+      for (const dep of raw_issue.dependencies) {
+        if (
+          dep &&
+          typeof dep === 'object' &&
+          dep.dependency_type === 'blocks' &&
+          typeof dep.id === 'string' &&
+          dep.id.length > 0
+        ) {
+          blocked_by.push(dep.id);
+        }
+      }
+    }
     return {
       title,
       created_at: stampOf(raw_issue && raw_issue.created_at),
       updated_at: stampOf(raw_issue && raw_issue.updated_at),
       labels: workerLabels(raw_issue && raw_issue.labels),
+      blocked_by,
       at: now()
     };
   }
@@ -461,6 +478,19 @@ export function createTitleCache(options = {}) {
      */
     labelsFor(workspace, ids) {
       return collect(workspace, ids, (rec) => rec.labels);
+    },
+
+    /**
+     * Cache hits for `ids` as direct `blocks` blocker id arrays (UI-04vo §3).
+     * Same partiality contract as labels: an absent key is unknown, never an
+     * inferred "no blockers".
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, string[]>}
+     */
+    blockedByFor(workspace, ids) {
+      return collect(workspace, ids, (rec) => rec.blocked_by);
     },
 
     /**
