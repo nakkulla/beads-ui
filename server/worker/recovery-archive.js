@@ -502,6 +502,172 @@ export function createRecoveryArchive(deps = {}) {
   }
 
   /**
+   * @param {{ workspace: string, archive_id: string, repo: string, ref: string, base_oid: string, branch_head_sha: string }} input
+   * @returns {{ ok: true, reused?: boolean, receipt: { path: string, manifest_sha256: string, verified_at: number }}|{ ok: false, reason: string, temp_path?: string }}
+   */
+  function createBranch(input) {
+    const final_path = discardBackupDir(input.workspace, input.archive_id);
+    const temp_path = `${final_path}.tmp`;
+    if (fs.existsSync(final_path)) {
+      const existing = verify(final_path);
+      if (!existing.ok) {
+        return { ok: false, reason: 'archive_exists_invalid' };
+      }
+      try {
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(final_path, 'manifest.json'), 'utf8')
+        );
+        if (
+          manifest.mode !== 'branch-only' ||
+          manifest.source_snapshot?.repo !== input.repo ||
+          manifest.source_snapshot?.ref !== input.ref ||
+          manifest.source_snapshot?.base_oid !== input.base_oid ||
+          manifest.source_snapshot?.branch_head_sha !== input.branch_head_sha
+        ) {
+          return { ok: false, reason: 'archive_exists_invalid' };
+        }
+      } catch {
+        return { ok: false, reason: 'archive_exists_invalid' };
+      }
+      return { ...existing, reused: true };
+    }
+    try {
+      if (
+        typeof input.repo !== 'string' ||
+        typeof input.ref !== 'string' ||
+        !/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(input.ref) ||
+        !/^[0-9a-f]{40,64}$/i.test(input.base_oid) ||
+        !/^[0-9a-f]{40,64}$/i.test(input.branch_head_sha)
+      ) {
+        throw new ArchiveError('branch_archive_input_invalid');
+      }
+      fs.mkdirSync(path.dirname(final_path), { recursive: true });
+      fs.rmSync(temp_path, { recursive: true, force: true });
+      fs.mkdirSync(temp_path, { recursive: true });
+
+      let ahead_count;
+      try {
+        const observed_head = git(input.repo, ['rev-parse', input.ref])
+          .toString('utf8')
+          .trim();
+        if (observed_head !== input.branch_head_sha) {
+          throw new ArchiveError('source_head_changed');
+        }
+        ahead_count = Number(
+          git(input.repo, [
+            'rev-list',
+            '--count',
+            `${input.base_oid}..${input.ref}`
+          ])
+            .toString('utf8')
+            .trim()
+        );
+      } catch (err) {
+        if (err instanceof ArchiveError) {
+          throw err;
+        }
+        throw new ArchiveError('commit_range_observation_failed');
+      }
+      if (!Number.isInteger(ahead_count) || ahead_count <= 0) {
+        throw new ArchiveError('commit_range_observation_failed');
+      }
+
+      const bundle_path = path.join(temp_path, 'commits.bundle');
+      try {
+        git(input.repo, [
+          'bundle',
+          'create',
+          bundle_path,
+          input.ref,
+          `^${input.base_oid}`
+        ]);
+        const bundled_head = git(input.repo, [
+          'bundle',
+          'list-heads',
+          bundle_path,
+          input.ref
+        ])
+          .toString('utf8')
+          .trim();
+        const observed_after = git(input.repo, ['rev-parse', input.ref])
+          .toString('utf8')
+          .trim();
+        if (
+          bundled_head !== `${input.branch_head_sha} ${input.ref}` ||
+          observed_after !== input.branch_head_sha
+        ) {
+          throw new ArchiveError('source_head_changed');
+        }
+        git(input.repo, ['bundle', 'verify', bundle_path]);
+      } catch (err) {
+        throw err instanceof ArchiveError
+          ? err
+          : new ArchiveError('bundle_create_failed');
+      }
+      const artifacts = [
+        {
+          path: 'commits.bundle',
+          kind: 'bundle',
+          ...checksumEntry(fs, bundle_path)
+        }
+      ];
+      const manifest = {
+        schema_version: ARCHIVE_SCHEMA_VERSION,
+        operation_id: input.archive_id,
+        created_at: now(),
+        mode: 'branch-only',
+        topology: 'branch',
+        source_snapshot: {
+          repo: input.repo,
+          ref: input.ref,
+          base_oid: input.base_oid,
+          branch_head_sha: input.branch_head_sha
+        },
+        commit_range: {
+          target_base: input.base_oid,
+          source_head: input.branch_head_sha,
+          ahead_count
+        },
+        excluded: [
+          'worktree-patch',
+          'index-patch',
+          'untracked-files',
+          'submodule-and-special-file-checks'
+        ],
+        failures: [],
+        artifacts,
+        files: []
+      };
+      const manifest_bytes = Buffer.from(JSON.stringify(manifest, null, 2));
+      const manifest_sha256 = sha256(manifest_bytes);
+      fs.writeFileSync(path.join(temp_path, 'manifest.json'), manifest_bytes);
+      fs.writeFileSync(
+        path.join(temp_path, 'COMPLETE'),
+        `${manifest_sha256}\n`
+      );
+      const checked = verify(temp_path);
+      if (!checked.ok) {
+        throw new ArchiveError(checked.reason);
+      }
+      fs.renameSync(temp_path, final_path);
+      const final_check = verify(final_path);
+      if (!final_check.ok) {
+        throw new ArchiveError(final_check.reason);
+      }
+      return final_check;
+    } catch (err) {
+      return {
+        ok: false,
+        reason:
+          err instanceof ArchiveError
+            ? err.reason
+            : 'branch_archive_create_failed',
+        temp_path
+      };
+    }
+  }
+
+  /**
    * Preserve immutable evidence when a cleanup-failed merged source is already
    * absent. This intentionally makes no dirty/untracked recovery claim.
    *
@@ -608,7 +774,7 @@ export function createRecoveryArchive(deps = {}) {
     }
   }
 
-  return { create, createCommittedSource, verify };
+  return { create, createBranch, createCommittedSource, verify };
 }
 
 /**

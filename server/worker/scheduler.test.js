@@ -5778,6 +5778,70 @@ describe('scheduler worktree residue hygiene', () => {
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
+  test('dispatches in the same tick after reclaiming a contained ahead worktree', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: true,
+      state: 'discardable',
+      removed: true,
+      reason: null,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'a'.repeat(40),
+        branch_head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 2,
+        head_ahead: 2
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).toHaveBeenCalledTimes(1);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('dispatches in the same tick after reclaiming a branch-only contained ahead residue', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: true,
+      state: 'discardable',
+      removed: true,
+      reason: null,
+      identity: {
+        worktree_realpath: null,
+        branch: 'S1',
+        head_sha: null,
+        branch_head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 2,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).toHaveBeenCalledTimes(1);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
   test('records an owned unique residue as structured admission without an attempt', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     env.worktree.removeIfDiscardable = vi.fn(async () => ({
@@ -5995,6 +6059,66 @@ describe('scheduler worktree residue hygiene', () => {
     });
     expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['prior']);
     expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('reclaims branch-only residue when a resumable row cannot match it', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'prior', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'prior',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        session_id: 'session-1',
+        head_oid: 'a'.repeat(40)
+      }
+    });
+    env.worktree.removeIfDiscardable = vi.fn(
+      async (/** @type {any} */ input) => ({
+        ok: true,
+        state: 'discardable',
+        removed: input.preserve !== true,
+        reason: null,
+        cause: null,
+        owned: true,
+        identity: {
+          worktree_realpath: null,
+          branch: 'S1',
+          head_sha: null,
+          branch_head_sha: 'a'.repeat(40),
+          base_oid: 'b'.repeat(40),
+          status_digest: 'c'.repeat(64)
+        },
+        summary: {
+          staged_count: 0,
+          unstaged_count: 0,
+          untracked_count: 0,
+          branch_ahead: 2,
+          head_ahead: 0
+        }
+      })
+    );
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.removeIfDiscardable.mock.calls).toEqual([
+      [
+        {
+          repo: '/repo',
+          bead_id: 'S1',
+          base: 'main',
+          preserve: true
+        }
+      ],
+      [{ repo: '/repo', bead_id: 'S1', base: 'main' }]
+    ]);
+    expect(env.worktree.add).toHaveBeenCalledTimes(1);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
   test('does not bump revision for the same residue on a later tick', async () => {
