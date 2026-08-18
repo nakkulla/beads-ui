@@ -134,3 +134,44 @@ describe('operationFailureText', () => {
     expect(operationFailureText(null, '')).toBe('');
   });
 });
+
+describe('cleanup step-1 (base 포함 확인) codes', () => {
+  /** Every reason `base_containment` can record (server/worker/pr-actions.js). */
+  const BASE_CODES = [
+    'base_unresolved:no_resolver',
+    'base_unresolved:git_error',
+    'base_ref_unobserved',
+    'merge_sha_unobserved',
+    'base_fetch_failed',
+    'base_rev_unavailable',
+    'base_ff_diverged',
+    'deployment_target_not_covering_merge',
+    'deployment_candidate_ancestry_check_failed'
+  ];
+
+  test('names a diverged local base branch', () => {
+    expect(failureSentence('base_ff_diverged')).toBe(
+      '로컬 base 브랜치가 원격과 갈라져 fast-forward로 정렬할 수 없습니다.'
+    );
+  });
+
+  test('names an unresolved base through the composite prefix', () => {
+    expect(failureSentence('base_unresolved:no_resolver')).toBe(
+      'PR이 어느 base 브랜치로 머지되는지 확정하지 못했습니다.'
+    );
+  });
+
+  test('renders the sentence alone because no category maps', () => {
+    expect(failureText('base_fetch_failed')).toBe(
+      '원격 base 브랜치를 fetch하지 못했습니다.'
+    );
+  });
+
+  test('leaves the step-1 codes out of the three category words', () => {
+    expect(BASE_CODES.map(failureCategory)).toEqual(BASE_CODES.map(() => null));
+  });
+
+  test('maps every code the step can record', () => {
+    expect(BASE_CODES.filter((code) => !isKnownFailure(code))).toEqual([]);
+  });
+});
