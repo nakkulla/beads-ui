@@ -231,41 +231,73 @@ follow toggle, heartbeat, close interaction은 재사용한다. main attempt row
   늘리지 않는다.
 - 한 drawer가 한 subscription만 유지하는 existing UX를 보존한다.
 
+## 배포·적용 순서와 Worker disposition
+
+핀된 target base의 `repo-ops/config.toml`에는 `[deploy]`가 선언돼 있다.
+머지 후 shared service 적용의 canonical owner는 `repo-ops/script/deploy`이며,
+이 spec은 그 script를 우회하는 수동 restart를 required residue로 남기지 않는다.
+고정 순서와 단계별 readback은 다음과 같다.
+
+1. repo operation executor가 fetched target SHA의 detached deploy worktree와 공용
+   lock을 확정하고 script 진입 HEAD가 target SHA인지 확인한다.
+2. `npm ci`로 해당 deploy worktree의 dependency tree를 설치한다.
+3. `npm run build`로 committed frontend source에서 bundle/map을 다시 검증한다.
+4. `bdui-shared restart`로 shared service를 재시작한다.
+5. bounded health polling으로 live process의 `source_sha`와 `source_repo`가 exact
+   target/deploy worktree인지, bd protocol diagnostics가 healthy인지 확인한다.
+6. final HEAD=target SHA와 tracked-clean을 확인한다.
+
+각 단계 실패는 뒤 단계를 실행하지 않고 terminal deploy failure가 된다. script의
+self-flock, exact source identity와 final clean readback이 같은 merged SHA 재실행을
+안전하게 만든다.
+
+현재 Bead의 required disposition은 모두 정해져 있다.
+
+- producer contract/runtime: cross-workspace prerequisite `dotfiles-y1rk` Bead+PR,
+  blocks dependency readback으로 current consumer 실행 전 완료
+- server/frontend/bundle/test: `UI-c00b` PR
+- shared service restart·HTTP/source identity readback: declared `[deploy]`
+
+따라서 `UI-c00b`에 required no-PR residue는 없고 `worker-ineligible` label은
+absent가 맞다. producer가 닫히기 전 실행 불가는 stored blocked status나 label이
+아니라 existing blocks edge가 소유한다.
+
 ## Test scope
 
 ### State path·schema
 
-- attempt ID path escape sanitize/containment
-- monitor directory `0700`, file `0600`, symlink/owner/mode reject
-- complete-line parsing, trailing partial 보류, launch/attempt/thread identity conflict reject
-- `delegation_sessions` normalize/dedupe/persist/cold reload
+- `server/worker/queue-store.test.js`: `delegation_sessions` normalize/dedupe/
+  persist/cold reload. 현재 Attempt normalizer가 이 field를 만들지 않아 RED다.
+- `server/worker/scheduler.test.js`: attempt monitor directory/env, final scan,
+  restart reattach와 terminal persistence. 현재 scheduler에 binding이 없어 RED다.
+- 같은 existing server target에서 path escape, `0700`/`0600`, symlink/owner/mode,
+  trailing partial과 identity conflict를 고정한다.
 
 ### Live ingest·restart
 
-- running stream discovery 후 snapshot + append
-- root activity가 delegation `last_event_at`과 queue fanout을 갱신
-- outer completion final scan과 terminal summary persistence
-- terminal 없는 stream의 `interrupted` 판정
-- restart boundary 뒤 event 누락/중복 없는 reattach
-- usage receipt와 launch ID merge, delayed receipt 갱신
+- `server/worker/scheduler.test.js`에서 running discovery, append fanout,
+  `last_event_at`, completion final scan, no-terminal `interrupted`, restart
+  boundary와 delayed receipt merge를 검증한다. 현재 monitor reader/tailer가 없어
+  각 assertion이 RED다.
 
 ### WS·client store
 
-- main payload backward compatibility
-- delegation `attempt_id + launch_id` validation
-- cross-workspace/unknown launch fail-quiet
-- subscription ID별 main/delegation buffer 격리
-- close/reopen/unsubscribe가 prior listener를 남기지 않음
+- `server/ws.session-log.test.js`: optional `launch_id`, exact attempt/session
+  authorization, cross-workspace/unknown launch fail-quiet. 현재 handler는 main
+  attempt log만 읽어 RED다.
+- `app/data/session-log-store.test.js`: subscription ID별 main/delegation buffer
+  격리. 현재 store가 `attempt_id`로만 key해 RED다.
+- `app/views/worker/transcript-drawer.test.js`: exact delegation subscribe,
+  close/reopen/unsubscribe. 현재 drawer payload에 `launch_id`가 없어 RED다.
 
 ### UI
 
-- running/done/failed/interrupted glyph와 metadata
-- monitor row click이 exact delegation subscription을 열음
-- main attempt row click, resume, usage toggle 회귀 없음
-- legacy usage-only row는 static으로 유지
-- `implementation|review-consult` 외 role과 child/Explore row가 없음
-- drawer가 agent message/reasoning/coarse activity/terminal을 렌더
-- 좁은 viewport에서 기존 session row wrapping 유지
+- `app/views/detail-panel/session-history.test.js`: 네 status glyph, metadata,
+  exact row click, legacy static row, 두 role allowlist, child/Explore 부재. 현재
+  receipt leg는 static terminal usage row라 click/live assertion이 RED다.
+- `app/views/worker/transcript-drawer.test.js`: agent message/reasoning/coarse
+  activity/terminal 렌더와 main drawer 회귀.
+- existing responsive session-row CSS를 유지하고 좁은 viewport assertion을 추가한다.
 
 ### Repository validation
 
