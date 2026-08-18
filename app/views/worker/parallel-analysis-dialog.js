@@ -597,18 +597,31 @@ export function createParallelAnalysisDialog(mount_element, options) {
    * @returns {import('lit-html').TemplateResult|string}
    */
   function settingsStateTemplate(settings) {
-    if (!isConfigured(settings)) {
+    // An unusable DEFAULT is not a broken user choice — there is nothing stored
+    // to repair, so it reads as unconfigured exactly like the refusal the
+    // server sends for it (`settings_missing`, UI-yqw9 §3).
+    if (!isConfigured(settings) || isDefaultUnusable(settings)) {
       return html`<span class="pa-settings__unset">분석 모델 설정 필요</span>`;
     }
     if (settings.compatible === false) {
+      // The STORED triple, not the clamped one the selects show: the reader
+      // cannot fix a selection the screen no longer names (UI-yqw9 §2.1).
       return html`<span class="pa-settings__incompatible"
-        >설정 비호환 — 카탈로그가 이 러너/모델/effort를 더는 제공하지
-        않습니다</span
+        >설정 비호환 — 저장된 ${settings.runner}/${settings.model} · effort
+        ${settings.effort} 을(를) 카탈로그가 더는 제공하지 않습니다</span
       >`;
     }
     return settings.is_default === true
       ? html`<span class="pa-settings__default">기본값</span>`
       : '';
+  }
+
+  /**
+   * @param {any} settings
+   * @returns {boolean}
+   */
+  function isDefaultUnusable(settings) {
+    return settings.is_default === true && settings.compatible === false;
   }
 
   /**

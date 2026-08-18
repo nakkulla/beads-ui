@@ -561,20 +561,27 @@ export function runAnalysis(input) {
         return;
       }
       if (input.runner === 'codex') {
-        // The STREAM verdict comes first, before the exit code: a turn that
-        // reported an error item is `runner_error` whatever it exited with, so
-        // a lost `--disable` can never be reported as a plain non-zero exit
-        // (UI-yqw9 §1.3).
+        // Three judgements in a fixed order, each one able to refuse alone
+        // (UI-yqw9 §1.3). The STREAM verdict comes first so a turn that
+        // reported an error item is `runner_error` whatever it exited with —
+        // a lost `--disable` can never be downgraded to a plain non-zero exit.
+        // The exit code comes SECOND, before the result is accepted: a run the
+        // process itself called failed must never reach the last-good cache,
+        // however well-formed its final message looked.
         const parsed = parseCodexAnalysisStream(stdout);
-        if (parsed.ok || parsed.reason === 'runner_error') {
+        if (parsed.reason === 'runner_error') {
           settle(parsed);
           return;
         }
-        settle(
-          code === 0
-            ? parsed
-            : { ok: false, reason: 'exit_nonzero', diagnostic: `exit ${code}` }
-        );
+        if (code !== 0) {
+          settle({
+            ok: false,
+            reason: 'exit_nonzero',
+            diagnostic: `exit ${code}`
+          });
+          return;
+        }
+        settle(parsed);
         return;
       }
       if (code !== 0) {

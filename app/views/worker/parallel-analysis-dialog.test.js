@@ -563,6 +563,48 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     ).toBe(true);
   });
 
+  test('names the stored triple an incompatible selection was saved with', () => {
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        settings: {
+          revision: 2,
+          runner: 'codex',
+          model: 'sol',
+          effort: 'minimal',
+          is_default: false,
+          compatible: false
+        }
+      })
+    });
+
+    const warning = /** @type {HTMLElement} */ (
+      mount.querySelector('.pa-settings__incompatible')
+    );
+    expect(warning.textContent).toContain('codex/sol');
+    expect(warning.textContent).toContain('minimal');
+  });
+
+  test('reads an unusable default as unconfigured, not as a broken choice', () => {
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        settings: {
+          revision: 0,
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          is_default: true,
+          compatible: false
+        }
+      })
+    });
+
+    expect(mount.textContent).toContain('분석 모델 설정 필요');
+    expect(mount.textContent).not.toContain('설정 비호환');
+    expect(
+      /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).disabled
+    ).toBe(true);
+  });
+
   test('shows 준비 중 while the start request has no job yet', async () => {
     const transport = vi.fn(() => new Promise(() => {}));
     const { mount } = mountDialog({

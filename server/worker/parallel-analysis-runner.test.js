@@ -483,6 +483,42 @@ describe('codex analyzer run (UI-yqw9 §1)', () => {
     expect(fs.existsSync(path.dirname(schema_path))).toBe(false);
   });
 
+  test('rejects a non-zero exit even when the final message parsed', async () => {
+    const { spawn } = makeAnalysisSpawn({
+      stdout: agentMessage(RESULT),
+      exit: 1
+    });
+
+    const outcome = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput({ runner: 'codex', model: 'sol' }),
+        catalog: CATALOG,
+        spawn_impl: spawn
+      }).done
+    );
+
+    expect(outcome.ok).toBe(false);
+    expect(outcome.reason).toBe('exit_nonzero');
+  });
+
+  test('reports an error item as runner_error, not as the non-zero exit', async () => {
+    const { spawn } = makeAnalysisSpawn({
+      stdout:
+        errorItem('shell_tool is not a known feature') + agentMessage(RESULT),
+      exit: 1
+    });
+
+    const outcome = /** @type {any} */ (
+      await runAnalysis({
+        ...runInput({ runner: 'codex', model: 'sol' }),
+        catalog: CATALOG,
+        spawn_impl: spawn
+      }).done
+    );
+
+    expect(outcome.reason).toBe('runner_error');
+  });
+
   test('rejects a run whose stream reported an error item', async () => {
     const { spawn } = makeAnalysisSpawn({
       stdout:
