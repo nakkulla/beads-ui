@@ -3270,6 +3270,38 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * The control-bar analysis button (UI-yqw9 §4.4).
+   *
+   * It carries the progress badge because the dialog can be closed while a run
+   * continues — without it, closing the dialog erases every trace that an
+   * analysis is alive. The badge never disables the button: the point of the
+   * indicator is to make the reader able to OPEN the dialog and watch.
+   * Elapsed time deliberately stays in the dialog, so the control bar is not
+   * re-rendered once a second.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function analysisButtonTemplate() {
+    const analysis = analysisStore?.get();
+    const running = !!analysis?.job;
+    const preparing = !running && analysisStore?.isPending?.() === true;
+    const badge = running ? '분석 중' : preparing ? '준비 중' : '';
+    return html`<button
+      type="button"
+      class=${badge
+        ? 'worker-analysis-btn worker-analysis-btn--running'
+        : 'worker-analysis-btn'}
+      aria-busy=${badge ? 'true' : 'false'}
+      title="대기 이슈의 병렬 실행 가능성을 분석해 직렬 그룹을 제안합니다 (클릭할 때만 실행)"
+    >
+      ✳ 병렬성
+      분석${badge
+        ? html`<span class="worker-analysis-btn__badge">${badge}</span>`
+        : ''}
+    </button>`;
+  }
+
+  /**
    * @param {ReturnType<typeof buildModel>} m
    * @returns {import('lit-html').TemplateResult}
    */
@@ -3339,15 +3371,7 @@ export function createWorkerView(mount_element, options = {}) {
           )}
         </select>
       </label>
-      ${analysisStore
-        ? html`<button
-            type="button"
-            class="worker-analysis-btn"
-            title="대기 이슈의 병렬 실행 가능성을 분석해 직렬 그룹을 제안합니다 (클릭할 때만 실행)"
-          >
-            ✳ 병렬성 분석
-          </button>`
-        : ''} `;
+      ${analysisStore ? analysisButtonTemplate() : ''} `;
     const banners = bannersTemplate({ failure: m.failure });
     // 정리 멈춤은 더 이상 배너가 아니라 타임라인의 한 항목이다 (§4.2) — 스트립의
     // 해결 필요 배지가 부르고, 클릭이 그 자리로 데려간다.
@@ -4584,6 +4608,13 @@ export function createWorkerView(mount_element, options = {}) {
         refreshOpenDrawerMeta();
       })
     );
+  }
+  // 분석 진행 표시 (UI-yqw9 §4.4): the control-bar button reads both the
+  // server's job and this browser's preparation flag, so the view must
+  // re-render on either transition. The unsubscribe rides the same list every
+  // other live source uses, so a destroyed view stops re-rendering.
+  if (analysisStore && typeof analysisStore.subscribe === 'function') {
+    unsubscribers.push(analysisStore.subscribe(() => doRender()));
   }
 
   doRender();

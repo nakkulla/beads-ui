@@ -4555,8 +4555,32 @@ html[data-theme='dark'] {
   color: var(--text-secondary);
 }
 
-.pa-settings__unset {
+.pa-settings__unset,
+.pa-settings__incompatible {
   color: var(--accent-warn);
+}
+
+.pa-settings__default {
+  color: var(--text-secondary);
+  opacity: 0.85;
+}
+
+.pa-meta__progress {
+  color: var(--accent-child);
+  font-variant-numeric: tabular-nums;
+}
+
+.worker-analysis-btn__badge {
+  margin-left: var(--sp-4);
+  padding: 0 var(--sp-4);
+  border-radius: var(--r-6);
+  background: color-mix(in srgb, var(--accent-child) 18%, transparent);
+  color: var(--accent-child);
+  font-size: var(--fs-chip);
+}
+
+.worker-analysis-btn--running {
+  border-color: color-mix(in srgb, var(--accent-child) 55%, transparent);
 }
 
 .pa-group {

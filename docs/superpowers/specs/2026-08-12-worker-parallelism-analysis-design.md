@@ -156,6 +156,9 @@ $XDG_STATE_HOME/bdui/parallel-analysis-settings.json
   호환으로 간주하지 않는다.
 - initial state는 unconfigured다. 설정 전 버튼은 `분석 모델 설정 필요`를 표시하고
   process를 띄우지 않는다.
+  <br>→ 이 항목은
+  `docs/superpowers/specs/2026-08-18-parallel-analysis-codex-runner-design.md` §3의
+  기본 선택이 대체한다.
 - model이 catalog에서 사라지거나 effort가 비호환이면 fail-visible하게 설정 오류를
   표시한다.
 - unknown model, provider mismatch, unavailable runner는 자동 fallback하지 않는다.
@@ -175,6 +178,9 @@ provider transport 하나만 실행하며, collector가 만든 manifest와 artif
 - Codex는 tool declaration이 비어 있는 analyzer 전용 structured-completion transport만
   허용한다. 일반 `codex exec --sandbox read-only`는 write만 막고 filesystem read를
   bundle로 제한하지 못하므로 이 capability를 충족하지 않으며 사용하지 않는다.
+  <br>→ 그 transport의 확정은
+  `docs/superpowers/specs/2026-08-18-parallel-analysis-codex-runner-design.md` §1이
+  대체한다.
 - provider transport가 tool-free 요청을 지원하지 않거나 capability probe에 실패하면
   해당 runner/model은 analyzer catalog에서 제외하고 fail-visible하게 표시한다. 다른
   provider로 자동 fallback하지 않는다.

@@ -124,18 +124,17 @@ function analysisResult(over = {}) {
   };
 }
 
-/** @type {{ runs: number, outcome: any }} */
+/** @type {{ runs: number, outcome: any, model_ids: string[] }} */
 let runner_state;
 
 /**
- * Wire the analyzer's injected deps: a fake bd issue lister, a pinned-blob git
+ * The analyzer's injected deps: a fake bd issue lister, a pinned-blob git
  * runner, and a fake tool-free runner. No real process is ever spawned.
  *
  * @param {{ result?: any, outcome?: any }} [options]
  */
-function armAnalysis(options = {}) {
-  runner_state = { runs: 0, outcome: options.outcome || null };
-  __setAnalysisDepsForTest({
+function analysisDeps(options = {}) {
+  return {
     listIssues: async () => ISSUES,
     analysisContext: () => ({
       repo: '/repo',
@@ -156,6 +155,9 @@ function armAnalysis(options = {}) {
     }),
     runAnalysis: (/** @type {any} */ input) => {
       runner_state.runs += 1;
+      if (typeof input.model_id === 'string') {
+        runner_state.model_ids.push(input.model_id);
+      }
       const outcome = runner_state.outcome || {
         ok: true,
         result: {
@@ -165,7 +167,15 @@ function armAnalysis(options = {}) {
       };
       return { done: Promise.resolve(outcome), cancel: vi.fn() };
     }
-  });
+  };
+}
+
+/**
+ * @param {{ result?: any, outcome?: any }} [options]
+ */
+function armAnalysis(options = {}) {
+  runner_state = { runs: 0, outcome: options.outcome || null, model_ids: [] };
+  __setAnalysisDepsForTest(analysisDeps(options));
 }
 
 beforeEach(() => {
@@ -248,6 +258,46 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
     expect(replyFor(sock, 'r2').payload.cached).toBe(true);
   });
 
+  test('re-runs when the catalog remaps a codex short name to a new model id', async () => {
+    seedQueue();
+    getWorkerRuntime().parallelAnalysis.updateSettings({
+      expected_revision: 1,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh'
+    });
+    const sock = fakeSocket();
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      catalog: {
+        runners: {
+          codex: { models: { sol: { id: 'gpt-codex-old' } } }
+        }
+      },
+      validateSelection: () => true
+    });
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+    const first_identity = replyFor(sock, 'r1').payload.identity;
+    __setAnalysisDepsForTest({
+      ...deps,
+      catalog: {
+        runners: {
+          codex: { models: { sol: { id: 'gpt-codex-new' } } }
+        }
+      },
+      validateSelection: () => true
+    });
+
+    await send(sock, 'r2', 'worker-parallel-analysis-start', {});
+
+    expect(replyFor(sock, 'r2').payload.cached).toBe(false);
+    expect(replyFor(sock, 'r2').payload.identity).not.toBe(first_identity);
+    expect(runner_state.runs).toBe(2);
+    expect(runner_state.model_ids).toEqual(['gpt-codex-old', 'gpt-codex-new']);
+  });
+
   test('force re-runs while preserving the previous last-good on failure', async () => {
     seedQueue();
     const sock = fakeSocket();
@@ -283,17 +333,116 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
     expect(analysisSnapshots(sock).at(-1).last_good).toBeNull();
   });
 
-  test('refuses to start without a configured analyzer model', async () => {
+  test('runs the default selection when nothing is stored', async () => {
     seedQueue();
     fs.rmSync(path.join(tmp_state, 'bdui'), { recursive: true, force: true });
     __resetWorkerRuntimeForTest();
     armAnalysis();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+
+    expect(replyFor(sock, 'r1').payload.applied).toBe(true);
+    expect(runner_state.runs).toBe(1);
+    expect(analysisSnapshots(sock)[0].settings).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      is_default: true,
+      compatible: true
+    });
+  });
+
+  test('marks a stored selection as not default in the snapshot', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+
+    expect(analysisSnapshots(sock).at(-1).settings).toMatchObject({
+      is_default: false,
+      compatible: true
+    });
+  });
+
+  test('refuses a start whose stored selection the catalog no longer offers', async () => {
+    seedQueue();
+    armAnalysis();
+    __setAnalysisDepsForTest({
+      ...analysisDeps(),
+      validateSelection: () => false
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+
+    expect(replyFor(sock, 'r1').payload.reason).toBe('settings_incompatible');
+    expect(runner_state.runs).toBe(0);
+  });
+
+  test('refuses a start whose default selection is not in the catalog', async () => {
+    seedQueue();
+    fs.rmSync(path.join(tmp_state, 'bdui'), { recursive: true, force: true });
+    __resetWorkerRuntimeForTest();
+    armAnalysis();
+    __setAnalysisDepsForTest({
+      ...analysisDeps(),
+      validateSelection: () => false
+    });
     const sock = fakeSocket();
 
     await send(sock, 'r1', 'worker-parallel-analysis-start', {});
 
     expect(replyFor(sock, 'r1').payload.reason).toBe('settings_missing');
     expect(runner_state.runs).toBe(0);
+  });
+
+  test('marks an incompatible stored selection in the snapshot without hiding it', async () => {
+    armAnalysis();
+    __setAnalysisDepsForTest({
+      ...analysisDeps(),
+      validateSelection: () => false
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+
+    expect(analysisSnapshots(sock).at(-1).settings).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      compatible: false
+    });
+  });
+
+  test('carries the running selection and start time on the job', async () => {
+    seedQueue();
+    /** @type {(v: any) => void} */
+    let resolveDone = () => {};
+    armAnalysis();
+    __setAnalysisDepsForTest({
+      ...analysisDeps(),
+      runAnalysis: () => ({
+        done: new Promise((res) => {
+          resolveDone = res;
+        }),
+        cancel: vi.fn()
+      })
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+    const started = send(sock, 'r1', 'worker-parallel-analysis-start', {});
+    await new Promise((res) => setTimeout(res, 5));
+
+    const job = analysisSnapshots(sock).at(-1).job;
+
+    expect(job).toMatchObject({
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high'
+    });
+    expect(typeof job.started_at).toBe('number');
+    resolveDone({ ok: false, reason: 'cancelled' });
+    await started;
   });
 
   test('settings-update persists under CAS and fans out', async () => {
@@ -312,6 +461,81 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
       model: 'sonnet',
       effort: 'medium'
     });
+  });
+
+  test('rejects an effort the model does not accept even though the runner lists it', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'u1', 'worker-parallel-analysis-settings-update', {
+      expected_revision: 1,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'minimal'
+    });
+
+    expect(replyFor(sock, 'u1').payload.applied).toBe(false);
+    expect(replyFor(sock, 'u1').payload.reason).toBe('selection_invalid');
+  });
+
+  test('accepts xhigh for sol', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'u1', 'worker-parallel-analysis-settings-update', {
+      expected_revision: 1,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh'
+    });
+
+    expect(replyFor(sock, 'u1').payload.applied).toBe(true);
+  });
+
+  test('accepts max for luna', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'u1', 'worker-parallel-analysis-settings-update', {
+      expected_revision: 1,
+      runner: 'codex',
+      model: 'luna',
+      effort: 'max'
+    });
+
+    expect(replyFor(sock, 'u1').payload.applied).toBe(true);
+  });
+
+  test('accepts xhigh but rejects max for opus', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'u1', 'worker-parallel-analysis-settings-update', {
+      expected_revision: 1,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'xhigh'
+    });
+    await send(sock, 'u2', 'worker-parallel-analysis-settings-update', {
+      expected_revision: 2,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'max'
+    });
+
+    expect(replyFor(sock, 'u1').payload.applied).toBe(true);
+    expect(replyFor(sock, 'u2').payload.applied).toBe(false);
+    expect(replyFor(sock, 'u2').payload.reason).toBe('selection_invalid');
+  });
+
+  test('rejects a runner without a tool-free analyzer transport', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'u1', 'worker-parallel-analysis-settings-update', {
+      expected_revision: 1,
+      runner: 'gemini',
+      model: 'opus',
+      effort: 'high'
+    });
+
+    expect(replyFor(sock, 'u1').payload.applied).toBe(false);
+    expect(replyFor(sock, 'u1').payload.reason).toBe('selection_invalid');
   });
 
   test('submit moves the eligible group into the target lane in one CAS', async () => {

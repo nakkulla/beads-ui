@@ -11,13 +11,14 @@
  * judgment recomputed here, so the button and the gate cannot disagree.
  *
  * @typedef {{ get: () => any, set: (q: any) => void, subscribe?: (fn: () => void) => () => void }} QueueStore
- * @typedef {{ get: () => any, set: (s: any) => void, subscribe?: (fn: () => void) => () => void }} AnalysisStore
+ * @typedef {{ get: () => any, set: (s: any) => void, isPending?: () => boolean, setPending?: (p: boolean) => void, subscribe?: (fn: () => void) => () => void }} AnalysisStore
  * @typedef {Object} ParallelAnalysisOptions
  * @property {QueueStore} queueStore
  * @property {AnalysisStore} analysisStore
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
  */
 import { html, render } from 'lit-html';
+import { analyzerEfforts } from '../../data/analyzer-efforts.js';
 import { showToast } from '../../utils/toast.js';
 
 /** @type {Set<string>} Attempt statuses that no longer own their bead. */
@@ -69,6 +70,17 @@ export function createParallelAnalysisDialog(mount_element, options) {
    * @type {boolean}
    */
   let pending = false;
+  /**
+   * A runner the reader just picked, held until the server's snapshot confirms
+   * it. Without it the model/effort lists would keep describing the OLD runner
+   * until the round trip lands, and the reader would be choosing from a
+   * vocabulary that no longer applies.
+   *
+   * @type {string|null}
+   */
+  let staged_runner = null;
+  /** @type {ReturnType<typeof setInterval>|null} Elapsed-time ticker. */
+  let elapsed_timer = null;
 
   /**
    * @returns {any}
@@ -257,11 +269,22 @@ export function createParallelAnalysisDialog(mount_element, options) {
    * @param {boolean} force
    */
   async function startAnalysis(force) {
-    const result = /** @type {any} */ (
-      await sendAnalysis('worker-parallel-analysis-start', { force })
-    );
-    if (result && result.applied === false && result.reason) {
-      showToast(`분석 실패: ${result.reason}`, 'error', 2800);
+    // The 준비 중 stage (UI-yqw9 §4.0): the server has no job to announce until
+    // the snapshot and the bundle exist, and that is the longest silent wait in
+    // the whole flow. Only THIS path raises it — a group submit or a settings
+    // save is not an analysis run.
+    analysisStore?.setPending?.(true);
+    try {
+      const result = /** @type {any} */ (
+        await sendAnalysis('worker-parallel-analysis-start', { force })
+      );
+      if (result && result.applied === false && result.reason) {
+        showToast(`분석 실패: ${result.reason}`, 'error', 2800);
+      }
+    } finally {
+      // Every exit clears it: success, an early refusal like
+      // `settings_incompatible`, and a transport throw alike.
+      analysisStore?.setPending?.(false);
     }
   }
 
@@ -276,15 +299,123 @@ export function createParallelAnalysisDialog(mount_element, options) {
   }
 
   /**
+   * @returns {any} The resolved runner catalog the queue snapshot carries.
+   */
+  function catalogOf() {
+    return currentQueue().runner_catalog;
+  }
+
+  /**
+   * @param {string} runner
+   * @returns {string[]}
+   */
+  function modelsOf(runner) {
+    return Object.keys(catalogOf()?.runners?.[runner]?.models || {});
+  }
+
+  /**
+   * The runner's preferred model — its catalog `default_model` when the
+   * catalog still carries it, else the first one it lists.
+   *
+   * @param {string} runner
+   * @returns {string}
+   */
+  function defaultModelOf(runner) {
+    const models = modelsOf(runner);
+    const declared = catalogOf()?.runners?.[runner]?.default_model;
+    return typeof declared === 'string' && models.includes(declared)
+      ? declared
+      : models[0] || '';
+  }
+
+  /**
+   * The triple the three selects display: the stored selection, or — while a
+   * runner change is staged — the derived selection for the new runner. The
+   * effort is carried over only when the new pair actually accepts it.
+   *
+   * @returns {{ runner: string, model: string, effort: string, models: string[], efforts: string[] }}
+   */
+  function currentSelection() {
+    const settings = currentAnalysis().settings;
+    const runner = staged_runner || settings.runner || 'claude';
+    const models = modelsOf(runner);
+    const model = staged_runner
+      ? defaultModelOf(runner)
+      : settings.model || models[0] || '';
+    const efforts = analyzerEfforts(catalogOf(), runner, model);
+    const stored_effort = settings.effort || '';
+    const effort = efforts.includes(stored_effort)
+      ? stored_effort
+      : efforts[0] || '';
+    return { runner, model, effort, models, efforts };
+  }
+
+  /**
+   * Send ONE CAS carrying all three fields (UI-yqw9 §2). The server takes the
+   * triple or nothing, so a runner change that implies a new model and effort
+   * still travels as a single update.
+   *
+   * @param {{ runner: string, model: string, effort: string }} selection
+   */
+  async function updateSettings(selection) {
+    const settings = currentAnalysis().settings;
+    const result = /** @type {any} */ (
+      await sendAnalysis('worker-parallel-analysis-settings-update', {
+        expected_revision: settings.revision,
+        runner: selection.runner,
+        model: selection.model,
+        effort: selection.effort
+      })
+    );
+    if (!result || result.applied !== true) {
+      // Nothing was stored, so the staged runner would keep describing a
+      // vocabulary the server never accepted.
+      staged_runner = null;
+      doRender();
+      if (result && result.reason) {
+        showToast(`분석 설정 거부: ${result.reason}`, 'error', 2800);
+      }
+    }
+  }
+
+  /**
+   * @param {string} runner
+   */
+  function chooseRunner(runner) {
+    staged_runner = runner;
+    doRender();
+    const selection = currentSelection();
+    void updateSettings({
+      runner,
+      model: selection.model,
+      effort: selection.effort
+    });
+  }
+
+  /**
    * @param {string} model
    */
-  async function updateSettings(model) {
-    const settings = currentAnalysis().settings;
-    await sendAnalysis('worker-parallel-analysis-settings-update', {
-      expected_revision: settings.revision,
-      runner: settings.runner || 'claude',
+  function chooseModel(model) {
+    const selection = currentSelection();
+    const efforts = analyzerEfforts(catalogOf(), selection.runner, model);
+    void updateSettings({
+      runner: selection.runner,
       model,
-      effort: settings.effort || 'high'
+      effort: efforts.includes(selection.effort)
+        ? selection.effort
+        : efforts[0] || ''
+    });
+  }
+
+  /**
+   * @param {string} effort
+   */
+  function chooseEffort(effort) {
+    const selection = currentSelection();
+    void updateSettings({
+      runner: selection.runner,
+      model: selection.model,
+      effort
     });
   }
 
@@ -393,36 +524,170 @@ export function createParallelAnalysisDialog(mount_element, options) {
    */
   function settingsTemplate() {
     const settings = currentAnalysis().settings;
-    const catalog = currentQueue().runner_catalog;
-    const models = Object.keys(
-      catalog?.runners?.[settings.runner || 'claude']?.models || {}
-    );
-    const configured = !!(settings.runner && settings.model && settings.effort);
+    const runners = Object.keys(catalogOf()?.runners || {});
+    const selection = currentSelection();
     return html`<div class="pa-settings">
+      <label class="pa-settings__field"
+        >러너
+        <select
+          class="pa-settings__runner"
+          aria-label="분석 러너"
+          @change=${(/** @type {Event} */ ev) =>
+            chooseRunner(/** @type {HTMLSelectElement} */ (ev.target).value)}
+        >
+          ${runners.map(
+            (runner) =>
+              html`<option
+                value=${runner}
+                ?selected=${selection.runner === runner}
+              >
+                ${runner}
+              </option>`
+          )}
+        </select>
+      </label>
       <label class="pa-settings__field"
         >분석 모델
         <select
           class="pa-settings__model"
           aria-label="분석 모델"
           @change=${(/** @type {Event} */ ev) =>
-            void updateSettings(
-              /** @type {HTMLSelectElement} */ (ev.target).value
-            )}
+            chooseModel(/** @type {HTMLSelectElement} */ (ev.target).value)}
         >
-          ${models.map(
+          ${selection.models.map(
             (model) =>
-              html`<option value=${model} ?selected=${settings.model === model}>
+              html`<option
+                value=${model}
+                ?selected=${selection.model === model}
+              >
                 ${model}
               </option>`
           )}
         </select>
       </label>
-      ${configured
-        ? html`<span class="pa-settings__effort"
-            >effort ${settings.effort}</span
-          >`
-        : html`<span class="pa-settings__unset">분석 모델 설정 필요</span>`}
+      <label class="pa-settings__field"
+        >effort
+        <select
+          class="pa-settings__effort-select"
+          aria-label="분석 effort"
+          @change=${(/** @type {Event} */ ev) =>
+            chooseEffort(/** @type {HTMLSelectElement} */ (ev.target).value)}
+        >
+          ${selection.efforts.map(
+            (effort) =>
+              html`<option
+                value=${effort}
+                ?selected=${selection.effort === effort}
+              >
+                ${effort}
+              </option>`
+          )}
+        </select>
+      </label>
+      ${settingsStateTemplate(settings)}
     </div>`;
+  }
+
+  /**
+   * The one line that says whether the current selection is usable: unset,
+   * running on the built-in default, no longer offered by the catalog, or
+   * simply fine.
+   *
+   * @param {any} settings
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function settingsStateTemplate(settings) {
+    // An unusable DEFAULT is not a broken user choice — there is nothing stored
+    // to repair, so it reads as unconfigured exactly like the refusal the
+    // server sends for it (`settings_missing`, UI-yqw9 §3).
+    if (!isConfigured(settings) || isDefaultUnusable(settings)) {
+      return html`<span class="pa-settings__unset">분석 모델 설정 필요</span>`;
+    }
+    if (settings.compatible === false) {
+      // The STORED triple, not the clamped one the selects show: the reader
+      // cannot fix a selection the screen no longer names (UI-yqw9 §2.1).
+      return html`<span class="pa-settings__incompatible"
+        >설정 비호환 — 저장된 ${settings.runner}/${settings.model} · effort
+        ${settings.effort} 을(를) 카탈로그가 더는 제공하지 않습니다</span
+      >`;
+    }
+    return settings.is_default === true
+      ? html`<span class="pa-settings__default">기본값</span>`
+      : '';
+  }
+
+  /**
+   * @param {any} settings
+   * @returns {boolean}
+   */
+  function isDefaultUnusable(settings) {
+    return settings.is_default === true && settings.compatible === false;
+  }
+
+  /**
+   * @param {any} settings
+   * @returns {boolean}
+   */
+  function isConfigured(settings) {
+    return !!(settings.runner && settings.model && settings.effort);
+  }
+
+  /**
+   * Whether the analyze buttons may run at all: a selection the catalog no
+   * longer offers is refused before spawn anyway (UI-yqw9 §2.1), so offering
+   * the click would only produce a guaranteed failure.
+   *
+   * @param {any} settings
+   * @returns {boolean}
+   */
+  function isRunnable(settings) {
+    return isConfigured(settings) && settings.compatible !== false;
+  }
+
+  /**
+   * @param {number} ms
+   * @returns {string}
+   */
+  function elapsedText(ms) {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
+  }
+
+  /**
+   * The progress line (UI-yqw9 §4.3). Two stages, and the job WINS: the
+   * preparation flag is this browser's alone, while a job is server-global, so
+   * once one exists every tab must read the same thing.
+   *
+   * @param {any} analysis
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function progressTemplate(analysis) {
+    const job = analysis.job;
+    if (job) {
+      const started_at =
+        typeof job.started_at === 'number' ? job.started_at : 0;
+      const identity = `${job.runner || '?'}/${job.model || '?'}`;
+      const elapsed = started_at
+        ? ` · 경과 ${elapsedText(Date.now() - started_at)}`
+        : '';
+      return html`<span class="pa-meta__progress"
+        >분석 중 — ${identity} · effort ${job.effort || '?'}${elapsed}</span
+      >`;
+    }
+    return isPending()
+      ? html`<span class="pa-meta__progress"
+          >준비 중 — 대상과 아티팩트 수집 중</span
+        >`
+      : '';
+  }
+
+  /**
+   * @returns {boolean} Whether this browser has a start request in flight.
+   */
+  function isPending() {
+    return analysisStore?.isPending?.() === true;
   }
 
   /**
@@ -439,11 +704,8 @@ export function createParallelAnalysisDialog(mount_element, options) {
         0
       );
     const running = !!analysis.job;
-    const configured = !!(
-      analysis.settings.runner &&
-      analysis.settings.model &&
-      analysis.settings.effort
-    );
+    const runnable = isRunnable(analysis.settings);
+    const busy = running || pending || isPending();
     return html`<div class="pa-meta">
       <span class="pa-meta__targets">대상 ${target_count}</span>
       ${analysis.last_good
@@ -451,10 +713,11 @@ export function createParallelAnalysisDialog(mount_element, options) {
             >분석 ${new Date(analysis.last_good.at || 0).toLocaleString()}</span
           >`
         : html`<span class="pa-meta__at">분석 결과 없음</span>`}
+      ${progressTemplate(analysis)}
       <button
         type="button"
         class="pa-run"
-        ?disabled=${!configured || running || pending}
+        ?disabled=${!runnable || busy}
         @click=${() => void startAnalysis(false)}
       >
         ✳ 분석
@@ -462,7 +725,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
       <button
         type="button"
         class="pa-rerun"
-        ?disabled=${!configured || running || pending}
+        ?disabled=${!runnable || busy}
         @click=${() => void startAnalysis(true)}
       >
         재분석
@@ -632,9 +895,33 @@ export function createParallelAnalysisDialog(mount_element, options) {
     </div>`;
   }
 
+  /**
+   * Run the elapsed ticker ONLY while the dialog is open and a job exists
+   * (UI-yqw9 §4.3). 준비 중 has no elapsed reading, and a closed dialog has no
+   * reader — a timer surviving either would re-render an invisible tree once a
+   * second forever.
+   */
+  function syncElapsedTimer() {
+    const needed = is_open && !!currentAnalysis().job;
+    if (needed && elapsed_timer === null) {
+      elapsed_timer = setInterval(() => doRender(), 1_000);
+      return;
+    }
+    if (!needed && elapsed_timer !== null) {
+      clearInterval(elapsed_timer);
+      elapsed_timer = null;
+    }
+  }
+
   function doRender() {
     const analysis = currentAnalysis();
+    if (staged_runner && analysis.settings.runner === staged_runner) {
+      // The server confirmed the runner; the stored settings are authoritative
+      // again.
+      staged_runner = null;
+    }
     const result = analysis.last_good?.result;
+    syncElapsedTimer();
     render(
       html`
         <div class="pa__container">
@@ -676,6 +963,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
 
   const onDialogClose = () => {
     is_open = false;
+    syncElapsedTimer();
   };
   /** @param {MouseEvent} ev */
   const onDialogClick = (ev) => {
@@ -724,6 +1012,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
       return;
     }
     is_open = false;
+    syncElapsedTimer();
     if (typeof dialog.close === 'function') {
       dialog.close();
     } else {
@@ -736,6 +1025,10 @@ export function createParallelAnalysisDialog(mount_element, options) {
     close,
     destroy() {
       is_open = false;
+      if (elapsed_timer !== null) {
+        clearInterval(elapsed_timer);
+        elapsed_timer = null;
+      }
       dialog.removeEventListener('close', onDialogClose);
       dialog.removeEventListener('cancel', onDialogClose);
       dialog.removeEventListener('click', onDialogClick);

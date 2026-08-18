@@ -21,6 +21,23 @@ import {
 } from './state-paths.js';
 
 /**
+ * The selection used when the stored settings are incomplete (UI-yqw9 §3).
+ *
+ * It replaces the older "initial state is unconfigured": a fresh install can
+ * analyze without visiting the settings first. It is deliberately NEVER
+ * persisted — `revision` stays 0 so the user's first save still lands on CAS 0
+ * — and it is never auto-substituted for something else: a default the catalog
+ * no longer offers falls back to unconfigured rather than picking a neighbour.
+ *
+ * @type {{ runner: string, model: string, effort: string }}
+ */
+export const DEFAULT_ANALYZER_SELECTION = {
+  runner: 'claude',
+  model: 'opus',
+  effort: 'high'
+};
+
+/**
  * @param {unknown} value
  * @returns {value is Record<string, any>}
  */
@@ -31,9 +48,11 @@ function isRecord(value) {
 /**
  * Cache identity for one analysis (UI-04vo §9): the semantic snapshot digest
  * (workspace, base SHA, targets, artifact OIDs, deps, prompt version) plus the
- * exact runner/model/effort the result was produced with.
+ * exact runner/model/effort and resolved execution model id the result was
+ * produced with. The resolved id matters because a catalog restart can remap
+ * the same short model name to a different actual model.
  *
- * @param {{ snapshot: { digest: string }, runner: string|null, model: string|null, effort: string|null }} input
+ * @param {{ snapshot: { digest: string }, runner: string|null, model: string|null, model_id: string|null, effort: string|null }} input
  * @returns {string}
  */
 export function analysisIdentityOf(input) {
@@ -44,6 +63,7 @@ export function analysisIdentityOf(input) {
         input.snapshot?.digest || '',
         input.runner || '',
         input.model || '',
+        input.model_id || '',
         input.effort || ''
       ])
     )
@@ -84,7 +104,7 @@ export function createParallelAnalysisStore(options = {}) {
   const now = options.now || (() => Date.now());
   const validateSelection = options.validateSelection || (() => true);
   /**
-   * @type {Map<string, { job_id: string, identity: string, cancel: () => void, done: Promise<any> }>}
+   * @type {Map<string, { job_id: string, identity: string, runner: string|null, model: string|null, effort: string|null, started_at: number, cancel: () => void, done: Promise<any> }>}
    */
   const jobs = new Map();
   let job_seq = 0;
@@ -126,8 +146,37 @@ export function createParallelAnalysisStore(options = {}) {
     return { last_good };
   }
 
+  /**
+   * The selection a run would actually use: the stored one when it is
+   * COMPLETE, else {@link DEFAULT_ANALYZER_SELECTION} marked `is_default`.
+   *
+   * `revision` is always the stored one, so a CAS built on this value still
+   * writes the user's first save at revision 0 — the default is a reading, not
+   * a stored state.
+   *
+   * @returns {{ revision: number, runner: string, model: string, effort: string, is_default: boolean }}
+   */
+  function effectiveSettings() {
+    const stored = readSettings();
+    if (stored.runner && stored.model && stored.effort) {
+      return {
+        revision: stored.revision,
+        runner: stored.runner,
+        model: stored.model,
+        effort: stored.effort,
+        is_default: false
+      };
+    }
+    return {
+      revision: stored.revision,
+      ...DEFAULT_ANALYZER_SELECTION,
+      is_default: true
+    };
+  }
+
   return {
     readSettings,
+    effectiveSettings,
 
     /**
      * CAS settings update (UI-04vo §9). A selection failing the catalog+probe
@@ -196,11 +245,24 @@ export function createParallelAnalysisStore(options = {}) {
     /**
      * The active in-memory job for a workspace, or null.
      *
+     * Carries the SELECTION and the start time (UI-yqw9 §4.1) so every
+     * subscriber — including a tab that connected mid-run — can say what is
+     * running and for how long, without a new message type.
+     *
      * @param {string} workspace
      */
     activeJob(workspace) {
       const job = jobs.get(workspace);
-      return job ? { job_id: job.job_id, identity: job.identity } : null;
+      return job
+        ? {
+            job_id: job.job_id,
+            identity: job.identity,
+            runner: job.runner,
+            model: job.model,
+            effort: job.effort,
+            started_at: job.started_at
+          }
+        : null;
     },
 
     /**
@@ -213,7 +275,7 @@ export function createParallelAnalysisStore(options = {}) {
      * (`job_active`) rather than silently served the wrong run.
      *
      * @param {string} workspace
-     * @param {{ identity: string, start: () => { done: Promise<any>, cancel: () => void } }} input
+     * @param {{ identity: string, selection?: { runner: string, model: string, effort: string }, start: () => { done: Promise<any>, cancel: () => void } }} input
      * @returns {{ job_id: string, done?: Promise<any>, joined?: true, ok?: false, reason?: string }}
      */
     startJob(workspace, input) {
@@ -239,6 +301,10 @@ export function createParallelAnalysisStore(options = {}) {
       jobs.set(workspace, {
         job_id,
         identity: input.identity,
+        runner: input.selection?.runner ?? null,
+        model: input.selection?.model ?? null,
+        effort: input.selection?.effort ?? null,
+        started_at: now(),
         cancel: handle.cancel,
         done
       });

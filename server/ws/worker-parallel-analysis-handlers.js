@@ -20,14 +20,18 @@ import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { workerAnalysisContext } from '../worker/attach.js';
 import { collectAnalysisBundle } from '../worker/parallel-analysis-bundle.js';
-import { runAnalysis as realRunAnalysis } from '../worker/parallel-analysis-runner.js';
+import {
+  analyzerModelId,
+  runAnalysis as realRunAnalysis
+} from '../worker/parallel-analysis-runner.js';
 import { analysisIdentityOf } from '../worker/parallel-analysis-store.js';
 import { collectAnalysisSnapshot } from '../worker/parallel-analysis-targets.js';
 import {
   isGroupEligible,
   validateAnalysisResult
 } from '../worker/parallel-analysis-validator.js';
-import { getWorkerRuntime } from '../worker/runtime.js';
+import { runtimeCatalog } from '../worker/runner/index.js';
+import { analyzerSelectionValid, getWorkerRuntime } from '../worker/runtime.js';
 import { log, runBdJsonProjectedInWorkspace } from './context.js';
 import { decorateQueue, fanout as fanoutQueue } from './worker-handlers.js';
 import { targetWorkspaceOf } from './workspace-target.js';
@@ -39,9 +43,11 @@ const SUBSCRIBERS = new Map();
 
 /**
  * Injected collaborators. Tests replace all three so no real `bd`, git, or
- * model process is ever launched.
+ * model process is ever launched. The optional `validateSelection` lets a test
+ * present a catalog that no longer carries a model without editing the
+ * machine's config file.
  *
- * @type {{ listIssues: (ws: WebSocket, workspace: string) => Promise<any[]>, analysisContext: (workspace: string) => any, runAnalysis: (input: any) => { done: Promise<any>, cancel: () => void } }|null}
+ * @type {{ listIssues: (ws: WebSocket, workspace: string) => Promise<any[]>, analysisContext: (workspace: string) => any, runAnalysis: (input: any) => { done: Promise<any>, cancel: () => void }, validateSelection?: (selection: any) => boolean, catalog?: any }|null}
  */
 let TEST_DEPS = null;
 
@@ -85,16 +91,54 @@ function subscribersFor(key) {
 }
 
 /**
- * The channel's public snapshot: current settings, the active job (if any),
- * and the workspace's last-good validated result with its identity digest.
+ * The resolved catalog handed to the analyzer, or null when it cannot be read.
+ *
+ * @returns {any}
+ */
+function analyzerCatalog() {
+  if (TEST_DEPS && Object.hasOwn(TEST_DEPS, 'catalog')) {
+    return TEST_DEPS.catalog;
+  }
+  try {
+    return runtimeCatalog();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the given selection can run against the current catalog. Injectable
+ * so a test can shrink the catalog without touching the machine's config file.
+ *
+ * @param {{ runner: string, model: string, effort: string }} selection
+ * @param {any} [catalog]
+ * @returns {boolean}
+ */
+function selectionRunnable(selection, catalog = analyzerCatalog()) {
+  if (TEST_DEPS && typeof TEST_DEPS.validateSelection === 'function') {
+    return TEST_DEPS.validateSelection(selection) === true;
+  }
+  return analyzerSelectionValid(catalog, selection);
+}
+
+/**
+ * The channel's public snapshot: the EFFECTIVE settings (stored, or the
+ * default marked `is_default`) with a `compatible` flag, the active job (if
+ * any), and the workspace's last-good validated result with its identity
+ * digest.
+ *
+ * `compatible` travels with the settings rather than replacing them: a stored
+ * selection the catalog dropped must still be SHOWN, or the reader cannot see
+ * what to fix (UI-yqw9 §2.1).
  *
  * @param {string} workspace
  */
 function snapshotFor(workspace) {
   const store = analysisStore();
   const cache = store.readCache(workspace);
+  const settings = store.effectiveSettings();
   return {
-    settings: store.readSettings(),
+    settings: { ...settings, compatible: selectionRunnable(settings) },
     job: store.activeJob(workspace),
     last_good: cache.last_good
       ? {
@@ -294,11 +338,39 @@ export async function handleParallelAnalysisStart(ws, req) {
   }
   const force = /** @type {any} */ (req.payload || {}).force === true;
   const store = analysisStore();
-  const settings = store.readSettings();
-  if (!settings.runner || !settings.model || !settings.effort) {
+  const settings = store.effectiveSettings();
+  const catalog = analyzerCatalog();
+  if (!selectionRunnable(settings, catalog)) {
+    // Re-validated HERE, not only at save time (UI-yqw9 §2.1): the catalog can
+    // move under a stored selection. The refusal happens before the snapshot,
+    // the bundle, and any spawn — and never picks a substitute. The reason
+    // splits on where the effective selection came from, because the two need
+    // different repairs.
     ws.send(
       JSON.stringify(
-        makeOk(req, { applied: false, reason: 'settings_missing' })
+        makeOk(req, {
+          applied: false,
+          reason: settings.is_default
+            ? 'settings_missing'
+            : 'settings_incompatible'
+        })
+      )
+    );
+    return;
+  }
+  const model_id =
+    settings.runner === 'codex'
+      ? analyzerModelId(catalog, settings.runner, settings.model)
+      : settings.model;
+  if (!model_id) {
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          reason: settings.is_default
+            ? 'settings_missing'
+            : 'settings_incompatible'
+        })
       )
     );
     return;
@@ -315,6 +387,7 @@ export async function handleParallelAnalysisStart(ws, req) {
     snapshot,
     runner: settings.runner,
     model: settings.model,
+    model_id,
     effort: settings.effort
   });
   const cache = store.readCache(key);
@@ -328,14 +401,23 @@ export async function handleParallelAnalysisStart(ws, req) {
     snapshot,
     gitRun: built.gitRun
   });
+  const selection = {
+    runner: String(settings.runner),
+    model: String(settings.model),
+    effort: String(settings.effort)
+  };
   const job = /** @type {any} */ (
     store.startJob(key, {
       identity,
+      selection,
       start: () =>
         (TEST_DEPS ? TEST_DEPS.runAnalysis : realRunAnalysis)({
-          runner: String(settings.runner),
-          model: String(settings.model),
-          effort: String(settings.effort),
+          ...selection,
+          model_id,
+          // The analyzer verifies the pinned CLI model id against this same
+          // catalog allowlist before spawning. The cache identity and spawned
+          // model therefore use exactly the same value (UI-yqw9 §1.2).
+          catalog,
           bundle_dir: bundle.dir,
           manifest: bundle.manifest,
           snapshot

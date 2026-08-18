@@ -9306,6 +9306,7 @@ describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
    */
   function analysisStoreOf(over = {}) {
     const listeners = new Set();
+    let pending = false;
     let state = {
       settings: {
         revision: 1,
@@ -9336,14 +9337,24 @@ describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
       },
       ...over
     };
+    /** @type {() => void} */
+    const emit = () => {
+      for (const fn of listeners) {
+        fn();
+      }
+    };
     return {
       get: () => state,
       /** @param {any} next */
       set(next) {
         state = next;
-        for (const fn of listeners) {
-          fn();
-        }
+        emit();
+      },
+      isPending: () => pending,
+      /** @param {boolean} next */
+      setPending(next) {
+        pending = next;
+        emit();
       },
       /** @param {() => void} fn */
       subscribe(fn) {
@@ -9365,6 +9376,125 @@ describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
     queueStore.set(analysisQueue());
 
     expect(mount.querySelector('.worker-analysis-btn')).not.toBeNull();
+  });
+
+  test('shows no progress badge on the analysis button while idle', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysisStoreOf(),
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    );
+    expect(button.textContent).not.toContain('분석 중');
+    expect(button.getAttribute('aria-busy')).toBe('false');
+    expect(button.classList.contains('worker-analysis-btn--running')).toBe(
+      false
+    );
+  });
+
+  test('badges the analysis button while this browser is preparing a run', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+
+    analysis.setPending(true);
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    );
+    expect(button.textContent).toContain('준비 중');
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(button.classList.contains('worker-analysis-btn--running')).toBe(
+      true
+    );
+    expect(button.disabled).toBe(false);
+  });
+
+  test('badges the analysis button while a server job runs', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+
+    analysis.set({
+      ...analysis.get(),
+      job: {
+        job_id: 'job-1',
+        identity: 'i1',
+        runner: 'claude',
+        model: 'opus',
+        effort: 'high',
+        started_at: 1000
+      }
+    });
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    );
+    expect(button.textContent).toContain('분석 중');
+    expect(button.getAttribute('aria-busy')).toBe('true');
+  });
+
+  test('drops the badge once the job and the preparation flag are gone', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf();
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+    analysis.setPending(true);
+
+    analysis.setPending(false);
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    );
+    expect(button.textContent).not.toContain('준비 중');
+    expect(button.getAttribute('aria-busy')).toBe('false');
+  });
+
+  test('stops re-rendering the analysis badge after destroy', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf();
+    const view = createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn()
+    });
+    queueStore.set(analysisQueue());
+
+    view.destroy();
+    analysis.setPending(true);
+
+    const button = mount.querySelector('.worker-analysis-btn');
+    expect(button?.textContent).not.toContain('준비 중');
+    expect(button?.getAttribute('aria-busy')).toBe('false');
   });
 
   test('clicking the analysis button opens the dialog', () => {
