@@ -7,23 +7,40 @@
  * judgment that matters — group eligibility above all — is the server's and
  * travels stamped on the result.
  *
+ * One value here is NOT the server's: `pending` marks the preparation window
+ * between a start request leaving this browser and the server's `job`
+ * appearing (UI-yqw9 §4.0). It is browser-local on purpose — another tab did
+ * not send that request, so only this one may claim to be preparing. The
+ * moment the job exists, every tab sees it.
+ *
  * @typedef {Object} AnalysisSettings
  * @property {number} revision
  * @property {string|null} runner
  * @property {string|null} model
  * @property {string|null} effort
+ * @property {boolean} [is_default]
+ * @property {boolean} [compatible]
+ * @typedef {Object} AnalysisJob
+ * @property {string} job_id
+ * @property {string} identity
+ * @property {string|null} [runner]
+ * @property {string|null} [model]
+ * @property {string|null} [effort]
+ * @property {number} [started_at]
  * @typedef {Object} AnalysisSnapshot
  * @property {AnalysisSettings} settings
- * @property {{ job_id: string, identity: string }|null} job
+ * @property {AnalysisJob|null} job
  * @property {{ identity_digest: string, at: number|null, result: any }|null} last_good
  */
 
 /**
- * @returns {{ get: () => AnalysisSnapshot|null, set: (s: AnalysisSnapshot|null) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
+ * @returns {{ get: () => AnalysisSnapshot|null, set: (s: AnalysisSnapshot|null) => void, isPending: () => boolean, setPending: (p: boolean) => void, clear: () => void, subscribe: (fn: () => void) => () => void }}
  */
 export function createWorkerParallelAnalysisStore() {
   /** @type {AnalysisSnapshot|null} */
   let snapshot = null;
+  /** @type {boolean} */
+  let pending = false;
   /** @type {Set<() => void>} */
   const listeners = new Set();
 
@@ -43,6 +60,11 @@ export function createWorkerParallelAnalysisStore() {
     },
 
     /**
+     * Adopt a server push. It deliberately does NOT touch `pending`: the
+     * server has no opinion about a request this browser has in flight, and
+     * clearing it here would blank the 준비 중 line on the first unrelated
+     * fanout.
+     *
      * @param {AnalysisSnapshot|null} next
      */
     set(next) {
@@ -50,8 +72,25 @@ export function createWorkerParallelAnalysisStore() {
       emit();
     },
 
+    isPending() {
+      return pending;
+    },
+
+    /**
+     * @param {boolean} next
+     */
+    setPending(next) {
+      const value = next === true;
+      if (value === pending) {
+        return;
+      }
+      pending = value;
+      emit();
+    },
+
     clear() {
       snapshot = null;
+      pending = false;
       emit();
     },
 

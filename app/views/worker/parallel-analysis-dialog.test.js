@@ -11,9 +11,33 @@ function catalogFixture() {
       claude: {
         models: { opus: { id: 'opus' }, sonnet: { id: 'sonnet' } },
         efforts: ['low', 'medium', 'high', 'xhigh']
+      },
+      codex: {
+        models: {
+          sol: {
+            id: 'gpt-5.6-sol',
+            efforts: ['low', 'medium', 'high', 'xhigh']
+          },
+          luna: {
+            id: 'gpt-5.6-luna',
+            efforts: ['low', 'medium', 'high', 'xhigh', 'max']
+          }
+        },
+        efforts: ['minimal', 'low', 'medium', 'high', 'xhigh']
       }
     }
   };
+}
+
+/**
+ * @param {HTMLElement} mount
+ * @param {string} selector
+ * @returns {string[]}
+ */
+function optionValues(mount, selector) {
+  return Array.from(mount.querySelectorAll(`${selector} option`)).map(
+    (option) => /** @type {HTMLOptionElement} */ (option).value
+  );
 }
 
 /**
@@ -446,11 +470,256 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     );
   });
 
+  test('changing the runner swaps the model and effort vocabularies', async () => {
+    const { mount, transport } = mountDialog();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.pa-settings__runner')
+    );
+    select.value = 'codex';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(optionValues(mount, '.pa-settings__model')).toEqual(['sol', 'luna']);
+    expect(optionValues(mount, '.pa-settings__effort-select')).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+    expect(transport).toHaveBeenCalledWith(
+      'worker-parallel-analysis-settings-update',
+      expect.objectContaining({
+        expected_revision: 1,
+        runner: 'codex',
+        model: 'sol',
+        effort: 'high'
+      })
+    );
+  });
+
+  test('changing the effort sends the whole triple in one CAS', async () => {
+    const { mount, transport } = mountDialog();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('.pa-settings__effort-select')
+    );
+    select.value = 'medium';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-parallel-analysis-settings-update',
+      expect.objectContaining({
+        expected_revision: 1,
+        runner: 'claude',
+        model: 'opus',
+        effort: 'medium'
+      })
+    );
+  });
+
+  test('marks a default selection', () => {
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        settings: {
+          revision: 0,
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          is_default: true,
+          compatible: true
+        }
+      })
+    });
+
+    expect(mount.textContent).toContain('기본값');
+    expect(
+      /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).disabled
+    ).toBe(false);
+  });
+
+  test('disables the analyze buttons on an incompatible selection', () => {
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        settings: {
+          revision: 2,
+          runner: 'codex',
+          model: 'sol',
+          effort: 'minimal',
+          is_default: false,
+          compatible: false
+        }
+      })
+    });
+
+    expect(mount.textContent).toContain('설정 비호환');
+    expect(
+      /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-rerun'))
+        .disabled
+    ).toBe(true);
+  });
+
+  test('shows 준비 중 while the start request has no job yet', async () => {
+    const transport = vi.fn(() => new Promise(() => {}));
+    const { mount } = mountDialog({
+      analysis: analysisOf({ job: null, last_good: null }),
+      transport
+    });
+
+    /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
+    await flush();
+
+    expect(mount.textContent).toContain('준비 중');
+    expect(mount.textContent).not.toContain('분석 중');
+  });
+
+  test('switches to 분석 중 once the server reports a job', async () => {
+    const transport = vi.fn(() => new Promise(() => {}));
+    const { mount, analysisStore, dialog } = mountDialog({
+      analysis: analysisOf({ job: null, last_good: null }),
+      transport
+    });
+    /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
+    await flush();
+
+    analysisStore.set(
+      analysisOf({
+        job: {
+          job_id: 'job-1',
+          identity: 'i1',
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          started_at: Date.now() - 65_000
+        },
+        last_good: null
+      })
+    );
+
+    expect(mount.textContent).toContain('분석 중 — claude/opus · effort high');
+    expect(mount.textContent).toContain('경과 1:05');
+    dialog.destroy();
+  });
+
+  test('clears the preparation flag on an early refusal', async () => {
+    /** @type {(v: any) => void} */
+    let resolveStart = () => {};
+    const transport = vi.fn(
+      () =>
+        new Promise((res) => {
+          resolveStart = res;
+        })
+    );
+    const { mount, analysisStore } = mountDialog({
+      analysis: analysisOf({ job: null, last_good: null }),
+      transport
+    });
+    /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
+    await flush();
+    expect(analysisStore.isPending()).toBe(true);
+
+    resolveStart({ applied: false, reason: 'settings_incompatible' });
+    await flush();
+
+    expect(analysisStore.isPending()).toBe(false);
+    expect(mount.textContent).not.toContain('준비 중');
+  });
+
+  test('stops the elapsed timer when the job disappears', () => {
+    vi.useFakeTimers();
+    try {
+      const { analysisStore, dialog } = mountDialog({
+        analysis: analysisOf({
+          job: {
+            job_id: 'job-1',
+            identity: 'i1',
+            runner: 'claude',
+            model: 'opus',
+            effort: 'high',
+            started_at: Date.now()
+          }
+        })
+      });
+      expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+      analysisStore.set(analysisOf({ job: null }));
+
+      expect(vi.getTimerCount()).toBe(0);
+      dialog.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('stops the elapsed timer when the dialog closes', () => {
+    vi.useFakeTimers();
+    try {
+      const { dialog } = mountDialog({
+        analysis: analysisOf({
+          job: {
+            job_id: 'job-1',
+            identity: 'i1',
+            runner: 'claude',
+            model: 'opus',
+            effort: 'high',
+            started_at: Date.now()
+          }
+        })
+      });
+
+      dialog.close();
+
+      expect(vi.getTimerCount()).toBe(0);
+      dialog.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('destroy removes the dialog element', () => {
     const { mount, dialog } = mountDialog();
 
     dialog.destroy();
 
     expect(mount.querySelector('#worker-parallel-analysis-dialog')).toBeNull();
+  });
+});
+
+describe('client analysis store pending (UI-yqw9 §4.2)', () => {
+  test('a server push does not clear the local preparation flag', () => {
+    const store = createWorkerParallelAnalysisStore();
+    store.setPending(true);
+
+    store.set(analysisOf());
+
+    expect(store.isPending()).toBe(true);
+  });
+
+  test('emits only when the preparation flag actually changes', () => {
+    const store = createWorkerParallelAnalysisStore();
+    let emits = 0;
+    store.subscribe(() => {
+      emits += 1;
+    });
+
+    store.setPending(true);
+    store.setPending(true);
+
+    expect(emits).toBe(1);
+  });
+
+  test('clear drops both the snapshot and the preparation flag', () => {
+    const store = createWorkerParallelAnalysisStore();
+    store.set(analysisOf());
+    store.setPending(true);
+
+    store.clear();
+
+    expect(store.get()).toBeNull();
+    expect(store.isPending()).toBe(false);
   });
 });

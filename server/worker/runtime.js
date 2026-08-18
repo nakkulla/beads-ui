@@ -13,6 +13,7 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
+import { isAnalyzerEffortValid } from '../../app/data/analyzer-efforts.js';
 import { kvGetJson, kvSetJson } from '../bd.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createActivityStore } from './activity-store.js';
@@ -50,6 +51,46 @@ import { createUsageStore } from './usage-store.js';
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
+
+/**
+ * Whether one analyzer selection is executable against `catalog` (UI-yqw9 §2).
+ *
+ * Three conditions, no fallback: the runner has a tool-free transport, the
+ * catalog carries the model under that runner, and the effort is in the
+ * vocabulary {@link isAnalyzerEffortValid} derives — the model's own list when
+ * it has one, else the runner's. The runner-wide list alone would admit
+ * `sol` + `minimal`, which the CLI refuses.
+ *
+ * @param {any} catalog
+ * @param {{ runner: string, model: string, effort: string }} selection
+ * @returns {boolean}
+ */
+export function analyzerSelectionValid(catalog, selection) {
+  if (!ANALYZER_RUNNERS.has(selection.runner)) {
+    return false;
+  }
+  return isAnalyzerEffortValid(catalog, selection);
+}
+
+/**
+ * The same judgement against the PROCESS catalog. Exported because the settings
+ * write and the analysis start must use one function: a selection stored when
+ * the catalog offered it can stop being executable after a config edit or a
+ * restart, and start re-checks it before any snapshot, bundle, or spawn
+ * (UI-yqw9 §2.1).
+ *
+ * @param {{ runner: string, model: string, effort: string }} selection
+ * @returns {boolean}
+ */
+export function validateAnalyzerSelection(selection) {
+  let catalog;
+  try {
+    catalog = runtimeCatalog();
+  } catch {
+    return false;
+  }
+  return analyzerSelectionValid(catalog, selection);
+}
 
 /**
  * Build a fresh Worker runtime.
@@ -116,24 +157,7 @@ export function createWorkerRuntime() {
     // may be stored (UI-04vo §7). Without this the settings could name a model
     // the runner would refuse at spawn time, and the cache identity would
     // describe a run that can never happen.
-    validateSelection: (selection) => {
-      if (!ANALYZER_RUNNERS.has(selection.runner)) {
-        return false;
-      }
-      let catalog;
-      try {
-        catalog = runtimeCatalog();
-      } catch {
-        return false;
-      }
-      const runner = catalog?.runners?.[selection.runner];
-      return (
-        !!runner &&
-        Object.hasOwn(runner.models || {}, selection.model) &&
-        Array.isArray(runner.efforts) &&
-        runner.efforts.includes(selection.effort)
-      );
-    }
+    validateSelection: validateAnalyzerSelection
   });
   /** @type {() => number} */
   let runningCount = () => 0;

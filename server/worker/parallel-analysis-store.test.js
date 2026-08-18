@@ -98,6 +98,85 @@ describe('parallel-analysis settings (UI-04vo seam G)', () => {
   });
 });
 
+describe('parallel-analysis default selection (UI-yqw9 §3)', () => {
+  test('reads the default selection when nothing is stored', () => {
+    const store = createParallelAnalysisStore();
+
+    const settings = store.effectiveSettings();
+
+    expect(settings).toEqual({
+      revision: 0,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      is_default: true
+    });
+  });
+
+  test('never writes the default to disk', () => {
+    const store = createParallelAnalysisStore();
+
+    store.effectiveSettings();
+
+    expect(fs.existsSync(parallelAnalysisSettingsPath())).toBe(false);
+    expect(store.readSettings().revision).toBe(0);
+  });
+
+  test('accepts the first save at CAS revision 0 after a default read', () => {
+    const store = createParallelAnalysisStore();
+    store.effectiveSettings();
+
+    const result = store.updateSettings({
+      expected_revision: 0,
+      runner: 'claude',
+      model: 'sonnet',
+      effort: 'medium'
+    });
+
+    expect(result.ok).toBe(true);
+  });
+
+  test('falls back to the default when the stored selection is partial', () => {
+    fs.mkdirSync(path.dirname(parallelAnalysisSettingsPath()), {
+      recursive: true
+    });
+    fs.writeFileSync(
+      parallelAnalysisSettingsPath(),
+      JSON.stringify({ revision: 3, runner: 'codex', model: 'sol' })
+    );
+
+    const settings = createParallelAnalysisStore().effectiveSettings();
+
+    expect(settings).toEqual({
+      revision: 3,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      is_default: true
+    });
+  });
+
+  test('marks a complete stored selection as not default', () => {
+    const store = createParallelAnalysisStore();
+    store.updateSettings({
+      expected_revision: 0,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh'
+    });
+
+    const settings = store.effectiveSettings();
+
+    expect(settings).toEqual({
+      revision: 1,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh',
+      is_default: false
+    });
+  });
+});
+
 describe('parallel-analysis identity + cache (UI-04vo seam G)', () => {
   const IDENTITY_INPUT = {
     snapshot: { digest: 'd'.repeat(64) },
@@ -179,6 +258,24 @@ describe('parallel-analysis job lifecycle (UI-04vo seam G)', () => {
     const third = store.startJob(WS, { identity: 'i2', start });
     expect(start).toHaveBeenCalledTimes(2);
     expect(third.joined).toBeUndefined();
+  });
+
+  test('carries the selection and the start time on the active job', () => {
+    const store = createParallelAnalysisStore({ now: () => 1_700 });
+
+    store.startJob(WS, {
+      identity: 'i1',
+      selection: { runner: 'codex', model: 'sol', effort: 'xhigh' },
+      start: () => ({ done: new Promise(() => {}), cancel: vi.fn() })
+    });
+
+    expect(store.activeJob(WS)).toMatchObject({
+      identity: 'i1',
+      runner: 'codex',
+      model: 'sol',
+      effort: 'xhigh',
+      started_at: 1_700
+    });
   });
 
   test('refuses a concurrent start for a different identity', () => {
