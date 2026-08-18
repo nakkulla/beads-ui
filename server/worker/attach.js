@@ -518,8 +518,17 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return this.validate(snap);
     }
   };
+  const recoveryArchive = options.recoveryArchive || createRecoveryArchive();
   const worktree =
-    options.worktree || createWorktreeManager({ locks: runtime.locks });
+    options.worktree ||
+    createWorktreeManager({
+      locks: runtime.locks,
+      createBranchArchive: (input) =>
+        recoveryArchive.createBranch({
+          workspace: keyFor(workspace_root),
+          ...input
+        })
+    });
   // The repair lane's session Interface (master spec §4.4). It is built BEFORE
   // the scheduler and reaches it through a closure on purpose: the coordinator
   // needs the adapter at construction, the adapter needs the scheduler only at
@@ -714,7 +723,6 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     notifyQueueChanged: (ws_key) => emitQueueChanged(ws_key)
   });
 
-  const recoveryArchive = options.recoveryArchive || createRecoveryArchive();
   const discardCoordinator =
     options.discardCoordinator ||
     createDiscardCoordinator(

@@ -129,6 +129,7 @@ const SUBSCRIBERS = new Map();
 /**
  * @typedef {Object} PublicStaleWork
  * @property {1} schema
+ * @property {'worktree'|'branch'} residue
  * @property {'unique'|'unknown'} state
  * @property {string} cause
  * @property {PublicStaleWorkSummary} summary
@@ -260,6 +261,7 @@ function publicStaleWork(value) {
   }
   return {
     schema: 1,
+    residue: stale_work.residue === 'branch' ? 'branch' : 'worktree',
     state: stale_work.state === 'unique' ? 'unique' : 'unknown',
     cause: typeof stale_work.cause === 'string' ? stale_work.cause : 'unknown',
     summary: {

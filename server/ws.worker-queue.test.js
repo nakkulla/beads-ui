@@ -3064,6 +3064,7 @@ describe('ws worker-queue snapshot decoration', () => {
       at: 1,
       stale_work: {
         schema: 1,
+        residue: 'worktree',
         state: 'unique',
         cause: 'dirty_unique',
         summary: {
