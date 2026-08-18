@@ -173,19 +173,21 @@ describe('worker console styles', () => {
     expect(kvRule).toContain('width: auto');
   });
 
-  test('moves a mobile mini-row admission reason below its ID and title', () => {
-    const mediaStart = CSS.indexOf('/* ---------- Worker responsive (<=640px)');
-    const mediaEnd = CSS.indexOf('/* --- board Deferred', mediaStart);
-    const mq = CSS.slice(mediaStart, mediaEnd);
+  test('moves a mini-row admission reason below its ID and title at every width', () => {
+    const responsiveMarker = CSS.indexOf(
+      '/* ---------- Worker responsive (<=640px)'
+    );
+    const baseWorkerCss = CSS.slice(markerIndex, responsiveMarker);
     const lineRule =
-      mq.match(
+      baseWorkerCss.match(
         /#worker-root \.worker-mini__line:has\(> \.worker-mini__reason\)\s*{([^}]*)}/
       )?.[1] || '';
     const reasonRule =
-      mq.match(
+      baseWorkerCss.match(
         /#worker-root \.worker-mini__line > \.worker-mini__reason\s*{([^}]*)}/
       )?.[1] || '';
 
+    expect(responsiveMarker).toBeGreaterThan(markerIndex);
     expect(lineRule).toContain('flex-wrap: wrap');
     expect(reasonRule).toContain('flex: 1 0 100%');
     expect(reasonRule).toContain('margin-left: 0');

@@ -4926,6 +4926,20 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+/* 대기 행의 사유는 제목과 경쟁하지 않는다. 사유가 있을 때만 줄을 접고, 그
+   사유가 둘째 줄 전체를 써서 긴 admission reason도 안전하게 읽는다. */
+#worker-root .worker-mini__line:has(> .worker-mini__reason) {
+  flex-wrap: wrap;
+}
+
+#worker-root .worker-mini__line > .worker-mini__reason {
+  flex: 1 0 100%;
+  min-width: 0;
+  margin-left: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 /* PR-wait row surface (worker-phase2 §4/§5): the PR is a LINK, never a button
    — the only action-class button in this lane will be [머지] (Phase 5), and
    putting view and act side by side at the same weight invites misclicks. */
@@ -6441,20 +6455,6 @@ html[data-theme='dark'] {
   #worker-root.route.worker {
     height: auto;
     overflow: visible;
-  }
-
-  /* 대기 행의 사유는 제목과 경쟁하지 않는다. 사유가 있을 때만 줄을 접고, 그
-     사유가 둘째 줄 전체를 써서 긴 admission reason도 안전하게 읽는다. */
-  #worker-root .worker-mini__line:has(> .worker-mini__reason) {
-    flex-wrap: wrap;
-  }
-
-  #worker-root .worker-mini__line > .worker-mini__reason {
-    flex: 1 0 100%;
-    min-width: 0;
-    margin-left: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
   }
 
   .worker-console {
