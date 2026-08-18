@@ -6351,8 +6351,9 @@ describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo
 
   test('persists an attempt-less stale-work operation across restart', () => {
     const store = createQueueStore();
+    store.setSerialLaneCount(WS, { expected_revision: 0, count: 2 });
     const placed = store.place(WS, {
-      expected_revision: 0,
+      expected_revision: store.snapshot(WS).revision,
       bead_id: 'UI-stale',
       lane: 's2'
     });
