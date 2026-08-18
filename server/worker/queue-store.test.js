@@ -3789,6 +3789,123 @@ describe('worker/queue-store — post-merge cleanup state (worker-phase2 §6)', 
 });
 
 describe('worker/queue-store skip-reason recording', () => {
+  test('normalizes and reloads an optional stale-work admission', () => {
+    const store = createQueueStore();
+    const stale_work = {
+      schema: 1,
+      state: 'unique',
+      cause: 'dirty_unique',
+      summary: {
+        staged_count: 1,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      },
+      identity_digest: 'a'.repeat(64),
+      action_id: 'action-1',
+      can_resume: false,
+      can_continue: true,
+      can_backup_fresh: true,
+      can_recheck: true,
+      identity: {
+        worktree_realpath: '/private/repo/.worktrees/UI-1',
+        branch: 'UI-1',
+        head_sha: 'b'.repeat(40),
+        base_oid: 'c'.repeat(40),
+        status_digest: 'd'.repeat(64)
+      }
+    };
+
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'worktree_stale_work',
+      stale_work
+    });
+    const reloaded = createQueueStore().load(WS);
+
+    expect(reloaded.admission['UI-1'].stale_work).toEqual(stale_work);
+  });
+
+  test('no-ops an unchanged stale-work snapshot without bumping revision', () => {
+    const store = createQueueStore();
+    const stale_work = {
+      schema: 1,
+      state: 'unknown',
+      cause: 'observe_failed',
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      },
+      identity_digest: 'a'.repeat(64),
+      action_id: 'action-1',
+      can_resume: false,
+      can_continue: false,
+      can_backup_fresh: false,
+      can_recheck: true
+    };
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'worktree_stale_work',
+      stale_work
+    });
+    const before = store.snapshot(WS).revision;
+
+    const result = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'worktree_stale_work',
+      stale_work: structuredClone(stale_work)
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('replaces stale-work admission when a capability changes', () => {
+    const store = createQueueStore();
+    const stale_work = {
+      schema: 1,
+      state: 'unknown',
+      cause: 'observe_failed',
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      },
+      identity_digest: 'a'.repeat(64),
+      action_id: 'action-1',
+      can_resume: false,
+      can_continue: false,
+      can_backup_fresh: false,
+      can_recheck: false
+    };
+    store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'worktree_stale_work',
+      stale_work
+    });
+    const before = store.snapshot(WS).revision;
+
+    const result = store.recordAdmission(WS, {
+      bead_id: 'UI-1',
+      reason: 'worktree_stale_work',
+      stale_work: { ...stale_work, can_recheck: true }
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.revision).toBe(before + 1);
+    expect(
+      /** @type {import('./queue-store.js').StaleWorkAdmission} */ (
+        result.queue.admission['UI-1'].stale_work
+      ).can_recheck
+    ).toBe(true);
+  });
+
   test('records a first reason and reports it as applied', () => {
     const store = createQueueStore();
     const before = store.snapshot(WS).revision;

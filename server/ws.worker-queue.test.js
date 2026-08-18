@@ -2921,6 +2921,95 @@ describe('ws worker-queue snapshot decoration', () => {
     expect(snapshot).not.toHaveProperty('last_deploy');
     expect(snapshot).not.toHaveProperty('reconcile');
   });
+
+  test('projects stale-work admission without server identity details', () => {
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_DEPLOY.root_dir, {
+        revision: 1,
+        queue: [{ bead_id: 'UI-1', added_at: 1 }],
+        pr_wait: [],
+        done: [],
+        attempts: {},
+        admission: {
+          'UI-1': {
+            reason: 'worktree_stale_work',
+            at: 1,
+            stale_work: {
+              schema: 1,
+              state: 'unique',
+              cause: 'dirty_unique',
+              summary: {
+                staged_count: 1,
+                unstaged_count: 0,
+                untracked_count: 0,
+                branch_ahead: 0,
+                head_ahead: 0
+              },
+              identity_digest: 'a'.repeat(64),
+              action_id: 'opaque-action',
+              can_resume: false,
+              can_continue: true,
+              can_backup_fresh: true,
+              can_recheck: true,
+              identity: {
+                worktree_realpath: '/private/repo/.worktrees/UI-1',
+                branch: 'UI-1',
+                head_sha: 'b'.repeat(40),
+                base_oid: 'c'.repeat(40),
+                status_digest: 'd'.repeat(64),
+                stderr: 'secret git failure',
+                contents: 'secret contents'
+              }
+            }
+          }
+        }
+      })
+    );
+
+    expect(snapshot.admission['UI-1']).toEqual({
+      reason: 'worktree_stale_work',
+      at: 1,
+      stale_work: {
+        schema: 1,
+        state: 'unique',
+        cause: 'dirty_unique',
+        summary: {
+          staged_count: 1,
+          unstaged_count: 0,
+          untracked_count: 0,
+          branch_ahead: 0,
+          head_ahead: 0
+        },
+        identity_digest: 'a'.repeat(64),
+        action_id: 'opaque-action',
+        can_resume: false,
+        can_continue: true,
+        can_backup_fresh: true,
+        can_recheck: true
+      }
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('/private/repo');
+    expect(JSON.stringify(snapshot)).not.toContain('secret git failure');
+    expect(JSON.stringify(snapshot)).not.toContain('secret contents');
+  });
+
+  test('keeps legacy admission unchanged without stale-work payload', () => {
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_DEPLOY.root_dir, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        attempts: {},
+        admission: { 'UI-1': { reason: 'worktree_stale_work', at: 1 } }
+      })
+    );
+
+    expect(snapshot.admission['UI-1']).toEqual({
+      reason: 'worktree_stale_work',
+      at: 1
+    });
+  });
 });
 
 describe('ws worker-queue subscription addressing', () => {

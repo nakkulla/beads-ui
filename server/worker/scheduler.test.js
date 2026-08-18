@@ -5696,6 +5696,241 @@ describe('scheduler worktree residue hygiene', () => {
     expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
   });
 
+  test('dispatches in the same tick after reclaiming base-contained residue', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: true,
+      state: 'base_contained',
+      removed: true,
+      reason: null
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.add).toHaveBeenCalledTimes(1);
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).admission.S1).toBeUndefined();
+  });
+
+  test('records an owned unique residue as structured admission without an attempt', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'dirty_unique',
+      owned: true,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 1,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1).toMatchObject({
+      reason: 'worktree_stale_work',
+      stale_work: {
+        schema: 1,
+        state: 'unique',
+        cause: 'dirty_unique',
+        can_resume: false,
+        can_continue: true,
+        can_backup_fresh: true,
+        can_recheck: false
+      }
+    });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+    expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('closes every capability for a foreign residue identity', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      reason: 'dirty_unique',
+      owned: false,
+      identity: {
+        worktree_realpath: '/someone/worktree',
+        branch: 'foreign',
+        head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 1,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
+      state: 'unknown',
+      can_resume: false,
+      can_continue: false,
+      can_backup_fresh: false,
+      can_recheck: false
+    });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('offers only recheck for an owned unknown residue', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      state: 'unknown',
+      removed: false,
+      reason: 'observe_failed',
+      cause: 'observe_failed',
+      owned: true,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
+      state: 'unknown',
+      can_resume: false,
+      can_continue: false,
+      can_backup_fresh: false,
+      can_recheck: true
+    });
+    expect(env.store.snapshot(WS).attempts).toEqual({});
+  });
+
+  test('prefers a matching resumable leaf over automatic reclaim', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'prior', bead_id: 'S1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'prior',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        session_id: 'session-1',
+        head_oid: 'a'.repeat(40)
+      }
+    });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: true,
+      state: 'base_contained',
+      removed: false,
+      reason: null,
+      cause: null,
+      owned: true,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 1,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledWith({
+      repo: '/repo',
+      bead_id: 'S1',
+      base: 'main',
+      preserve: true
+    });
+    expect(env.worktree.removeIfDiscardable).toHaveBeenCalledTimes(1);
+    expect(env.store.snapshot(WS).admission.S1.stale_work).toMatchObject({
+      state: 'unique',
+      cause: 'resume_available',
+      can_resume: true,
+      can_continue: false,
+      can_backup_fresh: false,
+      can_recheck: false
+    });
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual(['prior']);
+    expect(env.worktree.add).not.toHaveBeenCalled();
+  });
+
+  test('does not bump revision for the same residue on a later tick', async () => {
+    const notifyQueueChanged = vi.fn();
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      notifyQueueChanged
+    });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      state: 'unknown',
+      removed: false,
+      reason: 'observe_failed',
+      cause: 'observe_failed',
+      owned: true,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 0,
+        unstaged_count: 0,
+        untracked_count: 0,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    }));
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const revision = env.store.snapshot(WS).revision;
+    const notifications = notifyQueueChanged.mock.calls.length;
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).revision).toBe(revision);
+    expect(notifyQueueChanged).toHaveBeenCalledTimes(notifications);
+  });
+
   for (const reason of [
     'dirty',
     'branch_ahead',

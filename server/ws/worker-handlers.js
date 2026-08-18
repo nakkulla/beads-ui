@@ -116,6 +116,35 @@ function queueStore() {
 const SUBSCRIBERS = new Map();
 
 /**
+ * @typedef {Object} PublicStaleWorkSummary
+ * @property {number} staged_count
+ * @property {number} unstaged_count
+ * @property {number} untracked_count
+ * @property {number} branch_ahead
+ * @property {number} head_ahead
+ */
+/**
+ * @typedef {Object} PublicStaleWork
+ * @property {1} schema
+ * @property {'unique'|'unknown'} state
+ * @property {string} cause
+ * @property {PublicStaleWorkSummary} summary
+ * @property {string} identity_digest
+ * @property {string} action_id
+ * @property {boolean} can_resume
+ * @property {boolean} can_continue
+ * @property {boolean} can_backup_fresh
+ * @property {boolean} can_recheck
+ */
+/**
+ * @typedef {Object} PublicAdmission
+ * @property {string} reason
+ * @property {number} at
+ * @property {true} [stale]
+ * @property {PublicStaleWork} [stale_work]
+ */
+
+/**
  * The connection's own workspace. Still the answer for the SUBSCRIPTION
  * handlers: a `worker-queue` / `session-log` subscription is connection-scoped
  * by design (UI-qrfo §5 「구독 채널은 건드리지 않는다」), and the monitor reads a
@@ -200,6 +229,93 @@ function publicDiscardPr(value) {
     base_ref: typeof value.base_ref === 'string' ? value.base_ref : null,
     merged_sha: typeof value.merged_sha === 'string' ? value.merged_sha : null
   };
+}
+
+/**
+ * Project the optional stale-work diagnostic without its server-only identity
+ * snapshot. Unknown or legacy payloads fail quiet to the existing reason/at
+ * badge contract.
+ *
+ * @param {unknown} value
+ * @returns {PublicStaleWork|null}
+ */
+function publicStaleWork(value) {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    /** @type {Record<string, unknown>} */ (value).schema !== 1
+  ) {
+    return null;
+  }
+  const stale_work = /** @type {Record<string, unknown>} */ (value);
+  const summary = /** @type {Record<string, unknown> | undefined} */ (
+    stale_work.summary
+  );
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+    return null;
+  }
+  return {
+    schema: 1,
+    state: stale_work.state === 'unique' ? 'unique' : 'unknown',
+    cause: typeof stale_work.cause === 'string' ? stale_work.cause : 'unknown',
+    summary: {
+      staged_count: Number.isInteger(summary.staged_count)
+        ? /** @type {number} */ (summary.staged_count)
+        : 0,
+      unstaged_count: Number.isInteger(summary.unstaged_count)
+        ? /** @type {number} */ (summary.unstaged_count)
+        : 0,
+      untracked_count: Number.isInteger(summary.untracked_count)
+        ? /** @type {number} */ (summary.untracked_count)
+        : 0,
+      branch_ahead: Number.isInteger(summary.branch_ahead)
+        ? /** @type {number} */ (summary.branch_ahead)
+        : 0,
+      head_ahead: Number.isInteger(summary.head_ahead)
+        ? /** @type {number} */ (summary.head_ahead)
+        : 0
+    },
+    identity_digest:
+      typeof stale_work.identity_digest === 'string'
+        ? stale_work.identity_digest
+        : '',
+    action_id:
+      typeof stale_work.action_id === 'string' ? stale_work.action_id : '',
+    can_resume: stale_work.can_resume === true,
+    can_continue: stale_work.can_continue === true,
+    can_backup_fresh: stale_work.can_backup_fresh === true,
+    can_recheck: stale_work.can_recheck === true
+  };
+}
+
+/**
+ * @param {unknown} value
+ * @returns {Record<string, PublicAdmission>}
+ */
+function publicAdmissions(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  /** @type {Record<string, PublicAdmission>} */
+  const projected = {};
+  for (const [bead_id, raw] of Object.entries(value)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      continue;
+    }
+    const admission = /** @type {Record<string, unknown>} */ (raw);
+    const stale_work = publicStaleWork(admission.stale_work);
+    projected[bead_id] = {
+      reason:
+        typeof admission.reason === 'string' ? admission.reason : 'unknown',
+      at: Number.isFinite(admission.at)
+        ? /** @type {number} */ (admission.at)
+        : 0,
+      ...(admission.stale === true ? { stale: true } : {}),
+      ...(stale_work === null ? {} : { stale_work })
+    };
+  }
+  return projected;
 }
 
 /**
@@ -1210,6 +1326,7 @@ export function decorateQueue(workspace_key, raw_queue) {
   const completion = completionStatusFor(workspace_key, overlaid);
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
+  public_queue.admission = publicAdmissions(overlaid.admission);
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
   delete public_queue.reconcile;

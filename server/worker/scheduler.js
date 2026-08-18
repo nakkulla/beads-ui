@@ -37,7 +37,9 @@
  * Fully injectable (fake clock / runner / bd / worktree / verify / PID probe) so
  * no real subprocess is spawned in tests.
  *
+ * @import { Attempt } from './queue-store.js'
  * @import { RunnerHandle, RunnerVerdict } from './runner/session.js'
+ * @import { WorktreeObservation, WorktreeSummary } from './worktree.js'
  */
 import { createHash } from 'node:crypto';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
@@ -52,6 +54,29 @@ import { defaultTaskPrompt } from './runner/preamble.js';
 import * as default_usage_receipts from './usage-receipts.js';
 
 const log = debug('worker:scheduler');
+
+/**
+ * @typedef {Object} StaleWorkIdentity
+ * @property {string|null} worktree_realpath
+ * @property {string|null} branch
+ * @property {string|null} head_sha
+ * @property {string|null} base_oid
+ * @property {string|null} status_digest
+ */
+/**
+ * @typedef {Object} StaleWorkAdmission
+ * @property {1} schema
+ * @property {'unique'|'unknown'} state
+ * @property {string} cause
+ * @property {WorktreeSummary} summary
+ * @property {string} identity_digest
+ * @property {string} action_id
+ * @property {boolean} can_resume
+ * @property {boolean} can_continue
+ * @property {boolean} can_backup_fresh
+ * @property {boolean} can_recheck
+ * @property {StaleWorkIdentity} identity
+ */
 
 /**
  * How far a probed process start time may differ from the attempt's recorded
@@ -265,7 +290,7 @@ function staleDispatchPrompt(bead_id, stale) {
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
  *   readStatus: (bead_id: string) => Promise<string|null>
  * }} bd
- * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
+ * @property {{ add: (i: { repo: string, bead_id: string, base: string }) => Promise<{ path: string, branch: string, base_oid: string }>, remove: (i: { repo: string, bead_id: string }) => Promise<any>, removeIfDiscardable?: (i: { repo: string, bead_id: string, base: string, preserve?: boolean }) => Promise<WorktreeObservation>, addDetached?: (i: { repo: string, name: string, sha: string }) => Promise<{ path: string }>, removeDetached?: (i: { repo: string, name: string }) => Promise<any>, pathFor?: (repo: string, bead_id: string) => string, exists?: (repo: string, bead_id: string) => boolean }} worktree
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
@@ -912,9 +937,14 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {string} reason
+   * @param {StaleWorkAdmission} [stale_work]
    */
-  function recordSkipReason(workspace, bead_id, reason) {
-    const result = deps.store.recordAdmission(workspace, { bead_id, reason });
+  function recordSkipReason(workspace, bead_id, reason, stale_work) {
+    const result = deps.store.recordAdmission(workspace, {
+      bead_id,
+      reason,
+      ...(stale_work ? { stale_work } : {})
+    });
     if (result && result.ok) {
       notifyChanged(workspace);
     }
@@ -970,12 +1000,132 @@ export function createScheduler(deps) {
    * @param {string} workspace
    * @param {string} bead_id
    * @param {string} reason
+   * @param {StaleWorkAdmission} [stale_work]
    */
-  function refuseDispatch(workspace, bead_id, reason) {
-    recordSkipReason(workspace, bead_id, reason);
+  function refuseDispatch(workspace, bead_id, reason, stale_work) {
+    recordSkipReason(workspace, bead_id, reason, stale_work);
     claimed.delete(bead_id);
     dispatch_refused.add(bead_id);
     requestRescan();
+  }
+
+  /**
+   * Leaf attempts that can still resume the same Bead conversation. Identity is
+   * checked after the worktree observation, before any automatic reclaim.
+   *
+   * @param {string} workspace
+   * @param {string} bead_id
+   * @param {string} repo
+   * @returns {Attempt[]}
+   */
+  function resumableResidueAttempts(workspace, bead_id, repo) {
+    const attempts = /** @type {Attempt[]} */ (
+      Object.values(deps.store.snapshot(workspace).attempts || {})
+    );
+    const resumed_from = new Set(
+      attempts.map((attempt) => attempt?.resumed_from).filter(Boolean)
+    );
+    return attempts.filter((attempt) => {
+      return (
+        attempt.bead_id === bead_id &&
+        attempt.repo === repo &&
+        (attempt.status === 'failed' ||
+          attempt.status === 'orphaned' ||
+          attempt.status === 'paused') &&
+        attempt.cleanup_diagnosis !== true &&
+        typeof attempt.session_id === 'string' &&
+        attempt.session_id.length > 0 &&
+        typeof attempt.head_oid === 'string' &&
+        attempt.head_oid.length > 0 &&
+        !resumed_from.has(attempt.attempt_id)
+      );
+    });
+  }
+
+  /**
+   * @param {WorktreeObservation} observation
+   * @param {string} bead_id
+   * @param {Attempt[]} candidates
+   * @returns {Attempt|null}
+   */
+  function matchingResidueAttempt(observation, bead_id, candidates) {
+    const identity = observation?.identity;
+    if (
+      observation?.owned !== true ||
+      !identity ||
+      identity.branch !== bead_id ||
+      typeof identity.worktree_realpath !== 'string'
+    ) {
+      return null;
+    }
+    return (
+      candidates.find((attempt) => attempt.head_oid === identity.head_sha) ||
+      null
+    );
+  }
+
+  /**
+   * Build the durable schema-1 admission from a server-only observation.
+   *
+   * @param {WorktreeObservation} observation
+   * @param {string} bead_id
+   * @param {Attempt|null} resume_attempt
+   * @returns {StaleWorkAdmission}
+   */
+  function staleWorkAdmission(observation, bead_id, resume_attempt) {
+    const owned =
+      observation?.owned === true &&
+      observation?.identity?.branch === bead_id &&
+      typeof observation?.identity?.worktree_realpath === 'string';
+    const state =
+      owned && (observation?.state === 'unique' || resume_attempt !== null)
+        ? 'unique'
+        : 'unknown';
+    const cause = !owned
+      ? 'ownership_unknown'
+      : resume_attempt
+        ? 'resume_available'
+        : typeof observation?.cause === 'string'
+          ? observation.cause
+          : typeof observation?.reason === 'string'
+            ? observation.reason
+            : 'observe_failed';
+    const summary = {
+      staged_count: Number(observation?.summary?.staged_count) || 0,
+      unstaged_count: Number(observation?.summary?.unstaged_count) || 0,
+      untracked_count: Number(observation?.summary?.untracked_count) || 0,
+      branch_ahead: Number(observation?.summary?.branch_ahead) || 0,
+      head_ahead: Number(observation?.summary?.head_ahead) || 0
+    };
+    const identity = observation?.identity || {
+      worktree_realpath: null,
+      branch: null,
+      head_sha: null,
+      base_oid: null,
+      status_digest: null
+    };
+    const identity_digest = continuationDigest(identity);
+    const capability = {
+      can_resume: owned && resume_attempt !== null,
+      can_continue: owned && resume_attempt === null && state === 'unique',
+      can_backup_fresh: owned && resume_attempt === null && state === 'unique',
+      can_recheck: owned && state === 'unknown'
+    };
+    const action_id = continuationDigest({
+      identity_digest,
+      cause,
+      capability
+    });
+    return {
+      schema: 1,
+      state,
+      cause,
+      summary,
+      identity_digest,
+      action_id,
+      ...capability,
+      identity
+    };
   }
 
   /**
@@ -3228,22 +3378,61 @@ export function createScheduler(deps) {
       // `-B` silently reset a branch that may still hold the only copy of its
       // commits. Clear it when nothing would be lost, refuse VISIBLY otherwise.
       if (typeof deps.worktree.removeIfDiscardable === 'function') {
-        /** @type {{ ok: boolean, removed: boolean, reason: string|null }} */
+        const resume_candidates = resumableResidueAttempts(
+          workspace,
+          bead_id,
+          snap.repo
+        );
+        /** @type {WorktreeObservation} */
         let residue;
         try {
           residue = await deps.worktree.removeIfDiscardable({
             repo: snap.repo,
             bead_id,
-            base: cut_base
+            base: cut_base,
+            ...(resume_candidates.length > 0 ? { preserve: true } : {})
           });
         } catch {
           removeGuardHook(workspace, attempt_id);
           refuseDispatch(workspace, bead_id, 'git_error');
           return;
         }
+        if (resume_candidates.length > 0) {
+          const resume_attempt = matchingResidueAttempt(
+            residue,
+            bead_id,
+            resume_candidates
+          );
+          if (resume_attempt) {
+            removeGuardHook(workspace, attempt_id);
+            refuseDispatch(
+              workspace,
+              bead_id,
+              'worktree_stale_work',
+              staleWorkAdmission(residue, bead_id, resume_attempt)
+            );
+            return;
+          }
+          try {
+            residue = await deps.worktree.removeIfDiscardable({
+              repo: snap.repo,
+              bead_id,
+              base: cut_base
+            });
+          } catch {
+            removeGuardHook(workspace, attempt_id);
+            refuseDispatch(workspace, bead_id, 'git_error');
+            return;
+          }
+        }
         if (!residue.ok) {
           removeGuardHook(workspace, attempt_id);
-          refuseDispatch(workspace, bead_id, 'worktree_stale_work');
+          refuseDispatch(
+            workspace,
+            bead_id,
+            'worktree_stale_work',
+            staleWorkAdmission(residue, bead_id, null)
+          );
           return;
         }
       }
