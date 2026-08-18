@@ -1164,23 +1164,14 @@ describe('worker e2e — completion intent post-merge recovery', () => {
     expect(Object.keys(queue.attempts)).toEqual(['beads-456-initial']);
   });
 
-  test('fake repair session → repair merge → root cleanup replay → done', async () => {
+  test('cleanup resolution stays on root and creates no repair Bead', async () => {
     const root_bead_id = 'R1';
-    const repair_bead_id = 'R1-repair';
     const base = await gitRun(['rev-parse', 'main'], { cwd: repo_dir });
     const base_sha = base.stdout.trim();
-    /** @type {ReturnType<typeof createCompletionActionDriver>|null} */
-    let completion_driver = null;
-    const { runtime, scheduler } = buildSystem({
+    const { runtime } = buildSystem({
       fixture: 'claude-success.jsonl',
-      config: {
-        [root_bead_id]: { runner: 'claude' },
-        [repair_bead_id]: { runner: 'claude' }
-      },
-      slots: 1,
-      onCompletionAttemptSettled: async (input) => {
-        await completion_driver?.onAttemptSettled(input);
-      }
+      config: { [root_bead_id]: { runner: 'claude' } },
+      slots: 1
     });
     const store = runtime.queueStore;
     store.appendAttempt(WS, {
@@ -1233,46 +1224,16 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       output_tail: 'post-merge regression'
     });
 
-    const repair_subject = {
-      role: /** @type {const} */ ('repair'),
-      bead_id: repair_bead_id,
-      pr_url: 'https://github.com/o/r/pull/2',
-      head_sha: base_sha,
-      base_sha,
-      merged_sha: null
-    };
-    /** @type {string[]} */
-    const merge_calls = [];
     let cleanup_replays = 0;
-    const completion_gate = async (/** @type {string} */ bead_id) => ({
-      ok: true,
-      target_base: 'main',
-      base_sha,
-      subject: bead_id === repair_bead_id ? repair_subject : root_subject,
-      verdict:
-        bead_id === repair_bead_id
-          ? { enabled: true, tier: 'ready', reason: null }
-          : { enabled: false, tier: 'merged', reason: null },
-      evidence: {}
-    });
-    const merge_queue = createMergeQueue({
-      workspace: WS,
-      store,
-      merge: async (/** @type {string} */ bead_id) => {
-        merge_calls.push(bead_id);
-        store.moveToDone(WS, { bead_id });
-        return { ok: true, action: 'merged', reason: null };
-      },
-      observePr: async () => ({ state: 'MERGED' }),
-      onCompletionResult: async (...args) => {
-        await completion_driver?.onMergeResult(...args);
-      }
-    });
-    completion_driver = createCompletionActionDriver({
+    let linked_bead_calls = 0;
+    let dispatch_calls = 0;
+    const completion_driver = createCompletionActionDriver({
       workspace: WS,
       store,
       prActions: {
-        completionGate: completion_gate,
+        completionGate: async () => {
+          throw new Error('completion gate must not run during cleanup');
+        },
         resumeCompletionCleanup: async () => {
           cleanup_replays += 1;
           store.moveToDone(WS, { bead_id: root_bead_id });
@@ -1281,40 +1242,46 @@ describe('worker e2e — completion intent post-merge recovery', () => {
       },
       completionRepair: {
         probeOwnership: async () => ({ state: 'base_owned' }),
-        ensureLinkedBead: async () => ({ bead_id: repair_bead_id })
+        ensureLinkedBead: async () => {
+          linked_bead_calls += 1;
+          return { bead_id: 'R1-repair' };
+        }
       },
-      scheduler,
-      kickMerge: () => merge_queue.kick()
+      scheduler: {
+        dispatchCompletionRepair: async () => {
+          dispatch_calls += 1;
+          return { ok: true };
+        }
+      }
     });
 
     let current = store.snapshot(WS).completion_intents[root_bead_id];
     const cleanup_fact = await completion_driver.observe(root_bead_id, current);
-    const repair_action = decideCompletionAction({
+    const waiting_action = decideCompletionAction({
       auto_merge: true,
       intent: current,
       fact: cleanup_fact
     });
-    if (!repair_action) {
-      throw new Error('repair action missing');
-    }
-    await completion_driver.onAction(root_bead_id, repair_action, current);
 
-    await waitFor(() => {
-      const intent = store.snapshot(WS).completion_intents[root_bead_id];
-      return intent.phase === 'gating' && intent.subject.role === 'repair';
-    });
+    expect(waiting_action).toBe(null);
+    expect(linked_bead_calls).toBe(0);
+    expect(dispatch_calls).toBe(0);
+
+    store.clearCleanupFailure(WS, root_bead_id);
     current = store.snapshot(WS).completion_intents[root_bead_id];
-    const repair_fact = await completion_driver.observe(root_bead_id, current);
-    const merge_action = decideCompletionAction({
+    const cleanup_pending = await completion_driver.observe(
+      root_bead_id,
+      current
+    );
+    const retry_action = decideCompletionAction({
       auto_merge: true,
       intent: current,
-      fact: repair_fact
+      fact: cleanup_pending
     });
-    if (!merge_action) {
-      throw new Error('repair merge action missing');
+    if (!retry_action) {
+      throw new Error('cleanup retry action missing');
     }
-    await completion_driver.onAction(root_bead_id, merge_action, current);
-    await merge_queue.kick();
+    await completion_driver.onAction(root_bead_id, retry_action, current);
 
     await waitFor(
       () =>
@@ -1322,21 +1289,16 @@ describe('worker e2e — completion intent post-merge recovery', () => {
         'completed'
     );
     const queue = store.snapshot(WS);
-    expect(merge_calls).toEqual([repair_bead_id]);
+    expect(retry_action).toEqual({ kind: 'retry_cleanup' });
     expect(cleanup_replays).toBe(1);
     expect(queue.completion_intents[root_bead_id]).toMatchObject({
       phase: 'completed',
-      repair_sessions_used: 1,
-      repair_bead_ids: [repair_bead_id],
+      repair_sessions_used: 0,
+      repair_bead_ids: [],
       active_op: null
     });
-    expect(queue.done.map((entry) => entry.bead_id)).toEqual(
-      expect.arrayContaining([root_bead_id, repair_bead_id])
-    );
-    const repair_attempts = Object.values(queue.attempts).filter(
-      (attempt) => attempt.bead_id === repair_bead_id
-    );
-    expect(repair_attempts).toHaveLength(1);
+    expect(queue.done.map((entry) => entry.bead_id)).toContain(root_bead_id);
+    expect(Object.values(queue.attempts)).toHaveLength(1);
   });
 });
 

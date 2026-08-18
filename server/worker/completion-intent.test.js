@@ -323,6 +323,16 @@ describe('worker/completion-intent decisions', () => {
     expect(action).toEqual({ kind: 'enter_cleanup' });
   });
 
+  test('leaves repairable cleanup with the resolution ladder owner', () => {
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: intent({ phase: 'cleaning' }),
+      fact: { state: 'cleanup_repairable' }
+    });
+
+    expect(action).toBe(null);
+  });
+
   test('re-gates stale pinned evidence instead of consuming it', () => {
     const action = decideCompletionAction({
       auto_merge: true,
@@ -1159,7 +1169,7 @@ describe('worker/completion-intent action driver', () => {
     expect(kickMerge).toHaveBeenCalledTimes(1);
   });
 
-  test('routes a merged root verify failure into a linked base repair', async () => {
+  test('does not create a linked repair for merged cleanup failure', async () => {
     const store = seededCompletionStore();
     store.recordCleanupFailure(DRIVER_WS, {
       bead_id: 'UI-root',
@@ -1173,6 +1183,7 @@ describe('worker/completion-intent action driver', () => {
       base_sha: 'c'.repeat(40),
       merged_sha: 'c'.repeat(40)
     };
+    const ensureLinkedBead = vi.fn(async () => ({ bead_id: 'UI-repair' }));
     const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
     const driver = actionDriver(store, {
       prActions: {
@@ -1187,7 +1198,7 @@ describe('worker/completion-intent action driver', () => {
       },
       completionRepair: {
         probeOwnership: vi.fn(),
-        ensureLinkedBead: vi.fn(async () => ({ bead_id: 'UI-repair' }))
+        ensureLinkedBead
       },
       scheduler: { dispatchCompletionRepair }
     });
@@ -1204,10 +1215,6 @@ describe('worker/completion-intent action driver', () => {
       intent: cleaning,
       fact
     });
-    if (!action) {
-      throw new Error('post-merge action missing');
-    }
-    await driver.onAction('UI-root', action, cleaning);
 
     expect(fact).toMatchObject({
       state: 'cleanup_repairable',
@@ -1218,15 +1225,16 @@ describe('worker/completion-intent action driver', () => {
         base_sha: 'c'.repeat(40)
       }
     });
-    expect(dispatchCompletionRepair).toHaveBeenCalledWith(
-      DRIVER_WS,
-      expect.objectContaining({
-        op: expect.objectContaining({
-          kind: 'dispatch_repair',
-          repair_bead_id: 'UI-repair'
-        })
-      })
-    );
+    expect(action).toBe(null);
+    expect(ensureLinkedBead).not.toHaveBeenCalled();
+    expect(dispatchCompletionRepair).not.toHaveBeenCalled();
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'cleaning',
+      repair_sessions_used: 0,
+      active_op: null
+    });
   });
 
   test('moves an initially observed merged root from gating into cleaning', async () => {
@@ -1365,7 +1373,7 @@ describe('worker/completion-intent action driver', () => {
     expect(notifyChanged).not.toHaveBeenCalled();
   });
 
-  test('routes a cleanup failure into the unified repair path', async () => {
+  test('leaves a cleanup failure on the unified resolution path', async () => {
     const store = seededCompletionStore();
     store.setCompletionSubject(DRIVER_WS, {
       root_bead_id: 'UI-root',
@@ -1391,7 +1399,7 @@ describe('worker/completion-intent action driver', () => {
       state: 'cleanup_repairable',
       failure_key: { stage: 'child_sweep', reason: 'bd_read_failed' }
     });
-    expect(action).toEqual({ kind: 'create_repair' });
+    expect(action).toBe(null);
   });
 
   test('opens no automatic repair session while auto_repair is off', async () => {

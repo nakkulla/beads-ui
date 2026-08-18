@@ -107,7 +107,9 @@ export function decideCompletionAction(input) {
   }
   if (intent.phase === 'cleaning') {
     if (fact.state === 'cleanup_repairable') {
-      return { kind: 'create_repair' };
+      // The RepoOperation resolution ladder owns cleanup failures. Wait for
+      // that durable subject instead of creating a second repair Bead.
+      return null;
     }
     if (fact.state === 'cleanup_pending') {
       return { kind: 'retry_cleanup' };
