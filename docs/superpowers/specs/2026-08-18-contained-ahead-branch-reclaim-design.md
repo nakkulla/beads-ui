@@ -3,7 +3,7 @@
 - 작성일: 2026-08-18
 - 상태: 사용자 설계 승인 완료, spec gate 대기
 - Bead: `UI-kt5d`
-- route: `full_plan`
+- route: `spec_backed`
 - 선행 조건: `UI-8vn1` closed(머지·필수 배포 검증 완료)
 - 실측 계기: `dotfiles-dk6v`, `UI-20gk`
 
@@ -521,9 +521,11 @@ deploy script가 실패하거나 executor가 끊기면 terminal success를 기�
 - Worker 밖의 임의 수동 worktree·branch 정리 도구
 - 백업 없는 destructive cleanup
 
-## 14. 실행 단위 근거
+## 14. 실행 단위와 route
 
-하나의 repository 안이지만 독립 검증 가능한 두 sealable unit을 가진다.
+하나의 repository 안에서 하나의 owner가 하나의 writable packet으로 봉인한다.
+그 안에서 구현은 독립 검증 가능한 두 덩어리로 나뉘며, 이는 커밋 순서 경계이지
+Phase 경계가 아니다.
 
 1. **ahead containment 증명, 삭제 전 archive, CAS 자동 회수.**
    `server/worker/worktree.js`와 `server/worker/recovery-archive.js`의 branch-only
@@ -534,6 +536,12 @@ deploy script가 실패하거나 executor가 끊기면 terminal success를 기�
    사용자 백업 흐름, branch-only cleanup, ws 게이팅, Worker UI, bundle 재생성을
    포함한다.
 
-두 번째 unit은 첫 번째가 봉인한 identity·archive·`residue` 계약을 소비하고
-durable operation과 frontend bundle까지 포함한다. 따라서 route는 `full_plan`이며, spec
-gate 뒤 plan이 Phase 경계를 고정한다. 착수는 `UI-8vn1`이 closed된 뒤다.
+두 번째 덩어리는 첫 번째가 세운 identity·archive·`residue` 계약을 소비하므로
+순서가 고정된다. 그러나 두 덩어리는 §10대로 하나의 PR이 함께 운반하고, 같은
+owner가 같은 worktree에서 연속으로 구현하며, 이 spec의 §4~§9가 판정 규칙·순서·
+실패 의미를 이미 전부 고정했다. 즉 각 덩어리가 별도의 reviewable delta와 pinned
+handoff를 **필요로 하지 않는다**. 따라서 route는 `spec_backed`이며, spec gate 뒤
+곧바로 구현으로 들어간다. 착수는 `UI-8vn1`이 closed된 뒤다.
+
+두 번째 덩어리를 나중에 떼어내야 할 근거가 생기면, 그 경계는 이 절이 이미
+명시한 지점 그대로다.
