@@ -1271,6 +1271,8 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
       'merge:UI-1',
       'merge:UI-3'
     ]);
+    // Resolver attempts carry no authoritative result SHA, so the observed
+    // head is never promoted into a voucher (UI-vkk8 §4).
     expect(probes.filter((bead_id) => bead_id === 'UI-1')).toHaveLength(2);
     expect(dispatchConflict).toHaveBeenCalledTimes(1);
   });
@@ -2233,7 +2235,11 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     const ensure_calls = [];
     const updateBase = vi.fn(async () => {
       updated = true;
-      return { ok: true, reason: null };
+      return {
+        ok: true,
+        reason: null,
+        result_head_sha: MOVED_HEAD
+      };
     });
     const merge = vi.fn(async (/** @type {string} */ bead_id) => {
       landMerge(store, bead_id);
@@ -2294,7 +2300,8 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     // The moved head is reviewed as a queue-owned base update, not guessed at.
     expect(ensure_calls[0].observed).toMatchObject({
       head_sha: MOVED_HEAD,
-      mutation: 'base_update'
+      mutation: 'base_update',
+      mutation_result_sha: MOVED_HEAD
     });
     expect(merge).toHaveBeenCalledTimes(1);
   });
@@ -2340,7 +2347,75 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
 
     await mq.kick();
 
-    expect(ensure_calls[0]).toMatchObject({ mutation: 'resolver:res-1' });
+    expect(ensure_calls[0]).toMatchObject({
+      mutation: 'resolver:res-1',
+      mutation_result_sha: null
+    });
+    expect(merge).toHaveBeenCalledTimes(1);
+  });
+
+  test('clears the result binding across consecutive resolver rounds', async () => {
+    const store = seedManual(['UI-1']);
+    const finishFirst = dispatchResolution(store, 'UI-1', 'res-1');
+    store.bindResolutionWait(WS, {
+      bead_id: 'UI-1',
+      subject_bead_id: 'UI-1',
+      attempt_id: 'res-1',
+      wait_ms: 100
+    });
+    finishFirst();
+    let probes = 0;
+    const dispatchConflict = vi.fn(async () => {
+      const finishSecond = dispatchResolution(store, 'UI-1', 'res-2');
+      finishSecond();
+      return {
+        ok: true,
+        action: /** @type {const} */ ('conflict_resolution'),
+        reason: null,
+        attempt_id: 'res-2'
+      };
+    });
+    /** @type {any[]} */
+    const ensure_calls = [];
+    const merge = vi.fn(async (/** @type {string} */ bead_id) => {
+      landMerge(store, bead_id);
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      dispatchConflict,
+      probeMergeability: async () => {
+        probes += 1;
+        return {
+          ok: true,
+          kind: probes === 1 ? 'dirty' : 'clean',
+          reason: null,
+          head_sha: probes === 1 ? MOVED_HEAD : 'c'.repeat(40),
+          base_ref: 'main',
+          head_ref: 'UI-1',
+          external: false
+        };
+      },
+      headReview: {
+        ensureApproved: async (
+          /** @type {string} */ _q,
+          /** @type {string} */ _s,
+          /** @type {any} */ observed
+        ) => {
+          ensure_calls.push(observed);
+          return { state: 'approved', reason: null };
+        }
+      }
+    });
+
+    await mq.kick();
+
+    expect(dispatchConflict).toHaveBeenCalledTimes(1);
+    expect(ensure_calls[0]).toMatchObject({
+      head_sha: 'c'.repeat(40),
+      mutation: 'resolver:res-2',
+      mutation_result_sha: null
+    });
     expect(merge).toHaveBeenCalledTimes(1);
   });
 
@@ -2527,7 +2602,7 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
     queue_store.__clearCacheForTest();
   }
 
-  test('dequeues a done+merge_queue head and drives the next item', async () => {
+  test('dequeues an unobserved not_in_pr_wait slot and drives the next item', async () => {
     const store = seed(['UI-1', 'UI-2']);
     contaminate(store, 'UI-1');
     expect(
@@ -2536,6 +2611,7 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
 
     /** @type {string[]} */
     const attempted = [];
+    const prepare = vi.fn(async () => {});
     const mq = driver(store, {
       // What `prActions.merge()` really answers for a bead in no lane the
       // driver can vouch for.
@@ -2549,16 +2625,123 @@ describe('worker/merge-queue — halt only where an observation can arrive (UI-w
       },
       // The restart that emptied the observation cache — the trigger that made
       // this permanent rather than transient.
-      headSha: () => null
+      headSha: () => null,
+      prepare
     });
 
     await mq.kick();
 
-    expect(attempted).toEqual(['UI-1', 'UI-2']);
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(attempted).toEqual(['UI-1', 'UI-1', 'UI-2']);
     expect(store.snapshot(WS).merge_queue).toEqual([]);
-    // Nowhere to pin an exclusion for a bead that left every lane, and nothing
-    // to protect against: the store now refuses to re-enrol it.
     expect(store.snapshot(WS).auto_merge_skips).toEqual({});
+  });
+
+  test('refreshes the external registry once and succeeds on retry', async () => {
+    const store = createQueueStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-ext', external: true }]
+    });
+    let registered = false;
+    const prepare = vi.fn(async () => {
+      if (prepare.mock.calls.length === 2) {
+        registered = true;
+      }
+    });
+    const merge = vi.fn(async () =>
+      registered
+        ? { ok: true, action: 'merged', reason: null }
+        : { ok: false, action: 'refused', reason: 'not_in_pr_wait' }
+    );
+    const mq = driver(store, {
+      merge,
+      prepare,
+      isExternalRow: () => registered
+    });
+
+    await mq.kick();
+
+    expect(prepare).toHaveBeenCalledTimes(2);
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('halts after one failed registry retry and remains re-clickable', async () => {
+    const store = createQueueStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-ext', external: true }]
+    });
+    let registered = false;
+    const merge = vi.fn(async () =>
+      registered
+        ? { ok: true, action: 'merged', reason: null }
+        : { ok: false, action: 'refused', reason: 'not_in_pr_wait' }
+    );
+    const mq = driver(store, {
+      merge,
+      prepare: async () => {},
+      isExternalRow: () => true
+    });
+
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(2);
+    expect(store.snapshot(WS).merge_queue).toHaveLength(1);
+    expect(mq.state().failures['UI-ext']).toBe('not_in_pr_wait');
+
+    registered = true;
+    await mq.kick();
+
+    expect(merge).toHaveBeenCalledTimes(3);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('resumes a registry-race halt from the poller event alone', async () => {
+    const store = createQueueStore();
+    store.enqueueMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-ext', external: true }]
+    });
+    /** @type {Array<(ws: string) => void>} */
+    const listeners = [];
+    let registered = false;
+    const merge = vi.fn(async () => {
+      if (!registered) {
+        return {
+          ok: false,
+          action: /** @type {const} */ ('refused'),
+          reason: 'not_in_pr_wait'
+        };
+      }
+      return {
+        ok: true,
+        action: /** @type {const} */ ('merged'),
+        reason: null
+      };
+    });
+    const mq = driver(store, {
+      merge,
+      prepare: async () => {},
+      headSha: () => (registered ? HEAD : null),
+      isExternalRow: () => true,
+      subscribeQueueChanged: (/** @type {any} */ fn) => {
+        listeners.push(fn);
+        return () => {};
+      }
+    });
+    mq.start();
+    await vi.waitFor(() => expect(merge).toHaveBeenCalledTimes(2));
+
+    registered = true;
+    for (const listener of listeners) {
+      listener(WS);
+    }
+
+    await vi.waitFor(() => expect(store.snapshot(WS).merge_queue).toEqual([]));
+    mq.stop();
+    expect(merge).toHaveBeenCalledTimes(3);
   });
 
   test('still halts on a pr_wait head whose SHA is unreadable', async () => {
