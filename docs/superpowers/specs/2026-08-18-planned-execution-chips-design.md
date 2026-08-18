@@ -76,6 +76,22 @@ planned metadata가 child 전용이므로 별도 parent 판정 로직은 넣지 
 issue에만 chip이 나타난다. 텍스트는 짧게 유지하고 actor/model/SHA는 기존 actual chip이
 소유한다.
 
+### 접힌 child rollup
+
+기본 board는 parent가 보이면 Phase child를 독립 카드가 아니라
+`.board-card__roll-child` row로 접는다. `app/views/board/index.js`의 rollup projection이
+child의 normalized `workflow`/chip 데이터를 보존하고, `app/views/board/card.js`가 같은
+label formatter로 compact planned/actual chip을 row 안에 렌더링한다.
+
+- 실행 전: `계획 · 위임` 또는 `계획 · 메인`
+- matching actual 뒤: planned chip과 compact `실행 · <kind>` chip을 함께 표시
+- mismatch 뒤: `계획 · <planned> → <actual>`과 compact actual chip을 함께 표시
+
+model/SHA와 main reason 전체는 row 폭을 늘리지 않고 tooltip과 detail panel에서 제공한다.
+title은 `min-width`/ellipsis를 유지하고 chip은 기존 rollup click target 안에서 읽을 수
+있어야 한다. parent가 숨겨져 child가 독립 카드로 fallback되는 경로는 기존 full chip을
+사용한다.
+
 ## Detail panel 표현
 
 detail summary header에도 board와 같은 planned chip을 사용해 화면 간 vocabulary를
@@ -112,6 +128,8 @@ detail summary header에도 board와 같은 planned chip을 사용해 화면 간
 - `server/workflow-enrich.test.js`
 - `app/views/board/card.js`
 - `app/views/board/card.test.js`
+- `app/views/board/index.js`
+- `app/views/board/index.test.js`
 - `app/views/detail-panel/effective-settings-view.js`
 - `app/views/detail-panel/effective-card.test.js`
 - `app/views/detail-panel/index.js`
@@ -125,11 +143,28 @@ detail summary header에도 board와 같은 planned chip을 사용해 화면 간
 ## 교차 저장소 실행과 적용
 
 이 unit과 `dotfiles-qxw3`는 저장소와 owned path가 달라 각 spec 승인 뒤 구현·review를
-병렬로 진행할 수 있다. 준비 단계에 `blocks` dependency를 추가하지 않는다.
+병렬로 진행할 수 있다. 준비 단계에는 `blocks` dependency를 추가하지 않는다. 두 PR의
+delivery와 gate receipt가 모두 고정되면 dotfiles controller가
+`dotfiles-qxw3 -> UI-6bfu` foreign `blocks` edge를 추가하고 `bd dep list`/`bd ready`로
+readback해 적용 tail만 순차화한다.
 
-적용은 이 beads-ui consumer PR을 먼저 merge/deploy한 뒤 dotfiles metadata writer PR을
-merge/deploy한다. consumer는 필드 부재에 하위 호환이므로 먼저 적용해도 기존 UI가
-변하지 않는다. 두 PR 모두 준비되기 전에는 cross-repo 작업 완료를 주장하지 않는다.
+적용 순서는 다음과 같다.
+
+1. 두 PR의 non-empty diff, exact head, implementation gate, required verification,
+   `pr_url` readback을 확인한다.
+2. foreign dependency readback 뒤 이 beads-ui PR을 먼저 `pr-finish`한다.
+3. exact merged-SHA containment, previous-base `[deploy]` terminal success, deploy worktree
+   final HEAD/clean과 `/healthz`의 `runtime.source_sha == merged SHA` 및 healthy bd
+   diagnostics를 live readback한다.
+4. 3의 증거가 있을 때만 dotfiles writer PR의 merge/deploy를 허용한다. dotfiles 쪽
+   containment, deploy terminal, final HEAD/clean, runtime install/post-merge verifier까지
+   확인한 뒤 두 Bead를 close한다.
+
+failure 또는 unknown이면 다음 단계로 진행하지 않는다. 재개는 exact-SHA로 완료된 증거를
+재사용하고 첫 미완료 단계부터 시작한다. consumer만 적용된 상태는 필드 부재에 하위
+호환이라 안전하다. producer-first 적용은 금지한다. 두 PR과 deploy coverage가 모든
+required work를 운반하므로 no-PR residue와 `worker-ineligible`은 없으며, spec receipt
+write에서 label 부재를 readback한다.
 
 ## Test scope
 
@@ -146,6 +181,9 @@ merge/deploy한다. consumer는 필드 부재에 하위 호환이므로 먼저 �
 - matching actual은 planned chip과 기존 exec chip을 함께 렌더링한다.
 - mismatch는 `계획 · <planned> → <actual>` visible text와 tooltip을 렌더링한다.
 - planned field가 없는 기존 fixture와 malformed fixture에는 chip이 없다.
+- folded rollup child가 normalized workflow를 잃지 않고 실행 전, matching, mismatch,
+  malformed 상태를 compact row에서 같은 vocabulary로 렌더링하는 `board/index` integration
+  fixture를 추가한다.
 
 ### Seam 3: detail panel
 
