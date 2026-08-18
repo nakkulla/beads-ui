@@ -28,7 +28,8 @@ dotfiles 설계는 모든 Phase에 `실행: delegated|main(<reason>)`을 요구�
 - planned 값으로 route, readiness, gate, Worker scheduling을 판정하지 않는다.
 - 기존 child에 값을 backfill하지 않는다.
 - `exec_receipt` 형식이나 기존 chip을 대체하지 않는다.
-- 이번 작업에서 PR merge 또는 운영 deploy를 수행하지 않는다.
+- 이 spec-backed 구현 unit은 PR delivery에서 멈추고, merge·운영 deploy는 뒤따르는
+  `pr-finish`가 고정 순서로 수행한다.
 
 ## 입력 계약
 
@@ -142,29 +143,30 @@ detail summary header에도 board와 같은 planned chip을 사용해 화면 간
 
 ## 교차 저장소 실행과 적용
 
-이 unit과 `dotfiles-qxw3`는 저장소와 owned path가 달라 각 spec 승인 뒤 구현·review를
-병렬로 진행할 수 있다. 준비 단계에는 `blocks` dependency를 추가하지 않는다. 두 PR의
-delivery와 gate receipt가 모두 고정되면 dotfiles controller가
-`dotfiles-qxw3 -> UI-6bfu` foreign `blocks` edge를 추가하고 `bd dep list`/`bd ready`로
-readback해 적용 tail만 순차화한다.
+이 unit과 `dotfiles-qxw3`는 별도 저장소지만 이번 실행은 병렬화하지 않는다. 수정된 spec
+gate가 닫히면 dotfiles controller가 구현 전에 `dotfiles-qxw3 -> UI-6bfu` foreign
+`blocks` edge를 즉시 추가한다. `bd dep list`에서 target을 exact readback하고
+`bd ready --json`에서 dotfiles는 제외되고 UI는 ready임을 확인한다.
 
 적용 순서는 다음과 같다.
 
-1. 두 PR의 non-empty diff, exact head, implementation gate, required verification,
-   `pr_url` readback을 확인한다.
-2. foreign dependency readback 뒤 이 beads-ui PR을 먼저 `pr-finish`한다.
-3. exact merged-SHA containment, previous-base `[deploy]` terminal success, deploy worktree
+1. foreign dependency readback 뒤 `UI-6bfu`만 구현한다. non-empty diff, exact head,
+   implementation gate, required verification, `pr_url` readback을 완료한다.
+2. 이 beads-ui PR을 `pr-finish`하고 exact merged-SHA containment, previous-base `[deploy]`
+   terminal success, deploy worktree
    final HEAD/clean과 `/healthz`의 `runtime.source_sha == merged SHA` 및 healthy bd
-   diagnostics를 live readback한다.
-4. 3의 증거가 있을 때만 dotfiles writer PR의 merge/deploy를 허용한다. dotfiles 쪽
-   containment, deploy terminal, final HEAD/clean, runtime install/post-merge verifier까지
-   확인한 뒤 두 Bead를 close한다.
+   diagnostics를 live readback한 뒤 UI Bead를 close하고 readback한다.
+3. dotfiles workspace의 `bd ready --json`에서 foreign dependency satisfaction과
+   `dotfiles-qxw3` readiness를 확인한다. UI가 `resolved`일 뿐이면 진행하지 않는다.
+4. 3의 증거가 있을 때만 dotfiles writer 구현을 시작하고, 그 PR의 merge/deploy를
+   허용한다. dotfiles containment, deploy terminal, final HEAD/clean,
+   runtime install/post-merge verifier까지 확인한 뒤 dotfiles Bead를 close한다.
 
 failure 또는 unknown이면 다음 단계로 진행하지 않는다. 재개는 exact-SHA로 완료된 증거를
-재사용하고 첫 미완료 단계부터 시작한다. consumer만 적용된 상태는 필드 부재에 하위
-호환이라 안전하다. producer-first 적용은 금지한다. 두 PR과 deploy coverage가 모든
-required work를 운반하므로 no-PR residue와 `worker-ineligible`은 없으며, spec receipt
-write에서 label 부재를 readback한다.
+재사용하고 첫 미완료 단계부터 시작한다. consumer만 완결된 상태는 필드 부재에 하위
+호환이라 안전하다. dependency가 풀리기 전 producer 구현·적용은 금지한다. 두 PR과
+deploy coverage가 모든 required work를 운반하므로 no-PR residue와 `worker-ineligible`은
+없으며, spec receipt write에서 label 부재를 readback한다.
 
 ## Test scope
 
