@@ -2448,6 +2448,33 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(store.snapshot(WS).merge_queue).toEqual([]);
   });
 
+  test('never spends a head review on an absent spec_id refusal', async () => {
+    const store = seedManual(['UI-1']);
+    const ensureApproved = vi.fn();
+    const merge = vi.fn();
+    const mq = driver(store, {
+      merge,
+      probeMergeability: async () => ({
+        ok: false,
+        kind: 'blocked',
+        reason: 'spec_id_missing',
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      headReview: { ensureApproved }
+    });
+
+    await mq.kick();
+
+    // A review cannot write Bead metadata, so dispatching one here would burn
+    // a reviewer round without ever unblocking the item (UI-yqw9).
+    expect(ensureApproved).not.toHaveBeenCalled();
+    expect(merge).not.toHaveBeenCalled();
+    expect(mq.state().failures['UI-1']).toBe('spec_id_missing');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('binds the head-review journal before merging an already CLEAN manual item', async () => {
     const store = seedManual(['UI-1']);
     /** @type {any[]} */

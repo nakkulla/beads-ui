@@ -8334,6 +8334,19 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     expect(result?.title).toContain('not_in_pr_wait');
   });
 
+  test('labels an absent spec_id as its own defect, not a review ask', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'spec_id_missing' }
+    });
+
+    expect(result).toMatchObject({ label: '스펙 ID 누락', alert: true });
+    expect(result?.title).toContain('bd update --spec-id');
+  });
+
+  test('names an absent spec_id in a merge failure record', () => {
+    expect(mergeFailureText('spec_id_missing')).toBe('스펙 ID 기록 없음');
+  });
+
   test('keeps a failure record above a waiting position', () => {
     const result = prStatusBadge({
       queue_failure: 'not_in_pr_wait',

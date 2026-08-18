@@ -367,7 +367,7 @@ export function createPrPoller(deps) {
       return { verify: null };
     }
 
-    /** @type {'current'|'missing'|'stale'|'invalid'} */
+    /** @type {import('./merge-gate.js').CurrentState} */
     let review_receipt_state = 'invalid';
     if (typeof deps.readIssue === 'function') {
       try {

@@ -136,6 +136,20 @@ describe('worker/merge-gate — no-CI eligibility', () => {
     });
   });
 
+  test('rejects an absent native spec_id under its own reason', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({ review_receipt_state: 'spec_id_missing' })
+    );
+
+    expect(gate).toMatchObject({
+      enabled: false,
+      tier: 'review',
+      gate_badge: '스펙 ID 누락',
+      reason: 'spec_id_missing'
+    });
+  });
+
   test('requires a current green receipt when verify is declared', () => {
     const gate = evaluateMergeGate(
       entryOf(),
@@ -283,6 +297,21 @@ describe('worker/merge-gate — shared review receipt state', () => {
     const state = reviewReceiptState(null, SHA);
 
     expect(state).toBe('invalid');
+  });
+
+  test('separates an absent native spec_id from a missing receipt', () => {
+    const state = reviewReceiptState(
+      {
+        metadata: {
+          route: 'spec_backed',
+          spec_review: `codex@${OLD_SHA}`,
+          impl_review: `self@${SHA}`
+        }
+      },
+      SHA
+    );
+
+    expect(state).toBe('spec_id_missing');
   });
 });
 

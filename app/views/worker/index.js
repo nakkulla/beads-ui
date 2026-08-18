@@ -540,6 +540,8 @@ export function mergeFailureText(reason) {
       return 'PR 닫힘';
     case 'merge_error':
       return '머지 오류';
+    case 'spec_id_missing':
+      return '스펙 ID 기록 없음';
     default:
       return reason;
   }
@@ -813,6 +815,14 @@ export function prStatusBadge(input) {
     input.gate?.reason === 'review_receipt_stale'
   ) {
     return badge('최종 변경 리뷰 필요', { alert: true });
+  }
+  if (input.gate?.reason === 'spec_id_missing') {
+    // Not a review problem: only a Bead metadata write can repair it, so the
+    // badge must not suggest a review will (UI-yqw9 incident).
+    return badge('스펙 ID 누락', {
+      title: 'native spec_id 미기록 — bd update --spec-id 필요',
+      alert: true
+    });
   }
   if (input.gate?.reason === 'review_receipt_invalid') {
     return badge('리뷰 기록 오류', {
@@ -1220,13 +1230,15 @@ function prWaitRow(
                         : gate?.reason === 'review_receipt_missing' ||
                             gate?.reason === 'review_receipt_stale'
                           ? '자동 리뷰 세션 후 승인되면 머지합니다'
-                          : enabled
-                            ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                            : gate && gate.tier === 'merged'
-                              ? // Already merged with no cleanup failure recorded: the cleanup
-                                // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                '머지됨 — 머지 후 정리 진행 중'
-                              : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                          : gate?.reason === 'spec_id_missing'
+                            ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                            : enabled
+                              ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                              : gate && gate.tier === 'merged'
+                                ? // Already merged with no cleanup failure recorded: the cleanup
+                                  // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                  '머지됨 — 머지 후 정리 진행 중'
+                                : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 

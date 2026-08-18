@@ -41,7 +41,7 @@ import path from 'node:path';
 
 /**
  * @typedef {Object} ReviewReceiptObservation
- * @property {'current'|'missing'|'stale'|'invalid'} state
+ * @property {import('./merge-gate.js').CurrentState} state
  * @property {string} head_sha
  */
 

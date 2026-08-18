@@ -544,7 +544,7 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} head_sha
-   * @returns {Promise<'current'|'missing'|'stale'|'invalid'>}
+   * @returns {Promise<import('./merge-gate.js').CurrentState>}
    */
   async function readReviewReceiptState(bead_id, head_sha) {
     if (typeof deps.bd.readIssue !== 'function') {

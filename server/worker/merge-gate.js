@@ -14,7 +14,12 @@
  */
 
 /**
- * @typedef {'current'|'missing'|'stale'|'invalid'} CurrentState
+ * `spec_id_missing` is deliberately distinct from `missing`: a review receipt
+ * can be re-acquired by dispatching a reviewer, but an absent native `spec_id`
+ * can only be repaired by writing Bead metadata, so the manual-merge
+ * continuation must never spend a review on it (UI-yqw9 incident).
+ *
+ * @typedef {'current'|'missing'|'stale'|'invalid'|'spec_id_missing'} CurrentState
  */
 
 /**
@@ -46,6 +51,7 @@ export const GATE_BADGES = {
   verify_fail: '검증 실패',
   verify_pending: '검증 대기',
   blocked: '머지 불가',
+  spec_id: '스펙 ID 누락',
   error: '관측 오류',
   unobserved: '관측 대기',
   merged: '머지됨',
@@ -104,7 +110,7 @@ export function reviewReceiptState(issue, head_sha) {
     return 'invalid';
   }
   if (typeof issue.spec_id !== 'string' || issue.spec_id.length === 0) {
-    return 'missing';
+    return 'spec_id_missing';
   }
   const spec_review =
     typeof metadata.spec_review === 'string'
@@ -249,6 +255,15 @@ export function evaluateMergeGate(entry, input) {
     );
   }
 
+  if (input.review_receipt_state === 'spec_id_missing') {
+    return verdict(
+      false,
+      'review',
+      GATE_BADGES.spec_id,
+      base_badge,
+      'spec_id_missing'
+    );
+  }
   if (input.review_receipt_state !== 'current') {
     return verdict(
       false,
