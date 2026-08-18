@@ -7876,6 +7876,69 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     expect(button.textContent).toContain('다시 머지');
   });
 
+  test('keeps a failed-journal re-click disabled for an invalid receipt', () => {
+    const queue = laneOf(['RD-1'], {
+      merge_queue: [
+        headReviewEntry('failed', {
+          failure_reason: 'receipt_readback_mismatch'
+        })
+      ],
+      merge_queue_state: { active: null, failures: {} }
+    });
+    queue.pr_observations['RD-1'].gate = {
+      enabled: false,
+      tier: 'review',
+      gate_badge: '차단',
+      base_badge: '최신',
+      reason: 'review_receipt_invalid'
+    };
+    const { mount } = mountLane(queue);
+
+    const row = rowOf(mount, 'RD-1');
+    const button = /** @type {HTMLButtonElement} */ (
+      row.querySelector('.worker-mini__merge')
+    );
+
+    expect(button).not.toBe(null);
+    expect(button.disabled).toBe(true);
+    expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
+      '리뷰 기록 오류'
+    );
+  });
+
+  test.each(['mergeability_unknown', 'gh_failed'])(
+    'keeps a failed-journal re-click disabled for %s',
+    (reason) => {
+      const queue = laneOf(['RD-1'], {
+        merge_queue: [
+          headReviewEntry('failed', {
+            failure_reason: 'head_unobservable'
+          })
+        ],
+        merge_queue_state: { active: null, failures: {} }
+      });
+      queue.pr_observations['RD-1'].gate = {
+        enabled: false,
+        tier: 'undecidable',
+        gate_badge: '관측 오류',
+        base_badge: '',
+        reason
+      };
+      const { mount } = mountLane(queue);
+
+      const row = rowOf(mount, 'RD-1');
+      const button = /** @type {HTMLButtonElement} */ (
+        row.querySelector('.worker-mini__merge')
+      );
+
+      expect(button).not.toBe(null);
+      expect(button.disabled).toBe(true);
+      expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
+        '리뷰 실패'
+      );
+    }
+  );
+
   test('keeps 취소 enabled while a review or repair is running', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {

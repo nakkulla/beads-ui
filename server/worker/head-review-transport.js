@@ -26,7 +26,11 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { REVIEW_EFFORTS, REVIEW_STEP_MODELS } from './exec-enums.js';
-import { DEFAULT_REVIEWER, DEFAULT_REVIEW_EFFORT } from './head-review.js';
+import {
+  DEFAULT_REVIEWER,
+  DEFAULT_REVIEW_EFFORT,
+  parseReviewReceipt
+} from './head-review.js';
 import { adapterSpec } from './runner/index.js';
 import { workspaceStateDir } from './state-paths.js';
 
@@ -50,7 +54,6 @@ export const HEAD_REPAIR_RESULT_MARKER = 'HEAD_REPAIR_RESULT';
 export const ATTEMPT_ADOPTION_WAIT_MS = 30 * 60 * 1000;
 
 const SHA40_RE = /^[0-9a-f]{40}$/i;
-const RECEIPT_RE = /^([^@\s]+)@([0-9a-f]{40})$/i;
 /** How much session-text tail a terminal marker keeps (verdict lines are last). */
 const MARKER_TEXT_TAIL = 8000;
 
@@ -304,13 +307,9 @@ export function createHeadReviewTransport(deps) {
     const read = await metadataOf(bead_id);
     const raw =
       typeof read.metadata.impl_review === 'string'
-        ? read.metadata.impl_review.trim()
+        ? read.metadata.impl_review
         : '';
-    const match = RECEIPT_RE.exec(raw);
-    if (!match) {
-      return null;
-    }
-    return { actor: match[1], head_sha: match[2].toLowerCase(), raw };
+    return parseReviewReceipt(raw);
   }
 
   /**

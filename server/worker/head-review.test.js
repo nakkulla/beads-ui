@@ -25,6 +25,7 @@ afterEach(() => {
 const OLD_HEAD = 'a'.repeat(40);
 const NEW_HEAD = 'b'.repeat(40);
 const REPAIR_HEAD = 'c'.repeat(40);
+const PRIOR_HEAD = 'd'.repeat(40);
 
 /**
  * One manual-authority queue entry plus a head-review driver whose effect
@@ -149,6 +150,68 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     });
   });
 
+  test('carries a prior carry without nesting its receipt vocabulary', async () => {
+    const prior_receipt = `carry:codex:${PRIOR_HEAD}@${OLD_HEAD}`;
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: prior_receipt
+      })
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.write_receipt).toEqual([
+      {
+        bead_id: 'UI-1',
+        receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
+      }
+    ]);
+  });
+
+  test('carries a resolver self-review as normalized self', async () => {
+    const prior_receipt = `resolver-self:res-0:${PRIOR_HEAD}@${OLD_HEAD}`;
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'self',
+        head_sha: OLD_HEAD,
+        raw: prior_receipt
+      })
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'base_update',
+      mutation_result_sha: NEW_HEAD,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.write_receipt).toEqual([
+      {
+        bead_id: 'UI-1',
+        receipt: `carry:self:${OLD_HEAD}@${NEW_HEAD}`
+      }
+    ]);
+  });
+
   test('binds the resolver session self-review verdict', async () => {
     const receipt = `resolver-self:res-1:${OLD_HEAD}@${NEW_HEAD}`;
     let receipt_reads = 0;
@@ -162,7 +225,7 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
               raw: `codex@${OLD_HEAD}`
             }
           : {
-              actor: `resolver-self:res-1:${OLD_HEAD}`,
+              actor: 'self',
               head_sha: NEW_HEAD,
               raw: receipt
             };

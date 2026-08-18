@@ -2161,6 +2161,131 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
   });
 });
 
+describe('worker/attach base-update result wiring (UI-vkk8 §4)', () => {
+  test('passes the mutation result SHA separately from a raced observed head', async () => {
+    const original_head = 'a'.repeat(40);
+    const result_head = 'b'.repeat(40);
+    const raced_head = 'c'.repeat(40);
+    const base_sha = 'd'.repeat(40);
+    const runtime = createWorkerRuntime();
+    const prDetail = vi
+      .fn()
+      .mockResolvedValueOnce({
+        state: 'ok',
+        data: {
+          number: 304,
+          url: 'https://github.com/o/r/pull/304',
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'BEHIND',
+          head_ref: 'UI-1',
+          head_sha: original_head,
+          base_ref: 'main',
+          merged_sha: null
+        }
+      })
+      .mockResolvedValue({
+        state: 'ok',
+        data: {
+          number: 304,
+          url: 'https://github.com/o/r/pull/304',
+          state: 'OPEN',
+          mergeable: 'MERGEABLE',
+          merge_state_status: 'CLEAN',
+          head_ref: 'UI-1',
+          head_sha: raced_head,
+          base_ref: 'main',
+          merged_sha: null
+        }
+      });
+    const updateBranch = vi.fn(async () => ({
+      state: 'ok',
+      data: result_head
+    }));
+    const ensureApproved = vi.fn(async () => ({
+      state: /** @type {const} */ ('failed'),
+      reason: 'external_review_required'
+    }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: {
+        ...fakeBd(),
+        readIssue: async () => ({
+          id: 'UI-1',
+          metadata: { route: 'quick_fix' }
+        })
+      },
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      resolveBase: okBase('main', base_sha),
+      gitRun: async (/** @type {string[]} */ args) =>
+        args[0] === 'show' && args[1]?.endsWith(':repo-ops/config.toml')
+          ? { code: 128, stdout: '', stderr: 'missing' }
+          : { code: 0, stdout: '', stderr: '' },
+      gh: /** @type {any} */ ({
+        checkAvailability: async () => ({ state: 'ok', data: true }),
+        prDetail,
+        updateBranch,
+        mergeSquash: vi.fn(),
+        closePr: vi.fn()
+      }),
+      headReview: {
+        captureStartingApproval: async () => ({
+          actor: 'codex',
+          head_sha: original_head,
+          raw: `codex@${original_head}`
+        }),
+        ensureApproved
+      }
+    });
+    runtime.queueStore.appendAttempt(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-UI-1',
+        bead_id: 'UI-1',
+        repo: WS,
+        target_base: 'main',
+        base_oid: base_sha,
+        runner: 'codex',
+        verify_result: {
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304
+        }
+      }
+    });
+    runtime.queueStore.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    runtime.queueStore.enqueueMergeManual(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: original_head,
+          target_base: 'main'
+        }
+      ]
+    });
+
+    await att.mergeQueue.kick();
+
+    expect(updateBranch).toHaveBeenCalledWith(WS, 304);
+    expect(ensureApproved).toHaveBeenCalledWith(
+      'UI-1',
+      'UI-1',
+      expect.objectContaining({
+        head_sha: raced_head,
+        mutation: 'base_update',
+        mutation_result_sha: result_head
+      })
+    );
+    expect(runtime.queueStore.snapshot(WS).merge_queue).toHaveLength(1);
+  });
+});
+
 describe('worker/attach — legacy state migration (master spec §11)', () => {
   test('runs the one-shot migration before the cleanup lane resumes', async () => {
     /** @type {string[]} */

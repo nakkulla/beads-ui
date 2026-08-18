@@ -31,6 +31,46 @@
 import nodeCrypto from 'node:crypto';
 
 const SHA40_RE = /^[0-9a-f]{40}$/i;
+const ORDINARY_RECEIPT_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)@([0-9a-f]{40})$/i;
+const CARRY_RECEIPT_RE =
+  /^carry:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
+const RESOLVER_RECEIPT_RE =
+  /^resolver-self:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
+
+/**
+ * Parse exactly the workflow contract's three implementation-review receipt
+ * forms and collapse derived forms to the reviewer identity another carry may
+ * name. Reserved prefixes never fall through to the ordinary grammar, so a
+ * malformed or nested derived receipt fails closed (UI-vkk8 §4).
+ *
+ * @param {unknown} raw
+ * @returns {{ actor: string, head_sha: string, raw: string }|null}
+ */
+export function parseReviewReceipt(raw) {
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  const carry = CARRY_RECEIPT_RE.exec(raw);
+  if (carry) {
+    return { actor: carry[1], head_sha: carry[3].toLowerCase(), raw };
+  }
+  const resolver = RESOLVER_RECEIPT_RE.exec(raw);
+  if (resolver) {
+    return { actor: 'self', head_sha: resolver[3].toLowerCase(), raw };
+  }
+  if (raw.startsWith('carry:') || raw.startsWith('resolver-self:')) {
+    return null;
+  }
+  const ordinary = ORDINARY_RECEIPT_RE.exec(raw);
+  if (!ordinary) {
+    return null;
+  }
+  return {
+    actor: ordinary[1],
+    head_sha: ordinary[2].toLowerCase(),
+    raw
+  };
+}
 
 /**
  * Harness implementation-gate defaults, projected here as a consumer. The
@@ -196,12 +236,15 @@ export function createHeadReview(deps) {
    * @param {string} head_sha
    */
   function validApproval(receipt, head_sha) {
+    const parsed = receipt ? parseReviewReceipt(receipt.raw) : null;
     return (
       receipt !== null &&
-      receipt.actor !== 'skipped' &&
-      receipt.actor !== 'skip' &&
-      receipt.head_sha.toLowerCase() === head_sha &&
-      receipt.raw.endsWith(`@${head_sha}`)
+      parsed !== null &&
+      parsed.actor !== 'skipped' &&
+      parsed.actor !== 'skip' &&
+      receipt.actor === parsed.actor &&
+      receipt.head_sha.toLowerCase() === parsed.head_sha &&
+      parsed.head_sha === head_sha
     );
   }
 
@@ -327,9 +370,10 @@ export function createHeadReview(deps) {
       return null;
     }
 
-    const reviewer = /** @type {NonNullable<typeof starting_approval>} */ (
-      starting_approval
-    ).actor;
+    const reviewer =
+      /** @type {NonNullable<ReturnType<typeof parseReviewReceipt>>} */ (
+        parseReviewReceipt(starting_approval?.raw)
+      ).actor;
     const journal = relaxedJournal(
       queue_bead_id,
       authority,
@@ -460,6 +504,7 @@ export function createHeadReview(deps) {
         const current = await deps.readReceipt(subject_bead_id);
         if (
           current === null ||
+          !validApproval(current, head_sha) ||
           current.raw !== journal.receipt ||
           current.head_sha.toLowerCase() !== head_sha
         ) {
@@ -522,9 +567,13 @@ export function createHeadReview(deps) {
 
     if (!journal) {
       const receipt = await deps.readReceipt(subject_bead_id);
+      const parsed_receipt = receipt ? parseReviewReceipt(receipt.raw) : null;
       const receipt_head =
-        receipt && SHA40_RE.test(receipt.head_sha)
-          ? receipt.head_sha.toLowerCase()
+        receipt &&
+        parsed_receipt &&
+        receipt.actor === parsed_receipt.actor &&
+        receipt.head_sha.toLowerCase() === parsed_receipt.head_sha
+          ? parsed_receipt.head_sha
           : null;
 
       if (
@@ -576,9 +625,8 @@ export function createHeadReview(deps) {
       if (
         journal.state === 'pending' &&
         head_sha === authority.requested_head_sha &&
-        receipt_head === head_sha &&
         receipt !== null &&
-        receipt.actor !== 'skipped'
+        validApproval(receipt, head_sha)
       ) {
         const ok = transition(
           queue_bead_id,

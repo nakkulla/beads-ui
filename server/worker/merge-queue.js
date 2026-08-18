@@ -112,7 +112,7 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  *     captureStartingApproval?: (queue_bead_id: string, subject_bead_id: string) => Promise<{ actor: string, head_sha: string, raw: string }|null>,
  *     ensureApproved: (queue_bead_id: string, subject_bead_id: string, observed: { head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null, mutation_result_sha?: string|null, starting_approval?: { actor: string, head_sha: string, raw: string }|null }) => Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>
  *   },
- *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null }>,
+ *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -1181,23 +1181,6 @@ export function createMergeQueue(deps) {
     ) {
       return null;
     }
-    if (
-      vouched.mutation !== null &&
-      vouched.result_head_sha === null &&
-      typeof probe.head_sha === 'string' &&
-      SHA40_RE.test(probe.head_sha)
-    ) {
-      // A queue-owned mutation gets one result identity, then a distinct
-      // re-probe must see that exact identity before §4 may relax re-review
-      // (UI-vkk8 §4). A crash loses this local voucher and fails closed.
-      vouched.result_head_sha = probe.head_sha.toLowerCase();
-      return {
-        ok: false,
-        action: 'refused',
-        reason: 'mutation_result_recorded',
-        head_sha: probe.head_sha
-      };
-    }
     if (!probe.ok) {
       return {
         ok: false,
@@ -1597,7 +1580,11 @@ export function createMergeQueue(deps) {
         return;
       }
       if (resolution.kind === 'ready' && resolution.attempt_id) {
+        // Resolver attempts currently expose no authoritative pushed head.
+        // Rebind both voucher fields together so a prior mutation's SHA cannot
+        // survive; the null result forces full-final-head review (UI-vkk8 §4).
         vouched.mutation = `resolver:${resolution.attempt_id}`;
+        vouched.result_head_sha = null;
       }
       const result = await runLatestMerge(
         bead_id,
@@ -1613,13 +1600,6 @@ export function createMergeQueue(deps) {
         return;
       }
       const action = result ? result.action : null;
-
-      if (
-        action === 'refused' &&
-        result.reason === 'mutation_result_recorded'
-      ) {
-        continue;
-      }
 
       if (action === 'cleanup_pending') {
         deps.store.dequeueMerge(workspace, bead_id);
@@ -1734,16 +1714,26 @@ export function createMergeQueue(deps) {
         // a BEHIND PR through `updateBranch`, and the moved head then takes
         // the SAME head-review path a resolver push does.
         base_update_attempted = true;
-        /** @type {{ ok: boolean, reason?: string|null }} */
-        let updated = { ok: false, reason: 'update_branch_failed' };
+        /** @type {{ ok: boolean, reason?: string|null, result_head_sha?: string|null }} */
+        let updated = {
+          ok: false,
+          reason: 'update_branch_failed',
+          result_head_sha: null
+        };
         try {
           updated = await deps.updateBase(bead_id);
         } catch (err) {
           log('merge queue base update threw for %s: %o', bead_id, err);
         }
         if (updated.ok) {
+          // The mutation response, not a later observation, owns this SHA.
+          // Rebind the pair atomically at the semantic seam (UI-vkk8 §4).
           vouched.mutation = 'base_update';
-          vouched.result_head_sha = null;
+          vouched.result_head_sha =
+            typeof updated.result_head_sha === 'string' &&
+            SHA40_RE.test(updated.result_head_sha)
+              ? updated.result_head_sha.toLowerCase()
+              : null;
           notify();
           continue;
         }
@@ -1834,6 +1824,7 @@ export function createMergeQueue(deps) {
         if (pollerObserves(bead_id)) {
           fail(bead_id, 'not_in_pr_wait');
           halted = true;
+          halted_on_head = bead_id;
           notify();
           return;
         }

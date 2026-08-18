@@ -1024,6 +1024,17 @@ function prWaitRow(
     gate.tier === 'merged';
   const external_cleanup =
     external && !!cleanup_failed && !!gate && gate.tier === 'merged';
+  // A failed journal restores the action surface, but it cannot turn an
+  // otherwise terminal/unknown gate into a server continuation (UI-vkk8 §2).
+  const reclick_continuable =
+    needs_reclick &&
+    (enabled ||
+      conflicting ||
+      gate?.reason === 'base_behind' ||
+      gate?.reason === 'review_receipt_missing' ||
+      gate?.reason === 'review_receipt_stale' ||
+      cleanup_retry ||
+      external_cleanup);
   // An external conflict WITHOUT a worktree has nowhere to run: the dispatch
   // never recreates one (UI-w0hi 제외), so the button would refuse every time.
   // The badge reports the conflict; the user resolves it in their own session.
@@ -1163,7 +1174,7 @@ function prWaitRow(
         gate?.reason === 'review_receipt_stale' ||
         cleanup_retry ||
         external_cleanup ||
-        needs_reclick),
+        reclick_continuable),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
