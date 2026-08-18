@@ -83,11 +83,11 @@ export const CLEANUP_STEPS = [
 
 /**
  * What step 1 of the cleanup actually did to the LOCAL checkout. `fast_forwarded`
- * = fetched AND moved the local base branch; the `fetch_only:*` pair = fetched,
+ * = fetched AND moved the local base branch; the `fetch_only:*` set = fetched,
  * local checkout deliberately untouched (see {@link syncBase} for why that is
  * sufficient rather than degraded).
  *
- * @typedef {'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'} BaseSyncOutcome
+ * @typedef {'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'|'fetch_only:diverged'} BaseSyncOutcome
  */
 
 /**
@@ -916,8 +916,15 @@ export function createPrActions(deps) {
    * are different facts about the user's repo, and the cleanup record/log names
    * which one happened.
    *
-   * A checkout that IS on a clean base branch but cannot fast-forward is
-   * divergence: a genuine failure (`base_ff_diverged`), never something to force.
+   * A checkout on a clean base branch that cannot fast-forward is divergence,
+   * and it reports as `fetch_only:diverged` for the SAME reason the two cases
+   * above do: the local branch is never forced, and nothing downstream reads
+   * it. Divergence used to end the cleanup, which made one stray local commit
+   * on the base branch — an artifact landed through a detached publication
+   * candidate leaves exactly that — block every later cleanup in the repository
+   * while buying no verification strength. The real containment gate is the
+   * caller's `merge-base --is-ancestor <merge_sha> <fetched sha>` check on the
+   * sha returned here, and it is untouched by any of these outcomes.
    *
    * @param {string} target_base
    * @param {string|null} [candidate_sha] - Already fetched candidate. When
@@ -975,7 +982,11 @@ export function createPrActions(deps) {
       }
       const ff = await deps.gitRun(['merge', '--ff-only', sha], { cwd: repo });
       if (ff.code !== 0) {
-        return { ok: /** @type {const} */ (false), reason: 'base_ff_diverged' };
+        return {
+          ok: /** @type {const} */ (true),
+          sha,
+          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:diverged')
+        };
       }
       return {
         ok: /** @type {const} */ (true),
