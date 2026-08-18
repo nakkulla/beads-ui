@@ -96,8 +96,9 @@ dotfiles 단계가 시작된 뒤 `beads-ui` 재시작에서 끊겨도 detached m
 
 `server/worker/repo-operation-coordinator.js`에 deploy 전용 terminal wait를 둔다.
 
-- 입력은 `operation_id`, exact `target_base`·`merged_sha`, 선택적
-  `timeout_ms`·`poll_ms`다.
+- 입력은 `operation_id`, exact `target_base`·`merged_sha`, 필수 finite
+  `timeout_ms`, 선택적 `poll_ms`다. 호출자가 timeout을 증명하지 못하면 임의 기본값으로
+  기다리지 않는다.
 - 각 poll은 먼저 `reconcile(workspace)`을 실행한 뒤 기존
   `deploymentEvidence`를 읽는다.
 - succeeded 또는 failed면 즉시 기존 evidence를 반환한다.
@@ -109,8 +110,18 @@ dotfiles 단계가 시작된 뒤 `beads-ui` 재시작에서 끊겨도 detached m
 
 coordinator는 exact subject로 기존 deploy operation을 찾는 read-only helper도
 소유한다. 후보는 같은 repo, `kind=deploy`, 같은 target base, exact
-`bead_id`+`merged_sha` subject로 제한한다. superseded relation과 요청 시각을 사용해
-결정적으로 한 operation을 고르고, 종료 판단은 계속 `deploymentEvidence`가 맡는다.
+`bead_id`+`merged_sha` subject로 제한한다. 요청 시각으로 결정적으로 origin operation을
+고르되 `superseded_by`가 있어도 origin을 버리지 않고 기존 `deploymentEvidence`가 successor
+또는 descendant success coverage를 판정하게 한다. unrelated successor를 exact subject로
+승격하지 않는다.
+
+재시작 채택은 `ensureDeploy`를 다시 호출하지 않으므로 helper가 wait bound도 함께
+복원한다. 선택한 operation의 durable `effective_base_sha`에서 deploy 선언을 읽기 전용으로
+재해석하고, operation에 저장된 script path·mode·blob identity와 정확히 일치하는 선언의
+`timeout_ms`만 사용한다. bootstrap 계보처럼 effective base와 target이 같은 경우에도 같은
+pinned SHA의 선언과 identity를 검증한다. config를 읽을 수 없거나 deploy 선언이 없거나
+identity·timeout이 맞지 않으면 `{ code: 'repo_operation_timeout_unresolved' }`로 반환한다.
+현재 target tip이나 home config, 상수 600000으로 추정하지 않는다.
 
 ### cleanup의 최초 실행과 재시작 채택
 
@@ -125,8 +136,12 @@ coordinator는 exact subject로 기존 deploy operation을 찾는 read-only help
 `resumeRepoOperations`가 `cleanup_cursor=repo_operations` 행을 만나면 base fetch를
 재실행하기 전에 exact subject deploy operation을 찾는다.
 
-- 찾았으면 terminal wait와 같은 판정으로 성공 시 closure, 실패 시 기존 실패 기록,
-  nonterminal이면 현 상태 유지를 수행한다.
+- 찾았고 pinned declaration에서 timeout까지 복원했으면 그 timeout을 사용한 terminal
+  wait로 성공 시 closure, 실패 시 기존 실패 기록, deadline 뒤 nonterminal이면 현 상태
+  유지를 수행한다.
+- exact operation은 찾았지만 timeout을 증명하지 못하면
+  `repo_operation_timeout_unresolved`로 fail closed한다. base fetch replay나 기본 timeout으로
+  우회하지 않는다.
 - 찾지 못했으면 재시작이 verify 이전 또는 deploy prerecord 이전에 일어난 경우이므로
   기존 전체 `runCleanup` replay를 사용한다.
 - `child_sweep` 이후 cursor는 현재처럼 closure-only replay를 유지한다.
@@ -182,6 +197,9 @@ canonical `docs/contracts/workflow.md`의 repo operation 절차에
   log path를 기존 cleanup failure에 전달한다.
 - bounded wait 만료는 operation이 여전히 running이라는 사실이지 실패 증거가 아니므로
   `cleanup_failed`를 만들지 않는다.
+- restart adoption의 pinned declaration·script identity에서 timeout을 복원할 수 없으면
+  `repo_operation_timeout_unresolved` terminal cleanup failure로 남기고 추정값으로
+  진행하지 않는다.
 - marker가 없거나 process identity가 모순되면 coordinator의 기존 interrupted/failure
   판정이 그대로 적용된다.
 - startup resume 중 exact operation을 찾지 못한 경우에만 기존 replay를 사용하므로,
@@ -198,14 +216,19 @@ canonical `docs/contracts/workflow.md`의 repo operation 절차에
      API가 없어 RED다.
    - adopted·queued `ensureDeploy`가 declaration timeout을 반환하는 테스트는 현재 해당
      반환값이 없어 RED다.
-   - exact subject lookup이 다른 Bead, 다른 merge SHA, superseded 후보를 고르지 않는
-     테스트를 추가한다.
+   - exact subject lookup이 다른 Bead와 다른 merge SHA를 고르지 않고, superseded origin은
+     기존 successor/descendant coverage 판정에 넘기며, 선택한 origin operation의 pinned
+     `effective_base_sha`와 script identity에서 timeout을 복원하는 테스트를 추가한다.
+   - pinned config 부재, script identity 불일치, 잘못된 timeout이
+     `repo_operation_timeout_unresolved`를 반환하는 fail-closed 테스트를 추가한다.
 2. `server/worker/pr-actions.test.js`
    - 최초 cleanup 한 번이 running evidence에서 곧바로 pending으로 끝나지 않고 terminal
      success 뒤 close하는 테스트는 현재 동작에서 RED다.
    - `repo_operations` cursor와 exact deploy operation을 seed한 boot resume가 fetch를
-     다시 호출하지 않고 terminal success 뒤 closure로 가는 테스트는 현재 전체 replay
-     때문에 RED다.
+     다시 호출하지 않고 복원된 declaration timeout으로 terminal success 뒤 closure로
+     가는 테스트는 현재 전체 replay 때문에 RED다.
+   - 같은 boot-resume wait가 deadline까지 nonterminal이면 `pending`으로 남고
+     `cleanup_failed`를 만들지 않는 테스트를 추가한다.
    - terminal failure의 code·fetch 진단·log path가 기존 cleanup failure에 남는 경로도
      함께 고정한다.
 3. `server/worker/pr-poller.test.js`
