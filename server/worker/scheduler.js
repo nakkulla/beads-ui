@@ -2714,9 +2714,18 @@ export function createScheduler(deps) {
     // and removing them at entry deleted that evidence a step ahead of the
     // observation — so the removal sits in a `finally` covering every branch's
     // own `return`, exactly as `onSessionDone` already does it.
+    //
+    // The `settling` fence spans the whole disposition for the same reason
+    // `onSessionDone` raises it: the observation below takes seconds, and this
+    // path writes the attempt's terminal status at the end of them. It is what
+    // makes a discard REQUESTED mid-disposition refuse with `attempt_settling`
+    // (`canDiscardAttempt`) instead of racing that write — the reverse order of
+    // the race `reconcile`'s own discard fence closes.
+    settling.add(attempt_id);
     try {
       await disposeDeadAttemptSettlement(workspace, attempt_id, attempt);
     } finally {
+      settling.delete(attempt_id);
       removeGuardHook(workspace, attempt_id);
     }
   }
@@ -3016,18 +3025,29 @@ export function createScheduler(deps) {
    * (worker-detached-session-reconcile §1). Both entry points — server startup
    * and the periodic timer — share this one routine.
    *
-   * ONLY attempts no part of THIS process owns are candidates, behind three
+   * ONLY attempts no part of THIS process owns are candidates, behind four
    * fences, because a durable `running` record is not by itself evidence of a
    * detached session:
    *
    *   - `running` — a live session handle: `onSessionDone` is its authority.
-   *   - `settling` — `onSessionDone` is mid-flight for it: it already dropped
-   *     the handle but has not written the terminal status yet.
+   *   - `settling` — a settlement is mid-flight for it: the handler already
+   *     dropped the handle but has not written the terminal status yet.
    *   - `claimed` (by BEAD) — a dispatch or relaunch is in flight. Between the
    *     durable pre-record (`status:'running'`, `pid:null`) and `running.set`
    *     at spawn, the attempt looks exactly like a dead one — `pid == null` —
    *     and the claim, taken in the tick cascade before dispatch and released
    *     only on abort/termination, is what tells the two apart.
+   *   - `discardActive` — a discard operation owns this attempt. Its very first
+   *     destructive act is to KILL the session, so the process disappearing is
+   *     the expected midpoint of the discard, not evidence of a dead detached
+   *     session. Without this fence the pass observes an attempt whose PR the
+   *     discard is busy closing, fails it `verify_failed:pr_missing`, and that
+   *     write lands on top of `finalizeDiscardAttempt`'s `discarded` — leaving a
+   *     failure banner on work that was in fact discarded cleanly. This fence is
+   *     the DURABLE one: unlike the scheduler-local `stopped` set it survives a
+   *     restart, and the operation record exists before the fence is raised. It
+   *     is checked FIRST because it also has to cover the legacy-diagnosis
+   *     retirement branch, which the other three fences sit behind.
    *
    * @param {string} workspace
    */
@@ -3050,6 +3070,12 @@ export function createScheduler(deps) {
       for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
         const a = /** @type {any} */ (attempt);
         if (!a) {
+          continue;
+        }
+        // AHEAD of the legacy-retirement branch, not beside the other three:
+        // retirement is a durable terminal write of its own, so a discard that
+        // owns a legacy diagnosis attempt must fence that branch too.
+        if (discardActive(q, { bead_id: a.bead_id, attempt_id })) {
           continue;
         }
         if (isOrphanedLegacyCleanupDiagnosis(attempt_id, a)) {
@@ -3076,11 +3102,33 @@ export function createScheduler(deps) {
       for (const d of dead) {
         // Re-checked per iteration, not just at selection: each disposition
         // ends in a `tick`, so an earlier one in this same pass may already
-        // have re-dispatched the bead of a later candidate.
+        // have re-dispatched the bead of a later candidate. The discard fence
+        // and the attempt's own status are re-read off a FRESH snapshot for the
+        // same reason plus one more — a discard that lands after this pass
+        // selected its candidates is exactly the race that produced the stale
+        // `verify_failed:pr_missing` banner. Two dispositions of that discard
+        // have to be caught, and only one of them is still `discardActive`:
+        // an accepted one, and a COMPLETED one whose operation is back to
+        // `phase: 'done'` with the attempt already written `discarded`. The
+        // durable status is what catches the second, so the candidate is
+        // disposed only while it is still `running`, and off the CURRENT
+        // record rather than the one selection captured.
         if (claimed.has(d.attempt.bead_id)) {
           continue;
         }
-        await disposeDeadAttempt(workspace, d.attempt_id, d.attempt);
+        const fresh = deps.store.snapshot(workspace);
+        const current = fresh.attempts?.[d.attempt_id];
+        if (
+          !current ||
+          current.status !== 'running' ||
+          discardActive(fresh, {
+            bead_id: current.bead_id,
+            attempt_id: d.attempt_id
+          })
+        ) {
+          continue;
+        }
+        await disposeDeadAttempt(workspace, d.attempt_id, current);
       }
     } finally {
       reconciling.delete(workspace);
