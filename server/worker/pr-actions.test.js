@@ -138,6 +138,7 @@ function seedStore(options = {}) {
  *   children?: Record<string, { id: string, status: string }[]>,
  *   bdFail?: (method: string, id: string) => boolean,
  *   mergeFails?: boolean,
+ *   updateBranchResult?: any,
  *   afterMerge?: any,
  *   worktreeExists?: boolean,
  *   worktrees?: Record<string, string>,
@@ -216,7 +217,12 @@ function makeActions(options = {}) {
     }),
     updateBranch: vi.fn(async () => {
       calls.push('gh:updateBranch');
-      return { state: 'ok', data: true };
+      return (
+        options.updateBranchResult || {
+          state: 'ok',
+          data: 'b'.repeat(40)
+        }
+      );
     }),
     closePr: vi.fn(async () => {
       calls.push('gh:closePr');
@@ -616,6 +622,36 @@ describe('worker/pr-actions rollback verify compatibility', () => {
 });
 
 describe('merge click — the three branches (worker-phase2 §6)', () => {
+  test('returns the authoritative base-update result head', async () => {
+    const result_head_sha = 'd'.repeat(40);
+    const h = makeActions({
+      updateBranchResult: { state: 'ok', data: result_head_sha }
+    });
+
+    const result = await h.actions.updateBase(BEAD);
+
+    expect(result).toEqual({
+      ok: true,
+      reason: null,
+      result_head_sha
+    });
+    expect(h.gh.updateBranch).toHaveBeenCalledWith(REPO, 304);
+  });
+
+  test('fails closed when a base update returns no result head', async () => {
+    const h = makeActions({
+      updateBranchResult: { state: 'ok', data: true }
+    });
+
+    const result = await h.actions.updateBase(BEAD);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'update_branch_failed',
+      result_head_sha: null
+    });
+  });
+
   test('refuses a bead fenced by an active discard operation', async () => {
     const h = makeActions();
     const snapshot = h.store.snapshot(WS);
@@ -1080,6 +1116,91 @@ describe('post-merge cleanup — bd status after a LATE failure (§6)', () => {
     expect(r).toMatchObject({ ok: false, cleanup_step: 'base_containment' });
     expect(h.bd.setStatus).not.toHaveBeenCalled();
     expect(h.store.snapshot(WS).cleanup_failed[BEAD].bd_restore).toBeNull();
+  });
+});
+
+describe('post-merge cleanup — what step 1 did to the LOCAL checkout', () => {
+  /** Checkout sitting on a clean base branch that cannot fast-forward. */
+  function divergedCheckout() {
+    return makeActions({
+      gitBranch: 'main',
+      gitStatus: '',
+      gitResult: (args) => (args[0] === 'merge' ? 1 : null)
+    });
+  }
+
+  test('reports a diverged local base without stopping the cleanup', async () => {
+    const h = divergedCheckout();
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.base_sync).toBe('fetch_only:diverged');
+    expect(r.cleanup_step).not.toBe('base_containment');
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('leaves a diverged local base branch exactly where it was', async () => {
+    const h = divergedCheckout();
+
+    await h.actions.merge(BEAD);
+
+    expect(
+      h.git_argv.filter((args) => args[0] === 'reset' || args[0] === 'rebase')
+    ).toEqual([]);
+    expect(
+      h.git_argv.filter(
+        (args) => args[0] === 'merge' && !args.includes('--ff-only')
+      )
+    ).toEqual([]);
+  });
+
+  test('reports a dirty checkout the cleanup deliberately left alone', async () => {
+    const h = makeActions({ gitBranch: 'main', gitStatus: ' M app/x.js\n' });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.base_sync).toBe('fetch_only:dirty');
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('reports a fast-forwarded base branch when the checkout allows it', async () => {
+    const h = makeActions({ gitBranch: 'main', gitStatus: '' });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r.base_sync).toBe('fast_forwarded');
+  });
+
+  test('still stops when the fetched base does not contain the merge', async () => {
+    const h = makeActions({
+      gitBranch: 'main',
+      gitStatus: '',
+      gitResult: (args) =>
+        args[0] === 'merge' ? 1 : args[0] === 'merge-base' ? 1 : null
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'base_containment' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'base_containment',
+      reason: 'deployment_target_not_covering_merge'
+    });
+  });
+
+  test('still stops when the base cannot be fetched at all', async () => {
+    const h = makeActions({
+      gitBranch: 'main',
+      gitStatus: '',
+      gitFail: (args) => args[0] === 'fetch'
+    });
+
+    const r = await h.actions.merge(BEAD);
+
+    expect(r).toMatchObject({ ok: false, cleanup_step: 'base_containment' });
+    expect(h.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      reason: 'base_fetch_failed'
+    });
   });
 });
 

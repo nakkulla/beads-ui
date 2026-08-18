@@ -77,6 +77,8 @@ export const UNCONFIRMED_WAIT_MS = 30 * 60 * 1000;
  */
 const RESOLUTION_POLL_MS = 30 * 1000;
 
+const SHA40_RE = /^[0-9a-f]{40}$/i;
+
 /** @type {Set<string>} */
 const TERMINAL_ATTEMPT_STATUSES = new Set([
   'done',
@@ -131,8 +133,11 @@ function repairFence(q) {
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
  *   conflictDispatchBlocked?: (queue_bead_id: string, subject_bead_id: string) => boolean,
- *   headReview?: { ensureApproved: (queue_bead_id: string, subject_bead_id: string, observed: { head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null }) => Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }> },
- *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null }>,
+ *   headReview?: {
+ *     captureStartingApproval?: (queue_bead_id: string, subject_bead_id: string) => Promise<{ actor: string, head_sha: string, raw: string }|null>,
+ *     ensureApproved: (queue_bead_id: string, subject_bead_id: string, observed: { head_sha: string, base_ref: string|null, head_ref?: string|null, mutation?: string|null, mutation_result_sha?: string|null, starting_approval?: { actor: string, head_sha: string, raw: string }|null }) => Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>
+ *   },
+ *   updateBase?: (bead_id: string) => Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>,
  *   onCompletionResult?: (root_bead_id: string, subject_bead_id: string, result: MergeClickResult) => Promise<void>|void,
  *   prepare?: () => Promise<unknown>,
  *   subscribeQueueChanged?: (fn: (workspace: string) => void) => (() => void),
@@ -1110,7 +1115,7 @@ export function createMergeQueue(deps) {
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
-   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation: string|null }} observed
+   * @param {{ head_sha: string, base_ref: string|null, head_ref?: string|null, mutation: string|null, mutation_result_sha: string|null, starting_approval: { actor: string, head_sha: string, raw: string }|null }} observed
    * @returns {Promise<{ state: 'approved'|'failed'|'gone'|'halted', reason: string|null }>}
    */
   async function ensureHeadReview(queue_bead_id, subject_bead_id, observed) {
@@ -1137,7 +1142,7 @@ export function createMergeQueue(deps) {
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
    * @param {string|null} ready_attempt_id
-   * @param {{ mutation: string|null }} [vouched] - The queue-owned mutation
+   * @param {{ mutation: string|null, result_head_sha: string|null, starting_approval: { actor: string, head_sha: string, raw: string }|null }} [vouched] - The queue-owned mutation
    * evidence this drain can vouch for (`resolver:<attempt>` / `base_update`).
    * A HOLDER, not a value: whichever site binds it consumes it, so one
    * resolver push or base update vouches for exactly one head-review binding
@@ -1148,7 +1153,11 @@ export function createMergeQueue(deps) {
     queue_bead_id,
     subject_bead_id,
     ready_attempt_id,
-    vouched = { mutation: null }
+    vouched = {
+      mutation: null,
+      result_head_sha: null,
+      starting_approval: null
+    }
   ) {
     if (
       ready_attempt_id &&
@@ -1231,9 +1240,13 @@ export function createMergeQueue(deps) {
           head_sha: probe.head_sha || '',
           base_ref: probe.base_ref || null,
           head_ref: probe.head_ref || null,
-          mutation: vouched.mutation
+          mutation: vouched.mutation,
+          mutation_result_sha: vouched.result_head_sha,
+          starting_approval: vouched.starting_approval
         });
         vouched.mutation = null;
+        vouched.result_head_sha = null;
+        vouched.starting_approval = null;
         if (review.state !== 'approved') {
           return {
             ok: false,
@@ -1566,11 +1579,33 @@ export function createMergeQueue(deps) {
     // Queue-owned mutation evidence THIS drain can vouch for (UI-58w8 §2):
     // a consumed ready resolution or the driver's own base update. It never
     // survives a restart on purpose — an unprovable move fails closed.
-    /** @type {{ mutation: string|null }} */
-    const vouched = { mutation: null };
+    /** @type {{ actor: string, head_sha: string, raw: string }|null} */
+    let starting_approval = null;
+    if (
+      manualContinuation(bead_id) &&
+      typeof deps.headReview?.captureStartingApproval === 'function'
+    ) {
+      try {
+        starting_approval = await deps.headReview.captureStartingApproval(
+          bead_id,
+          bead_id
+        );
+      } catch (err) {
+        log('merge queue approval snapshot failed for %s: %o', bead_id, err);
+      }
+    }
+    /** @type {{ mutation: string|null, result_head_sha: string|null, starting_approval: { actor: string, head_sha: string, raw: string }|null }} */
+    const vouched = {
+      mutation: null,
+      result_head_sha: null,
+      starting_approval
+    };
     // The base update is attempted at most once per turn, so a PR that stays
     // BEHIND cannot loop the driver against the GitHub API.
     let base_update_attempted = false;
+    // An external registry race gets one refresh/re-probe per item entry. The
+    // flag resets only when a new click/kick enters this item (UI-vkk8 §1).
+    let registry_refresh_attempted = false;
 
     while (!stopped && !halted) {
       if (!queuedEntry(bead_id)) {
@@ -1592,7 +1627,11 @@ export function createMergeQueue(deps) {
         return;
       }
       if (resolution.kind === 'ready' && resolution.attempt_id) {
+        // Resolver attempts currently expose no authoritative pushed head.
+        // Rebind both voucher fields together so a prior mutation's SHA cannot
+        // survive; the null result forces full-final-head review (UI-vkk8 §4).
         vouched.mutation = `resolver:${resolution.attempt_id}`;
+        vouched.result_head_sha = null;
       }
       const result = await runLatestMerge(
         bead_id,
@@ -1722,15 +1761,26 @@ export function createMergeQueue(deps) {
         // a BEHIND PR through `updateBranch`, and the moved head then takes
         // the SAME head-review path a resolver push does.
         base_update_attempted = true;
-        /** @type {{ ok: boolean, reason?: string|null }} */
-        let updated = { ok: false, reason: 'update_branch_failed' };
+        /** @type {{ ok: boolean, reason?: string|null, result_head_sha?: string|null }} */
+        let updated = {
+          ok: false,
+          reason: 'update_branch_failed',
+          result_head_sha: null
+        };
         try {
           updated = await deps.updateBase(bead_id);
         } catch (err) {
           log('merge queue base update threw for %s: %o', bead_id, err);
         }
         if (updated.ok) {
+          // The mutation response, not a later observation, owns this SHA.
+          // Rebind the pair atomically at the semantic seam (UI-vkk8 §4).
           vouched.mutation = 'base_update';
+          vouched.result_head_sha =
+            typeof updated.result_head_sha === 'string' &&
+            SHA40_RE.test(updated.result_head_sha)
+              ? updated.result_head_sha.toLowerCase()
+              : null;
           notify();
           continue;
         }
@@ -1752,9 +1802,13 @@ export function createMergeQueue(deps) {
           head_sha: result.head_sha || '',
           base_ref: result.base_ref || null,
           head_ref: result.head_ref || null,
-          mutation: vouched.mutation
+          mutation: vouched.mutation,
+          mutation_result_sha: vouched.result_head_sha,
+          starting_approval: vouched.starting_approval
         });
         vouched.mutation = null;
+        vouched.result_head_sha = null;
+        vouched.starting_approval = null;
         if (review.state === 'approved') {
           notify();
           continue;
@@ -1805,6 +1859,30 @@ export function createMergeQueue(deps) {
         halted = true;
         halted_on_repair = repairFence(snapshot()).reason || 'repair_in_flight';
         notify();
+        return;
+      }
+
+      if (action === 'refused' && result.reason === 'not_in_pr_wait') {
+        if (!registry_refresh_attempted && typeof deps.prepare === 'function') {
+          registry_refresh_attempted = true;
+          try {
+            await deps.prepare();
+          } catch (err) {
+            log('merge queue registry refresh failed for %s: %o', bead_id, err);
+          }
+          continue;
+        }
+        // Only an observed row may keep the queue head: its next poll can end
+        // the halt. An unobserved row must leave so it cannot freeze every PR
+        // behind it forever (UI-wwby §3, UI-vkk8 §1 correction).
+        if (pollerObserves(bead_id)) {
+          fail(bead_id, 'not_in_pr_wait');
+          halted = true;
+          halted_on_head = bead_id;
+          notify();
+          return;
+        }
+        failAndDequeue(bead_id, 'not_in_pr_wait');
         return;
       }
 

@@ -223,6 +223,36 @@ describe('worker/head-review-transport — receipts', () => {
     });
   });
 
+  test('normalizes derived receipt reviewer identities', async () => {
+    const { t, issue } = transport();
+    issue.metadata.impl_review = `carry:codex:${HEAD}@${NEW_HEAD}`;
+
+    expect(await t.readReceipt('UI-1')).toEqual({
+      actor: 'codex',
+      head_sha: NEW_HEAD,
+      raw: `carry:codex:${HEAD}@${NEW_HEAD}`
+    });
+
+    issue.metadata.impl_review = `resolver-self:res-1:${HEAD}@${NEW_HEAD}`;
+
+    expect(await t.readReceipt('UI-1')).toEqual({
+      actor: 'self',
+      head_sha: NEW_HEAD,
+      raw: `resolver-self:res-1:${HEAD}@${NEW_HEAD}`
+    });
+  });
+
+  test('rejects nested or ambiguous derived receipts', async () => {
+    const { t, issue } = transport();
+    issue.metadata.impl_review = `carry:carry:codex:${HEAD}@${NEW_HEAD}`;
+
+    expect(await t.readReceipt('UI-1')).toBeNull();
+
+    issue.metadata.impl_review = `resolver-self:resolver-self:res-1:${HEAD}@${NEW_HEAD}`;
+
+    expect(await t.readReceipt('UI-1')).toBeNull();
+  });
+
   test('returns null for a malformed receipt', async () => {
     const { t, issue } = transport();
     issue.metadata.impl_review = 'not-a-receipt';

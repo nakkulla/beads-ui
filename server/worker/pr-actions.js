@@ -83,11 +83,11 @@ export const CLEANUP_STEPS = [
 
 /**
  * What step 1 of the cleanup actually did to the LOCAL checkout. `fast_forwarded`
- * = fetched AND moved the local base branch; the `fetch_only:*` pair = fetched,
+ * = fetched AND moved the local base branch; the `fetch_only:*` set = fetched,
  * local checkout deliberately untouched (see {@link syncBase} for why that is
  * sufficient rather than degraded).
  *
- * @typedef {'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'} BaseSyncOutcome
+ * @typedef {'fast_forwarded'|'fetch_only:not_on_base'|'fetch_only:dirty'|'fetch_only:diverged'} BaseSyncOutcome
  */
 
 /**
@@ -916,8 +916,15 @@ export function createPrActions(deps) {
    * are different facts about the user's repo, and the cleanup record/log names
    * which one happened.
    *
-   * A checkout that IS on a clean base branch but cannot fast-forward is
-   * divergence: a genuine failure (`base_ff_diverged`), never something to force.
+   * A checkout on a clean base branch that cannot fast-forward is divergence,
+   * and it reports as `fetch_only:diverged` for the SAME reason the two cases
+   * above do: the local branch is never forced, and nothing downstream reads
+   * it. Divergence used to end the cleanup, which made one stray local commit
+   * on the base branch — an artifact landed through a detached publication
+   * candidate leaves exactly that — block every later cleanup in the repository
+   * while buying no verification strength. The real containment gate is the
+   * caller's `merge-base --is-ancestor <merge_sha> <fetched sha>` check on the
+   * sha returned here, and it is untouched by any of these outcomes.
    *
    * @param {string} target_base
    * @param {string|null} [candidate_sha] - Already fetched candidate. When
@@ -975,7 +982,11 @@ export function createPrActions(deps) {
       }
       const ff = await deps.gitRun(['merge', '--ff-only', sha], { cwd: repo });
       if (ff.code !== 0) {
-        return { ok: /** @type {const} */ (false), reason: 'base_ff_diverged' };
+        return {
+          ok: /** @type {const} */ (true),
+          sha,
+          outcome: /** @type {BaseSyncOutcome} */ ('fetch_only:diverged')
+        };
       }
       return {
         ok: /** @type {const} */ (true),
@@ -2747,18 +2758,18 @@ export function createPrActions(deps) {
 
   /**
    * Update a BEHIND PR's branch from its base — the queue-owned base-update
-   * mutation of the manual continuation (UI-58w8 §2). Effect-only: the caller
-   * re-observes the PR afterwards, and the moved head goes through the same
-   * head-review path a resolver push does.
+   * mutation of the manual continuation (UI-58w8 §2). The returned SHA is the
+   * mutation response's authoritative result identity; the caller re-observes
+   * the PR separately and requires exact equality before §4 may relax review.
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, reason: string|null }>}
+   * @returns {Promise<{ ok: boolean, reason: string|null, result_head_sha: string|null }>}
    */
   async function updateBase(bead_id) {
     const q = deps.store.snapshot(workspace);
     const member = await laneMembership(q, bead_id);
     if (!member.ok) {
-      return { ok: false, reason: member.reason };
+      return { ok: false, reason: member.reason, result_head_sha: null };
     }
     const ref = resolvePrRef(
       q,
@@ -2768,7 +2779,7 @@ export function createPrActions(deps) {
         : null
     );
     if (!ref) {
-      return { ok: false, reason: 'pr_ref_unknown' };
+      return { ok: false, reason: 'pr_ref_unknown', result_head_sha: null };
     }
     /** @type {any} */
     let updated;
@@ -2776,19 +2787,33 @@ export function createPrActions(deps) {
       updated = await deps.gh.updateBranch(repo, ref.number);
     } catch (err) {
       log('base update failed for %s: %o', bead_id, err);
-      return { ok: false, reason: 'update_branch_failed' };
+      return {
+        ok: false,
+        reason: 'update_branch_failed',
+        result_head_sha: null
+      };
     }
-    if (!updated || updated.state !== 'ok') {
+    if (
+      !updated ||
+      updated.state !== 'ok' ||
+      typeof updated.data !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(updated.data)
+    ) {
       return {
         ok: false,
         reason:
           updated && typeof updated.reason === 'string'
             ? updated.reason
-            : 'update_branch_failed'
+            : 'update_branch_failed',
+        result_head_sha: null
       };
     }
     notifyChanged(workspace);
-    return { ok: true, reason: null };
+    return {
+      ok: true,
+      reason: null,
+      result_head_sha: updated.data.toLowerCase()
+    };
   }
 
   return {
