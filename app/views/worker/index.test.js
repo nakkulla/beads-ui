@@ -10,7 +10,8 @@ import {
   applyCandidateSort,
   createWorkerView,
   mergeFailureText,
-  mergeStepView
+  mergeStepView,
+  prStatusBadge
 } from './index.js';
 
 function createTestIssueStores() {
@@ -2931,7 +2932,7 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     }
   });
 
-  test('renders the gate badge and the base badge', () => {
+  test('renders one merge-ready badge without the redundant latest badge', () => {
     const row = renderWith(
       withObservation({
         enabled: true,
@@ -2945,7 +2946,7 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     const badges = Array.from(row.querySelectorAll('.worker-mini__badge')).map(
       (b) => b.textContent
     );
-    expect(badges).toEqual(['머지 가능', '최신']);
+    expect(badges).toEqual(['머지 가능']);
   });
 
   test('renders the optional verification badge', () => {
@@ -2960,7 +2961,7 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     );
 
     expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
-      '검증 대기'
+      '확인 중'
     );
   });
 
@@ -2986,7 +2987,7 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     const badge = /** @type {HTMLElement} */ (
       row.querySelector('.worker-mini__badge')
     );
-    expect(badge.textContent).toBe('PR closed');
+    expect(badge.textContent).toBe('닫힘');
     expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
   });
 
@@ -3004,7 +3005,7 @@ describe('worker view — pr_wait PR link + gate badges (worker-phase2 §4/§5)'
     const badge = /** @type {HTMLElement} */ (
       row.querySelector('.worker-mini__badge')
     );
-    expect(badge.textContent).toBe('관측 오류');
+    expect(badge.textContent).toBe('상태 확인 실패');
     expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
   });
 
@@ -3281,12 +3282,6 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
   /** @type {Array<{ tier: string, gate_badge: string, enabled: boolean, reason: string|null }>} */
   const REFUSING_TIERS = [
     {
-      tier: 'review',
-      gate_badge: '리뷰 확인 필요',
-      enabled: false,
-      reason: 'review_receipt_missing'
-    },
-    {
       tier: 'verify',
       gate_badge: '검증 대기',
       enabled: false,
@@ -3332,7 +3327,7 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       expect(
         /** @type {HTMLElement} */ (mount.querySelector('.worker-mini__badge'))
           .textContent
-      ).toBe(t.gate_badge);
+      ).toBe('머지 가능');
     }
   });
 
@@ -3346,11 +3341,61 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
       );
       expect(btn.disabled).toBe(true);
       expect(btn.getAttribute('title')).toContain(t.reason || '정리 진행 중');
-      expect(
-        /** @type {HTMLElement} */ (mount.querySelector('.worker-mini__badge'))
-          .textContent
-      ).toBe(t.gate_badge);
+      expect(mount.querySelectorAll('.worker-mini__badge')).toHaveLength(1);
     }
+  });
+
+  test.each([
+    [
+      'review_receipt_missing',
+      '리뷰 후 머지',
+      '자동 리뷰 세션 후 승인되면 머지합니다'
+    ],
+    [
+      'review_receipt_stale',
+      '리뷰 후 머지',
+      '자동 리뷰 세션 후 승인되면 머지합니다'
+    ],
+    ['base_behind', 'base 갱신 후 머지', 'base를 자동 갱신한 뒤 머지합니다']
+  ])('enables the manual continuation for %s', (reason, label, title) => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: reason === 'base_behind' ? 'mergeability' : 'review',
+        gate_badge: '차단',
+        base_badge: reason === 'base_behind' ? 'base 뒤처짐' : '최신',
+        reason
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.disabled).toBe(false);
+    expect(button.textContent?.trim()).toBe(label);
+    expect(button.title).toBe(title);
+  });
+
+  test.each([
+    ['review_receipt_invalid', '리뷰 기록 오류'],
+    ['mergeability_unknown', '상태 확인 실패'],
+    ['gh_failed', '상태 확인 실패']
+  ])('keeps %s disabled without a server continuation', (reason, label) => {
+    const { mount } = mountWith(
+      queueWithGate({
+        enabled: false,
+        tier: reason === 'review_receipt_invalid' ? 'review' : 'undecidable',
+        gate_badge: '차단',
+        base_badge: '',
+        reason
+      })
+    );
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    );
+    expect(button.disabled).toBe(true);
+    expect(mount.querySelector('.worker-mini__badge')?.textContent).toBe(label);
   });
 
   test('offers 머지 and 폐기 on a pr_wait row', () => {
@@ -5343,7 +5388,7 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
     const badge = /** @type {HTMLElement} */ (
       row.querySelector('.worker-mini__badge--activity')
     );
-    expect(badge.textContent?.trim()).toBe('확인중');
+    expect(badge.textContent?.trim()).toBe('확인 중');
     expect(badge.querySelector('.act-dot')).not.toBe(null);
   });
 
@@ -5352,14 +5397,14 @@ describe('poller activity badge — view (UI-raqh §3)', () => {
 
     expect(
       row.querySelector('.worker-mini__badge--activity')?.textContent?.trim()
-    ).toBe('검증 중');
+    ).toBe('확인 중');
   });
 
   test('keeps the settled badge when nothing is running', () => {
     const row = renderRow(UNOBSERVED, null);
 
     expect(row.querySelector('.worker-mini__badge--activity')).toBe(null);
-    expect(row.textContent).toContain('관측 대기');
+    expect(row.textContent).toContain('확인 중');
   });
 
   test('leaves an eligibility badge untouched while the poller works', () => {
@@ -6329,7 +6374,12 @@ describe('target base 칩과 예외 배지 (UI-j6wa §3)', () => {
       )
     ).map((el) => (el.textContent || '').trim());
 
-    expect(badges).toContain('→ ilsun/dev');
+    expect(badges).toContain('다른 base 대상');
+    expect(
+      mount
+        .querySelector('.worker-mini[data-bead-id="RD-1"] .worker-mini__badge')
+        ?.getAttribute('title')
+    ).toContain('→ ilsun/dev');
   });
 });
 
@@ -6737,7 +6787,7 @@ describe('충돌 해소 세션 가시화 (UI-dxgz)', () => {
         ?.textContent?.trim()
     ).toBe('충돌 해소 중');
     expect(card(mount).textContent).not.toContain('확인중');
-    expect(card(mount).textContent).toContain('관측 대기');
+    expect(card(mount).textContent).not.toContain('관측 대기');
   });
 
   test('reads the action button as 충돌 해소 후 머지 on a conflicting gate', () => {
@@ -7031,16 +7081,20 @@ describe('외부 세션 PR 행 (UI-7agi §5)', () => {
     );
   }
 
-  test('marks an external row with a 세션 badge', () => {
+  test('marks an external row beside the title instead of as a status badge', () => {
     const mount = mountRow(OPEN_GREEN);
 
-    expect(badgesOf(mount)).toContain('세션');
+    expect(badgesOf(mount)).toEqual(['머지 가능']);
+    expect(mount.querySelector('.worker-mini__title .muted')?.textContent).toBe(
+      ' · 세션'
+    );
   });
 
-  test('leaves a worker row without the 세션 badge', () => {
+  test('leaves a worker row without the 세션 marker', () => {
     const mount = mountRow(OPEN_GREEN, { external: false });
 
     expect(badgesOf(mount)).not.toContain('세션');
+    expect(mount.querySelector('.worker-mini__title .muted')).toBe(null);
   });
 
   test('hides 폐기 on an external row', () => {
@@ -7282,19 +7336,18 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).toContain('자동복구 1/2 · 원 PR 수정 중');
+    expect(row.textContent).toContain('자동복구 중');
     const cancel = /** @type {HTMLButtonElement} */ (
       row.querySelector('.worker-mini__merge-cancel')
     );
     expect(cancel.disabled).toBe(true);
     expect(cancel.title).toContain('상단 자동 머지 중단');
     const badge = /** @type {HTMLElement} */ (
-      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
-        element.textContent?.includes('자동복구 1/2')
-      )
+      row.querySelector('.worker-mini__badge')
     );
-    expect(badge.title).toContain('merge_gate · verify_cmd_failed');
-    expect(badge.title).toContain('/state/verify.log');
+    const details = /** @type {HTMLElement} */ (badge.querySelector('[title]'));
+    expect(details.title).toContain('merge_gate · verify_cmd_failed');
+    expect(details.title).toContain('/state/verify.log');
   });
 
   test('shows root revalidation after a repair result', () => {
@@ -7317,7 +7370,13 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       })
     );
 
-    expect(rowOf(mount, 'RD-1').textContent).toContain('root 재검증 중');
+    const badge = /** @type {HTMLElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__badge')
+    );
+    expect(badge.textContent).toContain('자동복구 중');
+    expect(badge.querySelector('[title]')?.getAttribute('title')).toContain(
+      'root 재검증 중'
+    );
   });
 
   test('keeps a repair PR link on the root card without a child row', () => {
@@ -7346,7 +7405,10 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).toContain('repair PR #22 대기');
+    expect(row.textContent).toContain('자동복구 중');
+    expect(
+      row.querySelector('.worker-mini__badge [title]')?.getAttribute('title')
+    ).toContain('repair PR #22 대기');
     const link = /** @type {HTMLAnchorElement} */ (
       row.querySelector('.worker-mini__repair-pr')
     );
@@ -7379,7 +7441,11 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       })
     );
 
-    expect(rowOf(mount, 'RD-1').textContent).toContain('repair PR #22 머지 중');
+    const badge = rowOf(mount, 'RD-1').querySelector('.worker-mini__badge');
+    expect(badge?.textContent).toContain('자동복구 중');
+    expect(badge?.querySelector('[title]')?.getAttribute('title')).toContain(
+      'repair PR #22 머지 중'
+    );
   });
 
   test('shows cleanup recovery on the root card', () => {
@@ -7403,7 +7469,11 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       })
     );
 
-    expect(rowOf(mount, 'RD-1').textContent).toContain('정리 복구 중');
+    const badge = rowOf(mount, 'RD-1').querySelector('.worker-mini__badge');
+    expect(badge?.textContent).toContain('자동복구 중');
+    expect(badge?.querySelector('[title]')?.getAttribute('title')).toContain(
+      '정리 복구 중'
+    );
   });
 
   test('shows paused recovery while preserving the manual merge path', () => {
@@ -7670,7 +7740,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       expect(badge.classList.contains('worker-mini__badge--activity')).toBe(
         live
       );
-      expect(row.textContent).toContain('머지 대기 #1');
+      expect(row.textContent).not.toContain('머지 대기 #1');
     }
   );
 
@@ -7725,9 +7795,9 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
   }
 
   test.each([
-    ['pending', 'implementation review 대기', false],
-    ['reviewing', 'implementation review 중', true],
-    ['revising', 'review 수정 중 · 1회', true]
+    ['pending', '리뷰 진행 중', false],
+    ['reviewing', '리뷰 진행 중', true],
+    ['revising', '리뷰 진행 중', true]
   ])('renders the %s head-review badge (UI-58w8 §7)', (state, label, live) => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
@@ -7762,12 +7832,12 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     const row = rowOf(mount, 'RD-1');
     const badge = /** @type {HTMLElement} */ (
       Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
-        (element.textContent || '').includes('review 자동 진행 실패')
+        (element.textContent || '').includes('리뷰 실패')
       )
     );
 
     expect(badge).toBeDefined();
-    expect(badge.textContent).toContain('transport_unavailable');
+    expect(badge.title).toContain('transport_unavailable');
     expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
   });
 
@@ -7899,7 +7969,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       Array.from(row.querySelectorAll('.worker-mini__badge')).map(
         (b) => b.textContent
       )
-    ).toContain('일괄 머지 실패: 충돌 해소 2회 초과');
+    ).toContain('머지 실패 — 충돌 해소 2회 초과');
     expect(
       /** @type {HTMLButtonElement} */ (
         row.querySelector('.worker-mini__merge')
@@ -7929,9 +7999,10 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
 
     const row = rowOf(mount, 'RD-1');
 
-    expect(row.textContent).toContain(
-      '일괄 머지 실패: 충돌 해소 대기 시간 초과'
-    );
+    expect(row.textContent).not.toContain('머지 실패 —');
+    expect(
+      row.querySelector('.worker-mini__badge [title]')?.getAttribute('title')
+    ).toContain('resolution_timeout');
     expect(
       /** @type {HTMLButtonElement} */ (
         row.querySelector('.worker-mini__merge')
@@ -8030,7 +8101,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     expect(rowOf(mount, 'RD-1').textContent).toContain(
-      '자동 제외: 충돌 해소 2회 초과'
+      '자동 제외 — 충돌 해소 2회 초과'
     );
   });
 
@@ -8159,6 +8230,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
 describe('mergeFailureText (UI-5v7d §4)', () => {
   test('translates the driver vocabulary', () => {
     expect(mergeFailureText('resolution_round_cap')).toBe('충돌 해소 2회 초과');
+    expect(mergeFailureText('not_in_pr_wait')).toBe('PR 대기 상태 동기화 실패');
     expect(mergeFailureText('merge_unconfirmed_timeout')).toBe(
       '머지 확인 시간 초과'
     );
@@ -8166,6 +8238,70 @@ describe('mergeFailureText (UI-5v7d §4)', () => {
 
   test('passes an unknown reason through instead of blanking the badge', () => {
     expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
+  });
+});
+
+describe('prStatusBadge priority (UI-vkk8 §3)', () => {
+  test('keeps a continuation choice above progress and failures', () => {
+    const result = prStatusBadge({
+      continuation_required: true,
+      merge_step: { label: 'squash merge' },
+      queue_failure: 'not_in_pr_wait'
+    });
+
+    expect(result).toMatchObject({ label: '이어하기 선택 필요', alert: true });
+  });
+
+  test('keeps progress above an actionable gate', () => {
+    const result = prStatusBadge({
+      merge_step: { label: 'squash merge' },
+      gate: { reason: 'base_behind' }
+    });
+
+    expect(result).toMatchObject({ label: '머지 중', live: true });
+  });
+
+  test('keeps an actionable gate above a failure record', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'review_receipt_stale' },
+      queue_failure: 'not_in_pr_wait'
+    });
+
+    expect(result?.label).toBe('최종 변경 리뷰 필요');
+    expect(result?.title).toContain('not_in_pr_wait');
+  });
+
+  test('keeps a failure record above a waiting position', () => {
+    const result = prStatusBadge({
+      queue_failure: 'not_in_pr_wait',
+      queued: true,
+      queue_active: false,
+      queue_position: 2
+    });
+
+    expect(result).toMatchObject({
+      label: '머지 실패 — PR 대기 상태 동기화 실패',
+      alert: true
+    });
+    expect(result?.title).toContain('not_in_pr_wait');
+  });
+
+  test('keeps a waiting position above merge eligibility', () => {
+    const result = prStatusBadge({
+      queued: true,
+      queue_active: false,
+      queue_position: 3,
+      gate: { enabled: true }
+    });
+
+    expect(result?.label).toBe('머지 대기 #3');
+  });
+
+  test('renders an unmapped failure code verbatim', () => {
+    const result = prStatusBadge({ queue_failure: 'brand_new_reason' });
+
+    expect(result?.label).toBe('머지 실패 — brand_new_reason');
+    expect(result?.title).toContain('brand_new_reason');
   });
 });
 
