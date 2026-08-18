@@ -487,7 +487,16 @@ export function createExecPresetCoordinator(options) {
     if (all_ok && copied.legacy_ids.length > 0) {
       presetStore.deletePresets(copied.legacy_ids);
     }
-    return { ok: all_ok, outcomes };
+    // A workspace that could not be migrated is DEFERRED, not fatal: its own
+    // durable state is untouched (fill-only-empty, marker unwritten), so the
+    // next start retries it. Failing the whole pass would be read as "nothing
+    // may run" by the startup gate and would close the worker runtime for every
+    // OTHER workspace — a per-workspace bd database that refuses to open must
+    // not have that reach.
+    const deferred = outcomes
+      .filter((outcome) => !outcome.result.ok)
+      .map((outcome) => outcome.workspace);
+    return { ok: true, deferred, outcomes };
   }
 
   return {

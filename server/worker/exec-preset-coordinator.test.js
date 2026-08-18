@@ -347,7 +347,10 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
 
     const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
 
-    expect(result.ok).toBe(false);
+    // The failed workspace is reported as DEFERRED rather than failing the
+    // whole pass: the pass's `ok` gates the worker runtime for every
+    // workspace, and one unwritable kv may not close all of them.
+    expect(result).toMatchObject({ ok: true, deferred: [WORKSPACE] });
     expect(
       fixture.queueStore.snapshot(WORKSPACE).session_defaults_migration
     ).toBe(null);
@@ -404,6 +407,29 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
 
     expect(fixture.kvSet).not.toHaveBeenCalled();
+  });
+
+  test('keeps the pass ok when one workspace cannot reach its kv', async () => {
+    // A workspace whose bd database refuses to open (a pending-schema clone,
+    // for instance) cannot be migrated — but it must not close the worker
+    // runtime for every OTHER workspace, which is what an `ok:false` pass does
+    // at the startup gate.
+    const fixture = createFixture({ queue: legacyQueue(), kvFailOn: 'read' });
+
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(true);
+    expect(result.deferred).toEqual([WORKSPACE]);
+  });
+
+  test('leaves the unreachable workspace unmigrated for the next start', async () => {
+    const fixture = createFixture({ queue: legacyQueue(), kvFailOn: 'read' });
+
+    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(
+      fixture.queueStore.snapshot(WORKSPACE).session_defaults_migration
+    ).toBe(null);
   });
 
   test('re-runs the legacy cleanup when the marker exists but residue remains', async () => {

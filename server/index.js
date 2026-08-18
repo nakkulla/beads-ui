@@ -144,12 +144,24 @@ server.listen(config.port, config.host, async () => {
       await getWorkerRuntime().execPresetCoordinator.migrateWorkspaces(
         Array.from(worker_roots)
       );
+    // A deferred workspace keeps its legacy fields and no marker, so the next
+    // start retries it. Dispatch does NOT depend on that migration — the
+    // launcher reads the queue's own orchestration values, and the session
+    // defaults it did not migrate simply fall through to the harness — so an
+    // unmigrated workspace is never a reason to leave every workspace's worker
+    // unattached.
+    if (Array.isArray(migration.deferred) && migration.deferred.length > 0) {
+      log(
+        'exec preset migration deferred for %d workspace(s): %o',
+        migration.deferred.length,
+        migration.deferred
+      );
+    }
     if (!migration.ok) {
       log(
-        'exec preset migration incomplete; worker dispatch stays closed: %o',
+        'exec preset migration failed before any workspace pass: %o',
         migration.outcomes
       );
-      return;
     }
     // The subscriber-count provider is what arms the PR pollers: they observe
     // `pr_wait` PRs only while a client is actually watching that workspace's
