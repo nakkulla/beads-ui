@@ -4644,9 +4644,12 @@ html[data-theme='dark'] {
 }
 
 /* 직렬 레인 스택 (UI-04vo §4): 병렬 대기 pane 아래 레인 카드들을 세로로
-   쌓는 한 flex 컬럼. */
+   쌓는 한 flex 컬럼. 이 껍데기는 `.worker-pane`이 아니므로 `flex: 1`을 직접
+   갖지 않으면 basis가 `auto`로 남아 내용 폭만큼 벌어진다 — 대기 열만 다른
+   레인보다 넓어 보이던 원인이라, 생애 레인들과 같은 등폭 몫을 명시한다. */
 .worker-wait {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: var(--sp-6);
   min-width: 0;

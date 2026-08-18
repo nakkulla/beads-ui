@@ -273,6 +273,16 @@ describe('worker console styles', () => {
     expect(metaRule).toContain('min-width: 0');
   });
 
+  test('gives the waiting column the same lane width as the other lanes', () => {
+    const waitRule =
+      workerBlock.match(/(?:^|\n)\.worker-wait\s*{([^}]*)}/)?.[1] || '';
+    const paneRule =
+      workerBlock.match(/(?:^|\n)\.worker-pane\s*{([^}]*)}/)?.[1] || '';
+
+    expect(paneRule).toContain('flex: 1');
+    expect(waitRule).toContain('flex: 1');
+  });
+
   test('keeps running tile metadata readable when it has a long token', () => {
     const runnerRule =
       workerBlock.match(/(?:^|\n)\.rtile__runner\s*{([^}]*)}/)?.[1] || '';
