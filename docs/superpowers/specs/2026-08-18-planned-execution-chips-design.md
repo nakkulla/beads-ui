@@ -40,10 +40,10 @@ dotfiles 설계는 모든 Phase에 `실행: delegated|main(<reason>)`을 요구�
 | `planned_execution_reason` | 한 줄 비어 있지 않은 문자열 | main owner 선택 사유 |
 | `exec_receipt` | 기존 canonical 형식 | acceptance된 실제 owner와 commit |
 
-`delegated`는 reason 없이 유효하다. `main`은 유효한 reason이 함께 있을 때만 계획 chip을
-만든다. unknown enum, 배열/객체, 빈 reason, newline이 포함된 reason은 malformed로 보고
-planned display를 생략한다. 이는 fail-quiet 표시 정책이며 issue payload와 workflow stage를
-실패시키지 않는다.
+`delegated`는 reason이 없을 때만 유효하다. `main`은 유효한 reason이 함께 있을 때만 계획
+chip을 만든다. unknown enum, 배열/객체, delegated의 stray reason, 빈 reason, newline이
+포함된 reason은 malformed로 보고 planned display를 생략한다. 이는 fail-quiet 표시
+정책이며 issue payload와 workflow stage를 실패시키지 않는다.
 
 enrichment 결과는 다음 display-only shape를 추가한다.
 
@@ -136,8 +136,8 @@ merge/deploy한다. consumer는 필드 부재에 하위 호환이므로 먼저 �
 ### Seam 1: server parsing
 
 - delegated, main+reason, 부재를 exact shape로 파싱한다.
-- unknown enum, wrong type, main without reason, empty/multiline reason을 fail-quiet null로
-  만든다.
+- unknown enum, wrong type, delegated with reason, main without reason, empty/multiline
+  reason을 fail-quiet null로 만든다.
 - planned parsing 실패가 existing route/stage/exec receipt enrichment를 바꾸지 않는다.
 
 ### Seam 2: board card
