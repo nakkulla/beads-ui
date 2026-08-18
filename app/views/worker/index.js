@@ -68,12 +68,9 @@ import {
   repoOpsStripTemplate,
   staleWorkProjection
 } from './lanes.js';
-import {
-  cleanupStalledReason,
-  cleanupStepLabel,
-  mergeStepView
-} from './merge-steps.js';
+import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { createParallelAnalysisDialog } from './parallel-analysis-dialog.js';
+import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
@@ -773,7 +770,12 @@ export function prStatusBadge(input) {
     return badge('이어하기 선택 필요', { alert: true });
   }
   if (input.merge_step) {
-    return badge('머지 중', { title: input.merge_step.label, live: true });
+    return input.gate?.tier === 'merged'
+      ? badge('머지됨', {
+          title: input.merge_step.label,
+          alert: input.merge_step.failed === true
+        })
+      : badge('머지 중', { title: input.merge_step.label, live: true });
   }
   if (input.conflict_badge) {
     return badge(input.conflict_badge, {
@@ -953,6 +955,7 @@ export function prStatusBadge(input) {
  * @param {boolean} [auto_merge_on] - The workspace's global auto-merge toggle
  * (UI-58w8 §1). Read only to tell whether an AUTOMATIC enrolment still has a
  * driver behind it; it never gates a manual authority's continuation.
+ * @param {{ merge_sha?: unknown, cleanup_cursor?: unknown, repo_operations?: unknown }} [progress_input]
  * @returns {any}
  */
 function prWaitRow(
@@ -971,7 +974,8 @@ function prWaitRow(
   completion = null,
   discard_operations = {},
   worker_serial = false,
-  auto_merge_on = false
+  auto_merge_on = false,
+  progress_input = {}
 ) {
   const queued = !!merge_queue && merge_queue.position > 0;
   const continuation_required =
@@ -1019,9 +1023,16 @@ function prWaitRow(
   const enabled = !!gate && gate.enabled === true;
   // A merge in flight owns the row: both buttons go quiet until it settles, so
   // a second click cannot land on an action the server would refuse anyway.
-  const merge_step = mergeStepView(
-    active && active.merge_progress ? active.merge_progress.step : null
-  );
+  const merge_step = prWaitProgress({
+    bead_id,
+    merge_sha: progress_input.merge_sha,
+    cleanup_cursor: progress_input.cleanup_cursor,
+    merge_progress:
+      active && active.merge_progress ? active.merge_progress : null,
+    cleanup_failed,
+    repo_operations: progress_input.repo_operations
+  });
+  const cleanup_active = isPrWaitCleanupActive(merge_step);
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
@@ -1052,10 +1063,10 @@ function prWaitRow(
     external && conflicting && wt_present === false;
   const discard = discardProjection(discard_operations, bead_id, {
     external,
-    merge_active: queue_active || !!merge_step,
+    merge_active: queue_active || merge_step?.step === 'merge',
     merge_queued: queued,
     conflict_active: !!conflict_session,
-    cleanup_active: false,
+    cleanup_active,
     merged: !!cleanup_failed || gate?.tier === 'merged'
   });
   const discard_blocks_merge = !!discard.operation;
@@ -1098,9 +1109,10 @@ function prWaitRow(
   return {
     id: bead_id,
     title: external ? html`${title}<span class="muted"> · 세션</span>` : title,
-    reason: cleanup_failed
-      ? cleanupStalledReason(cleanup_failed.step)
-      : 'PR 대기',
+    reason:
+      cleanup_failed && merge_step?.active !== true
+        ? cleanupStalledReason(cleanup_failed.step)
+        : 'PR 대기',
     draggable: false,
     done: true,
     lane: 'pr_wait',
@@ -1133,9 +1145,12 @@ function prWaitRow(
     // The exception is a row the driver will not carry forward on its own
     // (UI-58w8 §1) — there the click IS the recovery path, and the server
     // re-validates the PR identity before issuing a new manual authority.
-    merge_action: repo_operations_action_blocked
-      ? false
-      : !queued || continuation_required || needs_reclick,
+    merge_action:
+      gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
+        ? false
+        : repo_operations_action_blocked
+          ? false
+          : !queued || continuation_required || needs_reclick,
     // 머지 액션이 저장소 작업 단계에서 잠긴 카드 (§4.4): 잠금 사유를 문장으로
     // 반복하는 대신, 그 사유가 실제로 적혀 있는 타임라인으로 데려간다.
     timeline_action: repo_operations_action_blocked,
@@ -3259,7 +3274,14 @@ export function createWorkerView(mount_element, options = {}) {
               : {},
             attempt_by_id.get(last_attempt_by_bead.get(e.bead_id) || '')
               ?.worker_serial === true,
-            q.auto_merge === true
+            q.auto_merge === true,
+            {
+              merge_sha: e.merge_sha,
+              cleanup_cursor: e.cleanup_cursor,
+              repo_operations: Array.isArray(q.repo_operations)
+                ? q.repo_operations
+                : []
+            }
           )
         )
         .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),

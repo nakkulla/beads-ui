@@ -5090,6 +5090,11 @@ html[data-theme='dark'] {
   transition: width 0.45s ease;
 }
 
+.worker-mini--merge-failed::before,
+.worker-mini--merge-failed::after {
+  background: var(--accent-warn);
+}
+
 .merge-step {
   flex: 0 0 auto;
   display: inline-flex;
@@ -5105,6 +5110,41 @@ html[data-theme='dark'] {
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
+}
+
+.merge-step--failed {
+  color: var(--accent-warn);
+}
+
+.mon-card--pr_wait:has(.merge-step) {
+  position: relative;
+  overflow: hidden;
+  border-color: var(--border-tile-run);
+}
+
+.mon-card--pr_wait:has(.merge-step)::before,
+.mon-card--pr_wait .merge-step::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  background: var(--accent-success);
+}
+
+.mon-card--pr_wait:has(.merge-step)::before {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+
+.mon-card--pr_wait .merge-step::after {
+  bottom: 0;
+  width: var(--progress, 0%);
+  height: 1px;
+}
+
+.mon-card--pr_wait:has(.merge-step--failed)::before,
+.mon-card--pr_wait .merge-step--failed::after {
+  background: var(--accent-warn);
 }
 
 @media (prefers-reduced-motion: reduce) {

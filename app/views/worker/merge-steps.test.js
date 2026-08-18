@@ -1,12 +1,29 @@
 import { describe, expect, test } from 'vitest';
 import {
   CLEANUP_STEPS,
+  MERGE_STEPS,
   cleanupStalledReason,
   cleanupStepLabel,
   cleanupStepPosition,
   cleanupStepperView,
   mergeStepView
 } from './merge-steps.js';
+
+describe('MERGE_STEPS', () => {
+  test('keeps the seven card steps at fixed semantic positions', () => {
+    expect(
+      MERGE_STEPS.map(({ step, label, index }) => ({ step, label, index }))
+    ).toEqual([
+      { step: 'merge', label: '머지', index: 1 },
+      { step: 'base', label: 'base', index: 2 },
+      { step: 'verify', label: '검증', index: 3 },
+      { step: 'deploy', label: '배포', index: 4 },
+      { step: 'child', label: '자식', index: 5 },
+      { step: 'branch', label: '브랜치', index: 6 },
+      { step: 'close', label: 'close', index: 7 }
+    ]);
+  });
+});
 
 describe('CLEANUP_STEPS', () => {
   test('holds the five post-merge cleanup steps in cursor order', () => {
@@ -22,11 +39,11 @@ describe('CLEANUP_STEPS', () => {
 
 describe('mergeStepView', () => {
   test('projects a known step with its position', () => {
-    expect(mergeStepView('repo_operations')).toEqual({
-      label: '저장소 작업',
-      index: 3,
-      total: 6,
-      percent: 50
+    expect(mergeStepView('child_sweep')).toEqual({
+      label: '자식 정리 중',
+      index: 5,
+      total: 7,
+      percent: 71
     });
   });
 

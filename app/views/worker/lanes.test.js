@@ -78,6 +78,45 @@ beforeEach(() => {
   mount = /** @type {HTMLElement} */ (document.getElementById('lane'));
 });
 
+describe('merge progress row', () => {
+  test('renders the shared fixed position and progress rail', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      merge_step: {
+        step: 'deploy',
+        label: '배포 중',
+        index: 4,
+        total: 7,
+        percent: 57,
+        active: true,
+        failed: false
+      }
+    });
+
+    expect(row.classList.contains('worker-mini--merging')).toBe(true);
+    expect(row.getAttribute('style')).toContain('--progress: 57%');
+    expect(row.textContent?.replace(/\s+/g, '')).toContain('배포중4/7');
+  });
+
+  test('marks a failed operation with the existing warning token modifier', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      merge_step: {
+        step: 'verify',
+        label: '검증 실패',
+        index: 3,
+        total: 7,
+        percent: 43,
+        active: false,
+        failed: true
+      }
+    });
+
+    expect(row.classList.contains('worker-mini--merge-failed')).toBe(true);
+    expect(row.querySelector('.merge-step--failed')).not.toBeNull();
+  });
+});
+
 describe('done lane row', () => {
   test('renders separate Claude and Codex usage badges without a grand total', () => {
     const row = renderRow({

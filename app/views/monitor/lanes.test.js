@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test } from 'vitest';
 import {
   buildLanes,
   monitorGroupHeaderTemplate,
+  monitorPrCard,
   monitorQueueRow,
   monitorRunnableCard,
   monitorRunningTile,
@@ -729,6 +730,182 @@ describe('monitor lane item decoration (ported from buildSections, UI-nprg)', ()
 
     expect(lanes.pr_wait[0].merge_action).toBe(true);
     expect(lanes.pr_wait[0].merge_enabled).toBe(false);
+  });
+
+  test('projects exact deploy progress with fixed numbering', () => {
+    const merge_sha = 'a'.repeat(40);
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [
+            {
+              bead_id: 'A-pr',
+              added_at: NOW,
+              merge_sha,
+              cleanup_cursor: 'repo_operations'
+            }
+          ],
+          pr_observations: {
+            'A-pr': {
+              gate: {
+                enabled: false,
+                tier: 'merged',
+                gate_badge: '머지됨'
+              }
+            }
+          },
+          repo_operations: [
+            {
+              operation_id: 'deploy-1',
+              kind: 'deploy',
+              state: 'running',
+              requested_at: 1,
+              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
+              superseded_by: null
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_step).toMatchObject({
+      label: '배포 중',
+      index: 4,
+      total: 7,
+      percent: 57
+    });
+  });
+
+  test('renders progress and hides merge on an already merged row', () => {
+    const merge_sha = 'a'.repeat(40);
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [
+            {
+              bead_id: 'A-pr',
+              added_at: NOW,
+              merge_sha,
+              cleanup_cursor: 'repo_operations'
+            }
+          ],
+          pr_observations: {
+            'A-pr': {
+              gate: {
+                enabled: false,
+                tier: 'merged',
+                gate_badge: '머지됨'
+              }
+            }
+          },
+          repo_operations: [
+            {
+              operation_id: 'verify-1',
+              kind: 'verify',
+              state: 'running',
+              requested_at: 1,
+              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
+              superseded_by: null
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    render(monitorPrCard(lanes.pr_wait[0]), mount);
+
+    expect(mount.textContent?.replace(/\s+/g, '')).toContain('검증중3/7');
+    expect(mount.querySelector('.worker-mini__merge')).toBeNull();
+    expect(lanes.pr_wait[0].discard?.enabled).toBe(false);
+  });
+
+  test('names an exact deploy cleanup failure', () => {
+    const merge_sha = 'a'.repeat(40);
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [
+            {
+              bead_id: 'A-pr',
+              added_at: NOW,
+              merge_sha,
+              cleanup_cursor: 'repo_operations'
+            }
+          ],
+          pr_observations: {
+            'A-pr': { gate: { enabled: false, tier: 'merged' } }
+          },
+          cleanup_failed: {
+            'A-pr': { step: 'repo_operations', reason: 'deploy failed' }
+          },
+          repo_operations: [
+            {
+              operation_id: 'deploy-1',
+              kind: 'deploy',
+              state: 'failed',
+              requested_at: 1,
+              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
+              superseded_by: null
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_step).toMatchObject({
+      label: '배포 실패',
+      index: 4,
+      failed: true
+    });
+  });
+
+  test('keeps an exact retry ahead of a stale cleanup failure', () => {
+    const merge_sha = 'a'.repeat(40);
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [
+            {
+              bead_id: 'A-pr',
+              added_at: NOW,
+              merge_sha,
+              cleanup_cursor: 'repo_operations'
+            }
+          ],
+          pr_observations: {
+            'A-pr': {
+              gate: {
+                enabled: false,
+                tier: 'merged',
+                gate_badge: '머지됨'
+              }
+            }
+          },
+          cleanup_failed: {
+            'A-pr': { step: 'repo_operations', reason: 'previous failure' }
+          },
+          repo_operations: [
+            {
+              operation_id: 'deploy-2',
+              kind: 'deploy',
+              state: 'repairing',
+              requested_at: 2,
+              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
+              superseded_by: null
+            }
+          ]
+        })
+      ],
+      []
+    );
+
+    expect(lanes.pr_wait[0].merge_step?.label).toBe('배포 자동 해결 중');
+    expect(lanes.pr_wait[0].badges).toEqual(['머지됨']);
+    expect(lanes.pr_wait[0].alert).toBe(false);
+    expect(lanes.pr_wait[0].reason).toBe('PR 대기');
   });
 
   test('projects the no-CI eligibility badge', () => {
