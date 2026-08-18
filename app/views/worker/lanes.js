@@ -335,16 +335,25 @@ export function discardProjection(operations, bead_id, input = {}) {
   const error =
     typeof operation?.last_error === 'string' ? operation.last_error : null;
   const progress = operation ? discardPhaseLabel(operation.phase) : null;
+  const stale_recovery = operation?.kind === 'stale_work_backup_fresh';
   const confirmation =
     input.merged || operation?.mode === 'merged_revert' ? 'merged' : 'unmerged';
   return {
     action: !input.external && !input.done,
     enabled: !blocked_reason && (!operation || !!error),
-    label: error ? '재시도' : '폐기',
+    label: stale_recovery
+      ? error
+        ? '백업 정리 재시도'
+        : '백업 후 새로 시작'
+      : error
+        ? '재시도'
+        : '폐기',
     title:
       blocked_reason ||
       (error
-        ? `폐기 실패: ${error} — 같은 작업을 재시도합니다`
+        ? stale_recovery
+          ? `백업 뒤 정리 실패: ${error} — 원본과 검증 영수증을 보존한 채 재시도합니다`
+          : `폐기 실패: ${error} — 같은 작업을 재시도합니다`
         : operation
           ? `${progress || '폐기 처리 중'} — 완료를 기다리세요`
           : confirmation === 'merged'
@@ -371,7 +380,10 @@ export function discardReceiptTemplate(item) {
     return '';
   }
   const operation = discard.operation;
-  const archive = operation.backup?.path;
+  const archive =
+    operation.kind === 'stale_work_backup_fresh' && !discard.error
+      ? null
+      : operation.backup?.path;
   const original = operation.original_pr;
   const revert = operation.revert_pr;
   return html`<div
@@ -398,6 +410,86 @@ export function discardReceiptTemplate(item) {
         >`
       : ''}
   </div>`;
+}
+
+/**
+ * @typedef {Object} StaleWorkView
+ * @property {'unique'|'unknown'} state
+ * @property {string} title
+ * @property {string} cause
+ * @property {string} summary
+ * @property {string} action_id
+ * @property {boolean} can_resume
+ * @property {boolean} can_continue
+ * @property {boolean} can_backup_fresh
+ * @property {boolean} can_recheck
+ * @property {boolean} locked
+ */
+
+const STALE_WORK_CAUSES = {
+  dirty_unique: '최신 base에 없는 로컬 변경이 남아 있습니다',
+  untracked_present: '추적되지 않은 파일이 남아 있습니다',
+  branch_ahead: '로컬 branch에 고유 commit이 남아 있습니다',
+  head_ahead: 'worktree HEAD에 고유 commit이 남아 있습니다',
+  resume_available: '이어갈 수 있는 이전 Worker session이 있습니다',
+  observe_failed: 'Git 상태를 안전하게 확인하지 못했습니다',
+  identity_changed: '확인 중 worktree 상태가 바뀌었습니다',
+  ownership_unknown: 'Worker 소유 worktree인지 확인하지 못했습니다'
+};
+
+/**
+ * @param {unknown} admission
+ * @param {boolean} [locked]
+ * @returns {StaleWorkView|null}
+ */
+export function staleWorkProjection(admission, locked = false) {
+  if (!admission || typeof admission !== 'object') {
+    return null;
+  }
+  const record = /** @type {Record<string, unknown>} */ (admission);
+  if (
+    record.reason !== 'worktree_stale_work' ||
+    !record.stale_work ||
+    typeof record.stale_work !== 'object'
+  ) {
+    return null;
+  }
+  const stale_work = /** @type {Record<string, unknown>} */ (record.stale_work);
+  const state = stale_work.state === 'unique' ? 'unique' : 'unknown';
+  const summary =
+    stale_work.summary && typeof stale_work.summary === 'object'
+      ? /** @type {Record<string, unknown>} */ (stale_work.summary)
+      : {};
+  /**
+   * @param {string} key
+   */
+  function count(key) {
+    return Number.isInteger(summary[key]) ? Number(summary[key]) : 0;
+  }
+  const cause_key =
+    typeof stale_work.cause === 'string' ? stale_work.cause : 'observe_failed';
+  return {
+    state,
+    title: state === 'unique' ? '이전 작업 보존됨' : '이전 작업 상태 확인 실패',
+    cause:
+      STALE_WORK_CAUSES[
+        /** @type {keyof typeof STALE_WORK_CAUSES} */ (cause_key)
+      ] || '안전하게 자동 정리할 수 없는 이전 작업이 남아 있습니다',
+    summary: [
+      `staged ${count('staged_count')}`,
+      `unstaged ${count('unstaged_count')}`,
+      `untracked ${count('untracked_count')}`,
+      `branch ahead ${count('branch_ahead')}`,
+      `HEAD ahead ${count('head_ahead')}`
+    ].join(' · '),
+    action_id:
+      typeof stale_work.action_id === 'string' ? stale_work.action_id : '',
+    can_resume: stale_work.can_resume === true,
+    can_continue: stale_work.can_continue === true,
+    can_backup_fresh: stale_work.can_backup_fresh === true,
+    can_recheck: stale_work.can_recheck === true,
+    locked
+  };
 }
 
 /**
@@ -439,6 +531,7 @@ export function discardReceiptTemplate(item) {
  * @property {boolean} [discard_action] - Render the [폐기] action.
  * @property {ReturnType<typeof discardProjection>} [discard] - Shared durable
  * discard eligibility, phase, error, archive, and PR-receipt projection.
+ * @property {StaleWorkView|null} [stale_work] - Optional stale worktree action card.
  * @property {boolean} [merge_enabled] - Whether the gate lets [머지] be clicked.
  * @property {boolean} [discard_enabled] - Whether [폐기] may be clicked; false
  * while a merge is in flight (UI-raqh §4) or a conflict-resolution session owns
@@ -499,7 +592,8 @@ export function miniRow(item) {
   const provider_badges = providerUsageBadges(item.usage);
   const usage_label = formatUsageTotalWithCost(item.usage);
   const merging = item.merge_step || null;
-  const card = item.lane === 'pr_wait' || !!item.revise_action;
+  const card =
+    item.lane === 'pr_wait' || !!item.revise_action || !!item.stale_work;
   // 완료 행은 2줄이다 (UI-rkly §3): 제목이 가로 전체를 쓰는 1줄과, 나머지 사실을
   // 전부 받는 2줄. 한 줄에 usage까지 실으면 제목이 먼저 잘린다.
   const two_line = item.lane === 'done' && !card;
@@ -667,6 +761,53 @@ export function miniRow(item) {
           ${discard?.label || '폐기'}
         </button>`
       : '';
+  const stale_work = item.stale_work || null;
+  const stale_els = stale_work
+    ? html`${stale_work.can_resume || stale_work.can_continue
+        ? html`<button
+            type="button"
+            class="worker-mini__stale-continue"
+            data-bead-id=${item.id}
+            data-action-id=${stale_work.action_id}
+            ?disabled=${stale_work.locked}
+          >
+            기존 작업 이어가기
+          </button>`
+        : ''}${stale_work.can_backup_fresh
+        ? html`<button
+            type="button"
+            class="worker-mini__stale-backup"
+            data-bead-id=${item.id}
+            data-action-id=${stale_work.action_id}
+            ?disabled=${stale_work.locked}
+          >
+            백업 후 새로 시작
+          </button>`
+        : ''}${stale_work.can_recheck
+        ? html`<button
+            type="button"
+            class="worker-mini__stale-recheck"
+            data-bead-id=${item.id}
+            data-action-id=${stale_work.action_id}
+            ?disabled=${stale_work.locked}
+          >
+            다시 확인
+          </button>`
+        : ''}`
+    : '';
+  const stale_details = stale_work
+    ? html`<div class="worker-mini__stale">
+        <strong>${stale_work.title}</strong>
+        <span>${stale_work.summary}</span>
+        <span>${stale_work.cause}</span>
+        ${stale_work.can_backup_fresh
+          ? html`<small
+              >Git-ignored dependency/build output은 archive에 포함되지
+              않습니다</small
+            >`
+          : ''}
+      </div>`
+    : '';
   // 파킹 처분 두 버튼 (UI-hs11 §3.5). 대기 레인 행에만 붙고, 머지/폐기와 같은
   // 클릭 위임·CAS 재시도 계약을 쓴다. findings 상세는 카드 클릭 → 이슈 상세
   // (notes 섹션, UI-yp64 §4)로 가고 여기서는 툴팁 요약만 싣는다.
@@ -699,7 +840,8 @@ export function miniRow(item) {
     item.timeline_action ||
     item.discard_action ||
     discard?.operation ||
-    item.revise_action
+    item.revise_action ||
+    stale_work
   );
   return html`<div
     class="worker-mini${card ? ' worker-mini--card' : ''}${draggable
@@ -733,12 +875,12 @@ export function miniRow(item) {
         ? html`<div class="worker-mini__head">
               ${grip}${seq_el}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
-            <div class="worker-mini__body">${title_el}</div>
+            <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${has_foot
               ? html`<div class="worker-mini__foot">
                   ${usage_el}${merge_step_el}
                   <span class="worker-mini__actions"
-                    >${merge_el}${cancel_el}${timeline_el}${discard_el}${revise_els}</span
+                    >${merge_el}${cancel_el}${timeline_el}${discard_el}${revise_els}${stale_els}</span
                   >
                   ${discardReceiptTemplate(item)}
                 </div>`

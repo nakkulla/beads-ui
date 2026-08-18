@@ -715,63 +715,75 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const recoveryArchive = options.recoveryArchive || createRecoveryArchive();
   const discardCoordinator =
     options.discardCoordinator ||
-    createDiscardCoordinator({
-      workspace: keyFor(workspace_root),
-      repo,
-      store: runtime.queueStore,
-      gh,
-      bd,
-      worktree,
-      gitRun,
-      scheduler,
-      archive: recoveryArchive,
-      processController,
-      sessionLog: runtime.sessionLog,
-      revertBuilder: createRevertBuilder({ gitRun }),
-      verifyRevert: async (
-        /** @type {{ worktree: string, base_sha: string }} */ input
-      ) => {
-        const resolved = await resolveVerify({ sha: input.base_sha });
-        if (resolved.state === 'absent') {
-          return { ok: true };
-        }
-        if (resolved.state !== 'resolved') {
-          return {
-            ok: false,
-            reason: resolved.reason || 'repo_ops_config_invalid'
-          };
-        }
-        const result = await runShell(
-          resolved.value.cmd[0],
-          resolved.value.cmd.slice(1),
-          {
-            cwd: input.worktree,
-            timeout_ms: resolved.value.timeout_ms
+    createDiscardCoordinator(
+      {
+        workspace: keyFor(workspace_root),
+        repo,
+        store: runtime.queueStore,
+        gh,
+        bd,
+        worktree,
+        gitRun,
+        scheduler,
+        archive: recoveryArchive,
+        processController,
+        sessionLog: runtime.sessionLog,
+        revertBuilder: createRevertBuilder({ gitRun }),
+        verifyRevert: async (
+          /** @type {{ worktree: string, base_sha: string }} */ input
+        ) => {
+          const resolved = await resolveVerify({ sha: input.base_sha });
+          if (resolved.state === 'absent') {
+            return { ok: true };
           }
-        );
-        return result.code === 0
-          ? { ok: true }
-          : { ok: false, reason: 'verify_cmd_failed' };
+          if (resolved.state !== 'resolved') {
+            return {
+              ok: false,
+              reason: resolved.reason || 'repo_ops_config_invalid'
+            };
+          }
+          const result = await runShell(
+            resolved.value.cmd[0],
+            resolved.value.cmd.slice(1),
+            {
+              cwd: input.worktree,
+              timeout_ms: resolved.value.timeout_ms
+            }
+          );
+          return result.code === 0
+            ? { ok: true }
+            : { ok: false, reason: 'verify_cmd_failed' };
+        },
+        rollbackBaseSync: (
+          /** @type {Parameters<NonNullable<typeof prActions>['rollbackBaseSync']>[0]} */ refs
+        ) =>
+          prActions
+            ? prActions.rollbackBaseSync(refs)
+            : Promise.resolve({
+                ok: false,
+                reason: 'rollback_cleanup_unwired'
+              }),
+        rollbackVerify: (
+          /** @type {string} */ bead_id,
+          /** @type {string} */ base_sha
+        ) =>
+          prActions
+            ? prActions.rollbackVerify(bead_id, base_sha)
+            : Promise.resolve({
+                ok: false,
+                reason: 'rollback_cleanup_unwired'
+              }),
+        external: {
+          get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
+            runtime.externalPrs.get(ws_key, bead_id)
+        },
+        actionInFlight: (/** @type {string} */ bead_id) =>
+          prActions?.isInFlight(bead_id) === true,
+        notifyChanged: (/** @type {string} */ ws_key) =>
+          emitQueueChanged(ws_key)
       },
-      rollbackBaseSync: (/** @type {any} */ refs) =>
-        prActions
-          ? prActions.rollbackBaseSync(refs)
-          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
-      rollbackVerify: (
-        /** @type {string} */ bead_id,
-        /** @type {string} */ base_sha
-      ) =>
-        prActions
-          ? prActions.rollbackVerify(bead_id, base_sha)
-          : Promise.resolve({ ok: false, reason: 'rollback_cleanup_unwired' }),
-      external: {
-        get: (/** @type {string} */ ws_key, /** @type {string} */ bead_id) =>
-          runtime.externalPrs.get(ws_key, bead_id)
-      },
-      actionInFlight: (/** @type {string} */ bead_id) =>
-        prActions?.isInFlight(bead_id) === true,
-      notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key)
-    });
+      { resolveBase }
+    );
 
   // REVISE-parking disposition (UI-hs11 §3.2–§3.4): the two human clicks that
   // dispose of a bead parked at `blocked_reason=spec_review_stale:revise`.
@@ -2033,6 +2045,44 @@ export async function discardWorkerBead(workspace_root, input) {
     return att.discardCoordinator.retry(input.operation_id);
   }
   return att.discardCoordinator.discard(input);
+}
+
+/**
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
+ */
+export async function continueWorkerStaleWork(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || typeof att.scheduler?.staleWorkContinue !== 'function') {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.staleWorkContinue(key, input);
+}
+
+/**
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
+ */
+export async function backupFreshWorkerStaleWork(workspace_root, input) {
+  const att = ATTACHMENTS.get(keyFor(workspace_root));
+  if (!att || typeof att.discardCoordinator?.backupFresh !== 'function') {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.discardCoordinator.backupFresh(input);
+}
+
+/**
+ * @param {string} workspace_root
+ * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
+ */
+export async function recheckWorkerStaleWork(workspace_root, input) {
+  const key = keyFor(workspace_root);
+  const att = ATTACHMENTS.get(key);
+  if (!att || typeof att.scheduler?.staleWorkRecheck !== 'function') {
+    return { ok: false, reason: 'no_attachment' };
+  }
+  return att.scheduler.staleWorkRecheck(key, input);
 }
 
 /**

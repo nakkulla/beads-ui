@@ -6344,4 +6344,99 @@ describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo
       'A'
     ]);
   });
+
+  test('persists an attempt-less stale-work operation across restart', () => {
+    const store = createQueueStore();
+    const placed = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-stale',
+      lane: 's2'
+    });
+
+    const created = store.createDiscardOperation(WS, {
+      expected_revision: placed.queue.revision,
+      operation: {
+        operation_id: 'stale-work-1',
+        bead_id: 'UI-stale',
+        attempt_id: null,
+        kind: 'stale_work_backup_fresh',
+        source_snapshot: {
+          repo: '/repo',
+          worktree: '/repo/.worktrees/UI-stale',
+          branch: 'UI-stale',
+          source_head: 'a'.repeat(40),
+          base_oid: 'b'.repeat(40),
+          identity_digest: 'identity-1'
+        }
+      }
+    });
+    const restarted = createQueueStore().load(WS);
+
+    expect(created.ok).toBe(true);
+    expect(restarted.discard_operations['stale-work-1']).toMatchObject({
+      attempt_id: null,
+      kind: 'stale_work_backup_fresh',
+      phase: 'requested'
+    });
+    expect(
+      restarted.serial_lanes[1].entries.map((entry) => entry.bead_id)
+    ).toEqual(['UI-stale']);
+  });
+
+  test('fences lane mutations until stale-work recovery completes', () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'UI-stale',
+      lane: 's1'
+    });
+    store.recordAdmission(WS, {
+      bead_id: 'UI-stale',
+      reason: 'worktree_stale_work'
+    });
+    const created = store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'stale-work-1',
+        bead_id: 'UI-stale',
+        attempt_id: null,
+        kind: 'stale_work_backup_fresh',
+        source_snapshot: { repo: '/repo' }
+      }
+    });
+    const active_revision = created.queue.revision;
+
+    const moved = store.place(WS, {
+      expected_revision: active_revision,
+      bead_id: 'UI-stale',
+      lane: 's2'
+    });
+    const reordered = store.reorder(WS, {
+      expected_revision: active_revision,
+      bead_id: 'UI-stale',
+      lane: 's1',
+      to_index: 0
+    });
+    const removed = store.remove(WS, {
+      expected_revision: active_revision,
+      bead_id: 'UI-stale'
+    });
+
+    expect(moved.ok).toBe(false);
+    expect(reordered.ok).toBe(false);
+    expect(removed.ok).toBe(false);
+    expect(store.snapshot(WS).revision).toBe(active_revision);
+    expect(store.snapshot(WS).serial_lanes[0].entries[0].bead_id).toBe(
+      'UI-stale'
+    );
+
+    const completed = store.completeDiscardOperation(WS, {
+      operation_id: 'stale-work-1',
+      expected_phase: 'requested'
+    });
+
+    expect(completed.ok).toBe(true);
+    expect(completed.queue.admission['UI-stale']).toBeUndefined();
+    expect(completed.queue.serial_lanes[0].entries[0].bead_id).toBe('UI-stale');
+  });
 });

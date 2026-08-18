@@ -22,8 +22,10 @@ const DISCARDABLE_ATTEMPT_STATUSES = new Set([
 
 /**
  * @param {{ workspace: string, repo: string, store: any, gh: any, bd: any, worktree: any, gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, scheduler: any, archive: any, processController: any, sessionLog: any, revertBuilder?: any, verifyRevert?: (input: any) => Promise<any>, rollbackBaseSync?: (refs: any) => Promise<any>, rollbackVerify?: (bead_id: string, base_sha: string) => Promise<any>, external?: { get: (workspace: string, bead_id: string) => any }, actionInFlight?: (bead_id: string) => boolean, makeOperationId?: () => string, now?: () => number, notifyChanged?: (workspace: string) => void }} deps
+ * @param {{ resolveBase?: (options?: { force?: boolean }) => Promise<{ ok: boolean, base?: string|null, base_oid?: string|null, step?: string }> }} [options]
  */
-export function createDiscardCoordinator(deps) {
+export function createDiscardCoordinator(deps, options = {}) {
+  const resolve_base = options.resolveBase;
   const now = deps.now || (() => Date.now());
   const makeOperationId =
     deps.makeOperationId ||
@@ -41,6 +43,20 @@ export function createDiscardCoordinator(deps) {
     return deps.store.snapshot(deps.workspace).discard_operations?.[
       operation_id
     ];
+  }
+
+  /**
+   * @param {Record<string, unknown>} expected
+   * @param {Record<string, unknown>} observed
+   */
+  function sameStaleIdentity(expected, observed) {
+    return [
+      'worktree_realpath',
+      'branch',
+      'head_sha',
+      'base_oid',
+      'status_digest'
+    ].every((key) => expected[key] === observed[key]);
   }
 
   /**
@@ -1370,9 +1386,63 @@ export function createDiscardCoordinator(deps) {
         `worktree_remove_failed:${result.reason || 'unknown'}`
       );
     }
-    return advance(operation, 'worktree_removed', {
-      receipts: { worktree_removed: { at: now() } }
-    });
+    return advance(
+      operation,
+      operation.kind === 'stale_work_backup_fresh'
+        ? 'stale_worktree_removed'
+        : 'worktree_removed',
+      {
+        receipts: { worktree_removed: { at: now() } }
+      }
+    );
+  }
+
+  /**
+   * Re-observe the complete archived identity immediately before the first
+   * cleanup mutation. A matching HEAD alone is insufficient because dirty or
+   * untracked content may have changed after the archive was verified.
+   *
+   * @param {NonNullable<ReturnType<typeof operationOf>>} operation
+   */
+  async function verifyStaleCleanupSource(operation) {
+    const source = operation.source_snapshot;
+    if (deps.external?.get(deps.workspace, operation.bead_id)) {
+      return { ok: false, reason: 'external_pr_owner' };
+    }
+    const remote = await remoteRef(source.repo, source.branch);
+    if (!remote.ok || remote.sha !== null) {
+      return {
+        ok: false,
+        reason: remote.reason || 'remote_branch_owner'
+      };
+    }
+    let observed;
+    try {
+      observed = await deps.worktree.removeIfDiscardable({
+        repo: source.repo,
+        bead_id: operation.bead_id,
+        base: source.base_oid,
+        preserve: true
+      });
+    } catch {
+      return { ok: false, reason: 'source_observe_failed' };
+    }
+    const expected = {
+      worktree_realpath: source.worktree,
+      branch: source.branch,
+      head_sha: source.source_head,
+      base_oid: source.base_oid,
+      status_digest: source.status_digest
+    };
+    if (
+      observed.state !== 'unique' ||
+      observed.owned !== true ||
+      !observed.identity ||
+      !sameStaleIdentity(expected, observed.identity)
+    ) {
+      return { ok: false, reason: 'worktree_identity_changed' };
+    }
+    return { ok: true };
   }
 
   /**
@@ -1409,9 +1479,15 @@ export function createDiscardCoordinator(deps) {
     if (!result.ok) {
       return fail(operation, result.reason || 'local_ref_delete_failed');
     }
-    return advance(operation, 'local_ref_removed', {
-      receipts: { local_ref_removed: { at: now() } }
-    });
+    return advance(
+      operation,
+      operation.kind === 'stale_work_backup_fresh'
+        ? 'stale_local_ref_removed'
+        : 'local_ref_removed',
+      {
+        receipts: { local_ref_removed: { at: now() } }
+      }
+    );
   }
 
   /**
@@ -1902,6 +1978,45 @@ export function createDiscardCoordinator(deps) {
         }
         continue;
       }
+      if (
+        operation.kind === 'stale_work_backup_fresh' &&
+        operation.phase === 'backup_verified'
+      ) {
+        const verified = await verifyStaleCleanupSource(operation);
+        if (!verified.ok) {
+          return fail(operation, verified.reason || 'source_verify_failed');
+        }
+        const result = await removeWorktree(operation);
+        if (!result || result.ok === false) {
+          return result || fail(operation, 'worktree_phase_persist_failed');
+        }
+        continue;
+      }
+      if (
+        operation.kind === 'stale_work_backup_fresh' &&
+        operation.phase === 'stale_worktree_removed'
+      ) {
+        const result = await removeLocalRef(operation);
+        if (!result || result.ok === false) {
+          return result || fail(operation, 'local_ref_phase_persist_failed');
+        }
+        continue;
+      }
+      if (
+        operation.kind === 'stale_work_backup_fresh' &&
+        operation.phase === 'stale_local_ref_removed'
+      ) {
+        const completed = deps.store.completeDiscardOperation(deps.workspace, {
+          operation_id,
+          expected_phase: operation.phase
+        });
+        if (!completed.ok) {
+          return fail(operation, 'stale_work_finalize_failed');
+        }
+        notifyChanged(deps.workspace);
+        await deps.scheduler.tick(deps.workspace);
+        return { ok: true, operation_id };
+      }
       if (operation.phase === 'backup_verified') {
         const result = await terminateRunner(operation);
         if (!result.ok) {
@@ -1977,6 +2092,130 @@ export function createDiscardCoordinator(deps) {
       });
     driving.set(operation_id, running);
     return running;
+  }
+
+  /**
+   * Start verified archive recovery for an attempt-less stale worktree. The
+   * admission identity and queue revision are checked again immediately before
+   * the durable operation/fence is created.
+   *
+   * @param {{ bead_id: string, action_id: string, expected_revision: number }} input
+   */
+  async function backupFresh(input) {
+    const snapshot = deps.store.snapshot(deps.workspace);
+    if (snapshot.revision !== input.expected_revision) {
+      return { ok: false, conflict: true, reason: 'revision_conflict' };
+    }
+    const admission = snapshot.admission?.[input.bead_id];
+    const stale_work = admission?.stale_work;
+    if (
+      admission?.reason !== 'worktree_stale_work' ||
+      !stale_work ||
+      stale_work.action_id !== input.action_id ||
+      stale_work.can_backup_fresh !== true ||
+      !stale_work.identity
+    ) {
+      return { ok: false, conflict: true, reason: 'stale_work_conflict' };
+    }
+    const waiting =
+      snapshot.queue.some(
+        (/** @type {{ bead_id: string }} */ entry) =>
+          entry.bead_id === input.bead_id
+      ) ||
+      snapshot.serial_lanes.some(
+        (/** @type {{ entries: Array<{ bead_id: string }> }} */ lane) =>
+          lane.entries.some((entry) => entry.bead_id === input.bead_id)
+      );
+    if (!waiting) {
+      return { ok: false, conflict: true, reason: 'waiting_lane_changed' };
+    }
+    if (
+      Object.values(snapshot.discard_operations || {}).some(
+        (operation) =>
+          operation.bead_id === input.bead_id && operation.phase !== 'done'
+      ) ||
+      deps.actionInFlight?.(input.bead_id) ||
+      deps.scheduler.activeBeadIds?.(deps.workspace).has(input.bead_id)
+    ) {
+      return { ok: false, conflict: true, reason: 'action_in_flight' };
+    }
+    if (deps.external?.get(deps.workspace, input.bead_id)) {
+      return { ok: false, conflict: true, reason: 'external_pr_owner' };
+    }
+    if (typeof resolve_base !== 'function') {
+      return { ok: false, conflict: false, reason: 'base_resolver_missing' };
+    }
+    let resolved;
+    try {
+      resolved = await resolve_base({ force: true });
+    } catch {
+      return { ok: false, conflict: false, reason: 'base_observe_failed' };
+    }
+    if (!resolved.ok || resolved.base_oid !== stale_work.identity.base_oid) {
+      return { ok: false, conflict: true, reason: 'base_identity_changed' };
+    }
+    const branch = stale_work.identity.branch;
+    if (typeof branch !== 'string' || branch.length === 0) {
+      return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
+    }
+    const remote = await remoteRef(deps.repo, branch);
+    if (!remote.ok) {
+      return { ok: false, conflict: false, reason: remote.reason };
+    }
+    if (remote.sha !== null) {
+      return { ok: false, conflict: true, reason: 'remote_branch_owner' };
+    }
+    let observed;
+    try {
+      observed = await deps.worktree.removeIfDiscardable({
+        repo: deps.repo,
+        bead_id: input.bead_id,
+        base: stale_work.identity.base_oid,
+        preserve: true
+      });
+    } catch {
+      return { ok: false, conflict: false, reason: 'source_observe_failed' };
+    }
+    if (
+      observed.state !== 'unique' ||
+      observed.owned !== true ||
+      !observed.identity ||
+      !sameStaleIdentity(stale_work.identity, observed.identity)
+    ) {
+      return { ok: false, conflict: true, reason: 'worktree_identity_changed' };
+    }
+    const operation_id = makeOperationId();
+    const created = deps.store.createDiscardOperation(deps.workspace, {
+      expected_revision: input.expected_revision,
+      operation: {
+        operation_id,
+        bead_id: input.bead_id,
+        attempt_id: null,
+        kind: 'stale_work_backup_fresh',
+        process_identity: null,
+        source_snapshot: {
+          repo: deps.repo,
+          worktree: stale_work.identity.worktree_realpath,
+          branch,
+          source_head: stale_work.identity.head_sha,
+          base_oid: stale_work.identity.base_oid,
+          target_base: resolved.base,
+          local_branch_sha: stale_work.identity.head_sha,
+          remote_branch_sha: null,
+          identity_digest: stale_work.identity_digest,
+          status_digest: stale_work.identity.status_digest
+        }
+      }
+    });
+    if (!created.ok) {
+      return {
+        ok: false,
+        conflict: created.conflict,
+        reason: created.reason || 'operation_create_failed'
+      };
+    }
+    notifyChanged(deps.workspace);
+    return drive(operation_id);
   }
 
   /**
@@ -2142,5 +2381,13 @@ export function createDiscardCoordinator(deps) {
     return drive(operation_id);
   }
 
-  return { discard, recoverFences, recover, retry, drive, observeBead };
+  return {
+    discard,
+    backupFresh,
+    recoverFences,
+    recover,
+    retry,
+    drive,
+    observeBead
+  };
 }

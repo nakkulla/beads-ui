@@ -30,7 +30,9 @@
 import nodeFs from 'node:fs';
 import { makeError, makeOk } from '../../app/protocol.js';
 import {
+  backupFreshWorkerStaleWork,
   checkWorkerQueueAdmission,
+  continueWorkerStaleWork,
   discardWorkerBead,
   dismissWorkerRepoOperation,
   enqueueWorkerManualMerge,
@@ -38,6 +40,7 @@ import {
   kickWorkerMergeQueue,
   observeWorkerPrs,
   pauseWorkerAttempt,
+  recheckWorkerStaleWork,
   reconcileWorkerRepoOperations,
   refreshWorkerExternalPrs,
   resumeWorkerAttempt,
@@ -343,6 +346,9 @@ function publicDiscardOperations(value) {
     }
     projected[operation_id] = {
       operation_id,
+      ...(operation.kind === 'stale_work_backup_fresh'
+        ? { kind: 'stale_work_backup_fresh' }
+        : {}),
       bead_id: typeof operation.bead_id === 'string' ? operation.bead_id : null,
       attempt_id:
         typeof operation.attempt_id === 'string' ? operation.attempt_id : null,
@@ -3164,6 +3170,117 @@ export async function handleWorkerDiscard(ws, req) {
   if (accepted) {
     fanout(key, queue);
   }
+}
+
+/**
+ * @typedef {Object} WorkerStaleActionResult
+ * @property {boolean} ok
+ * @property {boolean} [conflict]
+ * @property {string} [reason]
+ * @property {string} [operation_id]
+ * @property {string} [attempt_id]
+ * @property {string} [state]
+ */
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {(workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<WorkerStaleActionResult>} action
+ * @param {'continued'|'accepted'|'rechecked'} outcome_key
+ */
+async function handleWorkerStaleWorkAction(ws, req, action, outcome_key) {
+  const p = /** @type {Record<string, unknown>} */ (req.payload || {});
+  if (
+    typeof p.bead_id !== 'string' ||
+    p.bead_id.length === 0 ||
+    typeof p.action_id !== 'string' ||
+    p.action_id.length === 0 ||
+    !Number.isInteger(p.expected_revision)
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload requires { bead_id, action_id, expected_revision }'
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  /** @type {WorkerStaleActionResult} */
+  let result;
+  try {
+    result = await action(key, {
+      bead_id: p.bead_id,
+      action_id: p.action_id,
+      expected_revision: Number(p.expected_revision)
+    });
+  } catch (err) {
+    log('%s failed for %s/%s: %o', req.type, key, p.bead_id, err);
+    result = { ok: false, reason: 'error' };
+  }
+  const queue = queueStore().snapshot(key);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        bead_id: p.bead_id,
+        [outcome_key]: result.ok === true,
+        operation_id: result.operation_id || null,
+        attempt_id: result.attempt_id || null,
+        state: result.state || null,
+        conflict: result.conflict === true,
+        reason: result.reason || null,
+        queue: decorateQueue(key, queue)
+      })
+    )
+  );
+  if (result.ok === true) {
+    fanout(key, queue);
+  }
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerStaleWorkContinue(ws, req) {
+  return handleWorkerStaleWorkAction(
+    ws,
+    req,
+    continueWorkerStaleWork,
+    'continued'
+  );
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerStaleWorkBackupFresh(ws, req) {
+  return handleWorkerStaleWorkAction(
+    ws,
+    req,
+    backupFreshWorkerStaleWork,
+    'accepted'
+  );
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerStaleWorkRecheck(ws, req) {
+  return handleWorkerStaleWorkAction(
+    ws,
+    req,
+    recheckWorkerStaleWork,
+    'rechecked'
+  );
 }
 
 /**

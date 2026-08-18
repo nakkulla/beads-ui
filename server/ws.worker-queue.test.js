@@ -2749,6 +2749,99 @@ describe('ws worker PR actions (worker-phase2 §6)', () => {
     });
   });
 
+  test.each([
+    ['worker-stale-work-continue', 'staleWorkContinue', 'continued'],
+    ['worker-stale-work-recheck', 'staleWorkRecheck', 'rechecked']
+  ])(
+    'routes %s through the scheduler action fence',
+    async (type, method, flag) => {
+      const action = vi.fn(async () => ({ ok: true, state: 'unique' }));
+      __registerWorkerAttachmentForTest(
+        process.cwd(),
+        /** @type {ReturnType<typeof import('./worker/attach.js').createWorkerAttachment>} */ (
+          /** @type {unknown} */ ({ scheduler: { [method]: action } })
+        )
+      );
+      const sock = fakeSocket();
+
+      await send(sock, 'stale-1', type, {
+        bead_id: 'UI-1',
+        action_id: 'opaque-action',
+        expected_revision: 0
+      });
+
+      expect(action).toHaveBeenCalledWith(process.cwd(), {
+        bead_id: 'UI-1',
+        action_id: 'opaque-action',
+        expected_revision: 0
+      });
+      expect(replyFor(sock, 'stale-1').payload).toMatchObject({
+        bead_id: 'UI-1',
+        [flag]: true,
+        conflict: false,
+        queue: { revision: 0 }
+      });
+    }
+  );
+
+  test('routes stale-work backup-fresh through the durable coordinator', async () => {
+    const backupFresh = vi.fn(async () => ({
+      ok: true,
+      operation_id: 'stale-work-1'
+    }));
+    __registerWorkerAttachmentForTest(
+      process.cwd(),
+      /** @type {ReturnType<typeof import('./worker/attach.js').createWorkerAttachment>} */ (
+        /** @type {unknown} */ ({
+          scheduler: {},
+          discardCoordinator: { backupFresh }
+        })
+      )
+    );
+    const sock = fakeSocket();
+
+    await send(sock, 'stale-2', 'worker-stale-work-backup-fresh', {
+      bead_id: 'UI-1',
+      action_id: 'opaque-action',
+      expected_revision: 0
+    });
+
+    expect(backupFresh).toHaveBeenCalledWith({
+      bead_id: 'UI-1',
+      action_id: 'opaque-action',
+      expected_revision: 0
+    });
+    expect(replyFor(sock, 'stale-2').payload).toMatchObject({
+      bead_id: 'UI-1',
+      accepted: true,
+      operation_id: 'stale-work-1',
+      conflict: false,
+      queue: { revision: 0 }
+    });
+  });
+
+  test.each([
+    'worker-stale-work-continue',
+    'worker-stale-work-backup-fresh',
+    'worker-stale-work-recheck'
+  ])('requires action identity and queue revision for %s', async (type) => {
+    const sock = fakeSocket();
+
+    await send(sock, 'stale-bad', type, { bead_id: 'UI-1' });
+
+    expect(replyFor(sock, 'stale-bad').error.code).toBe('bad_request');
+  });
+
+  test('registers all stale-work actions as client-sendable messages', () => {
+    expect(MESSAGE_TYPES).toEqual(
+      expect.arrayContaining([
+        'worker-stale-work-continue',
+        'worker-stale-work-backup-fresh',
+        'worker-stale-work-recheck'
+      ])
+    );
+  });
+
   test('retired PR discard never acts even with a stale revision', async () => {
     const discard = vi.fn();
     __registerWorkerAttachmentForTest(

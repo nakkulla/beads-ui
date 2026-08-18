@@ -65,7 +65,8 @@ import {
   discardProjection,
   miniRow,
   paneTemplate,
-  repoOpsStripTemplate
+  repoOpsStripTemplate,
+  staleWorkProjection
 } from './lanes.js';
 import {
   cleanupStalledReason,
@@ -1215,6 +1216,8 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {Set<string>}
    */
   const revise_pending = new Set();
+  /** @type {Set<string>} Beads with one stale-work action in flight. */
+  const stale_work_pending = new Set();
   /** @type {Array<() => void>} */
   const unsubscribers = [];
 
@@ -1726,7 +1729,9 @@ export function createWorkerView(mount_element, options = {}) {
     }
     const message = discardConfirmationMessage(bead_id, confirmation);
     const confirmed =
-      typeof globalThis.confirm !== 'function' || globalThis.confirm(message);
+      !!operation_id ||
+      typeof globalThis.confirm !== 'function' ||
+      globalThis.confirm(message);
     if (!confirmed) {
       return;
     }
@@ -1768,6 +1773,49 @@ export function createWorkerView(mount_element, options = {}) {
     }
     if (res && !res.conflict) {
       showToast('폐기 거부: unknown', 'error', 2800);
+    }
+  }
+
+  /**
+   * Send one identity-bound stale-work action. A conflict response carries the
+   * newest queue snapshot, but is never retried with an obsolete action id.
+   *
+   * @param {'worker-stale-work-continue'|'worker-stale-work-backup-fresh'|'worker-stale-work-recheck'} type
+   * @param {string} bead_id
+   * @param {string} action_id
+   */
+  async function staleWorkAction(type, bead_id, action_id) {
+    if (
+      !transport ||
+      !bead_id ||
+      !action_id ||
+      stale_work_pending.has(bead_id)
+    ) {
+      return;
+    }
+    stale_work_pending.add(bead_id);
+    doRender();
+    try {
+      const res = /** @type {Record<string, unknown>} */ (
+        await transport(type, {
+          bead_id,
+          action_id,
+          expected_revision: currentRevision()
+        })
+      );
+      adopt(res);
+      if (res?.conflict) {
+        showToast(
+          '이전 작업 상태가 바뀌었습니다. 최신 상태를 확인하세요.',
+          'error',
+          2800
+        );
+      } else if (!res?.ok && res?.reason) {
+        showToast(`이전 작업 처리 거부: ${String(res.reason)}`, 'error', 2800);
+      }
+    } finally {
+      stale_work_pending.delete(bead_id);
+      doRender();
     }
   }
 
@@ -2335,10 +2383,6 @@ export function createWorkerView(mount_element, options = {}) {
         const discard = projected_discard?.operation ? projected_discard : null;
         const worker_serial =
           waiting_lane && legacy_serial_by_id.get(e.bead_id) === true;
-        const admission_reason = waiting_lane
-          ? admissionBadge(e.bead_id)
-          : null;
-        const reason_parts = waiting_lane ? [admission_reason] : [];
         // 대기 사유 chip (UI-04vo §4): blocked로 스킵된 행에 직접 blocker를
         // 보여준다. blocker 목록은 표시 전용이고 판정은 서버 스캔의 durable
         // admission 기록이다.
@@ -2347,6 +2391,15 @@ export function createWorkerView(mount_element, options = {}) {
           q.admission && typeof q.admission === 'object'
             ? q.admission[e.bead_id]
             : null;
+        const stale_work = waiting_lane
+          ? staleWorkProjection(
+              raw_admission,
+              !!discard || stale_work_pending.has(e.bead_id)
+            )
+          : null;
+        const admission_reason =
+          waiting_lane && !stale_work ? admissionBadge(e.bead_id) : null;
+        const reason_parts = waiting_lane ? [admission_reason] : [];
         /** @type {string[]} */
         const wait_badges =
           waiting_lane &&
@@ -2365,12 +2418,13 @@ export function createWorkerView(mount_element, options = {}) {
           id: e.bead_id,
           title: idToTitle.get(e.bead_id) || e.bead_id,
           reason: reason_parts.filter(Boolean).join(' · '),
-          draggable: waiting_lane && !discard,
+          draggable: waiting_lane && !discard && !stale_work,
           done: lane === 'done',
           lane,
           seq: serial_lane ? entry_index + 1 : undefined,
           worker_serial,
           discard,
+          stale_work,
           // 파킹 행은 처분 대기 카드다 (§3.5): 뱃지 + 버튼 2개. 뱃지는 사람의
           // 결정을 기다리는 상태이므로 alert 색을 쓴다.
           badges: [...wait_badges, ...(parked ? ['⏸ REVISE 파킹'] : [])],
@@ -4189,6 +4243,39 @@ export function createWorkerView(mount_element, options = {}) {
         discardBtn.dataset.attemptId || null,
         discardBtn.dataset.discardMode === 'merged' ? 'merged' : 'unmerged',
         discardBtn.dataset.operationId || null
+      );
+      return;
+    }
+    const staleContinueBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__stale-continue')
+    );
+    if (staleContinueBtn) {
+      void staleWorkAction(
+        'worker-stale-work-continue',
+        staleContinueBtn.dataset.beadId || '',
+        staleContinueBtn.dataset.actionId || ''
+      );
+      return;
+    }
+    const staleBackupBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__stale-backup')
+    );
+    if (staleBackupBtn) {
+      void staleWorkAction(
+        'worker-stale-work-backup-fresh',
+        staleBackupBtn.dataset.beadId || '',
+        staleBackupBtn.dataset.actionId || ''
+      );
+      return;
+    }
+    const staleRecheckBtn = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-mini__stale-recheck')
+    );
+    if (staleRecheckBtn) {
+      void staleWorkAction(
+        'worker-stale-work-recheck',
+        staleRecheckBtn.dataset.beadId || '',
+        staleRecheckBtn.dataset.actionId || ''
       );
       return;
     }

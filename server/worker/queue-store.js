@@ -429,6 +429,7 @@
  * @property {string} operation_id
  * @property {string} bead_id
  * @property {string|null} attempt_id
+ * @property {'discard'|'stale_work_backup_fresh'} kind
  * @property {number} requested_at
  * @property {'undecided'|'unmerged'|'merged_revert'} mode
  * @property {string} phase
@@ -1772,6 +1773,10 @@ function normalizeDiscardOperation(value, operation_id) {
       typeof value.attempt_id === 'string' && value.attempt_id.length > 0
         ? value.attempt_id
         : null,
+    kind:
+      value.kind === 'stale_work_backup_fresh'
+        ? 'stale_work_backup_fresh'
+        : 'discard',
     requested_at: value.requested_at,
     mode: value.mode,
     phase: value.phase,
@@ -2767,6 +2772,16 @@ function removeFromLanes(q, bead_id) {
 }
 
 /**
+ * @param {Queue} q
+ * @param {string} bead_id
+ */
+function hasActiveDiscardOperation(q, bead_id) {
+  return Object.values(q.discard_operations).some(
+    (operation) => operation.bead_id === bead_id && operation.phase !== 'done'
+  );
+}
+
+/**
  * Whether a bead may take a place in the merge queue (UI-wwby §2).
  *
  * The EXTERNAL bypass stays — an external row has no durable `pr_wait` entry to
@@ -3182,6 +3197,9 @@ export function createQueueStore(options = {}) {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
         }
+        if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
         if (waitingLaneEntries(next, lane) === null) {
           return false;
         }
@@ -3215,6 +3233,9 @@ export function createQueueStore(options = {}) {
     reorder(workspace, input) {
       const { expected_revision, bead_id, lane, to_index } = input;
       return applyMutation(workspace, expected_revision, (next) => {
+        if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
         const arr = waitingLaneEntries(next, lane);
         if (arr === null) {
           return false;
@@ -4177,6 +4198,9 @@ export function createQueueStore(options = {}) {
     remove(workspace, input) {
       const { expected_revision, bead_id } = input;
       return applyMutation(workspace, expected_revision, (next) => {
+        if (hasActiveDiscardOperation(next, bead_id)) {
+          return false;
+        }
         removeFromLanes(next, bead_id);
         rebindLineageLane(next, bead_id, null);
         delete next.admission[bead_id];
@@ -4658,7 +4682,7 @@ export function createQueueStore(options = {}) {
      * without minting a second id or bumping the revision.
      *
      * @param {string} workspace
-     * @param {{ expected_revision: number, operation: { operation_id: string, bead_id: string, attempt_id?: string|null, process_identity?: { pid: number, pgid: number, started_at: number }|null, source_snapshot: Record<string, unknown> } }} input
+     * @param {{ expected_revision: number, operation: { operation_id: string, bead_id: string, attempt_id?: string|null, kind?: 'discard'|'stale_work_backup_fresh', process_identity?: { pid: number, pgid: number, started_at: number }|null, source_snapshot: Record<string, unknown> } }} input
      * @returns {QueueOpResult & { reused?: boolean, operation?: DiscardOperation }}
      */
     createDiscardOperation(workspace, input) {
@@ -4852,7 +4876,9 @@ export function createQueueStore(options = {}) {
           reason = 'phase_mismatch';
           return false;
         }
-        removeFromLanes(next, current.bead_id);
+        if (current.kind !== 'stale_work_backup_fresh') {
+          removeFromLanes(next, current.bead_id);
+        }
         delete next.admission[current.bead_id];
         delete next.cleanup_failed[current.bead_id];
         next.discard_operations[operation_id] = {
