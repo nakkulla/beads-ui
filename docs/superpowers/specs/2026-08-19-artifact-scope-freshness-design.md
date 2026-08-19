@@ -10,7 +10,9 @@ scope:
 # artifact scope 선언과 admission freshness 코드-범위 확장 설계 (UI-7s3e)
 
 - 작성일: 2026-08-19
-- 상태: spec gate REVISE(blocking 6) 전건 반영, controller self-review 완료
+- 상태: spec gate REVISE(blocking 6) 전건 반영, controller self-review 완료.
+  이후 §7을 enclosed → `dotfiles-g7wz` 분리 disposition으로 개정(사용자 승인,
+  계약 정합 `5742fb7a`)
 - Bead: `UI-7s3e`
 - route: `spec_backed`
 - 관련: UI-dlim §3.1 (non-blocking stale 레인), dotfiles `docs/contracts/workflow.{md,yaml}` (계약 표면 소유)
@@ -57,7 +59,8 @@ freshness는 표시 측(`workflow-enrich.js planFreshness`)에만 있고 실행 
   freshness 재확인 결과는 `last_checked_sha` cursor에만 기록한다.
 - **계약 소유권**: scope 키 정의·재리뷰 레인 문구는 dotfiles
   `docs/contracts/workflow.{md,yaml}`이 소유한다. beads-ui는 소비자다. dotfiles
-  변경은 이 Bead의 enclosed foreign unit으로 같이 정합한다 (proxy Bead 금지).
+  변경은 대상 rig의 quick_fix Bead `dotfiles-g7wz` + foreign `blocks` 의존으로
+  분리한다 (§7).
 
 ## 3. 선언 포맷 (dotfiles 계약 소유)
 
@@ -210,9 +213,12 @@ artifact별 블록으로 영수증·delta 커밋·변경 경로를 제시하고,
   않는다. scope 단위 staleness는 Worker stale 관측 badge
   (`spec_review_stale`, stale:true)로만 표면화된다.
 
-## 7. dotfiles enclosed foreign unit
+## 7. dotfiles unit 분리 (`dotfiles-g7wz`)
 
-같은 Bead에서 정합하는 dotfiles 변경 (spec·구현 리뷰는 이 spec이 커버):
+계약·템플릿 반영은 dotfiles rig의 quick_fix Bead **`dotfiles-g7wz`**가 소유하고,
+이 Bead는 foreign `blocks` 의존으로 그것을 기다린다 (workflow
+`references/execution.md` Cross-repo units, 정합 커밋 `5742fb7a`). 설계 SoT는
+이 spec이며, `dotfiles-g7wz`는 아래 범위의 실행만 수행하는 닫힌 작업이다:
 
 - `docs/contracts/workflow.yaml`: artifact scope front-matter 키 정의(§3 규칙),
   `last_checked_sha` cursor의 소비 의미와 **authority-변경 시 unset 규칙**
@@ -222,34 +228,15 @@ artifact별 블록으로 영수증·delta 커밋·변경 경로를 제시하고,
 - brainstorming spec 템플릿 + plan-authoring 템플릿: front-matter `scope` 블록
   추가.
 
-### 7.1 적용 순서 (고정, 단계별 검증)
+`dotfiles-g7wz`의 delivery는 그 rig의 quick_fix 절차다: 검증
+(`run-tests.sh --tier required` + 계약 checker) → main push →
+`repo-ops/script/deploy` 실행·확인(installer + runtime 검증 포함) → `closed`.
+그 close가 이 Bead의 `bd ready`를 푼다.
 
-canonical 소스와 런타임 활성 복사본이 서로 다른 계약을 소비하는 창을 막기
-위해 다음 순서를 지킨다:
-
-1. canonical 문서·템플릿 수정 (dotfiles 워킹트리).
-2. 계약 checker(`check-workflow-contract.py` 등) 통과 확인.
-3. dotfiles landing (direct landing — 아래 §7.2 disposition).
-4. 공식 installer로 런타임 홈(`~/.claude/skills` 등) 활성 복사본 갱신.
-5. 설치본 내용 검증 — 설치된 파일이 landed canonical과 일치하는지, checker가
-   런타임 사본 기준으로도 통과하는지 확인.
-
-**중단 안전성**: 3 이후 어느 단계에서 중단돼도 landed canonical에서 installer를
-재실행하면 복구된다(멱등). 3 이전 중단은 워킹트리 상태일 뿐 어떤 소비자에게도
-노출되지 않는다.
-
-### 7.2 residue disposition과 `worker-ineligible`
-
-dotfiles unit은 이 Bead의 **required no-PR residue**다(`enclosed:<host>` direct
-landing). disposition을 다음으로 확정한다:
-
-- dotfiles direct landing과 런타임 적용(§7.1의 3–5)은 **beads-ui PR delivery
-  전에** 수행한다. beads-ui 머지 후 배포는 기존 `[deploy]` 절차가 맡는다.
-- spec gate 종결 시 `worker-ineligible` 라벨을 `spec_review` 영수증과 **같은
-  논리적 write**로 추가하고 `bd show --json`으로 영수증·라벨을 함께
-  readback한다.
-- 라벨 제거는 dotfiles landing·설치 검증(§7.1의 5)이 끝난 뒤에만 하며, 제거
-  write도 readback한다. 그 전에는 Worker가 이 Bead를 auto-run하지 않는다.
+**residue와 라벨**: 의존 readback이 no-PR residue를 운반하므로 이 Bead에는
+`worker-ineligible`을 붙이지 않는다. beads-ui 머지 후 배포는 기존 `[deploy]`
+절차가 맡는다. 두 Bead의 순서(계약 먼저, 소비자 나중)는 `blocks` 엣지가
+강제하므로 별도 절차 문구가 필요 없다.
 
 ## 8. 검증
 
