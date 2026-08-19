@@ -53,7 +53,7 @@ const log = debug('worker:quickfix-landing');
  *   worktree: {
  *     pathFor: (repo: string, bead_id: string) => string,
  *     exists: (repo: string, bead_id: string) => boolean,
- *     removeByBranch: (input: { repo: string, branch: string }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
+ *     removeByBranch: (input: { repo: string, branch: string, expected_head?: string|null }) => Promise<{ ok: boolean, removed: boolean, reason: string|null }>,
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   repoOperations: {
@@ -142,12 +142,17 @@ export function createQuickfixLanding(deps) {
    * branch deletion.
    *
    * @param {string} bead_id
+   * @param {string} head_sha
    * @returns {Promise<{ ok: true }|{ ok: false, reason: QuickfixLandingReason }>}
    */
-  async function cleanupBranch(bead_id) {
+  async function cleanupBranch(bead_id, head_sha) {
     const branch = branchForBead(bead_id);
     try {
-      const removed = await deps.worktree.removeByBranch({ repo, branch });
+      const removed = await deps.worktree.removeByBranch({
+        repo,
+        branch,
+        expected_head: head_sha
+      });
       if (!removed.ok) {
         return { ok: false, reason: 'worktree_remove_failed' };
       }
@@ -452,7 +457,7 @@ export function createQuickfixLanding(deps) {
     }
 
     markStep(attempt_id, 'branch_cleanup', head_sha);
-    const cleaned = await cleanupBranch(bead_id);
+    const cleaned = await cleanupBranch(bead_id, head_sha);
     if (!cleaned.ok) {
       return fail(attempt_id, cleaned.reason, 'branch_cleanup', head_sha);
     }

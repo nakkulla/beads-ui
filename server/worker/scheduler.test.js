@@ -8103,6 +8103,35 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
 });
 
 describe('scheduler quick_fix landing settlement', () => {
+  /**
+   * @param {any} store
+   * @param {'branch_cleanup'|'parent_close'} cursor
+   * @param {string} reason
+   */
+  function seedQuickfixCleanupFailure(store, cursor, reason) {
+    seedQueue(store, ['S1']);
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: { attempt_id: 'quickfix-cleanup', bead_id: 'S1' }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'quickfix-cleanup',
+      patch: {
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'release',
+        workflow_mode_prior: null,
+        quickfix_lane: true,
+        quickfix_landing: {
+          cursor,
+          head_sha: 'a'.repeat(40),
+          reason
+        },
+        cause: `quickfix_landing_failed:${reason}`
+      }
+    });
+  }
+
   test('settles a successful session without PR observation or pr_wait', async () => {
     const notify = {
       attemptStarted: vi.fn(),
@@ -8209,6 +8238,108 @@ describe('scheduler quick_fix landing settlement', () => {
     expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
       'session_failed:result_count'
     );
+  });
+
+  test('resumes local branch cleanup on the original attempt without a worktree', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(
+      env.store,
+      'branch_cleanup',
+      'local_branch_delete_failed'
+    );
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+    expect(result).toEqual({ ok: true, attempt_id: 'quickfix-cleanup' });
+    expect(settle).toHaveBeenCalledWith({
+      attempt_id: 'quickfix-cleanup',
+      bead_id: 'S1',
+      target_base: 'release'
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'quickfix-cleanup'
+    ]);
+  });
+
+  test('resumes parent close on the original attempt without a worktree', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(env.store, 'parent_close', 'bd_close_failed');
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+
+    expect(result).toEqual({ ok: true, attempt_id: 'quickfix-cleanup' });
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'quickfix-cleanup'
+    ]);
+  });
+
+  test('keeps failed cleanup resume on the original durable cursor', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id }) => {
+      env.store.updateAttempt(WS, {
+        attempt_id,
+        patch: {
+          quickfix_landing: {
+            cursor: 'parent_close',
+            head_sha: 'a'.repeat(40),
+            reason: 'bd_close_failed'
+          }
+        }
+      });
+      return { ok: false, reason: 'bd_close_failed', step: 'parent_close' };
+    });
+    env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      quickfixLanding: { settle }
+    });
+    env.worktree.exists.mockReturnValue(false);
+    seedQuickfixCleanupFailure(env.store, 'parent_close', 'bd_close_failed');
+
+    const result = await env.scheduler.resume(WS, 'quickfix-cleanup');
+    const attempt = env.store.snapshot(WS).attempts['quickfix-cleanup'];
+
+    expect(result).toEqual({ ok: false, reason: 'bd_close_failed' });
+    expect(attempt.status).toBe('failed');
+    expect(attempt.quickfix_landing).toEqual({
+      cursor: 'parent_close',
+      head_sha: 'a'.repeat(40),
+      reason: 'bd_close_failed'
+    });
+    expect(Object.keys(env.store.snapshot(WS).attempts)).toEqual([
+      'quickfix-cleanup'
+    ]);
   });
 });
 

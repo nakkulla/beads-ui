@@ -2766,6 +2766,7 @@ export function createScheduler(deps) {
    * @param {string|null} prior
    * @param {string} target_base
    * @param {boolean} repo_known
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step?: string|null }>}
    */
   async function settleQuickfixLanding(
     workspace,
@@ -2792,7 +2793,7 @@ export function createScheduler(deps) {
       );
       notifyChanged(workspace);
       await tick(workspace);
-      return;
+      return { ok: false, reason: 'workflow_mode_revert_failed' };
     }
     await revertExecStamps(
       bead_id,
@@ -2810,7 +2811,7 @@ export function createScheduler(deps) {
       );
       notifyChanged(workspace);
       await tick(workspace);
-      return;
+      return { ok: false, reason: 'quickfix_landing_failed:repo_unknown' };
     }
     if (!deps.quickfixLanding) {
       await failAttempt(
@@ -2822,7 +2823,7 @@ export function createScheduler(deps) {
       );
       notifyChanged(workspace);
       await tick(workspace);
-      return;
+      return { ok: false, reason: 'quickfix_landing_unavailable' };
     }
 
     let result;
@@ -2843,23 +2844,28 @@ export function createScheduler(deps) {
       );
       notifyChanged(workspace);
       await tick(workspace);
-      return;
+      return { ok: false, reason: 'quickfix_landing_failed:threw' };
     }
 
     if (result.ok) {
       notifyChanged(workspace);
       await tick(workspace);
-      return;
+      return { ok: true };
     }
+    const reason =
+      typeof result.reason === 'string' && result.reason.length > 0
+        ? result.reason
+        : 'unknown';
     await failAttempt(
       workspace,
       attempt_id,
       bead_id,
       prior,
-      `quickfix_landing_failed:${result.reason}`
+      `quickfix_landing_failed:${reason}`
     );
     notifyChanged(workspace);
     await tick(workspace);
+    return { ok: false, reason, step: result.step };
   }
 
   /**
@@ -4895,7 +4901,9 @@ export function createScheduler(deps) {
 
   /**
    * Manually resume a paused/failed/orphaned attempt in its EXISTING worktree
-   * (spec §1, extended by worker-phase1 §1.2). Fail-closed with five refusal
+   * (spec §1, extended by worker-phase1 §1.2). A failed quick_fix at a durable
+   * cleanup cursor resumes settlement on its original attempt, even after its
+   * worktree was removed. Fail-closed with five refusal
    * reasons (admission-badge convention): `not_failed` · `no_session_id` ·
    * `worktree_missing` · `bead_running` · `already_resumed`
    * A NEW attempt is minted carrying `resumed_from`. Its effective settings
@@ -4936,12 +4944,19 @@ export function createScheduler(deps) {
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    const quickfix_cleanup_resume =
+      prior.status === 'failed' &&
+      prior.quickfix_lane === true &&
+      typeof prior.quickfix_landing?.reason === 'string' &&
+      prior.quickfix_landing.reason.length > 0 &&
+      (prior.quickfix_landing.cursor === 'branch_cleanup' ||
+        prior.quickfix_landing.cursor === 'parent_close');
     // worktree_missing: the bead worktree is gone (resume never recreates it).
     const wt_present =
       typeof deps.worktree.exists === 'function'
         ? deps.worktree.exists(repo, bead_id)
         : true;
-    if (!wt_present) {
+    if (!quickfix_cleanup_resume && !wt_present) {
       return { ok: false, reason: 'worktree_missing' };
     }
     // bead_running: a live (or store-recorded running) attempt for the same bead.
@@ -4959,6 +4974,29 @@ export function createScheduler(deps) {
     for (const a of Object.values(q.attempts || {})) {
       if (a && a.resumed_from === attempt_id) {
         return { ok: false, reason: 'already_resumed' };
+      }
+    }
+    if (quickfix_cleanup_resume) {
+      if (settling.has(attempt_id)) {
+        return { ok: false, reason: 'bead_running' };
+      }
+      claimed.add(bead_id);
+      settling.add(attempt_id);
+      try {
+        const result = await settleQuickfixLanding(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior.workflow_mode_prior ?? null,
+          prior.target_base || 'main',
+          repo.length > 0
+        );
+        return result.ok
+          ? { ok: true, attempt_id }
+          : { ok: false, reason: result.reason };
+      } finally {
+        settling.delete(attempt_id);
+        claimed.delete(bead_id);
       }
     }
     /** @type {BeadSnapshot} */

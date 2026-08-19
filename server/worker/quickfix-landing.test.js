@@ -382,6 +382,32 @@ test('cleans branch before closing parent', async () => {
   );
 });
 
+test('binds worktree removal to reviewed head', async () => {
+  const { landing, worktree } = makeLanding();
+
+  await settle(landing);
+
+  expect(worktree.removeByBranch).toHaveBeenCalledWith({
+    repo: REPO,
+    branch: BEAD,
+    expected_head: HEAD_SHA
+  });
+});
+
+test('fails closed when worktree head identity changed', async () => {
+  const { landing } = makeLanding({
+    removeResult: { ok: false, removed: false, reason: 'identity_changed' }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'worktree_remove_failed',
+    step: 'branch_cleanup'
+  });
+});
+
 test('records premature close without rewriting Bead status', async () => {
   const { landing, bd } = makeLanding({ status: 'closed' });
 
@@ -413,7 +439,7 @@ test('resumes completed parent close without rewriting Bead status', async () =>
 });
 
 test('resumes branch cleanup without a worktree', async () => {
-  const { landing, gitRun } = makeLanding({
+  const { landing, gitRun, worktree } = makeLanding({
     worktreeExists: false,
     landingProgress: {
       cursor: 'branch_cleanup',
@@ -427,6 +453,11 @@ test('resumes branch cleanup without a worktree', async () => {
   expect(result).toEqual({ ok: true });
   expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
     cwd: `${REPO}/.worktrees/${BEAD}`
+  });
+  expect(worktree.removeByBranch).toHaveBeenCalledWith({
+    repo: REPO,
+    branch: BEAD,
+    expected_head: HEAD_SHA
   });
 });
 
