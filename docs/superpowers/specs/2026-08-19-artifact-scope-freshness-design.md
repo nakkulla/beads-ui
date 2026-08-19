@@ -200,8 +200,17 @@ artifact별 블록으로 영수증·delta 커밋·변경 경로를 제시하고,
    controller self-review 후 해당 영수증(`spec_review`)을 새 SHA로 갱신하고 한
    줄 사유·검증을 남긴다. plan 수정은 `plan_approval`을 기계가 갱신할 수
    없으므로 기존 `plan_approval_stale:revise` 파킹 경로로 넘긴다.
-3. **전제 깨짐**: 기존 `spec_review_stale:revise` / `plan_approval_stale:revise`
-   파킹. 새 verdict·새 파킹 경로 없음.
+3. **전제 깨짐** (드묾 — main이 승인 설계와 반대로 이동해 사용자 설계 결정이
+   필요한 경우): 기존 `spec_review_stale:revise` / `plan_approval_stale:revise`
+   파킹. 새 verdict·새 파킹 경로 없음. 이 blocked 파킹은 **사용자 결정 대기
+   전용**이다 — staleness 관측만으로 레인 수행 없이 즉시 파킹하는 것은
+   금지이고, 대화형 세션은 파킹 대신 그 자리에서 사용자에게 처분을 물으며
+   사용자가 명시적으로 미룰 때만 blocked를 쓴다.
+
+이 레인은 Worker 무인 admission만이 아니라 대화형 세션이 구현 진입 전에
+staleness를 발견한 경우에도 동일하게 적용된다. staleness의 warning 표면은 기존
+체계(Worker stale badge, `last_checked_sha` cursor)를 재사용하고 새 라벨을
+만들지 않는다.
 
 ## 6. 표시-실행 정합 (`workflow-enrich.js`)
 
@@ -222,9 +231,12 @@ artifact별 블록으로 영수증·delta 커밋·변경 경로를 제시하고,
 
 - `docs/contracts/workflow.yaml`: artifact scope front-matter 키 정의(§3 규칙),
   `last_checked_sha` cursor의 소비 의미와 **authority-변경 시 unset 규칙**
-  (§4.2) 명시.
+  (§4.2) 명시. `blocked_reason`의 `spec_review_stale:revise` /
+  `plan_approval_stale:revise` 값 의미를 사용자-결정-대기 전용으로 한정.
 - `docs/contracts/workflow.md`: 재리뷰 레인 문구에 scope probe와 cursor 종결
-  3갈래(§5.3) 반영.
+  3갈래(§5.3)를 반영하고, 이 레인이 대화형 세션의 구현 진입 전 staleness
+  발견에도 동일 적용됨과 blocked 파킹의 사용자-결정-대기 전용 한정(관측 즉시
+  파킹 금지)을 명시.
 - brainstorming spec 템플릿 + plan-authoring 템플릿: front-matter `scope` 블록
   추가.
 
