@@ -24,6 +24,8 @@
  *     any failure turns `auto_advance` OFF and leaves the failure banner to
  *     render off the terminal attempt record (worker-phase2 §2 — the circuit
  *     breaker that used to do this is gone with the merge axis).
+ *     Worker-dispatched quick_fix attempts bypass this PR verdict entirely:
+ *     their reviewed base-direct push settles through the quick_fix landing.
  *
  * {@link createScheduler}'s `reconcile` is the second observation path
  * (worker-detached-session-reconcile §1). Sessions are spawned detached so they
@@ -301,6 +303,7 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
  * @property {string|null} [title] - Issue title, for the start notification.
+ * @property {string|null} [description] - Issue description. The quick_fix route's only admission input (admission.js §4).
  * @property {string[]} [labels] - Normalized live Bead labels.
  * @property {string|null} [spec_id] - Native-first spec doc path (admission input).
  * @property {boolean} [spec_id_conflict] - Native and legacy metadata paths differ.
@@ -337,6 +340,10 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {{ verifyPrSubmitted: (i: { repo: string, bead_id: string }) => Promise<{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }> }} verify
  * Server-observation completion verdict (worker-phase2 §1): an open PR for the
  * attempt's branch, plus the worker's `pr_url`/`resolved` back-fill.
+ * @property {{ settle: (input: { attempt_id: string, bead_id: string, target_base: string }) => Promise<{ ok: boolean, reason?: string, step?: string|null }> }} [quickfixLanding]
+ * Worker-dispatched quick_fix landing settlement (design §6). An attachment
+ * without this dep fails the landing attempt closed; it never falls back to PR
+ * observation.
  * @property {(options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>} [resolveBase]
  * The repo's base declaration resolver (worker-base-scope-alignment §1). Called
  * with `{ force: true }` at dispatch, immediately before the worktree cut, so
@@ -2616,6 +2623,18 @@ export function createScheduler(deps) {
         return;
       }
 
+      if (quickfixLaneOf(workspace, attempt_id)) {
+        await settleQuickfixLanding(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior,
+          snap.target_base,
+          true
+        );
+        return;
+      }
+
       // Independent verification — session exit 0 is NOT enough, and neither is
       // the session's own bd bookkeeping (worker-phase2 §1). ONE verdict now:
       // does the server OBSERVE an open PR for this attempt's branch?
@@ -2742,6 +2761,136 @@ export function createScheduler(deps) {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Whether an attempt belongs to the Worker-dispatched quick_fix lane, read
+   * from the durable record so restart reconciliation makes the same decision
+   * as the live completion path.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {boolean}
+   */
+  function quickfixLaneOf(workspace, attempt_id) {
+    try {
+      const a = deps.store.snapshot(workspace).attempts[attempt_id];
+      return !!a && a.quickfix_lane === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Settle a successful quick_fix session without entering PR observation or
+   * `pr_wait`. The landing dep owns `moveToDone` on success.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {string|null} prior
+   * @param {string} target_base
+   * @param {boolean} repo_known
+   * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step?: string|null }>}
+   */
+  async function settleQuickfixLanding(
+    workspace,
+    attempt_id,
+    bead_id,
+    prior,
+    target_base,
+    repo_known
+  ) {
+    try {
+      await revertWorkflowMode(bead_id, prior);
+    } catch (err) {
+      log(
+        'workflow_mode revert failed on quick_fix landing for %s: %o',
+        bead_id,
+        err
+      );
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'workflow_mode_revert_failed'
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return { ok: false, reason: 'workflow_mode_revert_failed' };
+    }
+    await revertExecStamps(
+      bead_id,
+      execStampedKeysOf(workspace, attempt_id),
+      execRestoreValuesOf(workspace, attempt_id)
+    );
+
+    if (!repo_known) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'quickfix_landing_failed:repo_unknown'
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return { ok: false, reason: 'quickfix_landing_failed:repo_unknown' };
+    }
+    if (!deps.quickfixLanding) {
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'quickfix_landing_unavailable'
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return { ok: false, reason: 'quickfix_landing_unavailable' };
+    }
+
+    let result;
+    try {
+      result = await deps.quickfixLanding.settle({
+        attempt_id,
+        bead_id,
+        target_base
+      });
+    } catch (err) {
+      log('quick_fix landing threw for %s: %o', attempt_id, err);
+      await failAttempt(
+        workspace,
+        attempt_id,
+        bead_id,
+        prior,
+        'quickfix_landing_failed:threw'
+      );
+      notifyChanged(workspace);
+      await tick(workspace);
+      return { ok: false, reason: 'quickfix_landing_failed:threw' };
+    }
+
+    if (result.ok) {
+      notifyChanged(workspace);
+      await tick(workspace);
+      return { ok: true };
+    }
+    const reason =
+      typeof result.reason === 'string' && result.reason.length > 0
+        ? result.reason
+        : 'unknown';
+    await failAttempt(
+      workspace,
+      attempt_id,
+      bead_id,
+      prior,
+      `quickfix_landing_failed:${reason}`
+    );
+    notifyChanged(workspace);
+    await tick(workspace);
+    return { ok: false, reason, step: result.step };
   }
 
   /**
@@ -3165,6 +3314,8 @@ export function createScheduler(deps) {
     const bead_id = attempt.bead_id;
     const prior = attempt.workflow_mode_prior ?? null;
     const repo = typeof attempt.repo === 'string' ? attempt.repo : '';
+    const target_base =
+      typeof attempt.target_base === 'string' ? attempt.target_base : '';
     // A DISPOSITION session that outlived a restart is judged by its own
     // verdict, never by the PR observation (UI-hs11 §3.3): it opens no PR, so
     // the branch below would fail every successful repair as `pr_missing`.
@@ -3330,6 +3481,40 @@ export function createScheduler(deps) {
     }
     claimed.add(bead_id);
     try {
+      if (quickfixLaneOf(workspace, attempt_id)) {
+        deps.store.updateAttempt(workspace, {
+          attempt_id,
+          patch: usagePatch(workspace, attempt_id)
+        });
+        if (guard_kill) {
+          // Guard evidence outranks landing exactly as it outranks the ordinary
+          // PR observation: a monitor-killed session fails however far it got.
+          await failAttempt(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            'loud_fail_blocker',
+            blockerCauseDetail({
+              reason: guard_kill.reason,
+              command: guard_kill.command ?? null
+            })
+          );
+          notifyChanged(workspace);
+          await tick(workspace);
+        } else {
+          await settleQuickfixLanding(
+            workspace,
+            attempt_id,
+            bead_id,
+            prior,
+            target_base,
+            repo.length > 0
+          );
+        }
+        return;
+      }
+
       /** @type {{ ok: boolean, reason: string, pr_url?: string|null, already_finished?: boolean }} */
       let vr;
       if (repo.length === 0) {
@@ -3679,6 +3864,7 @@ export function createScheduler(deps) {
         refuseDispatch(workspace, bead_id, snap.base_unresolved);
         return;
       }
+      const quickfix_lane = snap.route === 'quick_fix';
       // The cut source: the FETCHED remote tip when the resolver produced one, so
       // a stale local `<base>` cannot silently become the worktree's parent.
       const cut_base = snap.base_oid || snap.target_base;
@@ -3689,7 +3875,11 @@ export function createScheduler(deps) {
       // record and no metadata stamp, so an install failure ends in a refusal
       // with nothing left behind (완료조건 #17). Every early return BELOW this
       // line removes it again.
+      // A reviewed quick_fix ends by pushing the base directly. Installing the
+      // ordinary hook would make that lane reject its own terminal duty;
+      // disposition has the same exemption, and base-drift skips this lane.
       if (
+        !quickfix_lane &&
         !installGuardHook({
           workspace,
           attempt_id,
@@ -3929,6 +4119,7 @@ export function createScheduler(deps) {
           exec_values,
           exec_restore_values,
           spec_review_stale: !!adm.stale,
+          quickfix_lane,
           serial_lane_id,
           status: 'running',
           pid: null
@@ -4009,6 +4200,7 @@ export function createScheduler(deps) {
         model: exec.orchestration_model ?? null,
         effort: exec.orchestration_effort ?? null,
         speed: exec.orchestration_speed ?? 'default',
+        quickfix_lane,
         prior_wf: prior,
         stamped_keys,
         wt_path: wt.path,
@@ -4412,6 +4604,7 @@ export function createScheduler(deps) {
    *   resume_session_id?: string|null,
    *   verify_worktree?: boolean,
    *   disposition?: string|null,
+   *   quickfix_lane?: boolean,
    *   completion_repair?: any
    * }} input
    * @returns {Promise<{ ok: boolean, reason?: string }>} Whether the session
@@ -4469,7 +4662,8 @@ export function createScheduler(deps) {
       repo,
       target_base,
       base_oid: base_oid ?? null,
-      disposition: input.disposition ?? null
+      disposition: input.disposition ?? null,
+      quickfix_lane: input.quickfix_lane === true
     };
     if (input.completion_repair) {
       settings.completion_repair = input.completion_repair;
@@ -4480,9 +4674,10 @@ export function createScheduler(deps) {
     // over the inherited environment, and `claude.js`'s routing env touches no
     // `GIT_CONFIG_*` key, so there is no collision to lose.
     //
-    // A DISPOSITION session is left alone in all three layers: publishing the
-    // resolved base IS its job (`revise-disposition.js`), so no hook was
-    // installed for it and none is announced.
+    // DISPOSITION and quick_fix sessions are left alone in all three layers:
+    // publishing the resolved/base-direct target IS their job, so no hook was
+    // installed. Pointing session git at that absent hooksPath would also
+    // disable every repository hook for the session.
     if (receipt_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
@@ -4490,7 +4685,7 @@ export function createScheduler(deps) {
         BDUI_CODEX_USAGE_RECEIPT_DIR: receipt_dir
       };
     }
-    if (!settings.disposition) {
+    if (!settings.disposition && !settings.quickfix_lane) {
       settings.env = {
         ...settings.env,
         ...guardHook.envFor({ workspace, attempt_id })
@@ -4748,7 +4943,9 @@ export function createScheduler(deps) {
 
   /**
    * Manually resume a paused/failed/orphaned attempt in its EXISTING worktree
-   * (spec §1, extended by worker-phase1 §1.2). Fail-closed with five refusal
+   * (spec §1, extended by worker-phase1 §1.2). A failed quick_fix at a durable
+   * cleanup cursor resumes settlement on its original attempt, even after its
+   * worktree was removed. Fail-closed with five refusal
    * reasons (admission-badge convention): `not_failed` · `no_session_id` ·
    * `worktree_missing` · `bead_running` · `already_resumed`
    * A NEW attempt is minted carrying `resumed_from`. Its effective settings
@@ -4789,12 +4986,19 @@ export function createScheduler(deps) {
     }
     const bead_id = prior.bead_id;
     const repo = typeof prior.repo === 'string' ? prior.repo : '';
+    const quickfix_cleanup_resume =
+      prior.status === 'failed' &&
+      prior.quickfix_lane === true &&
+      typeof prior.quickfix_landing?.reason === 'string' &&
+      prior.quickfix_landing.reason.length > 0 &&
+      (prior.quickfix_landing.cursor === 'branch_cleanup' ||
+        prior.quickfix_landing.cursor === 'parent_close');
     // worktree_missing: the bead worktree is gone (resume never recreates it).
     const wt_present =
       typeof deps.worktree.exists === 'function'
         ? deps.worktree.exists(repo, bead_id)
         : true;
-    if (!wt_present) {
+    if (!quickfix_cleanup_resume && !wt_present) {
       return { ok: false, reason: 'worktree_missing' };
     }
     // bead_running: a live (or store-recorded running) attempt for the same bead.
@@ -4812,6 +5016,29 @@ export function createScheduler(deps) {
     for (const a of Object.values(q.attempts || {})) {
       if (a && a.resumed_from === attempt_id) {
         return { ok: false, reason: 'already_resumed' };
+      }
+    }
+    if (quickfix_cleanup_resume) {
+      if (settling.has(attempt_id)) {
+        return { ok: false, reason: 'bead_running' };
+      }
+      claimed.add(bead_id);
+      settling.add(attempt_id);
+      try {
+        const result = await settleQuickfixLanding(
+          workspace,
+          attempt_id,
+          bead_id,
+          prior.workflow_mode_prior ?? null,
+          prior.target_base || 'main',
+          repo.length > 0
+        );
+        return result.ok
+          ? { ok: true, attempt_id }
+          : { ok: false, reason: result.reason };
+      } finally {
+        settling.delete(attempt_id);
+        claimed.delete(bead_id);
       }
     }
     /** @type {BeadSnapshot} */
@@ -5713,6 +5940,7 @@ export function createScheduler(deps) {
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
+    const quickfix_lane = prior.quickfix_lane === true;
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: serialLineageId(prior) || bead_id,
@@ -5755,6 +5983,7 @@ export function createScheduler(deps) {
       exec_values,
       exec_restore_values,
       serial_lane_id: prior.serial_lane_id ?? null,
+      quickfix_lane,
       resumed_from: attempt_id,
       continuation_mode,
       conflict_resolution: options.conflict_resolution,
@@ -5775,6 +6004,7 @@ export function createScheduler(deps) {
     try {
       if (
         !options.disposition &&
+        !quickfix_lane &&
         !installGuardHook({
           workspace,
           attempt_id: new_attempt_id,
@@ -5818,7 +6048,7 @@ export function createScheduler(deps) {
         }
       });
       removeGuardHook(workspace, attempt_id);
-      if (!options.disposition) {
+      if (!options.disposition && !quickfix_lane) {
         removeGuardHook(workspace, new_attempt_id);
       }
       notifyChanged(workspace);
@@ -5933,7 +6163,8 @@ export function createScheduler(deps) {
       },
       verify_worktree: true,
       resume_session_id,
-      disposition: options.disposition ?? null
+      disposition: options.disposition ?? null,
+      quickfix_lane
     };
     let launched = await launchSession(launch_input);
     if (!launched.ok && launched.reason === 'worktree_missing') {

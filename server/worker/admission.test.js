@@ -85,12 +85,15 @@ function makeGitRun(opts = {}) {
 }
 
 /**
- * @param {Partial<{ route: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown, plan_path: unknown, plan_approval: unknown, last_checked_sha: unknown, labels: unknown }>} [bead]
+ * @param {Partial<{ route: string|null, description: string|null, spec_id: string|null, spec_id_conflict: boolean, spec_review: unknown, plan_path: unknown, plan_approval: unknown, last_checked_sha: unknown, labels: unknown }>} [bead]
  */
 function makeBead(bead = {}) {
   /** @type {Record<string, unknown>} */
   const result = {
     route: Object.hasOwn(bead, 'route') ? bead.route : 'spec_backed',
+    ...(Object.hasOwn(bead, 'description')
+      ? { description: bead.description }
+      : {}),
     spec_id: Object.hasOwn(bead, 'spec_id') ? bead.spec_id : SPEC_PATH,
     spec_id_conflict: bead.spec_id_conflict === true,
     labels: Object.hasOwn(bead, 'labels') ? bead.labels : [],
@@ -194,12 +197,103 @@ describe('worker/admission fail-closed validator', () => {
   });
 
   test('rejects a non-enum route as invalid_route without any git call', async () => {
-    for (const route of [null, '', 'quick_fix', 'fullplan']) {
+    for (const route of [null, '', 'fullplan']) {
       const gitRun = makeGitRun();
       const r = await run(gitRun, makeBead({ route }));
       expect(r).toEqual({ ok: false, reason: 'invalid_route' });
       expect(gitRun).not.toHaveBeenCalled();
     }
+  });
+
+  test('admits a quick_fix bead with a non-empty description', async () => {
+    const r = await run(
+      makeGitRun(),
+      makeBead({ route: 'quick_fix', description: '  Fix the worker lane.  ' })
+    );
+
+    expect(r).toEqual({ ok: true });
+  });
+
+  test('refuses a quick_fix bead with an absent description as missing_description', async () => {
+    const r = await run(makeGitRun(), makeBead({ route: 'quick_fix' }));
+
+    expect(r).toEqual({ ok: false, reason: 'missing_description' });
+  });
+
+  test('refuses a quick_fix bead with a whitespace-only description as missing_description', async () => {
+    const r = await run(
+      makeGitRun(),
+      makeBead({ route: 'quick_fix', description: ' \n\t ' })
+    );
+
+    expect(r).toEqual({ ok: false, reason: 'missing_description' });
+  });
+
+  test('refuses a worker-ineligible quick_fix bead before the description check', async () => {
+    const gitRun = makeGitRun();
+    const ghAvailable = vi.fn(async () => true);
+
+    const r = await validateAdmission({
+      gitRun,
+      ghAvailable,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead({ route: 'quick_fix', labels: ['worker-ineligible'] })
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'worker_ineligible' });
+    expect(ghAvailable).not.toHaveBeenCalled();
+  });
+
+  test('refuses a quick_fix bead when gh is unavailable', async () => {
+    const r = await validateAdmission({
+      gitRun: makeGitRun(),
+      ghAvailable: async () => false,
+      repo: '/repo',
+      base: BASE,
+      bead: makeBead({
+        route: 'quick_fix',
+        description: 'Fix the worker lane.'
+      })
+    });
+
+    expect(r).toEqual({ ok: false, reason: 'gh_unavailable' });
+  });
+
+  test('runs no git command for a quick_fix bead', async () => {
+    const gitRun = makeGitRun({ base_code: 1, log_code: 128 });
+
+    await run(
+      gitRun,
+      makeBead({ route: 'quick_fix', description: 'Fix the worker lane.' })
+    );
+
+    expect(gitRun).not.toHaveBeenCalled();
+  });
+
+  test('never reports stale for a quick_fix bead', async () => {
+    const r = await run(
+      makeGitRun({ log_out: `${'b'.repeat(40)}\n` }),
+      makeBead({ route: 'quick_fix', description: 'Fix the worker lane.' })
+    );
+
+    expect(r).toEqual({ ok: true });
+    expect(r).not.toHaveProperty('stale');
+  });
+
+  test('admits a quick_fix bead without spec admission inputs', async () => {
+    const r = await run(
+      makeGitRun(),
+      makeBead({
+        route: 'quick_fix',
+        description: 'Fix the worker lane.',
+        spec_id: null,
+        spec_id_conflict: true,
+        spec_review: undefined
+      })
+    );
+
+    expect(r).toEqual({ ok: true });
   });
 
   test('rejects a missing spec_id as spec_missing without any git call', async () => {
@@ -792,15 +886,18 @@ describe('worker/admission gh availability (worker-phase2 §10)', () => {
       base: BASE,
       bead: makeBead()
     });
-    const fail = await validateAdmission({
+    const quick_fix = await validateAdmission({
       ...available,
       repo: '/repo',
       base: BASE,
-      bead: makeBead({ route: 'quick_fix' })
+      bead: makeBead({
+        route: 'quick_fix',
+        description: 'Fix the worker lane.'
+      })
     });
 
     expect(pass).toEqual({ ok: true });
-    expect(fail).toEqual({ ok: false, reason: 'invalid_route' });
+    expect(quick_fix).toEqual({ ok: true });
   });
 
   test('passes the gh condition when no availability dep is wired', async () => {

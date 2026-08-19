@@ -560,7 +560,8 @@ export function staleWorkProjection(admission, locked = false) {
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
- * @property {string} [reason] - Candidate reason chip (spec 없음 / 🔒 target).
+ * @property {string} [reason] - Candidate reason chip (missing_description /
+ * spec 없음 / 🔒 target).
  * @property {boolean} draggable - Whether this row can be dragged.
  * @property {'candidate'|'queue'|'running'|'runnable'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5'} lane -
  * Owning lane. `running`/`runnable` exist only for the monitor tab, which mixes
@@ -992,9 +993,9 @@ export function candidateCard(item) {
   const derived =
     chips.route_source === 'derived' ||
     !!(workflow && workflow.route_source === 'derived');
-  const is_quick_fix =
-    item.is_quick_fix === true ||
-    (!!workflow && workflow.route === 'quick_fix');
+  const missing_description =
+    typeof item.reason === 'string' &&
+    item.reason.split(' · ').includes('missing_description');
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   return html`<div
@@ -1047,8 +1048,8 @@ export function candidateCard(item) {
         ?disabled=${!draggable}
         title=${draggable
           ? '대기 큐 맨 뒤에 추가'
-          : is_quick_fix
-            ? 'quick_fix route는 워커 실행 대상이 아닙니다'
+          : missing_description
+            ? 'description이 없어 대기 큐에 넣을 수 없습니다'
             : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
       >
         대기로 ↴

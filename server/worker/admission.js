@@ -15,24 +15,33 @@
  *      moot. Reporting the environment cause instead of an incidental
  *      `invalid_route` is what makes the badge actionable; the adapter memoizes
  *      the probe, so leading with it costs no extra process per candidate.
- *   2. `route` pinned to the enum (`spec_backed` | `full_plan`),
- *   3. native/metadata `spec_id` conflict absent, then the resolved path tracked
+ *   2. `route` pinned to the enum (`spec_backed` | `full_plan` | `quick_fix`),
+ *   3. `quick_fix` stops here after requiring a non-empty description. It has no
+ *      anchor spec, so spec existence, receipt reachability, freshness, and git
+ *      probes do not apply, and no `stale` payload can be produced. Its
+ *      description is the only substantive admission input because the workflow
+ *      contract requires a self-sufficient quick-fix bead; the procedure remains
+ *      contract-owned by dotfiles `docs/contracts/workflow.md`.
+ *   4. native/metadata `spec_id` conflict absent, then the resolved path tracked
  *      at the base commit (`git cat-file -e <base>:<spec_id>`) —
  *      a spec absent from THAT base refuses as `spec_missing_at_base:<base>`
  *      (worker-target-base §2): the spec is not gone, it was not on that branch,
  *      and the base is what the operator must fix. An absent `spec_id` stays the
  *      bare `spec_missing`, which keeps the two causes distinguishable in one
  *      badge string,
- *   4. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
+ *   5. a `<reviewer>@<40hex>` spec_review receipt — `skipped@<40hex>` counts
  *      (a skip is explicit user authority to proceed), short/non-hex does not,
- *   5. the receipt SHA reachable as a commit,
- *   6. freshness: artifact files plus their declared scope prefixes are probed.
- *      A NON-empty delta never refuses: the bead is admitted with a `stale`
- *      payload and the dispatched session re-reviews it in-session (the lane's
- *      procedure is contract-owned — dotfiles `docs/contracts/workflow.md`). A
- *      probe FAILURE is still a refusal because an unknown verdict is not a
- *      pass. Enumerated full-plan readiness misses instead fall back to the spec
- *      scope; they are observations, not probe failures.
+ *   6. the receipt SHA reachable as a commit,
+ *   7. freshness: artifact files plus their declared scope prefixes are probed.
+ *      A NON-empty delta does not refuse (UI-dlim §3.1): refusing on it stopped
+ *      the unattended lane until a human refreshed the receipt by hand, and the
+ *      probe cannot tell a change that invalidates this bead's premises from an
+ *      unrelated one. The bead is admitted with a `stale` payload instead, and
+ *      the dispatched session re-reviews it in-session (the lane's procedure is
+ *      contract-owned — dotfiles `docs/contracts/workflow.md`). A probe FAILURE
+ *      is still a refusal because an unknown verdict is not a pass. Enumerated
+ *      full-plan readiness misses instead fall back to the spec scope; they are
+ *      observations, not probe failures.
  *
  * Process failures always reject as `git_error`. Cursor validation fails quiet
  * to the artifact receipt, and the four enumerated plan-readiness misses fail
@@ -52,8 +61,8 @@ import { parseArtifactScope, parseNameOnlyLog } from './artifact-scope.js';
  */
 export const ADMISSION_RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
 
-/** @type {ReadonlyArray<'spec_backed'|'full_plan'>} */
-const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan'];
+/** @type {ReadonlyArray<'spec_backed'|'full_plan'|'quick_fix'>} */
+const ADMISSIBLE_ROUTES = ['spec_backed', 'full_plan', 'quick_fix'];
 const EXACT_SHA_RE = /^[0-9a-fA-F]{40}$/;
 const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
 
@@ -68,7 +77,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  * base there is nothing for this validator to ask git about
  * (worker-base-scope-alignment §1).
  *
- * @typedef {'worker_ineligible'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
+ * @typedef {'worker_ineligible'|'bd_snapshot_failed'|'gh_unavailable'|'invalid_route'|'missing_description'|'spec_id_conflict'|'spec_missing'|`spec_missing_at_base:${string}`|`base_unresolved:${string}`|'receipt_missing_or_malformed'|'receipt_unreachable'|'git_error'} AdmissionReason
  */
 
 /**
@@ -125,6 +134,7 @@ const PLAN_APPROVAL_RE = /^user@([0-9a-fA-F]{40})$/;
  *   base_label?: string,
  *   bead: {
  *     route?: string|null,
+ *     description?: string|null,
  *     spec_id?: string|null,
  *     spec_id_conflict?: boolean,
  *     spec_review?: unknown,
@@ -160,6 +170,15 @@ export async function validateAdmission(input) {
 
   if (!ADMISSIBLE_ROUTES.includes(/** @type {any} */ (bead && bead.route))) {
     return { ok: false, reason: 'invalid_route' };
+  }
+  if (bead.route === 'quick_fix') {
+    if (
+      typeof bead.description !== 'string' ||
+      bead.description.trim().length === 0
+    ) {
+      return { ok: false, reason: 'missing_description' };
+    }
+    return { ok: true };
   }
   if (bead && bead.spec_id_conflict === true) {
     return { ok: false, reason: 'spec_id_conflict' };

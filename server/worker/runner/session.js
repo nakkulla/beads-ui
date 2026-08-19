@@ -294,6 +294,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
     typeof settings?.disposition === 'string'
       ? settings.disposition.length > 0
       : settings?.disposition === true;
+  const quickfix_lane = settings?.quickfix_lane === true;
 
   const fs = deps.fs || nodeFs;
   // The session-log file the child writes DIRECTLY (UI-o2yt §3.1). Absent ⇒ the
@@ -533,6 +534,7 @@ export function runSession(spec, bead, workspace, settings, deps) {
       const violation = cmd
         ? findMergeViolation(cmd, {
             disposition,
+            quickfix_lane,
             repo: guard_repo,
             target_base: guard_target_base
           })

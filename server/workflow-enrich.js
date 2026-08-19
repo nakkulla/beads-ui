@@ -867,7 +867,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     stages.plan = planStage(md, status, workspace_root, resolved_head);
   } else if (route === 'quick_fix') {
     stages.close = makeStage(
-      status === 'closed' ? 'full' : 'none',
+      status === 'closed' ? 'full' : status === 'resolved' ? 'dim' : 'none',
       null,
       false,
       null
