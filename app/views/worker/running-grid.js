@@ -236,7 +236,7 @@ export function bannersTemplate(state) {
                 type="button"
                 class="worker-banner__dismiss"
                 data-attempt-id=${state.failure.resume_attempt_id}
-                title="이 실패를 처리 완료로 표시하고 배너를 닫습니다"
+                title="실패 알림 닫기 — 레인에는 남습니다"
                 aria-label="배너 닫기"
               >
                 ✕
@@ -328,7 +328,7 @@ function runningTile(tile, now, selected_attempt = null) {
             <button
               type="button"
               class="rtile__dismiss"
-              title="실패 기록 닫기"
+              title="실패 알림 닫기 — 레인에는 남습니다"
               aria-label="실패 기록 닫기"
             >
               ✕

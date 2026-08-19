@@ -10,6 +10,7 @@ import {
   applyCandidateSort,
   createWorkerView,
   mergeFailureText,
+  mergeQueueRefusalText,
   mergeStepView,
   prStatusBadge
 } from './index.js';
@@ -7782,6 +7783,61 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     ).toContain('다시 머지');
   });
 
+  test('renders an execution-slot wait as a nonterminal resolution badge', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: {
+          active: null,
+          failures: {},
+          waiting: {
+            bead_id: 'RD-1',
+            reason: 'worker_sessions_busy'
+          }
+        }
+      })
+    );
+
+    const row = rowOf(mount, 'RD-1');
+
+    expect(row.textContent).toContain('해소 대기 — 실행 슬롯 대기 중');
+    expect(row.classList.contains('worker-mini--alert')).toBe(false);
+  });
+
+  test('hides an unknown resolver wait reason', () => {
+    const { mount } = mountLane(
+      laneOf(['RD-1'], {
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: {
+          active: null,
+          failures: {},
+          waiting: { bead_id: 'RD-1', reason: 'future_reason' }
+        }
+      })
+    );
+
+    expect(rowOf(mount, 'RD-1').textContent).not.toContain('future_reason');
+  });
+
+  test('shows the mapped lane-occupied merge refusal toast', async () => {
+    const transport = vi.fn(async () => ({
+      applied: false,
+      conflict: false,
+      reason: 'lane_occupied',
+      queued: 0
+    }));
+    const { mount } = mountLane(laneOf(['RD-1']), transport);
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+    ).click();
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '실행 레인에 남아 있어 머지 대상이 아닙니다'
+    );
+  });
+
   test('a queued row under a live manual authority still swaps 머지 for 취소', () => {
     const { mount } = mountLane(
       laneOf(['RD-1', 'RD-2'], {
@@ -8505,6 +8561,18 @@ describe('mergeFailureText (UI-5v7d §4)', () => {
 
   test('passes an unknown reason through instead of blanking the badge', () => {
     expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
+  });
+});
+
+describe('mergeQueueRefusalText (UI-75xw §6)', () => {
+  test('maps lane occupancy to Korean', () => {
+    expect(mergeQueueRefusalText('lane_occupied')).toBe(
+      '실행 레인에 남아 있어 머지 대상이 아닙니다'
+    );
+  });
+
+  test('appends an unknown server reason', () => {
+    expect(mergeQueueRefusalText('future_reason')).toContain('future_reason');
   });
 });
 

@@ -871,6 +871,56 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
+  test('dispatches a fresh attempt-less resolver for a reconciled pr_wait row', async () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: 0,
+      bead_id: BEAD,
+      lane: 's1'
+    });
+    store.reconcileExternalPrWait(WS, {
+      bead_id: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304',
+      head_ref: BEAD
+    });
+    const h = makeActions({
+      store,
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      },
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+    const resolution_wait = {
+      queue_bead_id: BEAD,
+      wait_ms: 1_800_000,
+      manual_authority: false
+    };
+
+    const result = await h.actions.dispatchConflict(
+      BEAD,
+      { head_sha: 'sha-aaa', base_ref: 'main' },
+      resolution_wait
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'conflict_resolution',
+      attempt_id: 'x1'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+    expect(h.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      'main',
+      resolution_wait
+    );
+  });
+
   test('refuses a moved DIRTY identity without dispatching', async () => {
     const h = makeActions({
       details: [

@@ -466,7 +466,7 @@ function waitingLaneOf(q, bead_id) {
  *     lane holder until merge cleanup moves it to Done);
  *   - a discard operation for the lineage is still in flight.
  *
- * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string }>, discard_operations?: Record<string, any> }} q
+ * @param {{ attempts?: Record<string, any>, pr_wait?: Array<{ bead_id: string, serial_lane_id?: string|null }>, discard_operations?: Record<string, any> }} q
  * @returns {Map<string, Set<string>>} lane id → occupying lineage ids.
  */
 export function activeLaneLineages(q) {
@@ -502,8 +502,10 @@ export function activeLaneLineages(q) {
     const attempt = [...values]
       .reverse()
       .find((item) => item?.bead_id === entry?.bead_id);
-    if (attempt) {
+    if (attempt && serialLaneIndexOf(attempt.serial_lane_id) !== null) {
       occupy(attempt.serial_lane_id, serialLineageId(attempt));
+    } else {
+      occupy(entry.serial_lane_id, entry.bead_id);
     }
   }
   for (const operation of Object.values(q.discard_operations || {})) {
@@ -549,8 +551,8 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
  *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
- *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
  *   dispatchReviseFix: (workspace: string, input: { bead_id: string, attempt_id: string, prompt: string, prior_receipt?: string|null, resume?: boolean, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchCompletionRepair: (workspace: string, input: { root_bead_id: string, op: any, log_path?: string|null, continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, adopted?: boolean, continuation_mismatch?: any }>,
@@ -1470,7 +1472,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {any} attempt
-   * @param {{ queue_bead_id: string, wait_ms: number }} resolution_wait
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }} resolution_wait
    * @param {number} [expected_revision]
    */
   function prerecordResolutionAttempt(
@@ -1507,7 +1509,7 @@ export function createScheduler(deps) {
    * @param {any} prior
    * @param {any} attempt
    * @param {boolean} completion_resume
-   * @param {{ queue_bead_id: string, wait_ms: number }|null} resolution_wait
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} resolution_wait
    * @param {number} [expected_revision]
    */
   function prerecordRelaunchAttempt(
@@ -4867,7 +4869,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} bead_id
-   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
    * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
@@ -4879,6 +4881,7 @@ export function createScheduler(deps) {
   ) {
     if (
       resolution_wait &&
+      resolution_wait.manual_authority !== true &&
       queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
     ) {
       return { ok: false, reason: 'worker_sessions_busy' };
@@ -5044,7 +5047,7 @@ export function createScheduler(deps) {
    * @param {string} bead_id
    * @param {string} [target_base] - The base branch the CLICK observed on the
    * PR (pr-actions §2); empty/absent falls back to `main`.
-   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
    * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string }>}
    */
@@ -5057,6 +5060,7 @@ export function createScheduler(deps) {
   ) {
     if (
       resolution_wait &&
+      resolution_wait.manual_authority !== true &&
       queueConflictBlocked(workspace, resolution_wait.queue_bead_id, bead_id)
     ) {
       return { ok: false, reason: 'worker_sessions_busy' };
@@ -5926,10 +5930,37 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Keep automatic conflict resolvers behind the existing physical-session
-   * fence. The queue owner and its current subject are the same saga, so only a
-   * different Bead blocks the side effect. Human-click dispatches do not call
-   * this predicate and remain cap-exempt.
+   * Return the launcher's physical slot occupants: in-process claims plus
+   * durable running attempts whose process cannot be proven dead.
+   *
+   * @param {Record<string, any>} q
+   * @returns {Set<string>}
+   */
+  function occupiedBeadIds(q) {
+    const occupied = new Set(claimed);
+    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
+      const a = /** @type {any} */ (attempt);
+      if (!a || a.status !== 'running') {
+        continue;
+      }
+      if (
+        running.has(attempt_id) ||
+        settling.has(attempt_id) ||
+        claimed.has(a.bead_id)
+      ) {
+        continue;
+      }
+      if (!isDeadAttempt(a)) {
+        occupied.add(a.bead_id);
+      }
+    }
+    return occupied;
+  }
+
+  /**
+   * Keep automatic conflict resolvers within the launcher's physical slot cap.
+   * Manual authority bypasses this predicate at the caller; same-Bead claims
+   * remain owned by the dispatcher's `bead_running` guard.
    *
    * @param {string} workspace
    * @param {string} queue_bead_id
@@ -5937,25 +5968,12 @@ export function createScheduler(deps) {
    */
   function queueConflictBlocked(workspace, queue_bead_id, subject_bead_id) {
     const allowed = new Set([queue_bead_id, subject_bead_id]);
-    for (const bead_id of claimed) {
-      if (!allowed.has(bead_id)) {
-        return true;
-      }
+    const q = deps.store.snapshot(workspace);
+    const occupied = occupiedBeadIds(q);
+    for (const bead_id of allowed) {
+      occupied.delete(bead_id);
     }
-    const attempts = deps.store.snapshot(workspace).attempts || {};
-    const values = Object.values(attempts);
-    const resumed_from = new Set(
-      values.map((attempt) => attempt && attempt.resumed_from).filter(Boolean)
-    );
-    return values.some(
-      (attempt) =>
-        attempt &&
-        typeof attempt.bead_id === 'string' &&
-        !allowed.has(attempt.bead_id) &&
-        (attempt.status === 'running' ||
-          (attempt.status === 'paused' &&
-            !resumed_from.has(attempt.attempt_id)))
-    );
+    return slotsOf(q) - occupied.size <= 0;
   }
 
   /**
@@ -6720,26 +6738,7 @@ export function createScheduler(deps) {
     // {@link reconcile} picks orphans with, so both sides define "orphan"
     // identically and cannot drift apart. The union is keyed by BEAD, matching
     // what the cap limits, so a bead in both sets is never counted twice.
-    const occupied = new Set(claimed);
-    for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
-      const a = /** @type {any} */ (attempt);
-      if (!a || a.status !== 'running') {
-        continue;
-      }
-      if (
-        running.has(attempt_id) ||
-        settling.has(attempt_id) ||
-        claimed.has(a.bead_id)
-      ) {
-        continue;
-      }
-      // Same judgment as dispose, opposite safe default: an unprobeable attempt
-      // reads as NOT dead, which here spends one slot less instead of
-      // overbooking — the two consumers' risks point in opposite directions.
-      if (!isDeadAttempt(a)) {
-        occupied.add(a.bead_id);
-      }
-    }
+    const occupied = occupiedBeadIds(q);
     let free = slotsOf(q) - occupied.size;
     // Candidate order (UI-04vo §2): every parallel-lane entry first, then the
     // head of each UNOCCUPIED serial lane. Non-head serial entries are never

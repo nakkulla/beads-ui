@@ -1132,7 +1132,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       dispatchConflict: (
         /** @type {string} */ bead_id,
         /** @type {{ head_sha: string, base_ref: string|null }} */ approved,
-        /** @type {{ queue_bead_id: string, wait_ms: number }} */ resolution_wait,
+        /** @type {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }} */ resolution_wait,
         /** @type {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} */ continuation
       ) =>
         prActions.dispatchConflict(

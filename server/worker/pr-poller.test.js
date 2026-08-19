@@ -144,6 +144,7 @@ function makePoller(input = {}) {
   const notifyChanged = vi.fn();
   const store = {
     snapshot: () => queue,
+    reconcileExternalPrWait: vi.fn(() => ({ ok: true })),
     promoteMergedExternal: vi.fn((_workspace, values) => {
       if (
         queue.pr_wait.some(
@@ -842,6 +843,67 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
 });
 
 describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
+  test('reconciles an external row immediately after an OPEN observation', async () => {
+    const { poller, store } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({
+          url: 'https://github.com/o/r/pull/75',
+          head_ref: 'UI-ext'
+        })
+      }
+    });
+
+    await poller.tick();
+
+    expect(store.reconcileExternalPrWait).toHaveBeenCalledWith('/ws', {
+      bead_id: 'UI-ext',
+      pr_url: 'https://github.com/o/r/pull/75',
+      head_ref: 'UI-ext'
+    });
+  });
+
+  test('does not reconcile an external CLOSED observation', async () => {
+    const { poller, store } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: { state: 'ok', data: detailOf({ state: 'CLOSED' }) }
+    });
+
+    await poller.tick();
+
+    expect(store.reconcileExternalPrWait).not.toHaveBeenCalled();
+  });
+
+  test('does not reconcile an external MERGED observation', async () => {
+    const { poller, store } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      }
+    });
+
+    await poller.tick();
+
+    expect(store.reconcileExternalPrWait).not.toHaveBeenCalled();
+  });
+
+  test('does not reconcile an external observation error', async () => {
+    const { poller, store } = makePoller({
+      queue: queueOf({ pr_wait: [] }),
+      external: externalOf([{ bead_id: 'UI-ext' }]),
+      detail: { state: 'error', reason: 'gh_failed' }
+    });
+
+    await poller.tick();
+
+    expect(store.reconcileExternalPrWait).not.toHaveBeenCalled();
+  });
+
   test('resolvePrRef falls back to the registry row when no attempt exists', () => {
     const queue = /** @type {any} */ (queueOf({ pr_wait: [] }));
 

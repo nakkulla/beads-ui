@@ -45,7 +45,9 @@ describe('worker failed running tile template', () => {
     expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe('실패');
     expect(resume.disabled).toBe(true);
     expect(resume.title).toBe('session_id 없는 구 attempt — 이어하기 불가');
-    expect(tile.querySelector('.rtile__dismiss')).not.toBeNull();
+    expect(tile.querySelector('.rtile__dismiss')?.getAttribute('title')).toBe(
+      '실패 알림 닫기 — 레인에는 남습니다'
+    );
     expect(tile.querySelector('.rtile__session')).toBeNull();
     expect(tile.querySelector('.rtile__pause')).toBeNull();
     expect(tile.querySelector('.rtile__stop')).toBeNull();
@@ -153,6 +155,28 @@ describe('worker failed running tile template', () => {
     expect(mount.querySelector('.worker-banner__raw dd')?.textContent).toBe(
       'verify_failed:gh_observation_failed'
     );
+  });
+
+  test('explains that dismissing a failure banner keeps its lane membership', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      bannersTemplate({
+        failure: /** @type {any} */ ({
+          repo: 'beads-ui',
+          bead_id: 'UI-3',
+          reason: 'verify_failed:gh_observation_failed',
+          resume_attempt_id: 'attempt-3',
+          resume_eligible: true,
+          discard: { action: false }
+        })
+      }),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.worker-banner__dismiss')?.getAttribute('title')
+    ).toBe('실패 알림 닫기 — 레인에는 남습니다');
   });
 });
 

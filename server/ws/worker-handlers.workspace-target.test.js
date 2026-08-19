@@ -20,7 +20,8 @@ const state = vi.hoisted(() => ({
   /** @type {string[]} */
   attach_calls: [],
   /** @type {string[]} */
-  workspaces: []
+  workspaces: [],
+  merge_reason: 'no_attachment'
 }));
 
 vi.mock('../registry-watcher.js', async (importOriginal) => {
@@ -48,7 +49,7 @@ vi.mock('../worker/attach.js', () => {
       Promise.resolve({
         ok: false,
         conflict: false,
-        reason: 'no_attachment',
+        reason: state.merge_reason,
         queue: { revision: 0, merge_queue: [] }
       })
     ),
@@ -213,6 +214,7 @@ beforeEach(() => {
   process.env.XDG_STATE_HOME = tmp_state;
   state.attach_calls = [];
   state.workspaces = [WS_CONN, WS_TARGET];
+  state.merge_reason = 'no_attachment';
   handlers.__resetWorkerQueueForTest();
 });
 
@@ -268,6 +270,21 @@ test('does not export the retired cleanup diagnosis websocket handler', () => {
   expect(
     /** @type {any} */ (handlers).handleWorkerCleanupDiagnose
   ).toBeUndefined();
+});
+
+test('forwards lane_occupied from manual merge placement', async () => {
+  state.merge_reason = 'lane_occupied';
+  const row = /** @type {any} */ (
+    MUTATIONS.find((entry) => entry.action === 'worker-merge-queue-add')
+  );
+
+  const { replies } = await dispatch(row, row.payload);
+
+  expect(replies[0].payload).toMatchObject({
+    applied: false,
+    conflict: false,
+    reason: 'lane_occupied'
+  });
 });
 
 describe.each([
