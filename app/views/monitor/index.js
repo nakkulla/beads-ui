@@ -22,6 +22,7 @@ import {
 } from '../../data/closed-range.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { debug } from '../../utils/logging.js';
+import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { showToast } from '../../utils/toast.js';
 import {
   discardCompletionMessage,
@@ -876,12 +877,20 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('mon-op--resume')) {
-      void sendContinuationAction(
-        'worker-attempt-resume',
-        { attempt_id },
-        root_dir,
-        revision
-      );
+      void requestResumeInstructions().then((instructions) => {
+        if (instructions === null) {
+          return;
+        }
+        return sendContinuationAction(
+          'worker-attempt-resume',
+          {
+            attempt_id,
+            ...(instructions !== '' ? { instructions } : {})
+          },
+          root_dir,
+          revision
+        );
+      });
       return;
     }
     if (cls.contains('mon-op--dismiss')) {

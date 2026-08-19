@@ -623,14 +623,46 @@ describe('ws worker-queue channel', () => {
       attempt_id: 'att-1',
       expected_revision: 0,
       continuation: 'fresh_current',
-      decision_token
+      decision_token,
+      instructions: '  실패 로그부터 확인  '
     });
 
     expect(resume).toHaveBeenCalledWith(process.cwd(), 'att-1', {
       continuation: 'fresh_current',
-      decision_token
+      decision_token,
+      instructions: '실패 로그부터 확인'
     });
     expect(replyFor(sock, 'r1').payload.new_attempt_id).toBe('att-2');
+  });
+
+  test('worker-attempt-resume rejects non-string instructions', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0,
+      instructions: 42
+    });
+
+    expect(replyFor(sock, 'r1').error).toMatchObject({
+      code: 'bad_request',
+      message: 'invalid instructions'
+    });
+  });
+
+  test('worker-attempt-resume rejects instructions over 4000 characters', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-attempt-resume', {
+      attempt_id: 'att-1',
+      expected_revision: 0,
+      instructions: 'x'.repeat(4001)
+    });
+
+    expect(replyFor(sock, 'r1').error).toMatchObject({
+      code: 'bad_request',
+      message: 'invalid instructions'
+    });
   });
 
   test('worker-attempt-resume rejects a decision without its token', async () => {

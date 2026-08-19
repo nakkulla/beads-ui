@@ -118,7 +118,8 @@ export const MESSAGE_TYPES = /** @type {const} */ ([
   'worker-attempt-pause',
   // Retired legacy action; server returns action_retired without mutation.
   'worker-attempt-stop',
-  // Manual resume (↻ / paused ▶) in the attempt's existing worktree
+  // Manual resume (↻ / paused ▶) in the attempt's existing worktree; payload:
+  // { attempt_id, expected_revision, continuation?, decision_token?, instructions? }
   'worker-attempt-resume',
   // Failure-banner ✕: stamp `dismissed_at` so the failure reads as handled
   'worker-attempt-dismiss',

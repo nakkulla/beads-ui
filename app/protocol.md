@@ -240,8 +240,10 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `{ attempt_id, paused, phase, reason }` exposes the durable control phase
   (`done` when the pause has settled).
 - `worker-attempt-resume` payload:
-  `{ attempt_id, expected_revision, continuation?, decision_token? }` — ▶ on a
-  paused/failed/orphaned attempt; cap-exempt (human-originated).
+  `{ attempt_id, expected_revision, continuation?, decision_token?, instructions? }`
+  — ▶ on a paused/failed/orphaned attempt; cap-exempt (human-originated).
+  `instructions` is an optional 1..4000 character user instruction; blank after
+  trimming is treated as absent.
 - `worker-attempt-dismiss` payload: `{ attempt_id, expected_revision }` — the
   failure banner's ✕: stamps `dismissed_at` on a `failed`/`orphaned` attempt so
   it stops reading as an unhandled failure. Reply
