@@ -1279,7 +1279,10 @@ describe('worker/attach createLiveBd bd show parsing', () => {
               metadata: {
                 route: 'spec_backed',
                 spec_id: 'docs/spec.md',
-                spec_review: 'codex@' + 'a'.repeat(40)
+                spec_review: 'codex@' + 'a'.repeat(40),
+                plan_path: 42,
+                plan_approval: null,
+                last_checked_sha: 'malformed'
               }
             }
           ]
@@ -1297,6 +1300,9 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.route).toBe('spec_backed');
     expect(snap.spec_id).toBe('docs/spec.md');
     expect(snap.spec_review).toBe('codex@' + 'a'.repeat(40));
+    expect(snap.plan_path).toBe(42);
+    expect(snap.plan_approval).toBeNull();
+    expect(snap.last_checked_sha).toBe('malformed');
     expect(snap.ready).toBe(true);
   });
 
@@ -1819,6 +1825,84 @@ describe('worker/attach target base resolution wiring (worker-base-scope-alignme
       '--verify',
       '--quiet',
       `${'a'.repeat(40)}^{commit}`
+    ]);
+  });
+
+  test('passes plan and cursor snapshot fields into admission', async () => {
+    const spec_sha = 'b'.repeat(40);
+    const plan_sha = 'c'.repeat(40);
+    const cursor_sha = 'd'.repeat(40);
+    /** @type {string[][]} */
+    const git_calls = [];
+    const att = attach({
+      bd: fakeBd(),
+      gh: { checkAvailability: async () => ({ state: 'ok' }) },
+      gitRun: async (/** @type {string[]} */ args) => {
+        git_calls.push(args);
+        return {
+          code: 0,
+          stdout:
+            args[0] === 'show' ? '---\nscope:\n  - server/worker/\n---\n' : '',
+          stderr: ''
+        };
+      }
+    });
+
+    const result = await att.admission.validate(
+      /** @type {any} */ ({
+        repo: '/repo',
+        target_base: 'main',
+        base_oid: 'a'.repeat(40),
+        base_unresolved: null,
+        route: 'full_plan',
+        spec_id: 'docs/spec.md',
+        spec_review: `codex@${spec_sha}`,
+        plan_path: 'docs/plan.md',
+        plan_approval: `user@${plan_sha}`,
+        last_checked_sha: cursor_sha
+      })
+    );
+
+    expect(result).toEqual({ ok: true });
+    expect(git_calls).toContainEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `${plan_sha}^{commit}`
+    ]);
+    expect(git_calls).toContainEqual([
+      'rev-parse',
+      '--verify',
+      '--quiet',
+      `${cursor_sha}^{commit}`
+    ]);
+    expect(git_calls).toContainEqual([
+      'cat-file',
+      '-e',
+      `${'a'.repeat(40)}:docs/plan.md`
+    ]);
+    expect(
+      git_calls.filter((args) => args[0] === '--literal-pathspecs')
+    ).toEqual([
+      [
+        '--literal-pathspecs',
+        'log',
+        '--format=%H',
+        '--name-only',
+        `${cursor_sha}..${'a'.repeat(40)}`,
+        '--',
+        'docs/spec.md'
+      ],
+      [
+        '--literal-pathspecs',
+        'log',
+        '--format=%H',
+        '--name-only',
+        `${cursor_sha}..${'a'.repeat(40)}`,
+        '--',
+        'docs/plan.md',
+        'server/worker/'
+      ]
     ]);
   });
 });

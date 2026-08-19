@@ -3,6 +3,8 @@ import * as preamble from './preamble.js';
 import {
   FAST_TRACK_DIRECTIVE,
   PR_SUBMIT_DIRECTIVE,
+  QUICKFIX_LANE_DIRECTIVE,
+  REVIEW_PREAMBLE,
   UNATTENDED_PREAMBLE,
   applyPreamble,
   guardContractDirective,
@@ -202,6 +204,67 @@ describe('runner/preamble disposition sessions (UI-hs11 §3.3, UI-rxp3 §1)', ()
     expect(out).not.toContain('PR 제출까지 수행하고');
     expect(out).toContain(guardContractDirective({ disposition: false }));
     expect(out).not.toContain(guardContractDirective({ disposition: true }));
+  });
+});
+
+describe('runner/preamble Worker-dispatched quick_fix lane', () => {
+  test('replaces PR-submit and PR-base directives with the quick_fix terminal', () => {
+    const out = applyPreamble('구현하라', {
+      quickfix_lane: true,
+      target_base: 'main'
+    }).system_prompt;
+
+    expect(out).toContain(QUICKFIX_LANE_DIRECTIVE);
+    expect(out).not.toContain(PR_SUBMIT_DIRECTIVE);
+    expect(out).not.toContain('## PR base');
+  });
+
+  test('states the reviewed push and Worker-owned tail', () => {
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain(
+      'implementation review 1회(필수)'
+    );
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain('실제로 push한 head SHA');
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain('bead `resolved`');
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain(
+      '배포 실행·배포 증거·bead `closed`·worktree/브랜치 정리는 Worker가 소유한다'
+    );
+    expect(QUICKFIX_LANE_DIRECTIVE).toContain(
+      'dotfiles `docs/contracts/workflow.md`'
+    );
+  });
+
+  test('permits base push while keeping hook bypass and gh merge kills', () => {
+    const out = applyPreamble('구현하라', {
+      quickfix_lane: true
+    }).system_prompt;
+
+    expect(out).not.toContain('pre-push hook 이 거부한다');
+    expect(out).not.toContain('base_landing_detected');
+    expect(out).toContain('base 로의 `git push`가 임무');
+    expect(out).toContain('git push --no-verify');
+    expect(out).toContain('gh pr merge');
+    expect(out).toContain('즉시 종료');
+  });
+
+  test('keeps disposition precedence over the narrow quick_fix exception', () => {
+    expect(
+      guardContractDirective({ disposition: true, quickfix_lane: true })
+    ).toBe(guardContractDirective({ disposition: true }));
+  });
+});
+
+describe('runner/preamble existing channel regressions', () => {
+  test('keeps the read-only review output exact', () => {
+    expect(
+      applyPreamble('검토하라', {
+        review: true,
+        quickfix_lane: true,
+        disposition: true
+      })
+    ).toEqual({
+      system_prompt: [UNATTENDED_PREAMBLE, REVIEW_PREAMBLE].join('\n\n'),
+      task_prompt: '검토하라'
+    });
   });
 });
 

@@ -324,8 +324,9 @@ export function claudeSpec(options = {}) {
         // enforcement pair here.
         review: s.mode === 'review',
         fast_track: !!s.fast_track,
-        pr_submit: !s.disposition,
+        pr_submit: !s.disposition && !s.quickfix_lane,
         disposition: !!s.disposition,
+        quickfix_lane: !!s.quickfix_lane,
         // The base the session must open its PR against
         // (worker-base-scope-alignment §4).
         target_base: typeof s.target_base === 'string' ? s.target_base : null,

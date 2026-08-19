@@ -24,6 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { validateAdmission } from '../worker/admission.js';
 import {
   createCompletionActionDriver,
   createCompletionIntentCoordinator,
@@ -33,6 +34,7 @@ import { createHeadReview } from '../worker/head-review.js';
 import { createMergeQueue } from '../worker/merge-queue.js';
 import { createPrActions } from '../worker/pr-actions.js';
 import { createPrObservationStore } from '../worker/pr-observations.js';
+import { createQuickfixLanding } from '../worker/quickfix-landing.js';
 import { makeFixtureSpawn } from '../worker/runner/fixture-spawn.js';
 import { createRunner } from '../worker/runner/index.js';
 import { createWorkerRuntime } from '../worker/runtime.js';
@@ -129,6 +131,7 @@ function makeFakeBd(config) {
         effort: c.effort ?? 'high',
         workflow_mode: c.workflow_mode ?? null,
         route: c.route ?? null,
+        description: c.description ?? null,
         plan_path: c.plan_path ?? null,
         status: c.status ?? '',
         plan_review: c.plan_review,
@@ -434,6 +437,267 @@ describe('worker e2e — full success flow', () => {
     // No live sessions → the runtime seam reads 0.
     expect(scheduler.runningCount()).toBe(0);
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+});
+
+describe('worker e2e — worker-dispatched quick_fix lands without a PR', () => {
+  test('enqueue → dispatch → resolved 관측 → landing → done', async () => {
+    const bead_id = 'QF-e2e';
+    const runtime = createWorkerRuntime();
+    const bd = makeFakeBd({
+      [bead_id]: {
+        runner: 'claude',
+        route: 'quick_fix',
+        description: '실제 base push 후 Worker landing으로 닫는다.'
+      }
+    });
+    const worktree_path = path.join(repo_dir, '.worktrees', bead_id);
+    const fixture_spawn = makeFixtureSpawn({
+      file: path.join(FIXTURES, 'claude-success.jsonl')
+    });
+    /** @type {string|null} */
+    let reviewed_sha = null;
+    let hook_install_calls = 0;
+    let verify_pr_calls = 0;
+    let pr_wait_events = 0;
+    let config_checks = 0;
+    let deploy_calls = 0;
+
+    const worktree = {
+      add: async (/** @type {{ bead_id: string, base: string }} */ input) => {
+        fs.mkdirSync(path.dirname(worktree_path), { recursive: true });
+        const base = await gitRun(['rev-parse', input.base], { cwd: repo_dir });
+        if (base.code !== 0) {
+          throw new Error(`base resolve failed: ${base.stderr}`);
+        }
+        const added = await gitRun(
+          [
+            'worktree',
+            'add',
+            '-b',
+            input.bead_id,
+            worktree_path,
+            base.stdout.trim()
+          ],
+          { cwd: repo_dir }
+        );
+        if (added.code !== 0) {
+          throw new Error(`worktree add failed: ${added.stderr}`);
+        }
+        fs.writeFileSync(path.join(worktree_path, 'quickfix.txt'), 'landed\n');
+        const staged = await gitRun(['add', '.'], { cwd: worktree_path });
+        const committed = await gitRun(
+          ['commit', '-q', '-m', 'quick_fix e2e'],
+          { cwd: worktree_path }
+        );
+        const head = await gitRun(['rev-parse', 'HEAD'], {
+          cwd: worktree_path
+        });
+        const pushed = await gitRun(['push', '-q', 'origin', 'HEAD:main'], {
+          cwd: worktree_path
+        });
+        if (
+          staged.code !== 0 ||
+          committed.code !== 0 ||
+          head.code !== 0 ||
+          pushed.code !== 0
+        ) {
+          throw new Error(
+            `quick_fix fixture git failed: ${[
+              staged.stderr,
+              committed.stderr,
+              head.stderr,
+              pushed.stderr
+            ].join(' ')}`
+          );
+        }
+        reviewed_sha = head.stdout.trim();
+        await bd.setMetadata(bead_id, 'impl_review', `codex@${reviewed_sha}`);
+        await bd.setStatus(bead_id, 'resolved');
+        return {
+          path: worktree_path,
+          branch: input.bead_id,
+          base_oid: base.stdout.trim()
+        };
+      },
+      remove: async () =>
+        gitRun(['worktree', 'remove', '--force', worktree_path], {
+          cwd: repo_dir
+        }),
+      pathFor: () => worktree_path,
+      exists: () => fs.existsSync(worktree_path),
+      removeByBranch: async () => {
+        const removed = await gitRun(
+          ['worktree', 'remove', '--force', worktree_path],
+          { cwd: repo_dir }
+        );
+        return {
+          ok: removed.code === 0,
+          removed: removed.code === 0,
+          reason: removed.code === 0 ? null : removed.stderr.trim()
+        };
+      },
+      /**
+       * @template T
+       * @param {string} repo
+       * @param {() => Promise<T>} fn
+       * @returns {Promise<T>}
+       */
+      async withTopologyLock(repo, fn) {
+        const release = await runtime.locks.topologyLock(repo);
+        try {
+          return await fn();
+        } finally {
+          release();
+        }
+      }
+    };
+    const quickfix_landing = createQuickfixLanding({
+      workspace: WS,
+      repo: repo_dir,
+      store: runtime.queueStore,
+      bd,
+      gitRun,
+      worktree,
+      repoOperations: {
+        hasConfig: async () => {
+          config_checks += 1;
+          return { ok: true, present: false };
+        },
+        ensureDeploy: async () => {
+          deploy_calls += 1;
+          return { ok: false, code: 'unexpected' };
+        },
+        waitForDeployTerminal: async () => ({
+          state: 'failed',
+          code: 'unexpected'
+        })
+      }
+    });
+    const scheduler = createScheduler({
+      store: runtime.queueStore,
+      execPresetCoordinator: runtime.execPresetCoordinator,
+      makeRunner: (name) =>
+        createRunner(name, {
+          spawn_impl: fixture_spawn
+        }),
+      bd,
+      worktree,
+      admission: {
+        validate: (snap, base) =>
+          validateAdmission({
+            gitRun,
+            ghAvailable: async () => true,
+            repo: repo_dir,
+            base: base ?? snap.target_base,
+            bead: snap
+          })
+      },
+      quickfixLanding: quickfix_landing,
+      verify: {
+        verifyPrSubmitted: async () => {
+          verify_pr_calls += 1;
+          return { ok: false, reason: 'unexpected' };
+        }
+      },
+      guardHook: {
+        install: () => {
+          hook_install_calls += 1;
+          return { ok: true };
+        },
+        envFor: () => ({}),
+        remove: () => true
+      },
+      notify: {
+        attemptStarted: () => {},
+        attemptFailed: () => {},
+        prWaitEntered: () => {
+          pr_wait_events += 1;
+        }
+      },
+      sessionLog: runtime.sessionLog,
+      gitRun
+    });
+    runtime.queueStore.setSlots(WS, {
+      expected_revision: runtime.queueStore.snapshot(WS).revision,
+      slots: 1
+    });
+    seedQueue(runtime.queueStore, [bead_id]);
+
+    const queued = runtime.queueStore.snapshot(WS);
+    expect(queued.queue.map((entry) => entry.bead_id)).toContain(bead_id);
+
+    const inherited_git_config = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) =>
+        key.startsWith('GIT_CONFIG_')
+      )
+    );
+    for (const key of Object.keys(inherited_git_config)) {
+      delete process.env[key];
+    }
+    try {
+      await scheduler.tick(WS);
+      await waitFor(() => fixture_spawn.captured.calls.length === 1);
+    } finally {
+      Object.assign(process.env, inherited_git_config);
+    }
+
+    const dispatched = runtime.queueStore.snapshot(WS);
+    const running_attempt = /** @type {any} */ (
+      Object.values(dispatched.attempts).find(
+        (attempt) => attempt.bead_id === bead_id
+      )
+    );
+    expect(running_attempt.quickfix_lane).toBe(true);
+    expect(hook_install_calls).toBe(0);
+    expect(fixture_spawn.captured.calls[0].options.env.GIT_CONFIG_COUNT).toBe(
+      undefined
+    );
+
+    await waitFor(() =>
+      runtime.queueStore
+        .snapshot(WS)
+        .done.some((entry) => entry.bead_id === bead_id)
+    );
+
+    const snap = runtime.queueStore.snapshot(WS);
+    const attempt = /** @type {any} */ (
+      snap.attempts[running_attempt.attempt_id]
+    );
+    const origin_head = await gitRun(['rev-parse', 'origin/main'], {
+      cwd: repo_dir
+    });
+    const branch = await gitRun(
+      ['rev-parse', '--verify', `refs/heads/${bead_id}`],
+      { cwd: repo_dir }
+    );
+    const worktrees = await gitRun(['worktree', 'list', '--porcelain'], {
+      cwd: repo_dir
+    });
+    const bead_snapshot = /** @type {any} */ (await bd.snapshotBead(bead_id));
+
+    expect(reviewed_sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(origin_head.stdout.trim()).toBe(reviewed_sha);
+    expect(attempt.quickfix_landing).toEqual({
+      cursor: 'parent_close',
+      head_sha: reviewed_sha,
+      reason: null
+    });
+    expect(attempt.status).toBe('done');
+    expect(bd.statuses[bead_id]).toBe('closed');
+    expect(await bd.readMetadata(bead_id, 'impl_review')).toBe(
+      `codex@${reviewed_sha}`
+    );
+    expect(bead_snapshot.spec_id).toBeUndefined();
+    expect(bead_snapshot.spec_review).toBeUndefined();
+    expect(verify_pr_calls).toBe(0);
+    expect(pr_wait_events).toBe(0);
+    expect(snap.pr_wait).toEqual([]);
+    expect(config_checks).toBe(1);
+    expect(deploy_calls).toBe(0);
+    expect(branch.code).not.toBe(0);
+    expect(fs.existsSync(worktree_path)).toBe(false);
+    expect(worktrees.stdout).not.toContain(worktree_path);
   });
 });
 

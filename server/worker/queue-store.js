@@ -151,6 +151,16 @@
  * relaxes the session-side base-into-branch `git merge` guard, so it is
  * recorded durably: a reconcile pass or a restart must be able to see what kind
  * of attempt this was. Defaults false — a missing value fails closed.
+ * @property {boolean} quickfix_lane - Whether this is a Worker-dispatched
+ * quick_fix lane attempt. Settlement uses it to choose landing instead of PR
+ * observation, and the session uses it as the exemption basis for the three
+ * base-push guard layers (pre-push hook install, base-drift observation, and
+ * textual guard). Defaults false.
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
+ * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
+ * before the first cleanup step), `head_sha` is the 40hex bound by
+ * `impl_review`, and `reason` records a landing failure. Its shape is directly
+ * consumable by the existing `prWaitProgress` projection.
  * @property {boolean} external_conflict - Whether this resolution attempt was
  * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session
  * delivered, which the durable lanes never held. It is what routes the two
@@ -1920,6 +1930,10 @@ export function makeAttempt(fields) {
       : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
+    quickfix_lane: fields.quickfix_lane === true,
+    quickfix_landing: isRecord(fields.quickfix_landing)
+      ? clone(fields.quickfix_landing)
+      : null,
     external_conflict: fields.external_conflict === true,
     cleanup_diagnosis: fields.cleanup_diagnosis === true,
     cleanup_diagnosis_result_path:

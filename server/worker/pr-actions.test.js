@@ -596,6 +596,38 @@ const ON_BASE = {
   gitHead: BASE_SHA
 };
 
+describe('worker/pr-actions — quick_fix merge non-participation', () => {
+  test('issues no merge or cleanup effects for a quick_fix attempt naturally lacking pr_url and pr_wait', async () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'qf-a1',
+        bead_id: BEAD,
+        repo: REPO,
+        target_base: 'main',
+        runner: 'codex',
+        quickfix_lane: true
+      }
+    });
+    const env = makeActions({ store });
+
+    const result = await env.actions.merge(BEAD);
+
+    // The quick_fix lane creates neither natural merge input: no PR URL and no
+    // durable pr_wait row, so the ordinary boundary refuses it before effects.
+    expect(result).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'not_in_pr_wait'
+    });
+    expect(env.gh.prDetail).not.toHaveBeenCalled();
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(env.bd.setStatus).not.toHaveBeenCalled();
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+});
+
 describe('worker/pr-actions rollback verify compatibility', () => {
   test('is inert when pinned repo ops declares no verify', async () => {
     const env = makeActions({ verifyResolution: { state: 'absent' } });

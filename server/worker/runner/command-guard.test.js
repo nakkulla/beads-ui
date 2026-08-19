@@ -1380,3 +1380,60 @@ describe('command-guard excludes a disposition session', () => {
     ).toBe('git_push_base');
   });
 });
+
+describe('command-guard permits reviewed quick_fix lane base pushes', () => {
+  const QUICKFIX_LANE = { ...ON_MAIN, quickfix_lane: true };
+
+  test('passes parsed and fallback base pushes', () => {
+    expect(
+      findMergeViolation('git push origin main', QUICKFIX_LANE)
+    ).toBeNull();
+    expect(
+      findMergeViolation('f() { :; }; git push origin main', QUICKFIX_LANE)
+    ).toBeNull();
+  });
+
+  test('still kills gh pr merge', () => {
+    const violation = findMergeViolation('gh pr merge 311', QUICKFIX_LANE);
+
+    expect(violation?.kind).toBe('gh_pr_merge');
+    expect(guardEffect(violation)).toBe('kill');
+  });
+
+  test('still kills every hook-bypass shape', () => {
+    const commands = [
+      'git push --no-verify origin main',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/tmp/x git push origin main',
+      'git -c core.hooksPath=/tmp/x push origin main'
+    ];
+
+    for (const cmd of commands) {
+      const violation = findMergeViolation(cmd, QUICKFIX_LANE);
+
+      expect(violation?.kind).toBe('hook_bypass');
+      expect(guardEffect(violation)).toBe('kill');
+    }
+  });
+
+  test('still records git merge as a warning', () => {
+    const violation = findMergeViolation(
+      'git merge origin/main',
+      QUICKFIX_LANE
+    );
+
+    expect(violation?.kind).toBe('base_merge');
+    expect(guardEffect(violation)).toBe('warn');
+  });
+
+  test('keeps base-push judgment when quickfix_lane is absent or false', () => {
+    expect(findMergeViolation('git push origin main', ON_MAIN)?.kind).toBe(
+      'git_push_base'
+    );
+    expect(
+      findMergeViolation('git push origin main', {
+        ...ON_MAIN,
+        quickfix_lane: false
+      })?.kind
+    ).toBe('git_push_base');
+  });
+});

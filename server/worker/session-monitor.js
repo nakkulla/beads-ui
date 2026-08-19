@@ -74,7 +74,7 @@ export function createSessionMonitors(deps) {
   const fs = deps.fs || nodeFs;
 
   /**
-   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: ReturnType<typeof createTailReader> }>}
+   * @type {Map<string, { workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: ReturnType<typeof createTailReader> }>}
    */
   const monitors = new Map();
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
@@ -335,7 +335,7 @@ export function createSessionMonitors(deps) {
    * Feed one tailed line through the drawer broker, the usage tally, and the
    * fail-closed guards — the live engine's `onLine` pipeline minus the verdict.
    *
-   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec }} entry
+   * @param {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec }} entry
    * @param {string} line
    */
   function handleLine(entry, line) {
@@ -380,6 +380,7 @@ export function createSessionMonitors(deps) {
       const violation = cmd
         ? findMergeViolation(cmd, {
             disposition: entry.disposition,
+            quickfix_lane: entry.quickfix_lane,
             repo: entry.repo,
             target_base: entry.target_base
           })
@@ -449,7 +450,7 @@ export function createSessionMonitors(deps) {
       if (!pidStillOurs(attempt)) {
         return false;
       }
-      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: any }} */
+      /** @type {{ workspace: string, attempt_id: string, repo: string|null, target_base: string|null, disposition: boolean, quickfix_lane: boolean, killed: boolean, spec: import('./runner/session.js').AdapterSpec, reader: any }} */
       const entry = {
         workspace,
         attempt_id,
@@ -466,6 +467,9 @@ export function createSessionMonitors(deps) {
           typeof attempt.disposition === 'string'
             ? attempt.disposition.length > 0
             : attempt.disposition === true,
+        // Same durable boolean normalization session.js applies to the
+        // quick_fix lane before command-guard judgment.
+        quickfix_lane: attempt.quickfix_lane === true,
         killed: false,
         reader: null
       };

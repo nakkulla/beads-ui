@@ -109,6 +109,56 @@ describe('worker failed running tile template', () => {
     );
   });
 
+  test('renders a landing progress line only on the tile carrying its projection', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'QF-1',
+          attempt_id: 'attempt-qf',
+          title: 'landing quick fix',
+          runner: 'codex',
+          model: 'sol',
+          started_at: null,
+          landing: {
+            step: 'deploy',
+            label: '배포 중',
+            index: 4,
+            total: 7,
+            percent: 57,
+            active: true,
+            failed: false
+          }
+        },
+        {
+          bead_id: 'UI-plain',
+          attempt_id: 'attempt-plain',
+          title: 'ordinary work',
+          runner: 'codex',
+          model: 'sol',
+          started_at: null
+        }
+      ]),
+      mount
+    );
+
+    const landing_tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="QF-1"]')
+    );
+    const plain_tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="UI-plain"]')
+    );
+
+    expect(
+      landing_tile.querySelector('.rtile__landing')?.textContent
+    ).toContain('배포 중');
+    expect(landing_tile.querySelector('.merge-step__n')?.textContent).toBe(
+      '4/7'
+    );
+    expect(plain_tile.querySelector('.rtile__landing')).toBeNull();
+  });
+
   test('renders no cleanup banner — the timeline owns stopped cleanups', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
 

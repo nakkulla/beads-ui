@@ -363,6 +363,24 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).not.toHaveBeenCalled();
   });
 
+  test('does not observe a quick_fix attempt naturally lacking pr_url and pr_wait', async () => {
+    const queue = queueOf({ pr_wait: [] });
+    queue.attempts['att-QF-1'] = {
+      attempt_id: 'att-QF-1',
+      bead_id: 'QF-1',
+      status: 'running',
+      quickfix_lane: true
+    };
+    const { poller, prDetail, observations } = makePoller({ queue });
+
+    await poller.tick();
+
+    // Poll subjects come only from pr_wait/external PR rows; the bare attempt
+    // has no PR URL and never becomes an observation target.
+    expect(prDetail).not.toHaveBeenCalled();
+    expect(observations.get('/ws', 'QF-1')).toBeNull();
+  });
+
   test('observes the pr_wait PR when a subscriber is watching', async () => {
     const { poller, prDetail, observations } = makePoller();
 

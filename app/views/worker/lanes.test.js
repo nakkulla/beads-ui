@@ -49,9 +49,9 @@ function renderCandidate(item) {
       /** @type {any} */ ({
         id: 'UI-qf',
         title: 'quick fix',
-        draggable: false,
+        draggable: true,
         lane: 'candidate',
-        reason: 'quick_fix · 워커 비대상',
+        reason: '',
         workflow: {
           route: 'quick_fix',
           route_source: 'explicit',
@@ -392,12 +392,34 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
 });
 
 describe('candidate card', () => {
-  test('explains why a quick_fix route cannot enter the worker queue', () => {
+  test('keeps a described quick_fix candidate draggable with an active queue button', () => {
     const card = renderCandidate({});
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
 
-    expect(
-      card.querySelector('.worker-card__place')?.getAttribute('title')
-    ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
+    expect(card.getAttribute('draggable')).toBe('true');
+    expect(place.disabled).toBe(false);
+    expect(place.title).toBe('대기 큐 맨 뒤에 추가');
+    expect(card.textContent).not.toContain('워커 비대상');
+  });
+
+  test('disables a description-less quick_fix candidate with its honest reason', () => {
+    const card = renderCandidate({
+      draggable: false,
+      reason: 'missing_description'
+    });
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(card.querySelector('.worker-card__reason')?.textContent).toBe(
+      'missing_description'
+    );
+    expect(place.disabled).toBe(true);
+    expect(place.title).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
+    expect(card.textContent).not.toContain('워커 비대상');
   });
 });
 
