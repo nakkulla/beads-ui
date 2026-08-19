@@ -4821,7 +4821,10 @@ export function createScheduler(deps) {
    * anyway); resolve preserving BOTH sides' intent; and do NOT merge the PR
    * (the merge stays a human click — resolving automatically and then merging
    * automatically would resurrect unattended merging at the single most
-   * dangerous moment).
+   * dangerous moment). After push the session records HOW it resolved each
+   * conflict as a `bd comment` — the merge commit shows the outcome but not
+   * the intent judgment, and that narrative is what the human merge click
+   * reviews.
    *
    * @param {string} bead_id
    * @param {string} target_base
@@ -4834,6 +4837,7 @@ export function createScheduler(deps) {
       `같은 워크트리에서 origin을 fetch한 뒤 \`git merge origin/${base}\`로 base를 이 브랜치에 머지해 충돌을 해소하라.`,
       'rebase와 force-push는 금지다 — merge-into-branch만 사용한다.',
       '충돌은 양쪽 변경의 의도가 모두 보존되도록 해소하고, 레포의 테스트/검증을 돌려 통과시킨 뒤 브랜치에 push하라.',
+      `push 후 \`bd comment ${bead_id}\`로 해소 내역을 기록하라 — 충돌 난 파일과 각각을 어떤 방식으로(어느 쪽을 살렸는지, 어떻게 양쪽 의도를 합쳤는지) 해소했는지 간결히.`,
       'PR 머지는 절대 수행하지 마라 — 머지는 사람이 버튼으로 한다.'
     ].join(' ');
   }

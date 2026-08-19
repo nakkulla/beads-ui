@@ -4422,6 +4422,17 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(prompt).toContain('PR 머지는 절대 수행하지 마라');
   });
 
+  test('instructs recording the resolution as a bd comment on the bead', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    await env.scheduler.resolveConflict(WS, 'B1');
+
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(prompt).toContain('bd comment B1');
+    expect(prompt).toContain('해소 내역을 기록하라');
+  });
+
   test('runs even with the slot cap already full (human-click origin)', async () => {
     const env = setup({
       config: { A1: { ready: true, repo: '/repo', target_base: 'main' } },
