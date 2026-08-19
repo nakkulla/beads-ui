@@ -253,6 +253,39 @@ export function gitHead(workspace_root) {
 }
 
 /**
+ * Prefer a valid freshness cursor over the receipt SHA. Reachability and
+ * ancestry are both required so a descendant or unrelated cursor cannot make
+ * `<cursor>..HEAD` falsely empty. Any uncertainty fails quiet to the receipt.
+ *
+ * @param {string | undefined | null} workspace_root
+ * @param {string | null} head
+ * @param {unknown} cursor
+ * @param {string} receipt_sha
+ */
+function freshnessAnchor(workspace_root, head, cursor, receipt_sha) {
+  const cursor_sha = typeof cursor === 'string' ? cursor.trim() : '';
+  if (!workspace_root || !head || !/^[0-9a-fA-F]{40}$/.test(cursor_sha)) {
+    return receipt_sha;
+  }
+  const reachable = runGit(workspace_root, [
+    'rev-parse',
+    '--verify',
+    '--quiet',
+    `${cursor_sha}^{commit}`
+  ]);
+  if (reachable === null) {
+    return receipt_sha;
+  }
+  const ancestor = runGit(workspace_root, [
+    'merge-base',
+    '--is-ancestor',
+    cursor_sha,
+    head
+  ]);
+  return ancestor === null ? receipt_sha : cursor_sha;
+}
+
+/**
  * Core staleness probe: did `path` change between `sha` and `head`?
  *   - `true`  → changed (git log non-empty)
  *   - `false` → unchanged (git log empty)
@@ -438,10 +471,22 @@ function computeStaleWithHead(
   if (!staleProbesApply(status)) {
     return { spec_stale: false, impl_stale: false, spec_receipt, impl_receipt };
   }
+  // Display stays file-only: scope parsing belongs to Worker admission because
+  // this enrichment path runs for every rendered issue.
   const spec_stale =
     !!spec_receipt &&
     spec_path.length > 0 &&
-    pathChangedSince(workspace_root, head, spec_receipt.sha, spec_path);
+    pathChangedSince(
+      workspace_root,
+      head,
+      freshnessAnchor(
+        workspace_root,
+        head,
+        md.last_checked_sha,
+        spec_receipt.sha
+      ),
+      spec_path
+    );
   const impl_stale =
     !!impl_receipt &&
     implFreshness(workspace_root, impl_receipt.sha, bead_id) === 'stale';
@@ -679,9 +724,23 @@ function planStage(md, status, workspace_root, head) {
   /** @type {'missing'|'fresh'|'stale'|'unknown'|'legacy'} */
   let approval_state = 'missing';
   if (approval_receipt) {
-    approval_state = staleProbesApply(status)
-      ? planFreshness(workspace_root, head, approval_receipt.sha, md.plan_path)
-      : 'fresh';
+    if (staleProbesApply(status)) {
+      // Plan display has the same intentional file-only asymmetry as spec.
+      const approval_anchor = freshnessAnchor(
+        workspace_root,
+        head,
+        md.last_checked_sha,
+        approval_receipt.sha
+      );
+      approval_state = planFreshness(
+        workspace_root,
+        head,
+        approval_anchor,
+        md.plan_path
+      );
+    } else {
+      approval_state = 'fresh';
+    }
   } else if (
     !has_new_approval &&
     !Object.hasOwn(md, 'plan_review') &&
