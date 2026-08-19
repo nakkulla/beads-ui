@@ -12,10 +12,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, test } from 'vitest';
+import { resolveRepoOps } from '../../server/worker/repo-ops-resolver.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ADAPTER = path.join(HERE, 'verify');
-const CONFIG = path.join(path.dirname(HERE), 'config.toml');
 const REPO_ROOT = path.dirname(path.dirname(HERE));
 
 /** @type {string[]} */
@@ -156,13 +156,62 @@ describe('repo-ops/script/verify', () => {
   });
 });
 
+/**
+ * The Worker never reads `repo-ops/config.toml` from a working tree — it reads
+ * the blob at a pinned SHA — so the declaration is asserted through the real
+ * resolver at HEAD. An edit that is not committed yet is, to the Worker, not a
+ * declaration at all, and this test says the same thing.
+ */
 describe('repo-ops/config.toml verify declaration', () => {
-  test('declares the verify script the resolver accepts', () => {
-    const text = fs.readFileSync(CONFIG, 'utf8');
+  /**
+   * @param {string[]} args
+   * @param {{ cwd: string }} options
+   */
+  const gitRun = async (args, options) => {
+    const result = spawnSync('git', args, {
+      cwd: options.cwd,
+      encoding: 'utf8'
+    });
+    return {
+      code: typeof result.status === 'number' ? result.status : 1,
+      stdout: result.stdout || '',
+      stderr: result.stderr || ''
+    };
+  };
 
-    expect(text).toContain('[verify]');
-    expect(text).toContain('script = "repo-ops/script/verify"');
-    expect(text).toContain('timeout_ms = 600000');
+  const headSha = () =>
+    spawnSync('git', ['rev-parse', 'HEAD'], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8'
+    }).stdout.trim();
+
+  test('resolves the verify declaration and script identity at HEAD', async () => {
+    const resolved = await resolveRepoOps({
+      repo: REPO_ROOT,
+      sha: headSha(),
+      gitRun
+    });
+
+    expect(resolved.ok).not.toBe(false);
+    expect(resolved.verify).toMatchObject({
+      script: 'repo-ops/script/verify',
+      timeout_ms: 600000,
+      mode: '100755',
+      object_type: 'blob'
+    });
+  });
+
+  test('keeps the deploy declaration alongside it', async () => {
+    const resolved = await resolveRepoOps({
+      repo: REPO_ROOT,
+      sha: headSha(),
+      gitRun
+    });
+
+    expect(resolved.base).toBe('main');
+    expect(resolved.deploy).toMatchObject({
+      script: 'repo-ops/script/deploy'
+    });
   });
 
   test('states the eligibility rule the declaration now completes', () => {

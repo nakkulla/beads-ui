@@ -145,6 +145,175 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     expect(calls.review).toHaveLength(1);
   });
 
+  test('carries the starting approval onto a descendant head with no dispatch', async () => {
+    const receipt = `codex@${OLD_HEAD}`;
+    const { store, driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: receipt
+      }),
+      probeAncestry: async () => 'ancestor'
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: null,
+      mutation_result_sha: null,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.select).toHaveLength(0);
+    expect(calls.review).toHaveLength(0);
+    expect(calls.write_receipt).toEqual([]);
+    expect(journalOf(store)).toMatchObject({
+      state: 'approved',
+      approval_source: 'existing_current',
+      receipt
+    });
+  });
+
+  test('keeps a carried approval approved when the same head is re-checked', async () => {
+    const receipt = `codex@${OLD_HEAD}`;
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: receipt
+      }),
+      probeAncestry: async () => 'ancestor'
+    });
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const observed = {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      starting_approval
+    };
+    await driver.ensureApproved('UI-1', 'UI-1', observed);
+
+    // A retried merge re-enters the machine on the SAME head: the journal is
+    // already approved and its receipt is bound to the head the approval was
+    // granted on, not the moved one.
+    const again = await driver.ensureApproved('UI-1', 'UI-1', observed);
+
+    expect(again).toEqual({ state: 'approved', reason: null });
+    expect(calls.review).toHaveLength(0);
+  });
+
+  test('reviews the observed head when it is not a descendant', async () => {
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      }),
+      probeAncestry: async () => 'non_ancestor'
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(1);
+  });
+
+  test('reviews the observed head when the ancestry probe cannot answer', async () => {
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      }),
+      probeAncestry: async () => 'probe_error'
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(1);
+  });
+
+  test('refuses to carry an approval the receipt no longer reads back', async () => {
+    let receipt_reads = 0;
+    const { driver, calls } = harness({
+      readReceipt: async () => {
+        receipt_reads += 1;
+        return receipt_reads === 1
+          ? { actor: 'codex', head_sha: OLD_HEAD, raw: `codex@${OLD_HEAD}` }
+          : { actor: 'self', head_sha: OLD_HEAD, raw: `self@${OLD_HEAD}` };
+      },
+      probeAncestry: async () => 'ancestor'
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      starting_approval
+    });
+
+    expect(result).toEqual({
+      state: 'failed',
+      reason: 'receipt_readback_mismatch'
+    });
+    expect(calls.write_receipt).toEqual([]);
+  });
+
+  test('never carries a resolver-produced head on ancestry alone', async () => {
+    const { driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      }),
+      // A resolver merge commit always descends from the reviewed head, so
+      // ancestry would silently swallow the conflict resolution (UI-vzyh §2).
+      probeAncestry: async () => 'ancestor'
+    });
+
+    const starting_approval = await driver.captureStartingApproval(
+      'UI-1',
+      'UI-1'
+    );
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main',
+      mutation: 'resolver:res-1',
+      mutation_result_sha: null,
+      starting_approval
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(1);
+  });
+
   test('reads a historical carry receipt as a valid starting approval', async () => {
     const prior_receipt = `carry:codex:${PRIOR_HEAD}@${OLD_HEAD}`;
     const receipt = `resolver-self:res-0:${OLD_HEAD}@${NEW_HEAD}`;
