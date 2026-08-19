@@ -45,7 +45,8 @@ afterEach(() => {
  *   repoOperations?: boolean,
  *   removeResult?: { ok: boolean, removed: boolean, reason: string|null },
  *   branchDeleteCode?: number,
- *   branchVerifyCode?: number
+ *   branchVerifyCode?: number,
+ *   landingProgress?: { cursor: string, head_sha: string|null, reason: string|null }
  * }} [options]
  */
 function makeLanding(options = {}) {
@@ -69,7 +70,13 @@ function makeLanding(options = {}) {
       calls.push('store:moveToDone');
       return { ok: true };
     }),
-    snapshot: vi.fn(() => ({}))
+    snapshot: vi.fn(() => ({
+      attempts: options.landingProgress
+        ? {
+            [ATTEMPT]: { quickfix_landing: options.landingProgress }
+          }
+        : {}
+    }))
   };
   const bd = {
     readStatus: vi.fn(async () => {
@@ -291,7 +298,7 @@ test('rejects reviewed head absent from fetched base', async () => {
   });
 });
 
-test('delegates deployment with fetched target and reviewed head', async () => {
+test('delegates deployment with reviewed target and subject', async () => {
   const { landing, repoOperations } = makeLanding({
     config: { ok: true, present: true },
     deploy: { ok: true, inert: true }
@@ -299,11 +306,32 @@ test('delegates deployment with fetched target and reviewed head', async () => {
 
   await settle(landing);
 
+  expect(repoOperations.hasConfig).toHaveBeenCalledWith(HEAD_SHA, {
+    current_target_base: true
+  });
   expect(repoOperations.ensureDeploy).toHaveBeenCalledWith({
     target_base: 'main',
-    target_sha: FETCHED_SHA,
+    target_sha: HEAD_SHA,
     subjects: [{ bead_id: BEAD, merged_sha: HEAD_SHA }]
   });
+});
+
+test('pins deployment target when fetched base is ahead of reviewed head', async () => {
+  const { landing, gitRun, repoOperations } = makeLanding({
+    config: { ok: true, present: true },
+    deploy: { ok: true, inert: true },
+    containmentCode: 0
+  });
+
+  await settle(landing);
+
+  expect(gitRun).toHaveBeenCalledWith(
+    ['merge-base', '--is-ancestor', HEAD_SHA, FETCHED_SHA],
+    { cwd: REPO }
+  );
+  expect(repoOperations.ensureDeploy).toHaveBeenCalledWith(
+    expect.objectContaining({ target_sha: HEAD_SHA })
+  );
 });
 
 test('skips deployment when repository config is absent', async () => {
@@ -365,6 +393,61 @@ test('records premature close without rewriting Bead status', async () => {
     step: null
   });
   expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('resumes completed parent close without rewriting Bead status', async () => {
+  const { landing, bd, store } = makeLanding({
+    status: 'closed',
+    landingProgress: {
+      cursor: 'parent_close',
+      head_sha: HEAD_SHA,
+      reason: null
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(store.moveToDone).toHaveBeenCalled();
+  expect(bd.setStatus).not.toHaveBeenCalled();
+});
+
+test('resumes branch cleanup without a worktree', async () => {
+  const { landing, gitRun } = makeLanding({
+    worktreeExists: false,
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: HEAD_SHA,
+      reason: null
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({ ok: true });
+  expect(gitRun).not.toHaveBeenCalledWith(['rev-parse', 'HEAD'], {
+    cwd: `${REPO}/.worktrees/${BEAD}`
+  });
+});
+
+test('rejects receipt mismatch against durable branch cleanup head', async () => {
+  const durable_head_sha = 'b'.repeat(40);
+  const { landing } = makeLanding({
+    worktreeExists: false,
+    landingProgress: {
+      cursor: 'branch_cleanup',
+      head_sha: durable_head_sha,
+      reason: null
+    }
+  });
+
+  const result = await settle(landing);
+
+  expect(result).toEqual({
+    ok: false,
+    reason: 'head_mismatch',
+    step: null
+  });
 });
 
 test('moves successful attempt to done', async () => {

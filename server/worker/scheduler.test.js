@@ -10281,7 +10281,41 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     });
   });
 
-  test('installs and delivers on a manual resume', async () => {
+  test('inherits quick_fix lane without installing a guard hook on resume', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({ GIT_CONFIG_COUNT: '1' })),
+      remove: vi.fn(() => true)
+    };
+    const env = setup({ config: {}, slots: 1, guardHook });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: { attempt_id: 'quick-anc', bead_id: 'B1' }
+    });
+    env.store.updateAttempt(WS, {
+      attempt_id: 'quick-anc',
+      patch: {
+        bead_id: 'B1',
+        status: 'failed',
+        repo: '/repo',
+        target_base: 'main',
+        session_id: 'sid-quick',
+        workflow_mode_prior: null,
+        quickfix_lane: true
+      }
+    });
+
+    const res = await env.scheduler.resume(WS, 'quick-anc');
+
+    expect(res.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(res.attempt_id)].quickfix_lane
+    ).toBe(true);
+    expect(guardHook.install).not.toHaveBeenCalled();
+    expect(env.runner.settingsFor('B1').quickfix_lane).toBe(true);
+  });
+
+  test('installs and delivers on a spec_backed manual resume', async () => {
     const env = setup({ config: {}, slots: 1 });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
@@ -10302,7 +10336,11 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     const res = await env.scheduler.resume(WS, 'anc');
 
     expect(res.ok).toBe(true);
+    expect(
+      env.store.snapshot(WS).attempts[String(res.attempt_id)].quickfix_lane
+    ).toBe(false);
     expect(hookInstalled(String(res.attempt_id))).toBe(true);
+    expect(env.runner.settingsFor('B1').quickfix_lane).toBe(false);
     expect(env.runner.settingsFor('B1').env.GIT_CONFIG_VALUE_0).toBe(
       guardHookDir(WS, String(res.attempt_id))
     );

@@ -11,9 +11,11 @@
  * No `pr_wait`, merge gate, or merge driver participates. This lane pushes the
  * base directly, then proves containment and settles the attempt itself. The
  * preserved worktree HEAD must equal the review receipt SHA exactly: ancestry
- * would accept an unreviewed commit B added after reviewed commit A. A bead
- * already `closed` is recorded as `premature_close`, never rewritten, because
- * restoring it would invent evidence for the mandatory Worker-owned landing.
+ * would accept an unreviewed commit B added after reviewed commit A. The
+ * durable cursor is also a resume input, not display-only state: after branch
+ * cleanup it replaces the legitimately absent worktree as the head binding,
+ * and a `parent_close` record makes an already-closed bead a successful resume.
+ * `premature_close` applies only without that Worker-owned close record.
  *
  * @import { Attempt } from './queue-store.js'
  */
@@ -212,11 +214,27 @@ export function createQuickfixLanding(deps) {
   }
 
   /**
+   * The durable landing cursor participates in resume judgment. A recorded
+   * cleanup/close step can outlive its worktree, while the receipt must still
+   * bind to the cursor's exact reviewed SHA. Only an unrecorded close is a
+   * `premature_close`.
+   *
    * @param {{ attempt_id: string, bead_id: string, target_base: string }} input
    * @returns {Promise<{ ok: true }|{ ok: false, reason: string, step: string|null }>}
    */
   async function settle(input) {
     const { attempt_id, bead_id, target_base } = input;
+    const snapshot = /** @type {any} */ (deps.store.snapshot(workspace));
+    const durable_landing = snapshot.attempts?.[attempt_id]?.quickfix_landing;
+    const durable_cursor =
+      durable_landing?.cursor === 'branch_cleanup' ||
+      durable_landing?.cursor === 'parent_close'
+        ? durable_landing.cursor
+        : null;
+    const durable_head_sha =
+      typeof durable_landing?.head_sha === 'string'
+        ? durable_landing.head_sha
+        : null;
     /** @type {string|null} */
     let status;
     try {
@@ -224,6 +242,28 @@ export function createQuickfixLanding(deps) {
     } catch (err) {
       log('quick_fix status readback failed for %s: %o', bead_id, err);
       return fail(attempt_id, 'not_resolved', null, null);
+    }
+    if (
+      status === 'closed' &&
+      durable_cursor === 'parent_close' &&
+      durable_head_sha !== null &&
+      /^[0-9a-f]{40}$/i.test(durable_head_sha)
+    ) {
+      deps.store.moveToDone(workspace, {
+        bead_id,
+        attempt_id,
+        patch: {
+          status: 'done',
+          finished_at: now(),
+          quickfix_landing: {
+            cursor: 'parent_close',
+            head_sha: durable_head_sha,
+            reason: null
+          }
+        }
+      });
+      notifyChanged(workspace);
+      return { ok: true };
     }
     if (status === 'closed') {
       return fail(attempt_id, 'premature_close', null, null);
@@ -246,23 +286,34 @@ export function createQuickfixLanding(deps) {
     if (!ADMISSION_RECEIPT_RE.test(trimmed_receipt) || reviewer === 'skipped') {
       return fail(attempt_id, 'invalid_impl_review', null, null);
     }
-    const head_sha = trimmed_receipt.slice(separator + 1);
+    const receipt_head_sha = trimmed_receipt.slice(separator + 1);
+    const head_sha = durable_cursor ? durable_head_sha : receipt_head_sha;
 
-    if (!deps.worktree.exists(repo, bead_id)) {
+    if (
+      head_sha === null ||
+      !/^[0-9a-f]{40}$/i.test(head_sha) ||
+      (durable_cursor && receipt_head_sha !== head_sha)
+    ) {
       return fail(attempt_id, 'head_mismatch', null, head_sha);
     }
-    try {
-      const head = await deps.gitRun(['rev-parse', 'HEAD'], {
-        cwd: deps.worktree.pathFor(repo, bead_id)
-      });
-      // An ancestry check would accept unreviewed B after reviewed A. Landing
-      // therefore requires exact equality with the receipt-bound SHA.
-      if (head.code !== 0 || head.stdout.trim() !== head_sha) {
+
+    if (!durable_cursor && !deps.worktree.exists(repo, bead_id)) {
+      return fail(attempt_id, 'head_mismatch', null, head_sha);
+    }
+    if (!durable_cursor) {
+      try {
+        const head = await deps.gitRun(['rev-parse', 'HEAD'], {
+          cwd: deps.worktree.pathFor(repo, bead_id)
+        });
+        // An ancestry check would accept unreviewed B after reviewed A. Landing
+        // therefore requires exact equality with the receipt-bound SHA.
+        if (head.code !== 0 || head.stdout.trim() !== head_sha) {
+          return fail(attempt_id, 'head_mismatch', null, head_sha);
+        }
+      } catch (err) {
+        log('quick_fix worktree HEAD read failed for %s: %o', bead_id, err);
         return fail(attempt_id, 'head_mismatch', null, head_sha);
       }
-    } catch (err) {
-      log('quick_fix worktree HEAD read failed for %s: %o', bead_id, err);
-      return fail(attempt_id, 'head_mismatch', null, head_sha);
     }
 
     markStep(attempt_id, 'base_containment', head_sha);
@@ -311,7 +362,7 @@ export function createQuickfixLanding(deps) {
       markStep(attempt_id, 'repo_operations', head_sha);
       let config;
       try {
-        config = await repo_operations.hasConfig(fetched.sha, {
+        config = await repo_operations.hasConfig(head_sha, {
           current_target_base: true
         });
       } catch (err) {
@@ -336,7 +387,11 @@ export function createQuickfixLanding(deps) {
         try {
           deployed = await repo_operations.ensureDeploy({
             target_base,
-            target_sha: fetched.sha,
+            // Only the reviewed SHA is authorized for automatic deployment in
+            // this attempt. Later unreviewed base commits are excluded; an
+            // already-deployed descendant is covered by the coordinator's
+            // existing descendant_success_covers_ancestor_rows monotonicity.
+            target_sha: head_sha,
             subjects: [{ bead_id, merged_sha: head_sha }]
           });
         } catch (err) {

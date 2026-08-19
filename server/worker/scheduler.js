@@ -5854,6 +5854,7 @@ export function createScheduler(deps) {
     const new_attempt_id = makeAttemptId(bead_id);
     const target_base =
       typeof prior.target_base === 'string' ? prior.target_base : 'main';
+    const quickfix_lane = prior.quickfix_lane === true;
     const serial_launch = acquireLaneLaunch(workspace, {
       bead_id,
       lineage_id: serialLineageId(prior) || bead_id,
@@ -5896,6 +5897,7 @@ export function createScheduler(deps) {
       exec_values,
       exec_restore_values,
       serial_lane_id: prior.serial_lane_id ?? null,
+      quickfix_lane,
       resumed_from: attempt_id,
       continuation_mode,
       conflict_resolution: options.conflict_resolution,
@@ -5916,6 +5918,7 @@ export function createScheduler(deps) {
     try {
       if (
         !options.disposition &&
+        !quickfix_lane &&
         !installGuardHook({
           workspace,
           attempt_id: new_attempt_id,
@@ -5959,7 +5962,7 @@ export function createScheduler(deps) {
         }
       });
       removeGuardHook(workspace, attempt_id);
-      if (!options.disposition) {
+      if (!options.disposition && !quickfix_lane) {
         removeGuardHook(workspace, new_attempt_id);
       }
       notifyChanged(workspace);
@@ -6074,7 +6077,8 @@ export function createScheduler(deps) {
       },
       verify_worktree: true,
       resume_session_id,
-      disposition: options.disposition ?? null
+      disposition: options.disposition ?? null,
+      quickfix_lane
     };
     let launched = await launchSession(launch_input);
     if (!launched.ok && launched.reason === 'worktree_missing') {
