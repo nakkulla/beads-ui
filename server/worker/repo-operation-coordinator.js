@@ -89,7 +89,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, onRepairLaneAdvanced?: () => Promise<void>, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, onRepairLaneAdvanced?: () => Promise<void>, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -1734,8 +1734,21 @@ export function createRepoOperationCoordinator(deps) {
   async function reconcile(workspace) {
     const release = await deps.locks.repoOperationLock(deps.repo);
     let repair_lane_advanced = false;
+    let auto_advance_restore_ready = false;
     try {
+      try {
+        deps.autoAdvanceRestore?.beforeReconcile(workspace);
+      } catch {
+        // Candidate capture is fail-closed and must not block ordinary reconcile.
+      }
       repair_lane_advanced = await reconcileLocked(workspace);
+      try {
+        auto_advance_restore_ready =
+          (await deps.autoAdvanceRestore?.afterReconcileLocked(workspace)) ===
+          true;
+      } catch {
+        // A later pass retries restoration judgment from durable operation state.
+      }
     } finally {
       release();
     }
@@ -1747,6 +1760,13 @@ export function createRepoOperationCoordinator(deps) {
         await deps.onRepairLaneAdvanced();
       } catch {
         // Reconciliation is durable; a later event can retry the handoff.
+      }
+    }
+    if (auto_advance_restore_ready) {
+      try {
+        await deps.autoAdvanceRestore?.restoreAll();
+      } catch {
+        // Per-workspace snapshots remain authoritative for a later pass.
       }
     }
   }
