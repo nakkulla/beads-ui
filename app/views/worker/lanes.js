@@ -51,7 +51,52 @@ export function formatElapsed(elapsed_ms) {
     return `${seconds.toFixed(1)}초`;
   }
   const minutes = Math.floor(seconds / 60);
-  return `${minutes}분 ${Math.round(seconds - minutes * 60)}초`;
+  if (minutes < 60) {
+    return `${minutes}분 ${Math.round(seconds - minutes * 60)}초`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remaining_minutes = minutes % 60;
+  return `${hours}시간 ${remaining_minutes}분`;
+}
+
+/**
+ * Resume 체인 포함 attempt별 실행 벽시계 시간의 합 — 완료 레인 행의 "작업
+ * 시간"으로 쓴다. `attempts`는 큐 스냅샷의 attempt_id → attempt record 맵이며,
+ * 모양이 어긋난 입력은 조용히 무시한다(fail-quiet).
+ *
+ * @param {unknown} attempts
+ * @param {string} bead_id
+ * @returns {number|null}
+ */
+export function sumAttemptWorkMs(attempts, bead_id) {
+  if (typeof attempts !== 'object' || attempts === null) {
+    return null;
+  }
+  let total_ms = 0;
+  let found = false;
+  for (const attempt of Object.values(attempts)) {
+    if (typeof attempt !== 'object' || attempt === null) {
+      continue;
+    }
+    const a = /** @type {Record<string, unknown>} */ (attempt);
+    if (a.bead_id !== bead_id) {
+      continue;
+    }
+    const started_at = a.started_at;
+    const finished_at = a.finished_at;
+    if (
+      typeof started_at !== 'number' ||
+      typeof finished_at !== 'number' ||
+      !Number.isFinite(started_at) ||
+      !Number.isFinite(finished_at) ||
+      finished_at < started_at
+    ) {
+      continue;
+    }
+    total_ms += finished_at - started_at;
+    found = true;
+  }
+  return found ? total_ms : null;
 }
 
 /**
@@ -582,6 +627,8 @@ export function staleWorkProjection(admission, locked = false) {
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
+ * @property {number|null} [work_ms] - 완료 행의 attempt 실행 시간 합산;
+ * absent/null renders nothing.
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4).
  * @property {number} [done_at] - 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3).
@@ -889,6 +936,12 @@ export function miniRow(item) {
                   class="worker-mini__done-at"
                   title=${`완료 ${formatTimestampLocal(item.done_at)}`}
                   >완료 ${done_at_label}</span
+                >`
+              : ''}${typeof item.work_ms === 'number'
+              ? html`<span
+                  class="worker-mini__work"
+                  title="attempt 실행 시간 합산 (재개 세션 포함)"
+                  >작업 ${formatElapsed(item.work_ms)}</span
                 >`
               : ''}${badge_els}${merge_step_el}
             <span class="worker-mini__actions"

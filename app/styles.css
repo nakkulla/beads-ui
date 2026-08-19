@@ -5024,6 +5024,10 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+.worker-mini__work {
+  white-space: nowrap;
+}
+
 .worker-mini__row2 .worker-mini__meta {
   margin-left: auto;
 }

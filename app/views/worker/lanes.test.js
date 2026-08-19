@@ -8,9 +8,11 @@ import {
   discardProjection,
   discardReceiptTemplate,
   formatClock,
+  formatElapsed,
   miniRow,
   repoOpsStripModel,
-  staleWorkProjection
+  staleWorkProjection,
+  sumAttemptWorkMs
 } from './lanes.js';
 
 /** @type {HTMLElement} */
@@ -184,6 +186,20 @@ describe('done lane row', () => {
     const row = renderRow({ usage: USAGE });
 
     expect(row.querySelector('.worker-mini__done-at')).toBeNull();
+  });
+
+  test('renders the summed attempt work time on the second line', () => {
+    const row = renderRow({ work_ms: 754_000 });
+
+    const work_el = row.querySelector('.worker-mini__work');
+
+    expect(work_el?.textContent).toBe('작업 12분 34초');
+  });
+
+  test('omits the work time when the entry carries none', () => {
+    const row = renderRow({ usage: USAGE });
+
+    expect(row.querySelector('.worker-mini__work')).toBeNull();
   });
 
   test('keeps the drag contract attributes on the row shell', () => {
@@ -663,5 +679,65 @@ describe('formatClock', () => {
 
   test('renders nothing for an absent timestamp', () => {
     expect(formatClock(null)).toBe('');
+  });
+});
+
+describe('formatElapsed hour tier', () => {
+  test('renders hours and minutes past the 60-minute boundary', () => {
+    const elapsed_ms = (2 * 60 + 5) * 60 * 1000;
+
+    expect(formatElapsed(elapsed_ms)).toBe('2시간 5분');
+  });
+});
+
+describe('sumAttemptWorkMs', () => {
+  test('sums finished minus started across multiple attempts of the bead', () => {
+    const attempts = {
+      a1: { bead_id: 'UI-x1', started_at: 1000, finished_at: 4000 },
+      a2: { bead_id: 'UI-x1', started_at: 5000, finished_at: 9000 }
+    };
+
+    const total = sumAttemptWorkMs(attempts, 'UI-x1');
+
+    expect(total).toBe(7000);
+  });
+
+  test('skips attempts with null or missing timestamps', () => {
+    const attempts = {
+      a1: { bead_id: 'UI-x1', started_at: 1000, finished_at: 4000 },
+      a2: { bead_id: 'UI-x1', started_at: null, finished_at: 9000 },
+      a3: { bead_id: 'UI-x1', started_at: 1000 }
+    };
+
+    const total = sumAttemptWorkMs(attempts, 'UI-x1');
+
+    expect(total).toBe(3000);
+  });
+
+  test("skips other beads' attempts", () => {
+    const attempts = {
+      a1: { bead_id: 'UI-x1', started_at: 1000, finished_at: 4000 },
+      a2: { bead_id: 'UI-other', started_at: 0, finished_at: 100_000 }
+    };
+
+    const total = sumAttemptWorkMs(attempts, 'UI-x1');
+
+    expect(total).toBe(3000);
+  });
+
+  test('returns null when nothing qualifies', () => {
+    const attempts = {
+      a1: { bead_id: 'UI-x1', started_at: null, finished_at: null },
+      a2: { bead_id: 'UI-other', started_at: 0, finished_at: 100_000 }
+    };
+
+    const total = sumAttemptWorkMs(attempts, 'UI-x1');
+
+    expect(total).toBeNull();
+  });
+
+  test('returns null for a missing or malformed attempts map', () => {
+    expect(sumAttemptWorkMs(null, 'UI-x1')).toBeNull();
+    expect(sumAttemptWorkMs(undefined, 'UI-x1')).toBeNull();
   });
 });

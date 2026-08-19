@@ -8914,6 +8914,37 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
 
     expect(doneIds(mount)).toEqual(['SESSION-NEWER', 'WORKER-OLDER']);
   });
+
+  test('renders the summed attempt work time on a done row', () => {
+    const mount = renderDone(
+      queueOf({
+        done: [{ bead_id: 'RD-1', added_at: 1 }],
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'RD-1',
+            status: 'done',
+            started_at: 1_000,
+            finished_at: 61_000
+          },
+          a2: {
+            attempt_id: 'a2',
+            bead_id: 'RD-1',
+            status: 'done',
+            started_at: 200_000,
+            finished_at: 260_000
+          }
+        }
+      })
+    );
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__work'
+      )
+    );
+    expect(el.textContent).toBe('작업 2분 0초');
+  });
 });
 
 describe('레인 행 생성·수정 시각 (UI-d7pw §4)', () => {

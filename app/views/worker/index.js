@@ -67,7 +67,8 @@ import {
   miniRow,
   paneTemplate,
   repoOpsStripTemplate,
-  staleWorkProjection
+  staleWorkProjection,
+  sumAttemptWorkMs
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
 import { createParallelAnalysisDialog } from './parallel-analysis-dialog.js';
@@ -2638,6 +2639,11 @@ export function createWorkerView(mount_element, options = {}) {
             lane === 'done'
               ? sumAttemptUsage(q.attempts || {}, e.bead_id)
               : null,
+          // 완료 행만 attempt 작업시간을 싣는다; 세션 작업 행은 attempt가 없어 null.
+          work_ms:
+            lane === 'done'
+              ? sumAttemptWorkMs(q.attempts || {}, e.bead_id)
+              : null,
           // 완료 레인 진입 시각 = 완료 시각 (UI-rkly §3). 2줄 행의 둘째 줄이
           // 이것을 싣는다; 구버전 queue.json 엔트리는 값이 없어 생략된다.
           done_at:
@@ -3039,6 +3045,7 @@ export function createWorkerView(mount_element, options = {}) {
           badges: ['세션 작업'],
           alert: false,
           usage: null,
+          work_ms: null,
           done_at: closed_at,
           created_at: issue.created_at,
           updated_at: issue.updated_at
