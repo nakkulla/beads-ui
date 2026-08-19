@@ -93,6 +93,43 @@ describe('worker/session-log', () => {
     ]);
   });
 
+  test('delegation publish carries the launch id', () => {
+    const log = createSessionLog();
+    /** @type {any[]} */
+    const seen = [];
+    log.subscribe((append) => seen.push(append), 'launch-1');
+
+    log.publish(WS, 'att-3', { type: 'session.started' }, 'launch-1');
+
+    expect(seen).toEqual([
+      {
+        workspace: WS,
+        attempt_id: 'att-3',
+        event: { type: 'session.started' },
+        launch_id: 'launch-1'
+      }
+    ]);
+  });
+
+  test('main subscribers do not receive delegation appends', () => {
+    const log = createSessionLog();
+    /** @type {any[]} */
+    const seen = [];
+    log.subscribe((append) => seen.push(append));
+
+    log.publish(WS, 'att-3', { type: 'session.started' }, 'launch-1');
+
+    expect(seen).toEqual([]);
+  });
+
+  test('delegation snapshot returns empty for an unknown launch', () => {
+    const log = createSessionLog();
+
+    const snapshot = log.readDelegation(WS, 'att-3', 'unknown-launch');
+
+    expect(snapshot).toEqual({ lines: [], last_event_at: null });
+  });
+
   test('read of an absent attempt returns []', () => {
     expect(createSessionLog().read(WS, 'nope')).toEqual([]);
   });
@@ -203,6 +240,21 @@ describe('worker/session-log last_event_at (UI-53es §1)', () => {
     vi.advanceTimersByTime(3_000);
 
     expect(log.lastEventAt(WS, 'att-4')).toBe(7_000);
+    expect(fanouts).toEqual([WS]);
+  });
+
+  test('delegation publish uses the same coalesced queue fanout', () => {
+    /** @type {string[]} */
+    const fanouts = [];
+    const log = createSessionLog({
+      now: () => 7_000,
+      emitChanged: (workspace) => fanouts.push(workspace)
+    });
+
+    log.publish(WS, 'att-4', { type: 'session.started' }, 'launch-1');
+    vi.advanceTimersByTime(3_000);
+
+    expect(log.lastEventAt(WS, 'att-4', 'launch-1')).toBe(7_000);
     expect(fanouts).toEqual([WS]);
   });
 });

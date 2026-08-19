@@ -56,6 +56,10 @@ import {
   workerWorktreeExists
 } from '../worker/attach.js';
 import {
+  normalizeDelegationSessions,
+  readAttemptDelegationStreams
+} from '../worker/delegation-monitor.js';
+import {
   evaluateMergeGate,
   observedReviewReceiptState
 } from '../worker/merge-gate.js';
@@ -928,6 +932,13 @@ export function attemptsWithUsage(queue, workspace_key) {
       } catch (err) {
         log('usage receipt overlay failed for %s: %o', attempt_id, err);
       }
+      const delegation_sessions = delegationSessionsForAttempt(
+        workspace_key,
+        attempt
+      );
+      if (delegation_sessions.length > 0) {
+        projected = { ...projected, delegation_sessions };
+      }
     }
     if (typeof last_event_at === 'number') {
       projected = { ...projected, last_event_at };
@@ -935,6 +946,32 @@ export function attemptsWithUsage(queue, workspace_key) {
     out[attempt_id] = projected;
   }
   return out;
+}
+
+/**
+ * Overlay validated live delegation summaries onto one running attempt. The
+ * durable identity is handed back to the reader as the conflict boundary;
+ * live rows then lead the merge so newer status/activity wins.
+ *
+ * @param {string} workspace
+ * @param {any} attempt
+ * @returns {import('../worker/queue-store.js').DelegationSession[]}
+ */
+function delegationSessionsForAttempt(workspace, attempt) {
+  const durable = normalizeDelegationSessions(attempt?.delegation_sessions);
+  if (!attempt || attempt.status !== 'running') {
+    return durable;
+  }
+  try {
+    const scanned = readAttemptDelegationStreams(
+      workspace,
+      String(attempt.attempt_id || ''),
+      { known_sessions: durable }
+    );
+    return normalizeDelegationSessions([...scanned.sessions, ...durable]);
+  } catch {
+    return durable;
+  }
 }
 
 const COMPLETION_PHASES = new Set([
@@ -1570,7 +1607,7 @@ export function detachWorkerQueue(ws) {
  * snapshot-then-appends for one attempt to one client id. `off` unsubscribes
  * the per-entry runtime session-log listener.
  *
- * @type {Set<{ ws: WebSocket, client_id: string, attempt_id: string, off: () => void }>}
+ * @type {Set<{ ws: WebSocket, client_id: string, attempt_id: string, launch_id?: string, off: () => void }>}
  */
 const SESSION_LOG_SUBS = new Set();
 
@@ -1593,7 +1630,8 @@ export function detachSessionLog(ws) {
 }
 
 /**
- * Handle `subscribe-session-log`. Payload: `{ id: client_id, attempt_id }`.
+ * Handle `subscribe-session-log`. Payload:
+ * `{ id: client_id, attempt_id, launch_id? }`.
  *
  * Emits a SNAPSHOT of the persisted raw stream, then registers a live-append
  * listener on the shared runtime session-log. A Done/Failed attempt simply
@@ -1607,13 +1645,22 @@ export function handleSubscribeSessionLog(ws, req) {
   const p = /** @type {any} */ (req.payload || {});
   const client_id = typeof p.id === 'string' ? p.id : '';
   const attempt_id = typeof p.attempt_id === 'string' ? p.attempt_id : '';
-  if (client_id.length === 0 || attempt_id.length === 0) {
+  const has_launch_id = p.launch_id !== undefined;
+  const launch_id =
+    has_launch_id && typeof p.launch_id === 'string' ? p.launch_id : '';
+  if (
+    client_id.length === 0 ||
+    attempt_id.length === 0 ||
+    (has_launch_id && launch_id.length === 0)
+  ) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'bad_request',
-          'payload requires { id: string, attempt_id: string }'
+          has_launch_id
+            ? 'payload requires { id: string, attempt_id: string, launch_id?: non-empty string }'
+            : 'payload requires { id: string, attempt_id: string }'
         )
       )
     );
@@ -1634,7 +1681,68 @@ export function handleSubscribeSessionLog(ws, req) {
     }
   }
 
-  ws.send(JSON.stringify(makeOk(req, { id: client_id, attempt_id })));
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        id: client_id,
+        attempt_id,
+        ...(has_launch_id ? { launch_id } : {})
+      })
+    )
+  );
+
+  if (has_launch_id) {
+    let attempt = null;
+    try {
+      attempt = runtime.queueStore.snapshot(key).attempts?.[attempt_id] || null;
+    } catch {
+      attempt = null;
+    }
+    const authorized = delegationSessionsForAttempt(key, attempt).some(
+      (session) => session.launch_id === launch_id
+    );
+    if (!authorized) {
+      emitSessionLogSnapshot(ws, client_id, attempt_id, [], null, launch_id);
+      return;
+    }
+    /** @type {{ lines: unknown[], last_event_at: number|null }} */
+    let snapshot = { lines: [], last_event_at: null };
+    try {
+      snapshot = runtime.sessionLog.readDelegation(key, attempt_id, launch_id);
+    } catch {
+      snapshot = { lines: [], last_event_at: null };
+    }
+    emitSessionLogSnapshot(
+      ws,
+      client_id,
+      attempt_id,
+      snapshot.lines,
+      snapshot.last_event_at,
+      launch_id
+    );
+    const off = runtime.sessionLog.subscribe((append) => {
+      if (
+        append.workspace === key &&
+        append.attempt_id === attempt_id &&
+        append.launch_id === launch_id
+      ) {
+        emitSessionLogAppend(
+          ws,
+          client_id,
+          attempt_id,
+          append.event,
+          launch_id
+        );
+      }
+    }, launch_id);
+    SESSION_LOG_SUBS.add({ ws, client_id, attempt_id, launch_id, off });
+    log(
+      'subscribe-session-log %s attempt=%s mode=delegation',
+      client_id,
+      attempt_id
+    );
+    return;
+  }
 
   const lines = runtime.sessionLog.read(key, attempt_id);
   emitSessionLogSnapshot(
@@ -1646,12 +1754,16 @@ export function handleSubscribeSessionLog(ws, req) {
   );
 
   const off = runtime.sessionLog.subscribe((a) => {
-    if (a.workspace === key && a.attempt_id === attempt_id) {
+    if (
+      a.workspace === key &&
+      a.attempt_id === attempt_id &&
+      typeof a.launch_id !== 'string'
+    ) {
       emitSessionLogAppend(ws, client_id, attempt_id, a.event);
     }
   });
   SESSION_LOG_SUBS.add({ ws, client_id, attempt_id, off });
-  log('subscribe-session-log %s attempt=%s ws=%s', client_id, attempt_id, key);
+  log('subscribe-session-log %s attempt=%s mode=main', client_id, attempt_id);
 }
 
 /**

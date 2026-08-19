@@ -599,7 +599,11 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
-import { normalizeDelegationSessions } from './delegation-monitor.js';
+import {
+  finalizeDelegationSessions,
+  normalizeDelegationSessions,
+  readAttemptDelegationStreams
+} from './delegation-monitor.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
 import {
@@ -3180,23 +3184,50 @@ export function createQueueStore(options = {}) {
     if (!current) {
       return { patch, files: [] };
     }
-    let scanned;
+    /** @type {{ legs: UsageLeg[], files: string[], warnings: string[] }} */
+    let scanned_receipts = { legs: [], files: [], warnings: [] };
+    let receipts_read = false;
     try {
-      scanned = readAttemptUsageReceipts(workspace, attempt_id, {
+      scanned_receipts = readAttemptUsageReceipts(workspace, attempt_id, {
         known_legs: current.usage_legs
       });
+      receipts_read = true;
     } catch {
-      return { patch, files: [] };
+      // Terminal settlement still persists without optional receipt evidence.
+    }
+    /** @type {DelegationSession[]} */
+    let scanned_sessions = [];
+    try {
+      scanned_sessions = readAttemptDelegationStreams(workspace, attempt_id, {
+        known_sessions: current.delegation_sessions
+      }).sessions;
+    } catch {
+      // Terminal settlement still persists without optional monitor evidence.
     }
     return {
       patch: {
         ...patch,
-        usage_legs: normalizeUsageLegs([
-          ...(Array.isArray(current.usage_legs) ? current.usage_legs : []),
-          ...scanned.legs
-        ])
+        ...(receipts_read
+          ? {
+              usage_legs: normalizeUsageLegs([
+                ...(Array.isArray(current.usage_legs)
+                  ? current.usage_legs
+                  : []),
+                ...scanned_receipts.legs
+              ])
+            }
+          : {}),
+        delegation_sessions: finalizeDelegationSessions(
+          [
+            ...(Array.isArray(current.delegation_sessions)
+              ? current.delegation_sessions
+              : []),
+            ...scanned_sessions
+          ],
+          true
+        )
       },
-      files: scanned.files
+      files: scanned_receipts.files
     };
   }
 

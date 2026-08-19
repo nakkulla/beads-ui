@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { ensureDelegationMonitorDir } from './delegation-monitor.js';
 import {
   GUARD_WARNINGS_CAP,
   GUARD_WARNING_COMMAND_MAX,
@@ -10,6 +11,7 @@ import {
   orderLaneByBlocks
 } from './queue-store.js';
 import {
+  delegationMonitorDir,
   deployLogDir,
   queueFilePath,
   usageReceiptInboxDir,
@@ -3005,6 +3007,51 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     expect(result.ok).toBe(true);
     expect(result.queue.attempts['receipt-attempt'].usage_legs).toHaveLength(1);
     expect(fs.existsSync(receipt_file)).toBe(false);
+  });
+
+  test('persists finalized delegation sessions without consuming monitor files', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'monitor-terminal', bead_id: 'UI-monitor' }
+    });
+    ensureDelegationMonitorDir(WS, 'monitor-terminal');
+    const monitor_file = path.join(
+      delegationMonitorDir(WS, 'monitor-terminal'),
+      'launch-1.jsonl'
+    );
+    fs.writeFileSync(
+      monitor_file,
+      `${JSON.stringify({
+        schema: 'codex-delegation-monitor-v1',
+        attempt_id: 'monitor-terminal',
+        launch_id: 'launch-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        thread_id: 'thread-1',
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      })}\n`,
+      { mode: 0o600 }
+    );
+
+    const result = store.updateAttempt(WS, {
+      attempt_id: 'monitor-terminal',
+      patch: { status: 'done' }
+    });
+
+    expect(
+      result.queue.attempts['monitor-terminal'].delegation_sessions
+    ).toMatchObject([
+      {
+        launch_id: 'launch-1',
+        status: 'interrupted',
+        last_event_at: Date.parse('2026-08-18T04:27:00.000Z')
+      }
+    ]);
+    expect(fs.existsSync(monitor_file)).toBe(true);
   });
 
   test('keeps receipt files when terminal queue persistence fails', () => {
