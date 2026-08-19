@@ -61,6 +61,9 @@ import { discardReceiptTemplate, timesMeta } from './lanes.js';
  * @property {string|null} [base_exception] - `→ <target_base>` when this
  * attempt targets a base other than the workspace's declared one (UI-j6wa §3);
  * null on a match and on either side being unknown.
+ * @property {{ step: string, label: string, index: number, total: number, percent: number, active: boolean, failed: boolean }} [landing] - Worker-owned
+ * quick_fix landing progress projected by `prWaitProgress`; absent omits the
+ * line (fail-quiet).
  * @property {any} [discard] - Shared durable discard UI projection.
  */
 
@@ -236,7 +239,7 @@ export function bannersTemplate(state) {
                 type="button"
                 class="worker-banner__dismiss"
                 data-attempt-id=${state.failure.resume_attempt_id}
-                title="이 실패를 처리 완료로 표시하고 배너를 닫습니다"
+                title="실패 알림 닫기 — 레인에는 남습니다"
                 aria-label="배너 닫기"
               >
                 ✕
@@ -285,6 +288,7 @@ function runningTile(tile, now, selected_attempt = null) {
   // 이 세션이 선언 base가 아닌 곳을 향해 일하고 있다 (UI-j6wa §3). 툴바 칩이
   // 워크스페이스의 base를 상시 말하므로, 타일은 그와 다를 때만 입을 연다.
   const base_badge = tile.base_exception || null;
+  const landing = tile.landing;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   const discard_button = tile.discard?.action
     ? html`<button
@@ -328,7 +332,7 @@ function runningTile(tile, now, selected_attempt = null) {
             <button
               type="button"
               class="rtile__dismiss"
-              title="실패 기록 닫기"
+              title="실패 알림 닫기 — 레인에는 남습니다"
               aria-label="실패 기록 닫기"
             >
               ✕
@@ -369,6 +373,19 @@ function runningTile(tile, now, selected_attempt = null) {
           └ ${tile.current_child}
         </div>`
       : ''}
+    ${landing
+      ? html`<div class="rtile__landing">
+          <span
+            class="merge-step${landing.failed ? ' merge-step--failed' : ''}"
+            style=${`--progress: ${landing.percent}%`}
+            >${landing.label}${landing.index > 0
+              ? html`<span class="merge-step__n"
+                  >${landing.index}/${landing.total}</span
+                >`
+              : ''}</span
+          >
+        </div>`
+      : ''}
     ${meta ||
     provider_badges.length > 0 ||
     usage_label ||
@@ -403,8 +420,8 @@ function runningTile(tile, now, selected_attempt = null) {
         </div>`
       : ''}
     ${timesMeta(tile)} ${discardReceiptTemplate(tile)}
-    <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일): 큐
-         스냅샷에는 페이즈명도 진행률도 없으므로 진행 바는 만들지 않는다.
+    <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
+         quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
     ${failed || paused
       ? ''

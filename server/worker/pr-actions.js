@@ -63,6 +63,15 @@ const log = debug('worker:pr-actions');
  */
 export const DEFAULT_CLICK_REQUERY_DELAY_MS = 2000;
 
+/** @type {Set<string>} */
+const RESUMABLE_TERMINAL_STATUSES = new Set([
+  'done',
+  'failed',
+  'orphaned',
+  'stopped',
+  'discarded'
+]);
+
 /**
  * The post-merge cleanup steps, IN THE ORDER the pr-finish contract fixes them
  * (worker-phase2 §6, worker-deploy-hook §2). Exported so the failure record,
@@ -186,7 +195,7 @@ function authoritativeMergeSha(pr) {
  *     withTopologyLock: <T>(repo: string, fn: () => Promise<T>) => Promise<T>
  *   },
  *   gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
- *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
+ *   scheduler: { resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>, tick: (workspace: string) => Promise<void> },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
@@ -2014,7 +2023,11 @@ export function createPrActions(deps) {
             first.pr.base_ref || ''
           );
         }
-        return dispatchResolution(bead_id, first.pr.head_sha);
+        return dispatchResolution(
+          bead_id,
+          first.pr.head_sha,
+          first.pr.base_ref || ''
+        );
       }
       if (!first.verdict.enabled) {
         if (first.verify_attempted) {
@@ -2171,13 +2184,15 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {string} head_sha
-   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {string} base_ref
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
   async function dispatchResolution(
     bead_id,
     head_sha,
+    base_ref,
     resolution_wait = null,
     continuation
   ) {
@@ -2185,6 +2200,26 @@ export function createPrActions(deps) {
     // so the row goes back to its ordinary conflict state rather than showing a
     // merge that is not happening.
     clearStep(bead_id);
+    const attempts = Object.values(
+      deps.store.snapshot(workspace).attempts || {}
+    );
+    const resumable = attempts.some(
+      (attempt) =>
+        attempt &&
+        attempt.bead_id === bead_id &&
+        RESUMABLE_TERMINAL_STATUSES.has(String(attempt.status)) &&
+        typeof attempt.session_id === 'string' &&
+        attempt.session_id.length > 0
+    );
+    if (!resumable) {
+      return dispatchExternalResolution(
+        bead_id,
+        head_sha,
+        base_ref,
+        resolution_wait,
+        continuation
+      );
+    }
     let r;
     if (resolution_wait && continuation) {
       r = await deps.scheduler.resolveConflict(
@@ -2229,7 +2264,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {string} head_sha
    * @param {string} base_ref - The base branch this click OBSERVED on the PR.
-   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
@@ -2290,7 +2325,7 @@ export function createPrActions(deps) {
    *
    * @param {string} bead_id
    * @param {{ head_sha: string, base_ref: string|null }} approved
-   * @param {{ queue_bead_id: string, wait_ms: number }|null} [resolution_wait]
+   * @param {{ queue_bead_id: string, wait_ms: number, manual_authority?: boolean }|null} [resolution_wait]
    * @param {{ continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }|undefined} [continuation]
    * @returns {Promise<MergeClickResult>}
    */
@@ -2332,6 +2367,7 @@ export function createPrActions(deps) {
       return dispatchResolution(
         bead_id,
         latest.head_sha || '',
+        latest.base_ref || '',
         resolution_wait,
         continuation
       );

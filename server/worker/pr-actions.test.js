@@ -596,6 +596,38 @@ const ON_BASE = {
   gitHead: BASE_SHA
 };
 
+describe('worker/pr-actions — quick_fix merge non-participation', () => {
+  test('issues no merge or cleanup effects for a quick_fix attempt naturally lacking pr_url and pr_wait', async () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'qf-a1',
+        bead_id: BEAD,
+        repo: REPO,
+        target_base: 'main',
+        runner: 'codex',
+        quickfix_lane: true
+      }
+    });
+    const env = makeActions({ store });
+
+    const result = await env.actions.merge(BEAD);
+
+    // The quick_fix lane creates neither natural merge input: no PR URL and no
+    // durable pr_wait row, so the ordinary boundary refuses it before effects.
+    expect(result).toEqual({
+      ok: false,
+      action: 'refused',
+      reason: 'not_in_pr_wait'
+    });
+    expect(env.gh.prDetail).not.toHaveBeenCalled();
+    expect(env.gh.mergeSquash).not.toHaveBeenCalled();
+    expect(env.bd.setStatus).not.toHaveBeenCalled();
+    expect(env.worktree.removeByBranch).not.toHaveBeenCalled();
+  });
+});
+
 describe('worker/pr-actions rollback verify compatibility', () => {
   test('is inert when pinned repo ops declares no verify', async () => {
     const env = makeActions({ verifyResolution: { state: 'absent' } });
@@ -869,6 +901,56 @@ describe('merge click — driver-approved latest probe (UI-yup9)', () => {
       resolution_wait
     );
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('dispatches a fresh attempt-less resolver for a reconciled pr_wait row', async () => {
+    const store = createQueueStore();
+    store.place(WS, {
+      expected_revision: 0,
+      bead_id: BEAD,
+      lane: 's1'
+    });
+    store.reconcileExternalPrWait(WS, {
+      bead_id: BEAD,
+      pr_url: 'https://github.com/o/r/pull/304',
+      head_ref: BEAD
+    });
+    const h = makeActions({
+      store,
+      external: {
+        [BEAD]: {
+          bead_id: BEAD,
+          pr_url: 'https://github.com/o/r/pull/304',
+          pr_number: 304,
+          added_at: 1
+        }
+      },
+      details: [prOf({ mergeable: 'CONFLICTING', merge_state_status: 'DIRTY' })]
+    });
+    const resolution_wait = {
+      queue_bead_id: BEAD,
+      wait_ms: 1_800_000,
+      manual_authority: false
+    };
+
+    const result = await h.actions.dispatchConflict(
+      BEAD,
+      { head_sha: 'sha-aaa', base_ref: 'main' },
+      resolution_wait
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'conflict_resolution',
+      attempt_id: 'x1'
+    });
+    expect(h.scheduler.resolveConflict).not.toHaveBeenCalled();
+    expect(h.scheduler.dispatchExternalConflict).toHaveBeenCalledWith(
+      WS,
+      BEAD,
+      'main',
+      resolution_wait
+    );
   });
 
   test('refuses a moved DIRTY identity without dispatching', async () => {

@@ -192,6 +192,33 @@ function setMergingCompletion(
 }
 
 describe('worker/merge-queue — sequencing', () => {
+  test('does not collect a quick_fix attempt naturally lacking pr_url and pr_wait', async () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-QF-1',
+        bead_id: 'QF-1',
+        repo: WS,
+        target_base: 'main',
+        runner: 'codex',
+        quickfix_lane: true
+      }
+    });
+    const merge = vi.fn(async () => ({
+      ok: true,
+      action: 'merged',
+      reason: null
+    }));
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    // No PR URL means no pr_wait row, and therefore no durable merge candidate.
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+  });
+
   test('merges queued items one at a time, in order', async () => {
     const store = seed(['UI-1', 'UI-2']);
     /** @type {string[]} */
@@ -1230,6 +1257,10 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
 
     mq.start();
     await vi.waitFor(() => expect(dispatchConflict).toHaveBeenCalledTimes(1));
+    expect(mq.state().waiting).toEqual({
+      bead_id: 'UI-1',
+      reason: 'worker_sessions_busy'
+    });
     changed.current?.(WS);
     await Promise.resolve();
     expect(dispatchConflict).toHaveBeenCalledTimes(1);
@@ -1241,6 +1272,7 @@ describe('worker/merge-queue — conflict resolution rounds', () => {
 
     expect(dispatchConflict).toHaveBeenCalledTimes(2);
     expect(mq.state().failures['UI-1']).toBeUndefined();
+    expect(mq.state().waiting).toBeNull();
   });
 
   test('survives the scheduler moving the bead back into pr_wait mid-round', async () => {
@@ -2389,6 +2421,82 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(store.snapshot(WS).auto_merge).toBe(false);
     expect(merge).toHaveBeenCalledTimes(1);
     expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('passes manual authority provenance to conflict dispatch', async () => {
+    const store = seedManual(['UI-1']);
+    const dispatchConflict = vi.fn(
+      async (
+        /** @type {string} */ _bead_id,
+        /** @type {unknown} */ _approved,
+        /** @type {unknown} */ _resolution_wait
+      ) => {
+        void _bead_id;
+        void _approved;
+        void _resolution_wait;
+        return {
+          ok: false,
+          action: /** @type {const} */ ('conflict_resolution'),
+          reason: 'worktree_missing'
+        };
+      }
+    );
+    const mq = driver(store, {
+      probeMergeability: async () => ({
+        ok: true,
+        kind: /** @type {const} */ ('dirty'),
+        reason: null,
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      dispatchConflict
+    });
+
+    await mq.kick();
+
+    expect(dispatchConflict.mock.calls[0][2]).toMatchObject({
+      queue_bead_id: 'UI-1',
+      manual_authority: true
+    });
+  });
+
+  test('treats missing authority provenance as automatic', async () => {
+    const store = seed(['UI-1']);
+    const dispatchConflict = vi.fn(
+      async (
+        /** @type {string} */ _bead_id,
+        /** @type {unknown} */ _approved,
+        /** @type {unknown} */ _resolution_wait
+      ) => {
+        void _bead_id;
+        void _approved;
+        void _resolution_wait;
+        return {
+          ok: false,
+          action: /** @type {const} */ ('conflict_resolution'),
+          reason: 'worktree_missing'
+        };
+      }
+    );
+    const mq = driver(store, {
+      probeMergeability: async () => ({
+        ok: true,
+        kind: /** @type {const} */ ('dirty'),
+        reason: null,
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      dispatchConflict
+    });
+
+    await mq.kick();
+
+    expect(dispatchConflict.mock.calls[0][2]).toMatchObject({
+      queue_bead_id: 'UI-1',
+      manual_authority: false
+    });
   });
 
   test('routes a manual review-stale refusal through head review and merges after approval', async () => {

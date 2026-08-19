@@ -134,6 +134,29 @@ describe('base-drift scope exclusions', () => {
     expect(git).not.toHaveBeenCalled();
   });
 
+  test('skips a quick_fix lane attempt without consulting anything', async () => {
+    const readPushLog = pushLog([]);
+    const git = makeGit();
+
+    const verdict = await observe({
+      attempt: {
+        bead_id: 'B2',
+        repo: '/repo',
+        base_oid: PINNED,
+        quickfix_lane: true
+      },
+      git,
+      readPushLog
+    });
+
+    expect(verdict).toEqual({
+      violation: false,
+      record: { skipped: 'quickfix_lane' }
+    });
+    expect(readPushLog).not.toHaveBeenCalled();
+    expect(git).not.toHaveBeenCalled();
+  });
+
   test('skips an attempt that pinned no base', async () => {
     const verdict = await observe({
       attempt: { bead_id: 'X1', repo: '/repo', base_oid: null }

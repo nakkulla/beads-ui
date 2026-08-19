@@ -1524,7 +1524,8 @@ export function decorateQueue(workspace_key, raw_queue) {
     // restart shows the resumed queue with no stale failure text.
     merge_queue_state: workerMergeQueueState(workspace_key) || {
       active: null,
-      failures: {}
+      failures: {},
+      waiting: null
     }
   };
 }

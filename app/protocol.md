@@ -257,10 +257,12 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   in the driver's `merge()` call — click-time `gh` re-read, gate re-evaluation
   against the observed head SHA, BEHIND update-branch, DIRTY resolution dispatch
   — so the snapshot badges remain ADVISORY. Reply:
-  `{ bead_id, applied, conflict, queued, queue }`; queuing a bead that is
-  already queued is a no-op (`applied:false`). A durable cross-runner
-  `continuation_action` reuses this message to bind `prior_session` or
-  `fresh_current` to the server-issued token before the driver resumes.
+  `{ bead_id, applied, conflict, queued, queue, reason? }`; queuing a bead that
+  is already queued is a no-op (`applied:false`). The optional `reason` explains
+  a refusal the client surfaces as a toast: `lane_occupied` (the row still sits
+  in an execution lane), `pr_identity_unreadable`, `no_attachment`. A durable
+  cross-runner `continuation_action` reuses this message to bind `prior_session`
+  or `fresh_current` to the server-issued token before the driver resumes.
 - `worker-merge-queue-add-all` payload: `{ expected_revision }` — the lane
   header's `[일괄 머지]`: the SERVER picks every currently mergeable `pr_wait`
   row (the same disjuncts the row's `merge_enabled` uses, external rows
@@ -280,8 +282,12 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   durable order). The optional `resolution` projection is the exact durable wait
   record (`attempt_id`, `subject_bead_id`, `deadline_at`, `state`, `yielded_at`,
   `settled_at`); older snapshots may omit it. A non-persisted
-  `merge_queue_state` = `{ active, failures }` says which item the driver is on
-  and why each skipped one failed.
+  `merge_queue_state` = `{ active, failures, waiting }` says which item the
+  driver is on, why each skipped one failed, and — as
+  `{ bead_id, reason } | null` — which single nonterminal item is deferred
+  (`worker_sessions_busy` while an automatic conflict resolver waits for an
+  execution slot). `waiting` is re-derived after a restart, and an unknown
+  reason renders nothing.
 - `worker-revise-fix` accepts the same optional
   `{ continuation, decision_token }` pair as attempt resume.
 - Attempt-derived replies may carry `continuation_mismatch` with prior/current

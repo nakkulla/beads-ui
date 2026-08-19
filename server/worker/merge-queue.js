@@ -118,6 +118,8 @@ function repairFence(q) {
  * @property {Record<string, string>} failures - Why each skipped item failed,
  * by bead_id. Non-durable: a restart clears it, which is correct — the reason
  * described one run of one click.
+ * @property {{ bead_id: string, reason: string }|null} waiting - Why one
+ * nonterminal item is deferred. Non-durable and re-derived after restart.
  */
 
 /**
@@ -128,7 +130,7 @@ function repairFence(q) {
  *   store: ReturnType<typeof import('./queue-store.js').createQueueStore>,
  *   merge: (bead_id: string) => Promise<MergeClickResult>,
  *   probeMergeability?: (bead_id: string) => Promise<{ ok: boolean, kind: 'merged'|'closed'|'dirty'|'behind'|'clean'|'blocked', reason: string|null, head_sha: string|null, base_ref: string|null, head_ref?: string|null, external: boolean, continuation?: 'verify' }>,
- *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
+ *   dispatchConflict?: (bead_id: string, approved: { head_sha: string, base_ref: string|null }, resolution_wait: { queue_bead_id: string, wait_ms: number, manual_authority?: boolean }, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: Record<string, unknown> }) => Promise<MergeClickResult>,
  *   observePr: (bead_id: string) => Promise<{ state?: string|null, error?: string|null }>,
  *   headSha?: (bead_id: string) => string|null,
  *   isExternalRow?: (bead_id: string) => boolean,
@@ -1288,7 +1290,8 @@ export function createMergeQueue(deps) {
         },
         {
           queue_bead_id,
-          wait_ms: resolution_wait_ms
+          wait_ms: resolution_wait_ms,
+          manual_authority: manualContinuation(queue_bead_id)
         },
         continuationInput(queue_bead_id, subject_bead_id)
       );
@@ -1905,6 +1908,10 @@ export function createMergeQueue(deps) {
       halted_on_conflict = null;
       return false;
     }
+    if (manualContinuation(pending.queue_bead_id)) {
+      halted_on_conflict = null;
+      return false;
+    }
     if (typeof deps.conflictDispatchBlocked !== 'function') {
       return true;
     }
@@ -2115,7 +2122,16 @@ export function createMergeQueue(deps) {
      * @returns {MergeQueueState}
      */
     state() {
-      return { active, failures: Object.fromEntries(failures) };
+      return {
+        active,
+        failures: Object.fromEntries(failures),
+        waiting: halted_on_conflict
+          ? {
+              bead_id: halted_on_conflict.queue_bead_id,
+              reason: 'worker_sessions_busy'
+            }
+          : null
+      };
     },
 
     /**

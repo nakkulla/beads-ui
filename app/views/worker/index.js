@@ -577,6 +577,34 @@ export function mergeFailureText(reason) {
 }
 
 /**
+ * Human text for a rejected manual merge-queue placement.
+ *
+ * @param {unknown} reason
+ * @returns {string}
+ */
+export function mergeQueueRefusalText(reason) {
+  if (reason === 'lane_occupied') {
+    return '실행 레인에 남아 있어 머지 대상이 아닙니다';
+  }
+  const base = '머지 큐에 넣지 못했습니다 (이미 대기 중이거나 대상 아님)';
+  return typeof reason === 'string' && reason.length > 0
+    ? `${base}: ${reason}`
+    : base;
+}
+
+/**
+ * Project a known nonterminal resolver wait reason; unknown values fail quiet.
+ *
+ * @param {unknown} reason
+ * @returns {string|null}
+ */
+export function mergeWaitingText(reason) {
+  return reason === 'worker_sessions_busy'
+    ? '해소 대기 — 실행 슬롯 대기 중'
+    : null;
+}
+
+/**
  * Turn the optional durable merge-queue wait into one nonterminal badge.
  * Unknown and malformed states stay invisible: the server owns fail-closed
  * execution, while this projection must remain compatible with older snapshots.
@@ -967,7 +995,7 @@ export function prStatusBadge(input) {
  * durable lane membership an external row does not have), and a MERGED row
  * becomes a [정리] button because nothing auto-cleans it. 충돌 해소 is NOT one
  * of them any more — the attempt-less dispatch (UI-w0hi §1) runs it.
- * @param {{ position: number, active: boolean, failure: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, head_review?: any, authority?: any }|null} [merge_queue]
+ * @param {{ position: number, active: boolean, failure: string|null, waiting?: string|null, resolution?: import('../../data/worker-queue-store.js').ResolutionProjection|null, continuation_action?: any, head_review?: any, authority?: any }|null} [merge_queue]
  * This row's place in the sequential merge queue (UI-5v7d §4): a 1-based
  * `position` while it waits (0 = not queued), whether the driver is on it right
  * now, and the reason it was skipped, if any.
@@ -1015,6 +1043,9 @@ function prWaitRow(
     merge_queue.continuation_action.continuation === null;
   const queue_active = !!merge_queue && merge_queue.active === true;
   const queue_failure = (merge_queue && merge_queue.failure) || null;
+  const queue_waiting = mergeWaitingText(
+    merge_queue ? merge_queue.waiting : null
+  );
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
@@ -1050,7 +1081,7 @@ function prWaitRow(
         ? resolution.badge
         : conflict_session === 'running'
           ? '충돌 해소 중'
-          : null;
+          : queue_waiting;
   const conflicting = !!gate && gate.base_badge === '충돌';
   const enabled = !!gate && gate.enabled === true;
   // A merge in flight owns the row: both buttons go quiet until it settles, so
@@ -1776,11 +1807,7 @@ export function createWorkerView(mount_element, options = {}) {
     }
     // Not applied and not a CAS conflict: the row is already queued (a no-op) or
     // it is no longer a lane member the server will merge.
-    showToast(
-      '머지 큐에 넣지 못했습니다 (이미 대기 중이거나 대상 아님)',
-      'error',
-      2400
-    );
+    showToast(mergeQueueRefusalText(res.reason), 'error', 2400);
   }
 
   /**
@@ -2459,7 +2486,8 @@ export function createWorkerView(mount_element, options = {}) {
         queued.has(it.id) ||
         seen.has(it.id) ||
         isPhaseChild(it) ||
-        isWorkerIneligible(/** @type {any} */ (it).labels)
+        (Object.hasOwn(it, 'labels') &&
+          isWorkerIneligible(/** @type {any} */ (it).labels))
       ) {
         continue;
       }
@@ -2511,18 +2539,33 @@ export function createWorkerView(mount_element, options = {}) {
       const is_quick_fix =
         it.workflow?.route === 'quick_fix' ||
         (it.metadata && it.metadata.route === 'quick_fix');
-      const eligible = !is_quick_fix && has_spec && !spec.conflict;
+      // Ready/Blocked subscriptions preserve raw bd fields, including
+      // `description`. An older/partial server may omit the key; that absence
+      // stays fail-quiet and leaves the authoritative admission check to the
+      // server. A present but empty description is safe to reject here.
+      const has_description =
+        !Object.hasOwn(it, 'description') ||
+        (typeof it.description === 'string' &&
+          it.description.trim().length > 0);
+      // Labels follow the same ownership boundary: use them when the payload
+      // carries them, otherwise leave worker eligibility to server admission.
+      const worker_ineligible =
+        Object.hasOwn(it, 'labels') &&
+        isWorkerIneligible(/** @type {any} */ (it).labels);
+      const eligible =
+        !worker_ineligible &&
+        (is_quick_fix ? has_description : has_spec && !spec.conflict);
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
       const parts = [];
       if (is_blocked) {
         parts.push(blockedReason(it));
       }
-      if (is_quick_fix) {
-        parts.push('quick_fix · 워커 비대상');
-      } else if (spec.conflict) {
+      if (is_quick_fix && !has_description) {
+        parts.push('missing_description');
+      } else if (!is_quick_fix && spec.conflict) {
         parts.push('spec_id_conflict');
-      } else if (!has_spec) {
+      } else if (!is_quick_fix && !has_spec) {
         parts.push('spec 없음');
       }
       const adm = admissionBadge(it.id);
@@ -2852,7 +2895,31 @@ export function createWorkerView(mount_element, options = {}) {
     // Failed records are the actionable front of the running lane; they do not
     // consume a live slot, but still claim their bead so queue rows do not
     // duplicate the same work item.
-    const running = [...failed_running, ...active_running];
+    const running = [...failed_running, ...active_running].map((tile) => {
+      const attempt = attempt_by_id.get(tile.attempt_id);
+      const progress = attempt?.quickfix_landing;
+      if (
+        attempt?.quickfix_lane !== true ||
+        !progress ||
+        typeof progress !== 'object'
+      ) {
+        return tile;
+      }
+      const reason =
+        typeof progress.reason === 'string' && progress.reason.length > 0
+          ? progress.reason
+          : null;
+      const landing = prWaitProgress({
+        bead_id: attempt.bead_id,
+        merge_sha: progress.head_sha,
+        cleanup_cursor: progress.cursor,
+        cleanup_failed: reason ? { step: progress.cursor, reason } : null,
+        repo_operations: Array.isArray(q.repo_operations)
+          ? q.repo_operations
+          : []
+      });
+      return landing ? { ...tile, landing } : tile;
+    });
     // The banner's ↻ targets EXACTLY the attempt the banner describes — the
     // latest failure. An older eligible attempt is never substituted (that
     // would resume a different session than the one reported); ineligibility
@@ -2912,6 +2979,12 @@ export function createWorkerView(mount_element, options = {}) {
     const merge_state = q.merge_queue_state || { active: null, failures: {} };
     /** @type {Record<string, string>} */
     const merge_failures = merge_state.failures || {};
+    const merge_waiting =
+      merge_state.waiting &&
+      typeof merge_state.waiting.bead_id === 'string' &&
+      typeof merge_state.waiting.reason === 'string'
+        ? merge_state.waiting
+        : null;
     // durable 제외 기록 (UI-yk55 §3): 계약 키가 없는 구버전 스냅샷은 빈 맵으로
     // 읽고 뱃지를 생략한다 (fail-quiet).
     /** @type {Record<string, { head_sha: string, reason: string, at: number }>} */
@@ -3257,6 +3330,10 @@ export function createWorkerView(mount_element, options = {}) {
               position: merge_positions.get(e.bead_id) || 0,
               active: merge_state.active === e.bead_id,
               failure: merge_failures[e.bead_id] || null,
+              waiting:
+                merge_waiting?.bead_id === e.bead_id
+                  ? merge_waiting.reason
+                  : null,
               resolution: merge_resolutions.get(e.bead_id),
               continuation_action: merge_continuations.get(e.bead_id),
               head_review: merge_head_reviews.get(e.bead_id) || null,

@@ -155,7 +155,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  * @param {{
  *   workspace: string,
  *   repo: string,
- *   store: { snapshot: (workspace: string) => Queue, promoteMergedExternal?: (workspace: string, input: any) => { ok: boolean }, recordCleanupFailure?: (workspace: string, input: any) => unknown },
+ *   store: { snapshot: (workspace: string) => Queue, reconcileExternalPrWait?: (workspace: string, input: { bead_id: string, pr_url: string, head_ref: string }) => { ok: boolean }, promoteMergedExternal?: (workspace: string, input: any) => { ok: boolean }, recordCleanupFailure?: (workspace: string, input: any) => unknown },
  *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>> },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
@@ -365,6 +365,21 @@ export function createPrPoller(deps) {
         };
       }
       return { verify: null };
+    }
+
+    if (
+      external_row !== null &&
+      typeof deps.store.reconcileExternalPrWait === 'function'
+    ) {
+      try {
+        deps.store.reconcileExternalPrWait(workspace, {
+          bead_id,
+          pr_url: pr.url || ref.url,
+          head_ref: pr.head_ref || ''
+        });
+      } catch (err) {
+        log('external PR-wait reconcile failed for %s: %o', bead_id, err);
+      }
     }
 
     /** @type {import('./merge-gate.js').CurrentState} */

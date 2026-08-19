@@ -26,6 +26,8 @@
  * @property {string|null} [cleanup_cursor] - Next post-merge cleanup step.
  * @property {string|null} [head_ref] - Branch identity retained for deferred cleanup.
  * @property {string|null} [pr_url] - PR URL retained for deferred notification.
+ * @property {string|null} [serial_lane_id] - Original serial lane retained
+ * while this row waits for merge cleanup. Optional for legacy snapshots.
  * @property {boolean} [external] - Durable external origin: a promoted
  * externally-merged row keeps this after the registry overlay yields, so
  * failure-resume eligibility ([정리]) still classifies it as external.
@@ -152,6 +154,16 @@
  * relaxes the session-side base-into-branch `git merge` guard, so it is
  * recorded durably: a reconcile pass or a restart must be able to see what kind
  * of attempt this was. Defaults false — a missing value fails closed.
+ * @property {boolean} quickfix_lane - Whether this is a Worker-dispatched
+ * quick_fix lane attempt. Settlement uses it to choose landing instead of PR
+ * observation, and the session uses it as the exemption basis for the three
+ * base-push guard layers (pre-push hook install, base-drift observation, and
+ * textual guard). Defaults false.
+ * @property {{ cursor: 'base_containment'|'repo_operations'|'branch_cleanup'|'parent_close'|null, head_sha: string|null, reason: string|null }|null} quickfix_landing -
+ * Durable landing progress. `cursor` reuses the cleanup step vocabulary (null
+ * before the first cleanup step), `head_sha` is the 40hex bound by
+ * `impl_review`, and `reason` records a landing failure. Its shape is directly
+ * consumable by the existing `prWaitProgress` projection.
  * @property {boolean} external_conflict - Whether this resolution attempt was
  * dispatched for an EXTERNAL PR row (UI-w0hi §1) — a bead a normal session
  * delivered, which the durable lanes never held. It is what routes the two
@@ -1603,7 +1615,12 @@ function normalizeEntry(entry) {
     pr_url:
       typeof entry.pr_url === 'string' && entry.pr_url.length > 0
         ? entry.pr_url
-        : null
+        : null,
+    serial_lane_id:
+      typeof entry.serial_lane_id === 'string' &&
+      serialLaneIndex(entry.serial_lane_id) !== null
+        ? entry.serial_lane_id
+        : undefined
   };
 }
 
@@ -1937,6 +1954,10 @@ export function makeAttempt(fields) {
       : null,
     resumed_from: fields.resumed_from ?? null,
     conflict_resolution: fields.conflict_resolution === true,
+    quickfix_lane: fields.quickfix_lane === true,
+    quickfix_landing: isRecord(fields.quickfix_landing)
+      ? clone(fields.quickfix_landing)
+      : null,
     external_conflict: fields.external_conflict === true,
     cleanup_diagnosis: fields.cleanup_diagnosis === true,
     cleanup_diagnosis_result_path:
@@ -5097,11 +5118,72 @@ export function createQueueStore(options = {}) {
           // session finished must not overtake the queue.
           next.merge_queue.splice(queued_at, 0, queued);
         }
-        next.pr_wait.push(makeQueueEntry(bead_id, now()));
+        const entry = makeQueueEntry(bead_id, now());
+        const serial_lane_id = next.attempts[attempt_id].serial_lane_id;
+        if (serialLaneIndex(serial_lane_id) !== null) {
+          entry.serial_lane_id = serial_lane_id;
+        }
+        next.pr_wait.push(entry);
         return true;
       });
       consumeTerminalReceipts(result, prepared.files);
       return result;
+    },
+
+    /**
+     * Reconcile an externally delivered OPEN PR into the durable PR-wait lane.
+     * Membership, terminality, and discard ownership are judged and mutated in
+     * one store write so no intermediate lane-free state can be observed.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, pr_url: string, head_ref: string }} input
+     * @returns {QueueOpResult}
+     */
+    reconcileExternalPrWait(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const { bead_id, pr_url, head_ref } = input;
+        if (
+          typeof bead_id !== 'string' ||
+          bead_id.length === 0 ||
+          typeof pr_url !== 'string' ||
+          pr_url.length === 0 ||
+          typeof head_ref !== 'string' ||
+          head_ref.length === 0 ||
+          hasActiveDiscardOperation(next, bead_id) ||
+          next.pr_wait.some((entry) => entry.bead_id === bead_id) ||
+          next.done.some((entry) => entry.bead_id === bead_id)
+        ) {
+          return false;
+        }
+        const in_parallel = next.queue.some(
+          (entry) => entry.bead_id === bead_id
+        );
+        const serial_lane = next.serial_lanes.find((lane) =>
+          lane.entries.some((entry) => entry.bead_id === bead_id)
+        );
+        if (!in_parallel && !serial_lane) {
+          return false;
+        }
+        const attempts = Object.values(next.attempts).filter(
+          (attempt) => attempt.bead_id === bead_id
+        );
+        if (
+          !attempts.every((attempt) =>
+            TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
+          )
+        ) {
+          return false;
+        }
+        removeFromLanes(next, bead_id);
+        const entry = makeQueueEntry(bead_id, now());
+        entry.pr_url = pr_url;
+        entry.head_ref = head_ref;
+        if (serial_lane) {
+          entry.serial_lane_id = serial_lane.id;
+        }
+        next.pr_wait.push(entry);
+        return true;
+      });
     },
 
     /**
@@ -5808,7 +5890,9 @@ export function createQueueStore(options = {}) {
      */
     enqueueMergeManual(workspace, input) {
       const { expected_revision, entries } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyMutation(workspace, expected_revision, (next) => {
         if (!Array.isArray(entries) || entries.length === 0) {
           return false;
         }
@@ -5831,6 +5915,15 @@ export function createQueueStore(options = {}) {
             continue;
           }
           if (!enqueueMember(next, bead_id, entry.external === true)) {
+            const lane_occupied =
+              next.queue.some((item) => item.bead_id === bead_id) ||
+              next.serial_lanes.some((lane) =>
+                lane.entries.some((item) => item.bead_id === bead_id)
+              ) ||
+              next.done.some((item) => item.bead_id === bead_id);
+            if (lane_occupied) {
+              reason = 'lane_occupied';
+            }
             continue;
           }
           if (next.auto_merge_skips[bead_id]) {
@@ -5879,6 +5972,7 @@ export function createQueueStore(options = {}) {
         }
         return changed > 0;
       });
+      return reason === null || result.ok ? result : { ...result, reason };
     },
 
     /**

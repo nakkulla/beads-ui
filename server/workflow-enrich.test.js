@@ -315,6 +315,25 @@ describe('computeStale — spec_review', () => {
     );
     expect(spec_stale).toBe(true);
   });
+
+  test('uses a valid last_checked_sha cursor for spec freshness', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/spec.md', '# spec v1\n');
+    const receipt_sha = commitAll(dir, 'add spec');
+    writeFile(dir, 'docs/spec.md', '# spec v2\n');
+    const cursor_sha = commitAll(dir, 'review updated scope');
+
+    const { spec_stale } = computeStale(
+      {
+        spec_id: 'docs/spec.md',
+        spec_review: 'codex@' + receipt_sha,
+        last_checked_sha: cursor_sha
+      },
+      dir
+    );
+
+    expect(spec_stale).toBe(false);
+  });
 });
 
 describe('computeStale — impl_review (Bead branch tip)', () => {
@@ -610,14 +629,14 @@ describe('enrichIssueWorkflow', () => {
     expect(invalid.route_source).toBe('derived');
   });
 
-  test('recognizes a pinned quick_fix route with an empty close stage', () => {
+  test('keeps the quick_fix close stage empty while implementation is in progress', () => {
     const dir = makeRepo();
     writeFile(dir, 'x.txt', '1\n');
     commitAll(dir, 'init');
 
     const wf = enrichIssueWorkflow(
       {
-        status: 'open',
+        status: 'in_progress',
         metadata: { route: 'quick_fix', plan_path: 'docs/ignored.md' }
       },
       dir
@@ -646,6 +665,19 @@ describe('enrichIssueWorkflow', () => {
     );
 
     expect(wf.stages.close?.fill).toBe('full');
+  });
+
+  test('dims the quick_fix close stage while a resolved bead waits for Worker close', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      { status: 'resolved', metadata: { route: 'quick_fix' } },
+      dir
+    );
+
+    expect(wf.stages.close?.fill).toBe('dim');
   });
 });
 
@@ -940,6 +972,34 @@ describe('planStage (full_plan)', () => {
       fill: 'dim',
       stale: true,
       approval_state: 'stale'
+    });
+  });
+
+  test('uses a valid last_checked_sha cursor for plan freshness', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan v1\n');
+    const approval_sha = commitAll(dir, 'add plan');
+    writeFile(dir, 'docs/plan.md', '# plan v2\n');
+    const cursor_sha = commitAll(dir, 'review updated plan');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'codex@' + '3'.repeat(12),
+          plan_approval: 'user@' + approval_sha,
+          last_checked_sha: cursor_sha
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan).toMatchObject({
+      fill: 'full',
+      stale: false,
+      approval_state: 'fresh'
     });
   });
 

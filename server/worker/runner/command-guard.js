@@ -213,9 +213,12 @@ export const BASE_INTO_BRANCH_RE = /git\s+merge(?!-(?:base|tree|file)\b)/i;
  *
  * @typedef {Object} GuardContext
  * @property {boolean} disposition - A REVISE-disposition session, whose JOB is
- * publishing the resolved base (`revise-disposition.js`). Neither the base-push
- * judgment nor the hook-bypass one applies to it; `gh pr merge` and `git merge`
- * still do.
+ * publishing the resolved base (`revise-disposition.js`). The hook-bypass
+ * judgment does not apply to it; `gh pr merge` and `git merge` still do.
+ * @property {boolean} base_push_allowed - A session outside the base-push
+ * judgment: REVISE disposition, whose job is publishing the resolved base, or
+ * the Worker-dispatched quick_fix lane, whose terminal is a reviewed direct
+ * base push. Hook-bypass exemption remains disposition-only.
  * @property {string|null} repo - The attempt's repo root. Null ⇒ condition 4 of
  * the allowlist is unprovable, so the allowlist never fires.
  * @property {string|null} target_base - The repo's declared base. Null ⇒ the
@@ -1812,7 +1815,7 @@ function fallbackViolation(src, ctx) {
       command: src
     };
   }
-  if (!ctx.disposition && basePushRegex(ctx.target_base).test(src)) {
+  if (!ctx.base_push_allowed && basePushRegex(ctx.target_base).test(src)) {
     return {
       kind: 'git_push_base',
       reason: 'merge_to_base_blocked',
@@ -1869,7 +1872,7 @@ function checkSimpleCommand(cmd, ctx, depth, siblings, index) {
   }
 
   if (
-    !ctx.disposition &&
+    !ctx.base_push_allowed &&
     name === 'git' &&
     argv[1] === 'push' &&
     pushLandsOnBase(argv.slice(2), ctx.target_base) &&
@@ -1969,10 +1972,12 @@ function scanCommand(src, ctx, depth) {
  * Judge a session's shell command against the two merge guards.
  *
  * @param {string} cmd - The command the session asked to run.
- * @param {{ disposition?: boolean, repo?: string|null,
+ * @param {{ disposition?: boolean, quickfix_lane?: boolean, repo?: string|null,
  * target_base?: string|null }} [options] - The attempt's judgment subject.
  * `disposition` true drops the base-push and hook-bypass judgments, whose
  * subject that session IS (guard-enforcement-layer-replacement §4).
+ * `quickfix_lane` true drops only the base-push judgment because reviewed
+ * direct base push is that Worker-dispatched lane's terminal.
  * `repo`/`target_base` are the attempt's subject
  * (worker-base-scope-alignment §6): absent `target_base` keeps the legacy
  * `main|master` match, absent `repo` disables the cross-repo allowlist. Every
@@ -1988,6 +1993,8 @@ export function findMergeViolation(cmd, options) {
   /** @type {GuardContext} */
   const ctx = {
     disposition: options?.disposition === true,
+    base_push_allowed:
+      options?.disposition === true || options?.quickfix_lane === true,
     repo:
       typeof options?.repo === 'string' && options.repo.length > 0
         ? options.repo
