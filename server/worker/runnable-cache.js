@@ -70,7 +70,7 @@ const NEGATIVE_TTL_MS = 60_000;
  *
  * @type {ReadonlySet<string>}
  */
-const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan']);
+const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
 
 /**
  * One display-runnable bead. Deliberately a PROJECTION of the `bd list` row, not
@@ -203,18 +203,35 @@ function qualify(row) {
   if (!RUNNABLE_ROUTES.has(route)) {
     return null;
   }
-  const spec = resolveSpecId(row);
-  if (spec.path.length === 0 || spec.conflict) {
-    return null;
-  }
-  const spec_review = meta.spec_review;
-  const normalized_spec_review =
-    typeof spec_review === 'string' ? spec_review.trim() : '';
-  if (
-    normalized_spec_review.length === 0 ||
-    !ADMISSION_RECEIPT_RE.test(normalized_spec_review)
-  ) {
-    return null;
+  const is_quick_fix = route === 'quick_fix';
+  let spec_id = '';
+  let spec_reviewer = '';
+  if (is_quick_fix) {
+    if (
+      typeof row.description !== 'string' ||
+      row.description.trim().length === 0
+    ) {
+      return null;
+    }
+  } else {
+    const spec = resolveSpecId(row);
+    if (spec.path.length === 0 || spec.conflict) {
+      return null;
+    }
+    const spec_review = meta.spec_review;
+    const normalized_spec_review =
+      typeof spec_review === 'string' ? spec_review.trim() : '';
+    if (
+      normalized_spec_review.length === 0 ||
+      !ADMISSION_RECEIPT_RE.test(normalized_spec_review)
+    ) {
+      return null;
+    }
+    spec_id = spec.path;
+    spec_reviewer = normalized_spec_review.slice(
+      0,
+      normalized_spec_review.indexOf('@')
+    );
   }
   if (isPhaseChild(row)) {
     return null;
@@ -223,12 +240,9 @@ function qualify(row) {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     route,
-    spec_id: spec.path,
-    spec_reviewer: normalized_spec_review.slice(
-      0,
-      normalized_spec_review.indexOf('@')
-    ),
-    plan_state: planState(meta, route),
+    spec_id,
+    spec_reviewer,
+    plan_state: is_quick_fix ? 'none' : planState(meta, route),
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at)

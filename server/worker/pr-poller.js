@@ -31,7 +31,7 @@
  */
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
-import { reviewReceiptState } from './merge-gate.js';
+import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
 
 const log = debug('worker:pr-poller');
@@ -159,6 +159,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
  *   gh: { prDetail: (repo_dir: string, number: number) => Promise<import('./gh.js').GhResult<import('./gh.js').PrDetail>> },
  *   observations: ReturnType<typeof import('./pr-observations.js').createPrObservationStore>,
  *   readIssue?: (bead_id: string) => Promise<Record<string, any>>,
+ *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   activity?: ReturnType<typeof import('./activity-store.js').createActivityStore>,
  *   getSubscriberCount: () => number,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
@@ -179,6 +180,12 @@ export function resolvePrRef(queue, bead_id, external = null) {
 export function createPrPoller(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
+  // Absent wiring leaves the probe undefined, which `reviewReceiptState` reads
+  // as fail-closed (UI-vzyh §2) — never as a silent pass.
+  const probeAncestry =
+    typeof deps.gitRun === 'function'
+      ? createAncestryProbe({ gitRun: deps.gitRun, repo })
+      : undefined;
   const sleep =
     deps.sleep ||
     ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
@@ -387,7 +394,11 @@ export function createPrPoller(deps) {
     if (typeof deps.readIssue === 'function') {
       try {
         const issue = await deps.readIssue(bead_id);
-        review_receipt_state = reviewReceiptState(issue, pr.head_sha);
+        review_receipt_state = await reviewReceiptState(
+          issue,
+          pr.head_sha,
+          probeAncestry
+        );
       } catch {
         review_receipt_state = 'invalid';
       }

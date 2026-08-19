@@ -1615,6 +1615,29 @@ describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
     );
   });
 
+  test('omits the spec reviewer chip when a quick fix has no reviewer', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-3',
+              title: '실행 가능',
+              route: 'quick_fix',
+              spec_reviewer: '',
+              plan_state: 'none'
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-c__review')).toBe(null);
+  });
+
   test('dims a skipped spec reviewer chip', () => {
     const lanes = buildLanes(
       [

@@ -47,7 +47,11 @@
  */
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
-import { evaluateMergeGate, reviewReceiptState } from './merge-gate.js';
+import {
+  createAncestryProbe,
+  evaluateMergeGate,
+  reviewReceiptState
+} from './merge-gate.js';
 import { resolvePrRef } from './pr-poller.js';
 import { branchForBead } from './worktree.js';
 
@@ -210,6 +214,7 @@ function authoritativeMergeSha(pr) {
 export function createPrActions(deps) {
   const workspace = deps.workspace;
   const repo = deps.repo;
+  const probeAncestry = createAncestryProbe({ gitRun: deps.gitRun, repo });
   const sleep =
     deps.sleep ||
     ((/** @type {number} */ ms) => new Promise((r) => setTimeout(r, ms)));
@@ -549,7 +554,8 @@ export function createPrActions(deps) {
   /**
    * Read workflow review authority at action time. Quick fixes intentionally
    * carry no formal receipts. Spec-backed routes require a reviewed spec and an
-   * implementation receipt bound to the current PR head.
+   * implementation receipt that is the observed PR head or one of its ancestors
+   * (UI-vzyh §2).
    *
    * @param {string} bead_id
    * @param {string} head_sha
@@ -567,7 +573,7 @@ export function createPrActions(deps) {
       log('review receipt read failed for %s: %o', bead_id, err);
       return 'invalid';
     }
-    return reviewReceiptState(issue, head_sha);
+    return reviewReceiptState(issue, head_sha, probeAncestry);
   }
 
   /**

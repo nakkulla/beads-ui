@@ -1,5 +1,6 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import {
+  createAncestryProbe,
   evaluateMergeGate,
   observedReviewReceiptState,
   reviewReceiptState,
@@ -267,20 +268,96 @@ describe('worker/merge-gate — candidate-tree verify receipt', () => {
 });
 
 describe('worker/merge-gate — shared review receipt state', () => {
-  test('accepts a spec-backed receipt bound to the current head', () => {
-    const state = reviewReceiptState(
-      {
-        spec_id: 'docs/spec.md',
-        metadata: {
-          route: 'spec_backed',
-          spec_review: `codex@${OLD_SHA}`,
-          impl_review: `self@${SHA}`
-        }
-      },
-      SHA
+  /** @type {import('./merge-gate.js').AncestryProbe} */
+  const ancestor = async () => 'ancestor';
+  /** @type {import('./merge-gate.js').AncestryProbe} */
+  const nonAncestor = async () => 'non_ancestor';
+  /** @type {import('./merge-gate.js').AncestryProbe} */
+  const probeError = async () => 'probe_error';
+
+  /**
+   * @param {Record<string, any>} [metadata]
+   */
+  function issueOf(metadata = {}) {
+    return {
+      spec_id: 'docs/spec.md',
+      metadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${OLD_SHA}`,
+        impl_review: `self@${SHA}`,
+        ...metadata
+      }
+    };
+  }
+
+  test('accepts a spec-backed receipt bound to the current head', async () => {
+    const state = await reviewReceiptState(issueOf(), SHA, nonAncestor);
+
+    expect(state).toBe('current');
+  });
+
+  test('accepts a receipt the observed head descends from', async () => {
+    const state = await reviewReceiptState(
+      issueOf({ impl_review: `codex@${OLD_SHA}` }),
+      SHA,
+      ancestor
     );
 
     expect(state).toBe('current');
+  });
+
+  test('marks a receipt the observed head does not descend from stale', async () => {
+    const state = await reviewReceiptState(
+      issueOf({ impl_review: `codex@${OLD_SHA}` }),
+      SHA,
+      nonAncestor
+    );
+
+    expect(state).toBe('stale');
+  });
+
+  test('fails closed at the gate when the ancestry probe errors', async () => {
+    const state = await reviewReceiptState(
+      issueOf({ impl_review: `codex@${OLD_SHA}` }),
+      SHA,
+      probeError
+    );
+
+    expect(state).toBe('stale');
+  });
+
+  test('fails closed when the ancestry probe throws', async () => {
+    const state = await reviewReceiptState(
+      issueOf({ impl_review: `codex@${OLD_SHA}` }),
+      SHA,
+      /** @type {import('./merge-gate.js').AncestryProbe} */ (
+        () => Promise.reject(new Error('git gone'))
+      )
+    );
+
+    expect(state).toBe('stale');
+  });
+
+  test('fails closed when no ancestry probe is wired', async () => {
+    const state = await reviewReceiptState(
+      issueOf({ impl_review: `codex@${OLD_SHA}` }),
+      SHA
+    );
+
+    expect(state).toBe('stale');
+  });
+
+  test('answers a quick_fix route without probing ancestry', async () => {
+    const probe = vi.fn();
+
+    const state = await reviewReceiptState(
+      { metadata: { route: 'quick_fix' } },
+      SHA,
+      probe
+    );
+
+    expect(state).toBe('current');
+    expect(probe).not.toHaveBeenCalled();
   });
 
   test('marks a cached review stale when the observed head moves', () => {
@@ -293,14 +370,14 @@ describe('worker/merge-gate — shared review receipt state', () => {
     expect(state).toBe('stale');
   });
 
-  test('fails closed on an unreadable issue', () => {
-    const state = reviewReceiptState(null, SHA);
+  test('fails closed on an unreadable issue', async () => {
+    const state = await reviewReceiptState(null, SHA, ancestor);
 
     expect(state).toBe('invalid');
   });
 
-  test('separates an absent native spec_id from a missing receipt', () => {
-    const state = reviewReceiptState(
+  test('separates an absent native spec_id from a missing receipt', async () => {
+    const state = await reviewReceiptState(
       {
         metadata: {
           route: 'spec_backed',
@@ -308,55 +385,112 @@ describe('worker/merge-gate — shared review receipt state', () => {
           impl_review: `self@${SHA}`
         }
       },
-      SHA
+      SHA,
+      ancestor
     );
 
     expect(state).toBe('spec_id_missing');
   });
 });
 
-describe('worker/merge-gate — fail-closed observations', () => {
-  test('rejects an observation error', () => {
-    const gate = evaluateMergeGate(entryOf({ error: 'gh_failed' }), inputOf());
-
-    expect(gate).toMatchObject({
-      enabled: false,
-      tier: 'undecidable',
-      reason: 'gh_failed'
+describe('worker/merge-gate — shared ancestry probe (UI-vzyh §2)', () => {
+  /**
+   * @param {(args: string[]) => { code: number, stdout?: string }} handler
+   */
+  function probeWith(handler) {
+    const calls = /** @type {string[][]} */ ([]);
+    const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+      calls.push(args);
+      const result = handler(args);
+      return { code: result.code, stdout: result.stdout || '', stderr: '' };
     });
+
+    return {
+      calls,
+      gitRun,
+      probe: createAncestryProbe({ gitRun, repo: '/r' })
+    };
+  }
+
+  test('answers equal without touching git', async () => {
+    const h = probeWith(() => ({ code: 0 }));
+
+    const state = await h.probe(SHA, SHA.toUpperCase());
+
+    expect(state).toBe('equal');
+    expect(h.gitRun).not.toHaveBeenCalled();
   });
 
-  test('rejects an unobserved PR', () => {
-    const gate = evaluateMergeGate(null, inputOf());
+  test('reports ancestor for a receipt the head descends from', async () => {
+    const h = probeWith(() => ({ code: 0 }));
 
-    expect(gate).toMatchObject({
-      enabled: false,
-      tier: 'unobserved',
-      reason: 'not_observed'
-    });
+    const state = await h.probe(OLD_SHA, SHA);
+
+    expect(state).toBe('ancestor');
   });
-});
 
-describe('worker/merge-gate — terminal PR states', () => {
-  test('reports a merged PR', () => {
-    const gate = evaluateMergeGate(
-      entryOf({ pr: prOf({ state: 'MERGED' }) }),
-      inputOf({ review_receipt_state: 'missing' })
+  test('reports non_ancestor on the merge-base refusal exit code', async () => {
+    const h = probeWith((args) => ({ code: args[0] === 'merge-base' ? 1 : 0 }));
+
+    const state = await h.probe(OLD_SHA, SHA);
+
+    expect(state).toBe('non_ancestor');
+  });
+
+  test('fetches the exact observed head before judging it', async () => {
+    let head_present = false;
+    const h = probeWith((args) => {
+      if (args[0] === 'fetch') {
+        head_present = true;
+        return { code: 0 };
+      }
+      if (args[0] === 'rev-parse') {
+        const wants_head = args[3].startsWith(SHA);
+        return { code: wants_head && !head_present ? 1 : 0 };
+      }
+      return { code: 0 };
+    });
+
+    const state = await h.probe(OLD_SHA, SHA);
+
+    expect(state).toBe('ancestor');
+    expect(h.calls).toContainEqual(['fetch', '--no-tags', 'origin', SHA]);
+  });
+
+  test('reports probe_error when the observed head cannot be fetched', async () => {
+    const h = probeWith((args) => ({ code: args[0] === 'rev-parse' ? 1 : 1 }));
+
+    const state = await h.probe(OLD_SHA, SHA);
+
+    expect(state).toBe('probe_error');
+  });
+
+  test('reports probe_error when merge-base itself fails', async () => {
+    const h = probeWith((args) => ({
+      code: args[0] === 'merge-base' ? 128 : 0
+    }));
+
+    const state = await h.probe(OLD_SHA, SHA);
+
+    expect(state).toBe('probe_error');
+  });
+
+  test('reports probe_error when git throws', async () => {
+    const gitRun = vi.fn(() => Promise.reject(new Error('spawn failed')));
+
+    const state = await createAncestryProbe({ gitRun, repo: '/r' })(
+      OLD_SHA,
+      SHA
     );
 
-    expect(gate).toMatchObject({ enabled: false, tier: 'merged' });
+    expect(state).toBe('probe_error');
   });
 
-  test('reports a closed unmerged PR', () => {
-    const gate = evaluateMergeGate(
-      entryOf({ pr: prOf({ state: 'CLOSED' }) }),
-      inputOf()
-    );
+  test('reports probe_error on a malformed sha', async () => {
+    const h = probeWith(() => ({ code: 0 }));
 
-    expect(gate).toMatchObject({
-      enabled: false,
-      tier: 'closed_unmerged',
-      reason: 'pr_closed_unmerged'
-    });
+    const state = await h.probe('nope', SHA);
+
+    expect(state).toBe('probe_error');
   });
 });

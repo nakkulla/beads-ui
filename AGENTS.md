@@ -213,13 +213,25 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   `Branch not protected`).
 - **머지 자격 판정은 checks를 아예 보지 않는다.** 판정 입력은 네 가지뿐이다:
   fresh PR/base/head identity, clean mergeability, current workflow review
-  영수증(`spec_review`·`impl_review`가 현재 head SHA에 결속), 그리고
-  `repo-ops/config.toml`에 `[verify]`가 선언된 경우에만 그 verify 영수증. 이
-  저장소는 `[verify]`를 선언하지 않는다.
+  영수증, 그리고 `repo-ops/config.toml`의 `[verify]` 영수증.
+- review 영수증의 결속은 두 가지로 갈린다. `spec_review`는 스펙 문서 경로
+  프로브가 판정하고, `impl_review`는 **exact head가 아니라 ancestry** 결속이다:
+  영수증 SHA가 관측된 head와 같거나 그 조상이면 유효하므로, base 동기화 머지나
+  큐가 소유한 base update로 head가 움직였다는 사실만으로는 재리뷰가 걸리지
+  않는다. 조상이 아니면(히스토리 재작성·브랜치 리셋) stale이고, ancestry probe
+  오류는 머지 게이트에서 fail-closed(stale 취급)·보드 표시에서만 fail-quiet다.
+  큐가 소유한 `resolver:` 충돌 해소는 ancestry보다 우선하는 필수조건으로, 해소
+  세션의 exact-delta self-review 영수증(`resolver-self:`) 없이는 머지되지
+  않는다. `carry:` 영수증 형식과 그 스탬프 절차는 폐기됐다(과거 기록만 읽는다).
+- 이 저장소는 `[verify]`를 선언한다(`repo-ops/script/verify` — `npm ci` 후
+  `npm run tsc`와 `npm test`). ancestry 결속이 통과시키는 "리뷰된 델타 + 움직인
+  base" 조합의 의미 충돌을 기계가 잡는 자리이며, base에 PR head를 squash-merge한
+  일회용 candidate 체크아웃에서 돌기 때문에 tracked 파일을 쓰면 안 된다.
 - 따라서 `gh pr checks`를 기다리거나 폴링하지 마라. 빈 checks를 즉시 통과로
   취급하던 예전 특례는, 판정에서 checks 자체가 사라지면서 함께 없어졌다.
 - 머지 전 검증은 Pre‑Handoff Validation(lint/tsc/test/prettier/build)으로
-  수행한다.
+  수행한다. `[verify]`는 그것을 대체하지 않는다 — 머지 후보의 base 조합을 머지
+  직전에 다시 확인하는 별개의 안전망이다.
 
 ## Pull Request Target
 

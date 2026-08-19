@@ -219,7 +219,71 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
 
   test('rejects a bead whose route is outside the admissible enum', async () => {
     const cache = createRunnableCache({
-      runJson: fakeBd({ [WS_A]: [row({ metadata: { route: 'quick_fix' } })] })
+      runJson: fakeBd({ [WS_A]: [row({ metadata: { route: 'not-a-route' } })] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out).toEqual([]);
+  });
+
+  test('lists quick fixes with a description despite missing or conflicting spec surfaces', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            id: 'UI-missing-spec',
+            description: '설명만 있는 빠른 수정',
+            metadata: {
+              route: 'quick_fix',
+              spec_id: '',
+              spec_review: ''
+            }
+          }),
+          row({
+            id: 'UI-conflicting-spec',
+            description: '사양 충돌이 있어도 되는 빠른 수정',
+            spec_id: 'docs/specs/native.md',
+            metadata: {
+              route: 'quick_fix',
+              spec_id: 'docs/specs/legacy.md',
+              spec_review: 'malformed'
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(
+      out.map((item) => [
+        item.bead_id,
+        item.spec_id,
+        item.spec_reviewer,
+        item.plan_state
+      ])
+    ).toEqual([
+      ['UI-missing-spec', '', '', 'none'],
+      ['UI-conflicting-spec', '', '', 'none']
+    ]);
+  });
+
+  test('rejects quick fixes with a missing or blank description', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            id: 'UI-no-description',
+            metadata: { route: 'quick_fix' }
+          }),
+          row({
+            id: 'UI-blank-description',
+            description: ' \n ',
+            metadata: { route: 'quick_fix' }
+          })
+        ]
+      })
     });
 
     const out = await warm(cache, WS_A);

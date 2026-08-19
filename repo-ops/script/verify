@@ -1,0 +1,41 @@
+#!/bin/sh
+set -eu
+
+fail() {
+    printf 'repo-ops verify: %s\n' "$*" >&2
+    exit 1
+}
+
+# The Worker gives this script no stdin, and a question would hang the operation
+# until its timeout. Closing stdin makes that a loud failure instead.
+exec </dev/null
+
+: "${REPO_OPS_TARGET_SHA:?REPO_OPS_TARGET_SHA is required}"
+: "${REPO_OPS_TARGET_BASE:?REPO_OPS_TARGET_BASE is required}"
+: "${REPO_OPS_REPO_ROOT:?REPO_OPS_REPO_ROOT is required}"
+
+case "$REPO_OPS_TARGET_SHA" in
+    *[!0-9a-f]*|'') fail "REPO_OPS_TARGET_SHA must be a lowercase hex SHA" ;;
+esac
+[ "${#REPO_OPS_TARGET_SHA}" -eq 40 ] || fail "REPO_OPS_TARGET_SHA must be 40 hex characters"
+
+repo_root="$(cd "$REPO_OPS_REPO_ROOT" && pwd -P)" || fail "REPO_OPS_REPO_ROOT is unavailable"
+cwd="$(pwd -P)"
+[ "$cwd" = "$repo_root" ] || fail "cwd must equal REPO_OPS_REPO_ROOT"
+
+# Unlike deploy, this runs in a THROWAWAY candidate checkout the coordinator
+# materialized: detached at the base SHA with the PR head squash-merged into the
+# working tree and NOT committed. So HEAD is deliberately not the target SHA,
+# there is no shared runtime to lock, and the one hard rule is that nothing here
+# may touch a tracked file — the coordinator compares the candidate's tree
+# object before and after, and any write settles the operation as
+# `verify_candidate_mismatch` instead of a verdict.
+#
+# The bundle is tsc + test. lint, prettier and build are already forced by
+# Pre-Handoff Validation before the PR exists, and `npm run build` would rewrite
+# the tracked frontend bundle, which is exactly the write this checkout forbids.
+npm ci || fail "npm ci failed"
+npm run tsc || fail "npm run tsc failed"
+npm test || fail "npm test failed"
+
+printf 'repo-ops verify ok: base=%s target=%s\n' "$REPO_OPS_TARGET_BASE" "$REPO_OPS_TARGET_SHA"

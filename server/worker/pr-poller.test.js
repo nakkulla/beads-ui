@@ -124,6 +124,7 @@ function repoOperations(input = {}) {
  *   observations?: any,
  *   activity?: any,
  *   readIssue?: any,
+ *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   resolveBase?: any,
  *   repoOperations?: any,
  *   onMerged?: any,
@@ -167,6 +168,7 @@ function makePoller(input = {}) {
       return { ok: true };
     })
   };
+  const gitRun = input.gitRun ?? null;
   const poller = createPrPoller({
     workspace: '/ws',
     repo: '/repo',
@@ -175,6 +177,7 @@ function makePoller(input = {}) {
     observations,
     readIssue:
       input.readIssue ?? (async () => ({ metadata: { route: 'quick_fix' } })),
+    ...(gitRun ? { gitRun } : {}),
     activity,
     getSubscriberCount: () => input.subscribers ?? 1,
     resolveBase:
@@ -211,6 +214,20 @@ function externalOf(rows) {
   };
 }
 
+/**
+ * Yield until `read` reports something, bounded so a real regression still
+ * fails instead of hanging. Counting individual microtasks would re-break
+ * every time an awaited step is added to the observation path.
+ *
+ * @param {() => unknown} read
+ */
+async function settle(read) {
+  for (let i = 0; i < 50 && !read(); i += 1) {
+    await Promise.resolve();
+  }
+  return read();
+}
+
 describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
   test('makes no gh call without subscribers', async () => {
     const { poller, prDetail } = makePoller({ subscribers: 0 });
@@ -233,16 +250,54 @@ describe('worker/pr-poller — gating (worker-phase2 §4)', () => {
     expect(prDetail).toHaveBeenCalled();
   });
 
-  test('records a stale implementation review against the observed head', async () => {
+  /**
+   * A spec-backed issue whose `impl_review` sits on some other sha, so the
+   * poller must consult the ancestry probe to classify it (UI-vzyh §2).
+   */
+  const movedReceiptIssue = async () => ({
+    spec_id: 'docs/spec.md',
+    metadata: {
+      route: 'spec_backed',
+      spec_review: `codex@${SHA}`,
+      impl_review: `self@${NEW_SHA}`
+    }
+  });
+
+  test('records a non-ancestor implementation review as stale', async () => {
     const { poller, observations } = makePoller({
-      readIssue: async () => ({
-        spec_id: 'docs/spec.md',
-        metadata: {
-          route: 'spec_backed',
-          spec_review: `codex@${SHA}`,
-          impl_review: `self@${NEW_SHA}`
-        }
+      readIssue: movedReceiptIssue,
+      gitRun: async (/** @type {string[]} */ args) => ({
+        code: args[0] === 'merge-base' ? 1 : 0,
+        stdout: '',
+        stderr: ''
       })
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.review_receipt).toEqual({
+      state: 'stale',
+      head_sha: SHA
+    });
+  });
+
+  test('records a receipt the observed head descends from as current', async () => {
+    const { poller, observations } = makePoller({
+      readIssue: movedReceiptIssue,
+      gitRun: async () => ({ code: 0, stdout: '', stderr: '' })
+    });
+
+    await poller.tick();
+
+    expect(observations.get('/ws', 'UI-1')?.review_receipt).toEqual({
+      state: 'current',
+      head_sha: SHA
+    });
+  });
+
+  test('records a receipt as stale when no git runner is wired', async () => {
+    const { poller, observations } = makePoller({
+      readIssue: movedReceiptIssue
     });
 
     await poller.tick();
@@ -810,10 +865,7 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
     });
 
     const pass = poller.tick();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle(() => activity.get('/ws', 'UI-1')?.activity === 'verifying');
 
     expect(activity.get('/ws', 'UI-1')?.activity).toBe('verifying');
     release({});
@@ -837,10 +889,7 @@ describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
       repoOperations: operations
     });
     const first = poller.tick();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    await settle(() => activity.get('/ws', 'UI-1')?.activity === 'verifying');
 
     await poller.tick();
 

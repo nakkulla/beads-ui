@@ -4555,6 +4555,20 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(prompt).toContain('PR 머지는 절대 수행하지 마라');
   });
 
+  test('instructs the exact-delta self-review the merge requires', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+
+    await env.scheduler.resolveConflict(WS, 'B1');
+
+    // Without it the resolved PR strands at `resolver_self_review_not_approved`
+    // and no external reviewer is dispatched to rescue it (UI-vzyh §2).
+    const prompt = env.runner.spawnedBead('B1').prompt;
+    expect(prompt).toContain('exact delta');
+    expect(prompt).toContain('self-review');
+    expect(prompt).toContain('머지의 필수조건');
+  });
+
   test('instructs recording the resolution as a bd comment on the bead', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);

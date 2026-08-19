@@ -2,8 +2,14 @@
  * No-CI merge eligibility. Pure evaluation over an observed PR's mergeability,
  * workflow review receipts, and the optional verify receipt.
  *
- * Observation failures stay fail-closed. Every receipt that can approve a
- * merge is bound to the currently observed head SHA.
+ * Observation failures stay fail-closed. The verify receipt is bound to the
+ * exact observed head SHA. The `impl_review` receipt is bound by ANCESTRY
+ * (UI-vzyh §2): it stays valid while its SHA equals or is an ancestor of the
+ * observed head, so a base-sync merge that only moves the tip never invalidates
+ * it. Only a non-ancestor receipt (rewritten history, branch reset) is stale.
+ * The one impure export here is {@link createAncestryProbe}, which owns that
+ * judgement's git access through an injected runner; everything else stays a
+ * pure function of what the probe returned.
  *
  * Identity is not a caller-provided gate input. Cached projections are advisory
  * and stay bound to the latest poller's PR/head observation. The authoritative
@@ -20,6 +26,20 @@
  * continuation must never spend a review on it (UI-yqw9 incident).
  *
  * @typedef {'current'|'missing'|'stale'|'invalid'|'spec_id_missing'} CurrentState
+ */
+
+/**
+ * The shared receipt/head ancestry judgement (UI-vzyh §2). `probe_error` covers
+ * every uncertainty — the observed head could not be fetched or proven, or git
+ * itself failed — and is deliberately NOT folded into `non_ancestor`, because
+ * the two have different owners: gate consumers fail closed on both, while the
+ * board's display probe (`workflow-enrich.js`) fails quiet on error only.
+ *
+ * @typedef {'equal'|'ancestor'|'non_ancestor'|'probe_error'} AncestryState
+ */
+
+/**
+ * @typedef {(receipt_sha: string, head_sha: string) => Promise<AncestryState>} AncestryProbe
  */
 
 /**
@@ -60,6 +80,8 @@ export const GATE_BADGES = {
 
 const REVIEW_RECEIPT_RE = /^[^@\s]+@([0-9a-f]{40})$/i;
 
+const SHA40_RE = /^[0-9a-f]{40}$/i;
+
 const VERIFY_RECEIPT_FIELDS = [
   'effective_base_sha',
   'head_sha',
@@ -84,13 +106,90 @@ export function verifyReceiptMatches(receipt, expected) {
 }
 
 /**
+ * Build the shared ancestry probe both gate consumers run (UI-vzyh §2).
+ *
+ * The head the poller observed is a GitHub fact: the local repository may not
+ * carry that object at all, and `merge-base` on a missing object exits 128,
+ * which would read as "not an ancestor" and refuse a perfectly fresh receipt.
+ * So the probe FETCHES the exact SHA first and answers only from an object it
+ * proved is present. Anything it cannot prove is `probe_error`, never a
+ * verdict.
+ *
+ * @param {{ gitRun: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>, repo: string, remote?: string }} deps
+ * @returns {AncestryProbe}
+ */
+export function createAncestryProbe(deps) {
+  const remote = deps.remote || 'origin';
+
+  /**
+   * @param {string[]} args
+   * @returns {Promise<number|null>}
+   */
+  async function run(args) {
+    try {
+      const result = await deps.gitRun(args, { cwd: deps.repo });
+      return typeof result.code === 'number' ? result.code : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * @param {string} sha
+   */
+  async function present(sha) {
+    return (
+      (await run(['rev-parse', '--verify', '--quiet', `${sha}^{commit}`])) === 0
+    );
+  }
+
+  /**
+   * @param {string} sha
+   */
+  async function ensure(sha) {
+    if (await present(sha)) {
+      return true;
+    }
+    await run(['fetch', '--no-tags', remote, sha]);
+    return present(sha);
+  }
+
+  return async function probeAncestry(receipt_sha, head_sha) {
+    const receipt = String(receipt_sha || '').toLowerCase();
+    const head = String(head_sha || '').toLowerCase();
+    if (!SHA40_RE.test(receipt) || !SHA40_RE.test(head)) {
+      return 'probe_error';
+    }
+    if (receipt === head) {
+      return 'equal';
+    }
+    if (!(await ensure(head)) || !(await ensure(receipt))) {
+      return 'probe_error';
+    }
+    const code = await run(['merge-base', '--is-ancestor', receipt, head]);
+    if (code === 0) {
+      return 'ancestor';
+    }
+    return code === 1 ? 'non_ancestor' : 'probe_error';
+  };
+}
+
+/**
  * Derive workflow review freshness from one authoritative Bead read.
+ *
+ * The `impl_review` receipt is ancestry-bound (UI-vzyh §2): equality and
+ * ancestry are both `current`, so head movement alone — a base-sync merge, a
+ * queue-owned `base_update` — never makes it stale. `non_ancestor` (rewritten
+ * history) and `probe_error` are both `stale`, which is the gate's fail-closed
+ * side: refusing is recoverable through the manual continuation's observed-head
+ * review, while passing on an unproven ancestry is not.
  *
  * @param {Record<string, any>|null|undefined} issue
  * @param {string} head_sha
- * @returns {CurrentState}
+ * @param {AncestryProbe} [probeAncestry] - Absent probe is fail-closed.
+ * @returns {Promise<CurrentState>}
  */
-export function reviewReceiptState(issue, head_sha) {
+export async function reviewReceiptState(issue, head_sha, probeAncestry) {
   if (!issue || typeof issue !== 'object' || Array.isArray(issue)) {
     return 'invalid';
   }
@@ -123,9 +222,22 @@ export function reviewReceiptState(issue, head_sha) {
   if (!spec_review || !impl_review) {
     return 'missing';
   }
-  return impl_review[1].toLowerCase() === head_sha.toLowerCase()
-    ? 'current'
-    : 'stale';
+  const receipt_sha = impl_review[1].toLowerCase();
+  const head = String(head_sha || '').toLowerCase();
+  if (receipt_sha === head) {
+    return 'current';
+  }
+  if (typeof probeAncestry !== 'function') {
+    return 'stale';
+  }
+  /** @type {AncestryState} */
+  let ancestry;
+  try {
+    ancestry = await probeAncestry(receipt_sha, head);
+  } catch {
+    return 'stale';
+  }
+  return ancestry === 'equal' || ancestry === 'ancestor' ? 'current' : 'stale';
 }
 
 /**

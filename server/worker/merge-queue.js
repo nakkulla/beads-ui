@@ -77,8 +77,6 @@ export const UNCONFIRMED_WAIT_MS = 30 * 60 * 1000;
  */
 const RESOLUTION_POLL_MS = 30 * 1000;
 
-const SHA40_RE = /^[0-9a-f]{40}$/i;
-
 /** @type {Set<string>} */
 const TERMINAL_ATTEMPT_STATUSES = new Set([
   'done',
@@ -1761,8 +1759,9 @@ export function createMergeQueue(deps) {
         !base_update_attempted
       ) {
         // Queue-owned base update (UI-58w8 §2): the manual authority carries
-        // a BEHIND PR through `updateBranch`, and the moved head then takes
-        // the SAME head-review path a resolver push does.
+        // a BEHIND PR through `updateBranch`. The moved head no longer needs a
+        // carry stamp to vouch for it — the prior receipt is an ancestor of the
+        // updated head, so the merge gate reads it as current (UI-vzyh §2).
         base_update_attempted = true;
         /** @type {{ ok: boolean, reason?: string|null, result_head_sha?: string|null }} */
         let updated = {
@@ -1776,14 +1775,6 @@ export function createMergeQueue(deps) {
           log('merge queue base update threw for %s: %o', bead_id, err);
         }
         if (updated.ok) {
-          // The mutation response, not a later observation, owns this SHA.
-          // Rebind the pair atomically at the semantic seam (UI-vkk8 §4).
-          vouched.mutation = 'base_update';
-          vouched.result_head_sha =
-            typeof updated.result_head_sha === 'string' &&
-            SHA40_RE.test(updated.result_head_sha)
-              ? updated.result_head_sha.toLowerCase()
-              : null;
           notify();
           continue;
         }
