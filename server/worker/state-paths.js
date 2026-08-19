@@ -239,6 +239,31 @@ export function usageReceiptRootDir(workspace_root) {
 }
 
 /**
+ * Absolute private directory containing one attempt's delegation monitor
+ * streams. Consumers derive this path instead of trusting the producer env.
+ *
+ * @param {string} workspace_root
+ * @param {string} attempt_id
+ * @returns {string}
+ */
+export function delegationMonitorDir(workspace_root, attempt_id) {
+  const safe = String(attempt_id || 'attempt').replace(/[^A-Za-z0-9._-]/g, '_');
+  return path.resolve(
+    workspaceStateDir(workspace_root),
+    'delegation-monitors',
+    safe
+  );
+}
+
+/**
+ * @param {string} workspace_root
+ * @returns {string}
+ */
+export function delegationMonitorRootDir(workspace_root) {
+  return path.resolve(workspaceStateDir(workspace_root), 'delegation-monitors');
+}
+
+/**
  * Absolute directory used by the Worker-owned bootstrap handoff. CLI callers
  * may create request files here, but only the running Worker consumes them and
  * writes queue state.

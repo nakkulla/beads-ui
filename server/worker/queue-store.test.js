@@ -2895,6 +2895,76 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     ).toEqual([]);
   });
 
+  test('normalizes absent delegation sessions to an empty list', () => {
+    const store = createQueueStore();
+
+    const result = store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'legacy-monitor', bead_id: 'UI-legacy' }
+    });
+
+    expect(result.queue.attempts['legacy-monitor'].delegation_sessions).toEqual(
+      []
+    );
+  });
+
+  test('normalizes garbage delegation sessions to an empty list on cold reload', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 0,
+        attempts: {
+          garbage: {
+            attempt_id: 'garbage',
+            bead_id: 'UI-garbage',
+            delegation_sessions: { launch_id: 'not-an-array' }
+          }
+        }
+      })
+    );
+
+    const result = createQueueStore().load(WS);
+
+    expect(result.attempts.garbage.delegation_sessions).toEqual([]);
+  });
+
+  test('deduplicates and persists delegation sessions across a cold reload', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'monitor-attempt', bead_id: 'UI-monitor' }
+    });
+    /** @type {import('./queue-store.js').DelegationSession} */
+    const first = {
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      session_id: 'thread-1',
+      turn_id: 'turn-1',
+      status: 'done',
+      started_at: 1,
+      completed_at: '2026-08-18T04:27:02.000Z',
+      last_event_at: 2
+    };
+
+    store.updateAttempt(WS, {
+      attempt_id: 'monitor-attempt',
+      patch: {
+        delegation_sessions: [
+          first,
+          { ...first, role: 'review-consult', model: 'conflict' }
+        ]
+      }
+    });
+    const result = createQueueStore().load(WS);
+
+    expect(result.attempts['monitor-attempt'].delegation_sessions).toEqual([
+      first
+    ]);
+  });
+
   test('persists terminal receipt legs before consuming their files', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {
