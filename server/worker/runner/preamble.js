@@ -63,6 +63,24 @@ export const PR_SUBMIT_DIRECTIVE = [
 ].join('\n');
 
 /**
+ * The terminal directive for a Worker-dispatched quick_fix lane. It opens no
+ * PR and hands deployment, close, and cleanup back to the Worker after the
+ * reviewed base push is recorded as `resolved`.
+ *
+ * @type {string}
+ */
+export const QUICKFIX_LANE_DIRECTIVE = [
+  '## 종점',
+  '',
+  '이 세션은 Worker가 dispatch한 quick_fix 레인이다. PR을 열지 않는다.',
+  '',
+  '- 종점은 구현 → 세션 내 implementation review 1회(필수) → base ref 직접 push → push containment 확인 → completion report → bead `resolved` 기록 후 종료다.',
+  '- 리뷰 게이트를 `skip`으로 선택하지 마라. `skipped@` 영수증은 Worker landing에서 fail-closed다. `impl_review` 영수증은 실제로 push한 head SHA에 결속되어야 한다. push 후 head가 바뀌었으면 계약의 follow-up 규칙대로 영수증을 새 SHA로 갱신하라.',
+  '- 배포 실행·배포 증거·bead `closed`·worktree/브랜치 정리는 Worker가 소유한다. 수행하지 마라. worktree와 브랜치를 보존한 채 `resolved`에서 멈춰라.',
+  '- 이 레인의 canonical 문구는 dotfiles `docs/contracts/workflow.md`가 소유한다. 여기서 복제하지 말고 그 계약을 따르라.'
+].join('\n');
+
+/**
  * The guard contract, restructured into three SEVERITY tiers (UI-rxp3).
  *
  * The old flat directive named the same prohibitions but offered no legal
@@ -84,11 +102,14 @@ export const PR_SUBMIT_DIRECTIVE = [
  * (`disposition` in `runMergeGuard`). Telling such a session that a base push
  * is refused would be false.
  *
- * @param {{ disposition?: boolean }} [options]
+ * @param {{ disposition?: boolean, quickfix_lane?: boolean }} [options]
  * @returns {string}
  */
 export function guardContractDirective(options = {}) {
   const disposition = options.disposition === true;
+  // The two shapes are mutually exclusive in dispatch. Keep disposition first
+  // defensively because its hook-bypass exemption is intentionally broader.
+  const quickfix_lane = !disposition && options.quickfix_lane === true;
   const lines = [
     '## 가드 계약',
     '',
@@ -99,7 +120,9 @@ export function guardContractDirective(options = {}) {
     '- `gh pr merge` — argv만으로 판정되어 즉시 종료된다.',
     disposition
       ? '  - 대안: 이 세션의 종점은 스펙 수정 커밋과 영수증 기록이다. 머지는 물론 PR도 이 세션의 일이 아니다.'
-      : '  - 대안: 이 세션의 종점은 PR 제출과 bead `resolved` 기록이다. 머지는 사람의 클릭이다.'
+      : quickfix_lane
+        ? '  - 대안: 이 세션의 종점은 리뷰드 base push와 bead `resolved` 기록이다. 머지 클릭도 PR도 이 세션의 일이 아니다.'
+        : '  - 대안: 이 세션의 종점은 PR 제출과 bead `resolved` 기록이다. 머지는 사람의 클릭이다.'
   ];
   if (disposition) {
     lines.push(
@@ -119,6 +142,10 @@ export function guardContractDirective(options = {}) {
     lines.push(
       '- 이 세션에 걸리는 거부 판정은 없다. base push 판정이 이 세션에는 적용되지 않기 때문이다(아래 「허용됨」).'
     );
+  } else if (quickfix_lane) {
+    lines.push(
+      '- 이 세션에 걸리는 거부 판정은 없다. 리뷰드 base push가 이 레인의 임무이기 때문이다(아래 「허용됨」).'
+    );
   } else {
     lines.push(
       '- base 브랜치 직접 랜딩 금지 — 이 attempt 가 맡은 저장소의 base 로 향하는 `git push` 는 attempt 전용 pre-push hook 이 거부한다. 세션은 종료되지 않고 push 만 실패한다. 다른 저장소의 base 로 향하는 push 는 hook 의 판정 대상이 아니다(통과).',
@@ -130,6 +157,10 @@ export function guardContractDirective(options = {}) {
   if (disposition) {
     lines.push(
       '- 이 세션은 REVISE 처분 세션이다. resolved base 에 스펙 수정을 게시하는 것이 임무이므로 base 로의 `git push` 와 hook 무력화 판정이 **적용되지 않는다**. 그렇다고 hook 을 무력화할 이유는 없다 — 설치된 hook 자체가 없다.'
+    );
+  } else if (quickfix_lane) {
+    lines.push(
+      '- 이 세션은 Worker-dispatched reviewed quick_fix 레인이다. base 로의 `git push`가 임무이며 attempt 전용 pre-push hook도 설치되지 않는다. hook 무력화 판정은 그대로 적용된다.'
     );
   }
   lines.push(
@@ -231,16 +262,18 @@ export function defaultTaskPrompt(bead_id) {
  *
  * `pr_submit: false` drops the PR-submit directive. `disposition: true`
  * independently selects the REVISE-disposition guard contract, whose base-push
- * exemption is much broader than merely opening no PR. Cleanup diagnosis is the
- * other no-PR shape: it keeps the ordinary guard contract and must never inherit
- * the disposition exemption.
+ * and hook-bypass exemption is much broader than merely opening no PR. Cleanup
+ * diagnosis is another no-PR shape: it keeps the ordinary guard contract and
+ * must never inherit the disposition exemption. `quickfix_lane: true` is the
+ * third no-PR shape: it receives its own terminal directive and only the
+ * base-push exemption, never disposition's hook-bypass exemption.
  *
  * `target_base` rides ALONGSIDE the PR-submit directive (§4): the session that
  * must open a PR is exactly the session that must know which base to open it
  * against, so a shape that opens none is told no base either.
  *
  * @param {string} base_prompt - The task prompt for the session.
- * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, review?: boolean, target_base?: string|null, repair?: { mode: 'resume_root'|'dispatch_repair', stage: string, reason: string, subject_sha: string, base_sha: string, result_digest: string, log_path?: string|null } }} [options]
+ * @param {{ fast_track?: boolean, pr_submit?: boolean, disposition?: boolean, quickfix_lane?: boolean, review?: boolean, target_base?: string|null, repair?: { mode: 'resume_root'|'dispatch_repair', stage: string, reason: string, subject_sha: string, base_sha: string, result_digest: string, log_path?: string|null } }} [options]
  * @returns {{ system_prompt: string, task_prompt: string }}
  */
 export function applyPreamble(base_prompt, options = {}) {
@@ -254,11 +287,14 @@ export function applyPreamble(base_prompt, options = {}) {
   }
   const pr_submit = options.pr_submit !== false;
   const disposition = options.disposition === true;
+  const quickfix_lane = !disposition && options.quickfix_lane === true;
   const parts = [UNATTENDED_PREAMBLE];
   if (options.fast_track) {
     parts.push(FAST_TRACK_DIRECTIVE);
   }
-  if (pr_submit) {
+  if (quickfix_lane) {
+    parts.push(QUICKFIX_LANE_DIRECTIVE);
+  } else if (pr_submit) {
     parts.push(PR_SUBMIT_DIRECTIVE);
     const target_base =
       typeof options.target_base === 'string' ? options.target_base.trim() : '';
@@ -269,7 +305,7 @@ export function applyPreamble(base_prompt, options = {}) {
   if (options.repair) {
     parts.push(repairDirective(options.repair));
   }
-  parts.push(guardContractDirective({ disposition }));
+  parts.push(guardContractDirective({ disposition, quickfix_lane }));
   return {
     system_prompt: parts.join('\n\n'),
     task_prompt: String(base_prompt ?? '')

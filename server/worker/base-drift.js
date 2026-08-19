@@ -78,7 +78,7 @@ const OID_RE = /^[0-9a-f]{40,64}$/i;
  * got that far.
  * @property {string[]} [shas] - The evidence set: the recorded oids that ARE
  * reachable from the observed tip, i.e. the landing itself.
- * @property {'disposition'|'no_base_oid'} [skipped] - Why the attempt was
+ * @property {'disposition'|'quickfix_lane'|'no_base_oid'} [skipped] - Why the attempt was
  * outside the invariant's scope. Recorded so the exclusion is visible.
  * @property {string} [error] - Which observation step could not be completed
  * (`base_resolve:<step>` / `push_log_absent` / `reachability:merge_base` /
@@ -133,7 +133,7 @@ function basePushedOids(entries, base_ref) {
  * the more honest failure cause than whatever the runner reported.
  *
  * @param {{
- *   attempt: { bead_id?: string, repo?: string|null, base_oid?: string|null, disposition?: string|null },
+ *   attempt: { bead_id?: string, repo?: string|null, base_oid?: string|null, disposition?: string|null, quickfix_lane?: boolean },
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   git?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   readPushLog?: () => { ok: true, entries: Record<string, unknown>[] } | { ok: false, reason: string }
@@ -151,6 +151,11 @@ export async function observeBaseDrift(input) {
     attempt.disposition.length > 0
   ) {
     return { violation: false, record: { skipped: 'disposition' } };
+  }
+  // Like disposition, this lane publishes the base as its job; reviewed direct
+  // base landing is its expected terminal, not a violation.
+  if (attempt.quickfix_lane === true) {
+    return { violation: false, record: { skipped: 'quickfix_lane' } };
   }
   // An external-conflict dispatch pins no base_oid, so there is no anchor to
   // compare against. The exclusion follows from unobservability, not policy.
