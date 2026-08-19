@@ -5694,7 +5694,7 @@ describe('worker/queue-store — legacy migration stamp (master spec §11)', () 
   const SUBJECT = 'a'.repeat(40);
 
   /**
-   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {any} store
    * @param {string[]} bead_ids
    */
   function park(store, bead_ids) {
@@ -6679,5 +6679,184 @@ describe('worker/queue-store — 레인 이동 시 lineage 재바인딩 (UI-04vo
     expect(completed.ok).toBe(true);
     expect(completed.queue.admission['UI-stale']).toBeUndefined();
     expect(completed.queue.serial_lanes[0].entries[0].bead_id).toBe('UI-stale');
+  });
+});
+
+describe('worker/queue-store — external OPEN PR 레인 reconcile (UI-75xw)', () => {
+  /**
+   * @param {any} store
+   * @param {string} [lane]
+   */
+  function placeExternal(store, lane = 's1') {
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-ext',
+      lane
+    });
+  }
+
+  /**
+   * @param {any} store
+   * @param {string} status
+   */
+  function appendExternalAttempt(store, status) {
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: `attempt-${status}`,
+        bead_id: 'UI-ext',
+        status
+      }
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   */
+  function reconcile(store) {
+    return store.reconcileExternalPrWait(WS, {
+      bead_id: 'UI-ext',
+      pr_url: 'https://github.com/o/r/pull/75',
+      head_ref: 'UI-ext'
+    });
+  }
+
+  test('moves a terminal serial member and records observed PR identity and lane', () => {
+    const store = createQueueStore({ now: () => 75 });
+    placeExternal(store);
+    appendExternalAttempt(store, 'done');
+
+    const result = reconcile(store);
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.serial_lanes[0].entries).toEqual([]);
+    expect(result.queue.pr_wait).toEqual([
+      expect.objectContaining({
+        bead_id: 'UI-ext',
+        added_at: 75,
+        pr_url: 'https://github.com/o/r/pull/75',
+        head_ref: 'UI-ext',
+        serial_lane_id: 's1'
+      })
+    ]);
+  });
+
+  test('moves a parallel member with no attempts', () => {
+    const store = createQueueStore();
+    placeExternal(store, 'parallel');
+
+    const result = reconcile(store);
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.queue).toEqual([]);
+    expect(result.queue.pr_wait[0].bead_id).toBe('UI-ext');
+    expect(result.queue.pr_wait[0].serial_lane_id).toBeUndefined();
+  });
+
+  test('does not move a nonmember', () => {
+    const store = createQueueStore();
+
+    const result = reconcile(store);
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.pr_wait).toEqual([]);
+  });
+
+  test('does not move a member with a running attempt', () => {
+    const store = createQueueStore();
+    placeExternal(store);
+    appendExternalAttempt(store, 'running');
+
+    const result = reconcile(store);
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.serial_lanes[0].entries[0].bead_id).toBe('UI-ext');
+  });
+
+  test('does not move a member with a paused attempt', () => {
+    const store = createQueueStore();
+    placeExternal(store);
+    appendExternalAttempt(store, 'paused');
+
+    const result = reconcile(store);
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.serial_lanes[0].entries[0].bead_id).toBe('UI-ext');
+  });
+
+  test('does not move a discard-fenced member', () => {
+    const store = createQueueStore();
+    placeExternal(store);
+    store.createDiscardOperation(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      operation: {
+        operation_id: 'discard-ext',
+        bead_id: 'UI-ext',
+        source_snapshot: { repo: '/repo', branch: 'UI-ext' }
+      }
+    });
+
+    const result = reconcile(store);
+
+    expect(result.ok).toBe(false);
+    expect(result.queue.serial_lanes[0].entries[0].bead_id).toBe('UI-ext');
+  });
+
+  test('keeps repeated reconciliation idempotent', () => {
+    const store = createQueueStore();
+    placeExternal(store);
+
+    const first = reconcile(store);
+    const second = reconcile(store);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(false);
+    expect(second.queue.pr_wait.map((entry) => entry.bead_id)).toEqual([
+      'UI-ext'
+    ]);
+  });
+
+  test('records the launch lane on the normal completion path', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'lane-attempt',
+        bead_id: 'UI-lane',
+        status: 'running',
+        serial_lane_id: 's1'
+      }
+    });
+
+    const result = store.moveToPrWait(WS, {
+      bead_id: 'UI-lane',
+      attempt_id: 'lane-attempt',
+      patch: { status: 'done' }
+    });
+
+    expect(result.queue.pr_wait[0].serial_lane_id).toBe('s1');
+  });
+
+  test('reports lane_occupied for a rejected manual merge placement', () => {
+    const store = createQueueStore();
+    placeExternal(store);
+
+    const result = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-ext',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main',
+          external: true
+        }
+      ]
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflict: false,
+      reason: 'lane_occupied'
+    });
   });
 });

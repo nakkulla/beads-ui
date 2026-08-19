@@ -12,7 +12,7 @@ import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
-import { createScheduler } from './scheduler.js';
+import { activeLaneLineages, createScheduler } from './scheduler.js';
 import { guardHookDir, usageReceiptInboxDir } from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
@@ -4540,6 +4540,97 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
+  test('dispatches an automatic queue resolver when one slot remains', async () => {
+    const env = setup({ config: {}, slots: 2 });
+    seedDoneAttempt(env.store);
+    env.store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'd1',
+      patch: { status: 'done' }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other-running',
+        bead_id: 'A1',
+        status: 'running'
+      }
+    });
+
+    const result = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
+  test('counts a running saga root against the automatic resolver slot cap', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+    env.store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'd1',
+      patch: { status: 'done' }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'root-running',
+        bead_id: 'ROOT1',
+        status: 'running'
+      }
+    });
+
+    const result = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'ROOT1',
+      wait_ms: 100
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worker_sessions_busy' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('bypasses the slot fence for manual queue authority', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+    env.store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'd1',
+      patch: { status: 'done' }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'other-running',
+        bead_id: 'A1',
+        status: 'running'
+      }
+    });
+
+    const result = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'B1',
+      wait_ms: 100,
+      manual_authority: true
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.spawnOrder).toEqual(['B1']);
+  });
+
   test('refuses no_session_id when no attempt of the bead captured one', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store, { session_id: null });
@@ -4809,8 +4900,12 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     expect(env.scheduler.runningCount()).toBe(2);
   });
 
-  test('defers a queue-origin external resolver while another worker bead is paused', async () => {
+  test('dispatches a queue-origin external resolver while another bead is paused', async () => {
     const env = extEnv();
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'X1', external: true }]
+    });
     env.store.appendAttempt(WS, {
       expected_revision: env.store.snapshot(WS).revision,
       attempt: {
@@ -4825,8 +4920,8 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
       wait_ms: 100
     });
 
-    expect(res).toEqual({ ok: false, reason: 'worker_sessions_busy' });
-    expect(env.runner.spawnOrder).toEqual([]);
+    expect(res.ok).toBe(true);
+    expect(env.runner.spawnOrder).toEqual(['X1']);
   });
 
   test('refuses bead_running while an attempt of the bead is running', async () => {
@@ -12214,6 +12309,44 @@ function seedLanes(store, lanes) {
 }
 
 describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
+  test('restores pr_wait occupancy from the entry when the attempt lane is null', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {
+        done: {
+          attempt_id: 'done',
+          bead_id: 'A',
+          status: 'done',
+          serial_lane_id: null
+        }
+      },
+      pr_wait: [{ bead_id: 'A', serial_lane_id: 's2' }]
+    });
+
+    expect([.../** @type {Set<string>} */ (occupancy.get('s2'))]).toEqual([
+      'A'
+    ]);
+  });
+
+  test('restores pr_wait occupancy without any attempt', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {},
+      pr_wait: [{ bead_id: 'A', serial_lane_id: 's1' }]
+    });
+
+    expect([.../** @type {Set<string>} */ (occupancy.get('s1'))]).toEqual([
+      'A'
+    ]);
+  });
+
+  test('keeps a legacy pr_wait row without a lane field unoccupied', () => {
+    const occupancy = activeLaneLineages({
+      attempts: {},
+      pr_wait: [{ bead_id: 'A' }]
+    });
+
+    expect(occupancy.size).toBe(0);
+  });
+
   test('dispatches lane heads and parallel entries concurrently within slots', async () => {
     const env = setup({
       config: { P1: {}, A: {}, B: {}, C: {} },
@@ -12319,6 +12452,7 @@ describe('스케줄러 직렬 레인 뮤텍스 (UI-04vo seam B)', () => {
     await env.scheduler.tick(WS);
 
     expect(env.store.snapshot(WS).pr_wait.map((e) => e.bead_id)).toEqual(['A']);
+    expect(env.store.snapshot(WS).pr_wait[0].serial_lane_id).toBe('s1');
     expect(env.runner.spawnOrder).toEqual(['A']);
 
     env.store.moveToDone(WS, { bead_id: 'A' });
