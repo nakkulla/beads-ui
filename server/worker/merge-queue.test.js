@@ -2648,7 +2648,7 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     expect(mq.state().failures['UI-1']).toBe('receipt_readback_mismatch');
   });
 
-  test('updates a BEHIND manual item and reviews the moved head', async () => {
+  test('updates a BEHIND manual item without vouching the moved head', async () => {
     const store = seedManual(['UI-1']);
     let updated = false;
     /** @type {any[]} */
@@ -2717,11 +2717,14 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
     await mq.kick();
 
     expect(updateBase).toHaveBeenCalledTimes(1);
-    // The moved head is reviewed as a queue-owned base update, not guessed at.
+    // The base update no longer carries a vouched mutation (UI-vzyh §2):
+    // ancestry keeps the receipt current, so a `review_receipt_stale` that
+    // still shows up afterwards is the abnormal case and gets a full review of
+    // the observed head, not a carry stamp.
     expect(ensure_calls[0].observed).toMatchObject({
       head_sha: MOVED_HEAD,
-      mutation: 'base_update',
-      mutation_result_sha: MOVED_HEAD
+      mutation: null,
+      mutation_result_sha: null
     });
     expect(merge).toHaveBeenCalledTimes(1);
   });

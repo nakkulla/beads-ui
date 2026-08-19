@@ -114,8 +114,8 @@ function journalOf(store) {
 }
 
 describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => {
-  test('carries a base-update approval without a reviewer session', async () => {
-    const { store, driver, calls } = harness({
+  test('stamps no carry receipt for a base update (UI-vzyh §2)', async () => {
+    const { driver, calls } = harness({
       readReceipt: async () => ({
         actor: 'codex',
         head_sha: OLD_HEAD,
@@ -135,29 +135,27 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
       starting_approval
     });
 
+    // Ancestry already carries the receipt at the merge gate, so this machine
+    // is only entered on the abnormal path — and there it reviews the observed
+    // head instead of re-vouching for it with a retired receipt form.
     expect(result.state).toBe('approved');
-    expect(calls.select).toHaveLength(0);
-    expect(calls.review).toHaveLength(0);
-    expect(calls.write_receipt).toEqual([
-      {
-        bead_id: 'UI-1',
-        receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
-      }
-    ]);
-    expect(journalOf(store)).toMatchObject({
-      state: 'approved',
-      receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
-    });
+    expect(
+      calls.write_receipt.filter((call) => call.receipt.startsWith('carry:'))
+    ).toEqual([]);
+    expect(calls.review).toHaveLength(1);
   });
 
-  test('carries a prior carry without nesting its receipt vocabulary', async () => {
+  test('reads a historical carry receipt as a valid starting approval', async () => {
     const prior_receipt = `carry:codex:${PRIOR_HEAD}@${OLD_HEAD}`;
-    const { driver, calls } = harness({
-      readReceipt: async () => ({
-        actor: 'codex',
-        head_sha: OLD_HEAD,
-        raw: prior_receipt
-      })
+    const receipt = `resolver-self:res-0:${OLD_HEAD}@${NEW_HEAD}`;
+    let receipt_reads = 0;
+    const { store, driver, calls } = harness({
+      readReceipt: async () => {
+        receipt_reads += 1;
+        return receipt_reads === 1
+          ? { actor: 'codex', head_sha: OLD_HEAD, raw: prior_receipt }
+          : { actor: 'self', head_sha: NEW_HEAD, raw: receipt };
+      }
     });
 
     const starting_approval = await driver.captureStartingApproval(
@@ -167,28 +165,27 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     const result = await driver.ensureApproved('UI-1', 'UI-1', {
       head_sha: NEW_HEAD,
       base_ref: 'main',
-      mutation: 'base_update',
+      mutation: 'resolver:res-0',
       mutation_result_sha: NEW_HEAD,
       starting_approval
     });
 
     expect(result.state).toBe('approved');
-    expect(calls.write_receipt).toEqual([
-      {
-        bead_id: 'UI-1',
-        receipt: `carry:codex:${OLD_HEAD}@${NEW_HEAD}`
-      }
-    ]);
+    expect(calls.review).toHaveLength(0);
+    expect(journalOf(store)).toMatchObject({ state: 'approved', receipt });
   });
 
-  test('carries a resolver self-review as normalized self', async () => {
+  test('reads a prior resolver self-review as a valid starting approval', async () => {
     const prior_receipt = `resolver-self:res-0:${PRIOR_HEAD}@${OLD_HEAD}`;
-    const { driver, calls } = harness({
-      readReceipt: async () => ({
-        actor: 'self',
-        head_sha: OLD_HEAD,
-        raw: prior_receipt
-      })
+    const receipt = `resolver-self:res-1:${OLD_HEAD}@${NEW_HEAD}`;
+    let receipt_reads = 0;
+    const { store, driver, calls } = harness({
+      readReceipt: async () => {
+        receipt_reads += 1;
+        return receipt_reads === 1
+          ? { actor: 'self', head_sha: OLD_HEAD, raw: prior_receipt }
+          : { actor: 'self', head_sha: NEW_HEAD, raw: receipt };
+      }
     });
 
     const starting_approval = await driver.captureStartingApproval(
@@ -198,18 +195,14 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     const result = await driver.ensureApproved('UI-1', 'UI-1', {
       head_sha: NEW_HEAD,
       base_ref: 'main',
-      mutation: 'base_update',
+      mutation: 'resolver:res-1',
       mutation_result_sha: NEW_HEAD,
       starting_approval
     });
 
     expect(result.state).toBe('approved');
-    expect(calls.write_receipt).toEqual([
-      {
-        bead_id: 'UI-1',
-        receipt: `carry:self:${OLD_HEAD}@${NEW_HEAD}`
-      }
-    ]);
+    expect(calls.review).toHaveLength(0);
+    expect(journalOf(store)).toMatchObject({ state: 'approved', receipt });
   });
 
   test('binds the resolver session self-review verdict', async () => {

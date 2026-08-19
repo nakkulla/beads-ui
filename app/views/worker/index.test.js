@@ -8712,6 +8712,24 @@ describe('prStatusBadge priority (UI-vkk8 §3)', () => {
     expect(result?.title).toContain('not_in_pr_wait');
   });
 
+  test('explains a stale receipt as abnormal history, not a moved head', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'review_receipt_stale' }
+    });
+
+    expect(result?.label).toBe('최종 변경 리뷰 필요');
+    expect(result?.title).toContain('조상이 아니');
+  });
+
+  test('explains a missing receipt without the ancestry wording', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'review_receipt_missing' }
+    });
+
+    expect(result?.label).toBe('최종 변경 리뷰 필요');
+    expect(result?.title).toContain('리뷰 영수증이 없습니다');
+  });
+
   test('labels an absent spec_id as its own defect, not a review ask', () => {
     const result = prStatusBadge({
       gate: { reason: 'spec_id_missing' }

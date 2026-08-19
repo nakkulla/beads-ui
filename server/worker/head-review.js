@@ -38,10 +38,13 @@ const RESOLVER_RECEIPT_RE =
   /^resolver-self:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
 
 /**
- * Parse exactly the workflow contract's three implementation-review receipt
- * forms and collapse derived forms to the reviewer identity another carry may
- * name. Reserved prefixes never fall through to the ordinary grammar, so a
- * malformed or nested derived receipt fails closed (UI-vkk8 §4).
+ * Parse the workflow contract's implementation-review receipt forms and
+ * collapse derived forms to the reviewer identity behind them. `carry:` is
+ * HISTORICAL-READ only (UI-vzyh §2): the contract retired the format, so
+ * nothing mints one any more, but a receipt written before the retirement is
+ * still a real approval and must keep parsing. Reserved prefixes never fall
+ * through to the ordinary grammar, so a malformed or nested derived receipt
+ * fails closed (UI-vkk8 §4).
  *
  * @param {unknown} raw
  * @returns {{ actor: string, head_sha: string, raw: string }|null}
@@ -308,10 +311,11 @@ export function createHeadReview(deps) {
   }
 
   /**
-   * Try the contract's same-authority no-dispatch paths. `null` means one of
-   * the three bindings was absent, so the caller continues into external
-   * full-head review. A resolver with a valid starting approval but without an
-   * exact APPROVE receipt is terminal under existing failure semantics.
+   * Try the contract's same-authority no-dispatch path — now exactly one, the
+   * `resolver:` mutation (UI-vzyh §2). `null` means one of its bindings was
+   * absent, so the caller continues into external full-head review. A resolver
+   * with a valid starting approval but without an exact APPROVE receipt is
+   * terminal under existing failure semantics.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
@@ -338,10 +342,15 @@ export function createHeadReview(deps) {
     const resolver_attempt = mutation?.startsWith('resolver:')
       ? mutation.slice('resolver:'.length)
       : null;
+    // Only `resolver:` reaches the relaxation now (UI-vzyh §2). A queue-owned
+    // `base_update` moves the head without changing what was reviewed, so
+    // ancestry already carries the receipt at the merge gate and this machine
+    // is never entered for it — the carry stamp that used to re-vouch for it
+    // is retired with the receipt format.
     if (
       head_sha === prior_head_sha ||
       result_head_sha === null ||
-      (mutation !== 'base_update' && !resolver_attempt) ||
+      !resolver_attempt ||
       head_sha !== result_head_sha
     ) {
       return null;
@@ -351,14 +360,9 @@ export function createHeadReview(deps) {
     if (!validApproval(starting_approval, prior_head_sha)) {
       return null;
     }
-    const receipt = resolver_attempt
-      ? await deps.readReceipt(subject_bead_id)
-      : null;
-    const resolver_receipt = resolver_attempt
-      ? `resolver-self:${resolver_attempt}:${prior_head_sha}@${result_head_sha}`
-      : null;
-    const resolver_approved =
-      resolver_receipt !== null && receipt?.raw === resolver_receipt;
+    const receipt = await deps.readReceipt(subject_bead_id);
+    const resolver_receipt = `resolver-self:${resolver_attempt}:${prior_head_sha}@${result_head_sha}`;
+    const resolver_approved = receipt?.raw === resolver_receipt;
     const lin = await deps.lineage(subject_bead_id, {
       prior_head_sha,
       head_sha,
@@ -384,57 +388,13 @@ export function createHeadReview(deps) {
       return { state: 'gone', reason: null };
     }
 
-    if (resolver_attempt) {
-      if (!resolver_approved || resolver_receipt === null) {
-        return failJournal(
-          queue_bead_id,
-          authority.id,
-          head_sha,
-          'pending',
-          'resolver_self_review_not_approved'
-        );
-      }
-      const post_head = await deps.observeHead(subject_bead_id);
-      if (
-        typeof post_head !== 'string' ||
-        post_head.toLowerCase() !== result_head_sha
-      ) {
-        return failJournal(
-          queue_bead_id,
-          authority.id,
-          head_sha,
-          'pending',
-          'head_drift_during_receipt'
-        );
-      }
-      const ok = transition(queue_bead_id, authority.id, head_sha, 'pending', {
-        state: 'approved',
-        approval_source: 'existing_current',
-        receipt: resolver_receipt
-      });
-      return ok
-        ? { state: 'approved', reason: null }
-        : { state: 'gone', reason: null };
-    }
-
-    const carry_receipt = `carry:${reviewer}:${prior_head_sha}@${result_head_sha}`;
-    let written = { ok: false, readback: /** @type {string|null} */ (null) };
-    try {
-      written = await deps.writeReceipt(subject_bead_id, carry_receipt);
-    } catch (err) {
-      log(
-        'head-review carry receipt write threw for %s: %o',
-        subject_bead_id,
-        err
-      );
-    }
-    if (!written.ok || written.readback !== carry_receipt) {
+    if (!resolver_approved) {
       return failJournal(
         queue_bead_id,
         authority.id,
         head_sha,
         'pending',
-        'receipt_readback_mismatch'
+        'resolver_self_review_not_approved'
       );
     }
     const post_head = await deps.observeHead(subject_bead_id);
@@ -453,7 +413,7 @@ export function createHeadReview(deps) {
     const ok = transition(queue_bead_id, authority.id, head_sha, 'pending', {
       state: 'approved',
       approval_source: 'existing_current',
-      receipt: carry_receipt
+      receipt: resolver_receipt
     });
     return ok
       ? { state: 'approved', reason: null }

@@ -1312,6 +1312,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       typeof bd.readIssue === 'function'
         ? (/** @type {string} */ bead_id) => bd.readIssue(bead_id)
         : undefined,
+    // The receipt/head ancestry probe needs git: the observed PR head is a
+    // GitHub fact this repository may not carry yet (UI-vzyh §2).
+    gitRun,
     activity: runtime.activityStore,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
     resolveBase,

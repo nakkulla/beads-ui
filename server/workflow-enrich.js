@@ -11,10 +11,10 @@
  * Stale rules (spec §5):
  *  - spec_review stale  iff `git log <sha>..HEAD -- <spec_id path>` is non-empty
  *    (only spec-doc follow-up commits cause stale; unrelated commits don't).
- *  - impl_review stale  iff the Bead's own branch tip moved past the receipt sha
- *    ({@link implFreshness}) — the impl gate is issued on a worktree branch tip
- *    that squash-merge keeps out of base history, so a HEAD comparison is
- *    permanently true and cannot be used.
+ *  - impl_review stale  iff the receipt sha is NOT an ancestor of the Bead's own
+ *    branch tip ({@link implFreshness}) — the impl gate is issued on a worktree
+ *    branch tip that squash-merge keeps out of base history, so a HEAD
+ *    comparison is permanently true and cannot be used.
  * A `skipped@` receipt is NOT exempt from either probe: the contract defines a
  * refresh procedure for skip-origin receipts, so skip can go stale too.
  *
@@ -239,6 +239,40 @@ function runGit(cwd, args) {
 }
 
 /**
+ * Exit code of a git predicate, or null when git itself could not answer.
+ *
+ * {@link runGit} collapses "answered no" and "could not answer" into one null,
+ * which is fine for probes whose only question is the stdout. An ancestry test
+ * needs them apart: exit 1 is a real `non_ancestor` verdict, while 128 (unknown
+ * object) or a spawn failure is the undetermined case the display probe fails
+ * quiet on (UI-vzyh §4.1).
+ *
+ * @param {string} cwd
+ * @param {string[]} args
+ * @returns {number | null}
+ */
+function runGitStatus(cwd, args) {
+  try {
+    execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'ignore', 'ignore']
+    });
+    return 0;
+  } catch (err) {
+    const status =
+      err && typeof err === 'object'
+        ? /** @type {{ status?: unknown }} */ (err).status
+        : null;
+    if (typeof status === 'number') {
+      return status;
+    }
+    log('git %o failed in %s: %o', args, cwd, err);
+    return null;
+  }
+}
+
+/**
  * Current HEAD sha of the workspace, or null (fail-quiet).
  *
  * @param {string | undefined | null} workspace_root
@@ -388,21 +422,30 @@ export function planFreshness(workspace_root, head, sha, plan_path) {
 }
 
 /**
- * Impl-review freshness (spec §5.1) — 3-state, keyed on the Bead's OWN branch.
- * The impl gate is issued at the worktree branch tip, and this repo squash-
- * merges, so that sha can never enter base history: the old `HEAD !== sha`
- * comparison was permanently true. The branch name is fixed by the workflow
- * contract (worktree basename == branch == Bead ID).
+ * Impl-review freshness (UI-vzyh §4.1) — 3-state, keyed on the Bead's OWN
+ * branch. The impl gate is issued at the worktree branch tip, and this repo
+ * squash-merges, so that sha can never enter base history: the old
+ * `HEAD !== sha` comparison was permanently true. The branch name is fixed by
+ * the workflow contract (worktree basename == branch == Bead ID).
  *
  *   branch tip == receipt sha            → `fresh`
- *   receipt sha is an ancestor of tip    → `stale` (post-review commits landed)
+ *   receipt sha is an ancestor of tip    → `fresh` (base-sync merges only moved
+ *                                          the tip; nothing unreviewed replaced
+ *                                          what the receipt covers)
+ *   receipt sha is NOT an ancestor       → `stale` (rewritten history, reset)
  *   no branch / missing input / git error → `unknown`
+ *
+ * This is the DISPLAY side of the same rule the merge gate decides on
+ * (`merge-gate.js` `createAncestryProbe`), so the board badge and the gate
+ * agree. The asymmetry is deliberate and contract-owned: a git error is
+ * `unknown` here (fail-quiet — never mark a card stale on a probe failure) and
+ * stale at the gate (fail-closed).
  *
  * The equality test normalizes case and accepts an abbreviated receipt sha as a
  * prefix of the tip, because `parseReceipt` allows 7-40 hex in either case.
  * Without that, a receipt written at the tip in short or upper-case form would
- * miss equality and then reach `merge-base --is-ancestor`, which is reflexive —
- * the unchanged tip would report `stale`.
+ * reach `merge-base --is-ancestor` — harmless now that ancestry means fresh,
+ * but the shortcut still saves the fork.
  *
  * Deliberately NOT `git branch --points-at`/`--contains`: a global search
  * misjudges both ways — an unrelated branch parked on the receipt sha reads
@@ -436,14 +479,16 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
   if (tip === receipt || tip.startsWith(receipt)) {
     return 'fresh';
   }
-  // Exit 0 = ancestor; exit 1 (and any error) is caught by runGit as null.
-  const ancestor = runGit(workspace_root, [
+  const code = runGitStatus(workspace_root, [
     'merge-base',
     '--is-ancestor',
     receipt_sha,
     tip
   ]);
-  return ancestor === null ? 'unknown' : 'stale';
+  if (code === 0) {
+    return 'fresh';
+  }
+  return code === 1 ? 'stale' : 'unknown';
 }
 
 /**

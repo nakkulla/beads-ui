@@ -151,6 +151,7 @@ function seedStore(options = {}) {
  *   bdPrUrl?: string|null,
  *   bdMetadata?: Record<string, unknown>,
  *   bdSpecId?: string|null,
+ *   implReviewAncestry?: 'ancestor'|'non_ancestor'|'probe_error',
  *   declaredBase?: string,
  *   resolveBase?: (options?: { force?: boolean }) => Promise<any>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
@@ -356,6 +357,14 @@ function makeActions(options = {}) {
   const git_status = options.gitStatus ?? '';
   const git_head = options.gitHead ?? BASE_SHA;
 
+  // The ancestry the shared probe (`merge-gate.js`) will read for this Bead's
+  // `impl_review` receipt. Keyed on the receipt sha so it never answers for the
+  // cleanup's own `merge-base --is-ancestor <merge_sha> <base>` probe.
+  const impl_receipt_sha = String(
+    (options.bdMetadata || {}).impl_review || ''
+  ).split('@')[1];
+  const impl_review_ancestry = options.implReviewAncestry ?? 'non_ancestor';
+
   /** @type {string[][]} */
   const git_argv = [];
   const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
@@ -372,6 +381,26 @@ function makeActions(options = {}) {
     // confirming `rev-parse --verify` then still finds it (the default below).
     if (args[0] === 'branch' && args[1] === '-D' && branchHeld(args[2])) {
       return { code: 1, stdout: '', stderr: 'used by worktree' };
+    }
+    if (
+      impl_receipt_sha &&
+      args[0] === 'merge-base' &&
+      args[1] === '--is-ancestor' &&
+      args[2] === impl_receipt_sha
+    ) {
+      return {
+        code: impl_review_ancestry === 'ancestor' ? 0 : 1,
+        stdout: '',
+        stderr: ''
+      };
+    }
+    if (
+      impl_receipt_sha &&
+      impl_review_ancestry === 'probe_error' &&
+      args[0] === 'rev-parse' &&
+      args[1] === '--verify'
+    ) {
+      return { code: 128, stdout: '', stderr: 'bad object' };
     }
     if (args[0] === 'rev-parse' && args[1] === 'origin/main') {
       return { code: 0, stdout: `${BASE_SHA}\n`, stderr: '' };
@@ -786,7 +815,29 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(result).toMatchObject({ ok: true, action: 'merged' });
   });
 
-  test('refuses a spec-backed PR with a stale implementation review', async () => {
+  test('merges a spec-backed PR whose head descends from the receipt', async () => {
+    const head_sha = 'a'.repeat(40);
+    const h = makeActions({
+      details: [prOf({ head_sha })],
+      bdSpecId: 'docs/spec.md',
+      bdMetadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        impl_review: `self@${'c'.repeat(40)}`
+      },
+      implReviewAncestry: 'ancestor'
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+    expect(h.observations.get(WS, BEAD)?.review_receipt).toEqual({
+      state: 'current',
+      head_sha
+    });
+  });
+
+  test('refuses a spec-backed PR whose head does not descend from the receipt', async () => {
     const h = makeActions({
       details: [prOf({ head_sha: 'a'.repeat(40) })],
       bdSpecId: 'docs/spec.md',
@@ -794,7 +845,8 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
         route: 'spec_backed',
         spec_review: `codex@${'b'.repeat(40)}`,
         impl_review: `self@${'c'.repeat(40)}`
-      }
+      },
+      implReviewAncestry: 'non_ancestor'
     });
 
     const result = await h.actions.merge(BEAD);
@@ -806,6 +858,27 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.observations.get(WS, BEAD)?.review_receipt).toEqual({
       state: 'stale',
       head_sha: 'a'.repeat(40)
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when the ancestry probe cannot answer', async () => {
+    const h = makeActions({
+      details: [prOf({ head_sha: 'a'.repeat(40) })],
+      bdSpecId: 'docs/spec.md',
+      bdMetadata: {
+        route: 'spec_backed',
+        spec_review: `codex@${'b'.repeat(40)}`,
+        impl_review: `self@${'c'.repeat(40)}`
+      },
+      implReviewAncestry: 'probe_error'
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'review_receipt_stale'
     });
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
