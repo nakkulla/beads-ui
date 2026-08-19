@@ -42,6 +42,7 @@
  * @import { WorktreeObservation, WorktreeSummary } from './worktree.js'
  */
 import { createHash } from 'node:crypto';
+import nodeFs from 'node:fs';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
@@ -330,12 +331,16 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * ends with would fail it as `no_pr`; this dep judges the disposition's own
  * durable result instead. Absent wiring simply means no disposition can be
  * dispatched (the entry point refuses).
+ * @property {{ judge: (input: { workspace: string, operation_id: string }) => Promise<{ verdict: string, evidence?: string|null }> }} [repairSession]
+ * Existing repair-target observation used to neutralize only failures whose
+ * target is already durably complete. Absent or throwing wiring fails closed.
  * @property {{ get: (workspace: string, bead_id: string) => import('./external-pr.js').ExternalPrRow|null }} [externalPrs]
  * The EXTERNAL PR registry (UI-7agi §1), read by {@link createScheduler}'s
  * `dispatchExternalConflict` to confirm the bead really is an external row
  * before launching a resolution session for it. Optional and FAIL-CLOSED: an
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
+ * @property {{ existsSync: (path: string) => boolean }} [fs]
  * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
@@ -566,6 +571,7 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  */
 export function createScheduler(deps) {
   const now = deps.now || (() => Date.now());
+  const fs = deps.fs || nodeFs;
   const guardHook = deps.guardHook || default_guard_hook;
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
   /** @type {Map<string, number>} */
@@ -2290,6 +2296,7 @@ export function createScheduler(deps) {
    * @param {{ reason: string, command: string|null }} [cause_detail] - What the
    * fail-closed path actually caught (UI-2o4z §2). Only the blocker path has
    * one; every other cause stays detail-less.
+   * @param {{ moot?: boolean }} [options]
    */
   async function failAttempt(
     workspace,
@@ -2297,7 +2304,8 @@ export function createScheduler(deps) {
     bead_id,
     prior,
     cause,
-    cause_detail
+    cause_detail,
+    options = {}
   ) {
     deps.store.updateAttempt(workspace, {
       attempt_id,
@@ -2305,7 +2313,8 @@ export function createScheduler(deps) {
         status: 'failed',
         cause,
         finished_at: now(),
-        cause_detail: cause_detail ?? null
+        cause_detail: cause_detail ?? null,
+        ...(options.moot === true ? { dismissed_at: now() } : {})
       }
     });
     notifyLifecycle('attemptFailed', {
@@ -2327,7 +2336,9 @@ export function createScheduler(deps) {
       execStampedKeysOf(workspace, attempt_id),
       execRestoreValuesOf(workspace, attempt_id)
     );
-    deps.store.setAutoAdvance(workspace, false);
+    if (options.moot !== true) {
+      deps.store.haltAutoAdvanceForAttempt(workspace, { attempt_id });
+    }
     // STRICTLY after the halt: reopening the bead makes it dispatchable again,
     // so a tick raised by a sibling attempt finishing concurrently must already
     // see auto_advance OFF or it would relaunch the attempt that just failed.
@@ -2502,6 +2513,24 @@ export function createScheduler(deps) {
       }
 
       if (!verdict.success) {
+        let moot = false;
+        const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+        if (
+          !verdict.blocked &&
+          typeof attempt?.repair_operation_id === 'string' &&
+          deps.repairSession &&
+          typeof deps.repairSession.judge === 'function'
+        ) {
+          try {
+            const judged = await deps.repairSession.judge({
+              workspace,
+              operation_id: attempt.repair_operation_id
+            });
+            moot = judged.verdict === 'chain_closed';
+          } catch (err) {
+            log('repair target judgment failed for %s: %o', attempt_id, err);
+          }
+        }
         await failAttempt(
           workspace,
           attempt_id,
@@ -2512,7 +2541,8 @@ export function createScheduler(deps) {
             : `session_failed:${verdict.reason}`,
           verdict.blocked
             ? blockerCauseDetail(verdict.blocked_detail)
-            : undefined
+            : undefined,
+          { moot }
         );
         notifyChanged(workspace);
         await tick(workspace);
@@ -4259,7 +4289,8 @@ export function createScheduler(deps) {
     const launched = await relaunchFromAttempt(workspace, prior, {
       prompt: repairSessionPrompt(input.packet),
       bead_snapshot: snap,
-      cwd: owned.path
+      cwd: owned.path,
+      repair_operation_id: input.operation_id
     });
     return launched.ok
       ? { ok: true, attempt_id: launched.attempt_id, session_id: null }
@@ -4337,6 +4368,7 @@ export function createScheduler(deps) {
    *   title?: string|null,
    *   launch_kind?: 'dispatch'|'stale_work_continue'|'resume'|'conflict'|'disposition'|'completion_repair',
    *   resume_session_id?: string|null,
+   *   verify_worktree?: boolean,
    *   disposition?: string|null,
    *   completion_repair?: any
    * }} input
@@ -4358,7 +4390,6 @@ export function createScheduler(deps) {
       effort,
       speed,
       prior_wf,
-      stamped_keys,
       wt_path,
       spawnBead,
       resume_session_id
@@ -4454,6 +4485,15 @@ export function createScheduler(deps) {
     // problem this Bead exists to remove.
     const start_oid = await branchTip(repo, bead_id);
 
+    if (
+      input.verify_worktree === true &&
+      wt_path.length > 0 &&
+      wt_path !== repo &&
+      !fs.existsSync(wt_path)
+    ) {
+      return { ok: false, reason: 'worktree_missing' };
+    }
+
     /** @type {RunnerHandle} */
     let handle;
     try {
@@ -4471,33 +4511,7 @@ export function createScheduler(deps) {
           ? `spawn_failed:${identity_reason}`
           : `spawn_failed:${identity_reason}:${cleanup?.reason || 'direct_child_cleanup_failed'}`;
       }
-      // A raw spawn error creates no process. An identity refusal carries a
-      // cleanup promise, and this path waits for direct-child close (including
-      // bounded SIGKILL escalation) before dropping the hook and ownership.
-      removeGuardHook(workspace, attempt_id);
-      usage_receipts.removeEmptyUsageReceiptInbox(workspace, attempt_id);
-      await revertExecStamps(
-        bead_id,
-        stamped_keys,
-        execRestoreValuesOf(workspace, attempt_id)
-      );
-      deps.store.updateAttempt(workspace, {
-        attempt_id,
-        patch: { status: 'failed', cause: spawn_failure, finished_at: now() }
-      });
-      notifyLifecycle('attemptFailed', {
-        bead_id,
-        cause: spawn_failure,
-        repo,
-        cause_detail: null
-      });
-      try {
-        await revertWorkflowMode(bead_id, prior_wf);
-      } catch {
-        // Best-effort: bd may be down; the failed record already reflects it.
-      }
-      claimed.delete(bead_id);
-      notifyChanged(workspace);
+      await finalizeLaunchRefusal(input, spawn_failure, false);
       return { ok: false, reason: spawn_failure };
     }
 
@@ -4622,6 +4636,48 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Apply the existing spawn-abort cleanup to a terminal launch refusal.
+   *
+   * @param {any} input
+   * @param {string} cause
+   * @param {boolean} dismissed
+   */
+  async function finalizeLaunchRefusal(input, cause, dismissed) {
+    removeGuardHook(input.workspace, input.attempt_id);
+    usage_receipts.removeEmptyUsageReceiptInbox(
+      input.workspace,
+      input.attempt_id
+    );
+    await revertExecStamps(
+      input.bead_id,
+      input.stamped_keys,
+      execRestoreValuesOf(input.workspace, input.attempt_id)
+    );
+    deps.store.updateAttempt(input.workspace, {
+      attempt_id: input.attempt_id,
+      patch: {
+        status: 'failed',
+        cause,
+        finished_at: now(),
+        ...(dismissed ? { dismissed_at: now() } : {})
+      }
+    });
+    notifyLifecycle('attemptFailed', {
+      bead_id: input.bead_id,
+      cause,
+      repo: input.repo,
+      cause_detail: null
+    });
+    try {
+      await revertWorkflowMode(input.bead_id, input.prior_wf);
+    } catch {
+      // Best-effort: the failed record already preserves the refusal.
+    }
+    claimed.delete(input.bead_id);
+    notifyChanged(input.workspace);
+  }
+
+  /**
    * The manual-resume task prompt (spec §1.4, branched by worker-phase1 §1.4):
    * announce how the prior attempt ended, instruct a self-check of worktree/
    * bead/PR state, and require finishing ONLY the remaining contract steps. The
@@ -4739,6 +4795,7 @@ export function createScheduler(deps) {
       prompt: resumePrompt(bead_id, prior.status ?? null),
       conflict_resolution: prior.conflict_resolution === true,
       completion_resume: true,
+      repair_operation_id: prior.repair_operation_id ?? null,
       continuation: continuation.continuation,
       decision_token: continuation.decision_token,
       bead_snapshot: snap
@@ -5524,6 +5581,56 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Resolve the ordered fallback for a disappeared resume worktree.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   * @param {any} options
+   * @returns {Promise<'repair_target_resolved'|'fresh'|'worktree_missing'>}
+   */
+  async function missingRelaunchDecision(
+    workspace,
+    attempt_id,
+    bead_id,
+    options
+  ) {
+    const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    let target_resolved = null;
+    if (typeof attempt?.repair_operation_id === 'string') {
+      if (
+        !deps.repairSession ||
+        typeof deps.repairSession.judge !== 'function'
+      ) {
+        return 'worktree_missing';
+      }
+      try {
+        const judged = await deps.repairSession.judge({
+          workspace,
+          operation_id: attempt.repair_operation_id
+        });
+        target_resolved = judged.verdict === 'chain_closed';
+      } catch {
+        return 'worktree_missing';
+      }
+    } else {
+      try {
+        const snapshot = await deps.bd.snapshotBead(bead_id);
+        target_resolved = snapshot.status === 'closed';
+      } catch {
+        return 'worktree_missing';
+      }
+    }
+    if (target_resolved) {
+      return 'repair_target_resolved';
+    }
+    if (options.repair_operation_id || options.disposition) {
+      return 'fresh';
+    }
+    return 'worktree_missing';
+  }
+
+  /**
    * @param {string} workspace
    * @param {any} prior
    * @param {any} options
@@ -5607,6 +5714,7 @@ export function createScheduler(deps) {
         ? continuation_mode === 'session'
         : false,
       disposition_prompt: options.disposition ? options.prompt : null,
+      repair_operation_id: options.repair_operation_id ?? null,
       started_at: options.resolution_wait ? now() : null,
       status: 'running',
       pid: null
@@ -5704,12 +5812,51 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'workflow_mode_record_failed' };
     }
 
-    const wt_path =
+    let wt_path =
       options.cwd ||
       (typeof deps.worktree.pathFor === 'function'
         ? deps.worktree.pathFor(repo, bead_id)
         : '');
-    const launched = await launchSession({
+    let resume_session_id =
+      continuation_mode === 'session' ? prior.session_id : null;
+    if (wt_path.length > 0 && wt_path !== repo) {
+      const owned = await proveOwnedWorktree(repo, bead_id);
+      if (owned.ok) {
+        wt_path = owned.path;
+      } else {
+        const decision = await missingRelaunchDecision(
+          workspace,
+          new_attempt_id,
+          bead_id,
+          options
+        );
+        if (decision === 'fresh') {
+          wt_path = repo;
+          resume_session_id = null;
+          deps.store.updateAttempt(workspace, {
+            attempt_id: new_attempt_id,
+            patch: {
+              continuation_mode: 'fresh',
+              disposition_resume: false
+            }
+          });
+        } else {
+          const refusal_input = {
+            workspace,
+            attempt_id: new_attempt_id,
+            bead_id,
+            repo,
+            prior_wf,
+            stamped_keys
+          };
+          await finalizeLaunchRefusal(refusal_input, decision, true);
+          await reportCompletionSettlement(workspace, new_attempt_id, null);
+          return { ok: false, reason: decision };
+        }
+      }
+    }
+    /** @type {any} */
+    const launch_input = {
       workspace,
       attempt_id: new_attempt_id,
       bead_id,
@@ -5732,10 +5879,35 @@ export function createScheduler(deps) {
         id: bead_id,
         prompt: options.prompt
       },
-      resume_session_id:
-        continuation_mode === 'session' ? prior.session_id : null,
+      verify_worktree: true,
+      resume_session_id,
       disposition: options.disposition ?? null
-    });
+    };
+    let launched = await launchSession(launch_input);
+    if (!launched.ok && launched.reason === 'worktree_missing') {
+      const decision = await missingRelaunchDecision(
+        workspace,
+        new_attempt_id,
+        bead_id,
+        options
+      );
+      if (decision === 'fresh') {
+        deps.store.updateAttempt(workspace, {
+          attempt_id: new_attempt_id,
+          patch: {
+            continuation_mode: 'fresh',
+            disposition_resume: false
+          }
+        });
+        launch_input.wt_path = repo;
+        launch_input.resume_session_id = null;
+        launched = await launchSession(launch_input);
+      } else {
+        await finalizeLaunchRefusal(launch_input, decision, true);
+        await reportCompletionSettlement(workspace, new_attempt_id, null);
+        return { ok: false, reason: decision };
+      }
+    }
     if (!launched.ok) {
       await reportCompletionSettlement(workspace, new_attempt_id, null);
       return { ok: false, reason: launched.reason || 'spawn_failed' };

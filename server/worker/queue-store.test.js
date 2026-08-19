@@ -62,6 +62,82 @@ describe('worker/state-paths', () => {
 });
 
 describe('worker/queue-store', () => {
+  test('normalizes moot-repair fields and preserves them through makeAttempt', () => {
+    const legacy = makeAttempt({ attempt_id: 'legacy', bead_id: 'UI-legacy' });
+    const malformed = makeAttempt({
+      attempt_id: 'malformed',
+      bead_id: 'UI-malformed',
+      repair_operation_id: ' ',
+      halted_auto_advance: /** @type {any} */ ('true')
+    });
+    const repair = makeAttempt({
+      attempt_id: 'repair',
+      bead_id: 'UI-repair',
+      repair_operation_id: 'cleanup:UI-repair',
+      halted_auto_advance: true
+    });
+
+    expect(legacy).toMatchObject({
+      repair_operation_id: null,
+      halted_auto_advance: false
+    });
+    expect(malformed).toMatchObject({
+      repair_operation_id: null,
+      halted_auto_advance: false
+    });
+    expect(repair).toMatchObject({
+      repair_operation_id: 'cleanup:UI-repair',
+      halted_auto_advance: true
+    });
+  });
+
+  test('halts auto advance and marks only the responsible attempt in one write', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    store.setAutoAdvance(WS, true);
+
+    const transitioned = store.haltAutoAdvanceForAttempt(WS, {
+      attempt_id: 'att-1'
+    });
+    const unchanged = store.haltAutoAdvanceForAttempt(WS, {
+      attempt_id: 'att-1'
+    });
+
+    expect(transitioned.queue.auto_advance).toBe(false);
+    expect(transitioned.queue.attempts['att-1'].halted_auto_advance).toBe(true);
+    expect(unchanged.queue.revision).toBe(transitioned.queue.revision);
+  });
+
+  test('does not mark an attempt when auto advance was already halted', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+
+    const result = store.haltAutoAdvanceForAttempt(WS, {
+      attempt_id: 'att-1'
+    });
+
+    expect(result.queue.auto_advance).toBe(false);
+    expect(result.queue.attempts['att-1'].halted_auto_advance).toBe(false);
+  });
+
+  test('halts auto advance when the responsible attempt is missing', () => {
+    const store = createQueueStore();
+    store.setAutoAdvance(WS, true);
+
+    const result = store.haltAutoAdvanceForAttempt(WS, {
+      attempt_id: 'missing'
+    });
+
+    expect(result.queue.auto_advance).toBe(false);
+    expect(result.queue.attempts).toEqual({});
+  });
+
   test('normalizes the durable worker serial snapshot', () => {
     const serial = makeAttempt({
       attempt_id: 'serial-attempt',

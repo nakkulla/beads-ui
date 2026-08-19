@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { resolveRepairOwner } from './repair-session-adapter.js';
 import {
@@ -89,7 +90,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, onRepairLaneAdvanced?: () => Promise<void>, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -1733,15 +1734,27 @@ export function createRepoOperationCoordinator(deps) {
    */
   async function reconcile(workspace) {
     const release = await deps.locks.repoOperationLock(deps.repo);
+    let repair_lane_advanced = false;
     try {
-      await reconcileLocked(workspace);
+      repair_lane_advanced = await reconcileLocked(workspace);
     } finally {
       release();
+    }
+    if (
+      repair_lane_advanced &&
+      typeof deps.onRepairLaneAdvanced === 'function'
+    ) {
+      try {
+        await deps.onRepairLaneAdvanced();
+      } catch {
+        // Reconciliation is durable; a later event can retry the handoff.
+      }
     }
   }
 
   /**
    * @param {string} workspace
+   * @returns {Promise<boolean>}
    */
   async function reconcileLocked(workspace) {
     const queue = deps.store.snapshot(workspace);
@@ -1906,8 +1919,7 @@ export function createRepoOperationCoordinator(deps) {
     try {
       names = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
     } catch {
-      await reconcileRepairsLocked(workspace);
-      return;
+      return reconcileRepairsLocked(workspace);
     }
     for (const name of names) {
       const file = path.join(pending, name);
@@ -1919,7 +1931,7 @@ export function createRepoOperationCoordinator(deps) {
         writeReceipt(file, { ok: false, code: 'bootstrap_provenance_invalid' });
       }
     }
-    await reconcileRepairsLocked(workspace);
+    return reconcileRepairsLocked(workspace);
   }
 
   /**
@@ -2282,10 +2294,11 @@ export function createRepoOperationCoordinator(deps) {
    * Caller holds the repo-operation lock.
    *
    * @param {string} workspace
+   * @returns {Promise<boolean>}
    */
   async function reconcileRepairsLocked(workspace) {
     if (!deps.repairSession) {
-      return;
+      return false;
     }
     for (const [operation_id, operation] of Object.entries(
       deps.store.snapshot(workspace).repo_operations
@@ -2323,6 +2336,65 @@ export function createRepoOperationCoordinator(deps) {
       }
       await startRepairLocked(workspace, subject.subject_id, 'auto');
     }
+
+    let dismissed_any = false;
+    let dismissed_halting = false;
+    const attempts = Object.values(
+      deps.store.snapshot(workspace).attempts || {}
+    );
+    for (const attempt of attempts) {
+      if (
+        !attempt ||
+        typeof attempt.repair_operation_id !== 'string' ||
+        attempt.status !== 'failed' ||
+        typeof attempt.dismissed_at === 'number' ||
+        attempt.cause === 'loud_fail_blocker'
+      ) {
+        continue;
+      }
+      let judged;
+      try {
+        judged = await deps.repairSession.judge({
+          workspace,
+          operation_id: attempt.repair_operation_id
+        });
+      } catch {
+        continue;
+      }
+      if (judged.verdict !== 'chain_closed') {
+        continue;
+      }
+      const updated = deps.store.updateAttempt(workspace, {
+        attempt_id: attempt.attempt_id,
+        patch: { dismissed_at: now() }
+      });
+      if (updated.ok) {
+        dismissed_any = true;
+        dismissed_halting ||= attempt.halted_auto_advance === true;
+      }
+    }
+
+    if (dismissed_any && dismissed_halting) {
+      const current = deps.store.snapshot(workspace);
+      const isUnhandledFailure = createUnhandledFailurePredicate(current);
+      const unhandled_failures = Object.values(current.attempts || {}).filter(
+        (attempt) =>
+          attempt &&
+          (attempt.status === 'failed' || attempt.status === 'orphaned') &&
+          isUnhandledFailure(attempt)
+      );
+      const unhandled_halting = unhandled_failures.some(
+        (attempt) => attempt.halted_auto_advance === true
+      );
+      if (
+        !unhandled_halting &&
+        unhandled_failures.length === 0 &&
+        current.auto_advance === false
+      ) {
+        deps.store.setAutoAdvance(workspace, true);
+      }
+    }
+    return dismissed_any;
   }
 
   /**

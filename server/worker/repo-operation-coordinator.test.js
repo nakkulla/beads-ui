@@ -80,7 +80,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, onRepairLaneAdvanced?: () => Promise<void>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -130,12 +130,151 @@ function coordinatorFor(overrides = {}) {
     deployLock: overrides.deployLock,
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     repairSession: /** @type {never} */ (overrides.repairSession),
+    onRepairLaneAdvanced: overrides.onRepairLaneAdvanced,
     policySupported: overrides.policySupported,
     now: overrides.now,
     sleep: overrides.sleep
   });
   return { store, coordinator };
 }
+
+describe('repo operation late moot repair reconciliation', () => {
+  /**
+   * @param {any} store
+   * @param {string} attempt_id
+   * @param {Partial<import('./queue-store.js').Attempt>} [extra]
+   */
+  function appendFailedRepair(store, attempt_id, extra = {}) {
+    store.appendAttempt(root, {
+      expected_revision: store.snapshot(root).revision,
+      attempt: {
+        attempt_id,
+        bead_id: `UI-${attempt_id}`,
+        status: 'failed',
+        finished_at: 10,
+        repair_operation_id: `cleanup:UI-${attempt_id}`,
+        halted_auto_advance: true,
+        ...extra
+      }
+    });
+  }
+
+  test('dismisses a closed repair and hands the restored lane onward', async () => {
+    const onRepairLaneAdvanced = vi.fn(async () => {});
+    const { store, coordinator } = coordinatorFor({
+      storeNow: () => 100,
+      now: () => 100,
+      repairSession: {
+        dispatch: vi.fn(),
+        judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
+      },
+      onRepairLaneAdvanced
+    });
+    appendFailedRepair(store, 'att-1');
+
+    await coordinator.reconcile(root);
+
+    const snapshot = store.snapshot(root);
+    expect(snapshot.attempts['att-1'].dismissed_at).toBe(100);
+    expect(snapshot.auto_advance).toBe(true);
+    expect(onRepairLaneAdvanced).toHaveBeenCalledTimes(1);
+  });
+
+  test('keeps auto advance halted while another failure is unhandled', async () => {
+    const { store, coordinator } = coordinatorFor({
+      repairSession: {
+        dispatch: vi.fn(),
+        judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
+      }
+    });
+    appendFailedRepair(store, 'att-1');
+    store.appendAttempt(root, {
+      expected_revision: store.snapshot(root).revision,
+      attempt: {
+        attempt_id: 'other',
+        bead_id: 'UI-other',
+        status: 'failed',
+        finished_at: 20
+      }
+    });
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).auto_advance).toBe(false);
+  });
+
+  test('ignores a superseded historical failure when restoring the lane', async () => {
+    const { store, coordinator } = coordinatorFor({
+      repairSession: {
+        dispatch: vi.fn(),
+        judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
+      }
+    });
+    store.appendAttempt(root, {
+      expected_revision: store.snapshot(root).revision,
+      attempt: {
+        attempt_id: 'old',
+        bead_id: 'UI-shared',
+        status: 'failed',
+        finished_at: 1
+      }
+    });
+    store.appendAttempt(root, {
+      expected_revision: store.snapshot(root).revision,
+      attempt: {
+        attempt_id: 'new',
+        bead_id: 'UI-shared',
+        status: 'done',
+        finished_at: 2
+      }
+    });
+    appendFailedRepair(store, 'att-1');
+
+    await coordinator.reconcile(root);
+
+    expect(store.snapshot(root).auto_advance).toBe(true);
+  });
+
+  test('dismisses a moot failure without restoring a user-paused lane', async () => {
+    const { store, coordinator } = coordinatorFor({
+      repairSession: {
+        dispatch: vi.fn(),
+        judge: vi.fn(async () => ({
+          verdict: 'chain_closed',
+          evidence: null
+        }))
+      }
+    });
+    appendFailedRepair(store, 'paused', { halted_auto_advance: false });
+
+    await coordinator.reconcile(root);
+
+    const snapshot = store.snapshot(root);
+    expect(snapshot.auto_advance).toBe(false);
+    expect(snapshot.attempts.paused.dismissed_at).not.toBeNull();
+  });
+
+  test('does not dismiss a blocker when its target is closed', async () => {
+    const judge = vi.fn(async () => ({
+      verdict: 'chain_closed',
+      evidence: null
+    }));
+    const { store, coordinator } = coordinatorFor({
+      repairSession: { dispatch: vi.fn(), judge }
+    });
+    appendFailedRepair(store, 'blocker', {
+      cause: 'loud_fail_blocker',
+      halted_auto_advance: false
+    });
+
+    await coordinator.reconcile(root);
+
+    const snapshot = store.snapshot(root);
+    expect(snapshot.auto_advance).toBe(false);
+    expect(snapshot.attempts.blocker.dismissed_at).toBeNull();
+    expect(judge).not.toHaveBeenCalled();
+  });
+});
 
 /**
  * @param {{ verify?: boolean }} [options]

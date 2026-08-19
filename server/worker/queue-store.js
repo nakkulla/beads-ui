@@ -91,6 +91,10 @@
  * failure's banner, declaring it handled. Null means "still unhandled", which
  * is one of the two ways the UI stops showing a failure banner (the other is
  * being superseded by a later attempt for the same bead).
+ * @property {string|null} repair_operation_id - Repo-operation target this
+ * repair attempt is durably bound to; null for ordinary attempts.
+ * @property {boolean} halted_auto_advance - Whether this attempt performed the
+ * durable true-to-false auto-advance transition.
  * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens?: number, total_cost_usd?: number }|null} usage -
  * Token usage this attempt consumed (UI-raqh §1), persisted when the session
  * ends (success/failure/pause/stop) from the live tally in `usage-store.js`.
@@ -1858,6 +1862,12 @@ export function makeAttempt(fields) {
         )
       : null,
     dismissed_at: fields.dismissed_at ?? null,
+    repair_operation_id:
+      typeof fields.repair_operation_id === 'string' &&
+      fields.repair_operation_id.trim().length > 0
+        ? fields.repair_operation_id
+        : null,
+    halted_auto_advance: fields.halted_auto_advance === true,
     usage: isRecord(fields.usage)
       ? /** @type {Attempt['usage']} */ (fields.usage)
       : null,
@@ -5545,6 +5555,31 @@ export function createQueueStore(options = {}) {
     setAutoAdvance(workspace, on) {
       return applyUnconditional(workspace, (next) => {
         next.auto_advance = !!on;
+        return true;
+      });
+    },
+
+    /**
+     * Halt automatic dispatch and bind responsibility to one attempt in the
+     * same durable mutation.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string }} input
+     * @returns {QueueOpResult}
+     */
+    haltAutoAdvanceForAttempt(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        if (next.auto_advance !== true) {
+          return false;
+        }
+        const attempt = next.attempts[input.attempt_id];
+        next.auto_advance = false;
+        if (attempt) {
+          next.attempts[input.attempt_id] = makeAttempt({
+            ...attempt,
+            halted_auto_advance: true
+          });
+        }
         return true;
       });
     },

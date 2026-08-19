@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -276,6 +277,62 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('hands a late moot repair to scheduler dispatch after reconciliation', async () => {
+    const runtime = createWorkerRuntime();
+    const spawn = vi.fn((/** @type {any} */ _bead) => ({
+      bead_id: _bead.id,
+      pid: 4321,
+      process_identity: { pid: 4321, pgid: 4321, started_at: 1 },
+      kill: vi.fn(),
+      events: new EventEmitter(),
+      done: new Promise(() => {})
+    }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd({ 'UI-next': { status: 'open' } }),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: okBase('main'),
+      gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
+      makeRunner: () => ({ name: 'claude', spawn }),
+      repairSession: {
+        dispatch: vi.fn(),
+        judge: vi.fn(async () => ({
+          verdict: 'chain_closed',
+          evidence: null
+        }))
+      }
+    });
+    const store = runtime.queueStore;
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'repair-failure',
+        bead_id: 'UI-repair',
+        repo: WS,
+        status: 'failed',
+        finished_at: 10,
+        repair_operation_id: 'cleanup:UI-repair',
+        halted_auto_advance: true
+      }
+    });
+    store.place(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      bead_id: 'UI-next'
+    });
+
+    await att.repoOperationCoordinator.reconcile(WS);
+
+    expect(store.snapshot(WS).auto_advance).toBe(true);
+    expect(store.snapshot(WS).attempts['repair-failure'].dismissed_at).not.toBe(
+      null
+    );
+    expect(store.snapshot(WS).admission).toEqual({});
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0].id).toBe('UI-next');
   });
 
   test('defaults the attachment git runner cwd to its repository', async () => {
