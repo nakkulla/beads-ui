@@ -84,7 +84,8 @@ export function claudeAnalysisArgv(model, effort) {
     model,
     ...(effort ? ['--effort', effort] : []),
     '--output-format',
-    'text'
+    'stream-json',
+    '--verbose'
   ];
 }
 
@@ -325,6 +326,78 @@ export function parseCodexAnalysisStream(stdout) {
 }
 
 /**
+ * Judge one Claude `stream-json` JSONL stream, FAIL-CLOSED.
+ *
+ * @param {string} stdout
+ * @returns {AnalysisOutcome}
+ */
+export function parseClaudeAnalysisStream(stdout) {
+  /** @type {any|null} */
+  let result_event = null;
+  for (const line of String(stdout).split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    /** @type {any} */
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (event && typeof event === 'object' && event.type === 'result') {
+      result_event = event;
+    }
+  }
+  if (result_event === null) {
+    return {
+      ok: false,
+      reason: 'invalid_output',
+      diagnostic: 'no result event'
+    };
+  }
+  if (result_event.is_error === true || result_event.subtype !== 'success') {
+    const messages = Array.isArray(result_event.errors)
+      ? result_event.errors.filter(
+          (/** @type {unknown} */ value) => typeof value === 'string'
+        )
+      : [];
+    if (
+      result_event.is_error === true &&
+      typeof result_event.result === 'string'
+    ) {
+      messages.push(result_event.result);
+    }
+    const diagnostic = [
+      typeof result_event.subtype === 'string'
+        ? result_event.subtype
+        : 'result error',
+      ...messages
+    ]
+      .join(': ')
+      .slice(0, DIAGNOSTIC_MAX);
+    return { ok: false, reason: 'runner_error', diagnostic };
+  }
+  if (typeof result_event.result !== 'string') {
+    return {
+      ok: false,
+      reason: 'invalid_output',
+      diagnostic: 'result field missing'
+    };
+  }
+  try {
+    return { ok: true, result: JSON.parse(result_event.result.trim()) };
+  } catch {
+    return {
+      ok: false,
+      reason: 'invalid_output',
+      diagnostic: result_event.result.trim().slice(0, DIAGNOSTIC_MAX)
+    };
+  }
+}
+
+/**
  * Materialize the `--output-schema` file in its OWN temp directory (UI-yqw9
  * §1.4). It never lands in the bundle directory: evidence-locator validation
  * reads that directory as "the bytes the model actually received", and a file
@@ -395,7 +468,7 @@ export function buildAnalysisPayload(input) {
  * Run one analysis. Returns a handle whose `done` resolves with the outcome;
  * `cancel()` kills the whole process group.
  *
- * @param {{ runner: string, model: string, model_id?: string, effort?: string, catalog?: any, bundle_dir: string, manifest: any, snapshot: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number, kill_grace_ms?: number }} input
+ * @param {{ runner: string, model: string, model_id?: string, effort?: string, catalog?: any, bundle_dir: string, payload: string, onStreamLine?: (line: string) => void, manifest?: any, snapshot?: any, spawn_impl?: typeof node_spawn, killGroup?: (pid: number) => void, timeout_ms?: number, kill_grace_ms?: number }} input
  * @returns {{ done: Promise<AnalysisOutcome>, cancel: () => void }}
  */
 export function runAnalysis(input) {
@@ -495,7 +568,30 @@ export function runAnalysis(input) {
     }
     let settled = false;
     let stdout = '';
+    let stdout_line_buffer = '';
     let stderr_tail = '';
+    /**
+     * Deliver complete non-empty stdout lines without interpreting them.
+     *
+     * @param {string} chunk
+     * @param {boolean} flush
+     */
+    function deliverStreamLines(chunk, flush) {
+      stdout_line_buffer += chunk;
+      const lines = stdout_line_buffer.split('\n');
+      stdout_line_buffer = flush ? '' : lines.pop() || '';
+      for (const raw_line of lines) {
+        const line = raw_line.endsWith('\r') ? raw_line.slice(0, -1) : raw_line;
+        if (line.trim().length === 0) {
+          continue;
+        }
+        try {
+          input.onStreamLine?.(line);
+        } catch {
+          // Observability must never change the analyzer outcome.
+        }
+      }
+    }
     /**
      * @param {AnalysisOutcome} outcome
      */
@@ -552,7 +648,9 @@ export function runAnalysis(input) {
       settle({ ok: false, reason: 'spawn_failed' });
     });
     child.stdout?.on('data', (chunk) => {
-      stdout += String(chunk);
+      const text = String(chunk);
+      stdout += text;
+      deliverStreamLines(text, false);
     });
     child.stderr?.on('data', (chunk) => {
       // Capped diagnostic only — stderr is never persisted (UI-04vo §7).
@@ -561,6 +659,7 @@ export function runAnalysis(input) {
       }
     });
     child.on('close', (code) => {
+      deliverStreamLines('', true);
       if (pending_kill_reason !== null) {
         // The kill landed and the child is measurably gone.
         settle({ ok: false, reason: pending_kill_reason });
@@ -590,6 +689,11 @@ export function runAnalysis(input) {
         settle(parsed);
         return;
       }
+      const parsed = parseClaudeAnalysisStream(stdout);
+      if (parsed.reason === 'runner_error') {
+        settle(parsed);
+        return;
+      }
       if (code !== 0) {
         settle({
           ok: false,
@@ -598,24 +702,10 @@ export function runAnalysis(input) {
         });
         return;
       }
-      try {
-        const parsed = JSON.parse(stdout.trim());
-        settle({ ok: true, result: parsed });
-      } catch {
-        settle({
-          ok: false,
-          reason: 'invalid_output',
-          diagnostic: stdout.trim().slice(0, DIAGNOSTIC_MAX)
-        });
-      }
+      settle(parsed);
     });
     try {
-      const payload = buildAnalysisPayload({
-        bundle_dir: input.bundle_dir,
-        manifest: input.manifest,
-        snapshot: input.snapshot
-      });
-      child.stdin?.write(payload);
+      child.stdin?.write(input.payload);
       child.stdin?.end();
     } catch {
       settle({ ok: false, reason: 'spawn_failed' });

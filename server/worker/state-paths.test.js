@@ -8,6 +8,8 @@ import {
   discardBackupRootDir,
   execPresetsFilePath,
   guardHookDir,
+  parallelAnalysisRunDir,
+  parallelAnalysisRunsPath,
   sessionLogPath,
   usageReceiptInboxDir,
   workspaceSlug,
@@ -108,6 +110,17 @@ describe('execPresetsFilePath', () => {
   test('derives one server-global file under the bdui state root', () => {
     expect(execPresetsFilePath()).toBe(
       path.join('/state', 'bdui', 'exec-presets.json')
+    );
+  });
+});
+
+describe('parallelAnalysisRunsPath', () => {
+  test('derives the history file and prompt directory in workspace state', () => {
+    expect(parallelAnalysisRunsPath(WS)).toBe(
+      path.join(workspaceStateDir(WS), 'parallel-analysis-runs.json')
+    );
+    expect(parallelAnalysisRunDir(WS)).toBe(
+      path.join(workspaceStateDir(WS), 'analysis-runs')
     );
   });
 });

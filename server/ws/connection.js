@@ -109,10 +109,12 @@ import {
 } from './worker-handlers.js';
 import {
   handleParallelAnalysisCancel,
+  handleParallelAnalysisPrompt,
   handleParallelAnalysisSettingsUpdate,
   handleParallelAnalysisSnapshot,
   handleParallelAnalysisStart,
   handleParallelAnalysisSubmit,
+  handleParallelAnalysisTargets,
   handleSubscribeParallelAnalysis,
   handleUnsubscribeParallelAnalysis
 } from './worker-parallel-analysis-handlers.js';
@@ -555,6 +557,12 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-parallel-analysis-snapshot':
       handleParallelAnalysisSnapshot(ws, req);
+      return;
+    case 'worker-parallel-analysis-targets':
+      await handleParallelAnalysisTargets(ws, req);
+      return;
+    case 'worker-parallel-analysis-prompt':
+      handleParallelAnalysisPrompt(ws, req);
       return;
     case 'worker-parallel-analysis-start':
       await handleParallelAnalysisStart(ws, req);

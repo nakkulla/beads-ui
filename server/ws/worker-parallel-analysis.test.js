@@ -11,6 +11,7 @@ import {
   __resetWorkerRuntimeForTest,
   getWorkerRuntime
 } from '../worker/runtime.js';
+import { sessionLogPath } from '../worker/state-paths.js';
 import {
   __resetRegistriesForTest,
   __resetWorkerQueueForTest,
@@ -124,7 +125,7 @@ function analysisResult(over = {}) {
   };
 }
 
-/** @type {{ runs: number, outcome: any, model_ids: string[] }} */
+/** @type {{ runs: number, outcome: any, model_ids: string[], inputs: any[] }} */
 let runner_state;
 
 /**
@@ -155,6 +156,7 @@ function analysisDeps(options = {}) {
     }),
     runAnalysis: (/** @type {any} */ input) => {
       runner_state.runs += 1;
+      runner_state.inputs.push(input);
       if (typeof input.model_id === 'string') {
         runner_state.model_ids.push(input.model_id);
       }
@@ -174,7 +176,12 @@ function analysisDeps(options = {}) {
  * @param {{ result?: any, outcome?: any }} [options]
  */
 function armAnalysis(options = {}) {
-  runner_state = { runs: 0, outcome: options.outcome || null, model_ids: [] };
+  runner_state = {
+    runs: 0,
+    outcome: options.outcome || null,
+    model_ids: [],
+    inputs: []
+  };
   __setAnalysisDepsForTest(analysisDeps(options));
 }
 
@@ -244,6 +251,116 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
     const snap = analysisSnapshots(sock).at(-1);
     expect(snap.last_good.result.groups[0].eligible).toBe(true);
     expect(snap.last_good.result.groups[0].members).toEqual(['UI-a', 'UI-b']);
+    expect(snap.runs[0]).toMatchObject({
+      outcome: 'success',
+      target_ids: ['UI-a', 'UI-b', 'UI-c']
+    });
+  });
+
+  test('stores the exact stdin payload for prompt retrieval', async () => {
+    seedQueue();
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+    const run_id = replyFor(sock, 'r1').payload.job_id;
+    await send(sock, 'p1', 'worker-parallel-analysis-prompt', { run_id });
+
+    expect(replyFor(sock, 'p1').payload).toEqual({
+      ok: true,
+      prompt: runner_state.inputs[0].payload
+    });
+  });
+
+  test('records each stream line and publishes its event', async () => {
+    seedQueue();
+    const deps = analysisDeps();
+    const line = JSON.stringify({ type: 'system', subtype: 'init' });
+    __setAnalysisDepsForTest({
+      ...deps,
+      runAnalysis: (/** @type {any} */ input) => {
+        input.onStreamLine(line);
+        return deps.runAnalysis(input);
+      }
+    });
+    const publish = vi.spyOn(getWorkerRuntime().sessionLog, 'publish');
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+    const run_id = replyFor(sock, 'r1').payload.job_id;
+
+    expect(fs.readFileSync(sessionLogPath(WS, run_id), 'utf8')).toBe(
+      `${line}\n`
+    );
+    expect(publish).toHaveBeenCalledWith(WS, run_id, JSON.parse(line));
+  });
+
+  test('fans out a claude session id on the active job', async () => {
+    seedQueue();
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      runAnalysis: (/** @type {any} */ input) => {
+        input.onStreamLine(
+          JSON.stringify({
+            type: 'system',
+            subtype: 'init',
+            session_id: 'claude-session'
+          })
+        );
+        return deps.runAnalysis(input);
+      }
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+
+    const running = analysisSnapshots(sock).find(
+      (snapshot) => snapshot.job?.session_id === 'claude-session'
+    );
+    expect(running.job.session_id).toBe('claude-session');
+  });
+
+  test('extracts a codex thread id into run history', async () => {
+    seedQueue();
+    getWorkerRuntime().parallelAnalysis.updateSettings({
+      expected_revision: 1,
+      runner: 'codex',
+      model: 'sol',
+      effort: 'high'
+    });
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      catalog: { runners: { codex: { models: { sol: { id: 'gpt-sol' } } } } },
+      validateSelection: () => true,
+      runAnalysis: (/** @type {any} */ input) => {
+        input.onStreamLine(
+          JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' })
+        );
+        return deps.runAnalysis(input);
+      }
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {});
+
+    expect(
+      getWorkerRuntime().parallelAnalysisRuns.read(WS, [])[0].session_id
+    ).toBe('thread-1');
+  });
+
+  test('returns not_found for an unknown prompt run', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'p1', 'worker-parallel-analysis-prompt', {
+      run_id: 'analysis-missing'
+    });
+
+    expect(replyFor(sock, 'p1').payload).toEqual({
+      ok: false,
+      reason: 'not_found'
+    });
   });
 
   test('a second start on the same identity is a cache hit that never re-runs', async () => {
@@ -256,6 +373,121 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
 
     expect(runner_state.runs).toBe(1);
     expect(replyFor(sock, 'r2').payload.cached).toBe(true);
+  });
+
+  test('returns the analysis universe with exclusions and lane overlays', async () => {
+    seedQueue();
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      listIssues: async () => [
+        issueOf('UI-a'),
+        issueOf('UI-x', { metadata: { route: 'quick_fix' } }),
+        issueOf('UI-z', { status: 'closed' })
+      ]
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 't1', 'worker-parallel-analysis-targets', {});
+
+    expect(replyFor(sock, 't1').payload.qualified).toEqual([
+      expect.objectContaining({ id: 'UI-a', lane: 'parallel' })
+    ]);
+    expect(replyFor(sock, 't1').payload.excluded).toEqual([
+      expect.objectContaining({ id: 'UI-x', reason: 'route', lane: null })
+    ]);
+  });
+
+  test('starts analysis with only the requested qualified subset', async () => {
+    seedQueue();
+    armAnalysis({
+      result: analysisResult({
+        issues: [],
+        groups: [analysisResult().groups[0]]
+      })
+    });
+    getWorkerRuntime().parallelAnalysis.updateSettings({
+      expected_revision: 0,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high'
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {
+      target_ids: ['UI-a', 'UI-b']
+    });
+
+    expect(replyFor(sock, 'r1').payload.applied).toBe(true);
+    expect(runner_state.inputs[0].snapshot.target_ids).toEqual([
+      'UI-a',
+      'UI-b'
+    ]);
+  });
+
+  test('rejects a start when any requested target is not qualified', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {
+      target_ids: ['UI-a', 'UI-missing']
+    });
+
+    expect(replyFor(sock, 'r1').payload).toMatchObject({
+      applied: false,
+      reason: 'target_not_qualified',
+      detail: ['UI-missing']
+    });
+    expect(runner_state.runs).toBe(0);
+  });
+
+  test('rejects an empty requested target subset', async () => {
+    const sock = fakeSocket();
+
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {
+      target_ids: []
+    });
+
+    expect(replyFor(sock, 'r1').payload.reason).toBe('no_targets');
+    expect(runner_state.runs).toBe(0);
+  });
+
+  test('does not duplicate run history when a start joins active work', async () => {
+    seedQueue();
+    /** @type {(value: any) => void} */
+    let resolveDone = () => {};
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      runAnalysis: (/** @type {any} */ input) => {
+        runner_state.runs += 1;
+        runner_state.inputs.push(input);
+        return {
+          done: new Promise((resolve) => {
+            resolveDone = resolve;
+          }),
+          cancel: vi.fn()
+        };
+      }
+    });
+    const sock = fakeSocket();
+
+    const first = send(sock, 'r1', 'worker-parallel-analysis-start', {});
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = send(sock, 'r2', 'worker-parallel-analysis-start', {});
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    resolveDone({
+      ok: true,
+      result: {
+        ...analysisResult(),
+        snapshot_digest: runner_state.inputs[0].snapshot.digest
+      }
+    });
+    await Promise.all([first, second]);
+
+    expect(runner_state.runs).toBe(1);
+    expect(getWorkerRuntime().parallelAnalysisRuns.read(WS, [])).toHaveLength(
+      1
+    );
   });
 
   test('re-runs when the catalog remaps a codex short name to a new model id', async () => {
@@ -562,6 +794,38 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
     ]);
     expect(queue.queue).toEqual([]);
     expect(queue.revision).toBe(rev + 1);
+  });
+
+  test('re-derives a subset last-good snapshot for submit', async () => {
+    const rev = seedQueue();
+    armAnalysis({
+      result: analysisResult({
+        issues: [],
+        groups: [analysisResult().groups[0]]
+      })
+    });
+    getWorkerRuntime().parallelAnalysis.updateSettings({
+      expected_revision: 0,
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high'
+    });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-parallel-analysis', { id: 'pa' });
+    await send(sock, 'r1', 'worker-parallel-analysis-start', {
+      target_ids: ['UI-a', 'UI-b']
+    });
+    const digest = analysisSnapshots(sock).at(-1).last_good.identity_digest;
+
+    await send(sock, 'sub1', 'worker-parallel-analysis-submit', {
+      snapshot_digest: digest,
+      group_index: 0,
+      lane: 's1',
+      ordered_bead_ids: ['UI-a', 'UI-b'],
+      expected_revision: rev
+    });
+
+    expect(replyFor(sock, 'sub1').payload.applied).toBe(true);
   });
 
   test('refuses a submit whose digest does not match the last-good result', async () => {

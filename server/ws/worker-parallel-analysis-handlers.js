@@ -22,16 +22,22 @@ import { workerAnalysisContext } from '../worker/attach.js';
 import { collectAnalysisBundle } from '../worker/parallel-analysis-bundle.js';
 import {
   analyzerModelId,
+  buildAnalysisPayload,
   runAnalysis as realRunAnalysis
 } from '../worker/parallel-analysis-runner.js';
+import { parallelAnalysisPromptPath } from '../worker/parallel-analysis-runs.js';
 import { analysisIdentityOf } from '../worker/parallel-analysis-store.js';
-import { collectAnalysisSnapshot } from '../worker/parallel-analysis-targets.js';
+import {
+  collectAnalysisSnapshot,
+  describeAnalysisTargets
+} from '../worker/parallel-analysis-targets.js';
 import {
   isGroupEligible,
   validateAnalysisResult
 } from '../worker/parallel-analysis-validator.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { analyzerSelectionValid, getWorkerRuntime } from '../worker/runtime.js';
+import { sessionLogPath } from '../worker/state-paths.js';
 import { log, runBdJsonProjectedInWorkspace } from './context.js';
 import { decorateQueue, fanout as fanoutQueue } from './worker-handlers.js';
 import { targetWorkspaceOf } from './workspace-target.js';
@@ -40,6 +46,9 @@ const DEFAULT_CLIENT_ID = 'worker:parallel-analysis';
 
 /** @type {Map<string, Set<{ ws: WebSocket, client_id: string }>>} */
 const SUBSCRIBERS = new Map();
+
+/** @type {Map<string, Set<string>>} */
+const ACTIVE_RUN_IDS = new Map();
 
 /**
  * Injected collaborators. Tests replace all three so no real `bd`, git, or
@@ -56,6 +65,9 @@ let TEST_DEPS = null;
  */
 export function __setAnalysisDepsForTest(deps) {
   TEST_DEPS = deps;
+  if (deps === null) {
+    ACTIVE_RUN_IDS.clear();
+  }
 }
 
 /** @returns {ReturnType<typeof getWorkerRuntime>['parallelAnalysis']} */
@@ -66,6 +78,27 @@ function analysisStore() {
 /** @returns {ReturnType<typeof getWorkerRuntime>['queueStore']} */
 function queueStore() {
   return getWorkerRuntime().queueStore;
+}
+
+/** @returns {ReturnType<typeof getWorkerRuntime>['parallelAnalysisRuns']} */
+function analysisRunsStore() {
+  return getWorkerRuntime().parallelAnalysisRuns;
+}
+
+/**
+ * Run ids still owned by this process, including the validation window after
+ * the child exits but before its durable outcome is final.
+ *
+ * @param {string} workspace
+ * @param {string|null} [job_id]
+ * @returns {Set<string>}
+ */
+function activeRunIds(workspace, job_id = null) {
+  const active = new Set(ACTIVE_RUN_IDS.get(workspace) || []);
+  if (job_id !== null) {
+    active.add(job_id);
+  }
+  return active;
 }
 
 /**
@@ -137,17 +170,115 @@ function snapshotFor(workspace) {
   const store = analysisStore();
   const cache = store.readCache(workspace);
   const settings = store.effectiveSettings();
+  const job = store.activeJob(workspace);
   return {
     settings: { ...settings, compatible: selectionRunnable(settings) },
-    job: store.activeJob(workspace),
+    job,
+    runs: analysisRunsStore().read(
+      workspace,
+      activeRunIds(workspace, job?.job_id || null)
+    ),
     last_good: cache.last_good
       ? {
           identity_digest: cache.last_good.identity,
           at: cache.last_good.at,
-          result: cache.last_good.result
+          result: cache.last_good.result,
+          target_ids: cache.last_good.target_ids
         }
       : null
   };
+}
+
+/**
+ * Open the server-owned analysis transcript writer and live broker bridge.
+ *
+ * @param {string} workspace
+ * @param {string} run_id
+ * @param {(session_id: string) => void} onSessionId
+ */
+function createSessionRecorder(workspace, run_id, onSessionId) {
+  /** @type {fs.WriteStream|null} */
+  let stream = null;
+  try {
+    const file = sessionLogPath(workspace, run_id);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    stream = fs.createWriteStream(file, { flags: 'a' });
+    stream.on('error', () => {});
+  } catch {
+    stream = null;
+  }
+  return {
+    /**
+     * @param {string} line
+     */
+    onLine(line) {
+      if (stream && !stream.destroyed) {
+        try {
+          stream.write(`${line}\n`);
+        } catch {
+          stream = null;
+        }
+      }
+      /** @type {unknown} */
+      let event = line;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        // Malformed progress still belongs in the raw transcript and broker.
+      }
+      try {
+        getWorkerRuntime().sessionLog.publish(workspace, run_id, event);
+      } catch {
+        // A broken live subscriber must not affect the analysis.
+      }
+      if (!event || typeof event !== 'object') {
+        return;
+      }
+      const record = /** @type {Record<string, any>} */ (event);
+      const session_id =
+        record.type === 'system' && record.subtype === 'init'
+          ? record.session_id
+          : record.type === 'thread.started'
+            ? record.thread_id
+            : null;
+      if (typeof session_id === 'string' && session_id.length > 0) {
+        onSessionId(session_id);
+      }
+    },
+
+    /**
+     * Finish pending transcript writes.
+     *
+     * @returns {Promise<void>}
+     */
+    close() {
+      if (!stream || stream.destroyed) {
+        return Promise.resolve();
+      }
+      return new Promise((resolve) => {
+        const output = /** @type {fs.WriteStream} */ (stream);
+        let settled = false;
+        function finish() {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          resolve();
+        }
+        output.once('error', finish);
+        output.end(finish);
+      });
+    }
+  };
+}
+
+/**
+ * @param {ReturnType<typeof createSessionRecorder>|null} recorder
+ */
+async function closeSessionRecorder(recorder) {
+  if (recorder) {
+    await recorder.close();
+  }
 }
 
 /**
@@ -238,8 +369,10 @@ async function listIssues(ws, workspace) {
  *
  * @param {WebSocket} ws
  * @param {string} workspace
+ * @param {string[]|undefined} target_ids
+ * @returns {Promise<{ ok: true, snapshot: any, gitRun: any }|{ ok: false, reason: string, detail?: string[] }>}
  */
-async function buildSnapshot(ws, workspace) {
+async function buildSnapshot(ws, workspace, target_ids) {
   const context = TEST_DEPS
     ? TEST_DEPS.analysisContext(workspace)
     : workerAnalysisContext(workspace);
@@ -261,11 +394,16 @@ async function buildSnapshot(ws, workspace) {
     issues,
     queue: queueStore().snapshot(workspace),
     base: { ref: base.base, sha: base.base_oid },
-    gitRun: context.gitRun
+    gitRun: context.gitRun,
+    ...(Array.isArray(target_ids) ? { target_ids } : {})
   });
   return collected.ok
     ? { ok: true, snapshot: collected.snapshot, gitRun: context.gitRun }
-    : { ok: false, reason: collected.reason };
+    : {
+        ok: false,
+        reason: String(collected.reason),
+        ...(Array.isArray(collected.detail) ? { detail: collected.detail } : {})
+      };
 }
 
 /**
@@ -325,6 +463,58 @@ export function handleParallelAnalysisSnapshot(ws, req) {
 }
 
 /**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export async function handleParallelAnalysisTargets(ws, req) {
+  const key = workspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const issues = await listIssues(ws, key);
+  ws.send(
+    JSON.stringify(
+      makeOk(req, describeAnalysisTargets(issues, queueStore().snapshot(key)))
+    )
+  );
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleParallelAnalysisPrompt(ws, req) {
+  const key = workspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  const run_id = /** @type {any} */ (req.payload || {}).run_id;
+  if (typeof run_id !== 'string') {
+    ws.send(
+      JSON.stringify(makeError(req, 'bad_request', 'payload.run_id required'))
+    );
+    return;
+  }
+  const job = analysisStore().activeJob(key);
+  const run = analysisRunsStore()
+    .read(key, activeRunIds(key, job?.job_id || null))
+    .find((entry) => entry.run_id === run_id);
+  if (!run) {
+    ws.send(JSON.stringify(makeOk(req, { ok: false, reason: 'not_found' })));
+    return;
+  }
+  try {
+    const prompt = fs.readFileSync(
+      parallelAnalysisPromptPath(key, run_id),
+      'utf8'
+    );
+    ws.send(JSON.stringify(makeOk(req, { ok: true, prompt })));
+  } catch {
+    ws.send(JSON.stringify(makeOk(req, { ok: false, reason: 'not_found' })));
+  }
+}
+
+/**
  * Start (or serve from cache) one analysis. The ONLY path that launches a
  * model process — and only after an explicit click reaches this handler.
  *
@@ -336,7 +526,23 @@ export async function handleParallelAnalysisStart(ws, req) {
   if (key === null) {
     return;
   }
-  const force = /** @type {any} */ (req.payload || {}).force === true;
+  const p = /** @type {any} */ (req.payload || {});
+  const force = p.force === true;
+  if (
+    Object.hasOwn(p, 'target_ids') &&
+    (!Array.isArray(p.target_ids) ||
+      p.target_ids.some(
+        (/** @type {unknown} */ target_id) => typeof target_id !== 'string'
+      ))
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(req, 'bad_request', 'payload.target_ids must be a string[]')
+      )
+    );
+    return;
+  }
+  const target_ids = Array.isArray(p.target_ids) ? p.target_ids : undefined;
   const store = analysisStore();
   const settings = store.effectiveSettings();
   const catalog = analyzerCatalog();
@@ -375,10 +581,16 @@ export async function handleParallelAnalysisStart(ws, req) {
     );
     return;
   }
-  const built = await buildSnapshot(ws, key);
+  const built = await buildSnapshot(ws, key, target_ids);
   if (!built.ok) {
     ws.send(
-      JSON.stringify(makeOk(req, { applied: false, reason: built.reason }))
+      JSON.stringify(
+        makeOk(req, {
+          applied: false,
+          reason: built.reason,
+          ...(Array.isArray(built.detail) ? { detail: built.detail } : {})
+        })
+      )
     );
     return;
   }
@@ -401,17 +613,73 @@ export async function handleParallelAnalysisStart(ws, req) {
     snapshot,
     gitRun: built.gitRun
   });
+  const payload = buildAnalysisPayload({
+    bundle_dir: bundle.dir,
+    manifest: bundle.manifest,
+    snapshot
+  });
   const selection = {
     runner: String(settings.runner),
     model: String(settings.model),
     effort: String(settings.effort)
   };
+  /** @type {ReturnType<typeof createSessionRecorder>|null} */
+  let session_recorder = null;
+  /** @type {string|null} */
+  let pending_session_id = null;
+  let owns_run = false;
   const job = /** @type {any} */ (
     store.startJob(key, {
       identity,
       selection,
-      start: () =>
-        (TEST_DEPS ? TEST_DEPS.runAnalysis : realRunAnalysis)({
+      start: (/** @type {string} */ job_id) => {
+        owns_run = true;
+        let active = ACTIVE_RUN_IDS.get(key);
+        if (!active) {
+          active = new Set();
+          ACTIVE_RUN_IDS.set(key, active);
+        }
+        active.add(job_id);
+        let prompt_saved = false;
+        try {
+          const prompt_path = parallelAnalysisPromptPath(key, job_id);
+          fs.mkdirSync(path.dirname(prompt_path), { recursive: true });
+          fs.writeFileSync(prompt_path, payload);
+          prompt_saved = true;
+        } catch {
+          prompt_saved = false;
+        }
+        analysisRunsStore().create(key, {
+          run_id: job_id,
+          session_id: null,
+          runner: selection.runner,
+          model: selection.model,
+          model_id,
+          effort: selection.effort,
+          target_ids: [...snapshot.target_ids],
+          snapshot_digest: snapshot.digest,
+          identity,
+          started_at: Date.now(),
+          ended_at: null,
+          outcome: 'running',
+          reason: null,
+          diagnostic: null,
+          prompt_saved
+        });
+        let observed_session_id = '';
+        session_recorder = createSessionRecorder(key, job_id, (session_id) => {
+          if (session_id === observed_session_id) {
+            return;
+          }
+          observed_session_id = session_id;
+          analysisRunsStore().update(key, job_id, { session_id });
+          if (store.setJobSessionId(key, job_id, session_id)) {
+            fanout(key);
+          } else {
+            pending_session_id = session_id;
+          }
+        });
+        return (TEST_DEPS ? TEST_DEPS.runAnalysis : realRunAnalysis)({
           ...selection,
           model_id,
           // The analyzer verifies the pinned CLI model id against this same
@@ -419,9 +687,12 @@ export async function handleParallelAnalysisStart(ws, req) {
           // model therefore use exactly the same value (UI-yqw9 §1.2).
           catalog,
           bundle_dir: bundle.dir,
+          payload,
+          onStreamLine: session_recorder.onLine,
           manifest: bundle.manifest,
           snapshot
-        })
+        });
+      }
     })
   );
   if (job.ok === false) {
@@ -439,6 +710,17 @@ export async function handleParallelAnalysisStart(ws, req) {
     );
     return;
   }
+  if (pending_session_id !== null) {
+    store.setJobSessionId(key, job.job_id, pending_session_id);
+  }
+  if (owns_run) {
+    const active_job = store.activeJob(key);
+    if (active_job) {
+      analysisRunsStore().update(key, job.job_id, {
+        started_at: active_job.started_at
+      });
+    }
+  }
   fanout(key);
   // The bundle outlives the run: evidence locators are checked against the
   // materialized bytes the model was actually given, so cleanup happens only
@@ -448,11 +730,21 @@ export async function handleParallelAnalysisStart(ws, req) {
     if (!outcome || outcome.ok !== true) {
       // Cancel, timeout, spawn failure and a non-zero exit all land here: the
       // last-good cache is deliberately untouched (UI-04vo §9).
+      const reason = outcome?.reason || 'run_failed';
+      analysisRunsStore().update(key, job.job_id, {
+        ended_at: Date.now(),
+        outcome: reason === 'cancelled' ? 'cancelled' : 'failure',
+        reason,
+        diagnostic:
+          typeof outcome?.diagnostic === 'string'
+            ? outcome.diagnostic.slice(0, 200)
+            : null
+      });
       ws.send(
         JSON.stringify(
           makeOk(req, {
             applied: false,
-            reason: outcome?.reason || 'run_failed',
+            reason,
             job_id: job.job_id
           })
         )
@@ -473,6 +765,12 @@ export async function handleParallelAnalysisStart(ws, req) {
       }
     });
     if (!verdict.ok) {
+      analysisRunsStore().update(key, job.job_id, {
+        ended_at: Date.now(),
+        outcome: 'failure',
+        reason: verdict.reason,
+        diagnostic: null
+      });
       ws.send(
         JSON.stringify(
           makeOk(req, {
@@ -485,12 +783,37 @@ export async function handleParallelAnalysisStart(ws, req) {
       fanout(key);
       return;
     }
-    store.saveLastGood(key, { identity, result: verdict.result });
+    store.saveLastGood(key, {
+      identity,
+      result: verdict.result,
+      target_ids: snapshot.target_ids
+    });
+    analysisRunsStore().update(key, job.job_id, {
+      ended_at: Date.now(),
+      outcome: 'success',
+      reason: null,
+      diagnostic: null
+    });
     ws.send(
-      JSON.stringify(makeOk(req, { applied: true, cached: false, identity }))
+      JSON.stringify(
+        makeOk(req, {
+          applied: true,
+          cached: false,
+          identity,
+          job_id: job.job_id
+        })
+      )
     );
     fanout(key);
   } finally {
+    await closeSessionRecorder(session_recorder);
+    if (owns_run) {
+      const active = ACTIVE_RUN_IDS.get(key);
+      active?.delete(job.job_id);
+      if (active && active.size === 0) {
+        ACTIVE_RUN_IDS.delete(key);
+      }
+    }
     bundle.cleanup();
   }
 }
@@ -633,7 +956,13 @@ export async function handleParallelAnalysisSubmit(ws, req) {
     refuse('member_mismatch');
     return;
   }
-  const built = await buildSnapshot(ws, key);
+  const built = await buildSnapshot(
+    ws,
+    key,
+    Array.isArray(cache.last_good.target_ids)
+      ? cache.last_good.target_ids
+      : undefined
+  );
   if (!built.ok) {
     refuse(String(built.reason));
     return;
