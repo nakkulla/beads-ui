@@ -10,7 +10,6 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { acquireDeployLock } from './deploy-lock.js';
 import { resolveRepairOwner } from './repair-session-adapter.js';
 import {
@@ -2337,8 +2336,8 @@ export function createRepoOperationCoordinator(deps) {
       await startRepairLocked(workspace, subject.subject_id, 'auto');
     }
 
-    let dismissed_any = false;
-    let dismissed_halting = false;
+    /** @type {string[]} */
+    const moot_attempt_ids = [];
     const attempts = Object.values(
       deps.store.snapshot(workspace).attempts || {}
     );
@@ -2364,37 +2363,15 @@ export function createRepoOperationCoordinator(deps) {
       if (judged.verdict !== 'chain_closed') {
         continue;
       }
-      const updated = deps.store.updateAttempt(workspace, {
-        attempt_id: attempt.attempt_id,
-        patch: { dismissed_at: now() }
-      });
-      if (updated.ok) {
-        dismissed_any = true;
-        dismissed_halting ||= attempt.halted_auto_advance === true;
-      }
+      moot_attempt_ids.push(attempt.attempt_id);
     }
 
-    if (dismissed_any && dismissed_halting) {
-      const current = deps.store.snapshot(workspace);
-      const isUnhandledFailure = createUnhandledFailurePredicate(current);
-      const unhandled_failures = Object.values(current.attempts || {}).filter(
-        (attempt) =>
-          attempt &&
-          (attempt.status === 'failed' || attempt.status === 'orphaned') &&
-          isUnhandledFailure(attempt)
-      );
-      const unhandled_halting = unhandled_failures.some(
-        (attempt) => attempt.halted_auto_advance === true
-      );
-      if (
-        !unhandled_halting &&
-        unhandled_failures.length === 0 &&
-        current.auto_advance === false
-      ) {
-        deps.store.setAutoAdvance(workspace, true);
-      }
+    if (moot_attempt_ids.length === 0) {
+      return false;
     }
-    return dismissed_any;
+    return deps.store.settleMootRepairFailures(workspace, {
+      attempt_ids: moot_attempt_ids
+    }).ok;
   }
 
   /**

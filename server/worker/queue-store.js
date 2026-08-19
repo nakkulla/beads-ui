@@ -579,6 +579,7 @@
 import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { createUnhandledFailurePredicate } from './attempt-failure.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
 import {
@@ -5579,6 +5580,55 @@ export function createQueueStore(options = {}) {
             ...attempt,
             halted_auto_advance: true
           });
+        }
+        return true;
+      });
+    },
+
+    /**
+     * Dismiss repair failures whose target became moot and restore automatic
+     * dispatch, when eligible, in the same durable write.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_ids: string[] }} input
+     * @returns {QueueOpResult}
+     */
+    settleMootRepairFailures(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        let dismissed_any = false;
+        let dismissed_halting = false;
+        for (const attempt_id of new Set(input.attempt_ids)) {
+          const attempt = next.attempts[attempt_id];
+          if (
+            !attempt ||
+            attempt.status !== 'failed' ||
+            typeof attempt.dismissed_at === 'number'
+          ) {
+            continue;
+          }
+          next.attempts[attempt_id] = makeAttempt({
+            ...attempt,
+            dismissed_at: now()
+          });
+          dismissed_any = true;
+          dismissed_halting ||= attempt.halted_auto_advance === true;
+        }
+        if (!dismissed_any) {
+          return false;
+        }
+
+        const isUnhandledFailure = createUnhandledFailurePredicate(next);
+        const has_unhandled_failure = Object.values(next.attempts).some(
+          (attempt) =>
+            (attempt.status === 'failed' || attempt.status === 'orphaned') &&
+            isUnhandledFailure(attempt)
+        );
+        if (
+          dismissed_halting &&
+          !has_unhandled_failure &&
+          next.auto_advance === false
+        ) {
+          next.auto_advance = true;
         }
         return true;
       });

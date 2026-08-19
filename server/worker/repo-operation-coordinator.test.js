@@ -175,8 +175,24 @@ describe('repo operation late moot repair reconciliation', () => {
     await coordinator.reconcile(root);
 
     const snapshot = store.snapshot(root);
+    const durable_before_reload = JSON.parse(
+      fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
+    );
+    const cold_store = createQueueStore({
+      filePathFor: (workspace) => path.join(workspace, 'queue.json')
+    });
+    const cold = cold_store.snapshot(root);
+    const durable_after_reload = JSON.parse(
+      fs.readFileSync(path.join(root, 'queue.json'), 'utf8')
+    );
+
     expect(snapshot.attempts['att-1'].dismissed_at).toBe(100);
     expect(snapshot.auto_advance).toBe(true);
+    expect(durable_before_reload.attempts['att-1'].dismissed_at).toBe(100);
+    expect(durable_before_reload.auto_advance).toBe(true);
+    expect(cold.attempts['att-1'].dismissed_at).toBe(100);
+    expect(cold.auto_advance).toBe(false);
+    expect(durable_after_reload.auto_advance).toBe(true);
     expect(onRepairLaneAdvanced).toHaveBeenCalledTimes(1);
   });
 

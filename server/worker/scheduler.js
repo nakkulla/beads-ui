@@ -6002,7 +6002,7 @@ export function createScheduler(deps) {
   /**
    * Fail one prerecorded completion attempt before its process starts.
    *
-   * @param {{ workspace: string, attempt_id: string, bead_id: string, repo: string, reason: string, prior_wf: string|null, stamped_keys?: string[], remove_worktree?: boolean }} input
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, repo: string, reason: string, prior_wf: string|null, stamped_keys?: string[], remove_worktree?: boolean, dismissed?: boolean }} input
    */
   async function failPreparedCompletion(input) {
     const {
@@ -6013,7 +6013,8 @@ export function createScheduler(deps) {
       reason,
       prior_wf,
       stamped_keys,
-      remove_worktree
+      remove_worktree,
+      dismissed
     } = input;
     if (Array.isArray(stamped_keys) && stamped_keys.length > 0) {
       await revertExecStamps(
@@ -6029,7 +6030,12 @@ export function createScheduler(deps) {
     }
     deps.store.updateAttempt(workspace, {
       attempt_id,
-      patch: { status: 'failed', cause: reason, finished_at: now() }
+      patch: {
+        status: 'failed',
+        cause: reason,
+        finished_at: now(),
+        ...(dismissed === true ? { dismissed_at: now() } : {})
+      }
     });
     if (remove_worktree === true) {
       try {
@@ -6039,6 +6045,7 @@ export function createScheduler(deps) {
       }
     }
     removeGuardHook(workspace, attempt_id);
+    usage_receipts.removeEmptyUsageReceiptInbox(workspace, attempt_id);
     claimed.delete(bead_id);
     notifyLifecycle('attemptFailed', {
       bead_id,
@@ -6443,6 +6450,29 @@ export function createScheduler(deps) {
       result_digest: op.failure_key.result_digest,
       log_path: input.log_path ?? null
     };
+    if (mode === 'resume_root') {
+      const owned = await proveOwnedWorktree(repo, bead_id);
+      if (!owned.ok) {
+        const reason = await missingRelaunchDecision(
+          workspace,
+          attempt_id,
+          bead_id,
+          {}
+        );
+        return failPreparedCompletion({
+          workspace,
+          attempt_id,
+          bead_id,
+          repo,
+          reason,
+          prior_wf,
+          stamped_keys,
+          remove_worktree: false,
+          dismissed: true
+        });
+      }
+      wt_path = owned.path;
+    }
     const launched = await launchSession({
       workspace,
       attempt_id,
@@ -6458,6 +6488,7 @@ export function createScheduler(deps) {
       stamped_keys,
       wt_path,
       launch_kind: 'completion_repair',
+      verify_worktree: mode === 'resume_root',
       resume_session_id,
       completion_repair,
       spawnBead: {
@@ -6466,6 +6497,25 @@ export function createScheduler(deps) {
       }
     });
     if (!launched.ok) {
+      if (mode === 'resume_root' && launched.reason === 'worktree_missing') {
+        const reason = await missingRelaunchDecision(
+          workspace,
+          attempt_id,
+          bead_id,
+          {}
+        );
+        return failPreparedCompletion({
+          workspace,
+          attempt_id,
+          bead_id,
+          repo,
+          reason,
+          prior_wf,
+          stamped_keys,
+          remove_worktree: false,
+          dismissed: true
+        });
+      }
       if (mode === 'dispatch_repair') {
         try {
           await deps.worktree.remove({ repo, bead_id });

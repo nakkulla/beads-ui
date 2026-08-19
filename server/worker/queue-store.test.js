@@ -62,8 +62,37 @@ describe('worker/state-paths', () => {
 });
 
 describe('worker/queue-store', () => {
-  test('normalizes moot-repair fields and preserves them through makeAttempt', () => {
-    const legacy = makeAttempt({ attempt_id: 'legacy', bead_id: 'UI-legacy' });
+  test('normalizes legacy moot-repair fields through load save and reload', () => {
+    fs.mkdirSync(path.dirname(queueFilePath(WS)), { recursive: true });
+    fs.writeFileSync(
+      queueFilePath(WS),
+      JSON.stringify({
+        revision: 0,
+        attempts: {
+          legacy: { attempt_id: 'legacy', bead_id: 'UI-legacy' }
+        }
+      })
+    );
+    const first_store = createQueueStore();
+
+    const legacy = first_store.snapshot(WS).attempts.legacy;
+    first_store.setSlots(WS, {
+      expected_revision: first_store.snapshot(WS).revision,
+      slots: 3
+    });
+    const reloaded = createQueueStore().snapshot(WS).attempts.legacy;
+
+    expect(legacy).toMatchObject({
+      repair_operation_id: null,
+      halted_auto_advance: false
+    });
+    expect(reloaded).toMatchObject({
+      repair_operation_id: null,
+      halted_auto_advance: false
+    });
+  });
+
+  test('normalizes malformed and explicit moot-repair fields', () => {
     const malformed = makeAttempt({
       attempt_id: 'malformed',
       bead_id: 'UI-malformed',
@@ -77,10 +106,6 @@ describe('worker/queue-store', () => {
       halted_auto_advance: true
     });
 
-    expect(legacy).toMatchObject({
-      repair_operation_id: null,
-      halted_auto_advance: false
-    });
     expect(malformed).toMatchObject({
       repair_operation_id: null,
       halted_auto_advance: false
@@ -89,6 +114,41 @@ describe('worker/queue-store', () => {
       repair_operation_id: 'cleanup:UI-repair',
       halted_auto_advance: true
     });
+  });
+
+  test('settles moot failures and restores auto advance in one durable write', () => {
+    const store = createQueueStore({ now: () => 100 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'repair',
+        bead_id: 'UI-repair',
+        status: 'failed',
+        repair_operation_id: 'cleanup:UI-repair'
+      }
+    });
+    store.setAutoAdvance(WS, true);
+    store.haltAutoAdvanceForAttempt(WS, { attempt_id: 'repair' });
+
+    const result = store.settleMootRepairFailures(WS, {
+      attempt_ids: ['repair']
+    });
+    const durable_before_reload = JSON.parse(
+      fs.readFileSync(queueFilePath(WS), 'utf8')
+    );
+    const cold = createQueueStore().snapshot(WS);
+    const durable_after_reload = JSON.parse(
+      fs.readFileSync(queueFilePath(WS), 'utf8')
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.attempts.repair.dismissed_at).toBe(100);
+    expect(result.queue.auto_advance).toBe(true);
+    expect(durable_before_reload.attempts.repair.dismissed_at).toBe(100);
+    expect(durable_before_reload.auto_advance).toBe(true);
+    expect(cold.attempts.repair.dismissed_at).toBe(100);
+    expect(cold.auto_advance).toBe(false);
+    expect(durable_after_reload.auto_advance).toBe(true);
   });
 
   test('halts auto advance and marks only the responsible attempt in one write', () => {
