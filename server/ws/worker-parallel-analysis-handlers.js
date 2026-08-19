@@ -258,6 +258,7 @@ function createSessionRecorder(workspace, run_id, onSessionId) {
       return new Promise((resolve) => {
         const output = /** @type {fs.WriteStream} */ (stream);
         let settled = false;
+        /** Resolve once, whether the flush ended cleanly or errored. */
         function finish() {
           if (settled) {
             return;

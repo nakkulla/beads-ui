@@ -37,9 +37,11 @@ export const ANALYSIS_TIMEOUT_MS = 300_000;
  * of them safer.
  *
  * Refusal vocabulary: `capability_missing`, `timeout`, `cancelled`,
- * `spawn_failed`, `exit_nonzero`, `invalid_output`, and — codex only —
- * `runner_error` for a stream that reported its own failure (UI-yqw9 §1.3).
- * None of them touches the last-good cache.
+ * `spawn_failed`, `exit_nonzero`, `invalid_output`, and `runner_error` for a
+ * stream that reported its own failure (UI-yqw9 §1.3). Both providers stream
+ * now, so `runner_error` is no longer codex-only: a claude `result` event with
+ * `is_error` or a non-`success` subtype reports the same thing. None of them
+ * touches the last-good cache.
  *
  * @typedef {{ ok: boolean, result?: any, reason?: string, diagnostic?: string }} AnalysisOutcome
  */

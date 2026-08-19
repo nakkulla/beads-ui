@@ -331,20 +331,48 @@ model.
 - `subscribe-worker-parallel-analysis` / `unsubscribe-worker-parallel-analysis`
   payload: `{ id }`.
 - `worker-parallel-analysis-snapshot` (push) payload:
-  `{ type, id, root_dir, settings: { revision, runner, model, effort }, job: { job_id, identity }|null, last_good: { identity_digest, at, result }|null }`.
+  `{ type, id, root_dir, settings: { revision, runner, model, effort }, job: { job_id, identity, session_id }|null, runs: AnalysisRun[], last_good: { identity_digest, at, result, target_ids }|null }`.
   `result` is the VALIDATED schema-v2 result; each group carries the server's
-  `eligible` stamp, and no consumer recomputes that judgment.
-- `worker-parallel-analysis-start` payload: `{ force? }` — reply
-  `{ applied, cached?, identity?, reason? }`. An identical identity (snapshot
-  digest + runner/model/effort) is a cache hit that spawns nothing; `force`
-  re-runs while PRESERVING the previous last-good until a new success. Cancel,
-  timeout, a non-zero exit, and an invalid/unvalidatable result all reply
-  `applied:false` and leave the cache untouched.
+  `eligible` stamp, and no consumer recomputes that judgment. `job.job_id` IS
+  the run id, so the drawer subscribes through the existing
+  `subscribe-session-log` with that id in the `attempt_id` slot — the analyzer
+  needs no session-log message type of its own. `runs` is the durable history
+  (newest first, capped at 20) described below.
+- `worker-parallel-analysis-targets` payload: `{ root_dir }` — reply
+  `{ qualified: [{ id, title, route, spec_id, plan_path, lane }], excluded: [{ id, title, reason, lane }] }`.
+  The population is the server's ANALYZABLE UNIVERSE, not a lane listing:
+  `qualified` is exactly what a `target_ids`-less start would analyze, and
+  `excluded` is every other open Bead with its reason. `lane` is
+  `'parallel' | 's<n>' | null` (unplaced) and is display-only — an unplaced Bead
+  is deliberately included, because the candidate lane exists only on the Board.
+  No git blob is pinned, so opening the dialog costs no git work.
+- `worker-parallel-analysis-prompt` payload: `{ root_dir, run_id }` — reply
+  `{ ok: true, prompt }` or `{ ok: false, reason: 'not_found' }`. The stored
+  bytes are the exact bytes written to the analyzer's stdin.
+- `worker-parallel-analysis-start` payload: `{ force?, target_ids? }` — reply
+  `{ applied, cached?, identity?, job_id?, reason?, detail? }`. An identical
+  identity (snapshot digest + runner/model/effort) is a cache hit that spawns
+  nothing; `force` re-runs while PRESERVING the previous last-good until a new
+  success. Omitting `target_ids` keeps the original meaning (the whole qualified
+  set). An array is re-judged server-side and must be ENTIRELY qualified: one
+  unqualified id refuses the whole request with `target_not_qualified` and the
+  offending ids in `detail`, rather than silently shrinking to the intersection.
+  An empty array replies `no_targets`. Cancel, timeout, a non-zero exit, and an
+  invalid/unvalidatable result all reply `applied:false` and leave the cache
+  untouched.
 - `worker-parallel-analysis-cancel` payload: `{ job_id }` — reply
   `{ cancelled }`; kills the process group and keeps last-good.
 - `worker-parallel-analysis-settings-update` payload:
   `{ expected_revision, runner, model, effort }` — CAS; only a selection that
   passes the catalog+probe validation is stored.
+- Durable run history (`runs`): one record per start, newest first, capped at
+  20; a rotated-out record's own `analysis-<run_id>-prompt.txt` and
+  `sessions/<run_id>.jsonl` are deleted with it. Shape:
+  `{ run_id, session_id, runner, model, model_id, effort, target_ids, snapshot_digest, identity, started_at, ended_at, outcome, reason, diagnostic, prompt_saved }`
+  with `outcome` in `running|success|failure|cancelled|interrupted`. A `running`
+  record with no matching active job is settled to `interrupted`
+  (`reason: 'server_restart'`) when the history is READ — the previous process's
+  death is the only way that state can be observed.
 - `worker-parallel-analysis-submit` payload:
   `{ snapshot_digest, group_index, lane, ordered_bead_ids, expected_revision }`
   — the client's draft is an INPUT, never an authority. The server re-derives

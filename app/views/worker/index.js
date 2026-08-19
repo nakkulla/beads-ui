@@ -72,7 +72,10 @@ import {
   sumAttemptWorkMs
 } from './lanes.js';
 import { cleanupStalledReason, cleanupStepLabel } from './merge-steps.js';
-import { createParallelAnalysisDialog } from './parallel-analysis-dialog.js';
+import {
+  analysisRunDrawerMeta,
+  createParallelAnalysisDialog
+} from './parallel-analysis-dialog.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
@@ -1492,12 +1495,15 @@ export function createWorkerView(mount_element, options = {}) {
 
   /** @type {string|null} Currently open attempt (for the tile ring). */
   let selected_attempt = null;
+  /** @type {string|null} Run id of an analyzer transcript open in the drawer. */
+  let selected_analysis_run = null;
 
   const drawer = createTranscriptDrawer(drawer_el, {
     transport,
     sessionLogStore,
     onClose: () => {
       selected_attempt = null;
+      selected_analysis_run = null;
       drawer_overlay_el.hidden = true;
       doRender();
     }
@@ -4312,6 +4318,7 @@ export function createWorkerView(mount_element, options = {}) {
     const q = currentQueue();
     const a = q.attempts ? q.attempts[attempt_id] : null;
     selected_attempt = attempt_id;
+    selected_analysis_run = null;
     repo_ops_drawer.close();
     repo_ops_drawer_el.hidden = true;
     drawer_overlay_el.hidden = false;
@@ -4329,10 +4336,14 @@ export function createWorkerView(mount_element, options = {}) {
    */
   function openDrawerForAnalysisRun(run_id, meta) {
     selected_attempt = null;
+    selected_analysis_run = run_id;
     repo_ops_drawer.close();
     repo_ops_drawer_el.hidden = true;
     drawer_overlay_el.hidden = false;
-    drawer.open({ attempt_id: run_id, meta });
+    // The analyzer's prompt lives on the analysis channel, not on
+    // `get-attempt-prompt`, so the attempt toggle would answer for the wrong
+    // store; the dialog owns the [프롬프트] surface for a run.
+    drawer.open({ attempt_id: run_id, meta, hide_prompt: true });
     doRender();
   }
 
@@ -4349,6 +4360,20 @@ export function createWorkerView(mount_element, options = {}) {
     // closed drawer must not pay for it on every push.
     if (repo_ops_drawer.isOpen()) {
       repo_ops_drawer.refresh(repoOpsDrawerInput());
+    }
+    if (selected_analysis_run) {
+      // Analysis runs live in the analysis snapshot, not the queue: the session
+      // id lands after open() just as it does for an attempt, and a run that
+      // vanished means the store was cleared (workspace switch).
+      const run = (analysisStore?.get()?.runs || []).find(
+        (/** @type {any} */ item) => item.run_id === selected_analysis_run
+      );
+      if (run) {
+        drawer.updateMeta(analysisRunDrawerMeta(run));
+      } else {
+        drawer.close();
+      }
+      return;
     }
     if (!selected_attempt) {
       return;
@@ -4781,7 +4806,12 @@ export function createWorkerView(mount_element, options = {}) {
   // re-render on either transition. The unsubscribe rides the same list every
   // other live source uses, so a destroyed view stops re-rendering.
   if (analysisStore && typeof analysisStore.subscribe === 'function') {
-    unsubscribers.push(analysisStore.subscribe(() => doRender()));
+    unsubscribers.push(
+      analysisStore.subscribe(() => {
+        refreshOpenDrawerMeta();
+        doRender();
+      })
+    );
   }
 
   doRender();

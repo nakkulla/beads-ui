@@ -107,6 +107,10 @@ function analysisOf(over = {}) {
   };
 }
 
+/**
+ * The analyzable universe the targets message returns: two qualified rows (one
+ * placed, one unplaced) and one excluded row.
+ */
 function targetsFixture() {
   return {
     qualified: [
@@ -822,7 +826,7 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     );
   });
 
-  test('enables history actions only when their durable signals exist', async () => {
+  test('gates the history prompt button on prompt_saved alone', async () => {
     const onOpenTranscript = vi.fn();
     const { mount } = mountDialog({
       analysis: analysisOf({
@@ -868,11 +872,6 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     ).toBe(false);
     expect(
       /** @type {HTMLButtonElement} */ (
-        rows[1].querySelector('.pa-run-row__monitor')
-      ).disabled
-    ).toBe(true);
-    expect(
-      /** @type {HTMLButtonElement} */ (
         rows[1].querySelector('.pa-run-row__prompt')
       ).disabled
     ).toBe(true);
@@ -881,6 +880,40 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     expect(onOpenTranscript).toHaveBeenCalledWith(
       'analysis-good',
       expect.anything()
+    );
+  });
+
+  test('monitors a run whose session id never arrived', async () => {
+    const onOpenTranscript = vi.fn();
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        runs: [
+          {
+            run_id: 'analysis-no-session',
+            session_id: null,
+            runner: 'claude',
+            model: 'opus',
+            effort: 'high',
+            started_at: 1_000,
+            outcome: 'interrupted',
+            reason: 'server_restart',
+            prompt_saved: false
+          }
+        ]
+      }),
+      onOpenTranscript
+    });
+    await flush();
+    const monitor = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-run-row__monitor')
+    );
+
+    monitor.click();
+
+    expect(monitor.disabled).toBe(false);
+    expect(onOpenTranscript).toHaveBeenCalledWith(
+      'analysis-no-session',
+      expect.objectContaining({ session_id: undefined })
     );
   });
 

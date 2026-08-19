@@ -558,6 +558,33 @@ describe('transcript drawer', () => {
     ).toBeNull();
   });
 
+  test('hides the attempt prompt toggle when opened with hide_prompt', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'analysis-1', hide_prompt: true });
+
+    expect(
+      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
+    ).toBeNull();
+    expect(mount.querySelector('.sv__id')?.textContent).toContain('analysis-1');
+  });
+
+  test('renders the attempt prompt toggle for an ordinary attempt', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-1' });
+
+    expect(
+      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
+    ).not.toBeNull();
+  });
+
   test('renders delegation messages reasoning activity and terminal events', () => {
     const base = {
       schema: 'codex-delegation-monitor-v1',

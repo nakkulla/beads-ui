@@ -52,6 +52,36 @@ const RUN_OUTCOME_LABELS = {
   interrupted: '중단'
 };
 
+/** @type {Record<string, string>} Run outcome to drawer attempt-status token. */
+const RUN_DRAWER_STATUSES = {
+  running: 'running',
+  success: 'done',
+  failure: 'failed',
+  cancelled: 'stopped',
+  interrupted: 'orphaned'
+};
+
+/**
+ * Project one durable run record (or the active job payload) into the shared
+ * transcript drawer's meta shape. Exported because the worker view re-feeds it
+ * on every snapshot push: the session id lands after the drawer is already
+ * open, exactly as it does for an attempt.
+ *
+ * @param {any} run
+ * @returns {import('./transcript-drawer.js').DrawerMeta}
+ */
+export function analysisRunDrawerMeta(run) {
+  return {
+    runner: run.runner || undefined,
+    model: run.model || undefined,
+    effort: run.effort || undefined,
+    status:
+      RUN_DRAWER_STATUSES[run.outcome] ||
+      (typeof run.job_id === 'string' ? 'running' : undefined),
+    session_id: run.session_id || undefined
+  };
+}
+
 /**
  * Create the parallelism-analysis dialog (native `<dialog>`), mirroring the
  * exec-defaults dialog's shell: mount-once, showModal with a jsdom fallback,
@@ -472,36 +502,12 @@ export function createParallelAnalysisDialog(mount_element, options) {
   }
 
   /**
-   * @param {any} run
-   * @returns {import('./transcript-drawer.js').DrawerMeta}
-   */
-  function drawerMetaForRun(run) {
-    /** @type {Record<string, string>} */
-    const statuses = {
-      running: 'running',
-      success: 'done',
-      failure: 'failed',
-      cancelled: 'stopped',
-      interrupted: 'orphaned'
-    };
-    return {
-      runner: run.runner || undefined,
-      model: run.model || undefined,
-      effort: run.effort || undefined,
-      status:
-        statuses[run.outcome] ||
-        (typeof run.job_id === 'string' ? 'running' : undefined),
-      session_id: run.session_id || undefined
-    };
-  }
-
-  /**
    * @param {string} run_id
    * @param {any} meta_source
    */
   function openTranscript(run_id, meta_source) {
     if (onOpenTranscript) {
-      onOpenTranscript(run_id, drawerMetaForRun(meta_source));
+      onOpenTranscript(run_id, analysisRunDrawerMeta(meta_source));
     }
   }
 
@@ -1065,6 +1071,10 @@ export function createParallelAnalysisDialog(mount_element, options) {
     const has_session =
       typeof run.session_id === 'string' && run.session_id.length > 0;
     const session_id = has_session ? run.session_id : '';
+    // Monitoring is gated on the transcript, not on the session id: every run
+    // opens its session log at start, while the id only appears if the provider
+    // emitted an init event (§2 treats a missing id as blank, not a failure).
+    // A rotated-out run has no history row left to click.
     return html`<li class="pa-run-row">
       <span class="pa-run-row__status pa-run-row__status--${run.outcome}"
         >${RUN_OUTCOME_LABELS[run.outcome] || run.outcome}</span
@@ -1087,7 +1097,6 @@ export function createParallelAnalysisDialog(mount_element, options) {
         <button
           type="button"
           class="pa-run-row__monitor"
-          ?disabled=${!has_session}
           @click=${() => openTranscript(run.run_id, run)}
         >
           모니터링
