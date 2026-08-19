@@ -5,6 +5,7 @@ scope:
   - server/worker/queue-store.js
   - server/worker/attach.js
   - server/worker/pr-actions.js
+  - server/worker/pr-poller.js
   - server/ws/worker-handlers.js
   - app/views/worker/
 ---
@@ -48,24 +49,35 @@ scope:
 
 ## 2. 세션 인계 레인 멤버의 pr_wait 자동 전이
 
-Worker의 external PR 관측 패스(external row를 합성하는 그 스캔 주기)에 reconcile
-단계를 추가한다.
+전이 트리거는 **pr-poller의 GitHub 관측**이다. external 레지스트리 자체는
+`pr_url`/PR 번호만 알고 PR의 OPEN 여부·`head_ref`는 폴러의 `prDetail` 관측
+이후에만 확실하므로, 레지스트리 스캔 시점의 전이는 닫힌·stale PR을 옮길 수
+있다. 따라서 폴러가 external 대상 bead의 `prDetail`을 **OPEN으로 성공 관측한
+직후**, 관측한 `pr_url`·`head_ref`를 전달해 queue-store의 원자적 reconcile
+뮤테이션을 호출한다. 관측 오류·`CLOSED`·`MERGED`에서는 전이하지 않는다.
 
 **전이 조건** — 모두 동시에 만족할 때만:
 
 - ⓐ bead가 durable 실행 레인(`queue` 또는 `serial_lanes[].entries`)의 멤버다.
-- ⓑ 같은 bead의 **open** PR external row가 external 레지스트리에 존재한다.
-- ⓒ 그 bead의 attempt가 전부 terminal이다(running/paused 없음).
+- ⓑ 같은 bead의 PR이 방금 `prDetail`로 **OPEN** 관측되었다(external 레지스트리
+  대상).
+- ⓒ 그 bead의 attempt가 전부 terminal이다(running/paused 없음). attempt가
+  하나도 없는 멤버도 전이 대상이다.
 - ⓓ 활성 discard operation이 없다.
 
 **전이 내용** — CAS 뮤테이션 한 번으로:
 
-- 실행 레인 행을 제거하고 `pr_wait` 행을 추가한다. `pr_url`·`head_ref`는 external
-  row 관측값으로 채운다.
+- 실행 레인 행을 제거하고 `pr_wait` 행을 추가한다. `pr_url`·`head_ref`는 방금의
+  `prDetail` 관측값으로 채운다.
 - 직렬 레인 출신이면 원 레인 id를 pr_wait 행의 선택 필드 `serial_lane_id`로
   기록한다(§3).
 
 전이 이후는 기존 pr_wait 기계(폴러, 머지 큐 자격, 머지, 정리)가 그대로 소유한다.
+단, 전이된 행은 durable `pr_wait` 멤버가 되므로 충돌 해소 디스패치가 worker
+경로(`dispatchResolution` — 이전 세션 relaunch)로 분류된다. **resumable
+attempt(`session_id` 있는 terminal attempt)가 없는 행**은 그 경로가
+`no_session_id`로 실패하므로, 해소 디스패치는 attempt 부재 시 external resolver와
+같은 fresh attempt-less 디스패치로 분기해야 한다.
 `enqueueMember`의 레인 배타성 규칙 자체는 바꾸지 않는다 — 전이가 일어나면 행이
 `pr_wait` 멤버이므로 정상 통과한다. 별도 "레인에서 제거" 버튼은 추가하지
 않는다(전이가 워크어라운드 자체를 제거한다). 후보 레인 드래그 제거는 현행대로
@@ -84,7 +96,8 @@ attempt의 `serial_lane_id`"로만 복원한다. attempt 스탬프가 null이면
 - pr_wait 행에 선택 필드 `serial_lane_id`를 도입한다. §2 전이가 기록하고, 정상
   경로(세션 완료 → pr_wait 전이)도 launch 시점의 레인 id를 알면 기록한다.
 - `activeLaneLineages`의 pr_wait 점유 계산에서 attempt 매칭이 레인 id를 내지
-  못하면 이 필드를 fallback으로 사용한다. 기존 재구성 경로는 유지한다 — fallback
+  못하면 이 필드를 fallback으로 사용하고, 그때 점유 lineage id는 attempt가 없어도
+  성립하도록 `entry.bead_id`로 복원한다. 기존 재구성 경로는 유지한다 — fallback
   확장만이며, 필드가 없는 구 스냅샷은 현행과 동일하게 동작한다(fail-quiet).
 
 효과: 전이된 행이 머지·정리 완료까지 원 직렬 레인을 점유하므로, 후행 entry는
@@ -144,17 +157,23 @@ attempt의 `serial_lane_id`"로만 복원한다. attempt 스탬프가 null이면
 
 각 seam의 단위 테스트를 추가한다. 기존 인접 테스트 파일의 구조를 따른다.
 
-- **전이(§2)**: 조건 4개 각각의 부정 케이스(레인 비멤버·PR closed·running
-  attempt 존재·discard 활성)에서 전이가 일어나지 않음; 전 조건 만족 시 레인 행
-  제거 + pr_wait 행 생성 + `pr_url`/`head_ref`/`serial_lane_id` 기록; 멱등성.
+- **전이(§2)**: 조건 4개 각각의 부정 케이스(레인 비멤버·PR closed/merged/관측
+  오류·running attempt 존재·paused attempt 존재·discard 활성)에서 전이가
+  일어나지 않음; 전 조건 만족 시 레인 행 제거 + pr_wait 행 생성 +
+  `pr_url`/`head_ref`/`serial_lane_id` 기록; attempt 0개 멤버의 전이 성립;
+  멱등성; 전이된 attempt-less 행의 해소 디스패치가 fresh attempt-less 경로로
+  분기(`no_session_id` 실패 없음).
 - **점유 fallback(§3)**: attempt 스탬프 null + pr_wait `serial_lane_id` 존재 시
-  해당 레인 점유 성립; 필드 부재 구 스냅샷은 현행 동작 유지.
+  해당 레인 점유 성립(attempt 0개는 `entry.bead_id` lineage로 성립); 필드 부재
+  구 스냅샷은 현행 동작 유지; 정상 경로(세션 완료 → pr_wait 전이)의
+  `serial_lane_id` 기록.
 - **fence(§4)**: manual authority 항목은 다른 bead running 중에도 디스패치;
   자동 항목은 빈 슬롯 없으면 `worker_sessions_busy`, 빈 슬롯 있으면 디스패치;
   provenance 판정 불가 시 자동 취급.
 - **관측성(§5)**: `halted_on_conflict` 설정 시 `state().waiting` 노출과 해제 시
   null 복귀; projection 배지 렌더.
-- **UX(§6)**: 레인 배타 거부 응답에 `lane_occupied` 포함; 토스트 매핑.
+- **UX(§6)**: 레인 배타 거부 응답에 `lane_occupied` 포함; 토스트 매핑; 실패 배너
+  ✕의 명시 title 렌더.
 - Pre-Handoff 번들: `npm run tsc` · `npm test` · `npm run lint` ·
   `npm run prettier:write` · `npm run build`(번들 포함).
 
@@ -169,7 +188,7 @@ attempt의 `serial_lane_id`"로만 복원한다. attempt 스탬프가 null이면
 
 ## 구현 unit 후보
 
-- `transition`: §2+§3 — server/worker (queue-store, attach/external 스캔,
-  scheduler 점유 fallback)
+- `transition`: §2+§3 — server/worker (queue-store, pr-poller 관측 트리거,
+  attach, pr-actions attempt-less 해소 분기, scheduler 점유 fallback)
 - `fence`: §4+§5 — server/worker (scheduler, merge-queue) + projection
 - `ux`: §6 — server/worker/queue-store 거부 사유 + app/views/worker
