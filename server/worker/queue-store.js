@@ -12,10 +12,12 @@
  * `$XDG_STATE_HOME/bdui/<slug>/` (see state-paths.js). Writes are atomic
  * (temp file + rename) so a crash mid-write never leaves a partial file.
  *
- * Restart safety: `load()` ALWAYS forces `auto_advance = false` regardless of
- * the persisted value, so beads-ui never auto-resumes execution after a crash
- * (spec §5.3). The reset is in-memory; the corrected value is flushed to disk
- * on the next mutation.
+ * Restart safety: `load()` forces `auto_advance = false` regardless of the
+ * persisted value. It retains the raw value only in a process-local snapshot;
+ * the self-deploy restore controller may consume that snapshot after proving
+ * the restarting deploy reached terminal success. Crashes, manual restarts,
+ * and unknown provenance stay OFF. The reset is in-memory; the corrected value
+ * is flushed to disk on the next mutation.
  *
  * @typedef {Object} QueueEntry
  * @property {string} bead_id - The bead placed in this lane.
@@ -280,6 +282,8 @@
  * @typedef {Object} Queue
  * @property {number} revision - CAS counter; bumped on every mutation.
  * @property {boolean} auto_advance - Whether the scheduler may start sessions.
+ * Cold load resets this OFF; only a verified terminal self-deploy may restore
+ * the process-local pre-restart value.
  * @property {SerialLane[]} serial_lanes - Fixed-slot exclusive waiting lanes
  * (`s1`..`s5`). Array order is display order; `entries` order is execution
  * order. Length always equals {@link Queue.serial_lane_count}.
@@ -342,12 +346,11 @@
  * flight.
  * @property {boolean} auto_merge - Whether the auto-merge enroller may keep
  * feeding eligible `pr_wait` rows into {@link Queue.merge_queue} (UI-yk55 §2).
- * DURABLE, unlike {@link Queue.auto_advance}: merging beads-ui DEPLOYS beads-ui,
- * which restarts this process, so a flag kept in memory would switch itself off
- * exactly when the queue merged its own repository. The restart-safety argument
- * that forces `auto_advance` to false on load does not apply — nothing here
- * resumes a half-run session, and the enroller's own members are re-judged by
- * the driver at their turn.
+ * DURABLE, unlike the fail-closed cold-load reset of
+ * {@link Queue.auto_advance}: merging beads-ui DEPLOYS beads-ui, which restarts
+ * this process, so a flag kept in memory would switch itself off exactly when
+ * the queue merged its own repository. Nothing here resumes a half-run session,
+ * and the enroller's own members are re-judged by the driver at their turn.
  * @property {Record<string, MergeSkip>} auto_merge_skips - Beads the driver gave
  * up on, by bead_id, each pinned to the head SHA it failed at (UI-yk55 §3).
  * DURABLE for the same reason as the flag, and it is what stops the enroller
@@ -3035,6 +3038,8 @@ export function createQueueStore(options = {}) {
 
   /** @type {Map<string, Queue>} */
   const cache = new Map();
+  /** @type {Map<string, boolean>} */
+  const auto_advance_at_shutdown = new Map();
 
   /**
    * @param {string} workspace
@@ -3059,13 +3064,21 @@ export function createQueueStore(options = {}) {
       return cached;
     }
     let q = emptyQueue();
+    let persisted_auto_advance = false;
     try {
       const raw = fs.readFileSync(filePathFor(workspace), 'utf8');
-      q = normalizeQueue(JSON.parse(raw));
+      const parsed = JSON.parse(raw);
+      persisted_auto_advance =
+        Boolean(parsed) &&
+        typeof parsed === 'object' &&
+        !Array.isArray(parsed) &&
+        /** @type {any} */ (parsed).auto_advance === true;
+      q = normalizeQueue(parsed);
     } catch {
       q = emptyQueue();
     }
-    // Restart safety: never auto-resume execution after a crash.
+    auto_advance_at_shutdown.set(key, persisted_auto_advance);
+    // Restart safety defaults OFF; only the verified self-deploy path may restore it.
     q.auto_advance = false;
     cache.set(key, q);
     return q;
@@ -3196,6 +3209,25 @@ export function createQueueStore(options = {}) {
      */
     snapshot(workspace) {
       return clone(ensureLoaded(workspace));
+    },
+
+    /**
+     * Read the process-local pre-restart auto-advance snapshot.
+     *
+     * @param {string} workspace
+     */
+    autoAdvanceAtShutdown(workspace) {
+      ensureLoaded(workspace);
+      return auto_advance_at_shutdown.get(keyFor(workspace)) === true;
+    },
+
+    /**
+     * Consume the process-local pre-restart auto-advance snapshot.
+     *
+     * @param {string} workspace
+     */
+    consumeAutoAdvanceAtShutdown(workspace) {
+      return auto_advance_at_shutdown.delete(keyFor(workspace));
     },
 
     /**
@@ -3413,10 +3445,14 @@ export function createQueueStore(options = {}) {
      */
     toggleAutoAdvance(workspace, input) {
       const { expected_revision, on } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      const result = applyMutation(workspace, expected_revision, (next) => {
         next.auto_advance = !!on;
         return true;
       });
+      if (result.ok) {
+        auto_advance_at_shutdown.delete(keyFor(workspace));
+      }
+      return result;
     },
 
     /**
@@ -4193,7 +4229,7 @@ export function createQueueStore(options = {}) {
      */
     toggleAutomation(workspace, input) {
       const { expected_revision, on, keep } = input;
-      return applyMutation(workspace, expected_revision, (next) => {
+      const result = applyMutation(workspace, expected_revision, (next) => {
         next.auto_advance = !!on;
         next.auto_merge = !!on;
         if (!on) {
@@ -4204,6 +4240,10 @@ export function createQueueStore(options = {}) {
         }
         return true;
       });
+      if (result.ok) {
+        auto_advance_at_shutdown.delete(keyFor(workspace));
+      }
+      return result;
     },
 
     /**

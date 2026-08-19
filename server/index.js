@@ -167,9 +167,13 @@ server.listen(config.port, config.host, async () => {
     // `pr_wait` PRs only while a client is actually watching that workspace's
     // queue (worker-phase2 §4) — or, since UI-nprg, while a monitor subscriber
     // is watching every visible workspace at once.
+    // The self-deploy auto-advance restore controller judges against the same
+    // identity `/healthz` serves, so it reads the published one rather than
+    // deriving a second source_sha of its own.
     initWorkerRuntime({
       workspaces: Array.from(worker_roots),
-      getSubscriberCount: pollDemandFor
+      getSubscriberCount: pollDemandFor,
+      runtime_identity
     });
   } catch (err) {
     log('worker runtime init failed: %o', err);

@@ -361,6 +361,63 @@ describe('worker/queue-store', () => {
     expect(restarted.snapshot(WS).auto_advance).toBe(false);
   });
 
+  test('captures persisted auto advance before restart safety resets it', () => {
+    const store = createQueueStore();
+    store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
+    const restarted = createQueueStore();
+
+    restarted.load(WS);
+
+    expect(restarted.autoAdvanceAtShutdown(WS)).toBe(true);
+    expect(restarted.snapshot(WS).auto_advance).toBe(false);
+  });
+
+  test('consumes the restart snapshot only after a successful auto advance toggle', () => {
+    const store = createQueueStore();
+    store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
+    const restarted = createQueueStore();
+    restarted.load(WS);
+
+    restarted.toggleAutoAdvance(WS, {
+      expected_revision: 99,
+      on: true
+    });
+    const before_success = restarted.autoAdvanceAtShutdown(WS);
+    restarted.toggleAutoAdvance(WS, {
+      expected_revision: restarted.snapshot(WS).revision,
+      on: true
+    });
+
+    expect(before_success).toBe(true);
+    expect(restarted.autoAdvanceAtShutdown(WS)).toBe(false);
+  });
+
+  test('consumes the restart snapshot after a successful automation toggle', () => {
+    const store = createQueueStore();
+    store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
+    const restarted = createQueueStore();
+    restarted.load(WS);
+
+    restarted.toggleAutomation(WS, {
+      expected_revision: restarted.snapshot(WS).revision,
+      on: false
+    });
+
+    expect(restarted.autoAdvanceAtShutdown(WS)).toBe(false);
+  });
+
+  test('preserves the restart snapshot across scheduler-owned auto advance writes', () => {
+    const store = createQueueStore();
+    store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
+    const restarted = createQueueStore();
+    restarted.load(WS);
+
+    restarted.setAutoAdvance(WS, true);
+    restarted.setAutoAdvance(WS, false);
+
+    expect(restarted.autoAdvanceAtShutdown(WS)).toBe(true);
+  });
+
   test('turns both automation flags on in one revision', () => {
     const store = createQueueStore();
 

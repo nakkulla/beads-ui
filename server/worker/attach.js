@@ -36,10 +36,12 @@ import { runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { createRuntimeIdentity } from '../runtime-identity.js';
 import { resolveSpecId } from '../spec-id.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { validateAdmission } from './admission.js';
+import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
 import { createBdMetadata } from './bd-metadata.js';
 import {
@@ -400,6 +402,7 @@ export function defaultProbePid(pid) {
  *   discardCoordinator?: any,
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   repoOperationMigration?: { run: () => Promise<any> },
+ *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number
  * }} [options]
  */
@@ -595,6 +598,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     locks: runtime.locks,
     gitRun,
     repairSession,
+    autoAdvanceRestore: options.autoAdvanceRestore,
     async onRepairLaneAdvanced() {
       emitQueueChanged(keyFor(workspace_root));
       await scheduler.tick(keyFor(workspace_root));
@@ -1316,6 +1320,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     // still exists (UI-w0hi §3); the manager itself stays attachment-owned.
     worktree,
     admission,
+    repairSession,
     repoOperationCoordinator,
     repoOperationMigration,
     repo,
@@ -1343,6 +1348,9 @@ const ATTACHMENTS = new Map();
  * @type {Map<string, Promise<void>>}
  */
 const ATTACHMENT_STARTUPS = new Map();
+
+/** @type {ReturnType<typeof createAutoAdvanceRestoreController>|null} */
+let auto_advance_restore_controller = null;
 
 /**
  * @param {string} workspace_root
@@ -1522,13 +1530,34 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
  * poller also honors durable auto-merge/merge-queue/deployment demand; omitting
  * the provider stays silent only when none of those internal consumers exist.
  *
- * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number }} input
+ * @param {{ workspaces: string[], getSubscriberCount?: (workspace: string) => number, runtime_identity?: any }} input
  * @returns {ReturnType<typeof createWorkerAttachment>[]}
  */
 export function initWorkerRuntime(input) {
   /** @type {ReturnType<typeof createWorkerAttachment>[]} */
   const built = [];
   const countFor = input.getSubscriberCount;
+  if (!auto_advance_restore_controller) {
+    let runtime_identity = null;
+    if (Object.hasOwn(input, 'runtime_identity')) {
+      runtime_identity = input.runtime_identity;
+    } else {
+      try {
+        const config = getConfig();
+        const created = createRuntimeIdentity({
+          host: config.host,
+          port: config.port
+        });
+        runtime_identity = created.ok ? created.identity : null;
+      } catch {
+        runtime_identity = null;
+      }
+    }
+    auto_advance_restore_controller = createAutoAdvanceRestoreController({
+      runtime_identity
+    });
+  }
+  const restore_controller = auto_advance_restore_controller;
   for (const ws of input.workspaces || []) {
     if (!ws) {
       continue;
@@ -1538,12 +1567,23 @@ export function initWorkerRuntime(input) {
     let created = false;
     if (!att) {
       att = createWorkerAttachment(key, {
+        autoAdvanceRestore: restore_controller,
         getSubscriberCount:
           typeof countFor === 'function' ? () => countFor(key) : undefined
       });
       ATTACHMENTS.set(key, att);
       created = true;
     }
+    restore_controller.register({
+      workspace: key,
+      repo: att.repo,
+      store: att.runtime.queueStore,
+      locks: att.runtime.locks,
+      gitRun: att.gitRun,
+      repairSession: att.repairSession,
+      notifyChanged: (workspace) => emitQueueChanged(workspace),
+      tick: (workspace) => att.scheduler.tick(workspace)
+    });
     if (!ATTACHMENT_STARTUPS.has(key)) {
       ATTACHMENT_STARTUPS.set(
         key,
@@ -2196,5 +2236,6 @@ export function __resetWorkerAttachmentsForTest() {
   }
   ATTACHMENTS.clear();
   ATTACHMENT_STARTUPS.clear();
+  auto_advance_restore_controller = null;
   unattachedAdmissionCheck = checkUnattachedWorkerAdmission;
 }

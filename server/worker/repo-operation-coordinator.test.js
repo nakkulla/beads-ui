@@ -80,7 +80,7 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, onRepairLaneAdvanced?: () => Promise<void>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, onRepairLaneAdvanced?: () => Promise<void>, autoAdvanceRestore?: { beforeReconcile: (workspace: string) => void, afterReconcileLocked: (workspace: string) => Promise<boolean>, restoreAll: () => Promise<void> }, locks?: ReturnType<typeof createLockManager>, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
@@ -102,7 +102,7 @@ function coordinatorFor(overrides = {}) {
     workspace: root,
     repo: root,
     store,
-    locks: createLockManager(),
+    locks: overrides.locks ?? createLockManager(),
     gitRun: overrides.gitRun ?? gitForBootstrap(),
     runner: /** @type {never} */ (runner),
     transition: /** @type {never} */ (
@@ -131,12 +131,50 @@ function coordinatorFor(overrides = {}) {
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     repairSession: /** @type {never} */ (overrides.repairSession),
     onRepairLaneAdvanced: overrides.onRepairLaneAdvanced,
+    autoAdvanceRestore: overrides.autoAdvanceRestore,
     policySupported: overrides.policySupported,
     now: overrides.now,
     sleep: overrides.sleep
   });
   return { store, coordinator };
 }
+
+describe('repo operation auto-advance restore handoff', () => {
+  test('reports around the locked pass and restores after releasing the lock', async () => {
+    /** @type {string[]} */
+    const order = [];
+    let locked = false;
+    const locks = {
+      ...createLockManager(),
+      async repoOperationLock() {
+        locked = true;
+        return () => {
+          locked = false;
+        };
+      }
+    };
+    const autoAdvanceRestore = {
+      beforeReconcile: vi.fn(() => {
+        expect(locked).toBe(true);
+        order.push('before');
+      }),
+      afterReconcileLocked: vi.fn(async () => {
+        expect(locked).toBe(true);
+        order.push('after');
+        return true;
+      }),
+      restoreAll: vi.fn(async () => {
+        expect(locked).toBe(false);
+        order.push('restore');
+      })
+    };
+    const { coordinator } = coordinatorFor({ locks, autoAdvanceRestore });
+
+    await coordinator.reconcile(root);
+
+    expect(order).toEqual(['before', 'after', 'restore']);
+  });
+});
 
 describe('repo operation late moot repair reconciliation', () => {
   /**

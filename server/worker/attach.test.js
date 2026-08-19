@@ -20,6 +20,7 @@ import {
   tickWorkerQueue
 } from './attach.js';
 import * as attachModule from './attach.js';
+import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import {
   pushLogPath as guardPushLogPath,
   install as installGuardHook
@@ -277,6 +278,121 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(typeof att.completionIntent.stop).toBe('function');
     // The runtime running-count seam now reflects THIS scheduler.
     expect(runtime.status(WS).running_count).toBe(0);
+  });
+
+  test('wires repo-operation passes to the process restore controller', async () => {
+    const autoAdvanceRestore = {
+      register: vi.fn(),
+      beforeReconcile: vi.fn(),
+      afterReconcileLocked: vi.fn(async () => false),
+      restoreAll: vi.fn(async () => {})
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      autoAdvanceRestore,
+      spawn_impl: makeFixtureSpawn({ lines: [] })
+    });
+
+    await att.repoOperationCoordinator.reconcile(WS);
+
+    expect(autoAdvanceRestore.beforeReconcile).toHaveBeenCalledWith(WS);
+    expect(autoAdvanceRestore.afterReconcileLocked).toHaveBeenCalledWith(WS);
+  });
+
+  test('dispatches waiting work through scheduler handoff after restoration', async () => {
+    const source_sha = 'a'.repeat(40);
+    const root_sha = 'b'.repeat(40);
+    const previous_store = createQueueStore({ now: () => 100 });
+    previous_store.toggleAutoAdvance(WS, { expected_revision: 0, on: true });
+    previous_store.place(WS, {
+      expected_revision: previous_store.snapshot(WS).revision,
+      bead_id: 'UI-next'
+    });
+    previous_store.ensureRepoOperation(WS, {
+      operation_id: 'self-deploy',
+      repo_id: WS,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-self', merged_sha: 'c'.repeat(40) }],
+      effective_base_sha: 'd'.repeat(40),
+      target_base: 'main',
+      script_mode: '100755',
+      script_blob_sha: 'e'.repeat(40)
+    });
+    const previous_operation =
+      previous_store.snapshot(WS).repo_operations['self-deploy'];
+    previous_store.startRepoOperation(WS, {
+      operation_id: 'self-deploy',
+      attempt_id: previous_operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 100 },
+      log_path: path.join(WS, 'deploy.log'),
+      target_sha: source_sha
+    });
+    const runtime = createWorkerRuntime();
+    const spawn = vi.fn((/** @type {any} */ bead) => ({
+      bead_id: bead.id,
+      pid: 4321,
+      process_identity: { pid: 4321, pgid: 4321, started_at: 201 },
+      kill: vi.fn(),
+      events: new EventEmitter(),
+      done: new Promise(() => {})
+    }));
+    const controller = createAutoAdvanceRestoreController({
+      runtime_identity: {
+        source_repo: WS,
+        source_sha,
+        process_started_at: 200
+      }
+    });
+    const repairSession = {
+      dispatch: vi.fn(),
+      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
+    };
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      bd: fakeBd({ 'UI-next': { status: 'open' } }),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      admission: { validate: async () => ({ ok: true }) },
+      resolveBase: okBase('main'),
+      gitRun: async (args) =>
+        args[0] === 'rev-list'
+          ? { code: 0, stdout: `${root_sha}\n`, stderr: '' }
+          : { code: 1, stdout: '', stderr: '' },
+      makeRunner: () => ({ name: 'codex', spawn }),
+      repairSession,
+      autoAdvanceRestore: controller
+    });
+    controller.register({
+      workspace: WS,
+      repo: WS,
+      store: runtime.queueStore,
+      locks: runtime.locks,
+      gitRun: att.gitRun,
+      repairSession,
+      notifyChanged: vi.fn(),
+      tick: (workspace) => att.scheduler.tick(workspace)
+    });
+
+    controller.beforeReconcile(WS);
+    const operation =
+      runtime.queueStore.snapshot(WS).repo_operations['self-deploy'];
+    runtime.queueStore.settleRepoOperation(WS, {
+      operation_id: 'self-deploy',
+      attempt_id: operation.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    const restore_ready = await controller.afterReconcileLocked(WS);
+    if (restore_ready) {
+      await controller.restoreAll();
+    }
+
+    expect(runtime.queueStore.snapshot(WS).auto_advance).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0][0].id).toBe('UI-next');
   });
 
   test('hands a late moot repair to scheduler dispatch after reconciliation', async () => {
