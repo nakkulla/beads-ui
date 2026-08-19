@@ -11,7 +11,7 @@ scope:
 # Worker quick_fix 실행 레인 설계 (UI-7tme)
 
 - 작성일: 2026-08-19
-- 상태: 초안 (spec gate 대기)
+- 상태: spec gate REVISE(blocking 2) 전건 반영, controller self-review 완료
 - Bead: `UI-7tme`
 - route: `spec_backed`
 - 관련: `docs/superpowers/specs/2026-08-10-quickfix-route-display-design.md`
@@ -64,8 +64,9 @@ Bead는 사람이 세션을 열어 처리하는 수밖에 없다. 작은 닫힌 
   beads-ui는 소비자다. dotfiles 변경은 대상 rig의 quick_fix Bead + foreign
   `blocks` 의존으로 분리한다(§9).
 - **fail-closed 게이트**: landing은 유효한 `<reviewer>@<40hex>` `impl_review`
-  없이는 진행하지 않는다. `skipped@`, malformed, base 미포함 SHA는 전부
-  terminal failure다.
+  없이는 진행하지 않는다. `skipped@`, malformed, 보존된 worktree HEAD와의
+  불일치, base 미포함 SHA, 그리고 Worker landing을 거치지 않은 세션의 직접
+  `closed`는 전부 terminal failure다.
 
 ## 3. 계약 확장 (dotfiles 소유, canonical 문구는 §9 unit이 반영)
 
@@ -128,21 +129,27 @@ worker-dispatched quick_fix 레인을 다음과 같이 정의한다:
 세션 종료 관측 후 스케줄러 settlement가 라우트 분기한다. `pr_url` 기반 pr_wait
 이동 대신 quick_fix는 landing으로 간다:
 
-1. **readback**: `bd show --json`으로 `status=resolved`,
-   `impl_review=<reviewer>@<40hex>` 파싱. `skipped@`·malformed·부재는 terminal
-   failure(`invalid_impl_review`). 세션이 `closed`까지 직접 간 경우(계약 위반
-   또는 레거시 세션)는 있는 그대로 관측하고 landing을 건너뛴 뒤
-   `done`으로만 이동한다 — Worker는 증거를 위조하지도, 이미 닫힌 Bead를 다시
-   열지도 않는다.
-2. **containment**: fetch 후 `git merge-base --is-ancestor <impl_review 40hex>
+1. **readback**: `bd show --json`으로 `status=resolved`를 요구하고
+   `impl_review=<reviewer>@<40hex>`를 파싱한다. `skipped@`·malformed·부재는
+   terminal failure(`invalid_impl_review`)다. Worker landing 없이 세션이 직접
+   `closed`까지 간 경우는 mandatory review와 Worker 소유 deploy/close를
+   우회한 것이므로 terminal failure(`premature_close`)다 — Worker는 Bead를
+   되돌리거나 증거를 위조하지 않고 attempt를 실패로 기록하며, 해소는
+   user-triggered 단계다.
+2. **head 결속**: 보존된 owned worktree의 `HEAD`가 `impl_review`의 40hex와
+   **정확히 일치**해야 한다. worktree 부재·HEAD 불일치는 terminal failure
+   (`head_mismatch`)다 — ancestor 검사만으로는 리뷰된 A 이후 미리뷰 B를 push한
+   경우를 잡지 못한다. 재수렴 등으로 head가 바뀐 정상 경로는 §3의 follow-up
+   영수증 갱신 레인이 영수증을 새 SHA로 옮기므로 일치가 유지된다.
+3. **containment**: fetch 후 `git merge-base --is-ancestor <impl_review 40hex>
    <fetched base>`로 push containment을 검증한다. 미포함은 terminal failure
    (`push_not_contained`).
-3. **배포**: 기존 `repoOperations.ensureDeploy`를 target=`<impl_review 40hex>`
+4. **배포**: 기존 `repoOperations.ensureDeploy`를 target=`<impl_review 40hex>`
    로 호출한다. coordinator의 lock 프로토콜·monotonicity(`superseded` 포함)·
    `descendant_success_covers_ancestor_rows`·restart adoption이 그대로
    적용되고, 실패는 기존 v2 사다리
    `script_retry → auto_repair_session → user_triggered_session`으로 수렴한다.
-4. **close + cleanup**: 배포 terminal success 후 `closeBead`(`closed` readback)
+5. **close + cleanup**: 배포 terminal success 후 `closeBead`(`closed` readback)
    → owned worktree 제거·로컬 브랜치 삭제. base 직접 push라 remote 브랜치는
    존재하지 않는다(정리 대상 아님). 이후 `moveToDone`.
 
@@ -218,8 +225,11 @@ Post-Merge Runtime Validation의 "Bead/PR 없는 quick_fix ref push는 관측 �
   `missing_description` 거부, `worker-ineligible`/gh 거부 유지. 기존 "quick_fix
   → invalid_route" 고정 테스트 반전.
 - 신규 `quickfix-landing` 단위 테스트: 영수증 파싱(유효/`skipped@`/malformed),
-  containment 판정, ensureDeploy 위임, close+cleanup 순서, 이미 `closed`인
-  Bead의 관측-후-통과, terminal failure 사유 2종.
+  worktree HEAD 정확 일치와 불일치(리뷰 A 이후 미리뷰 B push 시나리오)·worktree
+  부재, containment 판정, ensureDeploy 위임, close+cleanup 순서, 세션 직접
+  `closed`의 `premature_close` 거부, terminal failure 사유 4종
+  (`invalid_impl_review`/`head_mismatch`/`push_not_contained`/
+  `premature_close`).
 - `scheduler` settlement 분기: quick_fix `resolved` → landing 진입, pr_wait
   미진입.
 - merge 비관여: `pr-actions`/`merge-queue`/`auto-merge`/`pr-poller` 테스트에
