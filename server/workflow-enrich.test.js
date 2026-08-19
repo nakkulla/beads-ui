@@ -372,7 +372,7 @@ describe('computeStale — impl_review (Bead branch tip)', () => {
     expect(upper.impl_stale).toBe(false);
   });
 
-  test('commits landed on the Bead branch after the receipt → stale', () => {
+  test('the receipt is an ancestor of the tip → fresh', () => {
     const dir = makeRepo();
     writeFile(dir, 'a.txt', '1\n');
     const sha = commitAll(dir, 'first');
@@ -385,7 +385,62 @@ describe('computeStale — impl_review (Bead branch tip)', () => {
       dir,
       'UI-1'
     );
+    expect(impl_stale).toBe(false);
+  });
+
+  test('a base-sync merge commit on the branch keeps the receipt fresh', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const root = commitAll(dir, 'root');
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    writeFile(dir, 'b.txt', '1\n');
+    const sha = commitAll(dir, 'reviewed work');
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['reset', '-q', '--hard', root]);
+    writeFile(dir, 'c.txt', '1\n');
+    commitAll(dir, 'sibling PR landed on base');
+    git(dir, ['checkout', '-q', 'UI-1']);
+    git(dir, ['merge', '-q', '--no-edit', 'main']);
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + sha },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(false);
+  });
+
+  test('a tip the receipt is not an ancestor of → stale', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    const root = commitAll(dir, 'root');
+    git(dir, ['checkout', '-q', '-b', 'UI-1']);
+    writeFile(dir, 'a.txt', '2\n');
+    const sha = commitAll(dir, 'reviewed work');
+    git(dir, ['reset', '-q', '--hard', root]);
+    writeFile(dir, 'a.txt', '3\n');
+    commitAll(dir, 'rewritten work');
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + sha },
+      dir,
+      'UI-1'
+    );
     expect(impl_stale).toBe(true);
+  });
+
+  test('a receipt sha git cannot resolve → undetermined (fail-quiet)', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'a.txt', '1\n');
+    commitAll(dir, 'first');
+    git(dir, ['branch', 'UI-1']);
+
+    const { impl_stale } = computeStale(
+      { impl_review: 'opus@' + 'f'.repeat(40) },
+      dir,
+      'UI-1'
+    );
+    expect(impl_stale).toBe(false);
   });
 
   test('no Bead branch (merged and deleted) → fresh', () => {
@@ -414,15 +469,20 @@ describe('computeStale — impl_review (Bead branch tip)', () => {
     expect(impl_stale).toBe(false);
   });
 
-  test('a distractor branch parked on the receipt sha does not fake freshness', () => {
+  test('a distractor branch holding the receipt does not fake freshness', () => {
     const dir = makeRepo();
     writeFile(dir, 'a.txt', '1\n');
-    const sha = commitAll(dir, 'first');
-    // Unrelated branch stays at the receipt sha; the Bead branch advances.
-    git(dir, ['branch', 'unrelated']);
+    const root = commitAll(dir, 'root');
     git(dir, ['checkout', '-q', '-b', 'UI-1']);
     writeFile(dir, 'a.txt', '2\n');
-    commitAll(dir, 'post-review commit');
+    const sha = commitAll(dir, 'reviewed work');
+    // The receipt stays reachable from an unrelated ref, but the Bead branch
+    // itself no longer descends from it — a global `--contains` search would
+    // call that fresh.
+    git(dir, ['branch', 'unrelated']);
+    git(dir, ['reset', '-q', '--hard', root]);
+    writeFile(dir, 'a.txt', '3\n');
+    commitAll(dir, 'rewritten work');
 
     const { impl_stale } = computeStale(
       { impl_review: 'opus@' + sha },
@@ -432,13 +492,16 @@ describe('computeStale — impl_review (Bead branch tip)', () => {
     expect(impl_stale).toBe(true);
   });
 
-  test('a skip impl receipt is stale like any other (no exemption)', () => {
+  test('a skip impl receipt follows the same ancestry rule (no exemption)', () => {
     const dir = makeRepo();
     writeFile(dir, 'a.txt', '1\n');
-    const sha = commitAll(dir, 'first');
+    const root = commitAll(dir, 'root');
     git(dir, ['checkout', '-q', '-b', 'UI-1']);
     writeFile(dir, 'a.txt', '2\n');
-    commitAll(dir, 'post-review commit');
+    const sha = commitAll(dir, 'skipped work');
+    git(dir, ['reset', '-q', '--hard', root]);
+    writeFile(dir, 'a.txt', '3\n');
+    commitAll(dir, 'rewritten work');
 
     const { impl_stale } = computeStale(
       { impl_review: 'skipped@' + sha },
@@ -1181,18 +1244,25 @@ describe('closed beads skip the staleness probes', () => {
   }
 
   /**
-   * Fixture where the Bead branch survives and advanced past the receipt —
-   * the branch must stay alive, since a deleted one already reads `unknown`.
+   * Fixture where the Bead branch survives but no longer descends from the
+   * receipt — the only impl staleness the ancestry rule reports. The branch
+   * must stay alive, since a deleted one already reads `unknown`.
    *
    * @param {string} dir
    * @returns {string} receipt sha
    */
-  function beadBranchAdvanced(dir) {
+  function beadBranchRewritten(dir) {
     writeFile(dir, 'a.txt', '1\n');
-    const sha = commitAll(dir, 'first');
+    const root = commitAll(dir, 'root');
     git(dir, ['checkout', '-q', '-b', 'UI-1']);
     writeFile(dir, 'a.txt', '2\n');
-    commitAll(dir, 'post-review commit');
+    const sha = commitAll(dir, 'reviewed work');
+    // Keep the receipt commit alive on another ref, then reset the Bead branch
+    // off it: exactly the rewritten-history shape the gate refuses.
+    git(dir, ['branch', 'keeps-receipt']);
+    git(dir, ['reset', '-q', '--hard', root]);
+    writeFile(dir, 'a.txt', '3\n');
+    commitAll(dir, 'rewritten work');
     return sha;
   }
 
@@ -1229,9 +1299,9 @@ describe('closed beads skip the staleness probes', () => {
     expect(wf.stages.spec.stale).toBe(false);
   });
 
-  test('keeps impl fresh on a closed bead whose branch advanced', () => {
+  test('keeps impl fresh on a closed bead whose branch was rewritten', () => {
     const dir = makeRepo();
-    const sha = beadBranchAdvanced(dir);
+    const sha = beadBranchRewritten(dir);
 
     const wf = enrichIssueWorkflow(
       {
@@ -1268,7 +1338,7 @@ describe('closed beads skip the staleness probes', () => {
     const spec_dir = makeRepo();
     const spec_sha = specMovedAfterReceipt(spec_dir);
     const impl_dir = makeRepo();
-    const impl_sha = beadBranchAdvanced(impl_dir);
+    const impl_sha = beadBranchRewritten(impl_dir);
     const plan_dir = makeRepo();
     const plan_sha = planMovedAfterReceipt(plan_dir);
 

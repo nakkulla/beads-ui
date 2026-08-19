@@ -876,7 +876,18 @@ export function prStatusBadge(input) {
     input.gate?.reason === 'review_receipt_missing' ||
     input.gate?.reason === 'review_receipt_stale'
   ) {
-    return badge('최종 변경 리뷰 필요', { alert: true });
+    // Head movement alone no longer lands here: the receipt is ancestry-bound,
+    // so a base-sync merge or a queue base update keeps reading current
+    // (UI-vzyh §2). What is left is abnormal — no receipt at all, a receipt the
+    // observed head does not descend from (rewritten history, branch reset), or
+    // an ancestry probe the gate could not complete and fails closed on.
+    return badge('최종 변경 리뷰 필요', {
+      title:
+        input.gate.reason === 'review_receipt_stale'
+          ? '리뷰 영수증이 현재 head의 조상이 아니거나 조상 확인에 실패했습니다 — 히스토리 재작성·브랜치 리셋 복구 경로로, 관측된 최종 head 전체를 다시 리뷰합니다'
+          : '리뷰 영수증이 없습니다 — 관측된 최종 head 전체를 리뷰해야 머지할 수 있습니다',
+      alert: true
+    });
   }
   if (input.gate?.reason === 'spec_id_missing') {
     // Not a review problem: only a Bead metadata write can repair it, so the

@@ -53,6 +53,7 @@ import { createDiscardCoordinator } from './discard-coordinator.js';
 import { createHeadReviewTransport } from './head-review-transport.js';
 import { createHeadReview } from './head-review.js';
 import { observedHeadSha } from './merge-candidates.js';
+import { createAncestryProbe } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createNotifier } from './notify.js';
 import { createPrActions } from './pr-actions.js';
@@ -1145,6 +1146,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       workspace: keyFor(workspace_root),
       store: runtime.queueStore,
       ...headReviewTransport,
+      // The same probe the merge gate decides on, so the manual lane and the
+      // badge never disagree about a moved head (UI-vzyh §2).
+      probeAncestry: createAncestryProbe({ gitRun, repo }),
       log
     });
 
@@ -1312,6 +1316,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       typeof bd.readIssue === 'function'
         ? (/** @type {string} */ bead_id) => bd.readIssue(bead_id)
         : undefined,
+    // The receipt/head ancestry probe needs git: the observed PR head is a
+    // GitHub fact this repository may not carry yet (UI-vzyh §2).
+    gitRun,
     activity: runtime.activityStore,
     getSubscriberCount: options.getSubscriberCount || (() => 0),
     resolveBase,

@@ -2,14 +2,23 @@
 # 소유한다. Worker는 이 파일을 워킹트리가 아니라 **핀된 base SHA의 git blob**에서
 # 읽으므로, PR이 자기 자신을 검증·배포하는 명령을 정의할 수 없다.
 #
-# `[verify]`는 두지 않는다. 이 레포의 merge 자격은 fresh PR/base/head identity,
-# clean mergeability, current workflow review 영수증으로 판정한다.
+# 머지 자격은 fresh PR/base/head identity, clean mergeability, current workflow
+# review 영수증, 그리고 아래 `[verify]` 영수증으로 판정한다. review 영수증은
+# ancestry 결속이라 base 동기화 머지로 head가 움직여도 유효하며, 그 새 조합의
+# 의미 충돌(타입 깨짐·테스트 실패)을 잡는 것이 `[verify]`의 몫이다.
+#
+# verify는 base에 PR head를 squash-merge한 일회용 candidate 체크아웃에서 돌고,
+# 그 체크아웃의 tracked tree를 바꾸면 판정 대신 candidate mismatch가 된다.
 #
 # 배포는 Worker가 소유한 영구 detached 워크트리 `.worktrees/.repo-ops-deploy`에서
 # 아래 script를 한 번 실행하는 것이 전부다. 그 워크트리가 안정 런타임 소스이며,
 # candidate release 디렉터리와 `current` release symlink는 만들지 않는다.
 
 base = "main"
+
+[verify]
+script = "repo-ops/script/verify"
+timeout_ms = 600000
 
 [deploy]
 script = "repo-ops/script/deploy"

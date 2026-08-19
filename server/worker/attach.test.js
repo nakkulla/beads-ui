@@ -2418,8 +2418,8 @@ describe('worker/attach external registry wiring (UI-wwby)', () => {
   });
 });
 
-describe('worker/attach base-update result wiring (UI-vkk8 §4)', () => {
-  test('passes the mutation result SHA separately from a raced observed head', async () => {
+describe('worker/attach base-update result wiring (UI-vzyh §2)', () => {
+  test('passes no vouched mutation for a base update', async () => {
     const original_head = 'a'.repeat(40);
     const result_head = 'b'.repeat(40);
     const raced_head = 'c'.repeat(40);
@@ -2530,13 +2530,16 @@ describe('worker/attach base-update result wiring (UI-vkk8 §4)', () => {
     await att.mergeQueue.kick();
 
     expect(updateBranch).toHaveBeenCalledWith(WS, 304);
+    // The retired carry stamp was the only consumer of the mutation result SHA
+    // (UI-vzyh §2): ancestry keeps the receipt current across the moved head,
+    // so head review sees the raced observation unvouched and reviews it.
     expect(ensureApproved).toHaveBeenCalledWith(
       'UI-1',
       'UI-1',
       expect.objectContaining({
         head_sha: raced_head,
-        mutation: 'base_update',
-        mutation_result_sha: result_head
+        mutation: null,
+        mutation_result_sha: null
       })
     );
     expect(runtime.queueStore.snapshot(WS).merge_queue).toHaveLength(1);

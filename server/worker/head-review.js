@@ -38,10 +38,13 @@ const RESOLVER_RECEIPT_RE =
   /^resolver-self:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
 
 /**
- * Parse exactly the workflow contract's three implementation-review receipt
- * forms and collapse derived forms to the reviewer identity another carry may
- * name. Reserved prefixes never fall through to the ordinary grammar, so a
- * malformed or nested derived receipt fails closed (UI-vkk8 §4).
+ * Parse the workflow contract's implementation-review receipt forms and
+ * collapse derived forms to the reviewer identity behind them. `carry:` is
+ * HISTORICAL-READ only (UI-vzyh §2): the contract retired the format, so
+ * nothing mints one any more, but a receipt written before the retirement is
+ * still a real approval and must keep parsing. Reserved prefixes never fall
+ * through to the ordinary grammar, so a malformed or nested derived receipt
+ * fails closed (UI-vkk8 §4).
  *
  * @param {unknown} raw
  * @returns {{ actor: string, head_sha: string, raw: string }|null}
@@ -149,6 +152,10 @@ export function findingsDigest(findings) {
  * Run the single bounded repair-controller attempt: apply the findings batch,
  * validate, push, self-review the exact delta, record the receipt. Returns
  * the pushed head; the driver independently verifies lineage and readback.
+ * @property {import('./merge-gate.js').AncestryProbe} [probeAncestry] -
+ * The shared receipt/head ancestry judgement (UI-vzyh §2). Absent is
+ * fail-closed: the carry-forward below refuses and the caller reviews the
+ * observed head.
  * @property {(...args: any[]) => void} [log]
  */
 
@@ -249,6 +256,30 @@ export function createHeadReview(deps) {
   }
 
   /**
+   * Whether an approved receipt still covers the observed head (UI-vzyh §2).
+   * Equality needs no git; anything the shared probe cannot prove an ancestor
+   * is refused, which keeps this fail-closed when the probe is absent.
+   *
+   * @param {string} receipt_head_sha
+   * @param {string} head_sha
+   */
+  async function coversHead(receipt_head_sha, head_sha) {
+    if (receipt_head_sha === head_sha) {
+      return true;
+    }
+    if (typeof deps.probeAncestry !== 'function') {
+      return false;
+    }
+    try {
+      const ancestry = await deps.probeAncestry(receipt_head_sha, head_sha);
+      return ancestry === 'equal' || ancestry === 'ancestor';
+    } catch (err) {
+      log('head-review ancestry probe threw: %o', err);
+      return false;
+    }
+  }
+
+  /**
    * Snapshot the approval that exists when a manual queue item first enters
    * its authority-owned drain. The snapshot is deliberately caller-local: a
    * restart or later item entry cannot recreate grant-time evidence and must
@@ -308,10 +339,22 @@ export function createHeadReview(deps) {
   }
 
   /**
-   * Try the contract's same-authority no-dispatch paths. `null` means one of
-   * the three bindings was absent, so the caller continues into external
-   * full-head review. A resolver with a valid starting approval but without an
-   * exact APPROVE receipt is terminal under existing failure semantics.
+   * Try the contract's same-authority no-dispatch paths (UI-vzyh §2). `null`
+   * means no path applied, so the caller continues into external full-head
+   * review — the fail-closed side, which is where every unprovable case lands.
+   *
+   * Two paths, and the resolver one takes precedence over ancestry:
+   *
+   * - `resolver:<attempt>`: the resolving session's exact-delta self-review is
+   *   a MERGE PRECONDITION, so a resolver-produced head is deliberately NOT
+   *   carried by ancestry. Its prior/result binding and `resolver-self:`
+   *   readback are unchanged; without the bound result SHA it returns `null`
+   *   and the observed head is reviewed, which is strictly stronger.
+   * - anything else: the approval captured at authority grant is carried
+   *   forward while the observed head DESCENDS from the head it was bound to.
+   *   That is what makes a base-sync merge or a queue-owned base update pass
+   *   with no dispatch, no session, and no receipt rewrite — the retired
+   *   `carry:` stamp existed only to re-vouch for exactly this.
    *
    * @param {string} queue_bead_id
    * @param {string} subject_bead_id
@@ -338,54 +381,44 @@ export function createHeadReview(deps) {
     const resolver_attempt = mutation?.startsWith('resolver:')
       ? mutation.slice('resolver:'.length)
       : null;
-    if (
-      head_sha === prior_head_sha ||
-      result_head_sha === null ||
-      (mutation !== 'base_update' && !resolver_attempt) ||
-      head_sha !== result_head_sha
-    ) {
+    if (head_sha === prior_head_sha) {
       return null;
     }
-
     const starting_approval = observed.starting_approval ?? null;
     if (!validApproval(starting_approval, prior_head_sha)) {
       return null;
     }
-    const receipt = resolver_attempt
-      ? await deps.readReceipt(subject_bead_id)
-      : null;
-    const resolver_receipt = resolver_attempt
-      ? `resolver-self:${resolver_attempt}:${prior_head_sha}@${result_head_sha}`
-      : null;
-    const resolver_approved =
-      resolver_receipt !== null && receipt?.raw === resolver_receipt;
-    const lin = await deps.lineage(subject_bead_id, {
-      prior_head_sha,
-      head_sha,
-      target_base: authority.target_base,
-      head_ref: observed.head_ref ?? null,
-      mutation
-    });
-    if (!lin.queue_owned) {
-      return null;
-    }
-
     const reviewer =
       /** @type {NonNullable<ReturnType<typeof parseReviewReceipt>>} */ (
         parseReviewReceipt(starting_approval?.raw)
       ).actor;
-    const journal = relaxedJournal(
-      queue_bead_id,
-      authority,
-      head_sha,
-      reviewer
-    );
-    if (!journal || journal.state !== 'pending') {
-      return { state: 'gone', reason: null };
-    }
 
     if (resolver_attempt) {
-      if (!resolver_approved || resolver_receipt === null) {
+      if (result_head_sha === null || head_sha !== result_head_sha) {
+        return null;
+      }
+      const receipt = await deps.readReceipt(subject_bead_id);
+      const resolver_receipt = `resolver-self:${resolver_attempt}:${prior_head_sha}@${result_head_sha}`;
+      const lin = await deps.lineage(subject_bead_id, {
+        prior_head_sha,
+        head_sha,
+        target_base: authority.target_base,
+        head_ref: observed.head_ref ?? null,
+        mutation
+      });
+      if (!lin.queue_owned) {
+        return null;
+      }
+      const journal = relaxedJournal(
+        queue_bead_id,
+        authority,
+        head_sha,
+        reviewer
+      );
+      if (!journal || journal.state !== 'pending') {
+        return { state: 'gone', reason: null };
+      }
+      if (receipt?.raw !== resolver_receipt) {
         return failJournal(
           queue_bead_id,
           authority.id,
@@ -417,18 +450,26 @@ export function createHeadReview(deps) {
         : { state: 'gone', reason: null };
     }
 
-    const carry_receipt = `carry:${reviewer}:${prior_head_sha}@${result_head_sha}`;
-    let written = { ok: false, readback: /** @type {string|null} */ (null) };
-    try {
-      written = await deps.writeReceipt(subject_bead_id, carry_receipt);
-    } catch (err) {
-      log(
-        'head-review carry receipt write threw for %s: %o',
-        subject_bead_id,
-        err
-      );
+    if (!(await coversHead(prior_head_sha, head_sha))) {
+      return null;
     }
-    if (!written.ok || written.readback !== carry_receipt) {
+    const journal = relaxedJournal(
+      queue_bead_id,
+      authority,
+      head_sha,
+      reviewer
+    );
+    if (!journal || journal.state !== 'pending') {
+      return { state: 'gone', reason: null };
+    }
+    // The snapshot alone is not authority: the receipt must STILL read back as
+    // the exact value that was captured, so a rewrite after the grant cannot
+    // ride the snapshot into a merge.
+    const receipt = await deps.readReceipt(subject_bead_id);
+    if (
+      !validApproval(receipt, prior_head_sha) ||
+      receipt?.raw !== starting_approval?.raw
+    ) {
       return failJournal(
         queue_bead_id,
         authority.id,
@@ -437,23 +478,10 @@ export function createHeadReview(deps) {
         'receipt_readback_mismatch'
       );
     }
-    const post_head = await deps.observeHead(subject_bead_id);
-    if (
-      typeof post_head !== 'string' ||
-      post_head.toLowerCase() !== result_head_sha
-    ) {
-      return failJournal(
-        queue_bead_id,
-        authority.id,
-        head_sha,
-        'pending',
-        'head_drift_during_receipt'
-      );
-    }
     const ok = transition(queue_bead_id, authority.id, head_sha, 'pending', {
       state: 'approved',
       approval_source: 'existing_current',
-      receipt: carry_receipt
+      receipt: /** @type {{ raw: string }} */ (receipt).raw
     });
     return ok
       ? { state: 'approved', reason: null }
@@ -501,12 +529,17 @@ export function createHeadReview(deps) {
         // The journal alone is not enough: the Beads receipt must STILL read
         // back as the exact approved value — an independently rewritten
         // receipt after approval must not ride an old journal into a merge.
+        // The receipt's own head is where it is bound; the observed head only
+        // has to DESCEND from it, because a carried approval (UI-vzyh §2) is
+        // recorded at the head it was granted on, not at the moved one.
         const current = await deps.readReceipt(subject_bead_id);
+        const current_head = current ? current.head_sha.toLowerCase() : null;
         if (
           current === null ||
-          !validApproval(current, head_sha) ||
+          current_head === null ||
           current.raw !== journal.receipt ||
-          current.head_sha.toLowerCase() !== head_sha
+          !validApproval(current, current_head) ||
+          !(await coversHead(current_head, head_sha))
         ) {
           return failJournal(
             queue_bead_id,
