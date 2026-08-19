@@ -168,7 +168,10 @@ describe('worker/admission fail-closed validator', () => {
       ghAvailable: async () => false,
       repo: '/repo',
       base: BASE,
-      bead: makeBead({ route: 'quick_fix', description: 'Fix the worker lane.' })
+      bead: makeBead({
+        route: 'quick_fix',
+        description: 'Fix the worker lane.'
+      })
     });
 
     expect(r).toEqual({ ok: false, reason: 'gh_unavailable' });

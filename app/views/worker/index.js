@@ -2458,7 +2458,8 @@ export function createWorkerView(mount_element, options = {}) {
         queued.has(it.id) ||
         seen.has(it.id) ||
         isPhaseChild(it) ||
-        isWorkerIneligible(/** @type {any} */ (it).labels)
+        (Object.hasOwn(it, 'labels') &&
+          isWorkerIneligible(/** @type {any} */ (it).labels))
       ) {
         continue;
       }
@@ -2510,18 +2511,33 @@ export function createWorkerView(mount_element, options = {}) {
       const is_quick_fix =
         it.workflow?.route === 'quick_fix' ||
         (it.metadata && it.metadata.route === 'quick_fix');
-      const eligible = !is_quick_fix && has_spec && !spec.conflict;
+      // Ready/Blocked subscriptions preserve raw bd fields, including
+      // `description`. An older/partial server may omit the key; that absence
+      // stays fail-quiet and leaves the authoritative admission check to the
+      // server. A present but empty description is safe to reject here.
+      const has_description =
+        !Object.hasOwn(it, 'description') ||
+        (typeof it.description === 'string' &&
+          it.description.trim().length > 0);
+      // Labels follow the same ownership boundary: use them when the payload
+      // carries them, otherwise leave worker eligibility to server admission.
+      const worker_ineligible =
+        Object.hasOwn(it, 'labels') &&
+        isWorkerIneligible(/** @type {any} */ (it).labels);
+      const eligible =
+        !worker_ineligible &&
+        (is_quick_fix ? has_description : has_spec && !spec.conflict);
       const is_blocked = blocked_ids.has(it.id);
       /** @type {string[]} */
       const parts = [];
       if (is_blocked) {
         parts.push(blockedReason(it));
       }
-      if (is_quick_fix) {
-        parts.push('quick_fix · 워커 비대상');
-      } else if (spec.conflict) {
+      if (is_quick_fix && !has_description) {
+        parts.push('missing_description');
+      } else if (!is_quick_fix && spec.conflict) {
         parts.push('spec_id_conflict');
-      } else if (!has_spec) {
+      } else if (!is_quick_fix && !has_spec) {
         parts.push('spec 없음');
       }
       const adm = admissionBadge(it.id);
@@ -2851,7 +2867,31 @@ export function createWorkerView(mount_element, options = {}) {
     // Failed records are the actionable front of the running lane; they do not
     // consume a live slot, but still claim their bead so queue rows do not
     // duplicate the same work item.
-    const running = [...failed_running, ...active_running];
+    const running = [...failed_running, ...active_running].map((tile) => {
+      const attempt = attempt_by_id.get(tile.attempt_id);
+      const progress = attempt?.quickfix_landing;
+      if (
+        attempt?.quickfix_lane !== true ||
+        !progress ||
+        typeof progress !== 'object'
+      ) {
+        return tile;
+      }
+      const reason =
+        typeof progress.reason === 'string' && progress.reason.length > 0
+          ? progress.reason
+          : null;
+      const landing = prWaitProgress({
+        bead_id: attempt.bead_id,
+        merge_sha: progress.head_sha,
+        cleanup_cursor: progress.cursor,
+        cleanup_failed: reason ? { step: progress.cursor, reason } : null,
+        repo_operations: Array.isArray(q.repo_operations)
+          ? q.repo_operations
+          : []
+      });
+      return landing ? { ...tile, landing } : tile;
+    });
     // The banner's ↻ targets EXACTLY the attempt the banner describes — the
     // latest failure. An older eligible attempt is never substituted (that
     // would resume a different session than the one reported); ineligibility

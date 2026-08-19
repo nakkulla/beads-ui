@@ -2103,6 +2103,56 @@ describe('views/worker', () => {
     ).toBeNull();
   });
 
+  test('projects quick_fix landing on its running tile without adding a PR-wait row', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const head_sha = 'a'.repeat(40);
+    queueStore.set(
+      queueOf({
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'QF-1',
+            status: 'running',
+            started_at: Date.now() - 3000,
+            quickfix_lane: true,
+            quickfix_landing: {
+              cursor: 'repo_operations',
+              head_sha,
+              reason: null
+            }
+          }
+        },
+        repo_operations: [
+          {
+            operation_id: 'deploy-qf',
+            kind: 'deploy',
+            state: 'running',
+            superseded_by: null,
+            subjects: [{ bead_id: 'QF-1', merged_sha: head_sha }]
+          }
+        ]
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    const running = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="QF-1"]')
+    );
+
+    expect(running.querySelector('.rtile__landing')?.textContent).toContain(
+      '배포 중'
+    );
+    expect(
+      mount.querySelector('#worker-pane-pr-wait [data-bead-id="QF-1"]')
+    ).toBeNull();
+  });
+
   test('clicking the tile body opens the detail (gotoIssue), not the transcript drawer', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -2488,7 +2538,7 @@ describe('views/worker', () => {
     expect(card.querySelector('.b-impl.dim.stale')).not.toBeNull();
   });
 
-  test('quick_fix candidate stays in the with-spec filter but cannot be queued', () => {
+  test('queues a described quick_fix candidate without requiring a spec', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
@@ -2496,7 +2546,8 @@ describe('views/worker', () => {
         id: 'QF-1',
         title: 'quick fix candidate',
         status: 'open',
-        metadata: { route: 'quick_fix', spec_id: 'legacy-spec' }
+        description: 'Fix the worker lane.',
+        metadata: { route: 'quick_fix' }
       }
     ]);
     createWorkerView(mount, {
@@ -2510,23 +2561,78 @@ describe('views/worker', () => {
         '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
       )
     );
-    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
-      'quick_fix · 워커 비대상'
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
     );
-    expect(card.getAttribute('draggable')).toBe('false');
-    expect(
-      card.querySelector('.worker-card__place')?.getAttribute('title')
-    ).toBe('quick_fix route는 워커 실행 대상이 아닙니다');
 
-    /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.worker-filter__chip[data-spec="with"]')
-    ).click();
+    expect(card.querySelector('.worker-card__reason')).toBeNull();
+    expect(card.getAttribute('draggable')).toBe('true');
+    expect(place.disabled).toBe(false);
+    expect(place.title).toBe('대기 큐 맨 뒤에 추가');
+    expect(card.textContent).not.toContain('워커 비대상');
+  });
 
-    expect(
+  test('badges and blocks a quick_fix candidate with a blank description', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'QF-1',
+        title: 'blank quick fix candidate',
+        status: 'open',
+        description: ' \n\t ',
+        metadata: { route: 'quick_fix' }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
       mount.querySelector(
         '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
       )
-    ).not.toBeNull();
+    );
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(card.querySelector('.worker-card__reason')?.textContent).toContain(
+      'missing_description'
+    );
+    expect(card.textContent).not.toContain('spec 없음');
+    expect(place.disabled).toBe(true);
+    expect(place.title).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
+  });
+
+  test('leaves quick_fix eligibility to server admission when description is absent from the payload', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'QF-1',
+        title: 'legacy quick fix candidate',
+        status: 'open',
+        metadata: { route: 'quick_fix' }
+      }
+    ]);
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const card = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '#worker-pane-candidate .worker-card[data-bead-id="QF-1"]'
+      )
+    );
+
+    expect(card.getAttribute('draggable')).toBe('true');
+    expect(card.querySelector('.worker-card__reason')).toBeNull();
   });
 
   test('a candidate without workflow renders no chip/stepper and does not throw', () => {

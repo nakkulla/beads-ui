@@ -610,14 +610,14 @@ describe('enrichIssueWorkflow', () => {
     expect(invalid.route_source).toBe('derived');
   });
 
-  test('recognizes a pinned quick_fix route with an empty close stage', () => {
+  test('keeps the quick_fix close stage empty while implementation is in progress', () => {
     const dir = makeRepo();
     writeFile(dir, 'x.txt', '1\n');
     commitAll(dir, 'init');
 
     const wf = enrichIssueWorkflow(
       {
-        status: 'open',
+        status: 'in_progress',
         metadata: { route: 'quick_fix', plan_path: 'docs/ignored.md' }
       },
       dir
@@ -646,6 +646,19 @@ describe('enrichIssueWorkflow', () => {
     );
 
     expect(wf.stages.close?.fill).toBe('full');
+  });
+
+  test('dims the quick_fix close stage while a resolved bead waits for Worker close', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      { status: 'resolved', metadata: { route: 'quick_fix' } },
+      dir
+    );
+
+    expect(wf.stages.close?.fill).toBe('dim');
   });
 });
 

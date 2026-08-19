@@ -192,6 +192,33 @@ function setMergingCompletion(
 }
 
 describe('worker/merge-queue — sequencing', () => {
+  test('does not collect a quick_fix attempt naturally lacking pr_url and pr_wait', async () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-QF-1',
+        bead_id: 'QF-1',
+        repo: WS,
+        target_base: 'main',
+        runner: 'codex',
+        quickfix_lane: true
+      }
+    });
+    const merge = vi.fn(async () => ({
+      ok: true,
+      action: 'merged',
+      reason: null
+    }));
+    const mq = driver(store, { merge });
+
+    await mq.kick();
+
+    // No PR URL means no pr_wait row, and therefore no durable merge candidate.
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+    expect(merge).not.toHaveBeenCalled();
+  });
+
   test('merges queued items one at a time, in order', async () => {
     const store = seed(['UI-1', 'UI-2']);
     /** @type {string[]} */
