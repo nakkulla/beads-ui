@@ -486,6 +486,7 @@ export function createPrPoller(deps) {
       );
       if (
         result?.ok === false &&
+        result.reason !== 'action_in_flight' &&
         !deps.store.snapshot(workspace).cleanup_failed?.[bead_id]
       ) {
         deps.store.recordCleanupFailure?.(workspace, {

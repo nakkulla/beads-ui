@@ -1058,6 +1058,47 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     );
   });
 
+  test('coalesces action_in_flight without recording cleanup failure', async () => {
+    const onMerged = vi.fn(async () => ({
+      ok: false,
+      reason: 'action_in_flight'
+    }));
+    const { poller, store } = makePoller({
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(onMerged).toHaveBeenCalledOnce();
+    expect(store.recordCleanupFailure).not.toHaveBeenCalled();
+  });
+
+  test('records other false cleanup outcomes as durable failures', async () => {
+    const onMerged = vi.fn(async () => ({
+      ok: false,
+      reason: 'discard_in_progress'
+    }));
+    const { poller, store } = makePoller({
+      detail: {
+        state: 'ok',
+        data: detailOf({ state: 'MERGED', merge_sha: NEW_SHA })
+      },
+      onMerged
+    });
+
+    await poller.tick();
+
+    expect(store.recordCleanupFailure).toHaveBeenCalledWith('/ws', {
+      bead_id: 'UI-1',
+      step: 'repo_operations',
+      reason: 'discard_in_progress'
+    });
+  });
+
   test('keeps the previous rows when the scan throws', async () => {
     const external = externalOf([{ bead_id: 'UI-ext' }]);
     external.refresh = vi.fn(async () => {

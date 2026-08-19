@@ -41,6 +41,8 @@ import {
 } from './state-paths.js';
 import { createRepoOpsDeployWorktreeManager } from './worktree.js';
 
+const RECONCILE_GRACE_MS = 5000;
+
 /**
  * @param {{ repo_operations: Record<string, any> }} queue
  * @param {string} repo_id
@@ -87,7 +89,7 @@ export function failureFingerprint(input) {
 }
 
 /**
- * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, policySupported?: () => boolean }} deps
+ * @param {{ workspace: string, repo: string, store: ReturnType<typeof import('./queue-store.js').createQueueStore>, locks: ReturnType<typeof import('./locks.js').createLockManager>, gitRun: (args: string[], options: { cwd?: string, timeout_ms?: number }) => Promise<{ code: number, stdout: string, stderr: string }>, fs?: typeof import('node:fs'), runner?: ReturnType<typeof createRepoOperationRunner>, deployWorktree?: ReturnType<typeof createRepoOpsDeployWorktreeManager>, deployLock?: typeof acquireDeployLock, transition?: ReturnType<typeof createRepoOperationTransitionLauncher>, verifyCheckout?: { materialize: (input: any) => Promise<any>, verify: (input: any) => Promise<{ ok: boolean }>, cleanup: (input: any) => Promise<void> }, repairSession?: { dispatch: (input: any) => Promise<{ ok: boolean, attempt_id?: string, session_id?: string|null, reason?: string }>, judge: (input: any) => Promise<{ verdict: string, evidence: string|null }> }, policySupported?: () => boolean, now?: () => number, sleep?: (ms: number) => Promise<void> }} deps
  */
 export function createRepoOperationCoordinator(deps) {
   const fs = deps.fs || nodeFs;
@@ -100,6 +102,11 @@ export function createRepoOperationCoordinator(deps) {
   const verify_checkout =
     deps.verifyCheckout || createVerifyCheckout({ fs, gitRun: deps.gitRun });
   const policySupported = deps.policySupported || repoOperationPolicySupported;
+  const now = deps.now || (() => Date.now());
+  const sleep =
+    deps.sleep ||
+    ((/** @type {number} */ ms) =>
+      new Promise((resolve) => setTimeout(resolve, ms)));
 
   /**
    * Resolve an operation's historical/effective policy without publishing it
@@ -1272,17 +1279,30 @@ export function createRepoOperationCoordinator(deps) {
       return { ok: false, code: 'repo_operation_prerecord_failed' };
     const operations = prerecord.queue.repo_operations;
     if (operations[operation_id].state !== 'queued')
-      return { ok: true, operation_id, adopted: true };
+      return {
+        ok: true,
+        operation_id,
+        adopted: true,
+        timeout_ms: declaration.timeout_ms
+      };
     // Durable per-repo serialization: while another operation runs, the queued
     // record waits for a later reconcile instead of racing the worktree.
     if (runningOperationFor(operations, operation_id)) {
-      return { ok: true, operation_id, queued: true };
+      return {
+        ok: true,
+        operation_id,
+        queued: true,
+        timeout_ms: declaration.timeout_ms
+      };
     }
-    return launchRecorded(workspace, operation_id, {
+    const launched = await launchRecorded(workspace, operation_id, {
       declaration,
       classification: policy.classification,
       target_sha
     });
+    return launched.ok
+      ? { ...launched, timeout_ms: declaration.timeout_ms }
+      : launched;
   }
 
   /**
@@ -1553,6 +1573,63 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * @param {{ target_base: string, bead_id: string, merged_sha: string }} subject
+   */
+  async function findExactDeployOperation(subject) {
+    if (
+      typeof subject.target_base !== 'string' ||
+      typeof subject.bead_id !== 'string' ||
+      typeof subject.merged_sha !== 'string' ||
+      !/^[0-9a-f]{40}$/i.test(subject.merged_sha)
+    ) {
+      return null;
+    }
+    const merged_sha = subject.merged_sha.toLowerCase();
+    const candidates = Object.entries(
+      deps.store.snapshot(deps.workspace).repo_operations
+    )
+      .filter(
+        ([, operation]) =>
+          operation.repo_id === deps.repo &&
+          operation.kind === 'deploy' &&
+          operation.target_base === subject.target_base &&
+          operation.subjects.some(
+            (entry) =>
+              entry.bead_id === subject.bead_id &&
+              entry.merged_sha === merged_sha
+          )
+      )
+      .sort(([left_id, left], [right_id, right]) => {
+        const requested_delta = left.requested_at - right.requested_at;
+        return requested_delta !== 0
+          ? requested_delta
+          : left_id.localeCompare(right_id);
+      });
+    if (candidates.length === 0) {
+      return null;
+    }
+    const [operation_id, operation] = candidates[0];
+    const resolved = await resolveRepoOps({
+      repo: deps.repo,
+      sha: operation.effective_base_sha,
+      gitRun: deps.gitRun
+    });
+    const declaration = resolved.ok === false ? null : resolved.deploy;
+    if (
+      !declaration ||
+      declaration.script !== operation.script_path ||
+      declaration.mode !== operation.script_mode ||
+      declaration.blob_sha !== operation.script_blob_sha ||
+      !Number.isInteger(declaration.timeout_ms) ||
+      !Number.isFinite(declaration.timeout_ms) ||
+      declaration.timeout_ms <= 0
+    ) {
+      return { operation_id, code: 'repo_operation_timeout_unresolved' };
+    }
+    return { operation_id, timeout_ms: declaration.timeout_ms };
+  }
+
+  /**
    * @param {string} operation_id
    * @param {{ target_base: string, merged_sha: string }} subject
    */
@@ -1605,9 +1682,50 @@ export function createRepoOperationCoordinator(deps) {
             : {}),
           ...(Number.isFinite(failure?.elapsed_ms)
             ? { elapsed_ms: failure?.elapsed_ms }
+            : {}),
+          ...(typeof operation.log_path === 'string'
+            ? { log_path: operation.log_path }
             : {})
         }
       : { state: operation.state, operation_id };
+  }
+
+  /**
+   * @param {string} operation_id
+   * @param {{ target_base: string, merged_sha: string, timeout_ms: number, poll_ms?: number }} input
+   */
+  async function waitForDeployTerminal(operation_id, input) {
+    if (
+      !Number.isFinite(input.timeout_ms) ||
+      input.timeout_ms < 0 ||
+      typeof input.target_base !== 'string' ||
+      typeof input.merged_sha !== 'string'
+    ) {
+      return {
+        state: 'failed',
+        operation_id,
+        code: 'repo_operation_timeout_unresolved'
+      };
+    }
+    const poll_ms =
+      Number.isFinite(input.poll_ms) && Number(input.poll_ms) > 0
+        ? Number(input.poll_ms)
+        : 100;
+    const deadline = now() + input.timeout_ms + RECONCILE_GRACE_MS;
+    /** @type {any} */
+    let evidence = null;
+    while (true) {
+      await reconcile(deps.workspace);
+      evidence = await deploymentEvidence(operation_id, input);
+      if (evidence.state === 'succeeded' || evidence.state === 'failed') {
+        return evidence;
+      }
+      const remaining_ms = deadline - now();
+      if (remaining_ms <= 0) {
+        return evidence;
+      }
+      await sleep(Math.min(poll_ms, remaining_ms));
+    }
   }
 
   /**
@@ -2303,7 +2421,9 @@ export function createRepoOperationCoordinator(deps) {
     verifyReceipt,
     waitForTerminal,
     hasConfig,
+    findExactDeployOperation,
     deploymentEvidence,
+    waitForDeployTerminal,
     reconcile,
     startRepair,
     dismiss,

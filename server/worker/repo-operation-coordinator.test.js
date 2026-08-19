@@ -45,7 +45,7 @@ afterEach(() => {
  * Fake git that resolves the target tree's bootstrap policy and validates the
  * approved source against `known_shas`.
  *
- * @param {{ known_shas?: string[] }} [options]
+ * @param {{ known_shas?: string[], config?: string, script_mode?: string, script_blob_sha?: string }} [options]
  */
 function gitForBootstrap(options = {}) {
   const known = new Set(options.known_shas ?? [APPROVED]);
@@ -62,7 +62,7 @@ function gitForBootstrap(options = {}) {
     }
     if (args[0] === 'show') {
       return String(args[1]).startsWith(TARGET)
-        ? { code: 0, stdout: CONFIG, stderr: '' }
+        ? { code: 0, stdout: options.config ?? CONFIG, stderr: '' }
         : { code: 128, stdout: '', stderr: 'missing' };
     }
     if (args[0] === 'ls-tree') {
@@ -72,7 +72,7 @@ function gitForBootstrap(options = {}) {
       const entry =
         args.at(-1) === 'repo-ops/config.toml'
           ? `100644 blob ${'c'.repeat(40)}\trepo-ops/config.toml`
-          : `100755 blob ${'d'.repeat(40)}\trepo-ops/script/deploy`;
+          : `${options.script_mode ?? '100755'} blob ${options.script_blob_sha ?? 'd'.repeat(40)}\trepo-ops/script/deploy`;
       return { code: 0, stdout: entry, stderr: '' };
     }
     return { code: 1, stdout: '', stderr: 'unexpected' };
@@ -80,11 +80,12 @@ function gitForBootstrap(options = {}) {
 }
 
 /**
- * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any> }} [overrides]
+ * @param {{ gitRun?: (args: string[], options: object) => Promise<{ code: number, stdout: string, stderr: string }>, runner?: object, transition?: object, verifyCheckout?: object, repairSession?: object, policySupported?: () => boolean, deployWorktree?: object, deployLock?: (input: any) => Promise<any>, now?: () => number, storeNow?: () => number, sleep?: (ms: number) => Promise<void> }} [overrides]
  */
 function coordinatorFor(overrides = {}) {
   const store = createQueueStore({
-    filePathFor: (workspace) => path.join(workspace, 'queue.json')
+    filePathFor: (workspace) => path.join(workspace, 'queue.json'),
+    now: overrides.storeNow
   });
   const runner = overrides.runner ?? {
     start: () => ({
@@ -129,7 +130,9 @@ function coordinatorFor(overrides = {}) {
     deployLock: overrides.deployLock,
     verifyCheckout: /** @type {never} */ (overrides.verifyCheckout),
     repairSession: /** @type {never} */ (overrides.repairSession),
-    policySupported: overrides.policySupported
+    policySupported: overrides.policySupported,
+    now: overrides.now,
+    sleep: overrides.sleep
   });
   return { store, coordinator };
 }
@@ -210,6 +213,288 @@ function validRequest(overrides = {}) {
 }
 
 describe('RepoOperation coordinator', () => {
+  test('waits for a running deploy to reconcile terminal marker evidence', async () => {
+    let now_ms = 0;
+    /** @type {{ exit_code: number, signal: null }|null} */
+    let marker = null;
+    const sleep = vi.fn(async (ms) => {
+      now_ms += ms;
+      marker = { exit_code: 0, signal: null };
+    });
+    const { coordinator } = coordinatorFor({
+      now: () => now_ms,
+      sleep,
+      runner: {
+        start: vi.fn(async () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'deploy.log')
+        })),
+        readMarker: () => marker,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    const started = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    const evidence = await coordinator.waitForDeployTerminal(
+      started.operation_id,
+      {
+        target_base: 'main',
+        merged_sha: HEAD,
+        timeout_ms: 100,
+        poll_ms: 1
+      }
+    );
+
+    expect(evidence).toMatchObject({
+      state: 'succeeded',
+      operation_id: started.operation_id
+    });
+    expect(sleep).toHaveBeenCalledOnce();
+  });
+
+  test('returns the last nonterminal deploy evidence at the bounded deadline', async () => {
+    let now_ms = 0;
+    const sleep = vi.fn(async (ms) => {
+      now_ms += ms;
+    });
+    const { coordinator } = coordinatorFor({
+      now: () => now_ms,
+      sleep,
+      runner: {
+        start: vi.fn(async () => ({
+          ok: true,
+          process_identity: { pid: 1, pgid: 1, started_at: 1 },
+          log_path: path.join(root, 'deploy.log')
+        })),
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    const started = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    const evidence = await coordinator.waitForDeployTerminal(
+      started.operation_id,
+      {
+        target_base: 'main',
+        merged_sha: HEAD,
+        timeout_ms: 1,
+        poll_ms: 10_000
+      }
+    );
+
+    expect(evidence).toEqual({
+      state: 'running',
+      operation_id: started.operation_id
+    });
+    expect(sleep).toHaveBeenCalledWith(5001);
+  });
+
+  test('finds only the earliest exact deploy subject and restores its pinned timeout', async () => {
+    let requested_at = 0;
+    const { store, coordinator } = coordinatorFor({
+      storeNow: () => requested_at,
+      gitRun: gitForBootstrap({
+        config: `${CONFIG}\ntimeout_ms = 4321`
+      })
+    });
+    const candidates = [
+      {
+        operation_id: 'foreign-repo',
+        repo_id: path.join(root, 'foreign'),
+        bead_id: 'UI-1',
+        merged_sha: HEAD
+      },
+      {
+        operation_id: 'other-bead',
+        repo_id: root,
+        bead_id: 'UI-2',
+        merged_sha: HEAD
+      },
+      {
+        operation_id: 'other-merge',
+        repo_id: root,
+        bead_id: 'UI-1',
+        merged_sha: FINAL
+      },
+      {
+        operation_id: 'exact-origin',
+        repo_id: root,
+        bead_id: 'UI-1',
+        merged_sha: HEAD
+      },
+      {
+        operation_id: 'exact-later',
+        repo_id: root,
+        bead_id: 'UI-1',
+        merged_sha: HEAD
+      }
+    ];
+    for (const candidate of candidates) {
+      requested_at += 1;
+      store.ensureRepoOperation(root, {
+        operation_id: candidate.operation_id,
+        repo_id: candidate.repo_id,
+        kind: 'deploy',
+        subjects: [
+          {
+            bead_id: candidate.bead_id,
+            merged_sha: candidate.merged_sha
+          }
+        ],
+        effective_base_sha: TARGET,
+        target_base: 'main',
+        script_path: 'repo-ops/script/deploy',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+    }
+
+    const found = await coordinator.findExactDeployOperation({
+      target_base: 'main',
+      bead_id: 'UI-1',
+      merged_sha: HEAD
+    });
+
+    expect(found).toEqual({
+      operation_id: 'exact-origin',
+      timeout_ms: 4321
+    });
+  });
+
+  test('keeps a superseded exact origin for descendant success evidence', async () => {
+    let requested_at = 0;
+    const { store, coordinator } = coordinatorFor({
+      storeNow: () => requested_at,
+      gitRun: gitForBootstrap({
+        config: `${CONFIG}\ntimeout_ms = 4321`
+      })
+    });
+    for (const operation_id of ['origin', 'successor']) {
+      requested_at += 1;
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: TARGET,
+        target_base: 'main',
+        script_path: 'repo-ops/script/deploy',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+    }
+    const origin = store.snapshot(root).repo_operations.origin;
+    store.settleRepoOperation(root, {
+      operation_id: 'origin',
+      attempt_id: origin.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+    const successor = store.snapshot(root).repo_operations.successor;
+    store.startRepoOperation(root, {
+      operation_id: 'successor',
+      attempt_id: successor.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'successor.log'),
+      target_sha: TARGET
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'successor',
+      attempt_id: successor.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    store.supersedeRepoOperation(root, {
+      operation_id: 'origin',
+      successor_id: 'successor'
+    });
+
+    const found = await coordinator.findExactDeployOperation({
+      target_base: 'main',
+      bead_id: 'UI-1',
+      merged_sha: HEAD
+    });
+    const evidence = await coordinator.deploymentEvidence(
+      /** @type {any} */ (found).operation_id,
+      { target_base: 'main', merged_sha: HEAD }
+    );
+
+    expect(found).toEqual({ operation_id: 'origin', timeout_ms: 4321 });
+    expect(evidence).toEqual({
+      state: 'succeeded',
+      operation_id: 'successor',
+      covered_operation_id: 'origin'
+    });
+  });
+
+  test.each([
+    [
+      'missing pinned config',
+      async (/** @type {string[]} */ args) =>
+        args[0] === 'ls-tree'
+          ? { code: 0, stdout: '', stderr: '' }
+          : { code: 128, stdout: '', stderr: 'missing' }
+    ],
+    [
+      'mismatched script identity',
+      gitForBootstrap({ script_blob_sha: 'e'.repeat(40) })
+    ],
+    [
+      'invalid pinned timeout',
+      gitForBootstrap({ config: `${CONFIG}\ntimeout_ms = 0` })
+    ]
+  ])(
+    'fails closed for %s during exact deploy lookup',
+    async (_label, gitRun) => {
+      const { store, coordinator } = coordinatorFor({ gitRun });
+      store.ensureRepoOperation(root, {
+        operation_id: 'origin',
+        repo_id: root,
+        kind: 'deploy',
+        subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+        effective_base_sha: TARGET,
+        target_base: 'main',
+        script_path: 'repo-ops/script/deploy',
+        script_mode: '100755',
+        script_blob_sha: 'd'.repeat(40)
+      });
+
+      const found = await coordinator.findExactDeployOperation({
+        target_base: 'main',
+        bead_id: 'UI-1',
+        merged_sha: HEAD
+      });
+
+      expect(found).toEqual({
+        operation_id: 'origin',
+        code: 'repo_operation_timeout_unresolved'
+      });
+    }
+  );
+
   // The deploy-only declaration every caller must be able to tell apart from a
   // declared `[verify]`: `null` here is what lets the cleanup skip the verify
   // stage instead of demanding a verify candidate it can never build.
@@ -607,6 +892,48 @@ describe('RepoOperation coordinator', () => {
     });
   });
 
+  test('returns the terminal deploy failure log path', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: vi.fn(async () => ({ code: 1, stdout: '', stderr: '' }))
+    });
+    store.ensureRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      repo_id: root,
+      kind: 'deploy',
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      effective_base_sha: BASE,
+      target_base: 'main',
+      script_path: 'repo-ops/script/deploy',
+      script_mode: '100755',
+      script_blob_sha: '5'.repeat(40)
+    });
+    const operation = store.snapshot(root).repo_operations['failed-deploy'];
+    store.startRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: operation.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'failed.log'),
+      target_sha: TARGET
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-deploy',
+      attempt_id: operation.attempt_id,
+      exit_code: 2,
+      signal: null
+    });
+
+    const evidence = await coordinator.deploymentEvidence('failed-deploy', {
+      target_base: 'main',
+      merged_sha: HEAD
+    });
+
+    expect(evidence).toMatchObject({
+      state: 'failed',
+      code: 'runner_failed',
+      log_path: path.join(root, 'failed.log')
+    });
+  });
+
   test('supersedes an ancestor failed deploy when a descendant succeeds', async () => {
     const runner = {
       start: () => ({ ok: false, code: 'unused' }),
@@ -975,6 +1302,8 @@ describe('RepoOperation coordinator', () => {
       subjects: [{ bead_id: 'UI-2', merged_sha: FINAL }]
     });
 
+    expect(first).toMatchObject({ queued: true, timeout_ms: 600_000 });
+    expect(second).toMatchObject({ queued: true, timeout_ms: 600_000 });
     expect(second.operation_id).toBe(first.operation_id);
     expect(
       store.snapshot(root).repo_operations[first.operation_id].subjects
@@ -1072,7 +1401,8 @@ describe('RepoOperation coordinator', () => {
     expect(second).toMatchObject({
       ok: true,
       operation_id: first.operation_id,
-      adopted: true
+      adopted: true,
+      timeout_ms: 600_000
     });
     expect(waiting).toMatchObject({ state: 'running' });
     expect(bindTarget).toHaveBeenCalledOnce();
