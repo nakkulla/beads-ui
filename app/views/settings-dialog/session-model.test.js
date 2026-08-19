@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 import {
   IMPL_DISPATCHES,
+  REVIEW_EFFORTS,
   SESSION_DEFAULT_KEYS,
+  buildExecutionOptionView,
   buildOrchestrationPatch,
   buildSessionDefaultsPatch,
   implEffortOptions,
@@ -9,6 +11,43 @@ import {
   isDelegationDisabled,
   orchestrationModelOptions
 } from './session-model.js';
+
+const PROJECTION = {
+  supported: true,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: {
+      standard_recommended: 'codex',
+      fast_track_default: 'fable'
+    },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'auto',
+        speed: 'default'
+      },
+      model_catalog: { codex: { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: null,
+    speed: 'default'
+  }
+};
 
 /** A minimal two-runner catalog in the worker snapshot's shape. */
 const CATALOG = {
@@ -115,6 +154,77 @@ describe('orchestrationModelOptions', () => {
       'sol',
       'terra'
     ]);
+  });
+});
+
+describe('buildExecutionOptionView', () => {
+  test('keeps a stored token the narrowed choice list no longer offers', () => {
+    const view = buildExecutionOptionView(
+      'impl_model',
+      ['auto', 'opus'],
+      { impl_runtime: 'claude', impl_model: 'sol' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.options[0]).toEqual({
+      value: 'sol',
+      label: 'sol (비호환)',
+      full_value: 'sol'
+    });
+  });
+
+  test('keeps stored tokens separate from concrete option labels', () => {
+    const view = buildExecutionOptionView(
+      'spec_review_model',
+      ['codex', 'fable'],
+      {},
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.unset_label).toBe('기본값 사용 — 5.6-sol');
+    expect(view.options).toEqual([
+      { value: 'codex', label: '5.6-sol', full_value: 'gpt-5.6-sol' },
+      { value: 'fable', label: 'fable', full_value: 'fable' }
+    ]);
+  });
+
+  test('recalculates dependent effort from the current reviewer draft', () => {
+    const codex = buildExecutionOptionView(
+      'plan_review_effort',
+      REVIEW_EFFORTS,
+      { plan_review_model: 'codex' },
+      PROJECTION,
+      CATALOG
+    );
+    const fable = buildExecutionOptionView(
+      'plan_review_effort',
+      REVIEW_EFFORTS,
+      { plan_review_model: 'fable' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(codex.unset_label).toBe('기본값 사용 — xhigh');
+    expect(fable.unset_label).toBe('기본값 사용 — high');
+  });
+
+  test('recalculates implementation model label from runtime and model draft', () => {
+    const view = buildExecutionOptionView(
+      'impl_model',
+      ['auto', 'sol', 'terra'],
+      { impl_runtime: 'codex' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.unset_label).toBe('기본값 사용 — 5.6-sol');
+    expect(view.options[2]).toEqual({
+      value: 'terra',
+      label: '5.6-terra',
+      full_value: 'gpt-5.6-terra'
+    });
   });
 });
 

@@ -7494,6 +7494,15 @@ button.detail-session__leg:focus-visible {
   font-style: italic;
 }
 
+.settings-dialog__source-badge {
+  padding: var(--sp-1) var(--sp-7);
+  border: 1px dashed var(--border-chip);
+  border-radius: var(--r-4);
+  color: var(--layer-base);
+  font-size: var(--fs-label-tiny);
+  font-style: normal;
+}
+
 /* 리뷰 게이트 행의 stage 색 점 — 게이트 어휘를 카드 스텝퍼와 공유한다. */
 .settings-dialog__stage-dot {
   display: inline-block;
@@ -7868,6 +7877,11 @@ button.detail-session__leg:focus-visible {
   color: inherit;
   text-align: left;
   cursor: pointer;
+  list-style: none;
+}
+
+.detail-effective__head::-webkit-details-marker {
+  display: none;
 }
 
 .detail-effective__t {
@@ -7905,12 +7919,17 @@ button.detail-session__leg:focus-visible {
   color: var(--layer-global);
 }
 
+.detail-effective__count--base {
+  border-style: dashed;
+  color: var(--layer-base);
+}
+
 .detail-effective__chev {
   color: var(--text-dim);
   font-size: var(--fs-caption);
 }
 
-.detail-effective--open .detail-effective__chev {
+.detail-effective[open] .detail-effective__chev {
   transform: rotate(90deg);
 }
 

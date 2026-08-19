@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "workflow_mode_default": "standard",
+  "review": {
+    "default": "codex",
+    "reviewers": {
+      "codex": {
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh"
+      },
+      "opus": {
+        "model": "opus",
+        "effort": "high"
+      },
+      "fable": {
+        "model": "fable",
+        "effort": "high"
+      }
+    }
+  },
+  "plan_review": {
+    "standard_recommended": "codex",
+    "fast_track_default": "codex"
+  },
+  "implementation": {
+    "default": {
+      "runtime": "codex",
+      "model": "sol",
+      "effort": "auto",
+      "speed": "default",
+      "dispatch": "delegated"
+    },
+    "model_catalog": {
+      "claude": [
+        "opus",
+        "fable",
+        "sonnet",
+        "haiku"
+      ],
+      "codex": {
+        "sol": "gpt-5.6-sol",
+        "terra": "gpt-5.6-terra",
+        "luna": "gpt-5.6-luna"
+      }
+    },
+    "exact_model_default_effort": {
+      "claude_runner": "high",
+      "codex": "runtime_model_default"
+    },
+    "effort_by_transport": {
+      "claude-native-agent": {
+        "auto": "native-fixed-posture",
+        "explicit": "unsupported",
+        "receipt": "native-fixed-posture"
+      },
+      "implement-claude": {
+        "auto": "claude-runner-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
+      },
+      "codex-native-spawn": {
+        "auto": "provider-tier-or-runtime-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
+      },
+      "implement-codex": {
+        "auto": "provider-tier-or-runtime-model-default",
+        "explicit": "catalog-validated",
+        "receipt": "actual-effort"
+      }
+    }
+  }
+}

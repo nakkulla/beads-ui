@@ -4,10 +4,10 @@
  * beads-ui CONSUMES the workflow contract's vocabulary; the canonical
  * definitions live in dotfiles `workflow.yaml` (`workspace_kv_defaults`,
  * `metadata.parent_keys`) and are mirrored on the server in
- * `server/worker/exec-enums.js`. Nothing here may widen them, and no harness
- * default is copied into this repository — an unset key renders as
- * `(harness 기본)` and nothing more.
+ * `server/worker/exec-enums.js`. Nothing here may widen them. Concrete unset
+ * labels come from the pinned projection through the shared resolver.
  */
+import { buildOptionView } from '../../utils/execution-defaults.js';
 
 /** The `bd kv workflow_session_defaults` keys, in dialog display order. */
 export const SESSION_DEFAULT_KEYS = [
@@ -173,6 +173,35 @@ export function orchestrationModelOptions(catalog, runtime) {
     ? pairs.filter(([runner]) => runner === runtime)
     : pairs;
   return selected.flatMap(([, models]) => models);
+}
+
+/**
+ * Build labels for the dialog's own layer: it edits the workspace-global values
+ * directly, so its unset option names the result without naming a layer.
+ * Dependent selectors remain in the draft and immediately affect that label.
+ *
+ * @param {string} key
+ * @param {ReadonlyArray<string>} choices
+ * @param {Record<string, string|null|undefined>} draft
+ * @param {Record<string, any>|null|undefined} execution_defaults
+ * @param {Record<string, any>|null|undefined} runner_catalog
+ * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
+ */
+export function buildExecutionOptionView(
+  key,
+  choices,
+  draft,
+  execution_defaults,
+  runner_catalog
+) {
+  return buildOptionView({
+    key,
+    choices,
+    layer: 'global',
+    global: draft,
+    execution_defaults,
+    runner_catalog
+  });
 }
 
 /**

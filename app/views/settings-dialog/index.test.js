@@ -22,8 +22,49 @@ function makePolicy() {
 
 const CATALOG = {
   runners: {
-    claude: { models: { opus: { efforts: ['low', 'high'] } } },
-    codex: { models: { sol: { efforts: ['medium'] } } }
+    claude: { models: { opus: { id: 'opus', efforts: ['low', 'high'] } } },
+    codex: {
+      models: { sol: { id: 'gpt-5.6-sol', efforts: ['medium'] } }
+    }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
+const EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: {
+      standard_recommended: 'codex',
+      fast_track_default: 'fable'
+    },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'auto',
+        speed: 'default'
+      },
+      model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: null,
+    speed: 'default'
   }
 };
 
@@ -56,6 +97,7 @@ function mount(options = {}) {
           revision: 3,
           slots: 2,
           runner_catalog: CATALOG,
+          execution_defaults: EXECUTION_DEFAULTS,
           orchestration_model: null,
           orchestration_effort: null,
           orchestration_speed: null
@@ -132,6 +174,22 @@ describe('createSettingsDialog tabs', () => {
 });
 
 describe('createSettingsDialog session tab', () => {
+  test('renders actual defaults with source badge and full model id', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="spec_review_model"]')
+    );
+
+    expect(select.options[0].textContent).toContain('기본값 사용 — 5.6-sol');
+    expect(select.title).toBe('gpt-5.6-sol');
+    expect(select.parentElement?.textContent).toContain('기본');
+    expect(select.options[1].value).toBe('codex');
+    expect(select.options[1].textContent).toContain('5.6-sol');
+  });
+
   test('renders the kv parse-failure warning as a banner', async () => {
     const { root, dialog } = mount({ warnings: ['kv_value_unparsable'] });
     dialog.open();
@@ -252,6 +310,61 @@ describe('createSettingsDialog session tab', () => {
 });
 
 describe('createSettingsDialog worker tab', () => {
+  test('renders Worker launcher defaults from the snapshot projection', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-tab="worker"]')
+    ).click();
+
+    const model = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_model"]')
+    );
+    const effort = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_effort"]')
+    );
+
+    expect(model.options[0].textContent).toContain('기본값 사용 — opus');
+    expect(effort.options[0].textContent).toContain('CLI 기본 (미지정)');
+    expect(model.parentElement?.textContent).toContain('기본');
+  });
+
+  test('keeps explicit edits and saves when the projection is unavailable', async () => {
+    const { root, dialog, transport } = mount({
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: { supported: false },
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-tab="worker"]')
+    ).click();
+
+    const warning = root.querySelector(
+      '#settings-pane-worker [data-execution-defaults-warning]'
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_model"]')
+    );
+    select.value = 'opus';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(warning?.textContent).toContain('기본값 확인 불가');
+    expect(transport).toHaveBeenCalledWith(
+      'worker-queue-set-orchestration-defaults',
+      { expected_revision: 3, values: { orchestration_model: 'opus' } }
+    );
+  });
+
   test('filters the model list by the UI-only runtime choice', async () => {
     const { root, dialog } = mount();
     dialog.open();

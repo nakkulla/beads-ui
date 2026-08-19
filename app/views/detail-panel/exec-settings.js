@@ -1,4 +1,5 @@
 import { html } from 'lit-html';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -127,44 +128,6 @@ const REVIEW_EFFORT_PAIR = {
  */
 const EFFORT_GATING_MODELS = ['self', 'skip'];
 
-/** Mirror of policy.js ORCHESTRATION_MODEL_FALLBACK — what runs when nothing is set. */
-const ORCHESTRATION_MODEL_FALLBACK = 'opus';
-
-/**
- * `(기본)` labels for each exec key = what actually runs when NEITHER the bead
- * NOR the workspace-global exec_defaults set the key (the final fallback layer:
- * hardcoded / CLI / workflow default). Used verbatim by the ⚙ global dialog (it
- * edits the global layer, so its `(기본)` IS this fallback), and as the
- * detail-panel fallback when no global override exists (spec §3).
- *
- * MIRROR: keep in sync with the resolution fallbacks —
- *   - orchestration_model: hardcoded `opus` (policy.js
- *     ORCHESTRATION_MODEL_FALLBACK), so `--model opus` is always passed.
- *   - orchestration_effort: no effort flag passed ⇒ the runner CLI's own default
- *     (buildArgv omits the flag when unset).
- *   - `*_review_model`: session workflow gate default `codex` for all three
- *     steps.
- *   - `*_review_effort`: the workflow preset for that step.
- *   - impl_model: workflow delegation tier auto (complex=opus / boundary=sonnet).
- *   - impl_effort: whatever the chosen leaf tier defaults to.
- *
- * @type {Record<string, string>}
- */
-export const DEFAULT_LABELS = {
-  orchestration_model: '(기본: opus)',
-  orchestration_effort: '(기본: CLI 기본)',
-  orchestration_speed: '(기본: Standard)',
-  spec_review_model: '(기본: codex)',
-  spec_review_effort: '(기본: 프리셋)',
-  impl_review_model: '(기본: codex)',
-  impl_review_effort: '(기본: 프리셋)',
-  impl_runtime: '(기본: orchestration runtime 상속)',
-  plan_review_model: '(기본: codex)',
-  plan_review_effort: '(기본: 프리셋)',
-  impl_model: '(기본: 작업 성격에 따라 구현 모델 자동 선택)',
-  impl_effort: '(기본: 선택된 구현 에이전트의 reasoning effort 사용)'
-};
-
 /**
  * Shared semantic label for an execution-setting row.
  *
@@ -180,33 +143,6 @@ export function execSettingLabelTemplate(key) {
       ? html`<small data-exec-setting-help=${key}>${presentation.help}</small>`
       : ''}
   </span>`;
-}
-
-/**
- * The `(기본)` option label for a key on the detail-panel (bead) surface: a bead
- * left unset falls through to the workspace-global exec_defaults FIRST, so when a
- * global override exists show it (`(기본: <값> — 전역)`); otherwise the static
- * final-fallback label (spec §3.2).
- *
- * @param {string} key
- * @param {Record<string, any>} globals - Workspace preset settings.
- * @param {string} [source_name] - Selected workspace preset name.
- * @returns {string}
- */
-export function defaultLabelFor(key, globals, source_name = '') {
-  const g = globals && globals[key];
-  if (typeof g === 'string' && g.length > 0) {
-    const shown =
-      key === 'orchestration_speed'
-        ? g === 'default'
-          ? 'Standard'
-          : g === 'fast'
-            ? 'Fast'
-            : g
-        : g;
-    return `(기본: ${shown} — ${source_name || '워크스페이스 프리셋'})`;
-  }
-  return DEFAULT_LABELS[key] || '(기본)';
 }
 
 /**
@@ -553,8 +489,7 @@ export function normalizeImplTarget(
  */
 export function execSettingRows(input) {
   const { selectedOf, effectiveOf, runner_catalog, controller_runtime } = input;
-  const orchestration_model =
-    effectiveOf('orchestration_model') || ORCHESTRATION_MODEL_FALLBACK;
+  const orchestration_model = effectiveOf('orchestration_model');
   const impl_model = effectiveOf('impl_model');
   const requested_runtime = effectiveOf('impl_runtime');
   const impl_runtime =
@@ -757,16 +692,15 @@ function selectRow(
  * settings, so the highest-priority populated layer wins.
  *
  * @param {string[]} keys
- * @param {(key: string) => string} selectedOf
- * @param {(key: string) => string} effectiveOf
+ * @param {Record<string, { source: string, display: string }>} resolved
  * @param {string} default_source
  * @returns {string}
  */
-function summarySourceLabel(keys, selectedOf, effectiveOf, default_source) {
-  if (keys.some((key) => selectedOf(key))) {
+function summarySourceLabel(keys, resolved, default_source) {
+  if (keys.some((key) => resolved[key]?.source === 'pin')) {
     return '이슈 핀';
   }
-  if (keys.some((key) => effectiveOf(key))) {
+  if (keys.some((key) => resolved[key]?.source === 'global')) {
     return `프리셋 「${default_source || '워크스페이스 프리셋'}」`;
   }
   return '기본';
@@ -776,13 +710,13 @@ function summarySourceLabel(keys, selectedOf, effectiveOf, default_source) {
  * Effective execution summary derived from the same selected/effective
  * callbacks as the editor rows.
  *
- * @param {(key: string) => string} selectedOf
  * @param {(key: string) => string} effectiveOf
  * @param {string} default_source
+ * @param {Record<string, { source: string, display: string }>} resolved
  * @returns {TemplateResult}
  */
-function execSummaryTemplate(selectedOf, effectiveOf, default_source) {
-  const worker_parts = [effectiveOf('orchestration_model') || 'opus'];
+function execSummaryTemplate(effectiveOf, default_source, resolved) {
+  const worker_parts = [resolved.orchestration_model.display];
   const worker_effort = effectiveOf('orchestration_effort');
   const worker_speed = effectiveOf('orchestration_speed');
   if (worker_effort) {
@@ -794,14 +728,14 @@ function execSummaryTemplate(selectedOf, effectiveOf, default_source) {
     );
   }
 
-  const impl_value = `${effectiveOf('impl_runtime') || 'inherit'} · ${effectiveOf('impl_model') || 'auto'}`;
+  const impl_value = `${resolved.impl_runtime.display} · ${resolved.impl_model.display}`;
   const review_steps = [
     ['스펙', 'spec_review_model', 'spec_review_effort'],
     ['계획', 'plan_review_model', 'plan_review_effort'],
     ['구현', 'impl_review_model', 'impl_review_effort']
   ].map(([label, model_key, effort_key]) => {
-    const model = effectiveOf(model_key) || 'codex';
-    const effort = effectiveOf(effort_key);
+    const model = resolved[model_key].display;
+    const effort = resolved[effort_key].display;
     return `${label} ${model}${effort ? `/${effort}` : ''}`;
   });
   const summary_rows = [
@@ -846,12 +780,7 @@ function execSummaryTemplate(selectedOf, effectiveOf, default_source) {
           <span class="detail-kv__vgroup">
             <span class="workflow-summary__value">${row.value}</span>
             <span class="detail-kv__v" data-exec-source
-              >${summarySourceLabel(
-                row.keys,
-                selectedOf,
-                effectiveOf,
-                default_source
-              )}</span
+              >${summarySourceLabel(row.keys, resolved, default_source)}</span
             >
           </span>
         </div>`
@@ -871,6 +800,7 @@ function execSummaryTemplate(selectedOf, effectiveOf, default_source) {
  * the `(기본)` label (§3.2) and the derived vocabularies.
  * @param {any} [runner_catalog] - The snapshot's `runner_catalog` decoration.
  * @param {string} [default_source] - Selected workspace preset name.
+ * @param {Record<string, any>|null} [execution_defaults] - Pinned default projection.
  * Null/absent degrades the model selectors to the stored value (fail-quiet).
  * @returns {TemplateResult}
  */
@@ -879,21 +809,22 @@ export function execSettingsTemplate(
   handlers,
   exec_defaults,
   runner_catalog,
-  default_source = ''
+  default_source = '',
+  execution_defaults = null
 ) {
   const md = (effective_issue && effective_issue.metadata) || {};
   const globals =
     exec_defaults && typeof exec_defaults === 'object' ? exec_defaults : {};
   /** @param {string} key */
   const selectedOf = (key) => (typeof md[key] === 'string' ? md[key] : '');
+  const resolved = resolveExecutionSettings({
+    pin: md,
+    global: globals,
+    execution_defaults,
+    runner_catalog
+  });
   /** @param {string} key */
-  const effectiveOf = (key) => {
-    const own = selectedOf(key);
-    if (own) {
-      return own;
-    }
-    return typeof globals[key] === 'string' ? globals[key] : '';
-  };
+  const effectiveOf = (key) => resolved[key]?.value || '';
   const rows = execSettingRows({ selectedOf, effectiveOf, runner_catalog });
   const wf_mode = md.workflow_mode === 'fast_track' ? 'fast_track' : 'standard';
   /** @type {Map<string, ExecRow>} */
@@ -916,7 +847,7 @@ export function execSettingsTemplate(
       selectOptionsTemplate(
         row.groups,
         row.selected,
-        defaultLabelFor(row.key, globals, default_source)
+        `기본값 사용 — ${resolved[row.key]?.display || '기본값 확인 불가'}`
       ),
       row.selected,
       Boolean(row.selected),
@@ -928,7 +859,7 @@ export function execSettingsTemplate(
 
   return html`
     <div class="detail-section-label">실행 설정 (수정 가능)</div>
-    ${execSummaryTemplate(selectedOf, effectiveOf, default_source)}
+    ${execSummaryTemplate(effectiveOf, default_source, resolved)}
     <section class="exec-settings-core" data-exec-settings-core>
       ${selectRow(
         'workflow_mode',

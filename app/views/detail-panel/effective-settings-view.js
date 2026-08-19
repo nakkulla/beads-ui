@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { buildOptionView } from '../../utils/execution-defaults.js';
 import { formatPlannedExecution } from '../board/card.js';
 import {
   AUTO_LITERAL,
@@ -118,7 +119,7 @@ export function optionsForKey(key, effective, catalog) {
  * is expanded — the three-state editor.
  *
  * @param {EffectiveRow} row
- * @param {{ expanded: boolean, options: ReadonlyArray<string>, onEdit: (key: string, value: string|null) => void }} view
+ * @param {{ expanded: boolean, options: ReadonlyArray<{ value: string, label: string, full_value: string|null }>, default_label: string, default_full_value: string|null, onEdit: (key: string, value: string|null) => void }} view
  * @returns {TemplateResult}
  */
 function rowTemplate(row, view) {
@@ -129,7 +130,8 @@ function rowTemplate(row, view) {
     >
     <span
       class=${`detail-effective__v${row.source === 'base' ? ' detail-effective__v--dim' : ''}`}
-      >${row.value ?? '(harness 기본)'}</span
+      title=${row.full_value || ''}
+      >${row.display}</span
     >
     <span
       class=${`detail-effective__badge detail-effective__badge--${row.source}`}
@@ -140,6 +142,7 @@ function rowTemplate(row, view) {
           class="detail-effective__edit"
           data-edit-key=${row.key}
           aria-label=${`${SETTING_LABELS[row.key] || row.key} 편집`}
+          ?disabled=${row.resolution === 'not_applicable'}
           @change=${(/** @type {Event} */ ev) => {
             const next = String(
               /** @type {HTMLSelectElement} */ (ev.target).value
@@ -147,14 +150,21 @@ function rowTemplate(row, view) {
             view.onEdit(row.key, next.length === 0 ? null : next);
           }}
         >
-          <option value="" ?selected=${row.source !== 'pin'}>(기본)</option>
+          <option
+            value=""
+            title=${view.default_full_value || ''}
+            ?selected=${row.source !== 'pin'}
+          >
+            ${view.default_label}
+          </option>
           ${view.options.map(
             (option) =>
               html`<option
-                value=${option}
-                ?selected=${row.source === 'pin' && row.value === option}
+                value=${option.value}
+                title=${option.full_value || ''}
+                ?selected=${row.source === 'pin' && row.value === option.value}
               >
-                ${option === AUTO_LITERAL ? '자동' : option}
+                ${option.label}
               </option>`
           )}
         </select>`
@@ -170,13 +180,15 @@ function rowTemplate(row, view) {
  *   metadata: Record<string, unknown>,
  *   workspace_values: Record<string, unknown>,
  *   catalog: any,
+ *   execution_defaults: Record<string, any>|null,
+ *   controller_runtime?: string|null,
  *   expanded: boolean,
  *   presets: any[],
  *   preset_id: string,
  *   preset_busy: boolean
  * }} model
  * @param {{
- *   onToggle: () => void,
+ *   onToggle: (open: boolean) => void,
  *   onEdit: (key: string, value: string|null) => void,
  *   onPresetSelect: (id: string) => void,
  *   onPresetApply: () => void
@@ -185,31 +197,56 @@ function rowTemplate(row, view) {
  */
 export function effectiveSettingsCardTemplate(model, handlers) {
   const all_keys = EFFECTIVE_GROUPS.flatMap((group) => group.keys);
-  const counts = layerSummary(all_keys, model.metadata, model.workspace_values);
-  /** @type {Record<string, unknown>} */
-  const effective = {};
-  for (const row of effectiveRows(
+  const rows = effectiveRows(
     all_keys,
     model.metadata,
-    model.workspace_values
-  )) {
-    if (row.value !== null) {
-      effective[row.key] = row.value;
-    }
-  }
-  return html`<section
+    model.workspace_values,
+    model.execution_defaults,
+    model.catalog,
+    model.controller_runtime || null
+  );
+  const counts = layerSummary(
+    all_keys,
+    model.metadata,
+    model.workspace_values,
+    model.execution_defaults,
+    model.catalog,
+    model.controller_runtime || null
+  );
+  /** @type {Record<string, EffectiveRow>} */
+  const effective = Object.fromEntries(rows.map((row) => [row.key, row]));
+  /** @type {Record<string, unknown>} */
+  const effective_values = Object.fromEntries(
+    rows.filter((row) => row.value !== null).map((row) => [row.key, row.value])
+  );
+  const full_summary = rows
+    .filter((row) => row.full_value && row.display !== row.full_value)
+    .map((row) => row.full_value)
+    .join(' · ');
+  return html`<details
     class=${`detail-effective${model.expanded ? ' detail-effective--open' : ''}`}
     data-seam="effective-settings"
+    ?open=${model.expanded}
+    @toggle=${(/** @type {Event} */ event) =>
+      handlers.onToggle(
+        /** @type {HTMLDetailsElement} */ (event.currentTarget).open
+      )}
   >
-    <button
-      type="button"
+    <summary
       class="detail-effective__head"
       data-seam="effective-settings-toggle"
-      aria-expanded=${model.expanded ? 'true' : 'false'}
-      @click=${handlers.onToggle}
+      @click=${(/** @type {Event} */ event) => {
+        event.preventDefault();
+        const details = /** @type {HTMLDetailsElement} */ (
+          /** @type {HTMLElement} */ (event.currentTarget).parentElement
+        );
+        handlers.onToggle(!details.open);
+      }}
     >
       <span class="detail-effective__t">유효 실행 설정</span>
-      <span class="detail-effective__summary">${summaryLine(effective)}</span>
+      <span class="detail-effective__summary" title=${full_summary}
+        >${summaryLine(effective)}</span
+      >
       <span class="detail-effective__counts">
         <span class="detail-effective__count detail-effective__count--pin"
           >핀 ${counts.pin}</span
@@ -217,94 +254,113 @@ export function effectiveSettingsCardTemplate(model, handlers) {
         <span class="detail-effective__count detail-effective__count--global"
           >전역 ${counts.global}</span
         >
+        <span class="detail-effective__count detail-effective__count--base"
+          >기본 ${counts.base}</span
+        >
       </span>
       <span class="detail-effective__chev">▸</span>
-    </button>
-    <div class="detail-effective__body">
-      ${EFFECTIVE_GROUPS.map(
-        (group) => html`
-          <div class="detail-effective__subhead">${group.label}</div>
-          ${effectiveRows(
-            group.keys,
-            model.metadata,
-            model.workspace_values
-          ).map((row) =>
-            rowTemplate(row, {
-              expanded: model.expanded,
-              options: optionsForKey(row.key, effective, model.catalog),
-              onEdit: handlers.onEdit
-            })
+    </summary>
+    ${model.expanded
+      ? html`<div class="detail-effective__body">
+          ${EFFECTIVE_GROUPS.map(
+            (group) => html`
+              <div class="detail-effective__subhead">${group.label}</div>
+              ${rows
+                .filter((row) => group.keys.includes(row.key))
+                .map((row) => {
+                  const option_view = buildOptionView({
+                    key: row.key,
+                    choices: optionsForKey(
+                      row.key,
+                      effective_values,
+                      model.catalog
+                    ),
+                    layer: 'pin',
+                    pin: model.metadata,
+                    global: model.workspace_values,
+                    execution_defaults: model.execution_defaults,
+                    runner_catalog: model.catalog,
+                    controller_runtime: model.controller_runtime || null
+                  });
+                  return rowTemplate(row, {
+                    expanded: model.expanded,
+                    options: option_view.options,
+                    default_label: option_view.unset_label,
+                    default_full_value: option_view.full_value,
+                    onEdit: handlers.onEdit
+                  });
+                })}
+            `
           )}
-        `
-      )}
-      <div class="detail-effective__foot">
-        <select
-          data-impl-preset-select
-          aria-label="구현 프리셋"
-          .value=${live(model.preset_id)}
-          ?disabled=${model.preset_busy}
-          @change=${(/** @type {Event} */ ev) =>
-            handlers.onPresetSelect(
-              String(/** @type {HTMLSelectElement} */ (ev.target).value)
-            )}
-        >
-          <option value="" ?selected=${model.preset_id === ''}>
-            구현 프리셋…
-          </option>
-          ${model.presets.map(
-            (preset) =>
-              html`<option
-                value=${preset.id}
-                ?selected=${preset.id === model.preset_id}
-              >
-                ${preset.name}${preset.compatible === false ? ' (비호환)' : ''}
-              </option>`
-          )}
-        </select>
-        <button
-          type="button"
-          data-apply-impl-preset
-          ?disabled=${model.preset_id.length === 0 || model.preset_busy}
-          @click=${handlers.onPresetApply}
-        >
-          이 이슈에 적용
-        </button>
-        <span class="detail-effective__hint">구현 키 5개를 핀으로 기록</span>
-      </div>
-    </div>
-  </section>`;
+          <div class="detail-effective__foot">
+            <select
+              data-impl-preset-select
+              aria-label="구현 프리셋"
+              .value=${live(model.preset_id)}
+              ?disabled=${model.preset_busy}
+              @change=${(/** @type {Event} */ ev) =>
+                handlers.onPresetSelect(
+                  String(/** @type {HTMLSelectElement} */ (ev.target).value)
+                )}
+            >
+              <option value="" ?selected=${model.preset_id === ''}>
+                구현 프리셋…
+              </option>
+              ${model.presets.map(
+                (preset) =>
+                  html`<option
+                    value=${preset.id}
+                    ?selected=${preset.id === model.preset_id}
+                  >
+                    ${preset.name}${preset.compatible === false
+                      ? ' (비호환)'
+                      : ''}
+                  </option>`
+              )}
+            </select>
+            <button
+              type="button"
+              data-apply-impl-preset
+              ?disabled=${model.preset_id.length === 0 || model.preset_busy}
+              @click=${handlers.onPresetApply}
+            >
+              이 이슈에 적용
+            </button>
+            <span class="detail-effective__hint"
+              >구현 키 5개를 핀으로 기록</span
+            >
+          </div>
+        </div>`
+      : ''}
+  </details>`;
 }
 
 /**
  * The card's one-line synthesis: the values a reader checks first.
  *
- * @param {Record<string, unknown>} effective
+ * @param {Record<string, EffectiveRow>} effective
  * @returns {string}
  */
 export function summaryLine(effective) {
-  // Only pin/kv-confirmed values appear: naming a concrete fallback here would
-  // duplicate a harness default into this repo (spec 비-목표). An unresolved
-  // key reads `기본` — the value itself lives in the dotfiles contract.
   /** @type {string[]} */
   const parts = [];
-  if (typeof effective.workflow_mode === 'string') {
-    parts.push(String(effective.workflow_mode));
+  if (effective.workflow_mode) {
+    parts.push(effective.workflow_mode.display);
   }
-  if (effective.impl_dispatch === 'main') {
+  if (effective.impl_dispatch?.value === 'main') {
     parts.push('메인');
-  } else if (effective.impl_dispatch === 'delegated') {
-    const target =
-      typeof effective.impl_runtime === 'string'
-        ? ` ${effective.impl_runtime}`
-        : '';
+  } else if (effective.impl_dispatch?.value === 'delegated') {
+    const target = effective.impl_runtime
+      ? ` ${effective.impl_runtime.display}`
+      : '';
     parts.push(`위임${target}`);
-  } else if (typeof effective.impl_runtime === 'string') {
-    parts.push(`위임 ${effective.impl_runtime}`);
   }
-  if (typeof effective.impl_model === 'string') {
-    parts.push(String(effective.impl_model));
+  for (const key of ['impl_model', 'impl_effort', 'impl_speed']) {
+    if (effective[key]?.resolution !== 'not_applicable') {
+      parts.push(effective[key]?.display || '기본값 확인 불가');
+    }
   }
-  return parts.length > 0 ? parts.join(' · ') : '기본';
+  return parts.join(' · ');
 }
 
 /**

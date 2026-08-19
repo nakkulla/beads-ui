@@ -59,6 +59,7 @@ import {
   normalizeDelegationSessions,
   readAttemptDelegationStreams
 } from '../worker/delegation-monitor.js';
+import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import {
   evaluateMergeGate,
   observedReviewReceiptState
@@ -1473,6 +1474,19 @@ export function decorateQueue(workspace_key, raw_queue) {
   } catch {
     runner_catalog = null;
   }
+  let execution_defaults;
+  try {
+    execution_defaults = projectExecutionDefaults(runner_catalog);
+  } catch {
+    execution_defaults = {
+      schema_version: null,
+      supported: false,
+      source_commit: null,
+      digest: null,
+      session: null,
+      orchestration: null
+    };
+  }
   const bead_blocked_by = beadBlockedByFor(workspace_key, queue);
   return {
     ...queue,
@@ -1482,6 +1496,7 @@ export function decorateQueue(workspace_key, raw_queue) {
     // meaning for either.
     manual_merge_continuation: MANUAL_MERGE_CONTINUATION,
     runner_catalog,
+    execution_defaults,
     // The workspace's declared base (UI-j6wa §3), non-persisted like every
     // other decoration here. Display only — nothing dispatches on it.
     declared_base,
