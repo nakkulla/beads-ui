@@ -91,7 +91,10 @@ function seedCandidates() {
       priority: 1,
       updated_at: now,
       metadata: { spec_id: 'SPEC-2' },
-      dependencies: ['DEP-9']
+      // 실제 서버 push의 embedded edge 형태: blocker id는 `depends_on_id`.
+      dependencies: [
+        { issue_id: 'BL-1', depends_on_id: 'DEP-9', type: 'blocks' }
+      ]
     }
   ]);
   return stores;
@@ -378,6 +381,37 @@ describe('views/worker', () => {
       cand.querySelector('.worker-card[data-bead-id="RD-1"]')
     );
     expect(rd1.getAttribute('draggable')).toBe('true');
+  });
+
+  test('blocked reason prefers server blocked_info blockers over dependency edges', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'BL-2',
+        title: 'blocked via blocked_info',
+        status: 'open',
+        metadata: { spec_id: 'SPEC-3' },
+        blocked_info: { external: false, reason: null, blockers: ['DEP-7'] },
+        // blocked_info가 있으면 edge fallback은 읽지 않는다 (닫힌 blocker 오탐 방지).
+        dependencies: [
+          { issue_id: 'BL-2', depends_on_id: 'DEP-OLD', type: 'blocks' }
+        ]
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    presetCandidateFilter({ show_blocked: true });
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const reason = mount.querySelector(
+      '.worker-card[data-bead-id="BL-2"] .worker-card__reason'
+    )?.textContent;
+    expect(reason).toContain('🔒 DEP-7');
+    expect(reason).not.toContain('DEP-OLD');
   });
 
   test('excludes worker-ineligible issues from the candidate lane', () => {

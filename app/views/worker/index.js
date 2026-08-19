@@ -465,13 +465,41 @@ function parentIdOf(issue) {
 }
 
 /**
+ * Lock chip (🔒 + blocker ids) for a blocked candidate. The server-synthesized
+ * `blocked_info.blockers` (list-adapters `attachBlockedInfo`) is the primary
+ * source — it names exactly the unresolved `blocks` predecessors. When the
+ * whole `blocked_info` object is absent (older server), fall back to the
+ * embedded dependency edges, whose blocker id lives in `depends_on_id`
+ * (`bd list` edge shape), keeping only `blocks`-type edges so related /
+ * discovered-from links never render as a lock.
+ *
  * @param {any} issue
- * @returns {string} 🔒 + dependency target for a blocked candidate.
  */
 function blockedReason(issue) {
+  const info = issue?.blocked_info;
+  if (info && typeof info === 'object') {
+    const blockers = Array.isArray(info.blockers)
+      ? info.blockers.filter(
+          (/** @type {unknown} */ id) => typeof id === 'string' && id.length > 0
+        )
+      : [];
+    return blockers.length > 0 ? `🔒 ${blockers.join(', ')}` : '🔒 blocked';
+  }
   const deps = Array.isArray(issue?.dependencies) ? issue.dependencies : [];
   const ids = deps
-    .map((/** @type {any} */ d) => (typeof d === 'string' ? d : d && d.id))
+    .map((/** @type {any} */ d) => {
+      if (typeof d === 'string') {
+        return d;
+      }
+      if (!d || typeof d !== 'object') {
+        return '';
+      }
+      const kind = d.type ?? d.dependency_type;
+      if (kind !== undefined && kind !== 'blocks') {
+        return '';
+      }
+      return d.depends_on_id || d.id || '';
+    })
     .filter(Boolean);
   return ids.length > 0 ? `🔒 ${ids.join(', ')}` : '🔒 blocked';
 }
