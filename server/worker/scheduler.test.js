@@ -4524,6 +4524,36 @@ describe('scheduler conflict resolution (worker-phase2 §6)', () => {
     expect(env.runner.spawnOrder).toEqual(['B1']);
   });
 
+  test('counts a running saga root against the automatic resolver slot cap', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedDoneAttempt(env.store);
+    env.store.moveToPrWait(WS, {
+      bead_id: 'B1',
+      attempt_id: 'd1',
+      patch: { status: 'done' }
+    });
+    env.store.enqueueMerge(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      entries: [{ bead_id: 'B1' }]
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'root-running',
+        bead_id: 'ROOT1',
+        status: 'running'
+      }
+    });
+
+    const result = await env.scheduler.resolveConflict(WS, 'B1', {
+      queue_bead_id: 'ROOT1',
+      wait_ms: 100
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worker_sessions_busy' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
   test('bypasses the slot fence for manual queue authority', async () => {
     const env = setup({ config: {}, slots: 1 });
     seedDoneAttempt(env.store);

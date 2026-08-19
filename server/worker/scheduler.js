@@ -5962,17 +5962,21 @@ export function createScheduler(deps) {
    * Manual authority bypasses this predicate at the caller; same-Bead claims
    * remain owned by the dispatcher's `bead_running` guard.
    *
+   * The queue ROOT is never exempted. In a nested saga the root and the
+   * current subject are different beads, so excusing the root hides a slot it
+   * genuinely spends and overbooks the cap the launcher enforces. Only the
+   * subject is excused, and that cannot overbook: a subject already holding a
+   * slot is refused by `bead_running` before any session starts, so the excused
+   * slot is never actually handed out.
+   *
    * @param {string} workspace
-   * @param {string} queue_bead_id
+   * @param {string} queue_bead_id - The saga root, counted like any other bead.
    * @param {string} subject_bead_id
    */
   function queueConflictBlocked(workspace, queue_bead_id, subject_bead_id) {
-    const allowed = new Set([queue_bead_id, subject_bead_id]);
     const q = deps.store.snapshot(workspace);
     const occupied = occupiedBeadIds(q);
-    for (const bead_id of allowed) {
-      occupied.delete(bead_id);
-    }
+    occupied.delete(subject_bead_id);
     return slotsOf(q) - occupied.size <= 0;
   }
 
