@@ -349,17 +349,24 @@ model.
 
 Streams a per-attempt raw runner event stream to the transcript viewer.
 
-- `subscribe-session-log` payload: `{ id: client_id, attempt_id }` — replies
-  `ok`, then pushes a `session-log-snapshot`; a live attempt then pushes
-  `session-log-append` per new event. A Done/Failed attempt is snapshot-only.
+- `subscribe-session-log` payload: `{ id: client_id, attempt_id, launch_id? }` —
+  `launch_id`가 없으면 기존 main attempt log를 구독한다. `launch_id`가 있으면
+  connection workspace의 exact attempt와 그 attempt의 normalized delegation
+  summary를 먼저 확인한 뒤 해당 stream만 구독한다. replies `ok`, then pushes a
+  `session-log-snapshot`; a live attempt then pushes `session-log-append` per
+  new event. A Done/Failed attempt is snapshot-only.
 - `unsubscribe-session-log` payload: `{ id: client_id }`.
 - `session-log-snapshot` (push) payload:
-  `{ id, attempt_id, lines:[…], last_event_at }` — the persisted raw jsonl
-  events plus the log file's mtime in epoch ms (`null` when the file cannot be
-  stat'd). The raw events carry no timestamp, so this is where the drawer's
-  "얼마 전에 움직였나" starts; live appends are stamped client-side on receipt.
-- `session-log-append` (push) payload: `{ id, attempt_id, event }` — one raw
-  event.
+  `{ id, attempt_id, launch_id?, lines:[…], last_event_at }` — the persisted raw
+  jsonl events plus the log file's mtime in epoch ms (`null` when the file
+  cannot be stat'd). The raw events carry no timestamp, so this is where the
+  drawer's "얼마 전에 움직였나" starts; live appends are stamped client-side on
+  receipt.
+- `session-log-append` (push) payload: `{ id, attempt_id, launch_id?, event }` —
+  one raw event. Delegation 구독에서는 두 push payload 모두 요청한 `launch_id`를
+  echo한다. 다른 workspace의 attempt, unknown launch, unauthorized launch는
+  filesystem을 조회하거나 구분 가능한 오류를 내지 않고
+  `{ lines: [], last_event_at: null }` empty snapshot으로 fail-quiet 처리한다.
 
 ## Prompt inspection (UI-rxp3 §4/§5)
 

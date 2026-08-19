@@ -13,7 +13,11 @@ import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
 import { activeLaneLineages, createScheduler } from './scheduler.js';
-import { guardHookDir, usageReceiptInboxDir } from './state-paths.js';
+import {
+  delegationMonitorDir,
+  guardHookDir,
+  usageReceiptInboxDir
+} from './state-paths.js';
 import { createUsageStore } from './usage-store.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -232,6 +236,65 @@ function writeUsageReceipt(attempt_id, receipt_id = 'late-receipt') {
   );
   fs.chmodSync(file, 0o600);
   return file;
+}
+
+/**
+ * Publish validated delegation monitor events for one launch.
+ *
+ * @param {string} attempt_id
+ * @param {Record<string, unknown>[]} events
+ * @returns {string}
+ */
+function writeDelegationStream(attempt_id, events) {
+  const dir = delegationMonitorDir(WS, attempt_id);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dir, 0o700);
+  const file = path.join(dir, 'launch-1.jsonl');
+  const lines = events.map((entry) =>
+    JSON.stringify({
+      schema: 'codex-delegation-monitor-v1',
+      attempt_id,
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      thread_id: 'thread-1',
+      ...entry
+    })
+  );
+  fs.writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+  return file;
+}
+
+/**
+ * @param {Partial<any>} [overrides]
+ * @returns {any}
+ */
+function fakeDelegationMonitor(overrides = {}) {
+  return {
+    ensureDelegationMonitorDir: vi.fn(() => ({
+      ok: true,
+      dir: '/private/delegation-monitor'
+    })),
+    readAttemptDelegationStreams: vi.fn(() => ({
+      sessions: [],
+      streams: [],
+      warnings: []
+    })),
+    normalizeDelegationSessions: vi.fn((raw) =>
+      Array.isArray(raw) ? raw : []
+    ),
+    finalizeDelegationSessions: vi.fn((raw, outer_terminal) =>
+      (Array.isArray(raw) ? raw : []).map((session) =>
+        outer_terminal && session.status === 'running'
+          ? { ...session, status: 'interrupted' }
+          : session
+      )
+    ),
+    removeEmptyDelegationMonitorDir: vi.fn(),
+    ...overrides
+  };
 }
 
 /**
@@ -503,7 +566,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -591,6 +654,7 @@ function setup(opts) {
     sessionLog,
     usage,
     usageReceipts: opts.usageReceipts,
+    delegationMonitor: opts.delegationMonitor,
     admission: opts.admission,
     resolveBase: opts.resolveBase,
     notify: opts.notify,
@@ -10476,13 +10540,29 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
 
     expect(env.runner.spawnOrder).toEqual(['S1']);
     expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('running');
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      BDUI_ATTEMPT_ID: 'S1-1000-1',
+      BDUI_CODEX_DELEGATION_MONITOR_DIR: delegationMonitorDir(WS, 'S1-1000-1')
+    });
     expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
-      'BDUI_ATTEMPT_ID'
+      'BDUI_CODEX_USAGE_RECEIPT_DIR'
     );
     env.runner.finish('S1', { success: true });
     await flush();
     await flush();
     expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('done');
+  });
+
+  test('creates and delivers the delegation monitor directory', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('S1').env).toMatchObject({
+      BDUI_ATTEMPT_ID: 'S1-1000-1',
+      BDUI_CODEX_DELEGATION_MONITOR_DIR: delegationMonitorDir(WS, 'S1-1000-1')
+    });
   });
 
   test('fans out a receipt-only leg after the bounded live poll', async () => {
@@ -12591,5 +12671,347 @@ describe('스케줄러 blocked 직렬 head 레인 대기 (UI-04vo seam D)', () =
     await env.scheduler.tick(WS);
 
     expect(env.runner.spawnOrder).toEqual(['A']);
+  });
+});
+
+describe('scheduler delegation monitor wiring', () => {
+  test('continues launch without the monitor env when directory setup fails', async () => {
+    const delegationMonitor = fakeDelegationMonitor({
+      ensureDelegationMonitorDir: vi.fn(() => ({
+        ok: false,
+        reason: 'directory_mode'
+      }))
+    });
+    const env = setup({
+      config: { S1: {} },
+      slots: 1,
+      delegationMonitor
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual(['S1']);
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'BDUI_CODEX_DELEGATION_MONITOR_DIR'
+    );
+  });
+
+  test('publishes running delegation events and fans out summary changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const notifyQueueChanged = vi.fn();
+      const publish = vi.fn();
+      const delegationMonitor = fakeDelegationMonitor();
+      const session = {
+        launch_id: 'launch-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        session_id: 'thread-1',
+        turn_id: 'turn-1',
+        status: 'running',
+        started_at: 1_000,
+        completed_at: null,
+        last_event_at: 1_000
+      };
+      delegationMonitor.readAttemptDelegationStreams.mockReturnValueOnce({
+        sessions: [session],
+        streams: [
+          {
+            launch_id: 'launch-1',
+            offset: 64,
+            events: [{ offset: 0, event: { type: 'session.started' } }]
+          }
+        ],
+        warnings: []
+      });
+      const env = setup({
+        config: { S1: {} },
+        slots: 1,
+        delegationMonitor,
+        notifyQueueChanged,
+        sessionLog: { attach: vi.fn(), publish }
+      });
+      seedQueue(env.store, ['S1']);
+      await env.scheduler.tick(WS);
+      notifyQueueChanged.mockClear();
+      publish.mockClear();
+      delegationMonitor.readAttemptDelegationStreams.mockReturnValue({
+        sessions: [{ ...session, last_event_at: 2_000 }],
+        streams: [
+          {
+            launch_id: 'launch-1',
+            offset: 128,
+            events: [{ offset: 64, event: { type: 'turn.started' } }]
+          }
+        ],
+        warnings: []
+      });
+
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(publish).toHaveBeenCalledWith(
+        WS,
+        'S1-1000-1',
+        { type: 'turn.started' },
+        'launch-1',
+        64
+      );
+      expect(notifyQueueChanged).toHaveBeenCalledWith(WS);
+      expect(
+        delegationMonitor.readAttemptDelegationStreams
+      ).toHaveBeenLastCalledWith(WS, 'S1-1000-1', {
+        known_sessions: [session],
+        from_offsets: { 'launch-1': 64 }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('reattaches after restart without publishing durable events twice', async () => {
+    const publish = vi.fn();
+    const delegationMonitor = fakeDelegationMonitor();
+    /** @type {import('./queue-store.js').DelegationSession} */
+    const durable = {
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      session_id: 'thread-1',
+      turn_id: 'turn-1',
+      status: 'running',
+      started_at: 1_000,
+      completed_at: null,
+      last_event_at: 2_000
+    };
+    delegationMonitor.readAttemptDelegationStreams.mockReturnValue({
+      sessions: [{ ...durable, last_event_at: 3_000 }],
+      streams: [
+        {
+          launch_id: 'launch-1',
+          offset: 256,
+          events: [
+            { offset: 0, event: { type: 'x' } },
+            { offset: 128, event: { type: 'y' } }
+          ]
+        }
+      ],
+      warnings: []
+    });
+    const env = setup({
+      config: { S1: {} },
+      delegationMonitor,
+      probePid: () => ({ alive: true, started_at: 1_000 }),
+      sessionLog: { attach: vi.fn(), publish }
+    });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'restart-attempt',
+        bead_id: 'S1',
+        status: 'running',
+        pid: 42,
+        started_at: 1_000,
+        delegation_sessions: [durable]
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(
+      delegationMonitor.readAttemptDelegationStreams
+    ).toHaveBeenLastCalledWith(WS, 'restart-attempt', {
+      known_sessions: [durable],
+      from_offsets: {}
+    });
+  });
+
+  test('publishes only bytes past the adopted boundary after a restart', async () => {
+    vi.useFakeTimers();
+    try {
+      const publish = vi.fn();
+      const delegationMonitor = fakeDelegationMonitor();
+      /** @type {import('./queue-store.js').DelegationSession} */
+      const durable = {
+        launch_id: 'launch-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        session_id: 'thread-1',
+        turn_id: 'turn-1',
+        status: 'running',
+        started_at: 1_000,
+        completed_at: null,
+        last_event_at: 2_000
+      };
+      delegationMonitor.readAttemptDelegationStreams
+        .mockReturnValueOnce({
+          sessions: [durable],
+          streams: [
+            {
+              launch_id: 'launch-1',
+              offset: 256,
+              events: [{ offset: 128, event: { type: 'x' } }]
+            }
+          ],
+          warnings: []
+        })
+        .mockReturnValue({
+          sessions: [{ ...durable, last_event_at: 4_000 }],
+          streams: [
+            {
+              launch_id: 'launch-1',
+              offset: 384,
+              events: [{ offset: 256, event: { type: 'y' } }]
+            }
+          ],
+          warnings: []
+        });
+      const env = setup({
+        config: { S1: {} },
+        delegationMonitor,
+        probePid: () => ({ alive: true, started_at: 1_000 }),
+        sessionLog: { attach: vi.fn(), publish }
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'restart-attempt',
+          bead_id: 'S1',
+          status: 'running',
+          pid: 42,
+          started_at: 1_000,
+          delegation_sessions: [durable]
+        }
+      });
+      await env.scheduler.reconcile(WS);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish).toHaveBeenCalledWith(
+        WS,
+        'restart-attempt',
+        { type: 'y' },
+        'launch-1',
+        256
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('persists an unterminated delegation as interrupted on completion', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    writeDelegationStream('S1-1000-1', [
+      {
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      }
+    ]);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].delegation_sessions
+    ).toMatchObject([{ launch_id: 'launch-1', status: 'interrupted' }]);
+  });
+
+  test('persists a completed delegation during the outer terminal mutation', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    writeDelegationStream('S1-1000-1', [
+      {
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      },
+      {
+        turn_id: 'turn-1',
+        recorded_at: '2026-08-18T04:27:01.000Z',
+        event: { type: 'turn.started' }
+      },
+      {
+        turn_id: 'turn-1',
+        recorded_at: '2026-08-18T04:27:02.000Z',
+        event: { type: 'turn.completed', status: 'completed' }
+      }
+    ]);
+
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].delegation_sessions
+    ).toMatchObject([
+      {
+        launch_id: 'launch-1',
+        status: 'done',
+        completed_at: '2026-08-18T04:27:02.000Z'
+      }
+    ]);
+  });
+
+  test('recovers terminal delegation summaries after restart', async () => {
+    const env = setup({ config: { S1: {} } });
+    env.store.appendAttempt(WS, {
+      expected_revision: env.store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'paused-attempt',
+        bead_id: 'S1',
+        status: 'paused'
+      }
+    });
+    writeDelegationStream('paused-attempt', [
+      {
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      }
+    ]);
+
+    await env.scheduler.reconcile(WS);
+    const recovered_revision = env.store.snapshot(WS).revision;
+    await env.scheduler.reconcile(WS);
+
+    expect(
+      env.store.snapshot(WS).attempts['paused-attempt'].delegation_sessions
+    ).toMatchObject([{ launch_id: 'launch-1', status: 'interrupted' }]);
+    expect(env.store.snapshot(WS).revision).toBe(recovered_revision);
+  });
+
+  test('keeps delegation summary when a delayed receipt merges later', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    writeDelegationStream('S1-1000-1', [
+      {
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      }
+    ]);
+    env.runner.finish('S1', { success: true });
+    await flush();
+    await flush();
+    writeUsageReceipt('S1-1000-1', 'launch-1');
+
+    await env.scheduler.reconcile(WS);
+
+    const attempt = env.store.snapshot(WS).attempts['S1-1000-1'];
+    expect(attempt.delegation_sessions).toMatchObject([
+      { launch_id: 'launch-1', status: 'interrupted' }
+    ]);
+    expect(attempt.usage_legs).toHaveLength(1);
   });
 });

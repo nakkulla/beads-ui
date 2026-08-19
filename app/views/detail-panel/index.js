@@ -433,7 +433,10 @@ export function createDetailPanel(mount_element, options) {
             ? a.exec_values
             : null,
         usage: a.usage || null,
-        usage_legs: Array.isArray(a.usage_legs) ? a.usage_legs : []
+        usage_legs: Array.isArray(a.usage_legs) ? a.usage_legs : [],
+        delegation_sessions: Array.isArray(a.delegation_sessions)
+          ? a.delegation_sessions
+          : []
       }));
   }
 
@@ -490,6 +493,40 @@ export function createDetailPanel(mount_element, options) {
             session_id: a.session_id || undefined
           }
         : {}
+    });
+  }
+
+  /**
+   * @param {string} attempt_id
+   * @param {string} launch_id
+   */
+  function openDelegationTranscript(attempt_id, launch_id) {
+    const q = queueStore ? queueStore.get() : null;
+    const attempt = q && q.attempts ? q.attempts[attempt_id] : null;
+    /** @type {Array<Record<string, any>>} */
+    const sessions =
+      attempt && Array.isArray(attempt.delegation_sessions)
+        ? attempt.delegation_sessions
+        : [];
+    const session = sessions.find(
+      (candidate) =>
+        candidate &&
+        typeof candidate === 'object' &&
+        candidate.launch_id === launch_id
+    );
+    if (!session) {
+      return;
+    }
+    transcript_drawer.open({
+      attempt_id,
+      launch_id,
+      meta: {
+        runner: 'codex',
+        role: session.role,
+        model: session.model,
+        session_id: session.session_id,
+        status: session.status
+      }
     });
   }
 
@@ -558,6 +595,7 @@ export function createDetailPanel(mount_element, options) {
 
   const session_handlers = {
     onOpen: openTranscript,
+    onOpenDelegation: openDelegationTranscript,
     onResume: resumeAttempt,
     onToggleUsage: toggleUsageDetail
   };

@@ -107,6 +107,9 @@
  * renders nothing.
  * @property {UsageLeg[]} usage_legs - Completed nested provider usage receipts.
  * Legacy attempts normalize this optional field to an empty list.
+ * @property {DelegationSession[]} delegation_sessions - Validated delegated
+ * Codex session summaries. Legacy attempts normalize this optional field to an
+ * empty list.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -250,6 +253,19 @@
  * @property {string} model
  * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }} usage
  * @property {string} completed_at
+ */
+/**
+ * @typedef {Object} DelegationSession
+ * @property {string} launch_id
+ * @property {'codex'} provider
+ * @property {'implementation'|'review-consult'} role
+ * @property {string} model
+ * @property {string} session_id
+ * @property {string|null} turn_id
+ * @property {'running'|'done'|'failed'|'interrupted'} status
+ * @property {number} started_at
+ * @property {string|null} completed_at
+ * @property {number} last_event_at
  */
 /**
  * @typedef {Object} StaleWorkSummary
@@ -595,6 +611,11 @@ import nodeCrypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+import {
+  finalizeDelegationSessions,
+  normalizeDelegationSessions,
+  readAttemptDelegationStreams
+} from './delegation-monitor.js';
 import { ORCHESTRATION_KEYS, execSettingEnums } from './exec-enums.js';
 import { queueFilePath } from './state-paths.js';
 import {
@@ -1893,6 +1914,9 @@ export function makeAttempt(fields) {
       ? /** @type {Attempt['usage']} */ (fields.usage)
       : null,
     usage_legs: normalizeUsageLegs(fields.usage_legs),
+    delegation_sessions: normalizeDelegationSessions(
+      fields.delegation_sessions
+    ),
     merge_policy: fields.merge_policy ?? null,
     drift_policy: fields.drift_policy ?? null,
     demoted_reason: fields.demoted_reason ?? null,
@@ -3181,23 +3205,50 @@ export function createQueueStore(options = {}) {
     if (!current) {
       return { patch, files: [] };
     }
-    let scanned;
+    /** @type {{ legs: UsageLeg[], files: string[], warnings: string[] }} */
+    let scanned_receipts = { legs: [], files: [], warnings: [] };
+    let receipts_read = false;
     try {
-      scanned = readAttemptUsageReceipts(workspace, attempt_id, {
+      scanned_receipts = readAttemptUsageReceipts(workspace, attempt_id, {
         known_legs: current.usage_legs
       });
+      receipts_read = true;
     } catch {
-      return { patch, files: [] };
+      // Terminal settlement still persists without optional receipt evidence.
+    }
+    /** @type {DelegationSession[]} */
+    let scanned_sessions = [];
+    try {
+      scanned_sessions = readAttemptDelegationStreams(workspace, attempt_id, {
+        known_sessions: current.delegation_sessions
+      }).sessions;
+    } catch {
+      // Terminal settlement still persists without optional monitor evidence.
     }
     return {
       patch: {
         ...patch,
-        usage_legs: normalizeUsageLegs([
-          ...(Array.isArray(current.usage_legs) ? current.usage_legs : []),
-          ...scanned.legs
-        ])
+        ...(receipts_read
+          ? {
+              usage_legs: normalizeUsageLegs([
+                ...(Array.isArray(current.usage_legs)
+                  ? current.usage_legs
+                  : []),
+                ...scanned_receipts.legs
+              ])
+            }
+          : {}),
+        delegation_sessions: finalizeDelegationSessions(
+          [
+            ...(Array.isArray(current.delegation_sessions)
+              ? current.delegation_sessions
+              : []),
+            ...scanned_sessions
+          ],
+          true
+        )
       },
-      files: scanned.files
+      files: scanned_receipts.files
     };
   }
 

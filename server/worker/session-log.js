@@ -15,6 +15,7 @@
  */
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
+import { readAttemptDelegationStreams } from './delegation-monitor.js';
 import { emitQueueChanged } from './queue-events.js';
 import { sessionLogPath } from './state-paths.js';
 
@@ -31,7 +32,7 @@ export const LAST_EVENT_FANOUT_MS = 3_000;
  * transcript subscription (Phase 11) can push new lines to a live attempt's
  * drawer without re-reading the whole file.
  *
- * @typedef {{ workspace: string, attempt_id: string, event: unknown }} SessionLogAppend
+ * @typedef {{ workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number }} SessionLogAppend
  */
 
 /**
@@ -56,13 +57,14 @@ export function stderrPathOf(log_path) {
  * @returns {{
  *   pathFor: (workspace: string, attempt_id: string) => string,
  *   stderrPathFor: (workspace: string, attempt_id: string) => string,
- *   publish: (workspace: string, attempt_id: string, event: unknown) => void,
+ *   publish: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void,
  *   attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void,
  *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number }) => unknown[],
+ *   readDelegation: (workspace: string, attempt_id: string, launch_id: string, known_session?: unknown) => { lines: unknown[], last_event_at: number|null, offset: number },
  *   lastEventAtOf: (workspace: string, attempt_id: string) => number|null,
  *   lineBoundaryOf: (workspace: string, attempt_id: string) => number|null,
- *   lastEventAt: (workspace: string, attempt_id: string) => number|null,
- *   subscribe: (fn: (a: SessionLogAppend) => void) => (() => void)
+ *   lastEventAt: (workspace: string, attempt_id: string, launch_id?: string) => number|null,
+ *   subscribe: (fn: (a: SessionLogAppend) => void, launch_id?: string) => (() => void)
  * }}
  */
 export function createSessionLog(options = {}) {
@@ -116,10 +118,11 @@ export function createSessionLog(options = {}) {
   /**
    * @param {string} workspace
    * @param {string} attempt_id
+   * @param {string} [launch_id]
    * @returns {string}
    */
-  function keyOf(workspace, attempt_id) {
-    return `${workspace}\u0000${attempt_id}`;
+  function keyOf(workspace, attempt_id, launch_id) {
+    return `${workspace}\u0000${attempt_id}\u0000${launch_id || ''}`;
   }
 
   return {
@@ -146,11 +149,26 @@ export function createSessionLog(options = {}) {
      * @param {string} workspace
      * @param {string} attempt_id
      * @param {unknown} event
+     * @param {string} [launch_id]
+     * @param {number} [offset] - Byte offset of this line in its delegation
+     * stream, so a subscriber can drop what its snapshot already contained.
      */
-    publish(workspace, attempt_id, event) {
-      last_event_at.set(keyOf(workspace, attempt_id), now());
+    publish(workspace, attempt_id, event, launch_id, offset) {
+      const delegation_id =
+        typeof launch_id === 'string' && launch_id.length > 0
+          ? launch_id
+          : undefined;
+      last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
       scheduleFanout(workspace);
-      emitter.emit('append', { workspace, attempt_id, event });
+      emitter.emit('append', {
+        workspace,
+        attempt_id,
+        event,
+        ...(delegation_id ? { launch_id: delegation_id } : {}),
+        ...(typeof offset === 'number' && Number.isFinite(offset)
+          ? { offset }
+          : {})
+      });
     },
 
     /**
@@ -228,8 +246,8 @@ export function createSessionLog(options = {}) {
      * @param {string} attempt_id
      * @returns {number|null}
      */
-    lastEventAt(workspace, attempt_id) {
-      const at = last_event_at.get(keyOf(workspace, attempt_id));
+    lastEventAt(workspace, attempt_id, launch_id) {
+      const at = last_event_at.get(keyOf(workspace, attempt_id, launch_id));
       return typeof at === 'number' ? at : null;
     },
 
@@ -271,15 +289,64 @@ export function createSessionLog(options = {}) {
     },
 
     /**
+     * Read one authorized delegation stream through the validated monitor
+     * reader. Callers must authorize the launch before invoking this method,
+     * and pass the identity they authorized as `known_session`: the reader
+     * rejects a stream whose on-disk identity disagrees with it, so a file
+     * swapped under an authorized launch id returns nothing rather than
+     * another session's transcript.
+     *
+     * `offset` is the boundary this snapshot was taken at; the caller uses it
+     * to drop live appends the snapshot already contains.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @param {string} launch_id
+     * @param {unknown} [known_session]
+     * @returns {{ lines: unknown[], last_event_at: number|null, offset: number }}
+     */
+    readDelegation(workspace, attempt_id, launch_id, known_session) {
+      const scanned = readAttemptDelegationStreams(workspace, attempt_id, {
+        known_sessions: known_session ? [known_session] : undefined
+      });
+      const stream = scanned.streams.find(
+        (candidate) => candidate.launch_id === launch_id
+      );
+      const session = scanned.sessions.find(
+        (candidate) => candidate.launch_id === launch_id
+      );
+      if (!stream || !session) {
+        return { lines: [], last_event_at: null, offset: 0 };
+      }
+      return {
+        lines: stream.events.map((entry) => entry.event),
+        last_event_at: session.last_event_at,
+        offset: stream.offset
+      };
+    },
+
+    /**
      * Subscribe to live append notifications (every attempt, every workspace —
      * callers filter by `attempt_id`). Returns an unsubscribe function.
      *
      * @param {(a: SessionLogAppend) => void} fn
+     * @param {string} [launch_id]
      * @returns {() => void}
      */
-    subscribe(fn) {
-      emitter.on('append', fn);
-      return () => emitter.off('append', fn);
+    subscribe(fn, launch_id) {
+      const delegation_id =
+        typeof launch_id === 'string' && launch_id.length > 0
+          ? launch_id
+          : null;
+      /** @param {SessionLogAppend} append */
+      const listener = (append) => {
+        const append_id = append.launch_id || null;
+        if (append_id === delegation_id) {
+          fn(append);
+        }
+      };
+      emitter.on('append', listener);
+      return () => emitter.off('append', listener);
     }
   };
 }

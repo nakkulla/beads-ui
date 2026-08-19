@@ -315,10 +315,10 @@ export function bootstrap(root_element) {
     // appends for a running attempt (spec §5.6).
     client.on('session-log-snapshot', (payload) => {
       const p = /** @type {any} */ (payload);
-      if (p && typeof p.attempt_id === 'string') {
+      if (p && typeof p.id === 'string') {
         try {
           session_log_store.set(
-            p.attempt_id,
+            p.id,
             Array.isArray(p.lines) ? p.lines : [],
             typeof p.last_event_at === 'number' ? p.last_event_at : null
           );
@@ -329,9 +329,9 @@ export function bootstrap(root_element) {
     });
     client.on('session-log-append', (payload) => {
       const p = /** @type {any} */ (payload);
-      if (p && typeof p.attempt_id === 'string') {
+      if (p && typeof p.id === 'string') {
         try {
-          session_log_store.append(p.attempt_id, p.event);
+          session_log_store.append(p.id, p.event);
         } catch {
           // ignore
         }

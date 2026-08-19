@@ -48,6 +48,7 @@ import nodeFs from 'node:fs';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
+import * as default_delegation_monitor from './delegation-monitor.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import * as default_guard_hook from './guard-hook.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
@@ -373,7 +374,7 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
@@ -388,6 +389,9 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {typeof import('./usage-receipts.js')} [usageReceipts]
  * Attempt-scoped receipt filesystem adapter. The default is the production
  * reader; tests may inject a deterministic in-memory seam.
+ * @property {typeof import('./delegation-monitor.js')} [delegationMonitor]
+ * Attempt-scoped delegated-session monitor adapter. The default is the
+ * production reader; tests may inject a deterministic in-memory seam.
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
@@ -608,6 +612,8 @@ export function createScheduler(deps) {
   const fs = deps.fs || nodeFs;
   const guardHook = deps.guardHook || default_guard_hook;
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
+  const delegation_monitor =
+    deps.delegationMonitor || default_delegation_monitor;
   /** @type {Map<string, number>} */
   const receipt_recovery_cursor = new Map();
   let attempt_seq = 0;
@@ -775,6 +781,15 @@ export function createScheduler(deps) {
   const usage_fanout_timers = new Map();
   /** @type {Map<string, ReturnType<typeof setInterval>>} */
   const receipt_poll_timers = new Map();
+  /** @type {Map<string, ReturnType<typeof setInterval>>} */
+  const delegation_poll_timers = new Map();
+  /**
+   * @type {Map<string, {
+   *   offsets: Record<string, number>,
+   *   sessions: Map<string, import('./queue-store.js').DelegationSession>
+   * }>}
+   */
+  const delegation_tail_states = new Map();
 
   /**
    * Merge a usage-only change into the workspace's pending fanout. The FIRST
@@ -877,6 +892,128 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Compare only the fields whose live change requires a queue snapshot.
+   * Identity is validated by the monitor reader before it reaches this point.
+   *
+   * @param {import('./queue-store.js').DelegationSession|undefined} prior
+   * @param {import('./queue-store.js').DelegationSession} current
+   */
+  function delegationSummaryChanged(prior, current) {
+    return (
+      !prior ||
+      prior.status !== current.status ||
+      prior.last_event_at !== current.last_event_at
+    );
+  }
+
+  /**
+   * @param {import('./queue-store.js').DelegationSession[]} sessions
+   */
+  function delegationSummaryIdentity(sessions) {
+    return JSON.stringify(
+      [...sessions].sort((left, right) =>
+        left.launch_id.localeCompare(right.launch_id)
+      )
+    );
+  }
+
+  /**
+   * Tail validated delegated-session streams for one running attempt.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   */
+  function startDelegationPolling(workspace, attempt_id) {
+    if (delegation_poll_timers.has(attempt_id)) {
+      return;
+    }
+    /** @type {import('./queue-store.js').DelegationSession[]} */
+    let durable = [];
+    try {
+      const current = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      durable = delegation_monitor.normalizeDelegationSessions(
+        current?.delegation_sessions
+      );
+    } catch {
+      return;
+    }
+    const state = {
+      offsets: /** @type {Record<string, number>} */ ({}),
+      sessions: new Map(durable.map((session) => [session.launch_id, session]))
+    };
+    delegation_tail_states.set(attempt_id, state);
+    /**
+     * @param {boolean} publish_events - False for the adopting first scan: a
+     * restart re-reads a stream this process never published, and the drawer
+     * takes that prefix from its own snapshot. Publishing it here would push
+     * the same lines a second time.
+     */
+    const poll = (publish_events) => {
+      try {
+        const current = deps.store.snapshot(workspace).attempts?.[attempt_id];
+        if (!current || current.status !== 'running') {
+          clearDelegationPolling(attempt_id);
+          return;
+        }
+        const scanned = delegation_monitor.readAttemptDelegationStreams(
+          workspace,
+          attempt_id,
+          {
+            known_sessions: [...state.sessions.values()],
+            from_offsets: { ...state.offsets }
+          }
+        );
+        for (const stream of scanned.streams) {
+          if (publish_events && typeof deps.sessionLog.publish === 'function') {
+            for (const entry of stream.events) {
+              deps.sessionLog.publish(
+                workspace,
+                attempt_id,
+                entry.event,
+                stream.launch_id,
+                entry.offset
+              );
+            }
+          }
+          state.offsets[stream.launch_id] = stream.offset;
+        }
+        let changed = false;
+        for (const session of scanned.sessions) {
+          const prior = state.sessions.get(session.launch_id);
+          changed = delegationSummaryChanged(prior, session) || changed;
+          state.sessions.set(session.launch_id, session);
+        }
+        if (changed) {
+          notifyChanged(workspace);
+        }
+      } catch {
+        log('delegation tail failed for %s: read_failed', attempt_id);
+      }
+    };
+    poll(false);
+    if (!delegation_tail_states.has(attempt_id)) {
+      return;
+    }
+    const timer = setInterval(() => poll(true), USAGE_FANOUT_THROTTLE_MS);
+    if (typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    delegation_poll_timers.set(attempt_id, timer);
+  }
+
+  /**
+   * @param {string} attempt_id
+   */
+  function clearDelegationPolling(attempt_id) {
+    const timer = delegation_poll_timers.get(attempt_id);
+    if (timer) {
+      clearInterval(timer);
+      delegation_poll_timers.delete(attempt_id);
+    }
+    delegation_tail_states.delete(attempt_id);
+  }
+
+  /**
    * @param {string} workspace
    */
   function gcUsageReceiptInboxes(workspace) {
@@ -903,9 +1040,6 @@ export function createScheduler(deps) {
    * @returns {boolean}
    */
   function recoverTerminalUsageReceipts(workspace, attempts) {
-    if (typeof usage_receipts.readAttemptUsageReceipts !== 'function') {
-      return false;
-    }
     const candidates = Object.entries(attempts || {})
       .filter(([, attempt]) => {
         const status = /** @type {any} */ (attempt)?.status;
@@ -923,22 +1057,50 @@ export function createScheduler(deps) {
     for (let offset = 0; offset < limit; offset += 1) {
       const [attempt_id, attempt] =
         candidates[(start + offset) % candidates.length];
+      let receipt_arrived = false;
+      /** @type {import('./queue-store.js').DelegationSession[]|null} */
+      let recovered_sessions = null;
       try {
         const scanned = usage_receipts.readAttemptUsageReceipts(
           workspace,
           attempt_id,
           { known_legs: /** @type {any} */ (attempt).usage_legs }
         );
-        if (scanned.files.length === 0) {
-          continue;
+        receipt_arrived = scanned.files.length > 0;
+      } catch (err) {
+        log('terminal receipt recovery failed for %s: %o', attempt_id, err);
+      }
+      try {
+        const durable = delegation_monitor.normalizeDelegationSessions(
+          /** @type {any} */ (attempt).delegation_sessions
+        );
+        const scanned = delegation_monitor.readAttemptDelegationStreams(
+          workspace,
+          attempt_id,
+          { known_sessions: durable }
+        );
+        const finalized = delegation_monitor.finalizeDelegationSessions(
+          [...scanned.sessions, ...durable],
+          true
+        );
+        if (
+          delegationSummaryIdentity(finalized) !==
+          delegationSummaryIdentity(durable)
+        ) {
+          recovered_sessions = finalized;
         }
+      } catch {
+        log(
+          'terminal delegation recovery failed for %s: read_failed',
+          attempt_id
+        );
+      }
+      if (receipt_arrived || recovered_sessions !== null) {
         const result = deps.store.updateAttempt(workspace, {
           attempt_id,
           patch: {}
         });
         changed = changed || !!result?.ok;
-      } catch (err) {
-        log('terminal receipt recovery failed for %s: %o', attempt_id, err);
       }
     }
     receipt_recovery_cursor.set(workspace, (start + limit) % candidates.length);
@@ -986,6 +1148,7 @@ export function createScheduler(deps) {
       clearUsageFanout(workspace);
     }
     clearUsageReceiptPolling(attempt_id);
+    clearDelegationPolling(attempt_id);
     return usage ? { usage } : {};
   }
 
@@ -3682,6 +3845,9 @@ export function createScheduler(deps) {
         if (!a) {
           continue;
         }
+        if (a.status === 'running') {
+          startDelegationPolling(workspace, attempt_id);
+        }
         // AHEAD of the legacy-retirement branch, not beside the other three:
         // retirement is a durable terminal write of its own, so a discard that
         // owns a legacy diagnosis attempt must fence that branch too.
@@ -4648,6 +4814,20 @@ export function createScheduler(deps) {
         attempt_id
       );
     }
+    const monitor_inbox = delegation_monitor.ensureDelegationMonitorDir(
+      workspace,
+      attempt_id
+    );
+    const monitor_dir =
+      monitor_inbox.ok && typeof monitor_inbox.dir === 'string'
+        ? monitor_inbox.dir
+        : null;
+    if (monitor_dir === null) {
+      log(
+        'delegation monitor unavailable for %s: monitor_setup_failed',
+        attempt_id
+      );
+    }
 
     /** @type {any} */
     const settings = {
@@ -4680,11 +4860,16 @@ export function createScheduler(deps) {
     // publishing the resolved/base-direct target IS their job, so no hook was
     // installed. Pointing session git at that absent hooksPath would also
     // disable every repository hook for the session.
-    if (receipt_dir !== null) {
+    if (receipt_dir !== null || monitor_dir !== null) {
       settings.env = {
         ...(settings.env || {}),
         BDUI_ATTEMPT_ID: attempt_id,
-        BDUI_CODEX_USAGE_RECEIPT_DIR: receipt_dir
+        ...(receipt_dir !== null
+          ? { BDUI_CODEX_USAGE_RECEIPT_DIR: receipt_dir }
+          : {}),
+        ...(monitor_dir !== null
+          ? { BDUI_CODEX_DELEGATION_MONITOR_DIR: monitor_dir }
+          : {})
       };
     }
     if (!settings.disposition && !settings.quickfix_lane) {
@@ -4848,6 +5033,7 @@ export function createScheduler(deps) {
     });
     running.set(attempt_id, { bead_id, repo, handle, prior: prior_wf });
     startUsageReceiptPolling(workspace, attempt_id);
+    startDelegationPolling(workspace, attempt_id);
     notifyChanged(workspace);
 
     // onSessionDone reads only repo + target_base off the snap, so a synthetic
@@ -4884,6 +5070,10 @@ export function createScheduler(deps) {
   async function finalizeLaunchRefusal(input, cause, dismissed) {
     removeGuardHook(input.workspace, input.attempt_id);
     usage_receipts.removeEmptyUsageReceiptInbox(
+      input.workspace,
+      input.attempt_id
+    );
+    delegation_monitor.removeEmptyDelegationMonitorDir(
       input.workspace,
       input.attempt_id
     );
@@ -6360,6 +6550,7 @@ export function createScheduler(deps) {
     }
     removeGuardHook(workspace, attempt_id);
     usage_receipts.removeEmptyUsageReceiptInbox(workspace, attempt_id);
+    delegation_monitor.removeEmptyDelegationMonitorDir(workspace, attempt_id);
     claimed.delete(bead_id);
     notifyLifecycle('attemptFailed', {
       bead_id,

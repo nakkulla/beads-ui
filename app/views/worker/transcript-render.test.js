@@ -232,3 +232,133 @@ describe('parseTranscript — thinking blocks (UI-dixx 변경 1)', () => {
     expect(lines.map((l) => l.kind)).toEqual(['thinking', 'assistant', 'tool']);
   });
 });
+
+describe('parseTranscript — codex delegation monitor', () => {
+  /**
+   * @param {Record<string, unknown>} event
+   */
+  function envelope(event) {
+    return {
+      schema: 'codex-delegation-monitor-v1',
+      attempt_id: 'att-1',
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      recorded_at: 1,
+      event
+    };
+  }
+
+  test('projects agent messages through the assistant classifier', () => {
+    const lines = parseTranscript([
+      envelope({
+        type: 'item.completed',
+        item: { id: 'i1', kind: 'agent_message', text: '구현 완료' }
+      })
+    ]);
+
+    expect(lines).toEqual([{ kind: 'assistant', text: '구현 완료' }]);
+  });
+
+  test('projects reasoning as thinking', () => {
+    const lines = parseTranscript([
+      envelope({
+        type: 'item.completed',
+        item: { id: 'i2', kind: 'reasoning', text: '검증 경계를 확인한다.' }
+      })
+    ]);
+
+    expect(lines).toEqual([
+      { kind: 'thinking', text: '검증 경계를 확인한다.' }
+    ]);
+  });
+
+  test('projects bounded activity lifecycle without private details', () => {
+    const lines = parseTranscript([
+      envelope({
+        type: 'item.started',
+        item: { id: 'i3', kind: 'activity', activity: 'command_execution' }
+      }),
+      envelope({
+        type: 'item.completed',
+        item: {
+          id: 'i3',
+          kind: 'activity',
+          activity: 'command_execution',
+          status: 'completed'
+        }
+      }),
+      envelope({
+        type: 'item.completed',
+        item: {
+          id: 'i4',
+          kind: 'activity',
+          activity: 'file_change',
+          status: 'failed'
+        }
+      })
+    ]);
+
+    expect(lines).toHaveLength(3);
+    expect(lines.map((line) => line.kind)).toEqual(['tool', 'tool', 'tool']);
+    expect(lines.map((line) => line.tool)).toEqual([
+      '명령 실행 · 시작',
+      '명령 실행 · 완료',
+      '파일 변경 · 실패'
+    ]);
+    expect(lines.every((line) => !line.command && !line.path)).toBe(true);
+    expect(lines.every((line) => line.input === undefined)).toBe(true);
+    expect(lines.every((line) => line.output === undefined)).toBe(true);
+  });
+
+  test('projects turn terminals using existing result and error lines', () => {
+    const lines = parseTranscript([
+      envelope({ type: 'turn.completed', status: 'completed' }),
+      envelope({
+        type: 'turn.failed',
+        status: 'interrupted',
+        error_code: 'turn_cancelled'
+      })
+    ]);
+
+    expect(lines).toEqual([
+      { kind: 'result', success: true, text: 'DONE' },
+      { kind: 'error', text: 'turn_cancelled' }
+    ]);
+  });
+
+  test('skips unknown and malformed monitor envelopes fail-quiet', () => {
+    const lines = parseTranscript([
+      envelope({ type: 'item.completed', item: { kind: 'agent_message' } }),
+      envelope({
+        type: 'item.started',
+        item: { id: 'i4', kind: 'activity', activity: 'secret_activity' }
+      }),
+      envelope({ type: 'future.event' }),
+      { schema: 'codex-delegation-monitor-v1' }
+    ]);
+
+    expect(lines).toEqual([]);
+  });
+
+  test('keeps existing Claude and Codex runner projections unchanged', () => {
+    const lines = parseTranscript([
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'Claude 본문' }] }
+      },
+      {
+        type: 'item.completed',
+        item: { type: 'agent_message', text: 'Codex 본문' }
+      }
+    ]);
+
+    expect(lines).toEqual([
+      { kind: 'assistant', text: 'Claude 본문' },
+      { kind: 'assistant', text: 'Codex 본문' }
+    ]);
+  });
+});

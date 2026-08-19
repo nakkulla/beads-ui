@@ -551,13 +551,16 @@ export function emitDisplayPolicySnapshot(ws, client_id, policy) {
  * @param {number|null} [last_event_at] - Log file mtime in epoch ms (UI-rkly
  * §2): the raw events carry no timestamp, so this is the drawer's only source
  * for "how long ago did this session last move". Null when unknown.
+ * @param {string} [launch_id] - Delegated session identity. Omitted for the
+ * main attempt log so legacy payload bytes remain unchanged.
  */
 export function emitSessionLogSnapshot(
   ws,
   client_id,
   attempt_id,
   lines,
-  last_event_at = null
+  last_event_at = null,
+  launch_id
 ) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
@@ -567,6 +570,9 @@ export function emitSessionLogSnapshot(
       type: 'session-log-snapshot',
       id: client_id,
       attempt_id,
+      ...(typeof launch_id === 'string' && launch_id.length > 0
+        ? { launch_id }
+        : {}),
       lines,
       last_event_at
     }
@@ -585,8 +591,15 @@ export function emitSessionLogSnapshot(
  * @param {string} client_id
  * @param {string} attempt_id
  * @param {unknown} event - One raw parsed jsonl event.
+ * @param {string} [launch_id] - Delegated session identity; omitted for main.
  */
-export function emitSessionLogAppend(ws, client_id, attempt_id, event) {
+export function emitSessionLogAppend(
+  ws,
+  client_id,
+  attempt_id,
+  event,
+  launch_id
+) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
     ok: true,
@@ -595,6 +608,9 @@ export function emitSessionLogAppend(ws, client_id, attempt_id, event) {
       type: 'session-log-append',
       id: client_id,
       attempt_id,
+      ...(typeof launch_id === 'string' && launch_id.length > 0
+        ? { launch_id }
+        : {}),
       event
     }
   });

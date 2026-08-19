@@ -72,4 +72,18 @@ describe('session log store', () => {
 
     expect(calls).toBe(1);
   });
+
+  test('keeps main and delegation buffers isolated by subscription id', () => {
+    const store = createSessionLogStore();
+
+    store.set('session-log:att-1', [{ type: 'main' }]);
+    store.set('session-log:att-1:launch-1', [{ type: 'delegation' }]);
+    store.append('session-log:att-1:launch-1', { type: 'delegation-tail' });
+
+    expect(store.get('session-log:att-1')?.lines).toEqual([{ type: 'main' }]);
+    expect(store.get('session-log:att-1:launch-1')?.lines).toEqual([
+      { type: 'delegation' },
+      { type: 'delegation-tail' }
+    ]);
+  });
 });

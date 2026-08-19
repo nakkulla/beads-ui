@@ -1,4 +1,6 @@
 import { render } from 'lit-html';
+import { readFileSync } from 'node:fs';
+import process from 'node:process';
 import { describe, expect, test } from 'vitest';
 import { sessionHistoryTemplate } from './session-history.js';
 
@@ -374,5 +376,213 @@ describe('session-history preset audit', () => {
     expect(audit?.textContent).toContain(
       '내부 workflow 실행 영수증과 별도 기록'
     );
+  });
+});
+
+describe('session-history delegation monitors', () => {
+  /**
+   * @param {'running'|'done'|'failed'|'interrupted'} status
+   * @param {string} [launch_id]
+   */
+  function monitor(status, launch_id = `launch-${status}`) {
+    return {
+      launch_id,
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      session_id: `session-${status}`,
+      turn_id: 'turn-1',
+      status,
+      started_at: 100,
+      completed_at: status === 'running' ? null : '2026-08-18T04:27:00.000Z',
+      last_event_at: 200
+    };
+  }
+
+  test('renders four delegation status glyphs', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [
+            monitor('running'),
+            monitor('done'),
+            monitor('failed'),
+            monitor('interrupted')
+          ]
+        }
+      ])
+    );
+
+    expect(
+      Array.from(host.querySelectorAll('.detail-session__leg-glyph')).map(
+        (node) => node.textContent
+      )
+    ).toEqual(['●', '✓', '✗', '⚠']);
+  });
+
+  test('renders delegation row metadata and running activity time', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [monitor('running')]
+        }
+      ])
+    );
+    const row = host.querySelector('.detail-session__leg');
+
+    expect(row?.tagName).toBe('BUTTON');
+    expect(row?.textContent).toContain('implementation');
+    expect(row?.textContent).toContain('codex · gpt-5.6-sol');
+    expect(row?.textContent).toContain('session-');
+    expect(
+      row?.querySelector('.detail-session__leg-sid')?.getAttribute('title')
+    ).toBe('session-running');
+    expect(
+      row?.querySelector('.detail-session__leg-time')?.textContent
+    ).not.toBe('');
+  });
+
+  test('passes exact attempt and launch ids on delegation row click', () => {
+    /** @type {Array<[string, string]>} */
+    const opened = [];
+    const host = mount(
+      sessionHistoryTemplate(
+        [
+          {
+            attempt_id: 'outer',
+            delegation_sessions: [monitor('running', 'launch-exact')]
+          }
+        ],
+        {
+          onOpenDelegation: (attempt_id, launch_id) =>
+            opened.push([attempt_id, launch_id])
+        }
+      )
+    );
+
+    /** @type {HTMLButtonElement|null} */ (
+      host.querySelector('.detail-session__leg')
+    )?.click();
+
+    expect(opened).toEqual([['outer', 'launch-exact']]);
+  });
+
+  test('keeps a legacy usage-only row static', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          usage_legs: [
+            {
+              receipt_id: 'legacy-1',
+              provider: 'codex',
+              role: 'implementation',
+              model: 'gpt-5.6-terra',
+              session_id: 'legacy-session',
+              completed_at: '2026-08-18T04:27:00.000Z',
+              usage: { input_tokens: 5, output_tokens: 3 }
+            }
+          ]
+        }
+      ])
+    );
+    const row = host.querySelector('.detail-session__leg');
+
+    expect(row?.tagName).toBe('DIV');
+    expect(row?.textContent).toContain('Codex τ 8');
+    expect(row?.querySelector('.detail-session__leg-glyph')).toBeNull();
+  });
+
+  test('joins matching terminal usage into one monitored row', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [monitor('done', 'launch-joined')],
+          usage_legs: [
+            {
+              receipt_id: 'launch-joined',
+              provider: 'codex',
+              role: 'implementation',
+              model: 'gpt-5.6-sol',
+              session_id: 'session-done',
+              completed_at: '2026-08-18T04:27:00.000Z',
+              usage: { input_tokens: 5, output_tokens: 3 }
+            }
+          ]
+        }
+      ])
+    );
+    const row = host.querySelector('.detail-session__leg');
+
+    expect(host.querySelectorAll('.detail-session__leg')).toHaveLength(1);
+    expect(row?.tagName).toBe('BUTTON');
+    expect(row?.textContent).toContain('Codex τ 8');
+    expect(
+      row?.querySelector('.detail-session__leg-time')?.textContent
+    ).not.toBe('');
+  });
+
+  test('renders only implementation and review-consult monitors', () => {
+    const review = {
+      ...monitor('done', 'launch-review'),
+      role: 'review-consult'
+    };
+    const child = {
+      ...monitor('done', 'launch-child'),
+      role: 'Explore'
+    };
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [monitor('done'), review, child]
+        }
+      ])
+    );
+
+    expect(host.querySelectorAll('button.detail-session__leg')).toHaveLength(2);
+    expect(host.textContent).toContain('implementation');
+    expect(host.textContent).toContain('review-consult');
+    expect(host.textContent).not.toContain('Explore');
+    expect(host.textContent).not.toContain('child');
+  });
+
+  test('keeps static usage row when monitor identity conflicts', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [monitor('done', 'launch-conflict')],
+          usage_legs: [
+            {
+              receipt_id: 'launch-conflict',
+              provider: 'codex',
+              role: 'implementation',
+              model: 'gpt-5.6-terra',
+              session_id: 'session-done',
+              completed_at: '2026-08-18T04:27:00.000Z',
+              usage: { input_tokens: 5, output_tokens: 3 }
+            }
+          ]
+        }
+      ])
+    );
+    const row = host.querySelector('.detail-session__leg');
+
+    expect(host.querySelectorAll('.detail-session__leg')).toHaveLength(1);
+    expect(row?.tagName).toBe('DIV');
+    expect(row?.textContent).toContain('gpt-5.6-terra');
+  });
+
+  test('keeps delegation rows responsive at narrow viewport', () => {
+    const css = readFileSync(`${process.cwd()}/app/styles.css`, 'utf8');
+
+    const responsive =
+      /@media \(max-width: 640px\)[\s\S]*?\.detail-session__leg\s*\{[\s\S]*?flex-wrap:\s*wrap/;
+
+    expect(css).toMatch(responsive);
   });
 });

@@ -2,6 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  delegationMonitorDir,
+  delegationMonitorRootDir,
   discardBackupDir,
   discardBackupRootDir,
   execPresetsFilePath,
@@ -26,6 +28,17 @@ describe('usageReceiptInboxDir', () => {
   test('derives one deterministic private inbox per attempt', () => {
     expect(usageReceiptInboxDir(WS, 'UI-orfj-1')).toBe(
       path.join(workspaceStateDir(WS), 'usage-receipts', 'UI-orfj-1')
+    );
+  });
+});
+
+describe('delegationMonitorDir', () => {
+  test('derives a separate sanitized monitor directory per attempt', () => {
+    const root = delegationMonitorRootDir(WS);
+
+    expect(root).toBe(path.join(workspaceStateDir(WS), 'delegation-monitors'));
+    expect(delegationMonitorDir(WS, '../escape/UI-1')).toBe(
+      path.join(root, '.._escape_UI-1')
     );
   });
 });
