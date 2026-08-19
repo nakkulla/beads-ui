@@ -12159,12 +12159,7 @@ describe('scheduler delegation monitor wiring', () => {
           {
             launch_id: 'launch-1',
             offset: 64,
-            events: [
-              {
-                recorded_at: '1970-01-01T00:00:01.000Z',
-                event: { type: 'session.started' }
-              }
-            ]
+            events: [{ offset: 0, event: { type: 'session.started' } }]
           }
         ],
         warnings: []
@@ -12186,12 +12181,7 @@ describe('scheduler delegation monitor wiring', () => {
           {
             launch_id: 'launch-1',
             offset: 128,
-            events: [
-              {
-                recorded_at: '1970-01-01T00:00:02.000Z',
-                event: { type: 'turn.started' }
-              }
-            ]
+            events: [{ offset: 64, event: { type: 'turn.started' } }]
           }
         ],
         warnings: []
@@ -12202,10 +12192,9 @@ describe('scheduler delegation monitor wiring', () => {
       expect(publish).toHaveBeenCalledWith(
         WS,
         'S1-1000-1',
-        expect.objectContaining({
-          event: { type: 'turn.started' }
-        }),
-        'launch-1'
+        { type: 'turn.started' },
+        'launch-1',
+        64
       );
       expect(notifyQueueChanged).toHaveBeenCalledWith(WS);
       expect(
@@ -12242,8 +12231,8 @@ describe('scheduler delegation monitor wiring', () => {
           launch_id: 'launch-1',
           offset: 256,
           events: [
-            { recorded_at: '1970-01-01T00:00:02.000Z', event: { type: 'x' } },
-            { recorded_at: '1970-01-01T00:00:03.000Z', event: { type: 'y' } }
+            { offset: 0, event: { type: 'x' } },
+            { offset: 128, event: { type: 'y' } }
           ]
         }
       ],
@@ -12269,13 +12258,88 @@ describe('scheduler delegation monitor wiring', () => {
 
     await env.scheduler.reconcile(WS);
 
-    expect(publish).toHaveBeenCalledTimes(1);
-    expect(publish).toHaveBeenCalledWith(
-      WS,
-      'restart-attempt',
-      expect.objectContaining({ event: { type: 'y' } }),
-      'launch-1'
-    );
+    expect(publish).not.toHaveBeenCalled();
+    expect(
+      delegationMonitor.readAttemptDelegationStreams
+    ).toHaveBeenLastCalledWith(WS, 'restart-attempt', {
+      known_sessions: [durable],
+      from_offsets: {}
+    });
+  });
+
+  test('publishes only bytes past the adopted boundary after a restart', async () => {
+    vi.useFakeTimers();
+    try {
+      const publish = vi.fn();
+      const delegationMonitor = fakeDelegationMonitor();
+      /** @type {import('./queue-store.js').DelegationSession} */
+      const durable = {
+        launch_id: 'launch-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        session_id: 'thread-1',
+        turn_id: 'turn-1',
+        status: 'running',
+        started_at: 1_000,
+        completed_at: null,
+        last_event_at: 2_000
+      };
+      delegationMonitor.readAttemptDelegationStreams
+        .mockReturnValueOnce({
+          sessions: [durable],
+          streams: [
+            {
+              launch_id: 'launch-1',
+              offset: 256,
+              events: [{ offset: 128, event: { type: 'x' } }]
+            }
+          ],
+          warnings: []
+        })
+        .mockReturnValue({
+          sessions: [{ ...durable, last_event_at: 4_000 }],
+          streams: [
+            {
+              launch_id: 'launch-1',
+              offset: 384,
+              events: [{ offset: 256, event: { type: 'y' } }]
+            }
+          ],
+          warnings: []
+        });
+      const env = setup({
+        config: { S1: {} },
+        delegationMonitor,
+        probePid: () => ({ alive: true, started_at: 1_000 }),
+        sessionLog: { attach: vi.fn(), publish }
+      });
+      env.store.appendAttempt(WS, {
+        expected_revision: env.store.snapshot(WS).revision,
+        attempt: {
+          attempt_id: 'restart-attempt',
+          bead_id: 'S1',
+          status: 'running',
+          pid: 42,
+          started_at: 1_000,
+          delegation_sessions: [durable]
+        }
+      });
+      await env.scheduler.reconcile(WS);
+
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish).toHaveBeenCalledWith(
+        WS,
+        'restart-attempt',
+        { type: 'y' },
+        'launch-1',
+        256
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('persists an unterminated delegation as interrupted on completion', async () => {

@@ -54,10 +54,17 @@ const SESSION_STATUSES = new Set(['running', 'done', 'failed', 'interrupted']);
  */
 
 /**
+ * One validated stream's incremental projection. `offset` is the byte position
+ * just past the last COMPLETE line, and every entry in `events` carries the
+ * byte offset its line starts at. A snapshot reader and a live tail therefore
+ * share ONE ordering key: a subscriber that took its snapshot at `offset` can
+ * drop every append below it without guessing from timestamps, which collide
+ * at millisecond resolution.
+ *
  * @typedef {Object} DelegationStreamProjection
  * @property {string} launch_id
  * @property {number} offset
- * @property {Record<string, unknown>[]} events
+ * @property {{ offset: number, event: Record<string, unknown> }[]} events
  */
 
 /**
@@ -272,19 +279,20 @@ function validateDirectory(dir, file_system) {
 /**
  * @param {string} file
  * @param {typeof import('node:fs')} file_system
+ * @returns {{ ok: boolean, size: number }}
  */
 function validateFile(file, file_system) {
   try {
     const stat = file_system.lstatSync(file);
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-    return (
+    const ok =
       stat.isFile() &&
       !stat.isSymbolicLink() &&
       (stat.mode & 0o777) === FILE_MODE &&
-      (uid === null || stat.uid === uid)
-    );
+      (uid === null || stat.uid === uid);
+    return { ok, size: typeof stat.size === 'number' ? stat.size : 0 };
   } catch {
-    return false;
+    return { ok: false, size: 0 };
   }
 }
 
@@ -461,6 +469,10 @@ function parseStream(bytes, attempt_id, launch_id, from_offset) {
   /** @type {string|null} */
   let turn_id = null;
   let line_start = 0;
+  // The producer contract binds the FIRST complete line, not the first line
+  // that happens to parse: skipping a malformed opener and adopting a later
+  // `session.started` would accept a stream whose head was rewritten.
+  let first_complete_seen = false;
   while (line_start < boundary) {
     const newline = bytes.indexOf(0x0a, line_start);
     const line_bytes = bytes.subarray(line_start, newline);
@@ -471,11 +483,16 @@ function parseStream(bytes, attempt_id, launch_id, from_offset) {
       warnings.push('line_schema');
       continue;
     }
+    const is_first_complete = !first_complete_seen;
+    first_complete_seen = true;
     /** @type {unknown} */
     let raw;
     try {
       raw = JSON.parse(text);
     } catch {
+      if (is_first_complete) {
+        return { session: null, stream: null, warnings, conflict: true };
+      }
       warnings.push('line_schema');
       continue;
     }
@@ -484,13 +501,16 @@ function parseStream(bytes, attempt_id, launch_id, from_offset) {
     }
     const line = parseMonitorLine(raw);
     if (!line) {
+      if (is_first_complete) {
+        return { session: null, stream: null, warnings, conflict: true };
+      }
       warnings.push('line_schema');
       continue;
     }
     if (
       line.raw.attempt_id !== attempt_id ||
       line.raw.launch_id !== launch_id ||
-      (accepted.length === 0 && line.event.type !== 'session.started')
+      (is_first_complete && line.event.type !== 'session.started')
     ) {
       return { session: null, stream: null, warnings, conflict: true };
     }
@@ -553,7 +573,7 @@ function parseStream(bytes, attempt_id, launch_id, from_offset) {
       offset: boundary,
       events: positioned
         .filter((entry) => entry.start >= from_offset)
-        .map((entry) => entry.line.raw)
+        .map((entry) => ({ offset: entry.start, event: entry.line.raw }))
     },
     warnings,
     conflict: false
@@ -610,8 +630,22 @@ export function readAttemptDelegationStreams(
     }
     const launch_id = name.slice(0, -'.jsonl'.length);
     const file = path.join(dir, name);
-    if (!validateFile(file, file_system)) {
+    const checked_file = validateFile(file, file_system);
+    if (!checked_file.ok) {
       warnings.push('file_security');
+      continue;
+    }
+    const raw_offset = offsets[launch_id];
+    const from_offset =
+      typeof raw_offset === 'number' &&
+      Number.isInteger(raw_offset) &&
+      raw_offset >= 0
+        ? raw_offset
+        : 0;
+    // An incremental caller that already consumed the file up to its current
+    // size has nothing to learn from re-parsing it. Skipping the read keeps an
+    // idle tail at one stat per tick instead of one full parse.
+    if (from_offset > 0 && checked_file.size === from_offset) {
       continue;
     }
     /** @type {Buffer} */
@@ -622,13 +656,6 @@ export function readAttemptDelegationStreams(
       warnings.push('file_unreadable');
       continue;
     }
-    const raw_offset = offsets[launch_id];
-    const from_offset =
-      typeof raw_offset === 'number' &&
-      Number.isInteger(raw_offset) &&
-      raw_offset >= 0
-        ? raw_offset
-        : 0;
     const parsed = parseStream(bytes, attempt_id, launch_id, from_offset);
     warnings.push(...parsed.warnings);
     if (parsed.conflict) {

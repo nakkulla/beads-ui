@@ -265,7 +265,9 @@ describe('delegation monitor stream reader', () => {
     expect(first.sessions[0].status).toBe('running');
     expect(first.streams[0].events).toHaveLength(1);
     expect(second.sessions[0].status).toBe('done');
-    expect(second.streams[0].events).toEqual([terminal]);
+    expect(second.streams[0].events).toEqual([
+      { offset: first.streams[0].offset, event: terminal }
+    ]);
     expect(second.streams[0].offset).toBe(fs.statSync(file).size);
   });
 
@@ -322,6 +324,34 @@ describe('delegation monitor stream reader', () => {
 
     expect(result.sessions).toEqual([]);
     expect(result.warnings).toContain('identity_conflict');
+  });
+
+  it('rejects a whole stream whose first complete line is malformed', () => {
+    const started = monitorLine('launch-1', { type: 'session.started' });
+    const file = writeStream('launch-1', [started]);
+    fs.writeFileSync(file, `not json\n${fs.readFileSync(file, 'utf8')}`, {
+      mode: 0o600
+    });
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(read.sessions).toEqual([]);
+    expect(read.warnings).toContain('identity_conflict');
+  });
+
+  it('skips re-reading a stream already consumed to its current size', () => {
+    const file = writeStream('launch-1', [
+      monitorLine('launch-1', { type: 'session.started' })
+    ]);
+    const first = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    const read = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID, {
+      from_offsets: { 'launch-1': fs.statSync(file).size }
+    });
+
+    expect(first.streams).toHaveLength(1);
+    expect(read.streams).toEqual([]);
+    expect(read.sessions).toEqual([]);
   });
 
   it('rejects a whole stream when its first event is not session started', () => {

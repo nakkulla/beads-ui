@@ -127,7 +127,26 @@ describe('worker/session-log', () => {
 
     const snapshot = log.readDelegation(WS, 'att-3', 'unknown-launch');
 
-    expect(snapshot).toEqual({ lines: [], last_event_at: null });
+    expect(snapshot).toEqual({ lines: [], last_event_at: null, offset: 0 });
+  });
+
+  test('delegation snapshot is empty when the authorized identity disagrees', () => {
+    const log = createSessionLog();
+
+    const snapshot = log.readDelegation(WS, 'att-3', 'launch-1', {
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      session_id: 'another-thread',
+      turn_id: 'turn-1',
+      status: 'running',
+      started_at: 1,
+      completed_at: null,
+      last_event_at: 1
+    });
+
+    expect(snapshot).toEqual({ lines: [], last_event_at: null, offset: 0 });
   });
 
   test('read of an absent attempt returns []', () => {

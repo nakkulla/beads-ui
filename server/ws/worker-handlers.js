@@ -1698,19 +1698,29 @@ export function handleSubscribeSessionLog(ws, req) {
     } catch {
       attempt = null;
     }
-    const authorized = delegationSessionsForAttempt(key, attempt).some(
-      (session) => session.launch_id === launch_id
-    );
+    const authorized =
+      delegationSessionsForAttempt(key, attempt).find(
+        (session) => session.launch_id === launch_id
+      ) || null;
     if (!authorized) {
       emitSessionLogSnapshot(ws, client_id, attempt_id, [], null, launch_id);
       return;
     }
-    /** @type {{ lines: unknown[], last_event_at: number|null }} */
-    let snapshot = { lines: [], last_event_at: null };
+    // The identity that passed authorization is handed to the reader, not just
+    // the launch id: a stream whose on-disk identity disagrees with it is
+    // rejected there, so a file swapped under an authorized id yields an empty
+    // snapshot instead of another session's transcript.
+    /** @type {{ lines: unknown[], last_event_at: number|null, offset: number }} */
+    let snapshot = { lines: [], last_event_at: null, offset: 0 };
     try {
-      snapshot = runtime.sessionLog.readDelegation(key, attempt_id, launch_id);
+      snapshot = runtime.sessionLog.readDelegation(
+        key,
+        attempt_id,
+        launch_id,
+        authorized
+      );
     } catch {
-      snapshot = { lines: [], last_event_at: null };
+      snapshot = { lines: [], last_event_at: null, offset: 0 };
     }
     emitSessionLogSnapshot(
       ws,
@@ -1720,11 +1730,19 @@ export function handleSubscribeSessionLog(ws, req) {
       snapshot.last_event_at,
       launch_id
     );
+    const snapshot_offset =
+      typeof snapshot.offset === 'number' && Number.isFinite(snapshot.offset)
+        ? snapshot.offset
+        : 0;
     const off = runtime.sessionLog.subscribe((append) => {
       if (
         append.workspace === key &&
         append.attempt_id === attempt_id &&
-        append.launch_id === launch_id
+        append.launch_id === launch_id &&
+        // The snapshot already carried every line below its boundary. Byte
+        // offset is the only exact key here: `recorded_at` collides at
+        // millisecond resolution, so a timestamp filter would drop a line.
+        (typeof append.offset !== 'number' || append.offset >= snapshot_offset)
       ) {
         emitSessionLogAppend(
           ws,

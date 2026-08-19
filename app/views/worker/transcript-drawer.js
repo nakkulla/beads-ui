@@ -905,6 +905,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     if (!next_id) {
       return;
     }
+    const previous_subscription_id = subscription_id;
     attempt_id = next_id;
     launch_id =
       typeof input.launch_id === 'string' && input.launch_id.length > 0
@@ -913,6 +914,18 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     subscription_id = launch_id
       ? `session-log:${attempt_id}:${launch_id}`
       : `session-log:${attempt_id}`;
+    // Switching rows inside an open drawer replaces the subscription rather
+    // than adding one: the server keys a subscription by (connection,
+    // client_id), so a new id leaves the old listener pushing forever.
+    if (
+      transport &&
+      previous_subscription_id &&
+      previous_subscription_id !== subscription_id
+    ) {
+      void Promise.resolve(
+        transport('unsubscribe-session-log', { id: previous_subscription_id })
+      ).catch(() => {});
+    }
     meta = input.meta || {};
     follow = true;
     expanded.clear();

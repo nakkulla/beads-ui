@@ -14,9 +14,10 @@ const state = vi.hoisted(() => ({
   listeners: [],
   read: vi.fn(() => []),
   readDelegation: vi.fn(
-    /** @returns {{ lines: unknown[], last_event_at: number|null }} */ () => ({
+    /** @returns {{ lines: unknown[], last_event_at: number|null, offset: number }} */ () => ({
       lines: [],
-      last_event_at: null
+      last_event_at: null,
+      offset: 0
     })
   )
 }));
@@ -106,7 +107,11 @@ afterEach(() => {
   state.read.mockReset();
   state.read.mockReturnValue([]);
   state.readDelegation.mockReset();
-  state.readDelegation.mockReturnValue({ lines: [], last_event_at: null });
+  state.readDelegation.mockReturnValue({
+    lines: [],
+    last_event_at: null,
+    offset: 0
+  });
 });
 
 describe('worker session-log delegation subscription', () => {
@@ -114,7 +119,8 @@ describe('worker session-log delegation subscription', () => {
     state.attempts = { 'att-1': attempt() };
     state.readDelegation.mockReturnValue({
       lines: [{ event: { type: 'session.started' } }],
-      last_event_at: 2
+      last_event_at: 2,
+      offset: 64
     });
     const socket = fakeSocket();
 
@@ -137,7 +143,12 @@ describe('worker session-log delegation subscription', () => {
       lines: [{ event: { type: 'session.started' } }],
       last_event_at: 2
     });
-    expect(state.readDelegation).toHaveBeenCalledWith(WS, 'att-1', 'launch-1');
+    expect(state.readDelegation).toHaveBeenCalledWith(
+      WS,
+      'att-1',
+      'launch-1',
+      expect.objectContaining({ launch_id: 'launch-1' })
+    );
     detachSessionLog(socket);
   });
 
@@ -208,7 +219,11 @@ describe('worker session-log delegation subscription', () => {
       expect(state.readDelegation).toHaveBeenCalledWith(
         WS,
         'att-1',
-        'launch-live'
+        'launch-live',
+        expect.objectContaining({
+          launch_id: 'launch-live',
+          session_id: 'thread-live'
+        })
       );
       detachSessionLog(socket);
     } finally {
@@ -291,5 +306,48 @@ describe('worker session-log delegation subscription', () => {
     );
     detachSessionLog(main_socket);
     detachSessionLog(delegation_socket);
+  });
+
+  test('drops a delegation append its snapshot already carried', () => {
+    state.attempts = { 'att-1': attempt() };
+    state.readDelegation.mockReturnValue({
+      lines: [{ event: { type: 'session.started' } }],
+      last_event_at: 2,
+      offset: 128
+    });
+    const socket = fakeSocket();
+    handleSubscribeSessionLog(socket, {
+      id: 'request-1',
+      type: 'subscribe-session-log',
+      payload: {
+        id: 'subscription-1',
+        attempt_id: 'att-1',
+        launch_id: 'launch-1'
+      }
+    });
+    socket.sent.length = 0;
+
+    for (const listener of state.listeners) {
+      listener.fn({
+        workspace: WS,
+        attempt_id: 'att-1',
+        launch_id: 'launch-1',
+        offset: 64,
+        event: { type: 'already-in-snapshot' }
+      });
+      listener.fn({
+        workspace: WS,
+        attempt_id: 'att-1',
+        launch_id: 'launch-1',
+        offset: 128,
+        event: { type: 'past-the-boundary' }
+      });
+    }
+
+    expect(socket.sent).toHaveLength(1);
+    expect(JSON.parse(socket.sent[0]).payload.event).toEqual({
+      type: 'past-the-boundary'
+    });
+    detachSessionLog(socket);
   });
 });

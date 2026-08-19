@@ -464,6 +464,35 @@ describe('transcript drawer', () => {
     expect(closed).toBe(true);
   });
 
+  test('unsubscribes the prior subscription when a row switch replaces it', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-1' });
+    drawer.open({ attempt_id: 'att-1', launch_id: 'launch-1' });
+
+    expect(sends).toEqual([
+      {
+        type: 'subscribe-session-log',
+        payload: { id: 'session-log:att-1', attempt_id: 'att-1' }
+      },
+      {
+        type: 'unsubscribe-session-log',
+        payload: { id: 'session-log:att-1' }
+      },
+      {
+        type: 'subscribe-session-log',
+        payload: {
+          id: 'session-log:att-1:launch-1',
+          attempt_id: 'att-1',
+          launch_id: 'launch-1'
+        }
+      }
+    ]);
+  });
+
   test('uses one delegation subscription id for subscribe close and reopen', () => {
     const subscription_id = 'session-log:att-1:launch-1';
     store.set(subscription_id, [TEXT_EVENT]);

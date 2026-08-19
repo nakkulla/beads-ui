@@ -342,7 +342,7 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * attachment built without it (every hermetic test) refuses the dispatch as
  * `not_external` rather than launching against an unverified bead.
  * @property {{ existsSync: (path: string) => boolean }} [fs]
- * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
+ * @property {{ attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void, publish?: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void, pathFor?: (workspace: string, attempt_id: string) => string, stderrPathFor?: (workspace: string, attempt_id: string) => string }} sessionLog
  * The session-log broker. `pathFor`/`stderrPathFor` are what the spawn hands the
  * runner as its stdout/stderr files (UI-o2yt §3.1); a fake without them simply
  * leaves the engine on its stdout-pipe fallback, which is what fixture-driven
@@ -752,8 +752,7 @@ export function createScheduler(deps) {
   /**
    * @type {Map<string, {
    *   offsets: Record<string, number>,
-   *   sessions: Map<string, import('./queue-store.js').DelegationSession>,
-   *   durable_last_events: Map<string, number>
+   *   sessions: Map<string, import('./queue-store.js').DelegationSession>
    * }>}
    */
   const delegation_tail_states = new Map();
@@ -906,13 +905,16 @@ export function createScheduler(deps) {
     }
     const state = {
       offsets: /** @type {Record<string, number>} */ ({}),
-      sessions: new Map(durable.map((session) => [session.launch_id, session])),
-      durable_last_events: new Map(
-        durable.map((session) => [session.launch_id, session.last_event_at])
-      )
+      sessions: new Map(durable.map((session) => [session.launch_id, session]))
     };
     delegation_tail_states.set(attempt_id, state);
-    const poll = () => {
+    /**
+     * @param {boolean} publish_events - False for the adopting first scan: a
+     * restart re-reads a stream this process never published, and the drawer
+     * takes that prefix from its own snapshot. Publishing it here would push
+     * the same lines a second time.
+     */
+    const poll = (publish_events) => {
       try {
         const current = deps.store.snapshot(workspace).attempts?.[attempt_id];
         if (!current || current.status !== 'running') {
@@ -928,32 +930,18 @@ export function createScheduler(deps) {
           }
         );
         for (const stream of scanned.streams) {
-          const durable_last_event = state.durable_last_events.get(
-            stream.launch_id
-          );
-          for (const event of stream.events) {
-            const recorded_at =
-              event && typeof event.recorded_at === 'string'
-                ? Date.parse(event.recorded_at)
-                : Number.NaN;
-            if (
-              typeof durable_last_event === 'number' &&
-              Number.isFinite(recorded_at) &&
-              recorded_at <= durable_last_event
-            ) {
-              continue;
-            }
-            if (typeof deps.sessionLog.publish === 'function') {
+          if (publish_events && typeof deps.sessionLog.publish === 'function') {
+            for (const entry of stream.events) {
               deps.sessionLog.publish(
                 workspace,
                 attempt_id,
-                event,
-                stream.launch_id
+                entry.event,
+                stream.launch_id,
+                entry.offset
               );
             }
           }
           state.offsets[stream.launch_id] = stream.offset;
-          state.durable_last_events.delete(stream.launch_id);
         }
         let changed = false;
         for (const session of scanned.sessions) {
@@ -968,11 +956,11 @@ export function createScheduler(deps) {
         log('delegation tail failed for %s: read_failed', attempt_id);
       }
     };
-    poll();
+    poll(false);
     if (!delegation_tail_states.has(attempt_id)) {
       return;
     }
-    const timer = setInterval(poll, USAGE_FANOUT_THROTTLE_MS);
+    const timer = setInterval(() => poll(true), USAGE_FANOUT_THROTTLE_MS);
     if (typeof timer.unref === 'function') {
       timer.unref();
     }
