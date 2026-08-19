@@ -2287,6 +2287,44 @@ describe('worker/attach base-update result wiring (UI-vkk8 §4)', () => {
 });
 
 describe('worker/attach — legacy state migration (master spec §11)', () => {
+  test('reconciles repo operations before migration, cleanup resume, and poller start', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const [att] = initWorkerRuntime({
+      workspaces: [WS],
+      getSubscriberCount: () => 1
+    });
+    att.scheduler.recoverControls = vi.fn(async () => {});
+    att.scheduler.reconcile = vi.fn(async () => {});
+    att.discardCoordinator.recover = vi.fn(async () => {});
+    att.repoOperationCoordinator.reconcile = vi.fn(async () => {
+      order.push('reconcile');
+    });
+    att.repoOperationCoordinator.refreshDisplay = /** @type {any} */ (
+      vi.fn(async () => {})
+    );
+    att.resolveBase = okBase('main');
+    att.repoOperationMigration.run = vi.fn(async () => {
+      order.push('migration');
+      return { ok: true };
+    });
+    att.prActions.resumeRepoOperations = vi.fn(async () => {
+      order.push('resume');
+      return [];
+    });
+    att.prPoller.start = vi.fn(() => {
+      order.push('poller');
+    });
+    att.reconciler.start = vi.fn();
+    att.mergeQueue.start = vi.fn();
+    att.autoMerge.start = vi.fn();
+    att.completionIntent.start = vi.fn();
+
+    await waitFor(() => order.includes('poller'));
+
+    expect(order).toEqual(['reconcile', 'migration', 'resume', 'poller']);
+  });
+
   test('runs the one-shot migration before the cleanup lane resumes', async () => {
     /** @type {string[]} */
     const order = [];

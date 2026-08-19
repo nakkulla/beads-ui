@@ -190,7 +190,7 @@ function authoritativeMergeSha(pr) {
  *   resolveBase?: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>,
  *   resolveVerify?: (pin?: { sha?: string|null, force?: boolean }) => Promise<any>,
  *   runVerify?: (input: any) => Promise<{ ok: boolean, reason: string, exit: number|null, attempts?: { reason: string, log_path?: string }[] }>,
- *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
+ *   repoOperations?: { ensureVerify: (candidate: any) => Promise<any>, ensureDeploy: (subject: any) => Promise<any>, waitForTerminal: (operation_id: string, options?: any) => Promise<any>, waitForDeployTerminal: (operation_id: string, input: any) => Promise<any>, verifyReceipt: (operation_id: string, head_sha: string) => any, hasConfig: (sha: string, options?: { current_target_base?: boolean }) => Promise<any>, findExactDeployOperation: (subject: any) => Promise<any>, deploymentEvidence: (operation_id: string, subject: any) => Promise<any> },
  *   notifyChanged?: (workspace: string) => void,
  *   notify?: { mergeCompleted: (input: { bead_id: string, pr_url?: string|null, repo?: string|null }) => Promise<void> },
  *   requeryDelayMs?: number,
@@ -1652,9 +1652,13 @@ export function createPrActions(deps) {
           );
         }
         if (!deployed.inert && typeof deployed.operation_id === 'string') {
-          const evidence = await repo_operations.deploymentEvidence(
+          const evidence = await repo_operations.waitForDeployTerminal(
             deployed.operation_id,
-            { target_base, merged_sha: merge_sha }
+            {
+              target_base,
+              merged_sha: merge_sha,
+              timeout_ms: deployed.timeout_ms
+            }
           );
           if (evidence.state === 'failed') {
             return failCleanup(
@@ -1665,7 +1669,7 @@ export function createPrActions(deps) {
               undefined,
               undefined,
               undefined,
-              undefined,
+              evidence.log_path,
               repoOpsFailureEvidence(evidence)
             );
           }
@@ -1708,10 +1712,13 @@ export function createPrActions(deps) {
 
   /**
    * @param {any} value
-   * @returns {{ fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }}
+   * @returns {{ failure_code?: string, fetch_failure?: 'timeout'|'nonzero', elapsed_ms?: number }}
    */
   function repoOpsFailureEvidence(value) {
     return {
+      ...(typeof value?.code === 'string' && value.code.length > 0
+        ? { failure_code: value.code }
+        : {}),
       ...(value?.fetch_failure === 'timeout' ||
       value?.fetch_failure === 'nonzero'
         ? { fetch_failure: value.fetch_failure }
@@ -2436,13 +2443,14 @@ export function createPrActions(deps) {
   /**
    * Resume only nonterminal coordinator-owned cleanup rows after restart.
    *
-   * A row is resumed from where its cursor stopped. The repo-operation half
-   * (`base_containment`, `repo_operations`) replays the whole cleanup; the
-   * closure half (`child_sweep`, `branch_cleanup`, `parent_close`) replays
-   * ONLY the closure, because reaching those cursors is itself the proof that
-   * the repo operations already settled terminally — {@link closeCoveredRow}
-   * is the single entry that owns that half, and each of its steps is
-   * idempotent, so an interrupted step simply runs again.
+   * A row is resumed from where its cursor stopped. `base_containment` replays
+   * the whole cleanup. `repo_operations` first adopts an exact deploy subject
+   * and only replays when no operation was prerecorded. The closure half
+   * (`child_sweep`, `branch_cleanup`, `parent_close`) replays ONLY the closure,
+   * because reaching those cursors is itself the proof that the repo operations
+   * already settled terminally — {@link closeCoveredRow} is the single entry
+   * that owns that half, and each of its steps is idempotent, so an interrupted
+   * step simply runs again.
    *
    * Both halves are reachable interrupted: beads-ui deploys itself by
    * restarting its own service, so a self-deploy can kill the worker mid
@@ -2470,13 +2478,77 @@ export function createPrActions(deps) {
       }
       in_flight.add(row.bead_id);
       try {
-        await (closure_only
-          ? closeCoveredRow(row.bead_id, true)
-          : runCleanup(row.bead_id, {
-              merge_sha: row.merge_sha,
-              head_ref: row.head_ref,
-              pr_url: row.pr_url
-            }));
+        if (closure_only) {
+          await closeCoveredRow(row.bead_id, true);
+          continue;
+        }
+        const operations = repo_operations;
+        if (!operations) {
+          continue;
+        }
+        if (row.cleanup_cursor === 'repo_operations') {
+          const expected = await expectedBaseFor(queue, row.bead_id);
+          if (expected.ok) {
+            const exact = await operations.findExactDeployOperation({
+              target_base: expected.base,
+              bead_id: row.bead_id,
+              merged_sha: row.merge_sha
+            });
+            if (exact) {
+              markStep(row.bead_id, 'repo_operations');
+              if (
+                exact.code === 'repo_operation_timeout_unresolved' ||
+                !Number.isFinite(exact.timeout_ms)
+              ) {
+                await failCleanup(
+                  row.bead_id,
+                  'repo_operations',
+                  'repo_operation_timeout_unresolved',
+                  null,
+                  undefined,
+                  undefined,
+                  undefined,
+                  undefined,
+                  repoOpsFailureEvidence({
+                    code: 'repo_operation_timeout_unresolved'
+                  })
+                );
+                continue;
+              }
+              const evidence = await operations.waitForDeployTerminal(
+                exact.operation_id,
+                {
+                  target_base: expected.base,
+                  merged_sha: row.merge_sha,
+                  timeout_ms: exact.timeout_ms
+                }
+              );
+              if (evidence.state === 'succeeded') {
+                await closeCoveredRow(row.bead_id);
+                continue;
+              }
+              if (evidence.state === 'failed') {
+                await failCleanup(
+                  row.bead_id,
+                  'repo_operations',
+                  evidence.code || 'repo_operation_failed',
+                  null,
+                  undefined,
+                  undefined,
+                  undefined,
+                  evidence.log_path,
+                  repoOpsFailureEvidence(evidence)
+                );
+              }
+              continue;
+            }
+          }
+        }
+        await runCleanup(row.bead_id, {
+          merge_sha: row.merge_sha,
+          head_ref: row.head_ref,
+          pr_url: row.pr_url
+        });
       } finally {
         in_flight.delete(row.bead_id);
         clearStep(row.bead_id);

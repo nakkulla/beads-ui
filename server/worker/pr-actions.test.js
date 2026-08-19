@@ -1714,7 +1714,9 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
       ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
       ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
       waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
       verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
       deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' })),
       ...overrides
     };
@@ -1830,38 +1832,98 @@ describe('worker/pr-actions — RepoOperation cleanup lane', () => {
     });
   });
 
-  test('keeps bead open until deploy operation has terminal success evidence', async () => {
-    let deployment_state = 'running';
+  test('waits for terminal deploy evidence before closing one cleanup', async () => {
     const operations = repoOperations({
       ensureDeploy: vi.fn(async () => ({
         ok: true,
-        operation_id: 'deploy-1'
+        operation_id: 'deploy-1',
+        timeout_ms: 321
       })),
-      deploymentEvidence: vi.fn(async () => ({ state: deployment_state }))
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
+      deploymentEvidence: vi.fn(async () => ({ state: 'running' }))
     });
     const env = makeActions({
       repoOperations: operations,
       details: [prOf({ head_sha: 'a'.repeat(40) })]
     });
 
-    const pending = await env.actions.merge(BEAD);
-    deployment_state = 'succeeded';
-    const completed = await env.actions.cleanupObservedMerge(
-      BEAD,
-      'c'.repeat(40)
-    );
+    const completed = await env.actions.merge(BEAD);
 
-    expect(pending).toMatchObject({
-      ok: true,
-      action: 'cleanup_pending',
-      cleanup_step: 'repo_operations',
-      reason: null
+    expect(operations.waitForDeployTerminal).toHaveBeenCalledWith('deploy-1', {
+      target_base: 'main',
+      merged_sha: 'c'.repeat(40),
+      timeout_ms: 321
     });
     expect(completed).toMatchObject({ ok: true, reason: null });
     expect(env.bd.setStatus).toHaveBeenCalledWith(BEAD, 'closed');
     expect(env.store.snapshot(WS).done).toEqual(
       expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
     );
+  });
+
+  test('keeps cleanup pending when deploy wait reaches its deadline', async () => {
+    const operations = repoOperations({
+      ensureDeploy: vi.fn(async () => ({
+        ok: true,
+        operation_id: 'deploy-1',
+        timeout_ms: 321
+      })),
+      waitForDeployTerminal: vi.fn(async () => ({
+        state: 'running',
+        operation_id: 'deploy-1'
+      }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: true,
+      action: 'cleanup_pending',
+      cleanup_step: 'repo_operations',
+      reason: null
+    });
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('records terminal deploy failure diagnostics and log', async () => {
+    const operations = repoOperations({
+      ensureDeploy: vi.fn(async () => ({
+        ok: true,
+        operation_id: 'deploy-1',
+        timeout_ms: 321
+      })),
+      waitForDeployTerminal: vi.fn(async () => ({
+        state: 'failed',
+        operation_id: 'deploy-1',
+        code: 'repo_ops_fetch_failed',
+        fetch_failure: 'nonzero',
+        elapsed_ms: 28,
+        log_path: '/tmp/deploy.log'
+      }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'repo_operations',
+      reason: 'repo_ops_fetch_failed'
+    });
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      reason: 'repo_ops_fetch_failed',
+      failure_code: 'repo_ops_fetch_failed',
+      fetch_failure: 'nonzero',
+      elapsed_ms: 28,
+      log_path: '/tmp/deploy.log'
+    });
   });
 
   test('records deploy fetch diagnostics on the durable cleanup failure', async () => {
@@ -1903,6 +1965,7 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
    * reports for a `[verify]`-less base.
    *
    * @param {string|null} verify_script_path
+   * @returns {any}
    */
   function coordinatorFor(verify_script_path) {
     return {
@@ -1914,7 +1977,9 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
       ensureVerify: vi.fn(async () => ({ ok: true, inert: true })),
       ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
       waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
       verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
       deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' }))
     };
   }
@@ -1990,6 +2055,109 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     await env.actions.resumeRepoOperations();
 
     expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+  });
+
+  test('adopts an exact boot-resumed deploy without fetching the base again', async () => {
+    const operations = coordinatorFor(null);
+    operations.findExactDeployOperation.mockResolvedValue({
+      operation_id: 'deploy-1',
+      timeout_ms: 4321
+    });
+    operations.waitForDeployTerminal.mockResolvedValue({
+      state: 'succeeded',
+      operation_id: 'deploy-1'
+    });
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(operations.findExactDeployOperation).toHaveBeenCalledWith({
+      target_base: 'main',
+      bead_id: BEAD,
+      merged_sha: 'c'.repeat(40)
+    });
+    expect(operations.waitForDeployTerminal).toHaveBeenCalledWith('deploy-1', {
+      target_base: 'main',
+      merged_sha: 'c'.repeat(40),
+      timeout_ms: 4321
+    });
+    expect(env.git_argv.some((args) => args[0] === 'fetch')).toBe(false);
+    expect(operations.ensureDeploy).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).pr_wait).toEqual([]);
+  });
+
+  test('keeps an exact boot-resumed deploy pending without a cleanup failure', async () => {
+    const operations = coordinatorFor(null);
+    operations.findExactDeployOperation.mockResolvedValue({
+      operation_id: 'deploy-1',
+      timeout_ms: 4321
+    });
+    operations.waitForDeployTerminal.mockResolvedValue({
+      state: 'running',
+      operation_id: 'deploy-1'
+    });
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.store.snapshot(WS).pr_wait[0]).toMatchObject({
+      bead_id: BEAD,
+      cleanup_cursor: 'repo_operations'
+    });
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toBeUndefined();
+    expect(env.git_argv.some((args) => args[0] === 'fetch')).toBe(false);
+  });
+
+  test('preserves exact boot-resumed deploy failure diagnostics and log', async () => {
+    const operations = coordinatorFor(null);
+    operations.findExactDeployOperation.mockResolvedValue({
+      operation_id: 'deploy-1',
+      timeout_ms: 4321
+    });
+    operations.waitForDeployTerminal.mockResolvedValue({
+      state: 'failed',
+      operation_id: 'deploy-1',
+      code: 'repo_ops_fetch_failed',
+      fetch_failure: 'timeout',
+      elapsed_ms: 99,
+      log_path: '/tmp/deploy.log'
+    });
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'repo_operations',
+      reason: 'repo_ops_fetch_failed',
+      failure_code: 'repo_ops_fetch_failed',
+      fetch_failure: 'timeout',
+      elapsed_ms: 99,
+      log_path: '/tmp/deploy.log'
+    });
+    expect(env.git_argv.some((args) => args[0] === 'fetch')).toBe(false);
+  });
+
+  test('fails closed when exact boot-resumed deploy timeout is unresolved', async () => {
+    const operations = coordinatorFor(null);
+    operations.findExactDeployOperation.mockResolvedValue({
+      operation_id: 'deploy-1',
+      code: 'repo_operation_timeout_unresolved'
+    });
+    const env = makeActions({ ...ON_BASE, repoOperations: operations });
+    seedResumableRow(env.store);
+
+    await env.actions.resumeRepoOperations();
+
+    expect(env.store.snapshot(WS).cleanup_failed[BEAD]).toMatchObject({
+      step: 'repo_operations',
+      reason: 'repo_operation_timeout_unresolved',
+      failure_code: 'repo_operation_timeout_unresolved'
+    });
+    expect(operations.waitForDeployTerminal).not.toHaveBeenCalled();
+    expect(env.git_argv.some((args) => args[0] === 'fetch')).toBe(false);
   });
 
   /**
@@ -2314,7 +2482,9 @@ describe('worker/pr-actions — external PR rows (UI-7agi §4)', () => {
             ok: true,
             reason: 'ok'
           })),
+          waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
           verifyReceipt: vi.fn(),
+          findExactDeployOperation: vi.fn(async () => null),
           deploymentEvidence: vi.fn()
         }
       })
