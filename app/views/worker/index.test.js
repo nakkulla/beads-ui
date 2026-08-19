@@ -9817,6 +9817,29 @@ describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
     };
   }
 
+  /**
+   * One durable analyzer run record, as the snapshot pushes it.
+   *
+   * @param {any} [over]
+   */
+  function analysisRun(over = {}) {
+    return {
+      run_id: 'analysis-1000-1',
+      session_id: 'sess-12345678',
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      target_ids: ['A'],
+      started_at: 1000,
+      ended_at: null,
+      outcome: 'success',
+      reason: null,
+      diagnostic: null,
+      prompt_saved: true,
+      ...over
+    };
+  }
+
   test('renders the analysis button in the control bar', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
@@ -9969,6 +9992,89 @@ describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
       mount.querySelector('#worker-parallel-analysis-dialog')
     );
     expect(dialog.hasAttribute('open') || dialog.open).toBe(true);
+  });
+
+  test('opens the shared transcript drawer for an analysis run', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf({ runs: [analysisRun()] });
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn(async () => ({ qualified: [], excluded: [] }))
+    });
+    queueStore.set(analysisQueue());
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    ).click();
+    await Promise.resolve();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-run-row__monitor')
+    ).click();
+
+    expect(mount.querySelector('.sv__id')?.textContent).toContain(
+      'analysis-1000-1'
+    );
+    expect(
+      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
+    ).toBeNull();
+  });
+
+  test('refreshes an open analysis drawer with a late session id', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf({
+      runs: [analysisRun({ session_id: null })]
+    });
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn(async () => ({ qualified: [], excluded: [] }))
+    });
+    queueStore.set(analysisQueue());
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    ).click();
+    await Promise.resolve();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-run-row__monitor')
+    ).click();
+
+    analysis.set({
+      ...analysis.get(),
+      runs: [analysisRun({ session_id: 'sess-abcdef12' })]
+    });
+
+    expect(mount.querySelector('.sv__session')?.getAttribute('title')).toBe(
+      'sess-abcdef12'
+    );
+  });
+
+  test('closes an open analysis drawer when the workspace snapshot clears', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const analysis = analysisStoreOf({ runs: [analysisRun()] });
+    createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      analysisStore: analysis,
+      transport: vi.fn(async () => ({ qualified: [], excluded: [] }))
+    });
+    queueStore.set(analysisQueue());
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-analysis-btn')
+    ).click();
+    await Promise.resolve();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-run-row__monitor')
+    ).click();
+
+    analysis.set({ ...analysis.get(), runs: [] });
+
+    expect(mount.querySelector('.sv__id')).toBeNull();
   });
 
   test('renders a serial recommendation chip on an eligible parallel row', () => {

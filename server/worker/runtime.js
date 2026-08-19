@@ -22,6 +22,7 @@ import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
 import { createLockManager } from './locks.js';
 import { ANALYZER_RUNNERS } from './parallel-analysis-runner.js';
+import { createParallelAnalysisRunsStore } from './parallel-analysis-runs.js';
 import { createParallelAnalysisStore } from './parallel-analysis-store.js';
 import { createPrObservationStore } from './pr-observations.js';
 import { MANUAL_MERGE_CONTINUATION, createQueueStore } from './queue-store.js';
@@ -48,6 +49,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createReviseParkedStore>} reviseParked
  * @property {ReturnType<typeof createSessionLog>} sessionLog
  * @property {ReturnType<typeof createParallelAnalysisStore>} parallelAnalysis
+ * @property {ReturnType<typeof createParallelAnalysisRunsStore>} parallelAnalysisRuns
  * @property {(fn: () => number) => void} setRunningCountProvider
  * @property {(root_dir: string) => { auto_advance: boolean, running_count: number, auto_merge: boolean, manual_merge_continuation: typeof MANUAL_MERGE_CONTINUATION }} status
  */
@@ -159,6 +161,7 @@ export function createWorkerRuntime() {
     // describe a run that can never happen.
     validateSelection: validateAnalyzerSelection
   });
+  const parallelAnalysisRuns = createParallelAnalysisRunsStore();
   /** @type {() => number} */
   let runningCount = () => 0;
 
@@ -176,6 +179,7 @@ export function createWorkerRuntime() {
     reviseParked,
     sessionLog,
     parallelAnalysis,
+    parallelAnalysisRuns,
     /**
      * @param {() => number} fn
      */

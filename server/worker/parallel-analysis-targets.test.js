@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   PROMPT_SCHEMA_VERSION,
   collectAnalysisSnapshot,
+  describeAnalysisTargets,
   qualifyTargets
 } from './parallel-analysis-targets.js';
 import {
@@ -188,6 +189,37 @@ describe('parallel-analysis target qualification (UI-04vo seam F)', () => {
   });
 });
 
+describe('parallel-analysis target picker', () => {
+  test('lists qualified and open excluded issues with lane overlays', () => {
+    const result = describeAnalysisTargets(
+      [
+        issueOf({ id: 'UI-qualified' }),
+        issueOf({
+          id: 'UI-excluded',
+          metadata: { route: 'quick_fix' }
+        }),
+        issueOf({ id: 'UI-closed', status: 'closed' })
+      ],
+      {
+        queue: [{ bead_id: 'UI-qualified' }],
+        serial_lanes: []
+      }
+    );
+
+    expect(result.qualified[0]).toMatchObject({
+      id: 'UI-qualified',
+      lane: 'parallel'
+    });
+    expect(result.excluded).toEqual([
+      expect.objectContaining({
+        id: 'UI-excluded',
+        reason: 'route',
+        lane: null
+      })
+    ]);
+  });
+});
+
 describe('parallel-analysis snapshot (UI-04vo seam F)', () => {
   const blobs = {
     [`${BASE.sha}:docs/spec.md`]: { oid: 'c'.repeat(40), bytes: 120 }
@@ -303,6 +335,43 @@ describe('parallel-analysis snapshot (UI-04vo seam F)', () => {
     const result = await collectAnalysisSnapshot(input({ issues: [] }));
 
     expect(result.ok).toBe(false);
+    expect(result.reason).toBe('no_targets');
+  });
+
+  test('pins only a requested qualified subset', async () => {
+    const all = await collectAnalysisSnapshot(
+      input({ issues: [issueOf({ id: 'UI-a' }), issueOf({ id: 'UI-b' })] })
+    );
+
+    const subset = await collectAnalysisSnapshot(
+      input({
+        issues: [issueOf({ id: 'UI-a' }), issueOf({ id: 'UI-b' })],
+        target_ids: ['UI-b']
+      })
+    );
+
+    expect(subset.snapshot.target_ids).toEqual(['UI-b']);
+    expect(subset.snapshot.digest).not.toBe(all.snapshot.digest);
+  });
+
+  test('rejects every unqualified requested id without intersecting', async () => {
+    const result = await collectAnalysisSnapshot(
+      input({
+        issues: [
+          issueOf({ id: 'UI-a' }),
+          issueOf({ id: 'UI-x', status: 'closed' })
+        ],
+        target_ids: ['UI-a', 'UI-x', 'UI-missing']
+      })
+    );
+
+    expect(result.reason).toBe('target_not_qualified');
+    expect(result.detail).toEqual(['UI-x', 'UI-missing']);
+  });
+
+  test('rejects an empty requested subset', async () => {
+    const result = await collectAnalysisSnapshot(input({ target_ids: [] }));
+
     expect(result.reason).toBe('no_targets');
   });
 });

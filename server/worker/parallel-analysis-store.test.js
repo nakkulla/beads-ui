@@ -221,12 +221,14 @@ describe('parallel-analysis identity + cache (UI-04vo seam G)', () => {
 
     store.saveLastGood(WS, {
       identity,
-      result: { schema_version: 2, groups: [] }
+      result: { schema_version: 2, groups: [] },
+      target_ids: ['UI-a']
     });
 
     const cache = createParallelAnalysisStore().readCache(WS);
     expect(cache.last_good?.identity).toBe(identity);
     expect(cache.last_good?.result.schema_version).toBe(2);
+    expect(cache.last_good?.target_ids).toEqual(['UI-a']);
     expect(fs.existsSync(parallelAnalysisCachePath(WS))).toBe(true);
   });
 
@@ -246,6 +248,19 @@ describe('parallel-analysis identity + cache (UI-04vo seam G)', () => {
 });
 
 describe('parallel-analysis job lifecycle (UI-04vo seam G)', () => {
+  test('passes the allocated job id to the start callback', () => {
+    const store = createParallelAnalysisStore({ now: () => 1_700 });
+    const start = vi.fn(() => ({
+      done: new Promise(() => {}),
+      cancel: vi.fn()
+    }));
+
+    const job = store.startJob(WS, { identity: 'i1', start });
+
+    expect(start).toHaveBeenCalledWith(job.job_id);
+    expect(job.job_id).toBe('analysis-1700-1');
+  });
+
   test('runs one single-flight job per workspace and joins a duplicate start', async () => {
     const store = createParallelAnalysisStore();
     /** @type {(v: any) => void} */
@@ -288,6 +303,19 @@ describe('parallel-analysis job lifecycle (UI-04vo seam G)', () => {
       effort: 'xhigh',
       started_at: 1_700
     });
+  });
+
+  test('adds a provider session id to the active job', () => {
+    const store = createParallelAnalysisStore();
+    const job = store.startJob(WS, {
+      identity: 'i1',
+      start: () => ({ done: new Promise(() => {}), cancel: vi.fn() })
+    });
+
+    const changed = store.setJobSessionId(WS, job.job_id, 'session-1');
+
+    expect(changed).toBe(true);
+    expect(store.activeJob(WS)?.session_id).toBe('session-1');
   });
 
   test('refuses a concurrent start for a different identity', () => {

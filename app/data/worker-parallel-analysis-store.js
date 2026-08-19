@@ -2,7 +2,8 @@
  * Client-side holder for the latest parallelism-analysis snapshot (UI-04vo §9).
  *
  * Total-state like the queue store: the server pushes the whole channel
- * snapshot (settings, active job, last-good result) and the last one wins.
+ * snapshot (settings, active job, durable run history, last-good result) and
+ * the last one wins.
  * Views subscribe for re-render; nothing is derived here, because every
  * judgment that matters — group eligibility above all — is the server's and
  * travels stamped on the result.
@@ -27,10 +28,23 @@
  * @property {string|null} [model]
  * @property {string|null} [effort]
  * @property {number} [started_at]
+ * @property {string|null} [session_id]
+ * @typedef {Object} AnalysisRun
+ * @property {string} run_id
+ * @property {string|null} session_id
+ * @property {string} runner
+ * @property {string} model
+ * @property {string} effort
+ * @property {number} started_at
+ * @property {number|null} ended_at
+ * @property {'running'|'success'|'failure'|'cancelled'|'interrupted'} outcome
+ * @property {string|null} reason
+ * @property {boolean} prompt_saved
  * @typedef {Object} AnalysisSnapshot
  * @property {AnalysisSettings} settings
  * @property {AnalysisJob|null} job
- * @property {{ identity_digest: string, at: number|null, result: any }|null} last_good
+ * @property {AnalysisRun[]} [runs]
+ * @property {{ identity_digest: string, at: number|null, result: any, target_ids?: string[]|null }|null} last_good
  */
 
 /**

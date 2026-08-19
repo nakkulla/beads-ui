@@ -1360,6 +1360,7 @@ export function bootstrap(root_element) {
         worker_analysis_store.set({
           settings: p.settings,
           job: p.job ?? null,
+          runs: Array.isArray(p.runs) ? p.runs : [],
           last_good: p.last_good ?? null
         });
       } catch {

@@ -270,7 +270,7 @@ function formatAgo(at, now_ms) {
  *   sessionLogStore?: { get: (id: string) => { lines: unknown[], last_event_at?: number|null } | null, subscribe: (fn: () => void) => () => void },
  *   onClose?: () => void
  * }} [options]
- * @returns {{ open: (input: { attempt_id: string, launch_id?: string, meta?: DrawerMeta }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
+ * @returns {{ open: (input: { attempt_id: string, launch_id?: string, meta?: DrawerMeta, hide_prompt?: boolean }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
  */
 export function createTranscriptDrawer(mount_element, options = {}) {
   const { transport, sessionLogStore, onClose } = options;
@@ -281,6 +281,15 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   let launch_id = null;
   /** @type {string | null} */
   let subscription_id = null;
+  /**
+   * Whether the attempt-prompt toggle is suppressed for this session. An
+   * analyzer run has a run id, not an attempt id, so `get-attempt-prompt` would
+   * answer "기록 없음" for a prompt that is actually stored under the analysis
+   * channel — the opener owns that surface instead.
+   *
+   * @type {boolean}
+   */
+  let hide_prompt = false;
   /** @type {DrawerMeta} */
   let meta = {};
   let follow = true;
@@ -721,7 +730,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               >${meta.worktree}</span
             >`
           : ''}
-        ${launch_id
+        ${launch_id || hide_prompt
           ? ''
           : html`<button
               type="button"
@@ -755,7 +764,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           ✕
         </button>
       </div>
-      ${launch_id ? '' : promptTemplate()}
+      ${launch_id || hide_prompt ? '' : promptTemplate()}
       <div class="sv__body">
         ${lines.length === 0
           ? html`<div class="sv__empty">세션 로그 없음</div>`
@@ -898,7 +907,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   mount_element.addEventListener('scroll', onScroll, true);
 
   /**
-   * @param {{ attempt_id: string, launch_id?: string, meta?: DrawerMeta }} input
+   * @param {{ attempt_id: string, launch_id?: string, meta?: DrawerMeta, hide_prompt?: boolean }} input
    */
   function open(input) {
     const next_id = input && input.attempt_id;
@@ -927,6 +936,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       ).catch(() => {});
     }
     meta = input.meta || {};
+    hide_prompt = input.hide_prompt === true;
     follow = true;
     expanded.clear();
     unfolded.clear();
@@ -951,6 +961,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     attempt_id = null;
     launch_id = null;
     subscription_id = null;
+    hide_prompt = false;
     expanded.clear();
     unfolded.clear();
     resetPrompt();
@@ -983,6 +994,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       attempt_id = null;
       launch_id = null;
       subscription_id = null;
+      hide_prompt = false;
       render(html``, mount_element);
     }
   };

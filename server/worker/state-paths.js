@@ -381,3 +381,26 @@ export function parallelAnalysisSettingsPath() {
 export function parallelAnalysisCachePath(workspace_root) {
   return path.join(workspaceStateDir(workspace_root), 'parallel-analysis.json');
 }
+
+/**
+ * Absolute path to a workspace's durable parallel-analysis run history.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/parallel-analysis-runs.json`.
+ */
+export function parallelAnalysisRunsPath(workspace_root) {
+  return path.join(
+    workspaceStateDir(workspace_root),
+    'parallel-analysis-runs.json'
+  );
+}
+
+/**
+ * Absolute directory containing prompts owned by parallel-analysis runs.
+ *
+ * @param {string} workspace_root - Workspace root (relative or absolute).
+ * @returns {string} `$XDG_STATE_HOME/bdui/<slug>/analysis-runs`.
+ */
+export function parallelAnalysisRunDir(workspace_root) {
+  return path.join(workspaceStateDir(workspace_root), 'analysis-runs');
+}

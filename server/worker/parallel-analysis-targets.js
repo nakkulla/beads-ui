@@ -71,12 +71,12 @@ function isRecord(value) {
  *
  * @param {any[]} issues - `bd list --json` style issue rows (dependencies
  * included).
- * @returns {{ targets: AnalysisTarget[], excluded: Array<{ id: string, reason: string }> }}
+ * @returns {{ targets: AnalysisTarget[], excluded: Array<{ id: string, title: string|null, reason: string }> }}
  */
 export function qualifyTargets(issues) {
   /** @type {AnalysisTarget[]} */
   const targets = [];
-  /** @type {Array<{ id: string, reason: string }>} */
+  /** @type {Array<{ id: string, title: string|null, reason: string }>} */
   const excluded = [];
   for (const issue of Array.isArray(issues) ? issues : []) {
     if (!isRecord(issue) || typeof issue.id !== 'string') {
@@ -124,7 +124,11 @@ export function qualifyTargets(issues) {
       return null;
     })();
     if (reason !== null) {
-      excluded.push({ id: issue.id, reason });
+      excluded.push({
+        id: issue.id,
+        title: typeof issue.title === 'string' ? issue.title : null,
+        reason
+      });
       continue;
     }
     const spec_id =
@@ -217,13 +221,40 @@ function laneOverlayOf(queue) {
 }
 
 /**
+ * Build the lightweight target-picker payload without pinning git blobs.
+ *
+ * @param {any[]} issues
+ * @param {any} queue
+ */
+export function describeAnalysisTargets(issues, queue) {
+  const { targets, excluded } = qualifyTargets(issues);
+  const lanes = laneOverlayOf(queue);
+  return {
+    qualified: targets.map((target) => ({
+      id: target.id,
+      title: target.title,
+      route: target.route,
+      spec_id: target.spec_id,
+      plan_path: target.plan_path,
+      lane: lanes[target.id] || null
+    })),
+    excluded: excluded
+      .filter((target) => target.reason !== 'closed')
+      .map((target) => ({
+        ...target,
+        lane: lanes[target.id] || null
+      }))
+  };
+}
+
+/**
  * Collect the immutable analysis snapshot (UI-04vo §6). Fail-closed: an
  * unresolved base or an unreadable REQUIRED artifact aborts the whole
  * collection so a stale cache is preserved instead of being replaced by a
  * partial identity.
  *
- * @param {{ workspace: string, issues: any[], queue: any, base: { ref: string, sha: string|null }, gitRun: (args: string[]) => Promise<{ code: number, stdout: string }> }} input
- * @returns {Promise<{ ok: boolean, snapshot?: any, reason?: string }>}
+ * @param {{ workspace: string, issues: any[], queue: any, base: { ref: string, sha: string|null }, gitRun: (args: string[]) => Promise<{ code: number, stdout: string }>, target_ids?: string[] }} input
+ * @returns {Promise<{ ok: boolean, snapshot?: any, reason?: string, detail?: string[] }>}
  */
 export async function collectAnalysisSnapshot(input) {
   const { workspace, issues, queue, base, gitRun } = input;
@@ -234,7 +265,25 @@ export async function collectAnalysisSnapshot(input) {
   ) {
     return { ok: false, reason: 'base_unresolved' };
   }
-  const { targets, excluded } = qualifyTargets(issues);
+  const qualified = qualifyTargets(issues);
+  let targets = qualified.targets;
+  const excluded = qualified.excluded;
+  if (Array.isArray(input.target_ids)) {
+    const qualified_ids = new Set(targets.map((target) => target.id));
+    const requested_ids = [...new Set(input.target_ids)];
+    const rejected_ids = requested_ids.filter(
+      (target_id) => !qualified_ids.has(target_id)
+    );
+    if (rejected_ids.length > 0) {
+      return {
+        ok: false,
+        reason: 'target_not_qualified',
+        detail: rejected_ids
+      };
+    }
+    const requested = new Set(requested_ids);
+    targets = targets.filter((target) => requested.has(target.id));
+  }
   if (targets.length === 0) {
     return { ok: false, reason: 'no_targets' };
   }

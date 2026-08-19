@@ -104,7 +104,7 @@ export function createParallelAnalysisStore(options = {}) {
   const now = options.now || (() => Date.now());
   const validateSelection = options.validateSelection || (() => true);
   /**
-   * @type {Map<string, { job_id: string, identity: string, runner: string|null, model: string|null, effort: string|null, started_at: number, cancel: () => void, done: Promise<any> }>}
+   * @type {Map<string, { job_id: string, identity: string, runner: string|null, model: string|null, effort: string|null, started_at: number, session_id: string|null, cancel: () => void, done: Promise<any> }>}
    */
   const jobs = new Map();
   let job_seq = 0;
@@ -140,7 +140,12 @@ export function createParallelAnalysisStore(options = {}) {
         ? {
             identity: raw.last_good.identity,
             result: raw.last_good.result,
-            at: typeof raw.last_good.at === 'number' ? raw.last_good.at : null
+            at: typeof raw.last_good.at === 'number' ? raw.last_good.at : null,
+            target_ids: Array.isArray(raw.last_good.target_ids)
+              ? raw.last_good.target_ids.filter(
+                  (target_id) => typeof target_id === 'string'
+                )
+              : null
           }
         : null;
     return { last_good };
@@ -230,14 +235,17 @@ export function createParallelAnalysisStore(options = {}) {
      * Replace the last-good result — the ONLY path that writes it.
      *
      * @param {string} workspace
-     * @param {{ identity: string, result: any }} input
+     * @param {{ identity: string, result: any, target_ids?: string[] }} input
      */
     saveLastGood(workspace, input) {
       persist(parallelAnalysisCachePath(workspace), {
         last_good: {
           identity: input.identity,
           result: input.result,
-          at: now()
+          at: now(),
+          target_ids: Array.isArray(input.target_ids)
+            ? [...input.target_ids]
+            : null
         }
       });
     },
@@ -260,7 +268,8 @@ export function createParallelAnalysisStore(options = {}) {
             runner: job.runner,
             model: job.model,
             effort: job.effort,
-            started_at: job.started_at
+            started_at: job.started_at,
+            session_id: job.session_id
           }
         : null;
     },
@@ -275,7 +284,7 @@ export function createParallelAnalysisStore(options = {}) {
      * (`job_active`) rather than silently served the wrong run.
      *
      * @param {string} workspace
-     * @param {{ identity: string, selection?: { runner: string, model: string, effort: string }, start: () => { done: Promise<any>, cancel: () => void } }} input
+     * @param {{ identity: string, selection?: { runner: string, model: string, effort: string }, start: (job_id: string) => { done: Promise<any>, cancel: () => void } }} input
      * @returns {{ job_id: string, done?: Promise<any>, joined?: true, ok?: false, reason?: string }}
      */
     startJob(workspace, input) {
@@ -287,12 +296,13 @@ export function createParallelAnalysisStore(options = {}) {
         return { job_id: active.job_id, done: active.done, joined: true };
       }
       const job_id = `analysis-${now()}-${++job_seq}`;
-      const handle = input.start();
+      const started_at = now();
+      const handle = input.start(job_id);
       const done = Promise.resolve(handle.done)
         .catch((err) => ({
           ok: false,
           reason: 'run_error',
-          detail: String(err)
+          diagnostic: String(err).slice(0, 200)
         }))
         .then((outcome) => {
           jobs.delete(workspace);
@@ -304,11 +314,28 @@ export function createParallelAnalysisStore(options = {}) {
         runner: input.selection?.runner ?? null,
         model: input.selection?.model ?? null,
         effort: input.selection?.effort ?? null,
-        started_at: now(),
+        started_at,
+        session_id: null,
         cancel: handle.cancel,
         done
       });
       return { job_id, done };
+    },
+
+    /**
+     * Attach a provider session id to the matching active analysis job.
+     *
+     * @param {string} workspace
+     * @param {string} job_id
+     * @param {string} session_id
+     */
+    setJobSessionId(workspace, job_id, session_id) {
+      const job = jobs.get(workspace);
+      if (!job || job.job_id !== job_id || session_id.length === 0) {
+        return false;
+      }
+      job.session_id = session_id;
+      return true;
     },
 
     /**
