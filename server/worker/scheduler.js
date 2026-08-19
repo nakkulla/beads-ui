@@ -552,7 +552,7 @@ export function laneOccupiedByOther(occupancy, lane_id, lineage_id) {
  *   staleWorkRecheck: (workspace: string, input: { bead_id: string, action_id: string, expected_revision: number }) => Promise<{ ok: boolean, reason?: string, state?: string, conflict?: boolean }>,
  *   stop: (workspace: string, attempt_id: string) => Promise<boolean>,
  *   pause: (workspace: string, attempt_id: string) => Promise<{ ok: boolean, reason?: string }>,
- *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
+ *   resume: (workspace: string, attempt_id: string, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   resolveConflict: (workspace: string, bead_id: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   dispatchExternalConflict: (workspace: string, bead_id: string, target_base?: string, resolution_wait?: { queue_bead_id: string, wait_ms: number }|null, continuation?: { continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }) => Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>,
  *   queueConflictBlocked: (workspace: string, queue_bead_id: string, subject_bead_id: string) => boolean,
@@ -4910,7 +4910,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {string} attempt_id - The prior (paused/failed/orphaned) attempt.
-   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, preclaimed?: boolean }} [continuation]
+   * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string, preclaimed?: boolean }} [continuation]
    * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
    */
   async function resume(workspace, attempt_id, continuation = {}) {
@@ -4981,8 +4981,14 @@ export function createScheduler(deps) {
       recordSkipReason(workspace, bead_id, reason);
       return { ok: false, reason };
     }
+    const default_prompt = resumePrompt(bead_id, prior.status ?? null);
+    const prompt =
+      typeof continuation.instructions === 'string' &&
+      continuation.instructions.length > 0
+        ? `${default_prompt}\n\n사용자가 이번 재개에 추가 지침을 남겼다. 아래 지침이 위 기본 절차와 충돌하면 지침을 우선하라.\n${continuation.instructions}`
+        : default_prompt;
     const result = await relaunchFromAttempt(workspace, prior, {
-      prompt: resumePrompt(bead_id, prior.status ?? null),
+      prompt,
       conflict_resolution: prior.conflict_resolution === true,
       completion_resume: true,
       repair_operation_id: prior.repair_operation_id ?? null,

@@ -2,6 +2,7 @@ import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
+import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { showToast } from '../../utils/toast.js';
 import {
   providerUsageBadges,
@@ -542,17 +543,25 @@ export function createDetailPanel(mount_element, options) {
     if (!transport || !attempt_id) {
       return;
     }
+    const instructions = await requestResumeInstructions();
+    if (instructions === null) {
+      return;
+    }
     /** @returns {number} */
     const revision = () => {
       const q = queueStore ? queueStore.get() : null;
       return q && typeof q.revision === 'number' ? q.revision : 0;
     };
-    /** @param {Record<string, unknown>} extra */
-    const send = async (extra = {}) =>
+    /**
+     * @param {Record<string, unknown>} extra
+     * @param {number} [expected_revision]
+     */
+    const send = async (extra = {}, expected_revision = revision()) =>
       /** @type {any} */ (
         await transport('worker-attempt-resume', {
           attempt_id,
-          expected_revision: revision(),
+          expected_revision,
+          ...(instructions !== '' ? { instructions } : {}),
           ...extra
         })
       );
@@ -571,12 +580,7 @@ export function createDetailPanel(mount_element, options) {
         res.queue && typeof res.queue.revision === 'number'
           ? res.queue.revision
           : revision();
-      res = /** @type {any} */ (
-        await transport('worker-attempt-resume', {
-          attempt_id,
-          expected_revision: fresh
-        })
-      );
+      res = await send({}, fresh);
       adopt(res);
     }
     res = await resolveContinuationMismatch(

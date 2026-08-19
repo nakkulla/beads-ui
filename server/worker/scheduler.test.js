@@ -3958,7 +3958,30 @@ describe('scheduler resume (spec §1)', () => {
 
     expect((await env.scheduler.resume(WS, 'f1')).ok).toBe(true);
 
-    expect(env.runner.spawnedBead('B1').prompt).toContain('실패로 남았다');
+    expect(env.runner.spawnedBead('B1').prompt).toBe(
+      [
+        '이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead B1).',
+        '같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라.',
+        '이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.'
+      ].join(' ')
+    );
+  });
+
+  test('appends user instructions to the existing resume prompt', async () => {
+    const env = setup({ config: {}, slots: 1 });
+    seedAttempt(env.store, 'f1', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'f1', {
+      instructions: '실패 로그를 먼저 확인하라.'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.spawnedBead('B1').prompt).toBe(
+      [
+        '이전 무인 세션이 완료 전에 중단되어 attempt가 실패로 남았다(bead B1). 같은 워크트리에서 세션을 이어 진행한다. 먼저 워크트리·bead 상태·PR/머지 현황을 직접 점검해 어디까지 진행됐는지 확인하라. 이미 끝난 단계는 반복하지 말고, 남은 계약 단계만 마무리한 뒤 종료하라.',
+        '사용자가 이번 재개에 추가 지침을 남겼다. 아래 지침이 위 기본 절차와 충돌하면 지침을 우선하라.\n실패 로그를 먼저 확인하라.'
+      ].join('\n\n')
+    );
   });
 
   test('refuses worktree_missing when the bead worktree is gone', async () => {
