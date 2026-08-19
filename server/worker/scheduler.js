@@ -279,6 +279,7 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
  * @property {string|null} [title] - Issue title, for the start notification.
+ * @property {string|null} [description] - Issue description. The quick_fix route's only admission input (admission.js §4).
  * @property {string[]} [labels] - Normalized live Bead labels.
  * @property {string|null} [spec_id] - Native-first spec doc path (admission input).
  * @property {boolean} [spec_id_conflict] - Native and legacy metadata paths differ.

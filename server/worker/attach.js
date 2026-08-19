@@ -321,6 +321,8 @@ export function createLiveBd(config) {
         route,
         status,
         title: typeof issue.title === 'string' ? issue.title : null,
+        description:
+          typeof issue.description === 'string' ? issue.description : null,
         labels: workerLabels(issue.labels),
         spec_id,
         spec_id_conflict: spec.conflict,
@@ -500,6 +502,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         base_label: snap.target_base,
         bead: {
           route: snap.route,
+          description: snap.description,
           spec_id: snap.spec_id,
           spec_id_conflict: snap.spec_id_conflict,
           spec_review: snap.spec_review,
