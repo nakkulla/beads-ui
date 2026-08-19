@@ -500,7 +500,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -584,6 +584,7 @@ function setup(opts) {
     bd,
     worktree,
     verify,
+    quickfixLanding: opts.quickfixLanding,
     sessionLog,
     usage,
     usageReceipts: opts.usageReceipts,
@@ -8078,6 +8079,116 @@ describe('scheduler already-finished verify verdict (UI-b8n8 §접근 B)', () =>
   });
 });
 
+describe('scheduler quick_fix landing settlement', () => {
+  test('settles a successful session without PR observation or pr_wait', async () => {
+    const notify = {
+      attemptStarted: vi.fn(),
+      attemptFailed: vi.fn(),
+      prWaitEntered: vi.fn()
+    };
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = setup({
+      config: { S1: { route: 'quick_fix', target_base: 'release' } },
+      slots: 1,
+      notify,
+      quickfixLanding: { settle }
+    });
+    const moveToPrWait = vi.spyOn(env.store, 'moveToPrWait');
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledWith({
+      attempt_id: 'S1-1000-1',
+      bead_id: 'S1',
+      target_base: 'release'
+    });
+    expect(moveToPrWait).not.toHaveBeenCalled();
+    expect(notify.prWaitEntered).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].status).toBe('done');
+  });
+
+  test('records the landing reason when settlement fails', async () => {
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: {
+        settle: vi.fn(async () => ({
+          ok: false,
+          reason: 'head_mismatch',
+          step: null
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'quickfix_landing_failed:head_mismatch'
+    );
+  });
+
+  test('fails closed when landing wiring is absent', async () => {
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'quickfix_landing_unavailable'
+    );
+  });
+
+  test('does not settle a failed quick_fix session', async () => {
+    const settle = vi.fn(async () => ({ ok: true }));
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'result_count',
+      exit: 1
+    });
+    await flush();
+    await flush();
+
+    expect(settle).not.toHaveBeenCalled();
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(
+      'session_failed:result_count'
+    );
+  });
+});
+
 describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
   /**
    * Persist a `running` attempt exactly as a PRIOR process left it: the durable
@@ -8202,6 +8313,37 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     const snap = env.store.snapshot(WS);
     expect(snap.attempts['att-1'].status).toBe('done');
     expect(snap.pr_wait.map((e) => e.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('settles a detached quick_fix attempt through landing', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = reconcileEnv({ alive: false, started_at: null }, undefined, {
+      quickfixLanding: { settle }
+    });
+    seedDetachedAttempt(env.store, {
+      quickfix_lane: true,
+      target_base: 'release'
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(env.verify.verifyPrSubmitted).not.toHaveBeenCalled();
+    expect(settle).toHaveBeenCalledWith({
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      target_base: 'release'
+    });
+    expect(env.store.snapshot(WS).pr_wait).toEqual([]);
+    expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
   });
 
   test('does not halt the queue when it recovers a normal completion', async () => {
@@ -9951,8 +10093,43 @@ describe('guard hook wiring — prevention layer (UI-8mvc §2)', () => {
     };
   }
 
-  test('delivers the three GIT_CONFIG keys to the spawned session', async () => {
-    const env = setup({ config: { S1: {} }, slots: 1 });
+  test('skips the hook and records quick_fix lane settings', async () => {
+    const guardHook = {
+      install: vi.fn(() => ({ ok: true })),
+      envFor: vi.fn(() => ({ GIT_CONFIG_COUNT: '1' })),
+      remove: vi.fn(() => true)
+    };
+    const env = setup({
+      config: { S1: { route: 'quick_fix' } },
+      slots: 1,
+      guardHook
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(guardHook.install).not.toHaveBeenCalled();
+    expect(guardHook.envFor).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].quickfix_lane).toBe(
+      true
+    );
+    expect(env.runner.settingsFor('S1').quickfix_lane).toBe(true);
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'GIT_CONFIG_COUNT'
+    );
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'GIT_CONFIG_KEY_0'
+    );
+    expect(env.runner.settingsFor('S1').env).not.toHaveProperty(
+      'GIT_CONFIG_VALUE_0'
+    );
+  });
+
+  test('keeps the hook and GIT_CONFIG env for spec_backed dispatch', async () => {
+    const env = setup({
+      config: { S1: { route: 'spec_backed' } },
+      slots: 1
+    });
     seedQueue(env.store, ['S1']);
 
     await env.scheduler.tick(WS);
