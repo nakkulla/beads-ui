@@ -2522,7 +2522,7 @@ export async function handleWorkerAttemptStop(ws, req) {
 
 /**
  * Handle `worker-attempt-resume`. Payload:
- * `{ attempt_id, expected_revision, continuation?, decision_token? }`.
+ * `{ attempt_id, expected_revision, continuation?, decision_token?, instructions? }`.
  * Manually resumes (↻ / paused tile ▶) a paused, failed, or orphaned attempt in
  * its existing worktree (spec §1) under the SAME CAS revision contract as the
  * queue mutations: a stale `expected_revision` replies `conflict:true` with the
@@ -2582,6 +2582,19 @@ export async function handleWorkerAttemptResume(ws, req) {
     );
     return;
   }
+  if (
+    p.instructions !== undefined &&
+    (typeof p.instructions !== 'string' || p.instructions.length > 4000)
+  ) {
+    ws.send(
+      JSON.stringify(makeError(req, 'bad_request', 'invalid instructions'))
+    );
+    return;
+  }
+  const instructions =
+    typeof p.instructions === 'string' && p.instructions.trim().length > 0
+      ? p.instructions.trim()
+      : undefined;
   const key = mutationWorkspaceOf(ws, req);
   if (key === null) {
     return;
@@ -2607,7 +2620,8 @@ export async function handleWorkerAttemptResume(ws, req) {
   try {
     result = await resumeWorkerAttempt(key, p.attempt_id, {
       continuation: p.continuation,
-      decision_token: p.decision_token
+      decision_token: p.decision_token,
+      instructions
     });
   } catch (err) {
     log('worker-attempt-resume failed for %s/%s: %o', key, p.attempt_id, err);

@@ -1369,6 +1369,9 @@ describe('views/worker', () => {
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
     ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
     await flush();
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
       attempt_id: 'failed',
@@ -1376,10 +1379,21 @@ describe('views/worker', () => {
     });
   });
 
-  test('retries a runner mismatch only after the user selects a continuation', async () => {
+  test('preserves instructions through initial, conflict, and continuation sends', async () => {
     const decision_token = { source_attempt_id: 'failed', digest: 'one' };
+    const failed_attempt = {
+      attempt_id: 'failed',
+      bead_id: 'FAILED',
+      status: 'failed',
+      session_id: 'sid-failed'
+    };
     const transport = vi
       .fn()
+      .mockResolvedValueOnce({
+        resumed: false,
+        conflict: true,
+        queue: queueOf({ revision: 9, attempts: { failed: failed_attempt } })
+      })
       .mockResolvedValueOnce({
         resumed: false,
         conflict: false,
@@ -1395,14 +1409,7 @@ describe('views/worker', () => {
     const mount = mountAttemptTiles(
       {
         revision: 7,
-        attempts: {
-          failed: {
-            attempt_id: 'failed',
-            bead_id: 'FAILED',
-            status: 'failed',
-            session_id: 'sid-failed'
-          }
-        }
+        attempts: { failed: failed_attempt }
       },
       transport
     );
@@ -1410,20 +1417,49 @@ describe('views/worker', () => {
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.rtile[data-attempt-id="failed"] .rtile__resume')
     ).click();
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    textarea.value = '  로그부터 확인  ';
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
     await flush();
-    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport).toHaveBeenCalledTimes(2);
 
     /** @type {HTMLButtonElement} */ (
       document.querySelectorAll('.continuation-dialog button')[1]
     ).click();
     await flush();
 
-    expect(transport).toHaveBeenLastCalledWith('worker-attempt-resume', {
-      attempt_id: 'failed',
-      expected_revision: 7,
-      continuation: 'fresh_current',
-      decision_token
-    });
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'failed',
+          expected_revision: 7,
+          instructions: '로그부터 확인'
+        }
+      ],
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'failed',
+          expected_revision: 9,
+          instructions: '로그부터 확인'
+        }
+      ],
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'failed',
+          expected_revision: 9,
+          instructions: '로그부터 확인',
+          continuation: 'fresh_current',
+          decision_token
+        }
+      ]
+    ]);
   });
 
   test('sends the failed tile dismiss payload with the current revision', async () => {
@@ -1723,6 +1759,9 @@ describe('views/worker', () => {
     await flush();
     /** @type {HTMLButtonElement} */ (
       mount.querySelector('.rtile[data-attempt-id="live"] .rtile__resume')
+    ).click();
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
     ).click();
     await flush();
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
@@ -2659,7 +2698,7 @@ describe('views/worker', () => {
     );
   });
 
-  test('failure banner ↻ resumes the newest eligible failed attempt (§1)', () => {
+  test('failure banner ↻ resumes the newest eligible failed attempt (§1)', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -2691,6 +2730,10 @@ describe('views/worker', () => {
       mount.querySelector('.worker-banner--failure .worker-banner__discard')
     ).not.toBeNull();
     btn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await flush();
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
       attempt_id: 'f1',
       expected_revision: 1

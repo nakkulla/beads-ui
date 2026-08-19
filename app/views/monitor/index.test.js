@@ -487,6 +487,89 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     ]);
   });
 
+  test('preserves resume instructions through initial, conflict, and continuation sends', async () => {
+    const decision_token = { source_attempt_id: 'a1', digest: 'one' };
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({ conflict: true, queue: { revision: 77 } })
+      .mockResolvedValueOnce({
+        resumed: false,
+        conflict: false,
+        reason: 'runner_mismatch',
+        continuation_mismatch: {
+          prior_available: true,
+          prior: { runner: 'codex', model: 'sol' },
+          current: { runner: 'claude', model: 'opus' },
+          decision_token
+        }
+      })
+      .mockResolvedValueOnce({ resumed: true, conflict: false });
+    const { mount, view } = setup({
+      transport,
+      workspaces: [
+        workspace({
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-run',
+              status: 'paused',
+              session_id: 's1',
+              started_at: NOW - 1_000
+            }
+          }
+        })
+      ],
+      workspaces_state: [state({ revision: 2 })]
+    });
+    view.load();
+
+    click(mount, '#monitor-running .mon-op--resume');
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    textarea.value = '  변경 파일부터 검토  ';
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.continuation-dialog button')[1]
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(3));
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'a1',
+          instructions: '변경 파일부터 검토',
+          root_dir: WS_A,
+          expected_revision: 2
+        }
+      ],
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'a1',
+          instructions: '변경 파일부터 검토',
+          root_dir: WS_A,
+          expected_revision: 77
+        }
+      ],
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'a1',
+          instructions: '변경 파일부터 검토',
+          continuation: 'fresh_current',
+          decision_token,
+          root_dir: WS_A,
+          expected_revision: 77
+        }
+      ]
+    ]);
+  });
+
   test('uses the shared unmerged confirmation and worker-discard action', () => {
     const { mount, view, sent, confirmFn } = setup({
       workspaces: [

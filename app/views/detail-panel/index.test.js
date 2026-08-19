@@ -781,7 +781,7 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
-  test('session-history: only the newest eligible leaf gets an active ↻ 이어하기; ancestor/pre-session-id disabled; ↻ badge on resume attempts (§1)', () => {
+  test('session-history: only the newest eligible leaf gets an active ↻ 이어하기; ancestor/pre-session-id disabled; ↻ badge on resume attempts (§1)', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -848,12 +848,117 @@ describe('views/detail-panel', () => {
 
     // Clicking the active button fires the resume mutation (and does NOT open
     // the transcript drawer — it is a sibling, not the row button).
+    transport.mockClear();
     resumeBtn('kid').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(1));
     expect(transport).toHaveBeenCalledWith('worker-attempt-resume', {
       attempt_id: 'kid',
       expected_revision: 1
     });
 
+    panel.destroy();
+  });
+
+  test('session-history preserves instructions through initial, conflict, and continuation sends', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const attempt = {
+      attempt_id: 'kid',
+      bead_id: 'UI-1',
+      status: 'failed',
+      session_id: 'sid-kid',
+      started_at: 3000
+    };
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: { kid: attempt }
+      })
+    );
+    const decision_token = { source_attempt_id: 'kid', digest: 'one' };
+    const transport = vi.fn().mockResolvedValue({});
+    const panel = createDetailPanel(mount, {
+      queueStore,
+      transport,
+      onClose: vi.fn()
+    });
+    panel.load('UI-1');
+    transport
+      .mockReset()
+      .mockResolvedValueOnce({
+        resumed: false,
+        conflict: true,
+        queue: {
+          revision: 7,
+          auto_advance: false,
+          queue: [],
+          done: [],
+          attempts: { kid: attempt }
+        }
+      })
+      .mockResolvedValueOnce({
+        resumed: false,
+        conflict: false,
+        reason: 'runner_mismatch',
+        continuation_mismatch: {
+          prior_available: true,
+          prior: { runner: 'codex', model: 'sol' },
+          current: { runner: 'claude', model: 'opus' },
+          decision_token
+        }
+      })
+      .mockResolvedValueOnce({ resumed: true, conflict: false });
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-session__resume[data-attempt-id="kid"]')
+    ).click();
+    const textarea = /** @type {HTMLTextAreaElement} */ (
+      document.querySelector('.resume-instructions-dialog textarea')
+    );
+    textarea.value = '  테스트부터 실행  ';
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('.resume-instructions-dialog button')
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
+    /** @type {HTMLButtonElement} */ (
+      document.querySelectorAll('.continuation-dialog button')[1]
+    ).click();
+    await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(3));
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'kid',
+          expected_revision: 1,
+          instructions: '테스트부터 실행'
+        }
+      ],
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'kid',
+          expected_revision: 7,
+          instructions: '테스트부터 실행'
+        }
+      ],
+      [
+        'worker-attempt-resume',
+        {
+          attempt_id: 'kid',
+          expected_revision: 7,
+          instructions: '테스트부터 실행',
+          continuation: 'fresh_current',
+          decision_token
+        }
+      ]
+    ]);
     panel.destroy();
   });
 
