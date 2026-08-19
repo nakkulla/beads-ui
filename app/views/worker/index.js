@@ -599,9 +599,19 @@ export function mergeQueueRefusalText(reason) {
  * @returns {string|null}
  */
 export function mergeWaitingText(reason) {
-  return reason === 'worker_sessions_busy'
-    ? '해소 대기 — 실행 슬롯 대기 중'
-    : null;
+  if (reason === 'worker_sessions_busy') {
+    return '해소 대기 — 실행 슬롯 대기 중';
+  }
+  if (typeof reason !== 'string' || !reason.startsWith('completion_waiting:')) {
+    return null;
+  }
+  const phase = reason.slice('completion_waiting:'.length);
+  if (phase.length === 0) {
+    return null;
+  }
+  return phase === 'needs_human'
+    ? '완료 의도 대기 — 사람 확인 필요'
+    : `완료 의도 대기 — ${phase}`;
 }
 
 /**

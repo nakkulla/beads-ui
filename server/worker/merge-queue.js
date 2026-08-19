@@ -117,7 +117,8 @@ function repairFence(q) {
  * by bead_id. Non-durable: a restart clears it, which is correct — the reason
  * described one run of one click.
  * @property {{ bead_id: string, reason: string }|null} waiting - Why one
- * nonterminal item is deferred. Non-durable and re-derived after restart.
+ * nonterminal item is deferred (`worker_sessions_busy` or
+ * `completion_waiting:<phase>`). Non-durable and re-derived after restart.
  */
 
 /**
@@ -199,7 +200,7 @@ export function createMergeQueue(deps) {
    * @type {string|null}
    */
   let halted_on_head = null;
-  /** @type {string|null} */
+  /** @type {{ bead_id: string, phase: string }|null} */
   let halted_on_completion = null;
   /** @type {string|null} */
   let halted_on_repair = null;
@@ -1325,8 +1326,12 @@ export function createMergeQueue(deps) {
       }
     }
     if (queuedEntry(root_bead_id)) {
+      const intent = completionIntent(root_bead_id);
       halted = true;
-      halted_on_completion = root_bead_id;
+      halted_on_completion = {
+        bead_id: root_bead_id,
+        phase: typeof intent?.phase === 'string' ? intent.phase : 'unknown'
+      };
     }
     notify();
   }
@@ -1342,7 +1347,10 @@ export function createMergeQueue(deps) {
   async function processCompletionItem(root_bead_id, intent) {
     if (intent.phase !== 'merging') {
       halted = true;
-      halted_on_completion = root_bead_id;
+      halted_on_completion = {
+        bead_id: root_bead_id,
+        phase: intent.phase
+      };
       return;
     }
     const subject_bead_id = intent.subject?.bead_id;
@@ -2049,7 +2057,7 @@ export function createMergeQueue(deps) {
             }
           }
           if (halted_on_completion) {
-            const root_bead_id = halted_on_completion;
+            const root_bead_id = halted_on_completion.bead_id;
             const intent = completionIntent(root_bead_id);
             if (
               !queuedEntry(root_bead_id) ||
@@ -2116,12 +2124,18 @@ export function createMergeQueue(deps) {
       return {
         active,
         failures: Object.fromEntries(failures),
+        // A resolver slot fence is more specific when transient halts overlap.
         waiting: halted_on_conflict
           ? {
               bead_id: halted_on_conflict.queue_bead_id,
               reason: 'worker_sessions_busy'
             }
-          : null
+          : halted_on_completion
+            ? {
+                bead_id: halted_on_completion.bead_id,
+                reason: `completion_waiting:${halted_on_completion.phase}`
+              }
+            : null
       };
     },
 

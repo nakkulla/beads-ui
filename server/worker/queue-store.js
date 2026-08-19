@@ -588,6 +588,9 @@
  * @property {number} at
  */
 /**
+ * @typedef {CompletionTerminal & { resumed_at: number }} CompletionResumedTerminal
+ */
+/**
  * @typedef {Object} CompletionIntent
  * @property {string} target_base
  * @property {CompletionPhase} phase
@@ -598,6 +601,7 @@
  * after a nested linked repair merges, oldest first.
  * @property {CompletionOperation|null} active_op
  * @property {CompletionTerminal|null} terminal_reason
+ * @property {CompletionResumedTerminal} [resumed_terminal]
  */
 /**
  * @typedef {Object} QueueOpResult
@@ -878,6 +882,23 @@ function normalizeCompletionTerminal(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {CompletionResumedTerminal|null}
+ */
+function normalizeCompletionResumedTerminal(value) {
+  const terminal = normalizeCompletionTerminal(value);
+  if (
+    !terminal ||
+    !isRecord(value) ||
+    typeof value.resumed_at !== 'number' ||
+    !Number.isFinite(value.resumed_at)
+  ) {
+    return null;
+  }
+  return { ...terminal, resumed_at: value.resumed_at };
+}
+
+/**
  * Preserve a malformed record as a terminal saga instead of dropping it and
  * silently granting a fresh repair budget on the next intake.
  *
@@ -963,6 +984,9 @@ function normalizeCompletionIntent(root_bead_id, value) {
     value.terminal_reason === null
       ? null
       : normalizeCompletionTerminal(value.terminal_reason);
+  const resumed_terminal = normalizeCompletionResumedTerminal(
+    value.resumed_terminal
+  );
   const valid_repair_ids =
     repair_bead_ids !== null &&
     repair_bead_ids.every(
@@ -995,7 +1019,7 @@ function normalizeCompletionIntent(root_bead_id, value) {
   ) {
     return invalidCompletionIntent(root_bead_id, value);
   }
-  return {
+  const normalized = {
     target_base: value.target_base,
     phase: /** @type {CompletionPhase} */ (phase),
     subject,
@@ -1005,6 +1029,7 @@ function normalizeCompletionIntent(root_bead_id, value) {
     active_op,
     terminal_reason
   };
+  return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
 }
 
 /**
@@ -5925,6 +5950,20 @@ export function createQueueStore(options = {}) {
               reason = 'lane_occupied';
             }
             continue;
+          }
+          const intent = next.completion_intents[bead_id];
+          if (
+            intent?.phase === 'needs_human' &&
+            intent.terminal_reason !== null
+          ) {
+            intent.resumed_terminal = {
+              ...intent.terminal_reason,
+              resumed_at: now()
+            };
+            intent.phase =
+              intent.subject.merged_sha === null ? 'gating' : 'cleaning';
+            intent.terminal_reason = null;
+            changed += 1;
           }
           if (next.auto_merge_skips[bead_id]) {
             delete next.auto_merge_skips[bead_id];
