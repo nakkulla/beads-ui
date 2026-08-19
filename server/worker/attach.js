@@ -594,7 +594,11 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     locks: runtime.locks,
     gitRun,
-    repairSession
+    repairSession,
+    async onRepairLaneAdvanced() {
+      emitQueueChanged(keyFor(workspace_root));
+      await scheduler.tick(keyFor(workspace_root));
+    }
   });
   // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
   // bd writer is the same metadata adapter the scheduler uses (extended with
@@ -712,6 +716,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         reviseDisposition?.release(bead_id);
       }
     },
+    repairSession,
     onCompletionAttemptSettled(input) {
       return completionIntent
         ? completionIntent.attemptSettled(input)

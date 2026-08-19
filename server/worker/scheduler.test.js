@@ -500,7 +500,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -563,6 +563,21 @@ function setup(opts) {
   };
   const sessionLog = opts.sessionLog || { attach: vi.fn() };
   const usage = opts.usage === null ? undefined : createUsageStore();
+  const gitRun =
+    opts.gitRun ||
+    vi.fn(async (args, options = {}) => {
+      if (args.includes('--abbrev-ref')) {
+        return {
+          code: 0,
+          stdout: `${path.basename(options.cwd || '')}\n`,
+          stderr: ''
+        };
+      }
+      if (args[0] === 'ls-remote') {
+        return { code: 0, stdout: '', stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    });
   const scheduler = createScheduler({
     store,
     makeRunner: opts.makeRunner || runner.factory,
@@ -576,6 +591,7 @@ function setup(opts) {
     resolveBase: opts.resolveBase,
     notify: opts.notify,
     disposition: opts.disposition,
+    repairSession: opts.repairSession,
     // Absent by default: the external registry is a live-wiring dep, and a
     // scheduler built without it must refuse the external dispatch outright.
     externalPrs: opts.externalPrs
@@ -595,7 +611,8 @@ function setup(opts) {
     // The post-hoc base observation's two runners (UI-8mvc §3). Absent by
     // default: a scheduler built without them records the observation as
     // undone rather than judging an attempt it could not observe.
-    gitRun: opts.gitRun,
+    gitRun,
+    fs: opts.fs || { existsSync: () => true },
     notifyQueueChanged: opts.notifyQueueChanged,
     onCompletionAttemptSettled: opts.onCompletionAttemptSettled,
     now: () => 1000
@@ -731,13 +748,19 @@ function seedCompletionIntent(store, repair_bead_id = null) {
 }
 
 describe('scheduler completion repair dispatch', () => {
-  /** @returns {any} */
-  function ownedGit() {
+  /**
+   * @param {() => void} [on_branch_tip]
+   * @returns {any}
+   */
+  function ownedGit(on_branch_tip) {
     return vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') {
         return { code: 0, stdout: 'B1\n', stderr: '' };
       }
       if (args[0] === 'rev-parse' && args[1].startsWith('refs/heads/')) {
+        if (on_branch_tip) {
+          on_branch_tip();
+        }
         return { code: 0, stdout: `${'d'.repeat(40)}\n`, stderr: '' };
       }
       return { code: 0, stdout: '', stderr: '' };
@@ -831,6 +854,90 @@ describe('scheduler completion repair dispatch', () => {
         subject_sha: merged_sha
       }
     });
+  });
+
+  test('refuses a vanished completion resume after the final branch-tip await', async () => {
+    let present = true;
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      gitRun: ownedGit(() => {
+        present = false;
+      }),
+      fs: { existsSync: () => present },
+      slots: 1
+    });
+    seedCompletionIntent(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'missing-resume-op',
+        kind: 'resume_root',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'missing-resume-attempt',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const live = env.store.snapshot(WS);
+    const cold = createQueueStore().snapshot(WS);
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(live.auto_advance).toBe(true);
+    expect(cold.attempts['missing-resume-attempt']).toMatchObject({
+      status: 'failed',
+      cause: 'worktree_missing',
+      dismissed_at: 1000
+    });
+    expect(
+      Object.values(cold.attempts).filter(
+        (attempt) => attempt.status === 'running'
+      )
+    ).toEqual([]);
+    expect(
+      fs.existsSync(usageReceiptInboxDir(WS, 'missing-resume-attempt'))
+    ).toBe(false);
+  });
+
+  test('ends a vanished closed completion resume as repair_target_resolved', async () => {
+    const env = setup({
+      config: { B1: { status: 'closed' } },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedCompletionIntent(env.store);
+    env.store.setAutoAdvance(WS, true);
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op: {
+        op_id: 'closed-resume-op',
+        kind: 'resume_root',
+        failure_key: COMPLETION_FAILURE,
+        attempt_id: 'closed-resume-attempt',
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const live = env.store.snapshot(WS);
+    const cold = createQueueStore().snapshot(WS);
+    expect(result).toEqual({ ok: false, reason: 'repair_target_resolved' });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(live.auto_advance).toBe(true);
+    expect(cold.attempts['closed-resume-attempt']).toMatchObject({
+      status: 'failed',
+      cause: 'repair_target_resolved',
+      dismissed_at: 1000
+    });
+    expect(
+      Object.values(cold.attempts).filter(
+        (attempt) => attempt.status === 'running'
+      )
+    ).toEqual([]);
   });
 
   test('falls back to a fresh same-Bead session only with owned worktree proof', async () => {
@@ -2269,6 +2376,150 @@ describe('scheduler happy path (dispatch → PR observation → pr_wait)', () =>
 });
 
 describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker)', () => {
+  test('dismisses a moot repair failure without halting auto advance', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
+    };
+    const env = setup({
+      config: { S1: {}, S2: {} },
+      slots: 1,
+      repairSession
+    });
+    seedLanes(env.store, { parallel: ['S1'], s1: ['S2'] });
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.dropFromQueue(WS, { bead_id: 'S1' });
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { repair_operation_id: 'cleanup:S1' }
+    });
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    const snapshot = env.store.snapshot(WS);
+    expect(snapshot.auto_advance).toBe(true);
+    expect(snapshot.attempts[attempt_id]).toMatchObject({
+      status: 'failed',
+      cause: 'session_failed:subtype',
+      dismissed_at: 1000,
+      halted_auto_advance: false
+    });
+    expect(repairSession.judge).toHaveBeenCalledWith({
+      workspace: WS,
+      operation_id: 'cleanup:S1'
+    });
+    expect(env.runner.spawnOrder).toEqual(['S1', 'S2']);
+  });
+
+  test('halts an unresolved repair failure and records responsibility', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, repairSession });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { repair_operation_id: 'cleanup:S1' }
+    });
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS)).toMatchObject({
+      auto_advance: false,
+      attempts: {
+        [attempt_id]: {
+          dismissed_at: null,
+          halted_auto_advance: true
+        }
+      }
+    });
+  });
+
+  test('preserves an existing dismissal on a non-moot failure', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { dismissed_at: 777 }
+    });
+
+    env.runner.finish('S1', { success: false, reason: 'subtype', exit: 1 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).attempts[attempt_id].dismissed_at).toBe(777);
+  });
+
+  test('preserves an existing dismissal when runner spawn fails', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    env = setup({
+      config: { S1: {} },
+      slots: 1,
+      makeRunner: () => ({
+        name: 'claude',
+        spawn() {
+          const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+          env.store.updateAttempt(WS, {
+            attempt_id,
+            patch: { dismissed_at: 777 }
+          });
+          throw new Error('spawn failed');
+        }
+      })
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt).toMatchObject({
+      status: 'failed',
+      cause: 'spawn_failed',
+      dismissed_at: 777
+    });
+  });
+
+  test('keeps a blocker visible when its repair target is closed', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
+    };
+    const env = setup({ config: { S1: {} }, slots: 1, repairSession });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+    const attempt_id = Object.keys(env.store.snapshot(WS).attempts)[0];
+    env.store.updateAttempt(WS, {
+      attempt_id,
+      patch: { repair_operation_id: 'cleanup:S1' }
+    });
+
+    env.runner.finish('S1', {
+      success: false,
+      reason: 'blocker',
+      blocked: true,
+      exit: 143
+    });
+    await flush();
+    await flush();
+
+    const snapshot = env.store.snapshot(WS);
+    expect(snapshot.auto_advance).toBe(false);
+    expect(snapshot.attempts[attempt_id]).toMatchObject({
+      cause: 'loud_fail_blocker',
+      dismissed_at: null,
+      halted_auto_advance: true
+    });
+    expect(repairSession.judge).not.toHaveBeenCalled();
+  });
+
   test('failed session turns auto_advance OFF and leaves a banner-ready record', async () => {
     const env = setup({ config: { S1: {} }, slots: 1 });
     seedQueue(env.store, ['S1']);
@@ -3297,6 +3548,237 @@ describe('scheduler resume (spec §1)', () => {
       ...over
     };
   }
+
+  /**
+   * @param {() => void} [onBranchTip]
+   */
+  function ownedWorktreeGit(onBranchTip = () => {}) {
+    return vi.fn(async (args) => {
+      if (args.includes('--abbrev-ref')) {
+        return { code: 0, stdout: 'B1\n', stderr: '' };
+      }
+      if (String(args.at(-1)).includes('refs/heads/B1')) {
+        onBranchTip();
+        return { code: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: '' };
+    });
+  }
+
+  test('dismisses a terminal resume when its owned worktree disappears', async () => {
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+    env.store.setAutoAdvance(WS, true);
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    const child = Object.values(env.store.snapshot(WS).attempts).at(-1);
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(child).toMatchObject({
+      status: 'failed',
+      cause: 'worktree_missing',
+      dismissed_at: 1000,
+      resumed_from: 'r1'
+    });
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('ends a closed resume as repair_target_resolved without spawning', async () => {
+    const env = setup({
+      config: { B1: { status: 'closed' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    const child = Object.values(env.store.snapshot(WS).attempts).at(-1);
+    expect(result).toEqual({ ok: false, reason: 'repair_target_resolved' });
+    expect(child).toMatchObject({
+      status: 'failed',
+      cause: 'repair_target_resolved',
+      dismissed_at: 1000
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('catches deletion during the final branch-tip await', async () => {
+    let present = true;
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(() => {
+        present = false;
+      }),
+      fs: { existsSync: () => present }
+    });
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    const cold = createQueueStore().snapshot(WS);
+    const child = Object.values(cold.attempts).find(
+      (attempt) => attempt.resumed_from === 'r1'
+    );
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(child).toMatchObject({
+      status: 'failed',
+      cause: 'worktree_missing',
+      dismissed_at: 1000
+    });
+    expect(
+      Object.values(cold.attempts).filter(
+        (attempt) => attempt.status === 'running'
+      )
+    ).toEqual([]);
+  });
+
+  test('catches deletion before a fresh continuation spawn', async () => {
+    let present = true;
+    const exec_values = /** @type {Record<string, string|null>} */ (
+      Object.fromEntries(EXEC_SETTING_KEYS.map((key) => [key, null]))
+    );
+    exec_values.orchestration_model = 'opus';
+    exec_values.orchestration_effort = 'high';
+    const env = setup({
+      config: { B1: { status: 'open', model: 'sol', effort: 'xhigh' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit(() => {
+        present = false;
+      }),
+      fs: { existsSync: () => present }
+    });
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({
+        base_drift: { skipped: 'test' },
+        exec_values,
+        speed: 'fast'
+      })
+    );
+    const mismatch = await env.scheduler.resume(WS, 'r1');
+
+    const result = await env.scheduler.resume(WS, 'r1', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'worktree_missing' });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('keeps a live owned resume on its original cwd and session', async () => {
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      gitRun: ownedWorktreeGit()
+    });
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.cwdFor('B1')).toBe('/wt/B1');
+    expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+  });
+
+  test('binds a closed repo repair target and ends without a session', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'chain_closed', evidence: null }))
+    };
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      repairSession,
+      gitRun: ownedWorktreeGit()
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
+      bead_id: 'B1',
+      operation_id: 'cleanup:B1',
+      packet: {}
+    });
+
+    const child = Object.values(env.store.snapshot(WS).attempts).at(-1);
+    expect(result).toEqual({
+      ok: false,
+      reason: 'repair_target_resolved'
+    });
+    expect(child).toMatchObject({
+      repair_operation_id: 'cleanup:B1',
+      status: 'failed',
+      dismissed_at: 1000
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('switches an unresolved repo repair to fresh in the shared checkout', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
+    };
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      repairSession,
+      gitRun: ownedWorktreeGit()
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
+      bead_id: 'B1',
+      operation_id: 'cleanup:B1',
+      packet: {}
+    });
+
+    const child =
+      env.store.snapshot(WS).attempts[
+        /** @type {string} */ (result.attempt_id)
+      ];
+    expect(result.ok).toBe(true);
+    expect(env.runner.cwdFor('B1')).toBe('/repo');
+    expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
+    expect(child).toMatchObject({
+      repair_operation_id: 'cleanup:B1',
+      continuation_mode: 'fresh'
+    });
+  });
 
   test('refuses resume when the current bead is worker-ineligible', async () => {
     const env = setup({
@@ -4613,6 +5095,30 @@ describe('scheduler REVISE disposition dispatch (UI-hs11 §3.3)', () => {
 
     expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
     expect(env.runner.cwdFor('B1')).toBe('/repo');
+  });
+
+  test('switches a disappearing disposition resume to fresh durably', async () => {
+    const env = setup({ config: { B1: { status: 'open' } }, slots: 1 });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedParkedAttempt(env.store, { base_drift: { skipped: 'test' } });
+
+    const result = await env.scheduler.dispatchReviseFix(WS, {
+      bead_id: 'B1',
+      attempt_id: 'p1',
+      prompt: '처분 프롬프트'
+    });
+
+    const child =
+      env.store.snapshot(WS).attempts[
+        /** @type {string} */ (result.attempt_id)
+      ];
+    expect(result.ok).toBe(true);
+    expect(env.runner.cwdFor('B1')).toBe('/repo');
+    expect(env.runner.settingsFor('B1').resume_session_id).toBeUndefined();
+    expect(child).toMatchObject({
+      continuation_mode: 'fresh',
+      disposition_resume: false
+    });
   });
 
   test('falls back to a fresh session when the parking attempt captured no session id', async () => {

@@ -32,6 +32,7 @@
  */
 import { html, render } from 'lit-html';
 import { resolveSpecId } from '../../../server/spec-id.js';
+import { createUnhandledFailurePredicate } from '../../../server/worker/attempt-failure.js';
 import {
   CLOSED_RANGE_OPTIONS,
   DEFAULT_CLOSED_RANGE,
@@ -2647,25 +2648,6 @@ export function createWorkerView(mount_element, options = {}) {
         };
       });
 
-    // When a bead entered the done lane, by bead id. Every moveToDone call site
-    // runs AFTER termination is already settled (bd closed / merged PR), so a
-    // done entry is the durable snapshot of "this bead's work actually
-    // finished" — the fact the banner verdict below was missing (UI-a9ys).
-    // Raw `q.done`, not the period-filtered `done_entries`: the toolbar period
-    // is a display range for the done lane, and a bead pushed out of it is no
-    // less finished.
-    /** @type {Map<string, number>} */
-    const done_at_by_bead = new Map();
-    for (const e of /** @type {any[]} */ (q.done)) {
-      if (
-        e &&
-        typeof e.bead_id === 'string' &&
-        typeof e.added_at === 'number'
-      ) {
-        done_at_by_bead.set(e.bead_id, e.added_at);
-      }
-    }
-
     const attempts = q.attempts ? Object.values(q.attempts) : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
     // ancestor is never offered as a resume target (spec §1).
@@ -2758,30 +2740,7 @@ export function createWorkerView(mount_element, options = {}) {
     const failed_running = [];
     /** @type {any[]} */
     const active_running = [];
-    /**
-     * The single unhandled-failure predicate shared by failed tiles and the
-     * banner. A failure is actionable only while it is the bead's latest
-     * attempt, has not been resolved by a later done entry, and has not been
-     * dismissed.
-     *
-     * @param {any} attempt
-     * @returns {boolean}
-     */
-    const isUnhandledFailure = (attempt) => {
-      const superseded =
-        last_attempt_by_bead.get(attempt.bead_id) !== attempt.attempt_id;
-      const done_at = done_at_by_bead.get(attempt.bead_id);
-      const resolved_by_done =
-        typeof done_at === 'number' &&
-        done_at > 0 &&
-        typeof attempt.finished_at === 'number' &&
-        done_at >= attempt.finished_at;
-      return (
-        !superseded &&
-        !resolved_by_done &&
-        typeof attempt.dismissed_at !== 'number'
-      );
-    };
+    const isUnhandledFailure = createUnhandledFailurePredicate(q);
     /**
      * Resume eligibility is deliberately the same for the banner and its
      * corresponding failed tile.
