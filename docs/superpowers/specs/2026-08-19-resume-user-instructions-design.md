@@ -50,10 +50,14 @@ Worker의 수동 이어하기(↻ / 일시정지 ▶)는 지금 고정 문구의
 | 모니터 | `app/views/monitor/index.js` `mon-op--resume` 분기 | 다이얼로그 후 `sendContinuationAction('worker-attempt-resume', payload, …)` |
 
 지침은 최초 전송, CAS conflict 1회 재시도, continuation mismatch 재전송
-(`resolveContinuationMismatch`의 resend) **모두에 동일하게 실린다** — 각
+(`resolveContinuationMismatch`의 resend) **모두에 동일하게 실린다**. 각
 발신부의 send 클로저에 `...(instructions !== '' ? { instructions } : {})`를
-포함시키는 방식으로 보장한다. 모니터의 `worker-revise-fix` 등
-`sendContinuationAction`의 다른 사용처는 변경하지 않는다.
+포함시키되, Worker 뷰와 상세 패널의 현재 CAS conflict 재시도는 send 클로저를
+거치지 않고 `transport()`를 직접 호출하므로 **그 재시도 경로도 지침을 포함한
+공통 send를 사용하도록 교체한다** (모니터의 `sendContinuationAction`은
+`...payload` spread로 이미 모든 재전송에 보존된다). 모니터의
+`worker-revise-fix` 등 `sendContinuationAction`의 다른 사용처는 변경하지
+않는다.
 
 ## 2. 프로토콜
 
@@ -119,10 +123,21 @@ Worker의 수동 이어하기(↻ / 일시정지 ▶)는 지금 고정 문구의
   `bad_request`; 유효 지침 → `resumeWorkerAttempt` 인자로 전달됨(스파이).
 - `server/worker/scheduler` 테스트: 지침 有 → `relaunchFromAttempt`가 받는
   prompt가 기본 문구 + 지침 문단; 無 → 기존 문자열과 정확히 동일.
+- 발신부 3곳 각각: 최초 전송·CAS conflict 재시도·continuation mismatch 재전송
+  세 경로 모두에서 payload에 `instructions`가 실리는지 검증한다.
 - 기존 뷰 테스트(↻ 클릭 → transport 검증)는 다이얼로그가 끼므로 다이얼로그
   통과 스텁 또는 dialog 상호작용을 추가해 갱신한다.
 - 마감: `npm run tsc` · `npm test` · `npm run lint` · `npm run prettier:write`
   · `npm run build`(갱신된 `app/main.bundle.js`·`.map` 포함).
+
+## 8. 머지 후 배포 처분
+
+이 변경은 공유 서버의 런타임 동작을 바꾸므로 머지 후 공유 서비스 배포가
+필수다. 배포는 핀된 base SHA에서 읽는 `repo-ops/config.toml`의 `[deploy]`
+선언(`repo-ops/script/deploy`)이 운반한다 — install/build/restart와 target
+SHA·프로세스 경로·포트·HTTP 응답 판독까지 그 operation의 terminal success가
+증거다. 이 스펙에는 settled transport(최종 PR + `[deploy]` operation) 밖의
+필수 대화형 잔여 작업이 없으므로 `worker-ineligible` 라벨은 absent로 둔다.
 
 ## 구현 unit 후보
 
