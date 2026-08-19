@@ -1,7 +1,25 @@
+import fs from 'node:fs';
 import { createServer } from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { createApp } from './app.js';
+import { __resetWorkerRuntimeForTest } from './worker/runtime.js';
+
+/** @type {string} */
+let tmp_state;
+
+beforeEach(() => {
+  tmp_state = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-healthz-'));
+  process.env.XDG_STATE_HOME = tmp_state;
+  __resetWorkerRuntimeForTest();
+});
+
+afterEach(() => {
+  __resetWorkerRuntimeForTest();
+  delete process.env.XDG_STATE_HOME;
+  fs.rmSync(tmp_state, { recursive: true, force: true });
+});
 
 /**
  * A green bd capability snapshot: both producer legs healthy, no active
