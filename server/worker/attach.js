@@ -1777,7 +1777,7 @@ export async function pauseWorkerAttempt(workspace_root, attempt_id) {
  *
  * @param {string} workspace_root
  * @param {string} attempt_id
- * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any }} [continuation]
+ * @param {{ continuation?: 'auto'|'prior_session'|'fresh_current', decision_token?: any, instructions?: string }} [continuation]
  * @returns {Promise<{ ok: boolean, reason?: string, attempt_id?: string, continuation_mismatch?: any }>}
  */
 export async function resumeWorkerAttempt(

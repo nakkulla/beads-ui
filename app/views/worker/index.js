@@ -49,6 +49,7 @@ import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js'
 import { selectCurrentChild } from '../../utils/current-child.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
+import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
@@ -1641,24 +1642,24 @@ export function createWorkerView(mount_element, options = {}) {
     if (!transport || !attempt_id) {
       return;
     }
+    const instructions = await requestResumeInstructions();
+    if (instructions === null) {
+      return;
+    }
     /** @param {Record<string, unknown>} extra */
     const send = async (extra = {}) =>
       /** @type {any} */ (
         await transport('worker-attempt-resume', {
           attempt_id,
           expected_revision: currentRevision(),
+          ...(instructions !== '' ? { instructions } : {}),
           ...extra
         })
       );
     let res = await send();
     adopt(res);
     if (res && res.conflict) {
-      res = /** @type {any} */ (
-        await transport('worker-attempt-resume', {
-          attempt_id,
-          expected_revision: currentRevision()
-        })
-      );
+      res = await send();
       adopt(res);
     }
     res = await resolveContinuationMismatch(
