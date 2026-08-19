@@ -512,6 +512,27 @@ describe('worker/session-monitor guard effect parity (guard-enforcement-layer-re
     expect(pushed[1].event.message).toContain('git push origin main');
   });
 
+  test('allows a quick_fix base push without recording a guard warning', () => {
+    const env = setup();
+    const attempt = seedRunningAttempt(env.store, {
+      repo: REPO,
+      target_base: 'main',
+      quickfix_lane: true
+    });
+    /** @type {any[]} */
+    const pushed = [];
+    env.session_log.subscribe((a) => pushed.push(a));
+
+    env.monitors.start(WS, attempt);
+    sessionWrites(env.session_log, bashLine('git push origin main'));
+    env.monitors.stop(WS, 'att-1');
+
+    const record = env.store.snapshot(WS).attempts['att-1'];
+    expect(env.kill_impl).not.toHaveBeenCalled();
+    expect(record.guard_warnings).toBe(null);
+    expect(pushed).toHaveLength(1);
+  });
+
   test('renders no verdict at all for a cross-repo publication that leaves the attempt repo', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store, {
@@ -555,11 +576,12 @@ describe('worker/session-monitor guard effect parity (guard-enforcement-layer-re
     expect(pushed).toHaveLength(1);
   });
 
-  test('still kills on gh pr merge (kind decided by argv alone, unaffected by the warn demotion)', () => {
+  test('still kills a quick_fix attempt on gh pr merge', () => {
     const env = setup();
     const attempt = seedRunningAttempt(env.store, {
       repo: REPO,
-      target_base: 'main'
+      target_base: 'main',
+      quickfix_lane: true
     });
 
     env.monitors.start(WS, attempt);

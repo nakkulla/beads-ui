@@ -354,8 +354,9 @@ export function codexSpec(catalog_entry, options = {}) {
       const { system_prompt, task_prompt } = applyPreamble(promptFor(bead), {
         review: s.mode === 'review',
         fast_track: !!s.fast_track,
-        pr_submit: !s.disposition,
+        pr_submit: !s.disposition && !s.quickfix_lane,
         disposition: !!s.disposition,
+        quickfix_lane: !!s.quickfix_lane,
         target_base: typeof s.target_base === 'string' ? s.target_base : null,
         repair:
           s.completion_repair && typeof s.completion_repair === 'object'

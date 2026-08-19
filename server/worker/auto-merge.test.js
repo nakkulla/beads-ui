@@ -552,6 +552,28 @@ describe('worker/auto-merge — 워커 소유 Bead 비후보 (UI-b8n8 §접근 A
     });
   }
 
+  test('does not enroll a quick_fix attempt naturally lacking pr_url and pr_wait', () => {
+    const runtime = getWorkerRuntime();
+    runtime.externalPrs.clear();
+    runtime.externalPrs.replace(WS, []);
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'att-QF-1',
+        bead_id: 'QF-1',
+        target_base: 'main',
+        quickfix_lane: true
+      }
+    });
+
+    const result = realEnroller(store).enroll();
+
+    // The default candidate judgment only sees PR-backed pr_wait/external rows.
+    expect(result.queued).toBe(0);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('takes no candidate for a bead the external scan excluded', () => {
     const runtime = getWorkerRuntime();
     runtime.externalPrs.clear();

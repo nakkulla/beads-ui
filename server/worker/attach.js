@@ -59,6 +59,7 @@ import { createPrActions } from './pr-actions.js';
 import { createPrPoller } from './pr-poller.js';
 import { createProcessController } from './process-controller.js';
 import { emitQueueChanged, onQueueChanged } from './queue-events.js';
+import { createQuickfixLanding } from './quickfix-landing.js';
 import { createRecoveryArchive } from './recovery-archive.js';
 import {
   createRepairSessionAdapter,
@@ -321,6 +322,8 @@ export function createLiveBd(config) {
         route,
         status,
         title: typeof issue.title === 'string' ? issue.title : null,
+        description:
+          typeof issue.description === 'string' ? issue.description : null,
         labels: workerLabels(issue.labels),
         spec_id,
         spec_id_conflict: spec.conflict,
@@ -389,6 +392,7 @@ export function defaultProbePid(pid) {
  *   processController?: ReturnType<typeof createProcessController>,
  *   sessionMonitors?: any,
  *   repairSession?: any,
+ *   quickfixLanding?: ReturnType<typeof createQuickfixLanding>,
  *   gitRun?: (args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>,
  *   admission?: any,
  *   headReview?: any,
@@ -500,6 +504,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         base_label: snap.target_base,
         bead: {
           route: snap.route,
+          description: snap.description,
           spec_id: snap.spec_id,
           spec_id_conflict: snap.spec_id_conflict,
           spec_review: snap.spec_review,
@@ -604,6 +609,18 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       await scheduler.tick(keyFor(workspace_root));
     }
   });
+  const quickfixLanding =
+    options.quickfixLanding ||
+    createQuickfixLanding({
+      workspace: keyFor(workspace_root),
+      repo,
+      store: runtime.queueStore,
+      bd,
+      gitRun,
+      worktree,
+      repoOperations: repoOperationCoordinator,
+      notifyChanged: (ws_key) => emitQueueChanged(ws_key)
+    });
   // The observation verdict + the worker's `pr_url`/`resolved` back-fill: the
   // bd writer is the same metadata adapter the scheduler uses (extended with
   // the status pair), so both write through one confirmed argv encoding.
@@ -682,6 +699,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     bd,
     worktree,
     verify,
+    quickfixLanding,
     sessionLog: runtime.sessionLog,
     usage: runtime.usageStore,
     admission,
