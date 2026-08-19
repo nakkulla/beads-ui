@@ -1,6 +1,7 @@
 import { html, render } from 'lit-html';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { formatTimestampLocal } from '../../utils/relative-time.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { showToast } from '../../utils/toast.js';
@@ -655,6 +656,14 @@ export function createDetailPanel(mount_element, options) {
     return (q && /** @type {any} */ (q).runner_catalog) || null;
   }
 
+  /** @returns {Record<string, any>|null} */
+  function executionDefaults() {
+    const q = queueStore ? queueStore.get() : null;
+    return q && typeof q.execution_defaults === 'object'
+      ? q.execution_defaults
+      : null;
+  }
+
   /**
    * The provider an inherited implementation target resolves to on this exact
    * screen. This follows the same value resolution as the selects: optimistic
@@ -668,18 +677,13 @@ export function createDetailPanel(mount_element, options) {
       current?.metadata && typeof current.metadata === 'object'
         ? current.metadata
         : {};
-    const local = Object.hasOwn(exec_local, 'orchestration_model')
-      ? exec_local.orchestration_model
-      : undefined;
-    const model =
-      local ||
-      (typeof metadata.orchestration_model === 'string'
-        ? metadata.orchestration_model
-        : '') ||
-      (typeof execDefaults().orchestration_model === 'string'
-        ? execDefaults().orchestration_model
-        : '') ||
-      'opus';
+    const resolved = resolveExecutionSettings({
+      pin: { ...metadata, ...exec_local },
+      global: execDefaults(),
+      execution_defaults: executionDefaults(),
+      runner_catalog: runnerCatalog()
+    });
+    const model = resolved.orchestration_model.value || '';
     return modelRunnerOf(runnerCatalog(), model);
   }
 
@@ -1757,14 +1761,15 @@ export function createDetailPanel(mount_element, options) {
               metadata: effective.metadata,
               workspace_values: execDefaults(),
               catalog: runnerCatalog(),
+              execution_defaults: executionDefaults(),
               expanded: effective_expanded,
               presets: execPresetState()?.presets || [],
               preset_id: selected_preset_id,
               preset_busy: applying_preset
             },
             {
-              onToggle: () => {
-                effective_expanded = !effective_expanded;
+              onToggle: (open) => {
+                effective_expanded = open;
                 doRender();
               },
               onEdit: (key, value) => {
@@ -1842,6 +1847,7 @@ export function createDetailPanel(mount_element, options) {
       exec_local = {};
       selected_preset_id = '';
       applying_preset = false;
+      effective_expanded = false;
       resetEditors();
       resetComments();
       resetTaskPrompt();

@@ -180,14 +180,14 @@ describe('worker-queue snapshot workspace guard', () => {
     expect(waitingRowCount()).toBe(1);
   });
 
-  test('accepts an older queue snapshot with no bead_labels projection', async () => {
+  test('accepts an older queue snapshot with no display projections', async () => {
     CLIENT = makeClient({ current: '/repo-a' });
     bootstrap(setupShell());
     await settle();
 
-    // `queueSnapshotFor` intentionally omits bead_labels: an older server must
-    // leave the legacy chip unrendered without dropping the queue snapshot
-    // (UI-04vo — the label is display-only residue now).
+    // `queueSnapshotFor` intentionally omits bead_labels and
+    // execution_defaults: an older server must keep the queue usable because
+    // both fields are display-only projections.
     CLIENT.trigger('worker-queue-snapshot', queueSnapshotFor('/repo-a'));
     await settle();
 

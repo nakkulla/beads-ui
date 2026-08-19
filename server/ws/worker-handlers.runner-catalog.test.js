@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+import * as executionDefaults from '../worker/execution-defaults.js';
 import { decorateQueue } from './worker-handlers.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -65,5 +66,39 @@ describe('decorateQueue runner_catalog decoration (UI-jrb3 §7)', () => {
 
     expect(out.revision).toBe(1);
     expect(out.exec_defaults).toEqual({});
+  });
+});
+
+describe('decorateQueue execution_defaults decoration', () => {
+  test('ships supported defaults without changing persisted queue fields', () => {
+    const out = /** @type {any} */ (decorateQueue(WS, bareQueue()));
+
+    expect(out.execution_defaults).toMatchObject({
+      supported: true,
+      schema_version: 1,
+      session: { workflow_mode_default: 'standard' },
+      orchestration: { model: 'opus', runtime: 'claude' }
+    });
+    expect(out.revision).toBe(1);
+    expect(out.exec_defaults).toEqual({});
+  });
+
+  test('keeps the queue snapshot when defaults are unsupported', () => {
+    vi.spyOn(executionDefaults, 'projectExecutionDefaults').mockReturnValueOnce(
+      /** @type {any} */ ({
+        supported: false,
+        schema_version: 2,
+        source_commit: 'future',
+        digest: 'abc',
+        session: null,
+        orchestration: null
+      })
+    );
+
+    const out = /** @type {any} */ (decorateQueue(WS, bareQueue()));
+
+    expect(out.execution_defaults.supported).toBe(false);
+    expect(out.queue).toEqual([]);
+    expect(out.revision).toBe(1);
   });
 });

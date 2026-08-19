@@ -3,14 +3,14 @@
  * (spec §E).
  *
  * Three layers are visible here: `핀` (this bead's metadata), `전역` (the
- * workspace `bd kv` default), and `기본` (harness). The harness layer is a
- * PLACEHOLDER ONLY: its values are owned by dotfiles, so this repository never
- * copies or displays them — a `base` row shows the label and no value.
+ * workspace `bd kv` default), and `기본` (the pinned harness projection).
+ * The shared resolver decodes the projection; this module owns no default map.
  *
  * @typedef {'pin'|'global'|'base'} SettingSource
- * @typedef {{ value: string|null, source: SettingSource }} SettingLayer
- * @typedef {{ key: string, value: string|null, source: SettingSource }} EffectiveRow
+ * @typedef {{ value: string|null, source: SettingSource, display: string, full_value: string|null, resolution: string }} SettingLayer
+ * @typedef {{ key: string, value: string|null, source: SettingSource, display: string, full_value: string|null, resolution: string }} EffectiveRow
  */
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
   ORCHESTRATION_KEYS,
   SESSION_DEFAULT_KEYS
@@ -82,48 +82,61 @@ export const SETTING_LABELS = {
 export const SOURCE_LABELS = { pin: '핀', global: '전역', base: '기본' };
 
 /**
- * @param {unknown} value
- * @returns {string|null}
- */
-function usableString(value) {
-  return typeof value === 'string' && value.length > 0 ? value : null;
-}
-
-/**
  * Resolve one key across the visible layers.
  *
- * The `기본` layer deliberately carries NO value: the harness default is
- * dotfiles-owned, and duplicating it here would create a second source of truth
- * that silently drifts (spec 비-목표).
+ * The `기본` value comes only from the pinned wire projection. An unavailable
+ * projection remains a structured `기본값 확인 불가` result.
  *
  * @param {string} key
  * @param {Record<string, unknown>|null|undefined} bead_metadata
  * @param {Record<string, unknown>|null|undefined} workspace_values
+ * @param {Record<string, any>|null|undefined} execution_defaults
+ * @param {Record<string, any>|null|undefined} [runner_catalog]
+ * @param {string|null} [controller_runtime]
  * @returns {SettingLayer}
  */
-export function resolveLayer(key, bead_metadata, workspace_values) {
-  const pinned = usableString(bead_metadata?.[key]);
-  if (pinned !== null) {
-    return { value: pinned, source: 'pin' };
-  }
-  const global_value = usableString(workspace_values?.[key]);
-  if (global_value !== null) {
-    return { value: global_value, source: 'global' };
-  }
-  return { value: null, source: 'base' };
+export function resolveLayer(
+  key,
+  bead_metadata,
+  workspace_values,
+  execution_defaults,
+  runner_catalog,
+  controller_runtime = null
+) {
+  return resolveExecutionSettings({
+    pin: bead_metadata,
+    global: workspace_values,
+    execution_defaults,
+    runner_catalog,
+    controller_runtime
+  })[key];
 }
 
 /**
  * @param {string[]} keys
  * @param {Record<string, unknown>|null|undefined} bead_metadata
  * @param {Record<string, unknown>|null|undefined} workspace_values
+ * @param {Record<string, any>|null|undefined} execution_defaults
+ * @param {Record<string, any>|null|undefined} [runner_catalog]
+ * @param {string|null} [controller_runtime]
  * @returns {EffectiveRow[]}
  */
-export function effectiveRows(keys, bead_metadata, workspace_values) {
-  return keys.map((key) => ({
-    key,
-    ...resolveLayer(key, bead_metadata, workspace_values)
-  }));
+export function effectiveRows(
+  keys,
+  bead_metadata,
+  workspace_values,
+  execution_defaults,
+  runner_catalog,
+  controller_runtime = null
+) {
+  const resolved = resolveExecutionSettings({
+    pin: bead_metadata,
+    global: workspace_values,
+    execution_defaults,
+    runner_catalog,
+    controller_runtime
+  });
+  return keys.map((key) => ({ key, ...resolved[key] }));
 }
 
 /**
@@ -132,11 +145,28 @@ export function effectiveRows(keys, bead_metadata, workspace_values) {
  * @param {string[]} keys
  * @param {Record<string, unknown>|null|undefined} bead_metadata
  * @param {Record<string, unknown>|null|undefined} workspace_values
+ * @param {Record<string, any>|null|undefined} execution_defaults
+ * @param {Record<string, any>|null|undefined} [runner_catalog]
+ * @param {string|null} [controller_runtime]
  * @returns {{ pin: number, global: number, base: number }}
  */
-export function layerSummary(keys, bead_metadata, workspace_values) {
+export function layerSummary(
+  keys,
+  bead_metadata,
+  workspace_values,
+  execution_defaults,
+  runner_catalog,
+  controller_runtime = null
+) {
   const counts = { pin: 0, global: 0, base: 0 };
-  for (const row of effectiveRows(keys, bead_metadata, workspace_values)) {
+  for (const row of effectiveRows(
+    keys,
+    bead_metadata,
+    workspace_values,
+    execution_defaults,
+    runner_catalog,
+    controller_runtime
+  )) {
     counts[row.source] += 1;
   }
   return counts;

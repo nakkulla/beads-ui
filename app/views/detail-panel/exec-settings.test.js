@@ -1,4 +1,5 @@
 import { render } from 'lit-html';
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { execSettingsTemplate, normalizeImplTarget } from './exec-settings.js';
 
@@ -73,6 +74,57 @@ function catalogFixture() {
 }
 
 /**
+ * @returns {Record<string, any>}
+ */
+function projectionFixture() {
+  return {
+    supported: true,
+    schema_version: 1,
+    session: {
+      workflow_mode_default: 'standard',
+      review: {
+        default: 'codex',
+        reviewers: {
+          codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+          opus: { model: 'opus', effort: 'high' },
+          fable: { model: 'fable', effort: 'high' }
+        }
+      },
+      plan_review: {
+        standard_recommended: 'codex',
+        fast_track_default: 'codex'
+      },
+      implementation: {
+        default: {
+          dispatch: 'delegated',
+          runtime: 'codex',
+          model: 'sol',
+          model_id: 'gpt-5.6-sol',
+          effort: 'auto',
+          speed: 'default'
+        },
+        model_catalog: {
+          claude: ['opus', 'sonnet', 'haiku', 'fable'],
+          codex: {
+            sol: 'gpt-5.6-sol',
+            terra: 'gpt-5.6-terra',
+            luna: 'gpt-5.6-luna'
+          }
+        },
+        effort_by_transport: {}
+      }
+    },
+    orchestration: {
+      runtime: 'claude',
+      model: 'opus',
+      model_id: 'opus',
+      effort: null,
+      speed: 'default'
+    }
+  };
+}
+
+/**
  * @param {HTMLElement} mount
  * @param {string} key
  * @returns {HTMLSelectElement}
@@ -126,7 +178,8 @@ function mountTemplate(
       handlers || { onChange: vi.fn() },
       exec_defaults || {},
       catalog === undefined ? catalogFixture() : catalog,
-      default_source
+      default_source,
+      projectionFixture()
     ),
     mount
   );
@@ -165,10 +218,10 @@ describe('views/detail-panel/exec-settings key surface (dotfiles-mqcj)', () => {
     ).toContain('sonnet');
     expect(
       mount.querySelector('[data-exec-summary="implementation"]')?.textContent
-    ).toContain('codex · auto');
+    ).toContain('codex · 5.6-sol');
     expect(
       mount.querySelector('[data-exec-summary="review"]')?.textContent
-    ).toContain('스펙 codex · 계획 codex · 구현 codex');
+    ).toContain('스펙 5.6-sol/xhigh · 계획 5.6-sol/xhigh · 구현 5.6-sol/xhigh');
   });
 
   test('groups three core keys above ten advanced keys', () => {
@@ -479,7 +532,7 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
       Array.from(selectFor(codex, 'orchestration_speed').options).map(
         (option) => option.textContent?.trim()
       )
-    ).toEqual(['(기본: Standard)', 'Standard', 'Fast']);
+    ).toEqual(['기본값 사용 — default (일반)', 'Standard', 'Fast']);
   });
 
   test('keeps a stale speed value selected as incompatible', () => {
@@ -516,9 +569,7 @@ describe('views/detail-panel/exec-settings catalog-driven selectors', () => {
       '',
       'low',
       'medium',
-      'high',
-      'xhigh',
-      'max'
+      'high'
     ]);
 
     document.body.innerHTML = '<div id="m"></div>';
@@ -590,33 +641,38 @@ describe('views/detail-panel/exec-settings self/skip effort gating (mqcj §4.4)'
   });
 });
 
-describe('views/detail-panel/exec-settings default labels (§3.2)', () => {
+describe('views/detail-panel/exec-settings projected default labels', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
   });
 
-  test('the (기본) option uses the static fallback label per key', () => {
+  test('uses projected concrete values without a static default map', () => {
     const mount = mountTemplate();
 
     /** @type {[string, string][]} */
     const expected = [
-      ['orchestration_model', '기본: opus'],
-      ['orchestration_effort', '기본: CLI 기본'],
-      ['orchestration_speed', '기본: Standard'],
-      ['spec_review_model', '기본: codex'],
-      ['impl_review_model', '기본: codex'],
-      ['plan_review_model', '기본: codex'],
-      ['spec_review_effort', '기본: 프리셋'],
-      ['impl_review_effort', '기본: 프리셋'],
-      ['plan_review_effort', '기본: 프리셋'],
-      ['impl_model', '기본: 작업 성격에 따라 구현 모델 자동 선택'],
-      ['impl_effort', '기본: 선택된 구현 에이전트의 reasoning effort 사용']
+      ['orchestration_model', '기본값 사용 — opus'],
+      ['orchestration_effort', '기본값 사용 — CLI 기본 (미지정)'],
+      ['orchestration_speed', '기본값 사용 — default (일반)'],
+      ['spec_review_model', '기본값 사용 — 5.6-sol'],
+      ['impl_review_model', '기본값 사용 — 5.6-sol'],
+      ['plan_review_model', '기본값 사용 — 5.6-sol'],
+      ['spec_review_effort', '기본값 사용 — xhigh'],
+      ['impl_review_effort', '기본값 사용 — xhigh'],
+      ['plan_review_effort', '기본값 사용 — xhigh'],
+      ['impl_model', '기본값 사용 — 5.6-sol'],
+      ['impl_effort', '기본값 사용 — auto (실행 시 결정)']
     ];
     for (const [key, label] of expected) {
       const sel = selectFor(mount, key);
       expect(sel.options[0].value).toBe('');
       expect(sel.options[0].textContent).toContain(label);
     }
+    const source = readFileSync(
+      'app/views/detail-panel/exec-settings.js',
+      'utf8'
+    );
+    expect(source).not.toContain('DEFAULT_LABELS');
   });
 
   test('explains how the workflow chooses implementation model and effort', () => {
@@ -634,12 +690,11 @@ describe('views/detail-panel/exec-settings default labels (§3.2)', () => {
     );
   });
 
-  test('a selected workspace preset value names its source in the default label', () => {
+  test('a selected workspace value supplies the concrete default label', () => {
     const mount = mountTemplate({}, { spec_review_model: 'opus' });
 
     const sel = selectFor(mount, 'spec_review_model');
-    expect(sel.options[0].textContent).toContain('기본: opus');
-    expect(sel.options[0].textContent).toContain('워크스페이스 프리셋');
+    expect(sel.options[0].textContent).toContain('기본값 사용 — opus');
   });
 });
 

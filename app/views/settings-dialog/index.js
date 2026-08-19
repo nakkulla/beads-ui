@@ -32,6 +32,7 @@ import {
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
   WORKFLOW_MODES,
+  buildExecutionOptionView,
   buildOrchestrationPatch,
   buildSessionDefaultsPatch,
   implEffortOptions,
@@ -126,6 +127,14 @@ export function createSettingsDialog(mount_element, options) {
   function runnerCatalog() {
     const queue = options.queueStore?.get();
     return isRecord(queue) ? queue.runner_catalog : null;
+  }
+
+  /** @returns {Record<string, any>|null} */
+  function executionProjection() {
+    const queue = options.queueStore?.get();
+    return isRecord(queue) && isRecord(queue.execution_defaults)
+      ? queue.execution_defaults
+      : null;
   }
 
   /**
@@ -497,26 +506,48 @@ export function createSettingsDialog(mount_element, options) {
    */
   function selectControl(key, label, choices, onChange, source, disabled) {
     const selected = source[key] ?? UNSET;
+    const view = buildExecutionOptionView(
+      key,
+      choices,
+      source,
+      executionProjection(),
+      runnerCatalog()
+    );
+    const selected_option = view.options.find(
+      (option) => option.value === selected
+    );
+    const full_value =
+      selected === UNSET ? view.full_value : selected_option?.full_value;
     return html`<select
-      class=${selected === UNSET ? 'settings-dialog__unset' : ''}
-      data-key=${key}
-      aria-label=${label}
-      ?disabled=${disabled === true}
-      .value=${live(String(selected))}
-      @change=${(/** @type {Event} */ ev) =>
-        onChange(
-          key,
-          String(/** @type {HTMLSelectElement} */ (ev.target).value)
+        class=${selected === UNSET ? 'settings-dialog__unset' : ''}
+        data-key=${key}
+        aria-label=${label}
+        title=${full_value || ''}
+        ?disabled=${disabled === true || view.disabled}
+        .value=${live(String(selected))}
+        @change=${(/** @type {Event} */ ev) =>
+          onChange(
+            key,
+            String(/** @type {HTMLSelectElement} */ (ev.target).value)
+          )}
+      >
+        <option value=${UNSET} ?selected=${selected === UNSET}>
+          ${view.unset_label}
+        </option>
+        ${view.options.map(
+          (option) =>
+            html`<option
+              value=${option.value}
+              title=${option.full_value || ''}
+              ?selected=${option.value === selected}
+            >
+              ${option.label}
+            </option>`
         )}
-    >
-      <option value=${UNSET} ?selected=${selected === UNSET}>(기본)</option>
-      ${choices.map(
-        (choice) =>
-          html`<option value=${choice} ?selected=${choice === selected}>
-            ${choice === AUTO_LITERAL ? '자동' : choice}
-          </option>`
-      )}
-    </select>`;
+      </select>
+      ${selected === UNSET
+        ? html`<span class="settings-dialog__source-badge">기본</span>`
+        : ''}`;
   }
 
   /**
@@ -591,6 +622,14 @@ export function createSettingsDialog(mount_element, options) {
     const runtime = session_draft.impl_runtime;
     const model = session_draft.impl_model;
     const state = presetState();
+    const projection_available = executionProjection()?.supported === true;
+    const workflow_view = buildExecutionOptionView(
+      'workflow_mode',
+      WORKFLOW_MODES,
+      session_draft,
+      executionProjection(),
+      catalog
+    );
     return html`
       <section
         class=${`settings-dialog__pane${active_tab === 'session' ? ' settings-dialog__pane--active' : ''}`}
@@ -609,6 +648,15 @@ export function createSettingsDialog(mount_element, options) {
               ${session_warnings.join(', ')}
             </div>`
           : ''}
+        ${!projection_available
+          ? html`<div
+              class="settings-dialog__banner settings-dialog__banner--projection"
+              data-execution-defaults-warning
+              role="alert"
+            >
+              실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
+            </div>`
+          : ''}
         ${session_loading
           ? html`<div class="settings-dialog__empty">불러오는 중…</div>`
           : html`
@@ -624,8 +672,13 @@ export function createSettingsDialog(mount_element, options) {
                         aria-pressed=${String(!session_draft.workflow_mode)}
                         @click=${() => onSessionChange('workflow_mode', UNSET)}
                       >
-                        (기본)
+                        ${workflow_view.unset_label}
                       </button>
+                      ${!session_draft.workflow_mode
+                        ? html`<span class="settings-dialog__source-badge"
+                            >기본</span
+                          >`
+                        : ''}
                       ${WORKFLOW_MODES.map(
                         (mode) =>
                           html`<button
@@ -826,6 +879,15 @@ export function createSettingsDialog(mount_element, options) {
         <p class="settings-dialog__pane-sub">
           Worker가 세션을 띄울 때 쓰는 오케스트레이션 설정과 동시 실행 수입니다.
         </p>
+        ${executionProjection()?.supported !== true
+          ? html`<div
+              class="settings-dialog__banner settings-dialog__banner--projection"
+              data-execution-defaults-warning
+              role="alert"
+            >
+              실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
+            </div>`
+          : ''}
         <div class="settings-dialog__group">
           <div class="settings-dialog__group-title">오케스트레이션</div>
           <div class="settings-dialog__row">

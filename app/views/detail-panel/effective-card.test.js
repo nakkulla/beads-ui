@@ -12,8 +12,53 @@ import { createDetailPanel } from './index.js';
 
 const CATALOG = {
   runners: {
-    claude: { command: 'claude', models: { opus: { efforts: ['high'] } } },
-    codex: { command: 'codex', models: { sol: { efforts: ['medium'] } } }
+    claude: {
+      command: 'claude',
+      models: { opus: { id: 'opus', efforts: ['high'] } }
+    },
+    codex: {
+      command: 'codex',
+      models: { sol: { id: 'gpt-5.6-sol', efforts: ['medium'] } }
+    }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
+const EXECUTION_DEFAULTS = {
+  supported: true,
+  schema_version: 1,
+  session: {
+    workflow_mode_default: 'standard',
+    review: {
+      default: 'codex',
+      reviewers: {
+        codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+        fable: { model: 'fable', effort: 'high' }
+      }
+    },
+    plan_review: {
+      standard_recommended: 'codex',
+      fast_track_default: 'fable'
+    },
+    implementation: {
+      default: {
+        dispatch: 'delegated',
+        runtime: 'codex',
+        model: 'sol',
+        model_id: 'gpt-5.6-sol',
+        effort: 'auto',
+        speed: 'default'
+      },
+      model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
+      effort_by_transport: {}
+    }
+  },
+  orchestration: {
+    runtime: 'claude',
+    model: 'opus',
+    model_id: 'opus',
+    effort: null,
+    speed: 'default'
   }
 };
 
@@ -46,6 +91,7 @@ function seed(mount, options = {}) {
       done: [],
       attempts: {},
       runner_catalog: CATALOG,
+      execution_defaults: EXECUTION_DEFAULTS,
       orchestration_model: null,
       orchestration_effort: null,
       orchestration_speed: null,
@@ -89,6 +135,14 @@ async function settle() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+/** @param {HTMLElement} mount */
+async function openEffective(mount) {
+  /** @type {HTMLElement} */ (
+    mount.querySelector('[data-seam="effective-settings-toggle"]')
+  ).click();
+  await settle();
 }
 
 /**
@@ -261,10 +315,36 @@ describe('detail summary header', () => {
 });
 
 describe('effective-settings card', () => {
+  test('renders native disclosure closed with actual defaults and all source counts', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+
+    const details = /** @type {HTMLDetailsElement} */ (
+      mount.querySelector('details[data-seam="effective-settings"]')
+    );
+    const summary = /** @type {HTMLElement} */ (
+      details.querySelector('summary[data-seam="effective-settings-toggle"]')
+    );
+
+    expect(details.open).toBe(false);
+    expect(details.querySelector('.detail-effective__body')).toBeNull();
+    expect(summary.textContent).toContain('standard');
+    expect(summary.textContent).toContain('5.6-sol');
+    expect(summary.textContent).toContain('핀 0');
+    expect(summary.textContent).toContain('전역 0');
+    expect(summary.textContent).toContain('기본 15');
+    expect(
+      summary.querySelector('.detail-effective__summary')?.getAttribute('title')
+    ).toContain('gpt-5.6-sol');
+    panel.destroy();
+  });
+
   test('marks a bead-pinned key as 핀', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, { metadata: { impl_model: 'sol' } });
     await settle();
+    await openEffective(mount);
 
     const row = rowOf(mount, 'impl_model');
 
@@ -282,6 +362,7 @@ describe('effective-settings card', () => {
       session_defaults: { impl_model: 'sol' }
     });
     await settle();
+    await openEffective(mount);
 
     const row = rowOf(mount, 'impl_model');
 
@@ -292,17 +373,21 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('shows a 기본 row without duplicating any harness value', async () => {
+  test('shows a 기본 row with the projected actual value', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount);
     await settle();
+    await openEffective(mount);
 
     const row = rowOf(mount, 'impl_model');
 
     expect(
       row.querySelector('.detail-layer-rail')?.getAttribute('data-source')
     ).toBe('base');
-    expect(row.textContent).toContain('(harness 기본)');
+    expect(row.textContent).toContain('5.6-sol');
+    expect(
+      row.querySelector('.detail-effective__v')?.getAttribute('title')
+    ).toBe('gpt-5.6-sol');
     panel.destroy();
   });
 
@@ -313,6 +398,7 @@ describe('effective-settings card', () => {
       session_defaults: { workflow_mode: 'fast_track' }
     });
     await settle();
+    await openEffective(mount);
 
     const row = rowOf(mount, 'workflow_mode');
 
@@ -329,6 +415,7 @@ describe('effective-settings card', () => {
       queue: { orchestration_model: 'opus' }
     });
     await settle();
+    await openEffective(mount);
 
     const row = rowOf(mount, 'orchestration_model');
 
@@ -479,12 +566,36 @@ describe('effective-settings card', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount);
     await settle();
+    await openEffective(mount);
 
     const subheads = Array.from(
       mount.querySelectorAll('.detail-effective__subhead')
     ).map((el) => el.textContent?.trim());
 
     expect(subheads).toEqual(['워크플로우', '리뷰', '구현', 'Worker']);
+    panel.destroy();
+  });
+
+  test('resets disclosure after panel clear and reopen', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+    await openEffective(mount);
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('details[data-seam="effective-settings"]')
+      ).open
+    ).toBe(true);
+
+    panel.clear();
+    panel.load('UI-1');
+    await settle();
+
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('details[data-seam="effective-settings"]')
+      ).open
+    ).toBe(false);
     panel.destroy();
   });
 });
