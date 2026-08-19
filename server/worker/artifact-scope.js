@@ -1,3 +1,7 @@
+import { debug } from '../logging.js';
+
+const log = debug('worker:artifact-scope');
+
 /**
  * Parse the repo-relative path prefixes declared by an artifact's front matter.
  * Invalid entries are ignored independently so one bad path cannot suppress the
@@ -40,7 +44,11 @@ export function parseArtifactScope(content) {
       continue;
     }
     const item = match[1].trim();
-    if (!isValidScopeItem(item) || seen.has(item)) {
+    if (!isValidScopeItem(item)) {
+      log('ignoring invalid scope entry %o', item);
+      continue;
+    }
+    if (seen.has(item)) {
       continue;
     }
     seen.add(item);
