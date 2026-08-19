@@ -53,9 +53,17 @@ function fixtureFs(artifact, provenance_patch = {}) {
     typeof artifact === 'string' ? artifact : JSON.stringify(artifact)
   );
   const digest = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+  const blob_sha = nodeCrypto
+    .createHash('sha1')
+    .update(Buffer.from(`blob ${bytes.length}\0`, 'utf8'))
+    .update(bytes)
+    .digest('hex');
   const provenance = Buffer.from(
     JSON.stringify({
+      source_repo: 'dotfiles',
+      source_path: 'generated/contracts/execution-defaults.json',
       source_commit: 'abc123',
+      source_blob_sha: blob_sha,
       bytes: bytes.length,
       sha256: digest,
       ...provenance_patch
@@ -93,6 +101,9 @@ describe('loadExecutionDefaults', () => {
   test.each([
     ['byte count', ARTIFACT, { bytes: 1 }],
     ['digest', ARTIFACT, { sha256: '0'.repeat(64) }],
+    ['blob sha', ARTIFACT, { source_blob_sha: '0'.repeat(40) }],
+    ['source repo', ARTIFACT, { source_repo: '' }],
+    ['source path', ARTIFACT, { source_path: '' }],
     ['schema', { ...ARTIFACT, schema_version: 2 }, {}],
     ['parse', '{broken', {}]
   ])('returns unsupported on %s failure', (_name, artifact, patch) => {

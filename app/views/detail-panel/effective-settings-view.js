@@ -13,6 +13,7 @@
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { buildOptionView } from '../../utils/execution-defaults.js';
 import { formatPlannedExecution } from '../board/card.js';
 import {
   AUTO_LITERAL,
@@ -118,7 +119,7 @@ export function optionsForKey(key, effective, catalog) {
  * is expanded — the three-state editor.
  *
  * @param {EffectiveRow} row
- * @param {{ expanded: boolean, options: ReadonlyArray<string>, default_label: string, onEdit: (key: string, value: string|null) => void }} view
+ * @param {{ expanded: boolean, options: ReadonlyArray<{ value: string, label: string, full_value: string|null }>, default_label: string, default_full_value: string|null, onEdit: (key: string, value: string|null) => void }} view
  * @returns {TemplateResult}
  */
 function rowTemplate(row, view) {
@@ -149,16 +150,21 @@ function rowTemplate(row, view) {
             view.onEdit(row.key, next.length === 0 ? null : next);
           }}
         >
-          <option value="" ?selected=${row.source !== 'pin'}>
+          <option
+            value=""
+            title=${view.default_full_value || ''}
+            ?selected=${row.source !== 'pin'}
+          >
             ${view.default_label}
           </option>
           ${view.options.map(
             (option) =>
               html`<option
-                value=${option}
-                ?selected=${row.source === 'pin' && row.value === option}
+                value=${option.value}
+                title=${option.full_value || ''}
+                ?selected=${row.source === 'pin' && row.value === option.value}
               >
-                ${option === AUTO_LITERAL ? '자동' : option}
+                ${option.label}
               </option>`
           )}
         </select>`
@@ -262,24 +268,25 @@ export function effectiveSettingsCardTemplate(model, handlers) {
               ${rows
                 .filter((row) => group.keys.includes(row.key))
                 .map((row) => {
-                  const metadata_without_key = { ...model.metadata };
-                  delete metadata_without_key[row.key];
-                  const unset = effectiveRows(
-                    [row.key],
-                    metadata_without_key,
-                    model.workspace_values,
-                    model.execution_defaults,
-                    model.catalog,
-                    model.controller_runtime || null
-                  )[0];
-                  return rowTemplate(row, {
-                    expanded: model.expanded,
-                    options: optionsForKey(
+                  const option_view = buildOptionView({
+                    key: row.key,
+                    choices: optionsForKey(
                       row.key,
                       effective_values,
                       model.catalog
                     ),
-                    default_label: `기본값 사용 — ${unset.display}`,
+                    layer: 'pin',
+                    pin: model.metadata,
+                    global: model.workspace_values,
+                    execution_defaults: model.execution_defaults,
+                    runner_catalog: model.catalog,
+                    controller_runtime: model.controller_runtime || null
+                  });
+                  return rowTemplate(row, {
+                    expanded: model.expanded,
+                    options: option_view.options,
+                    default_label: option_view.unset_label,
+                    default_full_value: option_view.full_value,
                     onEdit: handlers.onEdit
                   });
                 })}

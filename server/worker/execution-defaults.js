@@ -59,6 +59,44 @@ function isRecord(value) {
 }
 
 /**
+ * The Git blob object name of these exact bytes. Recomputing it is what proves
+ * the provenance names THIS artifact and not another revision of it — the byte
+ * count and SHA-256 alone would still accept a provenance file copied from a
+ * different pin.
+ *
+ * @param {Buffer} bytes
+ * @returns {string}
+ */
+function gitBlobSha(bytes) {
+  return nodeCrypto
+    .createHash('sha1')
+    .update(Buffer.from(`blob ${bytes.length}\0`, 'utf8'))
+    .update(bytes)
+    .digest('hex');
+}
+
+/**
+ * @param {unknown} provenance
+ * @param {Buffer} bytes
+ * @param {string} digest
+ * @returns {boolean}
+ */
+function provenanceMatches(provenance, bytes, digest) {
+  return (
+    isRecord(provenance) &&
+    typeof provenance.source_repo === 'string' &&
+    provenance.source_repo.length > 0 &&
+    typeof provenance.source_path === 'string' &&
+    provenance.source_path.length > 0 &&
+    typeof provenance.source_commit === 'string' &&
+    provenance.source_commit.length > 0 &&
+    provenance.bytes === bytes.length &&
+    provenance.sha256 === digest &&
+    provenance.source_blob_sha === gitBlobSha(bytes)
+  );
+}
+
+/**
  * @param {Record<string, any>} artifact
  */
 function sessionFacts(artifact) {
@@ -114,10 +152,7 @@ export function loadExecutionDefaults(deps = {}) {
     const valid =
       isRecord(artifact) &&
       schema_version === 1 &&
-      isRecord(provenance) &&
-      provenance.bytes === bytes.length &&
-      provenance.sha256 === digest &&
-      typeof source_commit === 'string';
+      provenanceMatches(provenance, bytes, digest);
     loaded = valid
       ? {
           schema_version,

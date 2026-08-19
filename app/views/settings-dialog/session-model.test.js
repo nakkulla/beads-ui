@@ -158,6 +158,22 @@ describe('orchestrationModelOptions', () => {
 });
 
 describe('buildExecutionOptionView', () => {
+  test('keeps a stored token the narrowed choice list no longer offers', () => {
+    const view = buildExecutionOptionView(
+      'impl_model',
+      ['auto', 'opus'],
+      { impl_runtime: 'claude', impl_model: 'sol' },
+      PROJECTION,
+      CATALOG
+    );
+
+    expect(view.options[0]).toEqual({
+      value: 'sol',
+      label: 'sol (비호환)',
+      full_value: 'sol'
+    });
+  });
+
   test('keeps stored tokens separate from concrete option labels', () => {
     const view = buildExecutionOptionView(
       'spec_review_model',

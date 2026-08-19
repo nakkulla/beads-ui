@@ -576,6 +576,108 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
+  test('opens on keyboard activation of the summary', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+
+    const summary = /** @type {HTMLElement} */ (
+      mount.querySelector('summary[data-seam="effective-settings-toggle"]')
+    );
+    summary.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    summary.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true })
+    );
+    await settle();
+
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('details[data-seam="effective-settings"]')
+      ).open
+    ).toBe(true);
+    panel.destroy();
+  });
+
+  test('resets disclosure after switching to another issue', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+    await openEffective(mount);
+
+    panel.load('UI-2');
+    panel.load('UI-1');
+    await settle();
+
+    expect(
+      /** @type {HTMLDetailsElement} */ (
+        mount.querySelector('details[data-seam="effective-settings"]')
+      ).open
+    ).toBe(false);
+    panel.destroy();
+  });
+
+  test('renders editor options as actual model ids with the full id as title', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+    await openEffective(mount);
+
+    const select = /** @type {HTMLSelectElement} */ (
+      rowOf(mount, 'spec_review_model').querySelector('select')
+    );
+    const codex = /** @type {HTMLOptionElement} */ (
+      Array.from(select.options).find((option) => option.value === 'codex')
+    );
+
+    expect(codex.textContent?.trim()).toBe('5.6-sol');
+    expect(codex.getAttribute('title')).toBe('gpt-5.6-sol');
+    panel.destroy();
+  });
+
+  test('labels the unset option with the layer that supplies the value', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      session_defaults: { impl_review_model: 'fable' }
+    });
+    await settle();
+    await openEffective(mount);
+
+    const harness_unset = /** @type {HTMLSelectElement} */ (
+      rowOf(mount, 'spec_review_model').querySelector('select')
+    ).options[0];
+    const global_unset = /** @type {HTMLSelectElement} */ (
+      rowOf(mount, 'impl_review_model').querySelector('select')
+    ).options[0];
+
+    expect(harness_unset.textContent?.trim()).toBe(
+      '기본값 사용 — 5.6-sol (harness)'
+    );
+    expect(global_unset.textContent?.trim()).toBe('기본값 사용 — fable (전역)');
+    panel.destroy();
+  });
+
+  test('keeps a pinned value that the narrowed choice list no longer offers', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { impl_runtime: 'claude', impl_model: 'sol' }
+    });
+    await settle();
+    await openEffective(mount);
+
+    const select = /** @type {HTMLSelectElement} */ (
+      rowOf(mount, 'impl_model').querySelector('select')
+    );
+    const selected = /** @type {HTMLOptionElement} */ (
+      Array.from(select.options).find((option) => option.selected)
+    );
+
+    expect(selected.value).toBe('sol');
+    expect(selected.textContent?.trim()).toBe('sol (비호환)');
+    panel.destroy();
+  });
+
   test('resets disclosure after panel clear and reopen', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount);

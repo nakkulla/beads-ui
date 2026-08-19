@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { resolveExecutionSettings } from './execution-defaults.js';
+import {
+  buildOptionView,
+  resolveExecutionSettings,
+  unsetOptionLabel
+} from './execution-defaults.js';
 
 const PROJECTION = {
   supported: true,
@@ -189,5 +193,114 @@ describe('resolveExecutionSettings', () => {
       display: 'future-posture (비호환)',
       resolution: 'incompatible'
     });
+  });
+  test('marks a reviewer token the projection does not define as incompatible', () => {
+    const rows = resolveExecutionSettings({
+      pin: { spec_review_model: 'gemini' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.spec_review_model).toMatchObject({
+      value: 'gemini',
+      display: 'gemini (비호환)',
+      resolution: 'incompatible'
+    });
+  });
+
+  test('marks a model the pinned runtime does not offer as incompatible', () => {
+    const rows = resolveExecutionSettings({
+      pin: { impl_runtime: 'claude', impl_model: 'sol' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_model).toMatchObject({
+      value: 'sol',
+      display: 'sol (비호환)',
+      resolution: 'incompatible'
+    });
+  });
+});
+
+describe('unsetOptionLabel', () => {
+  test('names no layer for the dialog that edits that layer itself', () => {
+    const unset = resolveExecutionSettings({
+      execution_defaults: PROJECTION
+    }).spec_review_model;
+
+    expect(unsetOptionLabel(unset, false)).toBe('기본값 사용 — 5.6-sol');
+  });
+
+  test('names the supplying layer for the per-bead editor', () => {
+    const from_global = resolveExecutionSettings({
+      global: { spec_review_model: 'fable' },
+      execution_defaults: PROJECTION
+    }).spec_review_model;
+    const from_base = resolveExecutionSettings({
+      execution_defaults: PROJECTION
+    }).spec_review_model;
+
+    expect(unsetOptionLabel(from_global, true)).toBe(
+      '기본값 사용 — fable (전역)'
+    );
+    expect(unsetOptionLabel(from_base, true)).toBe(
+      '기본값 사용 — 5.6-sol (harness)'
+    );
+  });
+
+  test('drops the fixation marker from a literal default one layer down', () => {
+    const from_global = resolveExecutionSettings({
+      global: { impl_speed: 'default' },
+      execution_defaults: PROJECTION
+    }).impl_speed;
+
+    expect(unsetOptionLabel(from_global, true)).toBe(
+      '기본값 사용 — default (일반) (전역)'
+    );
+  });
+});
+
+describe('buildOptionView', () => {
+  test('labels each choice with what selecting it would resolve to', () => {
+    const view = buildOptionView({
+      key: 'spec_review_model',
+      choices: ['codex', 'fable', 'self'],
+      layer: 'pin',
+      execution_defaults: PROJECTION
+    });
+
+    expect(view.options).toEqual([
+      { value: 'codex', label: '5.6-sol', full_value: 'gpt-5.6-sol' },
+      { value: 'fable', label: 'fable', full_value: 'fable' },
+      { value: 'self', label: 'self', full_value: 'self' }
+    ]);
+  });
+
+  test('keeps a stored value the choice list omits', () => {
+    const view = buildOptionView({
+      key: 'impl_model',
+      choices: ['auto', 'opus'],
+      layer: 'pin',
+      pin: { impl_runtime: 'claude', impl_model: 'sol' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(view.options[0]).toEqual({
+      value: 'sol',
+      label: 'sol (비호환)',
+      full_value: 'sol'
+    });
+  });
+
+  test('resolves the unset option against the remaining layers only', () => {
+    const view = buildOptionView({
+      key: 'spec_review_model',
+      choices: ['codex', 'fable'],
+      layer: 'pin',
+      pin: { spec_review_model: 'fable' },
+      global: { spec_review_model: 'opus' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(view.unset_label).toBe('기본값 사용 — opus (전역)');
   });
 });

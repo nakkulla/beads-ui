@@ -172,6 +172,55 @@ function explicitResult(value, source, model = false) {
 }
 
 /**
+ * Every model token the runtime offers for `runtime`, from the projection's own
+ * catalog first and the resolved runner catalog second. An empty list means the
+ * runtime is unknown to both, which is not evidence that a token is wrong.
+ *
+ * @param {string} runtime
+ * @param {Record<string, any>|null} session
+ * @param {Record<string, any>|null} runner_catalog
+ * @returns {string[]}
+ */
+function runtimeModelTokens(runtime, session, runner_catalog) {
+  const projected = session?.implementation?.model_catalog?.[runtime];
+  /** @type {string[]} */
+  const tokens = [];
+  if (isRecord(projected)) {
+    tokens.push(...Object.keys(projected));
+  } else if (Array.isArray(projected)) {
+    tokens.push(...projected.filter((token) => typeof token === 'string'));
+  }
+  const catalog_models = runner_catalog?.runners?.[runtime]?.models;
+  if (isRecord(catalog_models)) {
+    for (const token of Object.keys(catalog_models)) {
+      if (!tokens.includes(token)) {
+        tokens.push(token);
+      }
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Mark a stored token the pinned projection does not recognize. The raw value
+ * survives verbatim with a `비호환` marker (spec §9.2) — this consumer never
+ * falls back to another reviewer, model, or effort, and never rewrites what the
+ * user stored.
+ *
+ * @param {ExecutionValue} row
+ * @returns {ExecutionValue}
+ */
+function incompatibleResult(row) {
+  return result(
+    row.value,
+    row.source,
+    `${row.value} (비호환)`,
+    row.value,
+    'incompatible'
+  );
+}
+
+/**
  * @param {string} key
  * @param {Record<string, any>} pin
  * @param {Record<string, any>} global_values
@@ -260,6 +309,14 @@ export function resolveExecutionSettings(input) {
           '기본값 확인 불가',
           null,
           'unavailable'
+        );
+      } else if (
+        chosen.value !== 'self' &&
+        chosen.value !== 'skip' &&
+        !isRecord(session.review?.reviewers?.[chosen.value])
+      ) {
+        rows[model_key] = incompatibleResult(
+          result(chosen.value, chosen.source, '', null, 'explicit')
         );
       } else {
         const full_value = reviewerModelId(chosen.value, session);
@@ -354,14 +411,25 @@ export function resolveExecutionSettings(input) {
           rows.impl_runtime.value === 'inherit'
             ? usableString(input.controller_runtime)
             : rows.impl_runtime.value;
-        const full_value = implementationModelId(
-          rows.impl_model.value,
-          runtime,
-          session,
-          runner_catalog
-        );
-        rows.impl_model.display = compactModelId(full_value);
-        rows.impl_model.full_value = full_value;
+        const offered = runtime
+          ? runtimeModelTokens(runtime, session, runner_catalog)
+          : [];
+        if (
+          rows.impl_model.value !== 'auto' &&
+          offered.length > 0 &&
+          !offered.includes(rows.impl_model.value)
+        ) {
+          rows.impl_model = incompatibleResult(rows.impl_model);
+        } else {
+          const full_value = implementationModelId(
+            rows.impl_model.value,
+            runtime,
+            session,
+            runner_catalog
+          );
+          rows.impl_model.display = compactModelId(full_value);
+          rows.impl_model.full_value = full_value;
+        }
       }
       if (rows.impl_effort.value === 'auto') {
         const transport =
@@ -481,4 +549,87 @@ export function resolveExecutionSettings(input) {
   }
 
   return rows;
+}
+
+/**
+ * The `기본값 사용 — …` label for the leading unset option.
+ *
+ * The settings dialog edits the global layer itself, so its unset option names
+ * only the result. The per-bead editor sits one layer above and must also name
+ * WHICH layer supplies that result (spec §7.5) — otherwise `기본값 사용` reads
+ * the same whether the value comes from the workspace or the harness.
+ *
+ * @param {ExecutionValue} unset
+ * @param {boolean} with_source
+ * @returns {string}
+ */
+export function unsetOptionLabel(unset, with_source) {
+  // A literal `default` stored one layer down is not fixed on THIS bead, so the
+  // stored-value fixation marker would misdescribe it here.
+  const body =
+    with_source && unset.value === 'default' ? 'default (일반)' : unset.display;
+  if (!with_source || unset.source === 'pin') {
+    return `기본값 사용 — ${unset.display}`;
+  }
+  const layer = unset.source === 'global' ? '전역' : 'harness';
+  return `기본값 사용 — ${body} (${layer})`;
+}
+
+/**
+ * Option labels for one select, without touching its stored contract tokens.
+ *
+ * Every candidate is resolved as if it were stored in `layer`, so an option
+ * reads exactly what choosing it would produce. Removing the key from that same
+ * layer yields the leading unset option, and a stored value the current choice
+ * list no longer offers is kept as an option — dropping it would render a
+ * pinned value as unset.
+ *
+ * @param {{
+ *   key: string,
+ *   choices: ReadonlyArray<string>,
+ *   layer: 'pin'|'global',
+ *   pin?: Record<string, any>|null,
+ *   global?: Record<string, any>|null,
+ *   execution_defaults?: Record<string, any>|null,
+ *   runner_catalog?: Record<string, any>|null,
+ *   controller_runtime?: string|null
+ * }} input
+ * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
+ */
+export function buildOptionView(input) {
+  const pin = isRecord(input.pin) ? input.pin : {};
+  const global_values = isRecord(input.global) ? input.global : {};
+  /** @param {Record<string, any>} layer_values */
+  const resolveWith = (layer_values) =>
+    resolveExecutionSettings({
+      pin: input.layer === 'pin' ? layer_values : pin,
+      global: input.layer === 'pin' ? global_values : layer_values,
+      execution_defaults: input.execution_defaults,
+      runner_catalog: input.runner_catalog,
+      controller_runtime: input.controller_runtime
+    });
+
+  const own_values = input.layer === 'pin' ? pin : global_values;
+  const unset_values = { ...own_values };
+  delete unset_values[input.key];
+  const unset = resolveWith(unset_values)[input.key];
+  const current = resolveWith(own_values)[input.key];
+  const stored = usableString(own_values[input.key]);
+  /** @type {string[]} */
+  const choices = [...input.choices];
+  if (stored !== null && !choices.includes(stored)) {
+    choices.unshift(stored);
+  }
+  return {
+    unset_label: unsetOptionLabel(unset, input.layer === 'pin'),
+    full_value: unset.full_value,
+    unavailable: unset.resolution === 'unavailable',
+    disabled: current?.resolution === 'not_applicable',
+    options: choices.map((choice) => {
+      const row = resolveWith({ ...own_values, [input.key]: choice })[
+        input.key
+      ];
+      return { value: choice, label: row.display, full_value: row.full_value };
+    })
+  };
 }

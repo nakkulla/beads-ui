@@ -7,7 +7,7 @@
  * `server/worker/exec-enums.js`. Nothing here may widen them. Concrete unset
  * labels come from the pinned projection through the shared resolver.
  */
-import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { buildOptionView } from '../../utils/execution-defaults.js';
 
 /** The `bd kv workflow_session_defaults` keys, in dialog display order. */
 export const SESSION_DEFAULT_KEYS = [
@@ -176,9 +176,9 @@ export function orchestrationModelOptions(catalog, runtime) {
 }
 
 /**
- * Build labels for one select without replacing its stored contract tokens.
- * Removing only this key from the draft computes the leading unset option;
- * dependent selectors remain in the draft and immediately affect that label.
+ * Build labels for the dialog's own layer: it edits the workspace-global values
+ * directly, so its unset option names the result without naming a layer.
+ * Dependent selectors remain in the draft and immediately affect that label.
  *
  * @param {string} key
  * @param {ReadonlyArray<string>} choices
@@ -194,37 +194,14 @@ export function buildExecutionOptionView(
   execution_defaults,
   runner_catalog
 ) {
-  const unset_values = { ...draft };
-  delete unset_values[key];
-  const unset_rows = resolveExecutionSettings({
-    global: unset_values,
-    execution_defaults,
-    runner_catalog
-  });
-  const current_rows = resolveExecutionSettings({
+  return buildOptionView({
+    key,
+    choices,
+    layer: 'global',
     global: draft,
     execution_defaults,
     runner_catalog
   });
-  const unset = unset_rows[key];
-  return {
-    unset_label: `기본값 사용 — ${unset.display}`,
-    full_value: unset.full_value,
-    unavailable: unset.resolution === 'unavailable',
-    disabled: current_rows[key]?.resolution === 'not_applicable',
-    options: choices.map((choice) => {
-      const rows = resolveExecutionSettings({
-        global: { ...draft, [key]: choice },
-        execution_defaults,
-        runner_catalog
-      });
-      return {
-        value: choice,
-        label: rows[key].display,
-        full_value: rows[key].full_value
-      };
-    })
-  };
 }
 
 /**
