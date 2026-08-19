@@ -1,7 +1,7 @@
 # 무의미해진 복구 세션 실패의 무해화와 resume cwd 재검증 설계 (UI-83tq)
 
 - 작성일: 2026-08-19
-- 상태: 사용자 설계 승인 완료, spec gate 대기
+- 상태: spec gate REVISE(blocking 7) 전건 반영, controller self-review 완료
 - Bead: `UI-83tq`
 - route: `spec_backed`
 - 실측 계기: `UI-k34k` attempt `UI-k34k-1787095976899-1` (2026-08-19)
@@ -99,10 +99,13 @@ UI-pmfr가 들어와도 구조적으로 남는 잔여 경합 — 정당하게 �
    무해화 대상에서 제외한다. blocker는 credential·destructive 등 hard-stop
    class의 표면화이므로 항상 기존 경로로 사람에게 도달해야 한다.
 
-`failAttempt`가 `setAutoAdvance(false)`를 실행하는 경우(비-moot), attempt
-patch에 `halted_auto_advance: true`를 함께 기록한다. §6의 복원 판정이 "이
-실패가 Worker를 멈춘 당사자"임을 durable하게 식별하는 유일한 근거다. 사용자
-⏸는 attempt를 거치지 않으므로 이 플래그를 만들지 않는다.
+비-moot 경로에서 `halted_auto_advance: true`는 **`auto_advance`의 실제
+`true→false` 전환과 하나의 store mutation으로 결합해서만** 기록한다(예:
+전환과 플래그를 함께 쓰는 내부 store API). `failAttempt`가 호출됐지만
+`auto_advance`가 이미 `false`였다면 — 사용자 ⏸ 등 선행 원인 — 이 실패는
+Worker를 멈춘 당사자가 아니므로 플래그를 만들지 않는다. §6의 복원 판정이
+"이 실패가 Worker를 멈춘 당사자"임을 durable하게 식별하는 유일한 근거다.
+사용자 ⏸는 attempt를 거치지 않으므로 이 플래그를 만들지 않는다.
 
 judge 호출이 던지면(defect) moot 판정을 포기하고 기존 실패 경로로 간다 —
 무해화는 최선 노력이고, 실패를 실패로 기록하는 쪽이 fail-closed다.
@@ -113,44 +116,76 @@ judge 호출이 던지면(defect) moot 판정을 포기하고 기존 실패 경�
 성공하는 경우가 남는다. 기존 주기 실행 지점인
 `reconcileRepairsLocked`(repo-operation lock 안)에 한 pass를 추가한다.
 
-- `repair_operation_id`가 있고 `status='failed'`이며 `dismissed_at`이 없는
-  attempt마다 `judge()`를 호출해 `chain_closed`면 `dismissed_at`을 채운다.
-- 이번 pass의 dismiss로 `halted_auto_advance=true`인 미dismiss 실패가 전부
-  소진되고, 다른 미dismiss 실패 attempt가 하나도 남지 않으며, 현재
-  `auto_advance=false`일 때만 `setAutoAdvance(true)`로 복원한다. 조건 하나라도
-  빠지면 복원하지 않는다.
+- **늦은 moot 자격**: `repair_operation_id`가 있고 `status='failed'`이며
+  `dismissed_at`이 없고, **blocker 실패가 아닌**(§5-3과 동일 제외 —
+  `cause`가 blocker cause(`loud_fail_blocker`)가 아닌) attempt만 대상이다.
+  blocker는 대상이 나중에 닫혀도 dismiss·복원 대상이 아니다 — hard-stop
+  class는 항상 사람에게 도달해야 한다.
+- 자격 있는 attempt마다 `judge()`를 호출해 `chain_closed`면 `dismissed_at`을
+  채운다.
+- **복원 조건**: 이번 pass의 dismiss로 `halted_auto_advance=true`인 미해소
+  실패가 전부 소진되고, 그 외 **미해소(unhandled) 실패**가 하나도 남지
+  않으며, 현재 `auto_advance=false`일 때만 `setAutoAdvance(true)`로 복원한다.
+  조건 하나라도 빠지면 복원하지 않는다. "미해소 실패" 판정은 실패 배너
+  projection이 이미 쓰는 predicate(미dismiss이며 후속 attempt로 supersede되지
+  않은 실패)를 **재사용**한다 — 별도 구현을 두지 않는다. 후속 child나
+  성공한 재시도로 이미 supersede된 과거 failed 레코드는 배너도 halt 원인도
+  아니므로 복원을 막지 않는다.
+- **인계**: dismiss 또는 복원이 실제로 일어난 pass는 repo-operation lock 해제
+  후 `notifyChanged`와 scheduler `tick`을 호출해, 복원된 큐가 같은 흐름에서
+  대기 bead를 dispatch하게 한다. `reconcileRepairsLocked` 자체는 dispatch를
+  수행하지 않으므로 이 인계 없이는 상태만 켜진 채 다음 외부 이벤트까지
+  멈춘다.
 - 사용자 ⏸로 꺼진 상태는 halting attempt가 존재하지 않으므로 복원 트리거가
   성립하지 않는다.
 
-수용 리스크: 실패가 Worker를 멈춘 뒤 사용자가 별도로 ⏸ 의도를 가진 경우(이미
-꺼진 상태에서의 ⏸는 상태 변화가 없어 구분 불가) 복원이 그 의도를 덮을 수
-있다. 토글 이력은 durable하지 않고, 빈도가 낮으며, 사용자의 무수동 운영
-정책상 진행 재개가 기본값이므로 수용한다(§9-5에서 ⏸ 단독 케이스의 비복원은
-검증한다).
+수용 리스크: 실패가 halt한 뒤 사용자가 ▶로 재개했다가 다시 ⏸한 경우, 그
+사이 해소되지 않은 halting 실패가 늦게 moot가 되면 복원이 두 번째 ⏸ 의도를
+덮을 수 있다. 토글 이력은 durable하지 않고, 빈도가 낮으며, 사용자의 무수동
+운영 정책상 진행 재개가 기본값이므로 수용한다(§9-7에서 ⏸ 단독 케이스의
+비복원은 검증한다).
 
 ## 7. Unit 2 — spawn 직전 cwd 재검증과 폴백 순서
 
-`relaunchFromAttempt`에서 마지막 await 이후, `launchSession` 호출 직전에
-재검증한다. `wt_path`가 공유 checkout(`repo` 자체)이면 검증 없이 진행하고,
-worktree 경로면 `proveOwnedWorktree()`를 다시 실행한다.
+재검증은 두 겹이다. `wt_path`가 공유 checkout(`repo` 자체)이면 어느 겹도
+적용하지 않는다.
+
+- **본증명**: `relaunchFromAttempt`가 `launchSession`을 부르기 직전
+  `proveOwnedWorktree()`(존재 + 브랜치 일치)를 다시 실행한다.
+- **최종 확인**: `launchSession` 내부, 마지막 await(`branchTip`) **이후**에
+  worktree 경로의 동기 존재 확인(`fs.existsSync` 수준)을 두고, 이 확인과
+  `runner.spawn` 사이에는 어떤 await도 두지 않는다. 본증명만으로는
+  `branchTip` await 동안 삭제되는 원래 ENOENT 경합이 그대로 통과한다.
 
 증명 성공이면 기존대로 resume한다. 실패(`worktree_missing` 등)이면:
 
 1. **대상 완료 우선 확인** — 폴더가 사라진 이유가 "작업 완료 후 정리"일 수
    있다. `repair_operation_id`가 있으면 `judge()`로, 그 외 resume 경로면 bead
    snapshot의 terminal 상태(closed)로 확인한다. 완료면 **아무 세션도 띄우지
-   않고** `repair_target_resolved` 사유의 spawn 거절로 끝낸다. 레코드 정리는
-   기존 spawn 거절 경로(스탬프·workflow_mode revert)의 의미를 그대로 따르며,
-   불변식은 세 가지다: 실패 배너가 생기지 않고, `auto_advance`가 꺼지지
-   않으며, `running` 레코드가 잔류하지 않는다. `failAttempt`는 부르지 않는다.
+   않고** `repair_target_resolved` 사유의 spawn 거절로 끝낸다.
 2. **repair / disposition 계열**(원래 공유 checkout 실행이 의미 보존인
-   종류): resume을 버리고 같은 prompt의 fresh 세션으로 전환한다 —
-   `cwd=repo`, `resume_session_id=null`. `dispatchReviseFix`가 이미 정의한
-   substitute-session 의미의 재사용이다.
+   종류): 대상 미완이면 resume을 버리고 **같은 attempt에서** 같은 prompt의
+   fresh 세션으로 전환한다 — `cwd=repo`, `resume_session_id` 미사용.
+   `dispatchReviseFix`가 이미 정의한 substitute-session 의미의 재사용이다.
+   전환 시 durable attempt 레코드도 fresh를 반영하도록 spawn 전에 정정한다:
+   `continuation_mode`를 fresh 의미 값으로, `disposition_resume=false`로.
+   정정 없이는 이후 fresh 세션의 실패가 resume 실패로 오독되어 substitute
+   retry가 한 번 더 돈다.
 3. **일반 bead 작업 resume**(완료 재개·conflict 등, 작업물이 worktree에 있는
-   종류): fresh 전환은 작업 문맥을 잃으므로 하지 않는다. 실패 attempt를
-   만들지 않고 `worktree_missing` 사유로 거절만 하고, 후속 판정은 기존
-   stale-work/admission 재관측(UI-8vn1 표면)에 맡긴다.
+   종류): fresh 전환은 작업 문맥을 잃으므로 하지 않는다. `worktree_missing`
+   사유의 spawn 거절로 끝내고, 후속 판정은 기존 stale-work/admission
+   재관측(UI-8vn1 표면)에 맡긴다.
+
+**spawn 거절의 terminal 표현**(1·3 공통): 기존 spawn-throw 정리 경로(guard
+hook 제거, usage inbox 정리, exec stamp·workflow_mode revert, claim 해제,
+`notifyChanged`)를 재사용하고, attempt는 `status='failed'` + 거절 사유
+`cause` + **즉시 `dismissed_at`**으로 마감한다. 불변식: 실패 배너가 생기지
+않고(§5 moot 기록과 같은 기제), `auto_advance`를 끄지 않으며(`failAttempt`
+미호출 — spawn 경로는 원래 halt하지 않는다), `running` 레코드가 잔류하지
+않는다. `resumed_from`은 lineage 보존을 위해 유지한다 — 이로 인해 조상이
+`already_resumed`로 소진되지만, worktree가 사라진 조상 resume은 어차피
+불가능하고 이후 진행은 fresh dispatch이므로 막히는 경로가 없다. 재시작이 이
+마감 직전에 끼어든 창은 기존 dead-attempt 처분이 흡수한다.
 
 spawn이 시작된 **이후**의 삭제 경합은 이 설계의 범위 밖이다. 그 창에서 죽은
 세션은 Unit 1의 moot 무해화가 흡수하고, dispatch 방지는 UI-pmfr가 맡는다.
@@ -182,24 +217,37 @@ spawn이 시작된 **이후**의 삭제 경합은 이 설계의 범위 밖이다
    dispatch된다. (RED: 현재는 배너 + `auto_advance=false`)
 2. **진짜 실패 회귀**: 같은 실패에서 행이 남아 있으면(`unresolved`) 기존
    경로 — 배너, `auto_advance=false`, attempt에 `halted_auto_advance=true`.
-3. **blocker 제외**: `verdict.blocked` 실패는 대상이 `chain_closed`여도 기존
-   실패 경로다.
-4. **늦은 moot reconcile**: 배너가 뜬 뒤 행이 소비되면 다음 reconcile pass가
-   `dismissed_at`을 채우고, 그 실패가 유일한 halting 실패였으면
-   `auto_advance`를 복원한다. 다른 미dismiss 실패가 남아 있으면 복원하지
-   않는다.
-5. **사용자 ⏸ 비복원**: halting attempt 없이 `auto_advance=false`인 상태는
+3. **halting 플래그의 전환 결합**: `auto_advance`가 이미 `false`인 상태에서
+   repair 실패가 기록되면 `halted_auto_advance`가 만들어지지 않고, 전환이
+   실제로 일어난 실패에서만 플래그와 전환이 한 mutation으로 기록된다.
+4. **blocker 제외 — 즉시와 늦은 경로 모두**: `verdict.blocked` 실패는 대상이
+   `chain_closed`여도 즉시 무해화되지 않고, blocker cause로 기록된 실패는
+   이후 대상이 닫혀도 늦은 reconcile가 dismiss·복원하지 않는다.
+5. **늦은 moot reconcile와 인계**: 배너가 뜬 뒤 행이 소비되면 다음 reconcile
+   pass가 `dismissed_at`을 채우고, 그 실패가 유일한 halting 실패였으면
+   `auto_advance`를 복원하며, lock 해제 후 `notifyChanged`+`tick` 인계로
+   serial lane 대기 bead가 **실제 dispatch**된다. 다른 미해소 실패가 남아
+   있으면 복원하지 않는다.
+6. **superseded 과거 실패 비차단**: 후속 attempt로 supersede된 미dismiss
+   failed 레코드가 남아 있어도, 유일한 현재 halting moot 실패가 해소되면
+   복원된다.
+7. **사용자 ⏸ 비복원**: halting attempt 없이 `auto_advance=false`인 상태는
    reconcile가 복원하지 않는다.
-6. **spawn 직전 재검증 — 완료 케이스**: dispatch 판정 통과 후 spawn 전에
-   worktree가 삭제되고 대상이 완료된 재현에서 세션이 기동되지 않고 실패
-   attempt·배너가 생기지 않는다.
-7. **spawn 직전 재검증 — 미완 케이스**: 같은 삭제 재현에서 대상이 미완이면
-   repair/disposition은 `cwd=repo`의 fresh 세션으로 기동되고, 일반 bead
-   resume은 실패 attempt 없이 `worktree_missing`으로 거절된다.
-8. **정상 resume 회귀**: worktree가 살아 있으면 원본 cwd에서 `--resume`이
-   그대로 실행된다.
-9. **legacy payload round-trip**: 두 신규 필드가 없는 queue.json이
-   `null`/`false`로 읽히고 저장 round-trip에서 보존된다.
+8. **spawn 직전 재검증 — 완료 케이스**: dispatch 판정 통과 후 spawn 전에
+   worktree가 삭제되고 대상이 완료된 재현에서 세션이 기동되지 않고, 실패
+   배너·`auto_advance` off가 생기지 않으며, cold snapshot에 `running`
+   잔류가 없다.
+9. **spawn 직전 재검증 — 미완 케이스**: 같은 삭제 재현에서 대상이 미완이면
+   repair/disposition은 `cwd=repo`의 fresh 세션으로 기동되고 durable
+   레코드가 fresh(`continuation_mode` fresh 값, `disposition_resume=false`)를
+   반영하며, 일반 bead resume은 배너 없이 `worktree_missing`으로 거절된다.
+10. **최종 확인의 await 창**: 본증명 통과 후 `launchSession` 내부 마지막
+    await(`branchTip`) 동안 worktree가 삭제되는 재현에서 세션이 ENOENT로
+    즉사하지 않고 위 8·9의 경로로 처리된다.
+11. **정상 resume 회귀**: worktree가 살아 있으면 원본 cwd에서 `--resume`이
+    그대로 실행된다.
+12. **legacy payload round-trip**: 두 신규 필드가 없는 queue.json이
+    `null`/`false`로 읽히고 저장 round-trip에서 보존된다.
 
 ### 회귀 보존
 
@@ -222,10 +270,10 @@ spawn이 시작된 **이후**의 삭제 경합은 이 설계의 범위 밖이다
 
 1. §9-1 재현(이번 실측과 동형)이 사용자 개입 없이 흡수된다: 배너 없음,
    `auto_advance` 유지, 대기 bead dispatch.
-2. §9-6/7 재현에서 무의미한 세션이 기동되지 않고, 필요한 경우에만 fresh
+2. §9-8/9/10 재현에서 무의미한 세션이 기동되지 않고, 필요한 경우에만 fresh
    전환되며, 어느 쪽도 Worker를 멈추지 않는다.
 3. 진짜 실패·blocker·정상 resume·사용자 ⏸의 기존 동작이 전부 보존된다
-   (§9-2, 3, 5, 8, 회귀 보존).
+   (§9-2, 4, 7, 11, 회귀 보존).
 4. 실패 정보(`cause`, `cause_detail`, raw 코드, 세션 로그 경로)는 moot
    경로에서도 전부 기록된다.
 5. Pre-handoff 검증과 §10의 배포·runtime 검증을 통과한다.
