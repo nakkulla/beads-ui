@@ -254,12 +254,21 @@ export function createLiveBd(config) {
           }
         }
       }
-      // Presence rule for the admission inputs: a malformed spec_review must
-      // reach the validator as present-and-invalid, never as absent.
+      // Presence rule for admission inputs: malformed values must reach the
+      // validator as present-and-invalid, never collapse into absence.
       const spec = resolveSpecId(issue);
       const spec_id = spec.path || null;
       const spec_review = Object.hasOwn(md, 'spec_review')
         ? md.spec_review
+        : undefined;
+      const plan_path = Object.hasOwn(md, 'plan_path')
+        ? md.plan_path
+        : undefined;
+      const plan_approval = Object.hasOwn(md, 'plan_approval')
+        ? md.plan_approval
+        : undefined;
+      const last_checked_sha = Object.hasOwn(md, 'last_checked_sha')
+        ? md.last_checked_sha
         : undefined;
 
       const resolved = await config.resolveBase();
@@ -328,6 +337,9 @@ export function createLiveBd(config) {
         spec_id,
         spec_id_conflict: spec.conflict,
         spec_review,
+        plan_path,
+        plan_approval,
+        last_checked_sha,
         deps: blocks_blockers,
         blocked_by: blocks_blockers
       };
@@ -508,6 +520,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           spec_id: snap.spec_id,
           spec_id_conflict: snap.spec_id_conflict,
           spec_review: snap.spec_review,
+          plan_path: snap.plan_path,
+          plan_approval: snap.plan_approval,
+          last_checked_sha: snap.last_checked_sha,
           labels: snap.labels
         }
       });

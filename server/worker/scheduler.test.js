@@ -417,6 +417,9 @@ function makeFakeBd(config) {
             ? ['worker-ineligible']
             : (c.labels ?? []),
         spec_review: c.spec_review,
+        plan_path: c.plan_path,
+        plan_approval: c.plan_approval,
+        last_checked_sha: c.last_checked_sha,
         deps: c.deps ?? []
       };
     },
@@ -2998,6 +3001,48 @@ describe('scheduler stale spec_review lane (UI-dlim §3.2)', () => {
     expect(prompt).toContain(DELTA_SHA);
     expect(prompt).toContain('c'.repeat(40));
     expect(prompt).toContain('워커 재리뷰 레인');
+  });
+
+  test('renders separate spec and plan blocks with changed paths', async () => {
+    const plan_receipt_sha = 'd'.repeat(40);
+    const plan_delta_sha = 'e'.repeat(40);
+    const env = setup({
+      config: {
+        S1: {
+          spec_review: `codex@${RECEIPT_SHA}`,
+          plan_approval: `user@${plan_receipt_sha}`
+        }
+      },
+      slots: 1,
+      admission: {
+        validate: vi.fn(async () => ({
+          ok: true,
+          stale: {
+            receipt_sha: RECEIPT_SHA,
+            delta_shas: [DELTA_SHA],
+            changed_paths: ['server/worker/admission.js'],
+            plan: {
+              receipt_sha: plan_receipt_sha,
+              delta_shas: [plan_delta_sha],
+              changed_paths: ['server/worker/scheduler.js']
+            }
+          }
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain('[spec]');
+    expect(prompt).toContain('stale spec_review 관측');
+    expect(prompt).toContain('server/worker/admission.js');
+    expect(prompt).toContain('[plan]');
+    expect(prompt).toContain('stale plan_approval 관측');
+    expect(prompt).toContain(`user@${plan_receipt_sha}`);
+    expect(prompt).toContain(plan_delta_sha);
+    expect(prompt).toContain('server/worker/scheduler.js');
   });
 
   test('builds the prompt from the DISPATCH re-check, not the tick scan', async () => {

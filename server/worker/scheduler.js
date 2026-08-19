@@ -210,11 +210,8 @@ function blockerCauseDetail(detail) {
 }
 
 /**
- * The first-dispatch prompt for a bead admitted with a STALE spec_review
- * receipt (UI-dlim §3.2): the default task prompt plus the observed facts the
- * session cannot see from inside its worktree — the receipt it currently pins,
- * the base the staleness was computed against, and the spec commits that landed
- * after the receipt.
+ * First-dispatch prompt for artifact staleness: default task plus the receipt,
+ * actual anchor, base, commits, and changed paths for each stale artifact.
  *
  * The lane's PROCEDURE is deliberately not restated here: it belongs to the
  * workflow contract (dotfiles `docs/contracts/workflow.md`), and beads-ui is
@@ -222,14 +219,39 @@ function blockerCauseDetail(detail) {
  * trigger plus observations and points at the contract for the rest.
  *
  * @param {string} bead_id
- * @param {{ receipt: string, base: string, delta_shas: string[] }} stale
+ * @param {{
+ *   base: string,
+ *   spec?: { receipt: string, receipt_sha: string, delta_shas: string[], changed_paths?: string[] },
+ *   plan?: { receipt: string, receipt_sha: string, delta_shas: string[], changed_paths: string[] }
+ * }} stale
  * @returns {string}
  */
 function staleDispatchPrompt(bead_id, stale) {
+  /** @type {string[]} */
+  const blocks = [];
+  if (stale.spec) {
+    blocks.push(
+      [
+        '[spec]',
+        `stale spec_review 관측 — 영수증 \`${stale.spec.receipt}\`, freshness 앵커 \`${stale.spec.receipt_sha}\`, base \`${stale.base}\`.`,
+        `delta 커밋: ${stale.spec.delta_shas.join(', ')}`,
+        `변경 경로: ${(stale.spec.changed_paths || []).join(', ') || '(기록 없음)'}`
+      ].join('\n')
+    );
+  }
+  if (stale.plan) {
+    blocks.push(
+      [
+        '[plan]',
+        `stale plan_approval 관측 — 영수증 \`${stale.plan.receipt}\`, freshness 앵커 \`${stale.plan.receipt_sha}\`, base \`${stale.base}\`.`,
+        `delta 커밋: ${stale.plan.delta_shas.join(', ')}`,
+        `변경 경로: ${stale.plan.changed_paths.join(', ') || '(기록 없음)'}`
+      ].join('\n')
+    );
+  }
   return [
     defaultTaskPrompt(bead_id),
-    `stale spec_review 관측 — 이 비드의 spec_review 영수증 \`${stale.receipt}\` 이후 base \`${stale.base}\`에서 스펙 파일이 변경되었다.`,
-    `delta 커밋: ${stale.delta_shas.join(', ')}`,
+    ...blocks,
     '구현에 들어가기 전에 workflow 계약의 워커 재리뷰 레인(stale receipt 갱신)을 먼저 수행하라.'
   ].join('\n\n');
 }
@@ -288,6 +310,9 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {unknown} [spec_review] - Raw spec_review metadata value. Key
  * absence ⇒ `undefined`; any present value must reach the admission
  * validator so a malformed receipt rejects instead of reading as absent.
+ * @property {unknown} [plan_path] - Raw plan_path admission input.
+ * @property {unknown} [plan_approval] - Raw plan_approval admission input.
+ * @property {unknown} [last_checked_sha] - Raw freshness cursor admission input.
  * @property {string[]} [deps] - Direct `blocks` blocker ids (UI-04vo §3) —
  * the lane-ordering edge source. Consumers intersect these with the current
  * queue membership.
@@ -325,13 +350,13 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * the cut and the attempt's recorded `target_base` come from a base read at
  * dispatch time rather than one captured earlier. Absent wiring falls back to
  * the snapshot's own resolution.
- * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }> }} [admission]
+ * @property {{ validate: (snap: BeadSnapshot, base?: string) => Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }> }} [admission]
  * Auto-run admission validator (worker-autorun-policy §1). When present, the
  * tick candidate scan AND the dispatch re-check (against the pinned worktree
  * base_oid) both gate on it; refusals are recorded in `Queue.admission`. An
  * ADMITTED result may still carry `stale` (UI-dlim §3.1) — a non-blocking
- * observation that the spec moved after the receipt, which flags the badge and
- * the attempt and is injected into the session prompt.
+ * observation that an artifact scope moved after its anchor, which flags the
+ * badge and attempt and is injected into the session prompt.
  * @property {{ complete: (input: { workspace: string, attempt_id: string, bead_id: string, kind: string, prior_receipt?: string|null, target_base?: string|null }) => Promise<{ ok: boolean, reason?: string }>, release?: (bead_id: string) => void }} [disposition]
  * Completion verdict for a DISPOSITION attempt (UI-hs11 §3.3). A disposition
  * session opens no PR, so the PR-existence check every implementation attempt
@@ -2011,7 +2036,7 @@ export function createScheduler(deps) {
    *
    * @param {BeadSnapshot} snap
    * @param {string} [base]
-   * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha: string, delta_shas: string[] } }>}
+   * @returns {Promise<{ ok: boolean, reason?: string, stale?: { receipt_sha?: string, delta_shas?: string[], changed_paths?: string[], plan?: { receipt_sha: string, delta_shas: string[], changed_paths: string[] } } }>}
    */
   async function checkAdmission(snap, base) {
     if (isWorkerIneligible(snap.labels)) {
@@ -4200,13 +4225,30 @@ export function createScheduler(deps) {
             ? {
                 id: bead_id,
                 prompt: staleDispatchPrompt(bead_id, {
-                  receipt:
-                    typeof snap.spec_review === 'string' &&
-                    snap.spec_review.trim().length > 0
-                      ? snap.spec_review.trim()
-                      : adm.stale.receipt_sha,
                   base: wt.base_oid,
-                  delta_shas: adm.stale.delta_shas
+                  spec:
+                    adm.stale.receipt_sha && adm.stale.delta_shas
+                      ? {
+                          receipt:
+                            typeof snap.spec_review === 'string' &&
+                            snap.spec_review.trim().length > 0
+                              ? snap.spec_review.trim()
+                              : adm.stale.receipt_sha,
+                          receipt_sha: adm.stale.receipt_sha,
+                          delta_shas: adm.stale.delta_shas,
+                          changed_paths: adm.stale.changed_paths
+                        }
+                      : undefined,
+                  plan: adm.stale.plan
+                    ? {
+                        receipt:
+                          typeof snap.plan_approval === 'string' &&
+                          snap.plan_approval.trim().length > 0
+                            ? snap.plan_approval.trim()
+                            : adm.stale.plan.receipt_sha,
+                        ...adm.stale.plan
+                      }
+                    : undefined
                 })
               }
             : { id: bead_id }
