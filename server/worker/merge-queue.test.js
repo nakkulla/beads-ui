@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { createCompletionIntentCoordinator } from './completion-intent.js';
 import { createMergeQueue } from './merge-queue.js';
 import { createQueueStore } from './queue-store.js';
 import { queueFilePath } from './state-paths.js';
@@ -560,6 +561,56 @@ describe('worker/merge-queue — repair fence', () => {
 });
 
 describe('worker/merge-queue — completion subject continuity', () => {
+  test('exposes a completion halt until the queued phase can continue', async () => {
+    const store = seed(['UI-root']);
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    /** @type {{ current: ((workspace: string) => void)|null }} */
+    const changed = { current: null };
+    const merge = vi.fn(async () => {
+      store.dequeueMerge(WS, 'UI-root');
+      return { ok: true, action: 'merged', reason: null };
+    });
+    const mq = driver(store, {
+      merge,
+      subscribeQueueChanged: (
+        /** @type {(workspace: string) => void} */ fn
+      ) => {
+        changed.current = fn;
+        return () => {};
+      }
+    });
+
+    mq.start();
+    await vi.waitFor(() =>
+      expect(mq.state().waiting).toEqual({
+        bead_id: 'UI-root',
+        reason: 'completion_waiting:gating'
+      })
+    );
+    store.setCompletionSubject(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'merging',
+      subject: store.snapshot(WS).completion_intents['UI-root'].subject
+    });
+    changed.current?.(WS);
+    await vi.waitFor(() => expect(merge).toHaveBeenCalledTimes(1));
+    mq.stop();
+
+    expect(mq.state().waiting).toBeNull();
+  });
+
   test('holds the root queue head while its repair PR is not ready to merge', async () => {
     const store = seed(['UI-root', 'UI-next']);
     store.enqueueCompletionIntent(WS, {
@@ -2399,6 +2450,96 @@ describe('worker/merge-queue — manual continuation authority (UI-58w8)', () =>
         patch: { status: 'done', finished_at: 2 }
       });
   }
+
+  test('resumes a terminal completion through its gate to conflict dispatch', async () => {
+    const store = seed(['UI-root']);
+    store.toggleAutoMerge(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      on: true
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: MANUAL_HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-root',
+      terminal: {
+        reason: 'review_receipt_stale',
+        stage: 'merge_gate',
+        failure_key: null,
+        evidence: null,
+        log_path: null,
+        at: 10
+      }
+    });
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: 'UI-root',
+          head_sha: MANUAL_HEAD,
+          target_base: 'main'
+        }
+      ]
+    });
+    const observe = vi.fn(async () => ({
+      state: /** @type {const} */ ('conflict')
+    }));
+    const completion = createCompletionIntentCoordinator({
+      workspace: WS,
+      store,
+      observe,
+      onAction: async (root_bead_id, action, intent) => {
+        expect(action).toEqual({ kind: 'merge_subject' });
+        store.setCompletionSubject(WS, {
+          root_bead_id,
+          phase: 'merging',
+          subject: intent.subject
+        });
+      }
+    });
+    const dispatchConflict = vi.fn(async () => ({
+      ok: false,
+      action: /** @type {const} */ ('conflict_resolution'),
+      reason: 'worktree_missing'
+    }));
+    const mq = driver(store, {
+      probeMergeability: async () => ({
+        ok: true,
+        kind: /** @type {const} */ ('dirty'),
+        reason: null,
+        head_sha: MANUAL_HEAD,
+        base_ref: 'main',
+        external: false
+      }),
+      dispatchConflict,
+      onCompletionResult: vi.fn()
+    });
+
+    await completion.reconcile();
+    await mq.kick();
+
+    expect(observe).toHaveBeenCalledWith(
+      'UI-root',
+      expect.objectContaining({
+        phase: 'gating',
+        resumed_terminal: expect.objectContaining({
+          reason: 'review_receipt_stale'
+        })
+      }),
+      expect.any(Object)
+    );
+    expect(dispatchConflict).toHaveBeenCalledTimes(1);
+  });
 
   test('merges a ready manual item while auto_merge is off', async () => {
     const store = seedManual(['UI-1']);

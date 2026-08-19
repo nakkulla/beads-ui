@@ -5096,6 +5096,178 @@ describe('worker/queue-store — manual merge continuation authority', () => {
     return store;
   }
 
+  /**
+   * @param {string|null} [merged_sha]
+   */
+  function terminalManualStore(merged_sha = null) {
+    const store = createQueueStore({ now: () => 123 });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-UI-1',
+        bead_id: 'UI-1',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-1',
+      attempt_id: 'att-UI-1',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      source_attempt_id: 'att-UI-1',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-1',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        merged_sha
+      }
+    });
+    store.terminalizeCompletionIntent(WS, {
+      root_bead_id: 'UI-1',
+      terminal: {
+        reason: 'review_receipt_stale',
+        stage: 'merge_gate',
+        failure_key: null,
+        evidence: 'receipt is stale',
+        log_path: null,
+        at: 99
+      }
+    });
+    return store;
+  }
+
+  /**
+   * @param {ReturnType<typeof createQueueStore>} store
+   * @param {number} [expected_revision]
+   */
+  function enqueueManual(
+    store,
+    expected_revision = store.snapshot(WS).revision
+  ) {
+    return store.enqueueMergeManual(WS, {
+      expected_revision,
+      entries: [
+        {
+          bead_id: 'UI-1',
+          head_sha: 'a'.repeat(40),
+          target_base: 'main'
+        }
+      ]
+    });
+  }
+
+  test('resumes a needs_human intent at gating with terminal evidence', () => {
+    const store = terminalManualStore();
+
+    const result = enqueueManual(store);
+
+    expect(result.ok).toBe(true);
+    expect(result.queue.completion_intents['UI-1']).toMatchObject({
+      phase: 'gating',
+      terminal_reason: null,
+      resumed_terminal: {
+        reason: 'review_receipt_stale',
+        stage: 'merge_gate',
+        evidence: 'receipt is stale',
+        at: 99,
+        resumed_at: 123
+      }
+    });
+  });
+
+  test('resumes a merged needs_human intent at cleaning', () => {
+    const store = terminalManualStore('c'.repeat(40));
+
+    const result = enqueueManual(store);
+
+    expect(result.queue.completion_intents['UI-1'].phase).toBe('cleaning');
+  });
+
+  test('preserves completion operation and repair lineage during resume', () => {
+    const store = terminalManualStore();
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    const intent = raw.completion_intents['UI-1'];
+    intent.repair_sessions_used = 1;
+    intent.repair_bead_ids = ['UI-repair'];
+    intent.subject_stack = [{ ...intent.subject }];
+    intent.active_op = {
+      op_id: 'resume-op',
+      kind: 'resume_root',
+      failure_key: {
+        stage: 'merge_gate',
+        reason: 'verify_cmd_failed',
+        subject_sha: 'a'.repeat(40),
+        base_sha: 'b'.repeat(40),
+        result_digest: 'c'.repeat(64)
+      },
+      attempt_id: 'repair-attempt',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    store.__clearCacheForTest();
+    const before = store.snapshot(WS).completion_intents['UI-1'];
+
+    const result = enqueueManual(store);
+    const resumed = result.queue.completion_intents['UI-1'];
+
+    expect(resumed.active_op).toEqual(before.active_op);
+    expect(resumed.repair_sessions_used).toBe(before.repair_sessions_used);
+    expect(resumed.repair_bead_ids).toEqual(before.repair_bead_ids);
+    expect(resumed.subject_stack).toEqual(before.subject_stack);
+    expect(resumed.subject).toEqual(before.subject);
+  });
+
+  test('leaves a non-needs_human intent unchanged on duplicate click', () => {
+    const store = terminalManualStore();
+    enqueueManual(store);
+    const before = store.snapshot(WS).completion_intents['UI-1'];
+
+    const result = enqueueManual(store);
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).completion_intents['UI-1']).toEqual(before);
+  });
+
+  test('rejects completion resume with the rest of a stale CAS mutation', () => {
+    const store = terminalManualStore();
+    const current_revision = store.snapshot(WS).revision;
+
+    const result = enqueueManual(store, current_revision - 1);
+    const intent = store.snapshot(WS).completion_intents['UI-1'];
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(intent.phase).toBe('needs_human');
+    expect(intent).not.toHaveProperty('resumed_terminal');
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('drops only a malformed resumed terminal during cold load', () => {
+    const store = terminalManualStore();
+    const raw = JSON.parse(fs.readFileSync(queueFilePath(WS), 'utf8'));
+    raw.completion_intents['UI-1'].resumed_terminal = {
+      ...raw.completion_intents['UI-1'].terminal_reason,
+      resumed_at: 'not-a-number'
+    };
+    fs.writeFileSync(queueFilePath(WS), JSON.stringify(raw));
+    store.__clearCacheForTest();
+
+    const intent = store.snapshot(WS).completion_intents['UI-1'];
+
+    expect(intent.phase).toBe('needs_human');
+    expect(intent.terminal_reason).toMatchObject({
+      reason: 'review_receipt_stale',
+      stage: 'merge_gate'
+    });
+    expect(intent).not.toHaveProperty('resumed_terminal');
+  });
+
   test('records manual authority only with authoritative head and target base', () => {
     const store = manualStore();
 

@@ -12,6 +12,7 @@ import {
   mergeFailureText,
   mergeQueueRefusalText,
   mergeStepView,
+  mergeWaitingText,
   prStatusBadge
 } from './index.js';
 
@@ -347,6 +348,18 @@ describe('views/worker', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
+  });
+
+  test('renders the needs_human completion wait label', () => {
+    const label = mergeWaitingText('completion_waiting:needs_human');
+
+    expect(label).toBe('완료 의도 대기 — 사람 확인 필요');
+  });
+
+  test('falls back to the phase name for an unknown completion phase', () => {
+    const label = mergeWaitingText('completion_waiting:future_phase');
+
+    expect(label).toBe('완료 의도 대기 — future_phase');
   });
 
   test('candidate lane renders Ready/Blocked with spec-missing + blocked reasons', () => {
