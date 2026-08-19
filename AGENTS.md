@@ -151,7 +151,9 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
 - 정리 cursor는
   `base_containment → repo_operations → child_sweep → branch_cleanup → parent_close`다.
   [머지] 클릭, 세션 직접 머지, 외부 머지는 모두 관측 후 같은 자동 정리 경로로
-  수렴한다. `[정리]`는 `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
+  수렴한다 — 단, 관측 단위는 Worker가 추적하는 bead의 PR 머지다. Bead/PR 없는
+  quick_fix ref push는 관측 대상이 아니므로 배포 실행과 그 증거 확인까지 push한
+  세션이 소유한다. `[정리]`는 `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
 - 실패 해결은 v2 사다리
   `script_retry → auto_repair_session → user_triggered_session` 순서다. 구체적인
   자동화·예산·중단 의미는 dotfiles의 `docs/contracts/workflow.{md,yaml}`과
