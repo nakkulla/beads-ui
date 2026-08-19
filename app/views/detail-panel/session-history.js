@@ -37,6 +37,20 @@ const USAGE_BREAKDOWN = [
  */
 const REPLAYED_NOTE = '서버 재시작 복구 — 부분 집계';
 
+/** @type {ReadonlyArray<'implementation'|'review-consult'>} */
+const DELEGATION_ROLES = ['implementation', 'review-consult'];
+
+/** @type {ReadonlyArray<'running'|'done'|'failed'|'interrupted'>} */
+const DELEGATION_STATUSES = ['running', 'done', 'failed', 'interrupted'];
+
+/** @type {Record<string, string>} */
+const DELEGATION_STATUS_GLYPH = {
+  running: '●',
+  done: '✓',
+  failed: '✗',
+  interrupted: '⚠'
+};
+
 /**
  * @param {unknown} value
  * @returns {number}
@@ -106,63 +120,240 @@ function completedTime(completed_at) {
 }
 
 /**
- * Completed nested receipts belong below their outer attempt. Missing or
- * invalid receipts never reach the projection, so no configured-but-unrun row
- * can be manufactured here.
- *
- * @param {import('../../utils/token-usage.js').UsageProjection|null} projection
- * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
+ * @typedef {Object} DelegationSession
+ * @property {string} launch_id
+ * @property {'codex'} provider
+ * @property {'implementation'|'review-consult'} role
+ * @property {string} model
+ * @property {string} session_id
+ * @property {string|null} turn_id
+ * @property {'running'|'done'|'failed'|'interrupted'} status
+ * @property {number} started_at
+ * @property {string|null} completed_at
+ * @property {number} last_event_at
  */
-function receiptLegs(projection) {
-  if (!projection) {
-    return '';
+
+/**
+ * @param {unknown} candidate
+ * @returns {DelegationSession|null}
+ */
+function validDelegation(candidate) {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+    return null;
   }
-  /** @type {Array<'implementation'|'review-consult'>} */
-  const roles = ['implementation', 'review-consult'];
-  return roles.flatMap((role) => {
-    const summary = projection.roles[role]?.codex;
-    if (!summary) {
-      return [];
-    }
-    return summary.legs.map((leg) => {
-      const badges = providerUsageBadges({
+  const session = /** @type {Record<string, any>} */ (candidate);
+  if (
+    typeof session.launch_id !== 'string' ||
+    session.launch_id.length === 0 ||
+    session.provider !== 'codex' ||
+    !DELEGATION_ROLES.includes(session.role) ||
+    typeof session.model !== 'string' ||
+    session.model.length === 0 ||
+    typeof session.session_id !== 'string' ||
+    session.session_id.length === 0 ||
+    !DELEGATION_STATUSES.includes(session.status) ||
+    typeof session.started_at !== 'number' ||
+    !Number.isFinite(session.started_at) ||
+    typeof session.last_event_at !== 'number' ||
+    !Number.isFinite(session.last_event_at) ||
+    !(
+      session.completed_at === null ||
+      (typeof session.completed_at === 'string' &&
+        Number.isFinite(Date.parse(session.completed_at)))
+    ) ||
+    !(session.turn_id === null || typeof session.turn_id === 'string')
+  ) {
+    return null;
+  }
+  return /** @type {DelegationSession} */ (session);
+}
+
+/**
+ * Existing static receipt markup. Legacy usage-only rows and identity conflicts
+ * keep this exact non-interactive projection.
+ *
+ * @param {'implementation'|'review-consult'} role
+ * @param {Record<string, any>} leg
+ * @returns {TemplateResult}
+ */
+function staticLegTemplate(role, leg) {
+  const badges = providerUsageBadges({
+    providers: {
+      codex: {
+        subtotal: leg.subtotal,
+        breakdown: leg.usage,
+        ...(leg.replayed ? { replayed: true } : {})
+      }
+    },
+    roles: {}
+  });
+  const badge = badges[0];
+  return html`<div class="detail-session__leg detail-session__usage-detail">
+    <span class="detail-session__leg-role detail-session__usage-label"
+      >${role}</span
+    >
+    <span class="detail-session__leg-meta detail-session__usage-value"
+      >${[leg.provider, leg.model].filter(Boolean).join(' · ')}</span
+    >
+    ${leg.session_id
+      ? html`<span
+          class="detail-session__leg-sid detail-session__sid"
+          title=${leg.session_id}
+          >${leg.session_id.slice(0, 8)}</span
+        >`
+      : ''}
+    ${completedTime(leg.completed_at)
+      ? html`<span class="detail-session__leg-time detail-session__time"
+          >${completedTime(leg.completed_at)}</span
+        >`
+      : ''}
+    ${badge
+      ? html`<span class="detail-session__usage" title=${badge.tooltip}
+          >${badge.label}</span
+        >`
+      : ''}
+  </div>`;
+}
+
+/**
+ * @param {DelegationSession} session
+ * @param {Record<string, any>|null} leg
+ * @param {string} attempt_id
+ * @param {{ onOpenDelegation?: (attempt_id: string, launch_id: string) => void }} handlers
+ * @returns {TemplateResult}
+ */
+function monitoredLegTemplate(session, leg, attempt_id, handlers) {
+  const terminal_leg = session.status === 'running' ? null : leg;
+  const badges = terminal_leg
+    ? providerUsageBadges({
         providers: {
           codex: {
-            subtotal: leg.subtotal,
-            breakdown: leg.usage,
-            ...(leg.replayed ? { replayed: true } : {})
+            subtotal: terminal_leg.subtotal,
+            breakdown: terminal_leg.usage,
+            ...(terminal_leg.replayed ? { replayed: true } : {})
           }
         },
         roles: {}
-      });
-      const badge = badges[0];
-      return html`<div class="detail-session__leg detail-session__usage-detail">
-        <span class="detail-session__leg-role detail-session__usage-label"
-          >${role}</span
-        >
-        <span class="detail-session__leg-meta detail-session__usage-value"
-          >${[leg.provider, leg.model].filter(Boolean).join(' · ')}</span
-        >
-        ${leg.session_id
-          ? html`<span
-              class="detail-session__leg-sid detail-session__sid"
-              title=${leg.session_id}
-              >${leg.session_id.slice(0, 8)}</span
-            >`
-          : ''}
-        ${completedTime(leg.completed_at)
-          ? html`<span class="detail-session__leg-time detail-session__time"
-              >${completedTime(leg.completed_at)}</span
-            >`
-          : ''}
-        ${badge
-          ? html`<span class="detail-session__usage" title=${badge.tooltip}
-              >${badge.label}</span
-            >`
-          : ''}
-      </div>`;
-    });
-  });
+      })
+    : [];
+  const badge = badges[0];
+  const time =
+    session.status === 'running'
+      ? shortTime(session.last_event_at)
+      : terminal_leg
+        ? completedTime(terminal_leg.completed_at)
+        : '';
+  return html`<button
+    type="button"
+    class="detail-session__leg detail-session__usage-detail detail-session__leg--${session.status}"
+    data-launch-id=${session.launch_id}
+    @click=${() =>
+      handlers.onOpenDelegation &&
+      handlers.onOpenDelegation(attempt_id, session.launch_id)}
+  >
+    <span class="detail-session__leg-glyph" aria-hidden="true"
+      >${DELEGATION_STATUS_GLYPH[session.status]}</span
+    >
+    <span class="detail-session__leg-role detail-session__usage-label"
+      >${session.role}</span
+    >
+    <span class="detail-session__leg-meta detail-session__usage-value"
+      >codex · ${session.model}</span
+    >
+    <span
+      class="detail-session__leg-sid detail-session__sid"
+      title=${session.session_id}
+      >${session.session_id.slice(0, 8)}</span
+    >
+    ${time
+      ? html`<span class="detail-session__leg-time detail-session__time"
+          >${time}</span
+        >`
+      : ''}
+    ${badge
+      ? html`<span class="detail-session__usage" title=${badge.tooltip}
+          >${badge.label}</span
+        >`
+      : ''}
+  </button>`;
+}
+
+/**
+ * @param {DelegationSession} session
+ * @param {Record<string, any>} leg
+ * @returns {boolean}
+ */
+function sameDelegationIdentity(session, leg) {
+  return (
+    session.role === leg.role &&
+    session.model === leg.model &&
+    session.session_id === leg.session_id
+  );
+}
+
+/**
+ * Merge live monitor rows with optional terminal usage receipts, then retain
+ * usage-only and identity-conflict rows as static legacy rows.
+ *
+ * @param {SessionAttempt} attempt
+ * @param {import('../../utils/token-usage.js').UsageProjection|null} projection
+ * @param {{ onOpenDelegation?: (attempt_id: string, launch_id: string) => void }} handlers
+ * @returns {TemplateResult[]}
+ */
+function delegationLegs(attempt, projection, handlers) {
+  /** @type {DelegationSession[]} */
+  const sessions = [];
+  /** @type {Set<string>} */
+  const launch_ids = new Set();
+  const candidates = Array.isArray(attempt.delegation_sessions)
+    ? attempt.delegation_sessions
+    : [];
+  for (const candidate of candidates) {
+    const session = validDelegation(candidate);
+    if (!session || launch_ids.has(session.launch_id)) {
+      continue;
+    }
+    launch_ids.add(session.launch_id);
+    sessions.push(session);
+  }
+  sessions.sort((left, right) => left.started_at - right.started_at);
+
+  /** @type {Record<'implementation'|'review-consult', Record<string, any>[]>} */
+  const usage_by_role = { implementation: [], 'review-consult': [] };
+  if (projection) {
+    for (const role of DELEGATION_ROLES) {
+      const summary = projection.roles[role]?.codex;
+      usage_by_role[role] = summary ? [...summary.legs] : [];
+    }
+  }
+  const all_usage = DELEGATION_ROLES.flatMap((role) => usage_by_role[role]);
+  /** @type {Set<string>} */
+  const joined_receipts = new Set();
+  /** @type {TemplateResult[]} */
+  const rows = [];
+
+  for (const role of DELEGATION_ROLES) {
+    for (const session of sessions.filter((entry) => entry.role === role)) {
+      const leg =
+        all_usage.find((entry) => entry.receipt_id === session.launch_id) ||
+        null;
+      if (leg && !sameDelegationIdentity(session, leg)) {
+        continue;
+      }
+      if (leg) {
+        joined_receipts.add(leg.receipt_id);
+      }
+      rows.push(
+        monitoredLegTemplate(session, leg, attempt.attempt_id, handlers)
+      );
+    }
+    for (const leg of usage_by_role[role]) {
+      if (!joined_receipts.has(leg.receipt_id)) {
+        rows.push(staticLegTemplate(role, leg));
+      }
+    }
+  }
+  return rows;
 }
 
 /**
@@ -248,6 +439,8 @@ function usageDetail(usage, provider) {
  * §2.2); absent/null renders no badge and no [τ 자세히] button.
  * @property {Array<Record<string, any>>} [usage_legs] - Durable completed
  * nested Codex receipts. Missing/invalid rows stay absent.
+ * @property {Array<Record<string, any>>} [delegation_sessions] - Durable/live
+ * normalized Codex delegation summaries.
  * @property {string|null} [exec_default_preset_id] - Outer launch preset id.
  * @property {number|null} [exec_default_preset_revision] - Pinned preset revision.
  * @property {Record<string, string|null>|null} [exec_values] - Outer resolved values.
@@ -330,7 +523,7 @@ function presetAudit(attempt) {
  * total beside the section heading.
  *
  * @param {SessionAttempt[]} [attempts]
- * @param {{ onOpen?: (attempt_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void }} [handlers]
+ * @param {{ onOpen?: (attempt_id: string) => void, onOpenDelegation?: (attempt_id: string, launch_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void }} [handlers]
  * @param {{ total?: UsageRecord|import('../../utils/token-usage.js').UsageProjection|null, expanded?: Set<string> }} [usage_view]
  * @returns {TemplateResult}
  */
@@ -509,7 +702,7 @@ export function sessionHistoryTemplate(
           ${expanded.has(a.attempt_id) && a.usage
             ? usageDetail(a.usage, a.runner === 'codex' ? 'codex' : 'claude')
             : ''}
-          ${receiptLegs(projection)}
+          ${delegationLegs(a, projection, handlers)}
         </div>`;
       })}
     </div>

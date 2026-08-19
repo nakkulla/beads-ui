@@ -91,7 +91,7 @@ beforeEach(() => {
 describe('transcript drawer', () => {
   test('open() subscribes and renders the persisted (Done) log', () => {
     // A Done session: its log is already in the store (from the snapshot push).
-    store.set('att-1', [TEXT_EVENT, READ_EVENT, RESULT_EVENT]);
+    store.set('session-log:att-1', [TEXT_EVENT, READ_EVENT, RESULT_EVENT]);
 
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
@@ -119,7 +119,7 @@ describe('transcript drawer', () => {
   });
 
   test('live append re-renders with the new line', () => {
-    store.set('att-2', [TEXT_EVENT]);
+    store.set('session-log:att-2', [TEXT_EVENT]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -128,14 +128,14 @@ describe('transcript drawer', () => {
     expect(mount.querySelectorAll('.sv__tool')).toHaveLength(0);
 
     // A server append push lands in the store → drawer follows live.
-    store.append('att-2', READ_EVENT);
+    store.append('session-log:att-2', READ_EVENT);
     expect(mount.querySelectorAll('.sv__tool')).toHaveLength(1);
-    store.append('att-2', RESULT_EVENT);
+    store.append('session-log:att-2', RESULT_EVENT);
     expect(mount.querySelector('.sv__result--ok')).toBeTruthy();
   });
 
   test('tool line click expands input/output', () => {
-    store.set('att-3', [READ_EVENT]);
+    store.set('session-log:att-3', [READ_EVENT]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -151,7 +151,7 @@ describe('transcript drawer', () => {
   });
 
   test('follow pill toggles OFF on click', () => {
-    store.set('att-4', [TEXT_EVENT]);
+    store.set('session-log:att-4', [TEXT_EVENT]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -168,7 +168,7 @@ describe('transcript drawer', () => {
   });
 
   test('shows the session id short (first 8) and copies the full value on click (§2)', async () => {
-    store.set('att-9', [TEXT_EVENT]);
+    store.set('session-log:att-9', [TEXT_EVENT]);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
@@ -197,7 +197,7 @@ describe('transcript drawer', () => {
   });
 
   test('updateMeta refreshes an already-open bar with a late-arriving session id (§2)', () => {
-    store.set('att-10', [TEXT_EVENT]);
+    store.set('session-log:att-10', [TEXT_EVENT]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -217,7 +217,7 @@ describe('transcript drawer', () => {
   test('a live attempt shows the heartbeat and how long ago it moved', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-03T00:00:00Z'));
-    store.set('att-live', [TEXT_EVENT], Date.now() - 3000);
+    store.set('session-log:att-live', [TEXT_EVENT], Date.now() - 3000);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -234,7 +234,7 @@ describe('transcript drawer', () => {
   });
 
   test('a snapshot-only attempt shows no heartbeat', () => {
-    store.set('att-done2', [TEXT_EVENT, RESULT_EVENT], 1);
+    store.set('session-log:att-done2', [TEXT_EVENT, RESULT_EVENT], 1);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -249,7 +249,7 @@ describe('transcript drawer', () => {
   test('the elapsed label advances while the session is quiet', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-03T00:00:00Z'));
-    store.set('att-quiet', [TEXT_EVENT], Date.now());
+    store.set('session-log:att-quiet', [TEXT_EVENT], Date.now());
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -270,7 +270,7 @@ describe('transcript drawer', () => {
   test('a running→done meta refresh drops the heartbeat and its timer', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-03T00:00:00Z'));
-    store.set('att-fin', [TEXT_EVENT], Date.now());
+    store.set('session-log:att-fin', [TEXT_EVENT], Date.now());
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -289,7 +289,7 @@ describe('transcript drawer', () => {
   test('close() releases the heartbeat timer', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-03T00:00:00Z'));
-    store.set('att-t', [TEXT_EVENT], Date.now());
+    store.set('session-log:att-t', [TEXT_EVENT], Date.now());
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -304,7 +304,7 @@ describe('transcript drawer', () => {
   });
 
   test('pins the unfinished tool line to the drawer foot', () => {
-    store.set('att-now', [TEXT_EVENT, toolUse('t9', 'Bash')]);
+    store.set('session-log:att-now', [TEXT_EVENT, toolUse('t9', 'Bash')]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -317,7 +317,7 @@ describe('transcript drawer', () => {
   });
 
   test('unpins the tool line once its result arrives', () => {
-    store.set('att-now2', [TEXT_EVENT, toolUse('t9', 'Bash')]);
+    store.set('session-log:att-now2', [TEXT_EVENT, toolUse('t9', 'Bash')]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -325,13 +325,13 @@ describe('transcript drawer', () => {
     drawer.open({ attempt_id: 'att-now2', meta: { status: 'running' } });
     expect(mount.querySelector('.sv__now')).toBeTruthy();
 
-    store.append('att-now2', toolResult('t9'));
+    store.append('session-log:att-now2', toolResult('t9'));
 
     expect(mount.querySelector('.sv__now')).toBeFalsy();
   });
 
   test('pins nothing once the attempt stops being live', () => {
-    store.set('att-stop', [TEXT_EVENT, toolUse('t9', 'Bash')]);
+    store.set('session-log:att-stop', [TEXT_EVENT, toolUse('t9', 'Bash')]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -347,7 +347,7 @@ describe('transcript drawer', () => {
   });
 
   test('treats an empty tool output as finished, not pending', () => {
-    store.set('att-empty', [
+    store.set('session-log:att-empty', [
       toolUse('t1', 'Bash'),
       {
         type: 'user',
@@ -368,7 +368,7 @@ describe('transcript drawer', () => {
   });
 
   test('finds the still-open tool when a later one finished first', () => {
-    store.set('att-par', [
+    store.set('session-log:att-par', [
       toolUse('slow', 'Bash'),
       toolUse('fast', 'Grep'),
       toolResult('fast')
@@ -390,7 +390,7 @@ describe('transcript drawer', () => {
     for (let i = 0; i < 6; i += 1) {
       lines.push(toolUse(`r${i}`, 'Read'), toolResult(`r${i}`));
     }
-    store.set('att-fold', lines);
+    store.set('session-log:att-fold', lines);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -412,7 +412,7 @@ describe('transcript drawer', () => {
     for (let i = 0; i < 5; i += 1) {
       lines.push(toolUse(`r${i}`, 'Read'), toolResult(`r${i}`));
     }
-    store.set('att-fold2', lines);
+    store.set('session-log:att-fold2', lines);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -432,7 +432,7 @@ describe('transcript drawer', () => {
     for (let i = 0; i < 4; i += 1) {
       lines.push(toolUse(`r${i}`, 'Read'), toolResult(`r${i}`));
     }
-    store.set('att-fold3', lines);
+    store.set('session-log:att-fold3', lines);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -445,7 +445,7 @@ describe('transcript drawer', () => {
   });
 
   test('close() unsubscribes and clears the mount', () => {
-    store.set('att-5', [TEXT_EVENT]);
+    store.set('session-log:att-5', [TEXT_EVENT]);
     let closed = false;
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
@@ -462,6 +462,126 @@ describe('transcript drawer', () => {
     expect(mount.querySelector('.sv')).toBeFalsy();
     expect(drawer.isOpen()).toBe(false);
     expect(closed).toBe(true);
+  });
+
+  test('uses one delegation subscription id for subscribe close and reopen', () => {
+    const subscription_id = 'session-log:att-1:launch-1';
+    store.set(subscription_id, [TEXT_EVENT]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-1', launch_id: 'launch-1' });
+    drawer.close();
+    drawer.open({ attempt_id: 'att-1', launch_id: 'launch-1' });
+
+    expect(sends).toEqual([
+      {
+        type: 'subscribe-session-log',
+        payload: {
+          id: subscription_id,
+          attempt_id: 'att-1',
+          launch_id: 'launch-1'
+        }
+      },
+      { type: 'unsubscribe-session-log', payload: { id: subscription_id } },
+      {
+        type: 'subscribe-session-log',
+        payload: {
+          id: subscription_id,
+          attempt_id: 'att-1',
+          launch_id: 'launch-1'
+        }
+      }
+    ]);
+    expect(mount.querySelector('.sv__as')?.textContent).toContain('issueToken');
+  });
+
+  test('shows delegation identity instead of the outer attempt id', () => {
+    store.set('session-log:att-1:launch-1', [TEXT_EVENT]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'att-1',
+      launch_id: 'launch-1',
+      meta: {
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        session_id: 'session-1234567890'
+      }
+    });
+
+    expect(mount.querySelector('.sv__id')?.textContent).toBe('implementation');
+    expect(mount.querySelector('.sv__bar')?.textContent).not.toContain('att-1');
+    expect(mount.querySelector('.sv__session')?.textContent).toContain(
+      'session-'
+    );
+    expect(mount.querySelector('.sv__session')?.getAttribute('title')).toBe(
+      'session-1234567890'
+    );
+    expect(mount.querySelector('.sv__meta')?.textContent).toBe('gpt-5.6-sol');
+    expect(
+      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
+    ).toBeNull();
+  });
+
+  test('renders delegation messages reasoning activity and terminal events', () => {
+    const base = {
+      schema: 'codex-delegation-monitor-v1',
+      attempt_id: 'att-1',
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      thread_id: 'thread-1',
+      turn_id: 'turn-1',
+      recorded_at: 1
+    };
+    store.set('session-log:att-1:launch-1', [
+      {
+        ...base,
+        event: {
+          type: 'item.completed',
+          item: { id: 'i1', kind: 'agent_message', text: '위임 응답' }
+        }
+      },
+      {
+        ...base,
+        event: {
+          type: 'item.completed',
+          item: { id: 'i2', kind: 'reasoning', text: '위임 판단' }
+        }
+      },
+      {
+        ...base,
+        event: {
+          type: 'item.started',
+          item: { id: 'i3', kind: 'activity', activity: 'file_change' }
+        }
+      },
+      { ...base, event: { type: 'turn.completed', status: 'completed' } }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-1', launch_id: 'launch-1' });
+
+    expect(mount.querySelector('.sv__as')?.textContent).toContain('위임 응답');
+    expect(mount.querySelector('.sv__think')?.textContent).toContain(
+      '위임 판단'
+    );
+    expect(mount.querySelector('.sv__tool')?.textContent).toContain(
+      '파일 변경 · 시작'
+    );
+    expect(mount.querySelector('.sv__result--ok')?.textContent).toContain(
+      'DONE'
+    );
   });
 });
 
@@ -510,7 +630,7 @@ function thinking(text) {
 
 describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx 변경 1·2)', () => {
   test('renders an assistant line as markdown DOM', () => {
-    store.set('att-md', [
+    store.set('session-log:att-md', [
       {
         type: 'assistant',
         message: {
@@ -532,7 +652,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('renders the result body as markdown and keeps its verdict glyph', () => {
-    store.set('att-md2', [
+    store.set('session-log:att-md2', [
       {
         type: 'result',
         subtype: 'success',
@@ -553,7 +673,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('keeps the failure glyph and colour on an errored result', () => {
-    store.set('att-md3', [
+    store.set('session-log:att-md3', [
       {
         type: 'result',
         subtype: 'error_during_execution',
@@ -574,7 +694,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('shows a thinking line as its first line and expands on click', () => {
-    store.set('att-th', [thinking('첫 줄 판단\n둘째 줄 세부')]);
+    store.set('session-log:att-th', [thinking('첫 줄 판단\n둘째 줄 세부')]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -602,7 +722,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
       lines.push(toolUse(`r${i}`, 'Read'), toolResult(`r${i}`));
     }
     lines.push(thinking('중간 판단'));
-    store.set('att-th2', lines);
+    store.set('session-log:att-th2', lines);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -617,7 +737,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('shows a multi-line Bash command as its first line plus a line-count badge', () => {
-    store.set('att-bash', [
+    store.set('session-log:att-bash', [
       toolWith('b1', 'Bash', {
         command: 'cat <<EOF > /tmp/x\nline two\nline three\nEOF'
       })
@@ -640,7 +760,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('expands a Bash line to the verbatim command, not its input JSON', () => {
-    store.set('att-bash2', [
+    store.set('session-log:att-bash2', [
       toolWith('b1', 'Bash', { command: 'echo one\necho two' }),
       resultWith('b1', 'one\ntwo')
     ]);
@@ -661,7 +781,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('pairs the pending tool with the latest thinking in the 지금 bar', () => {
-    store.set('att-now-th', [
+    store.set('session-log:att-now-th', [
       thinking('테스트 먼저 돌린다\n세부'),
       toolWith('b1', 'Bash', { command: 'npm test' })
     ]);
@@ -680,7 +800,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('shows the 지금 bar for a latest thinking with no pending tool', () => {
-    store.set('att-now-th2', [
+    store.set('session-log:att-now-th2', [
       toolWith('b1', 'Bash', { command: 'npm test' }),
       resultWith('b1', 'ok'),
       thinking('결과 읽는 중')
@@ -701,7 +821,7 @@ describe('transcript drawer — 마크다운·thinking·멀티라인 (UI-dixx �
   });
 
   test('shows no 지금 bar for a finished session with thinking', () => {
-    store.set('att-now-th3', [thinking('끝난 세션 판단')]);
+    store.set('session-log:att-now-th3', [thinking('끝난 세션 판단')]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -738,7 +858,7 @@ function taskUpdate(id, taskId, status) {
 
 describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   test('1층: shows the last phase/gate line as an exact stage chip', () => {
-    store.set('att-chip1', [
+    store.set('session-log:att-chip1', [
       {
         type: 'assistant',
         message: { content: [{ type: 'text', text: 'Phase 1/3 · 파서 확장' }] }
@@ -763,7 +883,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('2층: shows the in_progress task activeForm resolved through Task #N', () => {
-    store.set('att-chip2', [
+    store.set('session-log:att-chip2', [
       taskCreate('c1', '파서 확장', '파서 확장하는 중'),
       resultWith('c1', 'Task #1 created: 파서 확장'),
       taskUpdate('u1', 1, 'in_progress')
@@ -781,7 +901,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('2층: falls through to the lower tier once the task completes', () => {
-    store.set('att-chip3', [
+    store.set('session-log:att-chip3', [
       taskCreate('c1', '파서 확장', '파서 확장하는 중'),
       resultWith('c1', 'Task #1 created: 파서 확장'),
       taskUpdate('u1', 1, 'in_progress'),
@@ -805,7 +925,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('2층: ignores a TaskCreate whose tool_result never carried a Task #N', () => {
-    store.set('att-chip4', [
+    store.set('session-log:att-chip4', [
       taskCreate('c1', '파서 확장', '파서 확장하는 중'),
       taskUpdate('u1', 1, 'in_progress'),
       toolWith('r1', 'Read', { file_path: '/a.js' })
@@ -835,7 +955,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
         new_string: 'b'
       })
     );
-    store.set('att-chip5', lines);
+    store.set('session-log:att-chip5', lines);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -849,7 +969,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('3층: a tie resolves to the more recent signal', () => {
-    store.set('att-chip6', [
+    store.set('session-log:att-chip6', [
       toolWith('e1', 'Edit', {
         file_path: '/a.js',
         old_string: 'a',
@@ -872,7 +992,9 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('3층: a single verification bucket reads 검증 중', () => {
-    store.set('att-chip7', [toolWith('b1', 'Bash', { command: 'npm test' })]);
+    store.set('session-log:att-chip7', [
+      toolWith('b1', 'Bash', { command: 'npm test' })
+    ]);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store
@@ -886,7 +1008,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('3층: a PR/publish bucket reads PR/게시 중', () => {
-    store.set('att-chip8', [
+    store.set('session-log:att-chip8', [
       toolWith('b1', 'Bash', { command: 'gh pr create --base main' })
     ]);
     const drawer = createTranscriptDrawer(mount, {
@@ -902,7 +1024,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('3층: no bucket signal hides the chip', () => {
-    store.set('att-chip9', [
+    store.set('session-log:att-chip9', [
       toolWith('b1', 'Bash', { command: 'echo hi' }),
       TEXT_EVENT
     ]);
@@ -917,7 +1039,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
   });
 
   test('층간 우선순위: an exact tier-1 signal wins over task and activity', () => {
-    store.set('att-chip10', [
+    store.set('session-log:att-chip10', [
       taskCreate('c1', '파서 확장', '파서 확장하는 중'),
       resultWith('c1', 'Task #1 created'),
       taskUpdate('u1', 1, 'in_progress'),
@@ -953,7 +1075,7 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
     for (let i = 0; i < 6; i += 1) {
       lines.push(toolWith(`r${i}`, 'Read', { file_path: `/f${i}.js` }));
     }
-    store.set('att-chip11', lines);
+    store.set('session-log:att-chip11', lines);
     const drawer = createTranscriptDrawer(mount, {
       transport: mockTransport(),
       sessionLogStore: store

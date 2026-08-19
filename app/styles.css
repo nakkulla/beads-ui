@@ -6438,6 +6438,39 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
+.detail-session__leg {
+  box-sizing: border-box;
+  border: 0;
+  color: inherit;
+  text-align: left;
+}
+
+button.detail-session__leg {
+  cursor: pointer;
+}
+
+button.detail-session__leg:hover {
+  background: var(--bg-tile-run);
+}
+
+button.detail-session__leg:focus-visible {
+  outline: 2px solid var(--border-tile-run);
+  outline-offset: 1px;
+}
+
+.detail-session__leg--running .detail-session__leg-glyph,
+.detail-session__leg--done .detail-session__leg-glyph {
+  color: var(--accent-success);
+}
+
+.detail-session__leg--failed .detail-session__leg-glyph {
+  color: var(--accent-danger);
+}
+
+.detail-session__leg--interrupted .detail-session__leg-glyph {
+  color: var(--accent-warn);
+}
+
 .detail-session__usage-field {
   display: flex;
   gap: var(--sp-4);
@@ -6911,6 +6944,15 @@ html[data-theme='dark'] {
 
   .sv__body {
     max-height: 60vh;
+  }
+
+  .detail-session__leg {
+    flex-wrap: wrap;
+  }
+
+  .detail-session__leg-meta {
+    flex: 1 1 12ch;
+    min-width: 0;
   }
 
   /* Worker-tab drawer modal falls back to the bottom-sheet shape. */

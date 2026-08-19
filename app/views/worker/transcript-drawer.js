@@ -255,6 +255,7 @@ function formatAgo(at, now_ms) {
  * @typedef {Object} DrawerMeta
  * @property {string} [runner] - claude/codex/ccx.
  * @property {string} [model]
+ * @property {string} [role]
  * @property {string} [effort]
  * @property {string} [worktree] - Worktree path shown in the bar.
  * @property {string} [status] - running/done/failed (for the bar label).
@@ -269,13 +270,17 @@ function formatAgo(at, now_ms) {
  *   sessionLogStore?: { get: (id: string) => { lines: unknown[], last_event_at?: number|null } | null, subscribe: (fn: () => void) => () => void },
  *   onClose?: () => void
  * }} [options]
- * @returns {{ open: (input: { attempt_id: string, meta?: DrawerMeta }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
+ * @returns {{ open: (input: { attempt_id: string, launch_id?: string, meta?: DrawerMeta }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
  */
 export function createTranscriptDrawer(mount_element, options = {}) {
   const { transport, sessionLogStore, onClose } = options;
 
   /** @type {string | null} */
   let attempt_id = null;
+  /** @type {string | null} */
+  let launch_id = null;
+  /** @type {string | null} */
+  let subscription_id = null;
   /** @type {DrawerMeta} */
   let meta = {};
   let follow = true;
@@ -404,10 +409,10 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    * @returns {import('./transcript-render.js').DisplayLine[]}
    */
   function currentLines() {
-    if (!attempt_id || !sessionLogStore) {
+    if (!subscription_id || !sessionLogStore) {
       return [];
     }
-    const rec = sessionLogStore.get(attempt_id);
+    const rec = sessionLogStore.get(subscription_id);
     return parseTranscript(rec ? rec.lines : []);
   }
 
@@ -418,10 +423,10 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    * @returns {number|null}
    */
   function lastEventAt() {
-    if (!attempt_id || !sessionLogStore) {
+    if (!subscription_id || !sessionLogStore) {
       return null;
     }
-    const rec = sessionLogStore.get(attempt_id);
+    const rec = sessionLogStore.get(subscription_id);
     const at = rec ? rec.last_event_at : null;
     return typeof at === 'number' ? at : null;
   }
@@ -665,7 +670,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const lines = currentLines();
     // runner/model/effort stay inline; the worktree path is its own element so
     // ≤640px can hide it (title keeps the full path) without dropping the rest.
-    const metaBits = [meta.runner, meta.model, meta.effort]
+    const metaBits = (
+      launch_id ? [meta.model] : [meta.runner, meta.model, meta.effort]
+    )
       .filter(Boolean)
       .join(' · ');
     const session_id = meta.session_id || '';
@@ -679,7 +686,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const stage = stageOf(lines);
     return html`<div class="sv" data-attempt-id=${attempt_id}>
       <div class="sv__bar">
-        <span class="sv__id">${attempt_id}</span>
+        <span class="sv__id">${launch_id ? meta.role || '' : attempt_id}</span>
         ${stage
           ? html`<span
               class="sv__stage${stage.guess ? ' sv__stage--guess' : ''}"
@@ -714,19 +721,21 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               >${meta.worktree}</span
             >`
           : ''}
-        <button
-          type="button"
-          class="sv__prompt-toggle${prompt_expanded
-            ? ' sv__prompt-toggle--on'
-            : ''}"
-          data-seam="attempt-prompt-toggle"
-          aria-pressed=${prompt_expanded ? 'true' : 'false'}
-          aria-label="발송 프롬프트 보기"
-          title="이 세션에 실제로 보낸 시스템·과업 프롬프트"
-          @click=${togglePrompt}
-        >
-          ✉ 프롬프트
-        </button>
+        ${launch_id
+          ? ''
+          : html`<button
+              type="button"
+              class="sv__prompt-toggle${prompt_expanded
+                ? ' sv__prompt-toggle--on'
+                : ''}"
+              data-seam="attempt-prompt-toggle"
+              aria-pressed=${prompt_expanded ? 'true' : 'false'}
+              aria-label="발송 프롬프트 보기"
+              title="이 세션에 실제로 보낸 시스템·과업 프롬프트"
+              @click=${togglePrompt}
+            >
+              ✉ 프롬프트
+            </button>`}
         <button
           type="button"
           class="sv__follow${follow ? ' sv__follow--on' : ''}"
@@ -746,7 +755,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           ✕
         </button>
       </div>
-      ${promptTemplate()}
+      ${launch_id ? '' : promptTemplate()}
       <div class="sv__body">
         ${lines.length === 0
           ? html`<div class="sv__empty">세션 로그 없음</div>`
@@ -889,7 +898,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   mount_element.addEventListener('scroll', onScroll, true);
 
   /**
-   * @param {{ attempt_id: string, meta?: DrawerMeta }} input
+   * @param {{ attempt_id: string, launch_id?: string, meta?: DrawerMeta }} input
    */
   function open(input) {
     const next_id = input && input.attempt_id;
@@ -897,6 +906,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       return;
     }
     attempt_id = next_id;
+    launch_id =
+      typeof input.launch_id === 'string' && input.launch_id.length > 0
+        ? input.launch_id
+        : null;
+    subscription_id = launch_id
+      ? `session-log:${attempt_id}:${launch_id}`
+      : `session-log:${attempt_id}`;
     meta = input.meta || {};
     follow = true;
     expanded.clear();
@@ -908,8 +924,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     if (transport) {
       void Promise.resolve(
         transport('subscribe-session-log', {
-          id: `session-log:${attempt_id}`,
-          attempt_id
+          id: subscription_id,
+          attempt_id,
+          ...(launch_id ? { launch_id } : {})
         })
       ).catch(() => {});
     }
@@ -917,16 +934,18 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   }
 
   function close() {
-    const id = attempt_id;
+    const id = subscription_id;
     attempt_id = null;
+    launch_id = null;
+    subscription_id = null;
     expanded.clear();
     unfolded.clear();
     resetPrompt();
     stopHeartbeat();
     if (transport && id) {
-      void Promise.resolve(
-        transport('unsubscribe-session-log', { id: `session-log:${id}` })
-      ).catch(() => {});
+      void Promise.resolve(transport('unsubscribe-session-log', { id })).catch(
+        () => {}
+      );
     }
     render(html``, mount_element);
     if (onClose) {
@@ -949,6 +968,8 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       }
       mount_element.removeEventListener('scroll', onScroll, true);
       attempt_id = null;
+      launch_id = null;
+      subscription_id = null;
       render(html``, mount_element);
     }
   };

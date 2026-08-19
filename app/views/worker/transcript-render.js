@@ -8,7 +8,7 @@
  * deterministic and does NO DOM work: it returns plain line objects, and the
  * drawer owns the lit-html rendering.
  *
- * Both wire shapes are handled by auto-detecting the line kind per event:
+ * All wire shapes are handled by auto-detecting the line kind per event:
  *   - claude: `{type:'assistant', message:{content:[{type:'text'|'thinking'|
  *     'tool_use'…}]}}`,
  *     `{type:'user', message:{content:[{type:'tool_result', tool_use_id, content}]}}`,
@@ -17,6 +17,8 @@
  *     'error', …}}`,
  *     `{type:'turn.completed'}`, `{type:'turn.failed', error}`, `{type:'error'}`.
  *     `thread.started`/`turn.started` dropped.
+ *   - codex delegation monitor: `{schema:'codex-delegation-monitor-v1', event}`
+ *     projected onto the same existing line kinds.
  *
  * Line kinds (order-preserving): `assistant` · `thinking` · `tool` · `gate` ·
  * `phase` · `result` · `error` · `blocker`. Assistant text that matches a
@@ -64,6 +66,15 @@ const TOOL_ICONS = {
   Task: '🤖',
   WebFetch: '🌐',
   WebSearch: '🌐'
+};
+
+/** @type {Record<string, string>} */
+const DELEGATION_ACTIVITY_LABELS = {
+  command_execution: '명령 실행',
+  file_change: '파일 변경',
+  mcp_call: 'MCP 호출',
+  web_search: '웹 검색',
+  plan: '계획'
 };
 
 /**
@@ -363,6 +374,86 @@ function parseCodex(raw) {
 }
 
 /**
+ * Project a validated producer envelope onto existing drawer line kinds.
+ *
+ * @param {Record<string, unknown>} raw
+ * @returns {DisplayLine[]}
+ */
+function parseDelegationMonitor(raw) {
+  if (raw.schema !== 'codex-delegation-monitor-v1' || !isObject(raw.event)) {
+    return [];
+  }
+  const event = raw.event;
+  if (event.type === 'session.started' || event.type === 'turn.started') {
+    return [];
+  }
+  if (
+    (event.type === 'item.started' || event.type === 'item.completed') &&
+    isObject(event.item)
+  ) {
+    const item = event.item;
+    if (typeof item.id !== 'string' || item.id.length === 0) {
+      return [];
+    }
+    if (
+      event.type === 'item.completed' &&
+      item.kind === 'agent_message' &&
+      typeof item.text === 'string' &&
+      item.text.trim().length > 0
+    ) {
+      return [classifyText(item.text)];
+    }
+    if (event.type === 'item.completed' && item.kind === 'reasoning') {
+      const line = thinkingLine(item.text);
+      return line ? [line] : [];
+    }
+    if (item.kind !== 'activity' || typeof item.activity !== 'string') {
+      return [];
+    }
+    const activity_label = DELEGATION_ACTIVITY_LABELS[item.activity];
+    if (!activity_label) {
+      return [];
+    }
+    let lifecycle = '시작';
+    let icon = '…';
+    /** @type {DisplayLine} */
+    const line = {
+      kind: 'tool',
+      tool: '',
+      icon,
+      expandable: false
+    };
+    if (event.type === 'item.completed') {
+      if (item.status === 'completed') {
+        lifecycle = '완료';
+        icon = '✓';
+      } else if (item.status === 'failed') {
+        lifecycle = '실패';
+        icon = '✗';
+      } else {
+        return [];
+      }
+      line.result = '';
+    }
+    line.tool = `${activity_label} · ${lifecycle}`;
+    line.icon = icon;
+    return [line];
+  }
+  if (event.type === 'turn.completed' && event.status === 'completed') {
+    return [{ kind: 'result', success: true, text: 'DONE' }];
+  }
+  if (
+    event.type === 'turn.failed' &&
+    (event.status === 'failed' || event.status === 'interrupted') &&
+    typeof event.error_code === 'string' &&
+    event.error_code.length > 0
+  ) {
+    return [{ kind: 'error', text: event.error_code }];
+  }
+  return [];
+}
+
+/**
  * Detect whether a raw event uses the codex wire shape.
  *
  * @param {Record<string, unknown>} raw
@@ -408,9 +499,12 @@ export function parseTranscript(events) {
     if (!isObject(raw)) {
       continue;
     }
-    const produced = isCodexShape(raw)
-      ? parseCodex(raw)
-      : parseClaude(raw, toolsById);
+    const produced =
+      raw.schema === 'codex-delegation-monitor-v1'
+        ? parseDelegationMonitor(raw)
+        : isCodexShape(raw)
+          ? parseCodex(raw)
+          : parseClaude(raw, toolsById);
     for (const line of produced) {
       lines.push(line);
     }
