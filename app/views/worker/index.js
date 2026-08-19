@@ -1541,7 +1541,10 @@ export function createWorkerView(mount_element, options = {}) {
     ? createParallelAnalysisDialog(console_el, {
         queueStore,
         analysisStore,
-        transport
+        transport,
+        getWorkspacePath,
+        onOpenTranscript: (run_id, meta) =>
+          openDrawerForAnalysisRun(run_id, meta)
       })
     : null;
 
@@ -4313,6 +4316,23 @@ export function createWorkerView(mount_element, options = {}) {
     repo_ops_drawer_el.hidden = true;
     drawer_overlay_el.hidden = false;
     drawer.open({ attempt_id, meta: metaForAttempt(a) });
+    doRender();
+  }
+
+  /**
+   * Open the shared transcript drawer for an analyzer run. Analysis runs have
+   * no queue attempt record, so the dialog supplies the display-only meta and
+   * this seam only binds the run id to the existing session-log protocol.
+   *
+   * @param {string} run_id
+   * @param {import('./transcript-drawer.js').DrawerMeta} meta
+   */
+  function openDrawerForAnalysisRun(run_id, meta) {
+    selected_attempt = null;
+    repo_ops_drawer.close();
+    repo_ops_drawer_el.hidden = true;
+    drawer_overlay_el.hidden = false;
+    drawer.open({ attempt_id: run_id, meta });
     doRender();
   }
 

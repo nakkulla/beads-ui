@@ -76,6 +76,7 @@ function analysisOf(over = {}) {
   return {
     settings: { revision: 1, runner: 'claude', model: 'opus', effort: 'high' },
     job: null,
+    runs: [],
     last_good: {
       identity_digest: DIGEST,
       at: 1_000,
@@ -106,8 +107,39 @@ function analysisOf(over = {}) {
   };
 }
 
+function targetsFixture() {
+  return {
+    qualified: [
+      {
+        id: 'UI-a',
+        title: '스키마 A',
+        route: 'spec_backed',
+        spec_id: 'UI-a',
+        plan_path: null,
+        lane: 'parallel'
+      },
+      {
+        id: 'UI-b',
+        title: '스키마 B',
+        route: 'full_plan',
+        spec_id: 'UI-b',
+        plan_path: 'docs/plans/UI-b.md',
+        lane: 's1'
+      }
+    ],
+    excluded: [
+      {
+        id: 'UI-c',
+        title: '후보 C',
+        reason: 'spec_missing',
+        lane: null
+      }
+    ]
+  };
+}
+
 /**
- * @param {{ queue?: any, analysis?: any, transport?: any }} [options]
+ * @param {{ queue?: any, analysis?: any, transport?: any, onOpenTranscript?: any }} [options]
  */
 function mountDialog(options = {}) {
   document.body.innerHTML = '<div id="m"></div>';
@@ -118,11 +150,18 @@ function mountDialog(options = {}) {
   if (options.analysis !== null) {
     analysisStore.set(options.analysis || analysisOf());
   }
-  const transport = options.transport || vi.fn(async () => ({ applied: true }));
+  const request = options.transport || vi.fn(async () => ({ applied: true }));
+  const transport = vi.fn((type, payload) =>
+    type === 'worker-parallel-analysis-targets'
+      ? Promise.resolve(targetsFixture())
+      : request(type, payload)
+  );
   const dialog = createParallelAnalysisDialog(mount, {
     queueStore,
     analysisStore,
-    transport
+    transport,
+    getWorkspacePath: () => '/repo',
+    onOpenTranscript: options.onOpenTranscript
   });
   dialog.open();
   return { mount, dialog, queueStore, analysisStore, transport };
@@ -139,15 +178,35 @@ beforeEach(() => {
 });
 
 describe('parallel analysis dialog (UI-04vo seam J)', () => {
-  test('renders the analyzer settings and the pinned analysis meta', () => {
+  test('renders analyzer settings without the old lane target count', async () => {
     const { mount } = mountDialog();
+
+    await flush();
 
     const root = /** @type {HTMLElement} */ (
       mount.querySelector('#worker-parallel-analysis-dialog')
     );
     expect(root).not.toBeNull();
     expect(root.textContent).toContain('opus');
-    expect(root.textContent).toContain('대상 3');
+    expect(root.textContent).not.toContain('대상 3');
+    expect(root.textContent).toContain('자격 2 · 제외 1');
+  });
+
+  test('renders all qualified targets checked and exclusions collapsed', async () => {
+    const { mount } = mountDialog();
+
+    await flush();
+
+    const checks = Array.from(mount.querySelectorAll('.pa-target__check')).map(
+      (element) => /** @type {HTMLInputElement} */ (element).checked
+    );
+    const excluded = /** @type {HTMLDetailsElement} */ (
+      mount.querySelector('.pa-targets__excluded')
+    );
+    expect(checks).toEqual([true, true]);
+    expect(excluded.open).toBe(false);
+    expect(excluded.textContent).toContain('스펙 없음');
+    expect(excluded.textContent).toContain('미배치');
   });
 
   test('renders an eligible group card with its verdict and evidence', () => {
@@ -184,18 +243,59 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
   test('start sends worker-parallel-analysis-start', async () => {
     const { mount, transport } = mountDialog();
 
+    await flush();
     /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
     await flush();
 
     expect(transport).toHaveBeenCalledWith(
       'worker-parallel-analysis-start',
-      expect.objectContaining({ force: false })
+      expect.objectContaining({ force: false, target_ids: ['UI-a', 'UI-b'] })
+    );
+  });
+
+  test('sends only checked targets in the start payload', async () => {
+    const { mount, transport } = mountDialog();
+    await flush();
+    const check = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.pa-target__check[data-target-id="UI-b"]')
+    );
+    check.checked = false;
+    check.dispatchEvent(new Event('change', { bubbles: true }));
+
+    /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith(
+      'worker-parallel-analysis-start',
+      expect.objectContaining({ target_ids: ['UI-a'] })
+    );
+  });
+
+  test('names targets rejected after their qualification changed', async () => {
+    const transport = vi.fn(async (type) =>
+      type === 'worker-parallel-analysis-start'
+        ? {
+            applied: false,
+            reason: 'target_not_qualified',
+            detail: ['UI-b']
+          }
+        : { applied: true }
+    );
+    const { mount } = mountDialog({ transport });
+    await flush();
+
+    /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
+    await flush();
+
+    expect(document.body.querySelector('.toast')?.textContent).toContain(
+      'UI-b'
     );
   });
 
   test('reanalyze forces a fresh run', async () => {
     const { mount, transport } = mountDialog();
 
+    await flush();
     /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-rerun')).click();
     await flush();
 
@@ -519,7 +619,7 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     );
   });
 
-  test('marks a default selection', () => {
+  test('marks a default selection', async () => {
     const { mount } = mountDialog({
       analysis: analysisOf({
         settings: {
@@ -532,6 +632,8 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
         }
       })
     });
+
+    await flush();
 
     expect(mount.textContent).toContain('기본값');
     expect(
@@ -612,6 +714,7 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
       transport
     });
 
+    await flush();
     /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
     await flush();
 
@@ -625,6 +728,7 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
       analysis: analysisOf({ job: null, last_good: null }),
       transport
     });
+    await flush();
     /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
     await flush();
 
@@ -660,6 +764,7 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
       analysis: analysisOf({ job: null, last_good: null }),
       transport
     });
+    await flush();
     /** @type {HTMLButtonElement} */ (mount.querySelector('.pa-run')).click();
     await flush();
     expect(analysisStore.isPending()).toBe(true);
@@ -669,6 +774,204 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
 
     expect(analysisStore.isPending()).toBe(false);
     expect(mount.textContent).not.toContain('준비 중');
+  });
+
+  test('shows the active session id and opens monitoring by run id', async () => {
+    const onOpenTranscript = vi.fn();
+    const run = {
+      run_id: 'analysis-1',
+      session_id: '12345678abcdef',
+      runner: 'claude',
+      model: 'opus',
+      effort: 'high',
+      started_at: 1_000,
+      outcome: 'running',
+      prompt_saved: true
+    };
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        job: {
+          job_id: run.run_id,
+          identity: 'i1',
+          session_id: run.session_id,
+          runner: run.runner,
+          model: run.model,
+          effort: run.effort,
+          started_at: run.started_at
+        },
+        runs: [run]
+      }),
+      onOpenTranscript
+    });
+    await flush();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-monitor')
+    ).click();
+
+    expect(mount.querySelector('.pa-meta__progress')?.textContent).toContain(
+      '12345678'
+    );
+    expect(onOpenTranscript).toHaveBeenCalledWith(
+      'analysis-1',
+      expect.objectContaining({
+        runner: 'claude',
+        session_id: '12345678abcdef',
+        status: 'running'
+      })
+    );
+  });
+
+  test('enables history actions only when their durable signals exist', async () => {
+    const onOpenTranscript = vi.fn();
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        runs: [
+          {
+            run_id: 'analysis-good',
+            session_id: 'abcdefgh1234',
+            runner: 'codex',
+            model: 'sol',
+            effort: 'high',
+            started_at: 2_000,
+            outcome: 'success',
+            prompt_saved: true
+          },
+          {
+            run_id: 'analysis-bad',
+            session_id: null,
+            runner: 'claude',
+            model: 'opus',
+            effort: 'medium',
+            started_at: 1_000,
+            outcome: 'failure',
+            reason: 'runner_error',
+            prompt_saved: false
+          }
+        ]
+      }),
+      onOpenTranscript
+    });
+    await flush();
+    const rows = mount.querySelectorAll('.pa-run-row');
+
+    const first_monitor = /** @type {HTMLButtonElement} */ (
+      rows[0].querySelector('.pa-run-row__monitor')
+    );
+    first_monitor.click();
+
+    expect(first_monitor.disabled).toBe(false);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        rows[0].querySelector('.pa-run-row__prompt')
+      ).disabled
+    ).toBe(false);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        rows[1].querySelector('.pa-run-row__monitor')
+      ).disabled
+    ).toBe(true);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        rows[1].querySelector('.pa-run-row__prompt')
+      ).disabled
+    ).toBe(true);
+    expect(rows[1].textContent).toContain('실패');
+    expect(rows[1].textContent).toContain('runner_error');
+    expect(onOpenTranscript).toHaveBeenCalledWith(
+      'analysis-good',
+      expect.anything()
+    );
+  });
+
+  test('renders an empty history when the snapshot carries no runs', async () => {
+    const analysis = analysisOf();
+    delete analysis.runs;
+    const { mount } = mountDialog({ analysis });
+
+    await flush();
+
+    expect(mount.querySelector('.pa-run-row')).toBe(null);
+    expect(mount.querySelector('.pa-runs')?.textContent).toContain(
+      '실행 이력 없음'
+    );
+  });
+
+  test('opens the saved prompt in a fixed popup', async () => {
+    const transport = vi.fn(async (type) =>
+      type === 'worker-parallel-analysis-prompt'
+        ? { ok: true, prompt: 'exact prompt\nsecond line' }
+        : { applied: true }
+    );
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        runs: [
+          {
+            run_id: 'analysis-prompt',
+            session_id: 'session-1',
+            runner: 'codex',
+            model: 'sol',
+            effort: 'high',
+            started_at: 2_000,
+            outcome: 'success',
+            prompt_saved: true
+          }
+        ]
+      }),
+      transport
+    });
+    await flush();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-run-row__prompt')
+    ).click();
+    await flush();
+
+    const popup = /** @type {HTMLElement} */ (
+      mount.querySelector('.pa-prompt-popup')
+    );
+    expect(transport).toHaveBeenCalledWith('worker-parallel-analysis-prompt', {
+      root_dir: '/repo',
+      run_id: 'analysis-prompt'
+    });
+    expect(popup.textContent).toContain('exact prompt\nsecond line');
+    expect(popup.querySelector('pre')).not.toBeNull();
+    expect(popup.textContent).toContain('복사');
+  });
+
+  test('reports a missing saved prompt with a toast', async () => {
+    const transport = vi.fn(async (type) =>
+      type === 'worker-parallel-analysis-prompt'
+        ? { ok: false, reason: 'not_found' }
+        : { applied: true }
+    );
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        runs: [
+          {
+            run_id: 'analysis-missing',
+            session_id: 'session-1',
+            runner: 'codex',
+            model: 'sol',
+            effort: 'high',
+            started_at: 2_000,
+            outcome: 'success',
+            prompt_saved: true
+          }
+        ]
+      }),
+      transport
+    });
+    await flush();
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.pa-run-row__prompt')
+    ).click();
+    await flush();
+
+    expect(document.body.querySelector('.toast')?.textContent).toContain(
+      '찾을 수 없습니다'
+    );
   });
 
   test('stops the elapsed timer when the job disappears', () => {

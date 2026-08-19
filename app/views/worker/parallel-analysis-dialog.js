@@ -16,9 +16,12 @@
  * @property {QueueStore} queueStore
  * @property {AnalysisStore} analysisStore
  * @property {(type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>} [transport]
+ * @property {() => string|null|undefined} [getWorkspacePath]
+ * @property {(run_id: string, meta: import('./transcript-drawer.js').DrawerMeta) => void} [onOpenTranscript]
  */
 import { html, render } from 'lit-html';
 import { analyzerEfforts } from '../../data/analyzer-efforts.js';
+import { copyToClipboard } from '../../utils/clipboard.js';
 import { showToast } from '../../utils/toast.js';
 
 /** @type {Set<string>} Attempt statuses that no longer own their bead. */
@@ -30,6 +33,25 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
   'discarded'
 ]);
 
+/** @type {Record<string, string>} Server exclusion reason to reader label. */
+const EXCLUSION_REASON_LABELS = {
+  spec_missing: '스펙 없음',
+  route: 'route 미달',
+  spec_review: '스펙 리뷰 없음',
+  spec_conflict: '스펙 충돌',
+  phase_child: 'phase child',
+  worker_ineligible: 'worker 제외'
+};
+
+/** @type {Record<string, string>} Durable run outcome to reader label. */
+const RUN_OUTCOME_LABELS = {
+  running: '실행 중',
+  success: '성공',
+  failure: '실패',
+  cancelled: '취소',
+  interrupted: '중단'
+};
+
 /**
  * Create the parallelism-analysis dialog (native `<dialog>`), mirroring the
  * exec-defaults dialog's shell: mount-once, showModal with a jsdom fallback,
@@ -40,7 +62,13 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
  * @returns {{ open: () => void, close: () => void, destroy: () => void }}
  */
 export function createParallelAnalysisDialog(mount_element, options) {
-  const { queueStore, analysisStore, transport } = options;
+  const {
+    queueStore,
+    analysisStore,
+    transport,
+    getWorkspacePath,
+    onOpenTranscript
+  } = options;
 
   const dialog = /** @type {HTMLDialogElement} */ (
     document.createElement('dialog')
@@ -81,6 +109,16 @@ export function createParallelAnalysisDialog(mount_element, options) {
   let staged_runner = null;
   /** @type {ReturnType<typeof setInterval>|null} Elapsed-time ticker. */
   let elapsed_timer = null;
+  /** @type {{ qualified: any[], excluded: any[] }|null} */
+  let targets = null;
+  /** @type {Set<string>} Browser-local target selection. */
+  const selected_target_ids = new Set();
+  let targets_loading = false;
+  let targets_request_sequence = 0;
+  /** @type {{ run_id: string, prompt: string }|null} */
+  let prompt_popup = null;
+  /** @type {Set<string>} */
+  const prompt_pending_ids = new Set();
 
   /**
    * @returns {any}
@@ -106,9 +144,73 @@ export function createParallelAnalysisDialog(mount_element, options) {
       (analysisStore && analysisStore.get()) || {
         settings: { revision: 0, runner: null, model: null, effort: null },
         job: null,
+        runs: [],
         last_good: null
       }
     );
+  }
+
+  /**
+   * @returns {string}
+   */
+  function workspacePath() {
+    return getWorkspacePath ? getWorkspacePath() || '' : '';
+  }
+
+  /** Load the server-owned analysis universe each time the dialog opens. */
+  async function loadTargets() {
+    if (!transport) {
+      return;
+    }
+    const request_sequence = ++targets_request_sequence;
+    targets_loading = true;
+    targets = null;
+    selected_target_ids.clear();
+    doRender();
+    try {
+      const result = /** @type {any} */ (
+        await transport('worker-parallel-analysis-targets', {
+          root_dir: workspacePath()
+        })
+      );
+      if (request_sequence !== targets_request_sequence || !is_open) {
+        return;
+      }
+      const qualified = Array.isArray(result?.qualified)
+        ? result.qualified
+        : [];
+      const excluded = Array.isArray(result?.excluded) ? result.excluded : [];
+      targets = { qualified, excluded };
+      for (const target of qualified) {
+        if (target && typeof target.id === 'string') {
+          selected_target_ids.add(target.id);
+        }
+      }
+    } catch {
+      if (request_sequence === targets_request_sequence && is_open) {
+        targets = { qualified: [], excluded: [] };
+        showToast('분석 대상을 불러오지 못했습니다', 'error', 2800);
+      }
+    } finally {
+      if (request_sequence === targets_request_sequence) {
+        targets_loading = false;
+        if (is_open) {
+          doRender();
+        }
+      }
+    }
+  }
+
+  /**
+   * The durable run history the channel snapshot carries (§5.4). It rides the
+   * same push as settings and job, so history stays live without a second
+   * request per fanout.
+   *
+   * @param {any} analysis
+   * @returns {any[]}
+   */
+  function currentRuns(analysis) {
+    return Array.isArray(analysis.runs) ? analysis.runs : [];
   }
 
   /**
@@ -276,10 +378,24 @@ export function createParallelAnalysisDialog(mount_element, options) {
     analysisStore?.setPending?.(true);
     try {
       const result = /** @type {any} */ (
-        await sendAnalysis('worker-parallel-analysis-start', { force })
+        await sendAnalysis('worker-parallel-analysis-start', {
+          force,
+          target_ids: Array.from(selected_target_ids)
+        })
       );
       if (result && result.applied === false && result.reason) {
-        showToast(`분석 실패: ${result.reason}`, 'error', 2800);
+        if (
+          result.reason === 'target_not_qualified' &&
+          Array.isArray(result.detail)
+        ) {
+          showToast(
+            `분석 대상 자격 변경: ${result.detail.join(', ')}`,
+            'error',
+            3200
+          );
+        } else {
+          showToast(`분석 실패: ${result.reason}`, 'error', 2800);
+        }
       }
     } finally {
       // Every exit clears it: success, an early refusal like
@@ -296,6 +412,97 @@ export function createParallelAnalysisDialog(mount_element, options) {
     await transport('worker-parallel-analysis-cancel', {
       job_id: job.job_id
     });
+  }
+
+  /**
+   * Fetch and show the exact prompt bytes saved for one analysis run.
+   *
+   * @param {string} run_id
+   */
+  async function openPrompt(run_id) {
+    if (!transport || prompt_pending_ids.has(run_id)) {
+      return;
+    }
+    prompt_pending_ids.add(run_id);
+    doRender();
+    try {
+      const result = /** @type {any} */ (
+        await transport('worker-parallel-analysis-prompt', {
+          root_dir: workspacePath(),
+          run_id
+        })
+      );
+      if (!is_open) {
+        return;
+      }
+      if (result?.ok === true && typeof result.prompt === 'string') {
+        prompt_popup = { run_id, prompt: result.prompt };
+        return;
+      }
+      showToast(
+        result?.reason === 'not_found'
+          ? '저장된 분석 프롬프트를 찾을 수 없습니다'
+          : '분석 프롬프트를 불러오지 못했습니다',
+        'error',
+        2800
+      );
+    } finally {
+      prompt_pending_ids.delete(run_id);
+      doRender();
+    }
+  }
+
+  /** Close the analysis prompt popup. */
+  function closePrompt() {
+    prompt_popup = null;
+    doRender();
+  }
+
+  /** Copy the unmodified prompt content. */
+  async function copyPrompt() {
+    if (!prompt_popup) {
+      return;
+    }
+    const copied = await copyToClipboard(prompt_popup.prompt);
+    showToast(
+      copied ? '복사됨' : '복사 실패',
+      copied ? 'success' : 'error',
+      1400
+    );
+  }
+
+  /**
+   * @param {any} run
+   * @returns {import('./transcript-drawer.js').DrawerMeta}
+   */
+  function drawerMetaForRun(run) {
+    /** @type {Record<string, string>} */
+    const statuses = {
+      running: 'running',
+      success: 'done',
+      failure: 'failed',
+      cancelled: 'stopped',
+      interrupted: 'orphaned'
+    };
+    return {
+      runner: run.runner || undefined,
+      model: run.model || undefined,
+      effort: run.effort || undefined,
+      status:
+        statuses[run.outcome] ||
+        (typeof run.job_id === 'string' ? 'running' : undefined),
+      session_id: run.session_id || undefined
+    };
+  }
+
+  /**
+   * @param {string} run_id
+   * @param {any} meta_source
+   */
+  function openTranscript(run_id, meta_source) {
+    if (onOpenTranscript) {
+      onOpenTranscript(run_id, drawerMetaForRun(meta_source));
+    }
   }
 
   /**
@@ -672,9 +879,37 @@ export function createParallelAnalysisDialog(mount_element, options) {
       const elapsed = started_at
         ? ` · 경과 ${elapsedText(Date.now() - started_at)}`
         : '';
-      return html`<span class="pa-meta__progress"
-        >분석 중 — ${identity} · effort ${job.effort || '?'}${elapsed}</span
-      >`;
+      const session_id =
+        typeof job.session_id === 'string' ? job.session_id : '';
+      const run = currentRuns(analysis).find(
+        (/** @type {any} */ item) => item.run_id === job.job_id
+      );
+      return html`<span class="pa-meta__progress">
+        <span
+          >분석 중 — ${identity} · effort ${job.effort || '?'}${elapsed}</span
+        >
+        ${session_id
+          ? html`<code class="pa-session-id" title=${session_id}
+              >${session_id.slice(0, 8)}</code
+            >`
+          : ''}
+        <button
+          type="button"
+          class="pa-monitor"
+          @click=${() => openTranscript(job.job_id, run || job)}
+        >
+          모니터링
+        </button>
+        <button
+          type="button"
+          class="pa-prompt-open"
+          ?disabled=${run?.prompt_saved !== true ||
+          prompt_pending_ids.has(job.job_id)}
+          @click=${() => void openPrompt(job.job_id)}
+        >
+          프롬프트
+        </button>
+      </span>`;
     }
     return isPending()
       ? html`<span class="pa-meta__progress"
@@ -695,19 +930,11 @@ export function createParallelAnalysisDialog(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function metaTemplate(analysis) {
-    const q = currentQueue();
-    const target_count =
-      (Array.isArray(q.queue) ? q.queue.length : 0) +
-      (Array.isArray(q.serial_lanes) ? q.serial_lanes : []).reduce(
-        (/** @type {number} */ sum, /** @type {any} */ lane) =>
-          sum + (Array.isArray(lane.entries) ? lane.entries.length : 0),
-        0
-      );
     const running = !!analysis.job;
     const runnable = isRunnable(analysis.settings);
-    const busy = running || pending || isPending();
+    const no_selection = targets !== null && selected_target_ids.size === 0;
+    const busy = running || pending || isPending() || targets_loading;
     return html`<div class="pa-meta">
-      <span class="pa-meta__targets">대상 ${target_count}</span>
       ${analysis.last_good
         ? html`<span class="pa-meta__at"
             >분석 ${new Date(analysis.last_good.at || 0).toLocaleString()}</span
@@ -717,7 +944,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
       <button
         type="button"
         class="pa-run"
-        ?disabled=${!runnable || busy}
+        ?disabled=${!runnable || busy || no_selection}
         @click=${() => void startAnalysis(false)}
       >
         ✳ 분석
@@ -725,7 +952,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
       <button
         type="button"
         class="pa-rerun"
-        ?disabled=${!runnable || busy}
+        ?disabled=${!runnable || busy || no_selection}
         @click=${() => void startAnalysis(true)}
       >
         재분석
@@ -738,6 +965,199 @@ export function createParallelAnalysisDialog(mount_element, options) {
       >
         취소
       </button>
+    </div>`;
+  }
+
+  /**
+   * @param {string|null|undefined} lane
+   * @returns {string}
+   */
+  function laneLabel(lane) {
+    return typeof lane === 'string' && lane.length > 0 ? lane : '미배치';
+  }
+
+  /**
+   * @param {string} target_id
+   * @param {boolean} checked
+   */
+  function chooseTarget(target_id, checked) {
+    if (checked) {
+      selected_target_ids.add(target_id);
+    } else {
+      selected_target_ids.delete(target_id);
+    }
+    doRender();
+  }
+
+  /**
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function targetsTemplate() {
+    const qualified = targets?.qualified || [];
+    const excluded = targets?.excluded || [];
+    return html`<section class="pa-targets">
+      <header class="pa-targets__header">
+        <strong>분석 대상</strong>
+        <span class="pa-targets__summary"
+          >${targets_loading
+            ? '조회 중…'
+            : `자격 ${qualified.length} · 제외 ${excluded.length}`}</span
+        >
+      </header>
+      ${targets && qualified.length > 0
+        ? html`<ul class="pa-targets__list">
+            ${qualified.map(
+              (/** @type {any} */ target) =>
+                html`<li class="pa-target">
+                  <label class="pa-target__label">
+                    <input
+                      type="checkbox"
+                      class="pa-target__check"
+                      data-target-id=${target.id}
+                      .checked=${selected_target_ids.has(target.id)}
+                      @change=${(/** @type {Event} */ event) =>
+                        chooseTarget(
+                          target.id,
+                          /** @type {HTMLInputElement} */ (event.target).checked
+                        )}
+                    />
+                    <span class="pa-target__title">${target.title}</span>
+                  </label>
+                  <span class="pa-target__route">${target.route}</span>
+                  <span class="pa-target__lane">${laneLabel(target.lane)}</span>
+                </li>`
+            )}
+          </ul>`
+        : targets && qualified.length === 0
+          ? html`<p class="pa-empty">자격 있는 분석 대상이 없습니다</p>`
+          : ''}
+      ${targets && excluded.length > 0
+        ? html`<details class="pa-targets__excluded">
+            <summary>제외 대상 ${excluded.length}</summary>
+            <ul class="pa-targets__list">
+              ${excluded.map(
+                (/** @type {any} */ target) =>
+                  html`<li class="pa-target pa-target--excluded">
+                    <label class="pa-target__label">
+                      <input type="checkbox" disabled />
+                      <span class="pa-target__title">${target.title}</span>
+                    </label>
+                    <span class="pa-target__reason"
+                      >${EXCLUSION_REASON_LABELS[target.reason] ||
+                      target.reason}</span
+                    >
+                    <span class="pa-target__lane"
+                      >${laneLabel(target.lane)}</span
+                    >
+                  </li>`
+              )}
+            </ul>
+          </details>`
+        : ''}
+    </section>`;
+  }
+
+  /**
+   * @param {any} run
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function runTemplate(run) {
+    const has_session =
+      typeof run.session_id === 'string' && run.session_id.length > 0;
+    const session_id = has_session ? run.session_id : '';
+    return html`<li class="pa-run-row">
+      <span class="pa-run-row__status pa-run-row__status--${run.outcome}"
+        >${RUN_OUTCOME_LABELS[run.outcome] || run.outcome}</span
+      >
+      <time class="pa-run-row__time"
+        >${new Date(run.started_at || 0).toLocaleString()}</time
+      >
+      <span class="pa-run-row__identity"
+        >${run.runner || '?'} / ${run.model || '?'} / ${run.effort || '?'}</span
+      >
+      ${has_session
+        ? html`<code class="pa-session-id" title=${session_id}
+            >${session_id.slice(0, 8)}</code
+          >`
+        : html`<span class="pa-run-row__no-session">세션 없음</span>`}
+      ${run.outcome === 'failure' && run.reason
+        ? html`<span class="pa-run-row__reason">${run.reason}</span>`
+        : ''}
+      <span class="pa-run-row__actions">
+        <button
+          type="button"
+          class="pa-run-row__monitor"
+          ?disabled=${!has_session}
+          @click=${() => openTranscript(run.run_id, run)}
+        >
+          모니터링
+        </button>
+        <button
+          type="button"
+          class="pa-run-row__prompt"
+          ?disabled=${run.prompt_saved !== true ||
+          prompt_pending_ids.has(run.run_id)}
+          @click=${() => void openPrompt(run.run_id)}
+        >
+          프롬프트
+        </button>
+      </span>
+    </li>`;
+  }
+
+  /**
+   * @param {any[]} runs
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function runsTemplate(runs) {
+    return html`<section class="pa-runs">
+      <header class="pa-runs__header"><strong>최근 실행</strong></header>
+      ${runs.length > 0
+        ? html`<ul class="pa-runs__list">
+            ${runs.map((run) => runTemplate(run))}
+          </ul>`
+        : html`<p class="pa-empty">실행 이력 없음</p>`}
+    </section>`;
+  }
+
+  /**
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function promptPopupTemplate() {
+    if (!prompt_popup) {
+      return '';
+    }
+    return html`<div
+      class="pa-prompt-popup"
+      role="dialog"
+      aria-modal="true"
+      aria-label="분석 프롬프트"
+    >
+      <div class="pa-prompt-popup__backdrop" @click=${closePrompt}></div>
+      <section class="pa-prompt-popup__panel">
+        <header class="pa-prompt-popup__header">
+          <div class="pa-prompt-popup__identity">
+            <strong>분석 프롬프트</strong>
+            <code>${prompt_popup.run_id}</code>
+          </div>
+          <div class="pa-prompt-popup__actions">
+            <button type="button" @click=${() => void copyPrompt()}>
+              복사
+            </button>
+            <button
+              type="button"
+              class="pa-prompt-popup__close"
+              aria-label="분석 프롬프트 팝업 닫기"
+              @click=${closePrompt}
+            >
+              ✕
+            </button>
+          </div>
+        </header>
+        <pre class="pa-prompt-popup__content" tabindex="0">
+${prompt_popup.prompt}</pre
+        >
+      </section>
     </div>`;
   }
 
@@ -937,7 +1357,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
             </button>
           </header>
           <div class="pa__body">
-            ${settingsTemplate()} ${metaTemplate(analysis)}
+            ${settingsTemplate()} ${metaTemplate(analysis)} ${targetsTemplate()}
             ${result
               ? html`${result.groups.map(
                   (/** @type {any} */ group, /** @type {number} */ index) =>
@@ -950,8 +1370,10 @@ export function createParallelAnalysisDialog(mount_element, options) {
               : html`<p class="pa-empty">
                   아직 분석 결과가 없습니다 — [✳ 분석]을 눌러 시작하세요
                 </p>`}
+            ${runsTemplate(currentRuns(analysis))}
           </div>
         </div>
+        ${promptPopupTemplate()}
       `,
       dialog
     );
@@ -963,6 +1385,8 @@ export function createParallelAnalysisDialog(mount_element, options) {
 
   const onDialogClose = () => {
     is_open = false;
+    prompt_popup = null;
+    targets_request_sequence += 1;
     syncElapsedTimer();
   };
   /** @param {MouseEvent} ev */
@@ -1000,6 +1424,7 @@ export function createParallelAnalysisDialog(mount_element, options) {
     }
     is_open = true;
     doRender();
+    void loadTargets();
     if (typeof dialog.showModal === 'function') {
       dialog.showModal();
     } else {
@@ -1012,6 +1437,8 @@ export function createParallelAnalysisDialog(mount_element, options) {
       return;
     }
     is_open = false;
+    prompt_popup = null;
+    targets_request_sequence += 1;
     syncElapsedTimer();
     if (typeof dialog.close === 'function') {
       dialog.close();
