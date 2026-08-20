@@ -121,11 +121,55 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         spec_id: 'docs/specs/thing.md',
         spec_reviewer: 'codex',
         plan_state: 'none',
+        blocked: false,
+        blocked_by: [],
         labels: [],
         created_at: null,
         updated_at: null
       }
     ]);
+  });
+
+  test('projects blocked membership and direct blocker ids from ready explain', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [row()],
+        ready_explain: {
+          ready: [],
+          blocked: [
+            {
+              id: 'UI-1',
+              blocked_by: ['UI-2', { id: 'EXT-3' }, {}, null]
+            }
+          ]
+        }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      bead_id: 'UI-1',
+      blocked: true,
+      blocked_by: ['UI-2', 'EXT-3']
+    });
+  });
+
+  test('fails quiet when ready explain is absent', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: { all: [row()] }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ blocked: false, blocked_by: [] });
   });
 
   test('accepts native-only and equal dual spec_id but rejects conflicting dual', async () => {

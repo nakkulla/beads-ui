@@ -57,7 +57,11 @@ The detail panel uses the same mechanism with a `detail:<id>` client id and an
   override key). Replaces the removed v3 `update-workflow-settings`.
 - `create-issue` payload: `{ title, type?, priority?, description? }`
 - `delete-issue` payload: `{ id }`
-- `dep-add` / `dep-remove` payload: `{ a, b, view_id? }` (`a` depends on `b`).
+- `dep-add` / `dep-remove` payload: `{ a, b, view_id?, root_dir? }` (`a` depends
+  on `b`). Absent `root_dir` keeps the connection workspace. When present it
+  must resolve exactly to a registered, visible workspace root; otherwise the
+  server rejects the request with `bad_request`. Both the bd mutation and its
+  `show` readback run in that root.
 - `label-add` / `label-remove` payload: `{ id, label }`
 - `get-comments` payload: `{ id }`; `add-comment` payload: `{ id, body }`.
 
@@ -91,6 +95,22 @@ Besides fs-watch-driven pushes, the server re-runs list refreshes every
 `poll_interval_seconds` (config, default 30, `0` = off) while at least one
 client is connected, so writes from other machines through the central DB
 surface without a local fs event.
+
+## Monitor pipeline channel (UI-2gi1)
+
+`subscribe-monitor-pipeline` / `unsubscribe-monitor-pipeline` reuse the existing
+server-global monitor channel; this change adds fields to its snapshot and does
+not add a WebSocket op. `monitor-pipeline-snapshot` carries
+`{ workspaces, workspaces_state }`. Every visible workspace has a
+`workspaces_state` row:
+`{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`.
+`issue_prefix` comes from that workspace's bd config cache; missing, malformed,
+or temporarily unreadable config is `null`.
+
+Runnable rows inside `workspaces[].runnable` additionally carry
+`blocked: boolean` and `blocked_by: string[]`. They are display-only projections
+of the shared `ready_explain` snapshot. A legacy snapshot without that source
+uses `false` / `[]` and does not remove the candidate.
 
 ## Worker queue channel (worker-phase2 §3/§4/§6)
 

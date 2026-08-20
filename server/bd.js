@@ -10,6 +10,7 @@ import {
   bdJsonFailure,
   describeJsonType,
   normalizeBdComments,
+  normalizeBdConfigMap,
   normalizeBdDependencyRows,
   normalizeBdIssue,
   normalizeBdIssueList,
@@ -447,6 +448,7 @@ const BD_PROJECTORS = {
     normalizeBdIssue(value, { expected_id: options.expected_id }),
   ready: (value) => normalizeBdReadyRows(value),
   'ready-explain': (value) => normalizeBdReadyExplain(value),
+  config: (value) => normalizeBdConfigMap(value),
   dep: (value) => normalizeBdDependencyRows(value),
   comments: (value, options) =>
     normalizeBdComments(value, {

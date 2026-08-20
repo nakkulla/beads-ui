@@ -17,6 +17,7 @@
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { runBdJsonProjected } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
@@ -45,6 +46,7 @@ import {
  * than one full cross-repo scan per event.
  */
 const PUSH_DEBOUNCE_MS = 250;
+const ISSUE_PREFIX_RETRY_MS = 5_000;
 
 /**
  * Server-global subscriber set. No workspace key: a monitor subscription is one
@@ -74,6 +76,94 @@ let refresh_driver = null;
  * @type {Map<string, number>}
  */
 const last_seen_revision = new Map();
+
+/**
+ * Process-local config projection per workspace. Successes stay cached; a
+ * failed or malformed lookup remains null but becomes retryable after a short
+ * delay instead of spawning `bd` on every snapshot (UI-2gi1 §6.3).
+ *
+ * @type {Map<string, { value: string|null, retry_at: number, in_flight: boolean }>}
+ */
+const issue_prefix_cache = new Map();
+
+/**
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function issuePrefixFromConfig(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const prefix = /** @type {Record<string, unknown>} */ (value).issue_prefix;
+  if (typeof prefix !== 'string') {
+    return null;
+  }
+  const trimmed = prefix.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
+ *
+ * @param {string} root_dir
+ * @returns {string|null}
+ */
+function cachedIssuePrefixFor(root_dir) {
+  return issue_prefix_cache.get(path.resolve(root_dir))?.value || null;
+}
+
+/**
+ * Start at most one async `bd config list --json` lookup for a workspace.
+ *
+ * @param {string} root_dir
+ */
+function prewarmIssuePrefix(root_dir) {
+  const key = path.resolve(root_dir);
+  const current = issue_prefix_cache.get(key);
+  if (
+    (current && current.value !== null) ||
+    current?.in_flight === true ||
+    (current && current.retry_at > Date.now())
+  ) {
+    return;
+  }
+  issue_prefix_cache.set(key, {
+    value: current?.value || null,
+    retry_at: current?.retry_at || 0,
+    in_flight: true
+  });
+  void runBdJsonProjected('config', ['config', 'list', '--json'], { cwd: key })
+    .then((result) => {
+      const issue_prefix =
+        result.ok === true ? issuePrefixFromConfig(result.data) : null;
+      issue_prefix_cache.set(key, {
+        value: issue_prefix,
+        retry_at:
+          issue_prefix === null ? Date.now() + ISSUE_PREFIX_RETRY_MS : Infinity,
+        in_flight: false
+      });
+      if (issue_prefix !== null) {
+        schedulePush();
+      }
+    })
+    .catch((err) => {
+      issue_prefix_cache.set(key, {
+        value: null,
+        retry_at: Date.now() + ISSUE_PREFIX_RETRY_MS,
+        in_flight: false
+      });
+      log('monitor: issue prefix lookup failed for %s: %o', key, err);
+    });
+}
+
+/**
+ * Warm every visible workspace without delaying the current snapshot.
+ */
+function prewarmVisibleIssuePrefixes() {
+  for (const root_dir of visibleWorkspaceRoots()) {
+    prewarmIssuePrefix(root_dir);
+  }
+}
 
 /**
  * Whether a workspace still has anything worth a monitor row.
@@ -256,7 +346,8 @@ export function buildMonitorPipeline(options = {}) {
  *   listWorkspaces?: () => Array<{ path: string }>,
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
- *   runnerCatalog?: () => Record<string, unknown>
+ *   runnerCatalog?: () => Record<string, unknown>,
+ *   issuePrefixFor?: (workspace_key: string) => string|null
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -265,6 +356,7 @@ export function buildMonitorWorkspacesState(options = {}) {
     options.snapshotFor ||
     ((/** @type {string} */ key) =>
       getWorkerRuntime().queueStore.snapshot(key));
+  const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
   /** @type {Record<string, unknown>|null} */
   let runner_catalog = null;
   try {
@@ -287,9 +379,19 @@ export function buildMonitorWorkspacesState(options = {}) {
     if (!queue) {
       continue;
     }
+    /** @type {string|null} */
+    let issue_prefix = null;
+    try {
+      const value = issuePrefixFor(root_dir);
+      issue_prefix =
+        typeof value === 'string' && value.length > 0 ? value : null;
+    } catch {
+      issue_prefix = null;
+    }
     out.push({
       root_dir,
       name: path.basename(root_dir),
+      issue_prefix,
       auto_advance: queue.auto_advance === true,
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,
@@ -307,6 +409,7 @@ function pushNow() {
   if (SUBSCRIBERS.size === 0) {
     return;
   }
+  prewarmVisibleIssuePrefixes();
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
     workspaces = buildMonitorPipeline();
@@ -756,6 +859,8 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   log('subscribe-monitor-pipeline %s', client_id);
   ws.send(JSON.stringify(makeOk(req, { id: client_id })));
 
+  prewarmVisibleIssuePrefixes();
+
   let workspaces = /** @type {Array<Record<string, unknown>>} */ ([]);
   try {
     workspaces = buildMonitorPipeline();
@@ -969,5 +1074,6 @@ export function __resetMonitorPipelineForTest() {
     refresh_driver = null;
   }
   last_seen_revision.clear();
+  issue_prefix_cache.clear();
   poll_interval_seconds = null;
 }

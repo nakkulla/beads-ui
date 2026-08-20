@@ -357,6 +357,26 @@ export function normalizeBdReadyExplain(value) {
 }
 
 /**
+ * Project `bd config list --json`: a flat config map.
+ *
+ * Keys and values remain intentionally unconstrained so additive bd config
+ * fields do not become compatibility failures.
+ *
+ * @param {unknown} value
+ * @returns {BdProjectionOk|BdJsonFailure}
+ */
+export function normalizeBdConfigMap(value) {
+  if (!isRecord(value)) {
+    return bdJsonFailure(
+      BD_JSON_SHAPE_INVALID,
+      'bd config payload is not an object',
+      { expected: 'object', actual: describeJsonType(value) }
+    );
+  }
+  return { ok: true, data: value };
+}
+
+/**
  * Project `bd dep list --json` rows.
  *
  * Two shapes are valid per row and both are preserved as-is: a multi-id edge

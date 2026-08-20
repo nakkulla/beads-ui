@@ -82,13 +82,14 @@ function build(input) {
 }
 
 /**
- * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any> }} input
+ * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any>, issuePrefixes?: Record<string, string|null> }} input
  */
 function buildState(input) {
   return buildMonitorWorkspacesState({
     listWorkspaces: () => (input.workspaces || []).map((path) => ({ path })),
     listHidden: () => input.hidden || [],
-    snapshotFor: (key) => (input.queues || {})[key] || snapshot()
+    snapshotFor: (key) => (input.queues || {})[key] || snapshot(),
+    issuePrefixFor: (key) => (input.issuePrefixes || {})[key] ?? null
   });
 }
 
@@ -411,6 +412,28 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     });
 
     expect(out[0].revision).toBe(7);
+  });
+
+  test('carries the cached issue prefix of each workspace', () => {
+    const out = buildState({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'A', [WS_B]: 'B' }
+    });
+
+    expect(out.map((workspace) => workspace.issue_prefix)).toEqual(['A', 'B']);
+  });
+
+  test('fails quiet when an issue prefix lookup throws', () => {
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => {
+        throw new Error('config boom');
+      }
+    });
+
+    expect(out[0].issue_prefix).toBeNull();
   });
 
   test('carries no retired exec-defaults map', () => {

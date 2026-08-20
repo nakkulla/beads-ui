@@ -155,7 +155,8 @@ export function setConnWorkspace(ws, wsObj) {
 }
 
 /**
- * Run bd in the connection's selected workspace when available.
+ * Run bd in the connection's selected workspace, or an explicit `options.cwd`
+ * after applying the same workspace effect gate (UI-2gi1 §6.6).
  *
  * @param {WebSocket} ws
  * @param {string[]} args
@@ -163,7 +164,7 @@ export function setConnWorkspace(ws, wsObj) {
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 export async function runBdInWorkspace(ws, args, options = undefined) {
-  const root_dir = getConnWorkspace(ws)?.root_dir;
+  const root_dir = options?.cwd || getConnWorkspace(ws)?.root_dir;
 
   // Every WS bd write goes through this one door, so the workspace effect gate
   // belongs here: a workspace whose bd JSON this build cannot read must not be
@@ -188,7 +189,8 @@ export async function runBdInWorkspace(ws, args, options = undefined) {
 }
 
 /**
- * Run one bd JSON command in the connection's workspace and project it.
+ * Run one bd JSON command in the connection's workspace (or explicit
+ * `options.cwd`) and project it.
  *
  * Binding the connection's workspace to the command family is what makes a
  * protocol failure land on the right effect gate: a broken workspace must not
@@ -206,7 +208,7 @@ export function runBdJsonProjectedInWorkspace(
   args,
   options = undefined
 ) {
-  const root_dir = getConnWorkspace(ws)?.root_dir;
+  const root_dir = options?.cwd || getConnWorkspace(ws)?.root_dir;
   return runBdJsonProjected(command_family, args, {
     ...(options || {}),
     ...(root_dir ? { cwd: root_dir } : {})
