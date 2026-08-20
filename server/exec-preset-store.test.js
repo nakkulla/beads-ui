@@ -99,6 +99,49 @@ describe('exec-preset-store defaults', () => {
     expect(restarted.snapshot()).toEqual(snapshot);
   });
 
+  test('atomically persists and reloads the reseed marker with replacement presets', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const rename = vi.spyOn(fs, 'renameSync');
+    const store = createExecPresetStore({
+      filePath: file_path,
+      randomUUID: () => 'seed-1'
+    });
+
+    /** @type {any} */ (store).replaceAllForReseed({
+      presets: [
+        {
+          name: '클로드 라인',
+          settings: {
+            orchestration_model: 'opus',
+            impl_runtime: 'claude'
+          }
+        }
+      ],
+      marker: { version: 1 }
+    });
+    const durable = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+    const restarted = createExecPresetStore({ filePath: file_path });
+
+    expect(rename).toHaveBeenCalledTimes(1);
+    expect(durable).toEqual({
+      revision: 1,
+      presets: [
+        {
+          id: 'seed-1',
+          name: '클로드 라인',
+          settings: {
+            orchestration_model: 'opus',
+            impl_runtime: 'claude'
+          },
+          origin: { kind: 'user' }
+        }
+      ],
+      reseed_migration: { version: 1 }
+    });
+    expect(restarted.snapshot()).toEqual(durable);
+    rename.mockRestore();
+  });
+
   test('keeps parsed legacy presets durable when normalization persistence fails', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     const legacy = {

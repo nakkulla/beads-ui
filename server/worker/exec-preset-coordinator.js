@@ -23,6 +23,27 @@ import {
 import { resolveExecSettings } from './policy.js';
 import { discoverQueueStates } from './queue-state-discovery.js';
 
+const RESEED_MIGRATION_VERSION = 1;
+/** @type {Array<{ name: string, settings: Record<string, string> }>} */
+const RESEED_PRESETS = [
+  {
+    name: '클로드 라인',
+    settings: { orchestration_model: 'opus', impl_runtime: 'claude' }
+  },
+  {
+    name: '클로드 오케 + 코덱스 구현',
+    settings: { orchestration_model: 'opus', impl_runtime: 'codex' }
+  },
+  {
+    name: '코덱스 라인',
+    settings: {
+      orchestration_model: 'sol',
+      orchestration_effort: 'xhigh',
+      impl_runtime: 'codex'
+    }
+  }
+];
+
 /**
  * @typedef {{ ok: true, preset_id: null, preset_revision: null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }} DispatchResolution
  */
@@ -45,6 +66,19 @@ function isRecord(value) {
 function isLegacyPreset(preset) {
   return Object.keys(preset.settings).some(
     (key) => !IMPL_PRESET_KEYS.includes(key)
+  );
+}
+
+/**
+ * @param {unknown} state
+ * @returns {boolean}
+ */
+function reseedCompleted(state) {
+  return (
+    isRecord(state) &&
+    isRecord(state.reseed_migration) &&
+    Number.isInteger(state.reseed_migration.version) &&
+    Number(state.reseed_migration.version) > 0
   );
 }
 
@@ -72,7 +106,8 @@ function implSubsetOf(settings) {
  *   discover?: () => ReturnType<typeof discoverQueueStates>,
  *   workspaceKeyFor?: (workspace: string) => string,
  *   kvGet?: (workspace: string, key: string) => Promise<{ ok: boolean, value?: Record<string, unknown>, warning?: string, error?: string }>,
- *   kvSet?: (workspace: string, key: string, value: Record<string, unknown>) => Promise<{ ok: boolean, error?: string }>
+ *   kvSet?: (workspace: string, key: string, value: Record<string, unknown>) => Promise<{ ok: boolean, error?: string }>,
+ *   warn?: (message: string) => void
  * }} options
  */
 export function createExecPresetCoordinator(options) {
@@ -82,6 +117,7 @@ export function createExecPresetCoordinator(options) {
   const workspaceKeyFor = options.workspaceKeyFor || ((workspace) => workspace);
   const kvGet = options.kvGet;
   const kvSet = options.kvSet;
+  const warn = options.warn ?? console.warn;
 
   /**
    * Every applicable preset. A preset with a key outside the current 15-key
@@ -275,6 +311,9 @@ export function createExecPresetCoordinator(options) {
    */
   function copyLegacyPresets() {
     const state = presetStore.snapshot();
+    if (reseedCompleted(state)) {
+      return { ok: true, legacy_ids: [] };
+    }
     const legacy = state.presets.filter(isLegacyPreset);
     /** @type {string[]} */
     const legacy_ids = [];
@@ -302,6 +341,31 @@ export function createExecPresetCoordinator(options) {
       }
     }
     return { ok: true, legacy_ids };
+  }
+
+  /**
+   * Replace the server-global preset state once. Readback verification belongs
+   * to the store so persistence remains behind its atomic-write boundary.
+   */
+  function reseedPresets() {
+    const state = presetStore.snapshot();
+    if (reseedCompleted(state)) {
+      return;
+    }
+    try {
+      const replaced = presetStore.replaceAllForReseed({
+        presets: RESEED_PRESETS,
+        marker: { version: RESEED_MIGRATION_VERSION }
+      });
+      // A rejected replacement leaves no marker, so every later start retries
+      // it forever; without this line that retry loop is silent.
+      if (!replaced.applied) {
+        warn(`실행 프리셋 재시드 거부: ${replaced.reason ?? 'unknown'}`);
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      warn(`실행 프리셋 재시드 readback 실패: ${detail}`);
+    }
   }
 
   /**
@@ -486,6 +550,7 @@ export function createExecPresetCoordinator(options) {
     if (all_ok && copied.legacy_ids.length > 0) {
       presetStore.deletePresets(copied.legacy_ids);
     }
+    reseedPresets();
     // A workspace that could not be migrated is DEFERRED, not fatal: its own
     // durable state is untouched (fill-only-empty, marker unwritten), so the
     // next start retries it. Failing the whole pass would be read as "nothing
