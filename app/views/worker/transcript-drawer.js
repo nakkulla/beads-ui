@@ -680,7 +680,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     // runner/model/effort stay inline; the worktree path is its own element so
     // ≤640px can hide it (title keeps the full path) without dropping the rest.
     const metaBits = (
-      launch_id ? [meta.model] : [meta.runner, meta.model, meta.effort]
+      launch_id
+        ? [meta.model, meta.effort]
+        : [meta.runner, meta.model, meta.effort]
     )
       .filter(Boolean)
       .join(' · ');

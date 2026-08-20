@@ -26,7 +26,7 @@
  */
 
 /**
- * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, model?: string, session_id?: string, turn_id?: string, completed_at?: string, usage: UsageRecord, subtotal: number, replayed?: boolean }} UsageLeg
+ * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string, usage: UsageRecord, subtotal: number, replayed?: boolean }} UsageLeg
  */
 
 /**
@@ -604,6 +604,12 @@ export function sumAttemptUsage(attempts, bead_id) {
       leg.receipt_id = receipt_id;
       if (typeof candidate.model === 'string') {
         leg.model = candidate.model;
+      }
+      if (
+        typeof candidate.effort === 'string' &&
+        candidate.effort.trim().length > 0
+      ) {
+        leg.effort = candidate.effort;
       }
       if (typeof candidate.session_id === 'string') {
         leg.session_id = candidate.session_id;

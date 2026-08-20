@@ -12,10 +12,16 @@ import {
 
 /** @type {string[]} */
 const temp_roots = [];
+const ORIGINAL_XDG_STATE_HOME = process.env.XDG_STATE_HOME;
 
 afterEach(() => {
   for (const root of temp_roots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+  if (ORIGINAL_XDG_STATE_HOME === undefined) {
+    delete process.env.XDG_STATE_HOME;
+  } else {
+    process.env.XDG_STATE_HOME = ORIGINAL_XDG_STATE_HOME;
   }
 });
 
@@ -41,6 +47,7 @@ describe('attempt usage receipts', () => {
           thread_id: 'thread-1',
           turn_id: 'turn-1',
           model: 'gpt-5.6-terra',
+          effort: 'high',
           usage: {
             input_tokens: 10,
             output_tokens: 2,
@@ -63,6 +70,7 @@ describe('attempt usage receipts', () => {
           session_id: 'thread-1',
           turn_id: 'turn-1',
           model: 'gpt-5.6-terra',
+          effort: 'high',
           usage: {
             input_tokens: 10,
             output_tokens: 2,
@@ -81,6 +89,79 @@ describe('attempt usage receipts', () => {
         process.env.XDG_STATE_HOME = prior;
       }
     }
+  });
+
+  test('accepts a receipt without effort and normalizes it to null', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-receipt-'));
+    temp_roots.push(root);
+    process.env.XDG_STATE_HOME = root;
+    const workspace = '/tmp/example-workspace/project-a';
+    const attempt_id = 'UI-orfj-legacy';
+    const inbox = usageReceiptInboxDir(workspace, attempt_id);
+    ensureUsageReceiptInbox(workspace, attempt_id);
+    fs.writeFileSync(
+      path.join(inbox, 'launch-legacy.json'),
+      JSON.stringify({
+        schema: 'codex-usage-receipt-v1',
+        receipt_id: 'launch-legacy',
+        attempt_id,
+        provider: 'codex',
+        role: 'implementation',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        model: 'gpt-5.6-terra',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0
+        },
+        completed_at: '2026-08-11T12:34:56Z'
+      }),
+      { mode: 0o600 }
+    );
+
+    const result = readAttemptUsageReceipts(workspace, attempt_id);
+
+    expect(result.legs[0].effort).toBe(null);
+  });
+
+  test('rejects an empty effort', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-receipt-'));
+    temp_roots.push(root);
+    process.env.XDG_STATE_HOME = root;
+    const workspace = '/tmp/example-workspace/project-a';
+    const attempt_id = 'UI-orfj-empty';
+    const inbox = usageReceiptInboxDir(workspace, attempt_id);
+    ensureUsageReceiptInbox(workspace, attempt_id);
+    fs.writeFileSync(
+      path.join(inbox, 'launch-empty.json'),
+      JSON.stringify({
+        schema: 'codex-usage-receipt-v1',
+        receipt_id: 'launch-empty',
+        attempt_id,
+        provider: 'codex',
+        role: 'implementation',
+        thread_id: 'thread-1',
+        turn_id: 'turn-1',
+        model: 'gpt-5.6-terra',
+        effort: '',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          reasoning_output_tokens: 0
+        },
+        completed_at: '2026-08-11T12:34:56Z'
+      }),
+      { mode: 0o600 }
+    );
+
+    const result = readAttemptUsageReceipts(workspace, attempt_id);
+
+    expect(result.legs).toEqual([]);
   });
 
   test('keeps foreign, insecure, and conflicting receipts out of persistence', () => {

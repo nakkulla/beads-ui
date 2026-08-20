@@ -35,6 +35,7 @@ const TOP_LEVEL_KEYS = new Set([
   'usage',
   'completed_at'
 ]);
+const TOP_LEVEL_KEYS_WITH_EFFORT = new Set([...TOP_LEVEL_KEYS, 'effort']);
 const USAGE_KEYS = new Set([
   'input_tokens',
   'output_tokens',
@@ -112,6 +113,11 @@ export function isUsageLeg(value) {
     !nonEmptyString(value.session_id) ||
     !nonEmptyString(value.turn_id) ||
     !nonEmptyString(value.model) ||
+    !(
+      !('effort' in value) ||
+      value.effort === null ||
+      nonEmptyString(value.effort)
+    ) ||
     !isUtcSecond(value.completed_at) ||
     !isRecord(value.usage) ||
     !hasExactKeys(value.usage, USAGE_KEYS)
@@ -148,6 +154,10 @@ export function normalizeUsageLegs(raw) {
       session_id: value.session_id,
       turn_id: value.turn_id,
       model: value.model,
+      effort:
+        'effort' in value && typeof value.effort === 'string'
+          ? value.effort
+          : null,
       usage: {
         input_tokens: value.usage.input_tokens,
         output_tokens: value.usage.output_tokens,
@@ -262,7 +272,11 @@ function validateFile(file, file_system) {
  * @returns {import('./queue-store.js').UsageLeg|null}
  */
 function parseReceipt(raw, attempt_id, receipt_id) {
-  if (!isRecord(raw) || !hasExactKeys(raw, TOP_LEVEL_KEYS)) {
+  if (
+    !isRecord(raw) ||
+    (!hasExactKeys(raw, TOP_LEVEL_KEYS) &&
+      !hasExactKeys(raw, TOP_LEVEL_KEYS_WITH_EFFORT))
+  ) {
     return null;
   }
   if (
@@ -274,6 +288,7 @@ function parseReceipt(raw, attempt_id, receipt_id) {
     !nonEmptyString(raw.thread_id) ||
     !nonEmptyString(raw.turn_id) ||
     !nonEmptyString(raw.model) ||
+    ('effort' in raw && !nonEmptyString(raw.effort)) ||
     !isUtcSecond(raw.completed_at) ||
     !isRecord(raw.usage) ||
     !hasExactKeys(raw.usage, USAGE_KEYS) ||
@@ -282,7 +297,7 @@ function parseReceipt(raw, attempt_id, receipt_id) {
     return null;
   }
   const receipt =
-    /** @type {{ role: 'implementation'|'review-consult', thread_id: string, turn_id: string, model: string, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }, completed_at: string }} */ (
+    /** @type {{ role: 'implementation'|'review-consult', thread_id: string, turn_id: string, model: string, effort?: string, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }, completed_at: string }} */ (
       raw
     );
   return {
@@ -292,6 +307,7 @@ function parseReceipt(raw, attempt_id, receipt_id) {
     session_id: receipt.thread_id,
     turn_id: receipt.turn_id,
     model: receipt.model,
+    effort: receipt.effort ?? null,
     usage: {
       input_tokens: receipt.usage.input_tokens,
       output_tokens: receipt.usage.output_tokens,

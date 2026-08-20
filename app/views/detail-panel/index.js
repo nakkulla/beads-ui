@@ -412,7 +412,7 @@ export function createDetailPanel(mount_element, options) {
         started_at: typeof a.started_at === 'number' ? a.started_at : null,
         runner: a.runner || null,
         model: a.model || null,
-        effort: a.effort || null,
+        effort: a.effort || a.observed_effort || null,
         speed: a.speed || null,
         session_id: a.session_id || null,
         resumed_from: a.resumed_from || null,
@@ -525,6 +525,7 @@ export function createDetailPanel(mount_element, options) {
         runner: 'codex',
         role: session.role,
         model: session.model,
+        effort: session.effort,
         session_id: session.session_id,
         status: session.status
       }
