@@ -720,6 +720,9 @@ export function recalibrateSerialLaneAfterDepAdd(
   blocker,
   readback
 ) {
+  if (workspace_key.length === 0) {
+    return { matched: false, lane: null, changed: false, cycle: false };
+  }
   try {
     getWorkerRuntime().titleCache.refreshFromIssue(workspace_key, readback);
   } catch (err) {

@@ -159,6 +159,51 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     });
   });
 
+  test('falls back to embedded blocks edges when the explain row carries no ids', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [
+          row({
+            dependencies: [
+              { type: 'blocks', depends_on_id: 'UI-9' },
+              { dependency_type: 'blocks', id: 'UI-8' },
+              { type: 'related', depends_on_id: 'UI-7' }
+            ]
+          })
+        ],
+        ready_explain: { ready: [], blocked: [{ id: 'UI-1' }] }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      blocked: true,
+      blocked_by: ['UI-9', 'UI-8']
+    });
+  });
+
+  test('keeps a bead the explain source never blocked out of the fallback', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [
+          row({ dependencies: [{ type: 'blocks', depends_on_id: 'UI-9' }] })
+        ],
+        ready_explain: { ready: [{ id: 'UI-1' }], blocked: [] }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ blocked: false, blocked_by: [] });
+  });
+
   test('fails quiet when ready explain is absent', async () => {
     const requestSnapshot = vi.fn(async () => ({
       ok: true,

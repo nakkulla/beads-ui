@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   recalibrate: vi.fn(),
   invalidateRunnable: vi.fn(),
   refreshRunnable: vi.fn(),
+  refreshFromIssue: vi.fn(),
   emitQueueChanged: vi.fn()
 }));
 
@@ -57,6 +58,9 @@ vi.mock('../worker/runtime.js', () => ({
     runnableCache: {
       invalidate: state.invalidateRunnable,
       refresh: state.refreshRunnable
+    },
+    titleCache: {
+      refreshFromIssue: state.refreshFromIssue
     }
   })
 }));
@@ -96,6 +100,7 @@ beforeEach(() => {
   state.recalibrate.mockReset();
   state.invalidateRunnable.mockReset();
   state.refreshRunnable.mockReset();
+  state.refreshFromIssue.mockReset();
   state.emitQueueChanged.mockReset();
   state.runBd.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
   state.readback.mockResolvedValue({
@@ -232,6 +237,59 @@ describe('dependency mutation root targeting (UI-2gi1 §6.6)', () => {
 
     expect(ws.sent[0].error.code).toBe('bad_request');
     expect(state.runBd).not.toHaveBeenCalled();
+  });
+
+  test('recalibrates and refreshes even when the add readback fails', async () => {
+    state.readback.mockResolvedValue({
+      ok: false,
+      error: { code: 'bd_json_invalid', message: 'unreadable' }
+    });
+    const ws = fakeSocket();
+
+    await handleDepAdd(
+      ws,
+      request('dep-add', { a: 'A-1', b: 'B-1', root_dir: TARGET_WS })
+    );
+
+    expect(ws.sent[0].error.code).toBe('bd_readback_failed');
+    expect(state.recalibrate).toHaveBeenCalledWith(
+      TARGET_WS,
+      'A-1',
+      'B-1',
+      null
+    );
+    expect(state.emitQueueChanged).toHaveBeenCalledWith(TARGET_WS);
+  });
+
+  test('refreshes the decoration cache from the removed edge readback', async () => {
+    const ws = fakeSocket();
+
+    await handleDepRemove(
+      ws,
+      request('dep-remove', { a: 'A-1', b: 'B-1', root_dir: TARGET_WS })
+    );
+
+    expect(state.refreshFromIssue).toHaveBeenCalledWith(TARGET_WS, {
+      id: 'A-1',
+      title: 'A'
+    });
+  });
+
+  test('refreshes the target even when the remove readback fails', async () => {
+    state.readback.mockResolvedValue({
+      ok: false,
+      error: { code: 'bd_json_invalid', message: 'unreadable' }
+    });
+    const ws = fakeSocket();
+
+    await handleDepRemove(
+      ws,
+      request('dep-remove', { a: 'A-1', b: 'B-1', root_dir: TARGET_WS })
+    );
+
+    expect(ws.sent[0].error.code).toBe('bd_readback_failed');
+    expect(state.refreshFromIssue).not.toHaveBeenCalled();
+    expect(state.emitQueueChanged).toHaveBeenCalledWith(TARGET_WS);
   });
 
   test('runs no readback or refresh when bd rejects add', async () => {

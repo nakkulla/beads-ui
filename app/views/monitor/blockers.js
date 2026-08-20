@@ -268,8 +268,20 @@ export function detectSerialLaneHeadCycles(queue_groups) {
       ? group.sublanes.serial
       : []) {
       const source = serialLaneKey(group.root_dir, lane.id);
+      // `items` drops whatever the exclusive lane priority already claimed, so
+      // `items[0]` is the lane's HEAD only when nothing ahead of it was claimed.
+      // A lane whose lineage is running or awaiting merge is not waiting at all,
+      // and a first card at raw index > 0 stands behind a claimed bead — reading
+      // either as a head invents a 상호 정지 that no one is actually in.
       const head = Array.isArray(lane.items) ? lane.items[0] : null;
-      const blockers = Array.isArray(head?.blocked_by) ? head.blocked_by : [];
+      const is_waiting_head =
+        !!head &&
+        head.queue_index === 0 &&
+        (!Array.isArray(lane.occupied_by) || lane.occupied_by.length === 0);
+      const blockers =
+        is_waiting_head && Array.isArray(head.blocked_by)
+          ? head.blocked_by
+          : [];
       const targets = graph.get(source);
       if (!targets) {
         continue;

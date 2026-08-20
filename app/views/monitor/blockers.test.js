@@ -20,6 +20,8 @@ function item(patch) {
     title: 'item',
     root_dir: WS_A,
     workspace_name: 'repo-a',
+    // 직렬 카드는 언제나 소속 레인 기준 raw 좌표를 싣는다 (UI-2gi1 §5.1).
+    queue_index: 0,
     ...patch
   };
 }
@@ -207,6 +209,89 @@ describe('monitor serial lane head cycles (UI-2gi1 §6.4)', () => {
               items: [item({ id: 'A-head', blocked_by: ['A-other'] })]
             },
             { id: 's2', items: [item({ id: 'A-other', blocked_by: [] })] }
+          ]
+        }
+      }
+    ];
+
+    const cycles = detectSerialLaneHeadCycles(groups);
+
+    expect(cycles.size).toBe(0);
+  });
+
+  test('ignores a lane whose first card stands behind a claimed bead', () => {
+    const groups = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        sublanes: {
+          serial: [
+            {
+              id: 's1',
+              items: [
+                item({ id: 'A-second', queue_index: 1, blocked_by: ['B-head'] })
+              ]
+            }
+          ]
+        }
+      },
+      {
+        root_dir: WS_B,
+        name: 'repo-b',
+        sublanes: {
+          serial: [
+            {
+              id: 's2',
+              items: [
+                item({
+                  id: 'B-head',
+                  root_dir: WS_B,
+                  workspace_name: 'repo-b',
+                  blocked_by: ['A-second']
+                })
+              ]
+            }
+          ]
+        }
+      }
+    ];
+
+    const cycles = detectSerialLaneHeadCycles(groups);
+
+    expect(cycles.size).toBe(0);
+  });
+
+  test('ignores an occupied lane as a waiting source', () => {
+    const groups = [
+      {
+        root_dir: WS_A,
+        name: 'repo-a',
+        sublanes: {
+          serial: [
+            {
+              id: 's1',
+              occupied_by: ['A-running'],
+              items: [item({ id: 'A-head', blocked_by: ['B-head'] })]
+            }
+          ]
+        }
+      },
+      {
+        root_dir: WS_B,
+        name: 'repo-b',
+        sublanes: {
+          serial: [
+            {
+              id: 's2',
+              items: [
+                item({
+                  id: 'B-head',
+                  root_dir: WS_B,
+                  workspace_name: 'repo-b',
+                  blocked_by: ['A-head']
+                })
+              ]
+            }
           ]
         }
       }

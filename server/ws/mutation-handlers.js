@@ -72,13 +72,22 @@ function dependencyTargetOf(ws, payload) {
 }
 
 /**
- * Refresh every target-root projection affected by an explicit dependency
- * write. Each trigger fails quiet so a successful bd response stays successful
+ * Refresh every target-root projection affected by a dependency write. Each
+ * trigger fails quiet so a successful bd response stays successful
  * (UI-2gi1 §6.6).
+ *
+ * Runs REGARDLESS of the readback outcome: the edge is already durable, and no
+ * other event observes a dependency change, so a readback hiccup would leave
+ * the stale projection standing until a cache TTL expires with nothing left to
+ * correct it. The trigger set itself stays scoped to an explicit root, where
+ * the connection's own refresh cannot reach (§6.6).
  *
  * @param {string} root_dir
  */
 function refreshDependencyTarget(root_dir) {
+  if (root_dir.length === 0) {
+    return;
+  }
   try {
     getWorkerRuntime().runnableCache.invalidate(root_dir);
   } catch {
@@ -91,6 +100,59 @@ function refreshDependencyTarget(root_dir) {
   }
   try {
     emitQueueChanged(root_dir);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * The authoritative `bd show` record for the bead whose blocker set changed.
+ *
+ * `view_id` addresses whatever row the CLIENT is looking at, which is not
+ * necessarily the dependent bead. The decoration caches key off the record's
+ * own id, so a `view_id` readback refreshes the wrong bead's blocker list.
+ *
+ * @param {WebSocket} ws
+ * @param {{ root_dir: string, explicit: boolean }} target
+ * @param {string} bead_id - The dependent bead (`a`).
+ * @param {string} view_id - The id the primary readback already used.
+ * @param {unknown} primary - That readback's data, or null when it failed.
+ * @returns {Promise<unknown>}
+ */
+async function dependentReadback(ws, target, bead_id, view_id, primary) {
+  if (view_id === bead_id) {
+    return primary;
+  }
+  try {
+    const dependent = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', bead_id, '--json'],
+      target.explicit
+        ? { expected_id: bead_id, cwd: target.root_dir }
+        : { expected_id: bead_id }
+    );
+    return dependent.ok === true ? dependent.data : primary;
+  } catch {
+    // Best-effort: the client reply does not depend on this second read.
+    return primary;
+  }
+}
+
+/**
+ * Push a successful dependency readback into the blocker-id decoration cache so
+ * the chip a `dep-remove` just retired stops rendering immediately instead of
+ * waiting out the partial cache's TTL (UI-2gi1 §6.5).
+ *
+ * @param {string} root_dir
+ * @param {unknown} readback
+ */
+function refreshDependencyDecoration(root_dir, readback) {
+  if (root_dir.length === 0 || !readback) {
+    return;
+  }
+  try {
+    getWorkerRuntime().titleCache.refreshFromIssue(root_dir, readback);
   } catch {
     // ignore
   }
@@ -887,27 +949,16 @@ export async function handleDepAdd(ws, req) {
         )
       )
     );
-    return;
+  } else {
+    ws.send(JSON.stringify(makeOk(req, shown.data)));
   }
-  ws.send(JSON.stringify(makeOk(req, shown.data)));
-  let recalibration_readback = shown.data;
-  if (id !== a) {
-    try {
-      const dependency = await runBdJsonProjectedInWorkspace(
-        ws,
-        'show',
-        ['show', a, '--json'],
-        target.explicit
-          ? { expected_id: a, cwd: target.root_dir }
-          : { expected_id: a }
-      );
-      if (dependency.ok === true) {
-        recalibration_readback = dependency.data;
-      }
-    } catch {
-      // The user-facing readback already succeeded; recalibration stays best-effort.
-    }
-  }
+  const recalibration_readback = await dependentReadback(
+    ws,
+    target,
+    a,
+    id,
+    shown.ok === true ? shown.data : null
+  );
   try {
     recalibrateSerialLaneAfterDepAdd(
       target.root_dir,
@@ -997,9 +1048,22 @@ export async function handleDepRemove(ws, req) {
         )
       )
     );
-    return;
+  } else {
+    ws.send(JSON.stringify(makeOk(req, shown.data)));
   }
-  ws.send(JSON.stringify(makeOk(req, shown.data)));
+  // Removal has no lane recalibration — dropping a constraint leaves the
+  // existing order valid — but the retired blocker id must leave the partial
+  // decoration cache, or its 🔒 chip outlives the edge (UI-2gi1 §6.5).
+  refreshDependencyDecoration(
+    target.root_dir,
+    await dependentReadback(
+      ws,
+      target,
+      a,
+      id,
+      shown.ok === true ? shown.data : null
+    )
+  );
   try {
     triggerMutationRefreshOnce(ws);
   } catch {

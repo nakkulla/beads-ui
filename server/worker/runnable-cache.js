@@ -280,6 +280,46 @@ function blockerIds(row) {
 }
 
 /**
+ * Direct `blocks` blocker ids embedded in the bead's own `bd list` row — the
+ * second source spec §6.1 names for when the explain row carries membership but
+ * no blocker ids of its own.
+ *
+ * Both edge shapes this codebase already reads are accepted: the `bd show`
+ * shape (`dependency_type` + `id`, `title-cache.js`) and the embedded `bd list`
+ * shape (`type` + `depends_on_id`, `list-adapters.js`). Neither is guessed at —
+ * an unrecognized row simply contributes nothing.
+ *
+ * @param {Record<string, unknown>} row
+ * @returns {string[]}
+ */
+function embeddedBlockerIds(row) {
+  if (!Array.isArray(row.dependencies)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const ids = [];
+  for (const dep of row.dependencies) {
+    if (!dep || typeof dep !== 'object' || Array.isArray(dep)) {
+      continue;
+    }
+    const edge = /** @type {Record<string, unknown>} */ (dep);
+    if ((edge.dependency_type ?? edge.type) !== 'blocks') {
+      continue;
+    }
+    const id =
+      typeof edge.depends_on_id === 'string' && edge.depends_on_id.length > 0
+        ? edge.depends_on_id
+        : typeof edge.id === 'string'
+          ? edge.id
+          : '';
+    if (id.length > 0) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
  * Create a runnable-candidate cache. One instance is held process-wide by the
  * worker runtime, next to the title cache, so every monitor push shares one
  * fill queue.
@@ -411,10 +451,18 @@ export function createRunnableCache(options = {}) {
         continue;
       }
       const row = /** @type {Record<string, unknown>} */ (raw);
-      const blocked_by = blockers_by_id?.get(
+      const explained = blockers_by_id?.get(
         typeof row.id === 'string' ? row.id : String(row.id ?? '')
       );
-      const item = qualify(row, blocked_by === undefined ? null : blocked_by);
+      // Membership stays the explain row's alone; only the ids fall back, so a
+      // bead the explain source never called blocked can never gain a chip here.
+      const blocked_by =
+        explained === undefined
+          ? null
+          : explained.length > 0
+            ? explained
+            : embeddedBlockerIds(row);
+      const item = qualify(row, blocked_by);
       if (item) {
         items.push(item);
       }
