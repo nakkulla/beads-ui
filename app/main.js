@@ -1371,13 +1371,12 @@ export function bootstrap(root_element) {
     const router = createHashRouter(store);
     router.start();
 
-    // Request types whose rejection must reach the caller (UI-ucq6). Swallowing
-    // into `[]` works for the mutations, where an empty array is never a valid
-    // result — but `get-comments` returns `[]` on a genuinely empty issue, so
-    // the swallow would make a bd failure indistinguishable from "no comments"
-    // and the detail panel could never show it.
+    // Request types whose caller must distinguish a valid empty result or render
+    // the server rejection verbatim propagate instead of becoming `[]`.
     const PROPAGATED_ERROR_TYPES = new Set([
       'get-comments',
+      'dep-add',
+      'dep-remove',
       'impl-preset-create',
       'impl-preset-update',
       'impl-preset-delete',

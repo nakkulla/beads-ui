@@ -1941,3 +1941,126 @@ describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
     expect(/[▶🔀⧉⚙]/u.test(mount.textContent || '')).toBe(false);
   });
 });
+
+describe('monitor blocker rendering (UI-2gi1 §6.2–§6.4)', () => {
+  test('renders a same-lane predecessor as a gray normal-wait chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'A-first' }, { bead_id: 'A-second' }]
+            }
+          ],
+          bead_blocked_by: { 'A-second': ['A-first'] }
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorQueueRow(lanes.queue[1]), mount);
+
+    expect(mount.querySelector('.mon-blocker--normal')?.textContent).toContain(
+      '🔒 A-first (같은 레인 앞)'
+    );
+    expect(mount.querySelector('.mon-blocker-warning')).toBe(null);
+  });
+
+  test('omits blocker chips when the partial cache has no bead entry', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-wait' }] })],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')).toBe(null);
+  });
+
+  test('renders the exact unloaded internal blocker warning', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          bead_blocked_by: { 'A-wait': ['A-missing'] }
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')?.textContent).toContain(
+      '🔒 A-missing (미적재)'
+    );
+    expect(mount.querySelector('.mon-blocker-warning')?.textContent).toBe(
+      '⚠ 선행 A-missing가 어느 레인에도 없고 실행 중도 아님 — 수동 개입 전까지 이 자리에서 정지'
+    );
+  });
+
+  test('keeps an older completed blocker located outside the done display range', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          done: [{ bead_id: 'A-done', added_at: NOW - 10_000 }],
+          bead_blocked_by: { 'A-wait': ['A-done'] }
+        })
+      ],
+      [state({ issue_prefix: 'A' })],
+      { done_since: NOW }
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')?.textContent).toContain(
+      '🔒 A-done (완료)'
+    );
+    expect(mount.querySelector('.mon-blocker-warning')).toBe(null);
+  });
+
+  test('renders the Worker-matching lock fallback for a blocked runnable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-blocked',
+              title: '대기 중',
+              blocked: true,
+              blocked_by: []
+            }
+          ]
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')?.textContent).toBe('🔒 blocked');
+  });
+
+  test('omits the lock display when a blocked runnable lacks blocked_by', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-blocked',
+              title: '대기 중',
+              blocked: true
+            }
+          ]
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')).toBe(null);
+  });
+});

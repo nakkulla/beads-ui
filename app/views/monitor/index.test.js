@@ -1465,3 +1465,336 @@ describe('views/monitor live clock', () => {
     expect(mount.querySelectorAll('.mon-card').length).toBe(0);
   });
 });
+
+describe('views/monitor blocker controls (UI-2gi1 §6.2–§6.5)', () => {
+  test('hides blocked runnable cards by default under the monitor-owned key', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-ready', title: '실행 가능' },
+            {
+              bead_id: 'A-blocked',
+              title: '선행 대기',
+              blocked: true,
+              blocked_by: []
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+
+    view.load();
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-ready']);
+    expect(
+      mount.querySelector('.worker-filter__hidden')?.textContent
+    ).toContain('숨김 1건');
+    expect(
+      window.localStorage.getItem('beads-ui.worker.candidate-filter')
+    ).toBe(null);
+  });
+
+  test('shows a dim lock card and persists only the blocked monitor axis', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-blocked',
+              title: '선행 대기',
+              blocked: true,
+              blocked_by: []
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const toggle = /** @type {HTMLInputElement} */ (
+      mount.querySelector('.mon-filter__blocked')
+    );
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-blocked']);
+    expect(
+      mount
+        .querySelector('[data-issue-id="A-blocked"]')
+        ?.classList.contains('mon-card--blocked')
+    ).toBe(true);
+    expect(
+      mount.querySelector('[data-issue-id="A-blocked"] .mon-blocker')
+        ?.textContent
+    ).toBe('🔒 blocked');
+    expect(
+      window.localStorage.getItem('beads-ui.monitor.candidate-filter')
+    ).toBe('{"show_blocked":true}');
+  });
+
+  test('excludes the source bead from the serial link candidates', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          runnable: [{ bead_id: 'A-source', title: '연결 주체' }],
+          bead_titles: { 'A-wait': '선행 후보' }
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-source"]')
+    );
+
+    click(source, '.mon-link__trigger');
+    const candidates = Array.from(
+      source.querySelectorAll('.mon-link__candidate')
+    ).map((candidate) => candidate.getAttribute('data-target-id'));
+
+    expect(candidates).toEqual(['A-wait']);
+  });
+
+  test('defers serial link candidate DOM until the popover opens', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          runnable: [{ bead_id: 'A-source', title: '연결 주체' }]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-source"]')
+    );
+
+    const candidates = source.querySelectorAll('.mon-link__candidate');
+
+    expect(candidates).toHaveLength(0);
+  });
+
+  test('filters lazily injected serial link candidates by search text', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-one' }, { bead_id: 'A-two' }],
+          runnable: [{ bead_id: 'A-source', title: '연결 주체' }],
+          bead_titles: { 'A-one': '첫 번째', 'A-two': '두 번째' }
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-source"]')
+    );
+    click(source, '.mon-link__trigger');
+    const input = /** @type {HTMLInputElement} */ (
+      source.querySelector('.mon-link__search')
+    );
+
+    input.value = '두 번째';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    const visible = Array.from(
+      source.querySelectorAll('.mon-link__candidate:not([hidden])')
+    ).map((candidate) => candidate.getAttribute('data-target-id'));
+
+    expect(visible).toEqual(['A-two']);
+  });
+
+  test('clears serial link candidate DOM when the popover closes', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          runnable: [{ bead_id: 'A-source', title: '연결 주체' }]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-source"]')
+    );
+
+    click(source, '.mon-link__trigger');
+    click(source, '.mon-link__trigger');
+    const candidates = source.querySelectorAll('.mon-link__candidate');
+
+    expect(candidates).toHaveLength(0);
+  });
+
+  test('sends dep-add with the source repo root', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-before' }],
+          runnable: [{ bead_id: 'A-after', title: '후행' }]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-after"]')
+    );
+
+    click(source, '.mon-link__trigger');
+    click(source, '.mon-link__candidate[data-target-id="A-before"]');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(sent[0]).toEqual({
+      type: 'dep-add',
+      payload: { a: 'A-after', b: 'A-before', root_dir: WS_A }
+    });
+  });
+
+  test('sends a directly entered id that is absent from the candidate list', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-after', title: '후행' }]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-after"]')
+    );
+    click(source, '.mon-link__trigger');
+    const input = /** @type {HTMLInputElement} */ (
+      source.querySelector('.mon-link__search')
+    );
+
+    input.value = 'A-manual';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    click(source, '.mon-link__direct');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(sent[0]).toEqual({
+      type: 'dep-add',
+      payload: { a: 'A-after', b: 'A-manual', root_dir: WS_A }
+    });
+  });
+
+  test('sends dep-remove symmetrically from the blocker chip', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-after' }, { bead_id: 'A-before' }],
+          bead_blocked_by: { 'A-after': ['A-before'] }
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-after"]')
+    );
+
+    click(source, '.mon-blocker__remove');
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+
+    expect(sent[0]).toEqual({
+      type: 'dep-remove',
+      payload: { a: 'A-after', b: 'A-before', root_dir: WS_A }
+    });
+  });
+
+  test('shows the exact bd rejection without changing the rendered lanes', async () => {
+    const transport = vi.fn(() =>
+      Promise.reject({
+        code: 'bd_error',
+        message: 'bd: target EXT-404 not found'
+      })
+    );
+    const { mount, view } = setup({
+      transport,
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-before' }],
+          runnable: [{ bead_id: 'A-after', title: '후행' }]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-after"]')
+    );
+
+    click(source, '.mon-link__trigger');
+    click(source, '.mon-link__candidate[data-target-id="A-before"]');
+    await vi.waitFor(() =>
+      expect(source.querySelector('.mon-link__error')?.textContent).toBe(
+        'bd: target EXT-404 not found'
+      )
+    );
+
+    expect(idsIn(mount, 'runnable')).toEqual(['A-after']);
+    expect(idsIn(mount, 'queue')).toEqual(['A-before']);
+  });
+
+  test('keeps only one placement or serial-link popover open', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          runnable: [{ bead_id: 'A-source', title: '연결 주체' }]
+        })
+      ],
+      workspaces_state: [state({ issue_prefix: 'A' })]
+    });
+    view.load();
+    const source = /** @type {HTMLElement} */ (
+      mount.querySelector('[data-issue-id="A-source"]')
+    );
+
+    click(source, '.worker-card__place');
+    click(source, '.mon-link__trigger');
+
+    expect(el(source, '.mon-place__popover').hidden).toBe(true);
+    expect(el(source, '.mon-link__popover').hidden).toBe(false);
+  });
+
+  test('renders cross-repo head-cycle warnings on both serial lane headers', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-head' }] }],
+          bead_blocked_by: { 'A-head': ['B-head'] }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's2', entries: [{ bead_id: 'B-head' }] }],
+          bead_blocked_by: { 'B-head': ['A-head'] }
+        })
+      ],
+      workspaces_state: [
+        state({ issue_prefix: 'A' }),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ]
+    });
+
+    view.load();
+
+    expect(
+      Array.from(mount.querySelectorAll('.mon-sublane__cross-wait')).map(
+        (warning) => warning.textContent?.replace(/\s+/g, ' ').trim()
+      )
+    ).toEqual([
+      '⚠ 상호 정지 — repo-b·s2과 교차 대기',
+      '⚠ 상호 정지 — repo-a·s1과 교차 대기'
+    ]);
+  });
+});

@@ -50,6 +50,12 @@ import {
 } from '../worker/pr-wait-progress.js';
 import { formatElapsed } from '../worker/running-grid.js';
 import {
+  buildBlockerLocationMap,
+  describeBlocker,
+  detectSerialLaneHeadCycles,
+  serialCycleKey
+} from './blockers.js';
+import {
   iconClose,
   iconMerge,
   iconPause,
@@ -130,6 +136,10 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   place_index?: number,
  *   serial_lane_id?: 's1'|'s2'|'s3'|'s4'|'s5',
  *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
+ *   blocked?: boolean,
+ *   blocked_by?: string[],
+ *   blockers?: import('./blockers.js').BlockerDisplay[],
+ *   blocker_warnings?: string[],
  *   done_kind?: string|null,
  *   labels?: string[],
  *   spec_reviewer?: string,
@@ -145,6 +155,7 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  * @property {string[]} occupied_by
  * @property {number} corrections
  * @property {boolean} cycle
+ * @property {Array<{ root_dir: string, workspace_name: string, lane: string }>} [cross_wait_peers]
  */
 
 /**
@@ -385,6 +396,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const queue = [];
   /** @type {MonitorItem[]} */
   const done = [];
+  /** @type {Array<{ id: string, root_dir: string, workspace_name: string }>} */
+  const all_done_locations = [];
   /** @type {Map<string, MonitorItem[]>} */
   const queue_by_root = new Map();
   /** @type {Map<string, MonitorSerialSublane[]>} */
@@ -416,6 +429,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
+    const bead_blocked_by = objectOf(workspace.bead_blocked_by);
     const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
@@ -463,6 +477,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
     }
     const done_lane = Array.isArray(workspace.done) ? workspace.done : [];
+    for (const entry of done_lane) {
+      if (entry && typeof entry.bead_id === 'string') {
+        all_done_locations.push({
+          id: entry.bead_id,
+          root_dir,
+          workspace_name
+        });
+      }
+    }
     /** @type {Map<string, number>} */
     const done_at_by_bead = new Map();
     for (const entry of done_lane) {
@@ -698,6 +721,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
           : ''
       };
+      if (Object.hasOwn(bead_blocked_by, bead_id)) {
+        item.blocked_by = Array.isArray(bead_blocked_by[bead_id])
+          ? bead_blocked_by[bead_id].filter(
+              (/** @type {unknown} */ blocker_id) =>
+                typeof blocker_id === 'string' && blocker_id.length > 0
+            )
+          : [];
+      }
       return item;
     };
 
@@ -812,6 +843,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
             ? { route: entry.route, chips: { route: entry.route } }
             : null
         ),
+        blocked: entry.blocked === true,
+        ...(Array.isArray(entry.blocked_by)
+          ? {
+              blocked_by: entry.blocked_by.filter(
+                (/** @type {unknown} */ blocker_id) =>
+                  typeof blocker_id === 'string' && blocker_id.length > 0
+              )
+            }
+          : {}),
         // 적재 위치는 그 레포 대기 큐의 맨 뒤 (Worker 탭 [대기로 ↴]와 같다).
         place_index: queue_lane.length,
         place_lanes
@@ -938,7 +978,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     });
   }
 
-  return {
+  /** @type {MonitorLanes} */
+  const model = {
     runnable,
     queue,
     queue_groups,
@@ -950,6 +991,52 @@ export function buildLanes(workspaces, workspaces_state, options) {
       both_on: queue_groups.filter((g) => g.auto_advance && g.auto_merge).length
     }
   };
+
+  // 이하는 스냅샷 한 번에만 유효한 표시 파생값이다. partial cache에 없는
+  // 항목은 의도대로 계속 생략한다 (UI-2gi1 §6.3–§6.5).
+  const locations = buildBlockerLocationMap(model);
+  for (const entry of all_done_locations) {
+    if (!locations.has(entry.id)) {
+      locations.set(entry.id, {
+        root_dir: entry.root_dir,
+        workspace_name: entry.workspace_name,
+        lane: 'done',
+        state: 'done'
+      });
+    }
+  }
+  for (const item of [...model.queue, ...model.runnable]) {
+    if (!Object.hasOwn(item, 'blocked_by')) {
+      continue;
+    }
+    const current_location = locations.get(item.id);
+    item.blockers = (item.blocked_by || []).map((blocker_id) =>
+      describeBlocker(blocker_id, current_location, locations, states)
+    );
+    item.blocker_warnings = item.blockers
+      .filter((blocker) => blocker.missing_internal)
+      .map(
+        (blocker) =>
+          `⚠ 선행 ${blocker.id}가 어느 레인에도 없고 실행 중도 아님 — 수동 개입 전까지 이 자리에서 정지`
+      );
+    if (item.blocker_warnings.length > 0) {
+      item.alert = true;
+    }
+  }
+
+  const cross_wait_cycles = detectSerialLaneHeadCycles(model.queue_groups);
+  for (const group of model.queue_groups) {
+    for (const lane of group.sublanes.serial) {
+      const peers = cross_wait_cycles.get(
+        serialCycleKey(group.root_dir, lane.id)
+      );
+      if (peers) {
+        lane.cross_wait_peers = peers;
+      }
+    }
+  }
+
+  return model;
 }
 
 /**
@@ -1106,6 +1193,94 @@ function runningOps(item) {
 }
 
 /**
+ * Blocker 칩은 해제할 수 있는 의존 엣지이며 스케줄링 가드가 아니다
+ * (UI-2gi1 §6.3–§6.5).
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
+ */
+function blockerChips(item) {
+  if (!Object.hasOwn(item, 'blocked_by')) {
+    return '';
+  }
+  const blockers = Array.isArray(item.blockers) ? item.blockers : [];
+  if (blockers.length === 0) {
+    return item.blocked
+      ? html`<span class="mon-blocker">🔒 blocked</span>`
+      : '';
+  }
+  return blockers.map(
+    (blocker) =>
+      html`<span
+        class="mon-blocker${blocker.same_lane_ahead
+          ? ' mon-blocker--normal'
+          : ''}"
+      >
+        <span>${blocker.label}</span>
+        <button
+          type="button"
+          class="mon-blocker__remove"
+          data-blocker-id=${blocker.id}
+          aria-label=${`선행 ${blocker.id} 연결 해제`}
+          title="직렬 연결 해제"
+        >
+          ✕
+        </button>
+      </span>`
+  );
+}
+
+/**
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function blockerWarnings(item) {
+  const warnings = Array.isArray(item.blocker_warnings)
+    ? item.blocker_warnings
+    : [];
+  return warnings.length > 0
+    ? html`<div class="mon-blocker-warnings">
+        ${warnings.map(
+          (warning) => html`<div class="mon-blocker-warning">${warning}</div>`
+        )}
+      </div>`
+    : '';
+}
+
+/**
+ * UI-2gi1 §6.5: 실행가능·대기 카드가 공유하는 검색형 의존 엣지 선택기다. 검색 필터와
+ * mutation 소유권은 `index.js`에 남긴다 (UI-2gi1 §6.5).
+ *
+ * @returns {import('lit-html').TemplateResult}
+ */
+function serialLinkControl() {
+  return html`<span class="mon-link mon-popover-owner">
+    <button
+      type="button"
+      class="mon-link__trigger"
+      aria-haspopup="dialog"
+      aria-expanded="false"
+      title="직렬로 연결"
+    >
+      🔗
+    </button>
+    <span class="mon-link__popover mon-card-popover" role="dialog" hidden>
+      <input
+        type="search"
+        class="mon-link__search"
+        placeholder="id·제목·위치 검색"
+        aria-label="직렬로 연결할 버드 검색"
+        autocomplete="off"
+      />
+      <span class="mon-link__list"></span>
+      <button type="button" class="mon-link__direct" hidden></button>
+      <span class="mon-link__empty" hidden>검색 결과 없음</span>
+      <span class="mon-link__error" role="alert" hidden></span>
+    </span>
+  </span>`;
+}
+
+/**
  * The 실행중 tile — 이 탭의 주인공. 경과·하트비트는 시계가 지나가는 것만으로 값이
  * 바뀌는 유일한 자리이므로 1초 tick이 이 템플릿만을 위해 돈다.
  *
@@ -1204,54 +1379,59 @@ export function monitorRunnableCard(item) {
             >${item.reason}</span
           >`
         : ''}
-      <span class="mon-c__ops mon-place">
-        <button
-          type="button"
-          class="worker-card__place"
-          data-bead-id=${item.id}
-          aria-haspopup="menu"
-          aria-expanded="false"
-          title="적재할 대기 레인 선택"
-        >
-          대기로 ↴
-        </button>
-        <span class="mon-place__popover" role="menu" hidden>
+      ${blockerChips(item)}
+      <span class="mon-c__ops">
+        ${serialLinkControl()}
+        <span class="mon-place mon-popover-owner">
           <button
             type="button"
-            class="mon-place__choice"
-            data-lane="parallel"
-            data-place-index=${String(item.place_index ?? 0)}
-            role="menuitem"
-            aria-label=${`병렬 · 대기 ${item.place_index ?? 0}`}
+            class="worker-card__place"
+            data-bead-id=${item.id}
+            aria-haspopup="menu"
+            aria-expanded="false"
+            title="적재할 대기 레인 선택"
           >
-            <strong>병렬</strong><span>대기 ${item.place_index ?? 0}</span>
+            대기로 ↴
           </button>
-          ${(item.place_lanes || []).map(
-            (lane) =>
-              html`<button
-                type="button"
-                class="mon-place__choice"
-                data-lane=${lane.id}
-                data-place-index=${String(lane.index)}
-                role="menuitem"
-                aria-label=${`${lane.id} · ${
-                  lane.occupied_by.length > 0
-                    ? `점유 ${lane.occupied_by.join(', ')}`
-                    : '미점유'
-                } · 대기 ${lane.length}`}
-              >
-                <strong>${lane.id}</strong
-                ><span
-                  >${lane.occupied_by.length > 0
-                    ? `점유 ${lane.occupied_by.join(', ')}`
-                    : '미점유'}
-                  · 대기 ${lane.length}</span
+          <span class="mon-place__popover mon-card-popover" role="menu" hidden>
+            <button
+              type="button"
+              class="mon-place__choice"
+              data-lane="parallel"
+              data-place-index=${String(item.place_index ?? 0)}
+              role="menuitem"
+              aria-label=${`병렬 · 대기 ${item.place_index ?? 0}`}
+            >
+              <strong>병렬</strong><span>대기 ${item.place_index ?? 0}</span>
+            </button>
+            ${(item.place_lanes || []).map(
+              (lane) =>
+                html`<button
+                  type="button"
+                  class="mon-place__choice"
+                  data-lane=${lane.id}
+                  data-place-index=${String(lane.index)}
+                  role="menuitem"
+                  aria-label=${`${lane.id} · ${
+                    lane.occupied_by.length > 0
+                      ? `점유 ${lane.occupied_by.join(', ')}`
+                      : '미점유'
+                  } · 대기 ${lane.length}`}
                 >
-              </button>`
-          )}
+                  <strong>${lane.id}</strong
+                  ><span
+                    >${lane.occupied_by.length > 0
+                      ? `점유 ${lane.occupied_by.join(', ')}`
+                      : '미점유'}
+                    · 대기 ${lane.length}</span
+                  >
+                </button>`
+            )}
+          </span>
         </span>
       </span>
-    </div>`;
+    </div>
+    ${blockerWarnings(item)}`;
 }
 
 /**
@@ -1272,7 +1452,9 @@ export function monitorQueueRow(item) {
       ${item.reason
         ? html`<span class="mon-c__reason">${item.reason}</span>`
         : ''}
+      ${blockerChips(item)}
       <span class="mon-c__ops">
+        ${serialLinkControl()}
         <button
           type="button"
           class="mon-op mon-op--up"
@@ -1318,7 +1500,7 @@ export function monitorQueueRow(item) {
           : ''}
       </span>
     </div>
-    ${discardReceiptTemplate(item)}
+    ${blockerWarnings(item)} ${discardReceiptTemplate(item)}
     ${item.revise_action
       ? html`<div class="mon-c__tail">
           <button
