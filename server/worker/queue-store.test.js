@@ -3080,6 +3080,60 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     expect(fs.existsSync(monitor_file)).toBe(true);
   });
 
+  test('backfills a legacy durable session with re-observed effort', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'monitor-backfill',
+        bead_id: 'UI-monitor',
+        status: 'done',
+        // A record persisted before `effort` existed: the key is absent, not null.
+        delegation_sessions: /** @type {any} */ ([
+          {
+            launch_id: 'launch-1',
+            provider: 'codex',
+            role: 'implementation',
+            model: 'gpt-5.6-sol',
+            session_id: 'thread-1',
+            turn_id: null,
+            status: 'interrupted',
+            started_at: Date.parse('2026-08-18T04:27:00.000Z'),
+            completed_at: null,
+            last_event_at: Date.parse('2026-08-18T04:27:00.000Z')
+          }
+        ])
+      }
+    });
+    ensureDelegationMonitorDir(WS, 'monitor-backfill');
+    fs.writeFileSync(
+      path.join(delegationMonitorDir(WS, 'monitor-backfill'), 'launch-1.jsonl'),
+      `${JSON.stringify({
+        schema: 'codex-delegation-monitor-v1',
+        attempt_id: 'monitor-backfill',
+        launch_id: 'launch-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        effort: 'high',
+        thread_id: 'thread-1',
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      })}\n`,
+      { mode: 0o600 }
+    );
+
+    const result = store.updateAttempt(WS, {
+      attempt_id: 'monitor-backfill',
+      patch: {}
+    });
+
+    expect(
+      result.queue.attempts['monitor-backfill'].delegation_sessions
+    ).toMatchObject([{ launch_id: 'launch-1', effort: 'high' }]);
+  });
+
   test('keeps receipt files when terminal queue persistence fails', () => {
     const store = createQueueStore();
     store.appendAttempt(WS, {

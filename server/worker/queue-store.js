@@ -3272,12 +3272,18 @@ export function createQueueStore(options = {}) {
               ])
             }
           : {}),
+        // Scanned first: `normalizeDelegationSessions` keeps the FIRST record
+        // per launch_id, and a re-settlement's durable copy is the stale one.
+        // The reader already dropped any scanned session that conflicts with
+        // its durable twin, so whatever survives here is strictly fresher —
+        // which is what lets a legacy record without `effort` pick the value up
+        // from a re-observed stream. Matches the terminal recovery path's order.
         delegation_sessions: finalizeDelegationSessions(
           [
+            ...scanned_sessions,
             ...(Array.isArray(current.delegation_sessions)
               ? current.delegation_sessions
-              : []),
-            ...scanned_sessions
+              : [])
           ],
           true
         )
