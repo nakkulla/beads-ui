@@ -85,6 +85,8 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * @property {string} spec_id - The native-first resolved spec path.
  * @property {string} spec_reviewer - Reviewer token from `spec_review`.
  * @property {'approved'|'authored'|'none'} plan_state
+ * @property {boolean} blocked - Membership in `ready_explain.blocked`.
+ * @property {string[]} blocked_by - Direct `blocks` blocker ids.
  * @property {string[]} labels - Non-policy labels carried for display. An exact
  * `worker-ineligible` label excludes the row before this projection is made.
  * @property {number|string|null} created_at
@@ -185,9 +187,10 @@ function planState(meta, route) {
  * baked into the cached list.
  *
  * @param {Record<string, unknown>} row
+ * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
  * @returns {RunnableItem|null}
  */
-function qualify(row) {
+function qualify(row, blocked_by = null) {
   const bead_id = typeof row.id === 'string' ? row.id : '';
   if (bead_id.length === 0) {
     return null;
@@ -243,10 +246,77 @@ function qualify(row) {
     spec_id,
     spec_reviewer,
     plan_state: is_quick_fix ? 'none' : planState(meta, route),
+    blocked: blocked_by !== null,
+    blocked_by: blocked_by || [],
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
     updated_at: stampOf(row.updated_at)
   };
+}
+
+/**
+ * Read direct blocker ids from one `bd ready --explain` blocked row using the
+ * same string-or-`{ id }` convention as `list-adapters.js` (UI-2gi1 §6.1).
+ *
+ * @param {Record<string, unknown>} row
+ * @returns {string[]}
+ */
+function blockerIds(row) {
+  if (!Array.isArray(row.blocked_by)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const ids = [];
+  for (const entry of row.blocked_by) {
+    const id =
+      entry && typeof entry === 'object'
+        ? String(/** @type {Record<string, unknown>} */ (entry).id ?? '')
+        : String(entry ?? '');
+    if (id.length > 0) {
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Direct `blocks` blocker ids embedded in the bead's own `bd list` row — the
+ * second source spec §6.1 names for when the explain row carries membership but
+ * no blocker ids of its own.
+ *
+ * Both edge shapes this codebase already reads are accepted: the `bd show`
+ * shape (`dependency_type` + `id`, `title-cache.js`) and the embedded `bd list`
+ * shape (`type` + `depends_on_id`, `list-adapters.js`). Neither is guessed at —
+ * an unrecognized row simply contributes nothing.
+ *
+ * @param {Record<string, unknown>} row
+ * @returns {string[]}
+ */
+function embeddedBlockerIds(row) {
+  if (!Array.isArray(row.dependencies)) {
+    return [];
+  }
+  /** @type {string[]} */
+  const ids = [];
+  for (const dep of row.dependencies) {
+    if (!dep || typeof dep !== 'object' || Array.isArray(dep)) {
+      continue;
+    }
+    const edge = /** @type {Record<string, unknown>} */ (dep);
+    if ((edge.dependency_type ?? edge.type) !== 'blocks') {
+      continue;
+    }
+    const id =
+      typeof edge.depends_on_id === 'string' && edge.depends_on_id.length > 0
+        ? edge.depends_on_id
+        : typeof edge.id === 'string'
+          ? edge.id
+          : '';
+    if (id.length > 0) {
+      ids.push(id);
+    }
+  }
+  return ids;
 }
 
 /**
@@ -263,7 +333,7 @@ function qualify(row) {
  *   positive_ttl_ms?: number,
  *   negative_ttl_ms?: number,
  *   runJson?: (command_family: string, args: string[], options?: { cwd?: string }) => Promise<{ ok: boolean, data?: unknown }>,
- *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[] } }>,
+ *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[], ready_explain?: { blocked?: unknown[] } } }>,
  *   subscriberCount?: () => number
  * }} [options]
  */
@@ -335,12 +405,28 @@ export function createRunnableCache(options = {}) {
    */
   async function fetchRunnable(workspace) {
     let rows;
+    /** @type {Map<string, string[]>|null} */
+    let blockers_by_id = null;
     if (requestSnapshot) {
       const result = await requestSnapshot(workspace, 'monitor-runnable');
       if (!result.ok || result.stale || !Array.isArray(result.snapshot?.all)) {
         return { items: null, protocol_failure: false };
       }
       rows = result.snapshot.all;
+      const blocked = result.snapshot.ready_explain?.blocked;
+      if (Array.isArray(blocked)) {
+        blockers_by_id = new Map();
+        for (const raw of blocked) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            continue;
+          }
+          const row = /** @type {Record<string, unknown>} */ (raw);
+          const id = typeof row.id === 'string' ? row.id : String(row.id ?? '');
+          if (id.length > 0) {
+            blockers_by_id.set(id, blockerIds(row));
+          }
+        }
+      }
     } else {
       const result = await options.runJson?.(
         'list',
@@ -364,7 +450,19 @@ export function createRunnableCache(options = {}) {
       if (!raw || typeof raw !== 'object') {
         continue;
       }
-      const item = qualify(/** @type {Record<string, unknown>} */ (raw));
+      const row = /** @type {Record<string, unknown>} */ (raw);
+      const explained = blockers_by_id?.get(
+        typeof row.id === 'string' ? row.id : String(row.id ?? '')
+      );
+      // Membership stays the explain row's alone; only the ids fall back, so a
+      // bead the explain source never called blocked can never gain a chip here.
+      const blocked_by =
+        explained === undefined
+          ? null
+          : explained.length > 0
+            ? explained
+            : embeddedBlockerIds(row);
+      const item = qualify(row, blocked_by);
       if (item) {
         items.push(item);
       }

@@ -6239,6 +6239,55 @@ html[data-theme='dark'] {
   min-height: var(--sp-16);
 }
 
+/* 직렬 레인이 설정된 레포만 병렬/직렬 서브섹션을 드러낸다 (UI-2gi1 §5). */
+.mon-sublane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.mon-sublane--serial {
+  padding-left: var(--sp-6);
+  border-left: 2px solid var(--border-card);
+}
+
+.mon-sublane__hd {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.mon-sublane__name {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.mon-sublane__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.mon-sublane__held,
+.mon-sublane__corrections,
+.mon-sublane__cycle,
+.mon-sublane__cross-wait {
+  color: var(--accent-warn);
+}
+
+.mon-sublane__corrections {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--accent-warn);
+  border-radius: var(--r-5);
+}
+
+.mon-sublane__cycle {
+  font-size: var(--fs-chip);
+}
+
 /* 드롭 하이라이트는 Worker 레인과 같은 어휘(성공색 한 단계)를 쓴다. 다른 레포
    그룹은 여기 걸리지 않는다 — 크로스레포 적재는 서버에 없는 개념이다. */
 .mon-group--drag-over .mon-group__list {
@@ -6276,6 +6325,19 @@ html[data-theme='dark'] {
 /* 실패·정리 실패처럼 사람이 판단해야 하는 상태는 테두리까지 warn 톤으로 간다. */
 .mon-card--alert {
   border-color: var(--border-warn);
+}
+
+/* blocked 실행가능은 선택적으로만 보이며, 노출해도 실행 자격으로
+   오해하지 않도록 표면 전체를 흐린다 (UI-2gi1 §6.2). */
+.mon-card--blocked {
+  opacity: 0.58;
+}
+
+.mon-candidate-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-5);
+  font-size: var(--fs-chip);
 }
 
 .mon-c__title {
@@ -6328,6 +6390,15 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+.mon-c__lane {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 .mon-c__model,
 .mon-c__usage {
   flex: 0 0 auto;
@@ -6372,6 +6443,198 @@ html[data-theme='dark'] {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-4);
+}
+
+.mon-blocker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: 100%;
+  padding: 1px var(--sp-4);
+  border: 1px solid var(--accent-warn);
+  border-radius: var(--r-5);
+  color: var(--accent-warn);
+}
+
+.mon-blocker--normal {
+  border-color: var(--border-chip);
+  color: var(--text-dim);
+}
+
+.mon-blocker__remove {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.mon-blocker-warnings {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.mon-blocker-warning {
+  color: var(--accent-warn);
+  font-size: var(--fs-chip);
+  line-height: 1.45;
+}
+
+.mon-place {
+  position: relative;
+}
+
+.mon-link {
+  position: relative;
+}
+
+.mon-link__trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  padding: var(--sp-1) var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  cursor: pointer;
+}
+
+.mon-link__popover {
+  position: absolute;
+  z-index: 21;
+  top: calc(100% + var(--sp-4));
+  right: 0;
+  display: grid;
+  gap: var(--sp-4);
+  width: min(340px, 78vw);
+  padding: var(--sp-6);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.mon-link__search {
+  width: 100%;
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.mon-link__list {
+  display: grid;
+  gap: var(--sp-2);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.mon-link__candidate,
+.mon-link__direct {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--sp-2) var(--sp-6);
+  padding: var(--sp-5) var(--sp-6);
+  border: 0;
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mon-link__candidate:hover,
+.mon-link__candidate:focus-visible,
+.mon-link__direct:hover,
+.mon-link__direct:focus-visible {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.mon-link__candidate strong {
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+}
+
+.mon-link__candidate span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon-link__candidate small {
+  grid-column: 1 / -1;
+  color: var(--text-dim);
+}
+
+.mon-link__direct {
+  display: block;
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+}
+
+.mon-link__empty {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+  text-align: center;
+}
+
+.mon-link__error {
+  color: var(--accent-danger);
+  font-size: var(--fs-chip);
+  white-space: pre-wrap;
+}
+
+.mon-place__popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--sp-4));
+  right: 0;
+  display: grid;
+  min-width: 210px;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.mon-place__choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  padding: var(--sp-5) var(--sp-6);
+  border: 0;
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mon-place__choice:hover,
+.mon-place__choice:focus-visible {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.mon-place__choice strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.mon-place__choice span {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
 }
 
 /* 꼬리 줄: PR 대기의 usage·액션과 REVISE 파킹 처분처럼 메타 한 줄에 담기지 않는

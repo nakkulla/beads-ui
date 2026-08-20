@@ -699,6 +699,75 @@ function laneBlocksEdges(workspace_key, queue, lane, bead_id) {
 }
 
 /**
+ * Recalibrate one serial lane after `dep-add` changes its blocks graph
+ * (UI-2gi1 §6.5). Both beads must already belong to the same lane in this
+ * workspace. The ordinary placement edge source remains authoritative; the
+ * newly committed edge is added only when its readback has not reached that
+ * partial cache yet.
+ *
+ * A matching lane always fans out, including no-order-change and cycle cases,
+ * because the non-persisted `lane_states` projection may still have changed.
+ *
+ * @param {string} workspace_key
+ * @param {string} blockee
+ * @param {string} blocker
+ * @param {unknown} readback
+ * @returns {{ matched: boolean, lane: string|null, changed: boolean, cycle: boolean }}
+ */
+export function recalibrateSerialLaneAfterDepAdd(
+  workspace_key,
+  blockee,
+  blocker,
+  readback
+) {
+  if (workspace_key.length === 0) {
+    return { matched: false, lane: null, changed: false, cycle: false };
+  }
+  try {
+    getWorkerRuntime().titleCache.refreshFromIssue(workspace_key, readback);
+  } catch (err) {
+    log(
+      'dependency readback cache refresh failed for %s: %o',
+      workspace_key,
+      err
+    );
+  }
+  const queue = queueStore().snapshot(workspace_key);
+  const lanes = Array.isArray(queue.serial_lanes) ? queue.serial_lanes : [];
+  const lane = lanes.find((candidate) => {
+    if (!candidate || !Array.isArray(candidate.entries)) {
+      return false;
+    }
+    const members = new Set(
+      candidate.entries.map((entry) => entry && entry.bead_id)
+    );
+    return members.has(blockee) && members.has(blocker);
+  });
+  if (!lane || typeof lane.id !== 'string') {
+    return { matched: false, lane: null, changed: false, cycle: false };
+  }
+  const blocks_edges = laneBlocksEdges(workspace_key, queue, lane.id, blockee);
+  if (
+    !blocks_edges.some(
+      (edge) => edge.blocker === blocker && edge.blockee === blockee
+    )
+  ) {
+    blocks_edges.push({ blocker, blockee });
+  }
+  const result = queueStore().recalibrateSerialLane(workspace_key, {
+    lane: lane.id,
+    blocks_edges
+  });
+  fanout(workspace_key, result.queue);
+  return {
+    matched: true,
+    lane: lane.id,
+    changed: result.changed,
+    cycle: result.cycle
+  };
+}
+
+/**
  * Direct `blocks` blocker ids for every bead the lanes render (UI-04vo §3).
  * Partial like labels: an absent key is unknown, never "no blockers".
  *

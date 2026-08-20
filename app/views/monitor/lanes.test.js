@@ -227,6 +227,177 @@ describe('monitor lane builder exclusive priority (UI-qrfo §8)', () => {
   });
 });
 
+describe('monitor serial waiting lanes (UI-2gi1 §5)', () => {
+  test('omits empty serial lanes from the group sublanes', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [
+            { id: 's1', entries: [] },
+            { id: 's2', entries: [{ bead_id: 'A-serial' }] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-running'] } }
+        })
+      ],
+      [state()]
+    );
+
+    const ids = lanes.queue_groups[0].sublanes.serial.map((lane) => lane.id);
+
+    expect(ids).toEqual(['s2']);
+  });
+
+  test('projects serial lane state badges into the group sublane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
+          lane_states: {
+            s1: {
+              occupied_by: ['A-owner', 'A-owner-2'],
+              corrections: [{ bead_id: 'A-serial', after: 'A-owner' }],
+              cycle: true
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+
+    expect(lane).toMatchObject({
+      occupied_by: ['A-owner', 'A-owner-2'],
+      corrections: 1,
+      cycle: true
+    });
+  });
+
+  test('defaults missing serial lane state', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
+        })
+      ],
+      [state()]
+    );
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+
+    expect(lane).toMatchObject({
+      occupied_by: [],
+      corrections: 0,
+      cycle: false
+    });
+  });
+
+  test('keeps a serial member out of runnable and done lanes', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
+          runnable: [{ bead_id: 'A-serial', title: '중복 후보' }],
+          done: [{ bead_id: 'A-serial', added_at: NOW }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(ids(lanes.queue)).toEqual(['A-serial']);
+    expect(ids(lanes.runnable)).toEqual([]);
+    expect(ids(lanes.done)).toEqual([]);
+  });
+
+  test('includes serial members in the aggregate waiting KPI source', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-parallel' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(ids(lanes.queue)).toEqual(['A-parallel', 'A-serial']);
+  });
+
+  test('projects a running bead serial lane chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's2', entries: [{ bead_id: 'A-running' }] }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-running',
+              status: 'running'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunningTile(lanes.running[0], NOW), mount);
+
+    expect(mount.querySelector('.mon-c__lane')?.textContent).toBe('s2');
+  });
+
+  test('numbers a serial card inside its own lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'A-first' }, { bead_id: 'A-second' }]
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const item = lanes.queue_groups[0].sublanes.serial[0].items[1];
+
+    expect(item).toMatchObject({
+      lane: 's1',
+      queue_position: 2,
+      queue_index: 1,
+      queue_length: 2
+    });
+  });
+
+  test('preserves legacy lane placement when serial fields are absent', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          runnable: [{ bead_id: 'A-next', title: '다음' }],
+          done: [{ bead_id: 'A-done', added_at: NOW }]
+        })
+      ],
+      [state()]
+    );
+
+    const placement = {
+      queue: ids(lanes.queue),
+      runnable: ids(lanes.runnable),
+      done: ids(lanes.done),
+      group: ids(lanes.queue_groups[0].items)
+    };
+
+    expect(placement).toEqual({
+      queue: ['A-wait'],
+      runnable: ['A-next'],
+      done: ['A-done'],
+      group: ['A-wait']
+    });
+  });
+});
+
 describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
   test('splits the waiting lane into one group per repo', () => {
     const lanes = buildLanes(
@@ -1768,5 +1939,128 @@ describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
       ).not.toBe(null);
     }
     expect(/[▶🔀⧉⚙]/u.test(mount.textContent || '')).toBe(false);
+  });
+});
+
+describe('monitor blocker rendering (UI-2gi1 §6.2–§6.4)', () => {
+  test('renders a same-lane predecessor as a gray normal-wait chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'A-first' }, { bead_id: 'A-second' }]
+            }
+          ],
+          bead_blocked_by: { 'A-second': ['A-first'] }
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorQueueRow(lanes.queue[1]), mount);
+
+    expect(mount.querySelector('.mon-blocker--normal')?.textContent).toContain(
+      '🔒 A-first (같은 레인 앞)'
+    );
+    expect(mount.querySelector('.mon-blocker-warning')).toBe(null);
+  });
+
+  test('omits blocker chips when the partial cache has no bead entry', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-wait' }] })],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')).toBe(null);
+  });
+
+  test('renders the exact unloaded internal blocker warning', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          bead_blocked_by: { 'A-wait': ['A-missing'] }
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')?.textContent).toContain(
+      '🔒 A-missing (미적재)'
+    );
+    expect(mount.querySelector('.mon-blocker-warning')?.textContent).toBe(
+      '⚠ 선행 A-missing가 어느 레인에도 없고 실행 중도 아님 — 수동 개입 전까지 이 자리에서 정지'
+    );
+  });
+
+  test('keeps an older completed blocker located outside the done display range', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          done: [{ bead_id: 'A-done', added_at: NOW - 10_000 }],
+          bead_blocked_by: { 'A-wait': ['A-done'] }
+        })
+      ],
+      [state({ issue_prefix: 'A' })],
+      { done_since: NOW }
+    );
+
+    render(monitorQueueRow(lanes.queue[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')?.textContent).toContain(
+      '🔒 A-done (완료)'
+    );
+    expect(mount.querySelector('.mon-blocker-warning')).toBe(null);
+  });
+
+  test('renders the Worker-matching lock fallback for a blocked runnable', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-blocked',
+              title: '대기 중',
+              blocked: true,
+              blocked_by: []
+            }
+          ]
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')?.textContent).toBe('🔒 blocked');
+  });
+
+  test('omits the lock display when a blocked runnable lacks blocked_by', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            {
+              bead_id: 'A-blocked',
+              title: '대기 중',
+              blocked: true
+            }
+          ]
+        })
+      ],
+      [state({ issue_prefix: 'A' })]
+    );
+
+    render(monitorRunnableCard(lanes.runnable[0]), mount);
+
+    expect(mount.querySelector('.mon-blocker')).toBe(null);
   });
 });

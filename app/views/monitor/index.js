@@ -29,6 +29,7 @@ import {
   discardConfirmationMessage,
   paneTemplate
 } from '../worker/lanes.js';
+import { buildSerialLinkCandidates } from './blockers.js';
 import {
   MIN_SLOTS,
   buildLanes,
@@ -39,7 +40,7 @@ import {
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
- * @import { MonitorItem, MonitorLanes } from './lanes.js'
+ * @import { MonitorItem, MonitorLanes, MonitorQueueGroup } from './lanes.js'
  */
 
 /**
@@ -55,6 +56,64 @@ const DONE_RANGE_KEY = 'bdui.monitor.done-range';
 
 /** Persisted sort for the 실행중 lane (UI-fmwh §4.1). */
 const RUNNING_SORT_KEY = 'bdui.monitor.running_sort';
+
+/** 모니터가 소유하는 Worker 형태의 표시 필터 (UI-2gi1 §6.2). */
+export const MONITOR_CANDIDATE_FILTER_KEY = 'beads-ui.monitor.candidate-filter';
+
+/** @typedef {{ show_blocked: boolean }} MonitorCandidateFilter */
+
+/** @type {MonitorCandidateFilter} */
+const MONITOR_CANDIDATE_FILTER_DEFAULT = { show_blocked: false };
+
+/**
+ * UI-2gi1 §6.2: 모르는 저장 축은 무시한다. 모니터는 blocked만 소유하고 Worker의
+ * `spec` 필터는 읽지 않는다.
+ *
+ * @returns {MonitorCandidateFilter}
+ */
+function loadMonitorCandidateFilter() {
+  try {
+    const raw = window.localStorage.getItem(MONITOR_CANDIDATE_FILTER_KEY);
+    if (!raw) {
+      return { ...MONITOR_CANDIDATE_FILTER_DEFAULT };
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') {
+      return { ...MONITOR_CANDIDATE_FILTER_DEFAULT };
+    }
+    return { show_blocked: parsed.show_blocked === true };
+  } catch {
+    return { ...MONITOR_CANDIDATE_FILTER_DEFAULT };
+  }
+}
+
+/**
+ * @param {MonitorCandidateFilter} filter
+ */
+function saveMonitorCandidateFilter(filter) {
+  try {
+    window.localStorage.setItem(
+      MONITOR_CANDIDATE_FILTER_KEY,
+      JSON.stringify({ show_blocked: filter.show_blocked })
+    );
+  } catch {
+    /* ignore — storage denial must not break the display toggle */
+  }
+}
+
+/**
+ * @template {{ blocked?: boolean }} T
+ * @param {T[]} rows
+ * @param {MonitorCandidateFilter} filter
+ * @returns {{ visible: T[], hidden_blocked: number }}
+ */
+export function applyMonitorCandidateFilter(rows, filter) {
+  if (filter.show_blocked) {
+    return { visible: rows, hidden_blocked: 0 };
+  }
+  const visible = rows.filter((row) => row.blocked !== true);
+  return { visible, hidden_blocked: rows.length - visible.length };
+}
 
 /**
  * @returns {import('../../data/closed-range.js').ClosedRange}
@@ -177,7 +236,7 @@ function cardTemplate(item, now) {
   return html`<div
     class="mon-card mon-card--${item.lane}${item.alert
       ? ' mon-card--alert'
-      : ''}"
+      : ''}${item.blocked ? ' mon-card--blocked' : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-issue-id=${item.id}
     data-root-dir=${item.root_dir}
@@ -189,6 +248,81 @@ function cardTemplate(item, now) {
     data-queue-length=${String(item.queue_length ?? '')}
   >
     ${monitorCardBody(item, now)}
+  </div>`;
+}
+
+/**
+ * Render one waiting repo group. 직렬 레인이 설정된 새 스냅샷만 서브레인 헤더를
+ * 더하고, 두 필드가 없는 구버전 스냅샷은 기존 DOM을 그대로 유지한다
+ * (UI-2gi1 §5).
+ *
+ * @param {MonitorQueueGroup} group
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult}
+ */
+function queueGroupTemplate(group, now) {
+  const uses_sublanes =
+    group.serial_lane_count > 0 || group.sublanes.serial.length > 0;
+  const parallel = uses_sublanes
+    ? html`<section class="mon-sublane mon-sublane--parallel">
+        <header class="mon-sublane__hd">
+          <span class="mon-sublane__name">병렬</span>
+          <span class="mon-sublane__count"
+            >대기 ${group.sublanes.parallel.length}</span
+          >
+        </header>
+        <div class="mon-group__list">
+          ${group.sublanes.parallel.map((item) => cardTemplate(item, now))}
+        </div>
+      </section>`
+    : html`<div class="mon-group__list">
+        ${group.items.map((item) => cardTemplate(item, now))}
+      </div>`;
+  return html`<div class="mon-group" data-root-dir=${group.root_dir}>
+    ${monitorGroupHeaderTemplate(group)} ${parallel}
+    ${uses_sublanes
+      ? group.sublanes.serial.map(
+          (lane) =>
+            html`<section
+              class="mon-sublane mon-sublane--serial"
+              data-serial-lane=${lane.id}
+            >
+              <header class="mon-sublane__hd">
+                <span class="mon-sublane__name">${lane.id}</span>
+                <span class="mon-sublane__count"
+                  >대기 ${lane.items.length}</span
+                >
+                ${lane.occupied_by.length > 0
+                  ? html`<span class="mon-sublane__held"
+                      >${`● 점유 중 · ${lane.occupied_by.join(
+                        ', '
+                      )} (머지까지 유지)`}</span
+                    >`
+                  : ''}
+                ${lane.corrections > 0
+                  ? html`<span class="mon-sublane__corrections"
+                      >순서 자동 교정 ${lane.corrections}건</span
+                    >`
+                  : ''}
+                ${lane.cross_wait_peers?.map(
+                  (peer) =>
+                    html`<span class="mon-sublane__cross-wait"
+                      >⚠ 상호 정지 — ${peer.workspace_name}·${peer.lane}과 교차
+                      대기</span
+                    >`
+                )}
+              </header>
+              ${lane.cycle
+                ? html`<div class="mon-sublane__cycle">
+                    ⛔ 의존 사이클 — 자동 교정 불가
+                  </div>`
+                : ''}
+              <div class="mon-group__list">
+                ${lane.items.map((item) => cardTemplate(item, now))}
+              </div>
+            </section>`
+        )
+      : ''}
   </div>`;
 }
 
@@ -221,6 +355,9 @@ export function createMonitorView(mount_element, options) {
 
   /** @type {'started'|'repo'} */
   let running_sort = loadRunningSort();
+
+  /** @type {MonitorCandidateFilter} */
+  let candidate_filter = loadMonitorCandidateFilter();
 
   /**
    * @returns {string}
@@ -694,9 +831,13 @@ export function createMonitorView(mount_element, options) {
    * @returns {import('lit-html').TemplateResult}
    */
   function monitorTemplate(now) {
+    const runnable_filter = applyMonitorCandidateFilter(
+      lanes.runnable,
+      candidate_filter
+    );
     /** @type {Record<string, MonitorItem[]>} */
     const by_lane = {
-      runnable: lanes.runnable,
+      runnable: runnable_filter.visible,
       queue: lanes.queue,
       running: lanes.running,
       pr_wait: lanes.pr_wait,
@@ -722,17 +863,8 @@ export function createMonitorView(mount_element, options) {
           const body =
             meta.lane === 'queue'
               ? lanes.queue_groups.length > 0
-                ? html`${lanes.queue_groups.map(
-                    (group) =>
-                      html`<div
-                        class="mon-group"
-                        data-root-dir=${group.root_dir}
-                      >
-                        ${monitorGroupHeaderTemplate(group)}
-                        <div class="mon-group__list">
-                          ${group.items.map((item) => cardTemplate(item, now))}
-                        </div>
-                      </div>`
+                ? html`${lanes.queue_groups.map((group) =>
+                    queueGroupTemplate(group, now)
                   )}`
                 : undefined
               : items.length > 0
@@ -750,15 +882,34 @@ export function createMonitorView(mount_element, options) {
             body,
             live: meta.lane === 'running' && items.length > 0,
             header_control:
-              meta.lane === 'pr_wait' && items.length > 0
-                ? html`<button
-                    type="button"
-                    class="mon-lane-op mon-merge-all"
-                    title="자격이 생기는 PR을 각 레포의 머지 큐에 한 번에 넣습니다"
-                  >
-                    일괄 머지
-                  </button>`
-                : ''
+              meta.lane === 'runnable'
+                ? html`<span class="mon-candidate-filter">
+                    <label
+                      class="worker-filter__tgl"
+                      title="blocked 이슈 표시 (기본 숨김)"
+                    >
+                      <input
+                        type="checkbox"
+                        class="mon-filter__blocked"
+                        .checked=${candidate_filter.show_blocked}
+                      />
+                      🔒 blocked
+                    </label>
+                    ${runnable_filter.hidden_blocked > 0
+                      ? html`<span class="worker-filter__hidden"
+                          >숨김 ${runnable_filter.hidden_blocked}건</span
+                        >`
+                      : ''}
+                  </span>`
+                : meta.lane === 'pr_wait' && items.length > 0
+                  ? html`<button
+                      type="button"
+                      class="mon-lane-op mon-merge-all"
+                      title="자격이 생기는 PR을 각 레포의 머지 큐에 한 번에 넣습니다"
+                    >
+                      일괄 머지
+                    </button>`
+                  : ''
           });
         })}
       </div>`;
@@ -814,6 +965,80 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * @param {unknown} error
+   * @returns {string}
+   */
+  function dependencyErrorMessage(error) {
+    if (typeof error === 'string' && error.length > 0) {
+      return error;
+    }
+    if (error && typeof error === 'object') {
+      const value = /** @type {Record<string, any>} */ (error);
+      if (typeof value.message === 'string' && value.message.length > 0) {
+        return value.message;
+      }
+      if (typeof value.error === 'string' && value.error.length > 0) {
+        return value.error;
+      }
+      if (
+        value.error &&
+        typeof value.error === 'object' &&
+        typeof value.error.message === 'string'
+      ) {
+        return value.error.message;
+      }
+    }
+    return '연결에 실패했습니다';
+  }
+
+  /**
+   * @param {HTMLElement} card
+   * @param {string} message
+   */
+  function showDependencyError(card, message) {
+    const trigger = /** @type {HTMLElement|null} */ (
+      card.querySelector('.mon-link__trigger')
+    );
+    const popover = /** @type {HTMLElement|null} */ (
+      card.querySelector('.mon-link__popover')
+    );
+    const error = /** @type {HTMLElement|null} */ (
+      card.querySelector('.mon-link__error')
+    );
+    if (!trigger || !popover || !error) {
+      return;
+    }
+    closePlacePopovers();
+    popover.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    error.textContent = message;
+    error.hidden = false;
+  }
+
+  /**
+   * UI-2gi1 §6.5·§7: 의존 mutation은 낙관적 투영을 소유하지 않는다. 성공하면 선택기만 닫고 u3의
+   * 집계 refresh를 기다린다. 거부되면 카드를 그대로 두고 bd 문구를 그대로
+   * 표시한다 (UI-2gi1 §6.5·§7).
+   *
+   * @param {'dep-add'|'dep-remove'} type
+   * @param {HTMLElement} card
+   * @param {string} blocker_id
+   */
+  async function mutateDependency(type, card, blocker_id) {
+    const root_dir = card.getAttribute('data-root-dir') || '';
+    const bead_id = card.getAttribute('data-issue-id') || '';
+    if (!bead_id || !blocker_id || blocker_id === bead_id) {
+      return;
+    }
+    try {
+      await send(type, { a: bead_id, b: blocker_id }, root_dir);
+      closePlacePopovers();
+    } catch (error) {
+      showDependencyError(card, dependencyErrorMessage(error));
+    }
+  }
+
+  /**
    * @param {HTMLElement} card
    * @param {HTMLElement} button
    */
@@ -823,18 +1048,41 @@ export function createMonitorView(mount_element, options) {
     const attempt_id =
       button.dataset.attemptId || card.getAttribute('data-attempt-id') || '';
     const cls = button.classList;
-    if (cls.contains('worker-card__place')) {
-      // 적재만 한다 — 서버가 적재 성공 후 이미 `tickWorkerQueue()`를 부르므로
-      // 별도의 "즉시 실행" 경로는 두지 않는다 (§8).
+    if (cls.contains('mon-link__trigger')) {
+      toggleLinkPopover(button);
+      return;
+    }
+    if (
+      cls.contains('mon-link__candidate') ||
+      cls.contains('mon-link__direct')
+    ) {
+      const blocker_id = button.dataset.targetId || '';
+      void mutateDependency('dep-add', card, blocker_id);
+      return;
+    }
+    if (cls.contains('mon-blocker__remove')) {
+      const blocker_id = button.dataset.blockerId || '';
+      void mutateDependency('dep-remove', card, blocker_id);
+      return;
+    }
+    if (cls.contains('mon-place__choice')) {
+      const lane = button.dataset.lane || 'parallel';
+      const index = Number(button.dataset.placeIndex || 0) || 0;
+      closePlacePopovers();
       void sendCas(
         'worker-queue-place',
         {
           bead_id,
-          index: Number(card.getAttribute('data-place-index') || 0) || 0
+          ...(lane === 'parallel' ? {} : { lane }),
+          index
         },
         root_dir,
         revision
       );
+      return;
+    }
+    if (cls.contains('worker-card__place')) {
+      togglePlacePopover(button);
       return;
     }
     if (cls.contains('mon-op--up') || cls.contains('mon-op--down')) {
@@ -845,7 +1093,13 @@ export function createMonitorView(mount_element, options) {
       }
       void sendCas(
         'worker-queue-reorder',
-        { bead_id, to_index },
+        {
+          bead_id,
+          ...(/^s[1-5]$/.test(card.dataset.lane || '')
+            ? { lane: card.dataset.lane }
+            : {}),
+          to_index
+        },
         root_dir,
         revision
       );
@@ -959,6 +1213,237 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * UI-2gi1 §6.5: 닫힌 카드마다 전 레포 후보 DOM을 보유하지 않도록 목록을
+   * 비운다. 오류 팝오버도 같은 껍데기를 다시 사용한다.
+   *
+   * @param {HTMLElement} popover
+   */
+  function clearLinkPopover(popover) {
+    const list = popover.querySelector('.mon-link__list');
+    list?.replaceChildren();
+    const input = /** @type {HTMLInputElement|null} */ (
+      popover.querySelector('.mon-link__search')
+    );
+    if (input) {
+      input.value = '';
+    }
+    const direct = /** @type {HTMLElement|null} */ (
+      popover.querySelector('.mon-link__direct')
+    );
+    if (direct) {
+      direct.hidden = true;
+      direct.dataset.targetId = '';
+      direct.textContent = '';
+    }
+    const empty = /** @type {HTMLElement|null} */ (
+      popover.querySelector('.mon-link__empty')
+    );
+    if (empty) {
+      empty.hidden = true;
+    }
+    const error = /** @type {HTMLElement|null} */ (
+      popover.querySelector('.mon-link__error')
+    );
+    if (error) {
+      error.hidden = true;
+      error.textContent = '';
+    }
+  }
+
+  /**
+   * UI-2gi1 §6.5: 현재 팝오버 하나에만 전 레포 후보를 지연 생성한다.
+   *
+   * @param {HTMLElement} popover
+   * @param {string} self_id
+   */
+  function populateLinkCandidates(popover, self_id) {
+    const list = popover.querySelector('.mon-link__list');
+    if (!list) {
+      return;
+    }
+    const fragment = document.createDocumentFragment();
+    const candidates = buildSerialLinkCandidates(lanes).filter(
+      (candidate) => candidate.id !== self_id
+    );
+    for (const candidate of candidates) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'mon-link__candidate';
+      button.dataset.targetId = candidate.id;
+      button.dataset.search =
+        `${candidate.id} ${candidate.title} ${candidate.location}`.toLocaleLowerCase();
+
+      const id = document.createElement('strong');
+      id.textContent = candidate.id;
+      const title = document.createElement('span');
+      title.textContent = candidate.title;
+      const location = document.createElement('small');
+      location.textContent = candidate.location;
+      button.append(id, title, location);
+      fragment.append(button);
+    }
+    list.replaceChildren(fragment);
+  }
+
+  /** UI-2gi1 §6.5: 레인·의존 선택기는 동시에 하나만 노출한다. */
+  function closePlacePopovers() {
+    for (const popover of Array.from(
+      console_el.querySelectorAll('.mon-card-popover')
+    )) {
+      const element = /** @type {HTMLElement} */ (popover);
+      element.hidden = true;
+      if (element.classList.contains('mon-link__popover')) {
+        clearLinkPopover(element);
+      }
+    }
+    for (const trigger of Array.from(
+      console_el.querySelectorAll('[aria-expanded="true"]')
+    )) {
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  /**
+   * @param {HTMLElement} button
+   */
+  function togglePlacePopover(button) {
+    const wrapper = button.closest('.mon-place');
+    const popover = /** @type {HTMLElement|null} */ (
+      wrapper?.querySelector('.mon-place__popover') || null
+    );
+    if (!popover) {
+      return;
+    }
+    const opens = popover.hidden;
+    closePlacePopovers();
+    if (opens) {
+      popover.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  /**
+   * @param {HTMLElement} button
+   */
+  function toggleLinkPopover(button) {
+    const wrapper = button.closest('.mon-link');
+    const popover = /** @type {HTMLElement|null} */ (
+      wrapper?.querySelector('.mon-link__popover') || null
+    );
+    if (!popover) {
+      return;
+    }
+    const opens = popover.hidden;
+    closePlacePopovers();
+    if (opens) {
+      const card = button.closest('.mon-card');
+      populateLinkCandidates(
+        popover,
+        card?.getAttribute('data-issue-id') || ''
+      );
+      popover.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      const input = /** @type {HTMLInputElement|null} */ (
+        popover.querySelector('.mon-link__search')
+      );
+      if (input) {
+        updateLinkSearch(input);
+        input.focus();
+      }
+    }
+  }
+
+  /**
+   * @param {HTMLInputElement} input
+   */
+  function updateLinkSearch(input) {
+    const popover = input.closest('.mon-link__popover');
+    const card = input.closest('.mon-card');
+    if (!popover || !card) {
+      return;
+    }
+    const query = input.value.trim();
+    const normalized = query.toLocaleLowerCase();
+    let visible = 0;
+    let exact = false;
+    for (const candidate of Array.from(
+      popover.querySelectorAll('.mon-link__candidate')
+    )) {
+      const button = /** @type {HTMLElement} */ (candidate);
+      const target_id = button.dataset.targetId || '';
+      const matches =
+        normalized.length === 0 ||
+        (button.dataset.search || '').includes(normalized);
+      button.hidden = !matches;
+      if (matches) {
+        visible += 1;
+      }
+      if (target_id.toLocaleLowerCase() === normalized) {
+        exact = true;
+      }
+    }
+    const direct = /** @type {HTMLElement|null} */ (
+      popover.querySelector('.mon-link__direct')
+    );
+    const self_id = card.getAttribute('data-issue-id') || '';
+    if (direct) {
+      const shows_direct =
+        query.length > 0 &&
+        !exact &&
+        normalized !== self_id.toLocaleLowerCase();
+      direct.hidden = !shows_direct;
+      direct.dataset.targetId = shows_direct ? query : '';
+      direct.textContent = shows_direct ? `직접 입력 · ${query}` : '';
+      if (shows_direct) {
+        visible += 1;
+      }
+    }
+    const empty = /** @type {HTMLElement|null} */ (
+      popover.querySelector('.mon-link__empty')
+    );
+    if (empty) {
+      empty.hidden = visible > 0;
+    }
+    const error = /** @type {HTMLElement|null} */ (
+      popover.querySelector('.mon-link__error')
+    );
+    if (error) {
+      error.hidden = true;
+      error.textContent = '';
+    }
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onDocumentClick(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      target &&
+      console_el.contains(target) &&
+      typeof target.closest === 'function' &&
+      target.closest('.mon-popover-owner')
+    ) {
+      return;
+    }
+    closePlacePopovers();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onDocumentKeydown(ev) {
+    if (ev.key !== 'Escape') {
+      return;
+    }
+    const trigger = /** @type {HTMLElement|null} */ (
+      console_el.querySelector('[aria-expanded="true"]')
+    );
+    closePlacePopovers();
+    trigger?.focus();
+  }
+
+  /**
    * @param {Event} ev
    */
   function onClick(ev) {
@@ -1060,6 +1545,15 @@ export function createMonitorView(mount_element, options) {
     if (!target || typeof target.closest !== 'function') {
       return;
     }
+    const blocked_toggle = /** @type {HTMLInputElement|null} */ (
+      target.closest('.mon-filter__blocked')
+    );
+    if (blocked_toggle) {
+      candidate_filter = { show_blocked: blocked_toggle.checked };
+      saveMonitorCandidateFilter(candidate_filter);
+      doRender();
+      return;
+    }
     const range_select = /** @type {HTMLSelectElement|null} */ (
       target.closest('.mon-done-range')
     );
@@ -1089,13 +1583,26 @@ export function createMonitorView(mount_element, options) {
     void sendCas('worker-queue-set-slots', { slots }, root_dir, revision);
   }
 
+  /**
+   * @param {Event} ev
+   */
+  function onInput(ev) {
+    const input = /** @type {HTMLInputElement|null} */ (ev.target);
+    if (input?.classList.contains('mon-link__search')) {
+      updateLinkSearch(input);
+    }
+  }
+
   mount_element.addEventListener('click', onClick);
   mount_element.addEventListener('change', onChange);
+  mount_element.addEventListener('input', onInput);
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
   mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('dragend', onDragEnd);
+  document.addEventListener('click', onDocumentClick);
+  document.addEventListener('keydown', onDocumentKeydown);
 
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
@@ -1133,6 +1640,11 @@ export function createMonitorView(mount_element, options) {
       if (tick_timer === null) {
         tick_timer = setInterval(() => {
           try {
+            // 팝오버 입력·오류는 사용자가 소유한 임시 상태다. 시계 tick이 DOM을
+            // 교체하면 1초 안에 사라지므로 열린 동안 시계 렌더만 미룬다.
+            if (console_el.querySelector('.mon-card-popover:not([hidden])')) {
+              return;
+            }
             doRender();
           } catch {
             // ignore
@@ -1154,6 +1666,7 @@ export function createMonitorView(mount_element, options) {
       }
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
+      mount_element.removeEventListener('input', onInput);
       mount_element.removeEventListener(
         'dragstart',
         /** @type {any} */ (onDragStart)
@@ -1168,6 +1681,8 @@ export function createMonitorView(mount_element, options) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('dragend', onDragEnd);
+      document.removeEventListener('click', onDocumentClick);
+      document.removeEventListener('keydown', onDocumentKeydown);
       mount_element.replaceChildren();
     }
   };

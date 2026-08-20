@@ -6635,6 +6635,84 @@ describe('worker/queue-store — blocks topological 보정 (UI-04vo seam C)', ()
     expect(order).toEqual(['B', 'A']);
     expect(edges).toEqual([{ blocker: 'A', blockee: 'B' }]);
   });
+
+  test('recalibrates an existing lane after a dependency edge is added', () => {
+    const store = createQueueStore();
+    let revision = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+    revision = store.place(WS, {
+      expected_revision: revision,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+
+    const result = store.recalibrateSerialLane(WS, {
+      lane: 's1',
+      blocks_edges: [{ blocker: 'A', blockee: 'B' }]
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.queue.revision).toBe(revision + 1);
+    expect(result.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'A',
+      'B'
+    ]);
+  });
+
+  test('keeps the revision when recalibration changes no order', () => {
+    const store = createQueueStore();
+    let revision = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    revision = store.place(WS, {
+      expected_revision: revision,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+
+    const result = store.recalibrateSerialLane(WS, {
+      lane: 's1',
+      blocks_edges: [{ blocker: 'A', blockee: 'B' }]
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.queue.revision).toBe(revision);
+  });
+
+  test('keeps the order and reports a recalibration cycle', () => {
+    const store = createQueueStore();
+    let revision = store.place(WS, {
+      expected_revision: 0,
+      bead_id: 'A',
+      lane: 's1'
+    }).queue.revision;
+    revision = store.place(WS, {
+      expected_revision: revision,
+      bead_id: 'B',
+      lane: 's1'
+    }).queue.revision;
+
+    const result = store.recalibrateSerialLane(WS, {
+      lane: 's1',
+      blocks_edges: [
+        { blocker: 'A', blockee: 'B' },
+        { blocker: 'B', blockee: 'A' }
+      ]
+    });
+
+    expect(result.cycle).toBe(true);
+    expect(result.changed).toBe(false);
+    expect(result.queue.revision).toBe(revision);
+    expect(result.queue.serial_lanes[0].entries.map((e) => e.bead_id)).toEqual([
+      'A',
+      'B'
+    ]);
+  });
 });
 
 describe('worker/queue-store — 분석 제출 단일 CAS (UI-04vo seam J)', () => {

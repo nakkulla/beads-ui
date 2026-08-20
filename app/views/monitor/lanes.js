@@ -11,11 +11,12 @@
  * 공유하므로 `index.js`의 클릭 위임은 그대로 동작하고, Worker 탭 렌더는
  * 무변경이다.
  *
- * 배타 우선순위는 `running > pr_wait > queue > runnable > done`이다 — 실행중인
- * 버드는 `queue` 레인에 그대로 남아 있고 conflict-resolution attempt는 `pr_wait`
- * 소속 버드에서도 돌기 때문에, 배타 없이 그리면 같은 버드가 두 레인에 동시에
- * 나타난다. `runnable`은 서버가 이미 레인 소속 버드를 빼고 보내지만, 같은
- * 규약을 클라이언트에서도 한 번 더 건다 (스냅샷 사이의 경합).
+ * 배타 우선순위는 `running > pr_wait > (queue ∪ serial_lanes) > runnable >
+ * done`이다 — 실행중인 버드는 대기 레인에 그대로 남아 있고
+ * conflict-resolution attempt는 `pr_wait` 소속 버드에서도 돌기 때문에, 배타 없이
+ * 그리면 같은 버드가 두 레인에 동시에 나타난다. `runnable`은 서버가 이미 레인
+ * 소속 버드를 빼고 보내지만, 같은 규약을 클라이언트에서도 한 번 더 건다
+ * (스냅샷 사이의 경합).
  *
  * 대기 레인의 레포 그룹은 **`workspaces_state`를 돌며** 만든다. 큐가 빈 레포에도
  * 헤더가 렌더되어야 하기 때문이다 — 자동 진행이 꺼져 큐가 빈 레포가 바로 그
@@ -48,6 +49,12 @@ import {
   prWaitProgress
 } from '../worker/pr-wait-progress.js';
 import { formatElapsed } from '../worker/running-grid.js';
+import {
+  buildBlockerLocationMap,
+  describeBlocker,
+  detectSerialLaneHeadCycles,
+  serialCycleKey
+} from './blockers.js';
 import {
   iconClose,
   iconMerge,
@@ -127,11 +134,28 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   queue_index?: number,
  *   queue_length?: number,
  *   place_index?: number,
+ *   serial_lane_id?: 's1'|'s2'|'s3'|'s4'|'s5',
+ *   place_lanes?: Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', index: number, length: number, occupied_by: string[] }>,
+ *   blocked?: boolean,
+ *   blocked_by?: string[],
+ *   blockers?: import('./blockers.js').BlockerDisplay[],
+ *   blocker_warnings?: string[],
  *   done_kind?: string|null,
  *   labels?: string[],
  *   spec_reviewer?: string,
  *   plan_state?: 'approved'|'authored'|'none'
  * }} MonitorItem
+ */
+
+/**
+ * @typedef {Object} MonitorSerialSublane
+ * @property {'s1'|'s2'|'s3'|'s4'|'s5'} id
+ * @property {number} index
+ * @property {MonitorItem[]} items
+ * @property {string[]} occupied_by
+ * @property {number} corrections
+ * @property {boolean} cycle
+ * @property {Array<{ root_dir: string, workspace_name: string, lane: string }>} [cross_wait_peers]
  */
 
 /**
@@ -145,6 +169,8 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  * 그대로 실어 보내는 값이므로, 파이프라인이 빈 레포에서도 반드시 있어야 한다.
  * @property {Record<string, any>} runner_catalog
  * @property {MonitorItem[]} items
+ * @property {{ parallel: MonitorItem[], serial: MonitorSerialSublane[] }} sublanes
+ * @property {number} serial_lane_count
  */
 
 /**
@@ -370,8 +396,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const queue = [];
   /** @type {MonitorItem[]} */
   const done = [];
+  /** @type {Array<{ id: string, root_dir: string, workspace_name: string }>} */
+  const all_done_locations = [];
   /** @type {Map<string, MonitorItem[]>} */
   const queue_by_root = new Map();
+  /** @type {Map<string, MonitorSerialSublane[]>} */
+  const serial_by_root = new Map();
+  /** @type {Map<string, number>} */
+  const serial_count_by_root = new Map();
 
   for (const workspace of list) {
     if (!workspace || typeof workspace.root_dir !== 'string') {
@@ -397,6 +429,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const merge_state = objectOf(workspace.merge_queue_state);
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
+    const bead_blocked_by = objectOf(workspace.bead_blocked_by);
     const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
@@ -417,7 +450,42 @@ export function buildLanes(workspaces, workspaces_state, options) {
         .map((/** @type {any} */ e) => [e.bead_id, e])
     );
     const queue_lane = Array.isArray(workspace.queue) ? workspace.queue : [];
+    const serial_lanes = (
+      Array.isArray(workspace.serial_lanes) ? workspace.serial_lanes : []
+    ).filter(
+      (/** @type {any} */ lane) =>
+        lane && /^s[1-5]$/.test(lane.id) && Array.isArray(lane.entries)
+    );
+    const lane_states = objectOf(workspace.lane_states);
+    const serial_lane_count =
+      typeof workspace.serial_lane_count === 'number'
+        ? Math.max(0, Math.min(5, Math.floor(workspace.serial_lane_count)))
+        : Math.min(5, serial_lanes.length);
+    serial_count_by_root.set(root_dir, serial_lane_count);
+    /** @type {Map<string, any>} */
+    const serial_by_id = new Map(serial_lanes.map((lane) => [lane.id, lane]));
+    /** @type {Map<string, 's1'|'s2'|'s3'|'s4'|'s5'>} */
+    const serial_lane_by_bead = new Map();
+    for (const lane of serial_lanes) {
+      for (const entry of lane.entries) {
+        if (entry && typeof entry.bead_id === 'string') {
+          serial_lane_by_bead.set(
+            entry.bead_id,
+            /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id)
+          );
+        }
+      }
+    }
     const done_lane = Array.isArray(workspace.done) ? workspace.done : [];
+    for (const entry of done_lane) {
+      if (entry && typeof entry.bead_id === 'string') {
+        all_done_locations.push({
+          id: entry.bead_id,
+          root_dir,
+          workspace_name
+        });
+      }
+    }
     /** @type {Map<string, number>} */
     const done_at_by_bead = new Map();
     for (const entry of done_lane) {
@@ -453,6 +521,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       running.push({
         ...base(bead_id),
         lane: 'running',
+        ...(serial_lane_by_bead.has(bead_id)
+          ? { serial_lane_id: serial_lane_by_bead.get(bead_id) }
+          : {}),
         attempt_id: live.attempt_id,
         run_state: live.run_state,
         can_pause: live.can_pause,
@@ -609,11 +680,20 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
     }
 
-    for (let i = 0; i < queue_lane.length; i++) {
-      const entry = queue_lane[i];
+    /**
+     * Project one parallel or serial waiting card (UI-2gi1 §5). 순번 좌표만
+     * 소속 레인 기준이며 admission/REVISE/폐기 규약은 같다.
+     *
+     * @param {any} entry
+     * @param {'queue'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
+     * @param {number} queue_index
+     * @param {number} queue_length
+     * @returns {MonitorItem|null}
+     */
+    const waitingItem = (entry, lane, queue_index, queue_length) => {
       const bead_id = entry && entry.bead_id;
       if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
-        continue;
+        return null;
       }
       claimed.add(bead_id);
       const parked = revise_parked[bead_id];
@@ -622,15 +702,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
       /** @type {MonitorItem} */
       const item = {
         ...base(bead_id),
-        lane: 'queue',
+        lane,
         draggable: !discard,
         discard: discard || undefined,
         reason: admissionBadge(admission, bead_id),
         // 순번은 레인에서의 디스패치 순서이므로, 실행중으로 빠진 버드를 건너뛴
         // 뒤의 인덱스가 아니라 레인 자체의 자리를 쓴다.
-        queue_position: i + 1,
-        queue_index: i,
-        queue_length: queue_lane.length,
+        queue_position: queue_index + 1,
+        queue_index,
+        queue_length,
         badges: parked ? ['⏸ REVISE 파킹'] : [],
         alert: !!parked,
         revise_action: !!parked,
@@ -641,6 +721,22 @@ export function buildLanes(workspaces, workspaces_state, options) {
             : 'notes의 REVISE finding을 스펙에 반영하는 처분 세션을 띄웁니다'
           : ''
       };
+      if (Object.hasOwn(bead_blocked_by, bead_id)) {
+        item.blocked_by = Array.isArray(bead_blocked_by[bead_id])
+          ? bead_blocked_by[bead_id].filter(
+              (/** @type {unknown} */ blocker_id) =>
+                typeof blocker_id === 'string' && blocker_id.length > 0
+            )
+          : [];
+      }
+      return item;
+    };
+
+    for (let i = 0; i < queue_lane.length; i++) {
+      const item = waitingItem(queue_lane[i], 'queue', i, queue_lane.length);
+      if (!item) {
+        continue;
+      }
       queue.push(item);
       const bucket = queue_by_root.get(root_dir);
       if (bucket) {
@@ -649,6 +745,68 @@ export function buildLanes(workspaces, workspaces_state, options) {
         queue_by_root.set(root_dir, [item]);
       }
     }
+
+    /** @type {MonitorSerialSublane[]} */
+    const projected_serial = [];
+    for (let lane_index = 0; lane_index < serial_lanes.length; lane_index++) {
+      const lane = serial_lanes[lane_index];
+      /** @type {MonitorItem[]} */
+      const items = [];
+      for (let i = 0; i < lane.entries.length; i++) {
+        const item = waitingItem(
+          lane.entries[i],
+          /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
+          i,
+          lane.entries.length
+        );
+        if (!item) {
+          continue;
+        }
+        items.push(item);
+        queue.push(item);
+      }
+      if (items.length === 0) {
+        continue;
+      }
+      const lane_state = objectOf(lane_states[lane.id]);
+      projected_serial.push({
+        id: /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
+        index: lane_index,
+        items,
+        occupied_by: Array.isArray(lane_state.occupied_by)
+          ? lane_state.occupied_by.filter(
+              (/** @type {any} */ bead_id) => typeof bead_id === 'string'
+            )
+          : [],
+        corrections: Array.isArray(lane_state.corrections)
+          ? lane_state.corrections.length
+          : 0,
+        cycle: lane_state.cycle === true
+      });
+    }
+    serial_by_root.set(root_dir, projected_serial);
+
+    const place_lanes = Array.from(
+      { length: serial_lane_count },
+      (_, lane_index) => {
+        const id = /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (
+          `s${lane_index + 1}`
+        );
+        const lane = serial_by_id.get(id);
+        const entries = lane && Array.isArray(lane.entries) ? lane.entries : [];
+        const lane_state = objectOf(lane_states[id]);
+        return {
+          id,
+          index: entries.length,
+          length: entries.length,
+          occupied_by: Array.isArray(lane_state.occupied_by)
+            ? lane_state.occupied_by.filter(
+                (/** @type {any} */ bead_id) => typeof bead_id === 'string'
+              )
+            : []
+        };
+      }
+    );
 
     for (const entry of Array.isArray(workspace.runnable)
       ? workspace.runnable
@@ -685,8 +843,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
             ? { route: entry.route, chips: { route: entry.route } }
             : null
         ),
+        blocked: entry.blocked === true,
+        ...(Array.isArray(entry.blocked_by)
+          ? {
+              blocked_by: entry.blocked_by.filter(
+                (/** @type {unknown} */ blocker_id) =>
+                  typeof blocker_id === 'string' && blocker_id.length > 0
+              )
+            }
+          : {}),
         // 적재 위치는 그 레포 대기 큐의 맨 뒤 (Worker 탭 [대기로 ↴]와 같다).
-        place_index: queue_lane.length
+        place_index: queue_lane.length,
+        place_lanes
       });
     }
 
@@ -791,6 +959,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     if (!source || typeof source.root_dir !== 'string') {
       continue;
     }
+    const parallel = queue_by_root.get(source.root_dir) || [];
+    const serial = serial_by_root.get(source.root_dir) || [];
     queue_groups.push({
       root_dir: source.root_dir,
       name: source.name || source.root_dir,
@@ -802,11 +972,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : MIN_SLOTS,
       revision: typeof source.revision === 'number' ? source.revision : 0,
       runner_catalog: objectOf(source.runner_catalog),
-      items: queue_by_root.get(source.root_dir) || []
+      items: parallel,
+      sublanes: { parallel, serial },
+      serial_lane_count: serial_count_by_root.get(source.root_dir) || 0
     });
   }
 
-  return {
+  /** @type {MonitorLanes} */
+  const model = {
     runnable,
     queue,
     queue_groups,
@@ -818,6 +991,52 @@ export function buildLanes(workspaces, workspaces_state, options) {
       both_on: queue_groups.filter((g) => g.auto_advance && g.auto_merge).length
     }
   };
+
+  // 이하는 스냅샷 한 번에만 유효한 표시 파생값이다. partial cache에 없는
+  // 항목은 의도대로 계속 생략한다 (UI-2gi1 §6.3–§6.5).
+  const locations = buildBlockerLocationMap(model);
+  for (const entry of all_done_locations) {
+    if (!locations.has(entry.id)) {
+      locations.set(entry.id, {
+        root_dir: entry.root_dir,
+        workspace_name: entry.workspace_name,
+        lane: 'done',
+        state: 'done'
+      });
+    }
+  }
+  for (const item of [...model.queue, ...model.runnable]) {
+    if (!Object.hasOwn(item, 'blocked_by')) {
+      continue;
+    }
+    const current_location = locations.get(item.id);
+    item.blockers = (item.blocked_by || []).map((blocker_id) =>
+      describeBlocker(blocker_id, current_location, locations, states)
+    );
+    item.blocker_warnings = item.blockers
+      .filter((blocker) => blocker.missing_internal)
+      .map(
+        (blocker) =>
+          `⚠ 선행 ${blocker.id}가 어느 레인에도 없고 실행 중도 아님 — 수동 개입 전까지 이 자리에서 정지`
+      );
+    if (item.blocker_warnings.length > 0) {
+      item.alert = true;
+    }
+  }
+
+  const cross_wait_cycles = detectSerialLaneHeadCycles(model.queue_groups);
+  for (const group of model.queue_groups) {
+    for (const lane of group.sublanes.serial) {
+      const peers = cross_wait_cycles.get(
+        serialCycleKey(group.root_dir, lane.id)
+      );
+      if (peers) {
+        lane.cross_wait_peers = peers;
+      }
+    }
+  }
+
+  return model;
 }
 
 /**
@@ -974,6 +1193,94 @@ function runningOps(item) {
 }
 
 /**
+ * Blocker 칩은 해제할 수 있는 의존 엣지이며 스케줄링 가드가 아니다
+ * (UI-2gi1 §6.3–§6.5).
+ *
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
+ */
+function blockerChips(item) {
+  if (!Object.hasOwn(item, 'blocked_by')) {
+    return '';
+  }
+  const blockers = Array.isArray(item.blockers) ? item.blockers : [];
+  if (blockers.length === 0) {
+    return item.blocked
+      ? html`<span class="mon-blocker">🔒 blocked</span>`
+      : '';
+  }
+  return blockers.map(
+    (blocker) =>
+      html`<span
+        class="mon-blocker${blocker.same_lane_ahead
+          ? ' mon-blocker--normal'
+          : ''}"
+      >
+        <span>${blocker.label}</span>
+        <button
+          type="button"
+          class="mon-blocker__remove"
+          data-blocker-id=${blocker.id}
+          aria-label=${`선행 ${blocker.id} 연결 해제`}
+          title="직렬 연결 해제"
+        >
+          ✕
+        </button>
+      </span>`
+  );
+}
+
+/**
+ * @param {MonitorItem} item
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function blockerWarnings(item) {
+  const warnings = Array.isArray(item.blocker_warnings)
+    ? item.blocker_warnings
+    : [];
+  return warnings.length > 0
+    ? html`<div class="mon-blocker-warnings">
+        ${warnings.map(
+          (warning) => html`<div class="mon-blocker-warning">${warning}</div>`
+        )}
+      </div>`
+    : '';
+}
+
+/**
+ * UI-2gi1 §6.5: 실행가능·대기 카드가 공유하는 검색형 의존 엣지 선택기다. 검색 필터와
+ * mutation 소유권은 `index.js`에 남긴다 (UI-2gi1 §6.5).
+ *
+ * @returns {import('lit-html').TemplateResult}
+ */
+function serialLinkControl() {
+  return html`<span class="mon-link mon-popover-owner">
+    <button
+      type="button"
+      class="mon-link__trigger"
+      aria-haspopup="dialog"
+      aria-expanded="false"
+      title="직렬로 연결"
+    >
+      🔗
+    </button>
+    <span class="mon-link__popover mon-card-popover" role="dialog" hidden>
+      <input
+        type="search"
+        class="mon-link__search"
+        placeholder="id·제목·위치 검색"
+        aria-label="직렬로 연결할 버드 검색"
+        autocomplete="off"
+      />
+      <span class="mon-link__list"></span>
+      <button type="button" class="mon-link__direct" hidden></button>
+      <span class="mon-link__empty" hidden>검색 결과 없음</span>
+      <span class="mon-link__error" role="alert" hidden></span>
+    </span>
+  </span>`;
+}
+
+/**
  * The 실행중 tile — 이 탭의 주인공. 경과·하트비트는 시계가 지나가는 것만으로 값이
  * 바뀌는 유일한 자리이므로 1초 tick이 이 템플릿만을 위해 돈다.
  *
@@ -1000,6 +1307,9 @@ export function monitorRunningTile(item, now) {
             title=${formatContinuationLineage(item)}
             >↻</span
           >`
+        : ''}
+      ${item.serial_lane_id
+        ? html`<span class="mon-c__lane">${item.serial_lane_id}</span>`
         : ''}
       ${elapsed ? html`<span class="mon-live__elapsed">${elapsed}</span>` : ''}
       ${usageChip(item)}${runningOps(item)}${discardReceiptTemplate(item)}
@@ -1069,17 +1379,59 @@ export function monitorRunnableCard(item) {
             >${item.reason}</span
           >`
         : ''}
+      ${blockerChips(item)}
       <span class="mon-c__ops">
-        <button
-          type="button"
-          class="worker-card__place"
-          data-bead-id=${item.id}
-          title="대기 큐 맨 뒤에 추가"
-        >
-          대기로 ↴
-        </button>
+        ${serialLinkControl()}
+        <span class="mon-place mon-popover-owner">
+          <button
+            type="button"
+            class="worker-card__place"
+            data-bead-id=${item.id}
+            aria-haspopup="menu"
+            aria-expanded="false"
+            title="적재할 대기 레인 선택"
+          >
+            대기로 ↴
+          </button>
+          <span class="mon-place__popover mon-card-popover" role="menu" hidden>
+            <button
+              type="button"
+              class="mon-place__choice"
+              data-lane="parallel"
+              data-place-index=${String(item.place_index ?? 0)}
+              role="menuitem"
+              aria-label=${`병렬 · 대기 ${item.place_index ?? 0}`}
+            >
+              <strong>병렬</strong><span>대기 ${item.place_index ?? 0}</span>
+            </button>
+            ${(item.place_lanes || []).map(
+              (lane) =>
+                html`<button
+                  type="button"
+                  class="mon-place__choice"
+                  data-lane=${lane.id}
+                  data-place-index=${String(lane.index)}
+                  role="menuitem"
+                  aria-label=${`${lane.id} · ${
+                    lane.occupied_by.length > 0
+                      ? `점유 ${lane.occupied_by.join(', ')}`
+                      : '미점유'
+                  } · 대기 ${lane.length}`}
+                >
+                  <strong>${lane.id}</strong
+                  ><span
+                    >${lane.occupied_by.length > 0
+                      ? `점유 ${lane.occupied_by.join(', ')}`
+                      : '미점유'}
+                    · 대기 ${lane.length}</span
+                  >
+                </button>`
+            )}
+          </span>
+        </span>
       </span>
-    </div>`;
+    </div>
+    ${blockerWarnings(item)}`;
 }
 
 /**
@@ -1100,7 +1452,9 @@ export function monitorQueueRow(item) {
       ${item.reason
         ? html`<span class="mon-c__reason">${item.reason}</span>`
         : ''}
+      ${blockerChips(item)}
       <span class="mon-c__ops">
+        ${serialLinkControl()}
         <button
           type="button"
           class="mon-op mon-op--up"
@@ -1146,7 +1500,7 @@ export function monitorQueueRow(item) {
           : ''}
       </span>
     </div>
-    ${discardReceiptTemplate(item)}
+    ${blockerWarnings(item)} ${discardReceiptTemplate(item)}
     ${item.revise_action
       ? html`<div class="mon-c__tail">
           <button
@@ -1308,7 +1662,7 @@ export function monitorCardBody(item, now) {
   if (item.lane === 'runnable') {
     return monitorRunnableCard(item);
   }
-  if (item.lane === 'queue') {
+  if (item.lane === 'queue' || /^s[1-5]$/.test(item.lane)) {
     return monitorQueueRow(item);
   }
   if (item.lane === 'pr_wait') {
@@ -1331,13 +1685,17 @@ export function monitorCardBody(item, now) {
  */
 export function monitorGroupHeaderTemplate(group) {
   const revision = String(group.revision);
+  const item_count = group.sublanes
+    ? group.sublanes.parallel.length +
+      group.sublanes.serial.reduce((sum, lane) => sum + lane.items.length, 0)
+    : group.items.length;
   return html`<header
-    class="mon-group__hd${group.items.length === 0 ? ' is-empty' : ''}"
+    class="mon-group__hd${item_count === 0 ? ' is-empty' : ''}"
     data-root-dir=${group.root_dir}
     data-revision=${revision}
   >
     <span class="mon-group__name" title=${group.root_dir}>${group.name}</span>
-    <span class="mon-group__count">${group.items.length}</span>
+    <span class="mon-group__count">${item_count}</span>
     <span class="mon-group__ops">
       <button
         type="button"

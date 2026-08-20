@@ -3526,6 +3526,65 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Reapply the authoritative blocks order to one existing serial lane after
+     * its dependency graph changes (UI-2gi1 §6.5). Scheduler-owned and non-CAS:
+     * the dependency write is already durable outside the queue revision. A
+     * cycle or already-correct order persists nothing and does not invalidate
+     * client CAS revisions.
+     *
+     * @param {string} workspace
+     * @param {{ lane: string, blocks_edges?: { blocker: string, blockee: string }[] }} input
+     * @returns {QueueOpResult & { changed: boolean, cycle: boolean }}
+     */
+    recalibrateSerialLane(workspace, input) {
+      const current = ensureLoaded(workspace);
+      const index = serialLaneIndex(input.lane);
+      if (index === null || index >= current.serial_lane_count) {
+        return {
+          ok: false,
+          conflict: false,
+          queue: clone(current),
+          reason: 'lane_invalid',
+          changed: false,
+          cycle: false
+        };
+      }
+      const current_order = current.serial_lanes[index].entries.map(
+        (entry) => entry.bead_id
+      );
+      const topo = orderLaneByBlocks(
+        current_order,
+        Array.isArray(input.blocks_edges) ? input.blocks_edges : []
+      );
+      if (topo.cycle) {
+        return {
+          ok: true,
+          conflict: false,
+          queue: clone(current),
+          changed: false,
+          cycle: true
+        };
+      }
+      const changed = topo.order.some(
+        (bead_id, position) => bead_id !== current_order[position]
+      );
+      if (!changed) {
+        return {
+          ok: true,
+          conflict: false,
+          queue: clone(current),
+          changed: false,
+          cycle: false
+        };
+      }
+      const result = applyUnconditional(workspace, (next) => {
+        applyLaneBlocksOrder(next, input.lane, input.blocks_edges);
+        return true;
+      });
+      return { ...result, changed: result.ok, cycle: false };
+    },
+
+    /**
      * Set the concurrency cap (worker-phase2 §3). CAS-guarded, mirroring
      * {@link toggleAutoAdvance}. A value that is not an integer ≥ 1 is REJECTED
      * (`ok:false, conflict:false`) without a write, so a malformed client input

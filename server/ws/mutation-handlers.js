@@ -2,13 +2,17 @@
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
  */
+import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
   AUTO_LITERAL,
   execSettingEnums,
   sessionDefaultEnums,
   validateImplSettings
 } from '../worker/exec-enums.js';
+import { emitQueueChanged } from '../worker/queue-events.js';
+import { getWorkerRuntime } from '../worker/runtime.js';
 import {
   getGitUserNameInWorkspace,
   log,
@@ -18,6 +22,8 @@ import {
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 import { pruneUiOrderForClose } from './ui-order-handlers.js';
+import { recalibrateSerialLaneAfterDepAdd } from './worker-handlers.js';
+import { targetWorkspaceOf } from './workspace-target.js';
 
 const UPDATE_STATUS_ALLOWED = new Set([
   'open',
@@ -26,6 +32,131 @@ const UPDATE_STATUS_ALLOWED = new Set([
   'resolved',
   'closed'
 ]);
+
+/**
+ * Resolve an optional dependency-mutation root. Explicit roots must be both
+ * registered and visible; absence preserves the connection-workspace path
+ * exactly (UI-2gi1 §6.6).
+ *
+ * @param {WebSocket} ws
+ * @param {Record<string, unknown>} payload
+ * @returns {{ root_dir: string, explicit: boolean }|null}
+ */
+function dependencyTargetOf(ws, payload) {
+  const explicit = Object.hasOwn(payload, 'root_dir');
+  if (
+    explicit &&
+    (typeof payload.root_dir !== 'string' || payload.root_dir.length === 0)
+  ) {
+    return null;
+  }
+  const root_dir = targetWorkspaceOf(ws, payload);
+  if (root_dir === null) {
+    return null;
+  }
+  if (explicit) {
+    try {
+      const hidden = new Set(
+        sharedVisibleWorkspacesStore()
+          .listHidden()
+          .map((entry) => path.resolve(entry))
+      );
+      if (hidden.has(root_dir)) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return { root_dir, explicit };
+}
+
+/**
+ * Refresh every target-root projection affected by a dependency write. Each
+ * trigger fails quiet so a successful bd response stays successful
+ * (UI-2gi1 §6.6).
+ *
+ * Runs REGARDLESS of the readback outcome: the edge is already durable, and no
+ * other event observes a dependency change, so a readback hiccup would leave
+ * the stale projection standing until a cache TTL expires with nothing left to
+ * correct it. The trigger set itself stays scoped to an explicit root, where
+ * the connection's own refresh cannot reach (§6.6).
+ *
+ * @param {string} root_dir
+ */
+function refreshDependencyTarget(root_dir) {
+  if (root_dir.length === 0) {
+    return;
+  }
+  try {
+    getWorkerRuntime().runnableCache.invalidate(root_dir);
+  } catch {
+    // ignore
+  }
+  try {
+    getWorkerRuntime().runnableCache.refresh(root_dir);
+  } catch {
+    // ignore
+  }
+  try {
+    emitQueueChanged(root_dir);
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * The authoritative `bd show` record for the bead whose blocker set changed.
+ *
+ * `view_id` addresses whatever row the CLIENT is looking at, which is not
+ * necessarily the dependent bead. The decoration caches key off the record's
+ * own id, so a `view_id` readback refreshes the wrong bead's blocker list.
+ *
+ * @param {WebSocket} ws
+ * @param {{ root_dir: string, explicit: boolean }} target
+ * @param {string} bead_id - The dependent bead (`a`).
+ * @param {string} view_id - The id the primary readback already used.
+ * @param {unknown} primary - That readback's data, or null when it failed.
+ * @returns {Promise<unknown>}
+ */
+async function dependentReadback(ws, target, bead_id, view_id, primary) {
+  if (view_id === bead_id) {
+    return primary;
+  }
+  try {
+    const dependent = await runBdJsonProjectedInWorkspace(
+      ws,
+      'show',
+      ['show', bead_id, '--json'],
+      target.explicit
+        ? { expected_id: bead_id, cwd: target.root_dir }
+        : { expected_id: bead_id }
+    );
+    return dependent.ok === true ? dependent.data : primary;
+  } catch {
+    // Best-effort: the client reply does not depend on this second read.
+    return primary;
+  }
+}
+
+/**
+ * Push a successful dependency readback into the blocker-id decoration cache so
+ * the chip a `dep-remove` just retired stops rendering immediately instead of
+ * waiting out the partial cache's TTL (UI-2gi1 §6.5).
+ *
+ * @param {string} root_dir
+ * @param {unknown} readback
+ */
+function refreshDependencyDecoration(root_dir, readback) {
+  if (root_dir.length === 0 || !readback) {
+    return;
+  }
+  try {
+    getWorkerRuntime().titleCache.refreshFromIssue(root_dir, readback);
+  } catch {
+    // ignore
+  }
+}
 
 /**
  * @param {WebSocket} ws
@@ -754,7 +885,8 @@ export async function handleCreateIssue(ws, req) {
  * @param {RequestEnvelope} req
  */
 export async function handleDepAdd(ws, req) {
-  const { a, b, view_id } = /** @type {any} */ (req.payload || {});
+  const payload = /** @type {Record<string, unknown>} */ (req.payload || {});
+  const { a, b, view_id } = /** @type {any} */ (payload);
   if (
     typeof a !== 'string' ||
     a.length === 0 ||
@@ -772,7 +904,24 @@ export async function handleDepAdd(ws, req) {
     );
     return;
   }
-  const res = await runBdInWorkspace(ws, ['dep', 'add', a, b]);
+  const target = dependencyTargetOf(ws, payload);
+  if (target === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'root_dir must name a visible registered workspace'
+        )
+      )
+    );
+    return;
+  }
+  const res = target.explicit
+    ? await runBdInWorkspace(ws, ['dep', 'add', a, b], {
+        cwd: target.root_dir
+      })
+    : await runBdInWorkspace(ws, ['dep', 'add', a, b]);
   if (res.code !== 0) {
     ws.send(
       JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -784,9 +933,9 @@ export async function handleDepAdd(ws, req) {
     ws,
     'show',
     ['show', id, '--json'],
-    {
-      expected_id: id
-    }
+    target.explicit
+      ? { expected_id: id, cwd: target.root_dir }
+      : { expected_id: id }
   );
   if (shown.ok !== true) {
     // The write already landed; replaying it could apply the change twice.
@@ -800,13 +949,33 @@ export async function handleDepAdd(ws, req) {
         )
       )
     );
-    return;
+  } else {
+    ws.send(JSON.stringify(makeOk(req, shown.data)));
   }
-  ws.send(JSON.stringify(makeOk(req, shown.data)));
+  const recalibration_readback = await dependentReadback(
+    ws,
+    target,
+    a,
+    id,
+    shown.ok === true ? shown.data : null
+  );
+  try {
+    recalibrateSerialLaneAfterDepAdd(
+      target.root_dir,
+      a,
+      b,
+      recalibration_readback
+    );
+  } catch {
+    // ignore
+  }
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
+  }
+  if (target.explicit) {
+    refreshDependencyTarget(target.root_dir);
   }
 }
 
@@ -815,7 +984,8 @@ export async function handleDepAdd(ws, req) {
  * @param {RequestEnvelope} req
  */
 export async function handleDepRemove(ws, req) {
-  const { a, b, view_id } = /** @type {any} */ (req.payload || {});
+  const payload = /** @type {Record<string, unknown>} */ (req.payload || {});
+  const { a, b, view_id } = /** @type {any} */ (payload);
   if (
     typeof a !== 'string' ||
     a.length === 0 ||
@@ -833,7 +1003,24 @@ export async function handleDepRemove(ws, req) {
     );
     return;
   }
-  const res = await runBdInWorkspace(ws, ['dep', 'remove', a, b]);
+  const target = dependencyTargetOf(ws, payload);
+  if (target === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'root_dir must name a visible registered workspace'
+        )
+      )
+    );
+    return;
+  }
+  const res = target.explicit
+    ? await runBdInWorkspace(ws, ['dep', 'remove', a, b], {
+        cwd: target.root_dir
+      })
+    : await runBdInWorkspace(ws, ['dep', 'remove', a, b]);
   if (res.code !== 0) {
     ws.send(
       JSON.stringify(makeError(req, 'bd_error', res.stderr || 'bd failed'))
@@ -845,9 +1032,9 @@ export async function handleDepRemove(ws, req) {
     ws,
     'show',
     ['show', id, '--json'],
-    {
-      expected_id: id
-    }
+    target.explicit
+      ? { expected_id: id, cwd: target.root_dir }
+      : { expected_id: id }
   );
   if (shown.ok !== true) {
     // The write already landed; replaying it could apply the change twice.
@@ -861,13 +1048,29 @@ export async function handleDepRemove(ws, req) {
         )
       )
     );
-    return;
+  } else {
+    ws.send(JSON.stringify(makeOk(req, shown.data)));
   }
-  ws.send(JSON.stringify(makeOk(req, shown.data)));
+  // Removal has no lane recalibration — dropping a constraint leaves the
+  // existing order valid — but the retired blocker id must leave the partial
+  // decoration cache, or its 🔒 chip outlives the edge (UI-2gi1 §6.5).
+  refreshDependencyDecoration(
+    target.root_dir,
+    await dependentReadback(
+      ws,
+      target,
+      a,
+      id,
+      shown.ok === true ? shown.data : null
+    )
+  );
   try {
     triggerMutationRefreshOnce(ws);
   } catch {
     // ignore
+  }
+  if (target.explicit) {
+    refreshDependencyTarget(target.root_dir);
   }
 }
 

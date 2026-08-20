@@ -4,6 +4,7 @@ import { describe, expect, test } from 'vitest';
 import {
   CONSUMER_SUPPORTED_FORMATS,
   normalizeBdComments,
+  normalizeBdConfigMap,
   normalizeBdDependencyRows,
   normalizeBdIssue,
   normalizeBdIssueList,
@@ -320,6 +321,25 @@ describe('normalizeBdReadyExplain', () => {
 
   test('rejects a payload without a blocked array', () => {
     const result = normalizeBdReadyExplain({ ready: [] });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: 'bd_json_shape_invalid' }
+    });
+  });
+});
+
+describe('normalizeBdConfigMap', () => {
+  test('accepts a config map', () => {
+    const payload = { issue_prefix: 'UI', future_key: 42 };
+
+    const result = normalizeBdConfigMap(payload);
+
+    expect(result).toEqual({ ok: true, data: payload });
+  });
+
+  test('rejects a non-object payload', () => {
+    const result = normalizeBdConfigMap([]);
 
     expect(result).toMatchObject({
       ok: false,

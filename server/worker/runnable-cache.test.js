@@ -121,11 +121,100 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         spec_id: 'docs/specs/thing.md',
         spec_reviewer: 'codex',
         plan_state: 'none',
+        blocked: false,
+        blocked_by: [],
         labels: [],
         created_at: null,
         updated_at: null
       }
     ]);
+  });
+
+  test('projects blocked membership and direct blocker ids from ready explain', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [row()],
+        ready_explain: {
+          ready: [],
+          blocked: [
+            {
+              id: 'UI-1',
+              blocked_by: ['UI-2', { id: 'EXT-3' }, {}, null]
+            }
+          ]
+        }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      bead_id: 'UI-1',
+      blocked: true,
+      blocked_by: ['UI-2', 'EXT-3']
+    });
+  });
+
+  test('falls back to embedded blocks edges when the explain row carries no ids', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [
+          row({
+            dependencies: [
+              { type: 'blocks', depends_on_id: 'UI-9' },
+              { dependency_type: 'blocks', id: 'UI-8' },
+              { type: 'related', depends_on_id: 'UI-7' }
+            ]
+          })
+        ],
+        ready_explain: { ready: [], blocked: [{ id: 'UI-1' }] }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({
+      blocked: true,
+      blocked_by: ['UI-9', 'UI-8']
+    });
+  });
+
+  test('keeps a bead the explain source never blocked out of the fallback', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [
+          row({ dependencies: [{ type: 'blocks', depends_on_id: 'UI-9' }] })
+        ],
+        ready_explain: { ready: [{ id: 'UI-1' }], blocked: [] }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ blocked: false, blocked_by: [] });
+  });
+
+  test('fails quiet when ready explain is absent', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: { all: [row()] }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0]).toMatchObject({ blocked: false, blocked_by: [] });
   });
 
   test('accepts native-only and equal dual spec_id but rejects conflicting dual', async () => {

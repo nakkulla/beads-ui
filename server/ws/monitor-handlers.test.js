@@ -82,13 +82,14 @@ function build(input) {
 }
 
 /**
- * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any> }} input
+ * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any>, issuePrefixes?: Record<string, string|null> }} input
  */
 function buildState(input) {
   return buildMonitorWorkspacesState({
     listWorkspaces: () => (input.workspaces || []).map((path) => ({ path })),
     listHidden: () => input.hidden || [],
-    snapshotFor: (key) => (input.queues || {})[key] || snapshot()
+    snapshotFor: (key) => (input.queues || {})[key] || snapshot(),
+    issuePrefixFor: (key) => (input.issuePrefixes || {})[key] ?? null
   });
 }
 
@@ -247,6 +248,69 @@ describe('buildMonitorPipeline runnable lane (UI-qrfo §4)', () => {
   });
 });
 
+describe('buildMonitorPipeline serial lanes (UI-2gi1 §4)', () => {
+  test('excludes a candidate that already sits in a serial lane', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-9', added_at: NOW }] }
+          ]
+        })
+      },
+      runnable: { [WS_A]: [candidate('A-9'), candidate('A-8')] }
+    });
+
+    expect(out[0].runnable).toEqual([candidate('A-8')]);
+  });
+
+  test('keeps a workspace whose only content sits in a serial lane', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1', added_at: NOW }] }
+          ]
+        })
+      }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+  });
+
+  test('preserves behavior when serial lanes are absent or malformed', () => {
+    const legacy_or_malformed_snapshots = [
+      snapshot(),
+      snapshot({ serial_lanes: {} }),
+      snapshot({ serial_lanes: [null, 's1', [], { entries: null }] }),
+      snapshot({
+        serial_lanes: [
+          {
+            entries: [null, 'A-9', [], {}, { bead_id: '' }, { bead_id: 9 }]
+          }
+        ]
+      })
+    ];
+
+    for (const current_snapshot of legacy_or_malformed_snapshots) {
+      const without_pipeline = build({
+        workspaces: [WS_A],
+        snapshots: { [WS_A]: current_snapshot }
+      });
+      const with_runnable = build({
+        workspaces: [WS_A],
+        snapshots: { [WS_A]: current_snapshot },
+        runnable: { [WS_A]: [candidate('A-9')] }
+      });
+
+      expect(without_pipeline).toEqual([]);
+      expect(with_runnable[0].runnable).toEqual([candidate('A-9')]);
+    }
+  });
+});
+
 describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
   test('omits a workspace whose lanes are all empty', () => {
     const out = build({ workspaces: [WS_A], snapshots: {} });
@@ -348,6 +412,28 @@ describe('buildMonitorWorkspacesState (UI-qrfo §4)', () => {
     });
 
     expect(out[0].revision).toBe(7);
+  });
+
+  test('carries the cached issue prefix of each workspace', () => {
+    const out = buildState({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'A', [WS_B]: 'B' }
+    });
+
+    expect(out.map((workspace) => workspace.issue_prefix)).toEqual(['A', 'B']);
+  });
+
+  test('fails quiet when an issue prefix lookup throws', () => {
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () => snapshot(),
+      issuePrefixFor: () => {
+        throw new Error('config boom');
+      }
+    });
+
+    expect(out[0].issue_prefix).toBeNull();
   });
 
   test('carries no retired exec-defaults map', () => {
