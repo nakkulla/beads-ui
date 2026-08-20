@@ -88,20 +88,23 @@ function mount(options = {}) {
       }
       return { values: options.values || {}, warnings: [] };
     });
+  let queue_state = options.queue || {
+    revision: 3,
+    slots: 2,
+    runner_catalog: CATALOG,
+    execution_defaults: EXECUTION_DEFAULTS,
+    orchestration_model: null,
+    orchestration_effort: null,
+    orchestration_speed: null
+  };
   const dialog = createSettingsDialog(root, {
     transport,
     policyStore: policy_store,
     queueStore: {
-      get: () =>
-        options.queue || {
-          revision: 3,
-          slots: 2,
-          runner_catalog: CATALOG,
-          execution_defaults: EXECUTION_DEFAULTS,
-          orchestration_model: null,
-          orchestration_effort: null,
-          orchestration_speed: null
-        }
+      get: () => queue_state,
+      set: (queue) => {
+        queue_state = queue;
+      }
     },
     implPresetStore: {
       get: () => options.presets || { revision: 1, presets: [] }
@@ -124,7 +127,7 @@ beforeEach(() => {
 });
 
 describe('createSettingsDialog tabs', () => {
-  test('renders the three rail tabs in contract order', async () => {
+  test('renders the two rail tabs in contract order', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
@@ -133,22 +136,18 @@ describe('createSettingsDialog tabs', () => {
       tab.getAttribute('data-tab')
     );
 
-    expect(tabs).toEqual(['session', 'worker', 'display']);
-    expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual([
-      '세션',
-      'Worker',
-      '표시'
-    ]);
+    expect(tabs).toEqual(['execution', 'display']);
+    expect(SETTINGS_TABS.map((tab) => tab.label)).toEqual(['실행', '표시']);
   });
 
-  test('opens on the 세션 tab', async () => {
+  test('opens on the 실행 tab', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
 
     const selected = root.querySelector('[role="tab"][aria-selected="true"]');
 
-    expect(selected?.getAttribute('data-tab')).toBe('session');
+    expect(selected?.getAttribute('data-tab')).toBe('execution');
   });
 
   test('switches the active pane on a tab click', async () => {
@@ -157,19 +156,47 @@ describe('createSettingsDialog tabs', () => {
     await settle();
 
     /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
+      root.querySelector('[data-tab="display"]')
     ).click();
 
     expect(
       root
-        .querySelector('#settings-pane-worker')
+        .querySelector('#settings-pane-display')
         ?.classList.contains('settings-dialog__pane--active')
     ).toBe(true);
     expect(
       root
-        .querySelector('#settings-pane-session')
+        .querySelector('#settings-pane-execution')
         ?.classList.contains('settings-dialog__pane--active')
     ).toBe(false);
+  });
+
+  test('renders the execution groups in the approved order', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+
+    const groups = Array.from(
+      root.querySelectorAll(
+        '#settings-pane-execution > .settings-dialog__preset-bar, #settings-pane-execution > .settings-dialog__group'
+      )
+    ).map((element) =>
+      element.classList.contains('settings-dialog__preset-bar')
+        ? '프리셋'
+        : element
+            .querySelector('.settings-dialog__group-title')
+            ?.childNodes[0]?.textContent?.trim()
+    );
+
+    expect(groups).toEqual([
+      '프리셋',
+      '오케스트레이션',
+      '워크플로우',
+      '리뷰 게이트',
+      '구현',
+      '동시 실행',
+      '워커 시스템 프롬프트'
+    ]);
   });
 });
 
@@ -309,15 +336,11 @@ describe('createSettingsDialog session tab', () => {
   });
 });
 
-describe('createSettingsDialog worker tab', () => {
+describe('createSettingsDialog execution tab orchestration', () => {
   test('renders Worker launcher defaults from the snapshot projection', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
-    ).click();
-
     const model = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="orchestration_model"]')
     );
@@ -344,12 +367,8 @@ describe('createSettingsDialog worker tab', () => {
     });
     dialog.open();
     await settle();
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
-    ).click();
-
     const warning = root.querySelector(
-      '#settings-pane-worker [data-execution-defaults-warning]'
+      '#settings-pane-execution [data-execution-defaults-warning]'
     );
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="orchestration_model"]')
@@ -369,10 +388,6 @@ describe('createSettingsDialog worker tab', () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
-    ).click();
-
     const filter = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="orchestration_runtime_filter"]')
     );
@@ -392,10 +407,6 @@ describe('createSettingsDialog worker tab', () => {
     const { root, dialog, transport } = mount();
     dialog.open();
     await settle();
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
-    ).click();
-
     const select = /** @type {HTMLSelectElement} */ (
       root.querySelector('select[data-key="orchestration_model"]')
     );
@@ -409,20 +420,17 @@ describe('createSettingsDialog worker tab', () => {
     );
   });
 
-  test('offers no session key on the Worker tab', async () => {
+  test('offers session and orchestration keys on the execution tab', async () => {
     const { root, dialog } = mount();
     dialog.open();
     await settle();
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
-    ).click();
-
     const keys = Array.from(
-      root.querySelectorAll('#settings-pane-worker select[data-key]')
+      root.querySelectorAll('#settings-pane-execution select[data-key]')
     ).map((select) => select.getAttribute('data-key'));
 
-    expect(keys.some((key) => key?.startsWith('impl_'))).toBe(false);
-    expect(keys.some((key) => key?.endsWith('_review_model'))).toBe(false);
+    expect(keys).toContain('orchestration_model');
+    expect(keys).toContain('impl_runtime');
+    expect(keys).toContain('spec_review_model');
   });
 });
 
@@ -455,7 +463,7 @@ describe('createSettingsDialog implementation presets', () => {
     ]
   };
 
-  test('creates a preset from the current 구현 values', async () => {
+  test('creates a preset from the current explicit execution values', async () => {
     const calls = /** @type {any[]} */ ([]);
     const transport = vi.fn(async (type, payload) => {
       calls.push([type, payload]);
@@ -471,8 +479,20 @@ describe('createSettingsDialog implementation presets', () => {
       }
       return { values: {}, warnings: [] };
     });
-    const { root, dialog } = mount({ transport, presets: PRESETS });
-    dialog.open('session');
+    const { root, dialog } = mount({
+      transport,
+      presets: PRESETS,
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'opus',
+        orchestration_effort: null,
+        orchestration_speed: 'fast'
+      }
+    });
+    dialog.open('execution');
     await settle();
 
     const name = /** @type {HTMLInputElement} */ (
@@ -489,7 +509,11 @@ describe('createSettingsDialog implementation presets', () => {
     expect(create[1]).toEqual({
       expected_revision: 4,
       name: '새 조합',
-      settings: { impl_runtime: 'codex' }
+      settings: {
+        impl_runtime: 'codex',
+        orchestration_model: 'opus',
+        orchestration_speed: 'fast'
+      }
     });
     dialog.destroy();
   });
@@ -507,11 +531,11 @@ describe('createSettingsDialog implementation presets', () => {
       return { values: {}, warnings: [] };
     });
     const { root, dialog } = mount({ transport, presets: PRESETS });
-    dialog.open('session');
+    dialog.open('execution');
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
-      root.querySelector('[aria-label="구현 프리셋"]')
+      root.querySelector('[aria-label="실행 프리셋"]')
     );
     select.value = 'p1';
     select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -540,11 +564,11 @@ describe('createSettingsDialog implementation presets', () => {
       return { values: {}, warnings: [] };
     });
     const { root, dialog } = mount({ transport, presets: PRESETS });
-    dialog.open('session');
+    dialog.open('execution');
     await settle();
 
     const select = /** @type {HTMLSelectElement} */ (
-      root.querySelector('[aria-label="구현 프리셋"]')
+      root.querySelector('[aria-label="실행 프리셋"]')
     );
     select.value = 'p1';
     select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -555,6 +579,108 @@ describe('createSettingsDialog implementation presets', () => {
 
     const del = calls.find(([type]) => type === 'impl-preset-delete');
     expect(del[1]).toEqual({ expected_revision: 4, id: 'p1' });
+    dialog.destroy();
+  });
+
+  test('applies a preset with both revisions and adopts the queue snapshot', async () => {
+    const transport = vi.fn(async (type) => {
+      if (type === 'get-session-defaults') {
+        return { values: {}, warnings: [] };
+      }
+      if (type === 'apply-impl-preset-global') {
+        return {
+          applied: true,
+          conflict: false,
+          revision: 5,
+          values: { workflow_mode: 'fast_track' },
+          warnings: [],
+          queue_applied: true,
+          queue_conflict: false,
+          queue: {
+            revision: 4,
+            slots: 2,
+            runner_catalog: CATALOG,
+            execution_defaults: EXECUTION_DEFAULTS,
+            orchestration_model: 'sol',
+            orchestration_effort: 'medium',
+            orchestration_speed: 'default'
+          }
+        };
+      }
+      return {};
+    });
+    const { root, dialog } = mount({ transport, presets: PRESETS });
+    dialog.open('execution');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[aria-label="실행 프리셋"]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-preset-apply-global]')
+    ).click();
+    await settle();
+
+    expect(transport).toHaveBeenCalledWith('apply-impl-preset-global', {
+      preset_id: 'p1',
+      expected_revision: 4,
+      expected_queue_revision: 3
+    });
+    expect(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="orchestration_model"]')
+      ).value
+    ).toBe('sol');
+    dialog.destroy();
+  });
+
+  test('reports a partial failure when queue values were not applied', async () => {
+    const transport = vi.fn(async (type) => {
+      if (type === 'get-session-defaults') {
+        return { values: {}, warnings: [] };
+      }
+      if (type === 'apply-impl-preset-global') {
+        return {
+          applied: true,
+          conflict: false,
+          revision: 5,
+          values: { workflow_mode: 'fast_track' },
+          warnings: [],
+          queue_applied: false,
+          queue_conflict: true,
+          queue: {
+            revision: 4,
+            slots: 2,
+            runner_catalog: CATALOG,
+            execution_defaults: EXECUTION_DEFAULTS,
+            orchestration_model: null,
+            orchestration_effort: null,
+            orchestration_speed: null
+          }
+        };
+      }
+      return {};
+    });
+    const { root, dialog, notify } = mount({ transport, presets: PRESETS });
+    dialog.open('execution');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[aria-label="실행 프리셋"]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-preset-apply-global]')
+    ).click();
+    await settle();
+
+    expect(notify).toHaveBeenCalledWith(
+      '오케스트레이션 값은 적용되지 않았습니다 — 다시 시도하세요'
+    );
+    expect(dialog.sessionDraft()).toEqual({ workflow_mode: 'fast_track' });
     dialog.destroy();
   });
 });

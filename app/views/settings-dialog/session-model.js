@@ -32,13 +32,10 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_speed'
 ];
 
-/** The five keys an implementation preset carries. */
+/** The fifteen keys an execution preset carries. */
 export const IMPL_PRESET_KEYS = [
-  'impl_dispatch',
-  'impl_runtime',
-  'impl_model',
-  'impl_effort',
-  'impl_speed'
+  ...SESSION_DEFAULT_KEYS,
+  ...ORCHESTRATION_KEYS
 ];
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */

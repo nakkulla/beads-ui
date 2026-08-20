@@ -2,12 +2,8 @@
  * The unified settings dialog — the ONE entry point behind the nav-bar ⚙
  * (spec §D).
  *
- * A left rail splits the surface by OWNERSHIP, not by screen:
- *
- * - `세션` edits the workspace session defaults in `bd kv`, which every
- *   session reads — the terminal-interactive one as much as a Worker session.
- * - `Worker` edits the three orchestration values in the workspace queue,
- *   whose only consumer is the dispatch launcher.
+ * The `실행` tab presents session and Worker-owned settings together while
+ * preserving their separate storage paths.
  * - `표시` edits the per-workspace label/chip display policy.
  *
  * Failure handling follows spec §F: a kv value that cannot be parsed shows a
@@ -28,6 +24,7 @@ import {
   IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
+  ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
@@ -43,8 +40,7 @@ import {
 
 /** The rail's tabs, in display order. */
 export const SETTINGS_TABS = [
-  { id: 'session', label: '세션', glyph: '◆' },
-  { id: 'worker', label: 'Worker', glyph: '▤' },
+  { id: 'execution', label: '실행', glyph: '◆' },
   { id: 'display', label: '표시', glyph: '◫' }
 ];
 
@@ -66,7 +62,7 @@ function isRecord(value) {
  * @param {{
  *   transport: (type: import('../../protocol.js').MessageType, payload?: unknown) => Promise<any>,
  *   policyStore: { get: () => DisplayPolicy|null, set: (p: DisplayPolicy|null) => void, subscribe?: (fn: () => void) => () => void },
- *   queueStore?: { get: () => any },
+ *   queueStore?: { get: () => any, set?: (queue: any) => void },
  *   implPresetStore?: { get: () => any, subscribe?: (fn: () => void) => () => void },
  *   labelOptions: () => string[],
  *   notify?: (message: string) => void,
@@ -88,7 +84,7 @@ export function createSettingsDialog(mount_element, options) {
   dialog.setAttribute('aria-label', '설정');
   mount_element.appendChild(dialog);
 
-  let active_tab = 'session';
+  let active_tab = 'execution';
   let is_open = false;
   let prefix_draft = '';
 
@@ -110,7 +106,7 @@ export function createSettingsDialog(mount_element, options) {
 
   /** @type {string} */
   let preset_choice = '';
-  /** Draft name for saving the current 구현 group as a preset. */
+  /** Draft name for saving the current execution settings as a preset. */
   let preset_name_draft = '';
 
   // The worker system prompt: read-only, server-assembled. It moved here with
@@ -202,7 +198,7 @@ export function createSettingsDialog(mount_element, options) {
     void saveSessionDefaults();
   }
 
-  /** Save the Worker tab's orchestration diff under the queue CAS. */
+  /** Save the orchestration diff under the queue CAS. */
   async function saveOrchestration() {
     const queue = options.queueStore?.get();
     if (!isRecord(queue)) {
@@ -268,16 +264,21 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
-   * The current 구현 group values as preset settings (only the five
-   * implementation keys, empty values dropped).
+   * Current explicit execution values as preset settings. Session values come
+   * from their draft; orchestration values come from the queue snapshot.
    *
    * @returns {Record<string, string>}
    */
-  function implDraftSettings() {
+  function executionDraftSettings() {
     /** @type {Record<string, string>} */
     const settings = {};
+    const queue = options.queueStore?.get();
     for (const key of IMPL_PRESET_KEYS) {
-      const value = session_draft[key];
+      const value = ORCHESTRATION_KEYS.includes(key)
+        ? isRecord(queue)
+          ? queue[key]
+          : undefined
+        : session_draft[key];
       if (typeof value === 'string' && value.length > 0) {
         settings[key] = value;
       }
@@ -286,7 +287,7 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
-   * Save the current 구현 group as an implementation preset: create when no
+   * Save the current execution settings as a preset: create when no
    * preset is selected, update the selected one otherwise. Conflicts notify
    * and re-render — the store snapshot arrives through the presets fanout.
    */
@@ -295,9 +296,9 @@ export function createSettingsDialog(mount_element, options) {
     if (!state) {
       return;
     }
-    const settings = implDraftSettings();
+    const settings = executionDraftSettings();
     if (Object.keys(settings).length === 0) {
-      notify('저장할 구현 값이 없습니다 — 먼저 구현 그룹을 선택하세요');
+      notify('저장할 실행 설정이 없습니다 — 먼저 실행 값을 선택하세요');
       return;
     }
     const selected = (state.presets || []).find(
@@ -341,7 +342,7 @@ export function createSettingsDialog(mount_element, options) {
     }
   }
 
-  /** Delete the selected implementation preset. */
+  /** Delete the selected execution preset. */
   async function onDeletePreset() {
     const state = presetState();
     if (!state || preset_choice.length === 0) {
@@ -366,27 +367,36 @@ export function createSettingsDialog(mount_element, options) {
     }
   }
 
-  /** Apply the chosen implementation preset as the workspace kv default. */
+  /** Apply the chosen execution preset across the kv and queue stores. */
   async function onApplyPresetGlobally() {
     const state = presetState();
-    if (!state || preset_choice.length === 0) {
+    const queue = options.queueStore?.get();
+    if (!state || !isRecord(queue) || preset_choice.length === 0) {
       return;
     }
     try {
       const res = await transport('apply-impl-preset-global', {
         preset_id: preset_choice,
-        expected_revision: state.revision
+        expected_revision: state.revision,
+        expected_queue_revision: queue.revision
       });
       if (res && res.applied) {
         session_baseline = isRecord(res.values) ? { ...res.values } : {};
         session_draft = { ...session_baseline };
         session_warnings = Array.isArray(res.warnings) ? res.warnings : [];
+        if (isRecord(res.queue)) {
+          options.queueStore?.set?.(res.queue);
+          worker_draft = {};
+        }
+        if (res.queue_applied === false) {
+          notify('오케스트레이션 값은 적용되지 않았습니다 — 다시 시도하세요');
+        }
       } else if (res && res.conflict) {
-        notify('구현 프리셋 적용 실패: 프리셋이 방금 변경되었습니다');
+        notify('실행 프리셋 적용 실패: 프리셋이 방금 변경되었습니다');
       }
     } catch (err) {
       notify(
-        `구현 프리셋 적용 실패: ${err instanceof Error ? err.message : String(err)}`
+        `실행 프리셋 적용 실패: ${err instanceof Error ? err.message : String(err)}`
       );
     }
     doRender();
@@ -613,15 +623,43 @@ export function createSettingsDialog(mount_element, options) {
     </div>`;
   }
 
+  /** @returns {Record<string, string|null>} */
+  function currentOrchestrationValues() {
+    const queue = options.queueStore?.get();
+    /** @type {Record<string, string|null>} */
+    const current = {};
+    for (const key of ORCHESTRATION_KEYS) {
+      current[key] = Object.prototype.hasOwnProperty.call(worker_draft, key)
+        ? worker_draft[key]
+        : isRecord(queue) && typeof queue[key] === 'string'
+          ? queue[key]
+          : null;
+    }
+    return current;
+  }
+
   /**
    * @returns {TemplateResult}
    */
-  function sessionPane() {
+  function executionPane() {
     const catalog = runnerCatalog();
     const delegation_off = isDelegationDisabled(session_draft);
     const runtime = session_draft.impl_runtime;
     const model = session_draft.impl_model;
     const state = presetState();
+    const queue = options.queueStore?.get();
+    const orchestration = currentOrchestrationValues();
+    const orchestration_models = orchestrationModelOptions(
+      catalog,
+      worker_runtime_filter
+    );
+    const orchestration_efforts = implEffortOptions(
+      catalog,
+      worker_runtime_filter || undefined,
+      orchestration.orchestration_model || AUTO_LITERAL
+    ).filter((effort) => effort !== AUTO_LITERAL);
+    const slots =
+      isRecord(queue) && typeof queue.slots === 'number' ? queue.slots : 2;
     const projection_available = executionProjection()?.supported === true;
     const workflow_view = buildExecutionOptionView(
       'workflow_mode',
@@ -632,15 +670,15 @@ export function createSettingsDialog(mount_element, options) {
     );
     return html`
       <section
-        class=${`settings-dialog__pane${active_tab === 'session' ? ' settings-dialog__pane--active' : ''}`}
+        class=${`settings-dialog__pane${active_tab === 'execution' ? ' settings-dialog__pane--active' : ''}`}
         role="tabpanel"
-        id="settings-pane-session"
-        aria-label="세션 기본값"
+        id="settings-pane-execution"
+        aria-label="실행 설정"
       >
-        <header class="settings-dialog__pane-head"><h2>세션 기본값</h2></header>
+        <header class="settings-dialog__pane-head"><h2>실행 설정</h2></header>
         <p class="settings-dialog__pane-sub">
-          모든 세션(터미널 대화형 포함)이 따르는 전역 기본값입니다. 이슈에 핀이
-          있으면 핀이 우선합니다.
+          세션 기본값과 Worker 오케스트레이션을 한곳에서 편집합니다. 저장소와
+          저장 경로는 설정 그룹별로 유지됩니다.
         </p>
         ${session_warnings.length > 0
           ? html`<div class="settings-dialog__banner" role="alert">
@@ -660,6 +698,136 @@ export function createSettingsDialog(mount_element, options) {
         ${session_loading
           ? html`<div class="settings-dialog__empty">불러오는 중…</div>`
           : html`
+              <div class="settings-dialog__preset-bar">
+                <select
+                  aria-label="실행 프리셋"
+                  .value=${live(preset_choice)}
+                  @change=${(/** @type {Event} */ ev) => {
+                    preset_choice = String(
+                      /** @type {HTMLSelectElement} */ (ev.target).value
+                    );
+                    doRender();
+                  }}
+                >
+                  <option value="" ?selected=${preset_choice === ''}>
+                    실행 프리셋…
+                  </option>
+                  ${(state?.presets || []).map(
+                    (preset) =>
+                      html`<option
+                        value=${preset.id}
+                        ?selected=${preset.id === preset_choice}
+                      >
+                        ${preset.name}
+                      </option>`
+                  )}
+                </select>
+                <button
+                  type="button"
+                  class="settings-dialog__btn settings-dialog__btn--primary"
+                  data-preset-apply-global
+                  ?disabled=${preset_choice.length === 0}
+                  @click=${onApplyPresetGlobally}
+                >
+                  전역 기본값으로 적용
+                </button>
+                <input
+                  type="text"
+                  class="settings-dialog__preset-name"
+                  placeholder=${preset_choice
+                    ? '이름 (비우면 유지)'
+                    : '새 프리셋 이름'}
+                  aria-label="프리셋 이름"
+                  .value=${live(preset_name_draft)}
+                  @input=${(/** @type {Event} */ ev) => {
+                    preset_name_draft = String(
+                      /** @type {HTMLInputElement} */ (ev.target).value
+                    );
+                  }}
+                />
+                <button
+                  type="button"
+                  class="settings-dialog__btn"
+                  data-preset-save
+                  @click=${onSavePreset}
+                >
+                  ${preset_choice ? '갱신' : '저장'}
+                </button>
+                <button
+                  type="button"
+                  class="settings-dialog__btn"
+                  data-preset-delete
+                  ?disabled=${preset_choice.length === 0}
+                  @click=${onDeletePreset}
+                >
+                  삭제
+                </button>
+              </div>
+
+              <div class="settings-dialog__group">
+                <div class="settings-dialog__group-title">오케스트레이션</div>
+                <div class="settings-dialog__row">
+                  <span class="settings-dialog__row-label">런타임</span>
+                  <span class="settings-dialog__controls">
+                    <select
+                      aria-label="런타임"
+                      data-key="orchestration_runtime_filter"
+                      .value=${live(worker_runtime_filter || UNSET)}
+                      @change=${(/** @type {Event} */ ev) => {
+                        const next = String(
+                          /** @type {HTMLSelectElement} */ (ev.target).value
+                        );
+                        worker_runtime_filter = next === UNSET ? null : next;
+                        doRender();
+                      }}
+                    >
+                      <option
+                        value=${UNSET}
+                        ?selected=${!worker_runtime_filter}
+                      >
+                        전체
+                      </option>
+                      <option
+                        value="claude"
+                        ?selected=${worker_runtime_filter === 'claude'}
+                      >
+                        claude
+                      </option>
+                      <option
+                        value="codex"
+                        ?selected=${worker_runtime_filter === 'codex'}
+                      >
+                        codex
+                      </option>
+                    </select>
+                    <span class="settings-dialog__hint"
+                      >모델 목록을 좁힙니다</span
+                    >
+                  </span>
+                </div>
+                ${selectRow(
+                  'orchestration_model',
+                  '모델',
+                  orchestration_models,
+                  onWorkerChange,
+                  orchestration
+                )}
+                ${selectRow(
+                  'orchestration_effort',
+                  'effort',
+                  orchestration_efforts,
+                  onWorkerChange,
+                  orchestration
+                )}
+                ${selectRow(
+                  'orchestration_speed',
+                  '속도',
+                  IMPL_SPEEDS,
+                  onWorkerChange,
+                  orchestration
+                )}
+              </div>
+
               <div class="settings-dialog__group">
                 <div class="settings-dialog__group-title">워크플로우</div>
                 <div class="settings-dialog__row">
@@ -774,204 +942,35 @@ export function createSettingsDialog(mount_element, options) {
                 )}
               </div>
 
-              <div class="settings-dialog__preset-bar">
-                <select
-                  aria-label="구현 프리셋"
-                  .value=${live(preset_choice)}
-                  @change=${(/** @type {Event} */ ev) => {
-                    preset_choice = String(
-                      /** @type {HTMLSelectElement} */ (ev.target).value
-                    );
-                    doRender();
-                  }}
-                >
-                  <option value="" ?selected=${preset_choice === ''}>
-                    구현 프리셋…
-                  </option>
-                  ${(state?.presets || []).map(
-                    (preset) =>
-                      html`<option
-                        value=${preset.id}
-                        ?selected=${preset.id === preset_choice}
+              <div class="settings-dialog__group">
+                <div class="settings-dialog__group-title">동시 실행</div>
+                <div class="settings-dialog__row">
+                  <span class="settings-dialog__row-label">slots</span>
+                  <span class="settings-dialog__controls">
+                    <span class="settings-dialog__stepper">
+                      <button
+                        type="button"
+                        aria-label="slots 감소"
+                        @click=${() => onSlotsChange(slots - 1)}
                       >
-                        ${preset.name}
-                      </option>`
-                  )}
-                </select>
-                <button
-                  type="button"
-                  class="settings-dialog__btn settings-dialog__btn--primary"
-                  ?disabled=${preset_choice.length === 0}
-                  @click=${onApplyPresetGlobally}
-                >
-                  전역 기본값으로 적용
-                </button>
-                <input
-                  type="text"
-                  class="settings-dialog__preset-name"
-                  placeholder=${preset_choice
-                    ? '이름 (비우면 유지)'
-                    : '새 프리셋 이름'}
-                  aria-label="프리셋 이름"
-                  .value=${live(preset_name_draft)}
-                  @input=${(/** @type {Event} */ ev) => {
-                    preset_name_draft = String(
-                      /** @type {HTMLInputElement} */ (ev.target).value
-                    );
-                  }}
-                />
-                <button
-                  type="button"
-                  class="settings-dialog__btn"
-                  data-preset-save
-                  @click=${onSavePreset}
-                >
-                  ${preset_choice ? '갱신' : '저장'}
-                </button>
-                <button
-                  type="button"
-                  class="settings-dialog__btn"
-                  data-preset-delete
-                  ?disabled=${preset_choice.length === 0}
-                  @click=${onDeletePreset}
-                >
-                  삭제
-                </button>
+                        −
+                      </button>
+                      <span class="settings-dialog__stepper-value"
+                        >${slots}</span
+                      >
+                      <button
+                        type="button"
+                        aria-label="slots 증가"
+                        @click=${() => onSlotsChange(slots + 1)}
+                      >
+                        +
+                      </button>
+                    </span>
+                  </span>
+                </div>
               </div>
+              ${systemPromptSection()}
             `}
-      </section>
-    `;
-  }
-
-  /**
-   * @returns {TemplateResult}
-   */
-  function workerPane() {
-    const queue = options.queueStore?.get();
-    const catalog = runnerCatalog();
-    const current = {
-      orchestration_model:
-        worker_draft.orchestration_model ??
-        (isRecord(queue) ? queue.orchestration_model : null),
-      orchestration_effort:
-        worker_draft.orchestration_effort ??
-        (isRecord(queue) ? queue.orchestration_effort : null),
-      orchestration_speed:
-        worker_draft.orchestration_speed ??
-        (isRecord(queue) ? queue.orchestration_speed : null)
-    };
-    const models = orchestrationModelOptions(catalog, worker_runtime_filter);
-    const efforts = implEffortOptions(
-      catalog,
-      worker_runtime_filter || undefined,
-      current.orchestration_model || AUTO_LITERAL
-    ).filter((effort) => effort !== AUTO_LITERAL);
-    const slots =
-      isRecord(queue) && typeof queue.slots === 'number' ? queue.slots : 2;
-    return html`
-      <section
-        class=${`settings-dialog__pane${active_tab === 'worker' ? ' settings-dialog__pane--active' : ''}`}
-        role="tabpanel"
-        id="settings-pane-worker"
-        aria-label="Worker 설정"
-      >
-        <header class="settings-dialog__pane-head"><h2>Worker 설정</h2></header>
-        <p class="settings-dialog__pane-sub">
-          Worker가 세션을 띄울 때 쓰는 오케스트레이션 설정과 동시 실행 수입니다.
-        </p>
-        ${executionProjection()?.supported !== true
-          ? html`<div
-              class="settings-dialog__banner settings-dialog__banner--projection"
-              data-execution-defaults-warning
-              role="alert"
-            >
-              실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
-            </div>`
-          : ''}
-        <div class="settings-dialog__group">
-          <div class="settings-dialog__group-title">오케스트레이션</div>
-          <div class="settings-dialog__row">
-            <span class="settings-dialog__row-label">런타임</span>
-            <span class="settings-dialog__controls">
-              <select
-                aria-label="런타임"
-                data-key="orchestration_runtime_filter"
-                .value=${live(worker_runtime_filter || UNSET)}
-                @change=${(/** @type {Event} */ ev) => {
-                  const next = String(
-                    /** @type {HTMLSelectElement} */ (ev.target).value
-                  );
-                  worker_runtime_filter = next === UNSET ? null : next;
-                  doRender();
-                }}
-              >
-                <option value=${UNSET} ?selected=${!worker_runtime_filter}>
-                  전체
-                </option>
-                <option
-                  value="claude"
-                  ?selected=${worker_runtime_filter === 'claude'}
-                >
-                  claude
-                </option>
-                <option
-                  value="codex"
-                  ?selected=${worker_runtime_filter === 'codex'}
-                >
-                  codex
-                </option>
-              </select>
-              <span class="settings-dialog__hint">모델 목록을 좁힙니다</span>
-            </span>
-          </div>
-          ${selectRow(
-            'orchestration_model',
-            '모델',
-            models,
-            onWorkerChange,
-            current
-          )}
-          ${selectRow(
-            'orchestration_effort',
-            'effort',
-            efforts,
-            onWorkerChange,
-            current
-          )}
-          ${selectRow(
-            'orchestration_speed',
-            '속도',
-            IMPL_SPEEDS,
-            onWorkerChange,
-            current
-          )}
-        </div>
-        <div class="settings-dialog__group">
-          <div class="settings-dialog__group-title">동시 실행</div>
-          <div class="settings-dialog__row">
-            <span class="settings-dialog__row-label">slots</span>
-            <span class="settings-dialog__controls">
-              <span class="settings-dialog__stepper">
-                <button
-                  type="button"
-                  aria-label="slots 감소"
-                  @click=${() => onSlotsChange(slots - 1)}
-                >
-                  −
-                </button>
-                <span class="settings-dialog__stepper-value">${slots}</span>
-                <button
-                  type="button"
-                  aria-label="slots 증가"
-                  @click=${() => onSlotsChange(slots + 1)}
-                >
-                  +
-                </button>
-              </span>
-            </span>
-          </div>
-        </div>
-        ${systemPromptSection()}
       </section>
     `;
   }
@@ -1130,7 +1129,7 @@ export function createSettingsDialog(mount_element, options) {
             </button>
           </nav>
           <div class="settings-dialog__panes">
-            ${sessionPane()} ${workerPane()} ${displayPane()}
+            ${executionPane()} ${displayPane()}
           </div>
         </div>
       `,
@@ -1178,7 +1177,7 @@ export function createSettingsDialog(mount_element, options) {
     });
   }
 
-  function open(tab_id = 'session') {
+  function open(tab_id = 'execution') {
     if (is_open) {
       return;
     }

@@ -63,8 +63,8 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
  * @property {(id: string) => void} [onNavigate] - Navigate to a dependency id.
- * @property {() => void} [onOpenExecPresets] - Close detail, move to Worker,
- * and open the Worker-owned global execution-settings dialog.
+ * @property {() => void} [onOpenExecPresets] - Close detail and open the
+ * global execution-settings dialog.
  * @property {() => void} onClose - Invoked to request the overlay be closed.
  */
 
@@ -90,6 +90,8 @@ export function createDetailPanel(mount_element, options) {
   let exec_local = {};
   let selected_preset_id = '';
   let applying_preset = false;
+  /** @type {string[]} */
+  let skipped_orchestration_keys = [];
   let effective_expanded = false;
   /**
    * The workspace `bd kv` session defaults — the `전역` layer of the card. Read
@@ -740,6 +742,7 @@ export function createDetailPanel(mount_element, options) {
       return;
     }
     applying_preset = true;
+    skipped_orchestration_keys = [];
     doRender();
     try {
       const res = /** @type {any} */ (
@@ -762,10 +765,23 @@ export function createDetailPanel(mount_element, options) {
       const issue = res && Array.isArray(res.issue) ? res.issue[0] : res?.issue;
       if (res && res.applied && issue && typeof issue === 'object') {
         current = issue;
+        skipped_orchestration_keys = Array.isArray(
+          res.skipped_orchestration_keys
+        )
+          ? res.skipped_orchestration_keys.filter(
+              (/** @type {unknown} */ key) => typeof key === 'string'
+            )
+          : [];
         for (const key of EXEC_KEYS) {
           delete exec_local[key];
         }
-        showToast('구현 프리셋을 적용했습니다.', 'success', 2400);
+        showToast(
+          skipped_orchestration_keys.length > 0
+            ? '실행 프리셋을 적용했습니다. 오케스트레이션 3키는 Bead에 핀할 수 없어 건너뛰었습니다.'
+            : '실행 프리셋을 적용했습니다.',
+          'success',
+          4000
+        );
         return;
       }
       if (res && res.error === 'bd_readback_failed') {
@@ -775,7 +791,7 @@ export function createDetailPanel(mount_element, options) {
           4000
         );
       } else {
-        showToast('구현 프리셋 적용 실패', 'error', 4000);
+        showToast('실행 프리셋 적용 실패', 'error', 4000);
       }
     } catch (err) {
       if (
@@ -789,7 +805,7 @@ export function createDetailPanel(mount_element, options) {
           4000
         );
       } else {
-        showToast('구현 프리셋 적용 실패', 'error', 4000);
+        showToast('실행 프리셋 적용 실패', 'error', 4000);
       }
     } finally {
       applying_preset = false;
@@ -1766,7 +1782,8 @@ export function createDetailPanel(mount_element, options) {
               expanded: effective_expanded,
               presets: execPresetState()?.presets || [],
               preset_id: selected_preset_id,
-              preset_busy: applying_preset
+              preset_busy: applying_preset,
+              skipped_orchestration_keys
             },
             {
               onToggle: (open) => {
@@ -1786,6 +1803,7 @@ export function createDetailPanel(mount_element, options) {
               },
               onPresetSelect: (id) => {
                 selected_preset_id = id;
+                skipped_orchestration_keys = [];
                 doRender();
               },
               onPresetApply: () => void applyImplPreset()
@@ -1832,6 +1850,7 @@ export function createDetailPanel(mount_element, options) {
       if (id !== current_id) {
         exec_local = {};
         selected_preset_id = '';
+        skipped_orchestration_keys = [];
         effective_expanded = false;
         resetEditors();
         resetComments();
@@ -1848,6 +1867,7 @@ export function createDetailPanel(mount_element, options) {
       exec_local = {};
       selected_preset_id = '';
       applying_preset = false;
+      skipped_orchestration_keys = [];
       effective_expanded = false;
       resetEditors();
       resetComments();
@@ -1882,6 +1902,7 @@ export function createDetailPanel(mount_element, options) {
       current = null;
       selected_preset_id = '';
       applying_preset = false;
+      skipped_orchestration_keys = [];
       resetComments();
       resetTaskPrompt();
       render(html``, mount_element);

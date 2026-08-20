@@ -491,7 +491,7 @@ describe('effective-settings card', () => {
     panel.destroy();
   });
 
-  test('applies an implementation preset to the bead with the snapshot revision', async () => {
+  test('applies twelve session keys and reports skipped orchestration keys', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const transport = vi.fn(async (/** @type {string} */ type) => {
       if (type === 'get-session-defaults') {
@@ -502,7 +502,28 @@ describe('effective-settings card', () => {
           applied: true,
           conflict: false,
           revision: 4,
-          issue: { ...BASE_ISSUE, metadata: { impl_dispatch: 'main' } }
+          issue: {
+            ...BASE_ISSUE,
+            metadata: {
+              workflow_mode: 'fast_track',
+              spec_review_model: 'codex',
+              spec_review_effort: 'xhigh',
+              plan_review_model: 'fable',
+              plan_review_effort: 'high',
+              impl_review_model: 'codex',
+              impl_review_effort: 'xhigh',
+              impl_dispatch: 'delegated',
+              impl_runtime: 'codex',
+              impl_model: 'sol',
+              impl_effort: 'medium',
+              impl_speed: 'default'
+            }
+          },
+          skipped_orchestration_keys: [
+            'orchestration_model',
+            'orchestration_effort',
+            'orchestration_speed'
+          ]
         };
       }
       return [];
@@ -515,7 +536,13 @@ describe('effective-settings card', () => {
           {
             id: 'p1',
             name: '메인 구현',
-            settings: { impl_dispatch: 'main' },
+            settings: {
+              impl_dispatch: 'delegated',
+              impl_runtime: 'codex',
+              orchestration_model: 'sol',
+              orchestration_effort: 'medium',
+              orchestration_speed: 'default'
+            },
             compatible: true
           }
         ]
@@ -541,6 +568,12 @@ describe('effective-settings card', () => {
       preset_id: 'p1',
       expected_revision: 4
     });
+    expect(
+      mount.querySelector('[data-preset-skip-notice]')?.textContent
+    ).toContain('오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀');
+    expect(
+      mount.querySelectorAll('.detail-effective__row [data-source="pin"]')
+    ).toHaveLength(12);
     panel.destroy();
   });
 

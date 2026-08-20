@@ -1554,7 +1554,7 @@ export function bootstrap(root_element) {
         }
       },
       onOpenExecPresets: () => {
-        settings_dialog.open('session');
+        settings_dialog.open('execution');
       }
     });
 
