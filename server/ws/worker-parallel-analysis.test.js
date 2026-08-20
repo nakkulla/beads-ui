@@ -102,7 +102,7 @@ const ISSUES = [issueOf('UI-a'), issueOf('UI-b'), issueOf('UI-c')];
  */
 function analysisResult(over = {}) {
   return {
-    schema_version: 2,
+    schema_version: 3,
     snapshot_digest: '',
     issues: [{ bead_id: 'UI-c', verdict: 'parallel_ok', reason: '독립' }],
     groups: [
@@ -382,20 +382,105 @@ describe('ws worker-parallel-analysis channel (UI-04vo seam J)', () => {
       ...deps,
       listIssues: async () => [
         issueOf('UI-a'),
+        issueOf('UI-b'),
         issueOf('UI-x', { metadata: { route: 'quick_fix' } }),
         issueOf('UI-z', { status: 'closed' })
-      ]
+      ],
+      analysisContext: () => ({
+        resolveBase: async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: BASE_SHA
+        }),
+        gitRun: async (/** @type {string[]} */ args) => {
+          const target = String(args[2]);
+          if (target.endsWith('docs/UI-a.md')) {
+            return {
+              code: 0,
+              stdout: '---\nscope:\n  - server/worker\n---\n'
+            };
+          }
+          if (target.endsWith('docs/UI-b.md')) {
+            return { code: 0, stdout: '---\nscope:\n  - server\n---\n' };
+          }
+          return { code: 128, stdout: '' };
+        }
+      })
     });
     const sock = fakeSocket();
 
     await send(sock, 't1', 'worker-parallel-analysis-targets', {});
 
     expect(replyFor(sock, 't1').payload.qualified).toEqual([
-      expect.objectContaining({ id: 'UI-a', lane: 'parallel' })
+      expect.objectContaining({
+        id: 'UI-a',
+        lane: 'parallel',
+        scope: ['server/worker'],
+        overlaps: ['UI-b']
+      }),
+      expect.objectContaining({
+        id: 'UI-b',
+        scope: ['server'],
+        overlaps: ['UI-a']
+      })
     ]);
     expect(replyFor(sock, 't1').payload.excluded).toEqual([
       expect.objectContaining({ id: 'UI-x', reason: 'route', lane: null })
     ]);
+  });
+
+  test('omits scope fields when context, base, or git resolution fails', async () => {
+    seedQueue();
+    const deps = analysisDeps();
+    __setAnalysisDepsForTest({
+      ...deps,
+      listIssues: async () => [issueOf('UI-a')],
+      analysisContext: () => null
+    });
+    const sock = fakeSocket();
+
+    await send(sock, 't-context', 'worker-parallel-analysis-targets', {});
+    __setAnalysisDepsForTest({
+      ...deps,
+      listIssues: async () => [issueOf('UI-a')],
+      analysisContext: () => ({
+        resolveBase: async () => ({ ok: false }),
+        gitRun: vi.fn()
+      })
+    });
+    await send(sock, 't-base', 'worker-parallel-analysis-targets', {});
+    __setAnalysisDepsForTest({
+      ...deps,
+      listIssues: async () => [issueOf('UI-a')],
+      analysisContext: () => ({
+        resolveBase: async () => ({
+          ok: true,
+          base: 'main',
+          base_oid: BASE_SHA
+        }),
+        gitRun: async () => ({ code: 128, stdout: '' })
+      })
+    });
+    await send(sock, 't-git', 'worker-parallel-analysis-targets', {});
+
+    expect(replyFor(sock, 't-context').payload.qualified[0]).not.toHaveProperty(
+      'scope'
+    );
+    expect(replyFor(sock, 't-context').payload.qualified[0]).not.toHaveProperty(
+      'overlaps'
+    );
+    expect(replyFor(sock, 't-base').payload.qualified[0]).not.toHaveProperty(
+      'scope'
+    );
+    expect(replyFor(sock, 't-base').payload.qualified[0]).not.toHaveProperty(
+      'overlaps'
+    );
+    expect(replyFor(sock, 't-git').payload.qualified[0]).not.toHaveProperty(
+      'scope'
+    );
+    expect(replyFor(sock, 't-git').payload.qualified[0]).not.toHaveProperty(
+      'overlaps'
+    );
   });
 
   test('starts analysis with only the requested qualified subset', async () => {

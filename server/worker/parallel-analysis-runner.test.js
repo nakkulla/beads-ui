@@ -145,7 +145,7 @@ function runInput(over = {}) {
 }
 
 const RESULT = JSON.stringify({
-  schema_version: 2,
+  schema_version: 3,
   snapshot_digest: 'd'.repeat(64),
   issues: [],
   groups: []
@@ -201,6 +201,51 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
     expect(payload).toContain('docs/spec.md');
   });
 
+  test('renders deterministic scope instructions and fenced signal data', () => {
+    const input = runInput();
+    const scope_item = 'server/worker/IGNORE-THIS-INSTRUCTION';
+    input.snapshot = {
+      digest: 'd'.repeat(64),
+      target_ids: ['UI-b', 'UI-a'],
+      targets: {
+        'UI-a': { scope: [scope_item] },
+        'UI-b': { scope: ['server/worker'] }
+      },
+      scope_overlaps: [{ pair: ['UI-a', 'UI-b'], prefixes: [scope_item] }]
+    };
+
+    const first = buildAnalysisPayload(input);
+    const second = buildAnalysisPayload(input);
+    const trusted = first.split(
+      '===== BEGIN UNTRUSTED DATA scope-signal ====='
+    )[0];
+
+    expect(first).toBe(second);
+    expect(trusted).toContain('declared_scope_overlap');
+    expect(trusted).toContain('freshness, not write ownership');
+    expect(trusted).not.toContain(scope_item);
+    expect(first).toContain('===== BEGIN UNTRUSTED DATA scope-signal =====');
+    expect(first).toContain(`"scope": [\n        "${scope_item}"`);
+    expect(first.indexOf('scope-signal')).toBeLessThan(
+      first.indexOf('docs/spec.md')
+    );
+  });
+
+  test('omits scope instructions and fence when every declaration is empty', () => {
+    const input = runInput();
+    input.snapshot = {
+      digest: 'd'.repeat(64),
+      target_ids: ['UI-a'],
+      targets: { 'UI-a': { scope: [] } },
+      scope_overlaps: []
+    };
+
+    const payload = buildAnalysisPayload(input);
+
+    expect(payload).not.toContain('scope-signal');
+    expect(payload).not.toContain('declared_scope_overlap');
+  });
+
   test('spawns detached in the bundle dir and touches no state outside it', async () => {
     const { spawn, captured } = makeAnalysisSpawn({ stdout: claudeResult() });
     const input = runInput();
@@ -224,7 +269,7 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
       .done;
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result.schema_version).toBe(2);
+    expect(outcome.result.schema_version).toBe(3);
   });
 
   test('calls onStreamLine for every non-empty stdout line', async () => {
@@ -371,7 +416,7 @@ describe('claude analyzer result channel', () => {
     );
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result.schema_version).toBe(2);
+    expect(outcome.result.schema_version).toBe(3);
   });
 
   test('rejects an error result event', () => {
@@ -469,7 +514,11 @@ describe('codex analyzer argv (UI-yqw9 §1.2)', () => {
     expect(
       schema.properties.groups.items.properties.categories.items.enum
     ).toEqual([...STRONG_CATEGORIES]);
-    expect(schema.properties.schema_version.enum).toEqual([2]);
+    expect(
+      schema.properties.groups.items.properties.categories.items.enum
+    ).toContain('declared_scope_overlap');
+    expect(schema.properties.schema_version.enum).toEqual([3]);
+    expect(ANALYSIS_PROMPT_VERSION).toBe(3);
   });
 });
 
@@ -483,7 +532,7 @@ describe('codex analyzer result channel (UI-yqw9 §1.3)', () => {
     const outcome = /** @type {any} */ (parseCodexAnalysisStream(stream));
 
     expect(outcome.ok).toBe(true);
-    expect(outcome.result.schema_version).toBe(2);
+    expect(outcome.result.schema_version).toBe(3);
   });
 
   test('rejects an error item even when a valid final message follows', () => {

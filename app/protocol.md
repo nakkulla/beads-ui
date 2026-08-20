@@ -352,20 +352,25 @@ model.
   payload: `{ id }`.
 - `worker-parallel-analysis-snapshot` (push) payload:
   `{ type, id, root_dir, settings: { revision, runner, model, effort }, job: { job_id, identity, session_id }|null, runs: AnalysisRun[], last_good: { identity_digest, at, result, target_ids }|null }`.
-  `result` is the VALIDATED schema-v2 result; each group carries the server's
+  `result` is the VALIDATED schema-v3 result; each group carries the server's
   `eligible` stamp, and no consumer recomputes that judgment. `job.job_id` IS
   the run id, so the drawer subscribes through the existing
   `subscribe-session-log` with that id in the `attempt_id` slot — the analyzer
   needs no session-log message type of its own. `runs` is the durable history
   (newest first, capped at 20) described below.
 - `worker-parallel-analysis-targets` payload: `{ root_dir }` — reply
-  `{ qualified: [{ id, title, route, spec_id, plan_path, lane }], excluded: [{ id, title, reason, lane }] }`.
+  `{ qualified: [{ id, title, route, spec_id, plan_path, lane, scope?, overlaps? }], excluded: [{ id, title, reason, lane }] }`.
   The population is the server's ANALYZABLE UNIVERSE, not a lane listing:
   `qualified` is exactly what a `target_ids`-less start would analyze, and
   `excluded` is every other open Bead with its reason. `lane` is
   `'parallel' | 's<n>' | null` (unplaced) and is display-only — an unplaced Bead
   is deliberately included, because the candidate lane exists only on the Board.
-  No git blob is pinned, so opening the dialog costs no git work.
+  When the pinned base can be resolved, `scope` is the sorted declared artifact
+  scope (an empty array means undeclared) and `overlaps` is the sorted list of
+  other qualified Bead ids with a server-computed pairwise overlap. Both fields
+  are advisory and display-only. Missing workspace context, an unresolved base,
+  or a git read error omits both fields and preserves the legacy reply instead
+  of failing the target panel.
 - `worker-parallel-analysis-prompt` payload: `{ root_dir, run_id }` — reply
   `{ ok: true, prompt }` or `{ ok: false, reason: 'not_found' }`. The stored
   bytes are the exact bytes written to the analyzer's stdin.

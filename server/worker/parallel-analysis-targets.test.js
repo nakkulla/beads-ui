@@ -4,9 +4,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   PROMPT_SCHEMA_VERSION,
+  calculateScopeOverlaps,
   collectAnalysisSnapshot,
   describeAnalysisTargets,
-  qualifyTargets
+  qualifyTargets,
+  scopeItemsOverlap
 } from './parallel-analysis-targets.js';
 import {
   parallelAnalysisCachePath,
@@ -51,7 +53,7 @@ function issueOf(over = {}) {
 /**
  * Fake pinned-blob git runner: oid/size lookups against a fixture map.
  *
- * @param {Record<string, { oid: string, bytes: number }>} blobs - keyed by
+ * @param {Record<string, { oid: string, bytes: number, content?: string, content_error?: boolean }>} blobs - keyed by
  * `<sha>:<path>`.
  */
 function gitRunOf(blobs) {
@@ -66,6 +68,12 @@ function gitRunOf(blobs) {
       const hit = blobs[args[2]];
       return hit
         ? { code: 0, stdout: `${hit.bytes}\n` }
+        : { code: 128, stdout: '' };
+    }
+    if (args[0] === 'cat-file' && args[1] === 'blob') {
+      const hit = blobs[args[2]];
+      return hit && hit.content_error !== true
+        ? { code: 0, stdout: hit.content || '' }
         : { code: 128, stdout: '' };
     }
     return { code: 1, stdout: '' };
@@ -220,6 +228,33 @@ describe('parallel-analysis target picker', () => {
   });
 });
 
+describe('parallel-analysis scope overlap', () => {
+  test('detects equal and directory-prefix items after trailing slash normalization', () => {
+    expect(scopeItemsOverlap('server/worker', 'server/worker')).toBe(true);
+    expect(scopeItemsOverlap('server/worker/', 'server/worker/queue.js')).toBe(
+      true
+    );
+    expect(scopeItemsOverlap('server/worker', 'server/worker-x.js')).toBe(
+      false
+    );
+  });
+
+  test('returns sorted pairwise overlaps and excludes unknown scopes', () => {
+    const overlaps = calculateScopeOverlaps({
+      'UI-c': { scope: [] },
+      'UI-b': { scope: ['server/worker/queue.js', 'app/views'] },
+      'UI-a': { scope: ['server/', 'app/views/worker'] }
+    });
+
+    expect(overlaps).toEqual([
+      {
+        pair: ['UI-a', 'UI-b'],
+        prefixes: ['app/views/worker', 'server/worker/queue.js']
+      }
+    ]);
+  });
+});
+
 describe('parallel-analysis snapshot (UI-04vo seam F)', () => {
   const blobs = {
     [`${BASE.sha}:docs/spec.md`]: { oid: 'c'.repeat(40), bytes: 120 }
@@ -250,6 +285,7 @@ describe('parallel-analysis snapshot (UI-04vo seam F)', () => {
     const snap = result.snapshot;
     expect(snap.base_sha).toBe(BASE.sha);
     expect(snap.prompt_schema_version).toBe(PROMPT_SCHEMA_VERSION);
+    expect(PROMPT_SCHEMA_VERSION).toBe(3);
     expect(snap.target_ids).toEqual(['UI-a', 'UI-b']);
     expect(snap.targets['UI-a'].artifacts[0]).toMatchObject({
       path: 'docs/spec.md',
@@ -257,6 +293,8 @@ describe('parallel-analysis snapshot (UI-04vo seam F)', () => {
       oid: 'c'.repeat(40),
       bytes: 120
     });
+    expect(snap.targets['UI-a'].scope).toEqual([]);
+    expect(snap.scope_overlaps).toEqual([]);
     expect(typeof snap.digest).toBe('string');
     expect(snap.digest).toHaveLength(64);
   });
@@ -289,6 +327,111 @@ describe('parallel-analysis snapshot (UI-04vo seam F)', () => {
     );
 
     expect(first.snapshot.digest).not.toBe(second.snapshot.digest);
+  });
+
+  test('unions spec and plan scopes and records deterministic overlaps', async () => {
+    const spec_a = 'docs/a.md';
+    const plan_a = 'docs/plan-a.md';
+    const spec_b = 'docs/b.md';
+    const gitRun = gitRunOf({
+      [`${BASE.sha}:${spec_a}`]: {
+        oid: 'a'.repeat(40),
+        bytes: 80,
+        content: '---\nscope:\n  - server/worker\n---\n'
+      },
+      [`${BASE.sha}:${plan_a}`]: {
+        oid: 'b'.repeat(40),
+        bytes: 80,
+        content: '---\nscope:\n  - app/views\n  - server/worker\n---\n'
+      },
+      [`${BASE.sha}:${spec_b}`]: {
+        oid: 'c'.repeat(40),
+        bytes: 80,
+        content:
+          '---\nscope:\n  - server/worker/queue-store.js\n  - docs\n---\n'
+      }
+    });
+    const issues = [
+      issueOf({
+        id: 'UI-a',
+        metadata: {
+          route: 'full_plan',
+          spec_id: spec_a,
+          plan_path: plan_a,
+          spec_review: RECEIPT
+        }
+      }),
+      issueOf({
+        id: 'UI-b',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: spec_b,
+          spec_review: RECEIPT
+        }
+      })
+    ];
+
+    const result = await collectAnalysisSnapshot(input({ issues, gitRun }));
+
+    expect(result.snapshot.targets['UI-a'].scope).toEqual([
+      'app/views',
+      'server/worker'
+    ]);
+    expect(result.snapshot.targets['UI-b'].scope).toEqual([
+      'docs',
+      'server/worker/queue-store.js'
+    ]);
+    expect(result.snapshot.scope_overlaps).toEqual([
+      {
+        pair: ['UI-a', 'UI-b'],
+        prefixes: ['server/worker/queue-store.js']
+      }
+    ]);
+  });
+
+  test('changes the digest when declared scope changes with stable blob metadata', async () => {
+    const first = await collectAnalysisSnapshot(
+      input({
+        gitRun: gitRunOf({
+          [`${BASE.sha}:docs/spec.md`]: {
+            oid: 'c'.repeat(40),
+            bytes: 120,
+            content: '---\nscope:\n  - server\n---\n'
+          }
+        })
+      })
+    );
+    const second = await collectAnalysisSnapshot(
+      input({
+        gitRun: gitRunOf({
+          [`${BASE.sha}:docs/spec.md`]: {
+            oid: 'c'.repeat(40),
+            bytes: 120,
+            content: '---\nscope:\n  - app\n---\n'
+          }
+        })
+      })
+    );
+
+    expect(first.snapshot.digest).not.toBe(second.snapshot.digest);
+  });
+
+  test('downgrades artifact content read failures to an empty scope', async () => {
+    const result = await collectAnalysisSnapshot(
+      input({
+        gitRun: gitRunOf({
+          [`${BASE.sha}:docs/spec.md`]: {
+            oid: 'c'.repeat(40),
+            bytes: 120,
+            content_error: true
+          }
+        })
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.snapshot.targets['UI-t1'].scope).toEqual([]);
+    expect(result.snapshot.scope_overlaps).toEqual([]);
   });
 
   test('folds active lineages into context but never into submit targets', async () => {
