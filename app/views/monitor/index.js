@@ -39,7 +39,7 @@ import {
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
- * @import { MonitorItem, MonitorLanes } from './lanes.js'
+ * @import { MonitorItem, MonitorLanes, MonitorQueueGroup } from './lanes.js'
  */
 
 /**
@@ -189,6 +189,74 @@ function cardTemplate(item, now) {
     data-queue-length=${String(item.queue_length ?? '')}
   >
     ${monitorCardBody(item, now)}
+  </div>`;
+}
+
+/**
+ * Render one waiting repo group. 직렬 레인이 설정된 새 스냅샷만 서브레인 헤더를
+ * 더하고, 두 필드가 없는 구버전 스냅샷은 기존 DOM을 그대로 유지한다
+ * (UI-2gi1 §5).
+ *
+ * @param {MonitorQueueGroup} group
+ * @param {number} now
+ * @returns {import('lit-html').TemplateResult}
+ */
+function queueGroupTemplate(group, now) {
+  const uses_sublanes =
+    group.serial_lane_count > 0 || group.sublanes.serial.length > 0;
+  const parallel = uses_sublanes
+    ? html`<section class="mon-sublane mon-sublane--parallel">
+        <header class="mon-sublane__hd">
+          <span class="mon-sublane__name">병렬</span>
+          <span class="mon-sublane__count"
+            >대기 ${group.sublanes.parallel.length}</span
+          >
+        </header>
+        <div class="mon-group__list">
+          ${group.sublanes.parallel.map((item) => cardTemplate(item, now))}
+        </div>
+      </section>`
+    : html`<div class="mon-group__list">
+        ${group.items.map((item) => cardTemplate(item, now))}
+      </div>`;
+  return html`<div class="mon-group" data-root-dir=${group.root_dir}>
+    ${monitorGroupHeaderTemplate(group)} ${parallel}
+    ${uses_sublanes
+      ? group.sublanes.serial.map(
+          (lane) =>
+            html`<section
+              class="mon-sublane mon-sublane--serial"
+              data-serial-lane=${lane.id}
+            >
+              <header class="mon-sublane__hd">
+                <span class="mon-sublane__name">${lane.id}</span>
+                <span class="mon-sublane__count"
+                  >대기 ${lane.items.length}</span
+                >
+                ${lane.occupied_by.length > 0
+                  ? html`<span class="mon-sublane__held"
+                      >${`● 점유 중 · ${lane.occupied_by.join(
+                        ', '
+                      )} (머지까지 유지)`}</span
+                    >`
+                  : ''}
+                ${lane.corrections > 0
+                  ? html`<span class="mon-sublane__corrections"
+                      >순서 자동 교정 ${lane.corrections}건</span
+                    >`
+                  : ''}
+              </header>
+              ${lane.cycle
+                ? html`<div class="mon-sublane__cycle">
+                    ⛔ 의존 사이클 — 자동 교정 불가
+                  </div>`
+                : ''}
+              <div class="mon-group__list">
+                ${lane.items.map((item) => cardTemplate(item, now))}
+              </div>
+            </section>`
+        )
+      : ''}
   </div>`;
 }
 
@@ -722,17 +790,8 @@ export function createMonitorView(mount_element, options) {
           const body =
             meta.lane === 'queue'
               ? lanes.queue_groups.length > 0
-                ? html`${lanes.queue_groups.map(
-                    (group) =>
-                      html`<div
-                        class="mon-group"
-                        data-root-dir=${group.root_dir}
-                      >
-                        ${monitorGroupHeaderTemplate(group)}
-                        <div class="mon-group__list">
-                          ${group.items.map((item) => cardTemplate(item, now))}
-                        </div>
-                      </div>`
+                ? html`${lanes.queue_groups.map((group) =>
+                    queueGroupTemplate(group, now)
                   )}`
                 : undefined
               : items.length > 0
@@ -823,18 +882,24 @@ export function createMonitorView(mount_element, options) {
     const attempt_id =
       button.dataset.attemptId || card.getAttribute('data-attempt-id') || '';
     const cls = button.classList;
-    if (cls.contains('worker-card__place')) {
-      // 적재만 한다 — 서버가 적재 성공 후 이미 `tickWorkerQueue()`를 부르므로
-      // 별도의 "즉시 실행" 경로는 두지 않는다 (§8).
+    if (cls.contains('mon-place__choice')) {
+      const lane = button.dataset.lane || 'parallel';
+      const index = Number(button.dataset.placeIndex || 0) || 0;
+      closePlacePopovers();
       void sendCas(
         'worker-queue-place',
         {
           bead_id,
-          index: Number(card.getAttribute('data-place-index') || 0) || 0
+          ...(lane === 'parallel' ? {} : { lane }),
+          index
         },
         root_dir,
         revision
       );
+      return;
+    }
+    if (cls.contains('worker-card__place')) {
+      togglePlacePopover(button);
       return;
     }
     if (cls.contains('mon-op--up') || cls.contains('mon-op--down')) {
@@ -845,7 +910,13 @@ export function createMonitorView(mount_element, options) {
       }
       void sendCas(
         'worker-queue-reorder',
-        { bead_id, to_index },
+        {
+          bead_id,
+          ...(/^s[1-5]$/.test(card.dataset.lane || '')
+            ? { lane: card.dataset.lane }
+            : {}),
+          to_index
+        },
         root_dir,
         revision
       );
@@ -956,6 +1027,69 @@ export function createMonitorView(mount_element, options) {
     if (cls.contains('worker-mini__revise-approve')) {
       void sendCas('worker-revise-approve', { bead_id }, root_dir, revision);
     }
+  }
+
+  /** Hide every placement chooser before another one opens. */
+  function closePlacePopovers() {
+    for (const popover of Array.from(
+      console_el.querySelectorAll('.mon-place__popover')
+    )) {
+      /** @type {HTMLElement} */ (popover).hidden = true;
+    }
+    for (const trigger of Array.from(
+      console_el.querySelectorAll('.worker-card__place[aria-expanded="true"]')
+    )) {
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  /**
+   * @param {HTMLElement} button
+   */
+  function togglePlacePopover(button) {
+    const wrapper = button.closest('.mon-place');
+    const popover = /** @type {HTMLElement|null} */ (
+      wrapper?.querySelector('.mon-place__popover') || null
+    );
+    if (!popover) {
+      return;
+    }
+    const opens = popover.hidden;
+    closePlacePopovers();
+    if (opens) {
+      popover.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+    }
+  }
+
+  /**
+   * @param {Event} ev
+   */
+  function onDocumentClick(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      target &&
+      console_el.contains(target) &&
+      typeof target.closest === 'function' &&
+      target.closest('.mon-place')
+    ) {
+      return;
+    }
+    closePlacePopovers();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onDocumentKeydown(ev) {
+    if (ev.key !== 'Escape') {
+      return;
+    }
+    const trigger = /** @type {HTMLElement|null} */ (
+      console_el.querySelector('.worker-card__place[aria-expanded="true"]')
+    );
+    closePlacePopovers();
+    trigger?.focus();
   }
 
   /**
@@ -1096,6 +1230,8 @@ export function createMonitorView(mount_element, options) {
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('dragend', onDragEnd);
+  document.addEventListener('click', onDocumentClick);
+  document.addEventListener('keydown', onDocumentKeydown);
 
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
@@ -1168,6 +1304,8 @@ export function createMonitorView(mount_element, options) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('dragend', onDragEnd);
+      document.removeEventListener('click', onDocumentClick);
+      document.removeEventListener('keydown', onDocumentKeydown);
       mount_element.replaceChildren();
     }
   };

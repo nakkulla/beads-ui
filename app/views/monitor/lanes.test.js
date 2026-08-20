@@ -227,6 +227,177 @@ describe('monitor lane builder exclusive priority (UI-qrfo §8)', () => {
   });
 });
 
+describe('monitor serial waiting lanes (UI-2gi1 §5)', () => {
+  test('omits empty serial lanes from the group sublanes', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [
+            { id: 's1', entries: [] },
+            { id: 's2', entries: [{ bead_id: 'A-serial' }] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-running'] } }
+        })
+      ],
+      [state()]
+    );
+
+    const ids = lanes.queue_groups[0].sublanes.serial.map((lane) => lane.id);
+
+    expect(ids).toEqual(['s2']);
+  });
+
+  test('projects serial lane state badges into the group sublane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
+          lane_states: {
+            s1: {
+              occupied_by: ['A-owner', 'A-owner-2'],
+              corrections: [{ bead_id: 'A-serial', after: 'A-owner' }],
+              cycle: true
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+
+    expect(lane).toMatchObject({
+      occupied_by: ['A-owner', 'A-owner-2'],
+      corrections: 1,
+      cycle: true
+    });
+  });
+
+  test('defaults missing serial lane state', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
+        })
+      ],
+      [state()]
+    );
+
+    const lane = lanes.queue_groups[0].sublanes.serial[0];
+
+    expect(lane).toMatchObject({
+      occupied_by: [],
+      corrections: 0,
+      cycle: false
+    });
+  });
+
+  test('keeps a serial member out of runnable and done lanes', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
+          runnable: [{ bead_id: 'A-serial', title: '중복 후보' }],
+          done: [{ bead_id: 'A-serial', added_at: NOW }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(ids(lanes.queue)).toEqual(['A-serial']);
+    expect(ids(lanes.runnable)).toEqual([]);
+    expect(ids(lanes.done)).toEqual([]);
+  });
+
+  test('includes serial members in the aggregate waiting KPI source', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-parallel' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(ids(lanes.queue)).toEqual(['A-parallel', 'A-serial']);
+  });
+
+  test('projects a running bead serial lane chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [{ id: 's2', entries: [{ bead_id: 'A-running' }] }],
+          attempts: {
+            a1: {
+              attempt_id: 'a1',
+              bead_id: 'A-running',
+              status: 'running'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    render(monitorRunningTile(lanes.running[0], NOW), mount);
+
+    expect(mount.querySelector('.mon-c__lane')?.textContent).toBe('s2');
+  });
+
+  test('numbers a serial card inside its own lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'A-first' }, { bead_id: 'A-second' }]
+            }
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    const item = lanes.queue_groups[0].sublanes.serial[0].items[1];
+
+    expect(item).toMatchObject({
+      lane: 's1',
+      queue_position: 2,
+      queue_index: 1,
+      queue_length: 2
+    });
+  });
+
+  test('preserves legacy lane placement when serial fields are absent', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-wait' }],
+          runnable: [{ bead_id: 'A-next', title: '다음' }],
+          done: [{ bead_id: 'A-done', added_at: NOW }]
+        })
+      ],
+      [state()]
+    );
+
+    const placement = {
+      queue: ids(lanes.queue),
+      runnable: ids(lanes.runnable),
+      done: ids(lanes.done),
+      group: ids(lanes.queue_groups[0].items)
+    };
+
+    expect(placement).toEqual({
+      queue: ['A-wait'],
+      runnable: ['A-next'],
+      done: ['A-done'],
+      group: ['A-wait']
+    });
+  });
+});
+
 describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
   test('splits the waiting lane into one group per repo', () => {
     const lanes = buildLanes(

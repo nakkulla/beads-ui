@@ -6239,6 +6239,54 @@ html[data-theme='dark'] {
   min-height: var(--sp-16);
 }
 
+/* 직렬 레인이 설정된 레포만 병렬/직렬 서브섹션을 드러낸다 (UI-2gi1 §5). */
+.mon-sublane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  min-width: 0;
+}
+
+.mon-sublane--serial {
+  padding-left: var(--sp-6);
+  border-left: 2px solid var(--border-card);
+}
+
+.mon-sublane__hd {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
+}
+
+.mon-sublane__name {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.mon-sublane__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.mon-sublane__held,
+.mon-sublane__corrections,
+.mon-sublane__cycle {
+  color: var(--accent-warn);
+}
+
+.mon-sublane__corrections {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--accent-warn);
+  border-radius: var(--r-5);
+}
+
+.mon-sublane__cycle {
+  font-size: var(--fs-chip);
+}
+
 /* 드롭 하이라이트는 Worker 레인과 같은 어휘(성공색 한 단계)를 쓴다. 다른 레포
    그룹은 여기 걸리지 않는다 — 크로스레포 적재는 서버에 없는 개념이다. */
 .mon-group--drag-over .mon-group__list {
@@ -6328,6 +6376,15 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+.mon-c__lane {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 .mon-c__model,
 .mon-c__usage {
   flex: 0 0 auto;
@@ -6372,6 +6429,55 @@ html[data-theme='dark'] {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-4);
+}
+
+.mon-place {
+  position: relative;
+}
+
+.mon-place__popover {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + var(--sp-4));
+  right: 0;
+  display: grid;
+  min-width: 210px;
+  padding: var(--sp-4);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
+}
+
+.mon-place__choice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  padding: var(--sp-5) var(--sp-6);
+  border: 0;
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mon-place__choice:hover,
+.mon-place__choice:focus-visible {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.mon-place__choice strong {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+.mon-place__choice span {
+  color: var(--text-dim);
+  font-size: var(--fs-chip);
 }
 
 /* 꼬리 줄: PR 대기의 usage·액션과 REVISE 파킹 처분처럼 메타 한 줄에 담기지 않는

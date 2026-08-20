@@ -5,9 +5,17 @@ import { createMonitorView } from './index.js';
 const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
+/** @type {Array<ReturnType<typeof createMonitorView>>} */
+const active_views = [];
 
 beforeEach(() => {
   window.localStorage.clear();
+});
+
+afterEach(() => {
+  while (active_views.length > 0) {
+    active_views.pop()?.clear();
+  }
 });
 
 /**
@@ -87,6 +95,7 @@ function setup(input = {}) {
     confirm: confirmFn,
     now: input.now || (() => NOW)
   });
+  active_views.push(view);
   return {
     mount,
     view,
@@ -245,6 +254,67 @@ describe('views/monitor lanes (UI-qrfo §8)', () => {
       mount.querySelector('#monitor-queue .mon-group__name')?.textContent
     ).toContain('repo-a');
   });
+
+  test('renders serial-only waiting content under its repo group header', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(
+      mount.querySelector('#monitor-queue .mon-group__name')?.textContent
+    ).toContain('repo-a');
+    expect(idsIn(mount, 'queue')).toEqual(['A-serial']);
+    expect(
+      mount.querySelector('[data-serial-lane="s1"] .mon-sublane__name')
+        ?.textContent
+    ).toBe('s1');
+  });
+
+  test('renders serial lane state facts in the sublane header', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
+          lane_states: {
+            s1: {
+              occupied_by: ['A-owner'],
+              corrections: [{ bead_id: 'A-serial', after: 'A-owner' }],
+              cycle: true
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const lane = el(mount, '[data-serial-lane="s1"]');
+    expect(lane.textContent).toContain('● 점유 중 · A-owner (머지까지 유지)');
+    expect(lane.textContent).toContain('순서 자동 교정 1건');
+    expect(lane.textContent).toContain('⛔ 의존 사이클 — 자동 교정 불가');
+  });
+
+  test('keeps the legacy waiting group markup when serial fields are absent', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ queue: [{ bead_id: 'A-wait' }] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(mount.querySelector('#monitor-queue .mon-sublane')).toBe(null);
+    expect(idsIn(mount, 'queue')).toEqual(['A-wait']);
+  });
 });
 
 describe('views/monitor running sort persistence (UI-fmwh §4.1)', () => {
@@ -321,7 +391,7 @@ describe('views/monitor running sort persistence (UI-fmwh §4.1)', () => {
 });
 
 describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
-  test('places a runnable bead into that repo waiting queue', () => {
+  test('places a runnable bead into that repo parallel queue', () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -336,6 +406,7 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
     view.load();
 
     click(mount, '#monitor-runnable .worker-card__place');
+    click(mount, '#monitor-runnable .mon-place__choice[data-lane="parallel"]');
 
     expect(sent).toEqual([
       {
@@ -348,6 +419,133 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
         }
       }
     ]);
+  });
+
+  test('places a runnable bead at the selected serial lane tail', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          serial_lane_count: 2,
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'B-1' }, { bead_id: 'B-2' }]
+            },
+            { id: 's2', entries: [] }
+          ],
+          runnable: [{ bead_id: 'B-next', title: '실행 가능' }]
+        })
+      ],
+      workspaces_state: [state({ root_dir: WS_B, name: 'repo-b', revision: 5 })]
+    });
+    view.load();
+
+    click(mount, '#monitor-runnable .worker-card__place');
+    click(mount, '#monitor-runnable .mon-place__choice[data-lane="s1"]');
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'B-next',
+          lane: 's1',
+          index: 2,
+          root_dir: WS_B,
+          expected_revision: 5
+        }
+      }
+    ]);
+  });
+
+  test('lists configured serial lanes with occupancy and waiting counts', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }] },
+            { id: 's2', entries: [] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-owner'] } },
+          runnable: [{ bead_id: 'A-next', title: '실행 가능' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+
+    click(mount, '#monitor-runnable .worker-card__place');
+
+    const options = Array.from(
+      mount.querySelectorAll('#monitor-runnable .mon-place__choice')
+    ).map((option) => option.getAttribute('aria-label'));
+    expect(options).toEqual([
+      '병렬 · 대기 0',
+      's1 · 점유 A-owner · 대기 1',
+      's2 · 미점유 · 대기 0'
+    ]);
+  });
+
+  test('keeps only one lane selection popover open', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [
+            { bead_id: 'A-one', title: '첫째' },
+            { bead_id: 'A-two', title: '둘째' }
+          ]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+    const triggers = Array.from(
+      mount.querySelectorAll('#monitor-runnable .worker-card__place')
+    );
+
+    /** @type {HTMLElement} */ (triggers[0]).click();
+    /** @type {HTMLElement} */ (triggers[1]).click();
+
+    const popovers = Array.from(
+      mount.querySelectorAll('#monitor-runnable .mon-place__popover')
+    );
+    expect(/** @type {HTMLElement} */ (popovers[0]).hidden).toBe(true);
+    expect(/** @type {HTMLElement} */ (popovers[1]).hidden).toBe(false);
+  });
+
+  test('closes the lane selection popover on outside click', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-next', title: '실행 가능' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+    click(mount, '#monitor-runnable .worker-card__place');
+
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(el(mount, '.mon-place__popover').hidden).toBe(true);
+  });
+
+  test('closes the lane selection popover on Escape', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-next', title: '실행 가능' }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+    view.load();
+    click(mount, '#monitor-runnable .worker-card__place');
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(el(mount, '.mon-place__popover').hidden).toBe(true);
   });
 
   test('sends the group automation toggle with that repo revision', () => {
@@ -435,6 +633,39 @@ describe('views/monitor mutations carry their own repo (UI-qrfo §5)', () => {
         type: 'worker-queue-reorder',
         payload: {
           bead_id: 'A-2',
+          to_index: 0,
+          root_dir: WS_A,
+          expected_revision: 2
+        }
+      }
+    ]);
+  });
+
+  test('reorders a serial waiting bead inside its own lane', () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [
+            {
+              id: 's1',
+              entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
+            }
+          ]
+        })
+      ],
+      workspaces_state: [state({ revision: 2 })]
+    });
+    view.load();
+
+    click(mount, '[data-issue-id="A-2"] .mon-op--up');
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-reorder',
+        payload: {
+          bead_id: 'A-2',
+          lane: 's1',
           to_index: 0,
           root_dir: WS_A,
           expected_revision: 2
