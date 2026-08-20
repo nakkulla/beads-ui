@@ -350,16 +350,26 @@ describe('views/worker', () => {
     window.localStorage.clear();
   });
 
-  test('renders the needs_human completion wait label', () => {
+  test('renders a clear label for a completion wait needing attention', () => {
     const label = mergeWaitingText('completion_waiting:needs_human');
 
-    expect(label).toBe('완료 의도 대기 — 사람 확인 필요');
+    expect(label).toBe('확인 필요');
   });
 
-  test('falls back to the phase name for an unknown completion phase', () => {
+  test('hides an unknown internal completion phase', () => {
     const label = mergeWaitingText('completion_waiting:future_phase');
 
-    expect(label).toBe('완료 의도 대기 — future_phase');
+    expect(label).toBe(null);
+  });
+
+  test('distinguishes initial gating from repaired-result revalidation', () => {
+    const initial = mergeWaitingText('completion_waiting:gating');
+    const repaired = mergeWaitingText('completion_waiting:gating', {
+      repair_sessions_used: 1
+    });
+
+    expect(initial).toBe('머지 조건 확인 중');
+    expect(repaired).toBe('수정 결과 재확인 중');
   });
 
   test('candidate lane renders Ready/Blocked with spec-missing + blocked reasons', () => {
@@ -7634,7 +7644,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   }
 
-  test('shows same-PR automatic repair progress and locks per-row cancellation', () => {
+  test('shows same-PR automatic edit progress and locks per-row cancellation', () => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {
         merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
@@ -7660,11 +7670,12 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).toContain('자동복구 중');
+    expect(row.textContent).toContain('자동 수정 중');
     const cancel = /** @type {HTMLButtonElement} */ (
       row.querySelector('.worker-mini__merge-cancel')
     );
     expect(cancel.disabled).toBe(true);
+    expect(cancel.title).toContain('자동 수정 중');
     expect(cancel.title).toContain('상단 자동 머지 중단');
     const badge = /** @type {HTMLElement} */ (
       row.querySelector('.worker-mini__badge')
@@ -7697,9 +7708,9 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     const badge = /** @type {HTMLElement} */ (
       rowOf(mount, 'RD-1').querySelector('.worker-mini__badge')
     );
-    expect(badge.textContent).toContain('자동복구 중');
+    expect(badge.textContent).toContain('수정 결과 재확인 중');
     expect(badge.querySelector('[title]')?.getAttribute('title')).toContain(
-      'root 재검증 중'
+      '수정 결과 재확인 중'
     );
   });
 
@@ -7729,10 +7740,10 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).toContain('자동복구 중');
+    expect(row.textContent).toContain('수정 PR #22 대기 중');
     expect(
       row.querySelector('.worker-mini__badge [title]')?.getAttribute('title')
-    ).toContain('repair PR #22 대기');
+    ).toContain('수정 PR #22 대기 중');
     const link = /** @type {HTMLAnchorElement} */ (
       row.querySelector('.worker-mini__repair-pr')
     );
@@ -7766,9 +7777,9 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const badge = rowOf(mount, 'RD-1').querySelector('.worker-mini__badge');
-    expect(badge?.textContent).toContain('자동복구 중');
+    expect(badge?.textContent).toContain('수정 PR #22 머지 중');
     expect(badge?.querySelector('[title]')?.getAttribute('title')).toContain(
-      'repair PR #22 머지 중'
+      '수정 PR #22 머지 중'
     );
   });
 
@@ -7794,9 +7805,9 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const badge = rowOf(mount, 'RD-1').querySelector('.worker-mini__badge');
-    expect(badge?.textContent).toContain('자동복구 중');
+    expect(badge?.textContent).toContain('마무리 중');
     expect(badge?.querySelector('[title]')?.getAttribute('title')).toContain(
-      '정리 복구 중'
+      '마무리 중'
     );
   });
 
@@ -7820,7 +7831,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).toContain('자동복구 일시정지');
+    expect(row.textContent).toContain('자동 진행 일시정지');
     expect(
       /** @type {HTMLButtonElement} */ (
         row.querySelector('.worker-mini__merge')
@@ -7850,10 +7861,10 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).toContain('사람 확인 필요 · intent_state_invalid');
+    expect(row.textContent).toContain('확인 필요');
     const badge = /** @type {HTMLElement} */ (
       Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
-        element.textContent?.includes('사람 확인 필요')
+        element.textContent?.includes('확인 필요')
       )
     );
     expect(badge.classList.contains('worker-mini__badge--alert')).toBe(true);
@@ -7865,8 +7876,8 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     const { mount } = mountLane(laneOf(['RD-1']));
 
     const row = rowOf(mount, 'RD-1');
-    expect(row.textContent).not.toContain('자동복구');
-    expect(row.textContent).not.toContain('사람 확인 필요');
+    expect(row.textContent).not.toContain('자동 수정');
+    expect(row.textContent).not.toContain('확인 필요');
     expect(row.querySelector('.worker-mini__repair-pr')).toBe(null);
   });
 

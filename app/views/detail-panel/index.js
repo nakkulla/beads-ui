@@ -684,7 +684,8 @@ export function createDetailPanel(mount_element, options) {
       pin: { ...metadata, ...exec_local },
       global: execDefaults(),
       execution_defaults: executionDefaults(),
-      runner_catalog: runnerCatalog()
+      runner_catalog: runnerCatalog(),
+      route: typeof metadata.route === 'string' ? metadata.route : null
     });
     const model = resolved.orchestration_model.value || '';
     return modelRunnerOf(runnerCatalog(), model);

@@ -108,6 +108,10 @@ export function resolveLayer(
     global: workspace_values,
     execution_defaults,
     runner_catalog,
+    route:
+      bead_metadata && typeof bead_metadata.route === 'string'
+        ? bead_metadata.route
+        : null,
     controller_runtime
   })[key];
 }
@@ -134,6 +138,10 @@ export function effectiveRows(
     global: workspace_values,
     execution_defaults,
     runner_catalog,
+    route:
+      bead_metadata && typeof bead_metadata.route === 'string'
+        ? bead_metadata.route
+        : null,
     controller_runtime
   });
   return keys.map((key) => ({ key, ...resolved[key] }));

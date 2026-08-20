@@ -32,6 +32,7 @@ const PROJECTION = {
         effort: 'auto',
         speed: 'default'
       },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
       model_catalog: { codex: { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra' } },
       effort_by_transport: {}
     }
@@ -94,6 +95,21 @@ describe('resolveLayer', () => {
       display: '5.6-sol',
       full_value: 'gpt-5.6-sol',
       resolution: 'default'
+    });
+  });
+
+  test('passes the bead route to the shared resolver', () => {
+    const dispatch = resolveLayer(
+      'impl_dispatch',
+      { route: 'quick_fix' },
+      {},
+      PROJECTION
+    );
+
+    expect(dispatch).toMatchObject({
+      value: 'main',
+      source: 'base',
+      display: '메인'
     });
   });
 

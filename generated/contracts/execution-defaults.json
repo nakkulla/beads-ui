@@ -30,6 +30,11 @@
       "speed": "default",
       "dispatch": "delegated"
     },
+    "route_defaults": {
+      "quick_fix": {
+        "dispatch": "main"
+      }
+    },
     "model_catalog": {
       "claude": [
         "opus",

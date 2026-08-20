@@ -31,6 +31,7 @@ const PROJECTION = {
         effort: 'auto',
         speed: 'default'
       },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
       model_catalog: {
         claude: ['opus', 'fable'],
         codex: { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra' }
@@ -176,6 +177,73 @@ describe('resolveExecutionSettings', () => {
     expect(self_rows.impl_runtime.display).toBe('inherit (실행 시 결정)');
     expect(main_rows.impl_dispatch.display).toBe('메인');
     expect(main_rows.impl_model.display).toBe('해당 없음');
+  });
+
+  test('uses the quick_fix route dispatch default when upper layers are absent', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch).toMatchObject({
+      value: 'main',
+      source: 'base',
+      display: '메인'
+    });
+    for (const key of [
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]) {
+      expect(rows[key]).toMatchObject({
+        value: null,
+        display: '해당 없음',
+        resolution: 'not_applicable'
+      });
+    }
+  });
+
+  test('lets an upper-layer dispatch override the quick_fix route default', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: { impl_dispatch: 'delegated' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch).toMatchObject({
+      value: 'delegated',
+      source: 'global',
+      display: '위임'
+    });
+    expect(rows.impl_model.display).toBe('5.6-sol');
+  });
+
+  test('preserves existing defaults for other missing and unknown routes', () => {
+    const without_route = resolveExecutionSettings({
+      execution_defaults: PROJECTION
+    });
+    const spec_backed = resolveExecutionSettings({
+      route: 'spec_backed',
+      execution_defaults: PROJECTION
+    });
+    const unknown = resolveExecutionSettings({
+      route: 'future_route',
+      execution_defaults: PROJECTION
+    });
+    const without_route_defaults = structuredClone(PROJECTION);
+    Reflect.deleteProperty(
+      without_route_defaults.session.implementation,
+      'route_defaults'
+    );
+    const missing = resolveExecutionSettings({
+      route: 'quick_fix',
+      execution_defaults: without_route_defaults
+    });
+
+    expect(spec_backed).toEqual(without_route);
+    expect(unknown).toEqual(without_route);
+    expect(missing).toEqual(without_route);
   });
 
   test('surfaces unknown transport effort tokens as incompatible', () => {
