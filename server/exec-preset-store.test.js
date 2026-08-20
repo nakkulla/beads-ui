@@ -164,6 +164,36 @@ describe('exec-preset-store defaults', () => {
 });
 
 describe('exec-preset-store CRUD', () => {
+  test('persists and reads back a sparse full-profile preset', () => {
+    const file_path = path.join(tmp_dir, 'exec-presets.json');
+    const store = createExecPresetStore({
+      filePath: file_path,
+      randomUUID: () => 'profile-1'
+    });
+
+    const created = store.create({
+      expected_revision: 0,
+      name: '빠른 코덱스',
+      settings: {
+        workflow_mode: 'fast_track',
+        impl_runtime: 'codex',
+        orchestration_model: 'sol',
+        orchestration_effort: 'xhigh',
+        orchestration_speed: 'fast'
+      }
+    });
+    const restarted = createExecPresetStore({ filePath: file_path });
+
+    expect(created.applied).toBe(true);
+    expect(restarted.snapshot().presets[0].settings).toEqual({
+      workflow_mode: 'fast_track',
+      impl_runtime: 'codex',
+      orchestration_model: 'sol',
+      orchestration_effort: 'xhigh',
+      orchestration_speed: 'fast'
+    });
+  });
+
   test('reuses an implementation copy across restart after resolving a name collision', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     const ids = ['user-preset', 'migration-preset'];

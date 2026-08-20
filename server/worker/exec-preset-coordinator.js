@@ -1,5 +1,5 @@
 /**
- * Authority boundary for global IMPLEMENTATION presets and the workspace
+ * Authority boundary for global execution presets and the workspace
  * session-defaults migration (spec §C.6, §F).
  *
  * The preset store remains a persistence primitive and queue-store remains a
@@ -36,8 +36,8 @@ function isRecord(value) {
 }
 
 /**
- * A preset is LEGACY while it still carries any key outside the five
- * implementation keys — i.e. it predates spec §C.6 and awaits migration.
+ * A preset is legacy only while it carries a key outside the 15-key
+ * full-profile vocabulary.
  *
  * @param {ExecPreset} preset
  * @returns {boolean}
@@ -49,7 +49,7 @@ function isLegacyPreset(preset) {
 }
 
 /**
- * Project a legacy 12-key preset onto the five implementation keys.
+ * Project a legacy preset onto the current 15-key vocabulary.
  *
  * @param {Record<string, string>} settings
  * @returns {Record<string, string>}
@@ -84,9 +84,8 @@ export function createExecPresetCoordinator(options) {
   const kvSet = options.kvSet;
 
   /**
-   * Every APPLICABLE preset: the implementation-shaped ones. A legacy 12-key
-   * preset is hidden rather than deleted — it stays readable to the migration
-   * until its copy has been read back.
+   * Every applicable preset. A preset with a key outside the current 15-key
+   * vocabulary stays hidden.
    */
   function snapshot() {
     const state = presetStore.snapshot();

@@ -1,10 +1,8 @@
 /**
- * Server-global IMPLEMENTATION preset persistence (spec §C.6).
+ * Server-global full-profile execution preset persistence.
  *
- * A preset now carries only the five implementation keys
- * (`impl_dispatch/runtime/model/effort/speed`). The retired 12-key shape is
- * still READ so the spec §F migration can copy it; such a preset is reported as
- * `legacy: true` and is never offered as an editable or applicable preset.
+ * A preset sparsely carries the 12 session-default keys plus the workspace
+ * queue's three orchestration keys.
  *
  * @typedef {Object} ExecPreset
  * @property {string} id
@@ -21,7 +19,6 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
-  EXEC_SETTING_KEYS,
   IMPL_PRESET_KEYS,
   implPresetEnums,
   validateImplPresetSettings
@@ -69,10 +66,7 @@ function normalizeState(raw) {
   if (!Array.isArray(raw.presets)) {
     return state;
   }
-  // Both shapes are retained on load: the five implementation keys are the
-  // active vocabulary, and the retired 12 stay readable until the spec §F
-  // migration has copied and removed them.
-  const known_keys = new Set([...EXEC_SETTING_KEYS, ...IMPL_PRESET_KEYS]);
+  const known_keys = new Set(IMPL_PRESET_KEYS);
   for (const entry of raw.presets) {
     if (!isRecord(entry)) {
       continue;

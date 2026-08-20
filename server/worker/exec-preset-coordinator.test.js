@@ -92,7 +92,7 @@ function createFixture(options = {}) {
 }
 
 describe('exec-preset-coordinator implementation presets', () => {
-  test('hides a legacy 12-key preset from the applicable snapshot', () => {
+  test('keeps an old partial profile in the applicable snapshot', () => {
     const fixture = createFixture({
       preset: {
         revision: 1,
@@ -115,7 +115,58 @@ describe('exec-preset-coordinator implementation presets', () => {
 
     const snapshot = fixture.coordinator.snapshot();
 
-    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['impl-1']);
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual([
+      'legacy-1',
+      'impl-1'
+    ]);
+  });
+
+  test('keeps a 15-key profile and hides a preset with an outside key', () => {
+    const presetStore = {
+      snapshot: () => ({
+        revision: 2,
+        presets: [
+          {
+            id: 'profile-15',
+            name: '전체 프로필',
+            settings: {
+              workflow_mode: 'standard',
+              spec_review_model: 'codex',
+              spec_review_effort: 'high',
+              plan_review_model: 'fable',
+              plan_review_effort: 'low',
+              impl_review_model: 'self',
+              impl_review_effort: 'xhigh',
+              impl_dispatch: 'main',
+              impl_runtime: 'claude',
+              impl_model: 'terra',
+              impl_effort: 'max',
+              impl_speed: 'fast',
+              orchestration_model: 'opus',
+              orchestration_effort: 'high',
+              orchestration_speed: 'default'
+            },
+            origin: { kind: /** @type {'user'} */ ('user') }
+          },
+          {
+            id: 'outside',
+            name: '외부 키',
+            settings: { removed_key: 'value' },
+            origin: { kind: /** @type {'user'} */ ('user') }
+          }
+        ]
+      })
+    };
+    const coordinator = createExecPresetCoordinator({
+      queueStore: /** @type {any} */ ({}),
+      presetStore: /** @type {any} */ (presetStore)
+    });
+
+    const snapshot = coordinator.snapshot();
+
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual([
+      'profile-15'
+    ]);
   });
 
   test('marks an implementation preset whose model left the catalog incompatible', () => {
@@ -271,7 +322,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     );
   });
 
-  test('creates the implementation copy of a legacy 12-key preset', async () => {
+  test('keeps a partial 15-key preset without making a migration copy', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       preset: {
@@ -296,13 +347,11 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     const presets = fixture.coordinator.snapshot().presets;
     expect(presets).toHaveLength(1);
     expect(presets[0].settings).toEqual({
+      orchestration_model: 'sonnet',
       impl_runtime: 'claude',
       impl_model: 'haiku'
     });
-    expect(presets[0].origin).toEqual({
-      kind: 'legacy-preset-copy',
-      source_preset_id: 'legacy-1'
-    });
+    expect(presets[0].origin).toEqual({ kind: 'user' });
   });
 
   test('writes the completion marker and clears the legacy fields', async () => {
@@ -316,7 +365,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(false);
   });
 
-  test('deletes the legacy 12-key original only after every workspace succeeded', async () => {
+  test('keeps a partial 15-key preset after every workspace succeeded', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       preset: {
@@ -336,7 +385,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
 
     expect(
       fixture.presetStore.snapshot().presets.map((preset) => preset.id)
-    ).not.toContain('legacy-1');
+    ).toContain('legacy-1');
   });
 
   test('writes no marker and keeps the source when the kv write fails', async () => {
@@ -464,7 +513,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     ).toBe(null);
   });
 
-  test('reuses the implementation copy rather than duplicating it on a re-run', async () => {
+  test('creates no migration copy for a partial 15-key preset on a re-run', async () => {
     const preset = {
       revision: 1,
       presets: [
@@ -494,6 +543,6 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
           entry.origin.kind === 'legacy-preset-copy' &&
           entry.origin.source_preset_id === 'legacy-1'
       );
-    expect(copies).toHaveLength(1);
+    expect(copies).toHaveLength(0);
   });
 });
