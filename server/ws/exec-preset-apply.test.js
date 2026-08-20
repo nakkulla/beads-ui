@@ -3,13 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { MESSAGE_TYPES } from '../../app/protocol.js';
-import { IMPL_PRESET_KEYS } from '../worker/exec-enums.js';
 
 const runBdInWorkspace = vi.fn();
 const runBdJsonProjectedInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
+const fanoutWorkerQueue = vi.fn();
 
 // The workspace effect gate has its own tests; these state an open gate rather
 // than probing the live bd binary.
@@ -23,6 +23,7 @@ vi.mock('../bd-effect-gate.js', async (importOriginal) => {
 });
 
 vi.mock('./context.js', () => ({
+  getConnWorkspace: (/** @type {any} */ ws) => ws.workspace || null,
   readbackFailureDetail: (/** @type {string} */ reason) => ({
     phase: 'readback',
     write_applied: true,
@@ -50,6 +51,15 @@ vi.mock('./refresh.js', () => ({
   triggerMutationRefreshOnce: () => triggerMutationRefreshOnce()
 }));
 
+vi.mock('./worker-handlers.js', () => ({
+  decorateQueue: (
+    /** @type {string} */ _workspace_key,
+    /** @type {any} */ queue
+  ) => queue,
+  fanout: (/** @type {string} */ workspace_key, /** @type {any} */ queue) =>
+    fanoutWorkerQueue(workspace_key, queue)
+}));
+
 const {
   __resetImplPresetsForTest,
   buildApplyImplPresetArgs,
@@ -67,6 +77,7 @@ function fakeWs() {
   const sent = [];
   return {
     ws: {
+      workspace: { root_dir: '/workspace' },
       /** @param {string} message */
       send(message) {
         sent.push(JSON.parse(message));
@@ -99,6 +110,7 @@ beforeEach(() => {
   triggerMutationRefreshOnce.mockReset();
   kvGetJsonInWorkspace.mockReset();
   kvSetJsonInWorkspace.mockReset();
+  fanoutWorkerQueue.mockReset();
 });
 
 afterEach(() => {
@@ -131,33 +143,43 @@ describe('retired 12-key preset protocol', () => {
 });
 
 describe('buildApplyImplPresetArgs', () => {
-  test('writes every implementation key in canonical order with one update argv', () => {
+  test('writes every session key in canonical order with one update argv', () => {
     const args = buildApplyImplPresetArgs('UI-1', {
+      workflow_mode: 'fast_track',
       impl_dispatch: 'delegated',
-      impl_effort: 'high'
+      impl_effort: 'high',
+      orchestration_model: 'sol'
     });
 
-    expect(args).toEqual([
-      'update',
-      'UI-1',
-      '--set-metadata',
-      'impl_dispatch=delegated',
-      '--unset-metadata',
+    const named = args
+      .slice(2)
+      .filter((_, index) => index % 2 === 1)
+      .map((value) => value.split('=')[0]);
+    expect(named).toEqual([
+      'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_dispatch',
       'impl_runtime',
-      '--unset-metadata',
       'impl_model',
-      '--set-metadata',
-      'impl_effort=high',
-      '--unset-metadata',
+      'impl_effort',
       'impl_speed'
     ]);
+    expect(args).toContain('workflow_mode=fast_track');
+    expect(args).toContain('impl_dispatch=delegated');
+    expect(args).toContain('impl_effort=high');
+    expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
   });
 
-  test('names exactly the five implementation keys and no orchestration key', () => {
+  test('names exactly the twelve session keys and no orchestration key', () => {
     const args = buildApplyImplPresetArgs('UI-1', {});
 
-    const named = args.filter((arg) => arg.startsWith('impl_'));
-    expect(named).toEqual([...IMPL_PRESET_KEYS]);
+    const named = args.slice(2).filter((_, index) => index % 2 === 1);
+    expect(named).toHaveLength(12);
     expect(args.some((arg) => arg.includes('orchestration_'))).toBe(false);
   });
 });
@@ -193,6 +215,11 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
     expect(reply.ok).toBe(true);
     expect(reply.payload.applied).toBe(true);
     expect(reply.payload.issue.id).toBe('UI-1');
+    expect(reply.payload.skipped_orchestration_keys).toEqual([
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]);
   });
 
   test('reports a conflict without touching bd when the revision is stale', async () => {
@@ -237,23 +264,29 @@ describe('handleApplyImplPreset (Bead metadata path)', () => {
   });
 });
 
-describe('handleApplyImplPresetGlobal (bd kv path)', () => {
-  test('writes the five implementation keys into the kv session defaults', async () => {
+describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
+  test('replaces kv and queue values and publishes the updated queue', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, {
-      impl_dispatch: 'delegated',
-      impl_runtime: 'inherit',
-      impl_model: 'auto'
+      workflow_mode: 'fast_track',
+      impl_runtime: 'codex',
+      orchestration_model: 'sol'
     });
     kvGetJsonInWorkspace
-      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
       .mockResolvedValueOnce({
         ok: true,
         value: {
           schema: 1,
-          impl_dispatch: 'delegated',
-          impl_runtime: 'inherit',
-          impl_model: 'auto'
+          spec_review_model: 'claude',
+          impl_dispatch: 'delegated'
+        }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          workflow_mode: 'fast_track',
+          impl_runtime: 'codex'
         }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
@@ -261,7 +294,11 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
     await handleApplyImplPresetGlobal(ws, {
       id: 'apply-global',
       type: 'apply-impl-preset-global',
-      payload: { preset_id, expected_revision: 1 }
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
     });
 
     expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
@@ -269,12 +306,34 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
       'workflow_session_defaults',
       {
         schema: 1,
-        impl_dispatch: 'delegated',
-        impl_runtime: 'inherit',
-        impl_model: 'auto'
+        workflow_mode: 'fast_track',
+        impl_runtime: 'codex'
       }
     );
-    expect(sent[sent.length - 1].payload.applied).toBe(true);
+    const reply = sent[sent.length - 1];
+    expect(reply.payload).toMatchObject({
+      applied: true,
+      queue_applied: true,
+      values: {
+        workflow_mode: 'fast_track',
+        impl_runtime: 'codex'
+      },
+      queue: {
+        revision: 1,
+        orchestration_model: 'sol',
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    expect(fanoutWorkerQueue).toHaveBeenCalledWith(
+      '/workspace',
+      expect.objectContaining({
+        revision: 1,
+        orchestration_model: 'sol',
+        orchestration_effort: null,
+        orchestration_speed: null
+      })
+    );
   });
 
   test('clears a session key the preset does not carry', async () => {
@@ -294,7 +353,11 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
     await handleApplyImplPresetGlobal(ws, {
       id: 'apply-global',
       type: 'apply-impl-preset-global',
-      payload: { preset_id, expected_revision: 1 }
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
     });
 
     expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
@@ -304,29 +367,111 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
     );
   });
 
-  test('leaves a non-implementation session key alone', async () => {
+  test('clears a review session key the preset does not carry', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
     kvGetJsonInWorkspace
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, workflow_mode: 'fast_track' }
+        value: { schema: 1, spec_review_model: 'claude' }
       })
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, workflow_mode: 'fast_track', impl_dispatch: 'main' }
+        value: { schema: 1, impl_dispatch: 'main' }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 
     await handleApplyImplPresetGlobal(ws, {
       id: 'apply-global',
       type: 'apply-impl-preset-global',
-      payload: { preset_id, expected_revision: 1 }
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
     });
 
-    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toMatchObject({
-      workflow_mode: 'fast_track'
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
+      schema: 1,
+      impl_dispatch: 'main'
     });
+  });
+
+  test('keeps the kv apply when the queue revision conflicts', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, {
+      impl_runtime: 'codex',
+      orchestration_model: 'sol'
+    });
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'codex' }
+    });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global-first',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+    fanoutWorkerQueue.mockClear();
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global-conflict',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+
+    const reply = sent[sent.length - 1];
+    expect(reply.ok).toBe(true);
+    expect(reply.payload).toMatchObject({
+      applied: true,
+      conflict: false,
+      queue_applied: false,
+      queue_conflict: true,
+      values: { impl_runtime: 'codex' },
+      queue: { revision: 1, orchestration_model: 'sol' }
+    });
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledTimes(2);
+    expect(fanoutWorkerQueue).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    [{ preset_id: 'preset', expected_queue_revision: 0 }],
+    [{ preset_id: 'preset', expected_revision: 1 }],
+    [
+      {
+        preset_id: 'preset',
+        expected_revision: '1',
+        expected_queue_revision: 0
+      }
+    ],
+    [
+      {
+        preset_id: 'preset',
+        expected_revision: 1,
+        expected_queue_revision: '0'
+      }
+    ]
+  ])('rejects missing or non-integer revisions: %j', async (payload) => {
+    const { ws, sent } = fakeWs();
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('bad_request');
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
   });
 
   test('reports a kv write failure so the dialog can keep its edit state', async () => {
@@ -341,7 +486,11 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
     await handleApplyImplPresetGlobal(ws, {
       id: 'apply-global',
       type: 'apply-impl-preset-global',
-      payload: { preset_id, expected_revision: 1 }
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
     });
 
     expect(sent[sent.length - 1].error.code).toBe('kv_write_failed');
@@ -356,7 +505,11 @@ describe('handleApplyImplPresetGlobal (bd kv path)', () => {
     await handleApplyImplPresetGlobal(ws, {
       id: 'apply-global',
       type: 'apply-impl-preset-global',
-      payload: { preset_id, expected_revision: 1 }
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
     });
 
     expect(sent[sent.length - 1].error.code).toBe('bd_readback_failed');
