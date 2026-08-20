@@ -599,9 +599,10 @@ export function mergeQueueRefusalText(reason) {
  * Project a known nonterminal resolver wait reason; unknown values fail quiet.
  *
  * @param {unknown} reason
+ * @param {{ repair_sessions_used?: number }|null} [completion]
  * @returns {string|null}
  */
-export function mergeWaitingText(reason) {
+export function mergeWaitingText(reason, completion = null) {
   if (reason === 'worker_sessions_busy') {
     return '해소 대기 — 실행 슬롯 대기 중';
   }
@@ -612,9 +613,29 @@ export function mergeWaitingText(reason) {
   if (phase.length === 0) {
     return null;
   }
-  return phase === 'needs_human'
-    ? '완료 의도 대기 — 사람 확인 필요'
-    : `완료 의도 대기 — ${phase}`;
+  switch (phase) {
+    case 'gating': {
+      const repair_sessions_used = completion?.repair_sessions_used;
+      return typeof repair_sessions_used === 'number' &&
+        repair_sessions_used > 0
+        ? '수정 결과 재확인 중'
+        : '머지 조건 확인 중';
+    }
+    case 'repairing':
+      return '자동 수정 중';
+    case 'waiting_repair_pr':
+      return '수정 PR 대기 중';
+    case 'merging':
+      return '머지 중';
+    case 'cleaning':
+      return '마무리 중';
+    case 'paused':
+      return '자동 진행 일시정지';
+    case 'needs_human':
+      return '확인 필요';
+    default:
+      return null;
+  }
 }
 
 /**
@@ -737,35 +758,32 @@ function completionView(completion) {
   let badge = '';
   switch (completion.phase) {
     case 'gating':
-      badge = 'root 재검증 중';
+      badge = used > 0 ? '수정 결과 재확인 중' : '머지 조건 확인 중';
       break;
     case 'repairing':
-      badge =
-        completion.subject_role === 'root'
-          ? `자동복구 ${used}/${cap} · 원 PR 수정 중`
-          : `자동복구 ${used}/${cap} · repair PR 준비 중`;
+      badge = '자동 수정 중';
       break;
     case 'waiting_repair_pr':
       badge = repair_number
-        ? `repair PR #${repair_number} 대기`
-        : 'repair PR 대기';
+        ? `수정 PR #${repair_number} 대기 중`
+        : '수정 PR 대기 중';
       break;
     case 'merging':
       badge =
         completion.subject_role === 'repair'
           ? repair_number
-            ? `repair PR #${repair_number} 머지 중`
-            : 'repair PR 머지 중'
-          : 'root 머지 중';
+            ? `수정 PR #${repair_number} 머지 중`
+            : '수정 PR 머지 중'
+          : '머지 중';
       break;
     case 'cleaning':
-      badge = '정리 복구 중';
+      badge = '마무리 중';
       break;
     case 'paused':
-      badge = '자동복구 일시정지';
+      badge = '자동 진행 일시정지';
       break;
     case 'needs_human':
-      badge = `사람 확인 필요 · ${completion.terminal_reason || '원인 미상'}`;
+      badge = '확인 필요';
       break;
     case 'completed':
       return null;
@@ -774,7 +792,7 @@ function completionView(completion) {
   }
 
   /** @type {string[]} */
-  const details = [badge, `복구 세션 ${used}/${cap}`];
+  const details = [badge, `자동 수정 횟수 ${used}/${cap}`];
   if (completion.head_sha) {
     details.push(`head ${completion.head_sha}`);
   }
@@ -862,7 +880,7 @@ export function prStatusBadge(input) {
     });
   }
   if (input.recovery?.lock_actions) {
-    return badge('자동복구 중', {
+    return badge(input.recovery.badge, {
       title: input.recovery.title,
       live: true
     });
@@ -1068,7 +1086,8 @@ function prWaitRow(
   const queue_active = !!merge_queue && merge_queue.active === true;
   const queue_failure = (merge_queue && merge_queue.failure) || null;
   const queue_waiting = mergeWaitingText(
-    merge_queue ? merge_queue.waiting : null
+    merge_queue ? merge_queue.waiting : null,
+    completion
   );
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
@@ -1250,7 +1269,7 @@ function prWaitRow(
       !(recovery && recovery.lock_actions),
     cancel_title:
       recovery && recovery.lock_actions
-        ? '자동복구 중 — 중단하려면 상단 자동 머지 중단을 사용하세요'
+        ? `${recovery.badge} — 중단하려면 상단 자동 머지 중단을 사용하세요`
         : queue_active && !continuation_phase
           ? '머지 진행 중 — 취소할 수 없습니다'
           : continuation_phase
