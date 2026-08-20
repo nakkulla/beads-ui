@@ -9,6 +9,24 @@ import { createQueueStore } from './queue-store.js';
 /** @type {string} */
 let tmp_dir;
 const WORKSPACE = '/tmp/coordinator-workspace';
+const RESEED_PRESETS = [
+  {
+    name: '클로드 라인',
+    settings: { orchestration_model: 'opus', impl_runtime: 'claude' }
+  },
+  {
+    name: '클로드 오케 + 코덱스 구현',
+    settings: { orchestration_model: 'opus', impl_runtime: 'codex' }
+  },
+  {
+    name: '코덱스 라인',
+    settings: {
+      orchestration_model: 'sol',
+      orchestration_effort: 'xhigh',
+      impl_runtime: 'codex'
+    }
+  }
+];
 
 beforeEach(() => {
   tmp_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-coordinator-'));
@@ -21,7 +39,7 @@ afterEach(() => {
 /**
  * Build a coordinator over real queue + preset stores plus an in-memory kv.
  *
- * @param {{ queue?: Record<string, unknown>, preset?: Record<string, unknown>, kv?: Record<string, unknown>, kvFailOn?: 'read'|'write'|null, randomUUID?: () => string }} [options]
+ * @param {{ queue?: Record<string, unknown>, preset?: Record<string, unknown>, kv?: Record<string, unknown>, kvFailOn?: 'read'|'write'|null, randomUUID?: () => string, warn?: (message: string) => void }} [options]
  */
 function createFixture(options = {}) {
   const queue_file = path.join(tmp_dir, 'queue.json');
@@ -78,7 +96,8 @@ function createFixture(options = {}) {
     discover,
     workspaceKeyFor: () => 'workspace-key',
     kvGet,
-    kvSet
+    kvSet,
+    warn: options.warn
   });
   return {
     coordinator,
@@ -92,7 +111,7 @@ function createFixture(options = {}) {
 }
 
 describe('exec-preset-coordinator implementation presets', () => {
-  test('hides a legacy 12-key preset from the applicable snapshot', () => {
+  test('keeps an old partial profile in the applicable snapshot', () => {
     const fixture = createFixture({
       preset: {
         revision: 1,
@@ -101,6 +120,81 @@ describe('exec-preset-coordinator implementation presets', () => {
             id: 'legacy-1',
             name: '옛 프리셋',
             settings: { orchestration_model: 'sol', impl_model: 'sol' },
+            origin: { kind: 'user' }
+          },
+          {
+            id: 'impl-1',
+            name: '구현 프리셋',
+            settings: { impl_dispatch: 'main' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual([
+      'legacy-1',
+      'impl-1'
+    ]);
+  });
+
+  test('keeps a 15-key profile and hides a preset with an outside key', () => {
+    const presetStore = {
+      snapshot: () => ({
+        revision: 2,
+        presets: [
+          {
+            id: 'profile-15',
+            name: '전체 프로필',
+            settings: {
+              workflow_mode: 'standard',
+              spec_review_model: 'codex',
+              spec_review_effort: 'high',
+              plan_review_model: 'fable',
+              plan_review_effort: 'low',
+              impl_review_model: 'self',
+              impl_review_effort: 'xhigh',
+              impl_dispatch: 'main',
+              impl_runtime: 'claude',
+              impl_model: 'terra',
+              impl_effort: 'max',
+              impl_speed: 'fast',
+              orchestration_model: 'opus',
+              orchestration_effort: 'high',
+              orchestration_speed: 'default'
+            },
+            origin: { kind: /** @type {'user'} */ ('user') }
+          },
+          {
+            id: 'outside',
+            name: '외부 키',
+            settings: { removed_key: 'value' },
+            origin: { kind: /** @type {'user'} */ ('user') }
+          }
+        ]
+      })
+    };
+    const coordinator = createExecPresetCoordinator({
+      queueStore: /** @type {any} */ ({}),
+      presetStore: /** @type {any} */ (presetStore)
+    });
+
+    const snapshot = coordinator.snapshot();
+
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-15']);
+  });
+
+  test('hides a preset whose outside key survived a real store load', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'retired-key',
+            name: '퇴역 키',
+            settings: { review_model: 'codex', impl_runtime: 'claude' },
             origin: { kind: 'user' }
           },
           {
@@ -162,6 +256,148 @@ describe('exec-preset-coordinator implementation presets', () => {
     });
 
     expect(fixture.coordinator.snapshot().presets[0].compatible).toBe(true);
+  });
+});
+
+describe('exec-preset-coordinator server-global reseed (spec §D)', () => {
+  test('replaces every preset with the three seeds and records the marker', async () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 7,
+        presets: [
+          {
+            id: 'old-preset',
+            name: '삭제 대상',
+            settings: { impl_runtime: 'claude' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const result = await fixture.coordinator.migrateWorkspaces([]);
+
+    expect(result.ok).toBe(true);
+    const state = fixture.presetStore.snapshot();
+    expect(
+      state.presets.map(({ name, settings }) => ({ name, settings }))
+    ).toEqual(RESEED_PRESETS);
+    expect(state).toHaveProperty('reseed_migration', { version: 1 });
+  });
+
+  test('changes nothing when the reseed marker already exists', async () => {
+    const preset_file = path.join(tmp_dir, 'exec-presets.json');
+    const fixture = createFixture({
+      preset: {
+        revision: 8,
+        presets: [
+          {
+            id: 'kept',
+            name: '이미 완료',
+            settings: { impl_runtime: 'codex' },
+            origin: { kind: 'user' }
+          }
+        ],
+        reseed_migration: { version: 1 }
+      }
+    });
+    const before = fs.readFileSync(preset_file, 'utf8');
+
+    const result = await fixture.coordinator.migrateWorkspaces([]);
+
+    expect(result.ok).toBe(true);
+    expect(fs.readFileSync(preset_file, 'utf8')).toBe(before);
+    expect(fixture.presetStore.snapshot().revision).toBe(8);
+  });
+
+  test('warns and keeps startup successful when reseed readback fails', async () => {
+    const warn = vi.fn();
+    const preset_file = path.join(tmp_dir, 'exec-presets.json');
+    let reads = 0;
+    const presetStore = createExecPresetStore({
+      filePath: preset_file,
+      fs: /** @type {any} */ ({
+        readFileSync(/** @type {any} */ target, /** @type {any} */ options) {
+          reads += 1;
+          if (target === preset_file && reads === 2) {
+            return JSON.stringify({ revision: 0, presets: [] });
+          }
+          return fs.readFileSync(target, options);
+        },
+        mkdirSync: fs.mkdirSync,
+        writeFileSync: fs.writeFileSync,
+        renameSync: fs.renameSync,
+        rmSync: fs.rmSync
+      })
+    });
+    const coordinator = createExecPresetCoordinator({
+      queueStore: /** @type {any} */ ({}),
+      presetStore,
+      warn
+    });
+
+    const result = await coordinator.migrateWorkspaces([]);
+
+    expect(result.ok).toBe(true);
+    expect(warn).toHaveBeenCalledOnce();
+  });
+
+  test('blocks legacy copies after the reseed marker exists', async () => {
+    const createOrReuseImplCopy = vi.fn();
+    const replaceAllForReseed = vi.fn();
+    const presetStore = {
+      snapshot: () => ({
+        revision: 8,
+        presets: [
+          {
+            id: 'deleted-legacy',
+            name: '삭제된 구형 프리셋',
+            settings: { removed_key: 'value' },
+            origin: { kind: /** @type {'user'} */ ('user') }
+          }
+        ],
+        reseed_migration: { version: 1 }
+      }),
+      createOrReuseImplCopy,
+      replaceAllForReseed
+    };
+    const coordinator = createExecPresetCoordinator({
+      queueStore: /** @type {any} */ ({}),
+      presetStore: /** @type {any} */ (presetStore)
+    });
+
+    const result = await coordinator.migrateWorkspaces([]);
+
+    expect(result.ok).toBe(true);
+    expect(createOrReuseImplCopy).not.toHaveBeenCalled();
+    expect(replaceAllForReseed).not.toHaveBeenCalled();
+  });
+
+  test('reads the workspace legacy source before replacing the presets', async () => {
+    const fixture = createFixture({
+      queue: { revision: 4, default_exec_preset_id: 'source-preset' },
+      preset: {
+        revision: 2,
+        presets: [
+          {
+            id: 'source-preset',
+            name: '워크스페이스 원본',
+            settings: { impl_runtime: 'claude' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+
+    expect(result.ok).toBe(true);
+    expect(fixture.kvValue()).toMatchObject({ impl_runtime: 'claude' });
+    expect(
+      fixture.presetStore
+        .snapshot()
+        .presets.map(({ name, settings }) => ({ name, settings }))
+    ).toEqual(RESEED_PRESETS);
   });
 });
 
@@ -271,7 +507,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     );
   });
 
-  test('creates the implementation copy of a legacy 12-key preset', async () => {
+  test('makes no legacy copy for a partial 15-key preset before reseeding', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       preset: {
@@ -291,18 +527,11 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
       }
     });
 
+    const create_copy = vi.spyOn(fixture.presetStore, 'createOrReuseImplCopy');
+
     await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
 
-    const presets = fixture.coordinator.snapshot().presets;
-    expect(presets).toHaveLength(1);
-    expect(presets[0].settings).toEqual({
-      impl_runtime: 'claude',
-      impl_model: 'haiku'
-    });
-    expect(presets[0].origin).toEqual({
-      kind: 'legacy-preset-copy',
-      source_preset_id: 'legacy-1'
-    });
+    expect(create_copy).not.toHaveBeenCalled();
   });
 
   test('writes the completion marker and clears the legacy fields', async () => {
@@ -316,7 +545,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(false);
   });
 
-  test('deletes the legacy 12-key original only after every workspace succeeded', async () => {
+  test('replaces a partial 15-key preset after every workspace succeeded', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       preset: {
@@ -334,9 +563,9 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
 
     await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
 
-    expect(
-      fixture.presetStore.snapshot().presets.map((preset) => preset.id)
-    ).not.toContain('legacy-1');
+    const state = fixture.presetStore.snapshot();
+    expect(state.presets.map((preset) => preset.id)).not.toContain('legacy-1');
+    expect(state).toHaveProperty('reseed_migration', { version: 1 });
   });
 
   test('writes no marker and keeps the source when the kv write fails', async () => {
@@ -358,7 +587,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(true);
   });
 
-  test('keeps the legacy original when a workspace pass failed', async () => {
+  test('keeps the legacy original when a workspace pass is deferred', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       kvFailOn: 'write',
@@ -375,8 +604,9 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
       }
     });
 
-    await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
+    const result = await fixture.coordinator.migrateWorkspaces([WORKSPACE]);
 
+    expect(result).toMatchObject({ ok: true, deferred: [WORKSPACE] });
     expect(
       fixture.presetStore.snapshot().presets.map((preset) => preset.id)
     ).toContain('legacy-1');
@@ -464,7 +694,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     ).toBe(null);
   });
 
-  test('reuses the implementation copy rather than duplicating it on a re-run', async () => {
+  test('creates no migration copy for a partial 15-key preset on a re-run', async () => {
     const preset = {
       revision: 1,
       presets: [
@@ -494,6 +724,6 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
           entry.origin.kind === 'legacy-preset-copy' &&
           entry.origin.source_preset_id === 'legacy-1'
       );
-    expect(copies).toHaveLength(1);
+    expect(copies).toHaveLength(0);
   });
 });

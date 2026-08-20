@@ -1,10 +1,8 @@
 /**
- * Server-global IMPLEMENTATION preset persistence (spec §C.6).
+ * Server-global full-profile execution preset persistence.
  *
- * A preset now carries only the five implementation keys
- * (`impl_dispatch/runtime/model/effort/speed`). The retired 12-key shape is
- * still READ so the spec §F migration can copy it; such a preset is reported as
- * `legacy: true` and is never offered as an editable or applicable preset.
+ * A preset sparsely carries the 12 session-default keys plus the workspace
+ * queue's three orchestration keys.
  *
  * @typedef {Object} ExecPreset
  * @property {string} id
@@ -16,13 +14,12 @@
  * @typedef {Object} ExecPresetState
  * @property {number} revision
  * @property {ExecPreset[]} presets
+ * @property {{ version: number }} [reseed_migration]
  */
 import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
-  EXEC_SETTING_KEYS,
-  IMPL_PRESET_KEYS,
   implPresetEnums,
   validateImplPresetSettings
 } from './worker/exec-enums.js';
@@ -66,13 +63,23 @@ function normalizeState(raw) {
   if (Number.isInteger(raw.revision) && Number(raw.revision) >= 0) {
     state.revision = Number(raw.revision);
   }
+  if (
+    isRecord(raw.reseed_migration) &&
+    Number.isInteger(raw.reseed_migration.version) &&
+    Number(raw.reseed_migration.version) > 0
+  ) {
+    state.reseed_migration = {
+      version: Number(raw.reseed_migration.version)
+    };
+  }
   if (!Array.isArray(raw.presets)) {
     return state;
   }
-  // Both shapes are retained on load: the five implementation keys are the
-  // active vocabulary, and the retired 12 stay readable until the spec §F
-  // migration has copied and removed them.
-  const known_keys = new Set([...EXEC_SETTING_KEYS, ...IMPL_PRESET_KEYS]);
+  // Load keeps every string setting, including one outside the current
+  // vocabulary: the write path is what enforces the 15 keys, and the
+  // coordinator needs an unknown key to survive to classify its preset as
+  // legacy and hide it. Stripping here would delete the only evidence and
+  // re-expose the preset with truncated settings.
   for (const entry of raw.presets) {
     if (!isRecord(entry)) {
       continue;
@@ -86,7 +93,7 @@ function normalizeState(raw) {
     const settings = {};
     if (isRecord(entry.settings)) {
       for (const [key, value] of Object.entries(entry.settings)) {
-        if (known_keys.has(key) && typeof value === 'string') {
+        if (typeof value === 'string') {
           settings[key] = value;
         }
       }
@@ -416,8 +423,82 @@ export function createExecPresetStore(options = {}) {
           presets: clone(current.presets)
         };
       }
-      const next = { revision: current.revision + 1, presets: remaining };
+      const next = {
+        ...current,
+        revision: current.revision + 1,
+        presets: remaining
+      };
       persist(next);
+      cache = next;
+      return {
+        applied: true,
+        conflict: false,
+        revision: next.revision,
+        presets: clone(next.presets)
+      };
+    },
+
+    /**
+     * Atomically replace every preset and record the server-global reseed
+     * marker in the same state-file rename.
+     *
+     * @param {{ presets: Array<{ name: string, settings: Record<string, string> }>, marker: { version: number } }} input
+     */
+    replaceAllForReseed(input) {
+      const current = ensureLoaded();
+      if (current.reseed_migration) {
+        return {
+          applied: false,
+          conflict: false,
+          revision: current.revision,
+          presets: clone(current.presets)
+        };
+      }
+      if (
+        !Array.isArray(input?.presets) ||
+        !isRecord(input?.marker) ||
+        !Number.isInteger(input.marker.version) ||
+        input.marker.version <= 0
+      ) {
+        return rejected(current, false, 'invalid');
+      }
+      /** @type {ExecPreset[]} */
+      const presets = [];
+      const names = new Set();
+      for (const seed of input.presets) {
+        const normalized = normalizeMutation(seed?.name, seed?.settings);
+        if (!normalized) {
+          return rejected(current, false, 'invalid');
+        }
+        const folded_name = normalized.name.toLowerCase();
+        if (names.has(folded_name)) {
+          return rejected(current, false, 'invalid');
+        }
+        names.add(folded_name);
+        presets.push({
+          id: randomUUID(),
+          name: normalized.name,
+          settings: normalized.settings,
+          origin: { kind: 'user' }
+        });
+      }
+      const next = {
+        revision: current.revision + 1,
+        presets,
+        reseed_migration: { version: input.marker.version }
+      };
+      persist(next);
+      let readback;
+      try {
+        readback = JSON.parse(fs.readFileSync(file_path, 'utf8'));
+      } catch (err) {
+        throw new Error('Exec preset reseed failed readback verification', {
+          cause: err
+        });
+      }
+      if (JSON.stringify(readback) !== JSON.stringify(next)) {
+        throw new Error('Exec preset reseed failed readback verification');
+      }
       cache = next;
       return {
         applied: true,

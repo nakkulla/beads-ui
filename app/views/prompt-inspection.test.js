@@ -279,7 +279,7 @@ describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
   /**
    * @param {any} transport
    */
-  function openWorkerTab(transport) {
+  async function openExecutionTab(transport) {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const dialog = createSettingsDialog(mount, {
       transport,
@@ -289,12 +289,10 @@ describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
       notify: () => {}
     });
     dialog.open();
+    await settle();
     const root = /** @type {HTMLElement} */ (
       mount.querySelector('#settings-dialog')
     );
-    /** @type {HTMLButtonElement} */ (
-      root.querySelector('[data-tab="worker"]')
-    ).click();
     return { dialog, root };
   }
 
@@ -321,7 +319,7 @@ describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
           }
         : { values: {}, warnings: [] }
     );
-    const { dialog, root } = openWorkerTab(transport);
+    const { dialog, root } = await openExecutionTab(transport);
 
     click(seamEl(root, 'system-prompt-toggle'));
     await settle();
@@ -336,8 +334,8 @@ describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
     dialog.destroy();
   });
 
-  test('holds no prompt text before the reply arrives', () => {
-    const { dialog, root } = openWorkerTab(
+  test('holds no prompt text before the reply arrives', async () => {
+    const { dialog, root } = await openExecutionTab(
       vi.fn(async () => ({ values: {}, warnings: [] }))
     );
 
@@ -354,7 +352,7 @@ describe('settings dialog worker system prompt (UI-rxp3 §4)', () => {
       }
       return { values: {}, warnings: [] };
     });
-    const { dialog, root } = openWorkerTab(transport);
+    const { dialog, root } = await openExecutionTab(transport);
 
     click(seamEl(root, 'system-prompt-toggle'));
     await settle();

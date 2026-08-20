@@ -126,20 +126,6 @@ export const SESSION_DEFAULT_KEYS = [
 ];
 
 /**
- * The five keys an implementation preset carries (spec §C.6). A preset holding
- * any other key is a legacy 12-key preset awaiting migration.
- *
- * @type {ReadonlyArray<string>}
- */
-export const IMPL_PRESET_KEYS = [
-  'impl_dispatch',
-  'impl_runtime',
-  'impl_model',
-  'impl_effort',
-  'impl_speed'
-];
-
-/**
  * The three orchestration keys stored directly as workspace queue values.
  *
  * @type {ReadonlyArray<string>}
@@ -148,6 +134,17 @@ export const ORCHESTRATION_KEYS = [
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed'
+];
+
+/**
+ * The 15 sparse keys a full-profile execution preset may carry: all session
+ * defaults plus the workspace queue's orchestration defaults.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const IMPL_PRESET_KEYS = [
+  ...SESSION_DEFAULT_KEYS,
+  ...ORCHESTRATION_KEYS
 ];
 
 /**
@@ -177,24 +174,28 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
 }
 
 /**
- * Allowed values per implementation-preset key — the session enums narrowed to
- * the five preset keys.
+ * Allowed values per full-profile preset key. Session keys reuse the session
+ * table; orchestration keys reuse the queue-facing execution table.
  *
  * @param {ResolvedCatalog} [catalog]
  * @returns {Record<string, ReadonlyArray<string>>}
  */
 export function implPresetEnums(catalog = runtimeCatalog()) {
-  const enums = sessionDefaultEnums(catalog);
+  const session_enums = sessionDefaultEnums(catalog);
+  const exec_enums = execSettingEnums(catalog);
   /** @type {Record<string, ReadonlyArray<string>>} */
   const narrowed = {};
   for (const key of IMPL_PRESET_KEYS) {
-    narrowed[key] = enums[key];
+    const source = ORCHESTRATION_KEYS.includes(key)
+      ? exec_enums
+      : session_enums;
+    narrowed[key] = source[key];
   }
   return narrowed;
 }
 
 /**
- * Validate one implementation preset's five keys.
+ * Validate one full-profile execution preset's sparse settings.
  *
  * The `auto` literal is a SELECTOR STATE, not a catalog model or effort, so it
  * is removed before the runtime/model/effort coherence check — otherwise

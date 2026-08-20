@@ -2,13 +2,18 @@ import { describe, expect, test } from 'vitest';
 import * as enums from './exec-enums.js';
 import {
   EXEC_SETTING_KEYS,
+  IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
+  ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
+  SESSION_DEFAULT_KEYS,
   execSettingEnums,
+  implPresetEnums,
   inferImplRuntime,
   validateExecSettings,
+  validateImplPresetSettings,
   validateImplSettings
 } from './exec-enums.js';
 import { resolveCatalog } from './runner-catalog.js';
@@ -30,6 +35,15 @@ const EXPECTED_KEYS = [
 ];
 
 describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
+  test('covers all 15 full-profile preset keys', () => {
+    expect(IMPL_PRESET_KEYS).toHaveLength(15);
+    expect(IMPL_PRESET_KEYS).toEqual([
+      ...SESSION_DEFAULT_KEYS,
+      ...ORCHESTRATION_KEYS
+    ]);
+    expect(Object.keys(implPresetEnums())).toEqual(IMPL_PRESET_KEYS);
+  });
+
   test('exposes the step-review model vocabulary', () => {
     expect(REVIEW_STEP_MODELS).toEqual([
       'codex',
@@ -55,6 +69,77 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
     expect(/** @type {any} */ (enums).EXEC_SETTING_ENUMS).toBeUndefined();
     expect(/** @type {any} */ (enums).IMPL_MODELS).toBeUndefined();
     expect(Object.hasOwn(execSettingEnums(), 'review_model')).toBe(false);
+  });
+});
+
+describe('worker/exec-enums full-profile presets', () => {
+  test('reuses the exec-setting orchestration enums', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: { models: { nova: { id: 'gpt-5.7-nova', efforts: ['ultra'] } } }
+      },
+      warn: () => {}
+    });
+
+    const preset_enums = implPresetEnums(catalog);
+    const exec_enums = execSettingEnums(catalog);
+
+    for (const key of ORCHESTRATION_KEYS) {
+      expect(preset_enums[key]).toEqual(exec_enums[key]);
+    }
+  });
+
+  test('validates orchestration values from the injected catalog', () => {
+    const catalog = resolveCatalog({
+      overrides: {
+        codex: { models: { nova: { id: 'gpt-5.7-nova', efforts: ['ultra'] } } }
+      },
+      warn: () => {}
+    });
+
+    const accepted = validateImplPresetSettings(
+      {
+        orchestration_model: 'nova',
+        orchestration_effort: 'ultra',
+        orchestration_speed: 'fast'
+      },
+      { catalog }
+    );
+    const rejected = validateImplPresetSettings(
+      { orchestration_model: 'removed-model' },
+      { catalog }
+    );
+
+    expect(accepted).toEqual({ ok: true });
+    expect(rejected).toEqual({
+      ok: false,
+      reason: 'invalid_orchestration_model'
+    });
+  });
+
+  test('preserves auto literals and the main-dispatch coherence exemption', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const auto = validateImplPresetSettings(
+      {
+        impl_dispatch: 'delegated',
+        impl_runtime: 'inherit',
+        impl_model: 'auto',
+        impl_effort: 'auto'
+      },
+      { catalog }
+    );
+    const main = validateImplPresetSettings(
+      {
+        impl_dispatch: 'main',
+        impl_runtime: 'claude',
+        impl_model: 'terra'
+      },
+      { catalog }
+    );
+
+    expect(auto).toEqual({ ok: true });
+    expect(main).toEqual({ ok: true });
   });
 });
 

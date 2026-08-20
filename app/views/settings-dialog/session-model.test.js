@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import {
   IMPL_DISPATCHES,
+  IMPL_PRESET_KEYS,
+  ORCHESTRATION_KEYS,
   REVIEW_EFFORTS,
   SESSION_DEFAULT_KEYS,
   buildExecutionOptionView,
@@ -79,6 +81,14 @@ describe('SESSION_DEFAULT_KEYS', () => {
 
   test('offers 위임 and 메인 as the two execution modes', () => {
     expect(IMPL_DISPATCHES).toEqual(['delegated', 'main']);
+  });
+
+  test('mirrors all fifteen execution preset keys', () => {
+    expect(IMPL_PRESET_KEYS).toEqual([
+      ...SESSION_DEFAULT_KEYS,
+      ...ORCHESTRATION_KEYS
+    ]);
+    expect(IMPL_PRESET_KEYS).toHaveLength(15);
   });
 });
 
