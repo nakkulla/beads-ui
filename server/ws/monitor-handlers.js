@@ -93,6 +93,9 @@ function hasPipeline(snapshot) {
       return true;
     }
   }
+  if (serialLaneBeadIds(snapshot).size > 0) {
+    return true;
+  }
   const attempts = snapshot.attempts || {};
   for (const attempt of Object.values(attempts)) {
     if (attempt && /** @type {any} */ (attempt).status === 'running') {
@@ -121,6 +124,46 @@ function lanedBeadIds(snapshot) {
     }
     for (const entry of entries) {
       const bead_id = entry && entry.bead_id;
+      if (typeof bead_id === 'string' && bead_id.length > 0) {
+        ids.add(bead_id);
+      }
+    }
+  }
+  for (const bead_id of serialLaneBeadIds(snapshot)) {
+    ids.add(bead_id);
+  }
+  return ids;
+}
+
+/**
+ * Valid bead ids in configured serial lanes (UI-2gi1 §4).
+ *
+ * Older and malformed snapshots fail quiet so monitor aggregation keeps its
+ * pre-serial-lane behavior.
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Set<string>}
+ */
+function serialLaneBeadIds(snapshot) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  const serial_lanes = snapshot.serial_lanes;
+  if (!Array.isArray(serial_lanes)) {
+    return ids;
+  }
+  for (const lane of serial_lanes) {
+    if (!lane || typeof lane !== 'object' || Array.isArray(lane)) {
+      continue;
+    }
+    const entries = lane.entries;
+    if (!Array.isArray(entries)) {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        continue;
+      }
+      const bead_id = entry.bead_id;
       if (typeof bead_id === 'string' && bead_id.length > 0) {
         ids.add(bead_id);
       }

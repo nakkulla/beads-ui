@@ -247,6 +247,69 @@ describe('buildMonitorPipeline runnable lane (UI-qrfo §4)', () => {
   });
 });
 
+describe('buildMonitorPipeline serial lanes (UI-2gi1 §4)', () => {
+  test('excludes a candidate that already sits in a serial lane', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-9', added_at: NOW }] }
+          ]
+        })
+      },
+      runnable: { [WS_A]: [candidate('A-9'), candidate('A-8')] }
+    });
+
+    expect(out[0].runnable).toEqual([candidate('A-8')]);
+  });
+
+  test('keeps a workspace whose only content sits in a serial lane', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1', added_at: NOW }] }
+          ]
+        })
+      }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+  });
+
+  test('preserves behavior when serial lanes are absent or malformed', () => {
+    const legacy_or_malformed_snapshots = [
+      snapshot(),
+      snapshot({ serial_lanes: {} }),
+      snapshot({ serial_lanes: [null, 's1', [], { entries: null }] }),
+      snapshot({
+        serial_lanes: [
+          {
+            entries: [null, 'A-9', [], {}, { bead_id: '' }, { bead_id: 9 }]
+          }
+        ]
+      })
+    ];
+
+    for (const current_snapshot of legacy_or_malformed_snapshots) {
+      const without_pipeline = build({
+        workspaces: [WS_A],
+        snapshots: { [WS_A]: current_snapshot }
+      });
+      const with_runnable = build({
+        workspaces: [WS_A],
+        snapshots: { [WS_A]: current_snapshot },
+        runnable: { [WS_A]: [candidate('A-9')] }
+      });
+
+      expect(without_pipeline).toEqual([]);
+      expect(with_runnable[0].runnable).toEqual([candidate('A-9')]);
+    }
+  });
+});
+
 describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
   test('omits a workspace whose lanes are all empty', () => {
     const out = build({ workspaces: [WS_A], snapshots: {} });
