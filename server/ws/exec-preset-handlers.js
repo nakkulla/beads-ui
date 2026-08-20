@@ -1,9 +1,10 @@
 /**
  * Server-global IMPLEMENTATION-preset WebSocket channel (spec §C.6).
  *
- * A preset carries the five implementation keys and has exactly two apply
- * paths: onto ONE Bead's metadata (issue detail quick-apply) or onto the
- * workspace's `bd kv` session defaults (settings dialog "전역 기본값으로 적용").
+ * A preset carries the full execution profile and has exactly two apply paths:
+ * its 12 Bead-pin-compatible session keys go onto ONE Bead's metadata, while a
+ * global apply replaces those session keys in `bd kv` and the three
+ * orchestration keys in the workspace queue.
  * The retired 12-key family — `exec-preset-*`, `apply-exec-preset`,
  * `worker-queue-set-default-exec-preset` — is gone from the protocol, so a
  * client still sending one gets `unknown_type` rather than a silent no-op.
@@ -18,7 +19,8 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
-  IMPL_PRESET_KEYS,
+  ORCHESTRATION_KEYS,
+  SESSION_DEFAULT_KEYS,
   implPresetEnums,
   validateImplPresetSettings
 } from '../worker/exec-enums.js';
@@ -29,11 +31,17 @@ import {
 import {
   kvGetJsonInWorkspace,
   kvSetJsonInWorkspace,
+  log,
   readbackFailureDetail,
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
+import {
+  decorateQueue,
+  fanout as fanoutWorkerQueue
+} from './worker-handlers.js';
+import { targetWorkspaceOf } from './workspace-target.js';
 
 const DEFAULT_CLIENT_ID = 'impl:presets';
 
@@ -45,8 +53,13 @@ function coordinator() {
   return getWorkerRuntime().execPresetCoordinator;
 }
 
+/** @returns {ReturnType<typeof getWorkerRuntime>['queueStore']} */
+function queueStore() {
+  return getWorkerRuntime().queueStore;
+}
+
 /**
- * Build one `bd update` argv that pins every implementation key on a Bead.
+ * Build one `bd update` argv that pins every session-default key on a Bead.
  * A key the preset omits is explicitly UNSET rather than left behind: applying
  * a preset must leave the Bead describing that preset and nothing else.
  *
@@ -56,7 +69,7 @@ function coordinator() {
  */
 export function buildApplyImplPresetArgs(issue_id, settings) {
   const args = ['update', issue_id];
-  for (const key of IMPL_PRESET_KEYS) {
+  for (const key of SESSION_DEFAULT_KEYS) {
     if (Object.hasOwn(settings, key)) {
       args.push('--set-metadata', `${key}=${settings[key]}`);
     } else {
@@ -106,6 +119,21 @@ function emitSnapshot(ws, client_id, snapshot) {
 function fanout(snapshot) {
   for (const subscriber of SUBSCRIBERS) {
     emitSnapshot(subscriber.ws, subscriber.client_id, snapshot);
+  }
+}
+
+/**
+ * Publish the current preset list to every subscriber without a client
+ * mutation. The startup migration runs inside the `listen` callback, so a
+ * client can already be subscribed while the §D reseed replaces the list;
+ * without this push it would keep rendering the pre-reseed presets until its
+ * next own mutation.
+ */
+export function broadcastImplPresets() {
+  try {
+    fanout(coordinator().snapshot());
+  } catch (err) {
+    log('impl preset broadcast failed: %o', err);
   }
 }
 
@@ -186,7 +214,7 @@ export function handleImplPresetDelete(ws, req) {
 }
 
 /**
- * Resolve the requested preset and validate its five keys before any write.
+ * Resolve the requested preset and validate its profile before any write.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -251,7 +279,7 @@ function resolvePresetForApply(ws, req, preset_id, expected_revision) {
 }
 
 /**
- * Apply path 1 — pin one preset's five keys onto ONE Bead's metadata.
+ * Apply path 1 — pin one preset's 12 session keys onto ONE Bead's metadata.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -355,35 +383,50 @@ export async function handleApplyImplPreset(ws, req) {
         applied: true,
         conflict: false,
         revision: resolved.revision,
-        issue: shown.data
+        issue: shown.data,
+        skipped_orchestration_keys: ORCHESTRATION_KEYS
       })
     )
   );
 }
 
 /**
- * Apply path 2 — write one preset's five keys into the workspace `bd kv`
- * session defaults. Same re-read-before-write discipline as a manual edit.
+ * Apply path 2 — replace the session profile in `bd kv`, then replace the
+ * orchestration profile in the workspace queue under its separate CAS.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
  */
 export async function handleApplyImplPresetGlobal(ws, req) {
-  const { preset_id, expected_revision } = /** @type {any} */ (
-    req.payload || {}
-  );
+  const { preset_id, expected_revision, expected_queue_revision } =
+    /** @type {any} */ (req.payload || {});
   if (
     typeof preset_id !== 'string' ||
     preset_id.length === 0 ||
     !Number.isInteger(expected_revision) ||
-    expected_revision < 0
+    expected_revision < 0 ||
+    !Number.isInteger(expected_queue_revision) ||
+    expected_queue_revision < 0
   ) {
     ws.send(
       JSON.stringify(
         makeError(
           req,
           'bad_request',
-          'payload requires { preset_id, expected_revision }'
+          'payload requires { preset_id, expected_revision, expected_queue_revision }'
+        )
+      )
+    );
+    return;
+  }
+  const workspace_key = targetWorkspaceOf(ws, req.payload);
+  if (workspace_key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
         )
       )
     );
@@ -405,7 +448,7 @@ export async function handleApplyImplPresetGlobal(ws, req) {
   }
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of IMPL_PRESET_KEYS) {
+  for (const key of SESSION_DEFAULT_KEYS) {
     patch[key] = Object.hasOwn(resolved.preset.settings, key)
       ? resolved.preset.settings[key]
       : null;
@@ -456,6 +499,39 @@ export async function handleApplyImplPresetGlobal(ws, req) {
       return;
     }
   }
+
+  /** @type {Record<string, string|null>} */
+  const orchestration_values = {};
+  for (const key of ORCHESTRATION_KEYS) {
+    orchestration_values[key] = Object.hasOwn(resolved.preset.settings, key)
+      ? resolved.preset.settings[key]
+      : null;
+  }
+  /** @type {import('../worker/queue-store.js').QueueOpResult} */
+  let queue_result;
+  try {
+    queue_result = queueStore().setOrchestrationDefaults(workspace_key, {
+      expected_revision: expected_queue_revision,
+      values: orchestration_values
+    });
+  } catch {
+    const queue = queueStore().snapshot(workspace_key);
+    ws.send(
+      JSON.stringify(
+        makeOk(req, {
+          applied: true,
+          conflict: false,
+          revision: resolved.revision,
+          values: confirmed.values,
+          warnings: confirmed.warnings,
+          queue_applied: false,
+          queue_conflict: false,
+          queue: decorateQueue(workspace_key, queue)
+        })
+      )
+    );
+    return;
+  }
   ws.send(
     JSON.stringify(
       makeOk(req, {
@@ -463,10 +539,16 @@ export async function handleApplyImplPresetGlobal(ws, req) {
         conflict: false,
         revision: resolved.revision,
         values: confirmed.values,
-        warnings: confirmed.warnings
+        warnings: confirmed.warnings,
+        queue_applied: queue_result.ok,
+        queue_conflict: queue_result.conflict,
+        queue: decorateQueue(workspace_key, queue_result.queue)
       })
     )
   );
+  if (queue_result.ok) {
+    fanoutWorkerQueue(workspace_key, queue_result.queue);
+  }
 }
 
 /** @param {WebSocket} ws */

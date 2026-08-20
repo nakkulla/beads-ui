@@ -185,7 +185,8 @@ function rowTemplate(row, view) {
  *   expanded: boolean,
  *   presets: any[],
  *   preset_id: string,
- *   preset_busy: boolean
+ *   preset_busy: boolean,
+ *   skipped_orchestration_keys?: string[]
  * }} model
  * @param {{
  *   onToggle: (open: boolean) => void,
@@ -295,7 +296,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
           <div class="detail-effective__foot">
             <select
               data-impl-preset-select
-              aria-label="구현 프리셋"
+              aria-label="실행 프리셋"
               .value=${live(model.preset_id)}
               ?disabled=${model.preset_busy}
               @change=${(/** @type {Event} */ ev) =>
@@ -304,7 +305,7 @@ export function effectiveSettingsCardTemplate(model, handlers) {
                 )}
             >
               <option value="" ?selected=${model.preset_id === ''}>
-                구현 프리셋…
+                실행 프리셋…
               </option>
               ${model.presets.map(
                 (preset) =>
@@ -327,8 +328,15 @@ export function effectiveSettingsCardTemplate(model, handlers) {
               이 이슈에 적용
             </button>
             <span class="detail-effective__hint"
-              >구현 키 5개를 핀으로 기록</span
+              >세션 키 12개를 핀으로 기록</span
             >
+            ${(model.skipped_orchestration_keys || []).length > 0
+              ? html`<span
+                  class="detail-effective__hint"
+                  data-preset-skip-notice
+                  >오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀</span
+                >`
+              : ''}
           </div>
         </div>`
       : ''}

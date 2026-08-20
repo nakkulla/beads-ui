@@ -196,8 +196,8 @@ describe('main exec-preset subscription lifecycle', () => {
     const dialog = document.getElementById('settings-dialog');
     expect(dialog).not.toBe(null);
     expect(dialog?.hasAttribute('open')).toBe(true);
-    expect(dialog?.querySelector('[role="tab"][data-tab="session"]')).not.toBe(
-      null
-    );
+    expect(
+      dialog?.querySelector('[role="tab"][data-tab="execution"]')
+    ).not.toBe(null);
   });
 });
