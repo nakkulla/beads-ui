@@ -31,6 +31,7 @@ import {
 import {
   kvGetJsonInWorkspace,
   kvSetJsonInWorkspace,
+  log,
   readbackFailureDetail,
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
@@ -118,6 +119,21 @@ function emitSnapshot(ws, client_id, snapshot) {
 function fanout(snapshot) {
   for (const subscriber of SUBSCRIBERS) {
     emitSnapshot(subscriber.ws, subscriber.client_id, snapshot);
+  }
+}
+
+/**
+ * Publish the current preset list to every subscriber without a client
+ * mutation. The startup migration runs inside the `listen` callback, so a
+ * client can already be subscribed while the §D reseed replaces the list;
+ * without this push it would keep rendering the pre-reseed presets until its
+ * next own mutation.
+ */
+export function broadcastImplPresets() {
+  try {
+    fanout(coordinator().snapshot());
+  } catch (err) {
+    log('impl preset broadcast failed: %o', err);
   }
 }
 

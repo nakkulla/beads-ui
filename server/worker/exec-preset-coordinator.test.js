@@ -186,6 +186,32 @@ describe('exec-preset-coordinator implementation presets', () => {
     expect(snapshot.presets.map((preset) => preset.id)).toEqual(['profile-15']);
   });
 
+  test('hides a preset whose outside key survived a real store load', () => {
+    const fixture = createFixture({
+      preset: {
+        revision: 1,
+        presets: [
+          {
+            id: 'retired-key',
+            name: '퇴역 키',
+            settings: { review_model: 'codex', impl_runtime: 'claude' },
+            origin: { kind: 'user' }
+          },
+          {
+            id: 'impl-1',
+            name: '구현 프리셋',
+            settings: { impl_dispatch: 'main' },
+            origin: { kind: 'user' }
+          }
+        ]
+      }
+    });
+
+    const snapshot = fixture.coordinator.snapshot();
+
+    expect(snapshot.presets.map((preset) => preset.id)).toEqual(['impl-1']);
+  });
+
   test('marks an implementation preset whose model left the catalog incompatible', () => {
     const fixture = createFixture({
       preset: {
@@ -561,7 +587,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(Object.hasOwn(persisted, 'exec_defaults')).toBe(true);
   });
 
-  test('replaces the legacy original when a workspace pass is deferred', async () => {
+  test('keeps the legacy original when a workspace pass is deferred', async () => {
     const fixture = createFixture({
       queue: legacyQueue(),
       kvFailOn: 'write',
@@ -583,7 +609,7 @@ describe('exec-preset-coordinator session-defaults migration (spec §F)', () => 
     expect(result).toMatchObject({ ok: true, deferred: [WORKSPACE] });
     expect(
       fixture.presetStore.snapshot().presets.map((preset) => preset.id)
-    ).not.toContain('legacy-1');
+    ).toContain('legacy-1');
   });
 
   test('re-converges on the next start after a partial pass', async () => {

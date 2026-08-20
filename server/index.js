@@ -15,6 +15,7 @@ import {
   resolveStartupWorkspace
 } from './workspace-discovery.js';
 import { attachWsServer } from './ws.js';
+import { broadcastImplPresets } from './ws/exec-preset-handlers.js';
 import {
   notifyMonitorRegistryChanged,
   pollDemandFor
@@ -163,6 +164,10 @@ server.listen(config.port, config.host, async () => {
         migration.outcomes
       );
     }
+    // The migration ran after `listen`, so a client may already hold the
+    // pre-reseed preset list; push the current one rather than leaving it
+    // stale until that client's next own mutation.
+    broadcastImplPresets();
     // The subscriber-count provider is what arms the PR pollers: they observe
     // `pr_wait` PRs only while a client is actually watching that workspace's
     // queue (worker-phase2 §4) — or, since UI-nprg, while a monitor subscriber

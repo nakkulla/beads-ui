@@ -62,10 +62,12 @@ vi.mock('./worker-handlers.js', () => ({
 
 const {
   __resetImplPresetsForTest,
+  broadcastImplPresets,
   buildApplyImplPresetArgs,
   handleApplyImplPreset,
   handleApplyImplPresetGlobal,
-  handleImplPresetCreate
+  handleImplPresetCreate,
+  handleSubscribeImplPresets
 } = await import('./exec-preset-handlers.js');
 
 /** @type {string} */
@@ -139,6 +141,28 @@ describe('retired 12-key preset protocol', () => {
     expect(
       /** @type {any} */ (handlers).buildApplyExecPresetArgs
     ).toBeUndefined();
+  });
+});
+
+describe('broadcastImplPresets', () => {
+  test('pushes the current snapshot to a subscriber with no client mutation', () => {
+    const { ws, sent } = fakeWs();
+    seedPreset(ws, sent, { impl_runtime: 'codex' });
+    handleSubscribeImplPresets(ws, {
+      id: 'sub',
+      type: 'subscribe-impl-presets',
+      payload: { id: 'client-1' }
+    });
+    const before = sent.length;
+
+    broadcastImplPresets();
+
+    const pushed = sent[sent.length - 1];
+    expect(sent.length).toBe(before + 1);
+    expect(pushed.payload.type).toBe('impl-presets-snapshot');
+    expect(
+      pushed.payload.presets.map((/** @type {any} */ p) => p.name)
+    ).toEqual(['프리셋']);
   });
 });
 

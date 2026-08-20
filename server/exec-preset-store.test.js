@@ -26,7 +26,7 @@ describe('exec-preset-store defaults', () => {
     expect(snapshot).toEqual({ revision: 0, presets: [] });
   });
 
-  test('normalizes loaded presets while preserving known incompatible strings', () => {
+  test('normalizes loaded presets while preserving every string setting', () => {
     const file_path = path.join(tmp_dir, 'exec-presets.json');
     fs.writeFileSync(
       file_path,
@@ -56,7 +56,7 @@ describe('exec-preset-store defaults', () => {
         {
           id: 'preset-1',
           name: 'Legacy',
-          settings: { impl_model: 'removed-model' },
+          settings: { impl_model: 'removed-model', unknown_key: 'drop-me' },
           origin: { kind: 'user' }
         }
       ]

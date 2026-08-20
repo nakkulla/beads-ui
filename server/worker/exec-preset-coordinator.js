@@ -550,7 +550,13 @@ export function createExecPresetCoordinator(options) {
     if (all_ok && copied.legacy_ids.length > 0) {
       presetStore.deletePresets(copied.legacy_ids);
     }
-    reseedPresets();
+    // Same gate as the legacy delete above, for the same reason: a deferred
+    // workspace still resolves its §F kv source through
+    // `default_exec_preset_id`, so replacing the preset list before that
+    // workspace has read it would strand the retry with no source.
+    if (all_ok) {
+      reseedPresets();
+    }
     // A workspace that could not be migrated is DEFERRED, not fatal: its own
     // durable state is untouched (fill-only-empty, marker unwritten), so the
     // next start retries it. Failing the whole pass would be read as "nothing

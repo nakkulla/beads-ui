@@ -264,20 +264,20 @@ export function createSettingsDialog(mount_element, options) {
   }
 
   /**
-   * Current explicit execution values as preset settings. Session values come
-   * from their draft; orchestration values come from the queue snapshot.
+   * Current explicit execution values as preset settings — what the tab shows,
+   * not what the stores hold. Orchestration reads the same draft-over-queue
+   * overlay the rows render, so a value whose queue save failed is still the
+   * one a save captures.
    *
    * @returns {Record<string, string>}
    */
   function executionDraftSettings() {
     /** @type {Record<string, string>} */
     const settings = {};
-    const queue = options.queueStore?.get();
+    const orchestration = currentOrchestrationValues();
     for (const key of IMPL_PRESET_KEYS) {
       const value = ORCHESTRATION_KEYS.includes(key)
-        ? isRecord(queue)
-          ? queue[key]
-          : undefined
+        ? orchestration[key]
         : session_draft[key];
       if (typeof value === 'string' && value.length > 0) {
         settings[key] = value;

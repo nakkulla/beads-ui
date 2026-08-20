@@ -20,7 +20,6 @@ import crypto from 'node:crypto';
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import {
-  IMPL_PRESET_KEYS,
   implPresetEnums,
   validateImplPresetSettings
 } from './worker/exec-enums.js';
@@ -76,7 +75,11 @@ function normalizeState(raw) {
   if (!Array.isArray(raw.presets)) {
     return state;
   }
-  const known_keys = new Set(IMPL_PRESET_KEYS);
+  // Load keeps every string setting, including one outside the current
+  // vocabulary: the write path is what enforces the 15 keys, and the
+  // coordinator needs an unknown key to survive to classify its preset as
+  // legacy and hide it. Stripping here would delete the only evidence and
+  // re-expose the preset with truncated settings.
   for (const entry of raw.presets) {
     if (!isRecord(entry)) {
       continue;
@@ -90,7 +93,7 @@ function normalizeState(raw) {
     const settings = {};
     if (isRecord(entry.settings)) {
       for (const [key, value] of Object.entries(entry.settings)) {
-        if (known_keys.has(key) && typeof value === 'string') {
+        if (typeof value === 'string') {
           settings[key] = value;
         }
       }

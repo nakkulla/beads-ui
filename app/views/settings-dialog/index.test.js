@@ -518,6 +518,60 @@ describe('createSettingsDialog implementation presets', () => {
     dialog.destroy();
   });
 
+  test('creates a preset from an orchestration edit whose queue save failed', async () => {
+    const calls = /** @type {any[]} */ ([]);
+    const transport = vi.fn(async (type, payload) => {
+      calls.push([type, payload]);
+      if (type === 'get-session-defaults') {
+        return { values: {}, warnings: [] };
+      }
+      if (type === 'worker-queue-set-orchestration-defaults') {
+        return { applied: false, conflict: true };
+      }
+      if (type === 'impl-preset-create') {
+        return { applied: true, revision: 5, presets: [] };
+      }
+      return { values: {}, warnings: [] };
+    });
+    const { root, dialog } = mount({
+      transport,
+      presets: PRESETS,
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'opus',
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open('execution');
+    await settle();
+
+    const model_select = /** @type {HTMLSelectElement} */ (
+      root.querySelector(
+        '#settings-pane-execution [data-key="orchestration_model"]'
+      )
+    );
+    model_select.value = 'sol';
+    model_select.dispatchEvent(new Event('change', { bubbles: true }));
+    await settle();
+    const name = /** @type {HTMLInputElement} */ (
+      root.querySelector('.settings-dialog__preset-name')
+    );
+    name.value = '실패한 편집';
+    name.dispatchEvent(new Event('input', { bubbles: true }));
+    /** @type {HTMLButtonElement} */ (
+      root.querySelector('[data-preset-save]')
+    ).click();
+    await settle();
+
+    const create = calls.find(([type]) => type === 'impl-preset-create');
+    expect(create[1].settings.orchestration_model).toBe('sol');
+    dialog.destroy();
+  });
+
   test('updates the selected preset keeping its name', async () => {
     const calls = /** @type {any[]} */ ([]);
     const transport = vi.fn(async (type, payload) => {
