@@ -95,6 +95,11 @@ launch 시점 요청값이며, actual 불일치 시 영수증이 skip되는 기�
 - `server/worker/queue-store.js` — `UsageLeg`/`DelegationSession` typedef와
   `normalizeUsageLegs`가 effort를 통과·보존한다(부재 → null).
 - 프런트엔드
+  - `app/utils/token-usage.js` — `staticLegTemplate`이 받는 durable receipt
+    행은 `projectAttemptUsage`가 `usage_legs` candidate를 필드 단위로
+    재구성한 `UsageLeg`이므로, 여기서 effort가 탈락하면 정적 레그에 표시되지
+    않는다. `UsageLeg` typedef에 `effort?: string`을 추가하고, 재구성 시
+    `candidate.effort`가 비어 있지 않은 문자열일 때 복사한다.
   - `app/views/detail-panel/session-history.js` — `validDelegation`이
     `effort`를 `string|null|부재`로 허용. `monitoredLegTemplate`의
     `codex · ${model}`을 effort non-null일 때 `codex · ${model} · ${effort}`로.
@@ -131,9 +136,13 @@ claude runner attempt에 한해, `session_id` 관측(stream-json `system/init`)
 - attempt 레코드에 새 필드 `observed_effort: string|null`을 추가한다. launch
   기록(`effort`)은 불변 튜플로 남기고, 관측값은 별도 필드로 둔다 —
   `attempt.effort`가 이미 non-null이면 관측을 수행하지 않는다.
-- `app/utils/attempt-display.js` `formatAttemptTuple`이
-  `effort ?? observed_effort`를 렌더링한다. 다른 소비처(running-grid 등
-  동일 유틸 사용처)는 자동으로 같은 값을 얻는다.
+- 표시 결정은 상세 패널 투영에서만 한다:
+  `app/views/detail-panel/index.js#attemptsForBead`가 attempt를 필드 단위로
+  재투영하므로(현재 `observed_effort`는 여기서 탈락한다), 이 투영의
+  `effort`를 `a.effort || a.observed_effort || null`로 결정한다. 공유
+  `app/utils/attempt-display.js#formatAttemptTuple`과 다른 소비처
+  (running-grid 등)의 기존 계약은 바꾸지 않는다 — 승인 범위는 세션 이력
+  표시다.
 - 구 attempt 레코드(필드 부재)는 null로 정규화되고 표시 생략이다.
 
 ### 2.3 경계
@@ -147,12 +156,16 @@ fail-quiet다: 실패는 어떤 상태 전이도 막지 않고, 필드는 표시
 1. **beads-ui (이 Bead, UI-3nf9)** — §1.2 소비자 수용 + §2 관측 + 표시.
    PR → 머지 → 공유 서버 배포(post-merge runtime validation 계약대로)까지가
    이 Bead의 완료다. 이 시점에 화면은: 구 데이터 그대로, effort는
-   orchestrator 관측분만 나타난다.
+   orchestrator 관측분만 나타난다. **이 Bead의 배포 후 검증은 소비자 배포와
+   orchestrator 관측 표시까지다** — codex 레그의 종단간 effort 표시는 생산자
+   배포 전이라 이 Bead의 완료 조건이 아니다.
 2. **dotfiles (별도 quick_fix Bead, 구현 진입 시 생성)** — §1.1 생산자.
    UI-3nf9의 배포를 foreign `blocks` 의존으로 선행 조건 삼는다. 순서를
    어기면(구 소비자 + 신 생산자) 소비자의 exact-key 검증이 첫 라인에서
    실패해 스트림 전체가 conflict로 버려지고 영수증이 skip된다 — 소비자 선행
-   배포가 필수인 이유다.
+   배포가 필수인 이유다. **codex 신규 위임 세션의 종단간 표시 검증
+   (`codex · <model> · <effort>`)은 이 quick_fix Bead가 자체 배포(런타임
+   스킬 설치) 후 완료 조건으로 소유한다.**
 
 ## 4. 검증
 
@@ -161,12 +174,16 @@ fail-quiet다: 실패는 어떤 상태 전이도 막지 않고, 필드는 표시
   - delegation-monitor: effort 있는 라인/없는 라인 각각 유효, 스트림 내 effort
     불일치 conflict, durable(effort 부재)+신 스트림(effort 있음) 병합 통과.
   - usage-receipts: effort 있는/없는 영수증 수용, 빈 문자열 거부.
-  - session-history/attempt-display: effort 표시, 부재 시 생략,
-    `observed_effort` 폴백.
+  - token-usage: `projectAttemptUsage`가 `usage_legs` candidate의 effort를
+    `UsageLeg`으로 보존(부재 시 키 없음), 정적 receipt 행 표시 테스트.
+  - session-history: 모니터 레그·정적 레그 effort 표시, 부재 시 생략.
+  - detail-panel 투영: `attemptsForBead`가 `effort || observed_effort`를
+    표시용 effort로 결정, `observed_effort` 부재 시 기존과 동일.
   - 관측 backfill: munged 경로 유도, assistant 레코드 관측, 파일 부재
     fail-quiet.
 - dotfiles: 기존 bridge 계약 테스트 갱신분 통과, 모니터 라인·영수증에 effort
   포함 확인.
-- 배포 후: 공유 서버에서 새 위임 세션 1건의 세션 이력에
-  `codex · <model> · <effort>`가 보이는지, orchestrator 행에 관측 effort가
-  보이는지 확인한다.
+- 배포 후 검증의 소유 분리(§3): UI-3nf9는 공유 서버 배포 후 orchestrator
+  행의 관측 effort 표시와 구 데이터 무손상(위임 레그가 기존처럼 보임)까지
+  확인한다. codex 신규 위임 세션의 `codex · <model> · <effort>` 종단간
+  확인은 dotfiles quick_fix Bead의 완료 조건이다.
