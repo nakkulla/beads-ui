@@ -242,6 +242,7 @@ function unavailableResult(key, pin, global_values) {
  *   global?: Record<string, unknown>|null,
  *   execution_defaults?: Record<string, any>|null,
  *   runner_catalog?: Record<string, any>|null,
+ *   route?: string|null,
  *   controller_runtime?: string|null,
  *   transport?: string|null
  * }} input
@@ -361,6 +362,17 @@ export function resolveExecutionSettings(input) {
     const defaults = isRecord(session.implementation?.default)
       ? session.implementation.default
       : {};
+    const route = usableString(input.route);
+    const known_route =
+      route !== null &&
+      ['quick_fix', 'spec_backed', 'full_plan'].includes(route);
+    const route_defaults = isRecord(session.implementation?.route_defaults)
+      ? session.implementation.route_defaults
+      : {};
+    const route_default =
+      known_route && isRecord(route_defaults[route])
+        ? route_defaults[route]
+        : {};
     for (const key of [
       'impl_dispatch',
       'impl_runtime',
@@ -372,7 +384,10 @@ export function resolveExecutionSettings(input) {
         key,
         pin,
         global_values,
-        usableString(defaults[key.replace('impl_', '')])
+        key === 'impl_dispatch'
+          ? usableString(route_default.dispatch) ||
+              usableString(defaults.dispatch)
+          : usableString(defaults[key.replace('impl_', '')])
       );
       rows[key] =
         chosen.value === null

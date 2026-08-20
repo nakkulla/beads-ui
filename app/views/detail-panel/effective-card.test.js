@@ -49,6 +49,7 @@ const EXECUTION_DEFAULTS = {
         effort: 'auto',
         speed: 'default'
       },
+      route_defaults: { quick_fix: { dispatch: 'main' } },
       model_catalog: { codex: { sol: 'gpt-5.6-sol' } },
       effort_by_transport: {}
     }
@@ -388,6 +389,24 @@ describe('effective-settings card', () => {
     expect(
       row.querySelector('.detail-effective__v')?.getAttribute('title')
     ).toBe('gpt-5.6-sol');
+    panel.destroy();
+  });
+
+  test('shows quick_fix base execution as main with delegated settings disabled', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, { metadata: { route: 'quick_fix' } });
+    await settle();
+    await openEffective(mount);
+
+    expect(rowOf(mount, 'impl_dispatch').textContent).toContain('메인');
+    for (const key of [
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]) {
+      expect(rowOf(mount, key).textContent).toContain('해당 없음');
+    }
     panel.destroy();
   });
 

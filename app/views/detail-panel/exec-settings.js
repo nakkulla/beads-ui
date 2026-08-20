@@ -821,7 +821,8 @@ export function execSettingsTemplate(
     pin: md,
     global: globals,
     execution_defaults,
-    runner_catalog
+    runner_catalog,
+    route: typeof md.route === 'string' ? md.route : null
   });
   /** @param {string} key */
   const effectiveOf = (key) => resolved[key]?.value || '';
