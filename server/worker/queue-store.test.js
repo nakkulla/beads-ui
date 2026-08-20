@@ -2870,6 +2870,7 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
             session_id: 'thread-1',
             turn_id: 'turn-1',
             model: 'gpt-5.6-terra',
+            effort: 'high',
             usage: {
               input_tokens: 10,
               output_tokens: 2,
@@ -2889,12 +2890,36 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     expect(reloaded.attempts['att-legs'].usage_legs[0].receipt_id).toBe(
       'launch-1'
     );
+    expect(reloaded.attempts['att-legs'].usage_legs[0].effort).toBe('high');
     expect(
       store.appendAttempt(WS, {
         expected_revision: store.snapshot(WS).revision,
         attempt: { attempt_id: 'legacy', bead_id: 'UI-legacy' }
       }).queue.attempts.legacy.usage_legs
     ).toEqual([]);
+  });
+
+  test('observed effort survives updateAttempt and normalizes legacy attempts', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-effort', bead_id: 'UI-effort' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-effort',
+      patch: { observed_effort: 'high' }
+    });
+    const reloaded = createQueueStore().load(WS);
+
+    expect(updated.queue.attempts['att-effort'].observed_effort).toBe('high');
+    expect(reloaded.attempts['att-effort'].observed_effort).toBe('high');
+    expect(
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: 'legacy-effort', bead_id: 'UI-legacy' }
+      }).queue.attempts['legacy-effort'].observed_effort
+    ).toBe(null);
   });
 
   test('normalizes absent delegation sessions to an empty list', () => {
@@ -2943,6 +2968,7 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
       provider: 'codex',
       role: 'implementation',
       model: 'gpt-5.6-sol',
+      effort: null,
       session_id: 'thread-1',
       turn_id: 'turn-1',
       status: 'done',

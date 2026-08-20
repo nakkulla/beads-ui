@@ -233,6 +233,7 @@ describe('delegation monitor stream reader', () => {
         provider: 'codex',
         role: 'implementation',
         model: 'gpt-5.6-sol',
+        effort: null,
         session_id: 'thread-1',
         turn_id: 'turn-1',
         status: 'done',
@@ -312,6 +313,64 @@ describe('delegation monitor stream reader', () => {
     expect(result.sessions).toEqual([]);
     expect(result.streams).toEqual([]);
     expect(result.warnings).toContain('identity_conflict');
+  });
+
+  it('accepts effort on every line and projects it', () => {
+    writeStream('launch-1', [
+      monitorLine('launch-1', { type: 'session.started' }, { effort: 'high' }),
+      monitorLine('launch-1', { type: 'turn.started' }, { effort: 'high' })
+    ]);
+
+    const result = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(result.sessions[0].effort).toBe('high');
+  });
+
+  it('rejects a whole stream when effort changes', () => {
+    writeStream('launch-1', [
+      monitorLine('launch-1', { type: 'session.started' }, { effort: 'high' }),
+      monitorLine('launch-1', { type: 'turn.started' }, { effort: 'low' })
+    ]);
+
+    const result = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(result.sessions).toEqual([]);
+    expect(result.warnings).toContain('identity_conflict');
+  });
+
+  it('rejects an empty effort', () => {
+    writeStream('launch-1', [
+      monitorLine('launch-1', { type: 'session.started' }, { effort: '' })
+    ]);
+
+    const result = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID);
+
+    expect(result.sessions).toEqual([]);
+  });
+
+  it('merges a legacy durable identity with observed effort', () => {
+    const durable = {
+      launch_id: 'launch-1',
+      provider: 'codex',
+      role: 'implementation',
+      model: 'gpt-5.6-sol',
+      session_id: 'thread-1',
+      turn_id: null,
+      status: 'running',
+      started_at: Date.parse('2026-08-18T04:27:00.000Z'),
+      completed_at: null,
+      last_event_at: Date.parse('2026-08-18T04:27:00.000Z')
+    };
+    writeStream('launch-1', [
+      monitorLine('launch-1', { type: 'session.started' }, { effort: 'high' })
+    ]);
+
+    const result = readAttemptDelegationStreams(WORKSPACE, ATTEMPT_ID, {
+      known_sessions: [durable]
+    });
+
+    expect(result.sessions[0].effort).toBe('high');
+    expect(result.warnings).not.toContain('identity_conflict');
   });
 
   it('rejects a whole stream when its provider identity changes', () => {
@@ -423,6 +482,7 @@ describe('delegation session summaries', () => {
     provider: 'codex',
     role: 'implementation',
     model: 'gpt-5.6-sol',
+    effort: null,
     session_id: 'thread-1',
     turn_id: null,
     status: 'running',

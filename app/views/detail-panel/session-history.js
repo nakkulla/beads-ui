@@ -125,6 +125,7 @@ function completedTime(completed_at) {
  * @property {'codex'} provider
  * @property {'implementation'|'review-consult'} role
  * @property {string} model
+ * @property {string|null} [effort]
  * @property {string} session_id
  * @property {string|null} turn_id
  * @property {'running'|'done'|'failed'|'interrupted'} status
@@ -149,6 +150,11 @@ function validDelegation(candidate) {
     !DELEGATION_ROLES.includes(session.role) ||
     typeof session.model !== 'string' ||
     session.model.length === 0 ||
+    !(
+      !('effort' in session) ||
+      session.effort === null ||
+      (typeof session.effort === 'string' && session.effort.trim().length > 0)
+    ) ||
     typeof session.session_id !== 'string' ||
     session.session_id.length === 0 ||
     !DELEGATION_STATUSES.includes(session.status) ||
@@ -193,7 +199,9 @@ function staticLegTemplate(role, leg) {
       >${role}</span
     >
     <span class="detail-session__leg-meta detail-session__usage-value"
-      >${[leg.provider, leg.model].filter(Boolean).join(' · ')}</span
+      >${[leg.provider, leg.model, leg.effort]
+        .filter(Boolean)
+        .join(' · ')}</span
     >
     ${leg.session_id
       ? html`<span
@@ -258,7 +266,9 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
       >${session.role}</span
     >
     <span class="detail-session__leg-meta detail-session__usage-value"
-      >codex · ${session.model}</span
+      >${['codex', session.model, session.effort]
+        .filter(Boolean)
+        .join(' · ')}</span
     >
     <span
       class="detail-session__leg-sid detail-session__sid"

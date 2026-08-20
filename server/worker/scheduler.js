@@ -48,6 +48,7 @@ import nodeFs from 'node:fs';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
+import { observeClaudeEffort as defaultObserveClaudeEffort } from './claude-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import * as default_guard_hook from './guard-hook.js';
@@ -392,6 +393,8 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {typeof import('./delegation-monitor.js')} [delegationMonitor]
  * Attempt-scoped delegated-session monitor adapter. The default is the
  * production reader; tests may inject a deterministic in-memory seam.
+ * @property {(input: { cwd: string, session_id: string }) => string|null} [observeClaudeEffort]
+ * Fail-quiet Claude session-file effort observer.
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
@@ -614,6 +617,8 @@ export function createScheduler(deps) {
   const usage_receipts = deps.usageReceipts || default_usage_receipts;
   const delegation_monitor =
     deps.delegationMonitor || default_delegation_monitor;
+  const observeClaudeEffort =
+    deps.observeClaudeEffort || defaultObserveClaudeEffort;
   /** @type {Map<string, number>} */
   const receipt_recovery_cursor = new Map();
   let attempt_seq = 0;
@@ -4994,16 +4999,74 @@ export function createScheduler(deps) {
 
     deps.store.clearAdmission(workspace, bead_id);
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
+    let init_cwd = wt_path;
+    let session_effort_attempted = false;
+    handle.events.on('raw', (raw) => {
+      if (
+        raw &&
+        typeof raw === 'object' &&
+        raw.type === 'system' &&
+        raw.subtype === 'init' &&
+        typeof raw.cwd === 'string' &&
+        raw.cwd.length > 0
+      ) {
+        init_cwd = raw.cwd;
+      }
+    });
+
+    /**
+     * @param {string|null} session_id
+     */
+    function backfillObservedEffort(session_id) {
+      const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      if (
+        runner_name !== 'claude' ||
+        typeof session_id !== 'string' ||
+        session_id.length === 0 ||
+        attempt?.effort != null ||
+        attempt?.observed_effort != null
+      ) {
+        return;
+      }
+      /** @type {string|null} */
+      let observed_effort = null;
+      try {
+        observed_effort = observeClaudeEffort({
+          cwd: init_cwd,
+          session_id
+        });
+      } catch (err) {
+        log('claude effort observation failed for %s: %o', attempt_id, err);
+        return;
+      }
+      if (
+        typeof observed_effort !== 'string' ||
+        observed_effort.trim().length === 0
+      ) {
+        return;
+      }
+      deps.store.updateAttempt(workspace, {
+        attempt_id,
+        patch: { observed_effort }
+      });
+    }
+
     // Persist the runner session id when it arrives (stream first event). The
     // updateAttempt store-only write does NOT fan out on its own, so notify ws
     // subscribers explicitly to propagate it to a live drawer (spec §2).
     handle.events.on('session_id', (session_id) => {
+      const normalized_session_id =
+        typeof session_id === 'string' ? session_id : null;
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
-          session_id: typeof session_id === 'string' ? session_id : null
+          session_id: normalized_session_id
         }
       });
+      if (normalized_session_id !== null && !session_effort_attempted) {
+        session_effort_attempted = true;
+        backfillObservedEffort(normalized_session_id);
+      }
       notifyChanged(workspace);
     });
     // Token usage (UI-raqh §1): assistant snapshots accumulate per message id,
@@ -5044,6 +5107,8 @@ export function createScheduler(deps) {
     );
     handle.done
       .then(async (verdict) => {
+        const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+        backfillObservedEffort(attempt?.session_id ?? null);
         await onSessionDone(
           workspace,
           attempt_id,

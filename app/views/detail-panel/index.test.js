@@ -684,6 +684,115 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  test('projects explicit or observed effort only for session history', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          observed: {
+            attempt_id: 'observed',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'claude',
+            model: 'opus',
+            observed_effort: 'high',
+            started_at: 3000
+          },
+          explicit: {
+            attempt_id: 'explicit',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'claude',
+            model: 'opus',
+            effort: 'low',
+            observed_effort: 'high',
+            started_at: 2000
+          },
+          legacy: {
+            attempt_id: 'legacy',
+            bead_id: 'UI-1',
+            status: 'done',
+            runner: 'claude',
+            model: 'opus',
+            started_at: 1000
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+
+    panel.load('UI-1');
+
+    expect(
+      mount.querySelector(
+        '.detail-session[data-attempt-id="observed"] .detail-session__meta'
+      )?.textContent
+    ).toBe('claude · opus · high');
+    expect(
+      mount.querySelector(
+        '.detail-session[data-attempt-id="explicit"] .detail-session__meta'
+      )?.textContent
+    ).toBe('claude · opus · low');
+    expect(
+      mount.querySelector(
+        '.detail-session[data-attempt-id="legacy"] .detail-session__meta'
+      )?.textContent
+    ).toBe('claude · opus');
+
+    panel.destroy();
+  });
+
+  test('passes delegation effort into the transcript drawer', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      /** @type {any} */ ({
+        revision: 1,
+        auto_advance: false,
+        queue: [],
+        done: [],
+        attempts: {
+          outer: {
+            attempt_id: 'outer',
+            bead_id: 'UI-1',
+            status: 'done',
+            delegation_sessions: [
+              {
+                launch_id: 'launch-1',
+                provider: 'codex',
+                role: 'implementation',
+                model: 'gpt-5.6-sol',
+                effort: 'high',
+                session_id: 'thread-1',
+                turn_id: 'turn-1',
+                status: 'done',
+                started_at: 100,
+                completed_at: '2026-08-18T04:27:00.000Z',
+                last_event_at: 200
+              }
+            ]
+          }
+        }
+      })
+    );
+    const panel = createDetailPanel(mount, { queueStore, onClose: vi.fn() });
+    panel.load('UI-1');
+
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.detail-session__leg')
+    ).click();
+
+    expect(
+      document.querySelector('.session-log-root .sv__meta')?.textContent
+    ).toBe('gpt-5.6-sol · high');
+    panel.destroy();
+  });
+
   test('shows provider usage badges in the issue heading', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();

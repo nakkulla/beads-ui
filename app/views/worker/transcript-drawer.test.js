@@ -540,6 +540,7 @@ describe('transcript drawer', () => {
       meta: {
         role: 'implementation',
         model: 'gpt-5.6-sol',
+        effort: 'high',
         session_id: 'session-1234567890'
       }
     });
@@ -552,7 +553,9 @@ describe('transcript drawer', () => {
     expect(mount.querySelector('.sv__session')?.getAttribute('title')).toBe(
       'session-1234567890'
     );
-    expect(mount.querySelector('.sv__meta')?.textContent).toBe('gpt-5.6-sol');
+    expect(mount.querySelector('.sv__meta')?.textContent).toBe(
+      'gpt-5.6-sol · high'
+    );
     expect(
       mount.querySelector('[data-seam="attempt-prompt-toggle"]')
     ).toBeNull();

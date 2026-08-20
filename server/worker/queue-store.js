@@ -58,6 +58,8 @@
  * `--resume`/transcript tracking; null until the runner emits it (spec §2).
  * @property {string|null} model - Model snapshot.
  * @property {string|null} effort - Effort snapshot.
+ * @property {string|null} observed_effort - Claude session-file effort observed
+ * after launch. Null for legacy attempts and runners without an observer.
  * @property {string|null} speed - Orchestration service tier snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
@@ -251,6 +253,7 @@
  * @property {string} session_id
  * @property {string} turn_id
  * @property {string} model
+ * @property {string|null} effort
  * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }} usage
  * @property {string} completed_at
  */
@@ -260,6 +263,7 @@
  * @property {'codex'} provider
  * @property {'implementation'|'review-consult'} role
  * @property {string} model
+ * @property {string|null} effort
  * @property {string} session_id
  * @property {string|null} turn_id
  * @property {'running'|'done'|'failed'|'interrupted'} status
@@ -1910,6 +1914,11 @@ export function makeAttempt(fields) {
     session_id: fields.session_id ?? null,
     model: fields.model ?? null,
     effort: fields.effort ?? null,
+    observed_effort:
+      typeof fields.observed_effort === 'string' &&
+      fields.observed_effort.trim().length > 0
+        ? fields.observed_effort
+        : null,
     speed: typeof fields.speed === 'string' ? fields.speed : null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
