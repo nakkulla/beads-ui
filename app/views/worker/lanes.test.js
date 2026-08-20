@@ -41,9 +41,10 @@ function renderRow(item) {
 
 /**
  * @param {Partial<import('./lanes.js').MiniItem>} item
+ * @param {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null} [place_menu]
  * @returns {HTMLElement}
  */
-function renderCandidate(item) {
+function renderCandidate(item, place_menu = null) {
   render(
     candidateCard(
       /** @type {any} */ ({
@@ -61,7 +62,8 @@ function renderCandidate(item) {
           }
         },
         ...item
-      })
+      }),
+      place_menu
     ),
     mount
   );
@@ -420,6 +422,61 @@ describe('candidate card', () => {
     expect(place.disabled).toBe(true);
     expect(place.title).toBe('description이 없어 대기 큐에 넣을 수 없습니다');
     expect(card.textContent).not.toContain('워커 비대상');
+  });
+
+  test('renders lane choices only for the matching candidate menu', () => {
+    const card = renderCandidate(
+      { reason: '🔒 UI-blocker' },
+      {
+        bead_id: 'UI-qf',
+        lanes: [
+          { id: 'parallel', label: '병렬', count: 3 },
+          { id: 's1', label: '직렬 1', count: 0 }
+        ]
+      }
+    );
+
+    const choices = Array.from(
+      card.querySelectorAll('.worker-card__place-lane')
+    );
+    expect(
+      choices.map((choice) => choice.textContent?.replace(/\s+/g, ' ').trim())
+    ).toEqual(['병렬 3', '직렬 1 0']);
+    expect(card.querySelector('.worker-card__place')).toBeNull();
+    expect(card.querySelector('.worker-card__reason')).toBeNull();
+    expect(card.querySelector('.worker-card__place-cancel')).not.toBeNull();
+  });
+
+  test('keeps the closed card when the menu belongs to another candidate', () => {
+    const card = renderCandidate(
+      { reason: '🔒 UI-blocker' },
+      {
+        bead_id: 'UI-other',
+        lanes: [{ id: 'parallel', label: '병렬', count: 3 }]
+      }
+    );
+
+    expect(card.querySelector('.worker-card__place')).not.toBeNull();
+    expect(card.querySelector('.worker-card__reason')?.textContent).toBe(
+      '🔒 UI-blocker'
+    );
+    expect(card.querySelector('.worker-card__place-menu')).toBeNull();
+  });
+
+  test('keeps lane choices closed when the candidate loses eligibility', () => {
+    const card = renderCandidate(
+      { draggable: false, reason: 'spec 없음' },
+      {
+        bead_id: 'UI-qf',
+        lanes: [{ id: 'parallel', label: '병렬', count: 3 }]
+      }
+    );
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.disabled).toBe(true);
+    expect(card.querySelector('.worker-card__place-menu')).toBeNull();
   });
 });
 

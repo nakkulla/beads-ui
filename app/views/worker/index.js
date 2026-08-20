@@ -1408,6 +1408,8 @@ export function createWorkerView(mount_element, options = {}) {
    * @type {CandidateFilter}
    */
   let candidate_filter = loadCandidateFilter();
+  /** @type {string|null} Candidate whose queue-lane picker is open. */
+  let place_menu_bead_id = null;
   /**
    * Candidate pane sort mode (UI-raqh §2), restored at view creation.
    *
@@ -1593,6 +1595,70 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
+   * Build queue-lane choices from the authoritative snapshot. A null result
+   * means parallel is the only choice, so no menu is needed.
+   *
+   * @returns {Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }>|null}
+   */
+  function placeMenuLanes() {
+    const q = currentQueue();
+    const serial_lane_count =
+      typeof q.serial_lane_count === 'number' &&
+      Number.isInteger(q.serial_lane_count) &&
+      q.serial_lane_count > 0
+        ? Math.min(q.serial_lane_count, 5)
+        : 0;
+    const serial_lanes = Array.isArray(q.serial_lanes) ? q.serial_lanes : [];
+    /** @type {Array<{ id: 's1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }>} */
+    const choices = [];
+    for (const lane of serial_lanes) {
+      if (choices.length >= serial_lane_count) {
+        break;
+      }
+      if (
+        !lane ||
+        typeof lane.id !== 'string' ||
+        !/^s[1-5]$/.test(lane.id) ||
+        !Array.isArray(lane.entries)
+      ) {
+        continue;
+      }
+      choices.push({
+        id: /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
+        label: `직렬 ${lane.id.slice(1)}`,
+        count: lane.entries.length
+      });
+    }
+    if (choices.length === 0) {
+      return null;
+    }
+    const queue_entries = Array.isArray(q.queue) ? q.queue : [];
+    return [
+      { id: 'parallel', label: '병렬', count: queue_entries.length },
+      ...choices
+    ];
+  }
+
+  /**
+   * Build the open candidate menu for this render, if its bead is still shown.
+   *
+   * @param {any[]} candidates
+   * @returns {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null}
+   */
+  function currentPlaceMenu(candidates) {
+    if (
+      !place_menu_bead_id ||
+      !candidates.some(
+        (/** @type {any} */ candidate) => candidate.id === place_menu_bead_id
+      )
+    ) {
+      return null;
+    }
+    const lanes = placeMenuLanes();
+    return lanes ? { bead_id: place_menu_bead_id, lanes } : null;
+  }
+
+  /**
    * @returns {number}
    */
   function currentRevision() {
@@ -1613,8 +1679,7 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * The index that appends to the waiting queue — what both the collapsed-strip
-   * drop and [대기로 ↴] mean by "큐 말미" (UI-58y2).
+   * The index that appends to the waiting queue for a collapsed-strip drop.
    *
    * @returns {number}
    */
@@ -1629,7 +1694,7 @@ export function createWorkerView(mount_element, options = {}) {
    *
    * @param {string} bead_id
    * @param {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
-   * @param {number} index
+   * @param {number} [index]
    */
   async function placeBead(bead_id, lane, index) {
     if (!transport) {
@@ -1638,7 +1703,7 @@ export function createWorkerView(mount_element, options = {}) {
     const payload = () => ({
       bead_id,
       ...(lane === 'parallel' ? {} : { lane }),
-      index,
+      ...(index === undefined ? {} : { index }),
       expected_revision: currentRevision()
     });
     const res = await transport('worker-queue-place', payload());
@@ -3822,7 +3887,8 @@ export function createWorkerView(mount_element, options = {}) {
       src: true,
       empty: '후보 없음',
       header_control: candidateSortTemplate(),
-      controls: candidateControlsTemplate(m)
+      controls: candidateControlsTemplate(m),
+      place_menu: currentPlaceMenu(m.candidates)
     });
     if (is_mobile) {
       // 관제 우선 배치 (UI-58y2 §모바일): 지금 → 대기 → 후보 → 완료. 실행 중과
@@ -4540,8 +4606,32 @@ export function createWorkerView(mount_element, options = {}) {
       }
       return;
     }
-    // [대기로 ↴]: 드래그와 같은 경로(worker-queue-place)로 큐 말미에 적재한다.
-    // 카드 기본 동작(상세 패널 열기)보다 먼저 처리해야 탭이 삼켜지지 않는다.
+    const place_lane = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-card__place-lane')
+    );
+    if (place_lane) {
+      const id = place_lane.dataset.beadId;
+      const lane = place_lane.dataset.lane;
+      if (id && (lane === 'parallel' || /^s[1-5]$/.test(lane || ''))) {
+        place_menu_bead_id = null;
+        doRender();
+        void placeBead(
+          id,
+          /** @type {'parallel'|'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane)
+        );
+      }
+      return;
+    }
+    const place_cancel = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.worker-card__place-cancel')
+    );
+    if (place_cancel) {
+      place_menu_bead_id = null;
+      doRender();
+      return;
+    }
+    // [대기로 ↴] opens lane choices when serial lanes exist. With only the
+    // parallel lane, one tap keeps the existing append behavior.
     const place_btn = /** @type {HTMLButtonElement|null} */ (
       target?.closest?.('.worker-card__place')
     );
@@ -4551,7 +4641,12 @@ export function createWorkerView(mount_element, options = {}) {
       // 클릭을 막아 주더라도, 적재 경로가 자격을 스스로 확인해야 드래그와
       // 같은 규율이 된다.
       if (id && !place_btn.disabled) {
-        void placeBead(id, 'parallel', queueTailIndex());
+        if (placeMenuLanes()) {
+          place_menu_bead_id = id;
+          doRender();
+        } else {
+          void placeBead(id, 'parallel');
+        }
       }
       return;
     }
