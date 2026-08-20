@@ -1,5 +1,5 @@
 /**
- * Parallel-analysis result validator — schema v2 (UI-04vo §8, seam I).
+ * Parallel-analysis result validator — schema v3 (UI-a29n §5, seam I).
  *
  * The model's stdout is untrusted data. Before it becomes a UI result or a
  * queue-mutation source, EVERY invariant here must hold; one violation rejects
@@ -21,7 +21,8 @@ export const STRONG_CATEGORIES = [
   'schema_or_migration',
   'canonical_contract',
   'shared_deploy_surface',
-  'exclusive_external_resource'
+  'exclusive_external_resource',
+  'declared_scope_overlap'
 ];
 
 /** @type {Set<string>} */
@@ -56,7 +57,7 @@ export function isGroupEligible(group) {
 /**
  * Validate one analyzer result against its pinned snapshot and bundle.
  *
- * @param {{ result: unknown, snapshot: { digest: string, target_ids: string[] }, manifest: { files: Array<{ path: string }> }, readBundleFile: (p: string) => string|null }} input
+ * @param {{ result: unknown, snapshot: { digest: string, target_ids: string[], scope_overlaps?: Array<{ pair: [string, string], prefixes: string[] }> }, manifest: { files: Array<{ path: string }> }, readBundleFile: (p: string) => string|null }} input
  * @returns {{ ok: boolean, result?: any, reason?: string, detail?: string }}
  */
 export function validateAnalysisResult(input) {
@@ -64,7 +65,7 @@ export function validateAnalysisResult(input) {
   if (!isRecord(result)) {
     return { ok: false, reason: 'shape' };
   }
-  if (result.schema_version !== 2) {
+  if (result.schema_version !== 3) {
     return { ok: false, reason: 'schema_version' };
   }
   if (result.snapshot_digest !== snapshot.digest) {
@@ -148,6 +149,55 @@ export function validateAnalysisResult(input) {
     ) {
       return { ok: false, reason: 'order' };
     }
+    if (group.categories.includes('declared_scope_overlap')) {
+      const member_ids = new Set(group.members);
+      /** @type {Map<string, Set<string>>} */
+      const adjacency = new Map(
+        group.members.map((member) => [member, new Set()])
+      );
+      for (const overlap of Array.isArray(snapshot.scope_overlaps)
+        ? snapshot.scope_overlaps
+        : []) {
+        if (
+          !isRecord(overlap) ||
+          !Array.isArray(overlap.pair) ||
+          overlap.pair.length !== 2
+        ) {
+          continue;
+        }
+        const [left_id, right_id] = overlap.pair;
+        if (!member_ids.has(left_id) || !member_ids.has(right_id)) {
+          continue;
+        }
+        adjacency.get(left_id)?.add(right_id);
+        adjacency.get(right_id)?.add(left_id);
+      }
+      /** @type {Set<string>} */
+      const connected = new Set();
+      const pending = [members_sorted[0]];
+      while (pending.length > 0) {
+        const member_id = pending.pop();
+        if (typeof member_id !== 'string' || connected.has(member_id)) {
+          continue;
+        }
+        connected.add(member_id);
+        for (const neighbor of adjacency.get(member_id) || []) {
+          if (!connected.has(neighbor)) {
+            pending.push(neighbor);
+          }
+        }
+      }
+      const disconnected = members_sorted.find(
+        (member_id) => !connected.has(member_id)
+      );
+      if (disconnected) {
+        return {
+          ok: false,
+          reason: 'scope_overlap',
+          detail: disconnected
+        };
+      }
+    }
     if (group.evidence.length === 0) {
       return { ok: false, reason: 'evidence', detail: 'empty' };
     }
@@ -177,7 +227,7 @@ export function validateAnalysisResult(input) {
   return {
     ok: true,
     result: {
-      schema_version: 2,
+      schema_version: 3,
       snapshot_digest: result.snapshot_digest,
       issues: result.issues,
       groups

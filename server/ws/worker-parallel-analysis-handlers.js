@@ -29,6 +29,7 @@ import { parallelAnalysisPromptPath } from '../worker/parallel-analysis-runs.js'
 import { analysisIdentityOf } from '../worker/parallel-analysis-store.js';
 import {
   collectAnalysisSnapshot,
+  collectAnalysisTargetScopeSignals,
   describeAnalysisTargets
 } from '../worker/parallel-analysis-targets.js';
 import {
@@ -473,11 +474,27 @@ export async function handleParallelAnalysisTargets(ws, req) {
     return;
   }
   const issues = await listIssues(ws, key);
-  ws.send(
-    JSON.stringify(
-      makeOk(req, describeAnalysisTargets(issues, queueStore().snapshot(key)))
-    )
-  );
+  const payload = describeAnalysisTargets(issues, queueStore().snapshot(key));
+  try {
+    const context = TEST_DEPS
+      ? TEST_DEPS.analysisContext(key)
+      : workerAnalysisContext(key);
+    if (context) {
+      const signals = await collectAnalysisTargetScopeSignals({
+        context,
+        targets: payload.qualified
+      });
+      if (signals) {
+        payload.qualified = payload.qualified.map((target) => ({
+          ...target,
+          ...signals[target.id]
+        }));
+      }
+    }
+  } catch {
+    // Scope signals are advisory; target selection remains available without them.
+  }
+  ws.send(JSON.stringify(makeOk(req, payload)));
 }
 
 /**

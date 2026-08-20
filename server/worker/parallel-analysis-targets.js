@@ -10,14 +10,15 @@
  * must not invalidate an analysis of unchanged artifacts.
  */
 import crypto from 'node:crypto';
+import { parseArtifactScope } from './artifact-scope.js';
 
 /**
  * Version of the analyzer prompt/result contract this snapshot feeds
- * (UI-04vo §8: result schema v2).
+ * (UI-a29n §5.3: result schema v3).
  *
  * @type {number}
  */
-export const PROMPT_SCHEMA_VERSION = 2;
+export const PROMPT_SCHEMA_VERSION = 3;
 
 /** @type {RegExp} Receipt shape shared with admission (`<reviewer>@<40hex>`). */
 const RECEIPT_RE = /^[A-Za-z0-9_.:-]+@[0-9a-fA-F]{40}$/;
@@ -52,6 +53,117 @@ function isRecord(value) {
 }
 
 /**
+ * @param {string} prefix
+ */
+function normalizedScopePrefix(prefix) {
+  return prefix.replace(/\/+$/, '');
+}
+
+/**
+ * Test whether two declared scope items overlap on a path-segment boundary.
+ *
+ * @param {string} left
+ * @param {string} right
+ */
+export function scopeItemsOverlap(left, right) {
+  const x = normalizedScopePrefix(left);
+  const y = normalizedScopePrefix(right);
+  return x === y || y.startsWith(`${x}/`) || x.startsWith(`${y}/`);
+}
+
+/**
+ * Calculate deterministic pairwise overlaps from target scope declarations.
+ * Targets without a declaration are unknown and contribute no pair.
+ *
+ * @param {Record<string, { scope?: string[] }>} targets
+ * @returns {Array<{ pair: [string, string], prefixes: string[] }>}
+ */
+export function calculateScopeOverlaps(targets) {
+  const target_ids = Object.keys(targets).sort();
+  /** @type {Array<{ pair: [string, string], prefixes: string[] }>} */
+  const overlaps = [];
+  for (let left_index = 0; left_index < target_ids.length; left_index += 1) {
+    const left_id = target_ids[left_index];
+    const left_scope = Array.isArray(targets[left_id].scope)
+      ? targets[left_id].scope
+      : [];
+    if (left_scope.length === 0) {
+      continue;
+    }
+    for (
+      let right_index = left_index + 1;
+      right_index < target_ids.length;
+      right_index += 1
+    ) {
+      const right_id = target_ids[right_index];
+      const right_scope = Array.isArray(targets[right_id].scope)
+        ? targets[right_id].scope
+        : [];
+      if (right_scope.length === 0) {
+        continue;
+      }
+      /** @type {Set<string>} */
+      const prefixes = new Set();
+      for (const left_item of left_scope) {
+        for (const right_item of right_scope) {
+          if (!scopeItemsOverlap(left_item, right_item)) {
+            continue;
+          }
+          const left_prefix = normalizedScopePrefix(left_item);
+          const right_prefix = normalizedScopePrefix(right_item);
+          prefixes.add(
+            left_prefix.length >= right_prefix.length
+              ? left_prefix
+              : right_prefix
+          );
+        }
+      }
+      if (prefixes.size > 0) {
+        overlaps.push({
+          pair: [left_id, right_id],
+          prefixes: [...prefixes].sort()
+        });
+      }
+    }
+  }
+  return overlaps;
+}
+
+/**
+ * @param {(args: string[]) => Promise<{ code: number, stdout: string }>} gitRun
+ * @param {string} base_sha
+ * @param {string[]} artifact_paths
+ * @param {boolean} [fail_on_read_error]
+ * @returns {Promise<string[]|null>}
+ */
+async function scopeAtBase(
+  gitRun,
+  base_sha,
+  artifact_paths,
+  fail_on_read_error = false
+) {
+  /** @type {Set<string>} */
+  const scope = new Set();
+  for (const artifact_path of artifact_paths) {
+    const content = await gitRun([
+      'cat-file',
+      'blob',
+      `${base_sha}:${artifact_path}`
+    ]);
+    if (content.code !== 0) {
+      if (fail_on_read_error) {
+        return null;
+      }
+      continue;
+    }
+    for (const prefix of parseArtifactScope(content.stdout)) {
+      scope.add(prefix);
+    }
+  }
+  return [...scope].sort();
+}
+
+/**
  * @typedef {Object} AnalysisTarget
  * @property {string} id
  * @property {string|null} title
@@ -60,6 +172,7 @@ function isRecord(value) {
  * @property {string|null} plan_path
  * @property {string[]} deps - Direct `blocks` blocker ids.
  * @property {Array<{ path: string, kind: 'spec'|'plan', oid: string, bytes: number }>} artifacts
+ * @property {string[]} scope
  */
 
 /**
@@ -150,7 +263,8 @@ export function qualifyTargets(issues) {
         )
         .map((d) => d.id)
         .sort(),
-      artifacts: []
+      artifacts: [],
+      scope: []
     });
   }
   return { targets, excluded };
@@ -248,6 +362,68 @@ export function describeAnalysisTargets(issues, queue) {
 }
 
 /**
+ * Enrich qualified target-picker rows from the workspace's pinned base.
+ * A missing base returns null so the caller can preserve the legacy payload.
+ *
+ * @param {{ context: { resolveBase: (input: { force: boolean }) => Promise<any>, gitRun: (args: string[]) => Promise<{ code: number, stdout: string }> }, targets: Array<{ id: string, spec_id: string, plan_path: string|null }> }} input
+ * @returns {Promise<Record<string, { scope: string[], overlaps: string[] }>|null>}
+ */
+export async function collectAnalysisTargetScopeSignals(input) {
+  const { context, targets } = input;
+  let base;
+  try {
+    base = await context.resolveBase({ force: false });
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(base) ||
+    base.ok !== true ||
+    typeof base.base_oid !== 'string' ||
+    !/^[0-9a-fA-F]{40}$/.test(base.base_oid)
+  ) {
+    return null;
+  }
+  /** @type {Record<string, { scope: string[] }>} */
+  const scoped_targets = {};
+  for (const target of [...targets].sort((a, b) => a.id.localeCompare(b.id))) {
+    const artifact_paths = [
+      target.spec_id,
+      ...(typeof target.plan_path === 'string' ? [target.plan_path] : [])
+    ];
+    const scope = await scopeAtBase(
+      context.gitRun,
+      base.base_oid,
+      artifact_paths,
+      true
+    );
+    if (scope === null) {
+      return null;
+    }
+    scoped_targets[target.id] = { scope };
+  }
+  /** @type {Record<string, string[]>} */
+  const overlap_ids = {};
+  for (const target_id of Object.keys(scoped_targets)) {
+    overlap_ids[target_id] = [];
+  }
+  for (const overlap of calculateScopeOverlaps(scoped_targets)) {
+    const [left_id, right_id] = overlap.pair;
+    overlap_ids[left_id].push(right_id);
+    overlap_ids[right_id].push(left_id);
+  }
+  /** @type {Record<string, { scope: string[], overlaps: string[] }>} */
+  const signals = {};
+  for (const target_id of Object.keys(scoped_targets).sort()) {
+    signals[target_id] = {
+      scope: scoped_targets[target_id].scope,
+      overlaps: overlap_ids[target_id].sort()
+    };
+  }
+  return signals;
+}
+
+/**
  * Collect the immutable analysis snapshot (UI-04vo §6). Fail-closed: an
  * unresolved base or an unreadable REQUIRED artifact aborts the whole
  * collection so a stale cache is preserved instead of being replaced by a
@@ -335,6 +511,12 @@ export async function collectAnalysisSnapshot(input) {
       // A missing plan is a bundle-level omission (UI-04vo §7), not a snapshot
       // failure: the spec alone still identifies the analysis input.
     }
+    target.scope =
+      (await scopeAtBase(
+        gitRun,
+        base.sha,
+        target.artifacts.map((artifact) => artifact.path)
+      )) || [];
   }
   const sorted = [...targets].sort((a, b) => a.id.localeCompare(b.id));
   /** @type {Record<string, AnalysisTarget>} */
@@ -343,12 +525,14 @@ export async function collectAnalysisSnapshot(input) {
     by_id[target.id] = target;
   }
   const context = { active_lineages: activeLineagesOf(queue) };
+  const scope_overlaps = calculateScopeOverlaps(by_id);
   const semantic = {
     workspace: String(workspace || ''),
     base_sha: base.sha,
     prompt_schema_version: PROMPT_SCHEMA_VERSION,
     target_ids: sorted.map((t) => t.id),
     targets: by_id,
+    scope_overlaps,
     context
   };
   const digest = crypto

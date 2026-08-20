@@ -996,6 +996,38 @@ export function createParallelAnalysisDialog(mount_element, options) {
   }
 
   /**
+   * @param {any} target
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function targetSignalsTemplate(target) {
+    const scope = Array.isArray(target.scope) ? target.scope : [];
+    const overlaps = Array.isArray(target.overlaps) ? target.overlaps : [];
+    if (scope.length === 0 && overlaps.length === 0) {
+      return html``;
+    }
+    return html`<span class="pa-target__signals">
+      ${scope.length > 0
+        ? html`<details class="pa-target__scope" title=${scope.join('\n')}>
+            <summary>scope ${scope.length}</summary>
+            <ul>
+              ${scope.map(
+                (/** @type {string} */ prefix) =>
+                  html`<li><code>${prefix}</code></li>`
+              )}
+            </ul>
+          </details>`
+        : ''}
+      ${overlaps.length > 0
+        ? html`<span
+            class="pa-target__overlaps"
+            title=${`겹침: ${overlaps.join(', ')}`}
+            >겹침 ${overlaps.join(', ')}</span
+          >`
+        : ''}
+    </span>`;
+  }
+
+  /**
    * @returns {import('lit-html').TemplateResult}
    */
   function targetsTemplate() {
@@ -1029,8 +1061,13 @@ export function createParallelAnalysisDialog(mount_element, options) {
                     />
                     <span class="pa-target__title">${target.title}</span>
                   </label>
-                  <span class="pa-target__route">${target.route}</span>
-                  <span class="pa-target__lane">${laneLabel(target.lane)}</span>
+                  <span class="pa-target__meta">
+                    ${targetSignalsTemplate(target)}
+                    <span class="pa-target__route">${target.route}</span>
+                    <span class="pa-target__lane"
+                      >${laneLabel(target.lane)}</span
+                    >
+                  </span>
                 </li>`
             )}
           </ul>`
@@ -1048,13 +1085,15 @@ export function createParallelAnalysisDialog(mount_element, options) {
                       <input type="checkbox" disabled />
                       <span class="pa-target__title">${target.title}</span>
                     </label>
-                    <span class="pa-target__reason"
-                      >${EXCLUSION_REASON_LABELS[target.reason] ||
-                      target.reason}</span
-                    >
-                    <span class="pa-target__lane"
-                      >${laneLabel(target.lane)}</span
-                    >
+                    <span class="pa-target__meta">
+                      <span class="pa-target__reason"
+                        >${EXCLUSION_REASON_LABELS[target.reason] ||
+                        target.reason}</span
+                      >
+                      <span class="pa-target__lane"
+                        >${laneLabel(target.lane)}</span
+                      >
+                    </span>
                   </li>`
               )}
             </ul>

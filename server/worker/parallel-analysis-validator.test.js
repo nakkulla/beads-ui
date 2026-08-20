@@ -12,7 +12,7 @@ const DIGEST = 'd'.repeat(64);
  */
 function resultOf(over = {}) {
   return {
-    schema_version: 2,
+    schema_version: 3,
     snapshot_digest: DIGEST,
     issues: [{ bead_id: 'UI-c', verdict: 'parallel_ok', reason: '독립' }],
     groups: [
@@ -36,7 +36,11 @@ function resultOf(over = {}) {
  */
 function contextOf(over = {}) {
   return {
-    snapshot: { digest: DIGEST, target_ids: ['UI-a', 'UI-b', 'UI-c'] },
+    snapshot: {
+      digest: DIGEST,
+      target_ids: ['UI-a', 'UI-b', 'UI-c'],
+      scope_overlaps: []
+    },
     manifest: {
       files: [
         { path: 'docs/spec.md', kind: 'spec', bytes: 20, target_id: 'UI-a' }
@@ -74,6 +78,12 @@ describe('parallel-analysis result validator (UI-04vo seam I)', () => {
       })
     ).toBe(false);
     expect(isGroupEligible({ confidence: 'high', categories: [] })).toBe(false);
+    expect(
+      isGroupEligible({
+        confidence: 'high',
+        categories: ['declared_scope_overlap']
+      })
+    ).toBe(true);
   });
 
   test('rejects a wrong schema version', () => {
@@ -84,6 +94,114 @@ describe('parallel-analysis result validator (UI-04vo seam I)', () => {
 
     expect(verdict.ok).toBe(false);
     expect(verdict.reason).toBe('schema_version');
+  });
+
+  test('returns schema version 3 for a valid result', () => {
+    const verdict = validateAnalysisResult({
+      result: resultOf(),
+      ...contextOf()
+    });
+
+    expect(verdict.result.schema_version).toBe(3);
+  });
+
+  test('accepts a declared scope overlap group connected by server edges', () => {
+    const verdict = validateAnalysisResult({
+      result: resultOf({
+        issues: [],
+        groups: [
+          {
+            members: ['UI-a', 'UI-b', 'UI-c'],
+            order: ['UI-a', 'UI-b', 'UI-c'],
+            confidence: 'high',
+            categories: ['declared_scope_overlap'],
+            reason: '연결된 선언 scope',
+            evidence: [
+              {
+                path: 'docs/spec.md',
+                artifact_kind: 'spec',
+                locator: 'queue.json'
+              }
+            ]
+          }
+        ]
+      }),
+      ...contextOf({
+        snapshot: {
+          digest: DIGEST,
+          target_ids: ['UI-a', 'UI-b', 'UI-c'],
+          scope_overlaps: [
+            { pair: ['UI-a', 'UI-b'], prefixes: ['server'] },
+            { pair: ['UI-b', 'UI-c'], prefixes: ['app'] }
+          ]
+        }
+      })
+    });
+
+    expect(verdict.ok).toBe(true);
+    expect(verdict.result.groups[0].eligible).toBe(true);
+  });
+
+  test('rejects a declared scope overlap group with a disconnected member', () => {
+    const verdict = validateAnalysisResult({
+      result: resultOf({
+        issues: [],
+        groups: [
+          {
+            members: ['UI-a', 'UI-b', 'UI-c'],
+            order: ['UI-a', 'UI-b', 'UI-c'],
+            confidence: 'high',
+            categories: ['declared_scope_overlap'],
+            reason: '끊긴 선언 scope',
+            evidence: [
+              {
+                path: 'docs/spec.md',
+                artifact_kind: 'spec',
+                locator: 'queue.json'
+              }
+            ]
+          }
+        ]
+      }),
+      ...contextOf({
+        snapshot: {
+          digest: DIGEST,
+          target_ids: ['UI-a', 'UI-b', 'UI-c'],
+          scope_overlaps: [{ pair: ['UI-a', 'UI-b'], prefixes: ['server'] }]
+        }
+      })
+    });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('scope_overlap');
+    expect(verdict.detail).toBe('UI-c');
+  });
+
+  test('rejects a declared scope overlap claim without a matching edge', () => {
+    const verdict = validateAnalysisResult({
+      result: resultOf({
+        groups: [
+          {
+            ...resultOf().groups[0],
+            categories: ['declared_scope_overlap']
+          }
+        ]
+      }),
+      ...contextOf()
+    });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('scope_overlap');
+    expect(verdict.detail).toBe('UI-b');
+  });
+
+  test('leaves other strong category groups independent of scope edges', () => {
+    const verdict = validateAnalysisResult({
+      result: resultOf(),
+      ...contextOf()
+    });
+
+    expect(verdict.ok).toBe(true);
   });
 
   test('rejects a snapshot digest mismatch', () => {

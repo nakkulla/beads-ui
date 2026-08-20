@@ -318,7 +318,7 @@ describe('worker lanes e2e — 분석 → 편집 → 제출 → dispatch (UI-04v
      * @param {string} digest
      */
     const suggested = (digest) => ({
-      schema_version: 2,
+      schema_version: 3,
       snapshot_digest: digest,
       issues: [{ bead_id: 'UI-c', verdict: 'parallel_ok', reason: '독립' }],
       groups: [
@@ -487,7 +487,7 @@ describe('worker lanes e2e — WS 경계 통과 분석·제출 (UI-04vo seam K)'
           done: Promise.resolve({
             ok: true,
             result: {
-              schema_version: 2,
+              schema_version: 3,
               snapshot_digest: run_input.snapshot.digest,
               issues: [],
               groups: [

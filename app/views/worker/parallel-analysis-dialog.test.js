@@ -81,7 +81,7 @@ function analysisOf(over = {}) {
       identity_digest: DIGEST,
       at: 1_000,
       result: {
-        schema_version: 2,
+        schema_version: 3,
         snapshot_digest: DIGEST,
         issues: [{ bead_id: 'UI-c', verdict: 'parallel_ok', reason: '독립' }],
         groups: [
@@ -120,7 +120,9 @@ function targetsFixture() {
         route: 'spec_backed',
         spec_id: 'UI-a',
         plan_path: null,
-        lane: 'parallel'
+        lane: 'parallel',
+        scope: ['app/views', 'server/worker'],
+        overlaps: ['UI-b']
       },
       {
         id: 'UI-b',
@@ -128,7 +130,9 @@ function targetsFixture() {
         route: 'full_plan',
         spec_id: 'UI-b',
         plan_path: 'docs/plans/UI-b.md',
-        lane: 's1'
+        lane: 's1',
+        scope: ['server'],
+        overlaps: ['UI-a']
       }
     ],
     excluded: [
@@ -136,14 +140,16 @@ function targetsFixture() {
         id: 'UI-c',
         title: '후보 C',
         reason: 'spec_missing',
-        lane: null
+        lane: null,
+        scope: ['must/not/render'],
+        overlaps: ['UI-a']
       }
     ]
   };
 }
 
 /**
- * @param {{ queue?: any, analysis?: any, transport?: any, onOpenTranscript?: any }} [options]
+ * @param {{ queue?: any, analysis?: any, transport?: any, targets?: any, onOpenTranscript?: any }} [options]
  */
 function mountDialog(options = {}) {
   document.body.innerHTML = '<div id="m"></div>';
@@ -155,9 +161,10 @@ function mountDialog(options = {}) {
     analysisStore.set(options.analysis || analysisOf());
   }
   const request = options.transport || vi.fn(async () => ({ applied: true }));
+  const target_response = options.targets || targetsFixture();
   const transport = vi.fn((type, payload) =>
     type === 'worker-parallel-analysis-targets'
-      ? Promise.resolve(targetsFixture())
+      ? Promise.resolve(target_response)
       : request(type, payload)
   );
   const dialog = createParallelAnalysisDialog(mount, {
@@ -211,6 +218,38 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     expect(excluded.open).toBe(false);
     expect(excluded.textContent).toContain('스펙 없음');
     expect(excluded.textContent).toContain('미배치');
+  });
+
+  test('renders scope and overlap badges only on qualified targets', async () => {
+    const { mount } = mountDialog();
+
+    await flush();
+
+    const scope_badges = Array.from(
+      mount.querySelectorAll('.pa-target__scope summary')
+    ).map((element) => element.textContent?.trim());
+    const overlap_badges = Array.from(
+      mount.querySelectorAll('.pa-target__overlaps')
+    ).map((element) => element.textContent?.trim());
+    expect(scope_badges).toEqual(['scope 2', 'scope 1']);
+    expect(overlap_badges).toEqual(['겹침 UI-b', '겹침 UI-a']);
+    expect(mount.textContent).toContain('server/worker');
+    expect(mount.textContent).not.toContain('must/not/render');
+  });
+
+  test('renders no signal badges when target fields are absent', async () => {
+    const target_response = targetsFixture();
+    for (const row of target_response.qualified) {
+      const target = /** @type {any} */ (row);
+      delete target.scope;
+      delete target.overlaps;
+    }
+    const { mount } = mountDialog({ targets: target_response });
+
+    await flush();
+
+    expect(mount.querySelector('.pa-target__scope')).toBeNull();
+    expect(mount.querySelector('.pa-target__overlaps')).toBeNull();
   });
 
   test('renders an eligible group card with its verdict and evidence', () => {
