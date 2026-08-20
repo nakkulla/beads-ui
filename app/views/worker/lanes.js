@@ -983,10 +983,12 @@ export function miniRow(item) {
  * workspace) renders without the chip/stepper and never throws.
  *
  * @param {MiniItem} item
+ * @param {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null} [place_menu]
  * @returns {import('lit-html').TemplateResult}
  */
-export function candidateCard(item) {
+export function candidateCard(item, place_menu = null) {
   const draggable = item.draggable && !item.done;
+  const menu_open = draggable && place_menu && place_menu.bead_id === item.id;
   const workflow = item.workflow;
   const chips = (workflow && workflow.chips) || {};
   const route = chips.route || (workflow && workflow.route);
@@ -1029,31 +1031,56 @@ export function candidateCard(item) {
         ? ''
         : ' worker-card__foot--actions-only'}"
     >
-      ${item.reason
-        ? html`<span
-            class="worker-card__reason${danger
-              ? ' worker-card__reason--danger'
-              : ''}"
-            >${item.reason}</span
-          >`
-        : ''}
-      <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 드래그의 보완재이지 대체재가
-           아니므로 자격 조건은 드래그와 완전히 같다 — spec 없는 후보만 막고,
-           blocked-with-spec은 드래그와 마찬가지로 적재할 수 있다. 표시 조건
-           (coarse pointer / 좁은 화면)은 CSS가 소유한다. -->
-      <button
-        type="button"
-        class="worker-card__place"
-        data-bead-id=${item.id}
-        ?disabled=${!draggable}
-        title=${draggable
-          ? '대기 큐 맨 뒤에 추가'
-          : missing_description
-            ? 'description이 없어 대기 큐에 넣을 수 없습니다'
-            : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
-      >
-        대기로 ↴
-      </button>
+      ${menu_open
+        ? html`<div class="worker-card__place-menu">
+            ${place_menu.lanes.map(
+              (lane) =>
+                html`<button
+                  type="button"
+                  class="worker-card__place-lane"
+                  data-bead-id=${item.id}
+                  data-lane=${lane.id}
+                  title="${lane.label} 대기 맨 뒤에 추가"
+                >
+                  <span>${lane.label}</span>
+                  <span class="worker-card__place-count">${lane.count}</span>
+                </button>`
+            )}
+            <button
+              type="button"
+              class="worker-card__place-cancel"
+              data-bead-id=${item.id}
+              title="레인 선택 취소"
+              aria-label="레인 선택 취소"
+            >
+              ✕
+            </button>
+          </div>`
+        : html`${item.reason
+              ? html`<span
+                  class="worker-card__reason${danger
+                    ? ' worker-card__reason--danger'
+                    : ''}"
+                  >${item.reason}</span
+                >`
+              : ''}
+            <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 드래그의 보완재이지 대체재가
+                 아니므로 자격 조건은 드래그와 완전히 같다 — spec 없는 후보만 막고,
+                 blocked-with-spec은 드래그와 마찬가지로 적재할 수 있다. 표시 조건
+                 (coarse pointer / 좁은 화면)은 CSS가 소유한다. -->
+            <button
+              type="button"
+              class="worker-card__place"
+              data-bead-id=${item.id}
+              ?disabled=${!draggable}
+              title=${draggable
+                ? '대기 큐 맨 뒤에 추가'
+                : missing_description
+                  ? 'description이 없어 대기 큐에 넣을 수 없습니다'
+                  : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+            >
+              대기로 ↴
+            </button>`}
     </div>
     ${timesMeta(item)}
   </div>`;
@@ -1072,7 +1099,7 @@ export function candidateCard(item) {
  * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
  * actually running, which is the only lane whose header dot breathes.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: { bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -1121,7 +1148,9 @@ export function paneTemplate(pane) {
                     ${pane.empty || ''}
                   </div>`
                 : pane.items.map((it) =>
-                    pane.lane === 'candidate' ? candidateCard(it) : miniRow(it)
+                    pane.lane === 'candidate'
+                      ? candidateCard(it, pane.place_menu)
+                      : miniRow(it)
                   )}
           </div>`}
   </section>`;

@@ -6018,21 +6018,29 @@ describe('candidate queue button — [대기로 ↴] (UI-58y2)', () => {
 
   /**
    * @param {any} transport
+   * @param {any} [queue_over]
+   * @param {((id: string) => void)|undefined} [gotoIssue]
    * @returns {HTMLElement} A view over seedCandidates() with blocked shown, so
    * the blocked-with-spec candidate BL-1 is on screen too.
    */
-  function mountWithBlocked(transport) {
+  function mountWithBlocked(transport, queue_over = {}, gotoIssue) {
     window.localStorage.setItem(
       'beads-ui.worker.candidate-filter',
       JSON.stringify({ show_blocked: true, spec: 'all' })
     );
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
-    queueStore.set(queueOf({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] }));
+    queueStore.set(
+      queueOf({
+        queue: [{ bead_id: 'QQ-1', added_at: 1 }],
+        ...queue_over
+      })
+    );
     createWorkerView(mount, {
       issueStores: seedCandidates(),
       queueStore,
-      transport
+      transport,
+      gotoIssue
     });
     return mount;
   }
@@ -6049,6 +6057,41 @@ describe('candidate queue button — [대기로 ↴] (UI-58y2)', () => {
       )
     );
 
+  /**
+   * @param {any} [over]
+   * @returns {any}
+   */
+  function serialQueue(over = {}) {
+    return {
+      serial_lane_count: 2,
+      serial_lanes: [
+        { id: 's1', entries: [{ bead_id: 'S1-1', added_at: 1 }] },
+        {
+          id: 's2',
+          entries: [
+            { bead_id: 'S2-1', added_at: 1 },
+            { bead_id: 'S2-2', added_at: 2 }
+          ]
+        }
+      ],
+      lane_states: {
+        s1: {
+          occupied_by: ['GHOST-1'],
+          order: ['S1-1', 'GHOST-1'],
+          corrections: [],
+          cycle: false
+        },
+        s2: {
+          occupied_by: [],
+          order: ['S2-1', 'S2-2'],
+          corrections: [],
+          cycle: false
+        }
+      },
+      ...over
+    };
+  }
+
   test('places the candidate at the tail of the waiting queue', async () => {
     const transport = vi.fn().mockResolvedValue({ ok: true });
     const mount = mountWithBlocked(transport);
@@ -6060,9 +6103,139 @@ describe('candidate queue button — [대기로 ↴] (UI-58y2)', () => {
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
       bead_id: 'RD-1',
-      index: 1,
       expected_revision: 1
     });
+  });
+
+  test('opens lane choices with waiting-entry counts without sending', () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport, serialQueue());
+
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    const choices = Array.from(
+      mount.querySelectorAll(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place-lane'
+      )
+    );
+    expect(
+      choices.map((choice) => choice.textContent?.replace(/\s+/g, ' ').trim())
+    ).toEqual(['병렬 1', '직렬 1 1', '직렬 2 2']);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  test('places the candidate at the serial lane tail without an index', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport, serialQueue());
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place-lane[data-lane="s2"]'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'RD-1',
+      lane: 's2',
+      expected_revision: 1
+    });
+  });
+
+  test('places the candidate at the parallel tail without lane or index', async () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport, serialQueue());
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place-lane[data-lane="parallel"]'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'RD-1',
+      expected_revision: 1
+    });
+  });
+
+  test('retries a tail placement after conflict without an index', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        applied: false,
+        conflict: true,
+        queue: queueOf({ ...serialQueue(), revision: 5 })
+      })
+      .mockResolvedValueOnce({ ok: true });
+    const mount = mountWithBlocked(transport, serialQueue());
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place-lane[data-lane="s2"]'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport.mock.calls).toEqual([
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-1', lane: 's2', expected_revision: 1 }
+      ],
+      [
+        'worker-queue-place',
+        { bead_id: 'RD-1', lane: 's2', expected_revision: 5 }
+      ]
+    ]);
+  });
+
+  test('closes lane choices without sending when cancel is clicked', () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport, serialQueue());
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place-cancel'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(transport).not.toHaveBeenCalled();
+    expect(placeBtn(mount, 'RD-1')).not.toBeNull();
+    expect(mount.querySelector('.worker-card__place-menu')).toBeNull();
+  });
+
+  test('keeps only the latest candidate lane menu open', () => {
+    const transport = vi.fn().mockResolvedValue({ ok: true });
+    const mount = mountWithBlocked(transport, serialQueue());
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    placeBtn(mount, 'BL-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    const menus = mount.querySelectorAll('.worker-card__place-menu');
+    expect(menus).toHaveLength(1);
+    expect(
+      menus[0]
+        .querySelector('.worker-card__place-lane')
+        ?.getAttribute('data-bead-id')
+    ).toBe('BL-1');
   });
 
   test('disables the button on a spec-less candidate', () => {
@@ -6087,21 +6260,39 @@ describe('candidate queue button — [대기로 ↴] (UI-58y2)', () => {
     await flush();
 
     expect(transport).not.toHaveBeenCalled();
+    expect(mount.querySelector('.worker-card__place-menu')).toBeNull();
   });
 
-  test('does not open the detail panel on a place click', async () => {
+  test('does not open the detail panel on a direct place button click', async () => {
     const gotoIssue = vi.fn();
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore: createWorkerQueueStore(),
-      transport: vi.fn().mockResolvedValue({ ok: true }),
+    const mount = mountWithBlocked(
+      vi.fn().mockResolvedValue({ ok: true }),
+      {},
       gotoIssue
-    });
+    );
 
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await flush();
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+  });
+
+  test('does not open the detail panel on a lane choice click', async () => {
+    const gotoIssue = vi.fn();
+    const mount = mountWithBlocked(
+      vi.fn().mockResolvedValue({ ok: true }),
+      serialQueue(),
+      gotoIssue
+    );
+
+    placeBtn(mount, 'RD-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
     /** @type {HTMLElement} */ (
       mount.querySelector(
-        '.worker-card[data-bead-id="RD-1"] .worker-card__place'
+        '.worker-card[data-bead-id="RD-1"] .worker-card__place-lane[data-lane="s1"]'
       )
     ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await flush();

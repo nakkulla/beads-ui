@@ -5949,6 +5949,39 @@ html[data-theme='dark'] {
   margin-left: 0;
 }
 
+.worker-card__place-menu {
+  display: flex;
+  flex: 1 1 100%;
+  gap: var(--sp-4);
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.worker-card__place-lane,
+.worker-card__place-cancel {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-4);
+  padding: 2px var(--sp-6);
+  border: 1px solid var(--stage-plan-dim);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--stage-plan-on);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.worker-card__place-count {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.worker-card__place-cancel {
+  color: var(--text-muted);
+}
+
 /* --- 실행 타일 현재 단계 줄 (UI-53es §2) --- */
 
 /* 제목 바로 아래, 제목보다 한 단계 낮은 명도 — 이 줄은 "무엇"이 아니라
