@@ -26,6 +26,23 @@ const TOP_LEVEL_KEYS = new Set([
   'recorded_at',
   'event'
 ]);
+const TOP_LEVEL_KEYS_WITH_EFFORT = new Set([...TOP_LEVEL_KEYS, 'effort']);
+const DELEGATION_SESSION_KEYS = new Set([
+  'launch_id',
+  'provider',
+  'role',
+  'model',
+  'session_id',
+  'turn_id',
+  'status',
+  'started_at',
+  'completed_at',
+  'last_event_at'
+]);
+const DELEGATION_SESSION_KEYS_WITH_EFFORT = new Set([
+  ...DELEGATION_SESSION_KEYS,
+  'effort'
+]);
 const SESSION_EVENT_KEYS = new Set(['type']);
 const TERMINAL_EVENT_KEYS = new Set(['type', 'status']);
 const FAILED_EVENT_KEYS = new Set(['type', 'status', 'error_code']);
@@ -46,6 +63,7 @@ const SESSION_STATUSES = new Set(['running', 'done', 'failed', 'interrupted']);
  * @typedef {Object} ParsedMonitorLine
  * @property {'implementation'|'review-consult'} role
  * @property {string} model
+ * @property {string|null} effort
  * @property {string} thread_id
  * @property {string|null} turn_id
  * @property {string} recorded_at
@@ -194,7 +212,11 @@ function isEvent(value) {
  * @returns {ParsedMonitorLine|null}
  */
 function parseMonitorLine(raw) {
-  if (!isRecord(raw) || !hasExactKeys(raw, TOP_LEVEL_KEYS)) {
+  if (
+    !isRecord(raw) ||
+    (!hasExactKeys(raw, TOP_LEVEL_KEYS) &&
+      !hasExactKeys(raw, TOP_LEVEL_KEYS_WITH_EFFORT))
+  ) {
     return null;
   }
   if (
@@ -204,6 +226,7 @@ function parseMonitorLine(raw) {
     raw.provider !== 'codex' ||
     !isRole(raw.role) ||
     !nonEmptyString(raw.model) ||
+    ('effort' in raw && !nonEmptyString(raw.effort)) ||
     !nonEmptyString(raw.thread_id) ||
     (raw.turn_id !== null && !nonEmptyString(raw.turn_id)) ||
     !isUtcMillisecond(raw.recorded_at) ||
@@ -214,6 +237,7 @@ function parseMonitorLine(raw) {
   return {
     role: raw.role,
     model: raw.model,
+    effort: 'effort' in raw ? /** @type {string} */ (raw.effort) : null,
     thread_id: raw.thread_id,
     turn_id: /** @type {string|null} */ (raw.turn_id),
     recorded_at: raw.recorded_at,
@@ -230,7 +254,11 @@ function parseMonitorLine(raw) {
  * @param {string|null} turn_id
  */
 function hasRawIdentityConflict(raw, attempt_id, launch_id, identity, turn_id) {
-  if (!isRecord(raw) || !hasExactKeys(raw, TOP_LEVEL_KEYS)) {
+  if (
+    !isRecord(raw) ||
+    (!hasExactKeys(raw, TOP_LEVEL_KEYS) &&
+      !hasExactKeys(raw, TOP_LEVEL_KEYS_WITH_EFFORT))
+  ) {
     return false;
   }
   if (
@@ -247,6 +275,7 @@ function hasRawIdentityConflict(raw, attempt_id, launch_id, identity, turn_id) {
     raw.schema !== MONITOR_SCHEMA ||
     raw.role !== identity.role ||
     raw.model !== identity.model ||
+    ('effort' in raw ? raw.effort : null) !== identity.effort ||
     raw.thread_id !== identity.thread_id ||
     (turn_id !== null && raw.turn_id !== turn_id)
   );
@@ -305,25 +334,17 @@ export function isDelegationSession(value) {
     return false;
   }
   if (
-    !hasExactKeys(
-      value,
-      new Set([
-        'launch_id',
-        'provider',
-        'role',
-        'model',
-        'session_id',
-        'turn_id',
-        'status',
-        'started_at',
-        'completed_at',
-        'last_event_at'
-      ])
-    ) ||
+    (!hasExactKeys(value, DELEGATION_SESSION_KEYS) &&
+      !hasExactKeys(value, DELEGATION_SESSION_KEYS_WITH_EFFORT)) ||
     !nonEmptyString(value.launch_id) ||
     value.provider !== 'codex' ||
     !isRole(value.role) ||
     !nonEmptyString(value.model) ||
+    !(
+      !('effort' in value) ||
+      value.effort === null ||
+      nonEmptyString(value.effort)
+    ) ||
     !nonEmptyString(value.session_id) ||
     (value.turn_id !== null && !nonEmptyString(value.turn_id)) ||
     !SESSION_STATUSES.has(String(value.status)) ||
@@ -368,6 +389,10 @@ export function normalizeDelegationSessions(raw) {
       provider: 'codex',
       role: value.role,
       model: value.model,
+      effort:
+        'effort' in value && typeof value.effort === 'string'
+          ? value.effort
+          : null,
       session_id: value.session_id,
       turn_id: value.turn_id,
       status: value.status,
@@ -443,6 +468,9 @@ function hasIdentityConflict(left, right) {
     left.provider !== right.provider ||
     left.role !== right.role ||
     left.model !== right.model ||
+    (left.effort !== null &&
+      right.effort !== null &&
+      left.effort !== right.effort) ||
     left.session_id !== right.session_id ||
     (left.turn_id !== null &&
       right.turn_id !== null &&
@@ -518,6 +546,7 @@ function parseStream(bytes, attempt_id, launch_id, from_offset) {
       identity &&
       (line.role !== identity.role ||
         line.model !== identity.model ||
+        line.effort !== identity.effort ||
         line.thread_id !== identity.thread_id)
     ) {
       return { session: null, stream: null, warnings, conflict: true };
@@ -559,6 +588,7 @@ function parseStream(bytes, attempt_id, launch_id, from_offset) {
     provider: /** @type {'codex'} */ ('codex'),
     role: identity.role,
     model: identity.model,
+    effort: identity.effort,
     session_id: identity.thread_id,
     turn_id,
     status,

@@ -566,7 +566,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -655,6 +655,7 @@ function setup(opts) {
     usage,
     usageReceipts: opts.usageReceipts,
     delegationMonitor: opts.delegationMonitor,
+    observeClaudeEffort: opts.observeClaudeEffort,
     admission: opts.admission,
     resolveBase: opts.resolveBase,
     notify: opts.notify,
@@ -9583,6 +9584,72 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
   });
 });
 
+describe('scheduler Claude effort observation', () => {
+  test('records effort from the init cwd when the session id arrives', async () => {
+    const observeClaudeEffort = vi.fn(() => 'high');
+    const env = setup({
+      config: { A1: { model: 'opus', effort: null } },
+      observeClaudeEffort
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('raw', {
+      type: 'system',
+      subtype: 'init',
+      cwd: '/observed/worktree'
+    });
+
+    events.emit('session_id', 'session-1');
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.observed_effort).toBe('high');
+    expect(observeClaudeEffort).toHaveBeenCalledWith({
+      cwd: '/observed/worktree',
+      session_id: 'session-1'
+    });
+  });
+
+  test('retries missing effort when the attempt terminates', async () => {
+    const observeClaudeEffort = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce('high');
+    const env = setup({
+      config: { A1: { model: 'opus', effort: null } },
+      observeClaudeEffort
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('session_id', 'session-1');
+
+    env.runner.finish('A1', { success: true });
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(observeClaudeEffort).toHaveBeenCalledTimes(2);
+    expect(attempt.observed_effort).toBe('high');
+  });
+
+  test('skips explicit effort and codex runner attempts', async () => {
+    const observeClaudeEffort = vi.fn(() => 'high');
+    const env = setup({
+      config: {
+        A1: { runner: 'claude', model: 'opus', effort: 'low' },
+        C1: { model: 'sol' }
+      },
+      slots: 2,
+      observeClaudeEffort
+    });
+    seedQueue(env.store, ['A1', 'C1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('A1').emit('session_id', 'session-1');
+    env.runner.eventsFor('C1').emit('session_id', 'thread-1');
+
+    expect(observeClaudeEffort).not.toHaveBeenCalled();
+  });
+});
+
 describe('scheduler token usage (UI-raqh §1)', () => {
   test('persists the tallied usage onto the attempt when the session ends', async () => {
     const env = setup({ config: { A1: {} } });
@@ -12779,6 +12846,7 @@ describe('scheduler delegation monitor wiring', () => {
       provider: 'codex',
       role: 'implementation',
       model: 'gpt-5.6-sol',
+      effort: null,
       session_id: 'thread-1',
       turn_id: 'turn-1',
       status: 'running',
@@ -12824,7 +12892,7 @@ describe('scheduler delegation monitor wiring', () => {
     expect(
       delegationMonitor.readAttemptDelegationStreams
     ).toHaveBeenLastCalledWith(WS, 'restart-attempt', {
-      known_sessions: [durable],
+      known_sessions: [{ ...durable, effort: null }],
       from_offsets: {}
     });
   });
@@ -12840,6 +12908,7 @@ describe('scheduler delegation monitor wiring', () => {
         provider: 'codex',
         role: 'implementation',
         model: 'gpt-5.6-sol',
+        effort: null,
         session_id: 'thread-1',
         turn_id: 'turn-1',
         status: 'running',

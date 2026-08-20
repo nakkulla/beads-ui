@@ -351,6 +351,7 @@ describe('provider and role usage projection (UI-orfj Phase 1)', () => {
             provider: 'codex',
             role: 'implementation',
             model: 'gpt-5.6-terra',
+            effort: 'high',
             session_id: 'thread-implementation',
             turn_id: 'turn-implementation',
             completed_at: '2026-08-11T00:00:00.000Z',
@@ -396,6 +397,7 @@ describe('provider and role usage projection (UI-orfj Phase 1)', () => {
         {
           receipt_id: 'r-implementation',
           model: 'gpt-5.6-terra',
+          effort: 'high',
           session_id: 'thread-implementation',
           turn_id: 'turn-implementation',
           completed_at: '2026-08-11T00:00:00.000Z'
@@ -414,6 +416,30 @@ describe('provider and role usage projection (UI-orfj Phase 1)', () => {
         }
       ]
     });
+  });
+
+  test('omits effort from a projected nested leg when it is absent', () => {
+    const projected = sumAttemptUsage(
+      {
+        outer: {
+          attempt_id: 'outer',
+          bead_id: 'UI-1',
+          usage_legs: [
+            {
+              receipt_id: 'r-1',
+              provider: 'codex',
+              role: 'implementation',
+              usage: { input_tokens: 1 }
+            }
+          ]
+        }
+      },
+      'UI-1'
+    );
+
+    expect(projected?.roles.implementation?.codex?.legs[0]).not.toHaveProperty(
+      'effort'
+    );
   });
 
   test('omits historical absent reasoning from an aggregate breakdown', () => {

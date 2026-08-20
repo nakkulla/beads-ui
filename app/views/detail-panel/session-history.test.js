@@ -444,6 +444,37 @@ describe('session-history delegation monitors', () => {
     ).not.toBe('');
   });
 
+  test('renders monitored and static effort while omitting absent effort', () => {
+    const monitored = { ...monitor('running'), effort: 'high' };
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [monitored, monitor('done', 'without-effort')],
+          usage_legs: [
+            {
+              receipt_id: 'static-effort',
+              provider: 'codex',
+              role: 'review-consult',
+              model: 'gpt-5.6-luna',
+              effort: 'low',
+              session_id: 'static-session',
+              completed_at: '2026-08-18T04:27:00.000Z',
+              usage: { input_tokens: 1 }
+            }
+          ]
+        }
+      ])
+    );
+    const metas = Array.from(
+      host.querySelectorAll('.detail-session__leg-meta')
+    ).map((node) => node.textContent?.trim());
+
+    expect(metas).toContain('codex · gpt-5.6-sol · high');
+    expect(metas).toContain('codex · gpt-5.6-luna · low');
+    expect(metas).toContain('codex · gpt-5.6-sol');
+  });
+
   test('passes exact attempt and launch ids on delegation row click', () => {
     /** @type {Array<[string, string]>} */
     const opened = [];

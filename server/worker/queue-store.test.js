@@ -2870,6 +2870,7 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
             session_id: 'thread-1',
             turn_id: 'turn-1',
             model: 'gpt-5.6-terra',
+            effort: 'high',
             usage: {
               input_tokens: 10,
               output_tokens: 2,
@@ -2889,12 +2890,36 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     expect(reloaded.attempts['att-legs'].usage_legs[0].receipt_id).toBe(
       'launch-1'
     );
+    expect(reloaded.attempts['att-legs'].usage_legs[0].effort).toBe('high');
     expect(
       store.appendAttempt(WS, {
         expected_revision: store.snapshot(WS).revision,
         attempt: { attempt_id: 'legacy', bead_id: 'UI-legacy' }
       }).queue.attempts.legacy.usage_legs
     ).toEqual([]);
+  });
+
+  test('observed effort survives updateAttempt and normalizes legacy attempts', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-effort', bead_id: 'UI-effort' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-effort',
+      patch: { observed_effort: 'high' }
+    });
+    const reloaded = createQueueStore().load(WS);
+
+    expect(updated.queue.attempts['att-effort'].observed_effort).toBe('high');
+    expect(reloaded.attempts['att-effort'].observed_effort).toBe('high');
+    expect(
+      store.appendAttempt(WS, {
+        expected_revision: store.snapshot(WS).revision,
+        attempt: { attempt_id: 'legacy-effort', bead_id: 'UI-legacy' }
+      }).queue.attempts['legacy-effort'].observed_effort
+    ).toBe(null);
   });
 
   test('normalizes absent delegation sessions to an empty list', () => {
@@ -2943,6 +2968,7 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
       provider: 'codex',
       role: 'implementation',
       model: 'gpt-5.6-sol',
+      effort: null,
       session_id: 'thread-1',
       turn_id: 'turn-1',
       status: 'done',
@@ -3052,6 +3078,60 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
       }
     ]);
     expect(fs.existsSync(monitor_file)).toBe(true);
+  });
+
+  test('backfills a legacy durable session with re-observed effort', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'monitor-backfill',
+        bead_id: 'UI-monitor',
+        status: 'done',
+        // A record persisted before `effort` existed: the key is absent, not null.
+        delegation_sessions: /** @type {any} */ ([
+          {
+            launch_id: 'launch-1',
+            provider: 'codex',
+            role: 'implementation',
+            model: 'gpt-5.6-sol',
+            session_id: 'thread-1',
+            turn_id: null,
+            status: 'interrupted',
+            started_at: Date.parse('2026-08-18T04:27:00.000Z'),
+            completed_at: null,
+            last_event_at: Date.parse('2026-08-18T04:27:00.000Z')
+          }
+        ])
+      }
+    });
+    ensureDelegationMonitorDir(WS, 'monitor-backfill');
+    fs.writeFileSync(
+      path.join(delegationMonitorDir(WS, 'monitor-backfill'), 'launch-1.jsonl'),
+      `${JSON.stringify({
+        schema: 'codex-delegation-monitor-v1',
+        attempt_id: 'monitor-backfill',
+        launch_id: 'launch-1',
+        provider: 'codex',
+        role: 'implementation',
+        model: 'gpt-5.6-sol',
+        effort: 'high',
+        thread_id: 'thread-1',
+        turn_id: null,
+        recorded_at: '2026-08-18T04:27:00.000Z',
+        event: { type: 'session.started' }
+      })}\n`,
+      { mode: 0o600 }
+    );
+
+    const result = store.updateAttempt(WS, {
+      attempt_id: 'monitor-backfill',
+      patch: {}
+    });
+
+    expect(
+      result.queue.attempts['monitor-backfill'].delegation_sessions
+    ).toMatchObject([{ launch_id: 'launch-1', effort: 'high' }]);
   });
 
   test('keeps receipt files when terminal queue persistence fails', () => {
