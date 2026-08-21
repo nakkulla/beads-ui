@@ -627,7 +627,7 @@ export async function checkReceipts(input) {
         if (!form.ok) {
           violations.push({
             code: 'exec_receipt_malformed',
-            detail: `${item.unit}=${form.detail}`
+            detail: `${item.unit}:${form.detail}`
           });
           unit_checks.push({ unit: item.unit, malformed: true });
           continue;
