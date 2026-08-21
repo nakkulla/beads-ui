@@ -590,6 +590,16 @@ describe('enrichIssueWorkflow', () => {
     expect(wf.stages.spec.fill).toBe('dim');
   });
 
+  test('keeps a draft-only spec_path out of the spec stage', () => {
+    const draft = enrichIssueWorkflow({
+      metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
+    });
+    const bare = enrichIssueWorkflow({ metadata: { route: 'spec_backed' } });
+
+    expect(draft.stages.spec).toEqual(bare.stages.spec);
+    expect(draft.stages.spec.fill).toBe('none');
+  });
+
   test('top-level spec_id drives Board staleness over conflicting metadata', () => {
     const dir = makeRepo();
     writeFile(dir, 'docs/native.md', '# native\n');

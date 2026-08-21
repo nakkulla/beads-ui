@@ -25,6 +25,41 @@ describe('views/detail-panel/artifacts', () => {
     });
   });
 
+  test('marks a metadata spec_path without spec_id as a draft', () => {
+    const rows = collectArtifacts({
+      metadata: { spec_path: ' docs/specs/draft.md ' }
+    });
+
+    expect(rows).toEqual([
+      {
+        kind: 'spec',
+        path: 'docs/specs/draft.md',
+        missing_state: 'spec_draft'
+      }
+    ]);
+  });
+
+  test('keeps only the published row when spec_id and spec_path disagree', () => {
+    const rows = collectArtifacts({
+      spec_id: 'docs/specs/published.md',
+      metadata: { spec_path: 'docs/specs/draft.md' }
+    });
+
+    expect(rows).toEqual([
+      {
+        kind: 'spec',
+        path: 'docs/specs/published.md',
+        missing_state: null
+      }
+    ]);
+  });
+
+  test('adds no spec row when neither spec_id nor spec_path exists', () => {
+    const rows = collectArtifacts({ metadata: { route: 'quick_fix' } });
+
+    expect(rows).toEqual([]);
+  });
+
   test('marks a reserved plan without authoring history as pending', () => {
     const rows = collectArtifacts({
       metadata: { plan_path: 'docs/plans/x.md' }

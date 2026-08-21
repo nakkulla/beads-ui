@@ -900,7 +900,7 @@ export function createDetailPanel(mount_element, options) {
   /**
    * @param {Event} ev
    * @param {string} path
-   * @param {'plan_pending'|null} missing_state
+   * @param {'plan_pending'|'spec_draft'|null} missing_state
    */
   function onOpenDoc(ev, path, missing_state) {
     ev.preventDefault();
