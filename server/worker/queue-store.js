@@ -148,6 +148,16 @@
  * legacy history neutral.
  * @property {Record<string, string|null>|null} exec_restore_values - Raw bead
  * metadata observed immediately before this attempt overlaid exec stamps.
+ * @property {string|null} workflow_mode_source_prior - `workflow_mode_source`
+ * value snapshotted before launch (null=was unset), reverted with
+ * `workflow_mode` as one pair (UI-bu6d §5).
+ * @property {Record<string, string|null>|null} receipt_baseline - Exact values
+ * of the five receipt-authority keys read immediately BEFORE this attempt's
+ * first metadata write (UI-bu6d §2). Null when the pre-dispatch read failed, in
+ * which case "appeared or changed" is unsayable and those checks are skipped.
+ * @property {Record<string, unknown>|null} receipt_check - The completion-time
+ * receipt observation (UI-bu6d §3). DISPLAY AND HISTORY ONLY: the merge gate
+ * re-runs the check against current metadata rather than trusting this.
  * @property {{ mismatch: Record<string, unknown>, continuation: null }|null} continuation_action -
  * Durable action-required descriptor when a background relaunch cannot choose
  * across runners. Null on ordinary attempts.
@@ -1978,6 +1988,16 @@ export function makeAttempt(fields) {
       !Array.isArray(fields.exec_restore_values)
         ? fields.exec_restore_values
         : null,
+    workflow_mode_source_prior:
+      typeof fields.workflow_mode_source_prior === 'string'
+        ? fields.workflow_mode_source_prior
+        : null,
+    receipt_baseline: isRecord(fields.receipt_baseline)
+      ? /** @type {Attempt['receipt_baseline']} */ (fields.receipt_baseline)
+      : null,
+    receipt_check: isRecord(fields.receipt_check)
+      ? /** @type {Attempt['receipt_check']} */ (fields.receipt_check)
+      : null,
     continuation_mode:
       fields.continuation_mode === 'session' ||
       fields.continuation_mode === 'fresh'

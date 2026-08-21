@@ -201,7 +201,12 @@ export function mergeQueueCandidates(workspace_key, queue, verify_policy) {
       verify_receipt_state: repoOpsVerifyReceiptState(
         verify_policy,
         record?.verify || null
-      )
+      ),
+      // This is a SYNCHRONOUS scan of cached observations, so it has no
+      // authority to judge receipts (UI-bu6d §4): the live re-check belongs to
+      // the click path, which reads current Bead metadata. Passing
+      // `undecidable` keeps this list from inventing either a hold or a pass.
+      receipt_state: { state: 'undecidable', codes: [] }
     });
     const conflicting = gate.base_badge === '충돌';
     const merged_tier = gate.tier === 'merged';

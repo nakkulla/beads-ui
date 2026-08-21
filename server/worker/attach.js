@@ -329,6 +329,13 @@ export function createLiveBd(config) {
           typeof md.impl_effort === 'string' ? md.impl_effort : undefined,
         workflow_mode:
           typeof md.workflow_mode === 'string' ? md.workflow_mode : null,
+        // Read from the SAME issue observation as `workflow_mode` (UI-bu6d §5):
+        // the pair is stamped in one write and reverted in one, so a prior read
+        // from a second source could restore a combination that never existed.
+        workflow_mode_source:
+          typeof md.workflow_mode_source === 'string'
+            ? md.workflow_mode_source
+            : null,
         route,
         status,
         title: typeof issue.title === 'string' ? issue.title : null,

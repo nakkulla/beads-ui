@@ -107,7 +107,12 @@ function makeFakeBd(config) {
       /** @type {string} */ _bead_id,
       /** @type {string} */ key
     ) {
-      return key === 'workflow_mode' ? 'fast_track' : null;
+      if (key === 'workflow_mode') {
+        return 'fast_track';
+      }
+      // Dispatch stamps and confirms the mode's authority in the same write
+      // (UI-bu6d §5), so the fake echoes both keys.
+      return key === 'workflow_mode_source' ? 'worker' : null;
     },
     async setStatus() {},
     async readStatus() {

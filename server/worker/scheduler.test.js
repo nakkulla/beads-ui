@@ -472,6 +472,7 @@ function makeFakeBd(config) {
         spec_review_model: c.spec_review_model ?? undefined,
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
+        workflow_mode_source: c.metadata?.workflow_mode_source ?? null,
         route: c.route ?? null,
         status: c.status ?? '',
         title: c.title ?? null,
@@ -538,7 +539,14 @@ function makeFakeBd(config) {
             c.bead_id === bead_id &&
             c.key === key
         );
-      return last?.method === 'setMetadata' ? (last.value ?? null) : null;
+      if (last) {
+        return last.method === 'setMetadata' ? (last.value ?? null) : null;
+      }
+      // Pre-existing metadata this attempt never wrote. Tests mutate the SAME
+      // config object between dispatch and completion to model a value that
+      // appeared under an unattended attempt.
+      const preexisting = cfg && cfg.metadata ? cfg.metadata[key] : undefined;
+      return typeof preexisting === 'string' ? preexisting : null;
     },
     async setStatus(
       /** @type {string} */ bead_id,
@@ -2767,16 +2775,15 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
     env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
     await flush();
     await flush();
-    // prior='fast_track' → revert re-sets it (not unset).
-    const revert = env.bd.calls.find(
-      (c) =>
-        c.method === 'setMetadata' &&
-        c.bead_id === 'S1' &&
-        c.value === 'fast_track' &&
-        // the LAST setMetadata is the revert (dispatch also set fast_track).
-        env.bd.calls.indexOf(c) === env.bd.calls.length - 1
+    // prior='fast_track' → the LAST workflow_mode write re-sets it (not unset).
+    const mode_writes = env.bd.calls.filter(
+      (/** @type {any} */ c) => c.bead_id === 'S1' && c.key === 'workflow_mode'
     );
-    expect(revert).toBeTruthy();
+
+    expect(mode_writes[mode_writes.length - 1]).toMatchObject({
+      method: 'setMetadata',
+      value: 'fast_track'
+    });
   });
 });
 
@@ -8637,6 +8644,26 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
   });
 
+  test('records the receipt observation on a restart-settled attempt', async () => {
+    const env = reconcileEnv(
+      { alive: true, started_at: 999999 },
+      {
+        'UI-1': { metadata: { exec_receipt: `main:bead@${'a'.repeat(40)}` } }
+      }
+    );
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    const check = env.store.snapshot(WS).attempts['att-1'].receipt_check;
+    expect(check?.violations).toEqual([
+      {
+        code: 'main_receipt_unbacked',
+        detail: 'main:bead without impl_dispatch=main'
+      }
+    ]);
+  });
+
   test('ignores attempts that are not running', async () => {
     const env = reconcileEnv({ alive: false, started_at: null });
     seedDetachedAttempt(env.store, { status: 'done' });
@@ -13082,5 +13109,257 @@ describe('scheduler delegation monitor wiring', () => {
       { launch_id: 'launch-1', status: 'interrupted' }
     ]);
     expect(attempt.usage_legs).toHaveLength(1);
+  });
+});
+
+describe('scheduler receipt observation (UI-bu6d §2/§3/§5)', () => {
+  const RECEIPT_SHA = 'a'.repeat(40);
+
+  test('snapshots the five receipt-authority keys before the first write', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          metadata: {
+            exec_receipt: `delegated:sol:high@${RECEIPT_SHA}`,
+            impl_dispatch: 'delegated'
+          }
+        }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].receipt_baseline
+    ).toEqual({
+      exec_receipt: `delegated:sol:high@${RECEIPT_SHA}`,
+      impl_entry: null,
+      plan_approval: null,
+      workflow_mode_source: null,
+      impl_dispatch: 'delegated'
+    });
+  });
+
+  test('dispatches even when the baseline read fails', async () => {
+    const env = setup({
+      config: { S1: { throwOnReadKey: 'plan_approval' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.scheduler.isRunning('S1')).toBe(true);
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].receipt_baseline).toBe(
+      null
+    );
+  });
+
+  test('stamps workflow_mode_source=worker with the fast_track mode', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.bd.calls).toContainEqual({
+      method: 'setMetadata',
+      bead_id: 'S1',
+      key: 'workflow_mode_source',
+      value: 'worker'
+    });
+  });
+
+  test('restores both workflow_mode keys to their prior values', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          workflow_mode: 'fast_track',
+          metadata: { workflow_mode_source: 'user' }
+        }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    const source_writes = env.bd.calls.filter(
+      (/** @type {any} */ c) =>
+        c.bead_id === 'S1' && c.key === 'workflow_mode_source'
+    );
+    expect(source_writes[source_writes.length - 1]).toEqual({
+      method: 'setMetadata',
+      bead_id: 'S1',
+      key: 'workflow_mode_source',
+      value: 'user'
+    });
+  });
+
+  test('keeps a user-owned workflow_mode_source when the baseline read fails', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          throwOnReadKey: 'impl_entry',
+          metadata: { workflow_mode_source: 'user' }
+        }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    const source_writes = env.bd.calls.filter(
+      (/** @type {any} */ c) =>
+        c.bead_id === 'S1' && c.key === 'workflow_mode_source'
+    );
+    expect(source_writes[source_writes.length - 1]).toEqual({
+      method: 'setMetadata',
+      bead_id: 'S1',
+      key: 'workflow_mode_source',
+      value: 'user'
+    });
+  });
+
+  test('unsets workflow_mode_source when the bead carried none', async () => {
+    const env = setup({ config: { S1: {} }, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    const source_writes = env.bd.calls.filter(
+      (/** @type {any} */ c) =>
+        c.bead_id === 'S1' && c.key === 'workflow_mode_source'
+    );
+    expect(source_writes[source_writes.length - 1]).toEqual({
+      method: 'unsetMetadata',
+      bead_id: 'S1',
+      key: 'workflow_mode_source'
+    });
+  });
+
+  test('records an unbacked receipt without holding the pr_wait move', async () => {
+    const env = setup({
+      config: {
+        S1: { metadata: { exec_receipt: `main:bead@${RECEIPT_SHA}` } }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['S1-1000-1'].receipt_check?.violations).toEqual([
+      expect.objectContaining({ code: 'main_receipt_unbacked' })
+    ]);
+    expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toContain(
+      'S1'
+    );
+  });
+
+  test('never halts auto_advance over a receipt violation', async () => {
+    const env = setup({
+      config: {
+        S1: { metadata: { exec_receipt: `main:bead@${RECEIPT_SHA}` } }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(env.store.snapshot(WS).auto_advance).toBe(true);
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].cause).toBe(null);
+  });
+
+  test('catches an impl_dispatch written after the dispatch snapshot', async () => {
+    /** @type {Record<string, any>} */
+    const config = { S1: { metadata: {} } };
+    const env = setup({ config, slots: 1 });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    config.S1.metadata.impl_dispatch = 'main';
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(
+      env.store.snapshot(WS).attempts['S1-1000-1'].receipt_check?.violations
+    ).toEqual([expect.objectContaining({ code: 'dispatch_forged' })]);
+  });
+
+  test('records the receipt check on the quick-fix landing path too', async () => {
+    /** @type {ReturnType<typeof setup>} */
+    let env;
+    const settle = vi.fn(async ({ attempt_id, bead_id }) => {
+      env.store.moveToDone(WS, {
+        bead_id,
+        attempt_id,
+        patch: { status: 'done', finished_at: 1000 }
+      });
+      return { ok: true };
+    });
+    env = setup({
+      config: {
+        S1: {
+          route: 'quick_fix',
+          metadata: {
+            route: 'quick_fix',
+            exec_receipt: `main:quick_fix_default@${RECEIPT_SHA}`
+          }
+        }
+      },
+      slots: 1,
+      quickfixLanding: { settle }
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    expect(settle).toHaveBeenCalled();
+    expect(env.store.snapshot(WS).attempts['S1-1000-1'].receipt_check).toEqual(
+      expect.objectContaining({ ok: true, probe_error: false })
+    );
+  });
+
+  test('records a probe error without blocking the lane move', async () => {
+    const env = setup({
+      config: { S1: { throwOnReadKey: 'exec_receipt' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: true, reason: 'ok', exit: 0 });
+    await flush();
+    await flush();
+
+    const snap = env.store.snapshot(WS);
+    expect(snap.attempts['S1-1000-1'].receipt_check?.probe_error).toBe(true);
+    expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toContain(
+      'S1'
+    );
   });
 });

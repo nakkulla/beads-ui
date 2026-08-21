@@ -246,6 +246,115 @@ describe('worker/merge-gate — no-CI eligibility', () => {
   });
 });
 
+describe('worker/merge-gate — receipt backing (UI-bu6d §4)', () => {
+  test('holds a PR whose execution receipt is unbacked', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        receipt_state: { state: 'unbacked', codes: ['main_receipt_unbacked'] }
+      })
+    );
+
+    expect(gate.enabled).toBe(false);
+    expect(gate.tier).toBe('receipt');
+    expect(gate.reason).toBe('receipt_unbacked:main_receipt_unbacked');
+  });
+
+  test('names the first blocking code in the refusal reason', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        receipt_state: {
+          state: 'unbacked',
+          codes: ['dispatch_forged', 'approval_forged']
+        }
+      })
+    );
+
+    expect(gate.reason).toBe('receipt_unbacked:dispatch_forged');
+  });
+
+  test('holds fail-closed when the receipt observation itself failed', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({ receipt_state: { state: 'probe_error', codes: [] } })
+    );
+
+    expect(gate.enabled).toBe(false);
+    expect(gate.reason).toBe('receipt_unbacked:probe_error');
+  });
+
+  test('lifts the hold once the observation comes back clean', () => {
+    const held = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        receipt_state: { state: 'unbacked', codes: ['approval_forged'] }
+      })
+    );
+    const repaired = evaluateMergeGate(
+      entryOf(),
+      inputOf({ receipt_state: { state: 'ok', codes: [] } })
+    );
+
+    expect(held.enabled).toBe(false);
+    expect(repaired.enabled).toBe(true);
+  });
+
+  test('holds on a fresh violation even after a clean earlier evaluation', () => {
+    const clean = evaluateMergeGate(
+      entryOf(),
+      inputOf({ receipt_state: { state: 'ok', codes: [] } })
+    );
+    const worsened = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        receipt_state: {
+          state: 'unbacked',
+          codes: ['mode_authority_forged']
+        }
+      })
+    );
+
+    expect(clean.enabled).toBe(true);
+    expect(worsened.enabled).toBe(false);
+    expect(worsened.reason).toBe('receipt_unbacked:mode_authority_forged');
+  });
+
+  test('creates no verdict from a caller with no authority to observe', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({ receipt_state: { state: 'undecidable', codes: [] } })
+    );
+
+    expect(gate.enabled).toBe(true);
+    expect(gate.tier).toBe('eligible');
+  });
+
+  test('refuses the review tier before it ever reaches the receipt', () => {
+    const gate = evaluateMergeGate(
+      entryOf(),
+      inputOf({
+        review_receipt_state: 'missing',
+        receipt_state: { state: 'unbacked', codes: ['approval_forged'] }
+      })
+    );
+
+    expect(gate.tier).toBe('review');
+  });
+
+  test('settles the receipt before spending a verify run', () => {
+    const gate = evaluateMergeGate(
+      entryOf({ pr: prOf() }),
+      inputOf({
+        receipt_state: { state: 'unbacked', codes: ['dispatch_forged'] },
+        verify_receipt_state: { declaration_state: 'present', receipt: null }
+      })
+    );
+
+    expect(gate.tier).toBe('receipt');
+  });
+});
+
 describe('worker/merge-gate — candidate-tree verify receipt', () => {
   test('inherits a receipt only for the exact candidate key', () => {
     const matches = verifyReceiptMatches(verifyKey(), verifyKey());

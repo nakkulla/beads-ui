@@ -325,11 +325,15 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       }
     });
 
+    // `impl_dispatch` is not a kv key (UI-bu6d §6), so the writer neither
+    // stores nor clears one a previous version left behind — and the readback
+    // below drops it rather than reporting it as a workspace default.
     expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
       ws,
       'workflow_session_defaults',
       {
         schema: 1,
+        impl_dispatch: 'delegated',
         workflow_mode: 'fast_track',
         impl_runtime: 'codex'
       }
@@ -362,7 +366,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
 
   test('clears a session key the preset does not carry', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
     kvGetJsonInWorkspace
       .mockResolvedValueOnce({
         ok: true,
@@ -370,7 +374,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, impl_dispatch: 'main' }
+        value: { schema: 1, impl_runtime: 'codex' }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 
@@ -387,21 +391,21 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
       ws,
       'workflow_session_defaults',
-      { schema: 1, impl_dispatch: 'main' }
+      { schema: 1, impl_runtime: 'codex' }
     );
   });
 
-  test('clears a review session key the preset does not carry', async () => {
+  test('never writes impl_dispatch into the workspace kv layer', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    const preset_id = seedPreset(ws, sent, {
+      impl_dispatch: 'main',
+      impl_runtime: 'codex'
+    });
     kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, spec_review_model: 'claude' }
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        value: { schema: 1, impl_dispatch: 'main' }
+        value: { schema: 1, impl_runtime: 'codex' }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 
@@ -417,7 +421,37 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
 
     expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
       schema: 1,
-      impl_dispatch: 'main'
+      impl_runtime: 'codex'
+    });
+  });
+
+  test('clears a review session key the preset does not carry', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_speed: 'fast' });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, spec_review_model: 'claude' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_speed: 'fast' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
+      schema: 1,
+      impl_speed: 'fast'
     });
   });
 
@@ -522,7 +556,7 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
 
   test('reports a readback that does not confirm the write', async () => {
     const { ws, sent } = fakeWs();
-    const preset_id = seedPreset(ws, sent, { impl_dispatch: 'main' });
+    const preset_id = seedPreset(ws, sent, { impl_speed: 'fast' });
     kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: { schema: 1 } });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 

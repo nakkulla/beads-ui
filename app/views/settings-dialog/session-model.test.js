@@ -1,10 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import {
+  BEAD_APPLY_KEYS,
   IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
   REVIEW_EFFORTS,
-  SESSION_DEFAULT_KEYS,
+  WORKSPACE_KV_KEYS,
   buildExecutionOptionView,
   buildOrchestrationPatch,
   buildSessionDefaultsPatch,
@@ -69,14 +70,20 @@ const CATALOG = {
   }
 };
 
-describe('SESSION_DEFAULT_KEYS', () => {
-  test('names the twelve contract keys and no orchestration key', () => {
-    expect(SESSION_DEFAULT_KEYS).toHaveLength(12);
-    expect(SESSION_DEFAULT_KEYS).toContain('impl_dispatch');
-    expect(SESSION_DEFAULT_KEYS).toContain('impl_speed');
+describe('session key lists', () => {
+  test('names the twelve per-bead keys and no orchestration key', () => {
+    expect(BEAD_APPLY_KEYS).toHaveLength(12);
+    expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
+    expect(BEAD_APPLY_KEYS).toContain('impl_speed');
     expect(
-      SESSION_DEFAULT_KEYS.some((key) => key.startsWith('orchestration_'))
+      BEAD_APPLY_KEYS.some((key) => key.startsWith('orchestration_'))
     ).toBe(false);
+  });
+
+  test('drops impl_dispatch from the eleven workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(11);
+
+    expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
   test('offers 위임 and 메인 as the two execution modes', () => {
@@ -85,14 +92,14 @@ describe('SESSION_DEFAULT_KEYS', () => {
 
   test('mirrors all fifteen execution preset keys', () => {
     expect(IMPL_PRESET_KEYS).toEqual([
-      ...SESSION_DEFAULT_KEYS,
+      ...BEAD_APPLY_KEYS,
       ...ORCHESTRATION_KEYS
     ]);
     expect(IMPL_PRESET_KEYS).toHaveLength(15);
   });
 });
 
-describe('isDelegationDisabled', () => {
+describe('isDelegationDisabled (per-bead drafts only)', () => {
   test('disables the delegation rows when the mode is 메인', () => {
     expect(isDelegationDisabled({ impl_dispatch: 'main' })).toBe(true);
   });
@@ -241,11 +248,20 @@ describe('buildExecutionOptionView', () => {
 describe('buildSessionDefaultsPatch', () => {
   test('sends only the keys whose value changed', () => {
     const patch = buildSessionDefaultsPatch(
-      { workflow_mode: 'standard', impl_dispatch: 'main' },
-      { workflow_mode: 'fast_track', impl_dispatch: 'main' }
+      { workflow_mode: 'standard', impl_speed: 'fast' },
+      { workflow_mode: 'fast_track', impl_speed: 'fast' }
     );
 
     expect(patch).toEqual({ workflow_mode: 'fast_track' });
+  });
+
+  test('never sends impl_dispatch to the workspace kv layer', () => {
+    const patch = buildSessionDefaultsPatch(
+      { impl_dispatch: 'delegated' },
+      { impl_dispatch: 'main' }
+    );
+
+    expect(patch).toEqual({});
   });
 
   test('sends null for a key the draft cleared back to (기본)', () => {

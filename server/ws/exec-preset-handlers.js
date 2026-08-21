@@ -19,8 +19,9 @@ import {
   normalizeSessionDefaults
 } from '../session-defaults.js';
 import {
+  BEAD_APPLY_KEYS,
   ORCHESTRATION_KEYS,
-  SESSION_DEFAULT_KEYS,
+  WORKSPACE_KV_KEYS,
   implPresetEnums,
   validateImplPresetSettings
 } from '../worker/exec-enums.js';
@@ -69,7 +70,7 @@ function queueStore() {
  */
 export function buildApplyImplPresetArgs(issue_id, settings) {
   const args = ['update', issue_id];
-  for (const key of SESSION_DEFAULT_KEYS) {
+  for (const key of BEAD_APPLY_KEYS) {
     if (Object.hasOwn(settings, key)) {
       args.push('--set-metadata', `${key}=${settings[key]}`);
     } else {
@@ -448,7 +449,7 @@ export async function handleApplyImplPresetGlobal(ws, req) {
   }
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of SESSION_DEFAULT_KEYS) {
+  for (const key of WORKSPACE_KV_KEYS) {
     patch[key] = Object.hasOwn(resolved.preset.settings, key)
       ? resolved.preset.settings[key]
       : null;

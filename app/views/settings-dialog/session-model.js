@@ -9,8 +9,12 @@
  */
 import { buildOptionView } from '../../utils/execution-defaults.js';
 
-/** The `bd kv workflow_session_defaults` keys, in dialog display order. */
-export const SESSION_DEFAULT_KEYS = [
+/**
+ * The twelve session keys a PER-BEAD write may carry — the per-bead preset
+ * apply and the detail panel's individual edits. Mirrors
+ * `server/worker/exec-enums.js BEAD_APPLY_KEYS`.
+ */
+export const BEAD_APPLY_KEYS = [
   'workflow_mode',
   'spec_review_model',
   'spec_review_effort',
@@ -25,6 +29,16 @@ export const SESSION_DEFAULT_KEYS = [
   'impl_speed'
 ];
 
+/**
+ * The eleven keys `bd kv workflow_session_defaults` may STORE, in dialog
+ * display order. `impl_dispatch` is absent by contract
+ * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
+ * every later bead, so the session-defaults group offers no such row.
+ */
+export const WORKSPACE_KV_KEYS = BEAD_APPLY_KEYS.filter(
+  (key) => key !== 'impl_dispatch'
+);
+
 /** The three orchestration keys the workspace queue stores as values. */
 export const ORCHESTRATION_KEYS = [
   'orchestration_model',
@@ -33,10 +47,7 @@ export const ORCHESTRATION_KEYS = [
 ];
 
 /** The fifteen keys an execution preset carries. */
-export const IMPL_PRESET_KEYS = [
-  ...SESSION_DEFAULT_KEYS,
-  ...ORCHESTRATION_KEYS
-];
+export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */
 export const IMPL_DISPATCHES = ['delegated', 'main'];
@@ -89,6 +100,10 @@ function runnerModels(catalog) {
 /**
  * `메인` means the controller implements the unit itself, so the delegation
  * target and its model/effort/speed rows carry no meaning and are disabled.
+ *
+ * A PER-BEAD predicate only: the workspace kv layer stores no `impl_dispatch`,
+ * so no workspace draft can ever answer true and the session-defaults group
+ * leaves its delegation rows enabled.
  *
  * @param {Record<string, string>} draft
  * @returns {boolean}
@@ -216,7 +231,7 @@ export function buildExecutionOptionView(
 export function buildSessionDefaultsPatch(baseline, draft) {
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of SESSION_DEFAULT_KEYS) {
+  for (const key of WORKSPACE_KV_KEYS) {
     const before = baseline?.[key];
     const after = draft?.[key];
     if (before === after) {

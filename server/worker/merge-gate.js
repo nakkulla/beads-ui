@@ -50,15 +50,29 @@
  */
 
 /**
+ * The receipt observation's verdict as the gate consumes it (UI-bu6d §4).
+ *
+ * `undecidable` is what a caller with no authority to observe passes — the
+ * cached board projections — and it neither holds nor clears. An ABSENT
+ * `receipt_state` reads the same way, so a surface that never learned about
+ * receipts keeps its prior behaviour instead of silently refusing every merge.
+ *
+ * @typedef {Object} ReceiptGateState
+ * @property {'ok'|'unbacked'|'probe_error'|'undecidable'} state
+ * @property {string[]} codes - Blocking violation codes, most relevant first.
+ */
+
+/**
  * @typedef {Object} MergeGateInput
  * @property {CurrentState} review_receipt_state
  * @property {VerifyReceiptState} verify_receipt_state
+ * @property {ReceiptGateState} [receipt_state]
  */
 
 /**
  * @typedef {Object} MergeGateVerdict
  * @property {boolean} enabled
- * @property {'eligible'|'mergeability'|'review'|'verify'|'undecidable'|'unobserved'|'merged'|'closed_unmerged'} tier
+ * @property {'eligible'|'mergeability'|'review'|'receipt'|'verify'|'undecidable'|'unobserved'|'merged'|'closed_unmerged'} tier
  * @property {string} gate_badge
  * @property {string} base_badge
  * @property {string|null} reason
@@ -67,6 +81,7 @@
 export const GATE_BADGES = {
   eligible: '머지 가능',
   review: '리뷰 확인 필요',
+  receipt: '영수증 확인 필요',
   verify_pass: '검증 완료',
   verify_fail: '검증 실패',
   verify_pending: '검증 대기',
@@ -383,6 +398,33 @@ export function evaluateMergeGate(entry, input) {
       GATE_BADGES.review,
       base_badge,
       `review_receipt_${input.review_receipt_state}`
+    );
+  }
+
+  // Receipt backing sits between review and verify (UI-bu6d §4): it is the last
+  // workflow-authority question, and it must be settled before any verify run
+  // is spent on a PR that cannot qualify anyway.
+  //
+  // A probe error holds, exactly like the ancestry probe: refusing is
+  // recoverable through a user's own merge, passing on an unproven receipt is
+  // not.
+  const receipt_state = input.receipt_state;
+  if (receipt_state && receipt_state.state === 'probe_error') {
+    return verdict(
+      false,
+      'receipt',
+      GATE_BADGES.receipt,
+      base_badge,
+      'receipt_unbacked:probe_error'
+    );
+  }
+  if (receipt_state && receipt_state.state === 'unbacked') {
+    return verdict(
+      false,
+      'receipt',
+      GATE_BADGES.receipt,
+      base_badge,
+      `receipt_unbacked:${receipt_state.codes[0] ?? 'unknown'}`
     );
   }
 

@@ -69,6 +69,7 @@ import {
   MANUAL_MERGE_CONTINUATION,
   orderLaneByBlocks
 } from '../worker/queue-store.js';
+import { summarizeReceiptCheck } from '../worker/receipt-check.js';
 import { sanitizeOutput } from '../worker/repair-session-adapter.js';
 import {
   classifyRepoOperationFailure,
@@ -458,6 +459,51 @@ export function withExternalPrWait(workspace_key, queue) {
 }
 
 /**
+ * The receipt warning a bead's latest checked attempt recorded (UI-bu6d §7).
+ *
+ * FAIL-QUIET by convention: an attempt with no `receipt_check` — a legacy
+ * record, an externally opened PR, an attempt whose bd read failed — summarizes
+ * to null and the row shows nothing. This projection creates no authority; the
+ * gate's own re-check does.
+ *
+ * @param {Record<string, unknown>} queue
+ * @param {string} bead_id
+ * @returns {ReturnType<typeof summarizeReceiptCheck>}
+ */
+function receiptWarningFor(queue, bead_id) {
+  const attempts =
+    queue.attempts && typeof queue.attempts === 'object'
+      ? Object.values(/** @type {Record<string, any>} */ (queue.attempts))
+      : [];
+  /** @type {{ at: number, check: Record<string, unknown> }|null} */
+  let best = null;
+  for (const attempt of attempts) {
+    if (
+      !attempt ||
+      attempt.bead_id !== bead_id ||
+      !attempt.receipt_check ||
+      typeof attempt.receipt_check !== 'object'
+    ) {
+      continue;
+    }
+    const at =
+      typeof attempt.receipt_check.checked_at === 'number'
+        ? attempt.receipt_check.checked_at
+        : 0;
+    if (!best || at >= best.at) {
+      best = { at, check: attempt.receipt_check };
+    }
+  }
+  return best
+    ? summarizeReceiptCheck(
+        /** @type {import('../worker/receipt-check.js').ReceiptCheckResult} */ (
+          best.check
+        )
+      )
+    : null;
+}
+
+/**
  * Project the PR observation cache onto the beads currently in `pr_wait`, each
  * with its evaluated merge gate (worker-phase2 §4/§5).
  *
@@ -504,8 +550,13 @@ function prObservationsFor(workspace_key, queue, verify_policy) {
         verify_receipt_state: repoOpsVerifyReceiptState(
           verify_policy,
           record?.verify || null
-        )
-      })
+        ),
+        // A pure read of cached observations creates no authority (UI-bu6d §4):
+        // the receipt verdict comes from the click path's live re-check, and
+        // this projection only CARRIES the recorded warning below.
+        receipt_state: { state: 'undecidable', codes: [] }
+      }),
+      receipt_check: receiptWarningFor(queue, bead_id)
     };
   }
   return out;

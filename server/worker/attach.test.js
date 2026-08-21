@@ -153,7 +153,13 @@ function fakeBd(config = {}) {
       calls.push(['unset', id, k]);
     },
     async readMetadata(/** @type {string} */ _id, /** @type {string} */ k) {
-      return k === 'workflow_mode' ? 'fast_track' : null;
+      if (k === 'workflow_mode') {
+        return 'fast_track';
+      }
+      // The dispatch stamps the mode's AUTHORITY in the same write and confirms
+      // it by readback (UI-bu6d §5), so the fake has to echo both or every
+      // launch refuses itself.
+      return k === 'workflow_mode_source' ? 'worker' : null;
     }
   };
 }

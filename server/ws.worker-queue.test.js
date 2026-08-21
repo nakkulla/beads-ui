@@ -1064,6 +1064,71 @@ describe('ws worker-queue pr_wait observations (worker-phase2 §4/§5)', () => {
     expect(obs.gate).toMatchObject({ enabled: true, gate_badge: '머지 가능' });
   });
 
+  test('the snapshot carries the recorded receipt warning', async () => {
+    parkInPrWait('UI-9');
+    getWorkerRuntime().queueStore.updateAttempt('', {
+      attempt_id: 'att-UI-9',
+      patch: {
+        receipt_check: {
+          ok: false,
+          probe_error: false,
+          checked_at: 5,
+          violations: [{ code: 'main_receipt_unbacked', detail: 'main:bead' }],
+          checks: {}
+        }
+      }
+    });
+    observe();
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].receipt_check
+    ).toEqual({
+      ok: false,
+      probe_error: false,
+      codes: ['main_receipt_unbacked'],
+      blocking_codes: ['main_receipt_unbacked']
+    });
+  });
+
+  test('omits the receipt warning when no attempt recorded one', async () => {
+    parkInPrWait('UI-9');
+    observe();
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].receipt_check
+    ).toBe(null);
+  });
+
+  test('never lets the cached snapshot gate decide a receipt', async () => {
+    parkInPrWait('UI-9');
+    getWorkerRuntime().queueStore.updateAttempt('', {
+      attempt_id: 'att-UI-9',
+      patch: {
+        receipt_check: {
+          ok: false,
+          probe_error: false,
+          checked_at: 5,
+          violations: [{ code: 'dispatch_forged', detail: 'x' }],
+          checks: {}
+        }
+      }
+    });
+    observe();
+    const sock = fakeSocket();
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(
+      queueSnapshots(sock).at(-1).pr_observations['UI-9'].gate
+    ).toMatchObject({ enabled: true, tier: 'eligible' });
+  });
+
   test('the snapshot rejects a verify receipt pinned to an older base', async () => {
     parkInPrWait('UI-9');
     observe();

@@ -2,18 +2,20 @@
  * Workspace-global SESSION defaults — the `bd kv` layer between a Bead's own
  * metadata pins and the harness defaults (spec §A).
  *
- * beads-ui is a CONSUMER of this contract: the key name, schema number, the 12
+ * beads-ui is a CONSUMER of this contract: the key name, schema number, the 11
  * allowed keys, and the `invalid_value: ignore_key_and_warn` / `absent:
  * skip_layer` rules are owned by dotfiles `workflow.yaml
  * workspace_kv_defaults`. Nothing here may widen that vocabulary, and no
  * harness default is ever copied into this repository.
  *
+ * `impl_dispatch` is deliberately NOT one of them (UI-bu6d §6): it is
+ * `write_rule: user_write_only`, so a workspace-global copy of it would pin a
+ * dispatch nobody chose for the bead it lands on. A value left behind in an
+ * older kv object drops through the ordinary `unknown_key:` warning.
+ *
  * @import { ResolvedCatalog } from './worker/runner-catalog.js'
  */
-import {
-  SESSION_DEFAULT_KEYS,
-  sessionDefaultEnums
-} from './worker/exec-enums.js';
+import { WORKSPACE_KV_KEYS, sessionDefaultEnums } from './worker/exec-enums.js';
 
 /** The single `bd kv` key holding every workspace session default. */
 export const SESSION_DEFAULTS_KV_KEY = 'workflow_session_defaults';
@@ -32,7 +34,7 @@ function isRecord(value) {
 /**
  * Read the durable kv object into the usable session-default layer.
  *
- * A key outside the contract's 12, or one whose value leaves its enum, is
+ * A key outside the contract's 11, or one whose value leaves its enum, is
  * DROPPED with a warning rather than failing the whole layer: the workspace
  * default is not an explicit pin, so it fails quiet (spec §A).
  *
@@ -53,7 +55,7 @@ export function normalizeSessionDefaults(raw, options = {}) {
     if (key === 'schema') {
       continue;
     }
-    if (!SESSION_DEFAULT_KEYS.includes(key)) {
+    if (!WORKSPACE_KV_KEYS.includes(key)) {
       warnings.push(`unknown_key:${key}`);
       continue;
     }
@@ -86,7 +88,7 @@ export function validateSessionDefaultsPatch(raw, options = {}) {
   /** @type {Record<string, string|null>} */
   const patch = {};
   for (const [key, value] of Object.entries(raw)) {
-    if (!SESSION_DEFAULT_KEYS.includes(key)) {
+    if (!WORKSPACE_KV_KEYS.includes(key)) {
       return { ok: false, reason: `unknown session-default key: ${key}` };
     }
     if (value === null || value === '') {

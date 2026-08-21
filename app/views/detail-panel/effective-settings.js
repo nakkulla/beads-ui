@@ -12,8 +12,8 @@
  */
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import {
-  ORCHESTRATION_KEYS,
-  SESSION_DEFAULT_KEYS
+  BEAD_APPLY_KEYS,
+  ORCHESTRATION_KEYS
 } from '../settings-dialog/session-model.js';
 
 /**
@@ -218,4 +218,4 @@ export function buildImplPresetApplyPayload(id, preset_id, expected_revision) {
  *
  * @type {ReadonlyArray<string>}
  */
-export const EFFECTIVE_KEYS = [...SESSION_DEFAULT_KEYS, ...ORCHESTRATION_KEYS];
+export const EFFECTIVE_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];

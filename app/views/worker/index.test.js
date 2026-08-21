@@ -13,7 +13,8 @@ import {
   mergeQueueRefusalText,
   mergeStepView,
   mergeWaitingText,
-  prStatusBadge
+  prStatusBadge,
+  receiptWarningCodes
 } from './index.js';
 
 function createTestIssueStores() {
@@ -8897,7 +8898,87 @@ describe('mergeQueueRefusalText (UI-75xw §6)', () => {
   });
 });
 
+describe('receiptWarningCodes (UI-bu6d §7)', () => {
+  test('reads the blocking codes off a recorded summary', () => {
+    const codes = receiptWarningCodes({
+      blocking_codes: ['main_receipt_unbacked']
+    });
+
+    expect(codes).toEqual(['main_receipt_unbacked']);
+  });
+
+  test('stays quiet without a recorded summary', () => {
+    expect(receiptWarningCodes(null)).toEqual([]);
+  });
+
+  test('stays quiet on a probe error that named no code', () => {
+    expect(
+      receiptWarningCodes({ probe_error: true, blocking_codes: [] })
+    ).toEqual([]);
+  });
+
+  test('stays quiet on a summary whose shape it cannot read', () => {
+    expect(receiptWarningCodes({ blocking_codes: 'nope' })).toEqual([]);
+  });
+});
+
 describe('prStatusBadge priority (UI-vkk8 §3)', () => {
+  test('warns about an unbacked execution receipt', () => {
+    const result = prStatusBadge({
+      receipt_check: {
+        ok: false,
+        probe_error: false,
+        codes: ['main_receipt_unbacked'],
+        blocking_codes: ['main_receipt_unbacked']
+      }
+    });
+
+    expect(result).toMatchObject({ label: '영수증 확인 필요', alert: true });
+    expect(result?.title).toContain('main_receipt_unbacked');
+  });
+
+  test('shows no receipt badge for a clean observation', () => {
+    const result = prStatusBadge({
+      receipt_check: {
+        ok: true,
+        probe_error: false,
+        codes: [],
+        blocking_codes: []
+      },
+      gate: { enabled: true }
+    });
+
+    expect(result?.label).toBe('머지 가능');
+  });
+
+  test('stays quiet when the receipt observation itself failed', () => {
+    const result = prStatusBadge({
+      receipt_check: {
+        ok: false,
+        probe_error: true,
+        codes: [],
+        blocking_codes: []
+      },
+      gate: { enabled: true }
+    });
+
+    expect(result?.label).toBe('머지 가능');
+  });
+
+  test('keeps the review receipt above the execution receipt', () => {
+    const result = prStatusBadge({
+      gate: { reason: 'review_receipt_missing' },
+      receipt_check: {
+        ok: false,
+        probe_error: false,
+        codes: ['dispatch_forged'],
+        blocking_codes: ['dispatch_forged']
+      }
+    });
+
+    expect(result?.label).toBe('최종 변경 리뷰 필요');
+  });
+
   test('keeps a continuation choice above progress and failures', () => {
     const result = prStatusBadge({
       continuation_required: true,

@@ -13,8 +13,8 @@
  *     synthesizes the extra `workflow_mode` key on top of these 12.
  *
  * `workflow_mode` is intentionally NOT part of this table: it is a SESSION key,
- * so its vocabulary lives in {@link sessionDefaultEnums} beside the other 11
- * `bd kv` keys rather than in the worker launcher's table.
+ * so its vocabulary lives in {@link sessionDefaultEnums} beside the other
+ * session keys rather than in the worker launcher's table.
  *
  * The runner axis is retired (worker-phase1 §4): the runner is DERIVED from the
  * resolved model through the catalog's globally-unique model names, so there is
@@ -103,14 +103,15 @@ export const WORKFLOW_MODES = ['standard', 'fast_track'];
 export const AUTO_LITERAL = 'auto';
 
 /**
- * The 12 session keys that resolve through `bd kv workflow_session_defaults`
- * (dotfiles `workflow.yaml workspace_kv_defaults.allowed_keys`). Disjoint from
- * the three `orchestration_*` keys, whose only consumer is the worker launcher
- * and whose workspace storage is the queue state.
+ * The 12 session keys a PER-BEAD write may carry: a preset applied to one bead
+ * and the detail panel's individual edits. `impl_dispatch` belongs here and
+ * nowhere else on the session axis — the contract makes it
+ * `write_rule: user_write_only`, and both of these surfaces ARE the user
+ * writing.
  *
  * @type {ReadonlyArray<string>}
  */
-export const SESSION_DEFAULT_KEYS = [
+export const BEAD_APPLY_KEYS = [
   'workflow_mode',
   'spec_review_model',
   'spec_review_effort',
@@ -124,6 +125,22 @@ export const SESSION_DEFAULT_KEYS = [
   'impl_effort',
   'impl_speed'
 ];
+
+/**
+ * The 11 keys that may be STORED workspace-wide through
+ * `bd kv workflow_session_defaults` (dotfiles `workflow.yaml
+ * workspace_kv_defaults.allowed_keys`).
+ *
+ * `impl_dispatch` is absent by contract: a workspace-global default would make
+ * every later bead's dispatch a value nobody wrote for it, which is exactly
+ * what `write_rule: user_write_only` forbids. A value left in an older kv
+ * object therefore drops per key with a warning, never failing the layer.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const WORKSPACE_KV_KEYS = BEAD_APPLY_KEYS.filter(
+  (key) => key !== 'impl_dispatch'
+);
 
 /**
  * The three orchestration keys stored directly as workspace queue values.
@@ -142,13 +159,10 @@ export const ORCHESTRATION_KEYS = [
  *
  * @type {ReadonlyArray<string>}
  */
-export const IMPL_PRESET_KEYS = [
-  ...SESSION_DEFAULT_KEYS,
-  ...ORCHESTRATION_KEYS
-];
+export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
- * Allowed values per session-default key. `impl_model`/`impl_effort` add the
+ * Allowed values per per-bead session key. `impl_model`/`impl_effort` add the
  * `auto` literal to their catalog vocabulary; every other key reuses the
  * existing metadata enum so the kv layer cannot diverge from the pin layer.
  *

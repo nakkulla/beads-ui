@@ -51,9 +51,13 @@ const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
  * read as effort, so a historical `delegated:<model>@<sha>` receipt and any
  * model token keep their whole prefix as the actor.
  *
+ * Exported so the Worker's receipt-check reuses this exact enumeration rather
+ * than restating it: a second effort table would be the seam where a valid
+ * `delegated:<model>:<effort>@<sha>` receipt starts reading as malformed.
+ *
  * @type {Set<string>}
  */
-const DELEGATED_EFFORT_TOKENS = new Set([
+export const DELEGATED_EFFORT_TOKENS = new Set([
   'low',
   'medium',
   'high',
