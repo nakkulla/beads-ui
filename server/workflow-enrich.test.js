@@ -201,6 +201,7 @@ describe('execution metadata display projection', () => {
     expect(workflow.exec_receipt).toEqual({
       kind: 'delegated',
       actor: 'gpt-5.6-sol',
+      effort: null,
       sha: 'a'.repeat(40)
     });
     expect(workflow.planned_execution).toBeNull();
@@ -237,14 +238,66 @@ describe('execution metadata display projection', () => {
       {
         kind: 'delegated',
         actor: 'gpt-5.6-sol',
+        effort: null,
         sha: 'a'.repeat(40)
       }
     );
     expect(parseExecReceipt(`main:국소 수정@${'b'.repeat(40)}`)).toEqual({
       kind: 'main',
       actor: '국소 수정',
+      effort: null,
       sha: 'b'.repeat(40)
     });
+  });
+
+  test.each([['xhigh'], ['default']])(
+    'splits the %s effort segment off a delegated receipt',
+    (effort) => {
+      expect(
+        parseExecReceipt(`delegated:gpt-5.6-sol:${effort}@${'a'.repeat(40)}`)
+      ).toEqual({
+        kind: 'delegated',
+        actor: 'gpt-5.6-sol',
+        effort,
+        sha: 'a'.repeat(40)
+      });
+    }
+  );
+
+  test('keeps a non-effort last segment inside the delegated actor', () => {
+    expect(
+      parseExecReceipt(`delegated:gpt-5.6-sol:sol@${'a'.repeat(40)}`)
+    ).toEqual({
+      kind: 'delegated',
+      actor: 'gpt-5.6-sol:sol',
+      effort: null,
+      sha: 'a'.repeat(40)
+    });
+  });
+
+  test('never reads an effort segment off a main receipt', () => {
+    expect(parseExecReceipt(`main:takeover:high@${'a'.repeat(40)}`)).toEqual({
+      kind: 'main',
+      actor: 'takeover:high',
+      effort: null,
+      sha: 'a'.repeat(40)
+    });
+  });
+
+  test('exposes the delegated effort on both enrichment surfaces', () => {
+    const workflow = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        metadata: {
+          exec_receipt: `delegated:gpt-5.6-sol:xhigh@${'a'.repeat(40)}`
+        }
+      },
+      null,
+      null
+    );
+
+    expect(workflow.exec_receipt?.effort).toBe('xhigh');
+    expect(workflow.chips.exec_receipt?.effort).toBe('xhigh');
   });
 
   test('parses user implementation entry receipts', () => {

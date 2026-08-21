@@ -43,6 +43,15 @@ import { workspaceStateDir } from './state-paths.js';
 export const HEAD_REVIEW_VERDICT_MARKER = 'HEAD_REVIEW_VERDICT';
 
 /**
+ * Runtime and effort the bounded repair round dispatches with. The pair is
+ * fixed here because the repair prompt must also tell the session which
+ * `exec_receipt` effort segment to write, and a receipt is a copy of the
+ * dispatch packet — not an independent claim.
+ */
+const REPAIR_REVIEWER = 'codex';
+const REPAIR_EFFORT = 'xhigh';
+
+/**
  * The repair session's structured result line:
  * `HEAD_REPAIR_RESULT { "self_review": "APPROVE"|"REVISE" }`. The exact-delta
  * self-review verdict must come back through this channel — a repair session
@@ -734,7 +743,7 @@ export function createHeadReviewTransport(deps) {
       '5. repair delta 전체를 self-review하라. 통과 시에만',
       '   `bd update ' +
         String(packet.bead_id) +
-        ' --set-metadata impl_review=self@<새 head SHA> exec_receipt=delegated:codex@<새 head SHA>`를 기록하라.',
+        ` --set-metadata impl_review=self@<새 head SHA> exec_receipt=delegated:${REPAIR_REVIEWER}:${REPAIR_EFFORT}@<새 head SHA>\`를 기록하라.`,
       '6. base로의 push, merge 실행, 두 번째 수정 라운드는 금지된다.',
       '',
       '마지막 출력 줄은 정확히 다음 한 줄이어야 한다(JSON 한 줄):',
@@ -742,8 +751,8 @@ export function createHeadReviewTransport(deps) {
     ].join('\n');
     const run = await runAttempt({
       attempt_id: String(packet.attempt_id),
-      reviewer: 'codex',
-      effort: 'xhigh',
+      reviewer: REPAIR_REVIEWER,
+      effort: REPAIR_EFFORT,
       bead_id: String(packet.bead_id),
       prompt,
       mode: null

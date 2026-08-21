@@ -278,6 +278,7 @@ describe('views/detail-panel', () => {
           exec_receipt: {
             kind: 'delegated',
             actor: 'gpt-5.6-sol',
+            effort: 'xhigh',
             sha: 'a'.repeat(40)
           },
           impl_entry: { actor: 'user', sha: 'b'.repeat(40) }
@@ -302,7 +303,7 @@ describe('views/detail-panel', () => {
     });
     expect(rows).toContainEqual({
       key: 'exec_receipt',
-      value: `delegated:gpt-5.6-sol@${'a'.repeat(40)}`
+      value: `delegated:gpt-5.6-sol:xhigh@${'a'.repeat(40)}`
     });
     expect(rows).toContainEqual({
       key: 'impl_entry',

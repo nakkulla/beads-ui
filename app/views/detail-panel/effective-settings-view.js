@@ -10,11 +10,12 @@
  *
  * @typedef {import('lit-html').TemplateResult} TemplateResult
  * @typedef {import('./effective-settings.js').EffectiveRow} EffectiveRow
+ * @typedef {import('../board/card.js').ExecReceipt} ExecReceipt
  */
 import { html } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { buildOptionView } from '../../utils/execution-defaults.js';
-import { formatPlannedExecution } from '../board/card.js';
+import { formatExecReceipt, formatPlannedExecution } from '../board/card.js';
 import {
   AUTO_LITERAL,
   IMPL_DISPATCHES,
@@ -372,6 +373,34 @@ export function summaryLine(effective) {
 }
 
 /**
+ * Narrow an enriched `workflow.exec_receipt` to the shape the formatters need.
+ * A payload without enrichment, or with a partial receipt, yields `null` so the
+ * caller falls back to the raw metadata pin (AGENTS.md consumer fail-quiet).
+ *
+ * @param {any} value
+ * @returns {ExecReceipt | null}
+ */
+function normalizeExecReceipt(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const { kind, actor, effort, sha } = value;
+  if (
+    typeof kind !== 'string' ||
+    typeof actor !== 'string' ||
+    typeof sha !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    kind,
+    actor,
+    effort: typeof effort === 'string' ? effort : null,
+    sha
+  };
+}
+
+/**
  * The summary header: status, route, the gate stepper with receipt binding, the
  * PR link, and the `exec_receipt` chip. Display-only — the gate receipts have
  * no editing surface by design (spec 비-목표).
@@ -393,6 +422,16 @@ export function summaryHeaderTemplate(data) {
   const pr_url = typeof metadata.pr_url === 'string' ? metadata.pr_url : '';
   const receipt =
     typeof metadata.exec_receipt === 'string' ? metadata.exec_receipt : '';
+  // The normalized receipt is what splits the delegated effort off the model,
+  // so the chip can name it in its own token. Without enrichment the raw pin
+  // still renders whole — a display-only surface never withholds what it has.
+  const normalized_receipt = normalizeExecReceipt(workflow.exec_receipt);
+  const receipt_title = normalized_receipt
+    ? formatExecReceipt(normalized_receipt)
+    : receipt;
+  const receipt_label = normalized_receipt
+    ? `${normalized_receipt.kind}:${normalized_receipt.actor}`
+    : receipt.split('@')[0];
   const planned_execution = formatPlannedExecution(
     workflow.planned_execution,
     workflow.exec_receipt
@@ -429,11 +468,17 @@ export function summaryHeaderTemplate(data) {
             >${planned_execution.label}</span
           >`
         : ''}
-      ${receipt
+      ${receipt_title
         ? html`<span
             class="detail-summary__chip detail-summary__chip--receipt"
-            title=${receipt}
-            >${receipt.split('@')[0]}</span
+            title=${receipt_title}
+            >${receipt_label}${normalized_receipt?.effort
+              ? html`${' '}<span
+                    class="detail-summary__chip-effort"
+                    data-seam="exec-receipt-effort"
+                    >${normalized_receipt.effort}</span
+                  >`
+              : ''}</span
           >`
         : ''}
     </div>

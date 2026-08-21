@@ -8424,6 +8424,13 @@ button.detail-session__leg:focus-visible {
   font-family: var(--font-mono, monospace);
 }
 
+.detail-summary__chip-effort {
+  margin-left: var(--sp-4);
+  padding-left: var(--sp-4);
+  border-left: 1px solid var(--border-chip);
+  color: var(--chip-route);
+}
+
 .detail-summary__chip.ctl-chip--planned[data-kind='delegated'] {
   color: var(--chip-route);
   border-color: var(--border-route);

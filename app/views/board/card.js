@@ -33,7 +33,7 @@ import { stepperTemplate } from './stepper.js';
  * @property {boolean} [fast_track]
  * @property {{ number: number | null } | null} [pr]
  * @property {{ kind: 'delegated'|'main', reason: string | null } | null} [planned_execution]
- * @property {{ kind: string, actor: string, sha: string } | null} [exec_receipt]
+ * @property {ExecReceipt | null} [exec_receipt]
  * @property {{ actor: string, sha: string } | null} [impl_entry]
  */
 
@@ -187,12 +187,45 @@ function executionKindLabel(kind) {
 }
 
 /**
+ * @typedef {Object} ExecReceipt
+ * @property {string} kind
+ * @property {string} actor
+ * @property {string | null} effort - Resolved dispatch effort on a delegated
+ * receipt; `null` on `main:` receipts and on historical delegated ones written
+ * before the contract carried the segment.
+ * @property {string} sha
+ */
+
+/**
+ * The receipt's actor as the contract writes it: `<model>:<effort>` when the
+ * dispatch pinned an effort, the bare actor otherwise. Keeping the two joined
+ * here means every display that shows an actor stays lossless.
+ *
+ * @param {ExecReceipt} exec_receipt
+ */
+export function execReceiptActor(exec_receipt) {
+  return exec_receipt.effort
+    ? `${exec_receipt.actor}:${exec_receipt.effort}`
+    : exec_receipt.actor;
+}
+
+/**
+ * The full receipt string as stored in metadata, rebuilt from the normalized
+ * object so tooltips and key/value rows never drop the effort segment.
+ *
+ * @param {ExecReceipt} exec_receipt
+ */
+export function formatExecReceipt(exec_receipt) {
+  return `${exec_receipt.kind}:${execReceiptActor(exec_receipt)}@${exec_receipt.sha}`;
+}
+
+/**
  * Shared planned/actual label and tooltip formatter for cards, folded rows,
  * and the detail summary. Inputs are normalized workflow objects, never raw
  * metadata strings.
  *
  * @param {{ kind: string, reason: string | null } | null | undefined} planned_execution
- * @param {{ kind: string, actor: string, sha: string } | null | undefined} exec_receipt
+ * @param {ExecReceipt | null | undefined} exec_receipt
  * @returns {PlannedExecutionPresentation | null}
  */
 export function formatPlannedExecution(planned_execution, exec_receipt) {
@@ -216,7 +249,7 @@ export function formatPlannedExecution(planned_execution, exec_receipt) {
   const label = `계획 · ${planned_label}${mismatch ? ` → ${actual_label}` : ''}`;
   const planned_summary = `planned_execution ${planned_execution.kind}${typeof reason === 'string' ? `:${reason}` : ''}`;
   const actual_summary = exec_receipt
-    ? ` · exec_receipt ${exec_receipt.kind}:${exec_receipt.actor}@${exec_receipt.sha}`
+    ? ` · exec_receipt ${formatExecReceipt(exec_receipt)}`
     : '';
   return {
     kind: /** @type {'delegated'|'main'} */ (planned_execution.kind),
@@ -227,7 +260,7 @@ export function formatPlannedExecution(planned_execution, exec_receipt) {
 
 /**
  * @param {{ kind: string, reason: string | null } | null | undefined} planned_execution
- * @param {{ kind: string, actor: string, sha: string } | null | undefined} exec_receipt
+ * @param {ExecReceipt | null | undefined} exec_receipt
  * @returns {TemplateResult | null}
  */
 function plannedExecutionChip(planned_execution, exec_receipt) {
@@ -243,7 +276,7 @@ function plannedExecutionChip(planned_execution, exec_receipt) {
 }
 
 /**
- * @param {{ kind: string, actor: string, sha: string } | null | undefined} exec_receipt
+ * @param {ExecReceipt | null | undefined} exec_receipt
  * @returns {TemplateResult | null}
  */
 function compactExecutionChip(exec_receipt) {
@@ -256,7 +289,7 @@ function compactExecutionChip(exec_receipt) {
   }
   return html`<span
     class="ctl-chip ctl-chip--exec-receipt"
-    title=${`exec_receipt ${exec_receipt.kind}:${exec_receipt.actor}@${exec_receipt.sha}`}
+    title=${`exec_receipt ${formatExecReceipt(exec_receipt)}`}
     >${`실행 · ${label}`}</span
   >`;
 }
@@ -312,8 +345,8 @@ function chipsTemplate(issue, ctx) {
     items.push(
       html`<span
         class="ctl-chip ctl-chip--exec-receipt"
-        title=${`exec_receipt ${receipt.kind}:${receipt.actor}@${receipt.sha}`}
-        >${`exec ${receipt.kind === 'delegated' ? receipt.actor : `main:${receipt.actor}`} · ${receipt.sha.slice(0, 7)}`}</span
+        title=${`exec_receipt ${formatExecReceipt(receipt)}`}
+        >${`exec ${receipt.kind === 'delegated' ? execReceiptActor(receipt) : `main:${receipt.actor}`} · ${receipt.sha.slice(0, 7)}`}</span
       >`
     );
   }

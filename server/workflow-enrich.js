@@ -43,6 +43,26 @@ const EXEC_RECEIPT_RE = /^(delegated|main):([^@\n]+)@([0-9a-fA-F]{40})$/;
 const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
 
 /**
+ * Effort tokens a delegated `exec_receipt` may carry as its last `:` segment
+ * (`docs/contracts/workflow.md` exec_receipt format, whose vocabulary is the
+ * union of `docs/contracts/harness.yaml` `implementation.effort_catalog` plus
+ * the fixed `default` token for a dispatch that pinned no effort). beads-ui
+ * consumes that enumeration rather than inferring it: only an exact match is
+ * read as effort, so a historical `delegated:<model>@<sha>` receipt and any
+ * model token keep their whole prefix as the actor.
+ *
+ * @type {Set<string>}
+ */
+const DELEGATED_EFFORT_TOKENS = new Set([
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'default'
+]);
+
+/**
  * Reviewer tokens the workflow contract enumerates as review evidence
  * (`docs/contracts/workflow.md` `## Review gates` Receipts, "Consumer glyph
  * classification"). beads-ui consumes that enumeration rather
@@ -98,22 +118,47 @@ export function parseReceipt(value) {
  * Parse execution provenance for display only. Malformed or absent metadata is
  * omitted and never participates in workflow gating.
  *
+ * A delegated receipt splits its resolved effort off the actor when the last
+ * `:` segment is an exact effort token; `main:` receipts are left whole because
+ * the contract keeps that series free of an effort segment and its reason text
+ * is prose.
+ *
  * @param {unknown} value
+ * @returns {{ kind: string, actor: string, effort: string|null, sha: string }|null}
  */
 export function parseExecReceipt(value) {
   if (typeof value !== 'string') {
     return null;
   }
   const match = EXEC_RECEIPT_RE.exec(value.trim());
-  return match
-    ? { kind: match[1], actor: match[2], sha: match[3].toLowerCase() }
-    : null;
+  if (!match) {
+    return null;
+  }
+  const kind = match[1];
+  const prefix = match[2];
+  const cut = kind === 'delegated' ? prefix.lastIndexOf(':') : -1;
+  const tail = cut === -1 ? '' : prefix.slice(cut + 1);
+  const has_effort = cut > 0 && DELEGATED_EFFORT_TOKENS.has(tail);
+  return {
+    kind,
+    actor: has_effort ? prefix.slice(0, cut) : prefix,
+    effort: has_effort ? tail : null,
+    sha: match[3].toLowerCase()
+  };
 }
 
 /**
  * @typedef {Object} PlannedExecution
  * @property {'delegated'|'main'} kind
  * @property {string | null} reason
+ */
+
+/**
+ * @typedef {Object} ExecReceipt
+ * @property {string} kind
+ * @property {string} actor
+ * @property {string | null} effort
+ * @property {string} sha
  */
 
 /**
@@ -853,9 +898,9 @@ function mergeStage(md, status) {
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
- * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: { kind: string, actor: string, sha: string }|null, impl_entry: { actor: string, sha: string }|null }} chips
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null }} chips
  * @property {PlannedExecution|null} planned_execution
- * @property {{ kind: string, actor: string, sha: string }|null} exec_receipt
+ * @property {ExecReceipt|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
  */
 

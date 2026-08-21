@@ -607,6 +607,33 @@ describe('views/board/card display policy', () => {
     ]);
   });
 
+  test('keeps the delegated effort in the execution chip and tooltip', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        workflow: {
+          chips: {
+            exec_receipt: {
+              kind: 'delegated',
+              actor: 'gpt-5.6-sol',
+              effort: 'xhigh',
+              sha: 'a'.repeat(40)
+            }
+          }
+        }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    const chip = /** @type {HTMLElement} */ (
+      m.querySelector('.ctl-chip--exec-receipt')
+    );
+    expect(chip.textContent?.trim()).toBe('exec gpt-5.6-sol:xhigh · aaaaaaa');
+    expect(chip.title).toBe(
+      `exec_receipt delegated:gpt-5.6-sol:xhigh@${'a'.repeat(40)}`
+    );
+  });
+
   test.each([
     ['delegated', null, '계획 · 위임'],
     ['main', '국소 수정', '계획 · 메인']

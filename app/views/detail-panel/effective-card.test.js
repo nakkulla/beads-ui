@@ -191,6 +191,59 @@ describe('detail summary header', () => {
     panel.destroy();
   });
 
+  test('names the delegated effort in its own chip token', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: {
+        exec_receipt: `delegated:gpt-5.6-sol:xhigh@${'a'.repeat(40)}`
+      },
+      workflow: {
+        exec_receipt: {
+          kind: 'delegated',
+          actor: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          sha: 'a'.repeat(40)
+        }
+      }
+    });
+    await settle();
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-summary__chip--receipt')
+    );
+    expect(chip.textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'delegated:gpt-5.6-sol xhigh'
+    );
+    expect(
+      chip.querySelector('[data-seam="exec-receipt-effort"]')?.textContent
+    ).toBe('xhigh');
+    expect(chip.title).toBe(`delegated:gpt-5.6-sol:xhigh@${'a'.repeat(40)}`);
+    panel.destroy();
+  });
+
+  test('shows no effort token for a historical delegated receipt', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { exec_receipt: `delegated:gpt-5.6-sol@${'a'.repeat(40)}` },
+      workflow: {
+        exec_receipt: {
+          kind: 'delegated',
+          actor: 'gpt-5.6-sol',
+          effort: null,
+          sha: 'a'.repeat(40)
+        }
+      }
+    });
+    await settle();
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.detail-summary__chip--receipt')
+    );
+    expect(chip.textContent?.trim()).toBe('delegated:gpt-5.6-sol');
+    expect(chip.querySelector('[data-seam="exec-receipt-effort"]')).toBeNull();
+    panel.destroy();
+  });
+
   test('renders planned main execution beside its actual receipt', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seed(mount, {

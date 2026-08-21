@@ -526,6 +526,12 @@ describe('worker/head-review-transport — repair runs', () => {
     expect(calls.spawn).toHaveLength(1);
     expect(calls.spawn[0].settings.mode).toBeNull();
     expect(calls.spawn[0].bead.prompt).toContain('impl_review=self@');
+    // The instructed receipt copies the repair dispatch's own effort, so the
+    // repair round writes the contract's delegated format rather than the
+    // pre-effort one.
+    expect(calls.spawn[0].bead.prompt).toContain(
+      'exec_receipt=delegated:codex:xhigh@'
+    );
   });
 
   test('refuses a repair whose exec_receipt does not bind the new head', async () => {

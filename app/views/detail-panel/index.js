@@ -9,6 +9,7 @@ import {
   providerUsageBadges,
   sumAttemptUsage
 } from '../../utils/token-usage.js';
+import { formatExecReceipt } from '../board/card.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { artifactsTemplate } from './artifacts.js';
 import { commentsTemplate } from './comments.js';
@@ -1389,7 +1390,7 @@ export function createDetailPanel(mount_element, options) {
         ? html`<div class="detail-kv">
             <span class="detail-kv__k">exec_receipt</span>
             <span class="detail-kv__v detail-kv__v--wrap"
-              >${`${wf.exec_receipt.kind}:${wf.exec_receipt.actor}@${wf.exec_receipt.sha}`}</span
+              >${formatExecReceipt(wf.exec_receipt)}</span
             >
           </div>`
         : ''}
