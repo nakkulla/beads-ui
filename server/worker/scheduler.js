@@ -311,6 +311,8 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {string} [impl_model] - impl_model (per-bead exec setting).
  * @property {string} [impl_effort] - impl_effort (per-bead exec setting).
  * @property {string|null} [workflow_mode] - Current workflow_mode metadata.
+ * @property {string|null} [workflow_mode_source] - Current workflow_mode_source
+ * metadata, read from the same issue observation as `workflow_mode`.
  * @property {string|null} [route] - Workflow route (e.g. full_plan).
  * @property {string} [status] - Issue status (open/in_progress/resolved/closed).
  * @property {string|null} [title] - Issue title, for the start notification.
@@ -1690,8 +1692,6 @@ export function createScheduler(deps) {
   async function recordReceiptCheck(workspace, attempt_id, bead_id) {
     const attempt =
       deps.store.snapshot(workspace).attempts?.[attempt_id] ?? null;
-    const heads =
-      typeof attempt?.head_oid === 'string' ? [attempt.head_oid] : [];
     /** @type {import('./receipt-check.js').ReceiptCheckResult} */
     let result;
     const metadata = await readReceiptMetadata(bead_id);
@@ -1704,7 +1704,11 @@ export function createScheduler(deps) {
           baseline: attempt?.receipt_baseline ?? null,
           lineage: receiptLineageForAttempt(attempt),
           defaults: receiptDefaultsFrom(loadExecutionDefaults()),
-          head: heads
+          // No head is passed on purpose. `head_oid` is the branch SHA read
+          // BEFORE the session ran, not the head it delivered, so binding a
+          // `verify_receipt` to it would assert a relationship nobody observed.
+          // The gate does that binding against the PR head it just fetched.
+          head: null
         });
       } catch (err) {
         log('receipt check threw for %s: %o', attempt_id, err);
@@ -3784,6 +3788,14 @@ export function createScheduler(deps) {
       );
       return;
     }
+    // The receipt observation, at the same place `onSessionDone` takes it
+    // (UI-bu6d §3): past the base-drift failure and the disposition arm, ahead
+    // of EVERY branch that can settle this attempt as done. A restart-recovered
+    // attempt reaches `pr_wait` through here and nowhere else, so a check that
+    // lived only in `onSessionDone` would leave those attempts unobserved — and
+    // leave a previous attempt's warning standing as if it still described them.
+    await recordReceiptCheck(workspace, attempt_id, bead_id);
+
     if (external_conflict) {
       // An EXTERNAL resolution takes the same claim the ordinary arm does, for
       // the same reason, but never reaches `gh`: there is no PR of its own to
@@ -4219,6 +4231,7 @@ export function createScheduler(deps) {
 
       const attempt_id = makeAttemptId(bead_id);
       const prior = snap.workflow_mode ?? null;
+      const prior_source = snap.workflow_mode_source ?? null;
 
       // Base RE-RESOLUTION at dispatch (worker-base-scope-alignment §1). The scan
       // may have read a memoized resolution; the cut below and the attempt record
@@ -4505,8 +4518,7 @@ export function createScheduler(deps) {
             ? { head_oid: stale_context.identity.head_sha }
             : {}),
           workflow_mode_prior: prior,
-          workflow_mode_source_prior:
-            receipt_baseline?.workflow_mode_source ?? null,
+          workflow_mode_source_prior: prior_source,
           receipt_baseline,
           exec_default_preset_id: resolved_exec.preset_id,
           exec_default_preset_revision: resolved_exec.preset_revision,
@@ -5993,8 +6005,7 @@ export function createScheduler(deps) {
         effort: launch_effort,
         speed: launch_speed,
         workflow_mode_prior: prior,
-        workflow_mode_source_prior:
-          receipt_baseline?.workflow_mode_source ?? null,
+        workflow_mode_source_prior: snap.workflow_mode_source ?? null,
         receipt_baseline,
         exec_default_preset_id: preset_id,
         exec_default_preset_revision: preset_revision,
@@ -6470,6 +6481,10 @@ export function createScheduler(deps) {
       typeof bead_snapshot.workflow_mode === 'string'
         ? bead_snapshot.workflow_mode
         : null;
+    const prior_wf_source =
+      typeof bead_snapshot.workflow_mode_source === 'string'
+        ? bead_snapshot.workflow_mode_source
+        : null;
     const receipt_baseline = await captureReceiptBaseline(bead_id);
     const relaunch_attempt = {
       attempt_id: new_attempt_id,
@@ -6482,8 +6497,7 @@ export function createScheduler(deps) {
       effort: launch_effort,
       speed: launch_speed,
       workflow_mode_prior: prior_wf,
-      workflow_mode_source_prior:
-        receipt_baseline?.workflow_mode_source ?? null,
+      workflow_mode_source_prior: prior_wf_source,
       receipt_baseline,
       exec_default_preset_id: preset_id,
       exec_default_preset_revision: preset_revision,
@@ -7007,6 +7021,8 @@ export function createScheduler(deps) {
     let resumed_from = null;
     /** @type {string|null} */
     let prior_wf = source.workflow_mode_prior ?? null;
+    /** @type {string|null} */
+    let prior_wf_source = source.workflow_mode_source_prior ?? null;
     /** @type {string} */
     let runner_name;
     /** @type {string|null} */
@@ -7065,6 +7081,7 @@ export function createScheduler(deps) {
           : null;
       resumed_from = resume_source.attempt_id;
       prior_wf = continuation.bead_snapshot.workflow_mode ?? null;
+      prior_wf_source = continuation.bead_snapshot.workflow_mode_source ?? null;
       runner_name = continuation.runner_name;
       launch_model = continuation.launch_model;
       launch_effort = continuation.launch_effort;
@@ -7100,6 +7117,7 @@ export function createScheduler(deps) {
         return { ok: false, reason: exec.invalid_reason };
       }
       prior_wf = repair_snap.workflow_mode ?? null;
+      prior_wf_source = repair_snap.workflow_mode_source ?? null;
       runner_name = exec.runner;
       launch_model = exec.orchestration_model ?? null;
       launch_effort = exec.orchestration_effort ?? null;
@@ -7169,8 +7187,7 @@ export function createScheduler(deps) {
             effort: launch_effort,
             speed: launch_speed,
             workflow_mode_prior: prior_wf,
-            workflow_mode_source_prior:
-              receipt_baseline?.workflow_mode_source ?? null,
+            workflow_mode_source_prior: prior_wf_source,
             receipt_baseline,
             exec_default_preset_id: preset_id,
             exec_default_preset_revision: preset_revision,

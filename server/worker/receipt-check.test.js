@@ -202,7 +202,7 @@ describe('receipt-check main token backing', () => {
     expect(codesOf(result)).toEqual(['takeover_lineage_missing']);
   });
 
-  test('skips the takeover lineage where the monitor cannot see it', async () => {
+  test('leaves a takeover unproven where the monitor cannot see the lineage', async () => {
     const result = await run(
       { exec_receipt: `main:takeover@${SHA}` },
       {
@@ -214,7 +214,9 @@ describe('receipt-check main token backing', () => {
       }
     );
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.probe_error).toBe(true);
+    expect(codesOf(result)).toEqual([]);
     expect(result.checks.exec_receipt).toMatchObject({
       takeover_lineage: 'undecidable'
     });
@@ -286,10 +288,19 @@ describe('receipt-check unit_plan agreement', () => {
     expect(result.ok).toBe(true);
   });
 
-  test('leaves a single-unit plan with a plain receipt alone', async () => {
+  test('refuses an unprefixed receipt even for a single-unit plan', async () => {
     const result = await run({
       unit_plan: '한 유닛 | core:server/core.js',
       exec_receipt: `delegated:sol:high@${SHA}`
+    });
+
+    expect(codesOf(result)).toEqual(['unit_plan_mismatch']);
+  });
+
+  test('accepts a single-unit plan whose receipt names that unit', async () => {
+    const result = await run({
+      unit_plan: '한 유닛 | core:server/core.js',
+      exec_receipt: `core:delegated:sol:high@${SHA}`
     });
 
     expect(result.ok).toBe(true);
@@ -341,6 +352,39 @@ describe('receipt-check baseline deltas', () => {
     );
 
     expect(codesOf(result)).toEqual(['dispatch_forged']);
+  });
+
+  test('reports an impl_dispatch the attempt deleted', async () => {
+    const result = await run(
+      {
+        route: 'quick_fix',
+        exec_receipt: `main:quick_fix_default@${SHA}`
+      },
+      {
+        baseline: { ...EMPTY_BASELINE, impl_dispatch: 'delegated' },
+        defaults: QUICK_FIX_MAIN
+      }
+    );
+
+    expect(codesOf(result)).toEqual(['dispatch_forged']);
+  });
+
+  test('reports an impl_entry the attempt deleted', async () => {
+    const result = await run(
+      {},
+      { baseline: { ...EMPTY_BASELINE, impl_entry: `user@${SHA}` } }
+    );
+
+    expect(codesOf(result)).toEqual(['approval_forged']);
+  });
+
+  test('reports a plan_approval the attempt deleted', async () => {
+    const result = await run(
+      {},
+      { baseline: { ...EMPTY_BASELINE, plan_approval: `user@${SHA}` } }
+    );
+
+    expect(codesOf(result)).toEqual(['approval_forged']);
   });
 
   test('reports a workflow_mode_source that became user', async () => {

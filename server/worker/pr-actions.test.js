@@ -892,10 +892,10 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
   test('judges a candidate with no attempt record on current metadata alone', async () => {
     const h = makeActions({
       bdMetadata: {
-        // Baseline- and lineage-dependent findings are unsayable without a
-        // Worker attempt to compare against, so an externally opened PR is
-        // judged only by what current metadata can back on its own.
-        exec_receipt: `main:takeover@${'e'.repeat(40)}`,
+        // Baseline-dependent findings are unsayable without a Worker attempt to
+        // compare against, so an externally opened PR is judged only by what
+        // current metadata can back on its own.
+        exec_receipt: `main:bead@${'e'.repeat(40)}`,
         impl_dispatch: 'main'
       }
     });
@@ -903,6 +903,59 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     const result = await h.actions.merge(BEAD);
 
     expect(result).toMatchObject({ ok: true, action: 'merged' });
+  });
+
+  test('never judges a baseline-less attempt against an older attempt snapshot', async () => {
+    const store = seedStore();
+    // An OLDER attempt that did snapshot a baseline. The latest attempt (`a1`)
+    // has none, so nothing here may be read as "this key appeared".
+    store.appendAttempt(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      attempt: {
+        attempt_id: 'a0',
+        bead_id: BEAD,
+        repo: REPO,
+        target_base: 'main',
+        base_oid: 'b'.repeat(40),
+        runner: 'claude',
+        receipt_baseline: {
+          exec_receipt: null,
+          impl_entry: null,
+          plan_approval: null,
+          workflow_mode_source: null,
+          impl_dispatch: null
+        }
+      }
+    });
+    store.updateAttempt(WS, {
+      attempt_id: 'a0',
+      patch: { finished_at: 1, status: 'done' }
+    });
+    const h = makeActions({
+      store,
+      bdMetadata: {
+        exec_receipt: `main:bead@${'e'.repeat(40)}`,
+        impl_dispatch: 'main'
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+  });
+
+  test('holds a takeover receipt whose lineage no attempt can prove', async () => {
+    const h = makeActions({
+      bdMetadata: { exec_receipt: `main:takeover@${'e'.repeat(40)}` }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'receipt_unbacked:probe_error'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
   test('fails closed when the ancestry probe cannot answer', async () => {

@@ -559,10 +559,16 @@ export function createPrActions(deps) {
   }
 
   /**
-   * The Worker attempt whose dispatch baseline this bead's receipt is judged
-   * against — the most recent one that actually holds a snapshot. External
-   * conflict attempts are skipped for the same reason
-   * {@link expectedBaseFor} skips them: they observe a PR they did not produce.
+   * The Worker attempt this bead's receipt is judged against — the LATEST one,
+   * whether or not it carries a baseline. External conflict attempts are
+   * skipped for the same reason {@link expectedBaseFor} skips them: they
+   * observe a PR they did not produce.
+   *
+   * Deliberately NOT "the latest attempt that has a baseline": an older
+   * attempt's snapshot describes a different dispatch, so reusing it would read
+   * this attempt's ordinary metadata as an appeared-or-changed key and hold a
+   * good PR. A latest attempt without a baseline correctly yields `null`, which
+   * skips the baseline-dependent checks instead of guessing.
    *
    * @param {string} bead_id
    * @returns {any|null}
@@ -581,8 +587,7 @@ export function createPrActions(deps) {
       if (
         !attempt ||
         attempt.bead_id !== bead_id ||
-        attempt.external_conflict === true ||
-        !attempt.receipt_baseline
+        attempt.external_conflict === true
       ) {
         continue;
       }

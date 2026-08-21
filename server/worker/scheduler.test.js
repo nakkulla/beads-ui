@@ -472,6 +472,7 @@ function makeFakeBd(config) {
         spec_review_model: c.spec_review_model ?? undefined,
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
+        workflow_mode_source: c.metadata?.workflow_mode_source ?? null,
         route: c.route ?? null,
         status: c.status ?? '',
         title: c.title ?? null,
@@ -8643,6 +8644,26 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     expect(env.store.snapshot(WS).attempts['att-1'].status).toBe('done');
   });
 
+  test('records the receipt observation on a restart-settled attempt', async () => {
+    const env = reconcileEnv(
+      { alive: true, started_at: 999999 },
+      {
+        'UI-1': { metadata: { exec_receipt: `main:bead@${'a'.repeat(40)}` } }
+      }
+    );
+    seedDetachedAttempt(env.store);
+
+    await env.scheduler.reconcile(WS);
+
+    const check = env.store.snapshot(WS).attempts['att-1'].receipt_check;
+    expect(check?.violations).toEqual([
+      {
+        code: 'main_receipt_unbacked',
+        detail: 'main:bead without impl_dispatch=main'
+      }
+    ]);
+  });
+
   test('ignores attempts that are not running', async () => {
     const env = reconcileEnv({ alive: false, started_at: null });
     seedDetachedAttempt(env.store, { status: 'done' });
@@ -13155,6 +13176,35 @@ describe('scheduler receipt observation (UI-bu6d §2/§3/§5)', () => {
       config: {
         S1: {
           workflow_mode: 'fast_track',
+          metadata: { workflow_mode_source: 'user' }
+        }
+      },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.finish('S1', { success: false, reason: 'boom', exit: 1 });
+    await flush();
+    await flush();
+
+    const source_writes = env.bd.calls.filter(
+      (/** @type {any} */ c) =>
+        c.bead_id === 'S1' && c.key === 'workflow_mode_source'
+    );
+    expect(source_writes[source_writes.length - 1]).toEqual({
+      method: 'setMetadata',
+      bead_id: 'S1',
+      key: 'workflow_mode_source',
+      value: 'user'
+    });
+  });
+
+  test('keeps a user-owned workflow_mode_source when the baseline read fails', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          throwOnReadKey: 'impl_entry',
           metadata: { workflow_mode_source: 'user' }
         }
       },

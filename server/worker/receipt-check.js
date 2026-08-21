@@ -106,14 +106,16 @@ export const RECEIPT_METADATA_KEYS = [
  * @property {boolean} ok - True when no violation of ANY kind was observed.
  * @property {ReceiptViolation[]} violations
  * @property {Record<string, unknown>} checks - What was judged, for display.
- * @property {boolean} probe_error - The observation itself failed.
+ * @property {boolean} probe_error - The observation itself failed, or one
+ * element's backing could not be observed. Either way the verdict is unproven,
+ * which the merge gate holds on and the board renders as nothing.
  */
 
 /**
  * @typedef {Object} ReceiptLineageInput
  * @property {boolean} supported - False when this attempt's delegation legs are
- * outside the monitor's reach, which makes `main:takeover` undecidable rather
- * than unbacked.
+ * outside the monitor's reach. That makes `main:takeover` UNPROVEN — a probe
+ * error, not a pass and not a forgery finding.
  * @property {DelegationSession[]} sessions
  * @property {string|null} resolved_impl_model
  */
@@ -190,10 +192,11 @@ export function blockingReceiptCodes(result) {
  * The delegation evidence a `main:takeover` receipt must be able to point at,
  * read off a durable attempt record.
  *
- * `supported` is false outside Codex on purpose: the delegation monitor records
- * only Codex legs, so a Claude-side takeover leaves no stream to find and its
- * absence is ignorance rather than forgery. `auto` is not a model, so it
- * constrains nothing.
+ * `supported` is false outside Codex because the delegation monitor records only
+ * Codex legs: a leg it never watched leaves no stream to find, and that absence
+ * is ignorance rather than forgery. Ignorance still REFUSES — the caller turns
+ * it into a probe error — so no runtime silently exempts `main:takeover` from
+ * the approved predicate. `auto` is not a model, so it constrains nothing.
  *
  * @param {any} attempt
  * @returns {ReceiptLineageInput}
@@ -389,9 +392,13 @@ function takeoverLineage(lineage) {
 /**
  * Judge one well-formed receipt against the state that must back it.
  *
+ * `undecidable` is NOT a pass: it says the backing could not be observed, and
+ * the caller turns it into a probe error so the merge gate holds while the
+ * board stays quiet (spec §4).
+ *
  * @param {{ kind: string, actor: string, effort: string|null, sha: string }} parsed
  * @param {{ metadata: Record<string, unknown>, defaults: ReceiptDefaultsInput|null|undefined, lineage: ReceiptLineageInput|null|undefined }} ctx
- * @returns {{ violations: ReceiptViolation[], notes: Record<string, unknown> }}
+ * @returns {{ violations: ReceiptViolation[], notes: Record<string, unknown>, undecidable?: boolean }}
  */
 function backingFor(parsed, ctx) {
   /** @type {ReceiptViolation[]} */
@@ -463,7 +470,14 @@ function backingFor(parsed, ctx) {
       detail: 'no terminal implementation delegation matches the resolved model'
     });
   }
-  return { violations, notes };
+  // A lineage nobody can read leaves `main:takeover` UNPROVEN. The approved
+  // predicate grants no exemption for a runtime the monitor cannot see, so the
+  // observation fails closed at the gate rather than passing quietly.
+  return {
+    violations,
+    notes,
+    ...(lineage_state === 'undecidable' ? { undecidable: true } : {})
+  };
 }
 
 /**
@@ -575,6 +589,10 @@ export async function checkReceipts(input) {
   const violations = [];
   /** @type {Record<string, unknown>} */
   const checks = {};
+  // Set when an element's backing could not be observed at all. It is neither a
+  // violation nor a pass, so it leaves through the probe-error channel: the
+  // merge gate holds, the board stays quiet (spec §4).
+  let undecidable = false;
 
   const heads = (
     Array.isArray(input.head)
@@ -616,6 +634,7 @@ export async function checkReceipts(input) {
         }
         const backing = backingFor(form.parsed, ctx);
         violations.push(...backing.violations);
+        undecidable = undecidable || backing.undecidable === true;
         unit_checks.push({
           unit: item.unit,
           kind: form.parsed.kind,
@@ -649,6 +668,7 @@ export async function checkReceipts(input) {
       } else {
         const backing = backingFor(form.parsed, ctx);
         violations.push(...backing.violations);
+        undecidable = undecidable || backing.undecidable === true;
         checks.exec_receipt = {
           kind: form.parsed.kind,
           actor: form.parsed.actor,
@@ -656,11 +676,10 @@ export async function checkReceipts(input) {
           sha: form.parsed.sha,
           ...backing.notes
         };
-        if (unit_names !== null && unit_names.length > 1) {
-          // A plan of N units delivered ONE undifferentiated receipt: the unit
-          // set cannot match. A single-unit plan is left alone — the contract's
-          // multi-unit form exists to tell units apart, and there is nothing to
-          // tell apart when the plan names one.
+        if (unit_names !== null) {
+          // A plan exists, so the contract's multi-unit form is the only one
+          // that can prove the unit set — including for a one-unit plan, where
+          // an unprefixed receipt still names no unit at all.
           violations.push({
             code: 'unit_plan_mismatch',
             detail: `single receipt for ${unit_names.length} planned units`
@@ -678,20 +697,24 @@ export async function checkReceipts(input) {
       : null;
   checks.baseline_present = baseline !== null;
   if (baseline) {
+    // ANY movement is forgery, deletion included: an unattended attempt may
+    // write none of these keys, so removing a user's `impl_dispatch` to make a
+    // `main:quick_fix_default` receipt look backed is the same offence as
+    // inventing one.
     for (const key of ['impl_entry', 'plan_approval']) {
       const delta = baselineDelta(metadata, baseline, key);
-      if (delta.changed && delta.to !== null) {
+      if (delta.changed) {
         violations.push({
           code: 'approval_forged',
-          detail: `${key} ${delta.from ?? '(absent)'} -> ${delta.to}`
+          detail: `${key} ${delta.from ?? '(absent)'} -> ${delta.to ?? '(absent)'}`
         });
       }
     }
     const dispatch = baselineDelta(metadata, baseline, 'impl_dispatch');
-    if (dispatch.changed && dispatch.to !== null) {
+    if (dispatch.changed) {
       violations.push({
         code: 'dispatch_forged',
-        detail: `impl_dispatch ${dispatch.from ?? '(absent)'} -> ${dispatch.to}`
+        detail: `impl_dispatch ${dispatch.from ?? '(absent)'} -> ${dispatch.to ?? '(absent)'}`
       });
     }
     // Only `user` is forgery: the Worker's own `workflow_mode_source=worker`
@@ -714,9 +737,9 @@ export async function checkReceipts(input) {
   checks.verify_receipt = verify.notes;
 
   return {
-    ok: violations.length === 0,
+    ok: violations.length === 0 && !undecidable,
     violations,
     checks,
-    probe_error: false
+    probe_error: undecidable
   };
 }
