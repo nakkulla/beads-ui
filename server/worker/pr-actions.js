@@ -47,12 +47,19 @@
  */
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
+import { loadExecutionDefaults } from './execution-defaults.js';
 import {
   createAncestryProbe,
   evaluateMergeGate,
   reviewReceiptState
 } from './merge-gate.js';
 import { resolvePrRef } from './pr-poller.js';
+import {
+  checkReceipts,
+  receiptDefaultsFrom,
+  receiptGateState,
+  receiptLineageForAttempt
+} from './receipt-check.js';
 import { branchForBead } from './worktree.js';
 
 const log = debug('worker:pr-actions');
@@ -552,18 +559,103 @@ export function createPrActions(deps) {
   }
 
   /**
-   * Read workflow review authority at action time. Quick fixes intentionally
-   * carry no formal receipts. Spec-backed routes require a reviewed spec and an
-   * implementation receipt that is the observed PR head or one of its ancestors
-   * (UI-vzyh §2).
+   * The Worker attempt whose dispatch baseline this bead's receipt is judged
+   * against — the most recent one that actually holds a snapshot. External
+   * conflict attempts are skipped for the same reason
+   * {@link expectedBaseFor} skips them: they observe a PR they did not produce.
+   *
+   * @param {string} bead_id
+   * @returns {any|null}
+   */
+  function receiptAttemptFor(bead_id) {
+    /** @type {any[]} */
+    let attempts;
+    try {
+      attempts = Object.values(deps.store.snapshot(workspace).attempts || {});
+    } catch {
+      return null;
+    }
+    /** @type {{ attempt: any, at: number }|null} */
+    let best = null;
+    for (const attempt of attempts) {
+      if (
+        !attempt ||
+        attempt.bead_id !== bead_id ||
+        attempt.external_conflict === true ||
+        !attempt.receipt_baseline
+      ) {
+        continue;
+      }
+      const at =
+        typeof attempt.finished_at === 'number'
+          ? attempt.finished_at
+          : typeof attempt.started_at === 'number'
+            ? attempt.started_at
+            : 0;
+      if (!best || at >= best.at) {
+        best = { attempt, at };
+      }
+    }
+    return best ? best.attempt : null;
+  }
+
+  /**
+   * RE-OBSERVE the execution receipt at action time (UI-bu6d §4).
+   *
+   * The attempt's own recorded `receipt_check` is deliberately NOT read back:
+   * metadata may have been forged further OR repaired since the session ended,
+   * and only the current state may decide. That is what makes a user's fix lift
+   * the hold on the next click, and a later forgery catch it.
+   *
+   * Every failure to observe is `probe_error`, which the gate holds on — the
+   * same fail-closed side the ancestry probe takes.
+   *
+   * @param {Record<string, any>|null} metadata
+   * @param {string} bead_id
+   * @param {string} head_sha
+   * @returns {Promise<import('./merge-gate.js').ReceiptGateState>}
+   */
+  async function receiptGateStateOf(metadata, bead_id, head_sha) {
+    if (!metadata) {
+      return { state: 'probe_error', codes: [] };
+    }
+    const attempt = receiptAttemptFor(bead_id);
+    try {
+      return receiptGateState(
+        await checkReceipts({
+          metadata,
+          baseline: attempt?.receipt_baseline ?? null,
+          lineage: receiptLineageForAttempt(attempt),
+          defaults: receiptDefaultsFrom(loadExecutionDefaults()),
+          head: head_sha,
+          probeAncestry
+        })
+      );
+    } catch (err) {
+      log('receipt check threw for %s: %o', bead_id, err);
+      return { state: 'probe_error', codes: [] };
+    }
+  }
+
+  /**
+   * Read both workflow authorities at action time from ONE Bead observation.
+   *
+   * Quick fixes intentionally carry no formal review receipts. Spec-backed
+   * routes require a reviewed spec and an implementation receipt that is the
+   * observed PR head or one of its ancestors (UI-vzyh §2). The receipt backing
+   * (UI-bu6d §4) is judged from the SAME read, so the two verdicts can never
+   * describe different moments of the bead.
    *
    * @param {string} bead_id
    * @param {string} head_sha
-   * @returns {Promise<import('./merge-gate.js').CurrentState>}
+   * @returns {Promise<{ review_receipt_state: import('./merge-gate.js').CurrentState, receipt_state: import('./merge-gate.js').ReceiptGateState }>}
    */
-  async function readReviewReceiptState(bead_id, head_sha) {
+  async function readGateAuthority(bead_id, head_sha) {
     if (typeof deps.bd.readIssue !== 'function') {
-      return 'invalid';
+      return {
+        review_receipt_state: 'invalid',
+        receipt_state: { state: 'probe_error', codes: [] }
+      };
     }
     /** @type {Record<string, any>} */
     let issue;
@@ -571,9 +663,25 @@ export function createPrActions(deps) {
       issue = await deps.bd.readIssue(bead_id);
     } catch (err) {
       log('review receipt read failed for %s: %o', bead_id, err);
-      return 'invalid';
+      return {
+        review_receipt_state: 'invalid',
+        receipt_state: { state: 'probe_error', codes: [] }
+      };
     }
-    return reviewReceiptState(issue, head_sha, probeAncestry);
+    const metadata =
+      issue &&
+      typeof issue.metadata === 'object' &&
+      !Array.isArray(issue.metadata)
+        ? issue.metadata
+        : null;
+    return {
+      review_receipt_state: await reviewReceiptState(
+        issue,
+        head_sha,
+        probeAncestry
+      ),
+      receipt_state: await receiptGateStateOf(metadata, bead_id, head_sha)
+    };
   }
 
   /**
@@ -669,7 +777,7 @@ export function createPrActions(deps) {
       if (!config.ok) {
         return { error: config.code || 'repo_ops_config_invalid' };
       }
-      const review_receipt_state = await readReviewReceiptState(
+      const { review_receipt_state, receipt_state } = await readGateAuthority(
         bead_id,
         pr.head_sha
       );
@@ -685,6 +793,7 @@ export function createPrActions(deps) {
         deps.observations.get(workspace, bead_id),
         {
           review_receipt_state,
+          receipt_state,
           verify_receipt_state: {
             declaration_state: 'absent',
             receipt: null
@@ -730,6 +839,7 @@ export function createPrActions(deps) {
             deps.observations.get(workspace, bead_id),
             {
               review_receipt_state,
+              receipt_state,
               verify_receipt_state: {
                 declaration_state: 'invalid',
                 receipt: null
@@ -768,6 +878,7 @@ export function createPrActions(deps) {
         pr,
         verdict: evaluateMergeGate(deps.observations.get(workspace, bead_id), {
           review_receipt_state,
+          receipt_state,
           verify_receipt_state: {
             declaration_state: 'present',
             receipt:

@@ -20,7 +20,6 @@ import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import {
   AUTO_LITERAL,
-  IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
   IMPL_SPEEDS,
@@ -34,7 +33,6 @@ import {
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
-  isDelegationDisabled,
   orchestrationModelOptions
 } from './session-model.js';
 
@@ -643,7 +641,9 @@ export function createSettingsDialog(mount_element, options) {
    */
   function executionPane() {
     const catalog = runnerCatalog();
-    const delegation_off = isDelegationDisabled(session_draft);
+    // No 실행 방식 row here: `impl_dispatch` is user_write_only per bead and has
+    // no workspace-global storage (UI-bu6d §6), so this layer can never disable
+    // the delegation rows and never offers the choice that would.
     const runtime = session_draft.impl_runtime;
     const model = session_draft.impl_model;
     const state = presetState();
@@ -902,43 +902,32 @@ export function createSettingsDialog(mount_element, options) {
                   >
                 </div>
                 ${selectRow(
-                  'impl_dispatch',
-                  '실행 방식',
-                  IMPL_DISPATCHES,
-                  onSessionChange,
-                  session_draft
-                )}
-                ${selectRow(
                   'impl_runtime',
                   '위임 대상',
                   IMPL_RUNTIMES,
                   onSessionChange,
-                  session_draft,
-                  delegation_off
+                  session_draft
                 )}
                 ${selectRow(
                   'impl_model',
                   '모델',
                   implModelOptions(catalog, runtime),
                   onSessionChange,
-                  session_draft,
-                  delegation_off
+                  session_draft
                 )}
                 ${selectRow(
                   'impl_effort',
                   'effort',
                   implEffortOptions(catalog, runtime, model),
                   onSessionChange,
-                  session_draft,
-                  delegation_off
+                  session_draft
                 )}
                 ${selectRow(
                   'impl_speed',
                   '속도',
                   IMPL_SPEEDS,
                   onSessionChange,
-                  session_draft,
-                  delegation_off
+                  session_draft
                 )}
               </div>
 

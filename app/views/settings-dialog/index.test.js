@@ -237,7 +237,7 @@ describe('createSettingsDialog session tab', () => {
 
   test('sends only the changed key when a session default is edited', async () => {
     const { root, dialog, transport } = mount({
-      values: { impl_dispatch: 'delegated' }
+      values: { impl_runtime: 'codex' }
     });
     dialog.open();
     await settle();
@@ -269,8 +269,16 @@ describe('createSettingsDialog session tab', () => {
     });
   });
 
-  test('disables the delegation rows when 실행 방식 is 메인', async () => {
+  test('offers no 실행 방식 row in the workspace session defaults', async () => {
     const { root, dialog } = mount({ values: { impl_dispatch: 'main' } });
+    dialog.open();
+    await settle();
+
+    expect(root.querySelector('select[data-key="impl_dispatch"]')).toBe(null);
+  });
+
+  test('keeps the delegation rows enabled on the normalized kv layer', async () => {
+    const { root, dialog } = mount({ values: { impl_runtime: 'codex' } });
     dialog.open();
     await settle();
 
@@ -283,20 +291,8 @@ describe('createSettingsDialog session tab', () => {
       const select = /** @type {HTMLSelectElement} */ (
         root.querySelector(`select[data-key="${key}"]`)
       );
-      expect(select.disabled).toBe(true);
+      expect(select.disabled).toBe(false);
     }
-  });
-
-  test('keeps the delegation rows enabled for 위임', async () => {
-    const { root, dialog } = mount({ values: { impl_dispatch: 'delegated' } });
-    dialog.open();
-    await settle();
-
-    const select = /** @type {HTMLSelectElement} */ (
-      root.querySelector('select[data-key="impl_runtime"]')
-    );
-
-    expect(select.disabled).toBe(false);
   });
 
   test('narrows the model list to the chosen delegation target', async () => {

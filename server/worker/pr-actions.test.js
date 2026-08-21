@@ -862,6 +862,49 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
+  test('refuses a merge whose execution receipt is unbacked', async () => {
+    const h = makeActions({
+      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'receipt_unbacked:main_receipt_unbacked'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
+  test('merges once the receipt names the dispatch that backs it', async () => {
+    const h = makeActions({
+      bdMetadata: {
+        exec_receipt: `main:bead@${'e'.repeat(40)}`,
+        impl_dispatch: 'main'
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+  });
+
+  test('judges a candidate with no attempt record on current metadata alone', async () => {
+    const h = makeActions({
+      bdMetadata: {
+        // Baseline- and lineage-dependent findings are unsayable without a
+        // Worker attempt to compare against, so an externally opened PR is
+        // judged only by what current metadata can back on its own.
+        exec_receipt: `main:takeover@${'e'.repeat(40)}`,
+        impl_dispatch: 'main'
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+  });
+
   test('fails closed when the ancestry probe cannot answer', async () => {
     const h = makeActions({
       details: [prOf({ head_sha: 'a'.repeat(40) })],

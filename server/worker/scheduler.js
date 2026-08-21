@@ -51,8 +51,17 @@ import { observeBaseDrift } from './base-drift.js';
 import { observeClaudeEffort as defaultObserveClaudeEffort } from './claude-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
+import { loadExecutionDefaults } from './execution-defaults.js';
 import * as default_guard_hook from './guard-hook.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
+import {
+  RECEIPT_BASELINE_KEYS,
+  RECEIPT_METADATA_KEYS,
+  checkReceipts,
+  receiptDefaultsFrom,
+  receiptLineageForAttempt,
+  receiptProbeError
+} from './receipt-check.js';
 import { repairSessionPrompt } from './repair-session-adapter.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
@@ -1589,6 +1598,134 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Snapshot the five receipt-authority keys immediately before this attempt's
+   * first metadata write (UI-bu6d §2). That snapshot is the ONLY thing that
+   * later makes "this key appeared" or "this key changed" a sayable claim.
+   *
+   * Unlike {@link captureExecRestoreValues} a failed read does NOT refuse the
+   * dispatch: nothing is restored from this snapshot, so its absence costs an
+   * observation, not user metadata. The baseline-dependent checks simply do not
+   * run for that attempt.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<Record<string, string|null>|null>}
+   */
+  async function captureReceiptBaseline(bead_id) {
+    /** @type {Record<string, string|null>} */
+    const values = {};
+    for (const key of RECEIPT_BASELINE_KEYS) {
+      try {
+        const value = await deps.bd.readMetadata(bead_id, key);
+        values[key] = typeof value === 'string' ? value : null;
+      } catch (err) {
+        log('receipt baseline read failed for %s %s: %o', bead_id, key, err);
+        return null;
+      }
+    }
+    return values;
+  }
+
+  /**
+   * Read the whole metadata surface the receipt check judges. One unreadable
+   * key makes the whole observation a probe error rather than a clean pass —
+   * absence and unreadability must never look alike here.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<Record<string, unknown>|null>}
+   */
+  async function readReceiptMetadata(bead_id) {
+    /** @type {Record<string, unknown>} */
+    const metadata = {};
+    for (const key of RECEIPT_METADATA_KEYS) {
+      try {
+        const value = await deps.bd.readMetadata(bead_id, key);
+        if (typeof value === 'string') {
+          metadata[key] = value;
+        }
+      } catch (err) {
+        log('receipt metadata read failed for %s %s: %o', bead_id, key, err);
+        return null;
+      }
+    }
+    return metadata;
+  }
+
+  /**
+   * Stamp the unattended dispatch's `workflow_mode` AND the authority that owns
+   * it, then confirm both by readback (UI-bu6d §5, contract L102). Writing
+   * `fast_track` without naming the Worker as its source leaves a mode whose
+   * author cannot be told from a user's.
+   *
+   * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, workflow_mode: string|null, workflow_mode_source: string|null }>}
+   */
+  async function stampWorkerWorkflowMode(bead_id) {
+    await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+    await deps.bd.setMetadata(bead_id, 'workflow_mode_source', 'worker');
+    const workflow_mode = await deps.bd.readMetadata(bead_id, 'workflow_mode');
+    const workflow_mode_source = await deps.bd.readMetadata(
+      bead_id,
+      'workflow_mode_source'
+    );
+    return {
+      ok: workflow_mode === 'fast_track' && workflow_mode_source === 'worker',
+      workflow_mode,
+      workflow_mode_source
+    };
+  }
+
+  /**
+   * Observe this attempt's receipt against the state that must back it, and
+   * record the result on the attempt (UI-bu6d §3).
+   *
+   * RECORDING ONLY. A violation is a bookkeeping defect, not a bad artifact, so
+   * it never calls {@link failAttempt} and never halts auto_advance; the single
+   * fail-closed consequence lives in the merge gate, which re-observes current
+   * metadata rather than reading this record back.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} bead_id
+   */
+  async function recordReceiptCheck(workspace, attempt_id, bead_id) {
+    const attempt =
+      deps.store.snapshot(workspace).attempts?.[attempt_id] ?? null;
+    const heads =
+      typeof attempt?.head_oid === 'string' ? [attempt.head_oid] : [];
+    /** @type {import('./receipt-check.js').ReceiptCheckResult} */
+    let result;
+    const metadata = await readReceiptMetadata(bead_id);
+    if (!metadata) {
+      result = receiptProbeError('metadata_unreadable');
+    } else {
+      try {
+        result = await checkReceipts({
+          metadata,
+          baseline: attempt?.receipt_baseline ?? null,
+          lineage: receiptLineageForAttempt(attempt),
+          defaults: receiptDefaultsFrom(loadExecutionDefaults()),
+          head: heads
+        });
+      } catch (err) {
+        log('receipt check threw for %s: %o', attempt_id, err);
+        result = receiptProbeError('check_threw');
+      }
+    }
+    if (!result.ok) {
+      log(
+        'receipt check unbacked for %s: probe_error=%o violations=%o',
+        bead_id,
+        result.probe_error,
+        result.violations
+      );
+    }
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { receipt_check: { ...result, checked_at: now() } }
+    });
+  }
+
+  /**
    * Restore a finished attempt's temporary overlay before resolving settings
    * for a substitute launch. Unlike terminal best-effort cleanup, this path
    * requires exact readback because the next resolver will treat the restored
@@ -1598,15 +1735,21 @@ export function createScheduler(deps) {
    * @param {string|null} workflow_mode_prior
    * @param {string[]|null|undefined} keys
    * @param {Record<string, string|null>|null} restore_values
+   * @param {string|null} [workflow_mode_source_prior]
    */
   async function restoreAttemptOverlayForRelaunch(
     bead_id,
     workflow_mode_prior,
     keys,
-    restore_values
+    restore_values,
+    workflow_mode_source_prior = null
   ) {
     try {
-      await revertWorkflowMode(bead_id, workflow_mode_prior);
+      await revertWorkflowMode(
+        bead_id,
+        workflow_mode_prior,
+        workflow_mode_source_prior
+      );
       const workflow_readback = await deps.bd.readMetadata(
         bead_id,
         'workflow_mode'
@@ -1615,6 +1758,18 @@ export function createScheduler(deps) {
         (typeof workflow_mode_prior === 'string' &&
           workflow_readback !== workflow_mode_prior) ||
         (workflow_mode_prior === null && typeof workflow_readback === 'string')
+      ) {
+        return false;
+      }
+      const source_readback = await deps.bd.readMetadata(
+        bead_id,
+        'workflow_mode_source'
+      );
+      if (
+        (typeof workflow_mode_source_prior === 'string' &&
+          source_readback !== workflow_mode_source_prior) ||
+        (workflow_mode_source_prior === null &&
+          typeof source_readback === 'string')
       ) {
         return false;
       }
@@ -2238,16 +2393,25 @@ export function createScheduler(deps) {
   }
 
   /**
-   * Revert workflow_mode to the pre-launch value (unset when originally absent).
+   * Revert the `workflow_mode` PAIR to its pre-launch values — the mode and the
+   * authority that owns it, unset when originally absent (UI-bu6d §5). They are
+   * stamped in one write and must come back in one: a `workflow_mode_source`
+   * left behind on a reverted mode names an author for a value nobody wrote.
    *
    * @param {string} bead_id
    * @param {string|null} prior
+   * @param {string|null} [source_prior]
    */
-  async function revertWorkflowMode(bead_id, prior) {
+  async function revertWorkflowMode(bead_id, prior, source_prior = null) {
     if (prior == null) {
       await deps.bd.unsetMetadata(bead_id, 'workflow_mode');
     } else {
       await deps.bd.setMetadata(bead_id, 'workflow_mode', prior);
+    }
+    if (source_prior == null) {
+      await deps.bd.unsetMetadata(bead_id, 'workflow_mode_source');
+    } else {
+      await deps.bd.setMetadata(bead_id, 'workflow_mode_source', source_prior);
     }
   }
 
@@ -2308,6 +2472,21 @@ export function createScheduler(deps) {
     } catch (err) {
       log('bead claim release failed for %s: %o', bead_id, err);
     }
+  }
+
+  /**
+   * The `workflow_mode_source` value this attempt overlaid, read off its
+   * durable record so the revert restores the exact prior even after a restart.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string|null}
+   */
+  function workflowModeSourcePriorOf(workspace, attempt_id) {
+    const a = deps.store.snapshot(workspace).attempts?.[attempt_id];
+    return a && typeof a.workflow_mode_source_prior === 'string'
+      ? a.workflow_mode_source_prior
+      : null;
   }
 
   /**
@@ -2526,7 +2705,11 @@ export function createScheduler(deps) {
       cause_detail: cause_detail ?? null
     });
     try {
-      await revertWorkflowMode(bead_id, prior);
+      await revertWorkflowMode(
+        bead_id,
+        prior,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
     } catch (err) {
       // Best-effort on the failure path: the halt below already stops the queue,
       // so a bd-down revert failure must not escape onSessionDone.
@@ -2751,6 +2934,13 @@ export function createScheduler(deps) {
         return;
       }
 
+      // The receipt observation, ahead of EVERY success branch (UI-bu6d §3).
+      // Both the external-PR resolution below and the quick-fix landing after
+      // it RETURN, and `main:quick_fix_default` is precisely the token a
+      // quick-fix attempt records — a check placed after the split would never
+      // see the attempts it exists for.
+      await recordReceiptCheck(workspace, attempt_id, bead_id);
+
       // An EXTERNAL-PR resolution takes its own completion path (UI-w0hi §1):
       // the bead's lane membership belongs to the external overlay, so the
       // ordinary success — verify the PR, then `moveToPrWait` — would inject a
@@ -2761,7 +2951,11 @@ export function createScheduler(deps) {
         // left on the bead would switch the user's next manual session to
         // unattended, which is worse than a failed attempt record.
         try {
-          await revertWorkflowMode(bead_id, prior);
+          await revertWorkflowMode(
+            bead_id,
+            prior,
+            workflowModeSourcePriorOf(workspace, attempt_id)
+          );
         } catch (err) {
           log(
             'workflow_mode revert failed on external resolution for %s: %o',
@@ -2824,7 +3018,11 @@ export function createScheduler(deps) {
         // unconditionally (fail-closed, implementation review 2026-07-22, now
         // not policy-gated).
         try {
-          await revertWorkflowMode(bead_id, prior);
+          await revertWorkflowMode(
+            bead_id,
+            prior,
+            workflowModeSourcePriorOf(workspace, attempt_id)
+          );
         } catch (err) {
           log(
             'workflow_mode revert failed on success for %s: %o',
@@ -2972,7 +3170,11 @@ export function createScheduler(deps) {
     repo_known
   ) {
     try {
-      await revertWorkflowMode(bead_id, prior);
+      await revertWorkflowMode(
+        bead_id,
+        prior,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
     } catch (err) {
       log(
         'workflow_mode revert failed on quick_fix landing for %s: %o',
@@ -3165,7 +3367,11 @@ export function createScheduler(deps) {
     // unattended, so a failed revert blocks the success.
     let reverted = true;
     try {
-      await revertWorkflowMode(bead_id, prior);
+      await revertWorkflowMode(
+        bead_id,
+        prior,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
     } catch (err) {
       log('workflow_mode revert failed after disposition %s: %o', bead_id, err);
       reverted = false;
@@ -3267,7 +3473,8 @@ export function createScheduler(deps) {
       bead_id,
       record.workflow_mode_prior ?? null,
       record.exec_stamped_keys,
-      record.exec_restore_values ?? null
+      record.exec_restore_values ?? null,
+      record.workflow_mode_source_prior ?? null
     );
     if (!restored) {
       return false;
@@ -3613,7 +3820,11 @@ export function createScheduler(deps) {
           // unattended.
           let mode_reverted = true;
           try {
-            await revertWorkflowMode(bead_id, prior);
+            await revertWorkflowMode(
+              bead_id,
+              prior,
+              workflowModeSourcePriorOf(workspace, attempt_id)
+            );
           } catch (err) {
             log(
               'workflow_mode revert failed on external resolution reconcile for %s: %o',
@@ -3732,7 +3943,11 @@ export function createScheduler(deps) {
         // unattended.
         let mode_reverted = true;
         try {
-          await revertWorkflowMode(bead_id, prior);
+          await revertWorkflowMode(
+            bead_id,
+            prior,
+            workflowModeSourcePriorOf(workspace, attempt_id)
+          );
         } catch (err) {
           log(
             'workflow_mode revert failed on reconcile for %s: %o',
@@ -4272,6 +4487,10 @@ export function createScheduler(deps) {
         return;
       }
       const exec_restore_values = restore_capture.values;
+      // Receipt-authority snapshot, taken in the same window and for the same
+      // reason: after the first metadata write nothing can tell an appeared key
+      // from a pre-existing one (UI-bu6d §2).
+      const receipt_baseline = await captureReceiptBaseline(bead_id);
 
       // DURABLE pre-record before the FIRST metadata write. It carries the whole
       // effective 12-key snapshot and exact cleanup provenance.
@@ -4286,6 +4505,9 @@ export function createScheduler(deps) {
             ? { head_oid: stale_context.identity.head_sha }
             : {}),
           workflow_mode_prior: prior,
+          workflow_mode_source_prior:
+            receipt_baseline?.workflow_mode_source ?? null,
+          receipt_baseline,
           exec_default_preset_id: resolved_exec.preset_id,
           exec_default_preset_revision: resolved_exec.preset_revision,
           exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
@@ -4320,14 +4542,14 @@ export function createScheduler(deps) {
       // (spec §5.2).
       let fast_track_ok = false;
       try {
-        await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-        const readback = await deps.bd.readMetadata(bead_id, 'workflow_mode');
-        fast_track_ok = readback === 'fast_track';
+        const stamped = await stampWorkerWorkflowMode(bead_id);
+        fast_track_ok = stamped.ok;
         if (!fast_track_ok) {
           log(
-            'workflow_mode readback mismatch for %s: expected fast_track, got %o',
+            'workflow_mode readback mismatch for %s: expected fast_track/worker, got %o/%o',
             bead_id,
-            readback
+            stamped.workflow_mode,
+            stamped.workflow_mode_source
           );
         }
       } catch (err) {
@@ -4352,7 +4574,11 @@ export function createScheduler(deps) {
           cause_detail: null
         });
         try {
-          await revertWorkflowMode(bead_id, prior);
+          await revertWorkflowMode(
+            bead_id,
+            prior,
+            workflowModeSourcePriorOf(workspace, attempt_id)
+          );
         } catch {
           // Best-effort: bd may be down; the failed record already reflects it.
         }
@@ -5163,7 +5389,11 @@ export function createScheduler(deps) {
       cause_detail: null
     });
     try {
-      await revertWorkflowMode(input.bead_id, input.prior_wf);
+      await revertWorkflowMode(
+        input.bead_id,
+        input.prior_wf,
+        workflowModeSourcePriorOf(input.workspace, input.attempt_id)
+      );
     } catch {
       // Best-effort: the failed record already preserves the refusal.
     }
@@ -5693,6 +5923,7 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'exec_restore_capture_failed' };
     }
     const exec_restore_values = restore_capture.values;
+    const receipt_baseline = await captureReceiptBaseline(bead_id);
     const attempt_id = makeAttemptId(bead_id);
     const prior = snap.workflow_mode ?? null;
     // External-PR resolution work owns no waiting-lane entry, so it launches
@@ -5762,6 +5993,9 @@ export function createScheduler(deps) {
         effort: launch_effort,
         speed: launch_speed,
         workflow_mode_prior: prior,
+        workflow_mode_source_prior:
+          receipt_baseline?.workflow_mode_source ?? null,
+        receipt_baseline,
         exec_default_preset_id: preset_id,
         exec_default_preset_revision: preset_revision,
         exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
@@ -5790,9 +6024,7 @@ export function createScheduler(deps) {
 
     let mode_ok = false;
     try {
-      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-      const rb = await deps.bd.readMetadata(bead_id, 'workflow_mode');
-      mode_ok = rb === 'fast_track';
+      mode_ok = (await stampWorkerWorkflowMode(bead_id)).ok;
     } catch (err) {
       log(
         'external conflict workflow_mode set/readback failed for %s: %o',
@@ -5817,7 +6049,11 @@ export function createScheduler(deps) {
         cause_detail: null
       });
       try {
-        await revertWorkflowMode(bead_id, prior);
+        await revertWorkflowMode(
+          bead_id,
+          prior,
+          workflowModeSourcePriorOf(workspace, attempt_id)
+        );
       } catch {
         // Best-effort: bd may be down; the failed record already reflects it.
       }
@@ -6234,6 +6470,7 @@ export function createScheduler(deps) {
       typeof bead_snapshot.workflow_mode === 'string'
         ? bead_snapshot.workflow_mode
         : null;
+    const receipt_baseline = await captureReceiptBaseline(bead_id);
     const relaunch_attempt = {
       attempt_id: new_attempt_id,
       bead_id,
@@ -6245,6 +6482,9 @@ export function createScheduler(deps) {
       effort: launch_effort,
       speed: launch_speed,
       workflow_mode_prior: prior_wf,
+      workflow_mode_source_prior:
+        receipt_baseline?.workflow_mode_source ?? null,
+      receipt_baseline,
       exec_default_preset_id: preset_id,
       exec_default_preset_revision: preset_revision,
       exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
@@ -6329,9 +6569,7 @@ export function createScheduler(deps) {
 
     let mode_ok = false;
     try {
-      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-      mode_ok =
-        (await deps.bd.readMetadata(bead_id, 'workflow_mode')) === 'fast_track';
+      mode_ok = (await stampWorkerWorkflowMode(bead_id)).ok;
     } catch (err) {
       log('resume workflow_mode set/readback failed for %s: %o', bead_id, err);
     }
@@ -6351,7 +6589,11 @@ export function createScheduler(deps) {
         cause_detail: null
       });
       try {
-        await revertWorkflowMode(bead_id, prior_wf);
+        await revertWorkflowMode(
+          bead_id,
+          prior_wf,
+          workflowModeSourcePriorOf(workspace, new_attempt_id)
+        );
       } catch {
         // The failed attempt remains the durable recovery evidence.
       }
@@ -6593,7 +6835,11 @@ export function createScheduler(deps) {
       );
     }
     try {
-      await revertWorkflowMode(bead_id, prior_wf);
+      await revertWorkflowMode(
+        bead_id,
+        prior_wf,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
     } catch {
       // Durable attempt failure and completion op remain the recovery evidence.
     }
@@ -6874,6 +7120,7 @@ export function createScheduler(deps) {
       preset_revision = resolved_exec.preset_revision;
       wt_path = '';
     }
+    const receipt_baseline = await captureReceiptBaseline(bead_id);
 
     const attempt_id = op.attempt_id;
     const serial_launch = acquireLaneLaunch(workspace, {
@@ -6922,6 +7169,9 @@ export function createScheduler(deps) {
             effort: launch_effort,
             speed: launch_speed,
             workflow_mode_prior: prior_wf,
+            workflow_mode_source_prior:
+              receipt_baseline?.workflow_mode_source ?? null,
+            receipt_baseline,
             exec_default_preset_id: preset_id,
             exec_default_preset_revision: preset_revision,
             exec_stamped_keys: stamped_keys.length > 0 ? stamped_keys : null,
@@ -6993,9 +7243,7 @@ export function createScheduler(deps) {
 
     let mode_ok = false;
     try {
-      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-      mode_ok =
-        (await deps.bd.readMetadata(bead_id, 'workflow_mode')) === 'fast_track';
+      mode_ok = (await stampWorkerWorkflowMode(bead_id)).ok;
     } catch {
       mode_ok = false;
     }
@@ -7441,7 +7689,11 @@ export function createScheduler(deps) {
    */
   async function revertStamps(workspace, attempt_id, entry) {
     try {
-      await revertWorkflowMode(entry.bead_id, entry.prior);
+      await revertWorkflowMode(
+        entry.bead_id,
+        entry.prior,
+        workflowModeSourcePriorOf(workspace, attempt_id)
+      );
     } catch {
       // Best-effort: bd may be down; the terminal record already reflects it.
     }

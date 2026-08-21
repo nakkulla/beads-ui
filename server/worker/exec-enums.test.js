@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import * as enums from './exec-enums.js';
 import {
+  BEAD_APPLY_KEYS,
   EXEC_SETTING_KEYS,
   IMPL_PRESET_KEYS,
   IMPL_RUNTIMES,
@@ -8,7 +9,7 @@ import {
   PLAN_REVIEW_MODELS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
-  SESSION_DEFAULT_KEYS,
+  WORKSPACE_KV_KEYS,
   execSettingEnums,
   implPresetEnums,
   inferImplRuntime,
@@ -38,10 +39,34 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   test('covers all 15 full-profile preset keys', () => {
     expect(IMPL_PRESET_KEYS).toHaveLength(15);
     expect(IMPL_PRESET_KEYS).toEqual([
-      ...SESSION_DEFAULT_KEYS,
+      ...BEAD_APPLY_KEYS,
       ...ORCHESTRATION_KEYS
     ]);
     expect(Object.keys(implPresetEnums())).toEqual(IMPL_PRESET_KEYS);
+  });
+
+  test('keeps impl_dispatch on the per-bead apply list', () => {
+    expect(BEAD_APPLY_KEYS).toHaveLength(12);
+
+    expect(BEAD_APPLY_KEYS).toContain('impl_dispatch');
+  });
+
+  test('drops impl_dispatch from the workspace kv list', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(11);
+
+    expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
+  });
+
+  test('keeps the workspace kv list a subset of the per-bead list', () => {
+    const extra = WORKSPACE_KV_KEYS.filter(
+      (key) => !BEAD_APPLY_KEYS.includes(key)
+    );
+
+    expect(extra).toEqual([]);
+  });
+
+  test('retires the merged SESSION_DEFAULT_KEYS surface', () => {
+    expect(/** @type {any} */ (enums).SESSION_DEFAULT_KEYS).toBeUndefined();
   });
 
   test('exposes the step-review model vocabulary', () => {

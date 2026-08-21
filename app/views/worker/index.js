@@ -830,6 +830,26 @@ function completionView(completion) {
 }
 
 /**
+ * The blocking receipt-violation codes a recorded observation carries.
+ *
+ * Fail-quiet (UI-bu6d §7): an absent summary, a malformed one, and a probe
+ * error all yield an empty list, because the display layer creates no authority
+ * and a warning nobody can act on is noise.
+ *
+ * @param {unknown} summary
+ * @returns {string[]}
+ */
+export function receiptWarningCodes(summary) {
+  if (!summary || typeof summary !== 'object') {
+    return [];
+  }
+  const codes = /** @type {Record<string, unknown>} */ (summary).blocking_codes;
+  return Array.isArray(codes)
+    ? codes.filter((code) => typeof code === 'string' && code.length > 0)
+    : [];
+}
+
+/**
  * Resolve every PR-card status input to one priority-ordered badge. The first
  * match is the state the user must read or act on now; lower-grade failure
  * facts remain in its tooltip instead of stacking another badge (UI-vkk8 §3).
@@ -931,6 +951,18 @@ export function prStatusBadge(input) {
   if (input.gate?.reason === 'review_receipt_invalid') {
     return badge('리뷰 기록 오류', {
       title: 'review_receipt_invalid',
+      alert: true
+    });
+  }
+  if (receiptWarningCodes(input.receipt_check).length > 0) {
+    // The recorded completion-time observation (UI-bu6d §7). The gate's own
+    // live re-check runs on the click, so this badge EXPLAINS a refusal rather
+    // than causing one. Fail-quiet by convention: no record and no probe error
+    // ever reaches here, so an unobserved attempt shows nothing at all.
+    return badge('영수증 확인 필요', {
+      title: `성립하지 않는 실행 영수증 — ${receiptWarningCodes(
+        input.receipt_check
+      ).join(', ')}`,
       alert: true
     });
   }
@@ -1201,6 +1233,7 @@ function prWaitRow(
     base_exception,
     conflicting,
     gate,
+    receipt_check: obs && obs.receipt_check ? obs.receipt_check : null,
     queue_failure,
     auto_skip,
     queued,

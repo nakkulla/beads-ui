@@ -462,7 +462,7 @@ describe('handleGetSessionDefaults', () => {
     const { ws, sent } = fakeWs();
     kvGetJsonInWorkspace.mockResolvedValue({
       ok: true,
-      value: { schema: 1, workflow_mode: 'fast_track', impl_dispatch: 'main' }
+      value: { schema: 1, workflow_mode: 'fast_track', impl_speed: 'fast' }
     });
 
     await handleGetSessionDefaults(ws, {
@@ -474,8 +474,25 @@ describe('handleGetSessionDefaults', () => {
     expect(sent[0].ok).toBe(true);
     expect(sent[0].payload.values).toEqual({
       workflow_mode: 'fast_track',
-      impl_dispatch: 'main'
+      impl_speed: 'fast'
     });
+  });
+
+  test('drops a leftover impl_dispatch from the layer and warns', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, workflow_mode: 'fast_track', impl_dispatch: 'main' }
+    });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g1b',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].payload.values).toEqual({ workflow_mode: 'fast_track' });
+    expect(sent[0].payload.warnings).toContain('unknown_key:impl_dispatch');
   });
 
   test('reports an absent kv key as an empty layer without warning', async () => {
@@ -514,7 +531,7 @@ describe('handleGetSessionDefaults', () => {
     const { ws, sent } = fakeWs();
     kvGetJsonInWorkspace.mockResolvedValue({
       ok: true,
-      value: { schema: 1, workflow_mode: 'bogus', impl_dispatch: 'delegated' }
+      value: { schema: 1, workflow_mode: 'bogus', impl_speed: 'fast' }
     });
 
     await handleGetSessionDefaults(ws, {
@@ -523,7 +540,7 @@ describe('handleGetSessionDefaults', () => {
       payload: {}
     });
 
-    expect(sent[0].payload.values).toEqual({ impl_dispatch: 'delegated' });
+    expect(sent[0].payload.values).toEqual({ impl_speed: 'fast' });
     expect(sent[0].payload.warnings).toContain('invalid_value:workflow_mode');
   });
 
@@ -578,11 +595,11 @@ describe('handleSetSessionDefaults', () => {
     kvGetJsonInWorkspace
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, impl_dispatch: 'main' }
+        value: { schema: 1, impl_speed: 'fast' }
       })
       .mockResolvedValueOnce({
         ok: true,
-        value: { schema: 1, impl_dispatch: 'main', workflow_mode: 'standard' }
+        value: { schema: 1, impl_speed: 'fast', workflow_mode: 'standard' }
       });
     kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
 
@@ -595,7 +612,7 @@ describe('handleSetSessionDefaults', () => {
     expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
       ws,
       'workflow_session_defaults',
-      { schema: 1, impl_dispatch: 'main', workflow_mode: 'standard' }
+      { schema: 1, impl_speed: 'fast', workflow_mode: 'standard' }
     );
   });
 
@@ -628,7 +645,7 @@ describe('handleSetSessionDefaults', () => {
     await handleSetSessionDefaults(ws, {
       id: 's4',
       type: 'set-session-defaults',
-      payload: { values: { impl_dispatch: 'sideways' } }
+      payload: { values: { impl_speed: 'sideways' } }
     });
 
     expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
@@ -636,7 +653,20 @@ describe('handleSetSessionDefaults', () => {
     expect(sent[0].error.code).toBe('bad_request');
   });
 
-  test('rejects a key outside the 12 contract keys without writing', async () => {
+  test('rejects impl_dispatch as a workspace-global write', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetSessionDefaults(ws, {
+      id: 's4b',
+      type: 'set-session-defaults',
+      payload: { values: { impl_dispatch: 'main' } }
+    });
+
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].error.code).toBe('bad_request');
+  });
+
+  test('rejects a key outside the 11 contract keys without writing', async () => {
     const { ws, sent } = fakeWs();
 
     await handleSetSessionDefaults(ws, {
