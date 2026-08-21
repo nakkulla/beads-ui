@@ -1,5 +1,5 @@
 import { html } from 'lit-html';
-import { resolveSpecId } from '../../../server/spec-id.js';
+import { resolveSpecDraft } from '../../../server/spec-id.js';
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -9,13 +9,13 @@ import { resolveSpecId } from '../../../server/spec-id.js';
  * @typedef {Object} ArtifactRow
  * @property {'spec'|'plan'} kind
  * @property {string} path
- * @property {'plan_pending'|null} missing_state
+ * @property {'plan_pending'|'spec_draft'|null} missing_state
  */
 
 /**
  * @typedef {Object} ArtifactHandlers
  * @property {(ev: Event, path: string) => void} onCopyPath - Path click = copy to clipboard.
- * @property {(ev: Event, path: string, missing_state: 'plan_pending'|null) => void} onOpenDoc - "열기" = open md viewer.
+ * @property {(ev: Event, path: string, missing_state: 'plan_pending'|'spec_draft'|null) => void} onOpenDoc - "열기" = open md viewer.
  */
 
 /**
@@ -31,21 +31,23 @@ function hasPlanAuthoringHistory(metadata) {
 }
 
 /**
- * Collect artifact rows from native spec_id and workflow metadata.
+ * Collect artifact rows from native spec_id and workflow metadata. This view is
+ * the only draft opt-in: a `spec_path` pinned at authoring time opens here
+ * without ever counting as publication evidence elsewhere.
  *
  * @param {{ spec_id?: unknown, metadata?: Record<string, any> }} issue
  * @returns {ArtifactRow[]}
  */
 export function collectArtifacts(issue) {
   const md = (issue && issue.metadata) || {};
-  const spec = resolveSpecId(issue);
+  const spec = resolveSpecDraft(issue);
   /** @type {ArtifactRow[]} */
   const rows = [];
   if (spec.path) {
     rows.push({
       kind: 'spec',
       path: spec.path,
-      missing_state: null
+      missing_state: spec.source === 'draft' ? 'spec_draft' : null
     });
   }
   if (typeof md.plan_path === 'string' && md.plan_path.trim().length > 0) {
@@ -86,6 +88,9 @@ export function artifactsTemplate(issue, handlers) {
                 >
                   ${row.path}
                 </button>
+                ${row.missing_state === 'spec_draft'
+                  ? html`<span class="detail-art__badge">draft</span>`
+                  : null}
                 <button
                   type="button"
                   class="detail-art__op"

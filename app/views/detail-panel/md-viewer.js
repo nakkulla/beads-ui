@@ -13,8 +13,12 @@ import { renderMarkdown } from '../../utils/markdown.js';
  */
 
 /**
+ * `spec_draft` is display-only state from the artifacts row; only
+ * `plan_pending` has a dedicated message, so a missing draft file falls through
+ * to the generic not-found error.
+ *
  * @typedef {Object} MdViewerOpenOptions
- * @property {'plan_pending'|null} [missing_state]
+ * @property {'plan_pending'|'spec_draft'|null} [missing_state]
  */
 
 /**

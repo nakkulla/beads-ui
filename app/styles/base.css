@@ -1054,6 +1054,17 @@ body {
   cursor: pointer;
 }
 
+/* authoring-time spec draft (UI-fqwn): the path is pinned before publication,
+   so the row reads as openable-but-unpublished rather than as a spec_id. */
+.detail-art__badge {
+  flex: 0 0 auto;
+  font-size: var(--fs-caption);
+  color: var(--text-dim);
+  border: 1px dashed var(--border-card);
+  border-radius: var(--r-4);
+  padding: 0 var(--sp-5);
+}
+
 .detail-art__op {
   font-size: var(--fs-chip);
   color: var(--accent-success);
