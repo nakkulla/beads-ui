@@ -10,7 +10,7 @@ Use MCP `beads` (bd) as our dependency‑aware issue tracker. Run
 - `bug` - Something broken that needs fixing
 - `feature` - New functionality
 - `task` - Work item (tests, docs, refactoring)
-- `epic` - Large feature composed of multiple issues
+- `epic` - Never create; existing `epic` issues are historical-read only
 - `chore` - Maintenance work (dependencies, tooling)
 
 ### Priorities
@@ -25,7 +25,8 @@ Use MCP `beads` (bd) as our dependency‑aware issue tracker. Run
 
 - `blocks` - Hard dependency (issue X blocks issue Y)
 - `related` - Soft relationship (issues are connected)
-- `parent-child` - Epic/subtask relationship
+- `parent-child` - full_plan Phase children only (owned by dotfiles
+  `docs/contracts/workflow-contract.md`)
 - `discovered-from` - Track issues discovered during work
 
 Only `blocks` dependencies affect the ready work queue.
@@ -33,7 +34,8 @@ Only `blocks` dependencies affect the ready work queue.
 ### Structured Fields and Labels
 
 - Use issue `type` and `priority` fields.
-- Use issue type "epic" and `parent-child` dependencies.
+- Never create `epic` issues; `parent-child` only for full_plan Phase children;
+  group sibling issues with `blocks`/`related` only.
 - Use `related` or `discovered-from` dependencies.
 - Area pointers are labels, e.g.: `frontend`, `backend`
 
