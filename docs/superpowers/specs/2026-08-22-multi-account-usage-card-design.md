@@ -18,8 +18,13 @@ scope:
 - 대체 관계: 기존 spec
   `2026-08-06-claude-usage-meter-design.md`와
   `2026-08-10-codex-usage-meter-design.md`의 "표시 범위는 활성 계정 하나"
-  결정을 이 spec이 대체한다. 두 spec의 나머지(소스 명령, fail-quiet, 헤더
-  레이아웃, 900px 축약 규칙)는 그대로 유효하다.
+  결정을 이 spec이 대체한다. 또한 `2026-08-10` Codex spec의 "email·account
+  key·credits·원문 출력을 HTTP로 노출하지 않는다" 결정 중 **`number`,
+  `email`, `alias`, `plan` 네 필드의 노출만** 이 spec이 대체한다(카드 라벨과
+  전환 식별에 필요). `account_key`, 자격 증명·토큰, `credits`·`reset_credits`,
+  refresh 오류, 원문 stdout/stderr는 계속 노출하지 않는다. 두 spec의
+  나머지(소스 명령, fail-quiet, 헤더 레이아웃, 900px 축약 규칙)는 그대로
+  유효하다.
 - 목업: `~/tmp/mockups/2026-08-22-multi-account-usage-meter.html` — 사용자
   확정 **A안(헤더 팝오버, 모바일 하단 시트)**.
 
@@ -163,7 +168,12 @@ scope:
   - 실패 `200 { ok:false, error:string }` — exit code ≠ 0, 타임아웃(`timeout`),
     not found(`not_found`), JSON 파싱 실패(`invalid_output`).
 - 성공 시(`switched` 여부와 무관) 해당 provider의 usage 캐시를 무효화한다.
-  `claude-usage.js`/`codex-usage.js`는 `invalidateCache()`를 export한다.
+  `claude-usage.js`/`codex-usage.js`는 `invalidateCache()`를 export하며, 이는
+  **세대(generation) 기반**이다: 모듈은 `cache_generation` 카운터를 두고,
+  `invalidateCache()`는 카운터를 올리고 캐시된 payload와 in-flight 참조를
+  버린다. 무효화 이전 세대에서 시작된 조회는 완료돼도 캐시에 쓰지 않고, 무효화
+  이후 도착한 GET은 그 in-flight를 재사용하지 않고 새 프로세스를 띄운다. 즉
+  전환 직후 `refresh()`는 전환 전 시작된 조회의 결과를 절대 받지 않는다.
 - 보안은 `/api/register-workspace`와 같다: `express.json()`으로
   `application/json` body만 받고 CORS 헤더를 추가하지 않는다. 토큰·Keychain에
   접근하지 않는다.
@@ -172,8 +182,10 @@ scope:
 
 ### 헤더(접힌 상태)
 
-- 기존 렌더 유지. provider 그룹 끝에 `+N` 배지(`N = accounts.length - 1`,
-  `N ≤ 0`이면 배지 없음). `accounts[]`가 없으면 배지도 없다.
+- 기존 렌더 유지. provider 그룹 끝에 `+N` 배지. `N = accounts.length −
+  (accounts 중 active === true인 행 수)`로 계산하므로 활성 계정 판정이 실패해
+  활성 행이 0개인 경우에도 수치가 맞는다. `N ≤ 0`이면 배지 없음.
+  `accounts[]`가 없으면 배지도 없다.
 - 미터 전체를 `<button class="usage-meter__toggle" aria-expanded
   aria-controls>`로 감싼다. 어떤 provider에도 `accounts[]`가 없으면 버튼 대신
   기존 정적 렌더(카드 없음).
@@ -182,7 +194,8 @@ scope:
 
 - 위치: 데스크톱은 헤더 아래 우측 정렬 팝오버(폭 380px, 최대 화면 폭−24px).
   `≤640px`(기존 브레이크포인트)에서는 하단 시트 + 스크림.
-- 구조: provider 섹션 헤더(`Claude · 활성 1 / 전체 N`) → 계정 행.
+- 구조: provider 섹션 헤더(`Claude · 활성 A / 전체 N`, `A`는 정규화된
+  행의 실제 활성 개수로 0일 수 있음) → 계정 행.
 - 계정 행:
   - 라벨: `alias`가 있으면 alias(이메일은 `title`), 없으면 이메일 전체.
   - 태그: Codex는 `plan` 태그 항상, 활성 행은 `active` 태그와 강조 배경.
@@ -192,7 +205,11 @@ scope:
     Codex primary/secondary)을 막대+%로. 아니면 막대 대신 상태 문구 —
     `token_expired`/`relogin_required` → "토큰 만료 — {도구} 재로그인 필요",
     그 외 → "사용량 없음".
-  - [전환] 버튼: 비활성 행에만. `status !== "ok"`면 비활성(`title`로 이유).
+  - [전환] 버튼: 유효한 `number`가 있는 **모든 비활성 행**에서 활성화한다.
+    `status`는 사용량 표시만 제어하고 전환 가능 여부에는 관여하지 않는다 —
+    대상 계정의 유효성(토큰 만료 등)은 cswap/codex-auth가 판정해 경고·오류로
+    돌려주고, 그 결과가 행 아래에 표시된다. 토큰 만료 계정으로의 전환이
+    바로 재로그인 복구 경로이기 때문이다.
 - 카드 하단 고정 안내 한 줄: "전환은 새로 시작하는 세션부터 적용됩니다."
 - 닫힘: outside `mousedown`, `Escape`(`workspace-picker`의 문서 리스너 패턴
   재사용). 60초 폴링 갱신은 열린 상태를 유지한 채 내용만 바꾼다. `destroy()`
@@ -237,10 +254,14 @@ scope:
 - `server/routes/account-switch.test.js`(신규): 400 검증, 성공/`already-active`
   /실패/타임아웃/`not_found`/`invalid_output`, provider별 409, 성공 시
   `invalidateUsageCache` 호출, cswap 응답 정규화.
+- 캐시 무효화 세대(`claude-usage.test.js`/`codex-usage.test.js`): 무효화 전에
+  시작된 in-flight 조회가 완료돼도 캐시에 쓰이지 않음, 무효화 후 GET이 새
+  프로세스를 실행함, 무효화 후 도착한 GET이 이전 in-flight 결과를 받지 않음.
 - `app/views/usage-meter.test.js`: 배지 개수와 0일 때 숨김, `accounts` 없을 때
   정적 렌더, 카드 열림/outside·Esc 닫힘, 폴링 갱신 중 열린 상태 유지, 행
-  라벨(alias 우선)·plan 태그·상태 문구, 전환 성공→`fetch` 재호출, 실패→행
-  오류 문구, 모바일 시트 클래스.
+  라벨(alias 우선)·plan 태그·상태 문구, `status !== "ok"` 행에서도 [전환]
+  버튼이 활성, 활성 행 0개일 때 배지·섹션 수치, 전환 성공→`fetch` 재호출,
+  실패→행 오류 문구, 모바일 시트 클래스.
 
 ## 범위 밖
 
