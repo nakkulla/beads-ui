@@ -6404,8 +6404,10 @@ html[data-theme='dark'] {
 }
 
 /* blocked 실행가능은 선택적으로만 보이며, 노출해도 실행 자격으로
-   오해하지 않도록 표면 전체를 흐린다 (UI-2gi1 §6.2). */
-.mon-card--blocked {
+   오해하지 않도록 표면 전체를 흐린다 (UI-2gi1 §6.2). opacity는 카드를 자체
+   stacking context로 만들어 카드 안의 절대 배치 팝오버(🔗·대기로)가 뒤따르는
+   blocked 카드 아래로 깔리므로, 팝오버가 열린 동안은 흐림을 푼다. */
+.mon-card--blocked:not(:has(.mon-card-popover:not([hidden]))) {
   opacity: 0.58;
 }
 
