@@ -17,6 +17,7 @@ const ADAPTER = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'deploy'
 );
+const STUB_INSTANCE_ID = '11111111-1111-4111-8111-111111111111';
 
 /** @type {string[]} */
 const created_roots = [];
@@ -84,7 +85,7 @@ function fixture(options = {}) {
   fs.chmodSync(path.join(bin, 'bdui-shared'), 0o755);
   // The health probe is the only `node` the script runs; the fake answers with
   // the canned verdict instead of doing a real fetch.
-  const health = options.health ?? 'ok';
+  const health = options.health ?? `ok ${STUB_INSTANCE_ID}`;
   fs.writeFileSync(
     path.join(bin, 'node'),
     `#!/bin/sh\nprintf 'node health\\n' >> "$CALL_LOG"\nprintf '%s' '${health}'\n`,
@@ -423,7 +424,11 @@ function healthyBody(root, diagnostics_bd) {
   return {
     ok: true,
     checks: { bd: true, db: true },
-    runtime: { source_sha: 'a'.repeat(40), source_repo: root },
+    runtime: {
+      source_sha: 'a'.repeat(40),
+      source_repo: root,
+      instance_id: STUB_INSTANCE_ID
+    },
     diagnostics: {
       bd: diagnostics_bd ?? {
         version: '1.2.0-fork.1',
@@ -452,7 +457,33 @@ describe('repo-ops/script/deploy health probe', () => {
       expect_root: root
     });
 
-    expect(verdict).toBe('ok');
+    expect(verdict).toBe(`ok ${STUB_INSTANCE_ID}`);
+  });
+
+  test('rejects a runtime that reports no usable instance id', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root);
+    delete body.runtime.instance_id;
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).toBe('runtime_identity_missing');
+  });
+
+  test('rejects an instance id the single-token verdict cannot carry', async () => {
+    const root = fs.realpathSync(
+      fs.mkdtempSync(path.join(os.tmpdir(), 'repo-ops-probe-root-'))
+    );
+    created_roots.push(root);
+    const body = healthyBody(root);
+    body.runtime.instance_id = 'has a space';
+
+    const verdict = await runHealthProbe(body, { expect_root: root });
+
+    expect(verdict).toBe('runtime_identity_missing');
   });
 
   test('rejects a body whose bd diagnostics are missing', async () => {

@@ -235,6 +235,40 @@ describe('repo-ops/script/deploy restart marker', () => {
     expect(marker.instance_id).toBeUndefined();
   });
 
+  test('records a failed marker when a runtime reports no instance id', async () => {
+    const health_url = await startHealthServer(() => {
+      const { runtime, ...rest } = healthyBody(INSTANCE_ID);
+      return {
+        ...rest,
+        runtime: {
+          source_sha: runtime.source_sha,
+          source_repo: runtime.source_repo
+        }
+      };
+    });
+
+    const result = await runDeploy(health_url, { attempts: '1' });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('runtime_identity_missing');
+    const marker = readMarker(marker_path);
+    expect(marker.result).toBe('failed');
+    expect(marker.instance_id).toBeUndefined();
+  });
+
+  test('records a failed marker when a check after the certified health fails', async () => {
+    const health_url = await startHealthServer(() => healthyBody(INSTANCE_ID));
+    installStub('npm', `touch "${path.join(repo, 'leftover.txt')}"`);
+
+    const result = await runDeploy(health_url);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('tracked-clean');
+    const marker = readMarker(marker_path);
+    expect(marker.result).toBe('failed');
+    expect(marker.instance_id).toBeUndefined();
+  });
+
   test('fails when the runtime identity changes mid poll', async () => {
     const health_url = await startHealthServer((index) =>
       index === 0
