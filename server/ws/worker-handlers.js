@@ -906,21 +906,22 @@ function laneStatesFor(raw_queue, blocked_by_map) {
 }
 
 /**
- * @param {string} workspace_key
- * @param {Record<string, unknown>} queue
- * @param {'titlesFor'|'timesFor'|'labelsFor'|'blockedByFor'} method
- * @returns {any}
+ * The process-wide title cache, with its refill fanout wired exactly once.
+ * Null when no worker runtime is reachable, which every decoration reads as
+ * "ship nothing" rather than as an error.
+ *
+ * @returns {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null}
  */
-function beadDecorationFor(workspace_key, queue, method) {
+function titleCacheHandle() {
   /** @type {ReturnType<typeof import('../worker/title-cache.js').createTitleCache>|null} */
   let cache = null;
   try {
     cache = getWorkerRuntime().titleCache;
   } catch {
-    cache = null;
+    return null;
   }
   if (!cache) {
-    return {};
+    return null;
   }
   if (!TITLE_FILL_WIRED.has(cache)) {
     TITLE_FILL_WIRED.add(cache);
@@ -931,6 +932,81 @@ function beadDecorationFor(workspace_key, queue, method) {
         log('title fill fanout failed for %s: %o', workspace, err);
       }
     });
+  }
+  return cache;
+}
+
+/**
+ * Stepper projections for every bead a LANE renders (UI-eey2 §9.2).
+ *
+ * The id set is deliberately not {@link beadDecorationFor}'s: it drops `done`
+ * — a finished bead's stepper is not drawn — and adds the beads of RUNNING
+ * attempts, which sit in no lane array at all while they execute.
+ *
+ * Partial on exactly the title cache's contract: a bead whose record has not
+ * landed is absent and arrives on the snapshot the fill callback triggers.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, unknown>}
+ */
+function beadWorkflowFor(workspace_key, queue) {
+  const cache = titleCacheHandle();
+  if (!cache) {
+    return {};
+  }
+  /** @type {string[]} */
+  const ids = [];
+  const lanes = [
+    queue.queue,
+    queue.pr_wait,
+    ...(Array.isArray(queue.serial_lanes)
+      ? /** @type {any[]} */ (queue.serial_lanes).map((lane) => lane?.entries)
+      : [])
+  ];
+  for (const lane_entries of lanes) {
+    const entries = Array.isArray(lane_entries)
+      ? /** @type {any[]} */ (lane_entries)
+      : [];
+    for (const entry of entries) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id === 'string' && bead_id.length > 0) {
+        ids.push(bead_id);
+      }
+    }
+  }
+  const attempts = /** @type {Record<string, any>} */ (queue.attempts || {});
+  for (const attempt of Object.values(attempts)) {
+    if (
+      attempt &&
+      attempt.status === 'running' &&
+      typeof attempt.bead_id === 'string' &&
+      attempt.bead_id.length > 0
+    ) {
+      ids.push(attempt.bead_id);
+    }
+  }
+  if (ids.length === 0) {
+    return {};
+  }
+  try {
+    return cache.workflowFor(workspace_key, ids);
+  } catch (err) {
+    log('bead workflow lookup failed for %s: %o', workspace_key, err);
+    return {};
+  }
+}
+
+/**
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @param {'titlesFor'|'timesFor'|'labelsFor'|'blockedByFor'} method
+ * @returns {any}
+ */
+function beadDecorationFor(workspace_key, queue, method) {
+  const cache = titleCacheHandle();
+  if (!cache) {
+    return {};
   }
   /** @type {string[]} */
   const ids = [];
@@ -1001,6 +1077,102 @@ function stripPrompts(attempt) {
 }
 
 /**
+ * Human label for one delegation leg (UI-eey2 §9.3).
+ *
+ * The ordinal is the only count available: the durable vocabulary carries no
+ * total unit count, and inventing one ("unit 3/5") would state a fact no
+ * producer wrote. `구현 unit 3 · codex` therefore says exactly what is known.
+ *
+ * @param {string|null} role
+ * @param {string|null} runtime
+ * @param {number} ordinal
+ * @returns {string}
+ */
+function legLabelOf(role, runtime, ordinal) {
+  const suffix = runtime ? ` · ${runtime}` : '';
+  if (role === 'implementation') {
+    return `구현 unit ${ordinal}${suffix}`;
+  }
+  if (role === 'review-consult') {
+    return `review-consult${suffix}`;
+  }
+  return `위임 ${ordinal}${suffix}`;
+}
+
+/**
+ * The delegation legs of ONE running attempt, derived purely from evidence the
+ * attempt already carries (UI-eey2 §9.3): the live/durable
+ * `delegation_sessions[]` launches and the `usage_legs[]` receipts. No new
+ * producer contract and no new durable vocabulary — a leg the monitor stream
+ * never observed still appears through its usage receipt, in the `done` state
+ * a receipt implies.
+ *
+ * Launches lead the ordering because they are the only rows with a start time;
+ * receipts with no matching launch follow in their own recorded order.
+ *
+ * @param {any} attempt
+ * @param {import('../worker/queue-store.js').DelegationSession[]} delegation_sessions
+ * @returns {Array<{ role: string|null, runtime: string|null, model: string|null, state: 'live'|'done'|'failed', ordinal: number, label: string }>}
+ */
+function attemptLegs(attempt, delegation_sessions) {
+  /** @type {Array<{ role: string|null, runtime: string|null, model: string|null, state: 'live'|'done'|'failed' }>} */
+  const rows = [];
+  /** @type {Set<string>} */
+  const seen = new Set();
+  const launches = [...delegation_sessions].sort(
+    (a, b) => (a?.started_at || 0) - (b?.started_at || 0)
+  );
+  for (const session of launches) {
+    if (!session || typeof session !== 'object') {
+      continue;
+    }
+    seen.add(`${session.session_id || ''}\u0000${session.turn_id || ''}`);
+    rows.push({
+      role: typeof session.role === 'string' ? session.role : null,
+      runtime: typeof session.provider === 'string' ? session.provider : null,
+      model: typeof session.model === 'string' ? session.model : null,
+      state:
+        session.status === 'running'
+          ? 'live'
+          : session.status === 'done'
+            ? 'done'
+            : 'failed'
+    });
+  }
+  const usage_legs = Array.isArray(attempt?.usage_legs)
+    ? attempt.usage_legs
+    : [];
+  for (const leg of usage_legs) {
+    if (!leg || typeof leg !== 'object') {
+      continue;
+    }
+    // A receipt exists only after the leg finished, so an unmatched one is a
+    // completed leg whose launch this process never saw (a restart, typically).
+    if (seen.has(`${leg.session_id || ''}\u0000${leg.turn_id || ''}`)) {
+      continue;
+    }
+    rows.push({
+      role: typeof leg.role === 'string' ? leg.role : null,
+      runtime: typeof leg.provider === 'string' ? leg.provider : null,
+      model: typeof leg.model === 'string' ? leg.model : null,
+      state: 'done'
+    });
+  }
+  /** @type {Map<string, number>} */
+  const ordinals = new Map();
+  return rows.map((row) => {
+    const role_key = row.role || '';
+    const ordinal = (ordinals.get(role_key) || 0) + 1;
+    ordinals.set(role_key, ordinal);
+    return {
+      ...row,
+      ordinal,
+      label: legLabelOf(row.role, row.runtime, ordinal)
+    };
+  });
+}
+
+/**
  * Project the attempts map with the LIVE, non-persisted per-attempt values
  * folded in: the token tally (UI-raqh §1) and `last_event_at`, the time of the
  * attempt's last session-log line (UI-53es §1), which the monitor row turns
@@ -1063,6 +1235,23 @@ export function attemptsWithUsage(queue, workspace_key) {
       );
       if (delegation_sessions.length > 0) {
         projected = { ...projected, delegation_sessions };
+      }
+      // The running card's progress detail (UI-eey2 §9.3). Both are live-only
+      // and fail-quiet: an attempt with no observed line and no delegation
+      // simply carries neither key, and the card renders without those rows.
+      const activity =
+        session_log && typeof session_log.lastActivity === 'function'
+          ? session_log.lastActivity(workspace_key, attempt_id)
+          : null;
+      if (activity) {
+        projected = { ...projected, last_activity: activity };
+      }
+      const legs = attemptLegs(
+        /** @type {any} */ (projected),
+        delegation_sessions
+      );
+      if (legs.length > 0) {
+        projected = { ...projected, legs };
       }
     }
     if (typeof last_event_at === 'number') {
@@ -1655,6 +1844,10 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Normalized labels for the same queue/pr_wait/done ids. Partial cache
     // hits only: a missing key is intentionally unknown to the Phase 3 view.
     bead_labels: beadLabelsFor(workspace_key, queue),
+    // Stepper projections for the LANE members (UI-eey2 §9.2) — `queue` ∪ the
+    // serial lanes ∪ running attempts ∪ `pr_wait`, `done` excluded. Same
+    // partial-cache contract as the three decorations above.
+    bead_workflow: beadWorkflowFor(workspace_key, queue),
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this.
     bead_blocked_by,
@@ -1778,12 +1971,19 @@ export function detachSessionLog(ws) {
 
 /**
  * Handle `subscribe-session-log`. Payload:
- * `{ id: client_id, attempt_id, launch_id? }`.
+ * `{ id: client_id, attempt_id, launch_id?, root_dir? }`.
  *
  * Emits a SNAPSHOT of the persisted raw stream, then registers a live-append
  * listener on the shared runtime session-log. A Done/Failed attempt simply
  * never fires an append (the session is over), so the same path yields
  * snapshot-only for historical logs and live-follow for a running attempt.
+ *
+ * `root_dir` generalizes the authorization rule from "this connection's exact
+ * attempt" to "the TARGET workspace's exact attempt" (UI-eey2 §9.5): the
+ * monitor's one drawer opens sessions in every visible repo, not only the
+ * connected one. An unregistered directory is `bad_request`, exactly like every
+ * other targeted op; absence keeps the connection workspace. The subscription
+ * registry is keyed by client id, so no key collides.
  *
  * @param {WebSocket} ws
  * @param {RequestEnvelope} req
@@ -1813,7 +2013,19 @@ export function handleSubscribeSessionLog(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  const key = targetWorkspaceOf(ws, req.payload);
+  if (key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
   const runtime = getWorkerRuntime();
 
   // Drop any prior subscription for the same (ws, client_id) so re-open is idempotent.
@@ -2016,7 +2228,23 @@ export function handleGetAttemptPrompt(ws, req) {
     );
     return;
   }
-  const key = workspaceKeyOf(ws);
+  // Same optional `root_dir` as `subscribe-session-log` (UI-eey2 §9.5), and for
+  // the same reason: the drawer's prompt toggle must read the prompt of the
+  // attempt it is actually showing, not answer 기록 없음 because the attempt
+  // lives in another repo.
+  const key = targetWorkspaceOf(ws, req.payload);
+  if (key === null) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          'payload.root_dir must be an absolute path in the available workspace list'
+        )
+      )
+    );
+    return;
+  }
   const attempt = queueStore().snapshot(key).attempts[attempt_id];
   ws.send(JSON.stringify(makeOk(req, promptRecordOf(attempt))));
 }

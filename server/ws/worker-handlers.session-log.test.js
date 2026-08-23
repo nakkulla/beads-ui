@@ -6,10 +6,15 @@ import { ensureDelegationMonitorDir } from '../worker/delegation-monitor.js';
 import { delegationMonitorDir } from '../worker/state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
+const WS_OTHER = '/tmp/example-workspace/project-b';
 
 const state = vi.hoisted(() => ({
   /** @type {Record<string, any>} */
   attempts: {},
+  /** @type {Record<string, Record<string, any>>} */
+  attempts_by_workspace: {},
+  /** @type {string[]} */
+  snapshot_calls: [],
   /** @type {any[]} */
   listeners: [],
   read: vi.fn(() => []),
@@ -22,10 +27,28 @@ const state = vi.hoisted(() => ({
   )
 }));
 
+vi.mock('../registry-watcher.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    getAvailableWorkspaces: () => [
+      { path: '/tmp/example-workspace/project-a' },
+      { path: '/tmp/example-workspace/project-b' }
+    ]
+  };
+});
+
 vi.mock('../worker/runtime.js', () => ({
   getWorkerRuntime: () => ({
     queueStore: {
-      snapshot: () => ({ attempts: state.attempts })
+      /** @param {string} workspace_key */
+      snapshot: (workspace_key) => {
+        state.snapshot_calls.push(String(workspace_key));
+        return {
+          attempts:
+            state.attempts_by_workspace[String(workspace_key)] || state.attempts
+        };
+      }
     },
     usageStore: { get: () => null },
     sessionLog: {
@@ -52,7 +75,7 @@ vi.mock('../worker/runtime.js', () => ({
 }));
 
 const { setConnWorkspace } = await import('./context.js');
-const { detachSessionLog, handleSubscribeSessionLog } =
+const { detachSessionLog, handleGetAttemptPrompt, handleSubscribeSessionLog } =
   await import('./worker-handlers.js');
 
 /**
@@ -103,6 +126,8 @@ function attempt(status = 'done') {
 
 afterEach(() => {
   state.attempts = {};
+  state.attempts_by_workspace = {};
+  state.snapshot_calls.length = 0;
   state.listeners.length = 0;
   state.read.mockReset();
   state.read.mockReturnValue([]);
@@ -349,5 +374,94 @@ describe('worker session-log delegation subscription', () => {
       type: 'past-the-boundary'
     });
     detachSessionLog(socket);
+  });
+});
+
+describe('session-log + prompt ops target a root_dir (UI-eey2 §9.5)', () => {
+  test('reads the named workspace attempt for subscribe-session-log', () => {
+    state.attempts_by_workspace = { [WS_OTHER]: { 'att-9': attempt() } };
+    state.read.mockReturnValue(
+      /** @type {any} */ ([{ type: 'turn.completed' }])
+    );
+    const socket = fakeSocket();
+
+    handleSubscribeSessionLog(socket, {
+      id: 'request-1',
+      type: 'subscribe-session-log',
+      payload: {
+        id: 'subscription-1',
+        attempt_id: 'att-9',
+        root_dir: WS_OTHER
+      }
+    });
+
+    expect(state.read).toHaveBeenCalledWith(WS_OTHER, 'att-9');
+    detachSessionLog(socket);
+  });
+
+  test('keeps the connection workspace when no root_dir is named', () => {
+    const socket = fakeSocket();
+
+    handleSubscribeSessionLog(socket, {
+      id: 'request-1',
+      type: 'subscribe-session-log',
+      payload: { id: 'subscription-1', attempt_id: 'att-1' }
+    });
+
+    expect(state.read).toHaveBeenCalledWith(WS, 'att-1');
+    detachSessionLog(socket);
+  });
+
+  test('refuses an unregistered root_dir for subscribe-session-log', () => {
+    const socket = fakeSocket();
+
+    handleSubscribeSessionLog(socket, {
+      id: 'request-1',
+      type: 'subscribe-session-log',
+      payload: {
+        id: 'subscription-1',
+        attempt_id: 'att-1',
+        root_dir: '/tmp/not-registered'
+      }
+    });
+
+    expect(JSON.parse(socket.sent[0]).error.code).toBe('bad_request');
+    expect(state.read).not.toHaveBeenCalled();
+    expect(state.listeners).toEqual([]);
+  });
+
+  test('reads the named workspace attempt for get-attempt-prompt', () => {
+    state.attempts_by_workspace = {
+      [WS_OTHER]: {
+        'att-9': { attempt_id: 'att-9', system_prompt: 'S', task_prompt: 'T' }
+      }
+    };
+    const socket = fakeSocket();
+
+    handleGetAttemptPrompt(socket, {
+      id: 'request-1',
+      type: 'get-attempt-prompt',
+      payload: { attempt_id: 'att-9', root_dir: WS_OTHER }
+    });
+
+    expect(state.snapshot_calls).toEqual([WS_OTHER]);
+    expect(JSON.parse(socket.sent[0]).payload).toMatchObject({
+      attempt_id: 'att-9',
+      system_prompt: 'S',
+      task_prompt: 'T'
+    });
+  });
+
+  test('refuses an unregistered root_dir for get-attempt-prompt', () => {
+    const socket = fakeSocket();
+
+    handleGetAttemptPrompt(socket, {
+      id: 'request-1',
+      type: 'get-attempt-prompt',
+      payload: { attempt_id: 'att-1', root_dir: '/tmp/not-registered' }
+    });
+
+    expect(JSON.parse(socket.sent[0]).error.code).toBe('bad_request');
+    expect(state.snapshot_calls).toEqual([]);
   });
 });

@@ -2745,3 +2745,66 @@ describe('worker/attach blocks edge 수집 (UI-04vo seam C)', () => {
     expect(snap.blocked_by).toEqual([]);
   });
 });
+
+describe('worker/attach title-cache readback wiring (UI-eey2 §9.2)', () => {
+  test('createLiveBd hands a readMetadata readback to onReadback', async () => {
+    const onReadback = vi.fn();
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1', status: 'open', metadata: { pr_url: 'u' } }
+    }));
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson),
+      onReadback
+    });
+
+    await bd.readMetadata('UI-1', 'pr_url');
+
+    expect(onReadback).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'UI-1' })
+    );
+  });
+
+  test('never lets a throwing onReadback fail the readback', async () => {
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1', status: 'resolved', metadata: {} }
+    }));
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson),
+      onReadback: () => {
+        throw new Error('cache boom');
+      }
+    });
+
+    await expect(bd.readStatus('UI-1')).resolves.toBe('resolved');
+  });
+
+  test('the attachment routes its bd readbacks into the title cache', async () => {
+    const runtime = createWorkerRuntime();
+    const refreshFromIssue = vi.spyOn(runtime.titleCache, 'refreshFromIssue');
+    const runJson = vi.fn(async () => ({
+      code: 0,
+      stdoutJson: { id: 'UI-1', status: 'open', metadata: {} }
+    }));
+    const att = createWorkerAttachment(WS, {
+      runtime,
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    await att.bd.readIssue('UI-1');
+
+    expect(refreshFromIssue).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ id: 'UI-1' })
+    );
+  });
+});

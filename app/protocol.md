@@ -103,14 +103,48 @@ server-global monitor channel; this change adds fields to its snapshot and does
 not add a WebSocket op. `monitor-pipeline-snapshot` carries
 `{ workspaces, workspaces_state }`. Every visible workspace has a
 `workspaces_state` row:
-`{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`.
+`{ root_dir, name, issue_prefix: string|null, auto_advance, auto_merge, slots, revision, runner_catalog }`
+plus, since UI-eey2 §9.4, the repo-panel control fields:
+`{ serial_lane_count, auto_repair, orchestration_model, orchestration_effort, orchestration_speed, execution_defaults, session_defaults, session_defaults_warnings, counts }`.
 `issue_prefix` comes from that workspace's bd config cache; missing, malformed,
 or temporarily unreadable config is `null`.
+
+- `serial_lane_count` / `auto_repair` / the three `orchestration_*` values are
+  that workspace's own queue state. A legacy queue with no key reads as one
+  serial lane, auto-repair ON, and null orchestration pins — the state such a
+  workspace is actually in.
+- `execution_defaults` is the same read-only projection the worker snapshot
+  carries (see below), repeated here so a repo panel can resolve chips for a
+  workspace it holds no worker subscription to.
+- `session_defaults: Record<string, string>` is that repo's
+  `bd kv workflow_session_defaults` layer, normalized by the same rules as
+  `get-session-defaults`, with `session_defaults_warnings: string[]` carrying
+  the dropped keys / unreadable-kv reasons. The read is ASYNC while this row is
+  built SYNCHRONOUSLY, so a cold or expired cache ships `{}` and the fill
+  schedules the next push — exactly the `issue_prefix` contract. A successful
+  `set-session-defaults` or `apply-impl-preset-global` invalidates the repo it
+  wrote and re-pushes.
+- `counts: { running, pr_wait, queue, runnable }` counts each bead in EXACTLY
+  ONE lane, on the client's exclusive lane priority (`running` > `pr_wait` >
+  `queue` ∪ serial lanes > `runnable`). Completion is not counted here: the 완료
+  period is a client selection, so the client counts it from
+  `workspaces[].done[]`.
+
+Consumers fail-quiet on every one of these keys being absent (older server) and
+render the corresponding control or chip row not at all rather than inventing a
+default.
 
 Runnable rows inside `workspaces[].runnable` additionally carry
 `blocked: boolean` and `blocked_by: string[]`. They are display-only projections
 of the shared `ready_explain` snapshot. A legacy snapshot without that source
 uses `false` / `[]` and does not remove the candidate.
+
+Runnable rows also carry `workflow` and `exec_pins` (UI-eey2 §9.1). `workflow`
+is the `enrichIssueWorkflow` stepper projection derived from the SAME `bd list`
+row — no extra bd call — and is `null` when it could not be computed.
+`exec_pins: Record<string, string>` is the row's execution metadata pins only
+(the per-bead preset axes plus `claude_account`/`codex_account`); the rest of
+`metadata` never travels, so the whole backlog's metadata stays off the wire.
 
 `workspaces[].bead_blocked_by` is the worker snapshot's map with one more
 filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
@@ -154,6 +188,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `bd show` fill as titles and times; no entry means label truth is unknown (not
   an empty array), including when an older server omits the whole key. It is UI
   projection only and never Worker scheduler authority.
+- `bead_workflow: Record<bead_id, WorkflowSummary|null>` (UI-eey2 §9.2) is the
+  stepper projection for the beads a LANE renders: `queue` ∪
+  `serial_lanes[].entries` ∪ RUNNING attempts ∪ `pr_wait`. `done` is excluded —
+  a finished bead draws no stepper. Non-persisted and PARTIAL on the same
+  contract as `bead_titles`: a bead whose record has not been read yet has no
+  entry and arrives in a later snapshot, and a bead whose enrich failed carries
+  `null`. Freshness rides two hooks besides the 5-minute TTL — the server's own
+  `bd show` readbacks after a metadata write, and the observation of a
+  `bd update|close|dep` COMPLETING inside a running session's log.
 - `execution_defaults` is the read-only display projection paired with
   `runner_catalog`. Shape:
   `{ supported, schema_version, source_commit, digest, session, orchestration }`.
@@ -172,6 +215,20 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   so a burst costs one snapshot per window. Live-only: a server restart drops it
   until the next line arrives, and consumers fail-quiet on its absence (no dot
   rather than a stale one).
+- A RUNNING attempt also carries two further non-persisted fields (UI-eey2
+  §9.3), both live-only and both absent when there is nothing to say:
+  - `last_activity: { at, kind, text, tool?, command?, path?, result? }` — the
+    attempt's last non-`thinking` transcript line, derived by a per-attempt
+    incremental parser (`app/utils/transcript-lines.js`) so a claude `tool_use`
+    carries the summary of its paired `tool_result`. `text` is truncated at 160
+    characters. A parser fault keeps the last successful value rather than
+    clearing it.
+  - `legs: Array<{ role, runtime, model, state, ordinal, label }>` — the
+    attempt's delegation legs, derived PURELY from the `delegation_sessions[]`
+    launches and the `usage_legs[]` receipts it already carries. `state` is
+    `live`/`done`/`failed`. No total unit count exists in the durable
+    vocabulary, so `label` names the ordinal only (`구현 unit 3 · codex`,
+    `review-consult · codex`).
 - `declared_base: string|null` — what this workspace DECLARES as its target base
   (`docs/agents/repo-ops.toml` top-level `base`), read from the declaration
   only. An absent file or absent key travels as `'main'`, matching the
@@ -423,12 +480,16 @@ model.
 
 Streams a per-attempt raw runner event stream to the transcript viewer.
 
-- `subscribe-session-log` payload: `{ id: client_id, attempt_id, launch_id? }` —
-  `launch_id`가 없으면 기존 main attempt log를 구독한다. `launch_id`가 있으면
-  connection workspace의 exact attempt와 그 attempt의 normalized delegation
-  summary를 먼저 확인한 뒤 해당 stream만 구독한다. replies `ok`, then pushes a
-  `session-log-snapshot`; a live attempt then pushes `session-log-append` per
-  new event. A Done/Failed attempt is snapshot-only.
+- `subscribe-session-log` payload:
+  `{ id: client_id, attempt_id, launch_id?, root_dir? }` — `launch_id`가 없으면
+  기존 main attempt log를 구독한다. `launch_id`가 있으면 대상 workspace의 exact
+  attempt와 그 attempt의 normalized delegation summary를 먼저 확인한 뒤 해당
+  stream만 구독한다. `root_dir`은 선택이며 (UI-eey2 §9.5) 있으면 registry allow
+  list로 검증한 그 workspace를, 없으면 현행대로 connection workspace를 대상으로
+  한다 — 등록되지 않은 경로는 `bad_request`다. 구독 레지스트리는 client id로
+  키를 잡으므로 충돌이 없다. replies `ok`, then pushes a `session-log-snapshot`;
+  a live attempt then pushes `session-log-append` per new event. A Done/Failed
+  attempt is snapshot-only.
 - `unsubscribe-session-log` payload: `{ id: client_id }`.
 - `session-log-snapshot` (push) payload:
   `{ id, attempt_id, launch_id?, lines:[…], last_event_at }` — the persisted raw
@@ -447,9 +508,10 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
 Read-only, request/response. The recorded prompts are multi-kilobyte and almost
 never rendered, so they are STRIPPED from the worker-queue push
 (`attemptsWithUsage`) and fetched only when a reader opens them. Workspace scope
-is the connection's own workspace, exactly like `subscribe-session-log`.
+is the TARGET workspace, exactly like `subscribe-session-log`: the connection's
+own unless the payload names a validated `root_dir`.
 
-- `get-attempt-prompt` payload: `{ attempt_id }` — replies
+- `get-attempt-prompt` payload: `{ attempt_id, root_dir? }` — replies
   `{ attempt_id, system_prompt, task_prompt, recorded_at }`, or
   `{ missing: true }` for an attempt recorded before the fields existed (or one
   of another workspace). `recorded_at` is the attempt's `started_at` in epoch
@@ -464,6 +526,34 @@ is the connection's own workspace, exactly like `subscribe-session-log`.
   contract text; `system_prompt` is the dispatch default (`fast_track`,
   PR-submitting) and `variants` carries each conditional shape with the
   condition that selects it.
+
+## Workspace session defaults and execution presets
+
+The workspace-global execution layer lives in `bd kv workflow_session_defaults`
+(key name, allowed keys, and the drop-and-warn rules are owned by dotfiles
+`workflow.yaml workspace_kv_defaults`; this repo is a consumer).
+
+- `get-session-defaults` payload: `{ root_dir? }` — replies
+  `{ values: Record<string,string>, warnings: string[] }`. Read is fail-quiet:
+  an absent key or an out-of-vocabulary value yields an empty/partial layer plus
+  warnings rather than an error.
+- `set-session-defaults` payload: `{ values, root_dir? }` — STRICT: an unknown
+  key or an illegal value is refused before bd is touched. `bd kv` has no CAS,
+  so the write re-reads immediately beforehand, making it per-KEY
+  last-write-wins, and confirms with a readback.
+- `apply-impl-preset-global` payload:
+  `{ preset_id, expected_revision, expected_queue_revision, root_dir? }` —
+  replaces the kv keys a full-profile preset can carry and the queue's three
+  orchestration defaults.
+
+`root_dir` is optional on all three (UI-eey2 §9.5). Absent means the
+connection's workspace; present means that validated registry workspace, and an
+unregistered path is `bad_request`. For `apply-impl-preset-global` this is a
+FIX, not only an extension: `root_dir` previously scoped the QUEUE write alone
+while the kv read/write/readback stayed on the connection's workspace, so one
+profile applied from another repo's panel split across two repos. All three now
+address one repo, and a successful write invalidates that repo's monitor
+`session_defaults` cache.
 
 ## Removed (historical)
 

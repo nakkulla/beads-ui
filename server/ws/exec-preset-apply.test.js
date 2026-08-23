@@ -9,7 +9,26 @@ const runBdJsonProjectedInWorkspace = vi.fn();
 const triggerMutationRefreshOnce = vi.fn();
 const kvGetJsonInWorkspace = vi.fn();
 const kvSetJsonInWorkspace = vi.fn();
+const kvGetJsonAtRoot = vi.fn();
+const kvSetJsonAtRoot = vi.fn();
 const fanoutWorkerQueue = vi.fn();
+const invalidateSessionDefaults = vi.fn();
+
+vi.mock('../registry-watcher.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    getAvailableWorkspaces: () => [
+      { path: '/workspace' },
+      { path: '/other-repo' }
+    ]
+  };
+});
+
+vi.mock('./monitor-handlers.js', () => ({
+  invalidateSessionDefaults: (/** @type {string} */ root) =>
+    invalidateSessionDefaults(root)
+}));
 
 // The workspace effect gate has its own tests; these state an open gate rather
 // than probing the live bd binary.
@@ -44,7 +63,14 @@ vi.mock('./context.js', () => ({
     /** @type {any} */ ws,
     /** @type {any} */ key,
     /** @type {any} */ value
-  ) => kvSetJsonInWorkspace(ws, key, value)
+  ) => kvSetJsonInWorkspace(ws, key, value),
+  kvGetJsonAtRoot: (/** @type {any} */ root, /** @type {any} */ key) =>
+    kvGetJsonAtRoot(root, key),
+  kvSetJsonAtRoot: (
+    /** @type {any} */ root,
+    /** @type {any} */ key,
+    /** @type {any} */ value
+  ) => kvSetJsonAtRoot(root, key, value)
 }));
 
 vi.mock('./refresh.js', () => ({
@@ -112,6 +138,9 @@ beforeEach(() => {
   triggerMutationRefreshOnce.mockReset();
   kvGetJsonInWorkspace.mockReset();
   kvSetJsonInWorkspace.mockReset();
+  kvGetJsonAtRoot.mockReset();
+  kvSetJsonAtRoot.mockReset();
+  invalidateSessionDefaults.mockReset();
   fanoutWorkerQueue.mockReset();
 });
 
@@ -611,5 +640,95 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
       write_applied: true,
       retry_safe: false
     });
+  });
+});
+
+describe('handleApplyImplPresetGlobal root_dir kv scope (UI-eey2 §9.5)', () => {
+  test('reads, writes and reads back the kv of the NAMED repo only', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+    kvGetJsonAtRoot
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_runtime: 'codex' }
+      });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0,
+        root_dir: '/other-repo'
+      }
+    });
+
+    expect(kvGetJsonAtRoot.mock.calls.map((c) => c[0])).toEqual([
+      '/other-repo',
+      '/other-repo'
+    ]);
+    expect(kvSetJsonAtRoot).toHaveBeenCalledWith(
+      '/other-repo',
+      'workflow_session_defaults',
+      { schema: 1, impl_runtime: 'codex' }
+    );
+    // The CONNECTED repo's kv is never touched.
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(fanoutWorkerQueue).toHaveBeenCalledWith(
+      '/other-repo',
+      expect.anything()
+    );
+    expect(invalidateSessionDefaults).toHaveBeenCalledWith('/other-repo');
+  });
+
+  test('keeps the connection-addressed kv path when no root_dir is named', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, impl_runtime: 'codex' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+
+    expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
+    expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
+    expect(kvSetJsonInWorkspace).toHaveBeenCalled();
+    expect(invalidateSessionDefaults).toHaveBeenCalledWith('/workspace');
+  });
+
+  test('refuses an unregistered root_dir before touching any kv', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0,
+        root_dir: '/not-registered'
+      }
+    });
+
+    expect(sent[sent.length - 1].error.code).toBe('bad_request');
+    expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
   });
 });

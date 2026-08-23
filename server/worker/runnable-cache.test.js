@@ -108,8 +108,14 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
     expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
   });
 
+  // `workflow` and `exec_pins` joined this projection in UI-eey2 §9.1; the
+  // enrich is stubbed so the assertion stays about the PROJECTION rather than
+  // about the git probe the live enrich makes.
   test('lists an open bead whose spec review is pinned', async () => {
-    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row()] }),
+      enrichWorkflow: () => ({ route: 'spec_backed' })
+    });
 
     const out = await warm(cache, WS_A);
 
@@ -125,7 +131,9 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         blocked_by: [],
         labels: [],
         created_at: null,
-        updated_at: null
+        updated_at: null,
+        workflow: { route: 'spec_backed' },
+        exec_pins: {}
       }
     ]);
   });
@@ -802,5 +810,65 @@ describe('runnable cache fill notification (UI-qrfo §4)', () => {
     cache.clear();
 
     expect(cache.runnableFor(WS_A)).toEqual([]);
+  });
+});
+
+describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
+  test('projects the enrich result for the same bd list row', async () => {
+    const enrichWorkflow = vi.fn(() => ({ route: 'full_plan', stages: {} }));
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row()] }),
+      enrichWorkflow: /** @type {any} */ (enrichWorkflow)
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].workflow).toEqual({ route: 'full_plan', stages: {} });
+    expect(enrichWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'UI-1' }),
+      WS_A
+    );
+  });
+
+  test('carries a null workflow when the enrich throws', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row()] }),
+      enrichWorkflow: () => {
+        throw new Error('git probe failed');
+      }
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].workflow).toBeNull();
+  });
+
+  test('projects only the execution pins of the row metadata', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            metadata: {
+              impl_runtime: 'codex',
+              impl_speed: 'fast',
+              codex_account: 'work',
+              plan_path: 'docs/plans/a.md',
+              blocked_reason: 'nope',
+              impl_effort: 7
+            }
+          })
+        ]
+      }),
+      enrichWorkflow: () => null
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].exec_pins).toEqual({
+      impl_runtime: 'codex',
+      impl_speed: 'fast',
+      codex_account: 'work'
+    });
   });
 });

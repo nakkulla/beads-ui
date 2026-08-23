@@ -149,7 +149,14 @@ export function createWorkerRuntime() {
   // Shared session-log broker: the scheduler's `attach` persists the raw stream
   // AND the ws `subscribe-session-log` handler follows live appends off the
   // same instance (spec §5.6).
-  const sessionLog = createSessionLog();
+  // `onBeadWrite` closes the freshness loop the other way (UI-eey2 §9.2): a
+  // RUNNING session's own `bd update|close|dep` is a write this server never
+  // made, so only the session log can see it. Expiring the record on the
+  // command's COMPLETION — never on its start — is what keeps a refill from
+  // reading the pre-write value back.
+  const sessionLog = createSessionLog({
+    onBeadWrite: (workspace, bead_id) => titleCache.expire(workspace, bead_id)
+  });
   // Process-wide parallelism-analysis store (UI-04vo §9): server-global
   // settings, the per-workspace last-good cache, and the single-flight job
   // registry. Process memory is what makes single-flight true across every

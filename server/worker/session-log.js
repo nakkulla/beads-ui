@@ -15,6 +15,7 @@
  */
 import { EventEmitter } from 'node:events';
 import nodeFs from 'node:fs';
+import { createTranscriptReducer } from '../../app/utils/transcript-lines.js';
 import { readAttemptDelegationStreams } from './delegation-monitor.js';
 import { emitQueueChanged } from './queue-events.js';
 import { sessionLogPath } from './state-paths.js';
@@ -48,12 +49,117 @@ export function stderrPathOf(log_path) {
 }
 
 /**
+ * How much of a display line's text the activity overlay carries (UI-eey2
+ * §9.3). The running card shows ONE line, so anything past this is layout the
+ * client would have to throw away anyway.
+ */
+export const LAST_ACTIVITY_TEXT_LIMIT = 160;
+
+/**
+ * The last display line an attempt produced, projected for the wire.
+ *
+ * @typedef {Object} LastActivity
+ * @property {number} at - Epoch ms the producing event was observed.
+ * @property {'assistant'|'thinking'|'tool'|'gate'|'phase'|'result'|'error'|'blocker'} kind
+ * @property {string} text
+ * @property {string} [tool]
+ * @property {string} [command]
+ * @property {string} [path]
+ * @property {string} [result]
+ */
+
+/**
+ * The bd subcommands that MUTATE a bead's durable state, and therefore the
+ * workflow projection the stepper reads (UI-eey2 §9.2). `show`/`list` are reads
+ * and deliberately absent.
+ */
+const BD_WRITE_SUBCOMMANDS = new Set(['update', 'close', 'dep']);
+
+/** A bead id token: rig prefix, a dash, then the id (phase children add `.n`). */
+const BEAD_ID_RE = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\.[0-9]+)*$/;
+
+/**
+ * Bead ids a completed bd WRITE command names, or an empty array for anything
+ * else. Fully fail-quiet: an unparseable command simply names nothing, since
+ * the only consequence of a miss is that the 5-minute TTL catches up instead.
+ *
+ * Every id-shaped argument is returned rather than only the first, because
+ * `bd dep add A B` changes the projection of BOTH ends and an extra cache
+ * expiry costs one refill.
+ *
+ * @param {unknown} command
+ * @returns {string[]}
+ */
+export function beadWriteTargets(command) {
+  if (typeof command !== 'string' || command.length === 0) {
+    return [];
+  }
+  /** @type {string[]} */
+  const ids = [];
+  const seen = new Set();
+  const re = /(?:^|[;&|(]|\s)bd\s+([a-z-]+)((?:\s+[^;&|]+)?)/g;
+  let match;
+  while ((match = re.exec(command)) !== null) {
+    if (!BD_WRITE_SUBCOMMANDS.has(match[1])) {
+      continue;
+    }
+    for (const token of String(match[2] || '').split(/\s+/)) {
+      if (token.length === 0 || token.startsWith('-') || token.includes('=')) {
+        continue;
+      }
+      if (BEAD_ID_RE.test(token) && !seen.has(token)) {
+        seen.add(token);
+        ids.push(token);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is Record<string, unknown>}
+ */
+function isObject(value) {
+  return !!value && typeof value === 'object';
+}
+
+/**
+ * Project one parsed display line onto the bounded activity shape.
+ *
+ * @param {any} line
+ * @param {number} at
+ * @returns {LastActivity}
+ */
+function activityOf(line, at) {
+  const tool = typeof line.tool === 'string' ? line.tool : '';
+  const command = typeof line.command === 'string' ? line.command : '';
+  const file_path = typeof line.path === 'string' ? line.path : '';
+  const result = typeof line.result === 'string' ? line.result : '';
+  const body =
+    line.kind === 'tool'
+      ? command || file_path || tool
+      : typeof line.text === 'string'
+        ? line.text
+        : '';
+  return {
+    at,
+    kind: line.kind,
+    text: String(body).slice(0, LAST_ACTIVITY_TEXT_LIMIT),
+    ...(tool.length > 0 ? { tool } : {}),
+    ...(command.length > 0 ? { command } : {}),
+    ...(file_path.length > 0 ? { path: file_path } : {}),
+    ...(result.length > 0 ? { result } : {})
+  };
+}
+
+/**
  * Create a session-log reader with an in-process append pub/sub.
  *
  * One shared instance lives on the Worker runtime, so the line readers'
  * `publish` and the ws subscription's `subscribe` flow through the same broker.
  *
- * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string, now?: () => number, emitChanged?: (workspace: string) => void, fanoutMs?: number }} [options]
+ * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string, now?: () => number, emitChanged?: (workspace: string) => void, fanoutMs?: number, onBeadWrite?: (workspace: string, bead_id: string) => void }} [options]
  * @returns {{
  *   pathFor: (workspace: string, attempt_id: string) => string,
  *   stderrPathFor: (workspace: string, attempt_id: string) => string,
@@ -64,6 +170,7 @@ export function stderrPathOf(log_path) {
  *   lastEventAtOf: (workspace: string, attempt_id: string) => number|null,
  *   lineBoundaryOf: (workspace: string, attempt_id: string) => number|null,
  *   lastEventAt: (workspace: string, attempt_id: string, launch_id?: string) => number|null,
+ *   lastActivity: (workspace: string, attempt_id: string) => LastActivity|null,
  *   subscribe: (fn: (a: SessionLogAppend) => void, launch_id?: string) => (() => void)
  * }}
  */
@@ -76,6 +183,8 @@ export function createSessionLog(options = {}) {
     typeof options.fanoutMs === 'number'
       ? options.fanoutMs
       : LAST_EVENT_FANOUT_MS;
+  const onBeadWrite =
+    typeof options.onBeadWrite === 'function' ? options.onBeadWrite : null;
   const emitter = new EventEmitter();
   // A live attempt may have many drawer subscribers; avoid the warning.
   emitter.setMaxListeners(0);
@@ -90,6 +199,163 @@ export function createSessionLog(options = {}) {
   const last_event_at = new Map();
   /** @type {Map<string, ReturnType<typeof setTimeout>>} */
   const fanout_timers = new Map();
+
+  /**
+   * One incremental transcript parser per STREAM — the attempt's own log and
+   * each delegation launch parse independently, because the `tool_use` →
+   * `tool_result` pairing is per stream and crossing them would let one
+   * session's result land on another's tool line.
+   *
+   * @type {Map<string, { push: (event: unknown) => any[] }>}
+   */
+  const reducers = new Map();
+  /**
+   * The last non-`thinking` display line per ATTEMPT (delegations included, so
+   * the running card shows what the session is doing right now rather than what
+   * its orchestrator last said). Live-only, exactly like `last_event_at`.
+   *
+   * The stored value is the LINE OBJECT, not a snapshot of it: a claude tool
+   * line learns its result summary when the later `tool_result` back-fills it in
+   * place, and projecting at read time is what lets that update show.
+   *
+   * @type {Map<string, { at: number, line: any }>}
+   */
+  const last_activity = new Map();
+  /**
+   * Pending claude `Bash` commands by `tool_use` id, per stream. A bd write is
+   * announced on the RESULT, so the command text has to survive from the
+   * `tool_use` that started it (UI-eey2 §9.2).
+   *
+   * @type {Map<string, Map<string, string>>}
+   */
+  const pending_commands = new Map();
+
+  /**
+   * Announce one completed bd write, fail-quiet.
+   *
+   * @param {string} workspace
+   * @param {unknown} command
+   */
+  function announceBeadWrites(workspace, command) {
+    if (!onBeadWrite) {
+      return;
+    }
+    for (const bead_id of beadWriteTargets(command)) {
+      try {
+        onBeadWrite(workspace, bead_id);
+      } catch {
+        // A broken cache hook must never break the session.
+      }
+    }
+  }
+
+  /**
+   * Observe bd write COMPLETIONS in one raw event. Claude announces on the
+   * paired `tool_result`, codex on the `command_execution` `item.completed` —
+   * both are the moment the command finished, so a refill cannot read the
+   * pre-write value back (UI-eey2 §9.2).
+   *
+   * @param {string} workspace
+   * @param {string} stream_key
+   * @param {unknown} event
+   */
+  function observeBeadWrites(workspace, stream_key, event) {
+    if (!onBeadWrite || !isObject(event)) {
+      return;
+    }
+    const raw = /** @type {any} */ (event);
+    if (raw.type === 'assistant' && isObject(raw.message)) {
+      const content = Array.isArray(raw.message.content)
+        ? raw.message.content
+        : [];
+      for (const block of content) {
+        if (
+          isObject(block) &&
+          /** @type {any} */ (block).type === 'tool_use' &&
+          /** @type {any} */ (block).name === 'Bash' &&
+          typeof (/** @type {any} */ (block).id) === 'string'
+        ) {
+          const input = /** @type {any} */ (block).input;
+          const command = isObject(input) ? input.command : '';
+          if (typeof command === 'string' && command.length > 0) {
+            let lane = pending_commands.get(stream_key);
+            if (!lane) {
+              lane = new Map();
+              pending_commands.set(stream_key, lane);
+            }
+            lane.set(String(/** @type {any} */ (block).id), command);
+          }
+        }
+      }
+      return;
+    }
+    if (raw.type === 'user' && isObject(raw.message)) {
+      const lane = pending_commands.get(stream_key);
+      if (!lane) {
+        return;
+      }
+      const content = Array.isArray(raw.message.content)
+        ? raw.message.content
+        : [];
+      for (const block of content) {
+        if (
+          isObject(block) &&
+          /** @type {any} */ (block).type === 'tool_result'
+        ) {
+          const id = String(/** @type {any} */ (block).tool_use_id || '');
+          const command = lane.get(id);
+          if (command !== undefined) {
+            lane.delete(id);
+            announceBeadWrites(workspace, command);
+          }
+        }
+      }
+      return;
+    }
+    if (raw.type === 'item.completed' && isObject(raw.item)) {
+      const item = /** @type {any} */ (raw.item);
+      if (item.type === 'command_execution') {
+        announceBeadWrites(workspace, item.command);
+      }
+    }
+  }
+
+  /**
+   * Fold one raw event into the attempt's activity projection.
+   *
+   * Wholly inside an exception boundary (UI-eey2 §12): a parser fault or a
+   * malformed event drops THAT event and keeps the last successful
+   * `last_activity` — `publish()`'s own stamping and fanout are unaffected
+   * because this is called from inside its own try.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string|undefined} launch_id
+   * @param {unknown} event
+   */
+  function observeActivity(workspace, attempt_id, launch_id, event) {
+    const stream_key = keyOf(workspace, attempt_id, launch_id);
+    let reducer = reducers.get(stream_key);
+    if (!reducer) {
+      reducer = createTranscriptReducer();
+      reducers.set(stream_key, reducer);
+    }
+    const produced = reducer.push(event);
+    observeBeadWrites(workspace, stream_key, event);
+    if (!Array.isArray(produced)) {
+      return;
+    }
+    for (let i = produced.length - 1; i >= 0; i -= 1) {
+      const line = produced[i];
+      if (line && line.kind !== 'thinking') {
+        last_activity.set(keyOf(workspace, attempt_id), {
+          at: now(),
+          line
+        });
+        return;
+      }
+    }
+  }
 
   /**
    * Arm the coalesced queue fanout for a workspace. The value is already
@@ -159,6 +425,12 @@ export function createSessionLog(options = {}) {
           ? launch_id
           : undefined;
       last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
+      try {
+        observeActivity(workspace, attempt_id, delegation_id, event);
+      } catch {
+        // The activity overlay is display-only: a parse fault keeps the last
+        // successful value and never interrupts the broadcast below.
+      }
       scheduleFanout(workspace);
       emitter.emit('append', {
         workspace,
@@ -249,6 +521,28 @@ export function createSessionLog(options = {}) {
     lastEventAt(workspace, attempt_id, launch_id) {
       const at = last_event_at.get(keyOf(workspace, attempt_id, launch_id));
       return typeof at === 'number' ? at : null;
+    },
+
+    /**
+     * The last non-`thinking` display line this attempt produced in THIS
+     * process, or null when none has been observed (UI-eey2 §9.3). Live-only
+     * and fail-quiet, on the same contract as {@link lastEventAt}: a restart
+     * loses it and the running card simply omits the activity row.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @returns {LastActivity|null}
+     */
+    lastActivity(workspace, attempt_id) {
+      const hit = last_activity.get(keyOf(workspace, attempt_id));
+      if (!hit) {
+        return null;
+      }
+      try {
+        return activityOf(hit.line, hit.at);
+      } catch {
+        return null;
+      }
     },
 
     /**

@@ -92,14 +92,20 @@ function build(input) {
 }
 
 /**
- * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any>, issuePrefixes?: Record<string, string|null> }} input
+ * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any>, issuePrefixes?: Record<string, string|null>, sessionDefaults?: Record<string, { values: Record<string, string>, warnings: string[] }>, runnable?: Record<string, Array<Record<string, any>>> }} input
  */
 function buildState(input) {
   return buildMonitorWorkspacesState({
     listWorkspaces: () => (input.workspaces || []).map((path) => ({ path })),
     listHidden: () => input.hidden || [],
     snapshotFor: (key) => (input.queues || {})[key] || snapshot(),
-    issuePrefixFor: (key) => (input.issuePrefixes || {})[key] ?? null
+    issuePrefixFor: (key) => (input.issuePrefixes || {})[key] ?? null,
+    sessionDefaultsFor: (key) =>
+      (input.sessionDefaults || {})[key] || { values: {}, warnings: [] },
+    runnableFor: (key, exclude_ids) =>
+      ((input.runnable || {})[key] || []).filter(
+        (item) => !exclude_ids.has(item.bead_id)
+      )
   });
 }
 
@@ -641,5 +647,136 @@ describe('monitor pipeline envelope (UI-qrfo §4)', () => {
     emitMonitorPipelineSnapshot(/** @type {any} */ (ws), 'm1', []);
 
     expect(frames[0].payload.workspaces_state).toEqual([]);
+  });
+});
+
+describe('workspaces_state control fields (UI-eey2 §9.4)', () => {
+  test('carries the repo panel fields beside the existing ones', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          revision: 7,
+          slots: 3,
+          auto_advance: true,
+          auto_merge: true,
+          auto_repair: false,
+          serial_lane_count: 2,
+          orchestration_model: 'sol',
+          orchestration_effort: 'high',
+          orchestration_speed: 'priority'
+        })
+      },
+      sessionDefaults: {
+        [WS_A]: { values: { impl_runtime: 'codex' }, warnings: ['w1'] }
+      }
+    });
+
+    expect(out[0]).toMatchObject({
+      root_dir: WS_A,
+      revision: 7,
+      slots: 3,
+      auto_advance: true,
+      auto_merge: true,
+      auto_repair: false,
+      serial_lane_count: 2,
+      orchestration_model: 'sol',
+      orchestration_effort: 'high',
+      orchestration_speed: 'priority',
+      session_defaults: { impl_runtime: 'codex' },
+      session_defaults_warnings: ['w1']
+    });
+    expect(out[0]).toHaveProperty('execution_defaults');
+  });
+
+  test('reads a legacy queue as one serial lane with auto_repair on', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: { [WS_A]: snapshot() }
+    });
+
+    expect(out[0]).toMatchObject({
+      serial_lane_count: 1,
+      auto_repair: true,
+      orchestration_model: null,
+      orchestration_effort: null,
+      orchestration_speed: null,
+      session_defaults: {},
+      session_defaults_warnings: []
+    });
+  });
+});
+
+describe('workspaces_state counts (UI-eey2 §9.4)', () => {
+  test('counts each bead in exactly one lane by the client priority', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          queue: [
+            { bead_id: 'A-run', added_at: NOW },
+            { bead_id: 'A-wait', added_at: NOW }
+          ],
+          serial_lanes: [
+            { id: 'lane-1', entries: [{ bead_id: 'A-serial' }] },
+            { id: 'lane-2', entries: [{ bead_id: 'A-run' }] }
+          ],
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
+          done: [{ bead_id: 'A-done', added_at: NOW }],
+          attempts: {
+            'att-1': {
+              attempt_id: 'att-1',
+              bead_id: 'A-run',
+              status: 'running'
+            },
+            'att-2': {
+              attempt_id: 'att-2',
+              bead_id: 'A-old',
+              status: 'done'
+            }
+          }
+        })
+      },
+      runnable: { [WS_A]: [candidate('A-cand'), candidate('A-pr')] }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 1,
+      pr_wait: 1,
+      queue: 2,
+      runnable: 1
+    });
+  });
+
+  test('counts a repo with nothing in flight as all zeros', () => {
+    const out = buildState({ workspaces: [WS_A] });
+
+    expect(out[0].counts).toEqual({
+      running: 0,
+      pr_wait: 0,
+      queue: 0,
+      runnable: 0
+    });
+  });
+
+  test('keeps counting the other lanes when the runnable lookup throws', () => {
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () =>
+        snapshot({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      runnableFor: () => {
+        throw new Error('runnable boom');
+      }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 0,
+      pr_wait: 0,
+      queue: 1,
+      runnable: 0
+    });
   });
 });

@@ -33,12 +33,14 @@ import { isBdProtocolFailure } from '../bd-json.js';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
 import {
+  enrichIssueWorkflow,
   parsePlanApprovalReceipt,
   parsePlanReceipt,
   parsePlanReviewReceipt
 } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
+import { ACCOUNT_KEYS, BEAD_APPLY_KEYS } from './exec-enums.js';
 
 const log = debug('worker:runnable-cache');
 
@@ -91,7 +93,41 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * `worker-ineligible` label excludes the row before this projection is made.
  * @property {number|string|null} created_at
  * @property {number|string|null} updated_at
+ * @property {Record<string, unknown>|null} workflow - The stepper projection for
+ * this row (UI-eey2 §9.1), or null when the enrich could not be computed.
+ * @property {Record<string, string>} exec_pins - Only the bead's EXECUTION
+ * metadata pins, so the card can resolve its orchestration/worker chips without
+ * the whole backlog's metadata riding the wire.
  */
+
+/**
+ * The metadata keys an execution chip may be resolved from: the per-bead preset
+ * axes plus the two account pins. Anything else in `metadata` stays off the
+ * wire.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+const EXEC_PIN_KEYS = [...BEAD_APPLY_KEYS, ...ACCOUNT_KEYS];
+
+/**
+ * Project the execution pins of one row's metadata (UI-eey2 §9.1). Non-string
+ * values are dropped rather than coerced: a pin is an enum token, and a number
+ * where one belongs is a malformed record, not a selection.
+ *
+ * @param {Record<string, unknown>} meta
+ * @returns {Record<string, string>}
+ */
+function execPinsOf(meta) {
+  /** @type {Record<string, string>} */
+  const pins = {};
+  for (const key of EXEC_PIN_KEYS) {
+    const value = meta[key];
+    if (typeof value === 'string' && value.length > 0) {
+      pins[key] = value;
+    }
+  }
+  return pins;
+}
 
 /**
  * Keep a timestamp only in the shapes the client can format; anything else
@@ -188,9 +224,11 @@ function planState(meta, route) {
  *
  * @param {Record<string, unknown>} row
  * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
+ * @param {(issue: unknown) => Record<string, unknown>|null} [enrich] - Workflow
+ * projection for the SAME row; defaults to no projection.
  * @returns {RunnableItem|null}
  */
-function qualify(row, blocked_by = null) {
+function qualify(row, blocked_by = null, enrich = undefined) {
   const bead_id = typeof row.id === 'string' ? row.id : '';
   if (bead_id.length === 0) {
     return null;
@@ -250,7 +288,9 @@ function qualify(row, blocked_by = null) {
     blocked_by: blocked_by || [],
     labels: workerLabels(row.labels),
     created_at: stampOf(row.created_at),
-    updated_at: stampOf(row.updated_at)
+    updated_at: stampOf(row.updated_at),
+    workflow: enrich ? enrich(row) : null,
+    exec_pins: execPinsOf(meta)
   };
 }
 
@@ -334,7 +374,8 @@ function embeddedBlockerIds(row) {
  *   negative_ttl_ms?: number,
  *   runJson?: (command_family: string, args: string[], options?: { cwd?: string }) => Promise<{ ok: boolean, data?: unknown }>,
  *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, snapshot?: { all?: unknown[], ready_explain?: { blocked?: unknown[] } } }>,
- *   subscriberCount?: () => number
+ *   subscriberCount?: () => number,
+ *   enrichWorkflow?: (issue: unknown, workspace: string) => Record<string, unknown>|null
  * }} [options]
  */
 export function createRunnableCache(options = {}) {
@@ -347,6 +388,10 @@ export function createRunnableCache(options = {}) {
     typeof options.negative_ttl_ms === 'number'
       ? options.negative_ttl_ms
       : NEGATIVE_TTL_MS;
+  const enrichWorkflow =
+    options.enrichWorkflow ||
+    ((/** @type {any} */ issue, /** @type {string} */ workspace) =>
+      enrichIssueWorkflow(issue, workspace));
   const requestSnapshot =
     typeof options.requestSnapshot === 'function'
       ? options.requestSnapshot
@@ -392,6 +437,28 @@ export function createRunnableCache(options = {}) {
    */
   function keyOf(workspace) {
     return path.resolve(String(workspace || ''));
+  }
+
+  /**
+   * The workflow projector for one workspace. The `bd list` row already carries
+   * everything `enrichIssueWorkflow` reads, so the stepper costs NO extra bd
+   * call (UI-eey2 §9.1); the git probe rides the enrich module's own cache.
+   * Fail-quiet per row: an enrich that throws leaves that one card with no
+   * stepper instead of dropping it from the lane.
+   *
+   * @param {string} workspace
+   * @returns {(issue: unknown) => Record<string, unknown>|null}
+   */
+  function enrichFor(workspace) {
+    const root = keyOf(workspace);
+    return (issue) => {
+      try {
+        return enrichWorkflow(issue, root) || null;
+      } catch (err) {
+        log('workflow enrich failed in %s: %o', root, err);
+        return null;
+      }
+    };
   }
 
   /**
@@ -462,7 +529,7 @@ export function createRunnableCache(options = {}) {
           : explained.length > 0
             ? explained
             : embeddedBlockerIds(row);
-      const item = qualify(row, blocked_by);
+      const item = qualify(row, blocked_by, enrichFor(workspace));
       if (item) {
         items.push(item);
       }

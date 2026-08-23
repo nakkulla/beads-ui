@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createWorkerRuntime } from './runtime.js';
 
 const WS = '/tmp/example-workspace/project-a';
@@ -79,5 +79,35 @@ describe('worker/runtime status', () => {
     expect(/** @type {any} */ (rt).breaker).toBeUndefined();
     expect(/** @type {any} */ (rt).tokens).toBeUndefined();
     expect(/** @type {any} */ (rt).mergeLock).toBeUndefined();
+  });
+});
+
+describe('worker/runtime session-log → title-cache wiring (UI-eey2 §9.2)', () => {
+  test('expires a bead when the session log sees its bd write complete', () => {
+    const rt = createWorkerRuntime();
+    const expire = vi.spyOn(rt.titleCache, 'expire');
+
+    rt.sessionLog.publish(WS, 'attempt-1', {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: 'bd update UI-1 --set-metadata route=full_plan',
+        exit_code: 0
+      }
+    });
+
+    expect(expire).toHaveBeenCalledWith(WS, 'UI-1');
+  });
+
+  test('leaves the cache alone for a bd read', () => {
+    const rt = createWorkerRuntime();
+    const expire = vi.spyOn(rt.titleCache, 'expire');
+
+    rt.sessionLog.publish(WS, 'attempt-1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd show UI-1 --json' }
+    });
+
+    expect(expire).not.toHaveBeenCalled();
   });
 });
