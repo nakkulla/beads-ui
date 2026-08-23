@@ -365,3 +365,548 @@ describe('usage meter rendering', () => {
     );
   });
 });
+
+/**
+ * Build one `accounts[]` row on top of the shared contract defaults.
+ *
+ * @param {Partial<{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: Array<{ key: string, pct: number, resetsAt: string }>, fetchedAt: string | null, ageSeconds: number | null }>} overrides
+ */
+function accountRow(overrides) {
+  return {
+    number: 1,
+    email: 'one@example.com',
+    alias: null,
+    plan: null,
+    active: false,
+    status: 'ok',
+    windows: [],
+    fetchedAt: null,
+    ageSeconds: null,
+    ...overrides
+  };
+}
+
+/** Mount a fresh usage meter host element. */
+function mountMeter() {
+  document.body.innerHTML = '<div id="usage-meter"></div>';
+  return /** @type {HTMLElement} */ (document.getElementById('usage-meter'));
+}
+
+/**
+ * Serve one payload per provider endpoint.
+ *
+ * @param {unknown} claude_payload
+ * @param {unknown} [codex_payload]
+ */
+function stubProviders(claude_payload, codex_payload = { available: false }) {
+  const fetchMock = vi.fn((/** @type {string} */ url) =>
+    Promise.resolve({
+      ok: true,
+      json: () =>
+        Promise.resolve(
+          url === '/api/codex-usage' ? codex_payload : claude_payload
+        )
+    })
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+/**
+ * @param {HTMLElement} mount
+ */
+function toggleButton(mount) {
+  return /** @type {HTMLButtonElement | null} */ (
+    mount.querySelector('.usage-meter__toggle')
+  );
+}
+
+/**
+ * @param {HTMLElement} mount
+ */
+async function openCard(mount) {
+  await vi.waitFor(() => expect(toggleButton(mount)).not.toBeNull());
+  /** @type {HTMLButtonElement} */ (toggleButton(mount)).click();
+}
+
+describe('usage meter account badge', () => {
+  test('counts every non-active managed account', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubProviders({
+      ...usageResponse([{ key: '5h', pct: 10, resetsAt: reset_at }]),
+      accounts: [
+        accountRow({ number: 2, active: true }),
+        accountRow({ number: 1, status: 'token_expired' }),
+        accountRow({ number: 3, status: 'token_expired' })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.usage-meter__badge')).not.toBeNull()
+    );
+
+    expect(mount.querySelector('.usage-meter__badge')?.textContent).toBe('+2');
+    meter.destroy();
+  });
+
+  test('omits the badge when every managed account is active', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubProviders({
+      ...usageResponse([{ key: '5h', pct: 10, resetsAt: reset_at }]),
+      accounts: [accountRow({ number: 2, active: true })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.usage-meter')).not.toBeNull()
+    );
+
+    expect(mount.querySelector('.usage-meter__badge')).toBeNull();
+    meter.destroy();
+  });
+
+  test('renders the static meter without a toggle when accounts are absent', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubProviders(usageResponse([{ key: '5h', pct: 10, resetsAt: reset_at }]));
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.usage-meter')).not.toBeNull()
+    );
+
+    expect(toggleButton(mount)).toBeNull();
+    expect(mount.querySelector('.usage-meter__badge')).toBeNull();
+    meter.destroy();
+  });
+
+  test('keeps the group with a badge when the active account is unavailable', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [
+        accountRow({ number: 1, status: 'token_expired' }),
+        accountRow({ number: 2, email: 'two@example.com', status: 'api_key' })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(mount.querySelector('.usage-meter__empty')).not.toBeNull()
+    );
+
+    expect(mount.querySelector('.usage-meter__provider')?.textContent).toBe(
+      'Claude'
+    );
+    expect(mount.querySelector('.usage-meter__badge')?.textContent).toBe('+2');
+    meter.destroy();
+  });
+});
+
+describe('usage meter account card', () => {
+  test('opens the card when the meter toggle is clicked', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubProviders({
+      ...usageResponse([{ key: '5h', pct: 10, resetsAt: reset_at }]),
+      accounts: [
+        accountRow({ number: 2, active: true }),
+        accountRow({ number: 1 })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    expect(mount.querySelector('.usage-meter__card')).not.toBeNull();
+    expect(toggleButton(mount)?.getAttribute('aria-expanded')).toBe('true');
+    meter.destroy();
+  });
+
+  test('closes the card on an outside mousedown', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    meter.destroy();
+  });
+
+  test('closes the card on Escape', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    meter.destroy();
+  });
+
+  test('keeps the card open across a polling refresh', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    /** @type {HTMLButtonElement} */ (toggleButton(mount)).click();
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mount.querySelector('.usage-meter__card')).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('prefers the alias as the row label and keeps the email as its title', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [
+        accountRow({ number: 1, email: 'one@example.com', alias: 'work' }),
+        accountRow({ number: 2, email: 'two@example.com' })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const labels = mount.querySelectorAll('.usage-meter__account-label');
+    expect(labels[0].textContent).toBe('work');
+    expect(labels[0].getAttribute('title')).toBe('one@example.com');
+    expect(labels[1].textContent).toBe('two@example.com');
+    meter.destroy();
+  });
+
+  test('renders the Codex plan tag on an account row', async () => {
+    const mount = mountMeter();
+    stubProviders(
+      { available: false },
+      {
+        available: false,
+        accounts: [accountRow({ number: 1, plan: 'pro' })]
+      }
+    );
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    expect(mount.querySelector('.usage-meter__account-tag')?.textContent).toBe(
+      'pro'
+    );
+    meter.destroy();
+  });
+
+  test('replaces the bars with a relogin message on an expired account', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1, status: 'token_expired' })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    expect(
+      mount.querySelector('.usage-meter__account-status')?.textContent?.trim()
+    ).toBe('토큰 만료 — cswap 재로그인 필요');
+    expect(mount.querySelector('.usage-meter__account-window')).toBeNull();
+    meter.destroy();
+  });
+
+  test('shows a plain empty message for other non-ok statuses', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1, status: 'api_key' })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    expect(
+      mount.querySelector('.usage-meter__account-status')?.textContent?.trim()
+    ).toBe('사용량 없음');
+    meter.destroy();
+  });
+
+  test('enables the switch button on a row whose status is not ok', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1, status: 'token_expired' })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    );
+    expect(button.disabled).toBe(false);
+    meter.destroy();
+  });
+
+  test('counts zero active accounts in the section heading', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [
+        accountRow({ number: 1 }),
+        accountRow({ number: 2, email: 'two@example.com' })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    expect(
+      mount
+        .querySelector('.usage-meter__section-title')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim()
+    ).toBe('Claude · 활성 0 / 전체 2');
+    expect(mount.querySelector('.usage-meter__badge')?.textContent).toBe('+2');
+    meter.destroy();
+  });
+
+  test('renders the persistent card note', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    expect(mount.querySelector('.usage-meter__note')?.textContent).toBe(
+      '전환은 새로 시작하는 세션부터 적용됩니다.'
+    );
+    meter.destroy();
+  });
+
+  test('declares the mobile bottom sheet and scrim rules', () => {
+    const styles = fs.readFileSync('app/styles.css', 'utf8');
+
+    expect(styles).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\.usage-meter__scrim\s*{[\s\S]*?display: block;/
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*?\.usage-meter__card\s*{[\s\S]*?position: fixed;/
+    );
+  });
+});
+
+describe('usage meter account switch', () => {
+  /**
+   * @param {unknown} switch_payload
+   */
+  function stubSwitch(switch_payload) {
+    const claude_payload = {
+      available: false,
+      accounts: [accountRow({ number: 1, status: 'token_expired' })]
+    };
+    const fetchMock = vi.fn((/** @type {string} */ url) => {
+      if (url === '/api/claude-account/switch') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(switch_payload)
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            url === '/api/codex-usage' ? { available: false } : claude_payload
+          )
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  test('posts the account number and refetches usage on success', async () => {
+    const mount = mountMeter();
+    const fetchMock = stubSwitch({ ok: true, switched: true, warnings: [] });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter((call) => call[0] === '/api/claude-usage')
+      ).toHaveLength(2)
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/claude-account/switch',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ number: 1 })
+      })
+    );
+    meter.destroy();
+  });
+
+  test('shows the returned warnings under the switched row', async () => {
+    const mount = mountMeter();
+    stubSwitch({ ok: true, switched: true, warnings: ['stale keychain'] });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        mount.querySelector('.usage-meter__account-message--warn')
+      ).not.toBeNull()
+    );
+
+    expect(
+      mount
+        .querySelector('.usage-meter__account-message--warn')
+        ?.textContent?.trim()
+    ).toBe('stale keychain');
+    meter.destroy();
+  });
+
+  test('shows the raw error under the row and restores the button on failure', async () => {
+    const mount = mountMeter();
+    stubSwitch({ ok: false, error: 'not_found' });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        mount.querySelector('.usage-meter__account-message--error')
+      ).not.toBeNull()
+    );
+
+    expect(
+      mount
+        .querySelector('.usage-meter__account-message--error')
+        ?.textContent?.trim()
+    ).toBe('전환 실패 — not_found');
+    const button = /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    );
+    expect(button.disabled).toBe(false);
+    meter.destroy();
+  });
+
+  test('reports a network failure as a row-level error', async () => {
+    const mount = mountMeter();
+    const claude_payload = {
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    };
+    const fetchMock = vi.fn((/** @type {string} */ url) => {
+      if (url === '/api/claude-account/switch') {
+        return Promise.reject(new Error('offline'));
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            url === '/api/codex-usage' ? { available: false } : claude_payload
+          )
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.waitFor(() =>
+      expect(
+        mount.querySelector('.usage-meter__account-message--error')
+      ).not.toBeNull()
+    );
+
+    expect(
+      mount
+        .querySelector('.usage-meter__account-message--error')
+        ?.textContent?.trim()
+    ).toBe('전환 실패 — network_error');
+    meter.destroy();
+  });
+  test('switches one provider while the other provider switch is in flight', async () => {
+    const mount = mountMeter();
+    /** @type {(value: unknown) => void} */
+    let releaseClaudeSwitch = () => {};
+    const claude_switch = new Promise((resolve) => {
+      releaseClaudeSwitch = resolve;
+    });
+    const accounts_payload = {
+      available: false,
+      accounts: [accountRow({ number: 1, status: 'token_expired' })]
+    };
+    const fetchMock = vi.fn((/** @type {string} */ url) => {
+      if (url === '/api/claude-account/switch') {
+        return claude_switch.then(() => ({
+          ok: true,
+          json: () => Promise.resolve({ ok: true, switched: true })
+        }));
+      }
+      if (url === '/api/codex-account/switch') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ok: true, switched: true })
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(accounts_payload)
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    /**
+     * @param {number} index
+     */
+    function switchButton(index) {
+      return /** @type {HTMLButtonElement} */ (
+        mount.querySelectorAll('.usage-meter__switch')[index]
+      );
+    }
+    switchButton(0).click();
+    await vi.waitFor(() => expect(switchButton(0).disabled).toBe(true));
+    switchButton(1).click();
+    await vi.waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/codex-account/switch',
+        expect.objectContaining({ method: 'POST' })
+      )
+    );
+
+    expect(switchButton(0).disabled).toBe(true);
+    releaseClaudeSwitch(undefined);
+    meter.destroy();
+  });
+});

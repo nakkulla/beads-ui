@@ -1,5 +1,13 @@
 import { html, render } from 'lit-html';
 
+/**
+ * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
+ * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[] }} ProviderSnapshot
+ * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
+ * @typedef {{ kind: 'warn' | 'error', text: string }} RowMessage
+ */
+
 const MONTH_NAMES = [
   'Jan',
   'Feb',
@@ -14,6 +22,10 @@ const MONTH_NAMES = [
   'Nov',
   'Dec'
 ];
+
+const CARD_ID = 'usage-meter-card';
+const STALE_AGE_SECONDS = 600;
+const RELOGIN_STATUSES = ['token_expired', 'relogin_required'];
 
 /**
  * Format a number as two decimal digits.
@@ -69,6 +81,22 @@ export function formatResetTime(resets_at, now_ms = Date.now()) {
 }
 
 /**
+ * Format a snapshot age with the card's second/minute/hour vocabulary.
+ *
+ * @param {number} age_seconds
+ */
+export function formatAge(age_seconds) {
+  const seconds = Math.max(0, Math.floor(age_seconds));
+  if (seconds < 60) {
+    return `${seconds}초 전`;
+  }
+  if (seconds < 3_600) {
+    return `${Math.floor(seconds / 60)}분 전`;
+  }
+  return `${Math.floor(seconds / 3_600)}시간 전`;
+}
+
+/**
  * @param {number} pct
  */
 function colorClass(pct) {
@@ -81,10 +109,151 @@ function colorClass(pct) {
   return 'usage-meter__window--success';
 }
 
+/**
+ * @param {unknown} pct
+ */
+function clampPct(pct) {
+  const raw_pct = typeof pct === 'number' && Number.isFinite(pct) ? pct : 0;
+  return Math.min(100, Math.max(0, raw_pct));
+}
+
+/** @type {ProviderDescriptor[]} */
 const PROVIDERS = [
-  { key: 'claude', label: 'Claude', endpoint: '/api/claude-usage' },
-  { key: 'codex', label: 'Codex', endpoint: '/api/codex-usage' }
+  {
+    key: 'claude',
+    label: 'Claude',
+    endpoint: '/api/claude-usage',
+    switch_endpoint: '/api/claude-account/switch',
+    tool: 'cswap'
+  },
+  {
+    key: 'codex',
+    label: 'Codex',
+    endpoint: '/api/codex-usage',
+    switch_endpoint: '/api/codex-account/switch',
+    tool: 'codex-auth'
+  }
 ];
+
+/**
+ * Keep only the windows the meter can actually draw.
+ *
+ * @param {unknown[]} input
+ * @returns {UsageWindow[]}
+ */
+function normalizeWindows(input) {
+  /** @type {UsageWindow[]} */
+  const windows = [];
+  for (const candidate of input) {
+    if (!candidate || typeof candidate !== 'object') {
+      continue;
+    }
+    const window = /** @type {any} */ (candidate);
+    if (typeof window.key !== 'string' || window.key.length === 0) {
+      continue;
+    }
+    if (typeof window.pct !== 'number' || !Number.isFinite(window.pct)) {
+      continue;
+    }
+    windows.push({
+      key: window.key,
+      pct: window.pct,
+      resetsAt: typeof window.resetsAt === 'string' ? window.resetsAt : ''
+    });
+  }
+  return windows;
+}
+
+/**
+ * Normalize one `accounts[]` row; a row that does not match the contract is
+ * dropped so a malformed row never removes the rest of the card.
+ *
+ * @param {unknown} input
+ * @returns {UsageAccount | null}
+ */
+function normalizeAccountRow(input) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const row = /** @type {any} */ (input);
+  if (!Number.isInteger(row.number) || row.number <= 0) {
+    return null;
+  }
+  if (typeof row.email !== 'string' || row.email.length === 0) {
+    return null;
+  }
+  if (typeof row.status !== 'string' || row.status.length === 0) {
+    return null;
+  }
+  if (typeof row.active !== 'boolean' || !Array.isArray(row.windows)) {
+    return null;
+  }
+  return {
+    number: row.number,
+    email: row.email,
+    alias:
+      typeof row.alias === 'string' && row.alias.length > 0 ? row.alias : null,
+    plan: typeof row.plan === 'string' && row.plan.length > 0 ? row.plan : null,
+    active: row.active,
+    status: row.status,
+    windows: normalizeWindows(row.windows),
+    fetchedAt: typeof row.fetchedAt === 'string' ? row.fetchedAt : null,
+    ageSeconds:
+      typeof row.ageSeconds === 'number' && Number.isFinite(row.ageSeconds)
+        ? row.ageSeconds
+        : null
+  };
+}
+
+/**
+ * Collapse one usage response into what the header and the card render. A
+ * provider stays visible when either the active account or at least one
+ * account row is usable.
+ *
+ * @param {unknown} input
+ * @returns {ProviderSnapshot | null}
+ */
+function normalizeSnapshot(input) {
+  if (!input || typeof input !== 'object') {
+    return null;
+  }
+  const payload = /** @type {any} */ (input);
+  /** @type {UsageAccount[]} */
+  const accounts = [];
+  if (Array.isArray(payload.accounts)) {
+    for (const row of payload.accounts) {
+      const account = normalizeAccountRow(row);
+      if (account) {
+        accounts.push(account);
+      }
+    }
+  }
+  const available =
+    payload.available === true && Array.isArray(payload.windows);
+  if (!available && accounts.length === 0) {
+    return null;
+  }
+  return {
+    available,
+    windows: available ? normalizeWindows(payload.windows) : [],
+    ageSeconds:
+      typeof payload.ageSeconds === 'number' &&
+      Number.isFinite(payload.ageSeconds)
+        ? payload.ageSeconds
+        : null,
+    accounts
+  };
+}
+
+/**
+ * Row-message key: the tool number is unique per provider, the email is not.
+ *
+ * @param {string} provider_key
+ * @param {number} account_number
+ */
+function rowKey(provider_key, account_number) {
+  return `${provider_key}:${account_number}`;
+}
 
 /**
  * Render and poll independent provider usage snapshots.
@@ -93,10 +262,18 @@ const PROVIDERS = [
  */
 export function createUsageMeter(mount_element) {
   let destroyed = false;
+  let is_open = false;
+  // provider key -> the account number currently switching. Keyed per provider
+  // because the server allows one concurrent switch per provider, not one
+  // globally, so a Codex switch must not be swallowed while Claude switches.
+  /** @type {Map<string, number>} */
+  const switching_rows = new Map();
   /** @type {ReturnType<typeof setInterval> | null} */
   let interval_id = null;
-  /** @type {Map<string, any>} */
-  const provider_payloads = new Map();
+  /** @type {Map<string, ProviderSnapshot>} */
+  const provider_snapshots = new Map();
+  /** @type {Map<string, RowMessage>} */
+  const row_messages = new Map();
 
   /** Hide the fail-quiet mount and discard its previous snapshot. */
   function hide() {
@@ -104,56 +281,381 @@ export function createUsageMeter(mount_element) {
     mount_element.hidden = true;
   }
 
+  /** Attach the document listeners that close the card. */
+  function openCard() {
+    if (is_open) {
+      return;
+    }
+    is_open = true;
+    document.addEventListener('mousedown', onDocMousedown);
+    document.addEventListener('keydown', onDocKeydown);
+  }
+
+  /** Detach the document listeners. Callers re-render. */
+  function closeCard() {
+    if (!is_open) {
+      return;
+    }
+    is_open = false;
+    document.removeEventListener('mousedown', onDocMousedown);
+    document.removeEventListener('keydown', onDocKeydown);
+  }
+
+  /**
+   * Close on an outside mousedown. Anything inside the mount (the meter, the
+   * card, its buttons) keeps the card open; the scrim closes it explicitly.
+   *
+   * @param {MouseEvent} ev
+   */
+  function onDocMousedown(ev) {
+    const target = /** @type {Node | null} */ (ev.target);
+    if (target && mount_element.contains(target)) {
+      return;
+    }
+    closeCard();
+    renderProviders();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onDocKeydown(ev) {
+    if (ev.key === 'Escape') {
+      closeCard();
+      renderProviders();
+    }
+  }
+
+  function onToggleClick() {
+    if (is_open) {
+      closeCard();
+    } else {
+      openCard();
+    }
+    renderProviders();
+  }
+
+  function onScrimMousedown() {
+    closeCard();
+    renderProviders();
+  }
+
+  /**
+   * Switch the active account of one provider. Failures stay on the row: no
+   * global toast, and the usage cache is left to the server.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {number} account_number
+   */
+  async function switchAccount(provider, account_number) {
+    if (switching_rows.has(provider.key)) {
+      return;
+    }
+    const row_key = rowKey(provider.key, account_number);
+    switching_rows.set(provider.key, account_number);
+    row_messages.delete(row_key);
+    renderProviders();
+
+    /** @type {any} */
+    let body = null;
+    try {
+      const response = await fetch(provider.switch_endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ number: account_number })
+      });
+      body = await response.json();
+    } catch {
+      body = null;
+    }
+    if (destroyed) {
+      return;
+    }
+    switching_rows.delete(provider.key);
+
+    if (!body || body.ok !== true) {
+      const error_text =
+        body && typeof body.error === 'string' && body.error.length > 0
+          ? body.error
+          : 'network_error';
+      row_messages.set(row_key, {
+        kind: 'error',
+        text: `전환 실패 — ${error_text}`
+      });
+      renderProviders();
+      return;
+    }
+
+    const warnings = Array.isArray(body.warnings)
+      ? body.warnings.filter(
+          (/** @type {unknown} */ warning) =>
+            typeof warning === 'string' && warning.length > 0
+        )
+      : [];
+    if (warnings.length > 0) {
+      row_messages.set(row_key, { kind: 'warn', text: warnings.join(' · ') });
+    }
+    renderProviders();
+    await refresh();
+  }
+
+  /**
+   * One usage window of the collapsed header meter.
+   *
+   * @param {UsageWindow} window
+   * @param {boolean} stale
+   * @param {string} stale_note
+   * @param {number} now_ms
+   */
+  function renderHeaderWindow(window, stale, stale_note, now_ms) {
+    const pct = clampPct(window.pct);
+    const reset_time = formatResetTime(window.resetsAt, now_ms);
+    const title = `resets ${reset_time}${stale ? ` · ${stale_note}` : ''}`;
+    return html`<span
+      class="usage-meter__window ${colorClass(pct)}"
+      style=${`--progress: ${pct}%`}
+      title=${title}
+    >
+      <span class="usage-meter__label">${window.key}</span>
+      <span class="usage-meter__track" aria-hidden="true">
+        <span class="usage-meter__fill"></span>
+      </span>
+      <span class="usage-meter__pct">${pct}%</span>
+    </span>`;
+  }
+
+  /**
+   * One provider group of the collapsed header meter.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {ProviderSnapshot} snapshot
+   * @param {number} now_ms
+   */
+  function renderGroup(provider, snapshot, now_ms) {
+    const stale =
+      snapshot.available &&
+      typeof snapshot.ageSeconds === 'number' &&
+      snapshot.ageSeconds > STALE_AGE_SECONDS;
+    const stale_note =
+      stale && typeof snapshot.ageSeconds === 'number'
+        ? `${Math.floor(snapshot.ageSeconds / 60)}분 전 측정`
+        : '';
+    const inactive_count = snapshot.accounts.filter(
+      (account) => !account.active
+    ).length;
+    return html`<span
+      class="usage-meter__group${stale ? ' usage-meter__group--stale' : ''}"
+      aria-label=${`${provider.label} usage`}
+    >
+      <span class="usage-meter__provider">${provider.label}</span>
+      ${snapshot.available
+        ? snapshot.windows.map((window) =>
+            renderHeaderWindow(window, stale, stale_note, now_ms)
+          )
+        : html`<span class="usage-meter__empty">사용량 없음</span>`}
+      ${inactive_count > 0
+        ? html`<span class="usage-meter__badge">+${inactive_count}</span>`
+        : ''}
+    </span>`;
+  }
+
+  /**
+   * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} entries
+   * @param {number} now_ms
+   */
+  function renderMeter(entries, now_ms) {
+    return html`<span class="usage-meter" aria-label="Usage">
+      ${entries.map((entry) =>
+        renderGroup(entry.provider, entry.snapshot, now_ms)
+      )}
+    </span>`;
+  }
+
+  /**
+   * One usage window of a card row. The color modifier is shared with the
+   * header because it only carries `--usage-meter-color`; the bar element
+   * itself is a separate class so the 900px header rule cannot fold it.
+   *
+   * @param {UsageWindow} window
+   */
+  function renderAccountWindow(window) {
+    const pct = clampPct(window.pct);
+    return html`<span
+      class="usage-meter__account-window ${colorClass(pct)}"
+      style=${`--progress: ${pct}%`}
+    >
+      <span class="usage-meter__account-key">${window.key}</span>
+      <span class="usage-meter__account-track" aria-hidden="true">
+        <span class="usage-meter__account-fill"></span>
+      </span>
+      <span class="usage-meter__account-pct">${pct}%</span>
+    </span>`;
+  }
+
+  /**
+   * @param {ProviderDescriptor} provider
+   * @param {string} status
+   */
+  function statusText(provider, status) {
+    if (RELOGIN_STATUSES.includes(status)) {
+      return `토큰 만료 — ${provider.tool} 재로그인 필요`;
+    }
+    return '사용량 없음';
+  }
+
+  /**
+   * One account row of the card.
+   *
+   * @param {ProviderDescriptor} provider
+   * @param {UsageAccount} account
+   */
+  function renderAccount(provider, account) {
+    const is_ok = account.status === 'ok';
+    const stale =
+      typeof account.ageSeconds === 'number' &&
+      account.ageSeconds > STALE_AGE_SECONDS;
+    const message = row_messages.get(rowKey(provider.key, account.number));
+    const switching_number = switching_rows.get(provider.key);
+    const provider_switching = switching_number !== undefined;
+    const row_switching = switching_number === account.number;
+    /** @type {string[]} */
+    const classes = ['usage-meter__account'];
+    if (account.active) {
+      classes.push('usage-meter__account--active');
+    }
+    if (!is_ok) {
+      classes.push('usage-meter__account--unavailable');
+    }
+    if (stale) {
+      classes.push('usage-meter__account--stale');
+    }
+
+    return html`<div class=${classes.join(' ')}>
+      <div class="usage-meter__account-head">
+        <span class="usage-meter__account-label" title=${account.email}
+          >${account.alias === null ? account.email : account.alias}</span
+        >
+        ${account.plan === null
+          ? ''
+          : html`<span class="usage-meter__account-tag">${account.plan}</span>`}
+        ${account.active
+          ? html`<span
+              class="usage-meter__account-tag usage-meter__account-tag--active"
+              >active</span
+            >`
+          : ''}
+        ${account.ageSeconds === null
+          ? ''
+          : html`<span class="usage-meter__account-age"
+              >${formatAge(account.ageSeconds)}</span
+            >`}
+        ${account.active
+          ? ''
+          : html`<button
+              type="button"
+              class="usage-meter__switch"
+              ?disabled=${provider_switching}
+              @click=${() => void switchAccount(provider, account.number)}
+            >
+              ${row_switching ? '전환 중…' : '전환'}
+            </button>`}
+      </div>
+      ${is_ok
+        ? html`<div class="usage-meter__account-windows">
+            ${account.windows.map((window) => renderAccountWindow(window))}
+          </div>`
+        : html`<div class="usage-meter__account-status">
+            ${statusText(provider, account.status)}
+          </div>`}
+      ${message === undefined
+        ? ''
+        : html`<div
+            class="usage-meter__account-message usage-meter__account-message--${message.kind}"
+          >
+            ${message.text}
+          </div>`}
+    </div>`;
+  }
+
+  /**
+   * @param {ProviderDescriptor} provider
+   * @param {ProviderSnapshot} snapshot
+   */
+  function renderSection(provider, snapshot) {
+    const active_count = snapshot.accounts.filter(
+      (account) => account.active
+    ).length;
+    return html`<section class="usage-meter__section">
+      <h2 class="usage-meter__section-title">
+        ${provider.label} · 활성 ${active_count} / 전체
+        ${snapshot.accounts.length}
+      </h2>
+      ${snapshot.accounts.map((account) => renderAccount(provider, account))}
+    </section>`;
+  }
+
+  /**
+   * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} entries
+   */
+  function renderCard(entries) {
+    return html`<div
+      class="usage-meter__card"
+      id=${CARD_ID}
+      role="dialog"
+      aria-label="계정 사용량"
+    >
+      ${entries
+        .filter((entry) => entry.snapshot.accounts.length > 0)
+        .map((entry) => renderSection(entry.provider, entry.snapshot))}
+      <p class="usage-meter__note">전환은 새로 시작하는 세션부터 적용됩니다.</p>
+    </div>`;
+  }
+
   /** Render every currently available provider. */
   function renderProviders() {
-    const available_providers = PROVIDERS.filter((provider) =>
-      provider_payloads.has(provider.key)
-    );
-    if (available_providers.length === 0) {
+    /** @type {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} */
+    const entries = [];
+    for (const provider of PROVIDERS) {
+      const snapshot = provider_snapshots.get(provider.key);
+      if (snapshot) {
+        entries.push({ provider, snapshot });
+      }
+    }
+    if (entries.length === 0) {
+      closeCard();
       hide();
       return;
     }
 
+    const has_accounts = entries.some(
+      (entry) => entry.snapshot.accounts.length > 0
+    );
+    if (!has_accounts) {
+      closeCard();
+    }
+
     const now_ms = Date.now();
+    const meter = renderMeter(entries, now_ms);
     render(
-      html`<div class="usage-meter" aria-label="Usage">
-        ${available_providers.map((provider) => {
-          const payload = provider_payloads.get(provider.key);
-          const stale =
-            typeof payload.ageSeconds === 'number' && payload.ageSeconds > 600;
-          const stale_note = stale
-            ? `${Math.floor(payload.ageSeconds / 60)}분 전 측정`
-            : '';
-          return html`<span
-            class="usage-meter__group${stale
-              ? ' usage-meter__group--stale'
-              : ''}"
-            aria-label=${`${provider.label} usage`}
+      html`${has_accounts
+        ? html`<button
+            type="button"
+            class="usage-meter__toggle"
+            aria-expanded=${is_open ? 'true' : 'false'}
+            aria-controls=${CARD_ID}
+            @click=${onToggleClick}
           >
-            <span class="usage-meter__provider">${provider.label}</span>
-            ${payload.windows.map((/** @type {any} */ window) => {
-              const raw_pct =
-                typeof window.pct === 'number' && Number.isFinite(window.pct)
-                  ? window.pct
-                  : 0;
-              const pct = Math.min(100, Math.max(0, raw_pct));
-              const reset_time = formatResetTime(window.resetsAt, now_ms);
-              const title = `resets ${reset_time}${stale ? ` · ${stale_note}` : ''}`;
-              return html`<span
-                class="usage-meter__window ${colorClass(pct)}"
-                style=${`--progress: ${pct}%`}
-                title=${title}
-              >
-                <span class="usage-meter__label">${window.key}</span>
-                <span class="usage-meter__track" aria-hidden="true">
-                  <span class="usage-meter__fill"></span>
-                </span>
-                <span class="usage-meter__pct">${pct}%</span>
-              </span>`;
-            })}
-          </span>`;
-        })}
-      </div>`,
+            ${meter}
+          </button>`
+        : meter}
+      ${is_open
+        ? html`<div
+              class="usage-meter__scrim"
+              aria-hidden="true"
+              @mousedown=${onScrimMousedown}
+            ></div>
+            ${renderCard(entries)}`
+        : ''}`,
       mount_element
     );
     mount_element.hidden = false;
@@ -162,7 +664,8 @@ export function createUsageMeter(mount_element) {
   /**
    * Fetch one provider and collapse its failure to unavailable.
    *
-   * @param {{ key: string, label: string, endpoint: string }} provider
+   * @param {ProviderDescriptor} provider
+   * @returns {Promise<ProviderSnapshot | null>}
    */
   async function fetchProvider(provider) {
     try {
@@ -170,15 +673,7 @@ export function createUsageMeter(mount_element) {
       if (!response.ok) {
         return null;
       }
-      const payload = /** @type {any} */ (await response.json());
-      if (
-        !payload ||
-        payload.available !== true ||
-        !Array.isArray(payload.windows)
-      ) {
-        return null;
-      }
-      return payload;
+      return normalizeSnapshot(await response.json());
     } catch {
       return null;
     }
@@ -189,17 +684,17 @@ export function createUsageMeter(mount_element) {
     const results = await Promise.all(
       PROVIDERS.map(async (provider) => ({
         provider,
-        payload: await fetchProvider(provider)
+        snapshot: await fetchProvider(provider)
       }))
     );
     if (destroyed) {
       return;
     }
     for (const result of results) {
-      if (result.payload) {
-        provider_payloads.set(result.provider.key, result.payload);
+      if (result.snapshot) {
+        provider_snapshots.set(result.provider.key, result.snapshot);
       } else {
-        provider_payloads.delete(result.provider.key);
+        provider_snapshots.delete(result.provider.key);
       }
     }
     renderProviders();
@@ -212,13 +707,14 @@ export function createUsageMeter(mount_element) {
   }, 60_000);
 
   return {
-    /** Stop polling and clear the mount. */
+    /** Stop polling, release the document listeners and clear the mount. */
     destroy() {
       destroyed = true;
       if (interval_id !== null) {
         clearInterval(interval_id);
         interval_id = null;
       }
+      closeCard();
       hide();
     }
   };

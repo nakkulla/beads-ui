@@ -393,6 +393,11 @@ a {
   margin-right: var(--sp-4);
 }
 
+/* 다계정 카드는 이 마운트를 기준으로 위치를 잡는다. */
+.usage-meter-mount {
+  position: relative;
+}
+
 .usage-meter__group {
   display: inline-flex;
   align-items: center;
@@ -485,6 +490,273 @@ a {
 
   .usage-meter__track {
     display: none;
+  }
+}
+
+/* 다계정 카드: 헤더 미터를 토글 버튼으로 감싸고, 그 아래에 계정 목록 카드를
+   띄운다. 버튼 크롬은 지우고 미터 레이아웃만 남긴다. */
+.usage-meter__toggle {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-6);
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+
+  &:hover .usage-meter__provider {
+    color: var(--text-primary);
+  }
+
+  &:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px
+      color-mix(in srgb, var(--text-secondary) 40%, transparent);
+  }
+}
+
+/* 활성이 아닌 관리 계정 수(+N). */
+.usage-meter__badge {
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-8);
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  color: var(--text-secondary);
+  font-size: var(--fs-label-tiny);
+  font-weight: 700;
+  line-height: 15px;
+}
+
+/* 활성 계정 usage가 없어도 accounts[]가 있으면 그룹을 지우지 않는다. */
+.usage-meter__empty {
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+}
+
+/* 데스크톱: 헤더 아래 우측 정렬 팝오버. 그림자는 헤더의 다른 팝오버
+   (.workspace-picker__manage-popover)와 같은 --fg 규약을 따른다. */
+.usage-meter__card {
+  position: absolute;
+  top: calc(100% + var(--sp-8));
+  right: 0;
+  z-index: 60;
+  width: 380px;
+  max-width: calc(100vw - 24px);
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--sp-10);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-10);
+  background: var(--bg-card);
+  box-shadow: 0 10px 28px color-mix(in srgb, var(--fg) 22%, transparent);
+  text-align: left;
+}
+
+/* 스크림은 하단 시트에서만 보인다. */
+.usage-meter__scrim {
+  display: none;
+}
+
+.usage-meter__section + .usage-meter__section {
+  margin-top: var(--sp-10);
+  padding-top: var(--sp-10);
+  border-top: 1px solid var(--border-chip);
+}
+
+.usage-meter__section-title {
+  margin: 0 0 var(--sp-8);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.usage-meter__account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-8);
+  border: 1px solid transparent;
+  border-radius: var(--r-8);
+}
+
+.usage-meter__account + .usage-meter__account {
+  margin-top: var(--sp-5);
+}
+
+.usage-meter__account--active {
+  border-color: var(--border-chip);
+  background: color-mix(in srgb, var(--accent-success) 10%, transparent);
+}
+
+.usage-meter__account--unavailable .usage-meter__account-label {
+  color: var(--text-muted);
+}
+
+/* 600초 초과는 측정값만 흐리게 한다. [전환]은 비활성처럼 보이면 안 된다. */
+.usage-meter__account--stale .usage-meter__account-windows,
+.usage-meter__account--stale .usage-meter__account-age {
+  opacity: 0.55;
+}
+
+.usage-meter__account-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.usage-meter__account-label {
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--fs-body-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-meter__account-tag {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  color: var(--text-muted);
+  font-size: var(--fs-label-tiny);
+  font-weight: 600;
+  line-height: 15px;
+}
+
+.usage-meter__account-tag--active {
+  border-color: color-mix(
+    in srgb,
+    var(--accent-success) 45%,
+    var(--border-chip)
+  );
+  color: var(--accent-success);
+}
+
+.usage-meter__account-age {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: var(--fs-label-tiny);
+}
+
+.usage-meter__switch {
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-8);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-6);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+  cursor: pointer;
+
+  &:hover:not(:disabled) {
+    border-color: var(--text-muted);
+    color: var(--text-primary);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+}
+
+/* 카드 안의 막대는 900px 축약 규칙에 걸리지 않도록 헤더와 별도 클래스를 쓰고,
+   색 modifier(--usage-meter-color)만 헤더와 공유한다. */
+.usage-meter__account-windows {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-4) var(--sp-10);
+}
+
+.usage-meter__account-window {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-5);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.usage-meter__account-key {
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  font-weight: 600;
+}
+
+.usage-meter__account-track {
+  width: 68px;
+  height: var(--sp-6);
+  overflow: hidden;
+  border-radius: var(--r-10);
+  background: color-mix(in srgb, var(--text-muted) 22%, transparent);
+}
+
+.usage-meter__account-fill {
+  display: block;
+  width: var(--progress);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--usage-meter-color);
+}
+
+.usage-meter__account-pct {
+  color: var(--text-primary);
+  font-size: var(--fs-chip-lg);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-meter__account-status {
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+}
+
+.usage-meter__account-message {
+  font-size: var(--fs-chip);
+}
+
+.usage-meter__account-message--warn {
+  color: var(--accent-warn);
+}
+
+.usage-meter__account-message--error {
+  color: var(--accent-danger);
+}
+
+.usage-meter__note {
+  margin: var(--sp-10) 0 0;
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--border-chip);
+  color: var(--text-dim);
+  font-size: var(--fs-label-tiny);
+}
+
+/* 모바일: 같은 카드를 스크림 위 하단 시트로 올린다. */
+@media (max-width: 640px) {
+  .usage-meter__scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: color-mix(in srgb, var(--bg-app) 62%, transparent);
+  }
+
+  .usage-meter__card {
+    position: fixed;
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+    max-height: 78vh;
+    border-width: 1px 0 0;
+    border-radius: var(--r-10) var(--r-10) 0 0;
   }
 }
 
