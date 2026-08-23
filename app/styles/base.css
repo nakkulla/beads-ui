@@ -190,9 +190,13 @@ body {
 }
 
 /* Longhand only: the shorthands would drop the select arrow background-image
-   and the hover border-width/style that styles.css owns. */
+   and the hover border-width/style that styles.css owns. The fixed height must
+   drop the inherited vertical padding, or the 13px label gets clipped. */
 .repo-scope .workspace-picker__select {
   height: 24px;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 22px;
   min-width: 0;
   border-color: transparent;
   background-color: transparent;
