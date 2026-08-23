@@ -1540,6 +1540,11 @@ export function bootstrap(root_element) {
       transport,
       pipelineStore: monitor_pipeline_store,
       execPresetStore: exec_preset_store,
+      // 실행 타일의 `▤ 세션`은 Worker 탭과 같은 드로어·같은 라인 스토어를 쓴다
+      // (UI-eey2 §7); `root_dir`만 더 실어 다른 레포의 세션도 연다.
+      sessionLogStore: session_log_store,
+      // 레포 배지·섹션 `Worker ↗` 클릭이 그 레포의 Worker 탭으로 넘어간다 (§11).
+      router,
       gotoIssue: (id) => router.gotoIssue(id),
       getWorkspacePath: () => store.getState().workspace.current?.path,
       switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir)

@@ -25,6 +25,10 @@
  * @property {BlockerScope|null} scope
  * @property {boolean} same_lane_ahead
  * @property {boolean} missing_internal
+ * @property {string} location_label - The 위치 phrase alone (`같은 레인 앞` ·
+ * `<repo> · <lane> #n` · `실행중` · `미적재` …), without the `🔒` prefix. The
+ * dependency chips (UI-eey2 §5.1) name the DIRECTION themselves
+ * (`🔒 선행 …` / `→ 후속 …`) and compose the phrase into their own label.
  */
 
 /**
@@ -200,6 +204,7 @@ export function describeBlocker(
     return {
       id: blocker_id,
       label: `🔒 ${blocker_id} (같은 레인 앞)`,
+      location_label: '같은 레인 앞',
       scope: null,
       same_lane_ahead: true,
       missing_internal: false
@@ -209,6 +214,7 @@ export function describeBlocker(
     return {
       id: blocker_id,
       label: `🔒 ${blocker_id} (${blockerLocationLabel(location)})`,
+      location_label: blockerLocationLabel(location),
       scope: null,
       same_lane_ahead: false,
       missing_internal: false
@@ -224,6 +230,7 @@ export function describeBlocker(
   return {
     id: blocker_id,
     label: `🔒 ${blocker_id} (${suffix})`,
+    location_label: suffix,
     scope,
     same_lane_ahead: false,
     missing_internal: isMissingInternalBlocker(scope, location)

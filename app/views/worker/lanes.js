@@ -562,26 +562,103 @@ export function staleWorkProjection(admission, locked = false) {
  * The prefix label lives here rather than in the formatter: the formatter owns
  * the settings text, the template owns how that text is introduced.
  *
+ * `pin` marks the pair as an ISSUE PIN that differs from the repo default
+ * (UI-eey2 §5): the monitor draws a card's exec chips only in that case, so the
+ * chip must say why it is the one chip on the card. Omitted — every Worker
+ * call — renders exactly as before.
+ *
  * @param {import('../../utils/exec-settings-chip.js').ExecChips|null|undefined} chips
+ * @param {{ pin?: boolean }} [options]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function execChipsTemplate(chips) {
+export function execChipsTemplate(chips, options = {}) {
   if (!chips || (!chips.orchestration && !chips.worker)) {
     return '';
   }
+  const pin = options.pin === true ? ' exec-chip--pin' : '';
+  const note = options.pin === true ? '\n이슈 핀 — 레포 기본값과 다름' : '';
   return html`${chips.orchestration
     ? html`<span
-        class="exec-chip exec-chip--orch"
-        title=${chips.orchestration.title}
+        class="exec-chip exec-chip--orch${pin}"
+        title=${`${chips.orchestration.title}${note}`}
         ><span class="exec-chip__k">오케</span
         ><span class="exec-chip__v">${chips.orchestration.text}</span></span
       >`
     : ''}${chips.worker
-    ? html`<span class="exec-chip exec-chip--worker" title=${chips.worker.title}
+    ? html`<span
+        class="exec-chip exec-chip--worker${pin}"
+        title=${`${chips.worker.title}${note}`}
         ><span class="exec-chip__k">워커</span
         ><span class="exec-chip__v">${chips.worker.text}</span></span
       >`
     : ''}`;
+}
+
+/**
+ * @typedef {Object} DependencyChip
+ * @property {string} id - The bead on the other end of the edge.
+ * @property {string} label - Full chip text. The projection composes it because
+ * only the projection knows the 위치 vocabulary; the template never invents it.
+ * @property {string} [title] - Tooltip sentence.
+ */
+
+/**
+ * @typedef {Object} DependencyChips
+ * @property {DependencyChip[]} [predecessors] - `🔒 선행 …` — releasable (✕).
+ * @property {DependencyChip[]} [successors] - `→ 후속 …` — reverse edges, so
+ * they carry no ✕: releasing one belongs to the successor's own 선행 chip.
+ * @property {string[]} [warnings] - Lines about a predecessor that is nowhere.
+ */
+
+/**
+ * The 선행/후속 의존 칩 (UI-eey2 §5.1). Two named chips rather than one coloured
+ * one, because "내가 막혔나 / 내가 막고 있나"는 색이 아니라 이름으로 읽힌다.
+ * Drawn only when a projection supplies them, so Worker rows are unchanged.
+ *
+ * @param {DependencyChips|null|undefined} chips
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function dependencyChipsTemplate(chips) {
+  if (!chips) {
+    return '';
+  }
+  const predecessors = Array.isArray(chips.predecessors)
+    ? chips.predecessors
+    : [];
+  const successors = Array.isArray(chips.successors) ? chips.successors : [];
+  const warnings = Array.isArray(chips.warnings) ? chips.warnings : [];
+  if (
+    predecessors.length === 0 &&
+    successors.length === 0 &&
+    warnings.length === 0
+  ) {
+    return '';
+  }
+  return html`<div class="worker-deps">
+    ${predecessors.map(
+      (chip) =>
+        html`<span class="worker-dep worker-dep--pred" title=${chip.title || ''}
+          ><span class="worker-dep__label">${chip.label}</span
+          ><button
+            type="button"
+            class="worker-dep__remove"
+            data-blocker-id=${chip.id}
+            aria-label=${`선행 ${chip.id} 연결 해제`}
+            title="선행 연결 해제"
+          >
+            ✕
+          </button></span
+        >`
+    )}${successors.map(
+      (chip) =>
+        html`<span class="worker-dep worker-dep--succ" title=${chip.title || ''}
+          >${chip.label}</span
+        >`
+    )}${warnings.map(
+      (warning) =>
+        html`<span class="worker-dep worker-dep--warn">${warning}</span>`
+    )}
+  </div>`;
 }
 
 /**
@@ -669,11 +746,92 @@ export function execChipsTemplate(chips) {
  * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
  * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
  * 돌아간다"를 적재 전에 미리 보여 준다. 완료 행·PR 대기 행은 싣지 않는다.
+ * @property {DependencyChips|null} [dependency_chips] - 선행/후속 의존 칩
+ * (UI-eey2 §5.1). Monitor-only; the Worker console never sets it.
+ * @property {'three_line'} [done_layout] - 완료 행 변형 (UI-eey2 §8). The
+ * monitor's done row carries a repo badge as well, which squeezes the two-line
+ * variant's title down to a few characters, so the title moves onto its own
+ * line. Absent keeps the two-line variant.
+ * @property {boolean} [exec_chips_pinned] - Whether {@link MiniItem.exec_chips}
+ * are ISSUE PINS differing from the repo default (UI-eey2 §5) rather than the
+ * resolved settings — drawn in the pin colour.
  * @property {boolean} [worker_ineligible] - Candidate carries the
  * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
  * wears the ⛔ chip, and refuses drag and queue placement. The candidate
  * projection computes it once; the template never re-reads label strings.
  */
+
+/**
+ * The 완료 3줄 행 (UI-eey2 §8): 레포 배지 · ID · 완료 시각 / 제목 / 토큰 · 작업.
+ *
+ * A separate builder rather than a branch inside {@link miniRow}: the monitor's
+ * done row is the only row that needs it, and rebuilding miniRow's ternary
+ * chain around it would rewrite the Worker console's rows for no reason.
+ *
+ * @param {MiniItem} item
+ * @returns {import('lit-html').TemplateResult}
+ */
+function doneThreeLineRow(item) {
+  const badges = Array.isArray(item.badges) ? item.badges : [];
+  const provider_badges = providerUsageBadges(item.usage);
+  const usage_label = formatUsageTotalWithCost(item.usage);
+  const done_at_label = formatRelativeTime(item.done_at);
+  return html`<div
+    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line"
+    draggable="false"
+    data-bead-id=${item.id}
+    data-lane=${item.lane}
+  >
+    <div class="worker-mini__row1">
+      ${item.workspace_name
+        ? html`<span class="worker-mini__repo" title=${item.root_dir || ''}
+            >${item.workspace_name}</span
+          >`
+        : ''}
+      <span class="worker-mini__id" title="클릭하면 ID 복사">${item.id}</span>
+      ${done_at_label
+        ? html`<span
+            class="worker-mini__done-at"
+            title=${`완료 ${formatTimestampLocal(item.done_at)}`}
+            >완료 ${done_at_label}</span
+          >`
+        : ''}
+      ${badges.map(
+        (b) =>
+          html`<span
+            class="worker-mini__badge${item.alert
+              ? ' worker-mini__badge--alert'
+              : ''}"
+            >${b}</span
+          >`
+      )}
+    </div>
+    <div class="worker-mini__row2">
+      <span class="worker-mini__title">${item.title}</span>
+    </div>
+    <div class="worker-mini__row3">
+      ${provider_badges.length > 0
+        ? provider_badges.map(
+            (badge) =>
+              html`<span class="worker-usage" title=${badge.tooltip}
+                >${badge.label}</span
+              >`
+          )
+        : usage_label
+          ? html`<span class="worker-usage" title=${usageTooltip(item.usage)}
+              >${usage_label}</span
+            >`
+          : ''}
+      ${typeof item.work_ms === 'number'
+        ? html`<span
+            class="worker-mini__work"
+            title="attempt 실행 시간 합산 (재개 세션 포함)"
+            >작업 ${formatElapsed(item.work_ms)}</span
+          >`
+        : ''}
+    </div>
+  </div>`;
+}
 
 /**
  * One `.mini` row.
@@ -689,6 +847,9 @@ export function execChipsTemplate(chips) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function miniRow(item) {
+  if (item.lane === 'done' && item.done_layout === 'three_line') {
+    return doneThreeLineRow(item);
+  }
   const draggable = item.draggable && !item.done;
   const badges = Array.isArray(item.badges) ? item.badges : [];
   const provider_badges = providerUsageBadges(item.usage);
@@ -947,9 +1108,13 @@ export function miniRow(item) {
     item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
       ? html`<div class="worker-mini__exec">
-          ${execChipsTemplate(item.exec_chips)}
+          ${execChipsTemplate(item.exec_chips, {
+            pin: item.exec_chips_pinned === true
+          })}
         </div>`
       : '';
+  const deps_el = dependencyChipsTemplate(item.dependency_chips);
+  const receipt_el = discardReceiptTemplate(item);
   const has_foot = !!(
     usage_label ||
     merging ||
@@ -1002,7 +1167,7 @@ export function miniRow(item) {
               ${grip}${seq_el}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
-            ${exec_el}${has_foot
+            ${deps_el}${exec_el}${has_foot
               ? html`<div class="worker-mini__foot">
                   ${usage_el}${merge_step_el}
                   <span class="worker-mini__actions"
@@ -1018,7 +1183,7 @@ export function miniRow(item) {
           html`<div class="worker-mini__line">
               ${grip}${seq_el}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
-            ${exec_el}${discardReceiptTemplate(item)} ${timesMeta(item)}`}
+            ${deps_el}${exec_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
 }
 
@@ -1029,11 +1194,19 @@ export function miniRow(item) {
  * drag controller treats it identically. An issue without `workflow` (inactive
  * workspace) renders without the chip/stepper and never throws.
  *
+ * `exec_chips_mode` (UI-eey2 §5) says what this card's exec chips MEAN.
+ * `always` — the Worker console's contract, unchanged — draws the resolved
+ * settings. `pinned_only` says the caller has already filtered them down to the
+ * issue pins that differ from the repo default, so they are drawn in the pin
+ * colour with the pin tooltip; the card never decides that itself, because only
+ * the caller knows the repo's defaults.
+ *
  * @param {MiniItem} item
  * @param {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null} [place_menu]
+ * @param {{ exec_chips_mode?: 'always'|'pinned_only' }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
-export function candidateCard(item, place_menu = null) {
+export function candidateCard(item, place_menu = null, options = {}) {
   // Observation-only rows (UI-8881) are refused here as well as by the
   // projection, so the card cannot become draggable through a caller that
   // forgot the conjunction.
@@ -1051,6 +1224,7 @@ export function candidateCard(item, place_menu = null) {
     item.reason.split(' · ').includes('missing_description');
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
+  const deps_el = dependencyChipsTemplate(item.dependency_chips);
   return html`<div
     class="worker-card${draggable
       ? ''
@@ -1087,11 +1261,13 @@ export function candidateCard(item, place_menu = null) {
         : ''}
     </div>
     <div class="worker-card__title">${item.title}</div>
-    ${workflow ? stepperTemplate(workflow, item.status) : ''}
+    ${workflow ? stepperTemplate(workflow, item.status) : ''}${deps_el}
     ${item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
       ? html`<div class="worker-mini__exec">
-          ${execChipsTemplate(item.exec_chips)}
+          ${execChipsTemplate(item.exec_chips, {
+            pin: options.exec_chips_mode === 'pinned_only'
+          })}
         </div>`
       : ''}
     <div

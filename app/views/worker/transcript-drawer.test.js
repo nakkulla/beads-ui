@@ -1147,3 +1147,63 @@ describe('transcript drawer — 현재 단계 칩 (UI-dixx 변경 3)', () => {
     );
   });
 });
+
+/**
+ * UI-eey2 §9.5: the monitor opens sessions of repos the connection is NOT
+ * pointed at, so both reads carry the owning workspace root. Omitting it keeps
+ * the server's own connection scope, which is what the Worker console wants.
+ */
+describe('transcript drawer root_dir (UI-eey2 §9.5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="d"></div>';
+    mount = /** @type {HTMLElement} */ (document.getElementById('d'));
+    store = createSessionLogStore();
+    sends = [];
+  });
+
+  test('carries root_dir on the session-log subscription', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'a1', root_dir: '/tmp/other-repo' });
+
+    expect(
+      sends.find((s) => s.type === 'subscribe-session-log')?.payload
+    ).toMatchObject({ attempt_id: 'a1', root_dir: '/tmp/other-repo' });
+    drawer.destroy();
+  });
+
+  test('carries root_dir on the recorded prompt read', async () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'a1', root_dir: '/tmp/other-repo' });
+    /** @type {HTMLElement|null} */ (
+      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
+    )?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(
+      sends.find((s) => s.type === 'get-attempt-prompt')?.payload
+    ).toMatchObject({ attempt_id: 'a1', root_dir: '/tmp/other-repo' });
+    drawer.destroy();
+  });
+
+  test('omits root_dir when the opener does not name one', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'a1' });
+
+    expect(
+      sends.find((s) => s.type === 'subscribe-session-log')?.payload
+    ).not.toHaveProperty('root_dir');
+    drawer.destroy();
+  });
+});
