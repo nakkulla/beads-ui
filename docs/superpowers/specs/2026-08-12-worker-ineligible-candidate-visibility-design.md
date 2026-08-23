@@ -236,16 +236,16 @@ timeout_ms = 600000
 
 PR에는 `npm run build`로 생성한 bundle과 map을 포함한다. 머지 뒤 배포 절차·lock
 계약·실패 사다리는 `AGENTS.md` "Post‑Merge Runtime Validation"이 소유하며 이
-문서는 복제하지 않는다. 이 unit의 머지 후 필수 작업은 그 선언된 `[deploy]`
-handler가 전부 덮으므로 별도 interactive-only 잔여는 없다.
+문서는 복제하지 않는다. 이 unit의 머지 후 **필수** 작업은 공유 서비스 배포와 그
+health/SHA 확인뿐이며, 선언된 `[deploy]` handler(build → restart → process
+source/SHA·port·`/healthz` readback)가 이를 수행하고 영수증화한다. 따라서
+interactive-only 잔여는 없다.
 
-controller의 독립 확인은 다음 두 가지다.
-
-1. 머지된 `main`에서 `npm run build`가 tracked bundle/map에 추가 diff를 만들지
-   않고, 공유 서비스의 process source/SHA, listening port, `/healthz`가 머지된
-   SHA와 일치한다.
-2. 실제 `worker-ineligible` Bead가 Worker 후보에서 음영·chip·비활성 상태로 보이며
-   queue placement가 불가능하다.
+카드 표현·drag 차단·`[대기로 ↴]` 비활성·필터/정렬 동작은 `Test scope`의 seam
+1–3이 결정적으로 검증하는 항목이며, 실제 공유 UI에서 `worker-ineligible` Bead가
+음영·chip·비활성으로 보이는지 눈으로 확인하는 것은 **advisory 수동 관측**이다.
+사용자나 controller가 배포 뒤 기회가 있을 때 확인하되, 완료 조건이나 Worker
+eligibility의 전제가 아니다.
 
 ## 완료 조건
 
@@ -255,5 +255,8 @@ controller의 독립 확인은 다음 두 가지다.
 4. 상세 열기와 ID 복사는 유지된다.
 5. Monitor와 server execution guard 의미는 변하지 않는다.
 6. focused tests, 전체 frontend/backend 검증, build가 통과한다.
-7. 선언된 `[deploy]` 배포의 terminal success와 merged shared service의 process
-   source/SHA, port, health, 실제 후보 카드 behavior가 확인된다.
+7. 선언된 `[deploy]` 배포가 terminal success에 도달하고, 그 영수증이 merged
+   shared service의 process source/SHA, port, `/healthz`를 확인한다.
+
+실제 후보 카드 behavior의 육안 확인은 위 "배포와 runtime 검증"의 advisory 수동
+관측이며 완료 조건이 아니다.
