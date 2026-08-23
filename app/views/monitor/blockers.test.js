@@ -302,3 +302,61 @@ describe('monitor serial lane head cycles (UI-2gi1 §6.4)', () => {
     expect(cycles.size).toBe(0);
   });
 });
+
+/**
+ * UI-eey2 §5.1: the dependency chips name the DIRECTION themselves
+ * (`🔒 선행 …` / `→ 후속 …`), so they need the 위치 phrase on its own rather
+ * than the whole `🔒 <id> (<위치>)` label this module has always produced.
+ */
+describe('blocker location phrase (UI-eey2 §5.1)', () => {
+  test('exposes the lane phrase without the lock prefix', () => {
+    const locations = new Map([
+      [
+        'A-1',
+        {
+          root_dir: '/tmp/a',
+          workspace_name: 'repo-a',
+          lane: 'parallel',
+          position: 2
+        }
+      ]
+    ]);
+
+    const display = describeBlocker('A-1', undefined, locations, []);
+
+    expect(display.location_label).toBe('repo-a · 병렬 #2');
+    expect(display.label).toBe('🔒 A-1 (repo-a · 병렬 #2)');
+  });
+
+  test('exposes the same-lane phrase', () => {
+    const locations = new Map([
+      [
+        'A-1',
+        {
+          root_dir: '/tmp/a',
+          workspace_name: 'repo-a',
+          lane: 'parallel',
+          position: 1
+        }
+      ]
+    ]);
+    const current = {
+      root_dir: '/tmp/a',
+      workspace_name: 'repo-a',
+      lane: 'parallel',
+      position: 3
+    };
+
+    expect(describeBlocker('A-1', current, locations, []).location_label).toBe(
+      '같은 레인 앞'
+    );
+  });
+
+  test('exposes the scope phrase for an unplaced blocker', () => {
+    const display = describeBlocker('Z-9', undefined, new Map(), [
+      { root_dir: '/tmp/a', issue_prefix: 'A' }
+    ]);
+
+    expect(display.location_label).toBe('외부');
+  });
+});

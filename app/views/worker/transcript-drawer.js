@@ -270,7 +270,7 @@ function formatAgo(at, now_ms) {
  *   sessionLogStore?: { get: (id: string) => { lines: unknown[], last_event_at?: number|null } | null, subscribe: (fn: () => void) => () => void },
  *   onClose?: () => void
  * }} [options]
- * @returns {{ open: (input: { attempt_id: string, launch_id?: string, meta?: DrawerMeta, hide_prompt?: boolean }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
+ * @returns {{ open: (input: { attempt_id: string, launch_id?: string, root_dir?: string, meta?: DrawerMeta, hide_prompt?: boolean }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
  */
 export function createTranscriptDrawer(mount_element, options = {}) {
   const { transport, sessionLogStore, onClose } = options;
@@ -281,6 +281,14 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   let launch_id = null;
   /** @type {string | null} */
   let subscription_id = null;
+  /**
+   * Which workspace the open attempt belongs to (UI-eey2 §9.5). The monitor
+   * opens sessions of repos this connection is NOT pointed at, so both reads
+   * carry it; absent keeps the server's own connection scope.
+   *
+   * @type {string | null}
+   */
+  let root_dir = null;
   /**
    * Whether the attempt-prompt toggle is suppressed for this session. An
    * analyzer run has a run id, not an attempt id, so `get-attempt-prompt` would
@@ -336,7 +344,10 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     doRender();
     try {
       const res = await Promise.resolve(
-        transport('get-attempt-prompt', { attempt_id: id })
+        transport('get-attempt-prompt', {
+          attempt_id: id,
+          ...(root_dir ? { root_dir } : {})
+        })
       );
       if (attempt_id !== id) {
         return;
@@ -909,7 +920,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   mount_element.addEventListener('scroll', onScroll, true);
 
   /**
-   * @param {{ attempt_id: string, launch_id?: string, meta?: DrawerMeta, hide_prompt?: boolean }} input
+   * @param {{ attempt_id: string, launch_id?: string, root_dir?: string, meta?: DrawerMeta, hide_prompt?: boolean }} input
    */
   function open(input) {
     const next_id = input && input.attempt_id;
@@ -937,6 +948,10 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         transport('unsubscribe-session-log', { id: previous_subscription_id })
       ).catch(() => {});
     }
+    root_dir =
+      typeof input.root_dir === 'string' && input.root_dir.length > 0
+        ? input.root_dir
+        : null;
     meta = input.meta || {};
     hide_prompt = input.hide_prompt === true;
     follow = true;
@@ -951,7 +966,8 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         transport('subscribe-session-log', {
           id: subscription_id,
           attempt_id,
-          ...(launch_id ? { launch_id } : {})
+          ...(launch_id ? { launch_id } : {}),
+          ...(root_dir ? { root_dir } : {})
         })
       ).catch(() => {});
     }
@@ -963,6 +979,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     attempt_id = null;
     launch_id = null;
     subscription_id = null;
+    root_dir = null;
     hide_prompt = false;
     expanded.clear();
     unfolded.clear();
@@ -996,6 +1013,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       attempt_id = null;
       launch_id = null;
       subscription_id = null;
+      root_dir = null;
       hide_prompt = false;
       render(html``, mount_element);
     }

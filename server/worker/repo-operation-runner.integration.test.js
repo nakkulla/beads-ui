@@ -3,12 +3,26 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createLockManager } from './locks.js';
 import { createQueueStore } from './queue-store.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationRunner } from './repo-operation-runner.js';
 import { repoOperationMarkerPath } from './state-paths.js';
+
+// These tests spawn REAL node processes and wait for the marker a detached
+// grandchild writes after its own sleep. One test costs ~1s on an idle machine,
+// and this file is one of 282 the suite runs in parallel — under that load the
+// default 5s per-test budget is not patience, it is a coin flip. The assertions
+// are unchanged; only the waiting is sized for the load the suite creates.
+vi.setConfig({ testTimeout: 30_000 });
+
+/**
+ * How long {@link eventually} may wait for a REAL spawned process to reach an
+ * observable state. The poll returns the moment the check passes, so an idle
+ * machine pays nothing for the headroom.
+ */
+const PROCESS_WAIT_MS = 15_000;
 
 /** @type {string} */
 let root;
@@ -30,9 +44,13 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** @param {() => unknown} check */
-async function eventually(check) {
-  for (let index = 0; index < 80; index += 1) {
+/**
+ * @param {() => unknown} check
+ * @param {number} [timeout_ms]
+ */
+async function eventually(check, timeout_ms = PROCESS_WAIT_MS) {
+  const deadline = Date.now() + timeout_ms;
+  while (Date.now() < deadline) {
     try {
       check();
       return;

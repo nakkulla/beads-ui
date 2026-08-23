@@ -234,6 +234,47 @@ export function readbackFailureDetail(reason) {
 }
 
 /**
+ * Read a `bd kv` JSON entry in an EXPLICIT workspace root (UI-eey2 §9.5).
+ *
+ * The root-addressed pair is the primitive and the connection-addressed pair
+ * below is a thin wrapper on it, because a repo panel in the monitor operates on
+ * a workspace the connection is not bound to — reading the connected repo's kv
+ * there would silently show (and, on write, clobber) the wrong repo's defaults.
+ *
+ * An empty root means "wherever bd defaults to", which is exactly what a
+ * connection with no selected workspace has always meant.
+ *
+ * @param {string|null|undefined} root_dir
+ * @param {string} key
+ * @returns {ReturnType<typeof kvGetJson>}
+ */
+export function kvGetJsonAtRoot(root_dir, key) {
+  return root_dir ? kvGetJson(key, { cwd: root_dir }) : kvGetJson(key);
+}
+
+/**
+ * Write a `bd kv` JSON entry in an EXPLICIT workspace root, behind the same
+ * workspace effect gate the connection-addressed writer uses.
+ *
+ * @param {string|null|undefined} root_dir
+ * @param {string} key
+ * @param {Record<string, unknown>} value
+ * @returns {ReturnType<typeof kvSetJson>}
+ */
+export async function kvSetJsonAtRoot(root_dir, key, value) {
+  const allowed = await requireBdJsonCapabilityForWorkspace(
+    'kv',
+    root_dir || undefined
+  );
+  if (allowed.ok !== true) {
+    return { ok: false, error: `bd write refused: ${allowed.error.code}` };
+  }
+  return root_dir
+    ? kvSetJson(key, value, { cwd: root_dir })
+    : kvSetJson(key, value);
+}
+
+/**
  * Read a `bd kv` JSON entry in the connection's selected workspace.
  *
  * @param {WebSocket} ws
@@ -241,8 +282,7 @@ export function readbackFailureDetail(reason) {
  * @returns {ReturnType<typeof kvGetJson>}
  */
 export function kvGetJsonInWorkspace(ws, key) {
-  const root_dir = getConnWorkspace(ws)?.root_dir;
-  return root_dir ? kvGetJson(key, { cwd: root_dir }) : kvGetJson(key);
+  return kvGetJsonAtRoot(getConnWorkspace(ws)?.root_dir, key);
 }
 
 /**
@@ -253,15 +293,8 @@ export function kvGetJsonInWorkspace(ws, key) {
  * @param {Record<string, unknown>} value
  * @returns {ReturnType<typeof kvSetJson>}
  */
-export async function kvSetJsonInWorkspace(ws, key, value) {
-  const root_dir = getConnWorkspace(ws)?.root_dir;
-  const allowed = await requireBdJsonCapabilityForWorkspace('kv', root_dir);
-  if (allowed.ok !== true) {
-    return { ok: false, error: `bd write refused: ${allowed.error.code}` };
-  }
-  return root_dir
-    ? kvSetJson(key, value, { cwd: root_dir })
-    : kvSetJson(key, value);
+export function kvSetJsonInWorkspace(ws, key, value) {
+  return kvSetJsonAtRoot(getConnWorkspace(ws)?.root_dir, key, value);
 }
 
 /**

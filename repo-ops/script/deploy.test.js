@@ -11,7 +11,22 @@ import path from 'node:path';
 import process from 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+
+// Every test below runs the REAL deploy script, which spawns `git`, a shell,
+// and the fake `npm`/`bdui-shared` binaries. One such run costs ~1s on an idle
+// machine, and this file is one of 282 the suite runs in parallel — under that
+// load the default 5s per-test budget is not patience, it is a coin flip. The
+// assertions are unchanged; only the waiting is sized for the load the suite
+// actually creates.
+vi.setConfig({ testTimeout: 30_000 });
+
+/**
+ * How long a poll may wait for a REAL spawned process to reach an observable
+ * state. Sized for a loaded machine; the poll returns the moment the predicate
+ * holds, so an idle machine pays nothing for the headroom.
+ */
+const PROCESS_WAIT_MS = 15_000;
 
 const ADAPTER = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -146,13 +161,20 @@ function exited(child) {
   return new Promise((resolve) => child.once('exit', resolve));
 }
 
-/** @param {() => boolean} predicate */
-async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+/**
+ * @param {() => boolean} predicate
+ * @param {number} [timeout_ms]
+ */
+async function waitFor(predicate, timeout_ms = PROCESS_WAIT_MS) {
+  const deadline = Date.now() + timeout_ms;
+  while (Date.now() < deadline) {
     if (predicate()) {
       return;
     }
     await delay(10);
+  }
+  if (predicate()) {
+    return;
   }
   throw new Error('condition_not_observed');
 }

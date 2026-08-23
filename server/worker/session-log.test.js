@@ -277,3 +277,303 @@ describe('worker/session-log last_event_at (UI-53es §1)', () => {
     expect(fanouts).toEqual([WS]);
   });
 });
+
+describe('worker/session-log lastActivity (UI-eey2 §9.3)', () => {
+  test('projects a claude assistant line as the last activity', () => {
+    const log = createSessionLog({ now: () => 1_000, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '구현을 시작합니다.' }] }
+    });
+
+    expect(log.lastActivity(WS, 'a1')).toEqual({
+      at: 1_000,
+      kind: 'assistant',
+      text: '구현을 시작합니다.'
+    });
+  });
+
+  test('carries the paired tool_result summary onto the tool activity', () => {
+    const log = createSessionLog({ now: () => 5, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Bash',
+            input: { command: 'npm test' }
+          }
+        ]
+      }
+    });
+    log.publish(WS, 'a1', {
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: '통과 41\nrest' }
+        ]
+      }
+    });
+
+    expect(log.lastActivity(WS, 'a1')).toEqual({
+      at: 5,
+      kind: 'tool',
+      text: 'npm test',
+      tool: 'Bash',
+      command: 'npm test',
+      result: '통과 41'
+    });
+  });
+
+  test('projects a codex agent_message and command_execution', () => {
+    const log = createSessionLog({ now: () => 7, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'agent_message', text: '검토를 마쳤습니다.' }
+    });
+    const after_message = log.lastActivity(WS, 'a1');
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: 'npm run lint',
+        exit_code: 0
+      }
+    });
+
+    expect(after_message).toMatchObject({
+      kind: 'assistant',
+      text: '검토를 마쳤습니다.'
+    });
+    expect(log.lastActivity(WS, 'a1')).toMatchObject({
+      kind: 'tool',
+      tool: 'shell',
+      command: 'npm run lint',
+      result: 'exit 0'
+    });
+  });
+
+  test('projects a delegation-monitor line onto the same attempt', () => {
+    const log = createSessionLog({ now: () => 9, emitChanged: () => {} });
+
+    log.publish(
+      WS,
+      'a1',
+      {
+        schema: 'codex-delegation-monitor-v1',
+        event: {
+          type: 'item.completed',
+          item: {
+            id: 'i1',
+            kind: 'activity',
+            activity: 'command_execution',
+            status: 'completed'
+          }
+        }
+      },
+      'launch-1'
+    );
+
+    expect(log.lastActivity(WS, 'a1')).toMatchObject({
+      kind: 'tool',
+      tool: '명령 실행 · 완료'
+    });
+  });
+
+  test('ignores thinking lines', () => {
+    const log = createSessionLog({ now: () => 3, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '먼저 계약을 읽습니다.' }] }
+    });
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: { content: [{ type: 'thinking', thinking: '고민 중' }] }
+    });
+
+    expect(log.lastActivity(WS, 'a1')).toMatchObject({
+      kind: 'assistant',
+      text: '먼저 계약을 읽습니다.'
+    });
+  });
+
+  test('truncates the activity text at 160 characters', () => {
+    const log = createSessionLog({ now: () => 1, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'ㄱ'.repeat(400) }] }
+    });
+
+    expect(log.lastActivity(WS, 'a1')?.text).toHaveLength(160);
+  });
+
+  test('returns null for an attempt that produced nothing', () => {
+    const log = createSessionLog({ emitChanged: () => {} });
+
+    expect(log.lastActivity(WS, 'nope')).toBeNull();
+  });
+
+  test('keeps the last successful activity when the parser throws', () => {
+    const changed = vi.fn();
+    const log = createSessionLog({ now: () => 2, emitChanged: changed });
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '정상 줄' }] }
+    });
+    const before = log.lastActivity(WS, 'a1');
+
+    const exploding = {
+      get type() {
+        throw new Error('boom');
+      }
+    };
+    log.publish(WS, 'a1', exploding);
+
+    expect(log.lastActivity(WS, 'a1')).toEqual(before);
+    expect(log.lastEventAt(WS, 'a1')).toBe(2);
+  });
+
+  test('keeps the last successful activity for a malformed event', () => {
+    const appended = /** @type {any[]} */ ([]);
+    const log = createSessionLog({ now: () => 4, emitChanged: () => {} });
+    log.subscribe((a) => appended.push(a));
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '정상 줄' }] }
+    });
+
+    log.publish(WS, 'a1', { type: 'assistant', message: null });
+    log.publish(WS, 'a1', 42);
+
+    expect(log.lastActivity(WS, 'a1')).toMatchObject({ text: '정상 줄' });
+    expect(log.lastEventAt(WS, 'a1')).toBe(4);
+    expect(appended).toHaveLength(3);
+  });
+});
+
+describe('worker/session-log onBeadWrite (UI-eey2 §9.2)', () => {
+  test('fires when a claude bd update Bash command completes', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Bash',
+            input: { command: 'bd update UI-1 --status in_progress' }
+          }
+        ]
+      }
+    });
+    const before_result = onBeadWrite.mock.calls.length;
+    log.publish(WS, 'a1', {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]
+      }
+    });
+
+    expect(before_result).toBe(0);
+    expect(onBeadWrite).toHaveBeenCalledWith(WS, 'UI-1');
+  });
+
+  test('fires when a codex command_execution of bd close completes', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: 'bd close UI-7',
+        exit_code: 0
+      }
+    });
+
+    expect(onBeadWrite).toHaveBeenCalledWith(WS, 'UI-7');
+  });
+
+  test('names both ends of a bd dep add', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: 'bd dep add UI-1 UI-2 --type blocks'
+      }
+    });
+
+    expect(onBeadWrite.mock.calls.map((c) => c[1])).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('ignores a bd dep read', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd dep list UI-1 --json' }
+    });
+
+    expect(onBeadWrite).not.toHaveBeenCalled();
+  });
+
+  test('fires on a bd dep remove', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd dep remove UI-1 UI-2' }
+    });
+
+    expect(onBeadWrite.mock.calls.map((c) => c[1])).toEqual(['UI-1', 'UI-2']);
+  });
+
+  test('ignores bd reads and non-bd commands', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd show UI-1 --json' }
+    });
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'git commit -m UI-1' }
+    });
+
+    expect(onBeadWrite).not.toHaveBeenCalled();
+  });
+
+  test('never lets a throwing hook break the broadcast', () => {
+    const appended = /** @type {any[]} */ ([]);
+    const log = createSessionLog({
+      emitChanged: () => {},
+      onBeadWrite: () => {
+        throw new Error('boom');
+      }
+    });
+    log.subscribe((a) => appended.push(a));
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd close UI-9' }
+    });
+
+    expect(appended).toHaveLength(1);
+  });
+});

@@ -16,6 +16,10 @@ let refresh_listener = null;
 let external_refreshes = [];
 /** @type {string[]} */
 let invalidations = [];
+/** @type {string[]} */
+let kv_reads = [];
+/** @type {(root: string) => Promise<any>} */
+let kv_answer = async () => ({ ok: true, value: {} });
 
 // The channel is isolated from the worker runtime: what is under test is the
 // aggregation's own subscriber/push/demand behaviour, not the decoration it
@@ -41,6 +45,23 @@ vi.mock('./worker-handlers.js', () => ({
 vi.mock('../registry-watcher.js', () => ({
   getAvailableWorkspaces: () => workspaces.map((path) => ({ path }))
 }));
+
+// The per-repo session-defaults cache (UI-eey2 §9.4) reads `bd kv` through this
+// module; stubbing it keeps the channel tests free of a real bd process per push
+// and makes the async fill observable.
+vi.mock('./context.js', async (importOriginal) => {
+  const actual = /** @type {any} */ (await importOriginal());
+  return {
+    ...actual,
+    /**
+     * @param {string} root
+     */
+    kvGetJsonAtRoot: (root) => {
+      kv_reads.push(root);
+      return kv_answer(root);
+    }
+  };
+});
 
 vi.mock('../visible-workspaces-store.js', () => ({
   sharedVisibleWorkspacesStore: () => ({ listHidden: () => hidden })
@@ -81,6 +102,7 @@ const {
   detachMonitorPipeline,
   handleSubscribeMonitorPipeline,
   handleUnsubscribeMonitorPipeline,
+  invalidateSessionDefaults,
   monitorPipelineSubscriberCount,
   pollDemandFor
 } = await import('./monitor-handlers.js');
@@ -122,6 +144,8 @@ beforeEach(() => {
   refresh_listener = null;
   external_refreshes = [];
   invalidations = [];
+  kv_reads = [];
+  kv_answer = async () => ({ ok: true, value: {} });
   __resetMonitorPipelineForTest();
 });
 
@@ -345,5 +369,94 @@ describe('monitor-driven PR poll demand (UI-nprg)', () => {
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
 
     expect(pollDemandFor(WS_A)).toBe(3);
+  });
+});
+
+describe('monitor session_defaults cache (UI-eey2 §9.4)', () => {
+  test('ships an empty layer first, then pushes the filled one', async () => {
+    kv_answer = async () => ({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'codex' }
+    });
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    const first = ws.snapshots()[0].payload.workspaces_state[0];
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(first.session_defaults).toEqual({});
+    expect(kv_reads).toEqual([WS_A]);
+    const pushed = ws.snapshots();
+    expect(pushed.length).toBeGreaterThan(1);
+    expect(
+      pushed[pushed.length - 1].payload.workspaces_state[0].session_defaults
+    ).toEqual({ impl_runtime: 'codex' });
+  });
+
+  test('does not re-read a fresh entry on the next push', async () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    await vi.advanceTimersByTimeAsync(250);
+    kv_reads = [];
+
+    refresh_listener?.(WS_A);
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(kv_reads).toEqual([]);
+  });
+
+  test('carries a warning and keeps an empty layer when the read fails', async () => {
+    kv_answer = async () => ({ ok: false, error: 'db locked' });
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    await vi.advanceTimersByTimeAsync(250);
+
+    const pushed = ws.snapshots();
+    const state = pushed[pushed.length - 1].payload.workspaces_state[0];
+    expect(state.session_defaults).toEqual({});
+    expect(state.session_defaults_warnings).toEqual(['db locked']);
+  });
+
+  test('ships an empty layer again once the entry expires', async () => {
+    kv_answer = async () => ({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'codex' }
+    });
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    await vi.advanceTimersByTimeAsync(250);
+    const filled = ws.snapshots();
+    expect(
+      filled[filled.length - 1].payload.workspaces_state[0].session_defaults
+    ).toEqual({ impl_runtime: 'codex' });
+    kv_reads = [];
+    // Hang every later read so the entry cannot silently refresh itself while
+    // the clock advances; the refill stays in flight and the TTL runs out.
+    kv_answer = () => new Promise(() => {});
+
+    // Past the 5-minute success TTL: the stale value must not ride along while
+    // the refill is in flight (spec §9.4 cold/expired ships `{}`).
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    refresh_listener?.(WS_A);
+    await vi.advanceTimersByTimeAsync(250);
+
+    const pushed = ws.snapshots();
+    expect(
+      pushed[pushed.length - 1].payload.workspaces_state[0].session_defaults
+    ).toEqual({});
+    expect(kv_reads).toEqual([WS_A]);
+  });
+
+  test('re-reads the repo an invalidation named', async () => {
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    await vi.advanceTimersByTimeAsync(250);
+    kv_reads = [];
+
+    invalidateSessionDefaults(WS_A);
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(kv_reads).toEqual([WS_A]);
   });
 });

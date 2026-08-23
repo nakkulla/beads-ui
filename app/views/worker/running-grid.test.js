@@ -4,7 +4,11 @@ import {
   formatAttemptOrchestrationChip,
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
-import { bannersTemplate, runningGridTemplate } from './running-grid.js';
+import {
+  bannersTemplate,
+  runningGridTemplate,
+  runningTile
+} from './running-grid.js';
 
 describe('worker failed running tile template', () => {
   beforeEach(() => {
@@ -471,5 +475,170 @@ describe('repo deployment strip template (UI-lb58 Phase 4)', () => {
     render(bannersTemplate({}), mount);
 
     expect(mount.querySelector('.worker-deployment-strip')).toBeNull();
+  });
+});
+
+/**
+ * @param {any} tpl
+ * @returns {string}
+ */
+function shape(tpl) {
+  const host = document.createElement('div');
+  render(tpl, host);
+  /**
+   * @param {Node} node
+   * @returns {string}
+   */
+  const walk = (node) => {
+    if (node.nodeType === 8) {
+      return '';
+    }
+    if (node.nodeType === 3) {
+      return (node.textContent || '').replace(/\s+/g, ' ');
+    }
+    const element = /** @type {Element} */ (node);
+    const tag = element.tagName.toLowerCase();
+    const attrs = Array.from(element.attributes)
+      .map((a) => `${a.name}="${a.value}"`)
+      .sort()
+      .join(' ');
+    const kids = Array.from(element.childNodes).map(walk).join('');
+    return `<${tag}${attrs ? ` ${attrs}` : ''}>${kids}</${tag}>`;
+  };
+  return Array.from(host.childNodes).map(walk).join('');
+}
+
+/**
+ * @param {Partial<import('./running-grid.js').RunningTile>} [patch]
+ * @returns {any}
+ */
+function tileInput(patch = {}) {
+  return {
+    bead_id: 'UI-t1',
+    attempt_id: 'a1',
+    title: '실행 중',
+    runner: 'claude',
+    model: 'opus',
+    started_at: 1000,
+    can_pause: true,
+    ...patch
+  };
+}
+
+describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', () => {
+  test('renders no repo badge, stepper, activity or delegation line', () => {
+    const tile = shape(runningTile(tileInput(), 5000, null));
+
+    expect(tile).not.toContain('rtile__repo');
+    expect(tile).not.toContain('rtile__activity');
+    expect(tile).not.toContain('rtile__legs');
+    expect(tile).not.toContain('stepper');
+    expect(tile).toMatchInlineSnapshot(
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> <div class="rtile__title">실행 중</div>       <div aria-hidden="true" class="rtile__accent"></div> </div>"`
+    );
+  });
+
+  test('renders the same DOM whether the options object is omitted or empty', () => {
+    expect(shape(runningTile(tileInput(), 5000, null, {}))).toBe(
+      shape(runningTile(tileInput(), 5000, null))
+    );
+  });
+
+  test('renders the same DOM through the grid as through the tile', () => {
+    expect(shape(runningGridTemplate([tileInput()], 5000, null))).toContain(
+      shape(runningTile(tileInput(), 5000, null))
+    );
+  });
+});
+
+describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
+  const monitor = {
+    repo: 'repo-a',
+    root_dir: '/tmp/repo-a',
+    serial_lane_id: /** @type {const} */ ('s1'),
+    workflow: {
+      route: /** @type {const} */ ('spec_backed'),
+      stages: {
+        spec: { fill: /** @type {const} */ ('full') },
+        impl: {},
+        pr: {},
+        merge: {}
+      }
+    },
+    last_activity: { at: 4000, kind: 'tool', text: '⚡ npm test — 통과 41' },
+    legs: [
+      { label: '구현 unit 3 · codex', state: /** @type {const} */ ('live') },
+      { label: 'review-consult · codex', state: /** @type {const} */ ('done') }
+    ],
+    dependency_chips: {
+      successors: [{ id: 'UI-s', label: '→ 후속 UI-s (repo-b · 병렬 #1)' }]
+    }
+  };
+
+  test('adds the repo badge and serial lane chip to the header', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ (monitor)
+      })
+    );
+
+    expect(tile).toContain('rtile__repo');
+    expect(tile).toContain('repo-a');
+    expect(tile).toContain('rtile__lane');
+  });
+
+  test('adds the stepper, the last activity and its age', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ (monitor)
+      })
+    );
+
+    expect(tile).toContain('⚡ npm test — 통과 41');
+    expect(tile).toContain('rtile__activity-age');
+    expect(tile).toContain('class="stp"');
+  });
+
+  test('spells out live delegations and folds finished ones into one chip', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ (monitor)
+      })
+    );
+
+    expect(tile).toContain('⟳ 구현 unit 3 · codex');
+    expect(tile).toContain('✓ 1');
+    expect(tile).toContain('완료된 위임: review-consult · codex');
+  });
+
+  test('adds the reverse successor chip', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ (monitor)
+      })
+    );
+
+    expect(tile).toContain('→ 후속 UI-s (repo-b · 병렬 #1)');
+  });
+
+  test('omits every line the overlay has no material for', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, { monitor: { repo: 'repo-a' } })
+    );
+
+    expect(tile).toContain('rtile__repo');
+    expect(tile).not.toContain('rtile__activity');
+    expect(tile).not.toContain('rtile__legs');
+    expect(tile).not.toContain('worker-deps');
+  });
+
+  test('greys the activity dot on a paused attempt', () => {
+    const tile = shape(
+      runningTile(tileInput({ paused: true }), 5000, null, {
+        monitor: /** @type {any} */ (monitor)
+      })
+    );
+
+    expect(tile).toContain('rtile__activity is-paused');
   });
 });

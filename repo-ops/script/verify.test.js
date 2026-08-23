@@ -11,8 +11,15 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { resolveRepoOps } from '../../server/worker/repo-ops-resolver.js';
+
+// This file drives REAL child processes (git, a shell, node), so its wall time
+// is process startup, not product work. Measured against the whole suite running
+// in parallel, tests here reach ~4s — against a 5s default that is a coin flip,
+// and the repo-ops verify gate is where the coin lands wrong. The assertions are
+// unchanged; only the budget is sized for the load the suite actually creates.
+vi.setConfig({ testTimeout: 30_000 });
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ADAPTER = path.join(HERE, 'verify');

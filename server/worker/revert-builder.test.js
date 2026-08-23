@@ -5,6 +5,13 @@ import path from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import { createRevertBuilder } from './revert-builder.js';
 
+// This file drives REAL child processes (git, a shell, node), so its wall time
+// is process startup, not product work. Measured against the whole suite running
+// in parallel, tests here reach ~4s — against a 5s default that is a coin flip,
+// and the repo-ops verify gate is where the coin lands wrong. The assertions are
+// unchanged; only the budget is sized for the load the suite actually creates.
+vi.setConfig({ testTimeout: 30_000 });
+
 const SHA = 'a'.repeat(40);
 const PARENT = 'b'.repeat(40);
 

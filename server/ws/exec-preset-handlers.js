@@ -30,13 +30,16 @@ import {
   getWorkerRuntime
 } from '../worker/runtime.js';
 import {
+  kvGetJsonAtRoot,
   kvGetJsonInWorkspace,
+  kvSetJsonAtRoot,
   kvSetJsonInWorkspace,
   log,
   readbackFailureDetail,
   runBdInWorkspace,
   runBdJsonProjectedInWorkspace
 } from './context.js';
+import { invalidateSessionDefaults } from './monitor-handlers.js';
 import { triggerMutationRefreshOnce } from './refresh.js';
 import {
   decorateQueue,
@@ -438,7 +441,29 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     return;
   }
 
-  const read = await kvGetJsonInWorkspace(ws, SESSION_DEFAULTS_KV_KEY);
+  // The kv side now follows `root_dir` too (UI-eey2 §9.5). Before this, a
+  // profile applied from another repo's panel wrote that repo's QUEUE but the
+  // CONNECTED repo's session defaults — the two halves of one profile landing in
+  // two different repos. Absent `root_dir` keeps the connection-addressed
+  // helpers, so the Worker tab's own payload is unchanged.
+  const targets_other_root =
+    /** @type {any} */ (req.payload || {}).root_dir !== undefined &&
+    /** @type {any} */ (req.payload || {}).root_dir !== null;
+  /** @param {string} key */
+  const readKv = (key) =>
+    targets_other_root
+      ? kvGetJsonAtRoot(workspace_key, key)
+      : kvGetJsonInWorkspace(ws, key);
+  /**
+   * @param {string} key
+   * @param {Record<string, unknown>} value
+   */
+  const writeKv = (key, value) =>
+    targets_other_root
+      ? kvSetJsonAtRoot(workspace_key, key, value)
+      : kvSetJsonInWorkspace(ws, key, value);
+
+  const read = await readKv(SESSION_DEFAULTS_KV_KEY);
   if (!read.ok) {
     ws.send(
       JSON.stringify(
@@ -457,8 +482,7 @@ export async function handleApplyImplPresetGlobal(ws, req) {
       ? resolved.preset.settings[key]
       : null;
   }
-  const written = await kvSetJsonInWorkspace(
-    ws,
+  const written = await writeKv(
     SESSION_DEFAULTS_KV_KEY,
     mergeSessionDefaults(read.value, patch)
   );
@@ -470,7 +494,7 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     );
     return;
   }
-  const readback = await kvGetJsonInWorkspace(ws, SESSION_DEFAULTS_KV_KEY);
+  const readback = await readKv(SESSION_DEFAULTS_KV_KEY);
   if (!readback.ok) {
     ws.send(
       JSON.stringify(
@@ -503,6 +527,9 @@ export async function handleApplyImplPresetGlobal(ws, req) {
       return;
     }
   }
+
+  // The kv half landed; the monitor's per-repo cache for THIS root is now stale.
+  invalidateSessionDefaults(workspace_key);
 
   /** @type {Record<string, string|null>} */
   const orchestration_values = {};

@@ -181,7 +181,7 @@ function readyIdSet(arr) {
  * `base_unresolved` instead of thrown, so the refusal names the failing
  * declaration step rather than an incidental `bd_snapshot_failed`.
  *
- * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: typeof runBdJsonProjected, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>, requestSnapshot?: (workspace: string, cause: string) => Promise<any> }} config
+ * @param {{ cwd: string, repo: string, resolveBase: (options?: { force?: boolean }) => Promise<import('./target-base.js').TargetBaseResult>, runJson?: typeof runBdJsonProjected, run?: (args: string[], options?: any) => Promise<{ code: number, stdout: string, stderr: string }>, requestSnapshot?: (workspace: string, cause: string) => Promise<any>, onReadback?: (issue: unknown) => void }} config
  */
 export function createLiveBd(config) {
   const cwd = config.cwd;
@@ -190,7 +190,8 @@ export function createLiveBd(config) {
     cwd,
     run: config.run,
     runJson: config.runJson,
-    requestSnapshot: config.requestSnapshot || requestWorkspaceSnapshot
+    requestSnapshot: config.requestSnapshot || requestWorkspaceSnapshot,
+    ...(config.onReadback ? { onReadback: config.onReadback } : {})
   });
 
   return {
@@ -438,7 +439,8 @@ export function defaultProbePid(pid) {
  *   recoveryArchive?: ReturnType<typeof createRecoveryArchive>,
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
- *   getSubscriberCount?: () => number
+ *   getSubscriberCount?: () => number,
+ *   runJson?: typeof runBdJsonProjected
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -495,8 +497,21 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       }
     });
 
+  // Every confirming `bd show` readback this attachment's metadata writer makes
+  // is the freshest authoritative view of that bead in the process, so it feeds
+  // the title cache directly (UI-eey2 §9.2) instead of letting the stepper wait
+  // out the 5-minute TTL after a metadata write.
   const bd =
-    options.bd || createLiveBd({ cwd: workspace_root, repo, resolveBase });
+    options.bd ||
+    createLiveBd({
+      cwd: workspace_root,
+      repo,
+      resolveBase,
+      ...(options.runJson ? { runJson: options.runJson } : {}),
+      onReadback: (issue) => {
+        runtime.titleCache.refreshFromIssue(workspace_root, issue);
+      }
+    });
 
   // Workspace-scoped admission accessor (worker-autorun-policy §1): the
   // scheduler validates candidates/dispatches through `validate` (base

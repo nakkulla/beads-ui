@@ -1098,3 +1098,228 @@ describe('exec chip placement', () => {
     expect(row.querySelector('.worker-mini__exec')).toBeNull();
   });
 });
+
+/**
+ * Serialize a rendered template as tag + sorted attributes + text, dropping
+ * lit-html's marker comments (engine bookkeeping, not rendered content).
+ *
+ * @param {any} tpl
+ * @returns {string}
+ */
+function shape(tpl) {
+  const host = document.createElement('div');
+  render(tpl, host);
+  /**
+   * @param {Node} node
+   * @returns {string}
+   */
+  const walk = (node) => {
+    if (node.nodeType === 8) {
+      return '';
+    }
+    if (node.nodeType === 3) {
+      return (node.textContent || '').replace(/\s+/g, ' ');
+    }
+    const element = /** @type {Element} */ (node);
+    const tag = element.tagName.toLowerCase();
+    const attrs = Array.from(element.attributes)
+      .map((a) => `${a.name}="${a.value}"`)
+      .sort()
+      .join(' ');
+    const kids = Array.from(element.childNodes).map(walk).join('');
+    return `<${tag}${attrs ? ` ${attrs}` : ''}>${kids}</${tag}>`;
+  };
+  return Array.from(host.childNodes).map(walk).join('');
+}
+
+/**
+ * UI-eey2 §5·§8: the monitor added three OPTIONAL knobs to these templates.
+ * The Worker console passes none of them, so its rows must render exactly what
+ * they rendered before — these snapshots are what makes "옵션 없으면 불변"
+ * checkable rather than merely asserted.
+ */
+describe('worker templates are unchanged without the monitor options', () => {
+  test('renders a waiting row with no dependency or pin markup', () => {
+    const row = shape(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-a1',
+          title: '대기 행',
+          lane: 'queue',
+          draggable: true,
+          seq: 2,
+          badges: ['b'],
+          exec_chips: {
+            orchestration: { text: 'o', title: 'ot' },
+            worker: { text: 'w', title: 'wt' }
+          }
+        })
+      )
+    );
+
+    expect(row).toContain('<div class="worker-mini__line">');
+    expect(row).not.toContain('worker-deps');
+    expect(row).not.toContain('exec-chip--pin');
+    expect(row).toMatchInlineSnapshot(
+      `"<div class="worker-mini" data-bead-id="UI-a1" data-lane="queue" draggable="true" style=""> <div class="worker-mini__line"> <span aria-hidden="true" class="worker-mini__grip">⠿</span><span aria-hidden="true" class="worker-mini__seq">2</span><span class="worker-mini__id" title="클릭하면 ID 복사">UI-a1</span><span class="worker-mini__title">대기 행</span><span class="worker-mini__badge" title="">b</span> </div> <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div>  </div>"`
+    );
+  });
+
+  test('renders the two-line done row when no layout is asked for', () => {
+    const row = shape(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-a2',
+          title: '완료 행',
+          lane: 'done',
+          done: true,
+          draggable: false,
+          done_at: 1_700_000_000_000,
+          work_ms: 65_000
+        })
+      )
+    );
+
+    expect(row).toContain('worker-mini__row1');
+    expect(row).not.toContain('worker-mini--three-line');
+    expect(row).not.toContain('worker-mini__row3');
+  });
+
+  test('renders a candidate card with resolved (not pinned) exec chips', () => {
+    const card = shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-a3',
+          title: '후보 카드',
+          lane: 'candidate',
+          draggable: true,
+          exec_chips: {
+            orchestration: { text: 'o', title: 'ot' },
+            worker: { text: 'w', title: 'wt' }
+          }
+        })
+      )
+    );
+
+    expect(card).toContain('exec-chip--orch');
+    expect(card).not.toContain('exec-chip--pin');
+    expect(card).not.toContain('worker-deps');
+    expect(card).toMatchInlineSnapshot(
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span>  <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>   </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
+    );
+  });
+
+  test('renders the same DOM whether the options object is omitted or empty', () => {
+    const item = /** @type {any} */ ({
+      id: 'UI-a4',
+      title: '동일',
+      lane: 'candidate',
+      draggable: true,
+      exec_chips: { orchestration: { text: 'o', title: 'ot' }, worker: null }
+    });
+
+    expect(shape(candidateCard(item, null, {}))).toBe(
+      shape(candidateCard(item))
+    );
+  });
+});
+
+describe('worker templates with the monitor options (UI-eey2)', () => {
+  test('marks exec chips as an issue pin in pinned_only mode', () => {
+    const card = shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-b1',
+          title: '핀',
+          lane: 'candidate',
+          draggable: true,
+          exec_chips: {
+            orchestration: { text: 'codex', title: 'orch' },
+            worker: null
+          }
+        }),
+        null,
+        { exec_chips_mode: 'pinned_only' }
+      )
+    );
+
+    expect(card).toContain('exec-chip--pin');
+    expect(card).toContain('이슈 핀 — 레포 기본값과 다름');
+  });
+
+  test('names the direction of each dependency chip', () => {
+    const row = shape(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-b2',
+          title: '의존',
+          lane: 'queue',
+          draggable: true,
+          dependency_chips: {
+            predecessors: [
+              { id: 'UI-p', label: '🔒 선행 UI-p (실행중)', title: 'pred' }
+            ],
+            successors: [
+              {
+                id: 'UI-s',
+                label: '→ 후속 UI-s (repo · 병렬 #2)',
+                title: 'succ'
+              }
+            ],
+            warnings: ['⚠ 선행 UI-z가 어느 레인에도 없음']
+          }
+        })
+      )
+    );
+
+    expect(row).toContain('🔒 선행 UI-p (실행중)');
+    expect(row).toContain('→ 후속 UI-s (repo · 병렬 #2)');
+    expect(row).toContain('⚠ 선행 UI-z가 어느 레인에도 없음');
+    // 후속은 역방향 간선이라 해제 ✕가 없다 — 해제는 후속 쪽 카드의 선행 칩이다.
+    expect(row.match(/worker-dep__remove/g)).toHaveLength(1);
+  });
+
+  test('gives the done row its own title line in three_line layout', () => {
+    const row = shape(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-b3',
+          title: '완료',
+          lane: 'done',
+          done: true,
+          done_layout: 'three_line',
+          workspace_name: 'repo-a',
+          root_dir: '/tmp/repo-a',
+          done_at: 1_700_000_000_000,
+          work_ms: 65_000,
+          usage: { input_tokens: 5 }
+        })
+      )
+    );
+
+    expect(row).toContain('worker-mini--three-line');
+    expect(row).toContain('worker-mini__row3');
+    expect(row).toContain('repo-a');
+    expect(row).toMatch(/worker-mini__row2[^]*worker-mini__title/);
+  });
+
+  test('draws no dependency block when the chips are all empty', () => {
+    const row = shape(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-b4',
+          title: '없음',
+          lane: 'queue',
+          draggable: true,
+          dependency_chips: {
+            predecessors: [],
+            successors: [],
+            warnings: []
+          }
+        })
+      )
+    );
+
+    expect(row).not.toContain('worker-deps');
+  });
+});

@@ -13,15 +13,18 @@
  */
 import { html } from 'lit-html';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
+import { formatRelativeTime } from '../../utils/relative-time.js';
 import {
   formatUsageTotalWithCost,
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
 import { childExecChips } from '../board/card.js';
+import { stepperTemplate } from '../board/stepper.js';
 import { childRollupTemplate } from '../child-rollup.js';
 import { failureText } from './failure-labels.js';
 import {
+  dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
   timesMeta
@@ -263,17 +266,117 @@ export function bannersTemplate(state) {
 }
 
 /**
+ * @typedef {Object} MonitorTileOverlay
+ * @property {string} [repo] - Owning workspace name; the badge is a coordinate
+ * on the monitor and clicking it goes to that repo's Worker tab (UI-eey2 §7).
+ * @property {string} [root_dir] - The badge's tooltip.
+ * @property {'s1'|'s2'|'s3'|'s4'|'s5'} [serial_lane_id] - Serial lane chip.
+ * @property {import('../board/stepper.js').WorkflowSummary|null} [workflow] -
+ * `bead_workflow[bead_id]`; absent/null omits the stepper (fail-quiet).
+ * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
+ * The attempt's last non-thinking transcript line (§9.3).
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed' }>} [legs] -
+ * Delegation legs; only the unfinished ones are spelled out.
+ * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
+ * `→ 후속` chips (§5.1); the running tile shows no 선행 (it already started).
+ */
+
+/**
+ * Monitor-only header pieces of a running tile (UI-eey2 §7): 레포 배지 ·
+ * 직렬 레인 칩.
+ *
+ * @param {MonitorTileOverlay|null} monitor
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function monitorTileHead(monitor) {
+  if (!monitor) {
+    return '';
+  }
+  return html`${monitor.repo
+    ? html`<span
+        class="worker-card__repo rtile__repo"
+        title=${monitor.root_dir || ''}
+        >${monitor.repo}</span
+      >`
+    : ''}${monitor.serial_lane_id
+    ? html`<span class="rtile__lane">${monitor.serial_lane_id}</span>`
+    : ''}`;
+}
+
+/**
+ * Monitor-only body of a running tile (UI-eey2 §7): stepper · 최근 활동 ·
+ * 위임 칩 · 후속 칩. 끝난 위임은 `✓ n` 한 칩으로 접고 목록은 툴팁으로
+ * 물러난다 ("기본은 접고 중요한 것만", 스펙 §2). 재료가 없는 줄은 통째로
+ * 생략한다.
+ *
+ * @param {MonitorTileOverlay|null} monitor
+ * @param {number} now
+ * @param {boolean} paused
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function monitorTileBody(monitor, now, paused) {
+  if (!monitor) {
+    return '';
+  }
+  const workflow = monitor.workflow || null;
+  const activity = monitor.last_activity || null;
+  const activity_text =
+    activity && typeof activity.text === 'string' ? activity.text : '';
+  const activity_at =
+    activity && typeof activity.at === 'number' ? activity.at : null;
+  const legs = Array.isArray(monitor.legs) ? monitor.legs : [];
+  const live_legs = legs.filter((leg) => leg && leg.state === 'live');
+  const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
+  const deps = dependencyChipsTemplate(monitor.dependency_chips);
+  return html`${workflow ? stepperTemplate(workflow, 'in_progress') : ''}
+  ${activity_text
+    ? html`<div class="rtile__activity${paused ? ' is-paused' : ''}">
+        <span class="rtile__activity-dot" aria-hidden="true"></span>
+        <span class="rtile__activity-text">${activity_text}</span>
+        ${activity_at !== null
+          ? html`<span class="rtile__activity-age"
+              >${formatRelativeTime(activity_at, now)}</span
+            >`
+          : ''}
+      </div>`
+    : ''}${live_legs.length > 0 || ended_legs.length > 0
+    ? html`<div class="rtile__legs">
+        ${live_legs.map(
+          (leg) =>
+            html`<span class="rtile__leg rtile__leg--live"
+              >⟳ ${leg.label}</span
+            >`
+        )}${ended_legs.length > 0
+          ? html`<span
+              class="rtile__leg rtile__leg--done"
+              title=${`완료된 위임: ${ended_legs
+                .map((leg) => leg.label)
+                .join(', ')}`}
+              >✓ ${ended_legs.length}</span
+            >`
+          : ''}
+      </div>`
+    : ''}${deps}`;
+}
+
+/**
  * One running-session tile. A click opens the bead detail like every other lane
  * surface (UI-k59y §3) — the live transcript is the tile's own [▤ 세션] button,
  * so the tile is not the one place on this board where the default click means
  * something else. The drawer's tile keeps its `.rtile--sel` ring.
  *
+ * `options.monitor` adds the monitor tab's four extra lines (UI-eey2 §7) —
+ * 레포 배지 · stepper · 활동 · 위임/후속 칩. Omitted — every Worker call —
+ * renders exactly as before. Exported since UI-eey2 so the monitor renders the
+ * SAME tile rather than a second one that drifts.
+ *
  * @param {RunningTile} tile
  * @param {number} now
  * @param {string|null} [selected_attempt]
+ * @param {{ monitor?: MonitorTileOverlay|null }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
-function runningTile(tile, now, selected_attempt = null) {
+export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const failed = tile.failed === true;
   const paused = !!tile.paused;
   const elapsed = failed
@@ -304,6 +407,9 @@ function runningTile(tile, now, selected_attempt = null) {
   const base_badge = tile.base_exception || null;
   const landing = tile.landing;
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
+  const monitor = options.monitor || null;
+  const monitor_head = monitorTileHead(monitor);
+  const monitor_body = monitorTileBody(monitor, now, paused);
   const discard_button = tile.discard?.action
     ? html`<button
         type="button"
@@ -326,7 +432,7 @@ function runningTile(tile, now, selected_attempt = null) {
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${lineage
+      ${monitor_head}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
         : ''}
       <span class="rtile__elapsed">${elapsed}</span>
@@ -382,7 +488,7 @@ function runningTile(tile, now, selected_attempt = null) {
             ${discard_button}`}
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${tile.rollup
+    ${monitor_body}${tile.rollup
       ? childRollupTemplate(tile.rollup, {
           parent_id: tile.bead_id,
           expanded: tile.rollup_expanded === true,

@@ -625,3 +625,137 @@ describe('bead timestamps + positive TTL (UI-d7pw §4.3/§4.4)', () => {
     });
   });
 });
+
+describe('worker title cache — workflow projection (UI-eey2 §9.2)', () => {
+  test('carries the enrich result from the same bd show fill', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    const enrichWorkflow = vi.fn(() => ({ route: 'spec_backed', stages: {} }));
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: /** @type {any} */ (enrichWorkflow)
+    });
+
+    expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({});
+
+    await vi.waitFor(() =>
+      expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': { route: 'spec_backed', stages: {} }
+      })
+    );
+    expect(bd.runJson).toHaveBeenCalledTimes(1);
+  });
+
+  test('projects null when the enrich throws', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => {
+        throw new Error('git probe failed');
+      }
+    });
+
+    cache.workflowFor('/ws', ['UI-1']);
+
+    await vi.waitFor(() =>
+      expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({ 'UI-1': null })
+    );
+    expect(cache.titlesFor('/ws', ['UI-1'])).toEqual({ 'UI-1': '첫 제목' });
+  });
+
+  test('omits a bead whose record has not landed yet', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => ({ route: 'quick_fix' })
+    });
+
+    cache.workflowFor('/ws', ['UI-1', 'UI-missing']);
+    await bd.settled();
+
+    expect(cache.workflowFor('/ws', ['UI-1', 'UI-missing'])).toEqual({
+      'UI-1': { route: 'quick_fix' }
+    });
+  });
+
+  test('refills the workflow after expire', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    let route = 'spec_backed';
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => ({ route })
+    });
+    await vi.waitFor(() =>
+      expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': { route: 'spec_backed' }
+      })
+    );
+
+    route = 'full_plan';
+    cache.expire('/ws', 'UI-1');
+
+    expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({});
+    await vi.waitFor(() =>
+      expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': { route: 'full_plan' }
+      })
+    );
+    expect(bd.runJson).toHaveBeenCalledTimes(2);
+  });
+
+  test('ignores an expire with no bead id', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => ({ route: 'quick_fix' })
+    });
+    await vi.waitFor(() =>
+      expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({
+        'UI-1': { route: 'quick_fix' }
+      })
+    );
+
+    cache.expire('/ws', '');
+
+    expect(cache.workflowFor('/ws', ['UI-1'])).toEqual({
+      'UI-1': { route: 'quick_fix' }
+    });
+  });
+
+  test('lands a workflow through refreshFromIssue without a bd call', () => {
+    const bd = fakeBd({});
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: (/** @type {any} */ issue) => ({
+        route: issue.metadata.route
+      })
+    });
+
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-9',
+      title: '읽기 되받기',
+      metadata: { route: 'full_plan' }
+    });
+
+    expect(cache.workflowFor('/ws', ['UI-9'])).toEqual({
+      'UI-9': { route: 'full_plan' }
+    });
+    expect(bd.runJson).not.toHaveBeenCalled();
+  });
+
+  test('passes the resolved workspace root to the enrich', async () => {
+    const bd = fakeBd({ 'UI-1': '첫 제목' });
+    const enrichWorkflow = vi.fn(() => ({ route: 'quick_fix' }));
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: /** @type {any} */ (enrichWorkflow)
+    });
+
+    cache.workflowFor('/ws/repo', ['UI-1']);
+    await bd.settled();
+
+    expect(enrichWorkflow).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'UI-1' }),
+      '/ws/repo'
+    );
+  });
+});

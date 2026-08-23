@@ -28,7 +28,8 @@ import { runBd, runBdJsonProjected } from '../bd.js';
  *   requireCapability?: (command_family: string) => Promise<{ ok: true } | { ok: false, error: { code: string } }>,
  *   runJson?: typeof runBdJsonProjected,
  *   cwd?: string,
- *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, fresh?: boolean, snapshot?: { generation?: number, all?: unknown[] } }>
+ *   requestSnapshot?: (workspace: string, cause: string) => Promise<{ ok: boolean, stale?: boolean, fresh?: boolean, snapshot?: { generation?: number, all?: unknown[] } }>,
+ *   onReadback?: (issue: unknown) => void
  * }} [deps]
  * @returns {{
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
@@ -74,6 +75,30 @@ export function createBdMetadata(deps = {}) {
   };
   const requestSnapshot =
     typeof deps.requestSnapshot === 'function' ? deps.requestSnapshot : null;
+  const onReadback =
+    typeof deps.onReadback === 'function' ? deps.onReadback : null;
+
+  /**
+   * Hand one successfully read issue to the readback observer (UI-eey2 §9.2).
+   *
+   * Every `bd show --json` here is a CONFIRMING readback of a write this server
+   * just made, so it is the freshest authoritative view of that bead in the
+   * process — which is exactly what the title cache wants instead of waiting out
+   * its TTL. Fail-quiet: an observer fault must never turn a successful readback
+   * into a failed one.
+   *
+   * @param {unknown} issue
+   */
+  function announceReadback(issue) {
+    if (!onReadback) {
+      return;
+    }
+    try {
+      onReadback(issue);
+    } catch {
+      // A display cache is never allowed to break a fail-closed readback.
+    }
+  }
 
   return {
     /**
@@ -138,6 +163,7 @@ export function createBdMetadata(deps = {}) {
       if (!issue || typeof issue !== 'object') {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
+      announceReadback(issue);
       const md = issue.metadata;
       const v =
         md && typeof md === 'object'
@@ -188,6 +214,7 @@ export function createBdMetadata(deps = {}) {
       if (!issue || typeof issue !== 'object') {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
+      announceReadback(issue);
       const status = issue.status;
       return typeof status === 'string' ? status : null;
     },
@@ -217,6 +244,7 @@ export function createBdMetadata(deps = {}) {
       if (!issue || typeof issue !== 'object') {
         throw new Error(`bd show ${bead_id} returned an unreadable payload`);
       }
+      announceReadback(issue);
       return /** @type {Record<string, any>} */ (issue);
     },
 

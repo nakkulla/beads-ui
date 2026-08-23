@@ -28,6 +28,7 @@ import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { isBdProtocolFailure } from '../bd-json.js';
 import { runBdJsonProjected } from '../bd.js';
 import { debug } from '../logging.js';
+import { enrichIssueWorkflow } from '../workflow-enrich.js';
 
 const log = debug('worker:title-cache');
 
@@ -62,6 +63,9 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * @property {number|string|null} updated_at
  * @property {string[]} labels
  * @property {string[]} blocked_by
+ * @property {Record<string, unknown>|null} workflow - The stepper projection
+ * `enrichIssueWorkflow` derives from the SAME `bd show` payload (UI-eey2 §9.2),
+ * or null when it could not be computed.
  * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
  */
 
@@ -69,7 +73,7 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * Create a bead title cache. One instance is held process-wide by the worker
  * runtime so every workspace's snapshot decoration shares the fill queue.
  *
- * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJsonProjected }} [options]
+ * @param {{ now?: () => number, negative_ttl_ms?: number, positive_ttl_ms?: number, runJson?: typeof runBdJsonProjected, enrichWorkflow?: (issue: unknown, workspace: string) => Record<string, unknown>|null }} [options]
  */
 export function createTitleCache(options = {}) {
   const now = options.now || (() => Date.now());
@@ -82,6 +86,10 @@ export function createTitleCache(options = {}) {
       ? options.positive_ttl_ms
       : POSITIVE_TTL_MS;
   const runJson = options.runJson || runBdJsonProjected;
+  const enrichWorkflow =
+    options.enrichWorkflow ||
+    ((/** @type {any} */ issue, /** @type {string} */ workspace) =>
+      enrichIssueWorkflow(issue, workspace));
 
   /** @type {Map<string, Map<string, BeadRecord>>} */
   const titles_by_workspace = new Map();
@@ -171,10 +179,29 @@ export function createTitleCache(options = {}) {
   }
 
   /**
+   * The stepper projection for one issue, or null. Fail-quiet by contract
+   * (UI-eey2 §12): a bead whose workflow cannot be derived simply carries no
+   * stepper, and the rest of its record still ships.
+   *
    * @param {unknown} issue
+   * @param {string} workspace
+   * @returns {Record<string, unknown>|null}
+   */
+  function workflowFromIssue(issue, workspace) {
+    try {
+      return enrichWorkflow(issue, keyOf(workspace)) || null;
+    } catch (err) {
+      log('workflow enrich failed in %s: %o', workspace, err);
+      return null;
+    }
+  }
+
+  /**
+   * @param {unknown} issue
+   * @param {string} workspace
    * @returns {BeadRecord|null}
    */
-  function recordFromIssue(issue) {
+  function recordFromIssue(issue, workspace) {
     const raw_issue = /** @type {any} */ (issue);
     const title =
       raw_issue && typeof raw_issue.title === 'string' ? raw_issue.title : '';
@@ -207,6 +234,7 @@ export function createTitleCache(options = {}) {
       updated_at: stampOf(raw_issue && raw_issue.updated_at),
       labels: workerLabels(raw_issue && raw_issue.labels),
       blocked_by,
+      workflow: workflowFromIssue(issue, workspace),
       at: now()
     };
   }
@@ -233,7 +261,10 @@ export function createTitleCache(options = {}) {
       // break behind a bead that simply "has no title".
       return { record: null, protocol_failure: isBdProtocolFailure(r) };
     }
-    return { record: recordFromIssue(r.data), protocol_failure: false };
+    return {
+      record: recordFromIssue(r.data, workspace),
+      protocol_failure: false
+    };
   }
 
   /**
@@ -499,6 +530,20 @@ export function createTitleCache(options = {}) {
     },
 
     /**
+     * Cache hits for `ids` as stepper projections (UI-eey2 §9.2). Same
+     * partiality contract as titles and labels: a bead whose record has not
+     * landed is ABSENT from the result, and a bead whose enrich failed carries
+     * `null` — the client renders no stepper for either.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, Record<string, unknown>|null>}
+     */
+    workflowFor(workspace, ids) {
+      return collect(workspace, ids, (rec) => rec.workflow);
+    },
+
+    /**
      * Replace one cache entry with a successful mutation readback. Advancing
      * this bead's generation makes any older in-flight `bd show` unable to
      * overwrite authoritative labels that arrived after the mutation.
@@ -517,7 +562,7 @@ export function createTitleCache(options = {}) {
       generations.set(bead_id, (generations.get(bead_id) || 0) + 1);
       const lane = laneFor(workspace);
       const failed = failedFor(workspace);
-      const record = recordFromIssue(issue);
+      const record = recordFromIssue(issue, workspace);
       if (record) {
         lane.set(bead_id, record);
         failed.delete(bead_id);
@@ -544,6 +589,23 @@ export function createTitleCache(options = {}) {
       generations.set(id, (generations.get(id) || 0) + 1);
       laneFor(workspace).delete(id);
       failedFor(workspace).delete(id);
+    },
+
+    /**
+     * Expire one bead so the next synchronous projection refills it (UI-eey2
+     * §9.2). The session-log observer calls this the moment a `bd update|close|
+     * dep` finishes in a running session, which is what keeps a stepper from
+     * showing pre-write state for the rest of the 5-minute TTL.
+     *
+     * Named separately from {@link invalidate} because the two callers mean
+     * different things — a mutation this server performed versus a write it
+     * merely OBSERVED — even though both need the same cache effect.
+     *
+     * @param {string} workspace
+     * @param {string} bead_id
+     */
+    expire(workspace, bead_id) {
+      this.invalidate(workspace, bead_id);
     },
 
     /**

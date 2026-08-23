@@ -2,8 +2,15 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { envFor, install, readPushLog } from './guard-hook.js';
+
+// This file drives REAL child processes (git, a shell, node), so its wall time
+// is process startup, not product work. Measured against the whole suite running
+// in parallel, tests here reach ~4s — against a 5s default that is a coin flip,
+// and the repo-ops verify gate is where the coin lands wrong. The assertions are
+// unchanged; only the budget is sized for the load the suite actually creates.
+vi.setConfig({ testTimeout: 30_000 });
 
 const ATTEMPT = 'UI-8mvc-1';
 // A slash-bearing base is the realistic shape (`ilsun/dev`) AND the quoting

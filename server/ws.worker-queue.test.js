@@ -3592,3 +3592,202 @@ describe('worker repo-ops opt-out toggle (UI-lsti §3)', () => {
     expect(MESSAGE_TYPES).toContain('worker-repo-ops-opt-out-toggle');
   });
 });
+
+describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)', () => {
+  const WS_STEP = '/tmp/wq-stepper';
+
+  /**
+   * @param {string} bead_id
+   * @param {string} route
+   */
+  function seedWorkflow(bead_id, route) {
+    getWorkerRuntime().titleCache.refreshFromIssue(WS_STEP, {
+      id: bead_id,
+      title: `제목 ${bead_id}`,
+      status: 'open',
+      metadata: { route }
+    });
+  }
+
+  test('carries a stepper for queue, serial, pr_wait and running beads only', () => {
+    for (const bead_id of ['UI-q', 'UI-s', 'UI-p', 'UI-r', 'UI-d']) {
+      seedWorkflow(bead_id, 'quick_fix');
+    }
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_STEP, {
+        revision: 1,
+        queue: [{ bead_id: 'UI-q', added_at: 1 }],
+        serial_lanes: [{ id: 'lane-1', entries: [{ bead_id: 'UI-s' }] }],
+        pr_wait: [{ bead_id: 'UI-p', added_at: 2 }],
+        done: [{ bead_id: 'UI-d', added_at: 3 }],
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'UI-r',
+            status: 'running',
+            started_at: 1
+          }
+        }
+      })
+    );
+
+    expect(Object.keys(snapshot.bead_workflow).sort()).toEqual([
+      'UI-p',
+      'UI-q',
+      'UI-r',
+      'UI-s'
+    ]);
+    expect(snapshot.bead_workflow['UI-q'].route).toBe('quick_fix');
+  });
+
+  test('omits a bead whose record has not landed', () => {
+    seedWorkflow('UI-known', 'spec_backed');
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_STEP, {
+        revision: 1,
+        queue: [
+          { bead_id: 'UI-known', added_at: 1 },
+          { bead_id: 'UI-never-cached', added_at: 2 }
+        ],
+        pr_wait: [],
+        done: [],
+        attempts: {}
+      })
+    );
+
+    expect(snapshot.bead_workflow).toHaveProperty('UI-known');
+    expect(snapshot.bead_workflow).not.toHaveProperty('UI-never-cached');
+  });
+
+  test('overlays last_activity and legs onto a RUNNING attempt only', () => {
+    const runtime = getWorkerRuntime();
+    runtime.sessionLog.publish(WS_STEP, 'att-run', {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: '검증을 돌립니다.' }] }
+    });
+    /** @param {string} status */
+    const withSessions = (status) => ({
+      attempt_id: status === 'running' ? 'att-run' : 'att-done',
+      bead_id: 'UI-1',
+      status,
+      started_at: 1,
+      delegation_sessions: [
+        {
+          launch_id: 'launch-1',
+          provider: 'codex',
+          role: 'implementation',
+          model: 'gpt-5.6-sol',
+          effort: null,
+          session_id: 'thread-1',
+          turn_id: 'turn-1',
+          status: 'running',
+          started_at: 10,
+          completed_at: null,
+          last_event_at: 11
+        },
+        {
+          launch_id: 'launch-2',
+          provider: 'codex',
+          role: 'review-consult',
+          model: 'gpt-5.6-sol',
+          effort: null,
+          session_id: 'thread-2',
+          turn_id: 'turn-2',
+          status: 'done',
+          started_at: 20,
+          completed_at: '2026-08-18T04:27:02.000Z',
+          last_event_at: 21
+        }
+      ]
+    });
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_STEP, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        attempts: {
+          'att-run': withSessions('running'),
+          'att-done': withSessions('done')
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-run'].last_activity).toMatchObject({
+      kind: 'assistant',
+      text: '검증을 돌립니다.'
+    });
+    expect(snapshot.attempts['att-run'].legs).toEqual([
+      {
+        role: 'implementation',
+        runtime: 'codex',
+        model: 'gpt-5.6-sol',
+        state: 'live',
+        ordinal: 1,
+        label: '구현 unit 1 · codex'
+      },
+      {
+        role: 'review-consult',
+        runtime: 'codex',
+        model: 'gpt-5.6-sol',
+        state: 'done',
+        ordinal: 1,
+        label: 'review-consult · codex'
+      }
+    ]);
+    expect(snapshot.attempts['att-done']).not.toHaveProperty('last_activity');
+    expect(snapshot.attempts['att-done']).not.toHaveProperty('legs');
+  });
+
+  test('derives a done leg from a usage receipt with no observed launch', () => {
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_STEP, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        attempts: {
+          'att-legs': {
+            attempt_id: 'att-legs',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: 1,
+            usage_legs: [
+              {
+                receipt_id: 'r1',
+                provider: 'codex',
+                role: 'implementation',
+                session_id: 'thread-9',
+                turn_id: 'turn-9',
+                model: 'gpt-5.6-sol',
+                effort: null,
+                usage: {
+                  input_tokens: 1,
+                  output_tokens: 1,
+                  cache_read_input_tokens: 0,
+                  cache_creation_input_tokens: 0,
+                  reasoning_output_tokens: 0
+                },
+                completed_at: '2026-08-18T04:27:02.000Z'
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-legs'].legs).toEqual([
+      {
+        role: 'implementation',
+        runtime: 'codex',
+        model: 'gpt-5.6-sol',
+        state: 'done',
+        ordinal: 1,
+        label: '구현 unit 1 · codex'
+      }
+    ]);
+  });
+});

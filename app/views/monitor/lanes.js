@@ -1,15 +1,12 @@
 /**
- * Monitor tab lane builder + the monitor's own templates (UI-qrfo §8,
- * UI-gwkl §2.2).
+ * Monitor tab lane builder (UI-qrfo §8, UI-eey2 §3·§5–§8).
  *
- * The monitor borrows Worker's pane SHELL (`paneTemplate`) but owns its cards.
- * Worker's one-line row packs 레포 칩 · 크로스레포 ID · 사용량 · 배지 onto the
- * same line as the title; in the monitor's narrower lanes those fixed-width
- * parts eat the whole row and the title is squeezed into a 1~4 글자 column that
- * flows vertically. 모니터 카드는 예외 없이 **제목 첫 줄(전폭) + 흐린 메타 한
- * 줄**이라 그 붕괴가 구조적으로 불가능하다. 버튼 class·`data-*` 계약만 Worker와
- * 공유하므로 `index.js`의 클릭 위임은 그대로 동작하고, Worker 탭 렌더는
- * 무변경이다.
+ * The monitor no longer owns card templates. It projects every visible repo's
+ * pipeline into WORKER item shapes and the Worker templates
+ * (`paneTemplate`/`candidateCard`/`miniRow`/`runningTile`) draw them — 같은
+ * 사실은 같은 모양으로 그린다. What is monitor-only is the SECOND axis this tab
+ * has and Worker does not: the repo. Repos become 섹션 (실행가능·대기), a badge
+ * (실행중·PR 대기·완료), and the coordinate every mutation carries.
  *
  * 배타 우선순위는 `running > pr_wait > (queue ∪ serial_lanes) > runnable >
  * done`이다 — 실행중인 버드는 대기 레인에 그대로 남아 있고
@@ -18,28 +15,18 @@
  * 소속 버드를 빼고 보내지만, 같은 규약을 클라이언트에서도 한 번 더 건다
  * (스냅샷 사이의 경합).
  *
- * 대기 레인의 레포 그룹은 **`workspaces_state`를 돌며** 만든다. 큐가 빈 레포에도
- * 헤더가 렌더되어야 하기 때문이다 — 자동 진행이 꺼져 큐가 빈 레포가 바로 그
- * 상태를 풀어야 하는 레포다 (§6).
+ * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
+ * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
-import { html } from 'lit-html';
-import { CLOSED_RANGE_OPTIONS } from '../../data/closed-range.js';
+import { activeAttemptStates } from '../../utils/active-attempts.js';
 import {
-  formatAttemptTuple,
-  formatContinuationLineage
-} from '../../utils/attempt-display.js';
-import { visibleLabels } from '../../utils/label-policy.js';
-import {
-  formatRelativeTime,
-  formatTimestampLocal
-} from '../../utils/relative-time.js';
-import {
-  formatUsageTotalWithCost,
-  providerUsageBadges,
-  sumAttemptUsage,
-  usageTooltip
-} from '../../utils/token-usage.js';
-import { discardProjection, discardReceiptTemplate } from '../worker/lanes.js';
+  formatAttemptOrchestrationChip,
+  formatOrchestrationChip,
+  formatWorkerChip
+} from '../../utils/exec-settings-chip.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { sumAttemptUsage } from '../../utils/token-usage.js';
+import { discardProjection, sumAttemptWorkMs } from '../worker/lanes.js';
 import {
   cleanupStalledReason,
   cleanupStepLabel
@@ -48,25 +35,17 @@ import {
   isPrWaitCleanupActive,
   prWaitProgress
 } from '../worker/pr-wait-progress.js';
-import { formatElapsed } from '../worker/running-grid.js';
 import {
+  blockerLocationLabel,
   buildBlockerLocationMap,
+  classifyBlockerPrefix,
   describeBlocker,
   detectSerialLaneHeadCycles,
   serialCycleKey
 } from './blockers.js';
-import {
-  iconClose,
-  iconMerge,
-  iconPause,
-  iconPlay,
-  iconPlayAll,
-  iconSlots,
-  iconStop
-} from './icons.js';
 
 /**
- * @import { MiniItem } from '../worker/lanes.js'
+ * @import { DependencyChip, DependencyChips, MiniItem } from '../worker/lanes.js'
  */
 
 /**
@@ -77,14 +56,43 @@ import {
 export const MIN_SLOTS = 1;
 
 /**
- * 하트비트가 "살아있음"으로 읽히는 창 (UI-53es §1). 이 안에서 마지막 로그
- * 이벤트가 있었으면 밝은 점, 넘으면 흐린 점 + 경과 텍스트.
+ * 실행가능 레인 정렬 (UI-eey2 §5). `updated_flat`만 섹션을 만들지 않는다 —
+ * 레포 묶음이 방해될 때의 탈출구이므로, 묶음 자체가 없어야 한다.
+ *
+ * @type {ReadonlyArray<{ value: 'repo_spec'|'repo_updated'|'updated_flat', label: string }>}
  */
-export const HEARTBEAT_FRESH_MS = 60_000;
+export const CANDIDATE_SORT_OPTIONS = [
+  { value: 'repo_spec', label: '레포 · spec 우선' },
+  { value: 'repo_updated', label: '레포 · 최신 수정' },
+  { value: 'updated_flat', label: '최신 수정(레포 무시)' }
+];
 
 /**
- * 완료 종류의 표시 이름. 여기 없는 종류는 서버가 준 문자열 그대로 싣고 warn
- * 색으로 읽힌다 — 모르는 종료를 "정상"으로 칠하지 않는다.
+ * spec 유무 세그먼트 (UI-eey2 §5). 판정은 runnable 투영의 `spec_id` 유무다.
+ *
+ * @type {ReadonlyArray<{ value: 'all'|'with'|'without', label: string }>}
+ */
+export const SPEC_FILTER_OPTIONS = [
+  { value: 'all', label: '전체' },
+  { value: 'with', label: 'spec 있음' },
+  { value: 'without', label: 'spec 없음' }
+];
+
+/**
+ * @typedef {{ show_blocked: boolean, spec: 'all'|'with'|'without' }} CandidateFilter
+ */
+
+/**
+ * 모니터의 blocked 기본값은 **표시**다 (Worker는 숨김, 사용자 결정 2026-08-24):
+ * 레포 간 계획을 세우려면 막힌 후보가 보여야 한다.
+ *
+ * @type {CandidateFilter}
+ */
+export const CANDIDATE_FILTER_DEFAULT = { show_blocked: true, spec: 'all' };
+
+/**
+ * Display names for a completion kind. 여기 없는 종류는 서버가 준 문자열
+ * 그대로 싣는다 — 모르는 종료를 "정상"으로 칠하지 않는다.
  *
  * @type {Record<string, string>}
  */
@@ -98,21 +106,6 @@ const DONE_KIND_LABELS = {
 };
 
 /**
- * Kinds that read as a clean finish; 나머지는 전부 warn 색으로 그린다.
- *
- * @type {ReadonlySet<string>}
- */
-const DONE_KIND_SUCCESS = new Set(['auto_merge', 'merged', 'merge', 'done']);
-
-/**
- * Which live state wins when one bead carries several unfinished attempts —
- * 살아 있는 세션이 멈춘 것보다, 멈춘 것이 실패한 것보다 먼저 읽혀야 한다.
- *
- * @type {Record<string, number>}
- */
-const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
-
-/**
  * @typedef {MiniItem & {
  *   root_dir: string,
  *   workspace_name: string,
@@ -123,6 +116,8 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   can_resume?: boolean,
  *   started_at?: number|null,
  *   last_event_at?: number|null,
+ *   last_activity?: Record<string, any>|null,
+ *   legs?: Array<Record<string, any>>,
  *   runner?: string|null,
  *   model?: string|null,
  *   effort?: string|null,
@@ -141,9 +136,8 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  *   blockers?: import('./blockers.js').BlockerDisplay[],
  *   blocker_warnings?: string[],
  *   done_kind?: string|null,
- *   labels?: string[],
- *   spec_reviewer?: string,
- *   plan_state?: 'approved'|'authored'|'none'
+ *   spec_id?: string,
+ *   labels?: string[]
  * }} MonitorItem
  */
 
@@ -155,6 +149,10 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  * @property {string[]} occupied_by
  * @property {number} corrections
  * @property {boolean} cycle
+ * @property {number} raw_length - 서버 배열의 entry 수. DOM에는 실행중으로 빠진
+ * 버드가 없으므로, 드롭 말미 인덱스는 이 값이어야 서버 인덱스와 맞는다 (§6).
+ * @property {boolean} [empty] - 설정만 있고 비어 있는 레인 (§6): 평소엔 한 줄
+ * 힌트로 접히고 드래그 중에만 드롭 타깃 pane으로 펼쳐진다 (표시는 CSS 소유).
  * @property {Array<{ root_dir: string, workspace_name: string, lane: string }>} [cross_wait_peers]
  */
 
@@ -165,30 +163,56 @@ const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
  * @property {boolean} auto_advance
  * @property {boolean} auto_merge
  * @property {number} slots
- * @property {number} revision - 이 workspace의 CAS revision. 헤더의 네 제어가
- * 그대로 실어 보내는 값이므로, 파이프라인이 빈 레포에서도 반드시 있어야 한다.
+ * @property {number} revision
  * @property {Record<string, any>} runner_catalog
  * @property {MonitorItem[]} items
  * @property {{ parallel: MonitorItem[], serial: MonitorSerialSublane[] }} sublanes
  * @property {number} serial_lane_count
+ * @property {number} raw_queue_length - 병렬 큐 서버 배열의 entry 수 (§6).
+ */
+
+/**
+ * @typedef {Object} MonitorRunnableSection
+ * @property {string} root_dir
+ * @property {string} name
+ * @property {MonitorItem[]} items
+ */
+
+/**
+ * @typedef {Object} MonitorChainNode
+ * @property {string} id
+ * @property {string} workspace_name
+ * @property {string} root_dir
+ * @property {string} location_label
+ * @property {number} indent
+ */
+
+/**
+ * @typedef {Object} MonitorChain
+ * @property {string} key
+ * @property {boolean} cycle
+ * @property {MonitorChainNode[]} nodes
  */
 
 /**
  * @typedef {Object} MonitorLanes
- * @property {MonitorItem[]} runnable
- * @property {MonitorItem[]} queue - 전 레포를 합친 대기 레인 — pane header의
- * count와 마스터 KPI가 읽는 값이다.
- * @property {MonitorQueueGroup[]} queue_groups - 대기 레인의 레포별 그룹 (repo
- * header + 그 workspace의 CAS 제어).
+ * @property {MonitorItem[]} runnable - Filter/sort 적용 후의 평면 목록.
+ * @property {{ blocked: number, spec: number }} runnable_hidden
+ * @property {MonitorRunnableSection[]} runnable_sections - `updated_flat`에서는
+ * 빈 배열이다 (섹션 자체를 만들지 않는다).
+ * @property {boolean} runnable_flat
+ * @property {MonitorItem[]} queue
+ * @property {MonitorQueueGroup[]} queue_groups - 대기 레인의 레포 섹션. 큐가
+ * 비어 있어도 그 레포에 후보가 있으면 남는다 — 데스크톱의 유일한 적재 수단이
+ * 드래그이므로 같은 레포 드롭 타깃이 있어야 한다 (§6).
  * @property {MonitorItem[]} running
  * @property {MonitorItem[]} pr_wait
  * @property {MonitorItem[]} done
- * @property {{ total: number, both_on: number }} automation
+ * @property {MonitorChain[]} chains
  */
 
 /**
- * Pick the newest attempt of a bead that has already ENDED — 완료 종류는 여기서만
- * 파생되고, 짝이 되는 기록이 없으면 종류 표기를 생략한다 (fail-quiet).
+ * Pick the newest attempt of a bead that has already ENDED.
  *
  * @param {Record<string, any>} attempts
  * @param {string} bead_id
@@ -221,86 +245,40 @@ export function latestTerminalAttempt(attempts, bead_id) {
 }
 
 /**
- * Fold one repo's UNFINISHED attempts onto the beads they belong to — 같은
- * 버드에 둘이 붙어 있으면(일반 실행 + conflict-resolution) 더 최근에 시작한 쪽이
- * 그 버드의 라이브 지표가 된다.
+ * Fold one repo's UNFINISHED attempts onto the beads they belong to.
  *
  * 실행중 레인은 `running` attempt만이 아니라 leaf paused와 아직 처리되지 않은
- * 실패까지 받는다 — 스펙 §8의 조작 표가 이 레인에 재개(`worker-attempt-resume`)와
- * 실패 정리(`worker-attempt-dismiss`)를 두므로, running만 실으면 두 액션에 도달할
- * 경로가 없다. 실패 판정은 Worker 탭 배너와 같다: 뒤에 온 attempt가 대체했거나,
- * 완료 레인 진입이 해소했거나, ✕로 닫혔으면 미처리 실패가 아니다.
+ * 실패까지 받는다 — 재개·실패 정리 액션에 도달할 경로가 그 레인뿐이다.
  *
  * @param {Record<string, any>} attempts
  * @param {Map<string, number>} done_at_by_bead
- * @returns {Map<string, { attempt_id: string, run_state: 'running'|'paused'|'failed', started_at: number|null, last_event_at: number|null, runner: string|null, model: string|null, effort: string|null, speed: string|null, resumed_from: string|null, continuation_mode: 'session'|'fresh'|null, usage: any, can_pause: boolean, can_resume: boolean }>}
+ * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead) {
-  const values = /** @type {any[]} */ (Object.values(attempts || {}));
-  /** @type {Set<string>} */
-  const resumed_from_ids = new Set();
-  /** @type {Map<string, string>} */
-  const last_attempt_by_bead = new Map();
-  for (const a of values) {
-    if (!a || typeof a.bead_id !== 'string') {
-      continue;
-    }
-    if (typeof a.resumed_from === 'string' && a.resumed_from.length > 0) {
-      resumed_from_ids.add(a.resumed_from);
-    }
-    last_attempt_by_bead.set(a.bead_id, a.attempt_id);
-  }
+  const { winners, resumed_from_ids } = activeAttemptStates(
+    attempts,
+    done_at_by_bead
+  );
 
   /** @type {Map<string, any>} */
   const map = new Map();
-  for (const a of values) {
-    if (!a || typeof a.bead_id !== 'string' || a.bead_id.length === 0) {
-      continue;
-    }
-    /** @type {'running'|'paused'|'failed'|null} */
-    let run_state = null;
-    if (a.status === 'running') {
-      run_state = 'running';
-    } else if (a.status === 'paused' && !resumed_from_ids.has(a.attempt_id)) {
-      run_state = 'paused';
-    } else if (a.status === 'failed' || a.status === 'orphaned') {
-      const done_at = done_at_by_bead.get(a.bead_id);
-      const resolved_by_done =
-        typeof done_at === 'number' &&
-        done_at > 0 &&
-        typeof a.finished_at === 'number' &&
-        done_at >= a.finished_at;
-      if (
-        last_attempt_by_bead.get(a.bead_id) === a.attempt_id &&
-        !resolved_by_done &&
-        typeof a.dismissed_at !== 'number'
-      ) {
-        run_state = 'failed';
-      }
-    }
-    if (!run_state) {
-      continue;
-    }
-    const started_at = typeof a.started_at === 'number' ? a.started_at : null;
-    const prior = map.get(a.bead_id);
-    if (prior) {
-      const prior_rank = RUN_STATE_RANK[prior.run_state];
-      const rank = RUN_STATE_RANK[run_state];
-      if (
-        prior_rank > rank ||
-        (prior_rank === rank && (prior.started_at ?? 0) > (started_at ?? 0))
-      ) {
-        continue;
-      }
-    }
+  for (const [bead_id, state] of winners) {
+    const a = state.attempt;
+    const run_state = state.run_state;
+    const started_at = state.started_at;
     const has_session =
       typeof a.session_id === 'string' && a.session_id.length > 0;
-    map.set(a.bead_id, {
+    map.set(bead_id, {
       attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
       run_state,
       started_at,
       last_event_at:
         typeof a.last_event_at === 'number' ? a.last_event_at : null,
+      last_activity:
+        a.last_activity && typeof a.last_activity === 'object'
+          ? a.last_activity
+          : null,
+      legs: Array.isArray(a.legs) ? a.legs : [],
       runner: typeof a.runner === 'string' ? a.runner : null,
       model: typeof a.model === 'string' ? a.model : null,
       effort: typeof a.effort === 'string' ? a.effort : null,
@@ -310,6 +288,7 @@ export function activeByBead(attempts, done_at_by_bead) {
         a.continuation_mode === 'session' || a.continuation_mode === 'fresh'
           ? a.continuation_mode
           : null,
+      status: typeof a.status === 'string' ? a.status : null,
       usage: sumAttemptUsage(attempts, a.bead_id),
       can_pause: run_state === 'running' && has_session,
       can_resume:
@@ -322,9 +301,7 @@ export function activeByBead(attempts, done_at_by_bead) {
 }
 
 /**
- * The ⛔ / ♻️ chip an admission record renders as (Worker 탭 `admissionBadge`와
- * 같은 산식 — 표시 통과 후 적재가 거부되는 것이 정상 경로이고, 그 사유가 카드에
- * 붙는다, §4).
+ * The ⛔ / ♻️ chip an admission record renders as.
  *
  * @param {Record<string, any>} admission
  * @param {string} bead_id
@@ -357,17 +334,315 @@ function objectOf(value) {
 }
 
 /**
- * Merge the aggregated snapshot into the five exclusive lanes.
+ * The 실행가능 card's exec chips (UI-eey2 §5): drawn ONLY when the issue pin
+ * resolves to something different from the repo's own default, because the repo
+ * default is what the deck tile says and repeating it on every card is noise.
  *
- * @param {Array<Record<string, any>>|null|undefined} workspaces - 파이프라인이
- * 있는 레포만 실린 heavy array.
- * @param {Array<Record<string, any>>|null|undefined} [workspaces_state] - 모든
- * visible 레포의 제어 상태 (파이프라인이 빈 레포 포함).
- * @param {{ done_since?: number, running_sort?: 'started'|'repo' }} [options] - Sort/filter options.
- * `done_since`는 Worker 탭과 같은 `closedRangeSince()` 하한이다 (§7). 생략하면
- * 필터 없음 — 기존 호출부와 호환된다. `added_at`이 없는 완료 엔트리는 기간으로
- * 판정할 수 없으므로 필터를 적용하지 않고 항상 남긴다 (Worker 탭과 같은 규약,
- * §10). `running_sort`의 미지 값은 기본 `started`로 물러난다.
+ * Resolving twice — once with the pin, once without — is the only honest way to
+ * ask "does this pin change anything": the pin's presence alone does not, since
+ * a pin may store exactly the repo value.
+ *
+ * @param {Record<string, any>} state - The repo's `workspaces_state` row.
+ * @param {Record<string, string>|null|undefined} exec_pins
+ * @param {string|null} route
+ * @returns {import('../../utils/exec-settings-chip.js').ExecChips|null}
+ */
+function pinnedExecChips(state, exec_pins, route) {
+  const pins = objectOf(exec_pins);
+  if (Object.keys(pins).length === 0) {
+    return null;
+  }
+  const execution_defaults = state.execution_defaults;
+  const runner_catalog = state.runner_catalog;
+  const session_defaults = state.session_defaults;
+  // 구버전 서버: 기본값을 알 수 없으면 "다르다"를 판정할 수 없다 — 칩 줄 자체를
+  // 생략한다 (스펙 §12).
+  if (!execution_defaults || !runner_catalog || !session_defaults) {
+    return null;
+  }
+  /**
+   * @param {Record<string, unknown>|null} pin
+   */
+  const resolve = (pin) =>
+    resolveExecutionSettings({
+      pin,
+      global: session_defaults,
+      execution_defaults,
+      runner_catalog,
+      route
+    });
+  /** @type {any} */
+  let pinned;
+  /** @type {any} */
+  let base;
+  try {
+    pinned = resolve(pins);
+    base = resolve(null);
+  } catch {
+    return null;
+  }
+  const orchestration = formatOrDrop(
+    formatOrchestrationChip(pinned, runner_catalog),
+    formatOrchestrationChip(base, runner_catalog)
+  );
+  const worker = formatOrDrop(
+    formatWorkerChip(pinned, null),
+    formatWorkerChip(base, null)
+  );
+  return orchestration || worker ? { orchestration, worker } : null;
+}
+
+/**
+ * @param {import('../../utils/exec-settings-chip.js').ExecChip|null} pinned
+ * @param {import('../../utils/exec-settings-chip.js').ExecChip|null} base
+ * @returns {import('../../utils/exec-settings-chip.js').ExecChip|null}
+ */
+function formatOrDrop(pinned, base) {
+  if (!pinned) {
+    return null;
+  }
+  if (base && base.text === pinned.text) {
+    return null;
+  }
+  return pinned;
+}
+
+/**
+ * One 선행 chip (UI-eey2 §5.1) — 방향을 이름으로 말한다.
+ *
+ * @param {import('./blockers.js').BlockerDisplay} blocker
+ * @returns {DependencyChip}
+ */
+function predecessorChip(blocker) {
+  return {
+    id: blocker.id,
+    label: `🔒 선행 ${blocker.id} (${blocker.location_label})`,
+    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다`
+  };
+}
+
+/**
+ * One 후속 chip (UI-eey2 §5.1) — 역방향 간선이므로 해제 ✕가 없다. 어느
+ * 레인에도 없는 후속은 알 수 없으므로 생략한다 (fail-quiet).
+ *
+ * @param {string} successor_id
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @returns {DependencyChip|null}
+ */
+function successorChip(successor_id, locations) {
+  const location = locations.get(successor_id);
+  if (!location) {
+    return null;
+  }
+  return {
+    id: successor_id,
+    label: `→ 후속 ${successor_id} (${blockerLocationLabel(location)})`,
+    title: `이 이슈가 close되면 ${successor_id}가 자기 레포 큐에서 출발한다`
+  };
+}
+
+/**
+ * Topologically ordered chain rows for ONE connected component (§6.4).
+ *
+ * @param {string[]} nodes
+ * @param {Map<string, Set<string>>} out_edges
+ * @param {Map<string, Set<string>>} in_edges
+ * @returns {{ order: string[], indent: Map<string, number>, cycle: boolean }}
+ */
+function orderChain(nodes, out_edges, in_edges) {
+  /** @type {Map<string, number>} */
+  const remaining = new Map();
+  for (const node of nodes) {
+    remaining.set(
+      node,
+      Array.from(in_edges.get(node) || []).filter((id) => nodes.includes(id))
+        .length
+    );
+  }
+  /** @type {string[]} */
+  const order = [];
+  /** @type {Map<string, number>} */
+  const indent = new Map();
+  const ready = nodes.filter((node) => (remaining.get(node) || 0) === 0).sort();
+  for (const node of ready) {
+    indent.set(node, 0);
+  }
+  const pending = [...ready];
+  while (pending.length > 0) {
+    const node = /** @type {string} */ (pending.shift());
+    order.push(node);
+    const children = Array.from(out_edges.get(node) || [])
+      .filter((id) => nodes.includes(id))
+      .sort();
+    // 분기(한 선행에 후속 여럿)만 한 단계 들여쓴다 — 선형 체인은 평평하다.
+    const child_indent =
+      (indent.get(node) || 0) + (children.length > 1 ? 1 : 0);
+    for (const child of children) {
+      const next = (remaining.get(child) || 0) - 1;
+      remaining.set(child, next);
+      const known = indent.get(child);
+      indent.set(
+        child,
+        known === undefined ? child_indent : Math.min(known, child_indent)
+      );
+      if (next === 0) {
+        pending.push(child);
+      }
+    }
+  }
+  return { order, indent, cycle: order.length !== nodes.length };
+}
+
+/**
+ * The 🔗 연결 체인 blocks (UI-eey2 §6.4): blocks 의존으로 이어진 연결 성분 중
+ * 노드가 둘 이상인 것. 모든 노드가 같은 레포의 같은 직렬 레인 안에 있으면 제외한다 —
+ * 레인 순서가 이미 같은 것을 보여 준다.
+ *
+ * 표시 전용 파생값이다. 체인은 큐 적재로 생기지 않고 bd `blocks` 의존으로만
+ * 생긴다.
+ *
+ * @param {Map<string, string[]>} blocked_by_map
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Array<Record<string, any>>} states
+ * @returns {MonitorChain[]}
+ */
+export function buildChains(blocked_by_map, locations, states) {
+  /** @type {Map<string, Set<string>>} */
+  const out_edges = new Map();
+  /** @type {Map<string, Set<string>>} */
+  const in_edges = new Map();
+  /** @type {Set<string>} */
+  const nodes = new Set();
+  /**
+   * @param {Map<string, Set<string>>} map
+   * @param {string} key
+   * @param {string} value
+   */
+  const link = (map, key, value) => {
+    const set = map.get(key);
+    if (set) {
+      set.add(value);
+    } else {
+      map.set(key, new Set([value]));
+    }
+  };
+  for (const [blockee, blockers] of blocked_by_map) {
+    for (const blocker of blockers) {
+      if (blocker === blockee) {
+        continue;
+      }
+      nodes.add(blocker);
+      nodes.add(blockee);
+      link(out_edges, blocker, blockee);
+      link(in_edges, blockee, blocker);
+    }
+  }
+
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {MonitorChain[]} */
+  const chains = [];
+  for (const start of Array.from(nodes).sort()) {
+    if (seen.has(start)) {
+      continue;
+    }
+    /** @type {string[]} */
+    const component = [];
+    const stack = [start];
+    seen.add(start);
+    while (stack.length > 0) {
+      const node = /** @type {string} */ (stack.pop());
+      component.push(node);
+      for (const next of [
+        ...(out_edges.get(node) || []),
+        ...(in_edges.get(node) || [])
+      ]) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          stack.push(next);
+        }
+      }
+    }
+    if (component.length < 2) {
+      continue;
+    }
+    const placed = component.map((id) => locations.get(id));
+    const all_same_serial =
+      placed.every(
+        (location) => !!location && /^s[1-5]$/.test(location.lane || '')
+      ) &&
+      placed.every(
+        (location) =>
+          location &&
+          placed[0] &&
+          location.root_dir === placed[0].root_dir &&
+          location.lane === placed[0].lane
+      );
+    if (all_same_serial) {
+      continue;
+    }
+    const { order, indent, cycle } = orderChain(
+      component.slice().sort(),
+      out_edges,
+      in_edges
+    );
+    const listed = cycle ? component.slice().sort() : order;
+    chains.push({
+      key: listed.join('\u0000'),
+      cycle,
+      nodes: listed.map((id) => {
+        const location = locations.get(id);
+        return {
+          id,
+          workspace_name: location ? location.workspace_name : '',
+          root_dir: location ? location.root_dir : '',
+          location_label: location
+            ? blockerLocationLabel(location)
+            : chainScopeLabel(id, states),
+          indent: cycle ? 0 : indent.get(id) || 0
+        };
+      })
+    });
+  }
+  return chains;
+}
+
+/**
+ * @param {string} bead_id
+ * @param {Array<Record<string, any>>} states
+ * @returns {string}
+ */
+function chainScopeLabel(bead_id, states) {
+  const scope = classifyBlockerPrefix(bead_id, states);
+  return scope === 'internal'
+    ? '미적재'
+    : scope === 'external'
+      ? '외부'
+      : '위치 미확인';
+}
+
+/**
+ * @param {unknown} value
+ * @returns {number}
+ */
+function timeOf(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+/**
+ * Merge the aggregated snapshot into the five exclusive lanes plus the repo
+ * sections and the 🔗 chains the monitor derives on top of them.
+ *
+ * @param {Array<Record<string, any>>|null|undefined} workspaces
+ * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat' }} [options]
  * @returns {MonitorLanes}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -377,6 +652,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
     options && typeof options.done_since === 'number'
       ? options.done_since
       : undefined;
+  const candidate_filter = {
+    ...CANDIDATE_FILTER_DEFAULT,
+    ...(options && options.candidate_filter ? options.candidate_filter : {})
+  };
+  const candidate_sort =
+    options &&
+    CANDIDATE_SORT_OPTIONS.some((o) => o.value === options.candidate_sort)
+      ? /** @type {'repo_spec'|'repo_updated'|'updated_flat'} */ (
+          options.candidate_sort
+        )
+      : 'repo_spec';
 
   /** @type {Map<string, Record<string, any>>} */
   const state_by_root = new Map();
@@ -404,6 +690,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const serial_by_root = new Map();
   /** @type {Map<string, number>} */
   const serial_count_by_root = new Map();
+  /** @type {Map<string, number>} */
+  const raw_queue_length_by_root = new Map();
+  /** @type {Map<string, string[]>} */
+  const blocked_by_map = new Map();
 
   for (const workspace of list) {
     if (!workspace || typeof workspace.root_dir !== 'string') {
@@ -412,9 +702,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const root_dir = workspace.root_dir;
     const workspace_name = workspace.name || root_dir;
     const state = state_by_root.get(root_dir);
-    // 파이프라인 항목의 CAS 토큰도 `workspaces_state`가 먼저다: 두 값은 같은
-    // 스냅샷에서 나오지만, 제어 상태 쪽이 모든 레포를 덮으므로 한 레포에 대해
-    // 카드와 그룹 헤더가 서로 다른 revision을 말하는 일이 없다.
     const expected_revision =
       state && typeof state.revision === 'number'
         ? state.revision
@@ -423,6 +710,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : 0;
     const attempts = objectOf(workspace.attempts);
     const titles = objectOf(workspace.bead_titles);
+    const times = objectOf(workspace.bead_times);
     const observations = objectOf(workspace.pr_observations);
     const admission = objectOf(workspace.admission);
     const revise_parked = objectOf(workspace.revise_parked);
@@ -430,6 +718,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
     const bead_blocked_by = objectOf(workspace.bead_blocked_by);
+    const bead_workflow = objectOf(workspace.bead_workflow);
     const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
@@ -462,6 +751,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         ? Math.max(0, Math.min(5, Math.floor(workspace.serial_lane_count)))
         : Math.min(5, serial_lanes.length);
     serial_count_by_root.set(root_dir, serial_lane_count);
+    raw_queue_length_by_root.set(root_dir, queue_lane.length);
     /** @type {Map<string, any>} */
     const serial_by_id = new Map(serial_lanes.map((lane) => [lane.id, lane]));
     /** @type {Map<string, 's1'|'s2'|'s3'|'s4'|'s5'>} */
@@ -474,6 +764,17 @@ export function buildLanes(workspaces, workspaces_state, options) {
             /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id)
           );
         }
+      }
+    }
+    for (const [bead_id, blockers] of Object.entries(bead_blocked_by)) {
+      if (Array.isArray(blockers)) {
+        blocked_by_map.set(
+          bead_id,
+          blockers.filter(
+            (/** @type {unknown} */ id) =>
+              typeof id === 'string' && id.length > 0
+          )
+        );
       }
     }
     const done_lane = Array.isArray(workspace.done) ? workspace.done : [];
@@ -500,7 +801,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
     /**
      * @param {string} bead_id
-     * @returns {{ id: string, title: string, root_dir: string, workspace_name: string, expected_revision: number, draggable: boolean }}
      */
     const base = (bead_id) => ({
       id: bead_id,
@@ -508,11 +808,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
       root_dir,
       workspace_name,
       expected_revision,
-      // 모니터에는 드래그 컨트롤러가 없다 — 순서 변경은 카드의 ↑/↓ 버튼이 한다.
-      draggable: false
+      draggable: false,
+      ...(objectOf(times[bead_id]).created_at
+        ? { created_at: objectOf(times[bead_id]).created_at }
+        : {}),
+      ...(objectOf(times[bead_id]).updated_at
+        ? { updated_at: objectOf(times[bead_id]).updated_at }
+        : {})
     });
 
-    // 배타 우선순위: 상위 레인에 잡힌 버드는 하위 레인에서 제외한다.
     /** @type {Set<string>} */
     const claimed = new Set();
 
@@ -526,10 +830,16 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : {}),
         attempt_id: live.attempt_id,
         run_state: live.run_state,
+        status: live.status || undefined,
+        // 실행중 타일의 stepper (§7) — Phase 1의 `bead_workflow` 투영이다.
+        // 그 버드의 항목이 아직 채워지지 않았으면 stepper만 생략된다.
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         can_pause: live.can_pause,
         can_resume: live.can_resume,
         started_at: live.started_at,
         last_event_at: live.last_event_at,
+        last_activity: live.last_activity,
+        legs: live.legs,
         runner: live.runner,
         model: live.model,
         effort: live.effort,
@@ -537,6 +847,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
         resumed_from: live.resumed_from,
         continuation_mode: live.continuation_mode,
         usage: live.usage,
+        exec_chips: {
+          orchestration: formatAttemptOrchestrationChip(live),
+          worker: null
+        },
         discard: discardProjection(discard_operations, bead_id, {
           attempt_id: live.attempt_id
         }),
@@ -579,8 +893,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         repo_operations
       });
       const cleanup_active = isPrWaitCleanupActive(merge_step);
-      // 아래 네 판정은 Worker 탭 `prWaitRow`와 같은 값이어야 한다 — 모니터가
-      // 서버가 거부할 조작을 제시하면 클릭이 실패로만 돌아온다.
       const conflicting = !!gate && gate.base_badge === '충돌';
       const cleanup_retry =
         !!cleanup &&
@@ -610,8 +922,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         external,
         usage: sumAttemptUsage(attempts, bead_id),
         merge_step,
-        // Worker 탭 `prWaitRow`와 같은 문자열이어야 한다 (UI-q0uy §4.4) — 같은
-        // 사실을 두 탭이 다르게 적으면 안 된다.
         badges: continuation_required
           ? ['이어하기 선택 필요']
           : merge_step
@@ -633,14 +943,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
           cleanup && merge_step?.active !== true
             ? cleanupStalledReason(cleanup.step)
             : 'PR 대기',
-        // 머지 큐에 이미 서 있으면 남은 조작은 자리를 포기하는 것뿐이다
-        // (Worker 탭 [취소]와 같은 규약).
         merge_action:
           gate?.tier === 'merged' && !cleanup_retry && !external_cleanup
             ? false
             : !queued || continuation_required,
-        // 게이트가 열렸거나(enabled), 충돌 해소 세션을 띄우는 클릭이거나,
-        // 머지된 뒤의 정리 재시도일 때만 누를 수 있다.
         merge_enabled:
           !discard_blocks_merge &&
           (continuation_required ||
@@ -681,8 +987,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
 
     /**
-     * Project one parallel or serial waiting card (UI-2gi1 §5). 순번 좌표만
-     * 소속 레인 기준이며 admission/REVISE/폐기 규약은 같다.
+     * Project one parallel or serial waiting row (UI-2gi1 §5).
      *
      * @param {any} entry
      * @param {'queue'|'s1'|'s2'|'s3'|'s4'|'s5'} lane
@@ -703,11 +1008,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const item = {
         ...base(bead_id),
         lane,
+        // 데스크톱의 유일한 적재 수단이 드래그다 (§6) — 대기 행은 끌 수 있다.
         draggable: !discard,
         discard: discard || undefined,
         reason: admissionBadge(admission, bead_id),
-        // 순번은 레인에서의 디스패치 순서이므로, 실행중으로 빠진 버드를 건너뛴
-        // 뒤의 인덱스가 아니라 레인 자체의 자리를 쓴다.
+        seq: queue_index + 1,
         queue_position: queue_index + 1,
         queue_index,
         queue_length,
@@ -748,40 +1053,52 @@ export function buildLanes(workspaces, workspaces_state, options) {
 
     /** @type {MonitorSerialSublane[]} */
     const projected_serial = [];
-    for (let lane_index = 0; lane_index < serial_lanes.length; lane_index++) {
-      const lane = serial_lanes[lane_index];
+    for (
+      let lane_index = 0;
+      lane_index < Math.max(serial_lane_count, serial_lanes.length);
+      lane_index++
+    ) {
+      const id = /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (`s${lane_index + 1}`);
+      const lane = serial_by_id.get(id);
+      const entries = lane && Array.isArray(lane.entries) ? lane.entries : [];
       /** @type {MonitorItem[]} */
       const items = [];
-      for (let i = 0; i < lane.entries.length; i++) {
-        const item = waitingItem(
-          lane.entries[i],
-          /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
-          i,
-          lane.entries.length
-        );
+      for (let i = 0; i < entries.length; i++) {
+        const item = waitingItem(entries[i], id, i, entries.length);
         if (!item) {
           continue;
         }
         items.push(item);
         queue.push(item);
       }
-      if (items.length === 0) {
+      const lane_state = objectOf(lane_states[id]);
+      const occupied_by = Array.isArray(lane_state.occupied_by)
+        ? lane_state.occupied_by.filter(
+            (/** @type {any} */ bead_id) => typeof bead_id === 'string'
+          )
+        : [];
+      // 설정된 레인 수가 1이고 그마저 비었으면 힌트도 생략한다 (§6): 드롭
+      // 타깃이 하나뿐인 병렬 pane과 구분할 것이 없다.
+      if (
+        items.length === 0 &&
+        occupied_by.length === 0 &&
+        (serial_lane_count <= 1 || lane_index >= serial_lane_count)
+      ) {
         continue;
       }
-      const lane_state = objectOf(lane_states[lane.id]);
       projected_serial.push({
-        id: /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id),
+        id,
         index: lane_index,
         items,
-        occupied_by: Array.isArray(lane_state.occupied_by)
-          ? lane_state.occupied_by.filter(
-              (/** @type {any} */ bead_id) => typeof bead_id === 'string'
-            )
-          : [],
+        raw_length: entries.length,
+        occupied_by,
         corrections: Array.isArray(lane_state.corrections)
           ? lane_state.corrections.length
           : 0,
-        cycle: lane_state.cycle === true
+        cycle: lane_state.cycle === true,
+        ...(items.length === 0 && occupied_by.length === 0
+          ? { empty: true }
+          : {})
       });
     }
     serial_by_root.set(root_dir, projected_serial);
@@ -816,33 +1133,44 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continue;
       }
       claimed.add(bead_id);
+      const workflow =
+        entry.workflow && typeof entry.workflow === 'object'
+          ? entry.workflow
+          : null;
+      const route =
+        (workflow && typeof workflow.route === 'string' && workflow.route) ||
+        (typeof entry.route === 'string' ? entry.route : null);
+      const exec_chips = pinnedExecChips(
+        objectOf(state),
+        entry.exec_pins,
+        route
+      );
+      if (Array.isArray(entry.blocked_by) && entry.blocked_by.length > 0) {
+        blocked_by_map.set(
+          bead_id,
+          entry.blocked_by.filter(
+            (/** @type {unknown} */ id) =>
+              typeof id === 'string' && id.length > 0
+          )
+        );
+      }
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
         lane: 'runnable',
-        // 적재 자격은 서버가 이미 판정했다 (§4) — 카드의 [대기로 ↴]는 항상
-        // 눌린다. 거부는 적재 시점의 admission이 판정하고 ⛔ 사유로 돌아온다.
         draggable: true,
         reason: admissionBadge(admission, bead_id),
         created_at: entry.created_at ?? undefined,
         updated_at: entry.updated_at ?? undefined,
-        // 라우팅 라벨(`worker-ineligible` 등)이 큐잉 판단의 근거다 (UI-lzfa §4.2).
+        status: typeof entry.status === 'string' ? entry.status : undefined,
         labels: Array.isArray(entry.labels) ? entry.labels : [],
-        spec_reviewer:
-          typeof entry.spec_reviewer === 'string'
-            ? entry.spec_reviewer
-            : undefined,
-        plan_state:
-          entry.plan_state === 'approved' || entry.plan_state === 'authored'
-            ? entry.plan_state
-            : 'none',
-        // route 칩만 쓰고 스테퍼는 그리지 않는다: 집계 payload에는 stage 요약이
-        // 없고, `stepperTemplate`은 `stages` 없는 workflow를 빈 문자열로 돌려준다.
+        spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
+        // Phase 1이 `workflow`를 실어 주므로 실행가능 카드도 Worker와 같은
+        // stepper를 그린다. 없으면 route 칩만 남는다 (fail-quiet).
         workflow: /** @type {any} */ (
-          entry.route
-            ? { route: entry.route, chips: { route: entry.route } }
-            : null
+          workflow || (route ? { route, chips: { route } } : null)
         ),
+        ...(exec_chips ? { exec_chips } : {}),
         blocked: entry.blocked === true,
         ...(Array.isArray(entry.blocked_by)
           ? {
@@ -852,7 +1180,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
               )
             }
           : {}),
-        // 적재 위치는 그 레포 대기 큐의 맨 뒤 (Worker 탭 [대기로 ↴]와 같다).
         place_index: queue_lane.length,
         place_lanes
       });
@@ -864,10 +1191,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continue;
       }
       claimed.add(bead_id);
-      // 기간 필터: `added_at`이 숫자로 있고 하한보다 이른 것만 뺀다.
-      // `added_at`이 없는 엔트리는 기간을 판정할 수 없으므로 필터를 걸지 않고
-      // 항상 남긴다 — 타임스탬프가 없다는 이유로 실제로 끝낸 일을 화면에서
-      // 지우는 쪽이 더 나쁜 오답이다 (Worker 탭과 같은 규약, §10).
       if (
         done_since !== undefined &&
         typeof entry.added_at === 'number' &&
@@ -876,24 +1199,22 @@ export function buildLanes(workspaces, workspaces_state, options) {
         continue;
       }
       const terminal = latestTerminalAttempt(attempts, bead_id);
+      const kind =
+        terminal && typeof terminal.done_kind === 'string'
+          ? terminal.done_kind
+          : null;
       done.push({
         ...base(bead_id),
         lane: 'done',
         done: true,
+        // 완료 3줄 행 (§8): 레포 배지가 붙으면 2줄 변형에서 제목이 먼저 잘린다.
+        done_layout: 'three_line',
         usage: sumAttemptUsage(attempts, bead_id),
+        work_ms: sumAttemptWorkMs(attempts, bead_id),
         done_at:
           typeof entry.added_at === 'number' ? entry.added_at : undefined,
-        done_kind:
-          terminal && typeof terminal.done_kind === 'string'
-            ? terminal.done_kind
-            : null
-        // 완료 레인에는 조작 버튼을 두지 않는다 — Worker 탭의 완료 행과 같다.
-        // 스펙 §8은 이 레인에 `worker-merge-queue-add` cleanup 재시도를 두라고
-        // 적었지만, 그 재시도는 실제로는 PR 대기 레인의 affordance다(머지 후
-        // 정리가 실패한 버드는 `done`이 아니라 `pr_wait`에 남는다). 게다가
-        // 큐 스토어의 `enqueueMember`가 레인 배타성(UI-wwby §2)에 따라 `done`
-        // 소속 버드의 적재를 항상 거부하므로, 여기 버튼을 두면 누를 때마다
-        // 거부로만 돌아온다.
+        done_kind: kind,
+        badges: kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []
       });
     }
   }
@@ -936,9 +1257,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   });
   done.sort((a, b) => (b.done_at ?? 0) - (a.done_at ?? 0));
 
-  // 그룹은 `workspaces_state`를 돌며 만든다 — 큐가 빈 레포에도 헤더가 필요하다.
-  // 제어 상태를 아예 못 받은 구버전 서버에서는 파이프라인 배열로 물러난다
-  // (fail-quiet: 헤더가 사라지는 것보다 revision 0으로라도 그리는 편이 낫다).
+  // 대기 섹션은 `workspaces_state`를 돌며 만든다 — 큐가 빈 레포에도 후보가
+  // 있으면 같은 레포 드롭 타깃이 있어야 한다 (§6).
   const group_sources =
     states.length > 0
       ? states
@@ -949,9 +1269,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
           auto_merge: w && w.auto_merge,
           slots: w && w.slots,
           revision: w && w.revision,
-
           runner_catalog: w && w.runner_catalog
         }));
+
+  /** @type {Set<string>} */
+  const roots_with_candidates = new Set(runnable.map((item) => item.root_dir));
 
   /** @type {MonitorQueueGroup[]} */
   const queue_groups = [];
@@ -961,6 +1283,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
     const parallel = queue_by_root.get(source.root_dir) || [];
     const serial = serial_by_root.get(source.root_dir) || [];
+    const has_queue =
+      parallel.length > 0 ||
+      serial.some(
+        (lane) => lane.items.length > 0 || lane.occupied_by.length > 0
+      );
+    if (!has_queue && !roots_with_candidates.has(source.root_dir)) {
+      continue;
+    }
     queue_groups.push({
       root_dir: source.root_dir,
       name: source.name || source.root_dir,
@@ -974,26 +1304,26 @@ export function buildLanes(workspaces, workspaces_state, options) {
       runner_catalog: objectOf(source.runner_catalog),
       items: parallel,
       sublanes: { parallel, serial },
-      serial_lane_count: serial_count_by_root.get(source.root_dir) || 0
+      serial_lane_count: serial_count_by_root.get(source.root_dir) || 0,
+      raw_queue_length: raw_queue_length_by_root.get(source.root_dir) || 0
     });
   }
 
   /** @type {MonitorLanes} */
   const model = {
     runnable,
+    runnable_hidden: { blocked: 0, spec: 0 },
+    runnable_sections: [],
+    runnable_flat: candidate_sort === 'updated_flat',
     queue,
     queue_groups,
     running,
     pr_wait,
     done,
-    automation: {
-      total: queue_groups.length,
-      both_on: queue_groups.filter((g) => g.auto_advance && g.auto_merge).length
-    }
+    chains: []
   };
 
-  // 이하는 스냅샷 한 번에만 유효한 표시 파생값이다. partial cache에 없는
-  // 항목은 의도대로 계속 생략한다 (UI-2gi1 §6.3–§6.5).
+  // 이하는 스냅샷 한 번에만 유효한 표시 파생값이다.
   const locations = buildBlockerLocationMap(model);
   for (const entry of all_done_locations) {
     if (!locations.has(entry.id)) {
@@ -1005,6 +1335,22 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
     }
   }
+
+  /** @type {Map<string, string[]>} */
+  const successors_by_bead = new Map();
+  for (const [blockee, blockers] of blocked_by_map) {
+    for (const blocker of blockers) {
+      const bucket = successors_by_bead.get(blocker);
+      if (bucket) {
+        if (!bucket.includes(blockee)) {
+          bucket.push(blockee);
+        }
+      } else {
+        successors_by_bead.set(blocker, [blockee]);
+      }
+    }
+  }
+
   for (const item of [...model.queue, ...model.runnable]) {
     if (!Object.hasOwn(item, 'blocked_by')) {
       continue;
@@ -1024,6 +1370,43 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
+  for (const item of [
+    ...model.queue,
+    ...model.runnable,
+    ...model.running,
+    ...model.pr_wait
+  ]) {
+    /** @type {DependencyChip[]} */
+    const predecessors =
+      item.lane === 'running' || item.lane === 'pr_wait'
+        ? []
+        : (item.blockers || []).map(predecessorChip);
+    /** @type {DependencyChip[]} */
+    const successors = [];
+    for (const successor_id of successors_by_bead.get(item.id) || []) {
+      const chip = successorChip(successor_id, locations);
+      if (chip) {
+        successors.push(chip);
+      }
+    }
+    const warnings =
+      item.lane === 'running' || item.lane === 'pr_wait'
+        ? []
+        : item.blocker_warnings || [];
+    if (
+      predecessors.length === 0 &&
+      successors.length === 0 &&
+      warnings.length === 0
+    ) {
+      continue;
+    }
+    /** @type {DependencyChips} */
+    const chips = { predecessors, successors, warnings };
+    item.dependency_chips = chips;
+  }
+
+  model.chains = buildChains(blocked_by_map, locations, states);
+
   const cross_wait_cycles = detectSerialLaneHeadCycles(model.queue_groups);
   for (const group of model.queue_groups) {
     for (const lane of group.sublanes.serial) {
@@ -1036,829 +1419,93 @@ export function buildLanes(workspaces, workspaces_state, options) {
     }
   }
 
+  // 실행가능 필터·정렬은 마지막이다: 파생값(의존 칩·체인)은 필터와 무관하게
+  // 전 레포 사실에서 나와야 한다.
+  const before = model.runnable.length;
+  let visible = model.runnable;
+  if (!candidate_filter.show_blocked) {
+    visible = visible.filter((item) => item.blocked !== true);
+  }
+  const after_blocked = visible.length;
+  if (candidate_filter.spec === 'with') {
+    visible = visible.filter((item) => !!item.spec_id);
+  } else if (candidate_filter.spec === 'without') {
+    visible = visible.filter((item) => !item.spec_id);
+  }
+  model.runnable_hidden = {
+    blocked: before - after_blocked,
+    spec: after_blocked - visible.length
+  };
+
+  /**
+   * @param {MonitorItem} a
+   * @param {MonitorItem} b
+   */
+  const byUpdated = (a, b) => {
+    const diff = timeOf(b.updated_at) - timeOf(a.updated_at);
+    return diff !== 0 ? diff : a.id.localeCompare(b.id);
+  };
+  /**
+   * @param {MonitorItem} a
+   * @param {MonitorItem} b
+   */
+  const bySpecThenUpdated = (a, b) => {
+    const a_spec = a.spec_id ? 0 : 1;
+    const b_spec = b.spec_id ? 0 : 1;
+    return a_spec !== b_spec ? a_spec - b_spec : byUpdated(a, b);
+  };
+  const within = candidate_sort === 'repo_spec' ? bySpecThenUpdated : byUpdated;
+
+  if (candidate_sort === 'updated_flat') {
+    model.runnable = visible.slice().sort(byUpdated);
+    model.runnable_sections = [];
+  } else {
+    /** @type {Map<string, MonitorItem[]>} */
+    const by_root = new Map();
+    for (const item of visible) {
+      const bucket = by_root.get(item.root_dir);
+      if (bucket) {
+        bucket.push(item);
+      } else {
+        by_root.set(item.root_dir, [item]);
+      }
+    }
+    /** @type {MonitorRunnableSection[]} */
+    const sections = [];
+    /** @type {MonitorItem[]} */
+    const ordered = [];
+    for (const source of group_sources) {
+      if (!source || typeof source.root_dir !== 'string') {
+        continue;
+      }
+      const items = (by_root.get(source.root_dir) || []).slice().sort(within);
+      by_root.delete(source.root_dir);
+      if (items.length === 0) {
+        continue;
+      }
+      sections.push({
+        root_dir: source.root_dir,
+        name: source.name || source.root_dir,
+        // 섹션 헤더가 레포를 말하므로 카드는 배지를 그리지 않는다 (§5).
+        // 섹션 헤더가 레포를 말하므로 카드는 배지를 그리지 않는다 — 빈 이름이
+        // 곧 "배지 없음"이다 (Worker 템플릿의 조건이 값의 존재다).
+        items: items.map((item) => ({ ...item, workspace_name: '' }))
+      });
+      ordered.push(...items);
+    }
+    // 제어 상태에 없는 레포(구버전 스냅샷)는 뒤에 붙인다 — 후보를 지우지 않는다.
+    for (const [root_dir, items] of by_root) {
+      const sorted = items.slice().sort(within);
+      sections.push({
+        root_dir,
+        name: sorted[0]?.workspace_name || root_dir,
+        items: sorted.map((item) => ({ ...item, workspace_name: '' }))
+      });
+      ordered.push(...sorted);
+    }
+    model.runnable = ordered;
+    model.runnable_sections = sections;
+  }
+
   return model;
-}
-
-/**
- * The live heartbeat: 최근이면 활성 점, 오래됐으면 흐린 점 + "N분 전",
- * `last_event_at` 자체가 없으면 아무것도 그리지 않는다 (fail-quiet).
- *
- * @param {number|null|undefined} last_event_at
- * @param {number} now
- * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
- */
-export function heartbeatTemplate(last_event_at, now) {
-  if (typeof last_event_at !== 'number' || !Number.isFinite(last_event_at)) {
-    return '';
-  }
-  const age = now - last_event_at;
-  const fresh = age < HEARTBEAT_FRESH_MS;
-  return html`<span
-    class="mon-beat${fresh ? ' mon-beat--live' : ''}"
-    title=${`마지막 이벤트 ${formatTimestampLocal(last_event_at)}`}
-    ><span class="mon-beat__dot" aria-hidden="true"></span>${fresh
-      ? ''
-      : html`<span class="mon-beat__age"
-          >${formatRelativeTime(last_event_at, now)}</span
-        >`}</span
-  >`;
-}
-
-/**
- * The title line every monitor card opens with — 카드 문법의 전부가 여기 걸려 있다.
- * 제목이 언제나 자기 블록 줄을
- * 통째로 가지므로, 메타에 무엇이 실리든 제목 폭이 눌리지 않는다 (§2.2).
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult}
- */
-function titleLine(item) {
-  return html`<div class="mon-c__title">${item.title}</div>`;
-}
-
-/**
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult}
- */
-function idChip(item) {
-  return html`<span class="mon-c__id" title="클릭하면 상세로 이동"
-    >${item.id}</span
-  >`;
-}
-
-/**
- * The owning repo chip: 전 레포를 한 화면에 섞는 순간부터 레포는 부가 정보가 아니라
- * 좌표다.
- * 대기 레인만 예외인데, 거기서는 그룹 헤더가 이미 레포를 말한다.
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult|''}
- */
-function repoChip(item) {
-  return item.workspace_name
-    ? html`<span class="mon-c__repo" title=${item.root_dir || ''}
-        >${item.workspace_name}</span
-      >`
-    : '';
-}
-
-/**
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
- */
-function usageChip(item) {
-  const provider_badges = providerUsageBadges(item.usage);
-  const label = formatUsageTotalWithCost(item.usage);
-  if (provider_badges.length > 0) {
-    return provider_badges.map(
-      (badge) =>
-        html`<span class="mon-c__usage" title=${badge.tooltip}
-          >${badge.label}</span
-        >`
-    );
-  }
-  return label
-    ? html`<span class="mon-c__usage" title=${usageTooltip(item.usage)}
-        >${label}</span
-      >`
-    : '';
-}
-
-/**
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult[]}
- */
-function badgeChips(item) {
-  const badges = Array.isArray(item.badges) ? item.badges : [];
-  return badges.map(
-    (b) =>
-      html`<span class="mon-c__badge${item.alert ? ' mon-c__badge--alert' : ''}"
-        >${b}</span
-      >`
-  );
-}
-
-/**
- * The running tile's controls (§2.3): 라벨 없이 라인 아이콘 + 툴팁. `mon-op--*` 클래스가
- * 클릭 위임 계약이므로 아이콘화는 표면만 바꾼다.
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult}
- */
-function runningOps(item) {
-  return html`<span class="mon-c__ops">
-    ${item.run_state === 'running'
-      ? html`<button
-          type="button"
-          class="mon-op mon-op--pause"
-          ?disabled=${item.can_pause === false}
-          aria-label="일시정지"
-          title="일시정지 — 세션을 끊고 이어하기 가능 상태로 둡니다"
-        >
-          ${iconPause()}
-        </button>`
-      : html`<button
-          type="button"
-          class="mon-op mon-op--resume"
-          ?disabled=${item.can_resume === false}
-          aria-label="이어하기"
-          title="이어하기"
-        >
-          ${iconPlay()}
-        </button>`}
-    ${item.discard?.action
-      ? html`<button
-          type="button"
-          class="mon-op mon-op--discard"
-          data-operation-id=${item.discard.operation?.operation_id || ''}
-          data-discard-mode=${item.discard.confirmation}
-          ?disabled=${!item.discard.enabled}
-          aria-label=${item.discard.label}
-          title=${item.discard.title}
-        >
-          ${item.discard.label}
-        </button>`
-      : ''}
-    ${item.run_state === 'failed'
-      ? html`<button
-          type="button"
-          class="mon-op mon-op--dismiss"
-          aria-label="실패 기록 닫기"
-          title="실패 기록 닫기"
-        >
-          ${iconClose()}
-        </button>`
-      : ''}
-  </span>`;
-}
-
-/**
- * Blocker 칩은 해제할 수 있는 의존 엣지이며 스케줄링 가드가 아니다
- * (UI-2gi1 §6.3–§6.5).
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult|import('lit-html').TemplateResult[]|''}
- */
-function blockerChips(item) {
-  if (!Object.hasOwn(item, 'blocked_by')) {
-    return '';
-  }
-  const blockers = Array.isArray(item.blockers) ? item.blockers : [];
-  if (blockers.length === 0) {
-    return item.blocked
-      ? html`<span class="mon-blocker">🔒 blocked</span>`
-      : '';
-  }
-  return blockers.map(
-    (blocker) =>
-      html`<span
-        class="mon-blocker${blocker.same_lane_ahead
-          ? ' mon-blocker--normal'
-          : ''}"
-      >
-        <span>${blocker.label}</span>
-        <button
-          type="button"
-          class="mon-blocker__remove"
-          data-blocker-id=${blocker.id}
-          aria-label=${`선행 ${blocker.id} 연결 해제`}
-          title="직렬 연결 해제"
-        >
-          ✕
-        </button>
-      </span>`
-  );
-}
-
-/**
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult|''}
- */
-function blockerWarnings(item) {
-  const warnings = Array.isArray(item.blocker_warnings)
-    ? item.blocker_warnings
-    : [];
-  return warnings.length > 0
-    ? html`<div class="mon-blocker-warnings">
-        ${warnings.map(
-          (warning) => html`<div class="mon-blocker-warning">${warning}</div>`
-        )}
-      </div>`
-    : '';
-}
-
-/**
- * UI-2gi1 §6.5: 실행가능·대기 카드가 공유하는 검색형 의존 엣지 선택기다. 검색 필터와
- * mutation 소유권은 `index.js`에 남긴다 (UI-2gi1 §6.5).
- *
- * @returns {import('lit-html').TemplateResult}
- */
-function serialLinkControl() {
-  return html`<span class="mon-link mon-popover-owner">
-    <button
-      type="button"
-      class="mon-link__trigger"
-      aria-haspopup="dialog"
-      aria-expanded="false"
-      title="직렬로 연결"
-    >
-      🔗
-    </button>
-    <span class="mon-link__popover mon-card-popover" role="dialog" hidden>
-      <input
-        type="search"
-        class="mon-link__search"
-        placeholder="id·제목·위치 검색"
-        aria-label="직렬로 연결할 버드 검색"
-        autocomplete="off"
-      />
-      <span class="mon-link__list"></span>
-      <button type="button" class="mon-link__direct" hidden></button>
-      <span class="mon-link__empty" hidden>검색 결과 없음</span>
-      <span class="mon-link__error" role="alert" hidden></span>
-    </span>
-  </span>`;
-}
-
-/**
- * The 실행중 tile — 이 탭의 주인공. 경과·하트비트는 시계가 지나가는 것만으로 값이
- * 바뀌는 유일한 자리이므로 1초 tick이 이 템플릿만을 위해 돈다.
- *
- * @param {MonitorItem} item
- * @param {number} now
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorRunningTile(item, now) {
-  const elapsed =
-    typeof item.started_at === 'number'
-      ? formatElapsed(now - item.started_at)
-      : '';
-  return html`${titleLine(item)}
-    <div class="mon-c__meta">
-      ${badgeChips(item)}${heartbeatTemplate(item.last_event_at, now)}${idChip(
-        item
-      )}${repoChip(item)}
-      ${formatAttemptTuple(item)
-        ? html`<span class="mon-c__model">${formatAttemptTuple(item)}</span>`
-        : ''}
-      ${formatContinuationLineage(item)
-        ? html`<span
-            class="rtile__resumed"
-            title=${formatContinuationLineage(item)}
-            >↻</span
-          >`
-        : ''}
-      ${item.serial_lane_id
-        ? html`<span class="mon-c__lane">${item.serial_lane_id}</span>`
-        : ''}
-      ${elapsed ? html`<span class="mon-live__elapsed">${elapsed}</span>` : ''}
-      ${usageChip(item)}${runningOps(item)}${discardReceiptTemplate(item)}
-    </div>`;
-}
-
-/**
- * The 실행가능 card. `[대기로 ↴]`는 드래그의 보완재로 남는다 (§2.4) — HTML5 드래그가
- * 터치에서 동작하지 않으므로 이 버튼이 모바일 수단이다.
- *
- * 라벨 칩은 보드 카드와 같은 `visibleLabels`를 쓰되 정책은 null이다 (UI-lzfa
- * §4.2): 모니터 파이프라인에는 표시 정책 배선 자체가 없고, null 정책 = 전부
- * 표시가 기존 의미론이다.
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorRunnableCard(item) {
-  const workflow = item.workflow;
-  const chips = (workflow && workflow.chips) || {};
-  const route = chips.route || (workflow && workflow.route);
-  const spec_reviewer =
-    typeof item.spec_reviewer === 'string' ? item.spec_reviewer : '';
-  const plan_label =
-    item.plan_state === 'approved'
-      ? 'plan ✓'
-      : item.plan_state === 'authored'
-        ? 'plan ✎'
-        : 'plan –';
-  const danger =
-    typeof item.reason === 'string' && item.reason.startsWith('⛔');
-  const updated = formatRelativeTime(item.updated_at);
-  return html`${titleLine(item)}
-    <div class="mon-c__meta">
-      <span class="mon-c__grip" aria-hidden="true">⠿</span>${idChip(item)}
-      ${route
-        ? html`<span class="ctl-chip ctl-chip--route">${route}</span>`
-        : ''}
-      ${spec_reviewer
-        ? html`<span
-            class="ctl-chip mon-c__review${spec_reviewer === 'skipped'
-              ? ' mon-c__review--dim'
-              : ''}"
-            >spec:${spec_reviewer}</span
-          >`
-        : ''}
-      ${route === 'full_plan'
-        ? html`<span
-            class="ctl-chip mon-c__plan${item.plan_state === 'none'
-              ? ' mon-c__review--dim'
-              : ''}"
-            >${plan_label}</span
-          >`
-        : ''}
-      ${visibleLabels(item.labels, null).map(
-        (label) => html`<span class="ctl-chip ctl-chip--label">${label}</span>`
-      )}
-      ${repoChip(item)}
-      ${updated
-        ? html`<span title=${`수정 ${formatTimestampLocal(item.updated_at)}`}
-            >수정 ${updated}</span
-          >`
-        : ''}
-      ${item.reason
-        ? html`<span
-            class="mon-c__reason${danger ? ' mon-c__reason--danger' : ''}"
-            >${item.reason}</span
-          >`
-        : ''}
-      ${blockerChips(item)}
-      <span class="mon-c__ops">
-        ${serialLinkControl()}
-        <span class="mon-place mon-popover-owner">
-          <button
-            type="button"
-            class="worker-card__place"
-            data-bead-id=${item.id}
-            aria-haspopup="menu"
-            aria-expanded="false"
-            title="적재할 대기 레인 선택"
-          >
-            대기로 ↴
-          </button>
-          <span class="mon-place__popover mon-card-popover" role="menu" hidden>
-            <button
-              type="button"
-              class="mon-place__choice"
-              data-lane="parallel"
-              data-place-index=${String(item.place_index ?? 0)}
-              role="menuitem"
-              aria-label=${`병렬 · 대기 ${item.place_index ?? 0}`}
-            >
-              <strong>병렬</strong><span>대기 ${item.place_index ?? 0}</span>
-            </button>
-            ${(item.place_lanes || []).map(
-              (lane) =>
-                html`<button
-                  type="button"
-                  class="mon-place__choice"
-                  data-lane=${lane.id}
-                  data-place-index=${String(lane.index)}
-                  role="menuitem"
-                  aria-label=${`${lane.id} · ${
-                    lane.occupied_by.length > 0
-                      ? `점유 ${lane.occupied_by.join(', ')}`
-                      : '미점유'
-                  } · 대기 ${lane.length}`}
-                >
-                  <strong>${lane.id}</strong
-                  ><span
-                    >${lane.occupied_by.length > 0
-                      ? `점유 ${lane.occupied_by.join(', ')}`
-                      : '미점유'}
-                    · 대기 ${lane.length}</span
-                  >
-                </button>`
-            )}
-          </span>
-        </span>
-      </span>
-    </div>
-    ${blockerWarnings(item)}`;
-}
-
-/**
- * The 대기 row — 예외 없이 실행중·실행가능과 같은 2줄 문법이다 (§2.2, spec 리뷰
- * finding 1). 좌측 레일은 1fr이라 현재보다 좁고, 한 줄을 유지하면 제목 압축이
- * 그대로 재발한다. REVISE 처분 버튼만 메타 아래 꼬리 줄로 내려간다.
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorQueueRow(item) {
-  const discard_locked = !!item.discard?.operation;
-  return html`${titleLine(item)}
-    <div class="mon-c__meta">
-      <span class="mon-c__grip" aria-hidden="true">⠿</span>
-      <span class="mon-live__pos">#${item.queue_position}</span>${idChip(item)}
-      ${badgeChips(item)}
-      ${item.reason
-        ? html`<span class="mon-c__reason">${item.reason}</span>`
-        : ''}
-      ${blockerChips(item)}
-      <span class="mon-c__ops">
-        ${serialLinkControl()}
-        <button
-          type="button"
-          class="mon-op mon-op--up"
-          ?disabled=${discard_locked || (item.queue_position ?? 1) <= 1}
-          aria-label="한 칸 앞으로"
-          title="한 칸 앞으로"
-        >
-          ↑
-        </button>
-        <button
-          type="button"
-          class="mon-op mon-op--down"
-          ?disabled=${discard_locked ||
-          (item.queue_index ?? 0) >= (item.queue_length ?? 1) - 1}
-          aria-label="한 칸 뒤로"
-          title="한 칸 뒤로"
-        >
-          ↓
-        </button>
-        <button
-          type="button"
-          class="mon-op mon-op--remove"
-          ?disabled=${discard_locked}
-          aria-label="대기 큐에서 제거"
-          title="대기 큐에서 제거"
-        >
-          ✕
-        </button>
-        ${discard_locked
-          ? html`<button
-              type="button"
-              class="worker-mini__discard"
-              data-bead-id=${item.id}
-              data-attempt-id=${item.discard?.attempt_id || ''}
-              data-operation-id=${item.discard?.operation?.operation_id || ''}
-              data-discard-mode=${item.discard?.confirmation || 'unmerged'}
-              ?disabled=${!item.discard?.enabled}
-              aria-label=${item.discard?.label || '폐기'}
-              title=${item.discard?.title || ''}
-            >
-              ${item.discard?.label || '폐기'}
-            </button>`
-          : ''}
-      </span>
-    </div>
-    ${blockerWarnings(item)} ${discardReceiptTemplate(item)}
-    ${item.revise_action
-      ? html`<div class="mon-c__tail">
-          <button
-            type="button"
-            class="worker-mini__revise-fix"
-            data-bead-id=${item.id}
-            ?disabled=${item.revise_enabled === false}
-            title=${item.revise_title || ''}
-          >
-            finding 수용·수정
-          </button>
-          <button
-            type="button"
-            class="worker-mini__revise-approve"
-            data-bead-id=${item.id}
-            ?disabled=${item.revise_enabled === false}
-            title="델타를 사용자 권한으로 승인해 영수증을 갱신하고 파킹을 해제합니다 (세션 없음)"
-          >
-            승인하고 진행
-          </button>
-        </div>`
-      : ''}`;
-}
-
-/**
- * PR 대기 카드. 버튼은 Worker의 class 계약(`worker-mini__merge` 등)을 그대로
- * 발행해 `index.js`의 클릭 위임이 무변경으로 동작한다 (§2.2).
- *
- * @param {MonitorItem} item
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorPrCard(item) {
-  const merge_step = item.merge_step || null;
-  const has_tail = !!(
-    formatUsageTotalWithCost(item.usage) ||
-    merge_step ||
-    item.merge_action ||
-    item.cancel_action ||
-    item.discard_action
-  );
-  return html`${titleLine(item)}
-    <div class="mon-c__meta">
-      ${idChip(item)}${repoChip(item)}
-      ${item.pr_url && item.pr_number
-        ? html`<a
-            class="mon-c__pr"
-            href=${item.pr_url}
-            target="_blank"
-            rel="noreferrer noopener"
-            title="PR 열기"
-            >#${item.pr_number} ↗</a
-          >`
-        : ''}
-      ${badgeChips(item)}
-      ${item.reason
-        ? html`<span class="mon-c__reason">${item.reason}</span>`
-        : ''}
-    </div>
-    ${has_tail
-      ? html`<div class="mon-c__tail">
-          ${usageChip(item)}${merge_step
-            ? html`<span
-                class="merge-step${merge_step.failed
-                  ? ' merge-step--failed'
-                  : ''}"
-                style=${`--progress: ${merge_step.percent}%`}
-                >${merge_step.label}${merge_step.index > 0
-                  ? html`<span class="merge-step__n"
-                      >${merge_step.index}/${merge_step.total}</span
-                    >`
-                  : ''}</span
-              >`
-            : ''}
-          ${item.merge_action
-            ? html`<button
-                type="button"
-                class="worker-mini__merge"
-                data-bead-id=${item.id}
-                ?disabled=${item.merge_enabled === false}
-                title=${item.merge_title || ''}
-              >
-                ${item.merge_label || '머지'}
-              </button>`
-            : ''}
-          ${item.cancel_action
-            ? html`<button
-                type="button"
-                class="worker-mini__merge-cancel"
-                data-bead-id=${item.id}
-                ?disabled=${item.cancel_enabled === false}
-                title=${item.cancel_title || ''}
-              >
-                취소
-              </button>`
-            : ''}
-          ${item.discard_action
-            ? html`<button
-                type="button"
-                class="worker-mini__discard"
-                data-bead-id=${item.id}
-                data-attempt-id=${item.discard?.attempt_id || ''}
-                data-operation-id=${item.discard?.operation?.operation_id || ''}
-                data-discard-mode=${item.discard?.confirmation || 'unmerged'}
-                ?disabled=${item.discard_enabled === false}
-                title=${item.discard_title}
-              >
-                ${item.discard?.label || '폐기'}
-              </button>`
-            : ''}
-          ${discardReceiptTemplate(item)}
-        </div>`
-      : ''}`;
-}
-
-/**
- * The 완료 row, kind label included: 모르는 종료를 "정상"으로 칠하지 않는 색 규약은
- * 그대로다.
- *
- * @param {MonitorItem} item
- * @param {number} now
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorDoneRow(item, now) {
-  const kind = item.done_kind || '';
-  const label = kind ? DONE_KIND_LABELS[kind] || kind : '';
-  const done_at = formatRelativeTime(item.done_at, now);
-  return html`${titleLine(item)}
-    <div class="mon-c__meta">
-      ${idChip(item)}${repoChip(item)}
-      ${label
-        ? html`<span
-            class="mon-live__kind${DONE_KIND_SUCCESS.has(kind)
-              ? ' mon-live__kind--ok'
-              : ' mon-live__kind--warn'}"
-            >${label}</span
-          >`
-        : ''}
-      ${usageChip(item)}
-      ${done_at
-        ? html`<span title=${`완료 ${formatTimestampLocal(item.done_at)}`}
-            >완료 ${done_at}</span
-          >`
-        : ''}
-    </div>`;
-}
-
-/**
- * The per-lane body dispatcher — `.mon-card` 껍데기(좌표·드래그 계약)는
- * `index.js`가 소유한다.
- *
- * @param {MonitorItem} item
- * @param {number} now
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorCardBody(item, now) {
-  if (item.lane === 'running') {
-    return monitorRunningTile(item, now);
-  }
-  if (item.lane === 'runnable') {
-    return monitorRunnableCard(item);
-  }
-  if (item.lane === 'queue' || /^s[1-5]$/.test(item.lane)) {
-    return monitorQueueRow(item);
-  }
-  if (item.lane === 'pr_wait') {
-    return monitorPrCard(item);
-  }
-  return monitorDoneRow(item, now);
-}
-
-/**
- * The waiting lane's per-repo group header — 그 레포의 workspace 단위 제어 넷을
- * 전부 싣는다 (§6 「레포별 제어」): `▶/⏸`(workspace automation) ·
- * `🔀`(independent auto_merge) · 슬롯 · 실행 기본값.
- *
- * 네 제어 모두 `data-root-dir`과 `data-revision`을 직접 싣는다. 파이프라인이 빈
- * workspace는 무거운 배열에 없으므로, 그 레포의 CAS 토큰은 그룹이 `workspaces_state`
- * 에서 받아 헤더에 실어 두는 것 말고는 도달할 길이 없다.
- *
- * @param {MonitorQueueGroup} group
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorGroupHeaderTemplate(group) {
-  const revision = String(group.revision);
-  const item_count = group.sublanes
-    ? group.sublanes.parallel.length +
-      group.sublanes.serial.reduce((sum, lane) => sum + lane.items.length, 0)
-    : group.items.length;
-  return html`<header
-    class="mon-group__hd${item_count === 0 ? ' is-empty' : ''}"
-    data-root-dir=${group.root_dir}
-    data-revision=${revision}
-  >
-    <span class="mon-group__name" title=${group.root_dir}>${group.name}</span>
-    <span class="mon-group__count">${item_count}</span>
-    <span class="mon-group__ops">
-      <button
-        type="button"
-        class="mon-ctl mon-ctl--advance${group.auto_advance
-          ? ' is-active'
-          : ''}"
-        data-root-dir=${group.root_dir}
-        data-revision=${revision}
-        data-on=${group.auto_advance ? 'false' : 'true'}
-        aria-pressed=${group.auto_advance ? 'true' : 'false'}
-        title=${group.auto_advance
-          ? '자동화 켜짐 — 클릭하면 자동 진행·자동 머지를 함께 끕니다'
-          : '자동화 꺼짐 — 클릭하면 자동 진행·자동 머지를 함께 켭니다'}
-      >
-        ${group.auto_advance ? iconPause() : iconPlay()}
-        <span class="mon-ctl__label">자동화</span>
-      </button>
-      <button
-        type="button"
-        class="mon-ctl mon-ctl--merge-auto${group.auto_merge
-          ? ' is-active'
-          : ''}"
-        data-root-dir=${group.root_dir}
-        data-revision=${revision}
-        data-on=${group.auto_merge ? 'false' : 'true'}
-        aria-pressed=${group.auto_merge ? 'true' : 'false'}
-        title=${group.auto_merge
-          ? '자동 머지 켜짐 — 클릭하면 끄고 이 레포의 머지 대기열을 비웁니다'
-          : '자동 머지 꺼짐 — 클릭하면 자격이 생기는 PR을 계속 머지합니다'}
-      >
-        ${iconMerge()}
-        <span class="mon-ctl__label">머지</span>
-      </button>
-      <label class="mon-ctl mon-ctl--slots" title="동시에 실행할 세션 수">
-        ${iconSlots()}
-        <span class="mon-ctl__label">슬롯</span>
-        <input
-          type="number"
-          class="mon-slots__input"
-          min=${MIN_SLOTS}
-          step="1"
-          data-root-dir=${group.root_dir}
-          data-revision=${revision}
-          aria-label=${`${group.name} 동시 실행 슬롯`}
-          .value=${String(group.slots)}
-        />
-      </label>
-    </span>
-  </header>`;
-}
-
-/**
- * The monitor's top bar: 마스터 자동화 토글 · 전체 카운트 · 완료 기간 select ·
- * 전 레포 토큰·비용 합계 (§8).
- *
- * 분자는 두 축(`auto_advance` && `auto_merge`)이 모두 켜진 레포 수, 분모는 visible
- * 레포 수다. 전부 켜져 있으면 `⏹ 전체 자동화` — Worker 탭의 `⏵⏵`/`⏹` 표기와 같다.
- * 레포 필터는 두지 않는다: 대기 레인이 이미 레포별 그룹이고 나머지 레인은 카드
- * 뱃지가 레포를 말하므로, 필터는 같은 구분을 세 번째 방식으로 다시 하는 것이 된다
- * (§8).
- *
- * 완료 기간이 이 바에 있는 이유는 그 기간이 완료 레인과 토큰 KPI **둘 다**를
- * 지배하기 때문이다 (§7) — Worker 탭은 완료 pane의 `controls` 스트립에 두지만
- * 거기엔 토큰 KPI가 없다.
- *
- * @param {{
- *   automation: { total: number, both_on: number },
- *   counts: { running: number, queue: number, pr_wait: number },
- *   running_sort?: 'started'|'repo',
- *   done_range: import('../../data/closed-range.js').ClosedRange,
- *   token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null,
- *   token_tooltip: string
- * }} model
- * @returns {import('lit-html').TemplateResult}
- */
-export function monitorTopBarTemplate(model) {
-  const { total, both_on } = model.automation;
-  const all_on = total > 0 && both_on === total;
-  const running_sort = model.running_sort === 'repo' ? 'repo' : 'started';
-  const done_label =
-    CLOSED_RANGE_OPTIONS.find((o) => o.value === model.done_range)?.label || '';
-  const token_badges = Array.isArray(model.token_total)
-    ? model.token_total
-    : model.token_total
-      ? [{ label: model.token_total, tooltip: model.token_tooltip }]
-      : [];
-  return html`<div class="mon-top">
-    <button
-      type="button"
-      class="mon-auto-all${all_on ? ' is-active' : ''}"
-      data-on=${all_on ? 'false' : 'true'}
-      aria-pressed=${all_on ? 'true' : 'false'}
-      ?disabled=${total === 0}
-      title=${all_on
-        ? '전 레포의 자동 진행·자동 머지를 함께 끕니다 (머지 대기열도 비워집니다)'
-        : '전 레포의 자동 진행·자동 머지를 함께 켭니다'}
-    >
-      ${all_on ? iconStop() : iconPlayAll()}
-      <span class="mon-auto-all__label"
-        >${all_on
-          ? '전체 자동화 멈춤'
-          : `전체 자동화 ${both_on}/${total}`}</span
-      >
-    </button>
-    <div class="mon-kpi">
-      <span
-        class="mon-running-sort-group"
-        role="group"
-        aria-label="실행중 정렬"
-      >
-        <button
-          type="button"
-          class="mon-running-sort${running_sort === 'started'
-            ? ' is-active'
-            : ''}"
-          data-sort="started"
-          aria-pressed=${running_sort === 'started' ? 'true' : 'false'}
-        >
-          시작순
-        </button>
-        <span aria-hidden="true">|</span>
-        <button
-          type="button"
-          class="mon-running-sort${running_sort === 'repo' ? ' is-active' : ''}"
-          data-sort="repo"
-          aria-pressed=${running_sort === 'repo' ? 'true' : 'false'}
-        >
-          레포순
-        </button>
-      </span>
-      <span class="mon-kpi__chip mon-kpi__chip--running"
-        >실행 <b>${model.counts.running}</b></span
-      >
-      <span class="mon-kpi__chip mon-kpi__chip--queue"
-        >대기 <b>${model.counts.queue}</b></span
-      >
-      <span class="mon-kpi__chip mon-kpi__chip--pr"
-        >PR <b>${model.counts.pr_wait}</b></span
-      >
-      <select
-        class="mon-done-range"
-        aria-label="완료 기간"
-        title="완료 기간"
-        .value=${model.done_range}
-      >
-        ${CLOSED_RANGE_OPTIONS.map(
-          (o) =>
-            html`<option
-              value=${o.value}
-              ?selected=${model.done_range === o.value}
-            >
-              ${o.label}
-            </option>`
-        )}
-      </select>
-      ${token_badges.map(
-        (badge) =>
-          html`<span
-            class="mon-kpi__chip mon-kpi__chip--tokens"
-            title=${badge.tooltip}
-            >${done_label} 완료 · 누적 ${badge.label}</span
-          >`
-      )}
-    </div>
-  </div>`;
 }

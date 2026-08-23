@@ -203,19 +203,24 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     });
     await Promise.resolve();
 
+    // 모니터는 Worker 템플릿을 그대로 쓴다 (UI-eey2 §3) — 실행중은 `.rtile`,
+    // 대기는 `.worker-mini`이고 좌표는 `data-bead-id`다.
     const running = monitor_root.querySelector(
-      '#monitor-running [data-issue-id="UI-run"]'
+      '#monitor-running .rtile[data-bead-id="UI-run"]'
     );
-    expect(running?.querySelector('.mon-c__repo')?.textContent).toContain(
+    expect(running?.querySelector('.rtile__repo')?.textContent).toContain(
       'ws-a'
     );
-    expect(running?.querySelector('.mon-live__elapsed')).not.toBe(null);
+    expect(running?.querySelector('.rtile__elapsed')).not.toBe(null);
     expect(
-      running?.querySelector('.mon-beat')?.classList.contains('mon-beat--live')
-    ).toBe(true);
-    expect(
-      monitor_root.querySelector('#monitor-queue [data-issue-id="UI-wait"]')
+      monitor_root.querySelector(
+        '#monitor-queue .worker-mini[data-bead-id="UI-wait"]'
+      )
     ).not.toBe(null);
+    // 폐기된 모니터 전용 카드 템플릿의 잔재가 없어야 한다.
+    expect(monitor_root.querySelector('.mon-card')).toBe(null);
+    // 마스터 자동화 토글은 UI에서 사라졌다 (서버 op는 그대로).
+    expect(monitor_root.querySelector('.mon-auto-all')).toBe(null);
   });
 
   // 서버가 만든 workspaces_state가 store까지 도달하지 않으면 파이프라인이 빈

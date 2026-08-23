@@ -17,10 +17,15 @@
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { activeBeadIds } from '../../app/utils/active-attempts.js';
 import { runBdJsonProjected } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
 import { getAvailableWorkspaces } from '../registry-watcher.js';
+import {
+  SESSION_DEFAULTS_KV_KEY,
+  normalizeSessionDefaults
+} from '../session-defaults.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
   enrollWorkerMergeCandidates,
@@ -29,10 +34,15 @@ import {
   tickWorkerQueue,
   workerMergeQueueState
 } from '../worker/attach.js';
+import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
-import { emitMonitorPipelineSnapshot, log } from './context.js';
+import {
+  emitMonitorPipelineSnapshot,
+  kvGetJsonAtRoot,
+  log
+} from './context.js';
 import {
   decorateQueue,
   onWorkerSnapshotRefresh,
@@ -164,11 +174,125 @@ function prewarmIssuePrefix(root_dir) {
 }
 
 /**
+ * How long a SUCCESSFUL per-repo session-defaults read stays fresh.
+ *
+ * The kv layer changes only on an explicit edit, and both editing paths
+ * (`set-session-defaults`, `apply-impl-preset-global`) invalidate the repo they
+ * wrote, so the TTL is only the backstop for an edit made outside this process.
+ */
+const SESSION_DEFAULTS_TTL_MS = 5 * 60_000;
+
+/** How long a FAILED read is remembered before another `bd kv get` is allowed. */
+const SESSION_DEFAULTS_RETRY_MS = 60_000;
+
+/**
+ * Process-local session-defaults projection per workspace (UI-eey2 §9.4).
+ *
+ * Same shape as {@link issue_prefix_cache} and for the same reason: the read is
+ * ASYNC (`bd kv get`) while `workspaces_state` is built SYNCHRONOUSLY, so a
+ * cold or expired entry ships the empty default and the fill's completion
+ * schedules the push that carries the real one.
+ *
+ * @type {Map<string, { values: Record<string, string>, warnings: string[], expires_at: number, in_flight: boolean }>}
+ */
+const session_defaults_cache = new Map();
+
+/**
+ * Synchronous cache-hit projection used by `buildMonitorWorkspacesState()`.
+ * A miss is the empty layer, which is exactly what an absent kv key means.
+ *
+ * @param {string} root_dir
+ * @returns {{ values: Record<string, string>, warnings: string[] }}
+ */
+function cachedSessionDefaultsFor(root_dir) {
+  const hit = session_defaults_cache.get(path.resolve(root_dir));
+  // An EXPIRED entry is as good as a cold one (spec §9.4): shipping the value it
+  // is about to replace would show execution settings the repo no longer has,
+  // and the empty layer is exactly what an absent kv key means anyway.
+  return hit && hit.expires_at > Date.now()
+    ? { values: hit.values, warnings: hit.warnings }
+    : { values: {}, warnings: [] };
+}
+
+/**
+ * Start at most one async `bd kv get` per workspace.
+ *
+ * @param {string} root_dir
+ */
+function prewarmSessionDefaults(root_dir) {
+  const key = path.resolve(root_dir);
+  const current = session_defaults_cache.get(key);
+  if (
+    current?.in_flight === true ||
+    (current && current.expires_at > Date.now())
+  ) {
+    return;
+  }
+  session_defaults_cache.set(key, {
+    values: current?.values || {},
+    warnings: current?.warnings || [],
+    expires_at: current?.expires_at || 0,
+    in_flight: true
+  });
+  void kvGetJsonAtRoot(key, SESSION_DEFAULTS_KV_KEY)
+    .then((read) => {
+      if (!read.ok) {
+        session_defaults_cache.set(key, {
+          values: {},
+          warnings: [read.error || 'bd kv get failed'],
+          expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
+          in_flight: false
+        });
+        schedulePush();
+        return;
+      }
+      const normalized = normalizeSessionDefaults(read.value);
+      session_defaults_cache.set(key, {
+        values: normalized.values,
+        warnings: read.warning
+          ? [read.warning, ...normalized.warnings]
+          : normalized.warnings,
+        expires_at: Date.now() + SESSION_DEFAULTS_TTL_MS,
+        in_flight: false
+      });
+      schedulePush();
+    })
+    .catch((err) => {
+      session_defaults_cache.set(key, {
+        values: {},
+        warnings: ['kv_read_failed'],
+        expires_at: Date.now() + SESSION_DEFAULTS_RETRY_MS,
+        in_flight: false
+      });
+      log('monitor: session defaults lookup failed for %s: %o', key, err);
+      schedulePush();
+    });
+}
+
+/**
+ * Drop one repo's cached session defaults and re-push (UI-eey2 §9.5).
+ *
+ * Called by `set-session-defaults` and `apply-impl-preset-global` on success:
+ * the writer already knows the value moved, so waiting out the TTL would leave
+ * every repo panel showing the value the user just replaced.
+ *
+ * @param {string} root_dir
+ */
+export function invalidateSessionDefaults(root_dir) {
+  if (typeof root_dir !== 'string' || root_dir.length === 0) {
+    return;
+  }
+  session_defaults_cache.delete(path.resolve(root_dir));
+  schedulePush();
+}
+
+/**
  * Warm every visible workspace without delaying the current snapshot.
  */
 function prewarmVisibleIssuePrefixes() {
   for (const root_dir of visibleWorkspaceRoots()) {
     prewarmIssuePrefix(root_dir);
+    prewarmSessionDefaults(root_dir);
   }
 }
 
@@ -507,6 +631,92 @@ export function buildMonitorPipeline(options = {}) {
 }
 
 /**
+ * The four lane counts for one repo, on the client's EXCLUSIVE lane priority
+ * (UI-eey2 §9.4): `running` > `pr_wait` > `queue` ∪ serial > `runnable`.
+ *
+ * One bead lands in exactly one bucket, which is what makes the deck's
+ * `실행 n · 대기 n` agree with the lanes it summarizes — counting a running
+ * bead in both its attempt and its queue entry is precisely the double count
+ * `buildLanes()` exists to prevent.
+ *
+ * @param {string} root_dir
+ * @param {Record<string, any>} queue - RAW queue snapshot.
+ * @param {(workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>} runnableFor
+ * @returns {{ running: number, pr_wait: number, queue: number, runnable: number }}
+ */
+function laneCountsFor(root_dir, queue, runnableFor) {
+  // The 실행중 레인 is per BEAD and admits leaf paused / unhandled failures, not
+  // just `status === 'running'` — so the count uses the CLIENT'S OWN classifier
+  // (`app/utils/active-attempts.js`) rather than a second predicate that would
+  // drift from the lane it summarizes.
+  /** @type {Map<string, number>} */
+  const done_at_by_bead = new Map();
+  for (const entry of Array.isArray(queue.done) ? queue.done : []) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id === 'string' && typeof entry.added_at === 'number') {
+      done_at_by_bead.set(bead_id, entry.added_at);
+    }
+  }
+  /** @type {Set<string>} */
+  const claimed = activeBeadIds(queue.attempts || {}, done_at_by_bead);
+  const running = claimed.size;
+  let pr_wait = 0;
+  for (const entry of Array.isArray(queue.pr_wait) ? queue.pr_wait : []) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id !== 'string' || bead_id.length === 0) {
+      continue;
+    }
+    if (claimed.has(bead_id)) {
+      continue;
+    }
+    claimed.add(bead_id);
+    pr_wait += 1;
+  }
+  let waiting = 0;
+  const waiting_lanes = [
+    Array.isArray(queue.queue) ? queue.queue : [],
+    ...(Array.isArray(queue.serial_lanes)
+      ? queue.serial_lanes.map((/** @type {any} */ lane) =>
+          Array.isArray(lane?.entries) ? lane.entries : []
+        )
+      : [])
+  ];
+  for (const entries of waiting_lanes) {
+    for (const entry of entries) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
+      }
+      if (claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      waiting += 1;
+    }
+  }
+  // The runnable cache applies the same exclusion the aggregation uses, so the
+  // remaining rows are exactly the candidates no earlier lane already drew.
+  let runnable = 0;
+  try {
+    const rows = runnableFor(root_dir, lanedBeadIds(queue)) || [];
+    for (const row of rows) {
+      const bead_id = /** @type {any} */ (row)?.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
+      }
+      if (claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      runnable += 1;
+    }
+  } catch (err) {
+    log('monitor: runnable count failed for %s: %o', root_dir, err);
+  }
+  return { running, pr_wait, queue: waiting, runnable };
+}
+
+/**
  * Build the per-workspace CONTROL state that rides beside the heavy pipeline
  * array (UI-qrfo §4 집계 payload 구조).
  *
@@ -524,7 +734,9 @@ export function buildMonitorPipeline(options = {}) {
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnerCatalog?: () => Record<string, unknown>,
- *   issuePrefixFor?: (workspace_key: string) => string|null
+ *   issuePrefixFor?: (workspace_key: string) => string|null,
+ *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string>, warnings: string[] },
+ *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -534,12 +746,34 @@ export function buildMonitorWorkspacesState(options = {}) {
     ((/** @type {string} */ key) =>
       getWorkerRuntime().queueStore.snapshot(key));
   const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
+  const sessionDefaultsFor =
+    options.sessionDefaultsFor || cachedSessionDefaultsFor;
+  const runnableFor =
+    options.runnableFor ||
+    ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
+      getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
   /** @type {Record<string, unknown>|null} */
   let runner_catalog = null;
   try {
     runner_catalog = (options.runnerCatalog || runtimeCatalog)();
   } catch {
     runner_catalog = null;
+  }
+  /** @type {Record<string, unknown>} */
+  let execution_defaults;
+  try {
+    execution_defaults = projectExecutionDefaults(
+      /** @type {any} */ (runner_catalog)
+    );
+  } catch {
+    execution_defaults = {
+      schema_version: null,
+      supported: false,
+      source_commit: null,
+      digest: null,
+      session: null,
+      orchestration: null
+    };
   }
 
   /** @type {Array<Record<string, unknown>>} */
@@ -565,6 +799,17 @@ export function buildMonitorWorkspacesState(options = {}) {
     } catch {
       issue_prefix = null;
     }
+    /** @type {{ values: Record<string, string>, warnings: string[] }} */
+    let session_defaults = { values: {}, warnings: [] };
+    try {
+      const read = sessionDefaultsFor(root_dir);
+      session_defaults = {
+        values: read?.values || {},
+        warnings: Array.isArray(read?.warnings) ? read.warnings : []
+      };
+    } catch {
+      session_defaults = { values: {}, warnings: [] };
+    }
     out.push({
       root_dir,
       name: path.basename(root_dir),
@@ -573,7 +818,33 @@ export function buildMonitorWorkspacesState(options = {}) {
       auto_merge: queue.auto_merge === true,
       slots: typeof queue.slots === 'number' ? queue.slots : 1,
       revision: typeof queue.revision === 'number' ? queue.revision : 0,
-      runner_catalog
+      runner_catalog,
+      // A legacy queue with no key is in the state the default describes: one
+      // serial lane, auto-repair on. Both are read the same way the Worker
+      // snapshot reads them, so a repo panel and the Worker tab agree.
+      serial_lane_count:
+        typeof queue.serial_lane_count === 'number'
+          ? queue.serial_lane_count
+          : 1,
+      auto_repair: queue.auto_repair !== false,
+      orchestration_model:
+        typeof queue.orchestration_model === 'string'
+          ? queue.orchestration_model
+          : null,
+      orchestration_effort:
+        typeof queue.orchestration_effort === 'string'
+          ? queue.orchestration_effort
+          : null,
+      orchestration_speed:
+        typeof queue.orchestration_speed === 'string'
+          ? queue.orchestration_speed
+          : null,
+      execution_defaults,
+      // Cold/expired cache ships the empty layer and the fill re-pushes; see
+      // `prewarmSessionDefaults`.
+      session_defaults: session_defaults.values,
+      session_defaults_warnings: session_defaults.warnings,
+      counts: laneCountsFor(root_dir, queue, runnableFor)
     });
   }
   return out;
@@ -1253,5 +1524,6 @@ export function __resetMonitorPipelineForTest() {
   }
   last_seen_revision.clear();
   issue_prefix_cache.clear();
+  session_defaults_cache.clear();
   poll_interval_seconds = null;
 }

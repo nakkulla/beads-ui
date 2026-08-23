@@ -20,6 +20,18 @@ vi.mock('../bd-effect-gate.js', async (importOriginal) => {
 });
 
 vi.mock('./context.js', () => ({
+  // `session-defaults-handlers.js` resolves its optional `root_dir` through
+  // `targetWorkspaceOf`, which reads the connection workspace from this module
+  // (UI-eey2 §9.5). These tests send no `root_dir`, so the connection root is
+  // what every assertion below still addresses.
+  getConnWorkspace: (/** @type {any} */ ws) => ws?.workspace || null,
+  kvGetJsonAtRoot: (/** @type {any} */ _root, /** @type {any} */ key) =>
+    kvGetJsonInWorkspace(null, key),
+  kvSetJsonAtRoot: (
+    /** @type {any} */ _root,
+    /** @type {any} */ key,
+    /** @type {any} */ value
+  ) => kvSetJsonInWorkspace(null, key, value),
   readbackFailureDetail: (/** @type {string} */ reason) => ({
     phase: 'readback',
     write_applied: true,
@@ -47,6 +59,10 @@ vi.mock('./context.js', () => ({
 
 vi.mock('./refresh.js', () => ({
   triggerMutationRefreshOnce: () => triggerMutationRefreshOnce()
+}));
+
+vi.mock('./monitor-handlers.js', () => ({
+  invalidateSessionDefaults: () => {}
 }));
 
 const {

@@ -1,6 +1,6 @@
-var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDescriptor;var fp=Object.getOwnPropertyNames;var _p=Object.getPrototypeOf,mp=Object.prototype.hasOwnProperty;var gp=(e,t,r)=>t in e?Do(e,t,{enumerable:!0,configurable:!0,writable:!0,value:r}):e[t]=r;var No=(e,t)=>()=>(t||e((t={exports:{}}).exports,t),t.exports);var bp=(e,t,r,n)=>{if(t&&typeof t=="object"||typeof t=="function")for(let s of fp(t))!mp.call(e,s)&&s!==r&&Do(e,s,{get:()=>t[s],enumerable:!(n=pp(t,s))||n.enumerable});return e};var hp=(e,t,r)=>(r=e!=null?dp(_p(e)):{},bp(t||!e||!e.__esModule?Do(r,"default",{value:e,enumerable:!0}):r,e));var mt=(e,t,r)=>gp(e,typeof t!="symbol"?t+"":t,r);var Xi=No((zb,Zi)=>{var mn=1e3,gn=mn*60,bn=gn*60,Xr=bn*24,wp=Xr*7,kp=Xr*365.25;Zi.exports=function(e,t){t=t||{};var r=typeof e;if(r==="string"&&e.length>0)return $p(e);if(r==="number"&&isFinite(e))return t.long?Ap(e):xp(e);throw new Error("val is not a non-empty string or a valid number. val="+JSON.stringify(e))};function $p(e){if(e=String(e),!(e.length>100)){var t=/^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(e);if(t){var r=parseFloat(t[1]),n=(t[2]||"ms").toLowerCase();switch(n){case"years":case"year":case"yrs":case"yr":case"y":return r*kp;case"weeks":case"week":case"w":return r*wp;case"days":case"day":case"d":return r*Xr;case"hours":case"hour":case"hrs":case"hr":case"h":return r*bn;case"minutes":case"minute":case"mins":case"min":case"m":return r*gn;case"seconds":case"second":case"secs":case"sec":case"s":return r*mn;case"milliseconds":case"millisecond":case"msecs":case"msec":case"ms":return r;default:return}}}}function xp(e){var t=Math.abs(e);return t>=Xr?Math.round(e/Xr)+"d":t>=bn?Math.round(e/bn)+"h":t>=gn?Math.round(e/gn)+"m":t>=mn?Math.round(e/mn)+"s":e+"ms"}function Ap(e){var t=Math.abs(e);return t>=Xr?As(e,t,Xr,"day"):t>=bn?As(e,t,bn,"hour"):t>=gn?As(e,t,gn,"minute"):t>=mn?As(e,t,mn,"second"):e+" ms"}function As(e,t,r,n){var s=t>=r*1.5;return Math.round(e/r)+" "+n+(s?"s":"")}});var Ji=No((Hb,Qi)=>{function Sp(e){r.debug=r,r.default=r,r.coerce=c,r.disable=a,r.enable=s,r.enabled=l,r.humanize=Xi(),r.destroy=u,Object.keys(e).forEach(d=>{r[d]=e[d]}),r.names=[],r.skips=[],r.formatters={};function t(d){let f=0;for(let g=0;g<d.length;g++)f=(f<<5)-f+d.charCodeAt(g),f|=0;return r.colors[Math.abs(f)%r.colors.length]}r.selectColor=t;function r(d){let f,g=null,x,A;function L(...z){if(!L.enabled)return;let ae=L,se=Number(new Date),q=se-(f||se);ae.diff=q,ae.prev=f,ae.curr=se,f=se,z[0]=r.coerce(z[0]),typeof z[0]!="string"&&z.unshift("%O");let N=0;z[0]=z[0].replace(/%([a-zA-Z%])/g,(j,m)=>{if(j==="%%")return"%";N++;let E=r.formatters[m];if(typeof E=="function"){let Y=z[N];j=E.call(ae,Y),z.splice(N,1),N--}return j}),r.formatArgs.call(ae,z),(ae.log||r.log).apply(ae,z)}return L.namespace=d,L.useColors=r.useColors(),L.color=r.selectColor(d),L.extend=n,L.destroy=r.destroy,Object.defineProperty(L,"enabled",{enumerable:!0,configurable:!1,get:()=>g!==null?g:(x!==r.namespaces&&(x=r.namespaces,A=r.enabled(d)),A),set:z=>{g=z}}),typeof r.init=="function"&&r.init(L),L}function n(d,f){let g=r(this.namespace+(typeof f>"u"?":":f)+d);return g.log=this.log,g}function s(d){r.save(d),r.namespaces=d,r.names=[],r.skips=[];let f=(typeof d=="string"?d:"").trim().replace(/\s+/g,",").split(",").filter(Boolean);for(let g of f)g[0]==="-"?r.skips.push(g.slice(1)):r.names.push(g)}function o(d,f){let g=0,x=0,A=-1,L=0;for(;g<d.length;)if(x<f.length&&(f[x]===d[g]||f[x]==="*"))f[x]==="*"?(A=x,L=g,x++):(g++,x++);else if(A!==-1)x=A+1,L++,g=L;else return!1;for(;x<f.length&&f[x]==="*";)x++;return x===f.length}function a(){let d=[...r.names,...r.skips.map(f=>"-"+f)].join(",");return r.enable(""),d}function l(d){for(let f of r.skips)if(o(d,f))return!1;for(let f of r.names)if(o(d,f))return!0;return!1}function c(d){return d instanceof Error?d.stack||d.message:d}function u(){console.warn("Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.")}return r.enable(r.load()),r}Qi.exports=Sp});var el=No((Bt,Ss)=>{Bt.formatArgs=Tp;Bt.save=Cp;Bt.load=Rp;Bt.useColors=Ep;Bt.storage=Ip();Bt.destroy=(()=>{let e=!1;return()=>{e||(e=!0,console.warn("Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`."))}})();Bt.colors=["#0000CC","#0000FF","#0033CC","#0033FF","#0066CC","#0066FF","#0099CC","#0099FF","#00CC00","#00CC33","#00CC66","#00CC99","#00CCCC","#00CCFF","#3300CC","#3300FF","#3333CC","#3333FF","#3366CC","#3366FF","#3399CC","#3399FF","#33CC00","#33CC33","#33CC66","#33CC99","#33CCCC","#33CCFF","#6600CC","#6600FF","#6633CC","#6633FF","#66CC00","#66CC33","#9900CC","#9900FF","#9933CC","#9933FF","#99CC00","#99CC33","#CC0000","#CC0033","#CC0066","#CC0099","#CC00CC","#CC00FF","#CC3300","#CC3333","#CC3366","#CC3399","#CC33CC","#CC33FF","#CC6600","#CC6633","#CC9900","#CC9933","#CCCC00","#CCCC33","#FF0000","#FF0033","#FF0066","#FF0099","#FF00CC","#FF00FF","#FF3300","#FF3333","#FF3366","#FF3399","#FF33CC","#FF33FF","#FF6600","#FF6633","#FF9900","#FF9933","#FFCC00","#FFCC33"];function Ep(){if(typeof window<"u"&&window.process&&(window.process.type==="renderer"||window.process.__nwjs))return!0;if(typeof navigator<"u"&&navigator.userAgent&&navigator.userAgent.toLowerCase().match(/(edge|trident)\/(\d+)/))return!1;let e;return typeof document<"u"&&document.documentElement&&document.documentElement.style&&document.documentElement.style.WebkitAppearance||typeof window<"u"&&window.console&&(window.console.firebug||window.console.exception&&window.console.table)||typeof navigator<"u"&&navigator.userAgent&&(e=navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/))&&parseInt(e[1],10)>=31||typeof navigator<"u"&&navigator.userAgent&&navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/)}function Tp(e){if(e[0]=(this.useColors?"%c":"")+this.namespace+(this.useColors?" %c":" ")+e[0]+(this.useColors?"%c ":" ")+"+"+Ss.exports.humanize(this.diff),!this.useColors)return;let t="color: "+this.color;e.splice(1,0,t,"color: inherit");let r=0,n=0;e[0].replace(/%[a-zA-Z%]/g,s=>{s!=="%%"&&(r++,s==="%c"&&(n=r))}),e.splice(n,0,t)}Bt.log=console.debug||console.log||(()=>{});function Cp(e){try{e?Bt.storage.setItem("debug",e):Bt.storage.removeItem("debug")}catch{}}function Rp(){let e;try{e=Bt.storage.getItem("debug")||Bt.storage.getItem("DEBUG")}catch{}return!e&&typeof process<"u"&&"env"in process&&(e=process.env.DEBUG),e}function Ip(){try{return localStorage}catch{}}Ss.exports=Ji()(Bt);var{formatters:Lp}=Ss.exports;Lp.j=function(e){try{return JSON.stringify(e)}catch(t){return"[UnexpectedJSONParseError]: "+t.message}}});var Ln=globalThis,ys=Ln.trustedTypes,Pi=ys?ys.createPolicy("lit-html",{createHTML:e=>e}):void 0,Fo="$lit$",kr=`lit$${Math.random().toFixed(9).slice(2)}$`,jo="?"+kr,yp=`<${jo}>`,Vr=document,On=()=>Vr.createComment(""),Mn=e=>e===null||typeof e!="object"&&typeof e!="function",Bo=Array.isArray,Bi=e=>Bo(e)||typeof e?.[Symbol.iterator]=="function",qo=`[ 	
-\f\r]`,In=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,Di=/-->/g,Ni=/>/g,Hr=RegExp(`>|${qo}(?:([^\\s"'>=/]+)(${qo}*=${qo}*(?:[^ 	
-\f\r"'\`<>=]|("|')|))|$)`,"g"),qi=/'/g,Fi=/"/g,Ui=/^(?:script|style|textarea|title)$/i,Uo=e=>(t,...r)=>({_$litType$:e,strings:t,values:r}),i=Uo(1),Lr=Uo(2),Nb=Uo(3),Xt=Symbol.for("lit-noChange"),$t=Symbol.for("lit-nothing"),ji=new WeakMap,Gr=Vr.createTreeWalker(Vr,129);function Wi(e,t){if(!Bo(e)||!e.hasOwnProperty("raw"))throw Error("invalid template strings array");return Pi!==void 0?Pi.createHTML(t):t}var zi=(e,t)=>{let r=e.length-1,n=[],s,o=t===2?"<svg>":t===3?"<math>":"",a=In;for(let l=0;l<r;l++){let c=e[l],u,d,f=-1,g=0;for(;g<c.length&&(a.lastIndex=g,d=a.exec(c),d!==null);)g=a.lastIndex,a===In?d[1]==="!--"?a=Di:d[1]!==void 0?a=Ni:d[2]!==void 0?(Ui.test(d[2])&&(s=RegExp("</"+d[2],"g")),a=Hr):d[3]!==void 0&&(a=Hr):a===Hr?d[0]===">"?(a=s??In,f=-1):d[1]===void 0?f=-2:(f=a.lastIndex-d[2].length,u=d[1],a=d[3]===void 0?Hr:d[3]==='"'?Fi:qi):a===Fi||a===qi?a=Hr:a===Di||a===Ni?a=In:(a=Hr,s=void 0);let x=a===Hr&&e[l+1].startsWith("/>")?" ":"";o+=a===In?c+yp:f>=0?(n.push(u),c.slice(0,f)+Fo+c.slice(f)+kr+x):c+kr+(f===-2?l:x)}return[Wi(e,o+(e[r]||"<?>")+(t===2?"</svg>":t===3?"</math>":"")),n]},Pn=class e{constructor({strings:t,_$litType$:r},n){let s;this.parts=[];let o=0,a=0,l=t.length-1,c=this.parts,[u,d]=zi(t,r);if(this.el=e.createElement(u,n),Gr.currentNode=this.el.content,r===2||r===3){let f=this.el.content.firstChild;f.replaceWith(...f.childNodes)}for(;(s=Gr.nextNode())!==null&&c.length<l;){if(s.nodeType===1){if(s.hasAttributes())for(let f of s.getAttributeNames())if(f.endsWith(Fo)){let g=d[a++],x=s.getAttribute(f).split(kr),A=/([.?@])?(.*)/.exec(g);c.push({type:1,index:o,name:A[2],strings:x,ctor:A[1]==="."?ws:A[1]==="?"?ks:A[1]==="@"?$s:Yr}),s.removeAttribute(f)}else f.startsWith(kr)&&(c.push({type:6,index:o}),s.removeAttribute(f));if(Ui.test(s.tagName)){let f=s.textContent.split(kr),g=f.length-1;if(g>0){s.textContent=ys?ys.emptyScript:"";for(let x=0;x<g;x++)s.append(f[x],On()),Gr.nextNode(),c.push({type:2,index:++o});s.append(f[g],On())}}}else if(s.nodeType===8)if(s.data===jo)c.push({type:2,index:o});else{let f=-1;for(;(f=s.data.indexOf(kr,f+1))!==-1;)c.push({type:7,index:o}),f+=kr.length-1}o++}}static createElement(t,r){let n=Vr.createElement("template");return n.innerHTML=t,n}};function Kr(e,t,r=e,n){if(t===Xt)return t;let s=n!==void 0?r._$Co?.[n]:r._$Cl,o=Mn(t)?void 0:t._$litDirective$;return s?.constructor!==o&&(s?._$AO?.(!1),o===void 0?s=void 0:(s=new o(e),s._$AT(e,r,n)),n!==void 0?(r._$Co??(r._$Co=[]))[n]=s:r._$Cl=s),s!==void 0&&(t=Kr(e,s._$AS(e,t.values),s,n)),t}var vs=class{constructor(t,r){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=r}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){let{el:{content:r},parts:n}=this._$AD,s=(t?.creationScope??Vr).importNode(r,!0);Gr.currentNode=s;let o=Gr.nextNode(),a=0,l=0,c=n[0];for(;c!==void 0;){if(a===c.index){let u;c.type===2?u=new _n(o,o.nextSibling,this,t):c.type===1?u=new c.ctor(o,c.name,c.strings,this,t):c.type===6&&(u=new xs(o,this,t)),this._$AV.push(u),c=n[++l]}a!==c?.index&&(o=Gr.nextNode(),a++)}return Gr.currentNode=Vr,s}p(t){let r=0;for(let n of this._$AV)n!==void 0&&(n.strings!==void 0?(n._$AI(t,n,r),r+=n.strings.length-2):n._$AI(t[r])),r++}},_n=class e{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,r,n,s){this.type=2,this._$AH=$t,this._$AN=void 0,this._$AA=t,this._$AB=r,this._$AM=n,this.options=s,this._$Cv=s?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode,r=this._$AM;return r!==void 0&&t?.nodeType===11&&(t=r.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,r=this){t=Kr(this,t,r),Mn(t)?t===$t||t==null||t===""?(this._$AH!==$t&&this._$AR(),this._$AH=$t):t!==this._$AH&&t!==Xt&&this._(t):t._$litType$!==void 0?this.$(t):t.nodeType!==void 0?this.T(t):Bi(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==$t&&Mn(this._$AH)?this._$AA.nextSibling.data=t:this.T(Vr.createTextNode(t)),this._$AH=t}$(t){let{values:r,_$litType$:n}=t,s=typeof n=="number"?this._$AC(t):(n.el===void 0&&(n.el=Pn.createElement(Wi(n.h,n.h[0]),this.options)),n);if(this._$AH?._$AD===s)this._$AH.p(r);else{let o=new vs(s,this),a=o.u(this.options);o.p(r),this.T(a),this._$AH=o}}_$AC(t){let r=ji.get(t.strings);return r===void 0&&ji.set(t.strings,r=new Pn(t)),r}k(t){Bo(this._$AH)||(this._$AH=[],this._$AR());let r=this._$AH,n,s=0;for(let o of t)s===r.length?r.push(n=new e(this.O(On()),this.O(On()),this,this.options)):n=r[s],n._$AI(o),s++;s<r.length&&(this._$AR(n&&n._$AB.nextSibling,s),r.length=s)}_$AR(t=this._$AA.nextSibling,r){for(this._$AP?.(!1,!0,r);t!==this._$AB;){let n=t.nextSibling;t.remove(),t=n}}setConnected(t){this._$AM===void 0&&(this._$Cv=t,this._$AP?.(t))}},Yr=class{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,r,n,s,o){this.type=1,this._$AH=$t,this._$AN=void 0,this.element=t,this.name=r,this._$AM=s,this.options=o,n.length>2||n[0]!==""||n[1]!==""?(this._$AH=Array(n.length-1).fill(new String),this.strings=n):this._$AH=$t}_$AI(t,r=this,n,s){let o=this.strings,a=!1;if(o===void 0)t=Kr(this,t,r,0),a=!Mn(t)||t!==this._$AH&&t!==Xt,a&&(this._$AH=t);else{let l=t,c,u;for(t=o[0],c=0;c<o.length-1;c++)u=Kr(this,l[n+c],r,c),u===Xt&&(u=this._$AH[c]),a||(a=!Mn(u)||u!==this._$AH[c]),u===$t?t=$t:t!==$t&&(t+=(u??"")+o[c+1]),this._$AH[c]=u}a&&!s&&this.j(t)}j(t){t===$t?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}},ws=class extends Yr{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===$t?void 0:t}},ks=class extends Yr{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==$t)}},$s=class extends Yr{constructor(t,r,n,s,o){super(t,r,n,s,o),this.type=5}_$AI(t,r=this){if((t=Kr(this,t,r,0)??$t)===Xt)return;let n=this._$AH,s=t===$t&&n!==$t||t.capture!==n.capture||t.once!==n.once||t.passive!==n.passive,o=t!==$t&&(n===$t||s);s&&this.element.removeEventListener(this.name,this,n),o&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){typeof this._$AH=="function"?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}},xs=class{constructor(t,r,n){this.element=t,this.type=6,this._$AN=void 0,this._$AM=r,this.options=n}get _$AU(){return this._$AM._$AU}_$AI(t){Kr(this,t)}},Hi={M:Fo,P:kr,A:jo,C:1,L:zi,R:vs,D:Bi,V:Kr,I:_n,H:Yr,N:ks,U:$s,B:ws,F:xs},vp=Ln.litHtmlPolyfillSupport;vp?.(Pn,_n),(Ln.litHtmlVersions??(Ln.litHtmlVersions=[])).push("3.3.1");var Ke=(e,t,r)=>{let n=r?.renderBefore??t,s=n._$litPart$;if(s===void 0){let o=r?.renderBefore??null;n._$litPart$=s=new _n(t.insertBefore(On(),o),o,void 0,r??{})}return s._$AI(e),s};var Ht="today",gr=[{value:"today",label:"\uC624\uB298"},{value:"7d",label:"\uCD5C\uADFC 7\uC77C"},{value:"30d",label:"\uCD5C\uADFC 30\uC77C"},{value:"all",label:"\uC804\uCCB4"}];function Qt(e){return e==="today"||e==="7d"||e==="30d"||e==="all"}function Zr(e,t=Date.now()){switch(e){case"today":{let r=new Date(t);return r.setHours(0,0,0,0),r.getTime()}case"7d":return t-7*864e5;case"30d":return t-30*864e5;case"all":default:return}}function Gi(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function Vi(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function Ki(){let e=null,t=[],r=new Set;function n(){for(let s of Array.from(r))try{s()}catch{}}return{get(){return e},getWorkspacesState(){return t},set(s,o){e=Array.isArray(s)?s:null,t=Array.isArray(o)?o:[],n()},clear(){e=null,t=[],n()},subscribe(s){return r.add(s),()=>r.delete(s)}}}function Yi(){let e=new Map,t=new Set;function r(s){return s.startsWith("session-log:")?s:`session-log:${s}`}function n(){for(let s of Array.from(t))try{s()}catch{}}return{set(s,o,a=null){e.set(r(s),{lines:Array.isArray(o)?[...o]:[],last_event_at:typeof a=="number"?a:null}),n()},append(s,o){let a=r(s),l=e.get(a)||{lines:[],last_event_at:null};l.lines=[...l.lines,o],l.last_event_at=Date.now(),e.set(a,l),n()},get(s){return e.get(r(s))||null},clear(s){typeof s=="string"?e.delete(r(s)):e.clear(),n()},subscribe(s){return t.add(s),()=>t.delete(s)}}}var tl=hp(el(),1);function yt(e){return(0,tl.default)(`beads-ui:${e}`)}function ar(e){if(typeof e=="number")return Number.isFinite(e)?e:0;if(typeof e=="string"){let t=Date.parse(e);return Number.isFinite(t)?t:0}return 0}function Qr(e,t){let r=ar(e.created_at),n=ar(t.created_at);if(r!==n)return r<n?1:-1;let s=e.priority??2,o=t.priority??2;if(s!==o)return s-o;let a=e.id,l=t.id;return a<l?-1:a>l?1:0}function sl(e,t){let r=ar(e.created_at),n=ar(t.created_at);if(r!==n)return r<n?-1:1;let s=e.priority??2,o=t.priority??2;if(s!==o)return s-o;let a=e.id,l=t.id;return a<l?-1:a>l?1:0}function ol(e,t){let r=ar(e.updated_at),n=ar(t.updated_at);if(r!==n)return r<n?1:-1;let s=e.id,o=t.id;return s<o?-1:s>o?1:0}function al(e,t){let r=e.priority??2,n=t.priority??2;if(r!==n)return r-n;let s=ar(e.created_at),o=ar(t.created_at);if(s!==o)return s<o?1:-1;let a=e.id,l=t.id;return a<l?-1:a>l?1:0}function il(e,t){let r=e.closed_at??0,n=t.closed_at??0;if(r!==n)return r<n?1:-1;let s=e?.id,o=t?.id;return s<o?-1:s>o?1:0}var Op=/^(?:[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\s+)?(?:Task|Phase|T)\s*(\d+)/i;function rl(e){let t=e&&e.metadata,r=t?t.task_order:void 0;if(r==null||r==="")return Number.POSITIVE_INFINITY;let n=Number(r);return Number.isFinite(n)?n:Number.POSITIVE_INFINITY}function nl(e){let t=e&&e.title;if(typeof t!="string")return Number.POSITIVE_INFINITY;let r=Op.exec(t);if(!r)return Number.POSITIVE_INFINITY;let n=Number(r[1]);return Number.isFinite(n)?n:Number.POSITIVE_INFINITY}function ll(e,t){let r=rl(e),n=rl(t);if(r!==n)return r<n?-1:1;let s=nl(e),o=nl(t);if(s!==o)return s<o?-1:1;let a=ar(e&&e.created_at),l=ar(t&&t.created_at);if(a!==l)return a<l?-1:1;let c=e&&e.id,u=t&&t.id;return c===u?0:String(c)<String(u)?-1:1}var Wo=2**20;function hn(e,t){let r=e&&e.id;return t&&typeof r=="string"&&Object.prototype.hasOwnProperty.call(t,r)&&typeof t[r]=="number"&&Number.isFinite(t[r])?t[r]:-ar(e&&e.created_at)}function Es(e){return(t,r)=>{let n=hn(t,e),s=hn(r,e);if(n!==s)return n<s?-1:1;let o=t?.id,a=r?.id;return o<a?-1:o>a?1:0}}function zo(e,t,r){let n=Array.isArray(e)?e:[],s=n.length,o=Math.max(0,Math.min(t,s-1)),a=o-1>=0?n[o-1]:null,l=o+1<s?n[o+1]:null;if(!a&&!l)return{rank:0};if(!a)return{rank:hn(l,r)-Wo};if(!l)return{rank:hn(a,r)+Wo};let c=hn(a,r),u=hn(l,r),d=(c+u)/2;return c<d&&d<u?{rank:d}:{renormalize:n.map((f,g)=>({bead_id:f.id,rank:g*Wo}))}}function Ho(e,t={}){let r=yt(`issue-store:${e}`),n=new Map,s=[],o=0,a=new Set,l=!1,c=t.sort||Qr;function u(){for(let g of Array.from(a))try{g()}catch{}}function d(){s=Array.from(n.values()).sort(c)}function f(g){if(l||!g||g.id!==e)return;let x=Number(g.revision)||0;if(r("apply %s rev=%d",g.type,x),!(x<=o&&g.type!=="snapshot")){if(g.type==="snapshot"){if(x<=o)return;n.clear();let A=Array.isArray(g.issues)?g.issues:[];for(let L of A)L&&typeof L.id=="string"&&L.id.length>0&&n.set(L.id,L);d(),o=x,u();return}if(g.type==="upsert"){let A=g.issue;if(A&&typeof A.id=="string"&&A.id.length>0){let L=n.get(A.id);if(!L)n.set(A.id,A);else{let z=Number.isFinite(L.updated_at)?L.updated_at:0,ae=Number.isFinite(A.updated_at)?A.updated_at:0;if(z<=ae){for(let se of Object.keys(L))se in A||delete L[se];for(let[se,q]of Object.entries(A))L[se]=q}}d()}o=x,u()}else if(g.type==="delete"){let A=String(g.issue_id||"");A&&(n.delete(A),d()),o=x,u()}}}return{id:e,subscribe(g){return a.add(g),()=>{a.delete(g)}},applyPush:f,snapshot(){return s},size(){return n.size},getById(g){return n.get(g)},dispose(){l=!0,n.clear(),s=[],a.clear(),o=0}}}function Ts(e){let t=String(e.type||"").trim(),r={};if(e.params&&typeof e.params=="object"){let s=Object.keys(e.params).sort();for(let o of s){let a=e.params[o];r[o]=String(a)}}let n=new URLSearchParams(r).toString();return n.length>0?`${t}?${n}`:t}function cl(e){let t=yt("subs"),r=new Map,n=new Map;function s(l,c){t("applyDelta %s +%d ~%d -%d",l,(c.added||[]).length,(c.updated||[]).length,(c.removed||[]).length);let u=n.get(l);if(!u||u.size===0)return;let d=Array.isArray(c.added)?c.added:[],f=Array.isArray(c.updated)?c.updated:[],g=Array.isArray(c.removed)?c.removed:[];for(let x of Array.from(u)){let A=r.get(x);if(!A)continue;let L=A.itemsById;for(let z of d)typeof z=="string"&&z.length>0&&L.set(z,!0);for(let z of f)typeof z=="string"&&z.length>0&&L.set(z,!0);for(let z of g)typeof z=="string"&&z.length>0&&L.delete(z)}}async function o(l,c){let u=Ts(c);if(t("subscribe %s key=%s",l,u),!r.has(l))r.set(l,{key:u,itemsById:new Map});else{let f=r.get(l);if(f&&f.key!==u){let g=n.get(f.key);g&&(g.delete(l),g.size===0&&n.delete(f.key)),r.set(l,{key:u,itemsById:new Map})}}n.has(u)||n.set(u,new Set);let d=n.get(u);d&&d.add(l);try{await e("subscribe-list",{id:l,type:c.type,params:c.params})}catch(f){let g=r.get(l)||null;if(g){let x=n.get(g.key);x&&(x.delete(l),x.size===0&&n.delete(g.key))}throw r.delete(l),f}return async()=>{t("unsubscribe %s key=%s",l,u);try{await e("unsubscribe-list",{id:l})}catch{}let f=r.get(l)||null;if(f){let g=n.get(f.key);g&&(g.delete(l),g.size===0&&n.delete(f.key))}r.delete(l)}}return{subscribeList:o,_applyDelta:s,_subKeyOf:Ts,selectors:{getIds(l){let c=r.get(l);return c?Array.from(c.itemsById.keys()):[]},has(l,c){let u=r.get(l);return u?u.itemsById.has(c):!1},count(l){let c=r.get(l);return c?c.itemsById.size:0},getItemsById(l){let c=r.get(l),u={};if(!c)return u;for(let d of c.itemsById.keys())u[d]=!0;return u}}}}function ul(){let e=yt("issue-stores"),t=new Map,r=new Map,n=new Set,s=new Map;function o(){for(let c of Array.from(n))try{c()}catch{}}function a(c,u,d){let f=u?Ts(u):"",g=r.get(c)||"",x=t.has(c);if(e("register %s key=%s (prev=%s)",c,f,g),x&&g&&f&&g!==f){let A=t.get(c);if(A)try{A.dispose()}catch{}let L=s.get(c);if(L){try{L()}catch{}s.delete(c)}let z=Ho(c,d);t.set(c,z);let ae=z.subscribe(()=>o());s.set(c,ae)}else if(!x){let A=Ho(c,d);t.set(c,A);let L=A.subscribe(()=>o());s.set(c,L)}return r.set(c,f),()=>l(c)}function l(c){e("unregister %s",c),r.delete(c);let u=t.get(c);u&&(u.dispose(),t.delete(c));let d=s.get(c);if(d){try{d()}catch{}s.delete(c)}}return{register:a,unregister:l,getStore(c){return t.get(c)||null},snapshotFor(c){let u=t.get(c);return u?u.snapshot().slice():[]},subscribe(c){return n.add(c),()=>n.delete(c)}}}function dl(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function pl(){let e=null,t=!1,r=new Set;function n(){for(let s of Array.from(r))try{s()}catch{}}return{get(){return e},set(s){e=s,n()},isPending(){return t},setPending(s){let o=s===!0;o!==t&&(t=o,n())},clear(){e=null,t=!1,n()},subscribe(s){return r.add(s),()=>r.delete(s)}}}function fl(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function Go(e,t){return`#/${e==="worker"||e==="monitor"?e:"board"}?issue=${encodeURIComponent(t)}`}function Mp(e){let t=String(e||""),r=t.startsWith("#")?t.slice(1):t,n=r.indexOf("?"),s=n>=0?r.slice(n+1):"";if(s){let l=new URLSearchParams(s).get("issue");if(l)return decodeURIComponent(l)}let o=/^\/issue\/([^\s?#]+)/.exec(r);return o&&o[1]?decodeURIComponent(o[1]):null}function Pp(e){let t=String(e||"");return/^#\/worker(\b|\/|$)/.test(t)?"worker":/^#\/monitor(\b|\/|$)/.test(t)?"monitor":"board"}function _l(e){let t=yt("router"),r=()=>{let n=window.location.hash||"",s=/^#\/issue\/([^\s?#]+)/.exec(n),o=s&&s[1]?decodeURIComponent(s[1]):Mp(n),a=Pp(n);if(t("hash change \u2192 view=%s id=%s",a,o),e.setState({selected_id:a==="worker"?null:o,view:a,worker:{selected_parent_id:a==="worker"?o:null}}),!!s||/^#\/(issues|epics)(\b|\/|\?|$)/.test(n)){let c=o?`#/${a}?issue=${encodeURIComponent(o)}`:`#/${a}`;window.location.hash!==c&&(window.location.hash=c)}};return{start(){window.addEventListener("hashchange",r),r()},stop(){window.removeEventListener("hashchange",r)},gotoIssue(n){let s=e.getState?e.getState():{view:"board"},o=s.view==="worker"||s.view==="monitor"?s.view:"board",a=Go(o,n);t("goto issue %s (view=%s)",n,o),window.location.hash!==a?window.location.hash=a:e.setState({selected_id:o==="worker"?null:n,view:o,worker:{selected_parent_id:o==="worker"?n:null}})},gotoView(n){let s=e.getState?e.getState():{selected_id:null,worker:{selected_parent_id:null}},o=n==="worker"?s.worker?.selected_parent_id:s.selected_id,a=o?Go(n,o):`#/${n}`;t("goto view %s (id=%s)",n,o||""),window.location.hash!==a?window.location.hash=a:e.setState({view:n,selected_id:n==="worker"?null:s.selected_id})}}}var Dp=Object.freeze({workspace_config:{default_workspace:null}});function ml(e){return{workspace_config:{default_workspace:typeof e?.workspace_config?.default_workspace=="string"&&e.workspace_config.default_workspace.length>0?e.workspace_config.default_workspace:Dp.workspace_config.default_workspace}}}function gl(e={}){let t=yt("state"),r={selected_id:e.selected_id??null,view:e.view??"board",filters:{status:e.filters?.status??"all",search:e.filters?.search??"",type:typeof e.filters?.type=="string"?e.filters?.type:""},board:{closed_filter:e.board?.closed_filter==="3"||e.board?.closed_filter==="7"||e.board?.closed_filter==="today"?e.board?.closed_filter:"today"},worker:{selected_parent_id:e.worker?.selected_parent_id??null,show_closed_children:Array.isArray(e.worker?.show_closed_children)?e.worker.show_closed_children:[]},workspace:{current:e.workspace?.current??null,available:e.workspace?.available??[],hidden:e.workspace?.hidden??[]},config:ml(e.config)},n=new Set;function s(){for(let o of Array.from(n))try{o(r)}catch{}}return{getState(){return r},setState(o){let a={...r,...o,filters:{...r.filters,...o.filters||{}},board:{...r.board,...o.board||{}},worker:{...r.worker,...o.worker||{}},workspace:{current:o.workspace?.current!==void 0?o.workspace.current:r.workspace.current,available:o.workspace?.available!==void 0?o.workspace.available:r.workspace.available,hidden:o.workspace?.hidden!==void 0?o.workspace.hidden:r.workspace.hidden},config:o.config!==void 0?ml(o.config):r.config},l=a.workspace.current?.path!==r.workspace.current?.path||a.workspace.available.length!==r.workspace.available.length||a.workspace.hidden.length!==r.workspace.hidden.length||a.workspace.hidden.some((u,d)=>u!==r.workspace.hidden[d]),c=a.config.workspace_config.default_workspace!==r.config.workspace_config.default_workspace;a.selected_id===r.selected_id&&a.view===r.view&&a.filters.status===r.filters.status&&a.filters.search===r.filters.search&&a.filters.type===r.filters.type&&a.board.closed_filter===r.board.closed_filter&&a.worker.selected_parent_id===r.worker.selected_parent_id&&a.worker.show_closed_children.length===r.worker.show_closed_children.length&&a.worker.show_closed_children.every((u,d)=>u===r.worker.show_closed_children[d])&&!l&&!c||(r=a,t("state change %o",{selected_id:r.selected_id,view:r.view,filters:r.filters,board:r.board,worker:r.worker,workspace:r.workspace.current?.path,config:{default_workspace:r.config.workspace_config.default_workspace}}),s())},subscribe(o){return n.add(o),()=>n.delete(o)}}}function bl(e){let t=yt("activity"),r=0,n=new Map,s=1;function o(){if(!e)return;let u=r>0;e.toggleAttribute("hidden",!u),e.setAttribute("aria-busy",u?"true":"false")}function a(){r+=1,t("start count=%d",r),o()}function l(){let u=r;r=Math.max(0,r-1),u<=0?t("done called but count was already %d",u):t("done count=%d\u2192%d",u,r),o()}function c(u){return async(f,g)=>{let x=s++,A=Date.now();n.set(x,{type:f,start_ts:A}),t("request start id=%d type=%s count=%d",x,f,r+1),a();let L=!1,z=()=>{L||(L=!0,n.delete(x),l())},ae=setTimeout(()=>{L||(t("request TIMEOUT id=%d type=%s elapsed=%dms",x,f,Date.now()-A),z())},3e4);try{let se=await u(f,g),q=Date.now()-A;return t("request done id=%d type=%s elapsed=%dms",x,f,q),se}catch(se){let q=Date.now()-A;throw t("request error id=%d type=%s elapsed=%dms err=%o",x,f,q,se),se}finally{clearTimeout(ae),z()}}}return o(),{wrapSend:c,start:a,done:l,getCount:()=>r,getActiveRequests:()=>{let u=Date.now();return Array.from(n.entries()).map(([d,f])=>({id:d,type:f.type,elapsed_ms:u-f.start_ts}))}}}function pe(e,t="info",r=2800){let n=document.createElement("div");n.className="toast",n.textContent=e,n.style.position="fixed",n.style.right="12px",n.style.bottom="12px",n.style.zIndex="1000",n.style.color="#fff",n.style.padding="8px 10px",n.style.borderRadius="4px",n.style.fontSize="12px",t==="success"?n.style.background="#156d36":t==="warning"?n.style.background="#a36a00":t==="error"?n.style.background="#9f2011":n.style.background="rgba(0,0,0,0.85)",(document.body||document.documentElement).appendChild(n),setTimeout(()=>{try{n.remove()}catch{}},r)}function Cs(e=void 0,t=void 0){function r(){if(!t||typeof t.get!="function")return null;let o=t.get();return o&&o.order?o.order:{}}function n(o,a,l){let c=e&&e.snapshotFor?e.snapshotFor(o).slice():[];if(a==="closed")return c.sort(il),c;switch(l){case"created_desc":return c.sort(Qr),c;case"created_asc":return c.sort(sl),c;case"updated_desc":return c.sort(ol),c;case"priority":return c.sort(al),c;case"manual":default:{let u=r();return u?c.sort(Es(u)):c.sort(Qr),c}}}function s(o){let a=[];return e&&typeof e.subscribe=="function"&&a.push(e.subscribe(o)),t&&typeof t.subscribe=="function"&&a.push(t.subscribe(o)),()=>{for(let l of a)try{l()}catch{}}}return{selectBoardColumn:n,subscribe:s}}function Jr(e){if(!e)return null;if(typeof e=="number")return Number.isFinite(e)?e:null;let t=Date.parse(e);return Number.isFinite(t)?t:null}function It(e){let t=Jr(e);if(t===null)return"";let r=new Date(t),n=s=>String(s).padStart(2,"0");return`${r.getFullYear()}-${n(r.getMonth()+1)}-${n(r.getDate())} ${n(r.getHours())}:${n(r.getMinutes())}`}function Gt(e,t){let r=Jr(e);if(r===null)return"";let s=(typeof t=="number"?t:Date.now())-r;if(s<6e4)return"\uBC29\uAE08";let o=Math.floor(s/6e4);if(o<60)return`${o}\uBD84 \uC804`;let a=Math.floor(s/36e5);if(a<24)return`${a}\uC2DC\uAC04 \uC804`;let l=Math.floor(s/864e5);if(l<7)return`${l}\uC77C \uC804`;let c=Math.floor(l/7);if(l<30)return`${c}\uC8FC \uC804`;let u=Math.floor(l/30);return u<12?`${u}\uAC1C\uC6D4 \uC804`:`${Math.floor(l/365)}\uB144 \uC804`}function hl(e){if(!Array.isArray(e))return null;let t=null,r=-1;for(let n of e){if(!n||n.status!=="in_progress")continue;let s=Jr(n.updated_at)??0;if(t===null||s>r){t=n,r=s;continue}s===r&&String(n.id)<String(t.id)&&(t=n)}return t}function Rs(e){let t=e&&e.parent;return typeof t=="string"?t:t&&t.id?String(t.id):""}function Is(e){let t=new Map;for(let n of e)n&&n.id&&!t.has(n.id)&&t.set(n.id,n);let r=new Map;for(let n of t.values()){let s=Rs(n);if(!s)continue;let o=r.get(s);o||(o=[],r.set(s,o)),o.push({id:n.id,title:n.title,status:n.status,metadata:n.metadata,workflow:n.workflow,created_at:n.created_at,updated_at:n.updated_at})}return r}function Ls(e,t){let r=e.get(t)||[],n=0;for(let o of r)(o.status==="resolved"||o.status==="closed")&&(n+=1);let s=hl(r);return{total:r.length,count:n,current:s,children:r}}function Os(e){let t=e.transport,r=e.uiOrderStore;function n(a,l){return"renormalize"in a?a.renormalize:[{bead_id:l,rank:a.rank}]}function s(a,l){let c={...a.order};for(let u of l)c[u.bead_id]=u.rank;r&&r.set({revision:a.revision,order:c})}async function o(a,l,c){if(!t||!r)return;let u=r.get()||{revision:0,order:{}},d=n(zo(l,c,u.order),a);s(u,d);let f=await t("ui-order-set",{expected_revision:u.revision,entries:d});if(f&&f.conflict){let g={revision:typeof f.revision=="number"?f.revision:0,order:f.order||{}};r.set(g);let x=n(zo(l,c,g.order),a);s(g,x);let A=await t("ui-order-set",{expected_revision:g.revision,entries:x});A&&A.applied&&r.set({revision:typeof A.revision=="number"?A.revision:0,order:A.order||{}})}else f&&f.applied&&r.set({revision:typeof f.revision=="number"?f.revision:0,order:f.order||{}})}return{applyReorder:o}}function Ms(e){return Array.isArray(e)?e.filter(t=>typeof t=="string"):[]}function Vo(e,t){return!t||typeof e!="string"||e.length===0||Ms(t.visible_labels).includes(e)?!0:Ms(t.hidden_labels).includes(e)?!1:!Ms(t.hidden_prefixes).some(r=>r.length>0&&e.startsWith(r))}function Ps(e,t){return Ms(e).filter(r=>Vo(r,t))}function Or(e,t){let r=e&&e.chips?e.chips[t]:void 0;return typeof r=="boolean"?r:!0}function Np(e){switch(e){case"in_progress":return"board-card__dot board-card__dot--progress";case"resolved":return"board-card__dot board-card__dot--resolved";case"closed":return"board-card__dot board-card__dot--closed";case"blocked":return"board-card__dot board-card__dot--blocked";default:return"board-card__dot"}}function qp(e,t,r,n,s){return i`<button
+var vp=Object.create;var Wo=Object.defineProperty;var wp=Object.getOwnPropertyDescriptor;var kp=Object.getOwnPropertyNames;var $p=Object.getPrototypeOf,xp=Object.prototype.hasOwnProperty;var Ap=(e,t,r)=>t in e?Wo(e,t,{enumerable:!0,configurable:!0,writable:!0,value:r}):e[t]=r;var zo=(e,t)=>()=>(t||e((t={exports:{}}).exports,t),t.exports);var Sp=(e,t,r,n)=>{if(t&&typeof t=="object"||typeof t=="function")for(let s of kp(t))!xp.call(e,s)&&s!==r&&Wo(e,s,{get:()=>t[s],enumerable:!(n=wp(t,s))||n.enumerable});return e};var Ep=(e,t,r)=>(r=e!=null?vp($p(e)):{},Sp(t||!e||!e.__esModule?Wo(r,"default",{value:e,enumerable:!0}):r,e));var xt=(e,t,r)=>Ap(e,typeof t!="symbol"?t+"":t,r);var rl=zo((rb,tl)=>{var gn=1e3,hn=gn*60,bn=hn*60,Zr=bn*24,Rp=Zr*7,Ip=Zr*365.25;tl.exports=function(e,t){t=t||{};var r=typeof e;if(r==="string"&&e.length>0)return Lp(e);if(r==="number"&&isFinite(e))return t.long?Pp(e):Op(e);throw new Error("val is not a non-empty string or a valid number. val="+JSON.stringify(e))};function Lp(e){if(e=String(e),!(e.length>100)){var t=/^(-?(?:\d+)?\.?\d+) *(milliseconds?|msecs?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w|years?|yrs?|y)?$/i.exec(e);if(t){var r=parseFloat(t[1]),n=(t[2]||"ms").toLowerCase();switch(n){case"years":case"year":case"yrs":case"yr":case"y":return r*Ip;case"weeks":case"week":case"w":return r*Rp;case"days":case"day":case"d":return r*Zr;case"hours":case"hour":case"hrs":case"hr":case"h":return r*bn;case"minutes":case"minute":case"mins":case"min":case"m":return r*hn;case"seconds":case"second":case"secs":case"sec":case"s":return r*gn;case"milliseconds":case"millisecond":case"msecs":case"msec":case"ms":return r;default:return}}}}function Op(e){var t=Math.abs(e);return t>=Zr?Math.round(e/Zr)+"d":t>=bn?Math.round(e/bn)+"h":t>=hn?Math.round(e/hn)+"m":t>=gn?Math.round(e/gn)+"s":e+"ms"}function Pp(e){var t=Math.abs(e);return t>=Zr?Os(e,t,Zr,"day"):t>=bn?Os(e,t,bn,"hour"):t>=hn?Os(e,t,hn,"minute"):t>=gn?Os(e,t,gn,"second"):e+" ms"}function Os(e,t,r,n){var s=t>=r*1.5;return Math.round(e/r)+" "+n+(s?"s":"")}});var sl=zo((nb,nl)=>{function Mp(e){r.debug=r,r.default=r,r.coerce=c,r.disable=a,r.enable=s,r.enabled=i,r.humanize=rl(),r.destroy=u,Object.keys(e).forEach(d=>{r[d]=e[d]}),r.names=[],r.skips=[],r.formatters={};function t(d){let p=0;for(let m=0;m<d.length;m++)p=(p<<5)-p+d.charCodeAt(m),p|=0;return r.colors[Math.abs(p)%r.colors.length]}r.selectColor=t;function r(d){let p,m=null,v,C;function F(...H){if(!F.enabled)return;let re=F,V=Number(new Date),q=V-(p||V);re.diff=q,re.prev=p,re.curr=V,p=V,H[0]=r.coerce(H[0]),typeof H[0]!="string"&&H.unshift("%O");let O=0;H[0]=H[0].replace(/%([a-zA-Z%])/g,(I,$)=>{if(I==="%%")return"%";O++;let M=r.formatters[$];if(typeof M=="function"){let K=H[O];I=M.call(re,K),H.splice(O,1),O--}return I}),r.formatArgs.call(re,H),(re.log||r.log).apply(re,H)}return F.namespace=d,F.useColors=r.useColors(),F.color=r.selectColor(d),F.extend=n,F.destroy=r.destroy,Object.defineProperty(F,"enabled",{enumerable:!0,configurable:!1,get:()=>m!==null?m:(v!==r.namespaces&&(v=r.namespaces,C=r.enabled(d)),C),set:H=>{m=H}}),typeof r.init=="function"&&r.init(F),F}function n(d,p){let m=r(this.namespace+(typeof p>"u"?":":p)+d);return m.log=this.log,m}function s(d){r.save(d),r.namespaces=d,r.names=[],r.skips=[];let p=(typeof d=="string"?d:"").trim().replace(/\s+/g,",").split(",").filter(Boolean);for(let m of p)m[0]==="-"?r.skips.push(m.slice(1)):r.names.push(m)}function o(d,p){let m=0,v=0,C=-1,F=0;for(;m<d.length;)if(v<p.length&&(p[v]===d[m]||p[v]==="*"))p[v]==="*"?(C=v,F=m,v++):(m++,v++);else if(C!==-1)v=C+1,F++,m=F;else return!1;for(;v<p.length&&p[v]==="*";)v++;return v===p.length}function a(){let d=[...r.names,...r.skips.map(p=>"-"+p)].join(",");return r.enable(""),d}function i(d){for(let p of r.skips)if(o(d,p))return!1;for(let p of r.names)if(o(d,p))return!0;return!1}function c(d){return d instanceof Error?d.stack||d.message:d}function u(){console.warn("Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.")}return r.enable(r.load()),r}nl.exports=Mp});var ol=zo((Zt,Ps)=>{Zt.formatArgs=Np;Zt.save=qp;Zt.load=Fp;Zt.useColors=Dp;Zt.storage=jp();Zt.destroy=(()=>{let e=!1;return()=>{e||(e=!0,console.warn("Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`."))}})();Zt.colors=["#0000CC","#0000FF","#0033CC","#0033FF","#0066CC","#0066FF","#0099CC","#0099FF","#00CC00","#00CC33","#00CC66","#00CC99","#00CCCC","#00CCFF","#3300CC","#3300FF","#3333CC","#3333FF","#3366CC","#3366FF","#3399CC","#3399FF","#33CC00","#33CC33","#33CC66","#33CC99","#33CCCC","#33CCFF","#6600CC","#6600FF","#6633CC","#6633FF","#66CC00","#66CC33","#9900CC","#9900FF","#9933CC","#9933FF","#99CC00","#99CC33","#CC0000","#CC0033","#CC0066","#CC0099","#CC00CC","#CC00FF","#CC3300","#CC3333","#CC3366","#CC3399","#CC33CC","#CC33FF","#CC6600","#CC6633","#CC9900","#CC9933","#CCCC00","#CCCC33","#FF0000","#FF0033","#FF0066","#FF0099","#FF00CC","#FF00FF","#FF3300","#FF3333","#FF3366","#FF3399","#FF33CC","#FF33FF","#FF6600","#FF6633","#FF9900","#FF9933","#FFCC00","#FFCC33"];function Dp(){if(typeof window<"u"&&window.process&&(window.process.type==="renderer"||window.process.__nwjs))return!0;if(typeof navigator<"u"&&navigator.userAgent&&navigator.userAgent.toLowerCase().match(/(edge|trident)\/(\d+)/))return!1;let e;return typeof document<"u"&&document.documentElement&&document.documentElement.style&&document.documentElement.style.WebkitAppearance||typeof window<"u"&&window.console&&(window.console.firebug||window.console.exception&&window.console.table)||typeof navigator<"u"&&navigator.userAgent&&(e=navigator.userAgent.toLowerCase().match(/firefox\/(\d+)/))&&parseInt(e[1],10)>=31||typeof navigator<"u"&&navigator.userAgent&&navigator.userAgent.toLowerCase().match(/applewebkit\/(\d+)/)}function Np(e){if(e[0]=(this.useColors?"%c":"")+this.namespace+(this.useColors?" %c":" ")+e[0]+(this.useColors?"%c ":" ")+"+"+Ps.exports.humanize(this.diff),!this.useColors)return;let t="color: "+this.color;e.splice(1,0,t,"color: inherit");let r=0,n=0;e[0].replace(/%[a-zA-Z%]/g,s=>{s!=="%%"&&(r++,s==="%c"&&(n=r))}),e.splice(n,0,t)}Zt.log=console.debug||console.log||(()=>{});function qp(e){try{e?Zt.storage.setItem("debug",e):Zt.storage.removeItem("debug")}catch{}}function Fp(){let e;try{e=Zt.storage.getItem("debug")||Zt.storage.getItem("DEBUG")}catch{}return!e&&typeof process<"u"&&"env"in process&&(e=process.env.DEBUG),e}function jp(){try{return localStorage}catch{}}Ps.exports=sl()(Zt);var{formatters:Bp}=Ps.exports;Bp.j=function(e){try{return JSON.stringify(e)}catch(t){return"[UnexpectedJSONParseError]: "+t.message}}});var Nn=globalThis,Es=Nn.trustedTypes,ji=Es?Es.createPolicy("lit-html",{createHTML:e=>e}):void 0,Go="$lit$",vr=`lit$${Math.random().toFixed(9).slice(2)}$`,Ko="?"+vr,Tp=`<${Ko}>`,Gr=document,qn=()=>Gr.createComment(""),Fn=e=>e===null||typeof e!="object"&&typeof e!="function",Vo=Array.isArray,Gi=e=>Vo(e)||typeof e?.[Symbol.iterator]=="function",Ho=`[ 	
+\f\r]`,Dn=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,Bi=/-->/g,Ui=/>/g,zr=RegExp(`>|${Ho}(?:([^\\s"'>=/]+)(${Ho}*=${Ho}*(?:[^ 	
+\f\r"'\`<>=]|("|')|))|$)`,"g"),Wi=/'/g,zi=/"/g,Ki=/^(?:script|style|textarea|title)$/i,Yo=e=>(t,...r)=>({_$litType$:e,strings:t,values:r}),l=Yo(1),mn=Yo(2),Yh=Yo(3),or=Symbol.for("lit-noChange"),Pt=Symbol.for("lit-nothing"),Hi=new WeakMap,Hr=Gr.createTreeWalker(Gr,129);function Vi(e,t){if(!Vo(e)||!e.hasOwnProperty("raw"))throw Error("invalid template strings array");return ji!==void 0?ji.createHTML(t):t}var Yi=(e,t)=>{let r=e.length-1,n=[],s,o=t===2?"<svg>":t===3?"<math>":"",a=Dn;for(let i=0;i<r;i++){let c=e[i],u,d,p=-1,m=0;for(;m<c.length&&(a.lastIndex=m,d=a.exec(c),d!==null);)m=a.lastIndex,a===Dn?d[1]==="!--"?a=Bi:d[1]!==void 0?a=Ui:d[2]!==void 0?(Ki.test(d[2])&&(s=RegExp("</"+d[2],"g")),a=zr):d[3]!==void 0&&(a=zr):a===zr?d[0]===">"?(a=s??Dn,p=-1):d[1]===void 0?p=-2:(p=a.lastIndex-d[2].length,u=d[1],a=d[3]===void 0?zr:d[3]==='"'?zi:Wi):a===zi||a===Wi?a=zr:a===Bi||a===Ui?a=Dn:(a=zr,s=void 0);let v=a===zr&&e[i+1].startsWith("/>")?" ":"";o+=a===Dn?c+Tp:p>=0?(n.push(u),c.slice(0,p)+Go+c.slice(p)+vr+v):c+vr+(p===-2?i:v)}return[Vi(e,o+(e[r]||"<?>")+(t===2?"</svg>":t===3?"</math>":"")),n]},jn=class e{constructor({strings:t,_$litType$:r},n){let s;this.parts=[];let o=0,a=0,i=t.length-1,c=this.parts,[u,d]=Yi(t,r);if(this.el=e.createElement(u,n),Hr.currentNode=this.el.content,r===2||r===3){let p=this.el.content.firstChild;p.replaceWith(...p.childNodes)}for(;(s=Hr.nextNode())!==null&&c.length<i;){if(s.nodeType===1){if(s.hasAttributes())for(let p of s.getAttributeNames())if(p.endsWith(Go)){let m=d[a++],v=s.getAttribute(p).split(vr),C=/([.?@])?(.*)/.exec(m);c.push({type:1,index:o,name:C[2],strings:v,ctor:C[1]==="."?Cs:C[1]==="?"?Rs:C[1]==="@"?Is:Vr}),s.removeAttribute(p)}else p.startsWith(vr)&&(c.push({type:6,index:o}),s.removeAttribute(p));if(Ki.test(s.tagName)){let p=s.textContent.split(vr),m=p.length-1;if(m>0){s.textContent=Es?Es.emptyScript:"";for(let v=0;v<m;v++)s.append(p[v],qn()),Hr.nextNode(),c.push({type:2,index:++o});s.append(p[m],qn())}}}else if(s.nodeType===8)if(s.data===Ko)c.push({type:2,index:o});else{let p=-1;for(;(p=s.data.indexOf(vr,p+1))!==-1;)c.push({type:7,index:o}),p+=vr.length-1}o++}}static createElement(t,r){let n=Gr.createElement("template");return n.innerHTML=t,n}};function Kr(e,t,r=e,n){if(t===or)return t;let s=n!==void 0?r._$Co?.[n]:r._$Cl,o=Fn(t)?void 0:t._$litDirective$;return s?.constructor!==o&&(s?._$AO?.(!1),o===void 0?s=void 0:(s=new o(e),s._$AT(e,r,n)),n!==void 0?(r._$Co??(r._$Co=[]))[n]=s:r._$Cl=s),s!==void 0&&(t=Kr(e,s._$AS(e,t.values),s,n)),t}var Ts=class{constructor(t,r){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=r}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){let{el:{content:r},parts:n}=this._$AD,s=(t?.creationScope??Gr).importNode(r,!0);Hr.currentNode=s;let o=Hr.nextNode(),a=0,i=0,c=n[0];for(;c!==void 0;){if(a===c.index){let u;c.type===2?u=new _n(o,o.nextSibling,this,t):c.type===1?u=new c.ctor(o,c.name,c.strings,this,t):c.type===6&&(u=new Ls(o,this,t)),this._$AV.push(u),c=n[++i]}a!==c?.index&&(o=Hr.nextNode(),a++)}return Hr.currentNode=Gr,s}p(t){let r=0;for(let n of this._$AV)n!==void 0&&(n.strings!==void 0?(n._$AI(t,n,r),r+=n.strings.length-2):n._$AI(t[r])),r++}},_n=class e{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,r,n,s){this.type=2,this._$AH=Pt,this._$AN=void 0,this._$AA=t,this._$AB=r,this._$AM=n,this.options=s,this._$Cv=s?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode,r=this._$AM;return r!==void 0&&t?.nodeType===11&&(t=r.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,r=this){t=Kr(this,t,r),Fn(t)?t===Pt||t==null||t===""?(this._$AH!==Pt&&this._$AR(),this._$AH=Pt):t!==this._$AH&&t!==or&&this._(t):t._$litType$!==void 0?this.$(t):t.nodeType!==void 0?this.T(t):Gi(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==Pt&&Fn(this._$AH)?this._$AA.nextSibling.data=t:this.T(Gr.createTextNode(t)),this._$AH=t}$(t){let{values:r,_$litType$:n}=t,s=typeof n=="number"?this._$AC(t):(n.el===void 0&&(n.el=jn.createElement(Vi(n.h,n.h[0]),this.options)),n);if(this._$AH?._$AD===s)this._$AH.p(r);else{let o=new Ts(s,this),a=o.u(this.options);o.p(r),this.T(a),this._$AH=o}}_$AC(t){let r=Hi.get(t.strings);return r===void 0&&Hi.set(t.strings,r=new jn(t)),r}k(t){Vo(this._$AH)||(this._$AH=[],this._$AR());let r=this._$AH,n,s=0;for(let o of t)s===r.length?r.push(n=new e(this.O(qn()),this.O(qn()),this,this.options)):n=r[s],n._$AI(o),s++;s<r.length&&(this._$AR(n&&n._$AB.nextSibling,s),r.length=s)}_$AR(t=this._$AA.nextSibling,r){for(this._$AP?.(!1,!0,r);t!==this._$AB;){let n=t.nextSibling;t.remove(),t=n}}setConnected(t){this._$AM===void 0&&(this._$Cv=t,this._$AP?.(t))}},Vr=class{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,r,n,s,o){this.type=1,this._$AH=Pt,this._$AN=void 0,this.element=t,this.name=r,this._$AM=s,this.options=o,n.length>2||n[0]!==""||n[1]!==""?(this._$AH=Array(n.length-1).fill(new String),this.strings=n):this._$AH=Pt}_$AI(t,r=this,n,s){let o=this.strings,a=!1;if(o===void 0)t=Kr(this,t,r,0),a=!Fn(t)||t!==this._$AH&&t!==or,a&&(this._$AH=t);else{let i=t,c,u;for(t=o[0],c=0;c<o.length-1;c++)u=Kr(this,i[n+c],r,c),u===or&&(u=this._$AH[c]),a||(a=!Fn(u)||u!==this._$AH[c]),u===Pt?t=Pt:t!==Pt&&(t+=(u??"")+o[c+1]),this._$AH[c]=u}a&&!s&&this.j(t)}j(t){t===Pt?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}},Cs=class extends Vr{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===Pt?void 0:t}},Rs=class extends Vr{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==Pt)}},Is=class extends Vr{constructor(t,r,n,s,o){super(t,r,n,s,o),this.type=5}_$AI(t,r=this){if((t=Kr(this,t,r,0)??Pt)===or)return;let n=this._$AH,s=t===Pt&&n!==Pt||t.capture!==n.capture||t.once!==n.once||t.passive!==n.passive,o=t!==Pt&&(n===Pt||s);s&&this.element.removeEventListener(this.name,this,n),o&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){typeof this._$AH=="function"?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}},Ls=class{constructor(t,r,n){this.element=t,this.type=6,this._$AN=void 0,this._$AM=r,this.options=n}get _$AU(){return this._$AM._$AU}_$AI(t){Kr(this,t)}},Zi={M:Go,P:vr,A:Ko,C:1,L:Yi,R:Ts,D:Gi,V:Kr,I:_n,H:Vr,N:Rs,U:Is,B:Cs,F:Ls},Cp=Nn.litHtmlPolyfillSupport;Cp?.(jn,_n),(Nn.litHtmlVersions??(Nn.litHtmlVersions=[])).push("3.3.1");var Ve=(e,t,r)=>{let n=r?.renderBefore??t,s=n._$litPart$;if(s===void 0){let o=r?.renderBefore??null;n._$litPart$=s=new _n(t.insertBefore(qn(),o),o,void 0,r??{})}return s._$AI(e),s};var er="today",Rr=[{value:"today",label:"\uC624\uB298"},{value:"7d",label:"\uCD5C\uADFC 7\uC77C"},{value:"30d",label:"\uCD5C\uADFC 30\uC77C"},{value:"all",label:"\uC804\uCCB4"}];function ar(e){return e==="today"||e==="7d"||e==="30d"||e==="all"}function Yr(e,t=Date.now()){switch(e){case"today":{let r=new Date(t);return r.setHours(0,0,0,0),r.getTime()}case"7d":return t-7*864e5;case"30d":return t-30*864e5;case"all":default:return}}function Qi(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function Xi(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function Ji(){let e=null,t=[],r=new Set;function n(){for(let s of Array.from(r))try{s()}catch{}}return{get(){return e},getWorkspacesState(){return t},set(s,o){e=Array.isArray(s)?s:null,t=Array.isArray(o)?o:[],n()},clear(){e=null,t=[],n()},subscribe(s){return r.add(s),()=>r.delete(s)}}}function el(){let e=new Map,t=new Set;function r(s){return s.startsWith("session-log:")?s:`session-log:${s}`}function n(){for(let s of Array.from(t))try{s()}catch{}}return{set(s,o,a=null){e.set(r(s),{lines:Array.isArray(o)?[...o]:[],last_event_at:typeof a=="number"?a:null}),n()},append(s,o){let a=r(s),i=e.get(a)||{lines:[],last_event_at:null};i.lines=[...i.lines,o],i.last_event_at=Date.now(),e.set(a,i),n()},get(s){return e.get(r(s))||null},clear(s){typeof s=="string"?e.delete(r(s)):e.clear(),n()},subscribe(s){return t.add(s),()=>t.delete(s)}}}var al=Ep(ol(),1);function Ct(e){return(0,al.default)(`beads-ui:${e}`)}function pr(e){if(typeof e=="number")return Number.isFinite(e)?e:0;if(typeof e=="string"){let t=Date.parse(e);return Number.isFinite(t)?t:0}return 0}function Qr(e,t){let r=pr(e.created_at),n=pr(t.created_at);if(r!==n)return r<n?1:-1;let s=e.priority??2,o=t.priority??2;if(s!==o)return s-o;let a=e.id,i=t.id;return a<i?-1:a>i?1:0}function cl(e,t){let r=pr(e.created_at),n=pr(t.created_at);if(r!==n)return r<n?-1:1;let s=e.priority??2,o=t.priority??2;if(s!==o)return s-o;let a=e.id,i=t.id;return a<i?-1:a>i?1:0}function ul(e,t){let r=pr(e.updated_at),n=pr(t.updated_at);if(r!==n)return r<n?1:-1;let s=e.id,o=t.id;return s<o?-1:s>o?1:0}function dl(e,t){let r=e.priority??2,n=t.priority??2;if(r!==n)return r-n;let s=pr(e.created_at),o=pr(t.created_at);if(s!==o)return s<o?1:-1;let a=e.id,i=t.id;return a<i?-1:a>i?1:0}function pl(e,t){let r=e.closed_at??0,n=t.closed_at??0;if(r!==n)return r<n?1:-1;let s=e?.id,o=t?.id;return s<o?-1:s>o?1:0}var Up=/^(?:[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\s+)?(?:Task|Phase|T)\s*(\d+)/i;function il(e){let t=e&&e.metadata,r=t?t.task_order:void 0;if(r==null||r==="")return Number.POSITIVE_INFINITY;let n=Number(r);return Number.isFinite(n)?n:Number.POSITIVE_INFINITY}function ll(e){let t=e&&e.title;if(typeof t!="string")return Number.POSITIVE_INFINITY;let r=Up.exec(t);if(!r)return Number.POSITIVE_INFINITY;let n=Number(r[1]);return Number.isFinite(n)?n:Number.POSITIVE_INFINITY}function fl(e,t){let r=il(e),n=il(t);if(r!==n)return r<n?-1:1;let s=ll(e),o=ll(t);if(s!==o)return s<o?-1:1;let a=pr(e&&e.created_at),i=pr(t&&t.created_at);if(a!==i)return a<i?-1:1;let c=e&&e.id,u=t&&t.id;return c===u?0:String(c)<String(u)?-1:1}var Zo=2**20;function yn(e,t){let r=e&&e.id;return t&&typeof r=="string"&&Object.prototype.hasOwnProperty.call(t,r)&&typeof t[r]=="number"&&Number.isFinite(t[r])?t[r]:-pr(e&&e.created_at)}function Ms(e){return(t,r)=>{let n=yn(t,e),s=yn(r,e);if(n!==s)return n<s?-1:1;let o=t?.id,a=r?.id;return o<a?-1:o>a?1:0}}function Qo(e,t,r){let n=Array.isArray(e)?e:[],s=n.length,o=Math.max(0,Math.min(t,s-1)),a=o-1>=0?n[o-1]:null,i=o+1<s?n[o+1]:null;if(!a&&!i)return{rank:0};if(!a)return{rank:yn(i,r)-Zo};if(!i)return{rank:yn(a,r)+Zo};let c=yn(a,r),u=yn(i,r),d=(c+u)/2;return c<d&&d<u?{rank:d}:{renormalize:n.map((p,m)=>({bead_id:p.id,rank:m*Zo}))}}function Xo(e,t={}){let r=Ct(`issue-store:${e}`),n=new Map,s=[],o=0,a=new Set,i=!1,c=t.sort||Qr;function u(){for(let m of Array.from(a))try{m()}catch{}}function d(){s=Array.from(n.values()).sort(c)}function p(m){if(i||!m||m.id!==e)return;let v=Number(m.revision)||0;if(r("apply %s rev=%d",m.type,v),!(v<=o&&m.type!=="snapshot")){if(m.type==="snapshot"){if(v<=o)return;n.clear();let C=Array.isArray(m.issues)?m.issues:[];for(let F of C)F&&typeof F.id=="string"&&F.id.length>0&&n.set(F.id,F);d(),o=v,u();return}if(m.type==="upsert"){let C=m.issue;if(C&&typeof C.id=="string"&&C.id.length>0){let F=n.get(C.id);if(!F)n.set(C.id,C);else{let H=Number.isFinite(F.updated_at)?F.updated_at:0,re=Number.isFinite(C.updated_at)?C.updated_at:0;if(H<=re){for(let V of Object.keys(F))V in C||delete F[V];for(let[V,q]of Object.entries(C))F[V]=q}}d()}o=v,u()}else if(m.type==="delete"){let C=String(m.issue_id||"");C&&(n.delete(C),d()),o=v,u()}}}return{id:e,subscribe(m){return a.add(m),()=>{a.delete(m)}},applyPush:p,snapshot(){return s},size(){return n.size},getById(m){return n.get(m)},dispose(){i=!0,n.clear(),s=[],a.clear(),o=0}}}function Ds(e){let t=String(e.type||"").trim(),r={};if(e.params&&typeof e.params=="object"){let s=Object.keys(e.params).sort();for(let o of s){let a=e.params[o];r[o]=String(a)}}let n=new URLSearchParams(r).toString();return n.length>0?`${t}?${n}`:t}function _l(e){let t=Ct("subs"),r=new Map,n=new Map;function s(i,c){t("applyDelta %s +%d ~%d -%d",i,(c.added||[]).length,(c.updated||[]).length,(c.removed||[]).length);let u=n.get(i);if(!u||u.size===0)return;let d=Array.isArray(c.added)?c.added:[],p=Array.isArray(c.updated)?c.updated:[],m=Array.isArray(c.removed)?c.removed:[];for(let v of Array.from(u)){let C=r.get(v);if(!C)continue;let F=C.itemsById;for(let H of d)typeof H=="string"&&H.length>0&&F.set(H,!0);for(let H of p)typeof H=="string"&&H.length>0&&F.set(H,!0);for(let H of m)typeof H=="string"&&H.length>0&&F.delete(H)}}async function o(i,c){let u=Ds(c);if(t("subscribe %s key=%s",i,u),!r.has(i))r.set(i,{key:u,itemsById:new Map});else{let p=r.get(i);if(p&&p.key!==u){let m=n.get(p.key);m&&(m.delete(i),m.size===0&&n.delete(p.key)),r.set(i,{key:u,itemsById:new Map})}}n.has(u)||n.set(u,new Set);let d=n.get(u);d&&d.add(i);try{await e("subscribe-list",{id:i,type:c.type,params:c.params})}catch(p){let m=r.get(i)||null;if(m){let v=n.get(m.key);v&&(v.delete(i),v.size===0&&n.delete(m.key))}throw r.delete(i),p}return async()=>{t("unsubscribe %s key=%s",i,u);try{await e("unsubscribe-list",{id:i})}catch{}let p=r.get(i)||null;if(p){let m=n.get(p.key);m&&(m.delete(i),m.size===0&&n.delete(p.key))}r.delete(i)}}return{subscribeList:o,_applyDelta:s,_subKeyOf:Ds,selectors:{getIds(i){let c=r.get(i);return c?Array.from(c.itemsById.keys()):[]},has(i,c){let u=r.get(i);return u?u.itemsById.has(c):!1},count(i){let c=r.get(i);return c?c.itemsById.size:0},getItemsById(i){let c=r.get(i),u={};if(!c)return u;for(let d of c.itemsById.keys())u[d]=!0;return u}}}}function ml(){let e=Ct("issue-stores"),t=new Map,r=new Map,n=new Set,s=new Map;function o(){for(let c of Array.from(n))try{c()}catch{}}function a(c,u,d){let p=u?Ds(u):"",m=r.get(c)||"",v=t.has(c);if(e("register %s key=%s (prev=%s)",c,p,m),v&&m&&p&&m!==p){let C=t.get(c);if(C)try{C.dispose()}catch{}let F=s.get(c);if(F){try{F()}catch{}s.delete(c)}let H=Xo(c,d);t.set(c,H);let re=H.subscribe(()=>o());s.set(c,re)}else if(!v){let C=Xo(c,d);t.set(c,C);let F=C.subscribe(()=>o());s.set(c,F)}return r.set(c,p),()=>i(c)}function i(c){e("unregister %s",c),r.delete(c);let u=t.get(c);u&&(u.dispose(),t.delete(c));let d=s.get(c);if(d){try{d()}catch{}s.delete(c)}}return{register:a,unregister:i,getStore(c){return t.get(c)||null},snapshotFor(c){let u=t.get(c);return u?u.snapshot().slice():[]},subscribe(c){return n.add(c),()=>n.delete(c)}}}function gl(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function hl(){let e=null,t=!1,r=new Set;function n(){for(let s of Array.from(r))try{s()}catch{}}return{get(){return e},set(s){e=s,n()},isPending(){return t},setPending(s){let o=s===!0;o!==t&&(t=o,n())},clear(){e=null,t=!1,n()},subscribe(s){return r.add(s),()=>r.delete(s)}}}function bl(){let e=null,t=new Set;function r(){for(let n of Array.from(t))try{n()}catch{}}return{get(){return e},set(n){e=n,r()},clear(){e=null,r()},subscribe(n){return t.add(n),()=>t.delete(n)}}}function Jo(e,t){return`#/${e==="worker"||e==="monitor"?e:"board"}?issue=${encodeURIComponent(t)}`}function Wp(e){let t=String(e||""),r=t.startsWith("#")?t.slice(1):t,n=r.indexOf("?"),s=n>=0?r.slice(n+1):"";if(s){let i=new URLSearchParams(s).get("issue");if(i)return decodeURIComponent(i)}let o=/^\/issue\/([^\s?#]+)/.exec(r);return o&&o[1]?decodeURIComponent(o[1]):null}function zp(e){let t=String(e||"");return/^#\/worker(\b|\/|$)/.test(t)?"worker":/^#\/monitor(\b|\/|$)/.test(t)?"monitor":"board"}function yl(e){let t=Ct("router"),r=()=>{let n=window.location.hash||"",s=/^#\/issue\/([^\s?#]+)/.exec(n),o=s&&s[1]?decodeURIComponent(s[1]):Wp(n),a=zp(n);if(t("hash change \u2192 view=%s id=%s",a,o),e.setState({selected_id:a==="worker"?null:o,view:a,worker:{selected_parent_id:a==="worker"?o:null}}),!!s||/^#\/(issues|epics)(\b|\/|\?|$)/.test(n)){let c=o?`#/${a}?issue=${encodeURIComponent(o)}`:`#/${a}`;window.location.hash!==c&&(window.location.hash=c)}};return{start(){window.addEventListener("hashchange",r),r()},stop(){window.removeEventListener("hashchange",r)},gotoIssue(n){let s=e.getState?e.getState():{view:"board"},o=s.view==="worker"||s.view==="monitor"?s.view:"board",a=Jo(o,n);t("goto issue %s (view=%s)",n,o),window.location.hash!==a?window.location.hash=a:e.setState({selected_id:o==="worker"?null:n,view:o,worker:{selected_parent_id:o==="worker"?n:null}})},gotoView(n){let s=e.getState?e.getState():{selected_id:null,worker:{selected_parent_id:null}},o=n==="worker"?s.worker?.selected_parent_id:s.selected_id,a=o?Jo(n,o):`#/${n}`;t("goto view %s (id=%s)",n,o||""),window.location.hash!==a?window.location.hash=a:e.setState({view:n,selected_id:n==="worker"?null:s.selected_id})}}}var Hp=Object.freeze({workspace_config:{default_workspace:null}});function vl(e){return{workspace_config:{default_workspace:typeof e?.workspace_config?.default_workspace=="string"&&e.workspace_config.default_workspace.length>0?e.workspace_config.default_workspace:Hp.workspace_config.default_workspace}}}function wl(e={}){let t=Ct("state"),r={selected_id:e.selected_id??null,view:e.view??"board",filters:{status:e.filters?.status??"all",search:e.filters?.search??"",type:typeof e.filters?.type=="string"?e.filters?.type:""},board:{closed_filter:e.board?.closed_filter==="3"||e.board?.closed_filter==="7"||e.board?.closed_filter==="today"?e.board?.closed_filter:"today"},worker:{selected_parent_id:e.worker?.selected_parent_id??null,show_closed_children:Array.isArray(e.worker?.show_closed_children)?e.worker.show_closed_children:[]},workspace:{current:e.workspace?.current??null,available:e.workspace?.available??[],hidden:e.workspace?.hidden??[]},config:vl(e.config)},n=new Set;function s(){for(let o of Array.from(n))try{o(r)}catch{}}return{getState(){return r},setState(o){let a={...r,...o,filters:{...r.filters,...o.filters||{}},board:{...r.board,...o.board||{}},worker:{...r.worker,...o.worker||{}},workspace:{current:o.workspace?.current!==void 0?o.workspace.current:r.workspace.current,available:o.workspace?.available!==void 0?o.workspace.available:r.workspace.available,hidden:o.workspace?.hidden!==void 0?o.workspace.hidden:r.workspace.hidden},config:o.config!==void 0?vl(o.config):r.config},i=a.workspace.current?.path!==r.workspace.current?.path||a.workspace.available.length!==r.workspace.available.length||a.workspace.hidden.length!==r.workspace.hidden.length||a.workspace.hidden.some((u,d)=>u!==r.workspace.hidden[d]),c=a.config.workspace_config.default_workspace!==r.config.workspace_config.default_workspace;a.selected_id===r.selected_id&&a.view===r.view&&a.filters.status===r.filters.status&&a.filters.search===r.filters.search&&a.filters.type===r.filters.type&&a.board.closed_filter===r.board.closed_filter&&a.worker.selected_parent_id===r.worker.selected_parent_id&&a.worker.show_closed_children.length===r.worker.show_closed_children.length&&a.worker.show_closed_children.every((u,d)=>u===r.worker.show_closed_children[d])&&!i&&!c||(r=a,t("state change %o",{selected_id:r.selected_id,view:r.view,filters:r.filters,board:r.board,worker:r.worker,workspace:r.workspace.current?.path,config:{default_workspace:r.config.workspace_config.default_workspace}}),s())},subscribe(o){return n.add(o),()=>n.delete(o)}}}function kl(e){let t=Ct("activity"),r=0,n=new Map,s=1;function o(){if(!e)return;let u=r>0;e.toggleAttribute("hidden",!u),e.setAttribute("aria-busy",u?"true":"false")}function a(){r+=1,t("start count=%d",r),o()}function i(){let u=r;r=Math.max(0,r-1),u<=0?t("done called but count was already %d",u):t("done count=%d\u2192%d",u,r),o()}function c(u){return async(p,m)=>{let v=s++,C=Date.now();n.set(v,{type:p,start_ts:C}),t("request start id=%d type=%s count=%d",v,p,r+1),a();let F=!1,H=()=>{F||(F=!0,n.delete(v),i())},re=setTimeout(()=>{F||(t("request TIMEOUT id=%d type=%s elapsed=%dms",v,p,Date.now()-C),H())},3e4);try{let V=await u(p,m),q=Date.now()-C;return t("request done id=%d type=%s elapsed=%dms",v,p,q),V}catch(V){let q=Date.now()-C;throw t("request error id=%d type=%s elapsed=%dms err=%o",v,p,q,V),V}finally{clearTimeout(re),H()}}}return o(),{wrapSend:c,start:a,done:i,getCount:()=>r,getActiveRequests:()=>{let u=Date.now();return Array.from(n.entries()).map(([d,p])=>({id:d,type:p.type,elapsed_ms:u-p.start_ts}))}}}function he(e,t="info",r=2800){let n=document.createElement("div");n.className="toast",n.textContent=e,n.style.position="fixed",n.style.right="12px",n.style.bottom="12px",n.style.zIndex="1000",n.style.color="#fff",n.style.padding="8px 10px",n.style.borderRadius="4px",n.style.fontSize="12px",t==="success"?n.style.background="#156d36":t==="warning"?n.style.background="#a36a00":t==="error"?n.style.background="#9f2011":n.style.background="rgba(0,0,0,0.85)",(document.body||document.documentElement).appendChild(n),setTimeout(()=>{try{n.remove()}catch{}},r)}function Ns(e=void 0,t=void 0){function r(){if(!t||typeof t.get!="function")return null;let o=t.get();return o&&o.order?o.order:{}}function n(o,a,i){let c=e&&e.snapshotFor?e.snapshotFor(o).slice():[];if(a==="closed")return c.sort(pl),c;switch(i){case"created_desc":return c.sort(Qr),c;case"created_asc":return c.sort(cl),c;case"updated_desc":return c.sort(ul),c;case"priority":return c.sort(dl),c;case"manual":default:{let u=r();return u?c.sort(Ms(u)):c.sort(Qr),c}}}function s(o){let a=[];return e&&typeof e.subscribe=="function"&&a.push(e.subscribe(o)),t&&typeof t.subscribe=="function"&&a.push(t.subscribe(o)),()=>{for(let i of a)try{i()}catch{}}}return{selectBoardColumn:n,subscribe:s}}function Xr(e){if(!e)return null;if(typeof e=="number")return Number.isFinite(e)?e:null;let t=Date.parse(e);return Number.isFinite(t)?t:null}function Ht(e){let t=Xr(e);if(t===null)return"";let r=new Date(t),n=s=>String(s).padStart(2,"0");return`${r.getFullYear()}-${n(r.getMonth()+1)}-${n(r.getDate())} ${n(r.getHours())}:${n(r.getMinutes())}`}function ir(e,t){let r=Xr(e);if(r===null)return"";let s=(typeof t=="number"?t:Date.now())-r;if(s<6e4)return"\uBC29\uAE08";let o=Math.floor(s/6e4);if(o<60)return`${o}\uBD84 \uC804`;let a=Math.floor(s/36e5);if(a<24)return`${a}\uC2DC\uAC04 \uC804`;let i=Math.floor(s/864e5);if(i<7)return`${i}\uC77C \uC804`;let c=Math.floor(i/7);if(i<30)return`${c}\uC8FC \uC804`;let u=Math.floor(i/30);return u<12?`${u}\uAC1C\uC6D4 \uC804`:`${Math.floor(i/365)}\uB144 \uC804`}function $l(e){if(!Array.isArray(e))return null;let t=null,r=-1;for(let n of e){if(!n||n.status!=="in_progress")continue;let s=Xr(n.updated_at)??0;if(t===null||s>r){t=n,r=s;continue}s===r&&String(n.id)<String(t.id)&&(t=n)}return t}function qs(e){let t=e&&e.parent;return typeof t=="string"?t:t&&t.id?String(t.id):""}function Fs(e){let t=new Map;for(let n of e)n&&n.id&&!t.has(n.id)&&t.set(n.id,n);let r=new Map;for(let n of t.values()){let s=qs(n);if(!s)continue;let o=r.get(s);o||(o=[],r.set(s,o)),o.push({id:n.id,title:n.title,status:n.status,metadata:n.metadata,workflow:n.workflow,created_at:n.created_at,updated_at:n.updated_at})}return r}function js(e,t){let r=e.get(t)||[],n=0;for(let o of r)(o.status==="resolved"||o.status==="closed")&&(n+=1);let s=$l(r);return{total:r.length,count:n,current:s,children:r}}function Bs(e){let t=e.transport,r=e.uiOrderStore;function n(a,i){return"renormalize"in a?a.renormalize:[{bead_id:i,rank:a.rank}]}function s(a,i){let c={...a.order};for(let u of i)c[u.bead_id]=u.rank;r&&r.set({revision:a.revision,order:c})}async function o(a,i,c){if(!t||!r)return;let u=r.get()||{revision:0,order:{}},d=n(Qo(i,c,u.order),a);s(u,d);let p=await t("ui-order-set",{expected_revision:u.revision,entries:d});if(p&&p.conflict){let m={revision:typeof p.revision=="number"?p.revision:0,order:p.order||{}};r.set(m);let v=n(Qo(i,c,m.order),a);s(m,v);let C=await t("ui-order-set",{expected_revision:m.revision,entries:v});C&&C.applied&&r.set({revision:typeof C.revision=="number"?C.revision:0,order:C.order||{}})}else p&&p.applied&&r.set({revision:typeof p.revision=="number"?p.revision:0,order:p.order||{}})}return{applyReorder:o}}function Us(e){return Array.isArray(e)?e.filter(t=>typeof t=="string"):[]}function ea(e,t){return!t||typeof e!="string"||e.length===0||Us(t.visible_labels).includes(e)?!0:Us(t.hidden_labels).includes(e)?!1:!Us(t.hidden_prefixes).some(r=>r.length>0&&e.startsWith(r))}function xl(e,t){return Us(e).filter(r=>ea(r,t))}function Ir(e,t){let r=e&&e.chips?e.chips[t]:void 0;return typeof r=="boolean"?r:!0}function Gp(e){switch(e){case"in_progress":return"board-card__dot board-card__dot--progress";case"resolved":return"board-card__dot board-card__dot--resolved";case"closed":return"board-card__dot board-card__dot--closed";case"blocked":return"board-card__dot board-card__dot--blocked";default:return"board-card__dot"}}function Kp(e,t,r,n,s){return l`<button
     type="button"
     class="board-card__roll-toggle"
     data-roll-parent=${e}
@@ -8,89 +8,89 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
     @click=${s}
   >
     children ${t}/${r} ${n?"\u25B4":"\u25BE"}
-  </button>`}function Fp(e,t,r,n){return i`<button
+  </button>`}function Vp(e,t,r,n){return l`<button
     type="button"
     class="board-card__roll-child"
     data-child-id=${e.id}
     @click=${n?s=>n(s,e.id):void 0}
   >
-    <span class=${Np(e.status)}>●</span>
+    <span class=${Gp(e.status)}>●</span>
     <span class="board-card__roll-child-ord">${t}</span>
     <span class="board-card__roll-child-title">${e.title||e.id}</span>
     ${r}
-  </button>`}function Ds(e,t){let r=e.total||0,n=!!t.expanded,s=t.trailing??"",o=typeof t.empty_label=="string"&&t.empty_label.length>0?t.empty_label:null;if(r===0&&o===null)return"";let a=Array.isArray(e.children)?e.children:[],l=r>0?a.slice().sort(ll):a;return i`
+  </button>`}function Ws(e,t){let r=e.total||0,n=!!t.expanded,s=t.trailing??"",o=typeof t.empty_label=="string"&&t.empty_label.length>0?t.empty_label:null;if(r===0&&o===null)return"";let a=Array.isArray(e.children)?e.children:[],i=r>0?a.slice().sort(fl):a;return l`
     <div class="board-card__roll">
       <div class="board-card__roll-meta">
-        ${r>0?qp(t.parent_id,e.count,r,n,t.onToggle):i`<span class="board-card__roll-none">${o}</span>`}
+        ${r>0?Kp(t.parent_id,e.count,r,n,t.onToggle):l`<span class="board-card__roll-none">${o}</span>`}
         ${s}
       </div>
-      ${r>0&&e.current?i`<div class="board-card__roll-current">
+      ${r>0&&e.current?l`<div class="board-card__roll-current">
             └
             <span class="board-card__cur-child"
               >● ${e.current.title||e.current.id}</span
             >
           </div>`:""}
-      ${n&&r>0?i`<div class="board-card__roll-list">
-            ${l.map((c,u)=>Fp(c,u+1,t.childChips?t.childChips(c):null,t.onChildClick))}
+      ${n&&r>0?l`<div class="board-card__roll-list">
+            ${i.map((c,u)=>Vp(c,u+1,t.childChips?t.childChips(c):null,t.onChildClick))}
           </div>`:""}
     </div>
-  `}var jp={spec:"spec",plan:"plan",impl:"impl",pr:"pr",merge:"mrg",close:"mrg"},vl={spec:"spec",plan:"plan",impl:"impl",pr:"pr",merge:"merge",close:"close"},yl={quick_fix:["impl","close"],spec_backed:["spec","impl","pr","merge"],full_plan:["spec","plan","impl","pr","merge"]},Bp={review:"\u2713",skip:"\u2298"},Mr={none:"\uBBF8\uB3C4\uB2EC",dim:"\uC9C4\uD589 \uC911",stale:"\uC7AC\uAC80\uD1A0 \uD544\uC694",review:"\uAC80\uD1A0 \uC644\uB8CC",skip:"\uAC80\uD1A0 \uC0DD\uB7B5",done:"\uC644\uB8CC"};function Up(e,t,r){if(!(r==="in_progress"||r==="resolved"))return null;for(let s of e){let o=t[s];if(o&&o.fill==="dim"&&o.stale!==!0)return s}return null}function wl(e){let t=e&&e.fill||"none";return t==="none"?Mr.none:e&&e.stale===!0?Mr.stale:t==="dim"?Mr.dim:e&&e.glyph==="review"?Mr.review:e&&e.glyph==="skip"?Mr.skip:Mr.done}function Wp(e){if(!e||e.fill==="none"||!e.approval_state)return wl(e);let t=[];return e.glyph==="review"?t.push(Mr.review):e.glyph==="skip"&&t.push(Mr.skip),e.approval_state==="missing"?t.push("\uC2B9\uC778 \uD544\uC694"):e.approval_state==="stale"?t.push("\uC7AC\uC2B9\uC778 \uD544\uC694"):e.approval_state==="unknown"?t.push("\uC2B9\uC778 \uD655\uC778 \uBD88\uAC00"):t.push("\uC2B9\uC778 \uC644\uB8CC"),t.join(" \xB7 ")}function zp(e,t,r){let n=jp[e]||e,s=t&&t.fill||"none",o=!!t&&t.stale===!0,a=Bp[t&&t.glyph||""]||"",l="bar";s==="dim"?l+=` b-${n} dim`:s==="full"&&(l+=` b-${n} full`),o&&(l+=" stale"),r&&(l+=" cur");let c=s==="none"?"lbl":`lbl l-${n} on`,u=r?`color: var(--stage-${n}-on)`:"";return i`
+  `}var Yp={spec:"spec",plan:"plan",impl:"impl",pr:"pr",merge:"mrg",close:"mrg"},Sl={spec:"spec",plan:"plan",impl:"impl",pr:"pr",merge:"merge",close:"close"},Al={quick_fix:["impl","close"],spec_backed:["spec","impl","pr","merge"],full_plan:["spec","plan","impl","pr","merge"]},Zp={review:"\u2713",skip:"\u2298"},Lr={none:"\uBBF8\uB3C4\uB2EC",dim:"\uC9C4\uD589 \uC911",stale:"\uC7AC\uAC80\uD1A0 \uD544\uC694",review:"\uAC80\uD1A0 \uC644\uB8CC",skip:"\uAC80\uD1A0 \uC0DD\uB7B5",done:"\uC644\uB8CC"};function Qp(e,t,r){if(!(r==="in_progress"||r==="resolved"))return null;for(let s of e){let o=t[s];if(o&&o.fill==="dim"&&o.stale!==!0)return s}return null}function El(e){let t=e&&e.fill||"none";return t==="none"?Lr.none:e&&e.stale===!0?Lr.stale:t==="dim"?Lr.dim:e&&e.glyph==="review"?Lr.review:e&&e.glyph==="skip"?Lr.skip:Lr.done}function Xp(e){if(!e||e.fill==="none"||!e.approval_state)return El(e);let t=[];return e.glyph==="review"?t.push(Lr.review):e.glyph==="skip"&&t.push(Lr.skip),e.approval_state==="missing"?t.push("\uC2B9\uC778 \uD544\uC694"):e.approval_state==="stale"?t.push("\uC7AC\uC2B9\uC778 \uD544\uC694"):e.approval_state==="unknown"?t.push("\uC2B9\uC778 \uD655\uC778 \uBD88\uAC00"):t.push("\uC2B9\uC778 \uC644\uB8CC"),t.join(" \xB7 ")}function Jp(e,t,r){let n=Yp[e]||e,s=t&&t.fill||"none",o=!!t&&t.stale===!0,a=Zp[t&&t.glyph||""]||"",i="bar";s==="dim"?i+=` b-${n} dim`:s==="full"&&(i+=` b-${n} full`),o&&(i+=" stale"),r&&(i+=" cur");let c=s==="none"?"lbl":`lbl l-${n} on`,u=r?`color: var(--stage-${n}-on)`:"";return l`
     <div class="seg">
-      <div class=${l} style=${u}>${a}</div>
+      <div class=${i} style=${u}>${a}</div>
       <div class=${c}>
-        ${vl[e]||e}
+        ${Sl[e]||e}
       </div>
     </div>
-  `}function Ns(e,t){if(!e||!e.stages)return"";let r=yl[e.route]||yl.spec_backed,n=e.stages,s=Up(r,n,String(t||"open")),o=`\uC6CC\uD06C\uD50C\uB85C\uC6B0 \uC9C4\uD589: ${r.map(a=>`${vl[a]||a} ${a==="plan"?Wp(n[a]||{}):wl(n[a]||{})}`).join(" \xB7 ")}`;return i`
+  `}function vn(e,t){if(!e||!e.stages)return"";let r=Al[e.route]||Al.spec_backed,n=e.stages,s=Qp(r,n,String(t||"open")),o=`\uC6CC\uD06C\uD50C\uB85C\uC6B0 \uC9C4\uD589: ${r.map(a=>`${Sl[a]||a} ${a==="plan"?Xp(n[a]||{}):El(n[a]||{})}`).join(" \xB7 ")}`;return l`
     <div class="stp" role="img" aria-label=${o}>
-      ${r.map(a=>zp(a,n[a]||{},a===s))}
+      ${r.map(a=>Jp(a,n[a]||{},a===s))}
     </div>
-  `}function Hp(e){return typeof e!="number"||!Number.isFinite(e)?"":`P${Math.max(0,Math.min(4,e))}`}var kl=2;function Gp(e){if(!e)return[];let t=[];if(e.external){let n=e.reason?`\u23F8 blocked: ${e.reason}`:"\u23F8 blocked";t.push(i`<span class="ctl-chip ctl-chip--blocked">${n}</span>`)}let r=Array.isArray(e.blockers)?e.blockers:[];if(r.length>0){let n=r.slice(0,kl).join(", "),s=r.length-kl,o=`\u26D3 blocked: ${n}${s>0?` +${s}`:""}`;t.push(i`<span class="ctl-chip ctl-chip--blocked-dep">${o}</span>`)}return t}function Ko(e){return e==="delegated"?"\uC704\uC784":e==="main"?"\uBA54\uC778":null}function $l(e){return e.effort?`${e.actor}:${e.effort}`:e.actor}function en(e){return`${e.kind}:${$l(e)}@${e.sha}`}function qs(e,t){if(!e)return null;let r=Ko(e.kind),n=e.reason,s=e.kind==="delegated"?n===null:typeof n=="string"&&n.trim().length>0&&!/[\r\n]/.test(n);if(!r||!s)return null;let o=Ko(t?.kind),a=o!==null&&t?.kind!==e.kind,l=`\uACC4\uD68D \xB7 ${r}${a?` \u2192 ${o}`:""}`,c=`planned_execution ${e.kind}${typeof n=="string"?`:${n}`:""}`,u=t?` \xB7 exec_receipt ${en(t)}`:"";return{kind:e.kind,label:l,title:`${c}${u}`}}function xl(e,t){let r=qs(e,t);return r?i`<span
+  `}function ef(e){return typeof e!="number"||!Number.isFinite(e)?"":`P${Math.max(0,Math.min(4,e))}`}var Tl=2;function tf(e){if(!e)return[];let t=[];if(e.external){let n=e.reason?`\u23F8 blocked: ${e.reason}`:"\u23F8 blocked";t.push(l`<span class="ctl-chip ctl-chip--blocked">${n}</span>`)}let r=Array.isArray(e.blockers)?e.blockers:[];if(r.length>0){let n=r.slice(0,Tl).join(", "),s=r.length-Tl,o=`\u26D3 blocked: ${n}${s>0?` +${s}`:""}`;t.push(l`<span class="ctl-chip ctl-chip--blocked-dep">${o}</span>`)}return t}function ta(e){return e==="delegated"?"\uC704\uC784":e==="main"?"\uBA54\uC778":null}function Cl(e){return e.effort?`${e.actor}:${e.effort}`:e.actor}function Jr(e){return`${e.kind}:${Cl(e)}@${e.sha}`}function zs(e,t){if(!e)return null;let r=ta(e.kind),n=e.reason,s=e.kind==="delegated"?n===null:typeof n=="string"&&n.trim().length>0&&!/[\r\n]/.test(n);if(!r||!s)return null;let o=ta(t?.kind),a=o!==null&&t?.kind!==e.kind,i=`\uACC4\uD68D \xB7 ${r}${a?` \u2192 ${o}`:""}`,c=`planned_execution ${e.kind}${typeof n=="string"?`:${n}`:""}`,u=t?` \xB7 exec_receipt ${Jr(t)}`:"";return{kind:e.kind,label:i,title:`${c}${u}`}}function Rl(e,t){let r=zs(e,t);return r?l`<span
         class="ctl-chip ctl-chip--planned"
         data-kind=${r.kind}
         title=${r.title}
         >${r.label}</span
-      >`:null}function Vp(e){if(!e)return null;let t=Ko(e.kind);return t?i`<span
+      >`:null}function rf(e){if(!e)return null;let t=ta(e.kind);return t?l`<span
     class="ctl-chip ctl-chip--exec-receipt"
-    title=${`exec_receipt ${en(e)}`}
+    title=${`exec_receipt ${Jr(e)}`}
     >${`\uC2E4\uD589 \xB7 ${t}`}</span
-  >`:null}function Kp(e,t){let r=t.policy||null,n=e.workflow&&e.workflow.chips||{},s=[];if(n.route&&Or(r,"route")){let l=n.route_source==="derived";s.push(i`<span
-        class="ctl-chip ctl-chip--route${l?" is-derived":""}"
-        title=${l?"route \uBBF8\uD540 (metadata unset)":"route"}
-        >${l?"unset":n.route}</span
-      >`)}if(n.fast_track&&Or(r,"fast_track")&&s.push(i`<span class="ctl-chip ctl-chip--ft">⚡ fast_track</span>`),n.pr&&Or(r,"pr")){let l=n.pr.number;s.push(i`<span class="ctl-chip ctl-chip--pr"
-        >${`PR${l!=null?` #${l}`:""}`}</span
-      >`)}let o=xl(n.planned_execution,n.exec_receipt);if(o&&s.push(o),n.exec_receipt){let l=n.exec_receipt;s.push(i`<span
+  >`:null}function nf(e,t){let r=t.policy||null,n=e.workflow&&e.workflow.chips||{},s=[];if(n.route&&Ir(r,"route")){let i=n.route_source==="derived";s.push(l`<span
+        class="ctl-chip ctl-chip--route${i?" is-derived":""}"
+        title=${i?"route \uBBF8\uD540 (metadata unset)":"route"}
+        >${i?"unset":n.route}</span
+      >`)}if(n.fast_track&&Ir(r,"fast_track")&&s.push(l`<span class="ctl-chip ctl-chip--ft">⚡ fast_track</span>`),n.pr&&Ir(r,"pr")){let i=n.pr.number;s.push(l`<span class="ctl-chip ctl-chip--pr"
+        >${`PR${i!=null?` #${i}`:""}`}</span
+      >`)}let o=Rl(n.planned_execution,n.exec_receipt);if(o&&s.push(o),n.exec_receipt){let i=n.exec_receipt;s.push(l`<span
         class="ctl-chip ctl-chip--exec-receipt"
-        title=${`exec_receipt ${en(l)}`}
-        >${`exec ${l.kind==="delegated"?$l(l):`main:${l.actor}`} \xB7 ${l.sha.slice(0,7)}`}</span
-      >`)}if(n.impl_entry){let l=n.impl_entry;s.push(i`<span
+        title=${`exec_receipt ${Jr(i)}`}
+        >${`exec ${i.kind==="delegated"?Cl(i):`main:${i.actor}`} \xB7 ${i.sha.slice(0,7)}`}</span
+      >`)}if(n.impl_entry){let i=n.impl_entry;s.push(l`<span
         class="ctl-chip ctl-chip--impl-entry"
-        title=${`impl_entry ${l.actor}@${l.sha}`}
-        >${`impl ${l.actor} \xB7 ${l.sha.slice(0,7)}`}</span
-      >`)}for(let l of Ps(e.labels,r))s.push(i`<span class="ctl-chip ctl-chip--label">${l}</span>`);return e.from_id&&Or(r,"from")&&s.push(i`<button
+        title=${`impl_entry ${i.actor}@${i.sha}`}
+        >${`impl ${i.actor} \xB7 ${i.sha.slice(0,7)}`}</span
+      >`)}for(let i of xl(e.labels,r))s.push(l`<span class="ctl-chip ctl-chip--label">${i}</span>`);return e.from_id&&Ir(r,"from")&&s.push(l`<button
         type="button"
         class="ctl-chip ctl-chip--from"
         title=${`\uCD9C\uCC98 ${e.from_id} \uC5F4\uAE30`}
-        @click=${l=>{l.stopPropagation(),t.onFromChipClick&&t.onFromChipClick(l,String(e.from_id))}}
+        @click=${i=>{i.stopPropagation(),t.onFromChipClick&&t.onFromChipClick(i,String(e.from_id))}}
       >
         ↩ from ${e.from_id}
-      </button>`),Or(r,"blocked")&&s.push(...Gp(e.blocked_info)),t.cleanupFailureFor&&t.cleanupFailureFor(e.id)&&Or(r,"blocked")&&s.push(i`<span class="ctl-chip ctl-chip--cleanup">⚠ 정리 멈춤</span>`),s.length===0?"":i`<div class="board-card__chips">${s}</div>`}function Yp(e){let t=Gt(e.created_at),r=Gt(e.updated_at);return!t&&!r?"":i`<span class="board-card__times">
-    ${t?i`<span
+      </button>`),Ir(r,"blocked")&&s.push(...tf(e.blocked_info)),t.cleanupFailureFor&&t.cleanupFailureFor(e.id)&&Ir(r,"blocked")&&s.push(l`<span class="ctl-chip ctl-chip--cleanup">⚠ 정리 멈춤</span>`),s.length===0?"":l`<div class="board-card__chips">${s}</div>`}function sf(e){let t=ir(e.created_at),r=ir(e.updated_at);return!t&&!r?"":l`<span class="board-card__times">
+    ${t?l`<span
           class="board-card__time"
-          title=${`\uC0DD\uC131 ${It(e.created_at)}`}
+          title=${`\uC0DD\uC131 ${Ht(e.created_at)}`}
           >생성 ${t}</span
         >`:""}
-    ${t&&r?i`<span class="board-card__time-sep">·</span>`:""}
-    ${r?i`<span
+    ${t&&r?l`<span class="board-card__time-sep">·</span>`:""}
+    ${r?l`<span
           class="board-card__time"
-          title=${`\uC218\uC815 ${It(e.updated_at)}`}
+          title=${`\uC218\uC815 ${Ht(e.updated_at)}`}
           >수정 ${r}</span
         >`:""}
-  </span>`}function Zp(e,t){let r=t.rollupFor?t.rollupFor(e.id):{total:0,count:0,current:null,children:[]};return Ds(r,{parent_id:e.id,expanded:t.isExpanded?t.isExpanded(e.id):!0,trailing:Yp(e),empty_label:"children \uC5C6\uC74C",childChips:Yo,onToggle:n=>t.onRollupToggle&&t.onRollupToggle(n,e.id),onChildClick:(n,s)=>t.onChildClick&&t.onChildClick(n,s)})}function Yo(e){let t=e?.workflow?.chips?.planned_execution,r=e?.workflow?.chips?.exec_receipt;return qs(t,r)?i`<span class="board-card__roll-child-chips">
-    ${xl(t,r)}
-    ${Vp(r)}
-  </span>`:null}function Fs(e,t){let r=Hp(e.priority);return i`
+  </span>`}function of(e,t){let r=t.rollupFor?t.rollupFor(e.id):{total:0,count:0,current:null,children:[]};return Ws(r,{parent_id:e.id,expanded:t.isExpanded?t.isExpanded(e.id):!0,trailing:sf(e),empty_label:"children \uC5C6\uC74C",childChips:ra,onToggle:n=>t.onRollupToggle&&t.onRollupToggle(n,e.id),onChildClick:(n,s)=>t.onChildClick&&t.onChildClick(n,s)})}function ra(e){let t=e?.workflow?.chips?.planned_execution,r=e?.workflow?.chips?.exec_receipt;return zs(t,r)?l`<span class="board-card__roll-child-chips">
+    ${Rl(t,r)}
+    ${rf(r)}
+  </span>`:null}function Hs(e,t){let r=ef(e.priority);return l`
     <article
       class="board-card"
       data-issue-id=${e.id}
@@ -111,14 +111,14 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
         >
           ${e.id}
         </button>
-        ${r?i`<span class="board-card__pri">${r}</span>`:""}
+        ${r?l`<span class="board-card__pri">${r}</span>`:""}
       </div>
       <div class="board-card__title">${e.title||"(\uC81C\uBAA9 \uC5C6\uC74C)"}</div>
-      ${Kp(e,t)}
-      ${e.workflow&&Or(t.policy||null,"stepper")?Ns(e.workflow,e.status):""}
-      ${Zp(e,t)}
+      ${nf(e,t)}
+      ${e.workflow&&Ir(t.policy||null,"stepper")?vn(e.workflow,e.status):""}
+      ${of(e,t)}
     </article>
-  `}function yn(e,t){let r=Array.isArray(e.items)?e.items.length:0,n=e.is_closed===!0;return i`
+  `}function wn(e,t){let r=Array.isArray(e.items)?e.items.length:0,n=e.is_closed===!0;return l`
     <section class=${n?"board-column board-column--closed":"board-column"} id=${e.id}>
       <header
         class="board-column__header"
@@ -132,12 +132,12 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
             >${r}</span
           >
         </div>
-        ${n?i`<select
+        ${n?l`<select
               class="board-column__closed-range"
               aria-label="Closed period"
               @change=${t.onClosedRangeChange}
             >
-              ${gr.map(o=>i`<option
+              ${Rr.map(o=>l`<option
                     value=${o.value}
                     ?selected=${o.value===e.closed_range}
                   >
@@ -150,10 +150,10 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
         role="list"
         aria-labelledby=${e.id+"-header"}
       >
-        ${e.items.map(o=>Fs(o,t))}
+        ${e.items.map(o=>Hs(o,t))}
       </div>
     </section>
-  `}function Al(e,t,r){return i`
+  `}function Il(e,t,r){return l`
     <dialog
       id="deferred-popup"
       class="deferred-popup"
@@ -182,11 +182,11 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
           role="list"
           aria-labelledby="deferred-popup-title"
         >
-          ${e.items.length===0?i`<div class="deferred-popup__empty">Deferred 이슈 없음</div>`:e.items.map(n=>Fs(n,t))}
+          ${e.items.length===0?l`<div class="deferred-popup__empty">Deferred 이슈 없음</div>`:e.items.map(n=>Hs(n,t))}
         </div>
       </div>
     </dialog>
-  `}var Xp=[{value:"",label:"\uC6B0\uC120\uC21C\uC704"},{value:"0",label:"P0"},{value:"1",label:"P1"},{value:"2",label:"P2"},{value:"3",label:"P3"},{value:"4",label:"P4"}],Qp=[{value:"",label:"\uD0C0\uC785"},{value:"bug",label:"bug"},{value:"feature",label:"feature"},{value:"task",label:"task"},{value:"epic",label:"epic"},{value:"chore",label:"chore"}],Jp=[{value:"created_desc",label:"\uC0DD\uC131 \uCD5C\uC2E0\uC21C"},{value:"created_asc",label:"\uC0DD\uC131 \uC624\uB798\uB41C\uC21C"},{value:"updated_desc",label:"\uC218\uC815 \uCD5C\uC2E0\uC21C"},{value:"priority",label:"\uC6B0\uC120\uC21C\uC704\uC21C"},{value:"manual",label:"\uC218\uB3D9(\uB4DC\uB798\uADF8)"}];function ef(e,t,r){let n=e.labels.length,s=n>0?`\uB77C\uBCA8 ${n}`:"\uB77C\uBCA8";return i`
+  `}var af=[{value:"",label:"\uC6B0\uC120\uC21C\uC704"},{value:"0",label:"P0"},{value:"1",label:"P1"},{value:"2",label:"P2"},{value:"3",label:"P3"},{value:"4",label:"P4"}],lf=[{value:"",label:"\uD0C0\uC785"},{value:"bug",label:"bug"},{value:"feature",label:"feature"},{value:"task",label:"task"},{value:"epic",label:"epic"},{value:"chore",label:"chore"}],cf=[{value:"created_desc",label:"\uC0DD\uC131 \uCD5C\uC2E0\uC21C"},{value:"created_asc",label:"\uC0DD\uC131 \uC624\uB798\uB41C\uC21C"},{value:"updated_desc",label:"\uC218\uC815 \uCD5C\uC2E0\uC21C"},{value:"priority",label:"\uC6B0\uC120\uC21C\uC704\uC21C"},{value:"manual",label:"\uC218\uB3D9(\uB4DC\uB798\uADF8)"}];function uf(e,t,r){let n=e.labels.length,s=n>0?`\uB77C\uBCA8 ${n}`:"\uB77C\uBCA8";return l`
     <div class="board-filter__labels">
       <button
         type="button"
@@ -197,8 +197,8 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
       >
         ${s} ▾
       </button>
-      ${r.label_menu_open?i`<div class="board-filter__label-menu" role="group">
-            ${r.label_options.length===0?i`<div class="board-filter__label-empty">라벨 없음</div>`:r.label_options.map(o=>i`<label class="board-filter__label-row">
+      ${r.label_menu_open?l`<div class="board-filter__label-menu" role="group">
+            ${r.label_options.length===0?l`<div class="board-filter__label-empty">라벨 없음</div>`:r.label_options.map(o=>l`<label class="board-filter__label-row">
                       <input
                         type="checkbox"
                         .checked=${e.labels.includes(o)}
@@ -206,7 +206,7 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
                       />
                       <span>${o}</span>
                     </label>`)}
-            ${n>0?i`<button
+            ${n>0?l`<button
                   type="button"
                   class="board-filter__label-clear"
                   @click=${t.onLabelClear}
@@ -215,7 +215,7 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
                 </button>`:""}
           </div>`:""}
     </div>
-  `}function Sl(e,t,r){return i`
+  `}function Ll(e,t,r){return l`
     <div class="board-filter">
       <input
         class="board-filter__search"
@@ -230,7 +230,7 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
         aria-label="우선순위 필터"
         @change=${t.onPriorityChange}
       >
-        ${Xp.map(n=>i`<option
+        ${af.map(n=>l`<option
               value=${n.value}
               ?selected=${e.priority===n.value}
             >
@@ -242,14 +242,14 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
         aria-label="타입 필터"
         @change=${t.onTypeChange}
       >
-        ${Qp.map(n=>i`<option
+        ${lf.map(n=>l`<option
               value=${n.value}
               ?selected=${e.type===n.value}
             >
               ${n.label}
             </option>`)}
       </select>
-      ${ef(e,t,r)}
+      ${uf(e,t,r)}
       <span class="board-filter__spacer"></span>
       <button
         type="button"
@@ -265,7 +265,7 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
         aria-label="정렬 규칙"
         @change=${t.onSortChange}
       >
-        ${Jp.map(n=>i`<option
+        ${cf.map(n=>l`<option
               value=${n.value}
               ?selected=${r.sort_mode===n.value}
             >
@@ -280,68 +280,68 @@ var dp=Object.create;var Do=Object.defineProperty;var pp=Object.getOwnPropertyDe
         + 새 이슈
       </button>
     </div>
-  `}var tf=200,rf={"ready-col":"open","in-progress-col":"in_progress","resolved-col":"resolved","closed-col":"closed"},nf=new Set(["blocked-col","ready-col","in-progress-col","resolved-col"]),El="beads-ui.board.sort",Tl=new Set(["created_desc","created_asc","updated_desc","priority","manual"]);function sf(){try{let e=window.localStorage.getItem(El);if(e&&Tl.has(e))return e}catch{}return"created_desc"}function Cl(e,t){let r=yt("views:board"),n=t.gotoIssue,s=t.issueStores,o=t.transport,a=t.uiOrderStore,l=t.displayPolicyStore,c=t.workerQueueStore,u=t.onClosedRangeChange,d=t.onNewIssue,f=t.closedRange||Ht,g=s?Cs(s,a):null,x=Os({transport:o,uiOrderStore:a}),A=[],L=[],z=[],ae=[],se=[],q=[],N=!1,I=0,j=sf(),m=new Map,E=new Map,Y=new Map,ue=new Set,oe={search:"",priority:"",type:"",labels:[]},de=!1,Ue=null;function et(W){return String(W.status||"open")==="open"}function qe(W){let re=String(W.status||"open");return re==="open"||re==="blocked"}function X(W){let re=oe.search.trim().toLowerCase(),be=oe.priority,k=oe.type,S=oe.labels;return W.filter(O=>{if(re){let J=String(O.id||"").toLowerCase(),Te=String(O.title||"").toLowerCase();if(!J.includes(re)&&!Te.includes(re))return!1}if(be!==""&&String(O.priority)!==be||k!==""&&String(O.issue_type||"")!==k)return!1;if(S.length>0){let J=Array.isArray(O.labels)?O.labels:[];if(!S.some(Te=>J.includes(Te)))return!1}return!0})}function te(){let W=new Set;for(let re of[A,L,z,ae,se,q])for(let be of re){let k=Array.isArray(be.labels)?be.labels:[];for(let S of k)typeof S=="string"&&S.length>0&&W.add(S)}return Array.from(W).sort()}function Ae(){return oe.search.trim()!==""||oe.priority!==""||oe.type!==""||oe.labels.length>0}function _e(){try{if(g){let W=g.selectBoardColumn("tab:board:in-progress","in_progress",j),re=g.selectBoardColumn("tab:board:blocked","blocked",j).filter(qe),be=new Set(W.map(je=>je.id)),k=g.selectBoardColumn("tab:board:ready","ready",j).filter(je=>et(je)&&!be.has(je.id)),S=g.selectBoardColumn("tab:board:resolved","resolved",j),O=g.selectBoardColumn("tab:board:deferred","deferred",j),J=g.selectBoardColumn("tab:board:closed","closed").slice(0,tf),Te=[...re,...k,...W,...S,...J];Pe(Te);let ye=new Set;for(let je of Te)je&&je.id&&!Rs(je)&&ye.add(je.id);let Ce=!Ae();A=Ce?Dn(re,ye):re,L=Ce?Dn(k,ye):k,z=Ce?Dn(W,ye):W,ae=Ce?Dn(S,ye):S,se=O,I=O.length,q=Ce?Dn(J,ye):J,m=new Map;for(let je of A)m.set(je.id,"open");for(let je of L)m.set(je.id,"open");for(let je of z)m.set(je.id,"in_progress");for(let je of ae)m.set(je.id,"resolved");for(let je of se)m.set(je.id,"deferred");for(let je of q)m.set(je.id,"closed");E=new Map;for(let je of A)E.set(je.id,"blocked-col");for(let je of L)E.set(je.id,"ready-col");for(let je of z)E.set(je.id,"in-progress-col");for(let je of ae)E.set(je.id,"resolved-col");for(let je of q)E.set(je.id,"closed-col")}H()}catch{A=[],L=[],z=[],ae=[],se=[],q=[],Y=new Map,H()}}function Pe(W){Y=Is(W)}function le(W){return Ls(Y,W)}function Me(W){return!ue.has(W)}function Oe(W,re){W.preventDefault(),W.stopPropagation(),ue.has(re)?ue.delete(re):ue.add(re),H()}function He(W,re){W.preventDefault(),W.stopPropagation(),n(re)}function $e(W,re){W.preventDefault(),W.stopPropagation(),n(re)}function Ve(W,re){Ue||n(re)}function it(W,re){W.preventDefault(),W.stopPropagation(),of(re).then(be=>{be&&pe("\uBCF5\uC0AC\uB428","success",1200)})}function Ie(W,re){Ue=re,W.dataTransfer&&(W.dataTransfer.setData("text/plain",re),W.dataTransfer.effectAllowed="move"),W.target.classList.add("board-card--dragging")}function Je(W){W.target.classList.remove("board-card--dragging"),me(),setTimeout(()=>{Ue=null},0)}function G(W){let re=String(W.target.value||"");!re||re===f||(f=re,u&&u(re),H())}function Z(){return l?l.get():null}function xe(W){let re=c?c.get():null,be=re?re.cleanup_failed:null;if(!be||typeof be!="object"||Array.isArray(be))return null;let k=be[W];return!k||typeof k!="object"||Array.isArray(k)?null:k}let De={onCardClick:Ve,onCopyId:it,onDragStart:Ie,onDragEnd:Je,onClosedRangeChange:G,rollupFor:le,isExpanded:Me,onRollupToggle:Oe,onChildClick:He,onFromChipClick:$e,cleanupFailureFor:xe,get policy(){return Z()}};function We(W,re){Ue||(ke(),n(re))}function Ge(W,re){W.preventDefault(),W.stopPropagation(),ke(),n(re)}let ze={...De,onCardClick:We,onChildClick:Ge,onFromChipClick:Ge,get policy(){return Z()}};function ct(W){let re=W.target,be=e.querySelector(".board-filter__labels");re&&be&&be.contains(re)||V()}function pt(W){W.key==="Escape"&&V()}function U(){de||(de=!0,document.addEventListener("mousedown",ct),document.addEventListener("keydown",pt),H())}function V(){de&&(de=!1,document.removeEventListener("mousedown",ct),document.removeEventListener("keydown",pt),H())}function ve(W){W.key==="Escape"&&ke()}function ot(){N||(N=!0,document.addEventListener("keydown",ve),H())}function ke(){N&&(N=!1,document.removeEventListener("keydown",ve),H())}let T={onClose:ke,onOverlayClick(W){W.target===W.currentTarget&&ke()}},M={onSearchInput(W){oe.search=String(W.target.value||""),_e()},onPriorityChange(W){oe.priority=String(W.target.value||""),_e()},onTypeChange(W){oe.type=String(W.target.value||""),_e()},onSortChange(W){let re=String(W.target.value||"");if(!(!Tl.has(re)||re===j)){j=re;try{window.localStorage.setItem(El,re)}catch{}_e()}},onDeferredToggle(){N?ke():ot()},onLabelMenuToggle(){de?V():U()},onLabelToggle(W){let re=oe.labels.indexOf(W);re===-1?oe.labels.push(W):oe.labels.splice(re,1),_e()},onLabelClear(){oe.labels.length!==0&&(oe.labels=[],_e())},onNewIssue(){d&&d()}};function P(){return i`
+  `}var df=200,pf={"ready-col":"open","in-progress-col":"in_progress","resolved-col":"resolved","closed-col":"closed"},ff=new Set(["blocked-col","ready-col","in-progress-col","resolved-col"]),Ol="beads-ui.board.sort",Pl=new Set(["created_desc","created_asc","updated_desc","priority","manual"]);function _f(){try{let e=window.localStorage.getItem(Ol);if(e&&Pl.has(e))return e}catch{}return"created_desc"}function Ml(e,t){let r=Ct("views:board"),n=t.gotoIssue,s=t.issueStores,o=t.transport,a=t.uiOrderStore,i=t.displayPolicyStore,c=t.workerQueueStore,u=t.onClosedRangeChange,d=t.onNewIssue,p=t.closedRange||er,m=s?Ns(s,a):null,v=Bs({transport:o,uiOrderStore:a}),C=[],F=[],H=[],re=[],V=[],q=[],O=!1,P=0,I=_f(),$=new Map,M=new Map,K=new Map,pe=new Set,_e={search:"",priority:"",type:"",labels:[]},me=!1,ae=null;function Ie(B){return String(B.status||"open")==="open"}function Te(B){let te=String(B.status||"open");return te==="open"||te==="blocked"}function ne(B){let te=_e.search.trim().toLowerCase(),ve=_e.priority,y=_e.type,R=_e.labels;return B.filter(W=>{if(te){let oe=String(W.id||"").toLowerCase(),Ce=String(W.title||"").toLowerCase();if(!oe.includes(te)&&!Ce.includes(te))return!1}if(ve!==""&&String(W.priority)!==ve||y!==""&&String(W.issue_type||"")!==y)return!1;if(R.length>0){let oe=Array.isArray(W.labels)?W.labels:[];if(!R.some(Ce=>oe.includes(Ce)))return!1}return!0})}function se(){let B=new Set;for(let te of[C,F,H,re,V,q])for(let ve of te){let y=Array.isArray(ve.labels)?ve.labels:[];for(let R of y)typeof R=="string"&&R.length>0&&B.add(R)}return Array.from(B).sort()}function we(){return _e.search.trim()!==""||_e.priority!==""||_e.type!==""||_e.labels.length>0}function A(){try{if(m){let B=m.selectBoardColumn("tab:board:in-progress","in_progress",I),te=m.selectBoardColumn("tab:board:blocked","blocked",I).filter(Te),ve=new Set(B.map(Be=>Be.id)),y=m.selectBoardColumn("tab:board:ready","ready",I).filter(Be=>Ie(Be)&&!ve.has(Be.id)),R=m.selectBoardColumn("tab:board:resolved","resolved",I),W=m.selectBoardColumn("tab:board:deferred","deferred",I),oe=m.selectBoardColumn("tab:board:closed","closed").slice(0,df),Ce=[...te,...y,...B,...R,...oe];ue(Ce);let Ae=new Set;for(let Be of Ce)Be&&Be.id&&!qs(Be)&&Ae.add(Be.id);let Me=!we();C=Me?Bn(te,Ae):te,F=Me?Bn(y,Ae):y,H=Me?Bn(B,Ae):B,re=Me?Bn(R,Ae):R,V=W,P=W.length,q=Me?Bn(oe,Ae):oe,$=new Map;for(let Be of C)$.set(Be.id,"open");for(let Be of F)$.set(Be.id,"open");for(let Be of H)$.set(Be.id,"in_progress");for(let Be of re)$.set(Be.id,"resolved");for(let Be of V)$.set(Be.id,"deferred");for(let Be of q)$.set(Be.id,"closed");M=new Map;for(let Be of C)M.set(Be.id,"blocked-col");for(let Be of F)M.set(Be.id,"ready-col");for(let Be of H)M.set(Be.id,"in-progress-col");for(let Be of re)M.set(Be.id,"resolved-col");for(let Be of q)M.set(Be.id,"closed-col")}Ye()}catch{C=[],F=[],H=[],re=[],V=[],q=[],K=new Map,Ye()}}function ue(B){K=Fs(B)}function E(B){return js(K,B)}function D(B){return!pe.has(B)}function ce(B,te){B.preventDefault(),B.stopPropagation(),pe.has(te)?pe.delete(te):pe.add(te),Ye()}function $e(B,te){B.preventDefault(),B.stopPropagation(),n(te)}function ge(B,te){B.preventDefault(),B.stopPropagation(),n(te)}function Oe(B,te){ae||n(te)}function _t(B,te){B.preventDefault(),B.stopPropagation(),mf(te).then(ve=>{ve&&he("\uBCF5\uC0AC\uB428","success",1200)})}function He(B,te){ae=te,B.dataTransfer&&(B.dataTransfer.setData("text/plain",te),B.dataTransfer.effectAllowed="move"),B.target.classList.add("board-card--dragging")}function pt(B){B.target.classList.remove("board-card--dragging"),gt(),setTimeout(()=>{ae=null},0)}function tt(B){let te=String(B.target.value||"");!te||te===p||(p=te,u&&u(te),Ye())}function Y(){return i?i.get():null}function Z(B){let te=c?c.get():null,ve=te?te.cleanup_failed:null;if(!ve||typeof ve!="object"||Array.isArray(ve))return null;let y=ve[B];return!y||typeof y!="object"||Array.isArray(y)?null:y}let Se={onCardClick:Oe,onCopyId:_t,onDragStart:He,onDragEnd:pt,onClosedRangeChange:tt,rollupFor:E,isExpanded:D,onRollupToggle:ce,onChildClick:$e,onFromChipClick:ge,cleanupFailureFor:Z,get policy(){return Y()}};function Ze(B,te){ae||(ee(),n(te))}function je(B,te){B.preventDefault(),B.stopPropagation(),ee(),n(te)}let rt={...Se,onCardClick:Ze,onChildClick:je,onFromChipClick:je,get policy(){return Y()}};function Qe(B){let te=B.target,ve=e.querySelector(".board-filter__labels");te&&ve&&ve.contains(te)||T()}function yt(B){B.key==="Escape"&&T()}function Le(){me||(me=!0,document.addEventListener("mousedown",Qe),document.addEventListener("keydown",yt),Ye())}function T(){me&&(me=!1,document.removeEventListener("mousedown",Qe),document.removeEventListener("keydown",yt),Ye())}function Q(B){B.key==="Escape"&&ee()}function Ee(){O||(O=!0,document.addEventListener("keydown",Q),Ye())}function ee(){O&&(O=!1,document.removeEventListener("keydown",Q),Ye())}let Ne={onClose:ee,onOverlayClick(B){B.target===B.currentTarget&&ee()}},et={onSearchInput(B){_e.search=String(B.target.value||""),A()},onPriorityChange(B){_e.priority=String(B.target.value||""),A()},onTypeChange(B){_e.type=String(B.target.value||""),A()},onSortChange(B){let te=String(B.target.value||"");if(!(!Pl.has(te)||te===I)){I=te;try{window.localStorage.setItem(Ol,te)}catch{}A()}},onDeferredToggle(){O?ee():Ee()},onLabelMenuToggle(){me?T():Le()},onLabelToggle(B){let te=_e.labels.indexOf(B);te===-1?_e.labels.push(B):_e.labels.splice(te,1),A()},onLabelClear(){_e.labels.length!==0&&(_e.labels=[],A())},onNewIssue(){d&&d()}};function st(){return l`
       <div class="board-view">
-        ${Sl(oe,M,{sort_mode:j,deferred_popup_open:N,deferred_count:I,label_options:te(),label_menu_open:de})}
+        ${Ll(_e,et,{sort_mode:I,deferred_popup_open:O,deferred_count:P,label_options:se(),label_menu_open:me})}
         <div class="board-root">
-          ${yn({title:"Blocked",id:"blocked-col",items:X(A)},De)}
-          ${yn({title:"Ready",id:"ready-col",items:X(L)},De)}
-          ${yn({title:"In progress",id:"in-progress-col",items:X(z)},De)}
-          ${yn({title:"Resolved",id:"resolved-col",items:X(ae)},De)}
-          ${yn({title:"Closed",id:"closed-col",items:X(q),is_closed:!0,closed_range:f},De)}
+          ${wn({title:"Blocked",id:"blocked-col",items:ne(C)},Se)}
+          ${wn({title:"Ready",id:"ready-col",items:ne(F)},Se)}
+          ${wn({title:"In progress",id:"in-progress-col",items:ne(H)},Se)}
+          ${wn({title:"Resolved",id:"resolved-col",items:ne(re)},Se)}
+          ${wn({title:"Closed",id:"closed-col",items:ne(q),is_closed:!0,closed_range:p},Se)}
         </div>
-        ${N?Al({items:X(se),count:I},ze,T):""}
+        ${O?Il({items:ne(V),count:P},rt,Ne):""}
       </div>
-    `}function H(){Ke(P(),e),ce()}function ce(){try{let W=e.querySelector("#deferred-popup");W&&!W.open&&(typeof W.showModal=="function"?W.showModal():W.setAttribute("open",""));let re=Array.from(e.querySelectorAll(".board-column, .deferred-popup__body"));for(let be of re)Array.from(be.querySelectorAll(".board-card")).forEach((S,O)=>{S.tabIndex=O===0?0:-1})}catch{}}async function y(W,re){if(!o){pe("\uC5F0\uACB0\uB418\uC9C0 \uC54A\uC544 \uC0C1\uD0DC\uB97C \uBCC0\uACBD\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4","error");return}try{await o("update-status",{id:W,status:re}),pe("\uC0C1\uD0DC \uBCC0\uACBD\uB428","success",1500)}catch(be){r("update-status failed: %o",be),pe("\uC0C1\uD0DC \uBCC0\uACBD \uC2E4\uD328","error")}}function C(W){switch(W){case"blocked-col":return A;case"ready-col":return L;case"in-progress-col":return z;case"resolved-col":return ae;default:return[]}}function D(W,re,be){if(!o||!a)return;let k=C(W),S=k.find(Ce=>Ce.id===re);if(!S)return;let O=k.filter(Ce=>Ce.id!==re),J=be.closest?be.closest(".board-card"):null,Te=O.length;if(J){let Ce=J.getAttribute("data-issue-id");if(Ce===re)return;let je=O.findIndex(Tt=>Tt.id===Ce);je>=0&&(Te=je)}let ye=O.slice();ye.splice(Te,0,S),x.applyReorder(re,ye,Te)}function me(){for(let W of Array.from(e.querySelectorAll(".board-column--drag-over")))W.classList.remove("board-column--drag-over")}let fe=null;e.addEventListener("dragover",W=>{W.preventDefault(),W.dataTransfer&&(W.dataTransfer.dropEffect="move");let be=W.target.closest(".board-column");be&&be!==fe&&(fe&&fe.classList.remove("board-column--drag-over"),be.classList.add("board-column--drag-over"),fe=be)}),e.addEventListener("dragleave",W=>{let re=W.relatedTarget;(!re||!e.contains(re))&&fe&&(fe.classList.remove("board-column--drag-over"),fe=null)}),e.addEventListener("drop",W=>{W.preventDefault(),fe&&(fe.classList.remove("board-column--drag-over"),fe=null);let re=W.target,be=re.closest(".board-column");if(!be)return;let k=W.dataTransfer?.getData("text/plain")||"";if(!k)return;let S=be.id,O=E.get(k);if(O&&O===S){if(nf.has(S)){if(j!=="manual"){pe("\uC218\uB3D9(\uB4DC\uB798\uADF8) \uC815\uB82C \uBAA8\uB4DC\uC5D0\uC11C\uB9CC \uC21C\uC11C\uB97C \uBC14\uAFC0 \uC218 \uC788\uC2B5\uB2C8\uB2E4","warning",2e3);return}D(S,k,re)}return}let J=rf[S];if(!J){pe("\uC5EC\uAE30\uB85C\uB294 \uC62E\uAE38 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4","warning",1500);return}m.get(k)!==J&&y(k,J)}),e.addEventListener("keydown",W=>{let re=W.target;if(!(re instanceof HTMLElement))return;let be=String(re.tagName||"").toLowerCase();if(be==="input"||be==="textarea"||be==="select"||be==="button"||be==="a"||re.isContentEditable===!0)return;let k=re.closest(".board-card");if(!k)return;let S=String(W.key||"");if(S==="Enter"||S===" "){W.preventDefault();let ye=k.getAttribute("data-issue-id");ye&&n(ye);return}if(S!=="ArrowUp"&&S!=="ArrowDown"&&S!=="ArrowLeft"&&S!=="ArrowRight")return;W.preventDefault();let O=k.closest(".board-column");if(!O)return;let J=Array.from(O.querySelectorAll(".board-card")),Te=J.indexOf(k);if(S==="ArrowDown"&&Te<J.length-1){Ee(k,J[Te+1]);return}if(S==="ArrowUp"&&Te>0){Ee(k,J[Te-1]);return}if(S==="ArrowLeft"||S==="ArrowRight"){let ye=Array.from(e.querySelectorAll(".board-column")),Ce=ye.indexOf(O),je=S==="ArrowRight"?1:-1,Tt=Ce+je;for(;Tt>=0&&Tt<ye.length;){let ht=ye[Tt].querySelector(".board-card");if(ht){Ee(k,ht);return}Tt+=je}}});function Ee(W,re){try{W.tabIndex=-1,re.tabIndex=0,re.focus()}catch{}}let Fe=null;g&&g.subscribe&&(Fe=g.subscribe(()=>{try{_e()}catch{}}));let Ye=null;l&&l.subscribe&&(Ye=l.subscribe(()=>{try{_e()}catch{}}));let Qe=null;return c&&c.subscribe&&(Qe=c.subscribe(()=>{H()})),{async load(){r("load"),_e()},clear(){V(),ke(),Fe&&(Fe(),Fe=null),Ye&&(Ye(),Ye=null),Qe&&(Qe(),Qe=null),e.replaceChildren(),A=[],L=[],z=[],ae=[],se=[],q=[],m=new Map,E=new Map}}}function Dn(e,t){return e.filter(r=>{let n=Rs(r);return!(n&&t.has(n))})}async function of(e){try{if(navigator.clipboard&&typeof navigator.clipboard.writeText=="function")return await navigator.clipboard.writeText(String(e)),!0;let t=document.createElement("textarea");t.value=String(e),t.style.position="fixed",t.style.left="-9999px",document.body.appendChild(t),t.select();let r=!1;try{r=document.execCommand("copy")}finally{t.remove()}return r}catch{return!1}}async function ir(e){let t=String(e);if(navigator.clipboard&&typeof navigator.clipboard.writeText=="function")try{return await navigator.clipboard.writeText(t),!0}catch{}try{let r=document.createElement("textarea");r.value=t,r.style.position="fixed",r.style.left="-9999px",document.body.appendChild(r),r.select();let n=!1;try{n=document.execCommand("copy")}finally{r.remove()}return n}catch{return!1}}function br(e){return[typeof e.runner=="string"?e.runner:null,typeof e.model=="string"?e.model:null,typeof e.effort=="string"?e.effort:null,e.speed==="fast"?"Fast":null].filter(Boolean).join(" \xB7 ")}function Pr(e){return typeof e.resumed_from!="string"||e.resumed_from.length===0?null:`${e.continuation_mode==="session"?"session \uC774\uC5B4\uBC1B\uC74C":e.continuation_mode==="fresh"?"\uC0C8 session\uC73C\uB85C \uC774\uC5B4\uBC1B\uC74C":"\uC774\uC804 attempt\uC5D0\uC11C \uC774\uC5B4\uBC1B\uC74C"} (from ${e.resumed_from})`}function af(e,t=document){let r=t.createElement("dialog");r.className="continuation-dialog";let n=t.createElement("button"),s=t.createElement("button"),o=t.createElement("button"),a=t.createElement("h2"),l=t.createElement("p");return a.textContent="\uC2E4\uD589 provider\uAC00 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4",l.textContent=`${br(e.prior||{})||"\uC774\uC804 \uC124\uC815"} \u2192 ${br(e.current||{})||"\uD604\uC7AC \uC124\uC815"}`,n.type="button",n.textContent="\uAE30\uC874 session \uC774\uC5B4\uD558\uAE30",n.disabled=e.prior_available===!1,s.type="button",s.textContent="\uD604\uC7AC preset\uC73C\uB85C \uC0C8 session",o.type="button",o.textContent="\uCDE8\uC18C",r.append(a,l,n,s,o),t.body.append(r),new Promise(c=>{let u=d=>{typeof r.close=="function"&&r.close(),r.remove(),c(d)};n.addEventListener("click",()=>u("prior_session")),s.addEventListener("click",()=>u("fresh_current")),o.addEventListener("click",()=>u(null)),r.addEventListener("cancel",d=>{d.preventDefault(),u(null)}),typeof r.showModal=="function"?r.showModal():r.setAttribute("open","")})}async function $r(e,t,r={}){let n=e;for(r.onResult?.(n);n?.continuation_mismatch;){let s=n.continuation_mismatch,o=await af(s);if(o===null)return n;n=await t(o,s.decision_token),r.onResult?.(n),n?.conflict&&r.refresh&&(n=await r.refresh(n),r.onResult?.(n))}return n}var lf=["workflow_mode","spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort","impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed","quick_fix_impl_model","orchestration_model","orchestration_effort","orchestration_speed"],Rl={spec_review_effort:"spec_review_model",plan_review_effort:"plan_review_model",impl_review_effort:"impl_review_model"},cf=new Set(["native-fixed-posture","unsupported","claude-runner-model-default","catalog-validated","provider-tier-or-runtime-model-default","actual-effort"]);function Et(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function wt(e){return typeof e=="string"&&e.length>0?e:null}function vn(e){return e.startsWith("gpt-")?e.slice(4):e}function bt(e,t,r,n,s){return{value:e,source:t,display:r,full_value:n,resolution:s}}function Ll(e,t,r){let n=wt(t[e]);if(n!==null)return{value:n,source:"pin"};let s=wt(r[e]);return s===null?null:{value:s,source:"global"}}function Nn(e,t,r,n){return Ll(e,t,r)||{value:n,source:"base"}}function Zo(e,t,r,n){let s=r?.implementation?.model_catalog;if(t&&Et(s?.[t])){let a=wt(s[t][e]);if(a!==null)return a}if(t&&Array.isArray(s?.[t])&&s[t].includes(e))return e;if(!t&&Et(s)){for(let a of Object.values(s))if(Et(a)){let l=wt(a[e]);if(l!==null)return l}else if(Array.isArray(a)&&a.includes(e))return e}let o=n?.model_index?.[e];return wt(n?.runners?.[o]?.models?.[e]?.id)||e}function uf(e,t){return wt(t?.review?.reviewers?.[e]?.model)||e}function wn(e,t,r=!1){if(e==="default")return bt(e,t,`default (\uC77C\uBC18 \xB7 ${t==="pin"?"\uD540":"\uC804\uC5ED \uACE0\uC815"})`,e,"explicit");let n=r?vn(e):e;return bt(e,t,n,e,"explicit")}function Ol(e,t,r){let n=t?.implementation?.model_catalog?.[e],s=[];Et(n)?s.push(...Object.keys(n)):Array.isArray(n)&&s.push(...n.filter(a=>typeof a=="string"));let o=r?.runners?.[e]?.models;if(Et(o))for(let a of Object.keys(o))s.includes(a)||s.push(a);return s}function df(e,t){let r=[],n=e?.implementation?.model_catalog;Et(n)&&r.push(...Object.keys(n));let s=t?.runners;if(Et(s))for(let o of Object.keys(s))r.includes(o)||r.push(o);return r}function pf(e,t,r){if(e===null)return{runtime:null,offered:!1};let n=!1;for(let s of df(t,r)){let o=Ol(s,t,r);if(o.length>0&&(n=!0),o.includes(e))return{runtime:s,offered:!0}}return{runtime:null,offered:n}}function Xo(e){return bt(e.value,e.source,`${e.value} (\uBE44\uD638\uD658)`,e.value,"incompatible")}function Il(e,t,r){let n=Ll(e,t,r);return n?wn(n.value,n.source):bt(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable")}function hr(e){let t=Et(e.pin)?e.pin:{},r=Et(e.global)?e.global:{},n=Et(e.execution_defaults)?e.execution_defaults:null,s=n?.supported===!0&&Et(n.session)?n.session:null,o=n?.supported===!0&&Et(n.orchestration)?n.orchestration:null,a=Et(e.runner_catalog)?e.runner_catalog:null,l=wt(r.quick_fix_impl_model),c=pf(l,s,a),u={};if(s){let d=Nn("workflow_mode",t,r,wt(s.workflow_mode_default));u.workflow_mode=d.source==="base"?bt(d.value,"base",d.value||"\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",d.value,"default"):wn(d.value,d.source);for(let q of["spec_review","plan_review","impl_review"]){let N=`${q}_model`,I=wt(q==="plan_review"?d.value==="fast_track"?s.plan_review?.fast_track_default:s.plan_review?.standard_recommended:s.review?.default),j=Nn(N,t,r,I);if(j.value===null)u[N]=bt(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable");else if(j.value!=="self"&&j.value!=="skip"&&!Et(s.review?.reviewers?.[j.value]))u[N]=Xo(bt(j.value,j.source,"",null,"explicit"));else{let m=uf(j.value,s);u[N]=bt(j.value,j.source,vn(m),m,j.source==="base"?"default":"explicit")}}for(let[q,N]of Object.entries(Rl)){let I=u[N].value;if(I==="self"||I==="skip"){u[q]=bt(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable");continue}let j=wt(s.review?.reviewers?.[I||""]?.effort),m=Nn(q,t,r,j);u[q]=m.value===null?bt(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable"):bt(m.value,m.source,m.value,m.value,m.source==="base"?"default":"explicit")}let f=Et(s.implementation?.default)?s.implementation.default:{},g=wt(e.route),x=g!==null&&["quick_fix","spec_backed","full_plan"].includes(g),A=Et(s.implementation?.route_defaults)?s.implementation.route_defaults:{},L=x&&Et(A[g])?A[g]:{};for(let q of["impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed"]){let N=Nn(q,t,r,q==="impl_dispatch"?wt(L.dispatch)||wt(f.dispatch):wt(f[q.replace("impl_","")]));u[q]=N.value===null?bt(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable"):bt(N.value,N.source,N.value,N.value,N.source==="base"?"default":"explicit")}let z=wt(t.impl_runtime),ae=z==="inherit"?wt(e.controller_runtime):z,se=g==="quick_fix"&&wt(t.impl_dispatch)===null&&c.runtime!==null&&(z===null||ae===c.runtime);if(se){let q=c.runtime,N=l;u.impl_dispatch=bt("delegated","global","\uC704\uC784 (\uC804\uC5ED quick_fix)","delegated","explicit"),z===null&&(u.impl_runtime=bt(q,"global",`${q} (\uC720\uB3C4)`,q,"explicit")),wt(t.impl_model)===null&&(u.impl_model=bt(N,"global",N,N,"explicit"))}if(u.impl_dispatch.value==="main"){u.impl_dispatch.display="\uBA54\uC778";for(let q of["impl_runtime","impl_model","impl_effort","impl_speed"])u[q]=bt(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable")}else{if(u.impl_dispatch.value==="delegated"&&!se&&(u.impl_dispatch.display="\uC704\uC784"),u.impl_runtime.value==="inherit"&&(u.impl_runtime.display=e.controller_runtime?`inherit (${e.controller_runtime})`:"inherit (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_runtime.resolution="dynamic"),u.impl_model.value!==null){let q=u.impl_runtime.value==="inherit"?wt(e.controller_runtime):u.impl_runtime.value,N=q?Ol(q,s,a):[];if(u.impl_model.value!=="auto"&&N.length>0&&!N.includes(u.impl_model.value))u.impl_model=Xo(u.impl_model);else{let I=Zo(u.impl_model.value,q,s,a);u.impl_model.display=vn(I),u.impl_model.full_value=I}}if(u.impl_effort.value==="auto"){let q=wt(e.transport)||(u.impl_runtime.value==="codex"?"codex-native-spawn":u.impl_runtime.value==="claude"?"implement-claude":null),N=q?wt(s.implementation?.effort_by_transport?.[q]?.auto):null;N&&!cf.has(N)?(u.impl_effort.display=`${N} (\uBE44\uD638\uD658)`,u.impl_effort.full_value=N,u.impl_effort.resolution="incompatible"):(u.impl_effort.display="auto (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_effort.resolution="dynamic")}u.impl_speed.value==="default"&&(u.impl_speed=u.impl_speed.source==="base"?bt("default","base","default (\uC77C\uBC18)","default","default"):wn("default",u.impl_speed.source))}}else for(let d of lf.filter(f=>!f.startsWith("orchestration_")))u[d]=Il(d,t,r);if(!s){for(let[d,f]of Object.entries(Rl))(u[f].value==="self"||u[f].value==="skip")&&(u[d]=bt(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable"));if(u.impl_dispatch.value==="main"){u.impl_dispatch.display="\uBA54\uC778";for(let d of["impl_runtime","impl_model","impl_effort","impl_speed"])u[d]=bt(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable")}else u.impl_dispatch.value==="delegated"&&(u.impl_dispatch.display="\uC704\uC784"),u.impl_runtime.value==="inherit"&&(u.impl_runtime.display=e.controller_runtime?`inherit (${e.controller_runtime})`:"inherit (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_runtime.resolution="dynamic"),u.impl_effort.value==="auto"&&(u.impl_effort.display="auto (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_effort.resolution="dynamic")}for(let d of["orchestration_model","orchestration_effort","orchestration_speed"]){if(!o){u[d]=Il(d,t,r);continue}let f=d.replace("orchestration_",""),g=wt(o[f]),x=Nn(d,t,r,g);if(d==="orchestration_effort"&&x.source==="base"){u[d]=bt(null,"base","CLI \uAE30\uBCF8 (\uBBF8\uC9C0\uC815)",null,"default");continue}if(x.value===null){u[d]=bt(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable");continue}if(d==="orchestration_model"){let A=x.source==="base"?wt(o.model_id)||x.value:Zo(x.value,null,s,a);u[d]=bt(x.value,x.source,vn(A),A,x.source==="base"?"default":"explicit");continue}if(x.value==="default"){u[d]=x.source==="base"?bt("default","base","default (\uC77C\uBC18)","default","default"):wn("default",x.source);continue}u[d]=wn(x.value,x.source)}if(s)if(l===null){let d=u.orchestration_model.full_value;u.quick_fix_impl_model=bt(null,"base",d===null?"\uBA54\uC778":`\uBA54\uC778 (orchestration ${vn(d)})`,null,"default")}else if(c.runtime!==null){let d=Zo(l,c.runtime,s,a);u.quick_fix_impl_model=bt(l,"global",vn(d),d,"explicit")}else c.offered?u.quick_fix_impl_model=Xo(bt(l,"global","",null,"explicit")):u.quick_fix_impl_model=wn(l,"global");return u}function ff(e,t){let r=t&&e.value==="default"?"default (\uC77C\uBC18)":e.display;if(!t||e.source==="pin")return`\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 ${e.display}`;let n=e.source==="global"?"\uC804\uC5ED":"harness";return`\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 ${r} (${n})`}function js(e){let t=Et(e.pin)?e.pin:{},r=Et(e.global)?e.global:{},n=Et(e.resolution_global)?{...e.resolution_global}:{};delete n[e.key];let s=f=>{let g={...n,...f};return hr({pin:e.layer==="pin"?g:t,global:e.layer==="pin"?r:g,execution_defaults:e.execution_defaults,runner_catalog:e.runner_catalog,route:e.route,controller_runtime:e.controller_runtime})},o=e.layer==="pin"?t:r,a={...o};delete a[e.key];let l=s(a)[e.key],c=s(o)[e.key],u=wt(o[e.key]),d=[...e.choices];return u!==null&&!d.includes(u)&&d.unshift(u),{unset_label:ff(l,e.layer==="pin"),full_value:l.full_value,unavailable:l.resolution==="unavailable",disabled:c?.resolution==="not_applicable",options:d.map(f=>{let g=s({...o,[e.key]:f})[e.key];return{value:f,label:g.display,full_value:g.full_value}})}}function kn(e=document){let t=e.createElement("dialog");t.className="resume-instructions-dialog";let r=e.createElement("h2"),n=e.createElement("textarea"),s=e.createElement("div"),o=e.createElement("button"),a=e.createElement("button");return r.textContent="\uC138\uC158 \uC774\uC5B4\uD558\uAE30",n.placeholder="\uCD94\uAC00 \uC9C0\uCE68 (\uC120\uD0DD) \u2014 \uBE44\uC6CC\uB450\uBA74 \uAE30\uBCF8 \uC808\uCC28\uB85C \uC7AC\uAC1C",n.maxLength=4e3,s.className="resume-instructions-dialog__actions",o.type="button",o.textContent="\uC774\uC5B4\uD558\uAE30",a.type="button",a.textContent="\uCDE8\uC18C",s.append(o,a),t.append(r,n,s),e.body.append(t),new Promise(l=>{let c=!1,u=f=>{c||(c=!0,typeof t.close=="function"&&t.close(),t.remove(),l(f))},d=()=>u(n.value.trim());o.addEventListener("click",d),a.addEventListener("click",()=>u(null)),n.addEventListener("keydown",f=>{f.key==="Enter"&&(f.ctrlKey||f.metaKey)&&(f.preventDefault(),d())}),t.addEventListener("cancel",f=>{f.preventDefault(),u(null)}),typeof t.showModal=="function"?t.showModal():t.setAttribute("open",""),n.focus()})}var ql="\uC11C\uBC84 \uC7AC\uC2DC\uC791 \uBCF5\uAD6C \u2014 \uBD80\uBD84 \uC9D1\uACC4";function Lt(e){return typeof e=="number"&&Number.isFinite(e)?e:0}var xr=["input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens"],qn=[...xr,"reasoning_output_tokens"],_f=["implementation","review-consult"];function Qo(e){let t=0;for(let r of xr)t+=Lt(e?.[r]);return t}function mf(e){return!e||typeof e!="object"?!1:xr.some(t=>Number.isFinite(e[t]))}function Ml(e){return!e||typeof e!="object"?!1:qn.some(t=>Number.isFinite(e[t]))}function gf(e){let t={};for(let r of qn)e&&Number.isFinite(e[r])&&(t[r]=e[r]);return t}function Pl(e){let t={};for(let r of qn)Number.isFinite(e[r])&&(t[r]=e[r]);return e.replayed===!0&&(t.replayed=!0),typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)&&(t.total_cost_usd=e.total_cost_usd),t}function Dl(e,t){return e==="codex"?Lt(t.input_tokens)+Lt(t.output_tokens):Qo(t)}function bf(e){return e==="claude"?"Claude":"Codex"}function hf(e){return`\u03C4 ${Fl(e)}`}function yf(e,t){let r=t.breakdown||{},n=[`\uC785\uB825 ${Lt(r.input_tokens).toLocaleString("en-US")}`,`\uCD9C\uB825 ${Lt(r.output_tokens).toLocaleString("en-US")}`];e==="claude"?n.push(`\uCE90\uC2DC\uC77D\uAE30 ${Lt(r.cache_read_input_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC0DD\uC131 ${Lt(r.cache_creation_input_tokens).toLocaleString("en-US")}`):(n.push(`\uCE90\uC2DC\uC77D\uAE30 ${Lt(r.cache_read_input_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC4F0\uAE30 ${Lt(r.cache_creation_input_tokens).toLocaleString("en-US")}`),Number.isFinite(r.reasoning_output_tokens)&&n.push(`\uCD94\uB860\uCD9C\uB825 ${Lt(r.reasoning_output_tokens).toLocaleString("en-US")}`));let o=[e==="claude"?"Claude subtotal = \uC785\uB825 + \uCD9C\uB825 + \uCE90\uC2DC\uC77D\uAE30 + \uCE90\uC2DC\uC0DD\uC131":"Codex subtotal = \uC785\uB825 + \uCD9C\uB825; \uCE90\uC2DC\uC77D\uAE30\xB7\uCE90\uC2DC\uC4F0\uAE30\xB7\uCD94\uB860\uCD9C\uB825\uC740 subtotal\uC5D0 \uD3EC\uD568\uB418\uC9C0 \uC54A\uB294 subset",`\uCD1D ${t.subtotal.toLocaleString("en-US")}`,n.join(" \xB7 ")];return typeof t.total_cost_usd=="number"&&Number.isFinite(t.total_cost_usd)&&o.push(`$${t.total_cost_usd.toFixed(2)}`),t.replayed&&o.push(ql),o.join(`
-`)}function Ot(e){let t=[];if(!e||typeof e!="object"||!("providers"in e)||!e.providers)return t;for(let r of["claude","codex"]){let n=e.providers[r];n&&t.push({provider:r,label:`${bf(r)} ${hf(n.subtotal)}${typeof n.total_cost_usd=="number"&&Number.isFinite(n.total_cost_usd)?` \xB7 $${n.total_cost_usd.toFixed(2)}`:""}`,tooltip:yf(r,n)})}return t}function Us(e){let t={},r={claude:!0,codex:!1},n={claude:0,codex:0};for(let s of e)if(!(!s||!s.providers))for(let o of["claude","codex"]){let a=s.providers[o];if(!a)continue;let l=t[o];l||(l={subtotal:0,breakdown:{}},t[o]=l),l.subtotal+=a.subtotal;for(let c of qn)Number.isFinite(a.breakdown[c])&&(l.breakdown[c]=Lt(l.breakdown[c])+Lt(a.breakdown[c]));a.replayed&&(l.replayed=!0),o==="claude"&&(typeof a.total_cost_usd=="number"&&Number.isFinite(a.total_cost_usd)?n.claude+=a.total_cost_usd:r.claude=!1)}return t.claude&&r.claude&&(t.claude.total_cost_usd=n.claude),Object.keys(t).length===0?null:{providers:t,roles:{}}}function Jo(e){return!e||typeof e!="object"?null:Jt({attempt:{...e,bead_id:"__attempt__"}},"__attempt__")}function vf(e){return e==="codex"?"codex":"claude"}function Dr(){return{subtotal:0,breakdown:gf(null),legs:[],replayed:!1,outer_count:0,outer_cost:0,outer_cost_count:0}}function Bs(e,t,r){e.subtotal+=t.subtotal;for(let n of qn)Number.isFinite(t.usage[n])&&(e.breakdown[n]=Lt(e.breakdown[n])+Lt(t.usage[n]));e.legs.push(t),t.replayed===!0&&(e.replayed=!0),r&&(e.outer_count+=1,typeof t.usage.total_cost_usd=="number"&&Number.isFinite(t.usage.total_cost_usd)&&(e.outer_cost+=t.usage.total_cost_usd,e.outer_cost_count+=1))}function Nl(e,t){let r={subtotal:e.subtotal,breakdown:e.breakdown};return t&&(r.legs=e.legs),e.replayed&&(r.replayed=!0),r}function Fl(e){return e>=1e6?`${(e/1e6).toFixed(1)}M`:e>=1e3?`${(e/1e3).toFixed(1)}k`:String(e)}function $n(e){return mf(e)?`\u03C4 ${Fl(Qo(e))}`:null}function lr(e){let t=$n(e);if(!t)return null;let r=e?.total_cost_usd;return typeof r=="number"&&Number.isFinite(r)?`${t} \xB7 $${r.toFixed(2)}`:t}function xn(e){if(!e||typeof e!="object")return"";let t=[`\uC785\uB825 ${Lt(e.input_tokens).toLocaleString("en-US")}`,`\uCD9C\uB825 ${Lt(e.output_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC77D\uAE30 ${Lt(e.cache_read_input_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC0DD\uC131 ${Lt(e.cache_creation_input_tokens).toLocaleString("en-US")}`];typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)&&t.push(`$${e.total_cost_usd.toFixed(2)}`);let r=[`\uCD1D ${Qo(e).toLocaleString("en-US")}`,t.join(" \xB7 ")];return e.replayed&&r.push(ql),r.join(`
-`)}function Jt(e,t){let r={claude:Dr(),codex:Dr()},n={orchestrator:{claude:Dr(),codex:Dr()},implementation:{claude:Dr(),codex:Dr()},"review-consult":{claude:Dr(),codex:Dr()}},s=new Set;for(let l of Object.values(e||{})){if(!l||l.bead_id!==t)continue;let c=l.usage;if(Ml(c)){let d=vf(l.runner),f=Pl(c),g={provider:d,role:"orchestrator",attempt_id:String(l.attempt_id||""),usage:f,subtotal:Dl(d,f)};f.replayed===!0&&(g.replayed=!0),typeof l.model=="string"&&(g.model=l.model),typeof l.session_id=="string"&&(g.session_id=l.session_id),Bs(r[d],g,!0),Bs(n.orchestrator[d],g,!0)}let u=Array.isArray(l.usage_legs)?l.usage_legs:[];for(let d of u){if(!d||d.provider!=="codex"||!_f.includes(d.role)||!Ml(d.usage))continue;let f=typeof d.receipt_id=="string"&&d.receipt_id.length>0?d.receipt_id:null;if(!f||s.has(f))continue;s.add(f);let g=Pl(d.usage),x={provider:"codex",role:d.role,attempt_id:String(l.attempt_id||""),usage:g,subtotal:Dl("codex",g)};x.receipt_id=f,typeof d.model=="string"&&(x.model=d.model),typeof d.effort=="string"&&d.effort.trim().length>0&&(x.effort=d.effort),typeof d.session_id=="string"?x.session_id=d.session_id:typeof d.thread_id=="string"&&(x.session_id=d.thread_id),typeof d.turn_id=="string"&&(x.turn_id=d.turn_id),typeof d.completed_at=="string"&&(x.completed_at=d.completed_at),g.replayed===!0&&(x.replayed=!0),Bs(r.codex,x,!1),Bs(n[x.role].codex,x,!1)}}let o={};for(let l of["claude","codex"]){let c=r[l];if(c.legs.length===0)continue;let u=Nl(c,!1);l==="claude"&&c.outer_count>0&&c.outer_cost_count===c.outer_count&&(u.total_cost_usd=c.outer_cost),o[l]=u}if(Object.keys(o).length===0)return null;let a={};for(let l of["orchestrator","implementation","review-consult"]){let c={};for(let u of["claude","codex"]){let d=n[l][u];d.legs.length>0&&(c[u]={...Nl(d,!0),legs:d.legs})}Object.keys(c).length>0&&(a[l]=c)}return{providers:o,roles:a}}var{entries:Kl,setPrototypeOf:jl,isFrozen:wf,getPrototypeOf:kf,getOwnPropertyDescriptor:$f}=Object,{freeze:Nt,seal:er,create:aa}=Object,{apply:ia,construct:la}=typeof Reflect<"u"&&Reflect;Nt||(Nt=function(t){return t});er||(er=function(t){return t});ia||(ia=function(t,r){for(var n=arguments.length,s=new Array(n>2?n-2:0),o=2;o<n;o++)s[o-2]=arguments[o];return t.apply(r,s)});la||(la=function(t){for(var r=arguments.length,n=new Array(r>1?r-1:0),s=1;s<r;s++)n[s-1]=arguments[s];return new t(...n)});var Ws=qt(Array.prototype.forEach),xf=qt(Array.prototype.lastIndexOf),Bl=qt(Array.prototype.pop),Fn=qt(Array.prototype.push),Af=qt(Array.prototype.splice),Hs=qt(String.prototype.toLowerCase),ea=qt(String.prototype.toString),ta=qt(String.prototype.match),jn=qt(String.prototype.replace),Sf=qt(String.prototype.indexOf),Ef=qt(String.prototype.trim),cr=qt(Object.prototype.hasOwnProperty),Dt=qt(RegExp.prototype.test),Bn=Tf(TypeError);function qt(e){return function(t){t instanceof RegExp&&(t.lastIndex=0);for(var r=arguments.length,n=new Array(r>1?r-1:0),s=1;s<r;s++)n[s-1]=arguments[s];return ia(e,t,n)}}function Tf(e){return function(){for(var t=arguments.length,r=new Array(t),n=0;n<t;n++)r[n]=arguments[n];return la(e,r)}}function st(e,t){let r=arguments.length>2&&arguments[2]!==void 0?arguments[2]:Hs;jl&&jl(e,null);let n=t.length;for(;n--;){let s=t[n];if(typeof s=="string"){let o=r(s);o!==s&&(wf(t)||(t[n]=o),s=o)}e[s]=!0}return e}function Cf(e){for(let t=0;t<e.length;t++)cr(e,t)||(e[t]=null);return e}function Ar(e){let t=aa(null);for(let[r,n]of Kl(e))cr(e,r)&&(Array.isArray(n)?t[r]=Cf(n):n&&typeof n=="object"&&n.constructor===Object?t[r]=Ar(n):t[r]=n);return t}function Un(e,t){for(;e!==null;){let n=$f(e,t);if(n){if(n.get)return qt(n.get);if(typeof n.value=="function")return qt(n.value)}e=kf(e)}function r(){return null}return r}var Ul=Nt(["a","abbr","acronym","address","area","article","aside","audio","b","bdi","bdo","big","blink","blockquote","body","br","button","canvas","caption","center","cite","code","col","colgroup","content","data","datalist","dd","decorator","del","details","dfn","dialog","dir","div","dl","dt","element","em","fieldset","figcaption","figure","font","footer","form","h1","h2","h3","h4","h5","h6","head","header","hgroup","hr","html","i","img","input","ins","kbd","label","legend","li","main","map","mark","marquee","menu","menuitem","meter","nav","nobr","ol","optgroup","option","output","p","picture","pre","progress","q","rp","rt","ruby","s","samp","search","section","select","shadow","slot","small","source","spacer","span","strike","strong","style","sub","summary","sup","table","tbody","td","template","textarea","tfoot","th","thead","time","tr","track","tt","u","ul","var","video","wbr"]),ra=Nt(["svg","a","altglyph","altglyphdef","altglyphitem","animatecolor","animatemotion","animatetransform","circle","clippath","defs","desc","ellipse","enterkeyhint","exportparts","filter","font","g","glyph","glyphref","hkern","image","inputmode","line","lineargradient","marker","mask","metadata","mpath","part","path","pattern","polygon","polyline","radialgradient","rect","stop","style","switch","symbol","text","textpath","title","tref","tspan","view","vkern"]),na=Nt(["feBlend","feColorMatrix","feComponentTransfer","feComposite","feConvolveMatrix","feDiffuseLighting","feDisplacementMap","feDistantLight","feDropShadow","feFlood","feFuncA","feFuncB","feFuncG","feFuncR","feGaussianBlur","feImage","feMerge","feMergeNode","feMorphology","feOffset","fePointLight","feSpecularLighting","feSpotLight","feTile","feTurbulence"]),Rf=Nt(["animate","color-profile","cursor","discard","font-face","font-face-format","font-face-name","font-face-src","font-face-uri","foreignobject","hatch","hatchpath","mesh","meshgradient","meshpatch","meshrow","missing-glyph","script","set","solidcolor","unknown","use"]),sa=Nt(["math","menclose","merror","mfenced","mfrac","mglyph","mi","mlabeledtr","mmultiscripts","mn","mo","mover","mpadded","mphantom","mroot","mrow","ms","mspace","msqrt","mstyle","msub","msup","msubsup","mtable","mtd","mtext","mtr","munder","munderover","mprescripts"]),If=Nt(["maction","maligngroup","malignmark","mlongdiv","mscarries","mscarry","msgroup","mstack","msline","msrow","semantics","annotation","annotation-xml","mprescripts","none"]),Wl=Nt(["#text"]),zl=Nt(["accept","action","align","alt","autocapitalize","autocomplete","autopictureinpicture","autoplay","background","bgcolor","border","capture","cellpadding","cellspacing","checked","cite","class","clear","color","cols","colspan","controls","controlslist","coords","crossorigin","datetime","decoding","default","dir","disabled","disablepictureinpicture","disableremoteplayback","download","draggable","enctype","enterkeyhint","exportparts","face","for","headers","height","hidden","high","href","hreflang","id","inert","inputmode","integrity","ismap","kind","label","lang","list","loading","loop","low","max","maxlength","media","method","min","minlength","multiple","muted","name","nonce","noshade","novalidate","nowrap","open","optimum","part","pattern","placeholder","playsinline","popover","popovertarget","popovertargetaction","poster","preload","pubdate","radiogroup","readonly","rel","required","rev","reversed","role","rows","rowspan","spellcheck","scope","selected","shape","size","sizes","slot","span","srclang","start","src","srcset","step","style","summary","tabindex","title","translate","type","usemap","valign","value","width","wrap","xmlns","slot"]),oa=Nt(["accent-height","accumulate","additive","alignment-baseline","amplitude","ascent","attributename","attributetype","azimuth","basefrequency","baseline-shift","begin","bias","by","class","clip","clippathunits","clip-path","clip-rule","color","color-interpolation","color-interpolation-filters","color-profile","color-rendering","cx","cy","d","dx","dy","diffuseconstant","direction","display","divisor","dur","edgemode","elevation","end","exponent","fill","fill-opacity","fill-rule","filter","filterunits","flood-color","flood-opacity","font-family","font-size","font-size-adjust","font-stretch","font-style","font-variant","font-weight","fx","fy","g1","g2","glyph-name","glyphref","gradientunits","gradienttransform","height","href","id","image-rendering","in","in2","intercept","k","k1","k2","k3","k4","kerning","keypoints","keysplines","keytimes","lang","lengthadjust","letter-spacing","kernelmatrix","kernelunitlength","lighting-color","local","marker-end","marker-mid","marker-start","markerheight","markerunits","markerwidth","maskcontentunits","maskunits","max","mask","mask-type","media","method","mode","min","name","numoctaves","offset","operator","opacity","order","orient","orientation","origin","overflow","paint-order","path","pathlength","patterncontentunits","patterntransform","patternunits","points","preservealpha","preserveaspectratio","primitiveunits","r","rx","ry","radius","refx","refy","repeatcount","repeatdur","restart","result","rotate","scale","seed","shape-rendering","slope","specularconstant","specularexponent","spreadmethod","startoffset","stddeviation","stitchtiles","stop-color","stop-opacity","stroke-dasharray","stroke-dashoffset","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-opacity","stroke","stroke-width","style","surfacescale","systemlanguage","tabindex","tablevalues","targetx","targety","transform","transform-origin","text-anchor","text-decoration","text-rendering","textlength","type","u1","u2","unicode","values","viewbox","visibility","version","vert-adv-y","vert-origin-x","vert-origin-y","width","word-spacing","wrap","writing-mode","xchannelselector","ychannelselector","x","x1","x2","xmlns","y","y1","y2","z","zoomandpan"]),Hl=Nt(["accent","accentunder","align","bevelled","close","columnsalign","columnlines","columnspan","denomalign","depth","dir","display","displaystyle","encoding","fence","frame","height","href","id","largeop","length","linethickness","lspace","lquote","mathbackground","mathcolor","mathsize","mathvariant","maxsize","minsize","movablelimits","notation","numalign","open","rowalign","rowlines","rowspacing","rowspan","rspace","rquote","scriptlevel","scriptminsize","scriptsizemultiplier","selection","separator","separators","stretchy","subscriptshift","supscriptshift","symmetric","voffset","width","xmlns"]),zs=Nt(["xlink:href","xml:id","xlink:title","xml:space","xmlns:xlink"]),Lf=er(/\{\{[\w\W]*|[\w\W]*\}\}/gm),Of=er(/<%[\w\W]*|[\w\W]*%>/gm),Mf=er(/\$\{[\w\W]*/gm),Pf=er(/^data-[\-\w.\u00B7-\uFFFF]+$/),Df=er(/^aria-[\-\w]+$/),Yl=er(/^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i),Nf=er(/^(?:\w+script|data):/i),qf=er(/[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g),Zl=er(/^html$/i),Ff=er(/^[a-z][.\w]*(-[.\w]+)+$/i),Gl=Object.freeze({__proto__:null,ARIA_ATTR:Df,ATTR_WHITESPACE:qf,CUSTOM_ELEMENT:Ff,DATA_ATTR:Pf,DOCTYPE_NAME:Zl,ERB_EXPR:Of,IS_ALLOWED_URI:Yl,IS_SCRIPT_OR_DATA:Nf,MUSTACHE_EXPR:Lf,TMPLIT_EXPR:Mf}),Wn={element:1,attribute:2,text:3,cdataSection:4,entityReference:5,entityNode:6,progressingInstruction:7,comment:8,document:9,documentType:10,documentFragment:11,notation:12},jf=function(){return typeof window>"u"?null:window},Bf=function(t,r){if(typeof t!="object"||typeof t.createPolicy!="function")return null;let n=null,s="data-tt-policy-suffix";r&&r.hasAttribute(s)&&(n=r.getAttribute(s));let o="dompurify"+(n?"#"+n:"");try{return t.createPolicy(o,{createHTML(a){return a},createScriptURL(a){return a}})}catch{return console.warn("TrustedTypes policy "+o+" could not be created."),null}},Vl=function(){return{afterSanitizeAttributes:[],afterSanitizeElements:[],afterSanitizeShadowDOM:[],beforeSanitizeAttributes:[],beforeSanitizeElements:[],beforeSanitizeShadowDOM:[],uponSanitizeAttribute:[],uponSanitizeElement:[],uponSanitizeShadowNode:[]}};function Xl(){let e=arguments.length>0&&arguments[0]!==void 0?arguments[0]:jf(),t=Se=>Xl(Se);if(t.version="3.3.0",t.removed=[],!e||!e.document||e.document.nodeType!==Wn.document||!e.Element)return t.isSupported=!1,t;let{document:r}=e,n=r,s=n.currentScript,{DocumentFragment:o,HTMLTemplateElement:a,Node:l,Element:c,NodeFilter:u,NamedNodeMap:d=e.NamedNodeMap||e.MozNamedAttrMap,HTMLFormElement:f,DOMParser:g,trustedTypes:x}=e,A=c.prototype,L=Un(A,"cloneNode"),z=Un(A,"remove"),ae=Un(A,"nextSibling"),se=Un(A,"childNodes"),q=Un(A,"parentNode");if(typeof a=="function"){let Se=r.createElement("template");Se.content&&Se.content.ownerDocument&&(r=Se.content.ownerDocument)}let N,I="",{implementation:j,createNodeIterator:m,createDocumentFragment:E,getElementsByTagName:Y}=r,{importNode:ue}=n,oe=Vl();t.isSupported=typeof Kl=="function"&&typeof q=="function"&&j&&j.createHTMLDocument!==void 0;let{MUSTACHE_EXPR:de,ERB_EXPR:Ue,TMPLIT_EXPR:et,DATA_ATTR:qe,ARIA_ATTR:X,IS_SCRIPT_OR_DATA:te,ATTR_WHITESPACE:Ae,CUSTOM_ELEMENT:_e}=Gl,{IS_ALLOWED_URI:Pe}=Gl,le=null,Me=st({},[...Ul,...ra,...na,...sa,...Wl]),Oe=null,He=st({},[...zl,...oa,...Hl,...zs]),$e=Object.seal(aa(null,{tagNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},allowCustomizedBuiltInElements:{writable:!0,configurable:!1,enumerable:!0,value:!1}})),Ve=null,it=null,Ie=Object.seal(aa(null,{tagCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeCheck:{writable:!0,configurable:!1,enumerable:!0,value:null}})),Je=!0,G=!0,Z=!1,xe=!0,De=!1,We=!0,Ge=!1,ze=!1,ct=!1,pt=!1,U=!1,V=!1,ve=!0,ot=!1,ke="user-content-",T=!0,M=!1,P={},H=null,ce=st({},["annotation-xml","audio","colgroup","desc","foreignobject","head","iframe","math","mi","mn","mo","ms","mtext","noembed","noframes","noscript","plaintext","script","style","svg","template","thead","title","video","xmp"]),y=null,C=st({},["audio","video","img","source","image","track"]),D=null,me=st({},["alt","class","for","id","label","name","pattern","placeholder","role","summary","title","value","style","xmlns"]),fe="http://www.w3.org/1998/Math/MathML",Ee="http://www.w3.org/2000/svg",Fe="http://www.w3.org/1999/xhtml",Ye=Fe,Qe=!1,W=null,re=st({},[fe,Ee,Fe],ea),be=st({},["mi","mo","mn","ms","mtext"]),k=st({},["annotation-xml"]),S=st({},["title","style","font","a","script"]),O=null,J=["application/xhtml+xml","text/html"],Te="text/html",ye=null,Ce=null,je=r.createElement("form"),Tt=function($){return $ instanceof RegExp||$ instanceof Function},ht=function(){let $=arguments.length>0&&arguments[0]!==void 0?arguments[0]:{};if(!(Ce&&Ce===$)){if((!$||typeof $!="object")&&($={}),$=Ar($),O=J.indexOf($.PARSER_MEDIA_TYPE)===-1?Te:$.PARSER_MEDIA_TYPE,ye=O==="application/xhtml+xml"?ea:Hs,le=cr($,"ALLOWED_TAGS")?st({},$.ALLOWED_TAGS,ye):Me,Oe=cr($,"ALLOWED_ATTR")?st({},$.ALLOWED_ATTR,ye):He,W=cr($,"ALLOWED_NAMESPACES")?st({},$.ALLOWED_NAMESPACES,ea):re,D=cr($,"ADD_URI_SAFE_ATTR")?st(Ar(me),$.ADD_URI_SAFE_ATTR,ye):me,y=cr($,"ADD_DATA_URI_TAGS")?st(Ar(C),$.ADD_DATA_URI_TAGS,ye):C,H=cr($,"FORBID_CONTENTS")?st({},$.FORBID_CONTENTS,ye):ce,Ve=cr($,"FORBID_TAGS")?st({},$.FORBID_TAGS,ye):Ar({}),it=cr($,"FORBID_ATTR")?st({},$.FORBID_ATTR,ye):Ar({}),P=cr($,"USE_PROFILES")?$.USE_PROFILES:!1,Je=$.ALLOW_ARIA_ATTR!==!1,G=$.ALLOW_DATA_ATTR!==!1,Z=$.ALLOW_UNKNOWN_PROTOCOLS||!1,xe=$.ALLOW_SELF_CLOSE_IN_ATTR!==!1,De=$.SAFE_FOR_TEMPLATES||!1,We=$.SAFE_FOR_XML!==!1,Ge=$.WHOLE_DOCUMENT||!1,pt=$.RETURN_DOM||!1,U=$.RETURN_DOM_FRAGMENT||!1,V=$.RETURN_TRUSTED_TYPE||!1,ct=$.FORCE_BODY||!1,ve=$.SANITIZE_DOM!==!1,ot=$.SANITIZE_NAMED_PROPS||!1,T=$.KEEP_CONTENT!==!1,M=$.IN_PLACE||!1,Pe=$.ALLOWED_URI_REGEXP||Yl,Ye=$.NAMESPACE||Fe,be=$.MATHML_TEXT_INTEGRATION_POINTS||be,k=$.HTML_INTEGRATION_POINTS||k,$e=$.CUSTOM_ELEMENT_HANDLING||{},$.CUSTOM_ELEMENT_HANDLING&&Tt($.CUSTOM_ELEMENT_HANDLING.tagNameCheck)&&($e.tagNameCheck=$.CUSTOM_ELEMENT_HANDLING.tagNameCheck),$.CUSTOM_ELEMENT_HANDLING&&Tt($.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)&&($e.attributeNameCheck=$.CUSTOM_ELEMENT_HANDLING.attributeNameCheck),$.CUSTOM_ELEMENT_HANDLING&&typeof $.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements=="boolean"&&($e.allowCustomizedBuiltInElements=$.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements),De&&(G=!1),U&&(pt=!0),P&&(le=st({},Wl),Oe=[],P.html===!0&&(st(le,Ul),st(Oe,zl)),P.svg===!0&&(st(le,ra),st(Oe,oa),st(Oe,zs)),P.svgFilters===!0&&(st(le,na),st(Oe,oa),st(Oe,zs)),P.mathMl===!0&&(st(le,sa),st(Oe,Hl),st(Oe,zs))),$.ADD_TAGS&&(typeof $.ADD_TAGS=="function"?Ie.tagCheck=$.ADD_TAGS:(le===Me&&(le=Ar(le)),st(le,$.ADD_TAGS,ye))),$.ADD_ATTR&&(typeof $.ADD_ATTR=="function"?Ie.attributeCheck=$.ADD_ATTR:(Oe===He&&(Oe=Ar(Oe)),st(Oe,$.ADD_ATTR,ye))),$.ADD_URI_SAFE_ATTR&&st(D,$.ADD_URI_SAFE_ATTR,ye),$.FORBID_CONTENTS&&(H===ce&&(H=Ar(H)),st(H,$.FORBID_CONTENTS,ye)),T&&(le["#text"]=!0),Ge&&st(le,["html","head","body"]),le.table&&(st(le,["tbody"]),delete Ve.tbody),$.TRUSTED_TYPES_POLICY){if(typeof $.TRUSTED_TYPES_POLICY.createHTML!="function")throw Bn('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');if(typeof $.TRUSTED_TYPES_POLICY.createScriptURL!="function")throw Bn('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');N=$.TRUSTED_TYPES_POLICY,I=N.createHTML("")}else N===void 0&&(N=Bf(x,s)),N!==null&&typeof I=="string"&&(I=N.createHTML(""));Nt&&Nt($),Ce=$}},tt=st({},[...ra,...na,...Rf]),Pt=st({},[...sa,...If]),wr=function($){let ne=q($);(!ne||!ne.tagName)&&(ne={namespaceURI:Ye,tagName:"template"});let we=Hs($.tagName),ut=Hs(ne.tagName);return W[$.namespaceURI]?$.namespaceURI===Ee?ne.namespaceURI===Fe?we==="svg":ne.namespaceURI===fe?we==="svg"&&(ut==="annotation-xml"||be[ut]):!!tt[we]:$.namespaceURI===fe?ne.namespaceURI===Fe?we==="math":ne.namespaceURI===Ee?we==="math"&&k[ut]:!!Pt[we]:$.namespaceURI===Fe?ne.namespaceURI===Ee&&!k[ut]||ne.namespaceURI===fe&&!be[ut]?!1:!Pt[we]&&(S[we]||!tt[we]):!!(O==="application/xhtml+xml"&&W[$.namespaceURI]):!1},Ne=function($){Fn(t.removed,{element:$});try{q($).removeChild($)}catch{z($)}},jt=function($,ne){try{Fn(t.removed,{attribute:ne.getAttributeNode($),from:ne})}catch{Fn(t.removed,{attribute:null,from:ne})}if(ne.removeAttribute($),$==="is")if(pt||U)try{Ne(ne)}catch{}else try{ne.setAttribute($,"")}catch{}},Yt=function($){let ne=null,we=null;if(ct)$="<remove></remove>"+$;else{let _t=ta($,/^[\r\n\t ]+/);we=_t&&_t[0]}O==="application/xhtml+xml"&&Ye===Fe&&($='<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>'+$+"</body></html>");let ut=N?N.createHTML($):$;if(Ye===Fe)try{ne=new g().parseFromString(ut,O)}catch{}if(!ne||!ne.documentElement){ne=j.createDocument(Ye,"template",null);try{ne.documentElement.innerHTML=Qe?I:ut}catch{}}let xt=ne.body||ne.documentElement;return $&&we&&xt.insertBefore(r.createTextNode(we),xt.childNodes[0]||null),Ye===Fe?Y.call(ne,Ge?"html":"body")[0]:Ge?ne.documentElement:xt},tr=function($){return m.call($.ownerDocument||$,$,u.SHOW_ELEMENT|u.SHOW_COMMENT|u.SHOW_TEXT|u.SHOW_PROCESSING_INSTRUCTION|u.SHOW_CDATA_SECTION,null)},rr=function($){return $ instanceof f&&(typeof $.nodeName!="string"||typeof $.textContent!="string"||typeof $.removeChild!="function"||!($.attributes instanceof d)||typeof $.removeAttribute!="function"||typeof $.setAttribute!="function"||typeof $.namespaceURI!="string"||typeof $.insertBefore!="function"||typeof $.hasChildNodes!="function")},fr=function($){return typeof l=="function"&&$ instanceof l};function Ct(Se,$,ne){Ws(Se,we=>{we.call(t,$,ne,Ce)})}let _r=function($){let ne=null;if(Ct(oe.beforeSanitizeElements,$,null),rr($))return Ne($),!0;let we=ye($.nodeName);if(Ct(oe.uponSanitizeElement,$,{tagName:we,allowedTags:le}),We&&$.hasChildNodes()&&!fr($.firstElementChild)&&Dt(/<[/\w!]/g,$.innerHTML)&&Dt(/<[/\w!]/g,$.textContent)||$.nodeType===Wn.progressingInstruction||We&&$.nodeType===Wn.comment&&Dt(/<[/\w]/g,$.data))return Ne($),!0;if(!(Ie.tagCheck instanceof Function&&Ie.tagCheck(we))&&(!le[we]||Ve[we])){if(!Ve[we]&&mr(we)&&($e.tagNameCheck instanceof RegExp&&Dt($e.tagNameCheck,we)||$e.tagNameCheck instanceof Function&&$e.tagNameCheck(we)))return!1;if(T&&!H[we]){let ut=q($)||$.parentNode,xt=se($)||$.childNodes;if(xt&&ut){let _t=xt.length;for(let At=_t-1;At>=0;--At){let p=L(xt[At],!0);p.__removalCount=($.__removalCount||0)+1,ut.insertBefore(p,ae($))}}}return Ne($),!0}return $ instanceof c&&!wr($)||(we==="noscript"||we==="noembed"||we==="noframes")&&Dt(/<\/no(script|embed|frames)/i,$.innerHTML)?(Ne($),!0):(De&&$.nodeType===Wn.text&&(ne=$.textContent,Ws([de,Ue,et],ut=>{ne=jn(ne,ut," ")}),$.textContent!==ne&&(Fn(t.removed,{element:$.cloneNode()}),$.textContent=ne)),Ct(oe.afterSanitizeElements,$,null),!1)},nr=function($,ne,we){if(ve&&(ne==="id"||ne==="name")&&(we in r||we in je))return!1;if(!(G&&!it[ne]&&Dt(qe,ne))){if(!(Je&&Dt(X,ne))){if(!(Ie.attributeCheck instanceof Function&&Ie.attributeCheck(ne,$))){if(!Oe[ne]||it[ne]){if(!(mr($)&&($e.tagNameCheck instanceof RegExp&&Dt($e.tagNameCheck,$)||$e.tagNameCheck instanceof Function&&$e.tagNameCheck($))&&($e.attributeNameCheck instanceof RegExp&&Dt($e.attributeNameCheck,ne)||$e.attributeNameCheck instanceof Function&&$e.attributeNameCheck(ne,$))||ne==="is"&&$e.allowCustomizedBuiltInElements&&($e.tagNameCheck instanceof RegExp&&Dt($e.tagNameCheck,we)||$e.tagNameCheck instanceof Function&&$e.tagNameCheck(we))))return!1}else if(!D[ne]){if(!Dt(Pe,jn(we,Ae,""))){if(!((ne==="src"||ne==="xlink:href"||ne==="href")&&$!=="script"&&Sf(we,"data:")===0&&y[$])){if(!(Z&&!Dt(te,jn(we,Ae,"")))){if(we)return!1}}}}}}}return!0},mr=function($){return $!=="annotation-xml"&&ta($,_e)},rt=function($){Ct(oe.beforeSanitizeAttributes,$,null);let{attributes:ne}=$;if(!ne||rr($))return;let we={attrName:"",attrValue:"",keepAttr:!0,allowedAttributes:Oe,forceKeepAttr:void 0},ut=ne.length;for(;ut--;){let xt=ne[ut],{name:_t,namespaceURI:At,value:p}=xt,v=ye(_t),B=p,_=_t==="value"?B:Ef(B);if(we.attrName=v,we.attrValue=_,we.keepAttr=!0,we.forceKeepAttr=void 0,Ct(oe.uponSanitizeAttribute,$,we),_=we.attrValue,ot&&(v==="id"||v==="name")&&(jt(_t,$),_=ke+_),We&&Dt(/((--!?|])>)|<\/(style|title|textarea)/i,_)){jt(_t,$);continue}if(v==="attributename"&&ta(_,"href")){jt(_t,$);continue}if(we.forceKeepAttr)continue;if(!we.keepAttr){jt(_t,$);continue}if(!xe&&Dt(/\/>/i,_)){jt(_t,$);continue}De&&Ws([de,Ue,et],ee=>{_=jn(_,ee," ")});let h=ye($.nodeName);if(!nr(h,v,_)){jt(_t,$);continue}if(N&&typeof x=="object"&&typeof x.getAttributeType=="function"&&!At)switch(x.getAttributeType(h,v)){case"TrustedHTML":{_=N.createHTML(_);break}case"TrustedScriptURL":{_=N.createScriptURL(_);break}}if(_!==B)try{At?$.setAttributeNS(At,_t,_):$.setAttribute(_t,_),rr($)?Ne($):Bl(t.removed)}catch{jt(_t,$)}}Ct(oe.afterSanitizeAttributes,$,null)},Zt=function Se($){let ne=null,we=tr($);for(Ct(oe.beforeSanitizeShadowDOM,$,null);ne=we.nextNode();)Ct(oe.uponSanitizeShadowNode,ne,null),_r(ne),rt(ne),ne.content instanceof o&&Se(ne.content);Ct(oe.afterSanitizeShadowDOM,$,null)};return t.sanitize=function(Se){let $=arguments.length>1&&arguments[1]!==void 0?arguments[1]:{},ne=null,we=null,ut=null,xt=null;if(Qe=!Se,Qe&&(Se="<!-->"),typeof Se!="string"&&!fr(Se))if(typeof Se.toString=="function"){if(Se=Se.toString(),typeof Se!="string")throw Bn("dirty is not a string, aborting")}else throw Bn("toString is not a function");if(!t.isSupported)return Se;if(ze||ht($),t.removed=[],typeof Se=="string"&&(M=!1),M){if(Se.nodeName){let p=ye(Se.nodeName);if(!le[p]||Ve[p])throw Bn("root node is forbidden and cannot be sanitized in-place")}}else if(Se instanceof l)ne=Yt("<!---->"),we=ne.ownerDocument.importNode(Se,!0),we.nodeType===Wn.element&&we.nodeName==="BODY"||we.nodeName==="HTML"?ne=we:ne.appendChild(we);else{if(!pt&&!De&&!Ge&&Se.indexOf("<")===-1)return N&&V?N.createHTML(Se):Se;if(ne=Yt(Se),!ne)return pt?null:V?I:""}ne&&ct&&Ne(ne.firstChild);let _t=tr(M?Se:ne);for(;ut=_t.nextNode();)_r(ut),rt(ut),ut.content instanceof o&&Zt(ut.content);if(M)return Se;if(pt){if(U)for(xt=E.call(ne.ownerDocument);ne.firstChild;)xt.appendChild(ne.firstChild);else xt=ne;return(Oe.shadowroot||Oe.shadowrootmode)&&(xt=ue.call(n,xt,!0)),xt}let At=Ge?ne.outerHTML:ne.innerHTML;return Ge&&le["!doctype"]&&ne.ownerDocument&&ne.ownerDocument.doctype&&ne.ownerDocument.doctype.name&&Dt(Zl,ne.ownerDocument.doctype.name)&&(At="<!DOCTYPE "+ne.ownerDocument.doctype.name+`>
-`+At),De&&Ws([de,Ue,et],p=>{At=jn(At,p," ")}),N&&V?N.createHTML(At):At},t.setConfig=function(){let Se=arguments.length>0&&arguments[0]!==void 0?arguments[0]:{};ht(Se),ze=!0},t.clearConfig=function(){Ce=null,ze=!1},t.isValidAttribute=function(Se,$,ne){Ce||ht({});let we=ye(Se),ut=ye($);return nr(we,ut,ne)},t.addHook=function(Se,$){typeof $=="function"&&Fn(oe[Se],$)},t.removeHook=function(Se,$){if($!==void 0){let ne=xf(oe[Se],$);return ne===-1?void 0:Af(oe[Se],ne,1)[0]}return Bl(oe[Se])},t.removeHooks=function(Se){oe[Se]=[]},t.removeAllHooks=function(){oe=Vl()},t}var Ql=Xl();var Sr={ATTRIBUTE:1,CHILD:2,PROPERTY:3,BOOLEAN_ATTRIBUTE:4,EVENT:5,ELEMENT:6},Gs=e=>(...t)=>({_$litDirective$:e,values:t}),An=class{constructor(t){}get _$AU(){return this._$AM._$AU}_$AT(t,r,n){this._$Ct=t,this._$AM=r,this._$Ci=n}_$AS(t,r){return this.update(t,r)}update(t,r){return this.render(...r)}};var zn=class extends An{constructor(t){if(super(t),this.it=$t,t.type!==Sr.CHILD)throw Error(this.constructor.directiveName+"() can only be used in child bindings")}render(t){if(t===$t||t==null)return this._t=void 0,this.it=t;if(t===Xt)return t;if(typeof t!="string")throw Error(this.constructor.directiveName+"() called with a non-string value");if(t===this.it)return this._t;this.it=t;let r=[t];return r.raw=r,this._t={_$litType$:this.constructor.resultType,strings:r,values:[]}}};zn.directiveName="unsafeHTML",zn.resultType=1;var Jl=Gs(zn);function pa(){return{async:!1,breaks:!1,extensions:null,gfm:!0,hooks:null,pedantic:!1,renderer:null,silent:!1,tokenizer:null,walkTokens:null}}var rn=pa();function ac(e){rn=e}var Kn={exec:()=>null};function dt(e,t=""){let r=typeof e=="string"?e:e.source,n={replace:(s,o)=>{let a=typeof o=="string"?o:o.source;return a=a.replace(Ft.caret,"$1"),r=r.replace(s,a),n},getRegex:()=>new RegExp(r,t)};return n}var Uf=(()=>{try{return!!new RegExp("(?<=1)(?<!1)")}catch{return!1}})(),Ft={codeRemoveIndent:/^(?: {1,4}| {0,3}\t)/gm,outputLinkReplace:/\\([\[\]])/g,indentCodeCompensation:/^(\s+)(?:```)/,beginningSpace:/^\s+/,endingHash:/#$/,startingSpaceChar:/^ /,endingSpaceChar:/ $/,nonSpaceChar:/[^ ]/,newLineCharGlobal:/\n/g,tabCharGlobal:/\t/g,multipleSpaceGlobal:/\s+/g,blankLine:/^[ \t]*$/,doubleBlankLine:/\n[ \t]*\n[ \t]*$/,blockquoteStart:/^ {0,3}>/,blockquoteSetextReplace:/\n {0,3}((?:=+|-+) *)(?=\n|$)/g,blockquoteSetextReplace2:/^ {0,3}>[ \t]?/gm,listReplaceTabs:/^\t+/,listReplaceNesting:/^ {1,4}(?=( {4})*[^ ])/g,listIsTask:/^\[[ xX]\] +\S/,listReplaceTask:/^\[[ xX]\] +/,listTaskCheckbox:/\[[ xX]\]/,anyLine:/\n.*\n/,hrefBrackets:/^<(.*)>$/,tableDelimiter:/[:|]/,tableAlignChars:/^\||\| *$/g,tableRowBlankLine:/\n[ \t]*$/,tableAlignRight:/^ *-+: *$/,tableAlignCenter:/^ *:-+: *$/,tableAlignLeft:/^ *:-+ *$/,startATag:/^<a /i,endATag:/^<\/a>/i,startPreScriptTag:/^<(pre|code|kbd|script)(\s|>)/i,endPreScriptTag:/^<\/(pre|code|kbd|script)(\s|>)/i,startAngleBracket:/^</,endAngleBracket:/>$/,pedanticHrefTitle:/^([^'"]*[^\s])\s+(['"])(.*)\2/,unicodeAlphaNumeric:/[\p{L}\p{N}]/u,escapeTest:/[&<>"']/,escapeReplace:/[&<>"']/g,escapeTestNoEncode:/[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/,escapeReplaceNoEncode:/[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/g,unescapeTest:/&(#(?:\d+)|(?:#x[0-9A-Fa-f]+)|(?:\w+));?/ig,caret:/(^|[^\[])\^/g,percentDecode:/%25/g,findPipe:/\|/g,splitPipe:/ \|/,slashPipe:/\\\|/g,carriageReturn:/\r\n|\r/g,spaceLine:/^ +$/gm,notSpaceStart:/^\S*/,endingNewline:/\n$/,listItemRegex:e=>new RegExp(`^( {0,3}${e})((?:[	 ][^\\n]*)?(?:\\n|$))`),nextBulletRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}(?:[*+-]|\\d{1,9}[.)])((?:[ 	][^\\n]*)?(?:\\n|$))`),hrRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`),fencesBeginRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}(?:\`\`\`|~~~)`),headingBeginRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}#`),htmlBeginRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}<(?:[a-z].*>|!--)`,"i")},Wf=/^(?:[ \t]*(?:\n|$))+/,zf=/^((?: {4}| {0,3}\t)[^\n]+(?:\n(?:[ \t]*(?:\n|$))*)?)+/,Hf=/^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}\1[~`]* *(?=\n|$)|$)/,Yn=/^ {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/,Gf=/^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/,fa=/(?:[*+-]|\d{1,9}[.)])/,ic=/^(?!bull |blockCode|fences|blockquote|heading|html|table)((?:.|\n(?!\s*?\n|bull |blockCode|fences|blockquote|heading|html|table))+?)\n {0,3}(=+|-+) *(?:\n+|$)/,lc=dt(ic).replace(/bull/g,fa).replace(/blockCode/g,/(?: {4}| {0,3}\t)/).replace(/fences/g,/ {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g,/ {0,3}>/).replace(/heading/g,/ {0,3}#{1,6}/).replace(/html/g,/ {0,3}<[^\n>]+>\n/).replace(/\|table/g,"").getRegex(),Vf=dt(ic).replace(/bull/g,fa).replace(/blockCode/g,/(?: {4}| {0,3}\t)/).replace(/fences/g,/ {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g,/ {0,3}>/).replace(/heading/g,/ {0,3}#{1,6}/).replace(/html/g,/ {0,3}<[^\n>]+>\n/).replace(/table/g,/ {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n/).getRegex(),_a=/^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/,Kf=/^[^\n]+/,ma=/(?!\s*\])(?:\\[\s\S]|[^\[\]\\])+/,Yf=dt(/^ {0,3}\[(label)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)(title))? *(?:\n+|$)/).replace("label",ma).replace("title",/(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/).getRegex(),Zf=dt(/^( {0,3}bull)([ \t][^\n]+?)?(?:\n|$)/).replace(/bull/g,fa).getRegex(),Qs="address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul",ga=/<!--(?:-?>|[\s\S]*?(?:-->|$))/,Xf=dt("^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n+|$)|comment[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>\\n*|$)|<![A-Z][\\s\\S]*?(?:>\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>\\n*|$)|</?(tag)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?:attribute)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$))","i").replace("comment",ga).replace("tag",Qs).replace("attribute",/ +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>`]+)?/).getRegex(),cc=dt(_a).replace("hr",Yn).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("|lheading","").replace("|table","").replace("blockquote"," {0,3}>").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",Qs).getRegex(),Qf=dt(/^( {0,3}> ?(paragraph|[^\n]*)(?:\n|$))+/).replace("paragraph",cc).getRegex(),ba={blockquote:Qf,code:zf,def:Yf,fences:Hf,heading:Gf,hr:Yn,html:Xf,lheading:lc,list:Zf,newline:Wf,paragraph:cc,table:Kn,text:Kf},ec=dt("^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n|hr|heading|blockquote|code|fences|list|html).*(?:\\n|$))*)\\n*|$)").replace("hr",Yn).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("blockquote"," {0,3}>").replace("code","(?: {4}| {0,3}	)[^\\n]").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",Qs).getRegex(),Jf={...ba,lheading:Vf,table:ec,paragraph:dt(_a).replace("hr",Yn).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("|lheading","").replace("table",ec).replace("blockquote"," {0,3}>").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",Qs).getRegex()},e_={...ba,html:dt(`^ *(?:comment *(?:\\n|\\s*$)|<(tag)[\\s\\S]+?</\\1> *(?:\\n{2,}|\\s*$)|<tag(?:"[^"]*"|'[^']*'|\\s[^'"/>\\s]*)*?/?> *(?:\\n{2,}|\\s*$))`).replace("comment",ga).replace(/tag/g,"(?!(?:a|em|strong|small|s|cite|q|dfn|abbr|data|time|code|var|samp|kbd|sub|sup|i|b|u|mark|ruby|rt|rp|bdi|bdo|span|br|wbr|ins|del|img)\\b)\\w+(?!:|[^\\w\\s@]*@)\\b").getRegex(),def:/^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +(["(][^\n]+[")]))? *(?:\n+|$)/,heading:/^(#{1,6})(.*)(?:\n+|$)/,fences:Kn,lheading:/^(.+?)\n {0,3}(=+|-+) *(?:\n+|$)/,paragraph:dt(_a).replace("hr",Yn).replace("heading",` *#{1,6} *[^
-]`).replace("lheading",lc).replace("|table","").replace("blockquote"," {0,3}>").replace("|fences","").replace("|list","").replace("|html","").replace("|tag","").getRegex()},t_=/^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/,r_=/^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/,uc=/^( {2,}|\\)\n(?!\s*$)/,n_=/^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/,Js=/[\p{P}\p{S}]/u,ha=/[\s\p{P}\p{S}]/u,dc=/[^\s\p{P}\p{S}]/u,s_=dt(/^((?![*_])punctSpace)/,"u").replace(/punctSpace/g,ha).getRegex(),pc=/(?!~)[\p{P}\p{S}]/u,o_=/(?!~)[\s\p{P}\p{S}]/u,a_=/(?:[^\s\p{P}\p{S}]|~)/u,i_=dt(/link|precode-code|html/,"g").replace("link",/\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)/).replace("precode-",Uf?"(?<!`)()":"(^^|[^`])").replace("code",/(?<b>`+)[^`]+\k<b>(?!`)/).replace("html",/<(?! )[^<>]*?>/).getRegex(),fc=/^(?:\*+(?:((?!\*)punct)|[^\s*]))|^_+(?:((?!_)punct)|([^\s_]))/,l_=dt(fc,"u").replace(/punct/g,Js).getRegex(),c_=dt(fc,"u").replace(/punct/g,pc).getRegex(),_c="^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)punct(\\*+)(?=[\\s]|$)|notPunctSpace(\\*+)(?!\\*)(?=punctSpace|$)|(?!\\*)punctSpace(\\*+)(?=notPunctSpace)|[\\s](\\*+)(?!\\*)(?=punct)|(?!\\*)punct(\\*+)(?!\\*)(?=punct)|notPunctSpace(\\*+)(?=notPunctSpace)",u_=dt(_c,"gu").replace(/notPunctSpace/g,dc).replace(/punctSpace/g,ha).replace(/punct/g,Js).getRegex(),d_=dt(_c,"gu").replace(/notPunctSpace/g,a_).replace(/punctSpace/g,o_).replace(/punct/g,pc).getRegex(),p_=dt("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)punct(_+)(?=[\\s]|$)|notPunctSpace(_+)(?!_)(?=punctSpace|$)|(?!_)punctSpace(_+)(?=notPunctSpace)|[\\s](_+)(?!_)(?=punct)|(?!_)punct(_+)(?!_)(?=punct)","gu").replace(/notPunctSpace/g,dc).replace(/punctSpace/g,ha).replace(/punct/g,Js).getRegex(),f_=dt(/\\(punct)/,"gu").replace(/punct/g,Js).getRegex(),__=dt(/^<(scheme:[^\s\x00-\x1f<>]*|email)>/).replace("scheme",/[a-zA-Z][a-zA-Z0-9+.-]{1,31}/).replace("email",/[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])/).getRegex(),m_=dt(ga).replace("(?:-->|$)","-->").getRegex(),g_=dt("^comment|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:attribute)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>").replace("comment",m_).replace("attribute",/\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/).getRegex(),Ys=/(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+[^`]*?`+(?!`)|[^\[\]\\`])*?/,b_=dt(/^!?\[(label)\]\(\s*(href)(?:(?:[ \t]*(?:\n[ \t]*)?)(title))?\s*\)/).replace("label",Ys).replace("href",/<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]*/).replace("title",/"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/).getRegex(),mc=dt(/^!?\[(label)\]\[(ref)\]/).replace("label",Ys).replace("ref",ma).getRegex(),gc=dt(/^!?\[(ref)\](?:\[\])?/).replace("ref",ma).getRegex(),h_=dt("reflink|nolink(?!\\()","g").replace("reflink",mc).replace("nolink",gc).getRegex(),tc=/[hH][tT][tT][pP][sS]?|[fF][tT][pP]/,ya={_backpedal:Kn,anyPunctuation:f_,autolink:__,blockSkip:i_,br:uc,code:r_,del:Kn,emStrongLDelim:l_,emStrongRDelimAst:u_,emStrongRDelimUnd:p_,escape:t_,link:b_,nolink:gc,punctuation:s_,reflink:mc,reflinkSearch:h_,tag:g_,text:n_,url:Kn},y_={...ya,link:dt(/^!?\[(label)\]\((.*?)\)/).replace("label",Ys).getRegex(),reflink:dt(/^!?\[(label)\]\s*\[([^\]]*)\]/).replace("label",Ys).getRegex()},ca={...ya,emStrongRDelimAst:d_,emStrongLDelim:c_,url:dt(/^((?:protocol):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*|^email/).replace("protocol",tc).replace("email",/[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/).getRegex(),_backpedal:/(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/,del:/^(~~?)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/,text:dt(/^([`~]+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/).replace("protocol",tc).getRegex()},v_={...ca,br:dt(uc).replace("{2,}","*").getRegex(),text:dt(ca.text).replace("\\b_","\\b_| {2,}\\n").replace(/\{2,\}/g,"*").getRegex()},Vs={normal:ba,gfm:Jf,pedantic:e_},Hn={normal:ya,gfm:ca,breaks:v_,pedantic:y_},w_={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"},rc=e=>w_[e];function Er(e,t){if(t){if(Ft.escapeTest.test(e))return e.replace(Ft.escapeReplace,rc)}else if(Ft.escapeTestNoEncode.test(e))return e.replace(Ft.escapeReplaceNoEncode,rc);return e}function nc(e){try{e=encodeURI(e).replace(Ft.percentDecode,"%")}catch{return null}return e}function sc(e,t){let r=e.replace(Ft.findPipe,(o,a,l)=>{let c=!1,u=a;for(;--u>=0&&l[u]==="\\";)c=!c;return c?"|":" |"}),n=r.split(Ft.splitPipe),s=0;if(n[0].trim()||n.shift(),n.length>0&&!n.at(-1)?.trim()&&n.pop(),t)if(n.length>t)n.splice(t);else for(;n.length<t;)n.push("");for(;s<n.length;s++)n[s]=n[s].trim().replace(Ft.slashPipe,"|");return n}function Gn(e,t,r){let n=e.length;if(n===0)return"";let s=0;for(;s<n;){let o=e.charAt(n-s-1);if(o===t&&!r)s++;else if(o!==t&&r)s++;else break}return e.slice(0,n-s)}function k_(e,t){if(e.indexOf(t[1])===-1)return-1;let r=0;for(let n=0;n<e.length;n++)if(e[n]==="\\")n++;else if(e[n]===t[0])r++;else if(e[n]===t[1]&&(r--,r<0))return n;return r>0?-2:-1}function oc(e,t,r,n,s){let o=t.href,a=t.title||null,l=e[1].replace(s.other.outputLinkReplace,"$1");n.state.inLink=!0;let c={type:e[0].charAt(0)==="!"?"image":"link",raw:r,href:o,title:a,text:l,tokens:n.inlineTokens(l)};return n.state.inLink=!1,c}function $_(e,t,r){let n=e.match(r.other.indentCodeCompensation);if(n===null)return t;let s=n[1];return t.split(`
-`).map(o=>{let a=o.match(r.other.beginningSpace);if(a===null)return o;let[l]=a;return l.length>=s.length?o.slice(s.length):o}).join(`
-`)}var Zs=class{constructor(e){mt(this,"options");mt(this,"rules");mt(this,"lexer");this.options=e||rn}space(e){let t=this.rules.block.newline.exec(e);if(t&&t[0].length>0)return{type:"space",raw:t[0]}}code(e){let t=this.rules.block.code.exec(e);if(t){let r=t[0].replace(this.rules.other.codeRemoveIndent,"");return{type:"code",raw:t[0],codeBlockStyle:"indented",text:this.options.pedantic?r:Gn(r,`
-`)}}}fences(e){let t=this.rules.block.fences.exec(e);if(t){let r=t[0],n=$_(r,t[3]||"",this.rules);return{type:"code",raw:r,lang:t[2]?t[2].trim().replace(this.rules.inline.anyPunctuation,"$1"):t[2],text:n}}}heading(e){let t=this.rules.block.heading.exec(e);if(t){let r=t[2].trim();if(this.rules.other.endingHash.test(r)){let n=Gn(r,"#");(this.options.pedantic||!n||this.rules.other.endingSpaceChar.test(n))&&(r=n.trim())}return{type:"heading",raw:t[0],depth:t[1].length,text:r,tokens:this.lexer.inline(r)}}}hr(e){let t=this.rules.block.hr.exec(e);if(t)return{type:"hr",raw:Gn(t[0],`
-`)}}blockquote(e){let t=this.rules.block.blockquote.exec(e);if(t){let r=Gn(t[0],`
+    `}function Ye(){Ve(st(),e),ct()}function ct(){try{let B=e.querySelector("#deferred-popup");B&&!B.open&&(typeof B.showModal=="function"?B.showModal():B.setAttribute("open",""));let te=Array.from(e.querySelectorAll(".board-column, .deferred-popup__body"));for(let ve of te)Array.from(ve.querySelectorAll(".board-card")).forEach((R,W)=>{R.tabIndex=W===0?0:-1})}catch{}}async function ft(B,te){if(!o){he("\uC5F0\uACB0\uB418\uC9C0 \uC54A\uC544 \uC0C1\uD0DC\uB97C \uBCC0\uACBD\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4","error");return}try{await o("update-status",{id:B,status:te}),he("\uC0C1\uD0DC \uBCC0\uACBD\uB428","success",1500)}catch(ve){r("update-status failed: %o",ve),he("\uC0C1\uD0DC \uBCC0\uACBD \uC2E4\uD328","error")}}function ut(B){switch(B){case"blocked-col":return C;case"ready-col":return F;case"in-progress-col":return H;case"resolved-col":return re;default:return[]}}function ot(B,te,ve){if(!o||!a)return;let y=ut(B),R=y.find(Me=>Me.id===te);if(!R)return;let W=y.filter(Me=>Me.id!==te),oe=ve.closest?ve.closest(".board-card"):null,Ce=W.length;if(oe){let Me=oe.getAttribute("data-issue-id");if(Me===te)return;let Be=W.findIndex(At=>At.id===Me);Be>=0&&(Ce=Be)}let Ae=W.slice();Ae.splice(Ce,0,R),v.applyReorder(te,Ae,Ce)}function gt(){for(let B of Array.from(e.querySelectorAll(".board-column--drag-over")))B.classList.remove("board-column--drag-over")}let U=null;e.addEventListener("dragover",B=>{B.preventDefault(),B.dataTransfer&&(B.dataTransfer.dropEffect="move");let ve=B.target.closest(".board-column");ve&&ve!==U&&(U&&U.classList.remove("board-column--drag-over"),ve.classList.add("board-column--drag-over"),U=ve)}),e.addEventListener("dragleave",B=>{let te=B.relatedTarget;(!te||!e.contains(te))&&U&&(U.classList.remove("board-column--drag-over"),U=null)}),e.addEventListener("drop",B=>{B.preventDefault(),U&&(U.classList.remove("board-column--drag-over"),U=null);let te=B.target,ve=te.closest(".board-column");if(!ve)return;let y=B.dataTransfer?.getData("text/plain")||"";if(!y)return;let R=ve.id,W=M.get(y);if(W&&W===R){if(ff.has(R)){if(I!=="manual"){he("\uC218\uB3D9(\uB4DC\uB798\uADF8) \uC815\uB82C \uBAA8\uB4DC\uC5D0\uC11C\uB9CC \uC21C\uC11C\uB97C \uBC14\uAFC0 \uC218 \uC788\uC2B5\uB2C8\uB2E4","warning",2e3);return}ot(R,y,te)}return}let oe=pf[R];if(!oe){he("\uC5EC\uAE30\uB85C\uB294 \uC62E\uAE38 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4","warning",1500);return}$.get(y)!==oe&&ft(y,oe)}),e.addEventListener("keydown",B=>{let te=B.target;if(!(te instanceof HTMLElement))return;let ve=String(te.tagName||"").toLowerCase();if(ve==="input"||ve==="textarea"||ve==="select"||ve==="button"||ve==="a"||te.isContentEditable===!0)return;let y=te.closest(".board-card");if(!y)return;let R=String(B.key||"");if(R==="Enter"||R===" "){B.preventDefault();let Ae=y.getAttribute("data-issue-id");Ae&&n(Ae);return}if(R!=="ArrowUp"&&R!=="ArrowDown"&&R!=="ArrowLeft"&&R!=="ArrowRight")return;B.preventDefault();let W=y.closest(".board-column");if(!W)return;let oe=Array.from(W.querySelectorAll(".board-card")),Ce=oe.indexOf(y);if(R==="ArrowDown"&&Ce<oe.length-1){J(y,oe[Ce+1]);return}if(R==="ArrowUp"&&Ce>0){J(y,oe[Ce-1]);return}if(R==="ArrowLeft"||R==="ArrowRight"){let Ae=Array.from(e.querySelectorAll(".board-column")),Me=Ae.indexOf(W),Be=R==="ArrowRight"?1:-1,At=Me+Be;for(;At>=0&&At<Ae.length;){let vt=Ae[At].querySelector(".board-card");if(vt){J(y,vt);return}At+=Be}}});function J(B,te){try{B.tabIndex=-1,te.tabIndex=0,te.focus()}catch{}}let be=null;m&&m.subscribe&&(be=m.subscribe(()=>{try{A()}catch{}}));let Ge=null;i&&i.subscribe&&(Ge=i.subscribe(()=>{try{A()}catch{}}));let De=null;return c&&c.subscribe&&(De=c.subscribe(()=>{Ye()})),{async load(){r("load"),A()},clear(){T(),ee(),be&&(be(),be=null),Ge&&(Ge(),Ge=null),De&&(De(),De=null),e.replaceChildren(),C=[],F=[],H=[],re=[],V=[],q=[],$=new Map,M=new Map}}}function Bn(e,t){return e.filter(r=>{let n=qs(r);return!(n&&t.has(n))})}async function mf(e){try{if(navigator.clipboard&&typeof navigator.clipboard.writeText=="function")return await navigator.clipboard.writeText(String(e)),!0;let t=document.createElement("textarea");t.value=String(e),t.style.position="fixed",t.style.left="-9999px",document.body.appendChild(t),t.select();let r=!1;try{r=document.execCommand("copy")}finally{t.remove()}return r}catch{return!1}}async function tr(e){let t=String(e);if(navigator.clipboard&&typeof navigator.clipboard.writeText=="function")try{return await navigator.clipboard.writeText(t),!0}catch{}try{let r=document.createElement("textarea");r.value=t,r.style.position="fixed",r.style.left="-9999px",document.body.appendChild(r),r.select();let n=!1;try{n=document.execCommand("copy")}finally{r.remove()}return n}catch{return!1}}function en(e){return[typeof e.runner=="string"?e.runner:null,typeof e.model=="string"?e.model:null,typeof e.effort=="string"?e.effort:null,e.speed==="fast"?"Fast":null].filter(Boolean).join(" \xB7 ")}function Un(e){return typeof e.resumed_from!="string"||e.resumed_from.length===0?null:`${e.continuation_mode==="session"?"session \uC774\uC5B4\uBC1B\uC74C":e.continuation_mode==="fresh"?"\uC0C8 session\uC73C\uB85C \uC774\uC5B4\uBC1B\uC74C":"\uC774\uC804 attempt\uC5D0\uC11C \uC774\uC5B4\uBC1B\uC74C"} (from ${e.resumed_from})`}function gf(e,t=document){let r=t.createElement("dialog");r.className="continuation-dialog";let n=t.createElement("button"),s=t.createElement("button"),o=t.createElement("button"),a=t.createElement("h2"),i=t.createElement("p");return a.textContent="\uC2E4\uD589 provider\uAC00 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4",i.textContent=`${en(e.prior||{})||"\uC774\uC804 \uC124\uC815"} \u2192 ${en(e.current||{})||"\uD604\uC7AC \uC124\uC815"}`,n.type="button",n.textContent="\uAE30\uC874 session \uC774\uC5B4\uD558\uAE30",n.disabled=e.prior_available===!1,s.type="button",s.textContent="\uD604\uC7AC preset\uC73C\uB85C \uC0C8 session",o.type="button",o.textContent="\uCDE8\uC18C",r.append(a,i,n,s,o),t.body.append(r),new Promise(c=>{let u=d=>{typeof r.close=="function"&&r.close(),r.remove(),c(d)};n.addEventListener("click",()=>u("prior_session")),s.addEventListener("click",()=>u("fresh_current")),o.addEventListener("click",()=>u(null)),r.addEventListener("cancel",d=>{d.preventDefault(),u(null)}),typeof r.showModal=="function"?r.showModal():r.setAttribute("open","")})}async function wr(e,t,r={}){let n=e;for(r.onResult?.(n);n?.continuation_mismatch;){let s=n.continuation_mismatch,o=await gf(s);if(o===null)return n;n=await t(o,s.decision_token),r.onResult?.(n),n?.conflict&&r.refresh&&(n=await r.refresh(n),r.onResult?.(n))}return n}var hf=["workflow_mode","spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort","impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed","quick_fix_impl_model","orchestration_model","orchestration_effort","orchestration_speed"],Dl={spec_review_effort:"spec_review_model",plan_review_effort:"plan_review_model",impl_review_effort:"impl_review_model"},bf=new Set(["native-fixed-posture","unsupported","claude-runner-model-default","catalog-validated","provider-tier-or-runtime-model-default","actual-effort"]);function jt(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function Lt(e){return typeof e=="string"&&e.length>0?e:null}function kn(e){return e.startsWith("gpt-")?e.slice(4):e}function Et(e,t,r,n,s){return{value:e,source:t,display:r,full_value:n,resolution:s}}function ql(e,t,r){let n=Lt(t[e]);if(n!==null)return{value:n,source:"pin"};let s=Lt(r[e]);return s===null?null:{value:s,source:"global"}}function Wn(e,t,r,n){return ql(e,t,r)||{value:n,source:"base"}}function na(e,t,r,n){let s=r?.implementation?.model_catalog;if(t&&jt(s?.[t])){let a=Lt(s[t][e]);if(a!==null)return a}if(t&&Array.isArray(s?.[t])&&s[t].includes(e))return e;if(!t&&jt(s)){for(let a of Object.values(s))if(jt(a)){let i=Lt(a[e]);if(i!==null)return i}else if(Array.isArray(a)&&a.includes(e))return e}let o=n?.model_index?.[e];return Lt(n?.runners?.[o]?.models?.[e]?.id)||e}function yf(e,t){return Lt(t?.review?.reviewers?.[e]?.model)||e}function $n(e,t,r=!1){if(e==="default")return Et(e,t,`default (\uC77C\uBC18 \xB7 ${t==="pin"?"\uD540":"\uC804\uC5ED \uACE0\uC815"})`,e,"explicit");let n=r?kn(e):e;return Et(e,t,n,e,"explicit")}function Fl(e,t,r){let n=t?.implementation?.model_catalog?.[e],s=[];jt(n)?s.push(...Object.keys(n)):Array.isArray(n)&&s.push(...n.filter(a=>typeof a=="string"));let o=r?.runners?.[e]?.models;if(jt(o))for(let a of Object.keys(o))s.includes(a)||s.push(a);return s}function vf(e,t){let r=[],n=e?.implementation?.model_catalog;jt(n)&&r.push(...Object.keys(n));let s=t?.runners;if(jt(s))for(let o of Object.keys(s))r.includes(o)||r.push(o);return r}function wf(e,t,r){if(e===null)return{runtime:null,offered:!1};let n=!1;for(let s of vf(t,r)){let o=Fl(s,t,r);if(o.length>0&&(n=!0),o.includes(e))return{runtime:s,offered:!0}}return{runtime:null,offered:n}}function sa(e){return Et(e.value,e.source,`${e.value} (\uBE44\uD638\uD658)`,e.value,"incompatible")}function Nl(e,t,r){let n=ql(e,t,r);return n?$n(n.value,n.source):Et(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable")}function Qt(e){let t=jt(e.pin)?e.pin:{},r=jt(e.global)?e.global:{},n=jt(e.execution_defaults)?e.execution_defaults:null,s=n?.supported===!0&&jt(n.session)?n.session:null,o=n?.supported===!0&&jt(n.orchestration)?n.orchestration:null,a=jt(e.runner_catalog)?e.runner_catalog:null,i=Lt(r.quick_fix_impl_model),c=wf(i,s,a),u={};if(s){let d=Wn("workflow_mode",t,r,Lt(s.workflow_mode_default));u.workflow_mode=d.source==="base"?Et(d.value,"base",d.value||"\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",d.value,"default"):$n(d.value,d.source);for(let q of["spec_review","plan_review","impl_review"]){let O=`${q}_model`,P=Lt(q==="plan_review"?d.value==="fast_track"?s.plan_review?.fast_track_default:s.plan_review?.standard_recommended:s.review?.default),I=Wn(O,t,r,P);if(I.value===null)u[O]=Et(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable");else if(I.value!=="self"&&I.value!=="skip"&&!jt(s.review?.reviewers?.[I.value]))u[O]=sa(Et(I.value,I.source,"",null,"explicit"));else{let $=yf(I.value,s);u[O]=Et(I.value,I.source,kn($),$,I.source==="base"?"default":"explicit")}}for(let[q,O]of Object.entries(Dl)){let P=u[O].value;if(P==="self"||P==="skip"){u[q]=Et(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable");continue}let I=Lt(s.review?.reviewers?.[P||""]?.effort),$=Wn(q,t,r,I);u[q]=$.value===null?Et(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable"):Et($.value,$.source,$.value,$.value,$.source==="base"?"default":"explicit")}let p=jt(s.implementation?.default)?s.implementation.default:{},m=Lt(e.route),v=m!==null&&["quick_fix","spec_backed","full_plan"].includes(m),C=jt(s.implementation?.route_defaults)?s.implementation.route_defaults:{},F=v&&jt(C[m])?C[m]:{};for(let q of["impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed"]){let O=Wn(q,t,r,q==="impl_dispatch"?Lt(F.dispatch)||Lt(p.dispatch):Lt(p[q.replace("impl_","")]));u[q]=O.value===null?Et(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable"):Et(O.value,O.source,O.value,O.value,O.source==="base"?"default":"explicit")}let H=Lt(t.impl_runtime),re=H==="inherit"?Lt(e.controller_runtime):H,V=m==="quick_fix"&&Lt(t.impl_dispatch)===null&&c.runtime!==null&&(H===null||re===c.runtime);if(V){let q=c.runtime,O=i;u.impl_dispatch=Et("delegated","global","\uC704\uC784 (\uC804\uC5ED quick_fix)","delegated","explicit"),H===null&&(u.impl_runtime=Et(q,"global",`${q} (\uC720\uB3C4)`,q,"explicit")),Lt(t.impl_model)===null&&(u.impl_model=Et(O,"global",O,O,"explicit"))}if(u.impl_dispatch.value==="main"){u.impl_dispatch.display="\uBA54\uC778";for(let q of["impl_runtime","impl_model","impl_effort","impl_speed"])u[q]=Et(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable")}else{if(u.impl_dispatch.value==="delegated"&&!V&&(u.impl_dispatch.display="\uC704\uC784"),u.impl_runtime.value==="inherit"&&(u.impl_runtime.display=e.controller_runtime?`inherit (${e.controller_runtime})`:"inherit (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_runtime.resolution="dynamic"),u.impl_model.value!==null){let q=u.impl_runtime.value==="inherit"?Lt(e.controller_runtime):u.impl_runtime.value,O=q?Fl(q,s,a):[];if(u.impl_model.value!=="auto"&&O.length>0&&!O.includes(u.impl_model.value))u.impl_model=sa(u.impl_model);else{let P=na(u.impl_model.value,q,s,a);u.impl_model.display=kn(P),u.impl_model.full_value=P}}if(u.impl_effort.value==="auto"){let q=Lt(e.transport)||(u.impl_runtime.value==="codex"?"codex-native-spawn":u.impl_runtime.value==="claude"?"implement-claude":null),O=q?Lt(s.implementation?.effort_by_transport?.[q]?.auto):null;O&&!bf.has(O)?(u.impl_effort.display=`${O} (\uBE44\uD638\uD658)`,u.impl_effort.full_value=O,u.impl_effort.resolution="incompatible"):(u.impl_effort.display="auto (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_effort.resolution="dynamic")}u.impl_speed.value==="default"&&(u.impl_speed=u.impl_speed.source==="base"?Et("default","base","default (\uC77C\uBC18)","default","default"):$n("default",u.impl_speed.source))}}else for(let d of hf.filter(p=>!p.startsWith("orchestration_")))u[d]=Nl(d,t,r);if(!s){for(let[d,p]of Object.entries(Dl))(u[p].value==="self"||u[p].value==="skip")&&(u[d]=Et(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable"));if(u.impl_dispatch.value==="main"){u.impl_dispatch.display="\uBA54\uC778";for(let d of["impl_runtime","impl_model","impl_effort","impl_speed"])u[d]=Et(null,"base","\uD574\uB2F9 \uC5C6\uC74C",null,"not_applicable")}else u.impl_dispatch.value==="delegated"&&(u.impl_dispatch.display="\uC704\uC784"),u.impl_runtime.value==="inherit"&&(u.impl_runtime.display=e.controller_runtime?`inherit (${e.controller_runtime})`:"inherit (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_runtime.resolution="dynamic"),u.impl_effort.value==="auto"&&(u.impl_effort.display="auto (\uC2E4\uD589 \uC2DC \uACB0\uC815)",u.impl_effort.resolution="dynamic")}for(let d of["orchestration_model","orchestration_effort","orchestration_speed"]){if(!o){u[d]=Nl(d,t,r);continue}let p=d.replace("orchestration_",""),m=Lt(o[p]),v=Wn(d,t,r,m);if(d==="orchestration_effort"&&v.source==="base"){u[d]=Et(null,"base","CLI \uAE30\uBCF8 (\uBBF8\uC9C0\uC815)",null,"default");continue}if(v.value===null){u[d]=Et(null,"base","\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00",null,"unavailable");continue}if(d==="orchestration_model"){let C=v.source==="base"?Lt(o.model_id)||v.value:na(v.value,null,s,a);u[d]=Et(v.value,v.source,kn(C),C,v.source==="base"?"default":"explicit");continue}if(v.value==="default"){u[d]=v.source==="base"?Et("default","base","default (\uC77C\uBC18)","default","default"):$n("default",v.source);continue}u[d]=$n(v.value,v.source)}if(s)if(i===null){let d=u.orchestration_model.full_value;u.quick_fix_impl_model=Et(null,"base",d===null?"\uBA54\uC778":`\uBA54\uC778 (orchestration ${kn(d)})`,null,"default")}else if(c.runtime!==null){let d=na(i,c.runtime,s,a);u.quick_fix_impl_model=Et(i,"global",kn(d),d,"explicit")}else c.offered?u.quick_fix_impl_model=sa(Et(i,"global","",null,"explicit")):u.quick_fix_impl_model=$n(i,"global");return u}function kf(e,t){let r=t&&e.value==="default"?"default (\uC77C\uBC18)":e.display;if(!t||e.source==="pin")return`\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 ${e.display}`;let n=e.source==="global"?"\uC804\uC5ED":"harness";return`\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 ${r} (${n})`}function Gs(e){let t=jt(e.pin)?e.pin:{},r=jt(e.global)?e.global:{},n=jt(e.resolution_global)?{...e.resolution_global}:{};delete n[e.key];let s=p=>{let m={...n,...p};return Qt({pin:e.layer==="pin"?m:t,global:e.layer==="pin"?r:m,execution_defaults:e.execution_defaults,runner_catalog:e.runner_catalog,route:e.route,controller_runtime:e.controller_runtime})},o=e.layer==="pin"?t:r,a={...o};delete a[e.key];let i=s(a)[e.key],c=s(o)[e.key],u=Lt(o[e.key]),d=[...e.choices];return u!==null&&!d.includes(u)&&d.unshift(u),{unset_label:kf(i,e.layer==="pin"),full_value:i.full_value,unavailable:i.resolution==="unavailable",disabled:c?.resolution==="not_applicable",options:d.map(p=>{let m=s({...o,[e.key]:p})[e.key];return{value:p,label:m.display,full_value:m.full_value}})}}function xn(e=document){let t=e.createElement("dialog");t.className="resume-instructions-dialog";let r=e.createElement("h2"),n=e.createElement("textarea"),s=e.createElement("div"),o=e.createElement("button"),a=e.createElement("button");return r.textContent="\uC138\uC158 \uC774\uC5B4\uD558\uAE30",n.placeholder="\uCD94\uAC00 \uC9C0\uCE68 (\uC120\uD0DD) \u2014 \uBE44\uC6CC\uB450\uBA74 \uAE30\uBCF8 \uC808\uCC28\uB85C \uC7AC\uAC1C",n.maxLength=4e3,s.className="resume-instructions-dialog__actions",o.type="button",o.textContent="\uC774\uC5B4\uD558\uAE30",a.type="button",a.textContent="\uCDE8\uC18C",s.append(o,a),t.append(r,n,s),e.body.append(t),new Promise(i=>{let c=!1,u=p=>{c||(c=!0,typeof t.close=="function"&&t.close(),t.remove(),i(p))},d=()=>u(n.value.trim());o.addEventListener("click",d),a.addEventListener("click",()=>u(null)),n.addEventListener("keydown",p=>{p.key==="Enter"&&(p.ctrlKey||p.metaKey)&&(p.preventDefault(),d())}),t.addEventListener("cancel",p=>{p.preventDefault(),u(null)}),typeof t.showModal=="function"?t.showModal():t.setAttribute("open",""),n.focus()})}var zl="\uC11C\uBC84 \uC7AC\uC2DC\uC791 \uBCF5\uAD6C \u2014 \uBD80\uBD84 \uC9D1\uACC4";function Ut(e){return typeof e=="number"&&Number.isFinite(e)?e:0}var kr=["input_tokens","output_tokens","cache_read_input_tokens","cache_creation_input_tokens"],zn=[...kr,"reasoning_output_tokens"],$f=["implementation","review-consult"];function oa(e){let t=0;for(let r of kr)t+=Ut(e?.[r]);return t}function xf(e){return!e||typeof e!="object"?!1:kr.some(t=>Number.isFinite(e[t]))}function jl(e){return!e||typeof e!="object"?!1:zn.some(t=>Number.isFinite(e[t]))}function Af(e){let t={};for(let r of zn)e&&Number.isFinite(e[r])&&(t[r]=e[r]);return t}function Bl(e){let t={};for(let r of zn)Number.isFinite(e[r])&&(t[r]=e[r]);return e.replayed===!0&&(t.replayed=!0),typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)&&(t.total_cost_usd=e.total_cost_usd),t}function Ul(e,t){return e==="codex"?Ut(t.input_tokens)+Ut(t.output_tokens):oa(t)}function Sf(e){return e==="claude"?"Claude":"Codex"}function Ef(e){return`\u03C4 ${Hl(e)}`}function Tf(e,t){let r=t.breakdown||{},n=[`\uC785\uB825 ${Ut(r.input_tokens).toLocaleString("en-US")}`,`\uCD9C\uB825 ${Ut(r.output_tokens).toLocaleString("en-US")}`];e==="claude"?n.push(`\uCE90\uC2DC\uC77D\uAE30 ${Ut(r.cache_read_input_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC0DD\uC131 ${Ut(r.cache_creation_input_tokens).toLocaleString("en-US")}`):(n.push(`\uCE90\uC2DC\uC77D\uAE30 ${Ut(r.cache_read_input_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC4F0\uAE30 ${Ut(r.cache_creation_input_tokens).toLocaleString("en-US")}`),Number.isFinite(r.reasoning_output_tokens)&&n.push(`\uCD94\uB860\uCD9C\uB825 ${Ut(r.reasoning_output_tokens).toLocaleString("en-US")}`));let o=[e==="claude"?"Claude subtotal = \uC785\uB825 + \uCD9C\uB825 + \uCE90\uC2DC\uC77D\uAE30 + \uCE90\uC2DC\uC0DD\uC131":"Codex subtotal = \uC785\uB825 + \uCD9C\uB825; \uCE90\uC2DC\uC77D\uAE30\xB7\uCE90\uC2DC\uC4F0\uAE30\xB7\uCD94\uB860\uCD9C\uB825\uC740 subtotal\uC5D0 \uD3EC\uD568\uB418\uC9C0 \uC54A\uB294 subset",`\uCD1D ${t.subtotal.toLocaleString("en-US")}`,n.join(" \xB7 ")];return typeof t.total_cost_usd=="number"&&Number.isFinite(t.total_cost_usd)&&o.push(`$${t.total_cost_usd.toFixed(2)}`),t.replayed&&o.push(zl),o.join(`
+`)}function Wt(e){let t=[];if(!e||typeof e!="object"||!("providers"in e)||!e.providers)return t;for(let r of["claude","codex"]){let n=e.providers[r];n&&t.push({provider:r,label:`${Sf(r)} ${Ef(n.subtotal)}${typeof n.total_cost_usd=="number"&&Number.isFinite(n.total_cost_usd)?` \xB7 $${n.total_cost_usd.toFixed(2)}`:""}`,tooltip:Tf(r,n)})}return t}function Vs(e){let t={},r={claude:!0,codex:!1},n={claude:0,codex:0};for(let s of e)if(!(!s||!s.providers))for(let o of["claude","codex"]){let a=s.providers[o];if(!a)continue;let i=t[o];i||(i={subtotal:0,breakdown:{}},t[o]=i),i.subtotal+=a.subtotal;for(let c of zn)Number.isFinite(a.breakdown[c])&&(i.breakdown[c]=Ut(i.breakdown[c])+Ut(a.breakdown[c]));a.replayed&&(i.replayed=!0),o==="claude"&&(typeof a.total_cost_usd=="number"&&Number.isFinite(a.total_cost_usd)?n.claude+=a.total_cost_usd:r.claude=!1)}return t.claude&&r.claude&&(t.claude.total_cost_usd=n.claude),Object.keys(t).length===0?null:{providers:t,roles:{}}}function aa(e){return!e||typeof e!="object"?null:lr({attempt:{...e,bead_id:"__attempt__"}},"__attempt__")}function Cf(e){return e==="codex"?"codex":"claude"}function Or(){return{subtotal:0,breakdown:Af(null),legs:[],replayed:!1,outer_count:0,outer_cost:0,outer_cost_count:0}}function Ks(e,t,r){e.subtotal+=t.subtotal;for(let n of zn)Number.isFinite(t.usage[n])&&(e.breakdown[n]=Ut(e.breakdown[n])+Ut(t.usage[n]));e.legs.push(t),t.replayed===!0&&(e.replayed=!0),r&&(e.outer_count+=1,typeof t.usage.total_cost_usd=="number"&&Number.isFinite(t.usage.total_cost_usd)&&(e.outer_cost+=t.usage.total_cost_usd,e.outer_cost_count+=1))}function Wl(e,t){let r={subtotal:e.subtotal,breakdown:e.breakdown};return t&&(r.legs=e.legs),e.replayed&&(r.replayed=!0),r}function Hl(e){return e>=1e6?`${(e/1e6).toFixed(1)}M`:e>=1e3?`${(e/1e3).toFixed(1)}k`:String(e)}function An(e){return xf(e)?`\u03C4 ${Hl(oa(e))}`:null}function $r(e){let t=An(e);if(!t)return null;let r=e?.total_cost_usd;return typeof r=="number"&&Number.isFinite(r)?`${t} \xB7 $${r.toFixed(2)}`:t}function Hn(e){if(!e||typeof e!="object")return"";let t=[`\uC785\uB825 ${Ut(e.input_tokens).toLocaleString("en-US")}`,`\uCD9C\uB825 ${Ut(e.output_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC77D\uAE30 ${Ut(e.cache_read_input_tokens).toLocaleString("en-US")}`,`\uCE90\uC2DC\uC0DD\uC131 ${Ut(e.cache_creation_input_tokens).toLocaleString("en-US")}`];typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)&&t.push(`$${e.total_cost_usd.toFixed(2)}`);let r=[`\uCD1D ${oa(e).toLocaleString("en-US")}`,t.join(" \xB7 ")];return e.replayed&&r.push(zl),r.join(`
+`)}function lr(e,t){let r={claude:Or(),codex:Or()},n={orchestrator:{claude:Or(),codex:Or()},implementation:{claude:Or(),codex:Or()},"review-consult":{claude:Or(),codex:Or()}},s=new Set;for(let i of Object.values(e||{})){if(!i||i.bead_id!==t)continue;let c=i.usage;if(jl(c)){let d=Cf(i.runner),p=Bl(c),m={provider:d,role:"orchestrator",attempt_id:String(i.attempt_id||""),usage:p,subtotal:Ul(d,p)};p.replayed===!0&&(m.replayed=!0),typeof i.model=="string"&&(m.model=i.model),typeof i.session_id=="string"&&(m.session_id=i.session_id),Ks(r[d],m,!0),Ks(n.orchestrator[d],m,!0)}let u=Array.isArray(i.usage_legs)?i.usage_legs:[];for(let d of u){if(!d||d.provider!=="codex"||!$f.includes(d.role)||!jl(d.usage))continue;let p=typeof d.receipt_id=="string"&&d.receipt_id.length>0?d.receipt_id:null;if(!p||s.has(p))continue;s.add(p);let m=Bl(d.usage),v={provider:"codex",role:d.role,attempt_id:String(i.attempt_id||""),usage:m,subtotal:Ul("codex",m)};v.receipt_id=p,typeof d.model=="string"&&(v.model=d.model),typeof d.effort=="string"&&d.effort.trim().length>0&&(v.effort=d.effort),typeof d.session_id=="string"?v.session_id=d.session_id:typeof d.thread_id=="string"&&(v.session_id=d.thread_id),typeof d.turn_id=="string"&&(v.turn_id=d.turn_id),typeof d.completed_at=="string"&&(v.completed_at=d.completed_at),m.replayed===!0&&(v.replayed=!0),Ks(r.codex,v,!1),Ks(n[v.role].codex,v,!1)}}let o={};for(let i of["claude","codex"]){let c=r[i];if(c.legs.length===0)continue;let u=Wl(c,!1);i==="claude"&&c.outer_count>0&&c.outer_cost_count===c.outer_count&&(u.total_cost_usd=c.outer_cost),o[i]=u}if(Object.keys(o).length===0)return null;let a={};for(let i of["orchestrator","implementation","review-consult"]){let c={};for(let u of["claude","codex"]){let d=n[i][u];d.legs.length>0&&(c[u]={...Wl(d,!0),legs:d.legs})}Object.keys(c).length>0&&(a[i]=c)}return{providers:o,roles:a}}var{entries:ec,setPrototypeOf:Gl,isFrozen:Rf,getPrototypeOf:If,getOwnPropertyDescriptor:Lf}=Object,{freeze:Kt,seal:cr,create:fa}=Object,{apply:_a,construct:ma}=typeof Reflect<"u"&&Reflect;Kt||(Kt=function(t){return t});cr||(cr=function(t){return t});_a||(_a=function(t,r){for(var n=arguments.length,s=new Array(n>2?n-2:0),o=2;o<n;o++)s[o-2]=arguments[o];return t.apply(r,s)});ma||(ma=function(t){for(var r=arguments.length,n=new Array(r>1?r-1:0),s=1;s<r;s++)n[s-1]=arguments[s];return new t(...n)});var Ys=Vt(Array.prototype.forEach),Of=Vt(Array.prototype.lastIndexOf),Kl=Vt(Array.prototype.pop),Gn=Vt(Array.prototype.push),Pf=Vt(Array.prototype.splice),Qs=Vt(String.prototype.toLowerCase),ia=Vt(String.prototype.toString),la=Vt(String.prototype.match),Kn=Vt(String.prototype.replace),Mf=Vt(String.prototype.indexOf),Df=Vt(String.prototype.trim),fr=Vt(Object.prototype.hasOwnProperty),Gt=Vt(RegExp.prototype.test),Vn=Nf(TypeError);function Vt(e){return function(t){t instanceof RegExp&&(t.lastIndex=0);for(var r=arguments.length,n=new Array(r>1?r-1:0),s=1;s<r;s++)n[s-1]=arguments[s];return _a(e,t,n)}}function Nf(e){return function(){for(var t=arguments.length,r=new Array(t),n=0;n<t;n++)r[n]=arguments[n];return ma(e,r)}}function it(e,t){let r=arguments.length>2&&arguments[2]!==void 0?arguments[2]:Qs;Gl&&Gl(e,null);let n=t.length;for(;n--;){let s=t[n];if(typeof s=="string"){let o=r(s);o!==s&&(Rf(t)||(t[n]=o),s=o)}e[s]=!0}return e}function qf(e){for(let t=0;t<e.length;t++)fr(e,t)||(e[t]=null);return e}function xr(e){let t=fa(null);for(let[r,n]of ec(e))fr(e,r)&&(Array.isArray(n)?t[r]=qf(n):n&&typeof n=="object"&&n.constructor===Object?t[r]=xr(n):t[r]=n);return t}function Yn(e,t){for(;e!==null;){let n=Lf(e,t);if(n){if(n.get)return Vt(n.get);if(typeof n.value=="function")return Vt(n.value)}e=If(e)}function r(){return null}return r}var Vl=Kt(["a","abbr","acronym","address","area","article","aside","audio","b","bdi","bdo","big","blink","blockquote","body","br","button","canvas","caption","center","cite","code","col","colgroup","content","data","datalist","dd","decorator","del","details","dfn","dialog","dir","div","dl","dt","element","em","fieldset","figcaption","figure","font","footer","form","h1","h2","h3","h4","h5","h6","head","header","hgroup","hr","html","i","img","input","ins","kbd","label","legend","li","main","map","mark","marquee","menu","menuitem","meter","nav","nobr","ol","optgroup","option","output","p","picture","pre","progress","q","rp","rt","ruby","s","samp","search","section","select","shadow","slot","small","source","spacer","span","strike","strong","style","sub","summary","sup","table","tbody","td","template","textarea","tfoot","th","thead","time","tr","track","tt","u","ul","var","video","wbr"]),ca=Kt(["svg","a","altglyph","altglyphdef","altglyphitem","animatecolor","animatemotion","animatetransform","circle","clippath","defs","desc","ellipse","enterkeyhint","exportparts","filter","font","g","glyph","glyphref","hkern","image","inputmode","line","lineargradient","marker","mask","metadata","mpath","part","path","pattern","polygon","polyline","radialgradient","rect","stop","style","switch","symbol","text","textpath","title","tref","tspan","view","vkern"]),ua=Kt(["feBlend","feColorMatrix","feComponentTransfer","feComposite","feConvolveMatrix","feDiffuseLighting","feDisplacementMap","feDistantLight","feDropShadow","feFlood","feFuncA","feFuncB","feFuncG","feFuncR","feGaussianBlur","feImage","feMerge","feMergeNode","feMorphology","feOffset","fePointLight","feSpecularLighting","feSpotLight","feTile","feTurbulence"]),Ff=Kt(["animate","color-profile","cursor","discard","font-face","font-face-format","font-face-name","font-face-src","font-face-uri","foreignobject","hatch","hatchpath","mesh","meshgradient","meshpatch","meshrow","missing-glyph","script","set","solidcolor","unknown","use"]),da=Kt(["math","menclose","merror","mfenced","mfrac","mglyph","mi","mlabeledtr","mmultiscripts","mn","mo","mover","mpadded","mphantom","mroot","mrow","ms","mspace","msqrt","mstyle","msub","msup","msubsup","mtable","mtd","mtext","mtr","munder","munderover","mprescripts"]),jf=Kt(["maction","maligngroup","malignmark","mlongdiv","mscarries","mscarry","msgroup","mstack","msline","msrow","semantics","annotation","annotation-xml","mprescripts","none"]),Yl=Kt(["#text"]),Zl=Kt(["accept","action","align","alt","autocapitalize","autocomplete","autopictureinpicture","autoplay","background","bgcolor","border","capture","cellpadding","cellspacing","checked","cite","class","clear","color","cols","colspan","controls","controlslist","coords","crossorigin","datetime","decoding","default","dir","disabled","disablepictureinpicture","disableremoteplayback","download","draggable","enctype","enterkeyhint","exportparts","face","for","headers","height","hidden","high","href","hreflang","id","inert","inputmode","integrity","ismap","kind","label","lang","list","loading","loop","low","max","maxlength","media","method","min","minlength","multiple","muted","name","nonce","noshade","novalidate","nowrap","open","optimum","part","pattern","placeholder","playsinline","popover","popovertarget","popovertargetaction","poster","preload","pubdate","radiogroup","readonly","rel","required","rev","reversed","role","rows","rowspan","spellcheck","scope","selected","shape","size","sizes","slot","span","srclang","start","src","srcset","step","style","summary","tabindex","title","translate","type","usemap","valign","value","width","wrap","xmlns","slot"]),pa=Kt(["accent-height","accumulate","additive","alignment-baseline","amplitude","ascent","attributename","attributetype","azimuth","basefrequency","baseline-shift","begin","bias","by","class","clip","clippathunits","clip-path","clip-rule","color","color-interpolation","color-interpolation-filters","color-profile","color-rendering","cx","cy","d","dx","dy","diffuseconstant","direction","display","divisor","dur","edgemode","elevation","end","exponent","fill","fill-opacity","fill-rule","filter","filterunits","flood-color","flood-opacity","font-family","font-size","font-size-adjust","font-stretch","font-style","font-variant","font-weight","fx","fy","g1","g2","glyph-name","glyphref","gradientunits","gradienttransform","height","href","id","image-rendering","in","in2","intercept","k","k1","k2","k3","k4","kerning","keypoints","keysplines","keytimes","lang","lengthadjust","letter-spacing","kernelmatrix","kernelunitlength","lighting-color","local","marker-end","marker-mid","marker-start","markerheight","markerunits","markerwidth","maskcontentunits","maskunits","max","mask","mask-type","media","method","mode","min","name","numoctaves","offset","operator","opacity","order","orient","orientation","origin","overflow","paint-order","path","pathlength","patterncontentunits","patterntransform","patternunits","points","preservealpha","preserveaspectratio","primitiveunits","r","rx","ry","radius","refx","refy","repeatcount","repeatdur","restart","result","rotate","scale","seed","shape-rendering","slope","specularconstant","specularexponent","spreadmethod","startoffset","stddeviation","stitchtiles","stop-color","stop-opacity","stroke-dasharray","stroke-dashoffset","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-opacity","stroke","stroke-width","style","surfacescale","systemlanguage","tabindex","tablevalues","targetx","targety","transform","transform-origin","text-anchor","text-decoration","text-rendering","textlength","type","u1","u2","unicode","values","viewbox","visibility","version","vert-adv-y","vert-origin-x","vert-origin-y","width","word-spacing","wrap","writing-mode","xchannelselector","ychannelselector","x","x1","x2","xmlns","y","y1","y2","z","zoomandpan"]),Ql=Kt(["accent","accentunder","align","bevelled","close","columnsalign","columnlines","columnspan","denomalign","depth","dir","display","displaystyle","encoding","fence","frame","height","href","id","largeop","length","linethickness","lspace","lquote","mathbackground","mathcolor","mathsize","mathvariant","maxsize","minsize","movablelimits","notation","numalign","open","rowalign","rowlines","rowspacing","rowspan","rspace","rquote","scriptlevel","scriptminsize","scriptsizemultiplier","selection","separator","separators","stretchy","subscriptshift","supscriptshift","symmetric","voffset","width","xmlns"]),Zs=Kt(["xlink:href","xml:id","xlink:title","xml:space","xmlns:xlink"]),Bf=cr(/\{\{[\w\W]*|[\w\W]*\}\}/gm),Uf=cr(/<%[\w\W]*|[\w\W]*%>/gm),Wf=cr(/\$\{[\w\W]*/gm),zf=cr(/^data-[\-\w.\u00B7-\uFFFF]+$/),Hf=cr(/^aria-[\-\w]+$/),tc=cr(/^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i),Gf=cr(/^(?:\w+script|data):/i),Kf=cr(/[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g),rc=cr(/^html$/i),Vf=cr(/^[a-z][.\w]*(-[.\w]+)+$/i),Xl=Object.freeze({__proto__:null,ARIA_ATTR:Hf,ATTR_WHITESPACE:Kf,CUSTOM_ELEMENT:Vf,DATA_ATTR:zf,DOCTYPE_NAME:rc,ERB_EXPR:Uf,IS_ALLOWED_URI:tc,IS_SCRIPT_OR_DATA:Gf,MUSTACHE_EXPR:Bf,TMPLIT_EXPR:Wf}),Zn={element:1,attribute:2,text:3,cdataSection:4,entityReference:5,entityNode:6,progressingInstruction:7,comment:8,document:9,documentType:10,documentFragment:11,notation:12},Yf=function(){return typeof window>"u"?null:window},Zf=function(t,r){if(typeof t!="object"||typeof t.createPolicy!="function")return null;let n=null,s="data-tt-policy-suffix";r&&r.hasAttribute(s)&&(n=r.getAttribute(s));let o="dompurify"+(n?"#"+n:"");try{return t.createPolicy(o,{createHTML(a){return a},createScriptURL(a){return a}})}catch{return console.warn("TrustedTypes policy "+o+" could not be created."),null}},Jl=function(){return{afterSanitizeAttributes:[],afterSanitizeElements:[],afterSanitizeShadowDOM:[],beforeSanitizeAttributes:[],beforeSanitizeElements:[],beforeSanitizeShadowDOM:[],uponSanitizeAttribute:[],uponSanitizeElement:[],uponSanitizeShadowNode:[]}};function nc(){let e=arguments.length>0&&arguments[0]!==void 0?arguments[0]:Yf(),t=Fe=>nc(Fe);if(t.version="3.3.0",t.removed=[],!e||!e.document||e.document.nodeType!==Zn.document||!e.Element)return t.isSupported=!1,t;let{document:r}=e,n=r,s=n.currentScript,{DocumentFragment:o,HTMLTemplateElement:a,Node:i,Element:c,NodeFilter:u,NamedNodeMap:d=e.NamedNodeMap||e.MozNamedAttrMap,HTMLFormElement:p,DOMParser:m,trustedTypes:v}=e,C=c.prototype,F=Yn(C,"cloneNode"),H=Yn(C,"remove"),re=Yn(C,"nextSibling"),V=Yn(C,"childNodes"),q=Yn(C,"parentNode");if(typeof a=="function"){let Fe=r.createElement("template");Fe.content&&Fe.content.ownerDocument&&(r=Fe.content.ownerDocument)}let O,P="",{implementation:I,createNodeIterator:$,createDocumentFragment:M,getElementsByTagName:K}=r,{importNode:pe}=n,_e=Jl();t.isSupported=typeof ec=="function"&&typeof q=="function"&&I&&I.createHTMLDocument!==void 0;let{MUSTACHE_EXPR:me,ERB_EXPR:ae,TMPLIT_EXPR:Ie,DATA_ATTR:Te,ARIA_ATTR:ne,IS_SCRIPT_OR_DATA:se,ATTR_WHITESPACE:we,CUSTOM_ELEMENT:A}=Xl,{IS_ALLOWED_URI:ue}=Xl,E=null,D=it({},[...Vl,...ca,...ua,...da,...Yl]),ce=null,$e=it({},[...Zl,...pa,...Ql,...Zs]),ge=Object.seal(fa(null,{tagNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},allowCustomizedBuiltInElements:{writable:!0,configurable:!1,enumerable:!0,value:!1}})),Oe=null,_t=null,He=Object.seal(fa(null,{tagCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeCheck:{writable:!0,configurable:!1,enumerable:!0,value:null}})),pt=!0,tt=!0,Y=!1,Z=!0,Se=!1,Ze=!0,je=!1,rt=!1,Qe=!1,yt=!1,Le=!1,T=!1,Q=!0,Ee=!1,ee="user-content-",Ne=!0,et=!1,st={},Ye=null,ct=it({},["annotation-xml","audio","colgroup","desc","foreignobject","head","iframe","math","mi","mn","mo","ms","mtext","noembed","noframes","noscript","plaintext","script","style","svg","template","thead","title","video","xmp"]),ft=null,ut=it({},["audio","video","img","source","image","track"]),ot=null,gt=it({},["alt","class","for","id","label","name","pattern","placeholder","role","summary","title","value","style","xmlns"]),U="http://www.w3.org/1998/Math/MathML",J="http://www.w3.org/2000/svg",be="http://www.w3.org/1999/xhtml",Ge=be,De=!1,B=null,te=it({},[U,J,be],ia),ve=it({},["mi","mo","mn","ms","mtext"]),y=it({},["annotation-xml"]),R=it({},["title","style","font","a","script"]),W=null,oe=["application/xhtml+xml","text/html"],Ce="text/html",Ae=null,Me=null,Be=r.createElement("form"),At=function(S){return S instanceof RegExp||S instanceof Function},vt=function(){let S=arguments.length>0&&arguments[0]!==void 0?arguments[0]:{};if(!(Me&&Me===S)){if((!S||typeof S!="object")&&(S={}),S=xr(S),W=oe.indexOf(S.PARSER_MEDIA_TYPE)===-1?Ce:S.PARSER_MEDIA_TYPE,Ae=W==="application/xhtml+xml"?ia:Qs,E=fr(S,"ALLOWED_TAGS")?it({},S.ALLOWED_TAGS,Ae):D,ce=fr(S,"ALLOWED_ATTR")?it({},S.ALLOWED_ATTR,Ae):$e,B=fr(S,"ALLOWED_NAMESPACES")?it({},S.ALLOWED_NAMESPACES,ia):te,ot=fr(S,"ADD_URI_SAFE_ATTR")?it(xr(gt),S.ADD_URI_SAFE_ATTR,Ae):gt,ft=fr(S,"ADD_DATA_URI_TAGS")?it(xr(ut),S.ADD_DATA_URI_TAGS,Ae):ut,Ye=fr(S,"FORBID_CONTENTS")?it({},S.FORBID_CONTENTS,Ae):ct,Oe=fr(S,"FORBID_TAGS")?it({},S.FORBID_TAGS,Ae):xr({}),_t=fr(S,"FORBID_ATTR")?it({},S.FORBID_ATTR,Ae):xr({}),st=fr(S,"USE_PROFILES")?S.USE_PROFILES:!1,pt=S.ALLOW_ARIA_ATTR!==!1,tt=S.ALLOW_DATA_ATTR!==!1,Y=S.ALLOW_UNKNOWN_PROTOCOLS||!1,Z=S.ALLOW_SELF_CLOSE_IN_ATTR!==!1,Se=S.SAFE_FOR_TEMPLATES||!1,Ze=S.SAFE_FOR_XML!==!1,je=S.WHOLE_DOCUMENT||!1,yt=S.RETURN_DOM||!1,Le=S.RETURN_DOM_FRAGMENT||!1,T=S.RETURN_TRUSTED_TYPE||!1,Qe=S.FORCE_BODY||!1,Q=S.SANITIZE_DOM!==!1,Ee=S.SANITIZE_NAMED_PROPS||!1,Ne=S.KEEP_CONTENT!==!1,et=S.IN_PLACE||!1,ue=S.ALLOWED_URI_REGEXP||tc,Ge=S.NAMESPACE||be,ve=S.MATHML_TEXT_INTEGRATION_POINTS||ve,y=S.HTML_INTEGRATION_POINTS||y,ge=S.CUSTOM_ELEMENT_HANDLING||{},S.CUSTOM_ELEMENT_HANDLING&&At(S.CUSTOM_ELEMENT_HANDLING.tagNameCheck)&&(ge.tagNameCheck=S.CUSTOM_ELEMENT_HANDLING.tagNameCheck),S.CUSTOM_ELEMENT_HANDLING&&At(S.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)&&(ge.attributeNameCheck=S.CUSTOM_ELEMENT_HANDLING.attributeNameCheck),S.CUSTOM_ELEMENT_HANDLING&&typeof S.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements=="boolean"&&(ge.allowCustomizedBuiltInElements=S.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements),Se&&(tt=!1),Le&&(yt=!0),st&&(E=it({},Yl),ce=[],st.html===!0&&(it(E,Vl),it(ce,Zl)),st.svg===!0&&(it(E,ca),it(ce,pa),it(ce,Zs)),st.svgFilters===!0&&(it(E,ua),it(ce,pa),it(ce,Zs)),st.mathMl===!0&&(it(E,da),it(ce,Ql),it(ce,Zs))),S.ADD_TAGS&&(typeof S.ADD_TAGS=="function"?He.tagCheck=S.ADD_TAGS:(E===D&&(E=xr(E)),it(E,S.ADD_TAGS,Ae))),S.ADD_ATTR&&(typeof S.ADD_ATTR=="function"?He.attributeCheck=S.ADD_ATTR:(ce===$e&&(ce=xr(ce)),it(ce,S.ADD_ATTR,Ae))),S.ADD_URI_SAFE_ATTR&&it(ot,S.ADD_URI_SAFE_ATTR,Ae),S.FORBID_CONTENTS&&(Ye===ct&&(Ye=xr(Ye)),it(Ye,S.FORBID_CONTENTS,Ae)),Ne&&(E["#text"]=!0),je&&it(E,["html","head","body"]),E.table&&(it(E,["tbody"]),delete Oe.tbody),S.TRUSTED_TYPES_POLICY){if(typeof S.TRUSTED_TYPES_POLICY.createHTML!="function")throw Vn('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');if(typeof S.TRUSTED_TYPES_POLICY.createScriptURL!="function")throw Vn('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');O=S.TRUSTED_TYPES_POLICY,P=O.createHTML("")}else O===void 0&&(O=Zf(v,s)),O!==null&&typeof P=="string"&&(P=O.createHTML(""));Kt&&Kt(S),Me=S}},h=it({},[...ca,...ua,...Ff]),x=it({},[...da,...jf]),N=function(S){let de=q(S);(!de||!de.tagName)&&(de={namespaceURI:Ge,tagName:"template"});let Pe=Qs(S.tagName),ht=Qs(de.tagName);return B[S.namespaceURI]?S.namespaceURI===J?de.namespaceURI===be?Pe==="svg":de.namespaceURI===U?Pe==="svg"&&(ht==="annotation-xml"||ve[ht]):!!h[Pe]:S.namespaceURI===U?de.namespaceURI===be?Pe==="math":de.namespaceURI===J?Pe==="math"&&y[ht]:!!x[Pe]:S.namespaceURI===be?de.namespaceURI===J&&!y[ht]||de.namespaceURI===U&&!ve[ht]?!1:!x[Pe]&&(R[Pe]||!h[Pe]):!!(W==="application/xhtml+xml"&&B[S.namespaceURI]):!1},j=function(S){Gn(t.removed,{element:S});try{q(S).removeChild(S)}catch{H(S)}},ye=function(S,de){try{Gn(t.removed,{attribute:de.getAttributeNode(S),from:de})}catch{Gn(t.removed,{attribute:null,from:de})}if(de.removeAttribute(S),S==="is")if(yt||Le)try{j(de)}catch{}else try{de.setAttribute(S,"")}catch{}},ke=function(S){let de=null,Pe=null;if(Qe)S="<remove></remove>"+S;else{let $t=la(S,/^[\r\n\t ]+/);Pe=$t&&$t[0]}W==="application/xhtml+xml"&&Ge===be&&(S='<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>'+S+"</body></html>");let ht=O?O.createHTML(S):S;if(Ge===be)try{de=new m().parseFromString(ht,W)}catch{}if(!de||!de.documentElement){de=I.createDocument(Ge,"template",null);try{de.documentElement.innerHTML=De?P:ht}catch{}}let Mt=de.body||de.documentElement;return S&&Pe&&Mt.insertBefore(r.createTextNode(Pe),Mt.childNodes[0]||null),Ge===be?K.call(de,je?"html":"body")[0]:je?de.documentElement:Mt},qe=function(S){return $.call(S.ownerDocument||S,S,u.SHOW_ELEMENT|u.SHOW_COMMENT|u.SHOW_TEXT|u.SHOW_PROCESSING_INSTRUCTION|u.SHOW_CDATA_SECTION,null)},ze=function(S){return S instanceof p&&(typeof S.nodeName!="string"||typeof S.textContent!="string"||typeof S.removeChild!="function"||!(S.attributes instanceof d)||typeof S.removeAttribute!="function"||typeof S.setAttribute!="function"||typeof S.namespaceURI!="string"||typeof S.insertBefore!="function"||typeof S.hasChildNodes!="function")},kt=function(S){return typeof i=="function"&&S instanceof i};function mt(Fe,S,de){Ys(Fe,Pe=>{Pe.call(t,S,de,Me)})}let Ft=function(S){let de=null;if(mt(_e.beforeSanitizeElements,S,null),ze(S))return j(S),!0;let Pe=Ae(S.nodeName);if(mt(_e.uponSanitizeElement,S,{tagName:Pe,allowedTags:E}),Ze&&S.hasChildNodes()&&!kt(S.firstElementChild)&&Gt(/<[/\w!]/g,S.innerHTML)&&Gt(/<[/\w!]/g,S.textContent)||S.nodeType===Zn.progressingInstruction||Ze&&S.nodeType===Zn.comment&&Gt(/<[/\w]/g,S.data))return j(S),!0;if(!(He.tagCheck instanceof Function&&He.tagCheck(Pe))&&(!E[Pe]||Oe[Pe])){if(!Oe[Pe]&&Nt(Pe)&&(ge.tagNameCheck instanceof RegExp&&Gt(ge.tagNameCheck,Pe)||ge.tagNameCheck instanceof Function&&ge.tagNameCheck(Pe)))return!1;if(Ne&&!Ye[Pe]){let ht=q(S)||S.parentNode,Mt=V(S)||S.childNodes;if(Mt&&ht){let $t=Mt.length;for(let Dt=$t-1;Dt>=0;--Dt){let f=F(Mt[Dt],!0);f.__removalCount=(S.__removalCount||0)+1,ht.insertBefore(f,re(S))}}}return j(S),!0}return S instanceof c&&!N(S)||(Pe==="noscript"||Pe==="noembed"||Pe==="noframes")&&Gt(/<\/no(script|embed|frames)/i,S.innerHTML)?(j(S),!0):(Se&&S.nodeType===Zn.text&&(de=S.textContent,Ys([me,ae,Ie],ht=>{de=Kn(de,ht," ")}),S.textContent!==de&&(Gn(t.removed,{element:S.cloneNode()}),S.textContent=de)),mt(_e.afterSanitizeElements,S,null),!1)},Tt=function(S,de,Pe){if(Q&&(de==="id"||de==="name")&&(Pe in r||Pe in Be))return!1;if(!(tt&&!_t[de]&&Gt(Te,de))){if(!(pt&&Gt(ne,de))){if(!(He.attributeCheck instanceof Function&&He.attributeCheck(de,S))){if(!ce[de]||_t[de]){if(!(Nt(S)&&(ge.tagNameCheck instanceof RegExp&&Gt(ge.tagNameCheck,S)||ge.tagNameCheck instanceof Function&&ge.tagNameCheck(S))&&(ge.attributeNameCheck instanceof RegExp&&Gt(ge.attributeNameCheck,de)||ge.attributeNameCheck instanceof Function&&ge.attributeNameCheck(de,S))||de==="is"&&ge.allowCustomizedBuiltInElements&&(ge.tagNameCheck instanceof RegExp&&Gt(ge.tagNameCheck,Pe)||ge.tagNameCheck instanceof Function&&ge.tagNameCheck(Pe))))return!1}else if(!ot[de]){if(!Gt(ue,Kn(Pe,we,""))){if(!((de==="src"||de==="xlink:href"||de==="href")&&S!=="script"&&Mf(Pe,"data:")===0&&ft[S])){if(!(Y&&!Gt(se,Kn(Pe,we,"")))){if(Pe)return!1}}}}}}}return!0},Nt=function(S){return S!=="annotation-xml"&&la(S,A)},nt=function(S){mt(_e.beforeSanitizeAttributes,S,null);let{attributes:de}=S;if(!de||ze(S))return;let Pe={attrName:"",attrValue:"",keepAttr:!0,allowedAttributes:ce,forceKeepAttr:void 0},ht=de.length;for(;ht--;){let Mt=de[ht],{name:$t,namespaceURI:Dt,value:f}=Mt,w=Ae($t),G=f,_=$t==="value"?G:Df(G);if(Pe.attrName=w,Pe.attrValue=_,Pe.keepAttr=!0,Pe.forceKeepAttr=void 0,mt(_e.uponSanitizeAttribute,S,Pe),_=Pe.attrValue,Ee&&(w==="id"||w==="name")&&(ye($t,S),_=ee+_),Ze&&Gt(/((--!?|])>)|<\/(style|title|textarea)/i,_)){ye($t,S);continue}if(w==="attributename"&&la(_,"href")){ye($t,S);continue}if(Pe.forceKeepAttr)continue;if(!Pe.keepAttr){ye($t,S);continue}if(!Z&&Gt(/\/>/i,_)){ye($t,S);continue}Se&&Ys([me,ae,Ie],le=>{_=Kn(_,le," ")});let b=Ae(S.nodeName);if(!Tt(b,w,_)){ye($t,S);continue}if(O&&typeof v=="object"&&typeof v.getAttributeType=="function"&&!Dt)switch(v.getAttributeType(b,w)){case"TrustedHTML":{_=O.createHTML(_);break}case"TrustedScriptURL":{_=O.createScriptURL(_);break}}if(_!==G)try{Dt?S.setAttributeNS(Dt,$t,_):S.setAttribute($t,_),ze(S)?j(S):Kl(t.removed)}catch{ye($t,S)}}mt(_e.afterSanitizeAttributes,S,null)},zt=function Fe(S){let de=null,Pe=qe(S);for(mt(_e.beforeSanitizeShadowDOM,S,null);de=Pe.nextNode();)mt(_e.uponSanitizeShadowNode,de,null),Ft(de),nt(de),de.content instanceof o&&Fe(de.content);mt(_e.afterSanitizeShadowDOM,S,null)};return t.sanitize=function(Fe){let S=arguments.length>1&&arguments[1]!==void 0?arguments[1]:{},de=null,Pe=null,ht=null,Mt=null;if(De=!Fe,De&&(Fe="<!-->"),typeof Fe!="string"&&!kt(Fe))if(typeof Fe.toString=="function"){if(Fe=Fe.toString(),typeof Fe!="string")throw Vn("dirty is not a string, aborting")}else throw Vn("toString is not a function");if(!t.isSupported)return Fe;if(rt||vt(S),t.removed=[],typeof Fe=="string"&&(et=!1),et){if(Fe.nodeName){let f=Ae(Fe.nodeName);if(!E[f]||Oe[f])throw Vn("root node is forbidden and cannot be sanitized in-place")}}else if(Fe instanceof i)de=ke("<!---->"),Pe=de.ownerDocument.importNode(Fe,!0),Pe.nodeType===Zn.element&&Pe.nodeName==="BODY"||Pe.nodeName==="HTML"?de=Pe:de.appendChild(Pe);else{if(!yt&&!Se&&!je&&Fe.indexOf("<")===-1)return O&&T?O.createHTML(Fe):Fe;if(de=ke(Fe),!de)return yt?null:T?P:""}de&&Qe&&j(de.firstChild);let $t=qe(et?Fe:de);for(;ht=$t.nextNode();)Ft(ht),nt(ht),ht.content instanceof o&&zt(ht.content);if(et)return Fe;if(yt){if(Le)for(Mt=M.call(de.ownerDocument);de.firstChild;)Mt.appendChild(de.firstChild);else Mt=de;return(ce.shadowroot||ce.shadowrootmode)&&(Mt=pe.call(n,Mt,!0)),Mt}let Dt=je?de.outerHTML:de.innerHTML;return je&&E["!doctype"]&&de.ownerDocument&&de.ownerDocument.doctype&&de.ownerDocument.doctype.name&&Gt(rc,de.ownerDocument.doctype.name)&&(Dt="<!DOCTYPE "+de.ownerDocument.doctype.name+`>
+`+Dt),Se&&Ys([me,ae,Ie],f=>{Dt=Kn(Dt,f," ")}),O&&T?O.createHTML(Dt):Dt},t.setConfig=function(){let Fe=arguments.length>0&&arguments[0]!==void 0?arguments[0]:{};vt(Fe),rt=!0},t.clearConfig=function(){Me=null,rt=!1},t.isValidAttribute=function(Fe,S,de){Me||vt({});let Pe=Ae(Fe),ht=Ae(S);return Tt(Pe,ht,de)},t.addHook=function(Fe,S){typeof S=="function"&&Gn(_e[Fe],S)},t.removeHook=function(Fe,S){if(S!==void 0){let de=Of(_e[Fe],S);return de===-1?void 0:Pf(_e[Fe],de,1)[0]}return Kl(_e[Fe])},t.removeHooks=function(Fe){_e[Fe]=[]},t.removeAllHooks=function(){_e=Jl()},t}var sc=nc();var Ar={ATTRIBUTE:1,CHILD:2,PROPERTY:3,BOOLEAN_ATTRIBUTE:4,EVENT:5,ELEMENT:6},Xs=e=>(...t)=>({_$litDirective$:e,values:t}),Sn=class{constructor(t){}get _$AU(){return this._$AM._$AU}_$AT(t,r,n){this._$Ct=t,this._$AM=r,this._$Ci=n}_$AS(t,r){return this.update(t,r)}update(t,r){return this.render(...r)}};var Qn=class extends Sn{constructor(t){if(super(t),this.it=Pt,t.type!==Ar.CHILD)throw Error(this.constructor.directiveName+"() can only be used in child bindings")}render(t){if(t===Pt||t==null)return this._t=void 0,this.it=t;if(t===or)return t;if(typeof t!="string")throw Error(this.constructor.directiveName+"() called with a non-string value");if(t===this.it)return this._t;this.it=t;let r=[t];return r.raw=r,this._t={_$litType$:this.constructor.resultType,strings:r,values:[]}}};Qn.directiveName="unsafeHTML",Qn.resultType=1;var oc=Xs(Qn);function ya(){return{async:!1,breaks:!1,extensions:null,gfm:!0,hooks:null,pedantic:!1,renderer:null,silent:!1,tokenizer:null,walkTokens:null}}var rn=ya();function pc(e){rn=e}var ts={exec:()=>null};function bt(e,t=""){let r=typeof e=="string"?e:e.source,n={replace:(s,o)=>{let a=typeof o=="string"?o:o.source;return a=a.replace(Yt.caret,"$1"),r=r.replace(s,a),n},getRegex:()=>new RegExp(r,t)};return n}var Qf=(()=>{try{return!!new RegExp("(?<=1)(?<!1)")}catch{return!1}})(),Yt={codeRemoveIndent:/^(?: {1,4}| {0,3}\t)/gm,outputLinkReplace:/\\([\[\]])/g,indentCodeCompensation:/^(\s+)(?:```)/,beginningSpace:/^\s+/,endingHash:/#$/,startingSpaceChar:/^ /,endingSpaceChar:/ $/,nonSpaceChar:/[^ ]/,newLineCharGlobal:/\n/g,tabCharGlobal:/\t/g,multipleSpaceGlobal:/\s+/g,blankLine:/^[ \t]*$/,doubleBlankLine:/\n[ \t]*\n[ \t]*$/,blockquoteStart:/^ {0,3}>/,blockquoteSetextReplace:/\n {0,3}((?:=+|-+) *)(?=\n|$)/g,blockquoteSetextReplace2:/^ {0,3}>[ \t]?/gm,listReplaceTabs:/^\t+/,listReplaceNesting:/^ {1,4}(?=( {4})*[^ ])/g,listIsTask:/^\[[ xX]\] +\S/,listReplaceTask:/^\[[ xX]\] +/,listTaskCheckbox:/\[[ xX]\]/,anyLine:/\n.*\n/,hrefBrackets:/^<(.*)>$/,tableDelimiter:/[:|]/,tableAlignChars:/^\||\| *$/g,tableRowBlankLine:/\n[ \t]*$/,tableAlignRight:/^ *-+: *$/,tableAlignCenter:/^ *:-+: *$/,tableAlignLeft:/^ *:-+ *$/,startATag:/^<a /i,endATag:/^<\/a>/i,startPreScriptTag:/^<(pre|code|kbd|script)(\s|>)/i,endPreScriptTag:/^<\/(pre|code|kbd|script)(\s|>)/i,startAngleBracket:/^</,endAngleBracket:/>$/,pedanticHrefTitle:/^([^'"]*[^\s])\s+(['"])(.*)\2/,unicodeAlphaNumeric:/[\p{L}\p{N}]/u,escapeTest:/[&<>"']/,escapeReplace:/[&<>"']/g,escapeTestNoEncode:/[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/,escapeReplaceNoEncode:/[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/g,unescapeTest:/&(#(?:\d+)|(?:#x[0-9A-Fa-f]+)|(?:\w+));?/ig,caret:/(^|[^\[])\^/g,percentDecode:/%25/g,findPipe:/\|/g,splitPipe:/ \|/,slashPipe:/\\\|/g,carriageReturn:/\r\n|\r/g,spaceLine:/^ +$/gm,notSpaceStart:/^\S*/,endingNewline:/\n$/,listItemRegex:e=>new RegExp(`^( {0,3}${e})((?:[	 ][^\\n]*)?(?:\\n|$))`),nextBulletRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}(?:[*+-]|\\d{1,9}[.)])((?:[ 	][^\\n]*)?(?:\\n|$))`),hrRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`),fencesBeginRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}(?:\`\`\`|~~~)`),headingBeginRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}#`),htmlBeginRegex:e=>new RegExp(`^ {0,${Math.min(3,e-1)}}<(?:[a-z].*>|!--)`,"i")},Xf=/^(?:[ \t]*(?:\n|$))+/,Jf=/^((?: {4}| {0,3}\t)[^\n]+(?:\n(?:[ \t]*(?:\n|$))*)?)+/,e_=/^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}\1[~`]* *(?=\n|$)|$)/,rs=/^ {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/,t_=/^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/,va=/(?:[*+-]|\d{1,9}[.)])/,fc=/^(?!bull |blockCode|fences|blockquote|heading|html|table)((?:.|\n(?!\s*?\n|bull |blockCode|fences|blockquote|heading|html|table))+?)\n {0,3}(=+|-+) *(?:\n+|$)/,_c=bt(fc).replace(/bull/g,va).replace(/blockCode/g,/(?: {4}| {0,3}\t)/).replace(/fences/g,/ {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g,/ {0,3}>/).replace(/heading/g,/ {0,3}#{1,6}/).replace(/html/g,/ {0,3}<[^\n>]+>\n/).replace(/\|table/g,"").getRegex(),r_=bt(fc).replace(/bull/g,va).replace(/blockCode/g,/(?: {4}| {0,3}\t)/).replace(/fences/g,/ {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g,/ {0,3}>/).replace(/heading/g,/ {0,3}#{1,6}/).replace(/html/g,/ {0,3}<[^\n>]+>\n/).replace(/table/g,/ {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n/).getRegex(),wa=/^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/,n_=/^[^\n]+/,ka=/(?!\s*\])(?:\\[\s\S]|[^\[\]\\])+/,s_=bt(/^ {0,3}\[(label)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)(title))? *(?:\n+|$)/).replace("label",ka).replace("title",/(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/).getRegex(),o_=bt(/^( {0,3}bull)([ \t][^\n]+?)?(?:\n|$)/).replace(/bull/g,va).getRegex(),so="address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul",$a=/<!--(?:-?>|[\s\S]*?(?:-->|$))/,a_=bt("^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n+|$)|comment[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>\\n*|$)|<![A-Z][\\s\\S]*?(?:>\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>\\n*|$)|</?(tag)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?:attribute)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$))","i").replace("comment",$a).replace("tag",so).replace("attribute",/ +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>`]+)?/).getRegex(),mc=bt(wa).replace("hr",rs).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("|lheading","").replace("|table","").replace("blockquote"," {0,3}>").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",so).getRegex(),i_=bt(/^( {0,3}> ?(paragraph|[^\n]*)(?:\n|$))+/).replace("paragraph",mc).getRegex(),xa={blockquote:i_,code:Jf,def:s_,fences:e_,heading:t_,hr:rs,html:a_,lheading:_c,list:o_,newline:Xf,paragraph:mc,table:ts,text:n_},ac=bt("^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n|hr|heading|blockquote|code|fences|list|html).*(?:\\n|$))*)\\n*|$)").replace("hr",rs).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("blockquote"," {0,3}>").replace("code","(?: {4}| {0,3}	)[^\\n]").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",so).getRegex(),l_={...xa,lheading:r_,table:ac,paragraph:bt(wa).replace("hr",rs).replace("heading"," {0,3}#{1,6}(?:\\s|$)").replace("|lheading","").replace("table",ac).replace("blockquote"," {0,3}>").replace("fences"," {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list"," {0,3}(?:[*+-]|1[.)]) ").replace("html","</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag",so).getRegex()},c_={...xa,html:bt(`^ *(?:comment *(?:\\n|\\s*$)|<(tag)[\\s\\S]+?</\\1> *(?:\\n{2,}|\\s*$)|<tag(?:"[^"]*"|'[^']*'|\\s[^'"/>\\s]*)*?/?> *(?:\\n{2,}|\\s*$))`).replace("comment",$a).replace(/tag/g,"(?!(?:a|em|strong|small|s|cite|q|dfn|abbr|data|time|code|var|samp|kbd|sub|sup|i|b|u|mark|ruby|rt|rp|bdi|bdo|span|br|wbr|ins|del|img)\\b)\\w+(?!:|[^\\w\\s@]*@)\\b").getRegex(),def:/^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +(["(][^\n]+[")]))? *(?:\n+|$)/,heading:/^(#{1,6})(.*)(?:\n+|$)/,fences:ts,lheading:/^(.+?)\n {0,3}(=+|-+) *(?:\n+|$)/,paragraph:bt(wa).replace("hr",rs).replace("heading",` *#{1,6} *[^
+]`).replace("lheading",_c).replace("|table","").replace("blockquote"," {0,3}>").replace("|fences","").replace("|list","").replace("|html","").replace("|tag","").getRegex()},u_=/^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/,d_=/^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/,gc=/^( {2,}|\\)\n(?!\s*$)/,p_=/^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/,oo=/[\p{P}\p{S}]/u,Aa=/[\s\p{P}\p{S}]/u,hc=/[^\s\p{P}\p{S}]/u,f_=bt(/^((?![*_])punctSpace)/,"u").replace(/punctSpace/g,Aa).getRegex(),bc=/(?!~)[\p{P}\p{S}]/u,__=/(?!~)[\s\p{P}\p{S}]/u,m_=/(?:[^\s\p{P}\p{S}]|~)/u,g_=bt(/link|precode-code|html/,"g").replace("link",/\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)/).replace("precode-",Qf?"(?<!`)()":"(^^|[^`])").replace("code",/(?<b>`+)[^`]+\k<b>(?!`)/).replace("html",/<(?! )[^<>]*?>/).getRegex(),yc=/^(?:\*+(?:((?!\*)punct)|[^\s*]))|^_+(?:((?!_)punct)|([^\s_]))/,h_=bt(yc,"u").replace(/punct/g,oo).getRegex(),b_=bt(yc,"u").replace(/punct/g,bc).getRegex(),vc="^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)punct(\\*+)(?=[\\s]|$)|notPunctSpace(\\*+)(?!\\*)(?=punctSpace|$)|(?!\\*)punctSpace(\\*+)(?=notPunctSpace)|[\\s](\\*+)(?!\\*)(?=punct)|(?!\\*)punct(\\*+)(?!\\*)(?=punct)|notPunctSpace(\\*+)(?=notPunctSpace)",y_=bt(vc,"gu").replace(/notPunctSpace/g,hc).replace(/punctSpace/g,Aa).replace(/punct/g,oo).getRegex(),v_=bt(vc,"gu").replace(/notPunctSpace/g,m_).replace(/punctSpace/g,__).replace(/punct/g,bc).getRegex(),w_=bt("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)punct(_+)(?=[\\s]|$)|notPunctSpace(_+)(?!_)(?=punctSpace|$)|(?!_)punctSpace(_+)(?=notPunctSpace)|[\\s](_+)(?!_)(?=punct)|(?!_)punct(_+)(?!_)(?=punct)","gu").replace(/notPunctSpace/g,hc).replace(/punctSpace/g,Aa).replace(/punct/g,oo).getRegex(),k_=bt(/\\(punct)/,"gu").replace(/punct/g,oo).getRegex(),$_=bt(/^<(scheme:[^\s\x00-\x1f<>]*|email)>/).replace("scheme",/[a-zA-Z][a-zA-Z0-9+.-]{1,31}/).replace("email",/[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])/).getRegex(),x_=bt($a).replace("(?:-->|$)","-->").getRegex(),A_=bt("^comment|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:attribute)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>").replace("comment",x_).replace("attribute",/\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/).getRegex(),to=/(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+[^`]*?`+(?!`)|[^\[\]\\`])*?/,S_=bt(/^!?\[(label)\]\(\s*(href)(?:(?:[ \t]*(?:\n[ \t]*)?)(title))?\s*\)/).replace("label",to).replace("href",/<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]*/).replace("title",/"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/).getRegex(),wc=bt(/^!?\[(label)\]\[(ref)\]/).replace("label",to).replace("ref",ka).getRegex(),kc=bt(/^!?\[(ref)\](?:\[\])?/).replace("ref",ka).getRegex(),E_=bt("reflink|nolink(?!\\()","g").replace("reflink",wc).replace("nolink",kc).getRegex(),ic=/[hH][tT][tT][pP][sS]?|[fF][tT][pP]/,Sa={_backpedal:ts,anyPunctuation:k_,autolink:$_,blockSkip:g_,br:gc,code:d_,del:ts,emStrongLDelim:h_,emStrongRDelimAst:y_,emStrongRDelimUnd:w_,escape:u_,link:S_,nolink:kc,punctuation:f_,reflink:wc,reflinkSearch:E_,tag:A_,text:p_,url:ts},T_={...Sa,link:bt(/^!?\[(label)\]\((.*?)\)/).replace("label",to).getRegex(),reflink:bt(/^!?\[(label)\]\s*\[([^\]]*)\]/).replace("label",to).getRegex()},ga={...Sa,emStrongRDelimAst:v_,emStrongLDelim:b_,url:bt(/^((?:protocol):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*|^email/).replace("protocol",ic).replace("email",/[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/).getRegex(),_backpedal:/(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/,del:/^(~~?)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/,text:bt(/^([`~]+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/).replace("protocol",ic).getRegex()},C_={...ga,br:bt(gc).replace("{2,}","*").getRegex(),text:bt(ga.text).replace("\\b_","\\b_| {2,}\\n").replace(/\{2,\}/g,"*").getRegex()},Js={normal:xa,gfm:l_,pedantic:c_},Xn={normal:Sa,gfm:ga,breaks:C_,pedantic:T_},R_={"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"},lc=e=>R_[e];function Sr(e,t){if(t){if(Yt.escapeTest.test(e))return e.replace(Yt.escapeReplace,lc)}else if(Yt.escapeTestNoEncode.test(e))return e.replace(Yt.escapeReplaceNoEncode,lc);return e}function cc(e){try{e=encodeURI(e).replace(Yt.percentDecode,"%")}catch{return null}return e}function uc(e,t){let r=e.replace(Yt.findPipe,(o,a,i)=>{let c=!1,u=a;for(;--u>=0&&i[u]==="\\";)c=!c;return c?"|":" |"}),n=r.split(Yt.splitPipe),s=0;if(n[0].trim()||n.shift(),n.length>0&&!n.at(-1)?.trim()&&n.pop(),t)if(n.length>t)n.splice(t);else for(;n.length<t;)n.push("");for(;s<n.length;s++)n[s]=n[s].trim().replace(Yt.slashPipe,"|");return n}function Jn(e,t,r){let n=e.length;if(n===0)return"";let s=0;for(;s<n;){let o=e.charAt(n-s-1);if(o===t&&!r)s++;else if(o!==t&&r)s++;else break}return e.slice(0,n-s)}function I_(e,t){if(e.indexOf(t[1])===-1)return-1;let r=0;for(let n=0;n<e.length;n++)if(e[n]==="\\")n++;else if(e[n]===t[0])r++;else if(e[n]===t[1]&&(r--,r<0))return n;return r>0?-2:-1}function dc(e,t,r,n,s){let o=t.href,a=t.title||null,i=e[1].replace(s.other.outputLinkReplace,"$1");n.state.inLink=!0;let c={type:e[0].charAt(0)==="!"?"image":"link",raw:r,href:o,title:a,text:i,tokens:n.inlineTokens(i)};return n.state.inLink=!1,c}function L_(e,t,r){let n=e.match(r.other.indentCodeCompensation);if(n===null)return t;let s=n[1];return t.split(`
+`).map(o=>{let a=o.match(r.other.beginningSpace);if(a===null)return o;let[i]=a;return i.length>=s.length?o.slice(s.length):o}).join(`
+`)}var ro=class{constructor(e){xt(this,"options");xt(this,"rules");xt(this,"lexer");this.options=e||rn}space(e){let t=this.rules.block.newline.exec(e);if(t&&t[0].length>0)return{type:"space",raw:t[0]}}code(e){let t=this.rules.block.code.exec(e);if(t){let r=t[0].replace(this.rules.other.codeRemoveIndent,"");return{type:"code",raw:t[0],codeBlockStyle:"indented",text:this.options.pedantic?r:Jn(r,`
+`)}}}fences(e){let t=this.rules.block.fences.exec(e);if(t){let r=t[0],n=L_(r,t[3]||"",this.rules);return{type:"code",raw:r,lang:t[2]?t[2].trim().replace(this.rules.inline.anyPunctuation,"$1"):t[2],text:n}}}heading(e){let t=this.rules.block.heading.exec(e);if(t){let r=t[2].trim();if(this.rules.other.endingHash.test(r)){let n=Jn(r,"#");(this.options.pedantic||!n||this.rules.other.endingSpaceChar.test(n))&&(r=n.trim())}return{type:"heading",raw:t[0],depth:t[1].length,text:r,tokens:this.lexer.inline(r)}}}hr(e){let t=this.rules.block.hr.exec(e);if(t)return{type:"hr",raw:Jn(t[0],`
+`)}}blockquote(e){let t=this.rules.block.blockquote.exec(e);if(t){let r=Jn(t[0],`
 `).split(`
-`),n="",s="",o=[];for(;r.length>0;){let a=!1,l=[],c;for(c=0;c<r.length;c++)if(this.rules.other.blockquoteStart.test(r[c]))l.push(r[c]),a=!0;else if(!a)l.push(r[c]);else break;r=r.slice(c);let u=l.join(`
+`),n="",s="",o=[];for(;r.length>0;){let a=!1,i=[],c;for(c=0;c<r.length;c++)if(this.rules.other.blockquoteStart.test(r[c]))i.push(r[c]),a=!0;else if(!a)i.push(r[c]);else break;r=r.slice(c);let u=i.join(`
 `),d=u.replace(this.rules.other.blockquoteSetextReplace,`
     $1`).replace(this.rules.other.blockquoteSetextReplace2,"");n=n?`${n}
 ${u}`:u,s=s?`${s}
-${d}`:d;let f=this.lexer.state.top;if(this.lexer.state.top=!0,this.lexer.blockTokens(d,o,!0),this.lexer.state.top=f,r.length===0)break;let g=o.at(-1);if(g?.type==="code")break;if(g?.type==="blockquote"){let x=g,A=x.raw+`
+${d}`:d;let p=this.lexer.state.top;if(this.lexer.state.top=!0,this.lexer.blockTokens(d,o,!0),this.lexer.state.top=p,r.length===0)break;let m=o.at(-1);if(m?.type==="code")break;if(m?.type==="blockquote"){let v=m,C=v.raw+`
 `+r.join(`
-`),L=this.blockquote(A);o[o.length-1]=L,n=n.substring(0,n.length-x.raw.length)+L.raw,s=s.substring(0,s.length-x.text.length)+L.text;break}else if(g?.type==="list"){let x=g,A=x.raw+`
+`),F=this.blockquote(C);o[o.length-1]=F,n=n.substring(0,n.length-v.raw.length)+F.raw,s=s.substring(0,s.length-v.text.length)+F.text;break}else if(m?.type==="list"){let v=m,C=v.raw+`
 `+r.join(`
-`),L=this.list(A);o[o.length-1]=L,n=n.substring(0,n.length-g.raw.length)+L.raw,s=s.substring(0,s.length-x.raw.length)+L.raw,r=A.substring(o.at(-1).raw.length).split(`
-`);continue}}return{type:"blockquote",raw:n,tokens:o,text:s}}}list(e){let t=this.rules.block.list.exec(e);if(t){let r=t[1].trim(),n=r.length>1,s={type:"list",raw:"",ordered:n,start:n?+r.slice(0,-1):"",loose:!1,items:[]};r=n?`\\d{1,9}\\${r.slice(-1)}`:`\\${r}`,this.options.pedantic&&(r=n?r:"[*+-]");let o=this.rules.other.listItemRegex(r),a=!1;for(;e;){let c=!1,u="",d="";if(!(t=o.exec(e))||this.rules.block.hr.test(e))break;u=t[0],e=e.substring(u.length);let f=t[2].split(`
-`,1)[0].replace(this.rules.other.listReplaceTabs,L=>" ".repeat(3*L.length)),g=e.split(`
-`,1)[0],x=!f.trim(),A=0;if(this.options.pedantic?(A=2,d=f.trimStart()):x?A=t[1].length+1:(A=t[2].search(this.rules.other.nonSpaceChar),A=A>4?1:A,d=f.slice(A),A+=t[1].length),x&&this.rules.other.blankLine.test(g)&&(u+=g+`
-`,e=e.substring(g.length+1),c=!0),!c){let L=this.rules.other.nextBulletRegex(A),z=this.rules.other.hrRegex(A),ae=this.rules.other.fencesBeginRegex(A),se=this.rules.other.headingBeginRegex(A),q=this.rules.other.htmlBeginRegex(A);for(;e;){let N=e.split(`
-`,1)[0],I;if(g=N,this.options.pedantic?(g=g.replace(this.rules.other.listReplaceNesting,"  "),I=g):I=g.replace(this.rules.other.tabCharGlobal,"    "),ae.test(g)||se.test(g)||q.test(g)||L.test(g)||z.test(g))break;if(I.search(this.rules.other.nonSpaceChar)>=A||!g.trim())d+=`
-`+I.slice(A);else{if(x||f.replace(this.rules.other.tabCharGlobal,"    ").search(this.rules.other.nonSpaceChar)>=4||ae.test(f)||se.test(f)||z.test(f))break;d+=`
-`+g}!x&&!g.trim()&&(x=!0),u+=N+`
-`,e=e.substring(N.length+1),f=I.slice(A)}}s.loose||(a?s.loose=!0:this.rules.other.doubleBlankLine.test(u)&&(a=!0)),s.items.push({type:"list_item",raw:u,task:!!this.options.gfm&&this.rules.other.listIsTask.test(d),loose:!1,text:d,tokens:[]}),s.raw+=u}let l=s.items.at(-1);if(l)l.raw=l.raw.trimEnd(),l.text=l.text.trimEnd();else return;s.raw=s.raw.trimEnd();for(let c of s.items){if(this.lexer.state.top=!1,c.tokens=this.lexer.blockTokens(c.text,[]),c.task){if(c.text=c.text.replace(this.rules.other.listReplaceTask,""),c.tokens[0]?.type==="text"||c.tokens[0]?.type==="paragraph"){c.tokens[0].raw=c.tokens[0].raw.replace(this.rules.other.listReplaceTask,""),c.tokens[0].text=c.tokens[0].text.replace(this.rules.other.listReplaceTask,"");for(let d=this.lexer.inlineQueue.length-1;d>=0;d--)if(this.rules.other.listIsTask.test(this.lexer.inlineQueue[d].src)){this.lexer.inlineQueue[d].src=this.lexer.inlineQueue[d].src.replace(this.rules.other.listReplaceTask,"");break}}let u=this.rules.other.listTaskCheckbox.exec(c.raw);if(u){let d={type:"checkbox",raw:u[0]+" ",checked:u[0]!=="[ ]"};c.checked=d.checked,s.loose?c.tokens[0]&&["paragraph","text"].includes(c.tokens[0].type)&&"tokens"in c.tokens[0]&&c.tokens[0].tokens?(c.tokens[0].raw=d.raw+c.tokens[0].raw,c.tokens[0].text=d.raw+c.tokens[0].text,c.tokens[0].tokens.unshift(d)):c.tokens.unshift({type:"paragraph",raw:d.raw,text:d.raw,tokens:[d]}):c.tokens.unshift(d)}}if(!s.loose){let u=c.tokens.filter(f=>f.type==="space"),d=u.length>0&&u.some(f=>this.rules.other.anyLine.test(f.raw));s.loose=d}}if(s.loose)for(let c of s.items){c.loose=!0;for(let u of c.tokens)u.type==="text"&&(u.type="paragraph")}return s}}html(e){let t=this.rules.block.html.exec(e);if(t)return{type:"html",block:!0,raw:t[0],pre:t[1]==="pre"||t[1]==="script"||t[1]==="style",text:t[0]}}def(e){let t=this.rules.block.def.exec(e);if(t){let r=t[1].toLowerCase().replace(this.rules.other.multipleSpaceGlobal," "),n=t[2]?t[2].replace(this.rules.other.hrefBrackets,"$1").replace(this.rules.inline.anyPunctuation,"$1"):"",s=t[3]?t[3].substring(1,t[3].length-1).replace(this.rules.inline.anyPunctuation,"$1"):t[3];return{type:"def",tag:r,raw:t[0],href:n,title:s}}}table(e){let t=this.rules.block.table.exec(e);if(!t||!this.rules.other.tableDelimiter.test(t[2]))return;let r=sc(t[1]),n=t[2].replace(this.rules.other.tableAlignChars,"").split("|"),s=t[3]?.trim()?t[3].replace(this.rules.other.tableRowBlankLine,"").split(`
-`):[],o={type:"table",raw:t[0],header:[],align:[],rows:[]};if(r.length===n.length){for(let a of n)this.rules.other.tableAlignRight.test(a)?o.align.push("right"):this.rules.other.tableAlignCenter.test(a)?o.align.push("center"):this.rules.other.tableAlignLeft.test(a)?o.align.push("left"):o.align.push(null);for(let a=0;a<r.length;a++)o.header.push({text:r[a],tokens:this.lexer.inline(r[a]),header:!0,align:o.align[a]});for(let a of s)o.rows.push(sc(a,o.header.length).map((l,c)=>({text:l,tokens:this.lexer.inline(l),header:!1,align:o.align[c]})));return o}}lheading(e){let t=this.rules.block.lheading.exec(e);if(t)return{type:"heading",raw:t[0],depth:t[2].charAt(0)==="="?1:2,text:t[1],tokens:this.lexer.inline(t[1])}}paragraph(e){let t=this.rules.block.paragraph.exec(e);if(t){let r=t[1].charAt(t[1].length-1)===`
-`?t[1].slice(0,-1):t[1];return{type:"paragraph",raw:t[0],text:r,tokens:this.lexer.inline(r)}}}text(e){let t=this.rules.block.text.exec(e);if(t)return{type:"text",raw:t[0],text:t[0],tokens:this.lexer.inline(t[0])}}escape(e){let t=this.rules.inline.escape.exec(e);if(t)return{type:"escape",raw:t[0],text:t[1]}}tag(e){let t=this.rules.inline.tag.exec(e);if(t)return!this.lexer.state.inLink&&this.rules.other.startATag.test(t[0])?this.lexer.state.inLink=!0:this.lexer.state.inLink&&this.rules.other.endATag.test(t[0])&&(this.lexer.state.inLink=!1),!this.lexer.state.inRawBlock&&this.rules.other.startPreScriptTag.test(t[0])?this.lexer.state.inRawBlock=!0:this.lexer.state.inRawBlock&&this.rules.other.endPreScriptTag.test(t[0])&&(this.lexer.state.inRawBlock=!1),{type:"html",raw:t[0],inLink:this.lexer.state.inLink,inRawBlock:this.lexer.state.inRawBlock,block:!1,text:t[0]}}link(e){let t=this.rules.inline.link.exec(e);if(t){let r=t[2].trim();if(!this.options.pedantic&&this.rules.other.startAngleBracket.test(r)){if(!this.rules.other.endAngleBracket.test(r))return;let o=Gn(r.slice(0,-1),"\\");if((r.length-o.length)%2===0)return}else{let o=k_(t[2],"()");if(o===-2)return;if(o>-1){let a=(t[0].indexOf("!")===0?5:4)+t[1].length+o;t[2]=t[2].substring(0,o),t[0]=t[0].substring(0,a).trim(),t[3]=""}}let n=t[2],s="";if(this.options.pedantic){let o=this.rules.other.pedanticHrefTitle.exec(n);o&&(n=o[1],s=o[3])}else s=t[3]?t[3].slice(1,-1):"";return n=n.trim(),this.rules.other.startAngleBracket.test(n)&&(this.options.pedantic&&!this.rules.other.endAngleBracket.test(r)?n=n.slice(1):n=n.slice(1,-1)),oc(t,{href:n&&n.replace(this.rules.inline.anyPunctuation,"$1"),title:s&&s.replace(this.rules.inline.anyPunctuation,"$1")},t[0],this.lexer,this.rules)}}reflink(e,t){let r;if((r=this.rules.inline.reflink.exec(e))||(r=this.rules.inline.nolink.exec(e))){let n=(r[2]||r[1]).replace(this.rules.other.multipleSpaceGlobal," "),s=t[n.toLowerCase()];if(!s){let o=r[0].charAt(0);return{type:"text",raw:o,text:o}}return oc(r,s,r[0],this.lexer,this.rules)}}emStrong(e,t,r=""){let n=this.rules.inline.emStrongLDelim.exec(e);if(!(!n||n[3]&&r.match(this.rules.other.unicodeAlphaNumeric))&&(!(n[1]||n[2])||!r||this.rules.inline.punctuation.exec(r))){let s=[...n[0]].length-1,o,a,l=s,c=0,u=n[0][0]==="*"?this.rules.inline.emStrongRDelimAst:this.rules.inline.emStrongRDelimUnd;for(u.lastIndex=0,t=t.slice(-1*e.length+s);(n=u.exec(t))!=null;){if(o=n[1]||n[2]||n[3]||n[4]||n[5]||n[6],!o)continue;if(a=[...o].length,n[3]||n[4]){l+=a;continue}else if((n[5]||n[6])&&s%3&&!((s+a)%3)){c+=a;continue}if(l-=a,l>0)continue;a=Math.min(a,a+l+c);let d=[...n[0]][0].length,f=e.slice(0,s+n.index+d+a);if(Math.min(s,a)%2){let x=f.slice(1,-1);return{type:"em",raw:f,text:x,tokens:this.lexer.inlineTokens(x)}}let g=f.slice(2,-2);return{type:"strong",raw:f,text:g,tokens:this.lexer.inlineTokens(g)}}}}codespan(e){let t=this.rules.inline.code.exec(e);if(t){let r=t[2].replace(this.rules.other.newLineCharGlobal," "),n=this.rules.other.nonSpaceChar.test(r),s=this.rules.other.startingSpaceChar.test(r)&&this.rules.other.endingSpaceChar.test(r);return n&&s&&(r=r.substring(1,r.length-1)),{type:"codespan",raw:t[0],text:r}}}br(e){let t=this.rules.inline.br.exec(e);if(t)return{type:"br",raw:t[0]}}del(e){let t=this.rules.inline.del.exec(e);if(t)return{type:"del",raw:t[0],text:t[2],tokens:this.lexer.inlineTokens(t[2])}}autolink(e){let t=this.rules.inline.autolink.exec(e);if(t){let r,n;return t[2]==="@"?(r=t[1],n="mailto:"+r):(r=t[1],n=r),{type:"link",raw:t[0],text:r,href:n,tokens:[{type:"text",raw:r,text:r}]}}}url(e){let t;if(t=this.rules.inline.url.exec(e)){let r,n;if(t[2]==="@")r=t[0],n="mailto:"+r;else{let s;do s=t[0],t[0]=this.rules.inline._backpedal.exec(t[0])?.[0]??"";while(s!==t[0]);r=t[0],t[1]==="www."?n="http://"+t[0]:n=t[0]}return{type:"link",raw:t[0],text:r,href:n,tokens:[{type:"text",raw:r,text:r}]}}}inlineText(e){let t=this.rules.inline.text.exec(e);if(t){let r=this.lexer.state.inRawBlock;return{type:"text",raw:t[0],text:t[0],escaped:r}}}},ur=class ua{constructor(t){mt(this,"tokens");mt(this,"options");mt(this,"state");mt(this,"inlineQueue");mt(this,"tokenizer");this.tokens=[],this.tokens.links=Object.create(null),this.options=t||rn,this.options.tokenizer=this.options.tokenizer||new Zs,this.tokenizer=this.options.tokenizer,this.tokenizer.options=this.options,this.tokenizer.lexer=this,this.inlineQueue=[],this.state={inLink:!1,inRawBlock:!1,top:!0};let r={other:Ft,block:Vs.normal,inline:Hn.normal};this.options.pedantic?(r.block=Vs.pedantic,r.inline=Hn.pedantic):this.options.gfm&&(r.block=Vs.gfm,this.options.breaks?r.inline=Hn.breaks:r.inline=Hn.gfm),this.tokenizer.rules=r}static get rules(){return{block:Vs,inline:Hn}}static lex(t,r){return new ua(r).lex(t)}static lexInline(t,r){return new ua(r).inlineTokens(t)}lex(t){t=t.replace(Ft.carriageReturn,`
-`),this.blockTokens(t,this.tokens);for(let r=0;r<this.inlineQueue.length;r++){let n=this.inlineQueue[r];this.inlineTokens(n.src,n.tokens)}return this.inlineQueue=[],this.tokens}blockTokens(t,r=[],n=!1){for(this.options.pedantic&&(t=t.replace(Ft.tabCharGlobal,"    ").replace(Ft.spaceLine,""));t;){let s;if(this.options.extensions?.block?.some(a=>(s=a.call({lexer:this},t,r))?(t=t.substring(s.raw.length),r.push(s),!0):!1))continue;if(s=this.tokenizer.space(t)){t=t.substring(s.raw.length);let a=r.at(-1);s.raw.length===1&&a!==void 0?a.raw+=`
+`),F=this.list(C);o[o.length-1]=F,n=n.substring(0,n.length-m.raw.length)+F.raw,s=s.substring(0,s.length-v.raw.length)+F.raw,r=C.substring(o.at(-1).raw.length).split(`
+`);continue}}return{type:"blockquote",raw:n,tokens:o,text:s}}}list(e){let t=this.rules.block.list.exec(e);if(t){let r=t[1].trim(),n=r.length>1,s={type:"list",raw:"",ordered:n,start:n?+r.slice(0,-1):"",loose:!1,items:[]};r=n?`\\d{1,9}\\${r.slice(-1)}`:`\\${r}`,this.options.pedantic&&(r=n?r:"[*+-]");let o=this.rules.other.listItemRegex(r),a=!1;for(;e;){let c=!1,u="",d="";if(!(t=o.exec(e))||this.rules.block.hr.test(e))break;u=t[0],e=e.substring(u.length);let p=t[2].split(`
+`,1)[0].replace(this.rules.other.listReplaceTabs,F=>" ".repeat(3*F.length)),m=e.split(`
+`,1)[0],v=!p.trim(),C=0;if(this.options.pedantic?(C=2,d=p.trimStart()):v?C=t[1].length+1:(C=t[2].search(this.rules.other.nonSpaceChar),C=C>4?1:C,d=p.slice(C),C+=t[1].length),v&&this.rules.other.blankLine.test(m)&&(u+=m+`
+`,e=e.substring(m.length+1),c=!0),!c){let F=this.rules.other.nextBulletRegex(C),H=this.rules.other.hrRegex(C),re=this.rules.other.fencesBeginRegex(C),V=this.rules.other.headingBeginRegex(C),q=this.rules.other.htmlBeginRegex(C);for(;e;){let O=e.split(`
+`,1)[0],P;if(m=O,this.options.pedantic?(m=m.replace(this.rules.other.listReplaceNesting,"  "),P=m):P=m.replace(this.rules.other.tabCharGlobal,"    "),re.test(m)||V.test(m)||q.test(m)||F.test(m)||H.test(m))break;if(P.search(this.rules.other.nonSpaceChar)>=C||!m.trim())d+=`
+`+P.slice(C);else{if(v||p.replace(this.rules.other.tabCharGlobal,"    ").search(this.rules.other.nonSpaceChar)>=4||re.test(p)||V.test(p)||H.test(p))break;d+=`
+`+m}!v&&!m.trim()&&(v=!0),u+=O+`
+`,e=e.substring(O.length+1),p=P.slice(C)}}s.loose||(a?s.loose=!0:this.rules.other.doubleBlankLine.test(u)&&(a=!0)),s.items.push({type:"list_item",raw:u,task:!!this.options.gfm&&this.rules.other.listIsTask.test(d),loose:!1,text:d,tokens:[]}),s.raw+=u}let i=s.items.at(-1);if(i)i.raw=i.raw.trimEnd(),i.text=i.text.trimEnd();else return;s.raw=s.raw.trimEnd();for(let c of s.items){if(this.lexer.state.top=!1,c.tokens=this.lexer.blockTokens(c.text,[]),c.task){if(c.text=c.text.replace(this.rules.other.listReplaceTask,""),c.tokens[0]?.type==="text"||c.tokens[0]?.type==="paragraph"){c.tokens[0].raw=c.tokens[0].raw.replace(this.rules.other.listReplaceTask,""),c.tokens[0].text=c.tokens[0].text.replace(this.rules.other.listReplaceTask,"");for(let d=this.lexer.inlineQueue.length-1;d>=0;d--)if(this.rules.other.listIsTask.test(this.lexer.inlineQueue[d].src)){this.lexer.inlineQueue[d].src=this.lexer.inlineQueue[d].src.replace(this.rules.other.listReplaceTask,"");break}}let u=this.rules.other.listTaskCheckbox.exec(c.raw);if(u){let d={type:"checkbox",raw:u[0]+" ",checked:u[0]!=="[ ]"};c.checked=d.checked,s.loose?c.tokens[0]&&["paragraph","text"].includes(c.tokens[0].type)&&"tokens"in c.tokens[0]&&c.tokens[0].tokens?(c.tokens[0].raw=d.raw+c.tokens[0].raw,c.tokens[0].text=d.raw+c.tokens[0].text,c.tokens[0].tokens.unshift(d)):c.tokens.unshift({type:"paragraph",raw:d.raw,text:d.raw,tokens:[d]}):c.tokens.unshift(d)}}if(!s.loose){let u=c.tokens.filter(p=>p.type==="space"),d=u.length>0&&u.some(p=>this.rules.other.anyLine.test(p.raw));s.loose=d}}if(s.loose)for(let c of s.items){c.loose=!0;for(let u of c.tokens)u.type==="text"&&(u.type="paragraph")}return s}}html(e){let t=this.rules.block.html.exec(e);if(t)return{type:"html",block:!0,raw:t[0],pre:t[1]==="pre"||t[1]==="script"||t[1]==="style",text:t[0]}}def(e){let t=this.rules.block.def.exec(e);if(t){let r=t[1].toLowerCase().replace(this.rules.other.multipleSpaceGlobal," "),n=t[2]?t[2].replace(this.rules.other.hrefBrackets,"$1").replace(this.rules.inline.anyPunctuation,"$1"):"",s=t[3]?t[3].substring(1,t[3].length-1).replace(this.rules.inline.anyPunctuation,"$1"):t[3];return{type:"def",tag:r,raw:t[0],href:n,title:s}}}table(e){let t=this.rules.block.table.exec(e);if(!t||!this.rules.other.tableDelimiter.test(t[2]))return;let r=uc(t[1]),n=t[2].replace(this.rules.other.tableAlignChars,"").split("|"),s=t[3]?.trim()?t[3].replace(this.rules.other.tableRowBlankLine,"").split(`
+`):[],o={type:"table",raw:t[0],header:[],align:[],rows:[]};if(r.length===n.length){for(let a of n)this.rules.other.tableAlignRight.test(a)?o.align.push("right"):this.rules.other.tableAlignCenter.test(a)?o.align.push("center"):this.rules.other.tableAlignLeft.test(a)?o.align.push("left"):o.align.push(null);for(let a=0;a<r.length;a++)o.header.push({text:r[a],tokens:this.lexer.inline(r[a]),header:!0,align:o.align[a]});for(let a of s)o.rows.push(uc(a,o.header.length).map((i,c)=>({text:i,tokens:this.lexer.inline(i),header:!1,align:o.align[c]})));return o}}lheading(e){let t=this.rules.block.lheading.exec(e);if(t)return{type:"heading",raw:t[0],depth:t[2].charAt(0)==="="?1:2,text:t[1],tokens:this.lexer.inline(t[1])}}paragraph(e){let t=this.rules.block.paragraph.exec(e);if(t){let r=t[1].charAt(t[1].length-1)===`
+`?t[1].slice(0,-1):t[1];return{type:"paragraph",raw:t[0],text:r,tokens:this.lexer.inline(r)}}}text(e){let t=this.rules.block.text.exec(e);if(t)return{type:"text",raw:t[0],text:t[0],tokens:this.lexer.inline(t[0])}}escape(e){let t=this.rules.inline.escape.exec(e);if(t)return{type:"escape",raw:t[0],text:t[1]}}tag(e){let t=this.rules.inline.tag.exec(e);if(t)return!this.lexer.state.inLink&&this.rules.other.startATag.test(t[0])?this.lexer.state.inLink=!0:this.lexer.state.inLink&&this.rules.other.endATag.test(t[0])&&(this.lexer.state.inLink=!1),!this.lexer.state.inRawBlock&&this.rules.other.startPreScriptTag.test(t[0])?this.lexer.state.inRawBlock=!0:this.lexer.state.inRawBlock&&this.rules.other.endPreScriptTag.test(t[0])&&(this.lexer.state.inRawBlock=!1),{type:"html",raw:t[0],inLink:this.lexer.state.inLink,inRawBlock:this.lexer.state.inRawBlock,block:!1,text:t[0]}}link(e){let t=this.rules.inline.link.exec(e);if(t){let r=t[2].trim();if(!this.options.pedantic&&this.rules.other.startAngleBracket.test(r)){if(!this.rules.other.endAngleBracket.test(r))return;let o=Jn(r.slice(0,-1),"\\");if((r.length-o.length)%2===0)return}else{let o=I_(t[2],"()");if(o===-2)return;if(o>-1){let a=(t[0].indexOf("!")===0?5:4)+t[1].length+o;t[2]=t[2].substring(0,o),t[0]=t[0].substring(0,a).trim(),t[3]=""}}let n=t[2],s="";if(this.options.pedantic){let o=this.rules.other.pedanticHrefTitle.exec(n);o&&(n=o[1],s=o[3])}else s=t[3]?t[3].slice(1,-1):"";return n=n.trim(),this.rules.other.startAngleBracket.test(n)&&(this.options.pedantic&&!this.rules.other.endAngleBracket.test(r)?n=n.slice(1):n=n.slice(1,-1)),dc(t,{href:n&&n.replace(this.rules.inline.anyPunctuation,"$1"),title:s&&s.replace(this.rules.inline.anyPunctuation,"$1")},t[0],this.lexer,this.rules)}}reflink(e,t){let r;if((r=this.rules.inline.reflink.exec(e))||(r=this.rules.inline.nolink.exec(e))){let n=(r[2]||r[1]).replace(this.rules.other.multipleSpaceGlobal," "),s=t[n.toLowerCase()];if(!s){let o=r[0].charAt(0);return{type:"text",raw:o,text:o}}return dc(r,s,r[0],this.lexer,this.rules)}}emStrong(e,t,r=""){let n=this.rules.inline.emStrongLDelim.exec(e);if(!(!n||n[3]&&r.match(this.rules.other.unicodeAlphaNumeric))&&(!(n[1]||n[2])||!r||this.rules.inline.punctuation.exec(r))){let s=[...n[0]].length-1,o,a,i=s,c=0,u=n[0][0]==="*"?this.rules.inline.emStrongRDelimAst:this.rules.inline.emStrongRDelimUnd;for(u.lastIndex=0,t=t.slice(-1*e.length+s);(n=u.exec(t))!=null;){if(o=n[1]||n[2]||n[3]||n[4]||n[5]||n[6],!o)continue;if(a=[...o].length,n[3]||n[4]){i+=a;continue}else if((n[5]||n[6])&&s%3&&!((s+a)%3)){c+=a;continue}if(i-=a,i>0)continue;a=Math.min(a,a+i+c);let d=[...n[0]][0].length,p=e.slice(0,s+n.index+d+a);if(Math.min(s,a)%2){let v=p.slice(1,-1);return{type:"em",raw:p,text:v,tokens:this.lexer.inlineTokens(v)}}let m=p.slice(2,-2);return{type:"strong",raw:p,text:m,tokens:this.lexer.inlineTokens(m)}}}}codespan(e){let t=this.rules.inline.code.exec(e);if(t){let r=t[2].replace(this.rules.other.newLineCharGlobal," "),n=this.rules.other.nonSpaceChar.test(r),s=this.rules.other.startingSpaceChar.test(r)&&this.rules.other.endingSpaceChar.test(r);return n&&s&&(r=r.substring(1,r.length-1)),{type:"codespan",raw:t[0],text:r}}}br(e){let t=this.rules.inline.br.exec(e);if(t)return{type:"br",raw:t[0]}}del(e){let t=this.rules.inline.del.exec(e);if(t)return{type:"del",raw:t[0],text:t[2],tokens:this.lexer.inlineTokens(t[2])}}autolink(e){let t=this.rules.inline.autolink.exec(e);if(t){let r,n;return t[2]==="@"?(r=t[1],n="mailto:"+r):(r=t[1],n=r),{type:"link",raw:t[0],text:r,href:n,tokens:[{type:"text",raw:r,text:r}]}}}url(e){let t;if(t=this.rules.inline.url.exec(e)){let r,n;if(t[2]==="@")r=t[0],n="mailto:"+r;else{let s;do s=t[0],t[0]=this.rules.inline._backpedal.exec(t[0])?.[0]??"";while(s!==t[0]);r=t[0],t[1]==="www."?n="http://"+t[0]:n=t[0]}return{type:"link",raw:t[0],text:r,href:n,tokens:[{type:"text",raw:r,text:r}]}}}inlineText(e){let t=this.rules.inline.text.exec(e);if(t){let r=this.lexer.state.inRawBlock;return{type:"text",raw:t[0],text:t[0],escaped:r}}}},_r=class ha{constructor(t){xt(this,"tokens");xt(this,"options");xt(this,"state");xt(this,"inlineQueue");xt(this,"tokenizer");this.tokens=[],this.tokens.links=Object.create(null),this.options=t||rn,this.options.tokenizer=this.options.tokenizer||new ro,this.tokenizer=this.options.tokenizer,this.tokenizer.options=this.options,this.tokenizer.lexer=this,this.inlineQueue=[],this.state={inLink:!1,inRawBlock:!1,top:!0};let r={other:Yt,block:Js.normal,inline:Xn.normal};this.options.pedantic?(r.block=Js.pedantic,r.inline=Xn.pedantic):this.options.gfm&&(r.block=Js.gfm,this.options.breaks?r.inline=Xn.breaks:r.inline=Xn.gfm),this.tokenizer.rules=r}static get rules(){return{block:Js,inline:Xn}}static lex(t,r){return new ha(r).lex(t)}static lexInline(t,r){return new ha(r).inlineTokens(t)}lex(t){t=t.replace(Yt.carriageReturn,`
+`),this.blockTokens(t,this.tokens);for(let r=0;r<this.inlineQueue.length;r++){let n=this.inlineQueue[r];this.inlineTokens(n.src,n.tokens)}return this.inlineQueue=[],this.tokens}blockTokens(t,r=[],n=!1){for(this.options.pedantic&&(t=t.replace(Yt.tabCharGlobal,"    ").replace(Yt.spaceLine,""));t;){let s;if(this.options.extensions?.block?.some(a=>(s=a.call({lexer:this},t,r))?(t=t.substring(s.raw.length),r.push(s),!0):!1))continue;if(s=this.tokenizer.space(t)){t=t.substring(s.raw.length);let a=r.at(-1);s.raw.length===1&&a!==void 0?a.raw+=`
 `:r.push(s);continue}if(s=this.tokenizer.code(t)){t=t.substring(s.raw.length);let a=r.at(-1);a?.type==="paragraph"||a?.type==="text"?(a.raw+=(a.raw.endsWith(`
 `)?"":`
 `)+s.raw,a.text+=`
 `+s.text,this.inlineQueue.at(-1).src=a.text):r.push(s);continue}if(s=this.tokenizer.fences(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.heading(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.hr(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.blockquote(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.list(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.html(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.def(t)){t=t.substring(s.raw.length);let a=r.at(-1);a?.type==="paragraph"||a?.type==="text"?(a.raw+=(a.raw.endsWith(`
 `)?"":`
 `)+s.raw,a.text+=`
-`+s.raw,this.inlineQueue.at(-1).src=a.text):this.tokens.links[s.tag]||(this.tokens.links[s.tag]={href:s.href,title:s.title},r.push(s));continue}if(s=this.tokenizer.table(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.lheading(t)){t=t.substring(s.raw.length),r.push(s);continue}let o=t;if(this.options.extensions?.startBlock){let a=1/0,l=t.slice(1),c;this.options.extensions.startBlock.forEach(u=>{c=u.call({lexer:this},l),typeof c=="number"&&c>=0&&(a=Math.min(a,c))}),a<1/0&&a>=0&&(o=t.substring(0,a+1))}if(this.state.top&&(s=this.tokenizer.paragraph(o))){let a=r.at(-1);n&&a?.type==="paragraph"?(a.raw+=(a.raw.endsWith(`
+`+s.raw,this.inlineQueue.at(-1).src=a.text):this.tokens.links[s.tag]||(this.tokens.links[s.tag]={href:s.href,title:s.title},r.push(s));continue}if(s=this.tokenizer.table(t)){t=t.substring(s.raw.length),r.push(s);continue}if(s=this.tokenizer.lheading(t)){t=t.substring(s.raw.length),r.push(s);continue}let o=t;if(this.options.extensions?.startBlock){let a=1/0,i=t.slice(1),c;this.options.extensions.startBlock.forEach(u=>{c=u.call({lexer:this},i),typeof c=="number"&&c>=0&&(a=Math.min(a,c))}),a<1/0&&a>=0&&(o=t.substring(0,a+1))}if(this.state.top&&(s=this.tokenizer.paragraph(o))){let a=r.at(-1);n&&a?.type==="paragraph"?(a.raw+=(a.raw.endsWith(`
 `)?"":`
 `)+s.raw,a.text+=`
 `+s.text,this.inlineQueue.pop(),this.inlineQueue.at(-1).src=a.text):r.push(s),n=o.length!==t.length,t=t.substring(s.raw.length);continue}if(s=this.tokenizer.text(t)){t=t.substring(s.raw.length);let a=r.at(-1);a?.type==="text"?(a.raw+=(a.raw.endsWith(`
 `)?"":`
 `)+s.raw,a.text+=`
-`+s.text,this.inlineQueue.pop(),this.inlineQueue.at(-1).src=a.text):r.push(s);continue}if(t){let a="Infinite loop on byte: "+t.charCodeAt(0);if(this.options.silent){console.error(a);break}else throw new Error(a)}}return this.state.top=!0,r}inline(t,r=[]){return this.inlineQueue.push({src:t,tokens:r}),r}inlineTokens(t,r=[]){let n=t,s=null;if(this.tokens.links){let c=Object.keys(this.tokens.links);if(c.length>0)for(;(s=this.tokenizer.rules.inline.reflinkSearch.exec(n))!=null;)c.includes(s[0].slice(s[0].lastIndexOf("[")+1,-1))&&(n=n.slice(0,s.index)+"["+"a".repeat(s[0].length-2)+"]"+n.slice(this.tokenizer.rules.inline.reflinkSearch.lastIndex))}for(;(s=this.tokenizer.rules.inline.anyPunctuation.exec(n))!=null;)n=n.slice(0,s.index)+"++"+n.slice(this.tokenizer.rules.inline.anyPunctuation.lastIndex);let o;for(;(s=this.tokenizer.rules.inline.blockSkip.exec(n))!=null;)o=s[2]?s[2].length:0,n=n.slice(0,s.index+o)+"["+"a".repeat(s[0].length-o-2)+"]"+n.slice(this.tokenizer.rules.inline.blockSkip.lastIndex);n=this.options.hooks?.emStrongMask?.call({lexer:this},n)??n;let a=!1,l="";for(;t;){a||(l=""),a=!1;let c;if(this.options.extensions?.inline?.some(d=>(c=d.call({lexer:this},t,r))?(t=t.substring(c.raw.length),r.push(c),!0):!1))continue;if(c=this.tokenizer.escape(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.tag(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.link(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.reflink(t,this.tokens.links)){t=t.substring(c.raw.length);let d=r.at(-1);c.type==="text"&&d?.type==="text"?(d.raw+=c.raw,d.text+=c.text):r.push(c);continue}if(c=this.tokenizer.emStrong(t,n,l)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.codespan(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.br(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.del(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.autolink(t)){t=t.substring(c.raw.length),r.push(c);continue}if(!this.state.inLink&&(c=this.tokenizer.url(t))){t=t.substring(c.raw.length),r.push(c);continue}let u=t;if(this.options.extensions?.startInline){let d=1/0,f=t.slice(1),g;this.options.extensions.startInline.forEach(x=>{g=x.call({lexer:this},f),typeof g=="number"&&g>=0&&(d=Math.min(d,g))}),d<1/0&&d>=0&&(u=t.substring(0,d+1))}if(c=this.tokenizer.inlineText(u)){t=t.substring(c.raw.length),c.raw.slice(-1)!=="_"&&(l=c.raw.slice(-1)),a=!0;let d=r.at(-1);d?.type==="text"?(d.raw+=c.raw,d.text+=c.text):r.push(c);continue}if(t){let d="Infinite loop on byte: "+t.charCodeAt(0);if(this.options.silent){console.error(d);break}else throw new Error(d)}}return r}},Xs=class{constructor(e){mt(this,"options");mt(this,"parser");this.options=e||rn}space(e){return""}code({text:e,lang:t,escaped:r}){let n=(t||"").match(Ft.notSpaceStart)?.[0],s=e.replace(Ft.endingNewline,"")+`
-`;return n?'<pre><code class="language-'+Er(n)+'">'+(r?s:Er(s,!0))+`</code></pre>
-`:"<pre><code>"+(r?s:Er(s,!0))+`</code></pre>
+`+s.text,this.inlineQueue.pop(),this.inlineQueue.at(-1).src=a.text):r.push(s);continue}if(t){let a="Infinite loop on byte: "+t.charCodeAt(0);if(this.options.silent){console.error(a);break}else throw new Error(a)}}return this.state.top=!0,r}inline(t,r=[]){return this.inlineQueue.push({src:t,tokens:r}),r}inlineTokens(t,r=[]){let n=t,s=null;if(this.tokens.links){let c=Object.keys(this.tokens.links);if(c.length>0)for(;(s=this.tokenizer.rules.inline.reflinkSearch.exec(n))!=null;)c.includes(s[0].slice(s[0].lastIndexOf("[")+1,-1))&&(n=n.slice(0,s.index)+"["+"a".repeat(s[0].length-2)+"]"+n.slice(this.tokenizer.rules.inline.reflinkSearch.lastIndex))}for(;(s=this.tokenizer.rules.inline.anyPunctuation.exec(n))!=null;)n=n.slice(0,s.index)+"++"+n.slice(this.tokenizer.rules.inline.anyPunctuation.lastIndex);let o;for(;(s=this.tokenizer.rules.inline.blockSkip.exec(n))!=null;)o=s[2]?s[2].length:0,n=n.slice(0,s.index+o)+"["+"a".repeat(s[0].length-o-2)+"]"+n.slice(this.tokenizer.rules.inline.blockSkip.lastIndex);n=this.options.hooks?.emStrongMask?.call({lexer:this},n)??n;let a=!1,i="";for(;t;){a||(i=""),a=!1;let c;if(this.options.extensions?.inline?.some(d=>(c=d.call({lexer:this},t,r))?(t=t.substring(c.raw.length),r.push(c),!0):!1))continue;if(c=this.tokenizer.escape(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.tag(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.link(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.reflink(t,this.tokens.links)){t=t.substring(c.raw.length);let d=r.at(-1);c.type==="text"&&d?.type==="text"?(d.raw+=c.raw,d.text+=c.text):r.push(c);continue}if(c=this.tokenizer.emStrong(t,n,i)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.codespan(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.br(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.del(t)){t=t.substring(c.raw.length),r.push(c);continue}if(c=this.tokenizer.autolink(t)){t=t.substring(c.raw.length),r.push(c);continue}if(!this.state.inLink&&(c=this.tokenizer.url(t))){t=t.substring(c.raw.length),r.push(c);continue}let u=t;if(this.options.extensions?.startInline){let d=1/0,p=t.slice(1),m;this.options.extensions.startInline.forEach(v=>{m=v.call({lexer:this},p),typeof m=="number"&&m>=0&&(d=Math.min(d,m))}),d<1/0&&d>=0&&(u=t.substring(0,d+1))}if(c=this.tokenizer.inlineText(u)){t=t.substring(c.raw.length),c.raw.slice(-1)!=="_"&&(i=c.raw.slice(-1)),a=!0;let d=r.at(-1);d?.type==="text"?(d.raw+=c.raw,d.text+=c.text):r.push(c);continue}if(t){let d="Infinite loop on byte: "+t.charCodeAt(0);if(this.options.silent){console.error(d);break}else throw new Error(d)}}return r}},no=class{constructor(e){xt(this,"options");xt(this,"parser");this.options=e||rn}space(e){return""}code({text:e,lang:t,escaped:r}){let n=(t||"").match(Yt.notSpaceStart)?.[0],s=e.replace(Yt.endingNewline,"")+`
+`;return n?'<pre><code class="language-'+Sr(n)+'">'+(r?s:Sr(s,!0))+`</code></pre>
+`:"<pre><code>"+(r?s:Sr(s,!0))+`</code></pre>
 `}blockquote({tokens:e}){return`<blockquote>
 ${this.parser.parse(e)}</blockquote>
 `}html({text:e}){return e}def(e){return""}heading({tokens:e,depth:t}){return`<h${t}>${this.parser.parseInline(e)}</h${t}>
 `}hr(e){return`<hr>
-`}list(e){let t=e.ordered,r=e.start,n="";for(let a=0;a<e.items.length;a++){let l=e.items[a];n+=this.listitem(l)}let s=t?"ol":"ul",o=t&&r!==1?' start="'+r+'"':"";return"<"+s+o+`>
+`}list(e){let t=e.ordered,r=e.start,n="";for(let a=0;a<e.items.length;a++){let i=e.items[a];n+=this.listitem(i)}let s=t?"ol":"ul",o=t&&r!==1?' start="'+r+'"':"";return"<"+s+o+`>
 `+n+"</"+s+`>
 `}listitem(e){return`<li>${this.parser.parse(e.tokens)}</li>
 `}checkbox({checked:e}){return"<input "+(e?'checked="" ':"")+'disabled="" type="checkbox"> '}paragraph({tokens:e}){return`<p>${this.parser.parseInline(e)}</p>
@@ -352,144 +352,144 @@ ${this.parser.parse(e)}</blockquote>
 `}tablerow({text:e}){return`<tr>
 ${e}</tr>
 `}tablecell(e){let t=this.parser.parseInline(e.tokens),r=e.header?"th":"td";return(e.align?`<${r} align="${e.align}">`:`<${r}>`)+t+`</${r}>
-`}strong({tokens:e}){return`<strong>${this.parser.parseInline(e)}</strong>`}em({tokens:e}){return`<em>${this.parser.parseInline(e)}</em>`}codespan({text:e}){return`<code>${Er(e,!0)}</code>`}br(e){return"<br>"}del({tokens:e}){return`<del>${this.parser.parseInline(e)}</del>`}link({href:e,title:t,tokens:r}){let n=this.parser.parseInline(r),s=nc(e);if(s===null)return n;e=s;let o='<a href="'+e+'"';return t&&(o+=' title="'+Er(t)+'"'),o+=">"+n+"</a>",o}image({href:e,title:t,text:r,tokens:n}){n&&(r=this.parser.parseInline(n,this.parser.textRenderer));let s=nc(e);if(s===null)return Er(r);e=s;let o=`<img src="${e}" alt="${r}"`;return t&&(o+=` title="${Er(t)}"`),o+=">",o}text(e){return"tokens"in e&&e.tokens?this.parser.parseInline(e.tokens):"escaped"in e&&e.escaped?e.text:Er(e.text)}},va=class{strong({text:e}){return e}em({text:e}){return e}codespan({text:e}){return e}del({text:e}){return e}html({text:e}){return e}text({text:e}){return e}link({text:e}){return""+e}image({text:e}){return""+e}br(){return""}checkbox({raw:e}){return e}},dr=class da{constructor(t){mt(this,"options");mt(this,"renderer");mt(this,"textRenderer");this.options=t||rn,this.options.renderer=this.options.renderer||new Xs,this.renderer=this.options.renderer,this.renderer.options=this.options,this.renderer.parser=this,this.textRenderer=new va}static parse(t,r){return new da(r).parse(t)}static parseInline(t,r){return new da(r).parseInline(t)}parse(t){let r="";for(let n=0;n<t.length;n++){let s=t[n];if(this.options.extensions?.renderers?.[s.type]){let a=s,l=this.options.extensions.renderers[a.type].call({parser:this},a);if(l!==!1||!["space","hr","heading","code","table","blockquote","list","html","def","paragraph","text"].includes(a.type)){r+=l||"";continue}}let o=s;switch(o.type){case"space":{r+=this.renderer.space(o);break}case"hr":{r+=this.renderer.hr(o);break}case"heading":{r+=this.renderer.heading(o);break}case"code":{r+=this.renderer.code(o);break}case"table":{r+=this.renderer.table(o);break}case"blockquote":{r+=this.renderer.blockquote(o);break}case"list":{r+=this.renderer.list(o);break}case"checkbox":{r+=this.renderer.checkbox(o);break}case"html":{r+=this.renderer.html(o);break}case"def":{r+=this.renderer.def(o);break}case"paragraph":{r+=this.renderer.paragraph(o);break}case"text":{r+=this.renderer.text(o);break}default:{let a='Token with "'+o.type+'" type was not found.';if(this.options.silent)return console.error(a),"";throw new Error(a)}}}return r}parseInline(t,r=this.renderer){let n="";for(let s=0;s<t.length;s++){let o=t[s];if(this.options.extensions?.renderers?.[o.type]){let l=this.options.extensions.renderers[o.type].call({parser:this},o);if(l!==!1||!["escape","html","link","image","strong","em","codespan","br","del","text"].includes(o.type)){n+=l||"";continue}}let a=o;switch(a.type){case"escape":{n+=r.text(a);break}case"html":{n+=r.html(a);break}case"link":{n+=r.link(a);break}case"image":{n+=r.image(a);break}case"checkbox":{n+=r.checkbox(a);break}case"strong":{n+=r.strong(a);break}case"em":{n+=r.em(a);break}case"codespan":{n+=r.codespan(a);break}case"br":{n+=r.br(a);break}case"del":{n+=r.del(a);break}case"text":{n+=r.text(a);break}default:{let l='Token with "'+a.type+'" type was not found.';if(this.options.silent)return console.error(l),"";throw new Error(l)}}}return n}},Ks,Vn=(Ks=class{constructor(e){mt(this,"options");mt(this,"block");this.options=e||rn}preprocess(e){return e}postprocess(e){return e}processAllTokens(e){return e}emStrongMask(e){return e}provideLexer(){return this.block?ur.lex:ur.lexInline}provideParser(){return this.block?dr.parse:dr.parseInline}},mt(Ks,"passThroughHooks",new Set(["preprocess","postprocess","processAllTokens","emStrongMask"])),mt(Ks,"passThroughHooksRespectAsync",new Set(["preprocess","postprocess","processAllTokens"])),Ks),x_=class{constructor(...e){mt(this,"defaults",pa());mt(this,"options",this.setOptions);mt(this,"parse",this.parseMarkdown(!0));mt(this,"parseInline",this.parseMarkdown(!1));mt(this,"Parser",dr);mt(this,"Renderer",Xs);mt(this,"TextRenderer",va);mt(this,"Lexer",ur);mt(this,"Tokenizer",Zs);mt(this,"Hooks",Vn);this.use(...e)}walkTokens(e,t){let r=[];for(let n of e)switch(r=r.concat(t.call(this,n)),n.type){case"table":{let s=n;for(let o of s.header)r=r.concat(this.walkTokens(o.tokens,t));for(let o of s.rows)for(let a of o)r=r.concat(this.walkTokens(a.tokens,t));break}case"list":{let s=n;r=r.concat(this.walkTokens(s.items,t));break}default:{let s=n;this.defaults.extensions?.childTokens?.[s.type]?this.defaults.extensions.childTokens[s.type].forEach(o=>{let a=s[o].flat(1/0);r=r.concat(this.walkTokens(a,t))}):s.tokens&&(r=r.concat(this.walkTokens(s.tokens,t)))}}return r}use(...e){let t=this.defaults.extensions||{renderers:{},childTokens:{}};return e.forEach(r=>{let n={...r};if(n.async=this.defaults.async||n.async||!1,r.extensions&&(r.extensions.forEach(s=>{if(!s.name)throw new Error("extension name required");if("renderer"in s){let o=t.renderers[s.name];o?t.renderers[s.name]=function(...a){let l=s.renderer.apply(this,a);return l===!1&&(l=o.apply(this,a)),l}:t.renderers[s.name]=s.renderer}if("tokenizer"in s){if(!s.level||s.level!=="block"&&s.level!=="inline")throw new Error("extension level must be 'block' or 'inline'");let o=t[s.level];o?o.unshift(s.tokenizer):t[s.level]=[s.tokenizer],s.start&&(s.level==="block"?t.startBlock?t.startBlock.push(s.start):t.startBlock=[s.start]:s.level==="inline"&&(t.startInline?t.startInline.push(s.start):t.startInline=[s.start]))}"childTokens"in s&&s.childTokens&&(t.childTokens[s.name]=s.childTokens)}),n.extensions=t),r.renderer){let s=this.defaults.renderer||new Xs(this.defaults);for(let o in r.renderer){if(!(o in s))throw new Error(`renderer '${o}' does not exist`);if(["options","parser"].includes(o))continue;let a=o,l=r.renderer[a],c=s[a];s[a]=(...u)=>{let d=l.apply(s,u);return d===!1&&(d=c.apply(s,u)),d||""}}n.renderer=s}if(r.tokenizer){let s=this.defaults.tokenizer||new Zs(this.defaults);for(let o in r.tokenizer){if(!(o in s))throw new Error(`tokenizer '${o}' does not exist`);if(["options","rules","lexer"].includes(o))continue;let a=o,l=r.tokenizer[a],c=s[a];s[a]=(...u)=>{let d=l.apply(s,u);return d===!1&&(d=c.apply(s,u)),d}}n.tokenizer=s}if(r.hooks){let s=this.defaults.hooks||new Vn;for(let o in r.hooks){if(!(o in s))throw new Error(`hook '${o}' does not exist`);if(["options","block"].includes(o))continue;let a=o,l=r.hooks[a],c=s[a];Vn.passThroughHooks.has(o)?s[a]=u=>{if(this.defaults.async&&Vn.passThroughHooksRespectAsync.has(o))return(async()=>{let f=await l.call(s,u);return c.call(s,f)})();let d=l.call(s,u);return c.call(s,d)}:s[a]=(...u)=>{if(this.defaults.async)return(async()=>{let f=await l.apply(s,u);return f===!1&&(f=await c.apply(s,u)),f})();let d=l.apply(s,u);return d===!1&&(d=c.apply(s,u)),d}}n.hooks=s}if(r.walkTokens){let s=this.defaults.walkTokens,o=r.walkTokens;n.walkTokens=function(a){let l=[];return l.push(o.call(this,a)),s&&(l=l.concat(s.call(this,a))),l}}this.defaults={...this.defaults,...n}}),this}setOptions(e){return this.defaults={...this.defaults,...e},this}lexer(e,t){return ur.lex(e,t??this.defaults)}parser(e,t){return dr.parse(e,t??this.defaults)}parseMarkdown(e){return(t,r)=>{let n={...r},s={...this.defaults,...n},o=this.onError(!!s.silent,!!s.async);if(this.defaults.async===!0&&n.async===!1)return o(new Error("marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise."));if(typeof t>"u"||t===null)return o(new Error("marked(): input parameter is undefined or null"));if(typeof t!="string")return o(new Error("marked(): input parameter is of type "+Object.prototype.toString.call(t)+", string expected"));if(s.hooks&&(s.hooks.options=s,s.hooks.block=e),s.async)return(async()=>{let a=s.hooks?await s.hooks.preprocess(t):t,l=await(s.hooks?await s.hooks.provideLexer():e?ur.lex:ur.lexInline)(a,s),c=s.hooks?await s.hooks.processAllTokens(l):l;s.walkTokens&&await Promise.all(this.walkTokens(c,s.walkTokens));let u=await(s.hooks?await s.hooks.provideParser():e?dr.parse:dr.parseInline)(c,s);return s.hooks?await s.hooks.postprocess(u):u})().catch(o);try{s.hooks&&(t=s.hooks.preprocess(t));let a=(s.hooks?s.hooks.provideLexer():e?ur.lex:ur.lexInline)(t,s);s.hooks&&(a=s.hooks.processAllTokens(a)),s.walkTokens&&this.walkTokens(a,s.walkTokens);let l=(s.hooks?s.hooks.provideParser():e?dr.parse:dr.parseInline)(a,s);return s.hooks&&(l=s.hooks.postprocess(l)),l}catch(a){return o(a)}}}onError(e,t){return r=>{if(r.message+=`
-Please report this to https://github.com/markedjs/marked.`,e){let n="<p>An error occurred:</p><pre>"+Er(r.message+"",!0)+"</pre>";return t?Promise.resolve(n):n}if(t)return Promise.reject(r);throw r}}},tn=new x_;function ft(e,t){return tn.parse(e,t)}ft.options=ft.setOptions=function(e){return tn.setOptions(e),ft.defaults=tn.defaults,ac(ft.defaults),ft};ft.getDefaults=pa;ft.defaults=rn;ft.use=function(...e){return tn.use(...e),ft.defaults=tn.defaults,ac(ft.defaults),ft};ft.walkTokens=function(e,t){return tn.walkTokens(e,t)};ft.parseInline=tn.parseInline;ft.Parser=dr;ft.parser=dr.parse;ft.Renderer=Xs;ft.TextRenderer=va;ft.Lexer=ur;ft.lexer=ur.lex;ft.Tokenizer=Zs;ft.Hooks=Vn;ft.parse=ft;var _y=ft.options,my=ft.setOptions,gy=ft.use,by=ft.walkTokens,hy=ft.parseInline;var yy=dr.parse,vy=ur.lex;function Nr(e){let t=ft.parse(e),r=Ql.sanitize(t);return Jl(r)}function Tr(e,t){return i`<div class="prompt-block">
+`}strong({tokens:e}){return`<strong>${this.parser.parseInline(e)}</strong>`}em({tokens:e}){return`<em>${this.parser.parseInline(e)}</em>`}codespan({text:e}){return`<code>${Sr(e,!0)}</code>`}br(e){return"<br>"}del({tokens:e}){return`<del>${this.parser.parseInline(e)}</del>`}link({href:e,title:t,tokens:r}){let n=this.parser.parseInline(r),s=cc(e);if(s===null)return n;e=s;let o='<a href="'+e+'"';return t&&(o+=' title="'+Sr(t)+'"'),o+=">"+n+"</a>",o}image({href:e,title:t,text:r,tokens:n}){n&&(r=this.parser.parseInline(n,this.parser.textRenderer));let s=cc(e);if(s===null)return Sr(r);e=s;let o=`<img src="${e}" alt="${r}"`;return t&&(o+=` title="${Sr(t)}"`),o+=">",o}text(e){return"tokens"in e&&e.tokens?this.parser.parseInline(e.tokens):"escaped"in e&&e.escaped?e.text:Sr(e.text)}},Ea=class{strong({text:e}){return e}em({text:e}){return e}codespan({text:e}){return e}del({text:e}){return e}html({text:e}){return e}text({text:e}){return e}link({text:e}){return""+e}image({text:e}){return""+e}br(){return""}checkbox({raw:e}){return e}},mr=class ba{constructor(t){xt(this,"options");xt(this,"renderer");xt(this,"textRenderer");this.options=t||rn,this.options.renderer=this.options.renderer||new no,this.renderer=this.options.renderer,this.renderer.options=this.options,this.renderer.parser=this,this.textRenderer=new Ea}static parse(t,r){return new ba(r).parse(t)}static parseInline(t,r){return new ba(r).parseInline(t)}parse(t){let r="";for(let n=0;n<t.length;n++){let s=t[n];if(this.options.extensions?.renderers?.[s.type]){let a=s,i=this.options.extensions.renderers[a.type].call({parser:this},a);if(i!==!1||!["space","hr","heading","code","table","blockquote","list","html","def","paragraph","text"].includes(a.type)){r+=i||"";continue}}let o=s;switch(o.type){case"space":{r+=this.renderer.space(o);break}case"hr":{r+=this.renderer.hr(o);break}case"heading":{r+=this.renderer.heading(o);break}case"code":{r+=this.renderer.code(o);break}case"table":{r+=this.renderer.table(o);break}case"blockquote":{r+=this.renderer.blockquote(o);break}case"list":{r+=this.renderer.list(o);break}case"checkbox":{r+=this.renderer.checkbox(o);break}case"html":{r+=this.renderer.html(o);break}case"def":{r+=this.renderer.def(o);break}case"paragraph":{r+=this.renderer.paragraph(o);break}case"text":{r+=this.renderer.text(o);break}default:{let a='Token with "'+o.type+'" type was not found.';if(this.options.silent)return console.error(a),"";throw new Error(a)}}}return r}parseInline(t,r=this.renderer){let n="";for(let s=0;s<t.length;s++){let o=t[s];if(this.options.extensions?.renderers?.[o.type]){let i=this.options.extensions.renderers[o.type].call({parser:this},o);if(i!==!1||!["escape","html","link","image","strong","em","codespan","br","del","text"].includes(o.type)){n+=i||"";continue}}let a=o;switch(a.type){case"escape":{n+=r.text(a);break}case"html":{n+=r.html(a);break}case"link":{n+=r.link(a);break}case"image":{n+=r.image(a);break}case"checkbox":{n+=r.checkbox(a);break}case"strong":{n+=r.strong(a);break}case"em":{n+=r.em(a);break}case"codespan":{n+=r.codespan(a);break}case"br":{n+=r.br(a);break}case"del":{n+=r.del(a);break}case"text":{n+=r.text(a);break}default:{let i='Token with "'+a.type+'" type was not found.';if(this.options.silent)return console.error(i),"";throw new Error(i)}}}return n}},eo,es=(eo=class{constructor(e){xt(this,"options");xt(this,"block");this.options=e||rn}preprocess(e){return e}postprocess(e){return e}processAllTokens(e){return e}emStrongMask(e){return e}provideLexer(){return this.block?_r.lex:_r.lexInline}provideParser(){return this.block?mr.parse:mr.parseInline}},xt(eo,"passThroughHooks",new Set(["preprocess","postprocess","processAllTokens","emStrongMask"])),xt(eo,"passThroughHooksRespectAsync",new Set(["preprocess","postprocess","processAllTokens"])),eo),O_=class{constructor(...e){xt(this,"defaults",ya());xt(this,"options",this.setOptions);xt(this,"parse",this.parseMarkdown(!0));xt(this,"parseInline",this.parseMarkdown(!1));xt(this,"Parser",mr);xt(this,"Renderer",no);xt(this,"TextRenderer",Ea);xt(this,"Lexer",_r);xt(this,"Tokenizer",ro);xt(this,"Hooks",es);this.use(...e)}walkTokens(e,t){let r=[];for(let n of e)switch(r=r.concat(t.call(this,n)),n.type){case"table":{let s=n;for(let o of s.header)r=r.concat(this.walkTokens(o.tokens,t));for(let o of s.rows)for(let a of o)r=r.concat(this.walkTokens(a.tokens,t));break}case"list":{let s=n;r=r.concat(this.walkTokens(s.items,t));break}default:{let s=n;this.defaults.extensions?.childTokens?.[s.type]?this.defaults.extensions.childTokens[s.type].forEach(o=>{let a=s[o].flat(1/0);r=r.concat(this.walkTokens(a,t))}):s.tokens&&(r=r.concat(this.walkTokens(s.tokens,t)))}}return r}use(...e){let t=this.defaults.extensions||{renderers:{},childTokens:{}};return e.forEach(r=>{let n={...r};if(n.async=this.defaults.async||n.async||!1,r.extensions&&(r.extensions.forEach(s=>{if(!s.name)throw new Error("extension name required");if("renderer"in s){let o=t.renderers[s.name];o?t.renderers[s.name]=function(...a){let i=s.renderer.apply(this,a);return i===!1&&(i=o.apply(this,a)),i}:t.renderers[s.name]=s.renderer}if("tokenizer"in s){if(!s.level||s.level!=="block"&&s.level!=="inline")throw new Error("extension level must be 'block' or 'inline'");let o=t[s.level];o?o.unshift(s.tokenizer):t[s.level]=[s.tokenizer],s.start&&(s.level==="block"?t.startBlock?t.startBlock.push(s.start):t.startBlock=[s.start]:s.level==="inline"&&(t.startInline?t.startInline.push(s.start):t.startInline=[s.start]))}"childTokens"in s&&s.childTokens&&(t.childTokens[s.name]=s.childTokens)}),n.extensions=t),r.renderer){let s=this.defaults.renderer||new no(this.defaults);for(let o in r.renderer){if(!(o in s))throw new Error(`renderer '${o}' does not exist`);if(["options","parser"].includes(o))continue;let a=o,i=r.renderer[a],c=s[a];s[a]=(...u)=>{let d=i.apply(s,u);return d===!1&&(d=c.apply(s,u)),d||""}}n.renderer=s}if(r.tokenizer){let s=this.defaults.tokenizer||new ro(this.defaults);for(let o in r.tokenizer){if(!(o in s))throw new Error(`tokenizer '${o}' does not exist`);if(["options","rules","lexer"].includes(o))continue;let a=o,i=r.tokenizer[a],c=s[a];s[a]=(...u)=>{let d=i.apply(s,u);return d===!1&&(d=c.apply(s,u)),d}}n.tokenizer=s}if(r.hooks){let s=this.defaults.hooks||new es;for(let o in r.hooks){if(!(o in s))throw new Error(`hook '${o}' does not exist`);if(["options","block"].includes(o))continue;let a=o,i=r.hooks[a],c=s[a];es.passThroughHooks.has(o)?s[a]=u=>{if(this.defaults.async&&es.passThroughHooksRespectAsync.has(o))return(async()=>{let p=await i.call(s,u);return c.call(s,p)})();let d=i.call(s,u);return c.call(s,d)}:s[a]=(...u)=>{if(this.defaults.async)return(async()=>{let p=await i.apply(s,u);return p===!1&&(p=await c.apply(s,u)),p})();let d=i.apply(s,u);return d===!1&&(d=c.apply(s,u)),d}}n.hooks=s}if(r.walkTokens){let s=this.defaults.walkTokens,o=r.walkTokens;n.walkTokens=function(a){let i=[];return i.push(o.call(this,a)),s&&(i=i.concat(s.call(this,a))),i}}this.defaults={...this.defaults,...n}}),this}setOptions(e){return this.defaults={...this.defaults,...e},this}lexer(e,t){return _r.lex(e,t??this.defaults)}parser(e,t){return mr.parse(e,t??this.defaults)}parseMarkdown(e){return(t,r)=>{let n={...r},s={...this.defaults,...n},o=this.onError(!!s.silent,!!s.async);if(this.defaults.async===!0&&n.async===!1)return o(new Error("marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise."));if(typeof t>"u"||t===null)return o(new Error("marked(): input parameter is undefined or null"));if(typeof t!="string")return o(new Error("marked(): input parameter is of type "+Object.prototype.toString.call(t)+", string expected"));if(s.hooks&&(s.hooks.options=s,s.hooks.block=e),s.async)return(async()=>{let a=s.hooks?await s.hooks.preprocess(t):t,i=await(s.hooks?await s.hooks.provideLexer():e?_r.lex:_r.lexInline)(a,s),c=s.hooks?await s.hooks.processAllTokens(i):i;s.walkTokens&&await Promise.all(this.walkTokens(c,s.walkTokens));let u=await(s.hooks?await s.hooks.provideParser():e?mr.parse:mr.parseInline)(c,s);return s.hooks?await s.hooks.postprocess(u):u})().catch(o);try{s.hooks&&(t=s.hooks.preprocess(t));let a=(s.hooks?s.hooks.provideLexer():e?_r.lex:_r.lexInline)(t,s);s.hooks&&(a=s.hooks.processAllTokens(a)),s.walkTokens&&this.walkTokens(a,s.walkTokens);let i=(s.hooks?s.hooks.provideParser():e?mr.parse:mr.parseInline)(a,s);return s.hooks&&(i=s.hooks.postprocess(i)),i}catch(a){return o(a)}}}onError(e,t){return r=>{if(r.message+=`
+Please report this to https://github.com/markedjs/marked.`,e){let n="<p>An error occurred:</p><pre>"+Sr(r.message+"",!0)+"</pre>";return t?Promise.resolve(n):n}if(t)return Promise.reject(r);throw r}}},tn=new O_;function wt(e,t){return tn.parse(e,t)}wt.options=wt.setOptions=function(e){return tn.setOptions(e),wt.defaults=tn.defaults,pc(wt.defaults),wt};wt.getDefaults=ya;wt.defaults=rn;wt.use=function(...e){return tn.use(...e),wt.defaults=tn.defaults,pc(wt.defaults),wt};wt.walkTokens=function(e,t){return tn.walkTokens(e,t)};wt.parseInline=tn.parseInline;wt.Parser=mr;wt.parser=mr.parse;wt.Renderer=no;wt.TextRenderer=Ea;wt.Lexer=_r;wt.lexer=_r.lex;wt.Tokenizer=ro;wt.Hooks=es;wt.parse=wt;var Sy=wt.options,Ey=wt.setOptions,Ty=wt.use,Cy=wt.walkTokens,Ry=wt.parseInline;var Iy=mr.parse,Ly=_r.lex;function Pr(e){let t=wt.parse(e),r=sc.sanitize(t);return oc(r)}function Er(e,t){return l`<div class="prompt-block">
     <div class="prompt-block__label">${e}</div>
     <pre class="prompt-block__body">${t}</pre>
-  </div>`}function Sn(e){return e.loading?i`<div class="prompt-block__status">불러오는 중…</div>`:e.error?i`<div class="prompt-block__status prompt-block__status--error">
+  </div>`}function En(e){return e.loading?l`<div class="prompt-block__status">불러오는 중…</div>`:e.error?l`<div class="prompt-block__status prompt-block__status--error">
       프롬프트를 불러오지 못했습니다
-    </div>`:""}function eo(e){if(typeof e!="number"||!Number.isFinite(e))return"";let t=new Date(e),r=n=>String(n).padStart(2,"0");return`${t.getFullYear()}-${r(t.getMonth()+1)}-${r(t.getDate())} ${r(t.getHours())}:${r(t.getMinutes())}`}var A_={Read:"\u{1F4D6}",Edit:"\u270E",MultiEdit:"\u270E",Write:"\u{1F4DD}",Bash:"\u26A1",Grep:"\u{1F50E}",Glob:"\u{1F50E}",Task:"\u{1F916}",WebFetch:"\u{1F310}",WebSearch:"\u{1F310}"},S_={command_execution:"\uBA85\uB839 \uC2E4\uD589",file_change:"\uD30C\uC77C \uBCC0\uACBD",mcp_call:"MCP \uD638\uCD9C",web_search:"\uC6F9 \uAC80\uC0C9",plan:"\uACC4\uD68D"},E_=/^\s*([✓✗⊘])\s*(spec|impl|implementation|plan)\s*게이트\s*[—–-]\s*(\S+)\s+(APPROVE|REVISE|REJECT|BLOCK|SKIP)(?:\s*·\s*(.+))?/,T_=/^\s*#{0,3}\s*Phase\s+\d+(?:\s*\/\s*\d+)?\s*(?:[·:—–-]\s*.+)?$/;function yr(e){return!!e&&typeof e=="object"}function wa(e){return typeof e!="string"||e.length===0?[]:e.split(/\r?\n/)}function bc(e,t){let r=wa(e),n=wa(t),s=new Map;for(let l of r)s.set(l,(s.get(l)||0)+1);let o=0;for(let l of n){let c=s.get(l)||0;c>0?s.set(l,c-1):o+=1}let a=0;for(let l of s.values())a+=l;return{added:o,removed:a}}function C_(e){let t="";typeof e=="string"?t=e:Array.isArray(e)?t=e.map(s=>yr(s)&&typeof s.text=="string"?s.text:"").join(""):yr(e)&&typeof e.text=="string"&&(t=e.text);let n=(String(t).split(/\r?\n/).find(s=>s.trim().length>0)||"").trim();return n.length>120?`${n.slice(0,117)}\u2026`:n}function R_(e){let t=String(e.name||""),r=e.input||{},n={kind:"tool",tool:t,icon:A_[t]||"\u{1F527}",input:r,expandable:!0};if((t==="Read"||t==="Write")&&(n.path=String(r.file_path||r.path||"")),t==="Write"&&(n.added=wa(r.content).length),t==="Edit"){n.path=String(r.file_path||r.path||"");let{added:s,removed:o}=bc(r.old_string,r.new_string);n.added=s,n.removed=o}if(t==="MultiEdit"){n.path=String(r.file_path||r.path||"");let s=0,o=0,a=Array.isArray(r.edits)?r.edits:[];for(let l of a){let c=bc(yr(l)?l.old_string:"",yr(l)?l.new_string:"");s+=c.added,o+=c.removed}n.added=s,n.removed=o}return t==="Bash"&&(n.command=String(r.command||"")),(t==="Grep"||t==="Glob")&&(n.command=String(r.pattern||r.query||"")),n}function ka(e){return typeof e!="string"||e.trim().length===0?null:{kind:"thinking",text:e}}function $a(e){let t=e.split(/\r?\n/).find(n=>n.trim().length>0)||"",r=E_.exec(t);return r?{kind:"gate",gate:r[2]==="implementation"?"impl":r[2],reviewer:r[3],verdict:r[4],time:r[5]?r[5].trim():void 0,text:t.trim()}:T_.test(t)&&t.trim().length<=80?{kind:"phase",text:t.trim()}:{kind:"assistant",text:e}}function I_(e,t){if(e.type==="assistant"){let r=e.message,n=r&&Array.isArray(r.content)?r.content:[],s=[];for(let o of n)if(yr(o)){if(o.type==="text"&&typeof o.text=="string")s.push($a(o.text));else if(o.type==="thinking"){let a=ka(o.thinking);a&&s.push(a)}else if(o.type==="tool_use"){let a=R_(o);typeof o.id=="string"&&t.set(o.id,a),s.push(a)}}return s}if(e.type==="user"){let r=e.message,n=r&&Array.isArray(r.content)?r.content:[];for(let s of n)if(yr(s)&&s.type==="tool_result"){let o=t.get(String(s.tool_use_id));if(o){let a=C_(s.content);o.result=a,o.output=typeof s.content=="string"?s.content:a}}return[]}if(e.type==="result"){let r=e.is_error===!1&&e.subtype==="success";return[{kind:"result",success:r,text:typeof e.result=="string"?e.result:r?"DONE":""}]}return[]}function L_(e){if(e.type==="item.completed"&&yr(e.item)){let t=e.item;if(t.type==="agent_message"&&typeof t.text=="string")return[$a(t.text)];if(t.type==="reasoning"){let r=ka(t.text);return r?[r]:[]}return t.type==="error"?[{kind:"error",text:String(t.message||"")}]:[]}if(e.type==="turn.completed")return[{kind:"result",success:!0,text:"DONE"}];if(e.type==="turn.failed"){let t=e.error;return[{kind:"error",text:t&&typeof t.message=="string"?t.message:"turn failed"}]}return e.type==="error"?[{kind:"error",text:String(e.message||"")}]:[]}function O_(e){if(e.schema!=="codex-delegation-monitor-v1"||!yr(e.event))return[];let t=e.event;if(t.type==="session.started"||t.type==="turn.started")return[];if((t.type==="item.started"||t.type==="item.completed")&&yr(t.item)){let r=t.item;if(typeof r.id!="string"||r.id.length===0)return[];if(t.type==="item.completed"&&r.kind==="agent_message"&&typeof r.text=="string"&&r.text.trim().length>0)return[$a(r.text)];if(t.type==="item.completed"&&r.kind==="reasoning"){let l=ka(r.text);return l?[l]:[]}if(r.kind!=="activity"||typeof r.activity!="string")return[];let n=S_[r.activity];if(!n)return[];let s="\uC2DC\uC791",o="\u2026",a={kind:"tool",tool:"",icon:o,expandable:!1};if(t.type==="item.completed"){if(r.status==="completed")s="\uC644\uB8CC",o="\u2713";else if(r.status==="failed")s="\uC2E4\uD328",o="\u2717";else return[];a.result=""}return a.tool=`${n} \xB7 ${s}`,a.icon=o,[a]}return t.type==="turn.completed"&&t.status==="completed"?[{kind:"result",success:!0,text:"DONE"}]:t.type==="turn.failed"&&(t.status==="failed"||t.status==="interrupted")&&typeof t.error_code=="string"&&t.error_code.length>0?[{kind:"error",text:t.error_code}]:[]}function M_(e){let t=e.type;return typeof t=="string"&&(t==="error"||t.startsWith("thread.")||t.startsWith("turn.")||t.startsWith("item."))}function hc(e){let t=[],r=new Map,n=Array.isArray(e)?e:[];for(let s of n){let o=s;if(typeof s=="string"){let l=s.trim();if(l.length===0)continue;try{o=JSON.parse(l)}catch{continue}}if(!yr(o))continue;let a=o.schema==="codex-delegation-monitor-v1"?O_(o):M_(o)?L_(o):I_(o,r);for(let l of a)t.push(l)}return t}var P_=5,D_=10,N_=/Task\s+#(\d+)/,q_=/\bgh\s+pr\s+create\b|\bgit\s+push\b/,F_=/\bnpm\s+(?:run\s+)?(?:test|tsc|lint|build)\b|\bvitest\b/;function to(e){return typeof e!="string"?"":(e.split(/\r?\n/).find(t=>t.trim().length>0)||"").trim()}function j_(e){return typeof e!="string"||e.length===0?0:e.split(/\r?\n/).length}function B_(e){for(let t=e.length-1;t>=0;t-=1){let r=e[t];if(r.kind==="phase"||r.kind==="gate")return r.text||null}return null}function U_(e){let t=new Map,r=0;for(let s of e){if(s.kind!=="tool")continue;r+=1;let o=s.input||{};if(s.tool==="TaskCreate"){let c=N_.exec(s.output||s.result||""),u=String(o.activeForm||o.subject||"").trim();if(!c||u.length===0)continue;t.set(c[1],{label:u,active:o.status==="in_progress"?r:0});continue}if(s.tool!=="TaskUpdate")continue;let a=t.get(String(o.taskId??""));if(!a)continue;let l=o.activeForm||o.subject;typeof l=="string"&&l.trim().length>0&&(a.label=l.trim()),typeof o.status=="string"&&(a.active=o.status==="in_progress"?r:0)}let n=null;for(let s of t.values())s.active>0&&(!n||s.active>n.active)&&(n=s);return n?n.label:null}function W_(e){if(e.tool==="Bash"){let t=e.command||"";return q_.test(t)?"~ PR/\uAC8C\uC2DC \uC911":F_.test(t)?"~ \uAC80\uC99D \uC911":null}return e.tool==="Edit"||e.tool==="Write"||e.tool==="MultiEdit"?"~ \uAD6C\uD604 \uC911":e.tool==="Read"||e.tool==="Grep"||e.tool==="Glob"?"~ \uD0D0\uC0C9 \uC911":null}function z_(e){let t=e.filter(s=>s.kind==="tool").slice(-D_),r=new Map;t.forEach((s,o)=>{let a=W_(s);if(!a)return;let l=r.get(a)||{count:0,last:-1};l.count+=1,l.last=o,r.set(a,l)});let n=null;for(let[s,o]of r)(!n||o.count>n.count||o.count===n.count&&o.last>n.last)&&(n={label:s,count:o.count,last:o.last});return n?n.label:null}function H_(e){let t=B_(e);if(t)return{text:t,guess:!1};let r=U_(e);if(r)return{text:r,guess:!1};let n=z_(e);return n?{text:n,guess:!0}:null}function G_(e,t){if(typeof e!="number")return"";let r=Math.max(0,Math.floor((t-e)/1e3));return r<60?`${r}\uCD08 \uC804`:Gt(e,t)}function ro(e,t={}){let{transport:r,sessionLogStore:n,onClose:s}=t,o=null,a=null,l=null,c=!1,u={},d=!0,f=new Set,g=new Set,x=null,A=null,L=!1,z=!1,ae=!1,se=null,q=null;function N(){L=!1,z=!1,ae=!1,se=null,q=null}async function I(G){if(r){z=!0,ae=!1,le();try{let Z=await Promise.resolve(r("get-attempt-prompt",{attempt_id:G}));if(o!==G)return;!Z||typeof Z!="object"||Array.isArray(Z)?ae=!0:(se=Z,q=G)}catch{o===G&&(ae=!0)}finally{o===G&&(z=!1,le())}}}function j(){if(L=!L,L&&o&&q!==o){I(o);return}le()}function m(){if(!L)return"";let G=Sn({loading:z,error:ae});if(G)return i`<div class="sv__prompt" data-seam="attempt-prompt">
-        ${G}
-      </div>`;if(!se)return"";if(se.missing)return i`<div class="sv__prompt" data-seam="attempt-prompt">
+    </div>`:""}function ao(e){if(typeof e!="number"||!Number.isFinite(e))return"";let t=new Date(e),r=n=>String(n).padStart(2,"0");return`${t.getFullYear()}-${r(t.getMonth()+1)}-${r(t.getDate())} ${r(t.getHours())}:${r(t.getMinutes())}`}var $c={Read:"\u{1F4D6}",Edit:"\u270E",MultiEdit:"\u270E",Write:"\u{1F4DD}",Bash:"\u26A1",Grep:"\u{1F50E}",Glob:"\u{1F50E}",Task:"\u{1F916}",WebFetch:"\u{1F310}",WebSearch:"\u{1F310}"},P_={command_execution:"\uBA85\uB839 \uC2E4\uD589",file_change:"\uD30C\uC77C \uBCC0\uACBD",mcp_call:"MCP \uD638\uCD9C",web_search:"\uC6F9 \uAC80\uC0C9",plan:"\uACC4\uD68D"},M_=/^\s*([✓✗⊘])\s*(spec|impl|implementation|plan)\s*게이트\s*[—–-]\s*(\S+)\s+(APPROVE|REVISE|REJECT|BLOCK|SKIP)(?:\s*·\s*(.+))?/,D_=/^\s*#{0,3}\s*Phase\s+\d+(?:\s*\/\s*\d+)?\s*(?:[·:—–-]\s*.+)?$/;function br(e){return!!e&&typeof e=="object"}function Ta(e){return typeof e!="string"||e.length===0?[]:e.split(/\r?\n/)}function Ca(e,t){let r=Ta(e),n=Ta(t),s=new Map;for(let i of r)s.set(i,(s.get(i)||0)+1);let o=0;for(let i of n){let c=s.get(i)||0;c>0?s.set(i,c-1):o+=1}let a=0;for(let i of s.values())a+=i;return{added:o,removed:a}}function xc(e){let t="";typeof e=="string"?t=e:Array.isArray(e)?t=e.map(s=>br(s)&&typeof s.text=="string"?s.text:"").join(""):br(e)&&typeof e.text=="string"&&(t=e.text);let n=(String(t).split(/\r?\n/).find(s=>s.trim().length>0)||"").trim();return n.length>120?`${n.slice(0,117)}\u2026`:n}function N_(e){let t=String(e.name||""),r=e.input||{},n={kind:"tool",tool:t,icon:$c[t]||"\u{1F527}",input:r,expandable:!0};if((t==="Read"||t==="Write")&&(n.path=String(r.file_path||r.path||"")),t==="Write"&&(n.added=Ta(r.content).length),t==="Edit"){n.path=String(r.file_path||r.path||"");let{added:s,removed:o}=Ca(r.old_string,r.new_string);n.added=s,n.removed=o}if(t==="MultiEdit"){n.path=String(r.file_path||r.path||"");let s=0,o=0,a=Array.isArray(r.edits)?r.edits:[];for(let i of a){let c=Ca(br(i)?i.old_string:"",br(i)?i.new_string:"");s+=c.added,o+=c.removed}n.added=s,n.removed=o}return t==="Bash"&&(n.command=String(r.command||"")),(t==="Grep"||t==="Glob")&&(n.command=String(r.pattern||r.query||"")),n}function Ra(e){return typeof e!="string"||e.trim().length===0?null:{kind:"thinking",text:e}}function Ia(e){let t=e.split(/\r?\n/).find(n=>n.trim().length>0)||"",r=M_.exec(t);return r?{kind:"gate",gate:r[2]==="implementation"?"impl":r[2],reviewer:r[3],verdict:r[4],time:r[5]?r[5].trim():void 0,text:t.trim()}:D_.test(t)&&t.trim().length<=80?{kind:"phase",text:t.trim()}:{kind:"assistant",text:e}}function q_(e,t){if(e.type==="assistant"){let r=e.message,n=r&&Array.isArray(r.content)?r.content:[],s=[];for(let o of n)if(br(o)){if(o.type==="text"&&typeof o.text=="string")s.push(Ia(o.text));else if(o.type==="thinking"){let a=Ra(o.thinking);a&&s.push(a)}else if(o.type==="tool_use"){let a=N_(o);typeof o.id=="string"&&t.set(o.id,a),s.push(a)}}return s}if(e.type==="user"){let r=e.message,n=r&&Array.isArray(r.content)?r.content:[];for(let s of n)if(br(s)&&s.type==="tool_result"){let o=t.get(String(s.tool_use_id));if(o){let a=xc(s.content);o.result=a,o.output=typeof s.content=="string"?s.content:a}}return[]}if(e.type==="result"){let r=e.is_error===!1&&e.subtype==="success";return[{kind:"result",success:r,text:typeof e.result=="string"?e.result:r?"DONE":""}]}return[]}function F_(e){let t=typeof e.command=="string"?e.command:"",r=xc(e.aggregated_output===void 0?e.output:e.aggregated_output),s=[typeof e.exit_code=="number"&&Number.isFinite(e.exit_code)?`exit ${e.exit_code}`:typeof e.status=="string"&&e.status.length>0?e.status:"",r].filter(a=>a.length>0).join(" \xB7 "),o={kind:"tool",tool:"shell",icon:$c.Bash,command:t,input:{command:t},expandable:!0};return s.length>0&&(o.result=s),typeof e.aggregated_output=="string"&&(o.output=e.aggregated_output),o}function j_(e){if(e.type==="item.completed"&&br(e.item)){let t=e.item;if(t.type==="agent_message"&&typeof t.text=="string")return[Ia(t.text)];if(t.type==="reasoning"){let r=Ra(t.text);return r?[r]:[]}return t.type==="error"?[{kind:"error",text:String(t.message||"")}]:t.type==="command_execution"?[F_(t)]:[]}if(e.type==="turn.completed")return[{kind:"result",success:!0,text:"DONE"}];if(e.type==="turn.failed"){let t=e.error;return[{kind:"error",text:t&&typeof t.message=="string"?t.message:"turn failed"}]}return e.type==="error"?[{kind:"error",text:String(e.message||"")}]:[]}function B_(e){if(e.schema!=="codex-delegation-monitor-v1"||!br(e.event))return[];let t=e.event;if(t.type==="session.started"||t.type==="turn.started")return[];if((t.type==="item.started"||t.type==="item.completed")&&br(t.item)){let r=t.item;if(typeof r.id!="string"||r.id.length===0)return[];if(t.type==="item.completed"&&r.kind==="agent_message"&&typeof r.text=="string"&&r.text.trim().length>0)return[Ia(r.text)];if(t.type==="item.completed"&&r.kind==="reasoning"){let i=Ra(r.text);return i?[i]:[]}if(r.kind!=="activity"||typeof r.activity!="string")return[];let n=P_[r.activity];if(!n)return[];let s="\uC2DC\uC791",o="\u2026",a={kind:"tool",tool:"",icon:o,expandable:!1};if(t.type==="item.completed"){if(r.status==="completed")s="\uC644\uB8CC",o="\u2713";else if(r.status==="failed")s="\uC2E4\uD328",o="\u2717";else return[];a.result=""}return a.tool=`${n} \xB7 ${s}`,a.icon=o,[a]}return t.type==="turn.completed"&&t.status==="completed"?[{kind:"result",success:!0,text:"DONE"}]:t.type==="turn.failed"&&(t.status==="failed"||t.status==="interrupted")&&typeof t.error_code=="string"&&t.error_code.length>0?[{kind:"error",text:t.error_code}]:[]}function U_(e){let t=e.type;return typeof t=="string"&&(t==="error"||t.startsWith("thread.")||t.startsWith("turn.")||t.startsWith("item."))}function W_(e){let t=e;if(typeof e=="string"){let r=e.trim();if(r.length===0)return null;try{t=JSON.parse(r)}catch{return null}}return br(t)?t:null}function Ac(){let e=new Map;return{push(t){let r=W_(t);return r?r.schema==="codex-delegation-monitor-v1"?B_(r):U_(r)?j_(r):q_(r,e):[]}}}function La(e){let t=[],r=Ac(),n=Array.isArray(e)?e:[];for(let s of n)for(let o of r.push(s))t.push(o);return t}var z_=5,H_=10,G_=/Task\s+#(\d+)/,K_=/\bgh\s+pr\s+create\b|\bgit\s+push\b/,V_=/\bnpm\s+(?:run\s+)?(?:test|tsc|lint|build)\b|\bvitest\b/;function io(e){return typeof e!="string"?"":(e.split(/\r?\n/).find(t=>t.trim().length>0)||"").trim()}function Y_(e){return typeof e!="string"||e.length===0?0:e.split(/\r?\n/).length}function Z_(e){for(let t=e.length-1;t>=0;t-=1){let r=e[t];if(r.kind==="phase"||r.kind==="gate")return r.text||null}return null}function Q_(e){let t=new Map,r=0;for(let s of e){if(s.kind!=="tool")continue;r+=1;let o=s.input||{};if(s.tool==="TaskCreate"){let c=G_.exec(s.output||s.result||""),u=String(o.activeForm||o.subject||"").trim();if(!c||u.length===0)continue;t.set(c[1],{label:u,active:o.status==="in_progress"?r:0});continue}if(s.tool!=="TaskUpdate")continue;let a=t.get(String(o.taskId??""));if(!a)continue;let i=o.activeForm||o.subject;typeof i=="string"&&i.trim().length>0&&(a.label=i.trim()),typeof o.status=="string"&&(a.active=o.status==="in_progress"?r:0)}let n=null;for(let s of t.values())s.active>0&&(!n||s.active>n.active)&&(n=s);return n?n.label:null}function X_(e){if(e.tool==="Bash"){let t=e.command||"";return K_.test(t)?"~ PR/\uAC8C\uC2DC \uC911":V_.test(t)?"~ \uAC80\uC99D \uC911":null}return e.tool==="Edit"||e.tool==="Write"||e.tool==="MultiEdit"?"~ \uAD6C\uD604 \uC911":e.tool==="Read"||e.tool==="Grep"||e.tool==="Glob"?"~ \uD0D0\uC0C9 \uC911":null}function J_(e){let t=e.filter(s=>s.kind==="tool").slice(-H_),r=new Map;t.forEach((s,o)=>{let a=X_(s);if(!a)return;let i=r.get(a)||{count:0,last:-1};i.count+=1,i.last=o,r.set(a,i)});let n=null;for(let[s,o]of r)(!n||o.count>n.count||o.count===n.count&&o.last>n.last)&&(n={label:s,count:o.count,last:o.last});return n?n.label:null}function em(e){let t=Z_(e);if(t)return{text:t,guess:!1};let r=Q_(e);if(r)return{text:r,guess:!1};let n=J_(e);return n?{text:n,guess:!0}:null}function tm(e,t){if(typeof e!="number")return"";let r=Math.max(0,Math.floor((t-e)/1e3));return r<60?`${r}\uCD08 \uC804`:ir(e,t)}function Tn(e,t={}){let{transport:r,sessionLogStore:n,onClose:s}=t,o=null,a=null,i=null,c=null,u=!1,d={},p=!0,m=new Set,v=new Set,C=null,F=null,H=!1,re=!1,V=!1,q=null,O=null;function P(){H=!1,re=!1,V=!1,q=null,O=null}async function I(Y){if(r){re=!0,V=!1,D();try{let Z=await Promise.resolve(r("get-attempt-prompt",{attempt_id:Y,...c?{root_dir:c}:{}}));if(o!==Y)return;!Z||typeof Z!="object"||Array.isArray(Z)?V=!0:(q=Z,O=Y)}catch{o===Y&&(V=!0)}finally{o===Y&&(re=!1,D())}}}function $(){if(H=!H,H&&o&&O!==o){I(o);return}D()}function M(){if(!H)return"";let Y=En({loading:re,error:V});if(Y)return l`<div class="sv__prompt" data-seam="attempt-prompt">
+        ${Y}
+      </div>`;if(!q)return"";if(q.missing)return l`<div class="sv__prompt" data-seam="attempt-prompt">
         <div class="prompt-block__status">
           기록 없음 — 프롬프트 기록 이전에 실행된 attempt입니다
         </div>
-      </div>`;let Z=eo(se.recorded_at);return i`<div class="sv__prompt" data-seam="attempt-prompt">
-      ${Z?i`<div class="prompt-block__meta">${Z} 발송</div>`:""}
-      ${typeof se.task_prompt=="string"?Tr("\uACFC\uC5C5 (user)",se.task_prompt):""}
-      ${typeof se.system_prompt=="string"?Tr("\uC2DC\uC2A4\uD15C \uACC4\uC57D (--append-system-prompt)",se.system_prompt):""}
-    </div>`}function E(){if(!l||!n)return[];let G=n.get(l);return hc(G?G.lines:[])}function Y(){if(!l||!n)return null;let G=n.get(l),Z=G?G.last_event_at:null;return typeof Z=="number"?Z:null}function ue(){return u.status==="running"}function oe(){if(ue()&&o){A||(A=setInterval(()=>le(),1e3));return}de()}function de(){A&&(clearInterval(A),A=null)}function Ue(G){let Z=[],xe=0;for(;xe<G.length;){let De=G[xe];if(De.kind==="tool"){let We=xe;for(;We<G.length&&G[We].kind==="tool"&&G[We].tool===De.tool;)We+=1;if(We-xe>=P_&&!g.has(xe)){Z.push({kind:"group",idx:xe,tool:De.tool||"",lines:G.slice(xe,We).map((Ge,ze)=>({idx:xe+ze,line:Ge}))}),xe=We;continue}}Z.push({kind:"line",idx:xe,line:De}),xe+=1}return Z}function et(G){for(let Z=G.length-1;Z>=0;Z-=1){let xe=G[Z];if(xe.kind==="result"||xe.kind==="error")return null;if(xe.kind==="tool"&&!Object.hasOwn(xe,"result"))return xe}return null}function qe(G){for(let Z=G.length-1;Z>=0;Z-=1)if(G[Z].kind==="thinking")return G[Z];return null}function X(G,Z){if(Z.kind==="gate")return i`<div class="sv__gate">${Z.text}</div>`;if(Z.kind==="phase")return i`<div class="sv__phase">${Z.text}</div>`;if(Z.kind==="result")return i`<div
+      </div>`;let Z=ao(q.recorded_at);return l`<div class="sv__prompt" data-seam="attempt-prompt">
+      ${Z?l`<div class="prompt-block__meta">${Z} 발송</div>`:""}
+      ${typeof q.task_prompt=="string"?Er("\uACFC\uC5C5 (user)",q.task_prompt):""}
+      ${typeof q.system_prompt=="string"?Er("\uC2DC\uC2A4\uD15C \uACC4\uC57D (--append-system-prompt)",q.system_prompt):""}
+    </div>`}function K(){if(!i||!n)return[];let Y=n.get(i);return La(Y?Y.lines:[])}function pe(){if(!i||!n)return null;let Y=n.get(i),Z=Y?Y.last_event_at:null;return typeof Z=="number"?Z:null}function _e(){return d.status==="running"}function me(){if(_e()&&o){F||(F=setInterval(()=>D(),1e3));return}ae()}function ae(){F&&(clearInterval(F),F=null)}function Ie(Y){let Z=[],Se=0;for(;Se<Y.length;){let Ze=Y[Se];if(Ze.kind==="tool"){let je=Se;for(;je<Y.length&&Y[je].kind==="tool"&&Y[je].tool===Ze.tool;)je+=1;if(je-Se>=z_&&!v.has(Se)){Z.push({kind:"group",idx:Se,tool:Ze.tool||"",lines:Y.slice(Se,je).map((rt,Qe)=>({idx:Se+Qe,line:rt}))}),Se=je;continue}}Z.push({kind:"line",idx:Se,line:Ze}),Se+=1}return Z}function Te(Y){for(let Z=Y.length-1;Z>=0;Z-=1){let Se=Y[Z];if(Se.kind==="result"||Se.kind==="error")return null;if(Se.kind==="tool"&&!Object.hasOwn(Se,"result"))return Se}return null}function ne(Y){for(let Z=Y.length-1;Z>=0;Z-=1)if(Y[Z].kind==="thinking")return Y[Z];return null}function se(Y,Z){if(Z.kind==="gate")return l`<div class="sv__gate">${Z.text}</div>`;if(Z.kind==="phase")return l`<div class="sv__phase">${Z.text}</div>`;if(Z.kind==="result")return l`<div
         class="sv__result${Z.success?" sv__result--ok":" sv__result--fail"}"
       >
         <span class="sv__result-glyph">${Z.success?"\u2713":"\u2717"}</span>
         <span class="sv__result-body"
-          >${Nr(Z.text||(Z.success?"DONE":"\uC2E4\uD328"))}</span
+          >${Pr(Z.text||(Z.success?"DONE":"\uC2E4\uD328"))}</span
         >
-      </div>`;if(Z.kind==="thinking"){let xe=f.has(G);return i`<div
-        class="sv__think${xe?" sv__think--expanded":""}"
+      </div>`;if(Z.kind==="thinking"){let Se=m.has(Y);return l`<div
+        class="sv__think${Se?" sv__think--expanded":""}"
         role="button"
         tabindex="0"
         title="펼치기"
-        @click=${()=>Oe(G)}
+        @click=${()=>$e(Y)}
       >
-        <span class="sv__think-line">💭 ${to(Z.text)}</span>
-        ${xe?i`<pre class="sv__think-expand">${Z.text}</pre>`:""}
-      </div>`}if(Z.kind==="error")return i`<div class="sv__error">⛔ ${Z.text}</div>`;if(Z.kind==="blocker")return i`<div class="sv__error">⛔ ${Z.text}</div>`;if(Z.kind==="tool"){let xe=f.has(G),De=Z.tool==="Bash"?j_(Z.command):0,We=Z.tool==="Bash"?De>1?to(Z.command):Z.command:Z.path||Z.command||"";return i`<div
-        class="sv__tool${xe?" sv__tool--expanded":""}"
+        <span class="sv__think-line">💭 ${io(Z.text)}</span>
+        ${Se?l`<pre class="sv__think-expand">${Z.text}</pre>`:""}
+      </div>`}if(Z.kind==="error")return l`<div class="sv__error">⛔ ${Z.text}</div>`;if(Z.kind==="blocker")return l`<div class="sv__error">⛔ ${Z.text}</div>`;if(Z.kind==="tool"){let Se=m.has(Y),Ze=Z.tool==="Bash"?Y_(Z.command):0,je=Z.tool==="Bash"?Ze>1?io(Z.command):Z.command:Z.path||Z.command||"";return l`<div
+        class="sv__tool${Se?" sv__tool--expanded":""}"
         role="button"
         tabindex="0"
-        @click=${()=>Oe(G)}
+        @click=${()=>$e(Y)}
       >
         <span class="sv__tool-line">
           <span class="sv__tool-icon">${Z.icon}</span>
           <span class="sv__tool-name">${Z.tool}</span>
-          ${We?i`<span class="sv__tool-detail">${We}</span>`:""}
-          ${De>1?i`<span class="sv__tool-more">⋯ ${De}줄</span>`:""}
-          ${typeof Z.added=="number"?i`<span class="sv__diff-add">+${Z.added}</span>`:""}
-          ${typeof Z.removed=="number"?i`<span class="sv__diff-del">−${Z.removed}</span>`:""}
-          ${Z.result?i`<span class="sv__tool-ok">→ ${Z.result}</span>`:""}
+          ${je?l`<span class="sv__tool-detail">${je}</span>`:""}
+          ${Ze>1?l`<span class="sv__tool-more">⋯ ${Ze}줄</span>`:""}
+          ${typeof Z.added=="number"?l`<span class="sv__diff-add">+${Z.added}</span>`:""}
+          ${typeof Z.removed=="number"?l`<span class="sv__diff-del">−${Z.removed}</span>`:""}
+          ${Z.result?l`<span class="sv__tool-ok">→ ${Z.result}</span>`:""}
         </span>
-        ${xe?i`<pre class="sv__tool-expand">${te(Z)}</pre>`:""}
-      </div>`}return i`<div class="sv__as">${Nr(Z.text||"")}</div>`}function te(G){let Z=[];if(G.tool==="Bash"&&typeof G.command=="string"&&G.command.length>0)Z.push(G.command);else if(G.input!==void 0)try{Z.push(`input: ${JSON.stringify(G.input,null,2)}`)}catch{}return typeof G.output=="string"&&G.output.length>0&&Z.push(`output:
-${G.output}`),Z.join(`
+        ${Se?l`<pre class="sv__tool-expand">${we(Z)}</pre>`:""}
+      </div>`}return l`<div class="sv__as">${Pr(Z.text||"")}</div>`}function we(Y){let Z=[];if(Y.tool==="Bash"&&typeof Y.command=="string"&&Y.command.length>0)Z.push(Y.command);else if(Y.input!==void 0)try{Z.push(`input: ${JSON.stringify(Y.input,null,2)}`)}catch{}return typeof Y.output=="string"&&Y.output.length>0&&Z.push(`output:
+${Y.output}`),Z.join(`
 
-`)}function Ae(){if(!o)return i``;let G=E(),Z=(a?[u.model,u.effort]:[u.runner,u.model,u.effort]).filter(Boolean).join(" \xB7 "),xe=u.session_id||"",De=`\uB77C\uC774\uBE0C \uB530\uB77C\uAC00\uAE30 ${d?"ON":"OFF"}`,We=ue(),Ge=We?G_(Y(),Date.now()):"",ze=We?et(G):null,ct=We?qe(G):null,pt=H_(G);return i`<div class="sv" data-attempt-id=${o}>
+`)}function A(){if(!o)return l``;let Y=K(),Z=(a?[d.model,d.effort]:[d.runner,d.model,d.effort]).filter(Boolean).join(" \xB7 "),Se=d.session_id||"",Ze=`\uB77C\uC774\uBE0C \uB530\uB77C\uAC00\uAE30 ${p?"ON":"OFF"}`,je=_e(),rt=je?tm(pe(),Date.now()):"",Qe=je?Te(Y):null,yt=je?ne(Y):null,Le=em(Y);return l`<div class="sv" data-attempt-id=${o}>
       <div class="sv__bar">
-        <span class="sv__id">${a?u.role||"":o}</span>
-        ${pt?i`<span
-              class="sv__stage${pt.guess?" sv__stage--guess":""}"
-              title=${pt.text}
-              >${pt.text}</span
+        <span class="sv__id">${a?d.role||"":o}</span>
+        ${Le?l`<span
+              class="sv__stage${Le.guess?" sv__stage--guess":""}"
+              title=${Le.text}
+              >${Le.text}</span
             >`:""}
-        ${We?i`<span
+        ${je?l`<span
               class="sv__live"
               title="세션이 진행 중입니다"
-              aria-label=${Ge?`\uC9C4\uD589 \uC911 \xB7 \uB9C8\uC9C0\uB9C9 \uC774\uBCA4\uD2B8 ${Ge}`:"\uC9C4\uD589 \uC911"}
-              ><span class="sv__live-dot" aria-hidden="true"></span>${Ge?i`<span class="sv__live-ago">${Ge}</span>`:""}</span
+              aria-label=${rt?`\uC9C4\uD589 \uC911 \xB7 \uB9C8\uC9C0\uB9C9 \uC774\uBCA4\uD2B8 ${rt}`:"\uC9C4\uD589 \uC911"}
+              ><span class="sv__live-dot" aria-hidden="true"></span>${rt?l`<span class="sv__live-ago">${rt}</span>`:""}</span
             >`:""}
-        ${xe?i`<button
+        ${Se?l`<button
               type="button"
               class="sv__session"
-              title=${xe}
-              aria-label=${`\uC138\uC158 ID \uBCF5\uC0AC: ${xe}`}
-              @click=${()=>$e(xe)}
+              title=${Se}
+              aria-label=${`\uC138\uC158 ID \uBCF5\uC0AC: ${Se}`}
+              @click=${()=>Oe(Se)}
             >
-              ⧉ ${xe.slice(0,8)}
+              ⧉ ${Se.slice(0,8)}
             </button>`:""}
-        ${Z?i`<span class="sv__meta">${Z}</span>`:""}
-        ${u.worktree?i`<span class="sv__wt" title=${u.worktree}
-              >${u.worktree}</span
+        ${Z?l`<span class="sv__meta">${Z}</span>`:""}
+        ${d.worktree?l`<span class="sv__wt" title=${d.worktree}
+              >${d.worktree}</span
             >`:""}
-        ${a||c?"":i`<button
+        ${a||u?"":l`<button
               type="button"
-              class="sv__prompt-toggle${L?" sv__prompt-toggle--on":""}"
+              class="sv__prompt-toggle${H?" sv__prompt-toggle--on":""}"
               data-seam="attempt-prompt-toggle"
-              aria-pressed=${L?"true":"false"}
+              aria-pressed=${H?"true":"false"}
               aria-label="발송 프롬프트 보기"
               title="이 세션에 실제로 보낸 시스템·과업 프롬프트"
-              @click=${j}
+              @click=${$}
             >
               ✉ 프롬프트
             </button>`}
         <button
           type="button"
-          class="sv__follow${d?" sv__follow--on":""}"
-          aria-pressed=${d?"true":"false"}
-          aria-label=${De}
-          @click=${He}
+          class="sv__follow${p?" sv__follow--on":""}"
+          aria-pressed=${p?"true":"false"}
+          aria-label=${Ze}
+          @click=${ge}
         >
-          <span class="sv__follow-full">⇣ ${De}</span>
-          <span class="sv__follow-short">⇣ ${d?"ON":"OFF"}</span>
+          <span class="sv__follow-full">⇣ ${Ze}</span>
+          <span class="sv__follow-short">⇣ ${p?"ON":"OFF"}</span>
         </button>
         <button
           type="button"
           class="sv__close"
           aria-label="닫기"
-          @click=${()=>Je()}
+          @click=${()=>tt()}
         >
           ✕
         </button>
       </div>
-      ${a||c?"":m()}
+      ${a||u?"":M()}
       <div class="sv__body">
-        ${G.length===0?i`<div class="sv__empty">세션 로그 없음</div>`:Ue(G).map(U=>U.kind==="group"?_e(U):X(U.idx,U.line))}
+        ${Y.length===0?l`<div class="sv__empty">세션 로그 없음</div>`:Ie(Y).map(T=>T.kind==="group"?ue(T):se(T.idx,T.line))}
       </div>
-      ${ze||ct?i`<div class="sv__now">
+      ${Qe||yt?l`<div class="sv__now">
             <span class="sv__now-label">지금</span>
-            ${ze?i`<span class="sv__now-icon">${ze.icon}</span>
-                  <span class="sv__now-name">${ze.tool}</span>
+            ${Qe?l`<span class="sv__now-icon">${Qe.icon}</span>
+                  <span class="sv__now-name">${Qe.tool}</span>
                   <span class="sv__now-detail"
-                    >${ze.tool==="Bash"?to(ze.command):ze.path||ze.command||""}</span
+                    >${Qe.tool==="Bash"?io(Qe.command):Qe.path||Qe.command||""}</span
                   >`:""}
-            ${ct?i`<span class="sv__now-think"
-                  >💭 ${to(ct.text)}</span
+            ${yt?l`<span class="sv__now-think"
+                  >💭 ${io(yt.text)}</span
                 >`:""}
           </div>`:""}
-    </div>`}function _e(G){return i`<div
+    </div>`}function ue(Y){return l`<div
       class="sv__group"
       role="button"
       tabindex="0"
       title="펼치기"
-      @click=${()=>Pe(G.idx)}
+      @click=${()=>E(Y.idx)}
     >
-      <span class="sv__group-icon">${G.lines[0].line.icon}</span>
-      <span class="sv__group-name">${G.tool}</span>
-      <span class="sv__group-count">${G.lines.length}</span>
+      <span class="sv__group-icon">${Y.lines[0].line.icon}</span>
+      <span class="sv__group-name">${Y.tool}</span>
+      <span class="sv__group-count">${Y.lines.length}</span>
       <span class="sv__group-caret" aria-hidden="true">▸</span>
-    </div>`}function Pe(G){g.add(G),le()}function le(){Ke(Ae(),e),oe(),d&&Me()}function Me(){let G=e.querySelector(".sv__body");G&&(G.scrollTop=G.scrollHeight)}function Oe(G){f.has(G)?f.delete(G):f.add(G),le()}function He(){d=!d,le()}function $e(G){ir(G).then(Z=>{Z?pe("\uBCF5\uC0AC\uB428","success",1200):pe("\uBCF5\uC0AC \uC2E4\uD328","error",1600)})}function Ve(G){!o||!G||(u={...u,...G},le())}function it(G){let Z=G.target;if(!Z||!Z.classList||!Z.classList.contains("sv__body"))return;!(Z.scrollHeight-Z.scrollTop-Z.clientHeight<=4)&&d&&(d=!1,le())}e.addEventListener("scroll",it,!0);function Ie(G){let Z=G&&G.attempt_id;if(!Z)return;let xe=l;o=Z,a=typeof G.launch_id=="string"&&G.launch_id.length>0?G.launch_id:null,l=a?`session-log:${o}:${a}`:`session-log:${o}`,r&&xe&&xe!==l&&Promise.resolve(r("unsubscribe-session-log",{id:xe})).catch(()=>{}),u=G.meta||{},c=G.hide_prompt===!0,d=!0,f.clear(),g.clear(),N(),!x&&n&&(x=n.subscribe(le)),r&&Promise.resolve(r("subscribe-session-log",{id:l,attempt_id:o,...a?{launch_id:a}:{}})).catch(()=>{}),le()}function Je(){let G=l;o=null,a=null,l=null,c=!1,f.clear(),g.clear(),N(),de(),r&&G&&Promise.resolve(r("unsubscribe-session-log",{id:G})).catch(()=>{}),Ke(i``,e),s&&s()}return{open:Ie,updateMeta:Ve,close:Je,isOpen(){return o!==null},destroy(){de(),x&&(x(),x=null),e.removeEventListener("scroll",it,!0),o=null,a=null,l=null,c=!1,Ke(i``,e)}}}function no(e){let t=e&&typeof e=="object"?e:{},r=t.metadata&&typeof t.metadata=="object"?t.metadata:{},n=xa(t.spec_id),s=xa(r.spec_id);return n?{path:n,source:"native",conflict:s.length>0&&s!==n}:s?{path:s,source:"metadata",conflict:!1}:{path:"",source:"none",conflict:!1}}function xa(e){return typeof e=="string"?e.trim():""}function yc(e){let t=no(e);if(t.path)return t;let r=xa(V_(e).spec_path);return r?{path:r,source:"draft",conflict:!1}:t}function V_(e){let t=e&&typeof e=="object"?e:{};return t.metadata&&typeof t.metadata=="object"?t.metadata:{}}function K_(e){return["plan_review","plan_approval","plan_check"].some(t=>{let r=e[t];return typeof r=="string"&&r.trim().length>0})}function Y_(e){let t=e&&e.metadata||{},r=yc(e),n=[];return r.path&&n.push({kind:"spec",path:r.path,missing_state:r.source==="draft"?"spec_draft":null}),typeof t.plan_path=="string"&&t.plan_path.trim().length>0&&n.push({kind:"plan",path:t.plan_path.trim(),missing_state:K_(t)?null:"plan_pending"}),n}function vc(e,t){let r=Y_(e);return i`
+    </div>`}function E(Y){v.add(Y),D()}function D(){Ve(A(),e),me(),p&&ce()}function ce(){let Y=e.querySelector(".sv__body");Y&&(Y.scrollTop=Y.scrollHeight)}function $e(Y){m.has(Y)?m.delete(Y):m.add(Y),D()}function ge(){p=!p,D()}function Oe(Y){tr(Y).then(Z=>{Z?he("\uBCF5\uC0AC\uB428","success",1200):he("\uBCF5\uC0AC \uC2E4\uD328","error",1600)})}function _t(Y){!o||!Y||(d={...d,...Y},D())}function He(Y){let Z=Y.target;if(!Z||!Z.classList||!Z.classList.contains("sv__body"))return;!(Z.scrollHeight-Z.scrollTop-Z.clientHeight<=4)&&p&&(p=!1,D())}e.addEventListener("scroll",He,!0);function pt(Y){let Z=Y&&Y.attempt_id;if(!Z)return;let Se=i;o=Z,a=typeof Y.launch_id=="string"&&Y.launch_id.length>0?Y.launch_id:null,i=a?`session-log:${o}:${a}`:`session-log:${o}`,r&&Se&&Se!==i&&Promise.resolve(r("unsubscribe-session-log",{id:Se})).catch(()=>{}),c=typeof Y.root_dir=="string"&&Y.root_dir.length>0?Y.root_dir:null,d=Y.meta||{},u=Y.hide_prompt===!0,p=!0,m.clear(),v.clear(),P(),!C&&n&&(C=n.subscribe(D)),r&&Promise.resolve(r("subscribe-session-log",{id:i,attempt_id:o,...a?{launch_id:a}:{},...c?{root_dir:c}:{}})).catch(()=>{}),D()}function tt(){let Y=i;o=null,a=null,i=null,c=null,u=!1,m.clear(),v.clear(),P(),ae(),r&&Y&&Promise.resolve(r("unsubscribe-session-log",{id:Y})).catch(()=>{}),Ve(l``,e),s&&s()}return{open:pt,updateMeta:_t,close:tt,isOpen(){return o!==null},destroy(){ae(),C&&(C(),C=null),e.removeEventListener("scroll",He,!0),o=null,a=null,i=null,c=null,u=!1,Ve(l``,e)}}}function lo(e){let t=e&&typeof e=="object"?e:{},r=t.metadata&&typeof t.metadata=="object"?t.metadata:{},n=Oa(t.spec_id),s=Oa(r.spec_id);return n?{path:n,source:"native",conflict:s.length>0&&s!==n}:s?{path:s,source:"metadata",conflict:!1}:{path:"",source:"none",conflict:!1}}function Oa(e){return typeof e=="string"?e.trim():""}function Sc(e){let t=lo(e);if(t.path)return t;let r=Oa(rm(e).spec_path);return r?{path:r,source:"draft",conflict:!1}:t}function rm(e){let t=e&&typeof e=="object"?e:{};return t.metadata&&typeof t.metadata=="object"?t.metadata:{}}function nm(e){return["plan_review","plan_approval","plan_check"].some(t=>{let r=e[t];return typeof r=="string"&&r.trim().length>0})}function sm(e){let t=e&&e.metadata||{},r=Sc(e),n=[];return r.path&&n.push({kind:"spec",path:r.path,missing_state:r.source==="draft"?"spec_draft":null}),typeof t.plan_path=="string"&&t.plan_path.trim().length>0&&n.push({kind:"plan",path:t.plan_path.trim(),missing_state:nm(t)?null:"plan_pending"}),n}function Ec(e,t){let r=sm(e);return l`
     <div class="detail-section-label">Artifacts</div>
-    ${r.length===0?i`<div class="detail-empty">산출물 없음</div>`:i`
-          ${r.map(n=>i`<div class="detail-art">
+    ${r.length===0?l`<div class="detail-empty">산출물 없음</div>`:l`
+          ${r.map(n=>l`<div class="detail-art">
                 <span class="detail-art__ic" aria-hidden="true">▤</span>
                 <button
                   type="button"
@@ -499,7 +499,7 @@ ${G.output}`),Z.join(`
                 >
                   ${n.path}
                 </button>
-                ${n.missing_state==="spec_draft"?i`<span class="detail-art__badge">draft</span>`:null}
+                ${n.missing_state==="spec_draft"?l`<span class="detail-art__badge">draft</span>`:null}
                 <button
                   type="button"
                   class="detail-art__op"
@@ -510,8 +510,8 @@ ${G.output}`),Z.join(`
               </div>`)}
           <div class="detail-art__cap">경로 클릭 = 복사 · 열기 = 뷰어</div>
         `}
-  `}var Z_="## \u{1F916} \uC791\uC5C5 \uBCF4\uACE0\uC11C",X_=/^> (worker · attempt|session · sid) ([A-Za-z0-9._-]{1,64}) · (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$/,Q_=/^\*\*결론\*\* — (.+)$/;function so(e){if(typeof e!="string"||e.length===0)return null;let t=e.split(/\r?\n/);if(t[0]!==Z_)return null;let r=X_.exec(t[1]||"");if(!r)return null;let n=r[1].split(" ")[0],s=r[2],o=r[3],a=2;for(;a<t.length&&t[a].trim().length===0;)a+=1;let l=a<t.length?Q_.exec(t[a]):null,c=l?l[1].replace(/\s+/g," ").trim():"",u=l?a+1:a;return{lane:n,identifier:s,timestamp:o,conclusion:c,body:t.slice(u).join(`
-`).trim()}}var wc=20;function kc(e){if(e==null||e==="")return"";let t=new Date(e);if(Number.isNaN(t.getTime()))return"";let r=String(t.getMonth()+1).padStart(2,"0"),n=String(t.getDate()).padStart(2,"0"),s=String(t.getHours()).padStart(2,"0"),o=String(t.getMinutes()).padStart(2,"0");return`${r}-${n} ${s}:${o}`}function J_(e){return e.length>wc?`${e.slice(0,wc)}\u2026`:e}function em(e,t,r,n){let s=`${t.lane} ${J_(t.identifier)}`;return i`<div class="detail-report">
+  `}var om="## \u{1F916} \uC791\uC5C5 \uBCF4\uACE0\uC11C",am=/^> (worker · attempt|session · sid) ([A-Za-z0-9._-]{1,64}) · (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$/,im=/^\*\*결론\*\* — (.+)$/;function co(e){if(typeof e!="string"||e.length===0)return null;let t=e.split(/\r?\n/);if(t[0]!==om)return null;let r=am.exec(t[1]||"");if(!r)return null;let n=r[1].split(" ")[0],s=r[2],o=r[3],a=2;for(;a<t.length&&t[a].trim().length===0;)a+=1;let i=a<t.length?im.exec(t[a]):null,c=i?i[1].replace(/\s+/g," ").trim():"",u=i?a+1:a;return{lane:n,identifier:s,timestamp:o,conclusion:c,body:t.slice(u).join(`
+`).trim()}}var Tc=20;function Cc(e){if(e==null||e==="")return"";let t=new Date(e);if(Number.isNaN(t.getTime()))return"";let r=String(t.getMonth()+1).padStart(2,"0"),n=String(t.getDate()).padStart(2,"0"),s=String(t.getHours()).padStart(2,"0"),o=String(t.getMinutes()).padStart(2,"0");return`${r}-${n} ${s}:${o}`}function lm(e){return e.length>Tc?`${e.slice(0,Tc)}\u2026`:e}function cm(e,t,r,n){let s=`${t.lane} ${lm(t.identifier)}`;return l`<div class="detail-report">
     <button
       type="button"
       class="detail-report__head"
@@ -528,31 +528,31 @@ ${G.output}`),Z.join(`
           title=${`${t.lane} ${t.identifier} \xB7 ${t.timestamp}`}
           >${s}</span
         >
-        <span class="detail-report__time">${kc(t.timestamp)}</span>
+        <span class="detail-report__time">${Cc(t.timestamp)}</span>
       </span>
       <span class="detail-report__concl">${t.conclusion}</span>
     </button>
-    ${n&&t.body.length>0?i`<div class="detail-report__body">
-          ${Nr(t.body)}
+    ${n&&t.body.length>0?l`<div class="detail-report__body">
+          ${Pr(t.body)}
         </div>`:""}
-  </div>`}function tm(e){return i`<div class="detail-comment" data-comment-id=${e.id}>
+  </div>`}function um(e){return l`<div class="detail-comment" data-comment-id=${e.id}>
     <div class="detail-comment__meta">
       <span class="detail-comment__author"
         >${e.author||"(\uC791\uC131\uC790 \uC5C6\uC74C)"}</span
       >
       <span class="detail-comment__time"
-        >${kc(e.created_at)}</span
+        >${Cc(e.created_at)}</span
       >
     </div>
     <div class="detail-comment__body">
-      ${Nr(typeof e.text=="string"?e.text:"")}
+      ${Pr(typeof e.text=="string"?e.text:"")}
     </div>
-  </div>`}function $c(e,t={},r={}){let n=Array.isArray(e)?e.filter(Boolean):[],s=r.expanded||new Set,o=typeof r.draft=="string"?r.draft:"",a=r.sending===!0,l=n.slice().sort((c,u)=>String(u.created_at||"").localeCompare(String(c.created_at||"")));return i`
+  </div>`}function Rc(e,t={},r={}){let n=Array.isArray(e)?e.filter(Boolean):[],s=r.expanded||new Set,o=typeof r.draft=="string"?r.draft:"",a=r.sending===!0,i=n.slice().sort((c,u)=>String(u.created_at||"").localeCompare(String(c.created_at||"")));return l`
     <div class="detail-section-label">댓글 (${n.length})</div>
-    ${r.error?i`<div class="detail-empty" data-seam="comments-error">
+    ${r.error?l`<div class="detail-empty" data-seam="comments-error">
           댓글을 불러오지 못했습니다
-        </div>`:l.length===0?i`<div class="detail-empty" data-seam="comments">댓글 없음</div>`:i`<div class="detail-comments" data-seam="comments">
-            ${l.map(c=>{let u=so(typeof c.text=="string"?c.text:"");return u?em(c,u,t,s.has(c.id)):tm(c)})}
+        </div>`:i.length===0?l`<div class="detail-empty" data-seam="comments">댓글 없음</div>`:l`<div class="detail-comments" data-seam="comments">
+            ${i.map(c=>{let u=co(typeof c.text=="string"?c.text:"");return u?cm(c,u,t,s.has(c.id)):um(c)})}
           </div>`}
     <div class="detail-comment-compose">
       <textarea
@@ -575,15 +575,15 @@ ${G.output}`),Z.join(`
         </button>
       </div>
     </div>
-  `}var{I:Jy}=Hi;var xc=e=>e.strings===void 0;var rm={},Ac=(e,t=rm)=>e._$AH=t;var nn=Gs(class extends An{constructor(e){if(super(e),e.type!==Sr.PROPERTY&&e.type!==Sr.ATTRIBUTE&&e.type!==Sr.BOOLEAN_ATTRIBUTE)throw Error("The `live` directive is not allowed on child or event bindings");if(!xc(e))throw Error("`live` bindings can only contain a single expression")}render(e){return e}update(e,[t]){if(t===Xt||t===$t)return t;let r=e.element,n=e.name;if(e.type===Sr.PROPERTY){if(t===r[n])return Xt}else if(e.type===Sr.BOOLEAN_ATTRIBUTE){if(!!t===r.hasAttribute(n))return Xt}else if(e.type===Sr.ATTRIBUTE&&r.getAttribute(n)===t+"")return Xt;return Ac(e),t}});var oo=["workflow_mode","spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort","impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed"],Sa=[...oo.filter(e=>e!=="impl_dispatch"),"quick_fix_impl_model"],Cr=["orchestration_model","orchestration_effort","orchestration_speed"],ao=[...oo,...Cr],nm=Sa.filter(e=>ao.includes(e)),Sc=["delegated","main"],io=["inherit","claude","codex"],Zn=["default","fast"],Xn=["standard","fast_track"],Qn=["codex","opus","fable","self","skip"],lo=["codex","fable","skip"],co=["low","medium","high","xhigh"],Kt="auto";function Vt(e){return!!e&&typeof e=="object"&&!Array.isArray(e)}function Ec(e){if(!Vt(e)||!Vt(e.runners))return[];let t=[];for(let[r,n]of Object.entries(e.runners))Vt(n)&&Vt(n.models)&&t.push([r,Object.keys(n.models)]);return t}function En(e,t){let r=Ec(e),n=t&&t!=="inherit"?r.filter(([s])=>s===t):r;return[Kt,...n.flatMap(([,s])=>s)]}function Tc(e,t,r,n){if(!Vt(e)||!Vt(e.runners))return[Kt];let s=[];for(let[o,a]of Object.entries(e.runners))if(!(!Vt(a)||!Vt(a.models))&&!(t&&t!=="inherit"&&o!==t))for(let[l,c]of Object.entries(a.models)){if(r&&r!==Kt&&l!==r)continue;let u=n(a,c);if(Array.isArray(u))for(let d of u)typeof d=="string"&&!s.includes(d)&&s.push(d)}return[Kt,...s]}function Tn(e,t,r){return Tc(e,t,r,(n,s)=>Vt(s)&&Array.isArray(s.efforts)?s.efforts:n.efforts)}function Ea(e,t,r){return Tc(e,t,r,(n,s)=>Vt(s)&&Array.isArray(s.orchestration_efforts)?s.orchestration_efforts:Vt(s)&&Array.isArray(s.efforts)?s.efforts:n.efforts)}function Jn(e,t){let r=Ec(e);return(t?r.filter(([s])=>s===t):r).flatMap(([,s])=>s)}function Cc(e,t,r){let n={impl_runtime:e?.impl_runtime,impl_model:e?.impl_model,impl_effort:e?.impl_effort},s=n.impl_runtime==="claude"||n.impl_runtime==="codex"?n.impl_runtime:n.impl_runtime==="inherit"?r:null;return s&&(n.impl_model&&!En(t,s).includes(n.impl_model)&&(n.impl_model=void 0),n.impl_effort&&!Tn(t,s,n.impl_model||Kt).includes(n.impl_effort)&&(n.impl_effort=void 0)),n}var sm={workflow_mode:"\uC6CC\uD06C\uD50C\uB85C \uBAA8\uB4DC",spec_review_model:"\uC2A4\uD399 \uB9AC\uBDF0\uC5B4",spec_review_effort:"\uC2A4\uD399 \uB9AC\uBDF0 effort",plan_review_model:"\uACC4\uD68D \uB9AC\uBDF0\uC5B4",plan_review_effort:"\uACC4\uD68D \uB9AC\uBDF0 effort",impl_review_model:"\uAD6C\uD604 \uB9AC\uBDF0\uC5B4",impl_review_effort:"\uAD6C\uD604 \uB9AC\uBDF0 effort",impl_runtime:"\uC704\uC784 \uB300\uC0C1",impl_model:"\uAD6C\uD604 \uBAA8\uB378",impl_effort:"\uAD6C\uD604 effort",impl_speed:"\uAD6C\uD604 \uC18D\uB3C4",orchestration_model:"\uC6CC\uCEE4 \uBAA8\uB378",orchestration_effort:"\uC6CC\uCEE4 effort",orchestration_speed:"\uC6CC\uCEE4 \uC18D\uB3C4"},Aa=[...nm,...Cr],om=[...ao,...Sa].filter((e,t,r)=>r.indexOf(e)===t&&!Aa.includes(e));function Rc(e,t){let r=Vt(e)?e:{},n=Vt(t)?t:{},s=[];for(let a of Aa){let l=r[a]??null,c=n[a]??null;l!==c&&s.push({key:a,label:sm[a]||a,before:l,after:c,kind:l===null?"added":c===null?"removed":"changed"})}let o=[];for(let a of[...om,...Object.keys(n)])!Aa.includes(a)&&!o.includes(a)&&Object.hasOwn(n,a)&&o.push(a);return{rows:s,ignored_keys:o}}function Ta(e,t,r,n,s,o){return js({key:e,choices:t,layer:"global",global:r,resolution_global:o,execution_defaults:n,runner_catalog:s})}function Ic(e,t){let r={};for(let n of Sa){let s=e?.[n],o=t?.[n];s!==o&&(r[n]=typeof o=="string"&&o.length>0?o:null)}return r}function Lc(e,t){let r={};for(let n of Cr){let s=e?.[n]??null,o=t?.[n]??null;s!==o&&(r[n]=typeof o=="string"&&o.length>0?o:null)}return r}var Ca=[{id:"workflow",label:"\uC6CC\uD06C\uD50C\uB85C\uC6B0",keys:["workflow_mode"]},{id:"review",label:"\uB9AC\uBDF0",keys:["spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort"]},{id:"implementation",label:"\uAD6C\uD604",keys:["impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed"]},{id:"worker",label:"Worker",keys:[...Cr]}],qr={workflow_mode:"\uBAA8\uB4DC",spec_review_model:"\uC0AC\uC591 \uB9AC\uBDF0",spec_review_effort:"\uC0AC\uC591 \uB9AC\uBDF0 effort",plan_review_model:"\uACC4\uD68D \uB9AC\uBDF0",plan_review_effort:"\uACC4\uD68D \uB9AC\uBDF0 effort",impl_review_model:"\uAD6C\uD604 \uB9AC\uBDF0",impl_review_effort:"\uAD6C\uD604 \uB9AC\uBDF0 effort",impl_dispatch:"\uC2E4\uD589 \uBC29\uC2DD",impl_runtime:"\uC704\uC784 \uB300\uC0C1",impl_model:"\uBAA8\uB378",impl_effort:"effort",impl_speed:"\uC18D\uB3C4",orchestration_model:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uBAA8\uB378",orchestration_effort:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 effort",orchestration_speed:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uC18D\uB3C4"},uo={pin:"\uD540",global:"\uC804\uC5ED",base:"\uAE30\uBCF8"};function Ra(e,t,r,n,s,o=null){let a=hr({pin:t,global:r,execution_defaults:n,runner_catalog:s,route:t&&typeof t.route=="string"?t.route:null,controller_runtime:o});return e.map(l=>({key:l,...a[l]}))}function Oc(e,t,r,n,s,o=null){let a={pin:0,global:0,base:0};for(let l of Ra(e,t,r,n,s,o))a[l.source]+=1;return a}function Mc(e,t,r){return{id:e,key:t,value:typeof r=="string"?r:""}}function Pc(e,t,r){return typeof t!="string"||t.length===0?null:{id:e,preset_id:t,expected_revision:r}}var uv=[...oo,...Cr];var am=[{id:"spec",label:"spec \uB9AC\uBDF0",receipt:"spec_review"},{id:"impl",label:"\uAD6C\uD604",receipt:null},{id:"impl_review",label:"impl \uB9AC\uBDF0",receipt:"impl_review"},{id:"pr",label:"PR",receipt:null}],im={pin:"pin",global:"global",base:"base"};function lm(e){return i`<span
-    class=${`detail-layer-rail detail-layer-rail--${im[e]}`}
+  `}var{I:fv}=Zi;var Ic=e=>e.strings===void 0;var dm={},Lc=(e,t=dm)=>e._$AH=t;var nn=Xs(class extends Sn{constructor(e){if(super(e),e.type!==Ar.PROPERTY&&e.type!==Ar.ATTRIBUTE&&e.type!==Ar.BOOLEAN_ATTRIBUTE)throw Error("The `live` directive is not allowed on child or event bindings");if(!Ic(e))throw Error("`live` bindings can only contain a single expression")}render(e){return e}update(e,[t]){if(t===or||t===Pt)return t;let r=e.element,n=e.name;if(e.type===Ar.PROPERTY){if(t===r[n])return or}else if(e.type===Ar.BOOLEAN_ATTRIBUTE){if(!!t===r.hasAttribute(n))return or}else if(e.type===Ar.ATTRIBUTE&&r.getAttribute(n)===t+"")return or;return Lc(e),t}});var uo=["workflow_mode","spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort","impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed"],Ma=[...uo.filter(e=>e!=="impl_dispatch"),"quick_fix_impl_model"],Tr=["orchestration_model","orchestration_effort","orchestration_speed"],po=[...uo,...Tr],pm=Ma.filter(e=>po.includes(e)),Oc=["delegated","main"],fo=["inherit","claude","codex"],ns=["default","fast"],ss=["standard","fast_track"],os=["codex","opus","fable","self","skip"],_o=["codex","fable","skip"],mo=["low","medium","high","xhigh"],nr="auto";function rr(e){return!!e&&typeof e=="object"&&!Array.isArray(e)}function Pc(e){if(!rr(e)||!rr(e.runners))return[];let t=[];for(let[r,n]of Object.entries(e.runners))rr(n)&&rr(n.models)&&t.push([r,Object.keys(n.models)]);return t}function Cn(e,t){let r=Pc(e),n=t&&t!=="inherit"?r.filter(([s])=>s===t):r;return[nr,...n.flatMap(([,s])=>s)]}function Mc(e,t,r,n){if(!rr(e)||!rr(e.runners))return[nr];let s=[];for(let[o,a]of Object.entries(e.runners))if(!(!rr(a)||!rr(a.models))&&!(t&&t!=="inherit"&&o!==t))for(let[i,c]of Object.entries(a.models)){if(r&&r!==nr&&i!==r)continue;let u=n(a,c);if(Array.isArray(u))for(let d of u)typeof d=="string"&&!s.includes(d)&&s.push(d)}return[nr,...s]}function Rn(e,t,r){return Mc(e,t,r,(n,s)=>rr(s)&&Array.isArray(s.efforts)?s.efforts:n.efforts)}function Da(e,t,r){return Mc(e,t,r,(n,s)=>rr(s)&&Array.isArray(s.orchestration_efforts)?s.orchestration_efforts:rr(s)&&Array.isArray(s.efforts)?s.efforts:n.efforts)}function as(e,t){let r=Pc(e);return(t?r.filter(([s])=>s===t):r).flatMap(([,s])=>s)}function Dc(e,t,r){let n={impl_runtime:e?.impl_runtime,impl_model:e?.impl_model,impl_effort:e?.impl_effort},s=n.impl_runtime==="claude"||n.impl_runtime==="codex"?n.impl_runtime:n.impl_runtime==="inherit"?r:null;return s&&(n.impl_model&&!Cn(t,s).includes(n.impl_model)&&(n.impl_model=void 0),n.impl_effort&&!Rn(t,s,n.impl_model||nr).includes(n.impl_effort)&&(n.impl_effort=void 0)),n}var fm={workflow_mode:"\uC6CC\uD06C\uD50C\uB85C \uBAA8\uB4DC",spec_review_model:"\uC2A4\uD399 \uB9AC\uBDF0\uC5B4",spec_review_effort:"\uC2A4\uD399 \uB9AC\uBDF0 effort",plan_review_model:"\uACC4\uD68D \uB9AC\uBDF0\uC5B4",plan_review_effort:"\uACC4\uD68D \uB9AC\uBDF0 effort",impl_review_model:"\uAD6C\uD604 \uB9AC\uBDF0\uC5B4",impl_review_effort:"\uAD6C\uD604 \uB9AC\uBDF0 effort",impl_runtime:"\uC704\uC784 \uB300\uC0C1",impl_model:"\uAD6C\uD604 \uBAA8\uB378",impl_effort:"\uAD6C\uD604 effort",impl_speed:"\uAD6C\uD604 \uC18D\uB3C4",orchestration_model:"\uC6CC\uCEE4 \uBAA8\uB378",orchestration_effort:"\uC6CC\uCEE4 effort",orchestration_speed:"\uC6CC\uCEE4 \uC18D\uB3C4"},Pa=[...pm,...Tr],_m=[...po,...Ma].filter((e,t,r)=>r.indexOf(e)===t&&!Pa.includes(e));function Nc(e,t){let r=rr(e)?e:{},n=rr(t)?t:{},s=[];for(let a of Pa){let i=r[a]??null,c=n[a]??null;i!==c&&s.push({key:a,label:fm[a]||a,before:i,after:c,kind:i===null?"added":c===null?"removed":"changed"})}let o=[];for(let a of[..._m,...Object.keys(n)])!Pa.includes(a)&&!o.includes(a)&&Object.hasOwn(n,a)&&o.push(a);return{rows:s,ignored_keys:o}}function Na(e,t,r,n,s,o){return Gs({key:e,choices:t,layer:"global",global:r,resolution_global:o,execution_defaults:n,runner_catalog:s})}function qc(e,t){let r={};for(let n of Ma){let s=e?.[n],o=t?.[n];s!==o&&(r[n]=typeof o=="string"&&o.length>0?o:null)}return r}function Fc(e,t){let r={};for(let n of Tr){let s=e?.[n]??null,o=t?.[n]??null;s!==o&&(r[n]=typeof o=="string"&&o.length>0?o:null)}return r}var qa=[{id:"workflow",label:"\uC6CC\uD06C\uD50C\uB85C\uC6B0",keys:["workflow_mode"]},{id:"review",label:"\uB9AC\uBDF0",keys:["spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort"]},{id:"implementation",label:"\uAD6C\uD604",keys:["impl_dispatch","impl_runtime","impl_model","impl_effort","impl_speed"]},{id:"worker",label:"Worker",keys:[...Tr]}],Mr={workflow_mode:"\uBAA8\uB4DC",spec_review_model:"\uC0AC\uC591 \uB9AC\uBDF0",spec_review_effort:"\uC0AC\uC591 \uB9AC\uBDF0 effort",plan_review_model:"\uACC4\uD68D \uB9AC\uBDF0",plan_review_effort:"\uACC4\uD68D \uB9AC\uBDF0 effort",impl_review_model:"\uAD6C\uD604 \uB9AC\uBDF0",impl_review_effort:"\uAD6C\uD604 \uB9AC\uBDF0 effort",impl_dispatch:"\uC2E4\uD589 \uBC29\uC2DD",impl_runtime:"\uC704\uC784 \uB300\uC0C1",impl_model:"\uBAA8\uB378",impl_effort:"effort",impl_speed:"\uC18D\uB3C4",orchestration_model:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uBAA8\uB378",orchestration_effort:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 effort",orchestration_speed:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uC18D\uB3C4"},go={pin:"\uD540",global:"\uC804\uC5ED",base:"\uAE30\uBCF8"};function Fa(e,t,r,n,s,o=null){let a=Qt({pin:t,global:r,execution_defaults:n,runner_catalog:s,route:t&&typeof t.route=="string"?t.route:null,controller_runtime:o});return e.map(i=>({key:i,...a[i]}))}function jc(e,t,r,n,s,o=null){let a={pin:0,global:0,base:0};for(let i of Fa(e,t,r,n,s,o))a[i.source]+=1;return a}function Bc(e,t,r){return{id:e,key:t,value:typeof r=="string"?r:""}}function Uc(e,t,r){return typeof t!="string"||t.length===0?null:{id:e,preset_id:t,expected_revision:r}}var xv=[...uo,...Tr];var mm=[{id:"spec",label:"spec \uB9AC\uBDF0",receipt:"spec_review"},{id:"impl",label:"\uAD6C\uD604",receipt:null},{id:"impl_review",label:"impl \uB9AC\uBDF0",receipt:"impl_review"},{id:"pr",label:"PR",receipt:null}],gm={pin:"pin",global:"global",base:"base"};function hm(e){return l`<span
+    class=${`detail-layer-rail detail-layer-rail--${gm[e]}`}
     data-source=${e}
     aria-hidden="true"
     ><i></i><i></i><i></i
-  ></span>`}function cm(e,t,r){switch(e){case"workflow_mode":return Xn;case"spec_review_model":case"impl_review_model":return Qn;case"plan_review_model":return lo;case"spec_review_effort":case"plan_review_effort":case"impl_review_effort":return co;case"impl_dispatch":return Sc;case"impl_runtime":return io;case"impl_model":return En(r,t.impl_runtime);case"impl_effort":return Tn(r,t.impl_runtime,t.impl_model);case"impl_speed":case"orchestration_speed":return Zn;case"orchestration_model":return Jn(r,null);case"orchestration_effort":return Tn(r,void 0,t.orchestration_model||Kt).filter(n=>n!==Kt);default:return[]}}function um(e,t){return i`<div class="detail-effective__row" data-key=${e.key}>
-    ${lm(e.source)}
+  ></span>`}function bm(e,t,r){switch(e){case"workflow_mode":return ss;case"spec_review_model":case"impl_review_model":return os;case"plan_review_model":return _o;case"spec_review_effort":case"plan_review_effort":case"impl_review_effort":return mo;case"impl_dispatch":return Oc;case"impl_runtime":return fo;case"impl_model":return Cn(r,t.impl_runtime);case"impl_effort":return Rn(r,t.impl_runtime,t.impl_model);case"impl_speed":case"orchestration_speed":return ns;case"orchestration_model":return as(r,null);case"orchestration_effort":return Rn(r,void 0,t.orchestration_model||nr).filter(n=>n!==nr);default:return[]}}function ym(e,t){return l`<div class="detail-effective__row" data-key=${e.key}>
+    ${hm(e.source)}
     <span class="detail-effective__k"
-      >${qr[e.key]||e.key}</span
+      >${Mr[e.key]||e.key}</span
     >
     <span
       class=${`detail-effective__v${e.source==="base"?" detail-effective__v--dim":""}`}
@@ -592,12 +592,12 @@ ${G.output}`),Z.join(`
     >
     <span
       class=${`detail-effective__badge detail-effective__badge--${e.source}`}
-      >${uo[e.source]}</span
+      >${go[e.source]}</span
     >
-    ${t.expanded?i`<select
+    ${t.expanded?l`<select
           class="detail-effective__edit"
           data-edit-key=${e.key}
-          aria-label=${`${qr[e.key]||e.key} \uD3B8\uC9D1`}
+          aria-label=${`${Mr[e.key]||e.key} \uD3B8\uC9D1`}
           ?disabled=${e.resolution==="not_applicable"}
           @change=${r=>{let n=String(r.target.value);t.onEdit(e.key,n.length===0?null:n)}}
         >
@@ -608,7 +608,7 @@ ${G.output}`),Z.join(`
           >
             ${t.default_label}
           </option>
-          ${t.options.map(r=>i`<option
+          ${t.options.map(r=>l`<option
                 value=${r.value}
                 title=${r.full_value||""}
                 ?selected=${e.source==="pin"&&e.value===r.value}
@@ -616,7 +616,7 @@ ${G.output}`),Z.join(`
                 ${r.label}
               </option>`)}
         </select>`:""}
-  </div>`}function Dc(e,t){let r=Ca.flatMap(c=>c.keys),n=Ra(r,e.metadata,e.workspace_values,e.execution_defaults,e.catalog,e.controller_runtime||null),s=Oc(r,e.metadata,e.workspace_values,e.execution_defaults,e.catalog,e.controller_runtime||null),o=Object.fromEntries(n.map(c=>[c.key,c])),a=Object.fromEntries(n.filter(c=>c.value!==null).map(c=>[c.key,c.value])),l=n.filter(c=>c.full_value&&c.display!==c.full_value).map(c=>c.full_value).join(" \xB7 ");return i`<details
+  </div>`}function Wc(e,t){let r=qa.flatMap(c=>c.keys),n=Fa(r,e.metadata,e.workspace_values,e.execution_defaults,e.catalog,e.controller_runtime||null),s=jc(r,e.metadata,e.workspace_values,e.execution_defaults,e.catalog,e.controller_runtime||null),o=Object.fromEntries(n.map(c=>[c.key,c])),a=Object.fromEntries(n.filter(c=>c.value!==null).map(c=>[c.key,c.value])),i=n.filter(c=>c.full_value&&c.display!==c.full_value).map(c=>c.full_value).join(" \xB7 ");return l`<details
     class=${`detail-effective${e.expanded?" detail-effective--open":""}`}
     data-seam="effective-settings"
     ?open=${e.expanded}
@@ -628,8 +628,8 @@ ${G.output}`),Z.join(`
       @click=${c=>{c.preventDefault();let u=c.currentTarget.parentElement;t.onToggle(!u.open)}}
     >
       <span class="detail-effective__t">유효 실행 설정</span>
-      <span class="detail-effective__summary" title=${l}
-        >${dm(o)}</span
+      <span class="detail-effective__summary" title=${i}
+        >${vm(o)}</span
       >
       <span class="detail-effective__counts">
         <span class="detail-effective__count detail-effective__count--pin"
@@ -644,10 +644,10 @@ ${G.output}`),Z.join(`
       </span>
       <span class="detail-effective__chev">▸</span>
     </summary>
-    ${e.expanded?i`<div class="detail-effective__body">
-          ${Ca.map(c=>i`
+    ${e.expanded?l`<div class="detail-effective__body">
+          ${qa.map(c=>l`
               <div class="detail-effective__subhead">${c.label}</div>
-              ${n.filter(u=>c.keys.includes(u.key)).map(u=>{let d=js({key:u.key,choices:cm(u.key,a,e.catalog),layer:"pin",pin:e.metadata,global:e.workspace_values,execution_defaults:e.execution_defaults,runner_catalog:e.catalog,route:typeof e.metadata?.route=="string"?e.metadata.route:null,controller_runtime:e.controller_runtime||null});return um(u,{expanded:e.expanded,options:d.options,default_label:d.unset_label,default_full_value:d.full_value,onEdit:t.onEdit})})}
+              ${n.filter(u=>c.keys.includes(u.key)).map(u=>{let d=Gs({key:u.key,choices:bm(u.key,a,e.catalog),layer:"pin",pin:e.metadata,global:e.workspace_values,execution_defaults:e.execution_defaults,runner_catalog:e.catalog,route:typeof e.metadata?.route=="string"?e.metadata.route:null,controller_runtime:e.controller_runtime||null});return ym(u,{expanded:e.expanded,options:d.options,default_label:d.unset_label,default_full_value:d.full_value,onEdit:t.onEdit})})}
             `)}
           <div class="detail-effective__foot">
             <select
@@ -660,7 +660,7 @@ ${G.output}`),Z.join(`
               <option value="" ?selected=${e.preset_id===""}>
                 실행 프리셋…
               </option>
-              ${e.presets.map(c=>i`<option
+              ${e.presets.map(c=>l`<option
                     value=${c.id}
                     ?selected=${c.id===e.preset_id}
                   >
@@ -678,59 +678,59 @@ ${G.output}`),Z.join(`
             <span class="detail-effective__hint"
               >세션 키 12개를 핀으로 기록</span
             >
-            ${(e.skipped_orchestration_keys||[]).length>0?i`<span
+            ${(e.skipped_orchestration_keys||[]).length>0?l`<span
                   class="detail-effective__hint"
                   data-preset-skip-notice
                   >오케스트레이션 3키는 Bead에 핀할 수 없어 건너뜀</span
                 >`:""}
           </div>
         </div>`:""}
-  </details>`}function dm(e){let t=[];if(e.workflow_mode&&t.push(e.workflow_mode.display),e.impl_dispatch?.value==="main")t.push("\uBA54\uC778");else if(e.impl_dispatch?.value==="delegated"){let r=e.impl_runtime?` ${e.impl_runtime.display}`:"";t.push(`\uC704\uC784${r}`)}for(let r of["impl_model","impl_effort","impl_speed"])e[r]?.resolution!=="not_applicable"&&t.push(e[r]?.display||"\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00");return t.join(" \xB7 ")}function pm(e){if(!e||typeof e!="object")return null;let{kind:t,actor:r,effort:n,sha:s}=e;return typeof t!="string"||typeof r!="string"||typeof s!="string"?null:{kind:t,actor:r,effort:typeof n=="string"?n:null,sha:s}}function Nc(e){let t=e&&typeof e.metadata=="object"&&e.metadata?e.metadata:{},r=e&&typeof e.workflow=="object"&&e.workflow?e.workflow:{},n=r.stages||{},s=r.route||t.route||null,o=typeof t.pr_url=="string"?t.pr_url:"",a=typeof t.exec_receipt=="string"?t.exec_receipt:"",l=pm(r.exec_receipt),c=l?en(l):a,u=l?`${l.kind}:${l.actor}`:a.split("@")[0],d=qs(r.planned_execution,r.exec_receipt);return i`<section class="detail-summary" data-seam="detail-summary">
+  </details>`}function vm(e){let t=[];if(e.workflow_mode&&t.push(e.workflow_mode.display),e.impl_dispatch?.value==="main")t.push("\uBA54\uC778");else if(e.impl_dispatch?.value==="delegated"){let r=e.impl_runtime?` ${e.impl_runtime.display}`:"";t.push(`\uC704\uC784${r}`)}for(let r of["impl_model","impl_effort","impl_speed"])e[r]?.resolution!=="not_applicable"&&t.push(e[r]?.display||"\uAE30\uBCF8\uAC12 \uD655\uC778 \uBD88\uAC00");return t.join(" \xB7 ")}function wm(e){if(!e||typeof e!="object")return null;let{kind:t,actor:r,effort:n,sha:s}=e;return typeof t!="string"||typeof r!="string"||typeof s!="string"?null:{kind:t,actor:r,effort:typeof n=="string"?n:null,sha:s}}function zc(e){let t=e&&typeof e.metadata=="object"&&e.metadata?e.metadata:{},r=e&&typeof e.workflow=="object"&&e.workflow?e.workflow:{},n=r.stages||{},s=r.route||t.route||null,o=typeof t.pr_url=="string"?t.pr_url:"",a=typeof t.exec_receipt=="string"?t.exec_receipt:"",i=wm(r.exec_receipt),c=i?Jr(i):a,u=i?`${i.kind}:${i.actor}`:a.split("@")[0],d=zs(r.planned_execution,r.exec_receipt);return l`<section class="detail-summary" data-seam="detail-summary">
     <div class="detail-summary__chips">
       <span class="detail-summary__chip detail-summary__chip--status"
         >${e?.status||"\u2014"}</span
       >
-      ${s?i`<span class="detail-summary__chip detail-summary__chip--route"
+      ${s?l`<span class="detail-summary__chip detail-summary__chip--route"
             >${s}</span
           >`:""}
-      ${t.workflow_mode==="fast_track"?i`<span class="detail-summary__chip detail-summary__chip--mode"
+      ${t.workflow_mode==="fast_track"?l`<span class="detail-summary__chip detail-summary__chip--mode"
             >fast_track</span
           >`:""}
-      ${o?i`<a
+      ${o?l`<a
             class="detail-summary__chip detail-summary__chip--pr"
             href=${o}
             target="_blank"
             rel="noreferrer"
             >PR</a
           >`:""}
-      ${d?i`<span
+      ${d?l`<span
             class="detail-summary__chip detail-summary__chip--planned ctl-chip--planned"
             data-kind=${d.kind}
             title=${d.title}
             >${d.label}</span
           >`:""}
-      ${c?i`<span
+      ${c?l`<span
             class="detail-summary__chip detail-summary__chip--receipt"
             title=${c}
-            >${u}${l?.effort?i`${" "}<span
+            >${u}${i?.effort?l`${" "}<span
                     class="detail-summary__chip-effort"
                     data-seam="exec-receipt-effort"
-                    >${l.effort}</span
+                    >${i.effort}</span
                   >`:""}</span
           >`:""}
     </div>
     <div class="detail-summary__gates">
-      ${am.map(f=>{let g=f.receipt&&typeof t[f.receipt]=="string"?String(t[f.receipt]):"",x=n[f.id],A=g.length>0||x?.fill==="full",L=!A&&x?.fill==="dim",z=x?.stale===!0;return i`<span
-          class=${`detail-summary__gate${A?" detail-summary__gate--on":""}${L?" detail-summary__gate--current":""}${z?" detail-summary__gate--stale":""}`}
-          data-gate=${f.id}
+      ${mm.map(p=>{let m=p.receipt&&typeof t[p.receipt]=="string"?String(t[p.receipt]):"",v=n[p.id],C=m.length>0||v?.fill==="full",F=!C&&v?.fill==="dim",H=v?.stale===!0;return l`<span
+          class=${`detail-summary__gate${C?" detail-summary__gate--on":""}${F?" detail-summary__gate--current":""}${H?" detail-summary__gate--stale":""}`}
+          data-gate=${p.id}
         >
-          <span class="detail-summary__gate-pill">${f.label}</span>
-          ${g?i`<span class="detail-summary__gate-sha"
-                >${g.split("@")[1]?.slice(0,7)||""}</span
+          <span class="detail-summary__gate-pill">${p.label}</span>
+          ${m?l`<span class="detail-summary__gate-sha"
+                >${m.split("@")[1]?.slice(0,7)||""}</span
               >`:""}
         </span>`})}
     </div>
-  </section>`}function Bc(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function qc(e){return Bc(e)&&typeof e.key=="string"&&e.key.length>0&&typeof e.email=="string"&&e.email.length>0}function Fc(e,t){let r=e&&e[t];if(!Bc(r)||!Array.isArray(r.accounts))return null;let n=r.accounts.filter(qc),s=qc(r.active)?r.active:null;return{accounts:n,active:s||n.find(o=>o.active===!0)||null}}function Uc(e){return typeof e.alias=="string"&&e.alias.length>0?` (${e.alias})`:""}function fm(e){let t=typeof e.status=="string"&&e.status!=="ok"?` \xB7 ${e.status}`:"";return`${e.email}${Uc(e)}${t}`}function Wc(e){let t=typeof e.plan=="string"&&e.plan.length>0?e.plan:"plan \uD655\uC778 \uBD88\uAC00";return`${e.email} \xB7 ${t}${Uc(e)}`}function _m(e,t){return t?t.active?`\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 \uD604\uC7AC \uB85C\uADF8\uC778(${e==="claude"?t.active.email:Wc({...t.active,alias:null})})`:"\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 \uD604\uC7AC \uB85C\uADF8\uC778(\uD655\uC778 \uBD88\uAC00)":"(\uAE30\uBCF8)"}function jc(e){let t=e.provider_key==="claude"?fm:Wc,r=!!e.provider?.accounts.some(n=>n.key===e.selected);return i`<div class="detail-kv" data-exec-account-row=${e.key}>
+  </section>`}function Vc(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function Hc(e){return Vc(e)&&typeof e.key=="string"&&e.key.length>0&&typeof e.email=="string"&&e.email.length>0}function Gc(e,t){let r=e&&e[t];if(!Vc(r)||!Array.isArray(r.accounts))return null;let n=r.accounts.filter(Hc),s=Hc(r.active)?r.active:null;return{accounts:n,active:s||n.find(o=>o.active===!0)||null}}function Yc(e){return typeof e.alias=="string"&&e.alias.length>0?` (${e.alias})`:""}function km(e){let t=typeof e.status=="string"&&e.status!=="ok"?` \xB7 ${e.status}`:"";return`${e.email}${Yc(e)}${t}`}function Zc(e){let t=typeof e.plan=="string"&&e.plan.length>0?e.plan:"plan \uD655\uC778 \uBD88\uAC00";return`${e.email} \xB7 ${t}${Yc(e)}`}function $m(e,t){return t?t.active?`\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 \uD604\uC7AC \uB85C\uADF8\uC778(${e==="claude"?t.active.email:Zc({...t.active,alias:null})})`:"\uAE30\uBCF8\uAC12 \uC0AC\uC6A9 \u2014 \uD604\uC7AC \uB85C\uADF8\uC778(\uD655\uC778 \uBD88\uAC00)":"(\uAE30\uBCF8)"}function Kc(e){let t=e.provider_key==="claude"?km:Zc,r=!!e.provider?.accounts.some(n=>n.key===e.selected);return l`<div class="detail-kv" data-exec-account-row=${e.key}>
     <span class="detail-kv__k">${e.title}</span>
     <span class="detail-kv__vgroup">
       <select
@@ -740,87 +740,87 @@ ${G.output}`),Z.join(`
         @change=${n=>e.handlers.onExecChange(e.key,n.target.value)}
       >
         <option value="" ?selected=${e.selected.length===0}>
-          ${_m(e.provider_key,e.provider)}
+          ${$m(e.provider_key,e.provider)}
         </option>
-        ${e.selected&&!r?i`<option value=${e.selected} selected>
+        ${e.selected&&!r?l`<option value=${e.selected} selected>
               ${e.selected} (목록에 없음)
             </option>`:""}
-        ${e.provider?.accounts.map(n=>i`<option
+        ${e.provider?.accounts.map(n=>l`<option
               value=${n.key}
               ?selected=${n.key===e.selected}
             >
               ${t(n)}
             </option>`)||""}
       </select>
-      ${e.hint?i`<small class="detail-effective__hint">${e.hint}</small>`:""}
-      ${e.provider?"":i`<small class="detail-effective__hint"
+      ${e.hint?l`<small class="detail-effective__hint">${e.hint}</small>`:""}
+      ${e.provider?"":l`<small class="detail-effective__hint"
             >계정 목록을 불러올 수 없습니다</small
           >`}
     </span>
-  </div>`}function zc({md:e,catalog:t,handlers:r}){let n=typeof e.claude_account=="string"?e.claude_account:"",s=typeof e.codex_account=="string"?e.codex_account:"";return i`<section class="exec-accounts" data-exec-accounts>
+  </div>`}function Qc({md:e,catalog:t,handlers:r}){let n=typeof e.claude_account=="string"?e.claude_account:"",s=typeof e.codex_account=="string"?e.codex_account:"";return l`<section class="exec-accounts" data-exec-accounts>
     <div class="detail-section-label">실행 계정</div>
     <div class="exec-settings-core">
-      ${jc({key:"claude_account",title:"Claude \uACC4\uC815",provider_key:"claude",provider:Fc(t,"claude"),selected:n,handlers:r,hint:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uB7F0\uD0C0\uC784\uC774 claude\uC77C \uB54C \uC801\uC6A9\uB429\uB2C8\uB2E4"})}
-      ${jc({key:"codex_account",title:"Codex \uACC4\uC815",provider_key:"codex",provider:Fc(t,"codex"),selected:s,handlers:r})}
+      ${Kc({key:"claude_account",title:"Claude \uACC4\uC815",provider_key:"claude",provider:Gc(t,"claude"),selected:n,handlers:r,hint:"\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uB7F0\uD0C0\uC784\uC774 claude\uC77C \uB54C \uC801\uC6A9\uB429\uB2C8\uB2E4"})}
+      ${Kc({key:"codex_account",title:"Codex \uACC4\uC815",provider_key:"codex",provider:Gc(t,"codex"),selected:s,handlers:r})}
     </div>
-  </section>`}var Hc=["orchestration_model","orchestration_effort","orchestration_speed","spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort","impl_runtime","impl_model","impl_effort"];function es(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function po(e){if(!es(e)||!es(e.runners))return null;let t=Object.entries(e.runners).filter(([,r])=>es(r)&&es(r.models));return t.length>0?t:null}function Rr(e,t){let r=po(e);if(!r||!t)return null;for(let[n,s]of r)if(Object.hasOwn(s.models,t))return n;return null}function Gc(e,t){return es(t)&&Array.isArray(t.efforts)?t.efforts.slice():Array.isArray(e.efforts)?e.efforts.slice():[]}function Vc(e,t){let r=po(e);if(!r||!t)return[];for(let[,n]of r)if(Object.hasOwn(n.models,t))return Gc(n,n.models[t]);return[]}function mm(e){let t=po(e);if(!t)return[];let r=[];for(let[,n]of t)for(let s of Object.values(n.models))for(let o of Gc(n,s))r.includes(o)||r.push(o);return r}function gm(e,t){if(!t)return mm(e);let n=po(e)?.find(([o])=>o===t)?.[1];if(!n)return[];let s=[];for(let o of Object.keys(n.models))for(let a of Vc(e,o))s.includes(a)||s.push(a);return s}function Kc(e,t,r){let n={impl_runtime:e.impl_runtime||"",impl_model:e.impl_model||"",impl_effort:e.impl_effort||""},s=n.impl_runtime==="inherit"?r:n.impl_runtime==="claude"||n.impl_runtime==="codex"?n.impl_runtime:null;if(n.impl_runtime==="inherit"&&!s)return n.impl_model="",n.impl_effort="",n;let o=Rr(t,n.impl_model);if(n.impl_model&&(!s||o!==s))return n.impl_model="",n.impl_effort="",n;let a=n.impl_model?Vc(t,n.impl_model):gm(t,s);return n.impl_effort&&a.length>0&&!a.includes(n.impl_effort)&&(n.impl_effort=""),n}function bm(e){return String(e||"").replace(/^docs\/(superpowers\/)?/,"")}function Yc(e,t){let r=t.getWorkspacePath,n=t.fetchImpl||globalThis.fetch?.bind(globalThis),s=null,o="loading",a="",l="";function c(A){A.key==="Escape"&&s&&(A.preventDefault(),g())}document.addEventListener("keydown",c);function u(){return s?i`
+  </section>`}var Xc=["orchestration_model","orchestration_effort","orchestration_speed","spec_review_model","spec_review_effort","plan_review_model","plan_review_effort","impl_review_model","impl_review_effort","impl_runtime","impl_model","impl_effort"];function is(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function ho(e){if(!is(e)||!is(e.runners))return null;let t=Object.entries(e.runners).filter(([,r])=>is(r)&&is(r.models));return t.length>0?t:null}function gr(e,t){let r=ho(e);if(!r||!t)return null;for(let[n,s]of r)if(Object.hasOwn(s.models,t))return n;return null}function Jc(e,t){return is(t)&&Array.isArray(t.efforts)?t.efforts.slice():Array.isArray(e.efforts)?e.efforts.slice():[]}function eu(e,t){let r=ho(e);if(!r||!t)return[];for(let[,n]of r)if(Object.hasOwn(n.models,t))return Jc(n,n.models[t]);return[]}function xm(e){let t=ho(e);if(!t)return[];let r=[];for(let[,n]of t)for(let s of Object.values(n.models))for(let o of Jc(n,s))r.includes(o)||r.push(o);return r}function Am(e,t){if(!t)return xm(e);let n=ho(e)?.find(([o])=>o===t)?.[1];if(!n)return[];let s=[];for(let o of Object.keys(n.models))for(let a of eu(e,o))s.includes(a)||s.push(a);return s}function tu(e,t,r){let n={impl_runtime:e.impl_runtime||"",impl_model:e.impl_model||"",impl_effort:e.impl_effort||""},s=n.impl_runtime==="inherit"?r:n.impl_runtime==="claude"||n.impl_runtime==="codex"?n.impl_runtime:null;if(n.impl_runtime==="inherit"&&!s)return n.impl_model="",n.impl_effort="",n;let o=gr(t,n.impl_model);if(n.impl_model&&(!s||o!==s))return n.impl_model="",n.impl_effort="",n;let a=n.impl_model?eu(t,n.impl_model):Am(t,s);return n.impl_effort&&a.length>0&&!a.includes(n.impl_effort)&&(n.impl_effort=""),n}function Sm(e){return String(e||"").replace(/^docs\/(superpowers\/)?/,"")}function ru(e,t){let r=t.getWorkspacePath,n=t.fetchImpl||globalThis.fetch?.bind(globalThis),s=null,o="loading",a="",i="";function c(C){C.key==="Escape"&&s&&(C.preventDefault(),m())}document.addEventListener("keydown",c);function u(){return s?l`
       <div class="mv-overlay" role="dialog" aria-modal="true">
-        <div class="mv-overlay__backdrop" @click=${()=>g()}></div>
+        <div class="mv-overlay__backdrop" @click=${()=>m()}></div>
         <div class="mv">
           <div class="mv__bar">
             <span class="mv__path" title=${s}
-              >${bm(s)}</span
+              >${Sm(s)}</span
             >
             <button
               type="button"
               class="mv__close"
               aria-label="닫기"
-              @click=${()=>g()}
+              @click=${()=>m()}
             >
               ✕
             </button>
           </div>
           <div class="mv__body">
-            ${o==="loading"?i`<div class="mv__status">불러오는 중…</div>`:o==="pending"?i`<div class="mv__status">${l}</div>`:o==="error"?i`<div class="mv__status mv__status--error">
-                      ${l||"\uBB38\uC11C\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4"}
-                    </div>`:Nr(a)}
+            ${o==="loading"?l`<div class="mv__status">불러오는 중…</div>`:o==="pending"?l`<div class="mv__status">${i}</div>`:o==="error"?l`<div class="mv__status mv__status--error">
+                      ${i||"\uBB38\uC11C\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4"}
+                    </div>`:Pr(a)}
           </div>
         </div>
       </div>
-    `:i``}function d(){Ke(u(),e)}async function f(A,L={}){s=A,o="loading",a="",l="",d();let z=r?r():"";if(!z){o="error",l="\uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uD0DD\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4",d();return}if(!n){o="error",l="fetch\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4",d();return}let ae="/api/doc?workspace="+encodeURIComponent(z)+"&path="+encodeURIComponent(A);try{let se=await n(ae),q=await se.json().catch(()=>({}));if(!se.ok||!q||q.ok!==!0){if(q?.error==="not_found"&&L.missing_state==="plan_pending"){o="pending",l="\uACC4\uD68D \uC791\uC131 \uC804 \xB7 \uACBD\uB85C\uB9CC \uC608\uC57D\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4",d();return}o="error",l="\uBB38\uC11C\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 ("+String(q&&q.error||se.status)+")",d();return}a=String(q.content||""),o="ready",d()}catch{o="error",l="\uBB38\uC11C \uC694\uCCAD \uC2E4\uD328",d()}}function g(){s=null,Ke(i``,e)}function x(){document.removeEventListener("keydown",c),g()}return{open:f,close:g,destroy:x}}var hm=[{key:"input_tokens",label:"\uC785\uB825"},{key:"output_tokens",label:"\uCD9C\uB825"},{key:"cache_read_input_tokens",label:"\uCE90\uC2DC \uC77D\uAE30"}],Xc="\uC11C\uBC84 \uC7AC\uC2DC\uC791 \uBCF5\uAD6C \u2014 \uBD80\uBD84 \uC9D1\uACC4",fo=["implementation","review-consult"],ym=["running","done","failed","interrupted"],vm={running:"\u25CF",done:"\u2713",failed:"\u2717",interrupted:"\u26A0"};function wm(e){return typeof e=="number"&&Number.isFinite(e)?e:0}function km(e){let t=Ot(e);if(t.length>0)return t.map(s=>i`<span class="detail-usage-total" title=${s.tooltip}
+    `:l``}function d(){Ve(u(),e)}async function p(C,F={}){s=C,o="loading",a="",i="",d();let H=r?r():"";if(!H){o="error",i="\uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uD0DD\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4",d();return}if(!n){o="error",i="fetch\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4",d();return}let re="/api/doc?workspace="+encodeURIComponent(H)+"&path="+encodeURIComponent(C);try{let V=await n(re),q=await V.json().catch(()=>({}));if(!V.ok||!q||q.ok!==!0){if(q?.error==="not_found"&&F.missing_state==="plan_pending"){o="pending",i="\uACC4\uD68D \uC791\uC131 \uC804 \xB7 \uACBD\uB85C\uB9CC \uC608\uC57D\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4",d();return}o="error",i="\uBB38\uC11C\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 ("+String(q&&q.error||V.status)+")",d();return}a=String(q.content||""),o="ready",d()}catch{o="error",i="\uBB38\uC11C \uC694\uCCAD \uC2E4\uD328",d()}}function m(){s=null,Ve(l``,e)}function v(){document.removeEventListener("keydown",c),m()}return{open:p,close:m,destroy:v}}var Em=[{key:"input_tokens",label:"\uC785\uB825"},{key:"output_tokens",label:"\uCD9C\uB825"},{key:"cache_read_input_tokens",label:"\uCE90\uC2DC \uC77D\uAE30"}],su="\uC11C\uBC84 \uC7AC\uC2DC\uC791 \uBCF5\uAD6C \u2014 \uBD80\uBD84 \uC9D1\uACC4",bo=["implementation","review-consult"],Tm=["running","done","failed","interrupted"],Cm={running:"\u25CF",done:"\u2713",failed:"\u2717",interrupted:"\u26A0"};function Rm(e){return typeof e=="number"&&Number.isFinite(e)?e:0}function Im(e){let t=Wt(e);if(t.length>0)return t.map(s=>l`<span class="detail-usage-total" title=${s.tooltip}
           >${s.label}</span
-        >`);let r=$n(e);if(!r||!e)return"";let n=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?` \xB7 $${e.total_cost_usd.toFixed(2)}`:"";return i`<span
+        >`);let r=An(e);if(!r||!e)return"";let n=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?` \xB7 $${e.total_cost_usd.toFixed(2)}`:"";return l`<span
       class="detail-usage-total"
       title="이 이슈의 모든 attempt 토큰 합계 (입력+출력+캐시)"
       >${r.replace(/^τ /,"\u03C4 \uCD1D ")}${n}</span
-    >${e.replayed?i`<span class="detail-usage-partial" title=${Xc}
+    >${e.replayed?l`<span class="detail-usage-partial" title=${su}
           >부분 집계</span
-        >`:""}`}function Zc(e){return!e||!e.roles.orchestrator?null:{providers:e.roles.orchestrator,roles:{}}}function Ia(e){if(typeof e!="string")return"";let t=Date.parse(e);return Number.isFinite(t)?La(t):""}function $m(e){if(!e||typeof e!="object"||Array.isArray(e))return null;let t=e;return typeof t.launch_id!="string"||t.launch_id.length===0||t.provider!=="codex"||!fo.includes(t.role)||typeof t.model!="string"||t.model.length===0||!(!("effort"in t)||t.effort===null||typeof t.effort=="string"&&t.effort.trim().length>0)||typeof t.session_id!="string"||t.session_id.length===0||!ym.includes(t.status)||typeof t.started_at!="number"||!Number.isFinite(t.started_at)||typeof t.last_event_at!="number"||!Number.isFinite(t.last_event_at)||!(t.completed_at===null||typeof t.completed_at=="string"&&Number.isFinite(Date.parse(t.completed_at)))||!(t.turn_id===null||typeof t.turn_id=="string")?null:t}function xm(e,t){let n=Ot({providers:{codex:{subtotal:t.subtotal,breakdown:t.usage,...t.replayed?{replayed:!0}:{}}},roles:{}})[0];return i`<div class="detail-session__leg detail-session__usage-detail">
+        >`:""}`}function nu(e){return!e||!e.roles.orchestrator?null:{providers:e.roles.orchestrator,roles:{}}}function ja(e){if(typeof e!="string")return"";let t=Date.parse(e);return Number.isFinite(t)?Ba(t):""}function Lm(e){if(!e||typeof e!="object"||Array.isArray(e))return null;let t=e;return typeof t.launch_id!="string"||t.launch_id.length===0||t.provider!=="codex"||!bo.includes(t.role)||typeof t.model!="string"||t.model.length===0||!(!("effort"in t)||t.effort===null||typeof t.effort=="string"&&t.effort.trim().length>0)||typeof t.session_id!="string"||t.session_id.length===0||!Tm.includes(t.status)||typeof t.started_at!="number"||!Number.isFinite(t.started_at)||typeof t.last_event_at!="number"||!Number.isFinite(t.last_event_at)||!(t.completed_at===null||typeof t.completed_at=="string"&&Number.isFinite(Date.parse(t.completed_at)))||!(t.turn_id===null||typeof t.turn_id=="string")?null:t}function Om(e,t){let n=Wt({providers:{codex:{subtotal:t.subtotal,breakdown:t.usage,...t.replayed?{replayed:!0}:{}}},roles:{}})[0];return l`<div class="detail-session__leg detail-session__usage-detail">
     <span class="detail-session__leg-role detail-session__usage-label"
       >${e}</span
     >
     <span class="detail-session__leg-meta detail-session__usage-value"
       >${[t.provider,t.model,t.effort].filter(Boolean).join(" \xB7 ")}</span
     >
-    ${t.session_id?i`<span
+    ${t.session_id?l`<span
           class="detail-session__leg-sid detail-session__sid"
           title=${t.session_id}
           >${t.session_id.slice(0,8)}</span
         >`:""}
-    ${Ia(t.completed_at)?i`<span class="detail-session__leg-time detail-session__time"
-          >${Ia(t.completed_at)}</span
+    ${ja(t.completed_at)?l`<span class="detail-session__leg-time detail-session__time"
+          >${ja(t.completed_at)}</span
         >`:""}
-    ${n?i`<span class="detail-session__usage" title=${n.tooltip}
+    ${n?l`<span class="detail-session__usage" title=${n.tooltip}
           >${n.label}</span
         >`:""}
-  </div>`}function Am(e,t,r,n){let s=e.status==="running"?null:t,a=(s?Ot({providers:{codex:{subtotal:s.subtotal,breakdown:s.usage,...s.replayed?{replayed:!0}:{}}},roles:{}}):[])[0],l=e.status==="running"?La(e.last_event_at):s?Ia(s.completed_at):"";return i`<button
+  </div>`}function Pm(e,t,r,n){let s=e.status==="running"?null:t,a=(s?Wt({providers:{codex:{subtotal:s.subtotal,breakdown:s.usage,...s.replayed?{replayed:!0}:{}}},roles:{}}):[])[0],i=e.status==="running"?Ba(e.last_event_at):s?ja(s.completed_at):"";return l`<button
     type="button"
     class="detail-session__leg detail-session__usage-detail detail-session__leg--${e.status}"
     data-launch-id=${e.launch_id}
     @click=${()=>n.onOpenDelegation&&n.onOpenDelegation(r,e.launch_id)}
   >
     <span class="detail-session__leg-glyph" aria-hidden="true"
-      >${vm[e.status]}</span
+      >${Cm[e.status]}</span
     >
     <span class="detail-session__leg-role detail-session__usage-label"
       >${e.role}</span
@@ -833,63 +833,63 @@ ${G.output}`),Z.join(`
       title=${e.session_id}
       >${e.session_id.slice(0,8)}</span
     >
-    ${l?i`<span class="detail-session__leg-time detail-session__time"
-          >${l}</span
+    ${i?l`<span class="detail-session__leg-time detail-session__time"
+          >${i}</span
         >`:""}
-    ${a?i`<span class="detail-session__usage" title=${a.tooltip}
+    ${a?l`<span class="detail-session__usage" title=${a.tooltip}
           >${a.label}</span
         >`:""}
-  </button>`}function Sm(e,t){return e.role===t.role&&e.model===t.model&&e.session_id===t.session_id}function Em(e,t,r){let n=[],s=new Set,o=Array.isArray(e.delegation_sessions)?e.delegation_sessions:[];for(let d of o){let f=$m(d);!f||s.has(f.launch_id)||(s.add(f.launch_id),n.push(f))}n.sort((d,f)=>d.started_at-f.started_at);let a={implementation:[],"review-consult":[]};if(t)for(let d of fo){let f=t.roles[d]?.codex;a[d]=f?[...f.legs]:[]}let l=fo.flatMap(d=>a[d]),c=new Set,u=[];for(let d of fo){for(let f of n.filter(g=>g.role===d)){let g=l.find(x=>x.receipt_id===f.launch_id)||null;g&&!Sm(f,g)||(g&&c.add(g.receipt_id),u.push(Am(f,g,e.attempt_id,r)))}for(let f of a[d])c.has(f.receipt_id)||u.push(xm(d,f))}return u}function Tm(e,t){let r=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?e.total_cost_usd:null,n=[...hm,{key:"cache_creation_input_tokens",label:t==="codex"?"\uCE90\uC2DC \uC4F0\uAE30":"\uCE90\uC2DC \uC0DD\uC131"},...t==="codex"&&typeof e.reasoning_output_tokens=="number"&&Number.isFinite(e.reasoning_output_tokens)?[{key:"reasoning_output_tokens",label:"\uCD94\uB860 \uCD9C\uB825"}]:[]];return i`<div class="detail-session__usage-detail">
-    ${n.map(s=>i`<span class="detail-session__usage-field"
+  </button>`}function Mm(e,t){return e.role===t.role&&e.model===t.model&&e.session_id===t.session_id}function Dm(e,t,r){let n=[],s=new Set,o=Array.isArray(e.delegation_sessions)?e.delegation_sessions:[];for(let d of o){let p=Lm(d);!p||s.has(p.launch_id)||(s.add(p.launch_id),n.push(p))}n.sort((d,p)=>d.started_at-p.started_at);let a={implementation:[],"review-consult":[]};if(t)for(let d of bo){let p=t.roles[d]?.codex;a[d]=p?[...p.legs]:[]}let i=bo.flatMap(d=>a[d]),c=new Set,u=[];for(let d of bo){for(let p of n.filter(m=>m.role===d)){let m=i.find(v=>v.receipt_id===p.launch_id)||null;m&&!Mm(p,m)||(m&&c.add(m.receipt_id),u.push(Pm(p,m,e.attempt_id,r)))}for(let p of a[d])c.has(p.receipt_id)||u.push(Om(d,p))}return u}function Nm(e,t){let r=typeof e.total_cost_usd=="number"&&Number.isFinite(e.total_cost_usd)?e.total_cost_usd:null,n=[...Em,{key:"cache_creation_input_tokens",label:t==="codex"?"\uCE90\uC2DC \uC4F0\uAE30":"\uCE90\uC2DC \uC0DD\uC131"},...t==="codex"&&typeof e.reasoning_output_tokens=="number"&&Number.isFinite(e.reasoning_output_tokens)?[{key:"reasoning_output_tokens",label:"\uCD94\uB860 \uCD9C\uB825"}]:[]];return l`<div class="detail-session__usage-detail">
+    ${n.map(s=>l`<span class="detail-session__usage-field"
           ><span class="detail-session__usage-label">${s.label}</span
           ><span class="detail-session__usage-value"
-            >${wm(e[s.key]).toLocaleString("en-US")}</span
+            >${Rm(e[s.key]).toLocaleString("en-US")}</span
           ></span
         >`)}
-    ${r===null?"":i`<span class="detail-session__usage-field"
+    ${r===null?"":l`<span class="detail-session__usage-field"
           ><span class="detail-session__usage-label">비용</span
           ><span class="detail-session__usage-value"
             >$${r.toFixed(2)}</span
           ></span
         >`}
-    ${e.replayed?i`<span class="detail-session__usage-note">${Xc}</span>`:""}
-  </div>`}var Cm={running:"\u25CF",done:"\u2713",failed:"\u2717",orphaned:"\u26A0"};function La(e){if(typeof e!="number"||!Number.isFinite(e))return"";let t=new Date(e),r=String(t.getHours()).padStart(2,"0"),n=String(t.getMinutes()).padStart(2,"0");return`${r}:${n}`}function Rm(e){if(typeof e.exec_default_preset_id!="string"||e.exec_default_preset_id.length===0)return"";let t=e.exec_values&&typeof e.exec_values=="object"?Object.entries(e.exec_values).filter(([,n])=>typeof n=="string"&&n.length>0).map(([n,s])=>`${n}=${s}`).join(" \xB7 "):"",r=typeof e.exec_default_preset_revision=="number"?` r${e.exec_default_preset_revision}`:"";return i`<div
+    ${e.replayed?l`<span class="detail-session__usage-note">${su}</span>`:""}
+  </div>`}var qm={running:"\u25CF",done:"\u2713",failed:"\u2717",orphaned:"\u26A0"};function Ba(e){if(typeof e!="number"||!Number.isFinite(e))return"";let t=new Date(e),r=String(t.getHours()).padStart(2,"0"),n=String(t.getMinutes()).padStart(2,"0");return`${r}:${n}`}function Fm(e){if(typeof e.exec_default_preset_id!="string"||e.exec_default_preset_id.length===0)return"";let t=e.exec_values&&typeof e.exec_values=="object"?Object.entries(e.exec_values).filter(([,n])=>typeof n=="string"&&n.length>0).map(([n,s])=>`${n}=${s}`).join(" \xB7 "):"",r=typeof e.exec_default_preset_revision=="number"?` r${e.exec_default_preset_revision}`:"";return l`<div
     class="detail-session__preset-audit"
     data-attempt-preset-audit
   >
     <strong>외부 실행 preset</strong>
     <span>${e.exec_default_preset_id}${r}</span>
-    ${t?i`<small>${t}</small>`:""}
+    ${t?l`<small>${t}</small>`:""}
     <small>내부 workflow 실행 영수증과 별도 기록</small>
-  </div>`}function Qc(e,t={},r={}){let n=Array.isArray(e)?e:[],s=r.expanded||new Set;if(n.length===0)return i`
+  </div>`}function ou(e,t={},r={}){let n=Array.isArray(e)?e:[],s=r.expanded||new Set;if(n.length===0)return l`
       <div class="detail-section-label">세션 이력</div>
       <div class="detail-empty" data-seam="session-history">세션 이력 없음</div>
-    `;let o=new Set;for(let u of n)u&&typeof u.resumed_from=="string"&&u.resumed_from.length>0&&o.add(u.resumed_from);let a=u=>{if(!(u.status==="failed"||u.status==="orphaned"))return"";let f=typeof u.session_id=="string"&&u.session_id.length>0,g=o.has(u.attempt_id),x=f&&!g,A=f?g?"\uC774\uBBF8 \uC774\uC5B4\uBC1B\uC740 attempt (child attempt \uC874\uC7AC) \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00":"\uC774 \uC138\uC158\uC744 \uAC19\uC740 \uC6CC\uD06C\uD2B8\uB9AC\uC5D0\uC11C \uC774\uC5B4\uC11C \uC9C4\uD589":"session_id \uC5C6\uB294 \uAD6C attempt \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00";return i`<button
+    `;let o=new Set;for(let u of n)u&&typeof u.resumed_from=="string"&&u.resumed_from.length>0&&o.add(u.resumed_from);let a=u=>{if(!(u.status==="failed"||u.status==="orphaned"))return"";let p=typeof u.session_id=="string"&&u.session_id.length>0,m=o.has(u.attempt_id),v=p&&!m,C=p?m?"\uC774\uBBF8 \uC774\uC5B4\uBC1B\uC740 attempt (child attempt \uC874\uC7AC) \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00":"\uC774 \uC138\uC158\uC744 \uAC19\uC740 \uC6CC\uD06C\uD2B8\uB9AC\uC5D0\uC11C \uC774\uC5B4\uC11C \uC9C4\uD589":"session_id \uC5C6\uB294 \uAD6C attempt \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00";return l`<button
       type="button"
       class="detail-session__resume"
       data-attempt-id=${u.attempt_id}
-      ?disabled=${!x}
-      title=${A}
-      @click=${L=>{L.stopPropagation(),x&&t.onResume&&t.onResume(u.attempt_id)}}
+      ?disabled=${!v}
+      title=${C}
+      @click=${F=>{F.stopPropagation(),v&&t.onResume&&t.onResume(u.attempt_id)}}
     >
       ↻ 이어하기
-    </button>`},l=u=>{if(!(u.status==="failed"||u.status==="orphaned")||typeof u.cause!="string"||u.cause==="")return"";let f=u.cause_detail,g=f&&typeof f.reason=="string"&&f.reason.length>0?typeof f.command=="string"&&f.command.length>0?`${f.reason} \xB7 ${f.command}`:f.reason:u.cause;return i`<div class="detail-session__cause" title=${g}>
+    </button>`},i=u=>{if(!(u.status==="failed"||u.status==="orphaned")||typeof u.cause!="string"||u.cause==="")return"";let p=u.cause_detail,m=p&&typeof p.reason=="string"&&p.reason.length>0?typeof p.command=="string"&&p.command.length>0?`${p.reason} \xB7 ${p.command}`:p.reason:u.cause;return l`<div class="detail-session__cause" title=${m}>
       ${u.cause}
-    </div>`},c=u=>{let d=Zc(Jo(u));if(Ot(d).length===0&&!$n(u.usage))return"";let f=s.has(u.attempt_id);return i`<button
+    </div>`},c=u=>{let d=nu(aa(u));if(Wt(d).length===0&&!An(u.usage))return"";let p=s.has(u.attempt_id);return l`<button
       type="button"
       class="detail-session__usage-toggle"
       data-attempt-id=${u.attempt_id}
-      aria-expanded=${f?"true":"false"}
-      title=${f?"\uD1A0\uD070 \uB0B4\uC5ED \uC811\uAE30":"\uD1A0\uD070 \uB0B4\uC5ED \uD3BC\uCE58\uAE30"}
-      @click=${g=>{g.stopPropagation(),t.onToggleUsage&&t.onToggleUsage(u.attempt_id)}}
+      aria-expanded=${p?"true":"false"}
+      title=${p?"\uD1A0\uD070 \uB0B4\uC5ED \uC811\uAE30":"\uD1A0\uD070 \uB0B4\uC5ED \uD3BC\uCE58\uAE30"}
+      @click=${m=>{m.stopPropagation(),t.onToggleUsage&&t.onToggleUsage(u.attempt_id)}}
     >
       τ 자세히
-    </button>`};return i`
+    </button>`};return l`
     <div class="detail-section-label">
-      세션 이력${km(r.total)}
+      세션 이력${Im(r.total)}
     </div>
     <div class="detail-sessions" data-seam="session-history">
-      ${n.map(u=>{let d=Jo(u),f=Zc(d),g=Ot(f);return i`<div class="detail-session-row">
+      ${n.map(u=>{let d=aa(u),p=nu(d),m=Wt(p);return l`<div class="detail-session-row">
           <button
             type="button"
             class="detail-session detail-session--${u.status||"unknown"}"
@@ -897,34 +897,34 @@ ${G.output}`),Z.join(`
             @click=${()=>t.onOpen&&t.onOpen(u.attempt_id)}
           >
             <span class="detail-session__glyph"
-              >${Cm[u.status||""]||"\xB7"}</span
+              >${qm[u.status||""]||"\xB7"}</span
             >
             <span class="detail-session__id">${u.attempt_id}</span>
-            ${Pr(u)?i`<span
+            ${Un(u)?l`<span
                   class="detail-session__resumed"
-                  title=${Pr(u)}
+                  title=${Un(u)}
                   >↻</span
                 >`:""}
-            <span class="detail-session__meta">${br(u)}</span>
-            ${g.length>0?i`<span class="detail-session__role">orchestrator</span>`:""}
-            ${u.session_id?i`<span class="detail-session__sid" title=${u.session_id}
+            <span class="detail-session__meta">${en(u)}</span>
+            ${m.length>0?l`<span class="detail-session__role">orchestrator</span>`:""}
+            ${u.session_id?l`<span class="detail-session__sid" title=${u.session_id}
                   >${String(u.session_id).slice(0,8)}</span
                 >`:""}
-            ${g.length>0?g.map(x=>i`<span
+            ${m.length>0?m.map(v=>l`<span
                       class="detail-session__usage"
-                      title=${x.tooltip}
-                      >${x.label}</span
-                    >`):$n(u.usage)?i`<span class="detail-session__usage"
-                    >${$n(u.usage)}</span
+                      title=${v.tooltip}
+                      >${v.label}</span
+                    >`):An(u.usage)?l`<span class="detail-session__usage"
+                    >${An(u.usage)}</span
                   >`:""}
-            <span class="detail-session__time">${La(u.started_at)}</span>
+            <span class="detail-session__time">${Ba(u.started_at)}</span>
           </button>
-          ${c(u)} ${a(u)} ${l(u)} ${Rm(u)}
-          ${s.has(u.attempt_id)&&u.usage?Tm(u.usage,u.runner==="codex"?"codex":"claude"):""}
-          ${Em(u,d,t)}
+          ${c(u)} ${a(u)} ${i(u)} ${Fm(u)}
+          ${s.has(u.attempt_id)&&u.usage?Nm(u.usage,u.runner==="codex"?"codex":"claude"):""}
+          ${Dm(u,d,t)}
         </div>`})}
     </div>
-  `}function Jc(e,t={}){return i`
+  `}function au(e,t={}){return l`
     <div class="detail-section-label">
       과업 프롬프트
       <button
@@ -938,117 +938,117 @@ ${G.output}`),Z.join(`
         ${e.expanded?"\uC811\uAE30":"\uD3BC\uCE58\uAE30"}
       </button>
     </div>
-    ${e.expanded?i`<div class="detail-prompt" data-seam="task-prompt">
-          ${Im(e)}
+    ${e.expanded?l`<div class="detail-prompt" data-seam="task-prompt">
+          ${jm(e)}
         </div>`:""}
-  `}function Im(e){let t=Sn(e);if(t)return t;let r=e.data;if(!r)return"";if(r.missing)return i`<div class="detail-prompt__missing">
+  `}function jm(e){let t=En(e);if(t)return t;let r=e.data;if(!r)return"";if(r.missing)return l`<div class="detail-prompt__missing">
         기록 없음 — 아직 이 이슈로 디스패치된 세션이 없습니다. 아래는 다음
         디스패치가 보낼 기본 과업입니다.
       </div>
-      ${typeof r.default_task_prompt=="string"?Tr("\uC608\uC0C1 \uAE30\uBCF8 \uACFC\uC5C5",r.default_task_prompt):""}`;let n=eo(r.recorded_at);return i`<div class="detail-prompt__meta">
+      ${typeof r.default_task_prompt=="string"?Er("\uC608\uC0C1 \uAE30\uBCF8 \uACFC\uC5C5",r.default_task_prompt):""}`;let n=ao(r.recorded_at);return l`<div class="detail-prompt__meta">
       ${r.attempt_id}${n?` \xB7 ${n}`:""}
     </div>
-    ${typeof r.task_prompt=="string"?Tr("\uACFC\uC5C5 (user)",r.task_prompt):""}
-    ${typeof r.system_prompt=="string"?Tr("\uC2DC\uC2A4\uD15C \uACC4\uC57D (--append-system-prompt)",r.system_prompt):""}`}var Lm=["open","in_progress","deferred","resolved","closed"],Om=[0,1,2,3,4];function eu(e,t){let r=t.issueStores,n=t.onClose,s=t.transport,o=t.onNavigate,a=t.queueStore,l=t.execPresetStore,c=t.sessionLogStore,u=null,d=null,f={},g="",x=!1,A=[],L=!1,z={},ae={claude:null,codex:null},se=null,q=0,N=!1,I=!1,j="",m="",E="";function Y(){N=!1,I=!1,j="",m="",E=""}function ue(){ae={claude:null,codex:null},se=null,q+=1}async function oe(w){try{let K=await fetch(w);if(!K.ok)return null;let R=await K.json();if(!R||typeof R!="object"||!Array.isArray(R.accounts))return null;let he=R.accounts.filter(at=>at!==null&&typeof at=="object"&&!Array.isArray(at));return{accounts:he,active:he.find(at=>at.active===!0)||null}}catch{return null}}async function de(w){se=w;let K=++q,[R,he]=await Promise.all([oe("/api/claude-usage"),oe("/api/codex-usage")]);K!==q||w!==u||(ae={claude:R,codex:he},ge())}let Ue=[],et=null,qe=null,X=!1,te="",Ae=!1,_e=0,Pe=new Set;function le(){Ue=[],et=null,qe=null,X=!1,te="",Ae=!1,_e+=1,Pe.clear()}async function Me(w){if(!s)return;let K=++_e;try{let R=await Promise.resolve(s("get-comments",{id:w}));if(K!==_e||w!==u)return;Ue=Array.isArray(R)?R:[],X=!1}catch{if(K!==_e||w!==u)return;X=!0}ge()}function Oe(){if(!s||!u)return;let w=d&&typeof d.comment_count=="number"?d.comment_count:null;if(et!==u){et=u,qe=w,Me(u);return}w!==null&&w!==qe&&(qe=w,Me(u))}function He(w){Pe.has(w)?Pe.delete(w):Pe.add(w),ge()}function $e(w){let K=te.trim().length===0;te=w,K!==(w.trim().length===0)&&ge()}async function Ve(){let w=te.trim();if(!s||!u||w.length===0||Ae)return;let K=u;Ae=!0,ge();let R=!1;try{let he=await Promise.resolve(s("add-comment",{id:K,text:w}));Array.isArray(he)&&he.length>0&&(R=!0,K===u&&(Ue=he,X=!1,te="",qe=he.length))}catch{R=!1}R||pe("\uB313\uAE00 \uCD94\uAC00 \uC2E4\uD328","error"),K===u&&(Ae=!1),ge()}let it={onToggle:He,onDraftInput:$e,onSubmit:Ve},Ie=document.createElement("div");Ie.className="md-viewer-root",document.body.appendChild(Ie);let Je=Yc(Ie,{getWorkspacePath:t.getWorkspacePath||(()=>"")}),G=document.createElement("div");G.className="session-log-root",document.body.appendChild(G);let Z=ro(G,{transport:s?(w,K)=>Promise.resolve(s(w,K)):void 0,sessionLogStore:c}),xe=!1,De=!1,We=!1,Ge=null,ze=null,ct=0;function pt(w){return`${t.getWorkspacePath&&t.getWorkspacePath()||""}::${w}`}function U(){xe=!1,De=!1,We=!1,Ge=null,ze=null,ct+=1}async function V(w){if(!s)return;let K=++ct;De=!0,We=!1,ge();try{let R=await Promise.resolve(s("get-bead-prompt",{bead_id:w}));if(K!==ct)return;!R||typeof R!="object"||Array.isArray(R)?We=!0:(Ge=R,ze=pt(w))}catch{K===ct&&(We=!0)}finally{K===ct&&(De=!1,ge())}}function ve(){if(xe=!xe,xe&&u&&ze!==pt(u)){Ge=null,V(u);return}ge()}function ot(){if(!a||!u)return[];let w=a.get();return(w&&w.attempts?Object.values(w.attempts):[]).filter(R=>R&&R.bead_id===u).sort((R,he)=>(he.started_at||0)-(R.started_at||0)).map(R=>({attempt_id:R.attempt_id,bead_id:R.bead_id,status:R.status,started_at:typeof R.started_at=="number"?R.started_at:null,runner:R.runner||null,model:R.model||null,effort:R.effort||R.observed_effort||null,speed:R.speed||null,session_id:R.session_id||null,resumed_from:R.resumed_from||null,continuation_mode:R.continuation_mode||null,dismissed_at:typeof R.dismissed_at=="number"?R.dismissed_at:null,cause:typeof R.cause=="string"?R.cause:null,cause_detail:R.cause_detail||null,exec_default_preset_id:typeof R.exec_default_preset_id=="string"?R.exec_default_preset_id:null,exec_default_preset_revision:typeof R.exec_default_preset_revision=="number"?R.exec_default_preset_revision:null,exec_values:R.exec_values&&typeof R.exec_values=="object"?R.exec_values:null,usage:R.usage||null,usage_legs:Array.isArray(R.usage_legs)?R.usage_legs:[],delegation_sessions:Array.isArray(R.delegation_sessions)?R.delegation_sessions:[]}))}function ke(){if(!a||!u)return null;let w=a.get();return Jt(w&&w.attempts||{},u)}let T=new Set;function M(w){T.has(w)?T.delete(w):T.add(w),ge()}function P(w){let K=a?a.get():null,R=K&&K.attempts?K.attempts[w]:null;Z.open({attempt_id:w,meta:R?{runner:R.runner||void 0,model:R.model||void 0,effort:R.effort||void 0,status:R.status||void 0,session_id:R.session_id||void 0}:{}})}function H(w,K){let R=a?a.get():null,he=R&&R.attempts?R.attempts[w]:null,nt=(he&&Array.isArray(he.delegation_sessions)?he.delegation_sessions:[]).find(Ze=>Ze&&typeof Ze=="object"&&Ze.launch_id===K);nt&&Z.open({attempt_id:w,launch_id:K,meta:{runner:"codex",role:nt.role,model:nt.model,effort:nt.effort,session_id:nt.session_id,status:nt.status}})}async function ce(w){if(!s||!w)return;let K=await kn();if(K===null)return;let R=()=>{let Ze=a?a.get():null;return Ze&&typeof Ze.revision=="number"?Ze.revision:0},he=async(Ze={},Xe=R())=>await s("worker-attempt-resume",{attempt_id:w,expected_revision:Xe,...K!==""?{instructions:K}:{},...Ze}),at=Ze=>{Ze?.queue&&a?.set&&a.set(Ze.queue)},nt=await he();if(at(nt),nt&&nt.conflict){let Ze=nt.queue&&typeof nt.queue.revision=="number"?nt.queue.revision:R();nt=await he({},Ze),at(nt)}nt=await $r(nt,(Ze,Xe)=>he({continuation:Ze,decision_token:Xe}),{onResult:at,refresh:()=>he()}),nt&&nt.resumed===!1&&!nt.conflict&&nt.reason&&pe(`\uC774\uC5B4\uD558\uAE30 \uAC70\uBD80: ${nt.reason}`,"error",2400)}let y={onOpen:P,onOpenDelegation:H,onResume:ce,onToggleUsage:M};function C(){let w=a?a.get():null,K={...z};for(let R of["orchestration_model","orchestration_effort","orchestration_speed"]){let he=w&&w[R];typeof he=="string"&&(K[R]=he)}return K}async function D(){if(s){try{let w=await Promise.resolve(s("get-session-defaults",{}));z=w&&w.values&&typeof w.values=="object"?w.values:{}}catch{z={}}ge()}}function me(){let w=a?a.get():null;return w&&w.runner_catalog||null}function fe(){let w=a?a.get():null;return w&&typeof w.execution_defaults=="object"?w.execution_defaults:null}function Ee(){let w=d?.metadata&&typeof d.metadata=="object"?d.metadata:{},R=hr({pin:{...w,...f},global:C(),execution_defaults:fe(),runner_catalog:me(),route:typeof w.route=="string"?w.route:null}).orchestration_model.value||"";return Rr(me(),R)}function Fe(){let w=l?l.get():null;return!w||typeof w.revision!="number"?null:{revision:w.revision,presets:Array.isArray(w.presets)?w.presets:[]}}function Ye(w){return w?.compatible===!1}function Qe(w){l&&w&&typeof w.revision=="number"&&Array.isArray(w.presets)&&l.set({revision:w.revision,presets:w.presets})}async function W(){let w=Fe(),K=w?.presets.find(R=>R.id===g);if(!(!s||!u||!w||!K||Ye(K)||x)){x=!0,A=[],ge();try{let R=await Promise.resolve(s("apply-impl-preset",Pc(u,K.id,w.revision)));if(R&&R.conflict){Qe(R),pe("\uD504\uB9AC\uC14B\uC774 \uBCC0\uACBD\uB410\uC2B5\uB2C8\uB2E4. \uCD5C\uC2E0 \uBAA9\uB85D\uC5D0\uC11C \uB2E4\uC2DC \uC801\uC6A9\uD558\uC138\uC694.","error",4e3);return}let he=R&&Array.isArray(R.issue)?R.issue[0]:R?.issue;if(R&&R.applied&&he&&typeof he=="object"){d=he,A=Array.isArray(R.skipped_orchestration_keys)?R.skipped_orchestration_keys.filter(at=>typeof at=="string"):[];for(let at of Hc)delete f[at];pe(A.length>0?"\uC2E4\uD589 \uD504\uB9AC\uC14B\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4. \uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 3\uD0A4\uB294 Bead\uC5D0 \uD540\uD560 \uC218 \uC5C6\uC5B4 \uAC74\uB108\uB6F0\uC5C8\uC2B5\uB2C8\uB2E4.":"\uC2E4\uD589 \uD504\uB9AC\uC14B\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4.","success",4e3);return}R&&R.error==="bd_readback_failed"?pe("\uC124\uC815\uC740 \uC804\uC1A1\uB410\uC9C0\uB9CC \uC801\uC6A9 \uC5EC\uBD80 \uD655\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.","error",4e3):pe("\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328","error",4e3)}catch(R){R&&typeof R=="object"&&R.code==="bd_readback_failed"?pe("\uC124\uC815\uC740 \uC804\uC1A1\uB410\uC9C0\uB9CC \uC801\uC6A9 \uC5EC\uBD80 \uD655\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.","error",4e3):pe("\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328","error",4e3)}finally{x=!1,ge()}}}let re=null;r&&r.subscribe&&(re=r.subscribe(()=>O()));let be=null;a&&typeof a.subscribe=="function"&&(be=a.subscribe(()=>{u&&ge()}));let k=null;l&&typeof l.subscribe=="function"&&(k=l.subscribe(()=>{u&&ge()}));function S(w){w.key==="Escape"&&u&&(w.preventDefault(),n())}document.addEventListener("keydown",S);function O(){if(u){if(r&&typeof r.snapshotFor=="function"){let w=r.snapshotFor("detail:"+u)||[];d=w.find(R=>R&&R.id===u)||w[0]||d}Oe(),ge()}}function J(w){ir(w).then(K=>{K?pe("\uBCF5\uC0AC\uB428","success",1200):pe("\uBCF5\uC0AC \uC2E4\uD328","error",1600)})}function Te(w){w.preventDefault(),w.stopPropagation(),u&&J(u)}function ye(w,K){w.preventDefault(),w.stopPropagation(),J(K)}function Ce(w,K,R){w.preventDefault(),w.stopPropagation(),Je.open(K,{missing_state:R})}function je(w,K){f[w]=K,ge(),!(!s||!u)&&Promise.resolve(s("update-exec-settings",Mc(u,w,K.length===0?null:K))).catch(()=>{pe("\uC2E4\uD589 \uC124\uC815 \uBCC0\uACBD \uC2E4\uD328","error")})}function Tt(w,K){let R=d||{},he=R.metadata&&typeof R.metadata=="object"?R.metadata:{},at={};for(let Xe of["impl_runtime","impl_model","impl_effort"])at[Xe]=Object.hasOwn(f,Xe)?f[Xe]:typeof he[Xe]=="string"?he[Xe]:"";at[w]=K;let nt=Kc(at,me(),Ee()),Ze={};for(let Xe of["impl_runtime","impl_model","impl_effort"])Ze[Xe]=f[Xe],f[Xe]=nt[Xe]||"";ge(),!(!s||!u)&&Promise.resolve(s("update-impl-target",{id:u,...nt,orchestration_runtime:Ee()})).then(Xe=>{let kt=Array.isArray(Xe)?Xe[0]:Xe;if(!kt||typeof kt!="object"||!kt.id)throw new Error("implementation target readback failed");d=kt;for(let zt of["impl_runtime","impl_model","impl_effort"])delete f[zt];ge()}).catch(()=>{for(let Xe of["impl_runtime","impl_model","impl_effort"])Ze[Xe]===void 0?delete f[Xe]:f[Xe]=Ze[Xe];ge(),pe("\uAD6C\uD604 target \uBCC0\uACBD \uC2E4\uD328","error")})}async function ht(w,K,R){if(!s||!u)return!1;try{let he=await Promise.resolve(s(w,K)),at=Array.isArray(he)?he[0]:he;return at&&typeof at=="object"&&at.id?(d=at,!0):(pe(R,"error"),!1)}catch{return pe(R,"error"),!1}}function tt(w){setTimeout(()=>{try{let K=e.querySelector(w);K&&typeof K.focus=="function"&&K.focus()}catch{}},0)}function Pt(){N=!0,j=d&&d.title||"",ge(),tt('.detail-edit__input[data-edit="title"]')}function wr(w){j=w.target.value}function Ne(){N=!1,j="",ge()}function jt(){ht("edit-text",{id:u,field:"title",value:j},"\uC81C\uBAA9 \uC800\uC7A5 \uC2E4\uD328").then(K=>{K&&(N=!1,j=""),ge()})}function Yt(){I=!0,m=d&&d.description||"",ge(),tt('.detail-edit__textarea[data-edit="description"]')}function tr(w){m=w.target.value}function rr(){I=!1,m="",ge()}function fr(){ht("edit-text",{id:u,field:"description",value:m},"\uC124\uBA85 \uC800\uC7A5 \uC2E4\uD328").then(K=>{K&&(I=!1,m=""),ge()})}function Ct(w,K,R,he){if(w.key==="Escape"){w.stopPropagation(),R();return}w.key==="Enter"&&(!he||w.ctrlKey||w.metaKey)&&(w.preventDefault(),K())}function _r(w){let K=w.target.value;ht("update-status",{id:u,status:K},"\uC0C1\uD0DC \uBCC0\uACBD \uC2E4\uD328").then(()=>ge())}function nr(w){let K=Number(w.target.value);ht("update-priority",{id:u,priority:K},"\uC6B0\uC120\uC21C\uC704 \uBCC0\uACBD \uC2E4\uD328").then(()=>ge())}function mr(w){E=w.target.value}function rt(){let w=E.trim();w.length!==0&&ht("label-add",{id:u,label:w},"\uB77C\uBCA8 \uCD94\uAC00 \uC2E4\uD328").then(K=>{K&&(E=""),ge()})}function Zt(w){if(w.key==="Escape"){w.stopPropagation(),E="",ge();return}w.key==="Enter"&&(w.preventDefault(),rt())}function Se(w){ht("label-remove",{id:u,label:w},"\uB77C\uBCA8 \uC81C\uAC70 \uC2E4\uD328").then(()=>ge())}let $={onCopyPath:ye,onOpenDoc:Ce};function ne(w){return typeof w=="string"?w:w&&typeof w=="object"?String(w.id||w.to||w.issue_id||w.depends_on||""):""}function we(w){switch(w&&typeof w=="object"?String(w.dependency_type||w.type||""):""){case"blocks":return"\u26D3";case"discovered-from":return"\u21A9";case"parent-child":return"\u2338";default:return""}}function ut(w){let R=(Array.isArray(w.dependencies)?w.dependencies:[]).map(he=>({id:ne(he),icon:we(he)})).filter(he=>he.id.length>0);return i`
+    ${typeof r.task_prompt=="string"?Er("\uACFC\uC5C5 (user)",r.task_prompt):""}
+    ${typeof r.system_prompt=="string"?Er("\uC2DC\uC2A4\uD15C \uACC4\uC57D (--append-system-prompt)",r.system_prompt):""}`}var Bm=["open","in_progress","deferred","resolved","closed"],Um=[0,1,2,3,4];function iu(e,t){let r=t.issueStores,n=t.onClose,s=t.transport,o=t.onNavigate,a=t.queueStore,i=t.execPresetStore,c=t.sessionLogStore,u=null,d=null,p={},m="",v=!1,C=[],F=!1,H={},re={claude:null,codex:null},V=null,q=0,O=!1,P=!1,I="",$="",M="";function K(){O=!1,P=!1,I="",$="",M=""}function pe(){re={claude:null,codex:null},V=null,q+=1}async function _e(k){try{let X=await fetch(k);if(!X.ok)return null;let L=await X.json();if(!L||typeof L!="object"||!Array.isArray(L.accounts))return null;let Re=L.accounts.filter(lt=>lt!==null&&typeof lt=="object"&&!Array.isArray(lt));return{accounts:Re,active:Re.find(lt=>lt.active===!0)||null}}catch{return null}}async function me(k){V=k;let X=++q,[L,Re]=await Promise.all([_e("/api/claude-usage"),_e("/api/codex-usage")]);X!==q||k!==u||(re={claude:L,codex:Re},xe())}let ae=[],Ie=null,Te=null,ne=!1,se="",we=!1,A=0,ue=new Set;function E(){ae=[],Ie=null,Te=null,ne=!1,se="",we=!1,A+=1,ue.clear()}async function D(k){if(!s)return;let X=++A;try{let L=await Promise.resolve(s("get-comments",{id:k}));if(X!==A||k!==u)return;ae=Array.isArray(L)?L:[],ne=!1}catch{if(X!==A||k!==u)return;ne=!0}xe()}function ce(){if(!s||!u)return;let k=d&&typeof d.comment_count=="number"?d.comment_count:null;if(Ie!==u){Ie=u,Te=k,D(u);return}k!==null&&k!==Te&&(Te=k,D(u))}function $e(k){ue.has(k)?ue.delete(k):ue.add(k),xe()}function ge(k){let X=se.trim().length===0;se=k,X!==(k.trim().length===0)&&xe()}async function Oe(){let k=se.trim();if(!s||!u||k.length===0||we)return;let X=u;we=!0,xe();let L=!1;try{let Re=await Promise.resolve(s("add-comment",{id:X,text:k}));Array.isArray(Re)&&Re.length>0&&(L=!0,X===u&&(ae=Re,ne=!1,se="",Te=Re.length))}catch{L=!1}L||he("\uB313\uAE00 \uCD94\uAC00 \uC2E4\uD328","error"),X===u&&(we=!1),xe()}let _t={onToggle:$e,onDraftInput:ge,onSubmit:Oe},He=document.createElement("div");He.className="md-viewer-root",document.body.appendChild(He);let pt=ru(He,{getWorkspacePath:t.getWorkspacePath||(()=>"")}),tt=document.createElement("div");tt.className="session-log-root",document.body.appendChild(tt);let Y=Tn(tt,{transport:s?(k,X)=>Promise.resolve(s(k,X)):void 0,sessionLogStore:c}),Z=!1,Se=!1,Ze=!1,je=null,rt=null,Qe=0;function yt(k){return`${t.getWorkspacePath&&t.getWorkspacePath()||""}::${k}`}function Le(){Z=!1,Se=!1,Ze=!1,je=null,rt=null,Qe+=1}async function T(k){if(!s)return;let X=++Qe;Se=!0,Ze=!1,xe();try{let L=await Promise.resolve(s("get-bead-prompt",{bead_id:k}));if(X!==Qe)return;!L||typeof L!="object"||Array.isArray(L)?Ze=!0:(je=L,rt=yt(k))}catch{X===Qe&&(Ze=!0)}finally{X===Qe&&(Se=!1,xe())}}function Q(){if(Z=!Z,Z&&u&&rt!==yt(u)){je=null,T(u);return}xe()}function Ee(){if(!a||!u)return[];let k=a.get();return(k&&k.attempts?Object.values(k.attempts):[]).filter(L=>L&&L.bead_id===u).sort((L,Re)=>(Re.started_at||0)-(L.started_at||0)).map(L=>({attempt_id:L.attempt_id,bead_id:L.bead_id,status:L.status,started_at:typeof L.started_at=="number"?L.started_at:null,runner:L.runner||null,model:L.model||null,effort:L.effort||L.observed_effort||null,speed:L.speed||null,session_id:L.session_id||null,resumed_from:L.resumed_from||null,continuation_mode:L.continuation_mode||null,dismissed_at:typeof L.dismissed_at=="number"?L.dismissed_at:null,cause:typeof L.cause=="string"?L.cause:null,cause_detail:L.cause_detail||null,exec_default_preset_id:typeof L.exec_default_preset_id=="string"?L.exec_default_preset_id:null,exec_default_preset_revision:typeof L.exec_default_preset_revision=="number"?L.exec_default_preset_revision:null,exec_values:L.exec_values&&typeof L.exec_values=="object"?L.exec_values:null,usage:L.usage||null,usage_legs:Array.isArray(L.usage_legs)?L.usage_legs:[],delegation_sessions:Array.isArray(L.delegation_sessions)?L.delegation_sessions:[]}))}function ee(){if(!a||!u)return null;let k=a.get();return lr(k&&k.attempts||{},u)}let Ne=new Set;function et(k){Ne.has(k)?Ne.delete(k):Ne.add(k),xe()}function st(k){let X=a?a.get():null,L=X&&X.attempts?X.attempts[k]:null;Y.open({attempt_id:k,meta:L?{runner:L.runner||void 0,model:L.model||void 0,effort:L.effort||void 0,status:L.status||void 0,session_id:L.session_id||void 0}:{}})}function Ye(k,X){let L=a?a.get():null,Re=L&&L.attempts?L.attempts[k]:null,at=(Re&&Array.isArray(Re.delegation_sessions)?Re.delegation_sessions:[]).find(Xe=>Xe&&typeof Xe=="object"&&Xe.launch_id===X);at&&Y.open({attempt_id:k,launch_id:X,meta:{runner:"codex",role:at.role,model:at.model,effort:at.effort,session_id:at.session_id,status:at.status}})}async function ct(k){if(!s||!k)return;let X=await xn();if(X===null)return;let L=()=>{let Xe=a?a.get():null;return Xe&&typeof Xe.revision=="number"?Xe.revision:0},Re=async(Xe={},Je=L())=>await s("worker-attempt-resume",{attempt_id:k,expected_revision:Je,...X!==""?{instructions:X}:{},...Xe}),lt=Xe=>{Xe?.queue&&a?.set&&a.set(Xe.queue)},at=await Re();if(lt(at),at&&at.conflict){let Xe=at.queue&&typeof at.queue.revision=="number"?at.queue.revision:L();at=await Re({},Xe),lt(at)}at=await wr(at,(Xe,Je)=>Re({continuation:Xe,decision_token:Je}),{onResult:lt,refresh:()=>Re()}),at&&at.resumed===!1&&!at.conflict&&at.reason&&he(`\uC774\uC5B4\uD558\uAE30 \uAC70\uBD80: ${at.reason}`,"error",2400)}let ft={onOpen:st,onOpenDelegation:Ye,onResume:ct,onToggleUsage:et};function ut(){let k=a?a.get():null,X={...H};for(let L of["orchestration_model","orchestration_effort","orchestration_speed"]){let Re=k&&k[L];typeof Re=="string"&&(X[L]=Re)}return X}async function ot(){if(s){try{let k=await Promise.resolve(s("get-session-defaults",{}));H=k&&k.values&&typeof k.values=="object"?k.values:{}}catch{H={}}xe()}}function gt(){let k=a?a.get():null;return k&&k.runner_catalog||null}function U(){let k=a?a.get():null;return k&&typeof k.execution_defaults=="object"?k.execution_defaults:null}function J(){let k=d?.metadata&&typeof d.metadata=="object"?d.metadata:{},L=Qt({pin:{...k,...p},global:ut(),execution_defaults:U(),runner_catalog:gt(),route:typeof k.route=="string"?k.route:null}).orchestration_model.value||"";return gr(gt(),L)}function be(){let k=i?i.get():null;return!k||typeof k.revision!="number"?null:{revision:k.revision,presets:Array.isArray(k.presets)?k.presets:[]}}function Ge(k){return k?.compatible===!1}function De(k){i&&k&&typeof k.revision=="number"&&Array.isArray(k.presets)&&i.set({revision:k.revision,presets:k.presets})}async function B(){let k=be(),X=k?.presets.find(L=>L.id===m);if(!(!s||!u||!k||!X||Ge(X)||v)){v=!0,C=[],xe();try{let L=await Promise.resolve(s("apply-impl-preset",Uc(u,X.id,k.revision)));if(L&&L.conflict){De(L),he("\uD504\uB9AC\uC14B\uC774 \uBCC0\uACBD\uB410\uC2B5\uB2C8\uB2E4. \uCD5C\uC2E0 \uBAA9\uB85D\uC5D0\uC11C \uB2E4\uC2DC \uC801\uC6A9\uD558\uC138\uC694.","error",4e3);return}let Re=L&&Array.isArray(L.issue)?L.issue[0]:L?.issue;if(L&&L.applied&&Re&&typeof Re=="object"){d=Re,C=Array.isArray(L.skipped_orchestration_keys)?L.skipped_orchestration_keys.filter(lt=>typeof lt=="string"):[];for(let lt of Xc)delete p[lt];he(C.length>0?"\uC2E4\uD589 \uD504\uB9AC\uC14B\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4. \uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 3\uD0A4\uB294 Bead\uC5D0 \uD540\uD560 \uC218 \uC5C6\uC5B4 \uAC74\uB108\uB6F0\uC5C8\uC2B5\uB2C8\uB2E4.":"\uC2E4\uD589 \uD504\uB9AC\uC14B\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4.","success",4e3);return}L&&L.error==="bd_readback_failed"?he("\uC124\uC815\uC740 \uC804\uC1A1\uB410\uC9C0\uB9CC \uC801\uC6A9 \uC5EC\uBD80 \uD655\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.","error",4e3):he("\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328","error",4e3)}catch(L){L&&typeof L=="object"&&L.code==="bd_readback_failed"?he("\uC124\uC815\uC740 \uC804\uC1A1\uB410\uC9C0\uB9CC \uC801\uC6A9 \uC5EC\uBD80 \uD655\uC778\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.","error",4e3):he("\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328","error",4e3)}finally{v=!1,xe()}}}let te=null;r&&r.subscribe&&(te=r.subscribe(()=>W()));let ve=null;a&&typeof a.subscribe=="function"&&(ve=a.subscribe(()=>{u&&xe()}));let y=null;i&&typeof i.subscribe=="function"&&(y=i.subscribe(()=>{u&&xe()}));function R(k){k.key==="Escape"&&u&&(k.preventDefault(),n())}document.addEventListener("keydown",R);function W(){if(u){if(r&&typeof r.snapshotFor=="function"){let k=r.snapshotFor("detail:"+u)||[];d=k.find(L=>L&&L.id===u)||k[0]||d}ce(),xe()}}function oe(k){tr(k).then(X=>{X?he("\uBCF5\uC0AC\uB428","success",1200):he("\uBCF5\uC0AC \uC2E4\uD328","error",1600)})}function Ce(k){k.preventDefault(),k.stopPropagation(),u&&oe(u)}function Ae(k,X){k.preventDefault(),k.stopPropagation(),oe(X)}function Me(k,X,L){k.preventDefault(),k.stopPropagation(),pt.open(X,{missing_state:L})}function Be(k,X){p[k]=X,xe(),!(!s||!u)&&Promise.resolve(s("update-exec-settings",Bc(u,k,X.length===0?null:X))).catch(()=>{he("\uC2E4\uD589 \uC124\uC815 \uBCC0\uACBD \uC2E4\uD328","error")})}function At(k,X){let L=d||{},Re=L.metadata&&typeof L.metadata=="object"?L.metadata:{},lt={};for(let Je of["impl_runtime","impl_model","impl_effort"])lt[Je]=Object.hasOwn(p,Je)?p[Je]:typeof Re[Je]=="string"?Re[Je]:"";lt[k]=X;let at=tu(lt,gt(),J()),Xe={};for(let Je of["impl_runtime","impl_model","impl_effort"])Xe[Je]=p[Je],p[Je]=at[Je]||"";xe(),!(!s||!u)&&Promise.resolve(s("update-impl-target",{id:u,...at,orchestration_runtime:J()})).then(Je=>{let Ot=Array.isArray(Je)?Je[0]:Je;if(!Ot||typeof Ot!="object"||!Ot.id)throw new Error("implementation target readback failed");d=Ot;for(let Jt of["impl_runtime","impl_model","impl_effort"])delete p[Jt];xe()}).catch(()=>{for(let Je of["impl_runtime","impl_model","impl_effort"])Xe[Je]===void 0?delete p[Je]:p[Je]=Xe[Je];xe(),he("\uAD6C\uD604 target \uBCC0\uACBD \uC2E4\uD328","error")})}async function vt(k,X,L){if(!s||!u)return!1;try{let Re=await Promise.resolve(s(k,X)),lt=Array.isArray(Re)?Re[0]:Re;return lt&&typeof lt=="object"&&lt.id?(d=lt,!0):(he(L,"error"),!1)}catch{return he(L,"error"),!1}}function h(k){setTimeout(()=>{try{let X=e.querySelector(k);X&&typeof X.focus=="function"&&X.focus()}catch{}},0)}function x(){O=!0,I=d&&d.title||"",xe(),h('.detail-edit__input[data-edit="title"]')}function N(k){I=k.target.value}function j(){O=!1,I="",xe()}function ye(){vt("edit-text",{id:u,field:"title",value:I},"\uC81C\uBAA9 \uC800\uC7A5 \uC2E4\uD328").then(X=>{X&&(O=!1,I=""),xe()})}function ke(){P=!0,$=d&&d.description||"",xe(),h('.detail-edit__textarea[data-edit="description"]')}function qe(k){$=k.target.value}function ze(){P=!1,$="",xe()}function kt(){vt("edit-text",{id:u,field:"description",value:$},"\uC124\uBA85 \uC800\uC7A5 \uC2E4\uD328").then(X=>{X&&(P=!1,$=""),xe()})}function mt(k,X,L,Re){if(k.key==="Escape"){k.stopPropagation(),L();return}k.key==="Enter"&&(!Re||k.ctrlKey||k.metaKey)&&(k.preventDefault(),X())}function Ft(k){let X=k.target.value;vt("update-status",{id:u,status:X},"\uC0C1\uD0DC \uBCC0\uACBD \uC2E4\uD328").then(()=>xe())}function Tt(k){let X=Number(k.target.value);vt("update-priority",{id:u,priority:X},"\uC6B0\uC120\uC21C\uC704 \uBCC0\uACBD \uC2E4\uD328").then(()=>xe())}function Nt(k){M=k.target.value}function nt(){let k=M.trim();k.length!==0&&vt("label-add",{id:u,label:k},"\uB77C\uBCA8 \uCD94\uAC00 \uC2E4\uD328").then(X=>{X&&(M=""),xe()})}function zt(k){if(k.key==="Escape"){k.stopPropagation(),M="",xe();return}k.key==="Enter"&&(k.preventDefault(),nt())}function Fe(k){vt("label-remove",{id:u,label:k},"\uB77C\uBCA8 \uC81C\uAC70 \uC2E4\uD328").then(()=>xe())}let S={onCopyPath:Ae,onOpenDoc:Me};function de(k){return typeof k=="string"?k:k&&typeof k=="object"?String(k.id||k.to||k.issue_id||k.depends_on||""):""}function Pe(k){switch(k&&typeof k=="object"?String(k.dependency_type||k.type||""):""){case"blocks":return"\u26D3";case"discovered-from":return"\u21A9";case"parent-child":return"\u2338";default:return""}}function ht(k){let L=(Array.isArray(k.dependencies)?k.dependencies:[]).map(Re=>({id:de(Re),icon:Pe(Re)})).filter(Re=>Re.id.length>0);return l`
       <div class="detail-section-label">의존성</div>
-      ${R.length===0?i`<div class="detail-empty">의존성 없음</div>`:i`<div class="detail-deps">
-            ${R.map(he=>o?i`<button
+      ${L.length===0?l`<div class="detail-empty">의존성 없음</div>`:l`<div class="detail-deps">
+            ${L.map(Re=>o?l`<button
                     type="button"
                     class="detail-dep detail-dep--link"
-                    @click=${()=>o(he.id)}
+                    @click=${()=>o(Re.id)}
                   >
-                    ${he.icon?`${he.icon} `:""}${he.id}
-                  </button>`:i`<span class="detail-dep"
-                    >${he.icon?`${he.icon} `:""}${he.id}</span
+                    ${Re.icon?`${Re.icon} `:""}${Re.id}
+                  </button>`:l`<span class="detail-dep"
+                    >${Re.icon?`${Re.icon} `:""}${Re.id}</span
                   >`)}
           </div>`}
-    `}function xt(w){let K=w.metadata||{},R=w.workflow||{},he=R.stages||{},at=he.spec&&he.spec.stale,nt=he.impl&&he.impl.stale,Ze=he.plan||null,Xe=R.route_source==="derived",kt=R.route||K.route||"\u2014";return i`
+    `}function Mt(k){let X=k.metadata||{},L=k.workflow||{},Re=L.stages||{},lt=Re.spec&&Re.spec.stale,at=Re.impl&&Re.impl.stale,Xe=Re.plan||null,Je=L.route_source==="derived",Ot=L.route||X.route||"\u2014";return l`
       <div class="detail-section-label">워크플로우</div>
       <div class="detail-kv">
         <span class="detail-kv__k">route</span>
         <span
-          class="detail-kv__v${Xe?" detail-kv__v--derived":""}"
-          title=${Xe?"route \uBBF8\uD540 (metadata unset)":"route"}
-          >${Xe?"unset":kt}</span
+          class="detail-kv__v${Je?" detail-kv__v--derived":""}"
+          title=${Je?"route \uBBF8\uD540 (metadata unset)":"route"}
+          >${Je?"unset":Ot}</span
         >
       </div>
-      ${R.route!=="quick_fix"||Object.hasOwn(K,"spec_review")?i`<div class="detail-kv">
+      ${L.route!=="quick_fix"||Object.hasOwn(X,"spec_review")?l`<div class="detail-kv">
             <span class="detail-kv__k">spec_review</span>
             <span class="detail-kv__v"
-              >${K.spec_review||"\uC5C6\uC74C"}${at?" \xB7 stale":""}</span
+              >${X.spec_review||"\uC5C6\uC74C"}${lt?" \xB7 stale":""}</span
             >
           </div>`:""}
-      ${R.route==="full_plan"?i`<div class="detail-kv">
+      ${L.route==="full_plan"?l`<div class="detail-kv">
               <span class="detail-kv__k">plan_review</span>
-              <span class="detail-kv__v">${Ze?.receipt||"\uC5C6\uC74C"}</span>
+              <span class="detail-kv__v">${Xe?.receipt||"\uC5C6\uC74C"}</span>
             </div>
             <div class="detail-kv">
               <span class="detail-kv__k">plan_approval</span>
               <span class="detail-kv__v"
-                >${Ze?.approval_receipt||"\uC5C6\uC74C"}${Ze?.approval_state==="stale"?" \xB7 stale":Ze?.approval_state==="unknown"?" \xB7 unknown":""}</span
+                >${Xe?.approval_receipt||"\uC5C6\uC74C"}${Xe?.approval_state==="stale"?" \xB7 stale":Xe?.approval_state==="unknown"?" \xB7 unknown":""}</span
               >
             </div>`:""}
-      ${R.route!=="quick_fix"||Object.hasOwn(K,"impl_review")?i`<div class="detail-kv">
+      ${L.route!=="quick_fix"||Object.hasOwn(X,"impl_review")?l`<div class="detail-kv">
             <span class="detail-kv__k">impl_review</span>
             <span class="detail-kv__v"
-              >${K.impl_review||"\uC5C6\uC74C"}${nt?" \xB7 stale":""}</span
+              >${X.impl_review||"\uC5C6\uC74C"}${at?" \xB7 stale":""}</span
             >
           </div>`:""}
-      ${R.planned_execution?i`<div class="detail-kv">
+      ${L.planned_execution?l`<div class="detail-kv">
               <span class="detail-kv__k">planned_execution</span>
-              <span class="detail-kv__v">${R.planned_execution.kind}</span>
+              <span class="detail-kv__v">${L.planned_execution.kind}</span>
             </div>
-            ${R.planned_execution.kind==="main"?i`<div class="detail-kv">
+            ${L.planned_execution.kind==="main"?l`<div class="detail-kv">
                   <span class="detail-kv__k">planned_execution_reason</span>
                   <span class="detail-kv__v detail-kv__v--wrap"
-                    >${R.planned_execution.reason}</span
+                    >${L.planned_execution.reason}</span
                   >
                 </div>`:""}`:""}
-      ${R.exec_receipt?i`<div class="detail-kv">
+      ${L.exec_receipt?l`<div class="detail-kv">
             <span class="detail-kv__k">exec_receipt</span>
             <span class="detail-kv__v detail-kv__v--wrap"
-              >${en(R.exec_receipt)}</span
+              >${Jr(L.exec_receipt)}</span
             >
           </div>`:""}
-      ${R.impl_entry?i`<div class="detail-kv">
+      ${L.impl_entry?l`<div class="detail-kv">
             <span class="detail-kv__k">impl_entry</span>
             <span class="detail-kv__v"
-              >${`${R.impl_entry.actor}@${R.impl_entry.sha}`}</span
+              >${`${L.impl_entry.actor}@${L.impl_entry.sha}`}</span
             >
           </div>`:""}
-      ${K.pr_url?i`<div class="detail-kv">
+      ${X.pr_url?l`<div class="detail-kv">
             <span class="detail-kv__k">pr_url</span>
-            <span class="detail-kv__v detail-kv__v--wrap">${K.pr_url}</span>
+            <span class="detail-kv__v detail-kv__v--wrap">${X.pr_url}</span>
           </div>`:""}
-    `}let _t={route:["quick_fix","spec_backed","full_plan"]};async function At(w,K){let R=K.target.value;if(w==="route"&&d&&d.metadata&&d.metadata.route==="full_plan"&&R!=="full_plan"&&!window.confirm(`full_plan \u2192 ${R||"(\uBBF8\uC124\uC815)"} \uC804\uD658: \uC800\uC7A5\uB41C plan \uC2B9\uC778\uC740 \uD3EC\uAE30\uB418\uBA70, plan \uD30C\uC77C\xB7\uB9C8\uCEE4 \uC815\uB9AC\uB294 \uC138\uC158 \uACC4\uC57D\uC774 \uC218\uD589\uD569\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`)){ge();return}await ht("update-workflow-meta",{id:u,key:w,value:R},"\uC6CC\uD06C\uD50C\uB85C\uC6B0 \uBA54\uD0C0 \uBCC0\uACBD \uC2E4\uD328"),ge()}function p(w){let K=w.metadata||{};return i` ${((he,at)=>{let nt=_t[he],Ze=typeof K[he]=="string"?K[he]:"";return i`<div class="detail-kv">
-        <span class="detail-kv__k">${he}</span>
+    `}let $t={route:["quick_fix","spec_backed","full_plan"]};async function Dt(k,X){let L=X.target.value;if(k==="route"&&d&&d.metadata&&d.metadata.route==="full_plan"&&L!=="full_plan"&&!window.confirm(`full_plan \u2192 ${L||"(\uBBF8\uC124\uC815)"} \uC804\uD658: \uC800\uC7A5\uB41C plan \uC2B9\uC778\uC740 \uD3EC\uAE30\uB418\uBA70, plan \uD30C\uC77C\xB7\uB9C8\uCEE4 \uC815\uB9AC\uB294 \uC138\uC158 \uACC4\uC57D\uC774 \uC218\uD589\uD569\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`)){xe();return}await vt("update-workflow-meta",{id:u,key:k,value:L},"\uC6CC\uD06C\uD50C\uB85C\uC6B0 \uBA54\uD0C0 \uBCC0\uACBD \uC2E4\uD328"),xe()}function f(k){let X=k.metadata||{};return l` ${((Re,lt)=>{let at=$t[Re],Xe=typeof X[Re]=="string"?X[Re]:"";return l`<div class="detail-kv">
+        <span class="detail-kv__k">${Re}</span>
         <select
           class="detail-kv__v detail-kv__v--sel"
-          aria-label=${he}
-          data-edit=${`wfmeta-${he}`}
-          @change=${Xe=>At(he,Xe)}
+          aria-label=${Re}
+          data-edit=${`wfmeta-${Re}`}
+          @change=${Je=>Dt(Re,Je)}
         >
-          <option value="" ?selected=${!nt.includes(Ze)}>
-            ${at}
+          <option value="" ?selected=${!at.includes(Xe)}>
+            ${lt}
           </option>
-          ${nt.map(Xe=>i`<option value=${Xe} ?selected=${Ze===Xe}>${Xe}</option>`)}
+          ${at.map(Je=>l`<option value=${Je} ?selected=${Xe===Je}>${Je}</option>`)}
         </select>
-      </div>`})("route","(unset)")} `}function v(w,K){return N?i`
+      </div>`})("route","(unset)")} `}function w(k,X){return O?l`
         <div class="detail-edit">
           <input
             class="detail-edit__input"
             data-edit="title"
             aria-label="제목 편집"
-            .value=${j}
-            @input=${wr}
-            @keydown=${R=>Ct(R,jt,Ne,!1)}
+            .value=${I}
+            @input=${N}
+            @keydown=${L=>mt(L,ye,j,!1)}
           />
           <div class="detail-edit__actions">
             <button
               type="button"
               class="detail-edit__save"
               data-edit="title-save"
-              @click=${jt}
+              @click=${ye}
             >
               저장
             </button>
@@ -1056,38 +1056,38 @@ ${G.output}`),Z.join(`
               type="button"
               class="detail-edit__cancel"
               data-edit="title-cancel"
-              @click=${Ne}
+              @click=${j}
             >
               취소
             </button>
           </div>
         </div>
-      `:i`
+      `:l`
       <div class="detail-title-row">
-        <h2 class="detail-overlay__title">${w}</h2>
-        ${Ot(K).map(R=>i`<span class="detail-usage-total" title=${R.tooltip}
-              >${R.label}</span
+        <h2 class="detail-overlay__title">${k}</h2>
+        ${Wt(X).map(L=>l`<span class="detail-usage-total" title=${L.tooltip}
+              >${L.label}</span
             >`)}
         <button
           type="button"
           class="detail-edit-btn"
           data-edit="title"
           aria-label="제목 편집"
-          @click=${Pt}
+          @click=${x}
         >
           ✎
         </button>
       </div>
-    `}function B(w){let K=It(w.created_at),R=It(w.updated_at);return!K&&!R?i``:i`
-      ${K?i`<div class="detail-kv">
+    `}function G(k){let X=Ht(k.created_at),L=Ht(k.updated_at);return!X&&!L?l``:l`
+      ${X?l`<div class="detail-kv">
             <span class="detail-kv__k">생성</span>
-            <span class="detail-kv__v detail-kv__v--time">${K}</span>
+            <span class="detail-kv__v detail-kv__v--time">${X}</span>
           </div>`:""}
-      ${R?i`<div class="detail-kv">
+      ${L?l`<div class="detail-kv">
             <span class="detail-kv__k">수정</span>
-            <span class="detail-kv__v detail-kv__v--time">${R}</span>
+            <span class="detail-kv__v detail-kv__v--time">${L}</span>
           </div>`:""}
-    `}function _(w,K){return i`
+    `}function _(k,X){return l`
       <div class="detail-section-label">속성 (수정 가능)</div>
       <div class="detail-kv">
         <span class="detail-kv__k">status</span>
@@ -1095,9 +1095,9 @@ ${G.output}`),Z.join(`
           class="detail-kv__v detail-kv__v--sel"
           aria-label="status"
           data-edit="status"
-          @change=${_r}
+          @change=${Ft}
         >
-          ${Lm.map(R=>i`<option value=${R} ?selected=${R===w}>${R}</option>`)}
+          ${Bm.map(L=>l`<option value=${L} ?selected=${L===k}>${L}</option>`)}
         </select>
       </div>
       <div class="detail-kv">
@@ -1106,42 +1106,42 @@ ${G.output}`),Z.join(`
           class="detail-kv__v"
           aria-label="priority"
           data-edit="priority"
-          @change=${nr}
+          @change=${Tt}
         >
-          ${Om.map(R=>i`<option value=${String(R)} ?selected=${R===K}>
-                P${R}
+          ${Um.map(L=>l`<option value=${String(L)} ?selected=${L===X}>
+                P${L}
               </option>`)}
         </select>
       </div>
-    `}function h(w){return i`
+    `}function b(k){return l`
       <div class="detail-title-row">
         <div class="detail-overlay__section-label">설명</div>
-        ${I?"":i`<button
+        ${P?"":l`<button
               type="button"
               class="detail-edit-btn"
               data-edit="description"
               aria-label="설명 편집"
-              @click=${Yt}
+              @click=${ke}
             >
               ✎
             </button>`}
       </div>
-      ${I?i`<div class="detail-edit">
+      ${P?l`<div class="detail-edit">
             <textarea
               class="detail-edit__textarea"
               data-edit="description"
               aria-label="설명 편집"
               rows="6"
-              .value=${m}
-              @input=${tr}
-              @keydown=${K=>Ct(K,fr,rr,!0)}
+              .value=${$}
+              @input=${qe}
+              @keydown=${X=>mt(X,kt,ze,!0)}
             ></textarea>
             <div class="detail-edit__actions">
               <button
                 type="button"
                 class="detail-edit__save"
                 data-edit="description-save"
-                @click=${fr}
+                @click=${kt}
               >
                 저장
               </button>
@@ -1149,27 +1149,27 @@ ${G.output}`),Z.join(`
                 type="button"
                 class="detail-edit__cancel"
                 data-edit="description-cancel"
-                @click=${rr}
+                @click=${ze}
               >
                 취소
               </button>
             </div>
-          </div>`:i`<div class="detail-overlay__desc">
-            ${w||"(\uC124\uBA85 \uC5C6\uC74C)"}
+          </div>`:l`<div class="detail-overlay__desc">
+            ${k||"(\uC124\uBA85 \uC5C6\uC74C)"}
           </div>`}
-    `}function ee(w){let K=typeof w.notes=="string"?w.notes:"";return K.trim().length===0?i``:i`
+    `}function le(k){let X=typeof k.notes=="string"?k.notes:"";return X.trim().length===0?l``:l`
       <div class="detail-overlay__section-label">노트</div>
-      <div class="detail-overlay__notes">${K}</div>
-    `}function Q(w){let K=Array.isArray(w.labels)?w.labels:[];return i`
+      <div class="detail-overlay__notes">${X}</div>
+    `}function ie(k){let X=Array.isArray(k.labels)?k.labels:[];return l`
       <div class="detail-section-label">라벨</div>
       <div class="detail-labels">
-        ${K.map(R=>i`<span class="detail-label-chip"
-              >${R}<button
+        ${X.map(L=>l`<span class="detail-label-chip"
+              >${L}<button
                 type="button"
                 class="detail-label-chip__x"
-                data-label=${R}
-                aria-label=${"\uB77C\uBCA8 \uC81C\uAC70: "+R}
-                @click=${()=>Se(R)}
+                data-label=${L}
+                aria-label=${"\uB77C\uBCA8 \uC81C\uAC70: "+L}
+                @click=${()=>Fe(L)}
               >
                 ×
               </button></span
@@ -1179,20 +1179,20 @@ ${G.output}`),Z.join(`
             class="detail-label-add__input"
             aria-label="라벨 추가"
             placeholder="라벨 추가"
-            .value=${E}
-            @input=${mr}
-            @keydown=${Zt}
+            .value=${M}
+            @input=${Nt}
+            @keydown=${zt}
           />
           <button
             type="button"
             class="detail-label-add__btn"
-            @click=${rt}
+            @click=${nt}
           >
             추가
           </button>
         </span>
       </div>
-    `}function Re(){if(!u)return i``;let w=d||{},K=String(w.id||u),R=w.title||"(\uC81C\uBAA9 \uC5C6\uC74C)",he=ke(),at=w.status||"open",nt=typeof w.priority=="number"?Math.max(0,Math.min(4,w.priority)):"",Ze=w.description||"",Xe={...w,metadata:{...w.metadata||{},...f}};return i`
+    `}function Ue(){if(!u)return l``;let k=d||{},X=String(k.id||u),L=k.title||"(\uC81C\uBAA9 \uC5C6\uC74C)",Re=ee(),lt=k.status||"open",at=typeof k.priority=="number"?Math.max(0,Math.min(4,k.priority)):"",Xe=k.description||"",Je={...k,metadata:{...k.metadata||{},...p}};return l`
       <div class="detail-overlay" role="dialog" aria-modal="true">
         <div class="detail-overlay__backdrop" @click=${()=>n()}></div>
         <div class="detail-overlay__panel">
@@ -1201,9 +1201,9 @@ ${G.output}`),Z.join(`
               type="button"
               class="detail-overlay__id"
               title="ID 복사"
-              @click=${Te}
+              @click=${Ce}
             >
-              ${K}
+              ${X}
             </button>
             <button
               type="button"
@@ -1214,21 +1214,21 @@ ${G.output}`),Z.join(`
               ✕
             </button>
           </div>
-          ${v(R,he)}
-          ${Nc(Xe)}
-          ${Dc({metadata:Xe.metadata,workspace_values:C(),catalog:me(),execution_defaults:fe(),expanded:L,presets:Fe()?.presets||[],preset_id:g,preset_busy:x,skipped_orchestration_keys:A},{onToggle:kt=>{L=kt,ge()},onEdit:(kt,zt)=>{if(kt==="impl_runtime"||kt==="impl_model"||kt==="impl_effort"){Tt(kt,zt??"");return}je(kt,zt??"")},onPresetSelect:kt=>{g=kt,A=[],ge()},onPresetApply:()=>{W()}})}
-          ${zc({md:Xe.metadata,catalog:ae,handlers:{onExecChange:je}})}
-          ${_(at,nt)} ${B(w)}
-          ${h(Ze)}
-          ${$c(Ue,it,{expanded:Pe,draft:te,sending:Ae,error:X})}
-          ${ee(w)} ${Q(w)} ${ut(w)}
-          ${xt(w)} ${p(w)}
-          ${vc(w,$)}
-          ${Jc({expanded:xe,loading:De,error:We,data:Ge},{onToggle:ve})}
-          ${Qc(ot(),y,{total:he,expanded:T})}
+          ${w(L,Re)}
+          ${zc(Je)}
+          ${Wc({metadata:Je.metadata,workspace_values:ut(),catalog:gt(),execution_defaults:U(),expanded:F,presets:be()?.presets||[],preset_id:m,preset_busy:v,skipped_orchestration_keys:C},{onToggle:Ot=>{F=Ot,xe()},onEdit:(Ot,Jt)=>{if(Ot==="impl_runtime"||Ot==="impl_model"||Ot==="impl_effort"){At(Ot,Jt??"");return}Be(Ot,Jt??"")},onPresetSelect:Ot=>{m=Ot,C=[],xe()},onPresetApply:()=>{B()}})}
+          ${Qc({md:Je.metadata,catalog:re,handlers:{onExecChange:Be}})}
+          ${_(lt,at)} ${G(k)}
+          ${b(Xe)}
+          ${Rc(ae,_t,{expanded:ue,draft:se,sending:we,error:ne})}
+          ${le(k)} ${ie(k)} ${ht(k)}
+          ${Mt(k)} ${f(k)}
+          ${Ec(k,S)}
+          ${au({expanded:Z,loading:Se,error:Ze,data:je},{onToggle:Q})}
+          ${ou(Ee(),ft,{total:Re,expanded:Ne})}
         </div>
       </div>
-    `}function ge(){Ke(Re(),e)}return{load(w){w!==u&&(f={},g="",A=[],L=!1,Y(),le(),U(),ue()),u=w,d=null,O(),D(),se!==w&&de(w)},clear(){u=null,d=null,f={},g="",x=!1,A=[],L=!1,Y(),le(),U(),ue(),Je.close(),Z.close(),Ke(i``,e)},destroy(){re&&(re(),re=null),be&&(be(),be=null),k&&(k(),k=null),document.removeEventListener("keydown",S),Je.destroy(),Ie.parentNode&&Ie.parentNode.removeChild(Ie),Z.destroy(),G.parentNode&&G.parentNode.removeChild(G),u=null,d=null,ue(),g="",x=!1,A=[],le(),U(),Ke(i``,e)}}}function tu(e){let t=document.createElement("dialog");t.id="fatal-error-dialog",t.setAttribute("role","alertdialog"),t.setAttribute("aria-modal","true"),t.innerHTML=`
+    `}function xe(){Ve(Ue(),e)}return{load(k){k!==u&&(p={},m="",C=[],F=!1,K(),E(),Le(),pe()),u=k,d=null,W(),ot(),V!==k&&me(k)},clear(){u=null,d=null,p={},m="",v=!1,C=[],F=!1,K(),E(),Le(),pe(),pt.close(),Y.close(),Ve(l``,e)},destroy(){te&&(te(),te=null),ve&&(ve(),ve=null),y&&(y(),y=null),document.removeEventListener("keydown",R),pt.destroy(),He.parentNode&&He.parentNode.removeChild(He),Y.destroy(),tt.parentNode&&tt.parentNode.removeChild(tt),u=null,d=null,pe(),m="",v=!1,C=[],E(),Le(),Ve(l``,e)}}}function lu(e){let t=document.createElement("dialog");t.id="fatal-error-dialog",t.setAttribute("role","alertdialog"),t.setAttribute("aria-modal","true"),t.innerHTML=`
     <div class="fatal-error">
       <div class="fatal-error__icon" aria-hidden="true">!</div>
       <div class="fatal-error__body">
@@ -1241,7 +1241,7 @@ ${G.output}`),Z.join(`
           <button type="button" class="btn" id="fatal-error-close">Dismiss</button>
         </div>
       </div>
-    </div>`,e.appendChild(t);let r=t.querySelector("#fatal-error-title"),n=t.querySelector("#fatal-error-message"),s=t.querySelector("#fatal-error-detail"),o=t.querySelector("#fatal-error-reload"),a=t.querySelector("#fatal-error-close"),l=()=>{if(typeof t.close=="function")try{t.close()}catch{}t.removeAttribute("open")},c=(u,d,f="")=>{r&&(r.textContent=u||"Unexpected Error"),n&&(n.textContent=d||"An unrecoverable error occurred.");let g=typeof f=="string"?f.trim():"";if(s&&(g.length>0?(s.textContent=g,s.removeAttribute("hidden")):(s.textContent="No additional diagnostics available.",s.setAttribute("hidden",""))),typeof t.showModal=="function")try{t.showModal(),t.setAttribute("open","")}catch{t.setAttribute("open","")}else t.setAttribute("open","")};return o&&o.addEventListener("click",()=>{window.location.reload()}),a&&a.addEventListener("click",()=>l()),t.addEventListener("cancel",u=>{u.preventDefault(),l()}),{open:c,close:l,getElement(){return t}}}function _o(e){return typeof e=="string"&&e.length>=7?e.slice(0,7):"\u2014"}function mo(e){if(typeof e!="number"||!Number.isFinite(e)||e<0)return"\u2014";if(e<1e3)return`${Math.round(e)}ms`;let t=e/1e3;if(t<60)return`${t.toFixed(1)}\uCD08`;let r=Math.floor(t/60);if(r<60)return`${r}\uBD84 ${Math.round(t-r*60)}\uCD08`;let n=Math.floor(r/60),s=r%60;return`${n}\uC2DC\uAC04 ${s}\uBD84`}function ru(e,t){if(typeof e!="object"||e===null)return null;let r=0,n=!1;for(let s of Object.values(e)){if(typeof s!="object"||s===null)continue;let o=s;if(o.bead_id!==t)continue;let a=o.started_at,l=o.finished_at;typeof a!="number"||typeof l!="number"||!Number.isFinite(a)||!Number.isFinite(l)||l<a||(r+=l-a,n=!0)}return n?r:null}function go(e){if(typeof e!="number"||!Number.isFinite(e)||e<=0)return"";let t=new Date(e);return`${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}`}function Mm(e,t){let r=Array.isArray(e)?e:[],n=Array.isArray(t)?t:[];if(r.length===0&&n.length===0)return null;let s=null;for(let l of r)l.kind!=="deploy"||l.state!=="succeeded"||typeof l.target_sha!="string"||(!s||(typeof l.finished_at=="number"?l.finished_at:0)>(typeof s.finished_at=="number"?s.finished_at:0))&&(s=l);let o=r.filter(l=>l.state==="failed"&&!l.dismissed&&!l.superseded_by).length+n.length,a=r.some(l=>l.state==="repairing");return{deploy:s?{sha:_o(s.target_sha),at:typeof s.finished_at=="number"?s.finished_at:null,elapsed_ms:typeof s.elapsed_ms=="number"?s.elapsed_ms:null}:null,unresolved:o,repairing:a,badge:o>0?{tone:"act",label:`\uD574\uACB0 \uD544\uC694 ${o}`}:a?{tone:"live",label:"\uC790\uB3D9 \uD574\uACB0 \uC911"}:{tone:"quiet",label:"\uBAA8\uB450 \uC815\uC0C1"}}}function nu(e,t){let r=Mm(e,t);return r?i`<button
+    </div>`,e.appendChild(t);let r=t.querySelector("#fatal-error-title"),n=t.querySelector("#fatal-error-message"),s=t.querySelector("#fatal-error-detail"),o=t.querySelector("#fatal-error-reload"),a=t.querySelector("#fatal-error-close"),i=()=>{if(typeof t.close=="function")try{t.close()}catch{}t.removeAttribute("open")},c=(u,d,p="")=>{r&&(r.textContent=u||"Unexpected Error"),n&&(n.textContent=d||"An unrecoverable error occurred.");let m=typeof p=="string"?p.trim():"";if(s&&(m.length>0?(s.textContent=m,s.removeAttribute("hidden")):(s.textContent="No additional diagnostics available.",s.setAttribute("hidden",""))),typeof t.showModal=="function")try{t.showModal(),t.setAttribute("open","")}catch{t.setAttribute("open","")}else t.setAttribute("open","")};return o&&o.addEventListener("click",()=>{window.location.reload()}),a&&a.addEventListener("click",()=>i()),t.addEventListener("cancel",u=>{u.preventDefault(),i()}),{open:c,close:i,getElement(){return t}}}function yo(e){return typeof e=="string"&&e.length>=7?e.slice(0,7):"\u2014"}function cs(e){if(typeof e!="number"||!Number.isFinite(e)||e<0)return"\u2014";if(e<1e3)return`${Math.round(e)}ms`;let t=e/1e3;if(t<60)return`${t.toFixed(1)}\uCD08`;let r=Math.floor(t/60);if(r<60)return`${r}\uBD84 ${Math.round(t-r*60)}\uCD08`;let n=Math.floor(r/60),s=r%60;return`${n}\uC2DC\uAC04 ${s}\uBD84`}function vo(e,t){if(typeof e!="object"||e===null)return null;let r=0,n=!1;for(let s of Object.values(e)){if(typeof s!="object"||s===null)continue;let o=s;if(o.bead_id!==t)continue;let a=o.started_at,i=o.finished_at;typeof a!="number"||typeof i!="number"||!Number.isFinite(a)||!Number.isFinite(i)||i<a||(r+=i-a,n=!0)}return n?r:null}function wo(e){if(typeof e!="number"||!Number.isFinite(e)||e<=0)return"";let t=new Date(e);return`${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}`}function Wm(e,t){let r=Array.isArray(e)?e:[],n=Array.isArray(t)?t:[];if(r.length===0&&n.length===0)return null;let s=null;for(let i of r)i.kind!=="deploy"||i.state!=="succeeded"||typeof i.target_sha!="string"||(!s||(typeof i.finished_at=="number"?i.finished_at:0)>(typeof s.finished_at=="number"?s.finished_at:0))&&(s=i);let o=r.filter(i=>i.state==="failed"&&!i.dismissed&&!i.superseded_by).length+n.length,a=r.some(i=>i.state==="repairing");return{deploy:s?{sha:yo(s.target_sha),at:typeof s.finished_at=="number"?s.finished_at:null,elapsed_ms:typeof s.elapsed_ms=="number"?s.elapsed_ms:null}:null,unresolved:o,repairing:a,badge:o>0?{tone:"act",label:`\uD574\uACB0 \uD544\uC694 ${o}`}:a?{tone:"live",label:"\uC790\uB3D9 \uD574\uACB0 \uC911"}:{tone:"quiet",label:"\uBAA8\uB450 \uC815\uC0C1"}}}function cu(e,t){let r=Wm(e,t);return r?l`<button
     type="button"
     class="worker-repo-strip"
     data-seam="repo-ops-strip"
@@ -1249,14 +1249,14 @@ ${G.output}`),Z.join(`
   >
     <span class="worker-repo-strip__cue" aria-hidden="true">▸</span>
     <span class="worker-repo-strip__name">저장소 작업</span>
-    ${r.deploy?i`<span class="worker-repo-strip__fact">
+    ${r.deploy?l`<span class="worker-repo-strip__fact">
           배포
           <code class="worker-repo-strip__sha">${r.deploy.sha}</code>
           <span class="worker-repo-strip__ok">✓ 최신</span>
           <span
             class="worker-repo-strip__ago"
-            title=${r.deploy.at?It(r.deploy.at):""}
-            >${go(r.deploy.at)}${r.deploy.elapsed_ms!==null?` \xB7 ${mo(r.deploy.elapsed_ms)}`:""}</span
+            title=${r.deploy.at?Ht(r.deploy.at):""}
+            >${wo(r.deploy.at)}${r.deploy.elapsed_ms!==null?` \xB7 ${cs(r.deploy.elapsed_ms)}`:""}</span
           >
         </span>`:""}
     <span class="worker-repo-strip__spacer"></span>
@@ -1264,78 +1264,132 @@ ${G.output}`),Z.join(`
       class="worker-repo-strip__badge worker-repo-strip__badge--${r.badge.tone}"
       >${r.badge.label}</span
     >
-  </button>`:""}function Cn(e){let t=Gt(e.created_at),r=Gt(e.updated_at);return!t&&!r?"":i`<div class="worker-mini__meta">
-    ${t?i`<span title=${`\uC0DD\uC131 ${It(e.created_at)}`}
+  </button>`:""}function In(e){let t=ir(e.created_at),r=ir(e.updated_at);return!t&&!r?"":l`<div class="worker-mini__meta">
+    ${t?l`<span title=${`\uC0DD\uC131 ${Ht(e.created_at)}`}
           >생성 ${t}</span
-        >`:""}${t&&r?i`<span>·</span>`:""}${r?i`<span title=${`\uC218\uC815 ${It(e.updated_at)}`}
+        >`:""}${t&&r?l`<span>·</span>`:""}${r?l`<span title=${`\uC218\uC815 ${Ht(e.updated_at)}`}
           >수정 ${r}</span
         >`:""}
-  </div>`}function Pm(e){return!e||e==="requested"?"\uBC31\uC5C5 \uC911":e==="backup_verified"||e==="signaled"?"runner \uC885\uB8CC \uC911":e==="merged_revert"||e.startsWith("revert_")?"revert PR \uB300\uAE30":e.startsWith("rollback_")?"\uC6D0\uBCF5 \uBC30\uD3EC \uC911":e==="runner_terminated"||e.startsWith("pr_")||e.includes("ref_")||e.includes("worktree")||e.startsWith("bead_")?"PR \uC815\uB9AC \uC911":`\uD3D0\uAE30 \uCC98\uB9AC \uC911 (${e})`}function ts(e,t){return t==="merged"?`${e}: \uC774\uBBF8 merge\uB41C \uAD6C\uD604\uC785\uB2C8\uB2E4. \uBCF5\uAD6C archive\uB97C \uB9CC\uB4E0 \uB4A4 revert PR\uC744 \uC0DD\uC131\uD558\uBA70, \uC2E4\uC81C \uC6D0\uBCF5\uC740 \uC0AC\uB78C\uC774 \uADF8 PR\uC744 merge\uD55C \uB4A4 \uC644\uB8CC\uB429\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`:`${e}: \uBCF5\uAD6C archive\uB97C \uB9CC\uB4E0 \uB4A4 runner/PR/branch/worktree\uB97C \uC815\uB9AC\uD558\uACE0 \uC774\uC288\uB97C \uD6C4\uBCF4\uB85C \uB418\uB3CC\uB9BD\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`}function bo(e){let t=["\uD3D0\uAE30 \uC644\uB8CC"];return e.operation_id&&t.push(`\uC791\uC5C5 ${e.operation_id}`),e.receipt?.archive_path&&t.push(`\uBC31\uC5C5 ${e.receipt.archive_path}`),e.receipt?.original_pr?.url&&t.push(`\uC6D0\uBCF8 PR ${e.receipt.original_pr.url}`),e.receipt?.revert_pr?.url&&t.push(`revert PR ${e.receipt.revert_pr.url}`),t.join(" \xB7 ")}function vr(e,t,r={}){let s=Object.values(e&&typeof e=="object"?e:{}).filter(f=>f&&f.bead_id===t&&f.phase!=="done").sort((f,g)=>(f.requested_at||0)-(g.requested_at||0)).at(-1),o=typeof r.attempt_id=="string"&&r.attempt_id.length>0?r.attempt_id:typeof s?.attempt_id=="string"?s.attempt_id:null,a=r.external?"\uC678\uBD80 PR\uC740 Worker\uAC00 \uC18C\uC720\uD558\uC9C0 \uC54A\uC544 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":r.done?"\uC644\uB8CC\uB41C \uC791\uC5C5\uC740 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":r.merge_active?"\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":r.merge_queued?"\uBA38\uC9C0 \uD050\uC5D0 \uC788\uC74C \u2014 \uD3D0\uAE30\uD558\uB824\uBA74 \uBA3C\uC800 [\uCDE8\uC18C]\uD558\uC138\uC694":r.conflict_active?"\uCDA9\uB3CC \uD574\uC18C \uC138\uC158 \uC788\uC74C \u2014 \uD3D0\uAE30\uD558\uB824\uBA74 \uBA3C\uC800 \uC138\uC158\uC744 \uC815\uB9AC\uD558\uC138\uC694":r.cleanup_active?"\uC815\uB9AC \uC9C4\uD589 \uC911 \u2014 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":null,l=typeof s?.last_error=="string"?s.last_error:null,c=s?Pm(s.phase):null,u=s?.kind==="stale_work_backup_fresh",d=r.merged||s?.mode==="merged_revert"?"merged":"unmerged";return{action:!r.external&&!r.done,enabled:!a&&(!s||!!l),label:u?l?"\uBC31\uC5C5 \uC815\uB9AC \uC7AC\uC2DC\uB3C4":"\uBC31\uC5C5 \uD6C4 \uC0C8\uB85C \uC2DC\uC791":l?"\uC7AC\uC2DC\uB3C4":"\uD3D0\uAE30",title:a||(l?u?`\uBC31\uC5C5 \uB4A4 \uC815\uB9AC \uC2E4\uD328: ${l} \u2014 \uC6D0\uBCF8\uACFC \uAC80\uC99D \uC601\uC218\uC99D\uC744 \uBCF4\uC874\uD55C \uCC44 \uC7AC\uC2DC\uB3C4\uD569\uB2C8\uB2E4`:`\uD3D0\uAE30 \uC2E4\uD328: ${l} \u2014 \uAC19\uC740 \uC791\uC5C5\uC744 \uC7AC\uC2DC\uB3C4\uD569\uB2C8\uB2E4`:s?`${c||"\uD3D0\uAE30 \uCC98\uB9AC \uC911"} \u2014 \uC644\uB8CC\uB97C \uAE30\uB2E4\uB9AC\uC138\uC694`:d==="merged"?"\uBCD1\uD569\uB41C \uBCC0\uACBD\uC744 \uC6D0\uBCF5 PR\uB85C \uB418\uB3CC\uB9BD\uB2C8\uB2E4":"\uBC31\uC5C5 \uD6C4 runner\xB7PR\xB7\uC6CC\uD06C\uD2B8\uB9AC\xB7\uBE0C\uB79C\uCE58\uB97C \uD3D0\uAE30\uD569\uB2C8\uB2E4"),attempt_id:o,operation:s||null,progress:c,error:l,confirmation:d}}function Ir(e){let t=e.discard;if(!t||!t.operation)return"";let r=t.operation,n=r.kind==="stale_work_backup_fresh"&&!t.error?null:r.backup?.path,s=r.original_pr,o=r.revert_pr;return i`<div
+  </div>`}function zm(e){return!e||e==="requested"?"\uBC31\uC5C5 \uC911":e==="backup_verified"||e==="signaled"?"runner \uC885\uB8CC \uC911":e==="merged_revert"||e.startsWith("revert_")?"revert PR \uB300\uAE30":e.startsWith("rollback_")?"\uC6D0\uBCF5 \uBC30\uD3EC \uC911":e==="runner_terminated"||e.startsWith("pr_")||e.includes("ref_")||e.includes("worktree")||e.startsWith("bead_")?"PR \uC815\uB9AC \uC911":`\uD3D0\uAE30 \uCC98\uB9AC \uC911 (${e})`}function us(e,t){return t==="merged"?`${e}: \uC774\uBBF8 merge\uB41C \uAD6C\uD604\uC785\uB2C8\uB2E4. \uBCF5\uAD6C archive\uB97C \uB9CC\uB4E0 \uB4A4 revert PR\uC744 \uC0DD\uC131\uD558\uBA70, \uC2E4\uC81C \uC6D0\uBCF5\uC740 \uC0AC\uB78C\uC774 \uADF8 PR\uC744 merge\uD55C \uB4A4 \uC644\uB8CC\uB429\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`:`${e}: \uBCF5\uAD6C archive\uB97C \uB9CC\uB4E0 \uB4A4 runner/PR/branch/worktree\uB97C \uC815\uB9AC\uD558\uACE0 \uC774\uC288\uB97C \uD6C4\uBCF4\uB85C \uB418\uB3CC\uB9BD\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?`}function ko(e){let t=["\uD3D0\uAE30 \uC644\uB8CC"];return e.operation_id&&t.push(`\uC791\uC5C5 ${e.operation_id}`),e.receipt?.archive_path&&t.push(`\uBC31\uC5C5 ${e.receipt.archive_path}`),e.receipt?.original_pr?.url&&t.push(`\uC6D0\uBCF8 PR ${e.receipt.original_pr.url}`),e.receipt?.revert_pr?.url&&t.push(`revert PR ${e.receipt.revert_pr.url}`),t.join(" \xB7 ")}function yr(e,t,r={}){let s=Object.values(e&&typeof e=="object"?e:{}).filter(p=>p&&p.bead_id===t&&p.phase!=="done").sort((p,m)=>(p.requested_at||0)-(m.requested_at||0)).at(-1),o=typeof r.attempt_id=="string"&&r.attempt_id.length>0?r.attempt_id:typeof s?.attempt_id=="string"?s.attempt_id:null,a=r.external?"\uC678\uBD80 PR\uC740 Worker\uAC00 \uC18C\uC720\uD558\uC9C0 \uC54A\uC544 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":r.done?"\uC644\uB8CC\uB41C \uC791\uC5C5\uC740 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":r.merge_active?"\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":r.merge_queued?"\uBA38\uC9C0 \uD050\uC5D0 \uC788\uC74C \u2014 \uD3D0\uAE30\uD558\uB824\uBA74 \uBA3C\uC800 [\uCDE8\uC18C]\uD558\uC138\uC694":r.conflict_active?"\uCDA9\uB3CC \uD574\uC18C \uC138\uC158 \uC788\uC74C \u2014 \uD3D0\uAE30\uD558\uB824\uBA74 \uBA3C\uC800 \uC138\uC158\uC744 \uC815\uB9AC\uD558\uC138\uC694":r.cleanup_active?"\uC815\uB9AC \uC9C4\uD589 \uC911 \u2014 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":null,i=typeof s?.last_error=="string"?s.last_error:null,c=s?zm(s.phase):null,u=s?.kind==="stale_work_backup_fresh",d=r.merged||s?.mode==="merged_revert"?"merged":"unmerged";return{action:!r.external&&!r.done,enabled:!a&&(!s||!!i),label:u?i?"\uBC31\uC5C5 \uC815\uB9AC \uC7AC\uC2DC\uB3C4":"\uBC31\uC5C5 \uD6C4 \uC0C8\uB85C \uC2DC\uC791":i?"\uC7AC\uC2DC\uB3C4":"\uD3D0\uAE30",title:a||(i?u?`\uBC31\uC5C5 \uB4A4 \uC815\uB9AC \uC2E4\uD328: ${i} \u2014 \uC6D0\uBCF8\uACFC \uAC80\uC99D \uC601\uC218\uC99D\uC744 \uBCF4\uC874\uD55C \uCC44 \uC7AC\uC2DC\uB3C4\uD569\uB2C8\uB2E4`:`\uD3D0\uAE30 \uC2E4\uD328: ${i} \u2014 \uAC19\uC740 \uC791\uC5C5\uC744 \uC7AC\uC2DC\uB3C4\uD569\uB2C8\uB2E4`:s?`${c||"\uD3D0\uAE30 \uCC98\uB9AC \uC911"} \u2014 \uC644\uB8CC\uB97C \uAE30\uB2E4\uB9AC\uC138\uC694`:d==="merged"?"\uBCD1\uD569\uB41C \uBCC0\uACBD\uC744 \uC6D0\uBCF5 PR\uB85C \uB418\uB3CC\uB9BD\uB2C8\uB2E4":"\uBC31\uC5C5 \uD6C4 runner\xB7PR\xB7\uC6CC\uD06C\uD2B8\uB9AC\xB7\uBE0C\uB79C\uCE58\uB97C \uD3D0\uAE30\uD569\uB2C8\uB2E4"),attempt_id:o,operation:s||null,progress:c,error:i,confirmation:d}}function ls(e){let t=e.discard;if(!t||!t.operation)return"";let r=t.operation,n=r.kind==="stale_work_backup_fresh"&&!t.error?null:r.backup?.path,s=r.original_pr,o=r.revert_pr;return l`<div
     class="worker-discard-receipt"
     role=${t.error?"alert":"status"}
   >
     <span>${t.progress}</span>
-    ${t.error?i`<span>폐기 실패: ${t.error}</span>`:""}
+    ${t.error?l`<span>폐기 실패: ${t.error}</span>`:""}
     <code>작업: ${r.operation_id}</code>
-    ${n?i`<code>백업: ${n}</code>`:t.error?i`<span>아직 아무것도 삭제하지 않음</span>`:""}
-    ${s?.url?i`<a href=${s.url} target="_blank" rel="noreferrer noopener"
+    ${n?l`<code>백업: ${n}</code>`:t.error?l`<span>아직 아무것도 삭제하지 않음</span>`:""}
+    ${s?.url?l`<a href=${s.url} target="_blank" rel="noreferrer noopener"
           >원본 PR #${s.number||"?"}</a
         >`:""}
-    ${o?.url?i`<a href=${o.url} target="_blank" rel="noreferrer noopener"
+    ${o?.url?l`<a href=${o.url} target="_blank" rel="noreferrer noopener"
           >revert PR #${o.number||"?"} ·
           ${o.state||"\uC0C1\uD0DC \uBBF8\uD655\uC778"}</a
         >`:""}
-  </div>`}var Dm={dirty_unique:"\uCD5C\uC2E0 base\uC5D0 \uC5C6\uB294 \uB85C\uCEEC \uBCC0\uACBD\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",untracked_present:"\uCD94\uC801\uB418\uC9C0 \uC54A\uC740 \uD30C\uC77C\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",branch_ahead:"\uB85C\uCEEC branch\uC5D0 \uACE0\uC720 commit\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",head_ahead:"worktree HEAD\uC5D0 \uACE0\uC720 commit\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",ahead_not_contained:"\uB85C\uCEEC branch\uC758 \uACE0\uC720 commit\uC774 \uCD5C\uC2E0 base\uC5D0 \uD3EC\uD568\uB410\uC74C\uC744 \uC99D\uBA85\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",ahead_merge_commit:"\uB85C\uCEEC branch\uC5D0 \uC790\uB3D9 \uC815\uB9AC\uD560 \uC218 \uC5C6\uB294 merge commit\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",ahead_submodule_path:"\uB85C\uCEEC branch\uC758 \uACE0\uC720 commit\uC774 submodule \uACBD\uB85C\uB97C \uBCC0\uACBD\uD569\uB2C8\uB2E4",archive_failed:"\uACE0\uC720 commit \uBC31\uC5C5\uC744 \uC548\uC804\uD558\uAC8C \uAC80\uC99D\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",ref_delete_failed:"\uD655\uC778\uB41C local branch\uB97C \uC548\uC804\uD558\uAC8C \uC0AD\uC81C\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",resume_available:"\uC774\uC5B4\uAC08 \uC218 \uC788\uB294 \uC774\uC804 Worker session\uC774 \uC788\uC2B5\uB2C8\uB2E4",observe_failed:"Git \uC0C1\uD0DC\uB97C \uC548\uC804\uD558\uAC8C \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",identity_changed:"\uD655\uC778 \uC911 worktree \uC0C1\uD0DC\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4",ownership_unknown:"Worker \uC18C\uC720 worktree\uC778\uC9C0 \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4"};function su(e,t=!1){if(!e||typeof e!="object")return null;let r=e;if(r.reason!=="worktree_stale_work"||!r.stale_work||typeof r.stale_work!="object")return null;let n=r.stale_work,s=n.residue==="branch"?"branch":"worktree",o=n.state==="unique"?"unique":"unknown",a=n.summary&&typeof n.summary=="object"?n.summary:{};function l(u){return Number.isInteger(a[u])?Number(a[u]):0}let c=typeof n.cause=="string"?n.cause:"observe_failed";return{residue:s,state:o,title:s==="branch"?"\uC774\uC804 \uBE0C\uB79C\uCE58 \uBCF4\uC874\uB428":o==="unique"?"\uC774\uC804 \uC791\uC5C5 \uBCF4\uC874\uB428":"\uC774\uC804 \uC791\uC5C5 \uC0C1\uD0DC \uD655\uC778 \uC2E4\uD328",cause:Dm[c]||"\uC548\uC804\uD558\uAC8C \uC790\uB3D9 \uC815\uB9AC\uD560 \uC218 \uC5C6\uB294 \uC774\uC804 \uC791\uC5C5\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",summary:s==="branch"?`\uACE0\uC720 commit ${l("branch_ahead")}`:[`staged ${l("staged_count")}`,`unstaged ${l("unstaged_count")}`,`untracked ${l("untracked_count")}`,`branch ahead ${l("branch_ahead")}`,`HEAD ahead ${l("head_ahead")}`].join(" \xB7 "),action_id:typeof n.action_id=="string"?n.action_id:"",can_resume:n.can_resume===!0,can_continue:n.can_continue===!0,can_backup_fresh:n.can_backup_fresh===!0,can_recheck:n.can_recheck===!0,locked:t}}function ho(e){return!e||!e.orchestration&&!e.worker?"":i`${e.orchestration?i`<span
-        class="exec-chip exec-chip--orch"
-        title=${e.orchestration.title}
+  </div>`}var Hm={dirty_unique:"\uCD5C\uC2E0 base\uC5D0 \uC5C6\uB294 \uB85C\uCEEC \uBCC0\uACBD\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",untracked_present:"\uCD94\uC801\uB418\uC9C0 \uC54A\uC740 \uD30C\uC77C\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",branch_ahead:"\uB85C\uCEEC branch\uC5D0 \uACE0\uC720 commit\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",head_ahead:"worktree HEAD\uC5D0 \uACE0\uC720 commit\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",ahead_not_contained:"\uB85C\uCEEC branch\uC758 \uACE0\uC720 commit\uC774 \uCD5C\uC2E0 base\uC5D0 \uD3EC\uD568\uB410\uC74C\uC744 \uC99D\uBA85\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",ahead_merge_commit:"\uB85C\uCEEC branch\uC5D0 \uC790\uB3D9 \uC815\uB9AC\uD560 \uC218 \uC5C6\uB294 merge commit\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",ahead_submodule_path:"\uB85C\uCEEC branch\uC758 \uACE0\uC720 commit\uC774 submodule \uACBD\uB85C\uB97C \uBCC0\uACBD\uD569\uB2C8\uB2E4",archive_failed:"\uACE0\uC720 commit \uBC31\uC5C5\uC744 \uC548\uC804\uD558\uAC8C \uAC80\uC99D\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",ref_delete_failed:"\uD655\uC778\uB41C local branch\uB97C \uC548\uC804\uD558\uAC8C \uC0AD\uC81C\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",resume_available:"\uC774\uC5B4\uAC08 \uC218 \uC788\uB294 \uC774\uC804 Worker session\uC774 \uC788\uC2B5\uB2C8\uB2E4",observe_failed:"Git \uC0C1\uD0DC\uB97C \uC548\uC804\uD558\uAC8C \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4",identity_changed:"\uD655\uC778 \uC911 worktree \uC0C1\uD0DC\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4",ownership_unknown:"Worker \uC18C\uC720 worktree\uC778\uC9C0 \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4"};function uu(e,t=!1){if(!e||typeof e!="object")return null;let r=e;if(r.reason!=="worktree_stale_work"||!r.stale_work||typeof r.stale_work!="object")return null;let n=r.stale_work,s=n.residue==="branch"?"branch":"worktree",o=n.state==="unique"?"unique":"unknown",a=n.summary&&typeof n.summary=="object"?n.summary:{};function i(u){return Number.isInteger(a[u])?Number(a[u]):0}let c=typeof n.cause=="string"?n.cause:"observe_failed";return{residue:s,state:o,title:s==="branch"?"\uC774\uC804 \uBE0C\uB79C\uCE58 \uBCF4\uC874\uB428":o==="unique"?"\uC774\uC804 \uC791\uC5C5 \uBCF4\uC874\uB428":"\uC774\uC804 \uC791\uC5C5 \uC0C1\uD0DC \uD655\uC778 \uC2E4\uD328",cause:Hm[c]||"\uC548\uC804\uD558\uAC8C \uC790\uB3D9 \uC815\uB9AC\uD560 \uC218 \uC5C6\uB294 \uC774\uC804 \uC791\uC5C5\uC774 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4",summary:s==="branch"?`\uACE0\uC720 commit ${i("branch_ahead")}`:[`staged ${i("staged_count")}`,`unstaged ${i("unstaged_count")}`,`untracked ${i("untracked_count")}`,`branch ahead ${i("branch_ahead")}`,`HEAD ahead ${i("head_ahead")}`].join(" \xB7 "),action_id:typeof n.action_id=="string"?n.action_id:"",can_resume:n.can_resume===!0,can_continue:n.can_continue===!0,can_backup_fresh:n.can_backup_fresh===!0,can_recheck:n.can_recheck===!0,locked:t}}function $o(e,t={}){if(!e||!e.orchestration&&!e.worker)return"";let r=t.pin===!0?" exec-chip--pin":"",n=t.pin===!0?`
+\uC774\uC288 \uD540 \u2014 \uB808\uD3EC \uAE30\uBCF8\uAC12\uACFC \uB2E4\uB984`:"";return l`${e.orchestration?l`<span
+        class="exec-chip exec-chip--orch${r}"
+        title=${`${e.orchestration.title}${n}`}
         ><span class="exec-chip__k">오케</span
         ><span class="exec-chip__v">${e.orchestration.text}</span></span
-      >`:""}${e.worker?i`<span class="exec-chip exec-chip--worker" title=${e.worker.title}
+      >`:""}${e.worker?l`<span
+        class="exec-chip exec-chip--worker${r}"
+        title=${`${e.worker.title}${n}`}
         ><span class="exec-chip__k">워커</span
         ><span class="exec-chip__v">${e.worker.text}</span></span
-      >`:""}`}function Oa(e){let t=e.draggable&&!e.done,r=Array.isArray(e.badges)?e.badges:[],n=Ot(e.usage),s=lr(e.usage),o=e.merge_step||null,a=e.lane==="pr_wait"||!!e.revise_action||!!e.stale_work,l=e.lane==="done"&&!a,c=l?Gt(e.done_at):"",u=t?i`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`:"",d=typeof e.seq=="number"?i`<span class="worker-mini__seq" aria-hidden="true"
+      >`:""}`}function xo(e){if(!e)return"";let t=Array.isArray(e.predecessors)?e.predecessors:[],r=Array.isArray(e.successors)?e.successors:[],n=Array.isArray(e.warnings)?e.warnings:[];return t.length===0&&r.length===0&&n.length===0?"":l`<div class="worker-deps">
+    ${t.map(s=>l`<span class="worker-dep worker-dep--pred" title=${s.title||""}
+          ><span class="worker-dep__label">${s.label}</span
+          ><button
+            type="button"
+            class="worker-dep__remove"
+            data-blocker-id=${s.id}
+            aria-label=${`\uC120\uD589 ${s.id} \uC5F0\uACB0 \uD574\uC81C`}
+            title="선행 연결 해제"
+          >
+            ✕
+          </button></span
+        >`)}${r.map(s=>l`<span class="worker-dep worker-dep--succ" title=${s.title||""}
+          >${s.label}</span
+        >`)}${n.map(s=>l`<span class="worker-dep worker-dep--warn">${s}</span>`)}
+  </div>`}function Gm(e){let t=Array.isArray(e.badges)?e.badges:[],r=Wt(e.usage),n=$r(e.usage),s=ir(e.done_at);return l`<div
+    class="worker-mini worker-mini--static worker-mini--done worker-mini--three-line"
+    draggable="false"
+    data-bead-id=${e.id}
+    data-lane=${e.lane}
+  >
+    <div class="worker-mini__row1">
+      ${e.workspace_name?l`<span class="worker-mini__repo" title=${e.root_dir||""}
+            >${e.workspace_name}</span
+          >`:""}
+      <span class="worker-mini__id" title="클릭하면 ID 복사">${e.id}</span>
+      ${s?l`<span
+            class="worker-mini__done-at"
+            title=${`\uC644\uB8CC ${Ht(e.done_at)}`}
+            >완료 ${s}</span
+          >`:""}
+      ${t.map(o=>l`<span
+            class="worker-mini__badge${e.alert?" worker-mini__badge--alert":""}"
+            >${o}</span
+          >`)}
+    </div>
+    <div class="worker-mini__row2">
+      <span class="worker-mini__title">${e.title}</span>
+    </div>
+    <div class="worker-mini__row3">
+      ${r.length>0?r.map(o=>l`<span class="worker-usage" title=${o.tooltip}
+                >${o.label}</span
+              >`):n?l`<span class="worker-usage" title=${Hn(e.usage)}
+              >${n}</span
+            >`:""}
+      ${typeof e.work_ms=="number"?l`<span
+            class="worker-mini__work"
+            title="attempt 실행 시간 합산 (재개 세션 포함)"
+            >작업 ${cs(e.work_ms)}</span
+          >`:""}
+    </div>
+  </div>`}function Ln(e){if(e.lane==="done"&&e.done_layout==="three_line")return Gm(e);let t=e.draggable&&!e.done,r=Array.isArray(e.badges)?e.badges:[],n=Wt(e.usage),s=$r(e.usage),o=e.merge_step||null,a=e.lane==="pr_wait"||!!e.revise_action||!!e.stale_work,i=e.lane==="done"&&!a,c=i?ir(e.done_at):"",u=t?l`<span class="worker-mini__grip" aria-hidden="true">⠿</span>`:"",d=typeof e.seq=="number"?l`<span class="worker-mini__seq" aria-hidden="true"
           >${e.seq}</span
-        >`:"",f=e.worker_serial===!0?i`<span
+        >`:"",p=e.worker_serial===!0?l`<span
           class="worker-mini__serial worker-mini__serial--legacy"
           title="legacy worker-serial 라벨 잔재 — 스케줄링에 사용되지 않습니다"
           >worker-serial</span
-        >`:"",g=e.workspace_name?i`<span class="worker-mini__repo" title=${e.root_dir||""}
+        >`:"",m=e.workspace_name?l`<span class="worker-mini__repo" title=${e.root_dir||""}
         >${e.workspace_name}</span
-      >`:"",x=i`<span class="worker-mini__id" title="클릭하면 ID 복사"
+      >`:"",v=l`<span class="worker-mini__id" title="클릭하면 ID 복사"
     >${e.id}</span
-  >`,A=i`<span class="worker-mini__title">${e.title}</span>`,L=e.pr_url&&e.pr_number?i`<a
+  >`,C=l`<span class="worker-mini__title">${e.title}</span>`,F=e.pr_url&&e.pr_number?l`<a
           class="worker-mini__pr"
           href=${e.pr_url}
           target="_blank"
           rel="noreferrer noopener"
           title="PR 열기"
           >#${e.pr_number} ↗</a
-        >`:"",z=e.completion_repair_pr_url&&e.completion_repair_pr_number?i`<a
+        >`:"",H=e.completion_repair_pr_url&&e.completion_repair_pr_number?l`<a
           class="worker-mini__pr worker-mini__repair-pr"
           href=${e.completion_repair_pr_url}
           target="_blank"
           rel="noreferrer noopener"
           title="repair PR 열기"
           >repair #${e.completion_repair_pr_number} ↗</a
-        >`:"",ae=r.map(X=>X===e.live_badge?i`<span
+        >`:"",re=r.map(we=>we===e.live_badge?l`<span
           class="worker-mini__badge worker-mini__badge--activity"
           title="서버가 이 PR을 처리하는 중입니다"
-          ><span class="act-dot" aria-hidden="true"></span>${X}</span
-        >`:i`<span
+          ><span class="act-dot" aria-hidden="true"></span>${we}</span
+        >`:l`<span
           class="worker-mini__badge${e.alert?" worker-mini__badge--alert":""}"
-          title=${X===e.completion_badge&&e.completion_title||""}
-          >${X}</span
-        >`),se=e.reason?i`<span class="worker-mini__reason">${e.reason}</span>`:"",q=n.length>0?n.map(X=>i`<span class="worker-usage" title=${X.tooltip}
-              >${X.label}</span
-            >`):s?i`<span class="worker-usage" title=${xn(e.usage)}
+          title=${we===e.completion_badge&&e.completion_title||""}
+          >${we}</span
+        >`),V=e.reason?l`<span class="worker-mini__reason">${e.reason}</span>`:"",q=n.length>0?n.map(we=>l`<span class="worker-usage" title=${we.tooltip}
+              >${we.label}</span
+            >`):s?l`<span class="worker-usage" title=${Hn(e.usage)}
             >${s}</span
-          >`:"",N=o?i`<span
+          >`:"",O=o?l`<span
         class="merge-step${o.failed?" merge-step--failed":""}"
         style=${`--progress: ${o.percent}%`}
-        >${o.label}${o.index>0?i`<span class="merge-step__n"
+        >${o.label}${o.index>0?l`<span class="merge-step__n"
               >${o.index}/${o.total}</span
             >`:""}</span
-      >`:"",I=e.merge_action?i`<button
+      >`:"",P=e.merge_action?l`<button
         type="button"
         class="worker-mini__merge"
         data-bead-id=${e.id}
@@ -1343,7 +1397,7 @@ ${G.output}`),Z.join(`
         title=${e.merge_title||""}
       >
         ${e.merge_label||"\uBA38\uC9C0"}
-      </button>`:"",j=e.cancel_action?i`<button
+      </button>`:"",I=e.cancel_action?l`<button
         type="button"
         class="worker-mini__merge-cancel"
         data-bead-id=${e.id}
@@ -1351,57 +1405,57 @@ ${G.output}`),Z.join(`
         title=${e.cancel_title||""}
       >
         취소
-      </button>`:"",m=e.timeline_action?i`<button
+      </button>`:"",$=e.timeline_action?l`<button
         type="button"
         class="worker-mini__timeline"
         data-bead-id=${e.id}
         title="저장소 작업이 끝나지 않아 머지 액션이 잠겼습니다 — 타임라인에서 원인과 해결 버튼을 볼 수 있습니다"
       >
         저장소 작업 보기
-      </button>`:"",E=e.discard,Y=E?.action||e.discard_action?i`<button
+      </button>`:"",M=e.discard,K=M?.action||e.discard_action?l`<button
           type="button"
           class="worker-mini__discard"
           data-bead-id=${e.id}
-          data-attempt-id=${E?.attempt_id||""}
-          data-operation-id=${E?.operation?.operation_id||""}
-          data-discard-mode=${E?.confirmation||"unmerged"}
-          ?disabled=${E?!E.enabled:e.discard_enabled===!1}
-          title=${E?E.title:e.discard_enabled===!1?e.discard_title||"\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":"PR\uC744 \uB2EB\uACE0 \uC6CC\uD06C\uD2B8\uB9AC/\uBE0C\uB79C\uCE58\uB97C \uD3D0\uAE30\uD569\uB2C8\uB2E4 (\uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC74C). \uB2E4\uC2DC \uC2E4\uD589\uD558\uB824\uBA74 \uD6C4\uBCF4 \uB808\uC778\uC5D0\uC11C \uB300\uAE30 \uB808\uC778\uC73C\uB85C \uC62E\uAE30\uC138\uC694"}
+          data-attempt-id=${M?.attempt_id||""}
+          data-operation-id=${M?.operation?.operation_id||""}
+          data-discard-mode=${M?.confirmation||"unmerged"}
+          ?disabled=${M?!M.enabled:e.discard_enabled===!1}
+          title=${M?M.title:e.discard_enabled===!1?e.discard_title||"\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uD3D0\uAE30\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":"PR\uC744 \uB2EB\uACE0 \uC6CC\uD06C\uD2B8\uB9AC/\uBE0C\uB79C\uCE58\uB97C \uD3D0\uAE30\uD569\uB2C8\uB2E4 (\uB418\uB3CC\uB9B4 \uC218 \uC5C6\uC74C). \uB2E4\uC2DC \uC2E4\uD589\uD558\uB824\uBA74 \uD6C4\uBCF4 \uB808\uC778\uC5D0\uC11C \uB300\uAE30 \uB808\uC778\uC73C\uB85C \uC62E\uAE30\uC138\uC694"}
         >
-          ${E?.label||"\uD3D0\uAE30"}
-        </button>`:"",ue=e.stale_work||null,oe=ue?i`${ue.can_resume||ue.can_continue?i`<button
+          ${M?.label||"\uD3D0\uAE30"}
+        </button>`:"",pe=e.stale_work||null,_e=pe?l`${pe.can_resume||pe.can_continue?l`<button
             type="button"
             class="worker-mini__stale-continue"
             data-bead-id=${e.id}
-            data-action-id=${ue.action_id}
-            ?disabled=${ue.locked}
+            data-action-id=${pe.action_id}
+            ?disabled=${pe.locked}
           >
             기존 작업 이어가기
-          </button>`:""}${ue.can_backup_fresh?i`<button
+          </button>`:""}${pe.can_backup_fresh?l`<button
             type="button"
             class="worker-mini__stale-backup"
             data-bead-id=${e.id}
-            data-action-id=${ue.action_id}
-            ?disabled=${ue.locked}
+            data-action-id=${pe.action_id}
+            ?disabled=${pe.locked}
           >
             백업 후 새로 시작
-          </button>`:""}${ue.can_recheck?i`<button
+          </button>`:""}${pe.can_recheck?l`<button
             type="button"
             class="worker-mini__stale-recheck"
             data-bead-id=${e.id}
-            data-action-id=${ue.action_id}
-            ?disabled=${ue.locked}
+            data-action-id=${pe.action_id}
+            ?disabled=${pe.locked}
           >
             다시 확인
-          </button>`:""}`:"",de=ue?i`<div class="worker-mini__stale">
-        <strong>${ue.title}</strong>
-        <span>${ue.summary}</span>
-        <span>${ue.cause}</span>
-        ${ue.can_backup_fresh?i`<small
+          </button>`:""}`:"",me=pe?l`<div class="worker-mini__stale">
+        <strong>${pe.title}</strong>
+        <span>${pe.summary}</span>
+        <span>${pe.cause}</span>
+        ${pe.can_backup_fresh?l`<small
               >Git-ignored dependency/build output은 archive에 포함되지
               않습니다</small
             >`:""}
-      </div>`:"",Ue=e.revise_action?i`<button
+      </div>`:"",ae=e.revise_action?l`<button
           type="button"
           class="worker-mini__revise-fix"
           data-bead-id=${e.id}
@@ -1418,86 +1472,86 @@ ${G.output}`),Z.join(`
           title="델타를 사용자 권한으로 승인해 영수증을 갱신하고 파킹을 해제합니다 (세션 없음)"
         >
           승인하고 진행
-        </button>`:"",et=e.lane!=="pr_wait"&&!e.done&&e.exec_chips&&(e.exec_chips.orchestration||e.exec_chips.worker)?i`<div class="worker-mini__exec">
-          ${ho(e.exec_chips)}
-        </div>`:"",qe=!!(s||o||e.merge_action||e.cancel_action||e.timeline_action||e.discard_action||E?.operation||e.revise_action||ue);return i`<div
+        </button>`:"",Ie=e.lane!=="pr_wait"&&!e.done&&e.exec_chips&&(e.exec_chips.orchestration||e.exec_chips.worker)?l`<div class="worker-mini__exec">
+          ${$o(e.exec_chips,{pin:e.exec_chips_pinned===!0})}
+        </div>`:"",Te=xo(e.dependency_chips),ne=ls(e),se=!!(s||o||e.merge_action||e.cancel_action||e.timeline_action||e.discard_action||M?.operation||e.revise_action||pe);return l`<div
     class="worker-mini${a?" worker-mini--card":""}${t?"":" worker-mini--static"}${e.done?" worker-mini--done":""}${e.ghost?" worker-mini--ghost":""}${o?" worker-mini--merging":""}${o?.failed?" worker-mini--merge-failed":""}${e.external?" worker-mini--external":""}"
     style=${o?`--progress: ${o.percent}%`:""}
     draggable=${t?"true":"false"}
     data-bead-id=${e.id}
     data-lane=${e.lane}
   >
-    ${l?i`<div class="worker-mini__row1">${g}${x}${A}</div>
+    ${i?l`<div class="worker-mini__row1">${m}${v}${C}</div>
           <div class="worker-mini__row2">
-            ${q}${c?i`<span
+            ${q}${c?l`<span
                   class="worker-mini__done-at"
-                  title=${`\uC644\uB8CC ${It(e.done_at)}`}
+                  title=${`\uC644\uB8CC ${Ht(e.done_at)}`}
                   >완료 ${c}</span
-                >`:""}${typeof e.work_ms=="number"?i`<span
+                >`:""}${typeof e.work_ms=="number"?l`<span
                   class="worker-mini__work"
                   title="attempt 실행 시간 합산 (재개 세션 포함)"
-                  >작업 ${mo(e.work_ms)}</span
-                >`:""}${ae}${N}
+                  >작업 ${cs(e.work_ms)}</span
+                >`:""}${re}${O}
             <span class="worker-mini__actions"
-              >${I}${j}${m}${Y}</span
+              >${P}${I}${$}${K}</span
             >
-            ${Cn(e)}
-          </div>`:a?i`<div class="worker-mini__head">
-              ${u}${d}${g}${x}${L}${z}${ae}${f}${se}
+            ${In(e)}
+          </div>`:a?l`<div class="worker-mini__head">
+              ${u}${d}${m}${v}${F}${H}${re}${p}${V}
             </div>
-            <div class="worker-mini__body">${A}${de}</div>
-            ${et}${qe?i`<div class="worker-mini__foot">
-                  ${q}${N}
+            <div class="worker-mini__body">${C}${me}</div>
+            ${Te}${Ie}${se?l`<div class="worker-mini__foot">
+                  ${q}${O}
                   <span class="worker-mini__actions"
-                    >${I}${j}${m}${Y}${Ue}${oe}</span
+                    >${P}${I}${$}${K}${ae}${_e}</span
                   >
-                  ${Ir(e)}
+                  ${ls(e)}
                 </div>`:""}
-            ${Cn(e)}`:i`<div class="worker-mini__line">
-              ${u}${d}${g}${x}${A}${L}${z}${ae}${f}${se}${q}${N}${I}${j}${m}${Y}
+            ${In(e)}`:l`<div class="worker-mini__line">
+              ${u}${d}${m}${v}${C}${F}${H}${re}${p}${V}${q}${O}${P}${I}${$}${K}
             </div>
-            ${et}${Ir(e)} ${Cn(e)}`}
-  </div>`}function Nm(e,t=null){let r=e.worker_ineligible===!0,n=e.draggable&&!e.done&&!r,s=n&&t&&t.bead_id===e.id,o=e.workflow,a=o&&o.chips||{},l=a.route||o&&o.route,c=a.route_source==="derived"||!!(o&&o.route_source==="derived"),u=typeof e.reason=="string"&&e.reason.split(" \xB7 ").includes("missing_description"),d=typeof e.reason=="string"&&e.reason.startsWith("\u26D4");return i`<div
-    class="worker-card${n?"":" worker-card--static"}${r?" worker-card--ineligible":""}"
-    draggable=${n?"true":"false"}
+            ${Te}${Ie}${ne} ${In(e)}`}
+  </div>`}function Ua(e,t=null,r={}){let n=e.worker_ineligible===!0,s=e.draggable&&!e.done&&!n,o=s&&t&&t.bead_id===e.id,a=e.workflow,i=a&&a.chips||{},c=i.route||a&&a.route,u=i.route_source==="derived"||!!(a&&a.route_source==="derived"),d=typeof e.reason=="string"&&e.reason.split(" \xB7 ").includes("missing_description"),p=typeof e.reason=="string"&&e.reason.startsWith("\u26D4"),m=xo(e.dependency_chips);return l`<div
+    class="worker-card${s?"":" worker-card--static"}${n?" worker-card--ineligible":""}"
+    draggable=${s?"true":"false"}
     data-bead-id=${e.id}
     data-lane=${e.lane}
   >
     <div class="worker-card__head">
-      ${n?i`<span class="worker-card__grip" aria-hidden="true">⠿</span>`:""}
-      ${e.workspace_name?i`<span class="worker-card__repo" title=${e.root_dir||""}
+      ${s?l`<span class="worker-card__grip" aria-hidden="true">⠿</span>`:""}
+      ${e.workspace_name?l`<span class="worker-card__repo" title=${e.root_dir||""}
             >${e.workspace_name}</span
           >`:""}
       <span class="worker-card__id" title="클릭하면 ID 복사">${e.id}</span>
-      ${r?i`<span
+      ${n?l`<span
             class="ctl-chip worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
             >⛔ worker-ineligible</span
           >`:""}
-      ${o&&l?i`<span
-            class="ctl-chip ctl-chip--route${c?" is-derived":""}"
-            title=${c?"route \uBBF8\uD540 (metadata unset)":"route"}
-            >${c?"unset":l}</span
+      ${a&&c?l`<span
+            class="ctl-chip ctl-chip--route${u?" is-derived":""}"
+            title=${u?"route \uBBF8\uD540 (metadata unset)":"route"}
+            >${u?"unset":c}</span
           >`:""}
     </div>
     <div class="worker-card__title">${e.title}</div>
-    ${o?Ns(o,e.status):""}
-    ${e.exec_chips&&(e.exec_chips.orchestration||e.exec_chips.worker)?i`<div class="worker-mini__exec">
-          ${ho(e.exec_chips)}
+    ${a?vn(a,e.status):""}${m}
+    ${e.exec_chips&&(e.exec_chips.orchestration||e.exec_chips.worker)?l`<div class="worker-mini__exec">
+          ${$o(e.exec_chips,{pin:r.exec_chips_mode==="pinned_only"})}
         </div>`:""}
     <div
       class="worker-card__foot${e.reason?"":" worker-card__foot--actions-only"}"
     >
-      ${s?i`<div class="worker-card__place-menu">
-            ${t.lanes.map(f=>i`<button
+      ${o?l`<div class="worker-card__place-menu">
+            ${t.lanes.map(v=>l`<button
                   type="button"
                   class="worker-card__place-lane"
                   data-bead-id=${e.id}
-                  data-lane=${f.id}
-                  title="${f.label} 대기 맨 뒤에 추가"
+                  data-lane=${v.id}
+                  title="${v.label} 대기 맨 뒤에 추가"
                 >
-                  <span>${f.label}</span>
-                  <span class="worker-card__place-count">${f.count}</span>
+                  <span>${v.label}</span>
+                  <span class="worker-card__place-count">${v.count}</span>
                 </button>`)}
             <button
               type="button"
@@ -1508,8 +1562,8 @@ ${G.output}`),Z.join(`
             >
               ✕
             </button>
-          </div>`:i`${e.reason?i`<span
-                  class="worker-card__reason${d?" worker-card__reason--danger":""}"
+          </div>`:l`${e.reason?l`<span
+                  class="worker-card__reason${p?" worker-card__reason--danger":""}"
                   >${e.reason}</span
                 >`:""}
             <!-- 버튼식 큐 적재 (UI-58y2 §[대기로 ↴]): 드래그의 보완재이지 대체재가
@@ -1520,25 +1574,25 @@ ${G.output}`),Z.join(`
               type="button"
               class="worker-card__place"
               data-bead-id=${e.id}
-              ?disabled=${!n}
-              title=${n?"\uB300\uAE30 \uD050 \uB9E8 \uB4A4\uC5D0 \uCD94\uAC00":r?"worker-ineligible label\uB85C \uC6CC\uCEE4\uC5D0\uC11C \uC2E4\uD589\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":u?"description\uC774 \uC5C6\uC5B4 \uB300\uAE30 \uD050\uC5D0 \uB123\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":"spec\uC774 \uC5C6\uC5B4 \uB300\uAE30 \uD050\uC5D0 \uB123\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4"}
+              ?disabled=${!s}
+              title=${s?"\uB300\uAE30 \uD050 \uB9E8 \uB4A4\uC5D0 \uCD94\uAC00":n?"worker-ineligible label\uB85C \uC6CC\uCEE4\uC5D0\uC11C \uC2E4\uD589\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":d?"description\uC774 \uC5C6\uC5B4 \uB300\uAE30 \uD050\uC5D0 \uB123\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":"spec\uC774 \uC5C6\uC5B4 \uB300\uAE30 \uD050\uC5D0 \uB123\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4"}
             >
               대기로 ↴
             </button>`}
     </div>
-    ${Cn(e)}
-  </div>`}function pr(e){let t=!!e.collapsible&&!!e.collapsed,r=i`<span
+    ${In(e)}
+  </div>`}function sr(e){let t=!!e.collapsible&&!!e.collapsed,r=l`<span
       class="worker-pane__dot worker-pane__dot--${e.lane}"
       aria-hidden="true"
     ></span>
     <span class="worker-pane__title">${e.title}</span>
-    ${t&&e.preview?i`<span class="worker-pane__preview">${e.preview}</span>`:""}
-    <span class="worker-pane__count">${e.items.length}</span>`;return i`<section
+    ${t&&e.preview?l`<span class="worker-pane__preview">${e.preview}</span>`:""}
+    <span class="worker-pane__count">${e.items.length}</span>`;return l`<section
     class="worker-pane worker-pane--lane-${e.lane}${e.src?" worker-pane--src":""}${e.live?" worker-pane--live":""}${e.collapsible?" worker-pane--collapsible":""}${t?" worker-pane--collapsed":""}"
     id=${e.id}
     data-lane=${e.lane}
   >
-    ${e.collapsible?i`<button
+    ${e.collapsible?l`<button
           type="button"
           class="worker-pane__hd worker-pane__hd--toggle"
           data-lane=${e.lane}
@@ -1548,19 +1602,19 @@ ${G.output}`),Z.join(`
           <span class="worker-pane__caret" aria-hidden="true"
             >${t?"\u25B8":"\u25BE"}</span
           >
-        </button>`:i`<header class="worker-pane__hd">
+        </button>`:l`<header class="worker-pane__hd">
           ${r}${e.header_control?e.header_control:""}
         </header>`}
-    ${t?"":i`${e.controls?e.controls:""}
+    ${t?"":l`${e.controls?e.controls:""}
           <div class="worker-pane__body">
-            ${e.body?e.body:e.items.length===0?i`<div class="worker-pane__empty">
+            ${e.body?e.body:e.items.length===0?l`<div class="worker-pane__empty">
                     ${e.empty||""}
-                  </div>`:e.items.map(n=>e.lane==="candidate"?Nm(n,e.place_menu):Oa(n))}
+                  </div>`:e.items.map(n=>e.lane==="candidate"?Ua(n,e.place_menu):Ln(n))}
           </div>`}
-  </section>`}function Ma(e,t){return`${e}\0${t}`}function Pa(e){let t=new Map;for(let r of Array.isArray(e?.running)?e.running:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"running",state:"running"});for(let r of Array.isArray(e?.pr_wait)?e.pr_wait:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"pr_wait",state:"pr_wait"});for(let r of Array.isArray(e?.queue_groups)?e.queue_groups:[]){let n=Array.isArray(r.sublanes?.parallel)?r.sublanes.parallel:Array.isArray(r.items)?r.items:[];for(let s of n)t.set(s.id,{root_dir:s.root_dir,workspace_name:s.workspace_name,lane:"parallel",position:s.queue_position});for(let s of Array.isArray(r.sublanes?.serial)?r.sublanes.serial:[])for(let o of s.items)t.set(o.id,{root_dir:o.root_dir,workspace_name:o.workspace_name,lane:s.id,position:o.queue_position})}for(let r of Array.isArray(e?.runnable)?e.runnable:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"runnable",state:"runnable"});for(let r of Array.isArray(e?.done)?e.done:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"done",state:"done"});return t}function qm(e,t){let r=Array.isArray(t)?t:[],n=e.indexOf("-"),s=n>0?e.slice(0,n):e;return r.some(o=>typeof o?.issue_prefix=="string"&&o.issue_prefix===s)?"internal":r.length>0&&r.every(o=>typeof o?.issue_prefix=="string")?"external":"unknown"}function Fm(e,t){return e==="internal"&&t===void 0}function ou(e){if(e.state==="running")return"\uC2E4\uD589\uC911";if(e.state==="pr_wait")return"PR \uB300\uAE30";if(e.state==="runnable")return"\uC2E4\uD589\uAC00\uB2A5";if(e.state==="done")return"\uC644\uB8CC";let t=e.lane==="parallel"?"\uBCD1\uB82C":e.lane;return`${e.workspace_name} \xB7 ${t} #${e.position}`}function au(e,t,r,n){let s=r.get(e);if(!!(s&&t&&s.root_dir===t.root_dir&&s.lane===t.lane&&typeof s.position=="number"&&typeof t.position=="number"&&s.position<t.position))return{id:e,label:`\u{1F512} ${e} (\uAC19\uC740 \uB808\uC778 \uC55E)`,scope:null,same_lane_ahead:!0,missing_internal:!1};if(s)return{id:e,label:`\u{1F512} ${e} (${ou(s)})`,scope:null,same_lane_ahead:!1,missing_internal:!1};let a=qm(e,n);return{id:e,label:`\u{1F512} ${e} (${a==="internal"?"\uBBF8\uC801\uC7AC":a==="external"?"\uC678\uBD80":"\uC704\uCE58 \uBBF8\uD655\uC778"})`,scope:a,same_lane_ahead:!1,missing_internal:Fm(a,s)}}function iu(e){let t=Array.isArray(e)?e:[],r=new Map,n=new Map,s=new Map;for(let l of t)for(let c of Array.isArray(l.sublanes?.serial)?l.sublanes.serial:[]){let u=Ma(l.root_dir,c.id);r.set(u,{root_dir:l.root_dir,workspace_name:l.name,lane:c.id}),s.set(u,[]);for(let d of Array.isArray(c.items)?c.items:[])n.set(d.id,u)}for(let l of t)for(let c of Array.isArray(l.sublanes?.serial)?l.sublanes.serial:[]){let u=Ma(l.root_dir,c.id),d=Array.isArray(c.items)?c.items[0]:null,g=!!d&&d.queue_index===0&&(!Array.isArray(c.occupied_by)||c.occupied_by.length===0)&&Array.isArray(d.blocked_by)?d.blocked_by:[],x=s.get(u);if(x)for(let A of g){let L=n.get(A);L&&L!==u&&!x.includes(L)&&x.push(L)}}let o=(l,c)=>{let u=new Set,d=[l];for(;d.length>0;){let f=d.pop();if(f===c)return!0;!f||u.has(f)||(u.add(f),d.push(...s.get(f)||[]))}return!1},a=new Map;for(let[l,c]of s){let u=[];for(let d of c){let f=r.get(d);o(d,l)&&f&&u.push(f)}u.length>0&&a.set(l,u)}return a}function lu(e){let t=Pa(e),r=new Map;for(let n of[...Array.isArray(e?.runnable)?e.runnable:[],...Array.isArray(e?.queue)?e.queue:[],...Array.isArray(e?.running)?e.running:[],...Array.isArray(e?.pr_wait)?e.pr_wait:[]])r.has(n.id)||r.set(n.id,n);return Array.from(r.values()).map(n=>({id:n.id,title:n.title,root_dir:n.root_dir,workspace_name:n.workspace_name,location:t.has(n.id)?(()=>{let s=t.get(n.id),o=ou(s);return s.state?`${s.workspace_name} \xB7 ${o}`:o})():""}))}function cu(e,t){return Ma(e,t)}var uu=[{step:"merge",label:"\uBA38\uC9C0",index:1},{step:"base",label:"base",index:2},{step:"verify",label:"\uAC80\uC99D",index:3},{step:"deploy",label:"\uBC30\uD3EC",index:4},{step:"child",label:"\uC790\uC2DD",index:5},{step:"branch",label:"\uBE0C\uB79C\uCE58",index:6},{step:"close",label:"close",index:7}],rs=[{step:"base_containment",label:"base \uD3EC\uD568 \uD655\uC778"},{step:"repo_operations",label:"\uC800\uC7A5\uC18C \uC791\uC5C5"},{step:"child_sweep",label:"\uC790\uC2DD \uC815\uB9AC"},{step:"branch_cleanup",label:"\uBE0C\uB79C\uCE58 \uC815\uB9AC"},{step:"parent_close",label:"\uBD80\uBAA8 close"}];function yo(e,t){let r=uu.find(s=>s.step===e);if(!r)return null;let n=uu.length;return{step:r.step,label:t,index:r.index,total:n,percent:Math.round(r.index/n*100)}}function du(e){let t=rs.findIndex(r=>r.step===e);return rs.map((r,n)=>({step:r.step,label:r.label,state:t<0?"todo":n<t?"done":n===t?"stall":"todo"}))}function sn(e){let t=rs.find(r=>r.step===e);return t?t.label:typeof e=="string"?e:""}function jm(e){let t=rs.findIndex(r=>r.step===e);return t<0?null:{index:t+1,total:rs.length}}function vo(e){let t=jm(e);return t?`\uBA38\uC9C0 \uC644\uB8CC \xB7 \uC815\uB9AC ${t.total}\uB2E8\uACC4 \uC911 ${t.index}\uB2E8\uACC4\uC5D0\uC11C \uBA48\uCDA4`:"\uBA38\uC9C0\uB428 \xB7 \uC815\uB9AC \uBBF8\uC644"}var Na=new Set(["queued","running","retry_pending","repairing"]),pu=new Set(["failed","succeeded"]),Bm={queued:"\uB300\uAE30",running:"\uC911",retry_pending:"\uC7AC\uC2DC\uB3C4 \uB300\uAE30",repairing:"\uC790\uB3D9 \uD574\uACB0 \uC911",failed:"\uC2E4\uD328",succeeded:"\uC644\uB8CC \xB7 \uC815\uB9AC \uC7AC\uAC1C \uB300\uAE30"},ns={base_containment:{step:"base",label:"base \uD655\uC778 \uC911"},child_sweep:{step:"child",label:"\uC790\uC2DD \uC815\uB9AC \uC911"},branch_cleanup:{step:"branch",label:"\uBE0C\uB79C\uCE58 \uC815\uB9AC \uC911"},parent_close:{step:"close",label:"\uBD80\uBAA8 close \uC911"}},Um={merging:{step:"merge",label:"\uBA38\uC9C0 \uC911"},base_containment:ns.base_containment,child_sweep:ns.child_sweep,branch_cleanup:ns.branch_cleanup,parent_close:ns.parent_close};function Wm(e){return typeof e=="string"&&/^[0-9a-f]{40}$/.test(e)}function zm(e,t,r){return!["verify","deploy"].includes(e.kind)||![...Na,...pu].includes(e.state)||![null,void 0,""].includes(e.superseded_by)||!Array.isArray(e.subjects)?!1:e.subjects.some(n=>n&&typeof n=="object"&&n.bead_id===t&&n.merged_sha===r)}function Hm(e,t){let r=(t.kind==="deploy"?2:1)-(e.kind==="deploy"?2:1);if(r!==0)return r;let n=u=>u.state==="succeeded"?1:2,s=n(t)-n(e);if(s!==0)return s;let o=typeof e.requested_at=="number"?e.requested_at:0,a=typeof t.requested_at=="number"?t.requested_at:0;if(o!==a)return a-o;let l=typeof e.operation_id=="string"?e.operation_id:"",c=typeof t.operation_id=="string"?t.operation_id:"";return l.localeCompare(c)}function Da(e,t=!1){let r=e.kind,n=r==="verify"?"\uAC80\uC99D":"\uBC30\uD3EC",s=t?"failed":e.state,o=Bm[s];if(!o)return null;let a=yo(r,`${n} ${o}`);return a?{...a,active:Na.has(s),failed:s==="failed"}:null}function Gm(e){return!e||typeof e!="object"?null:Um[e.step]||null}function ss(e){if(!e||typeof e.bead_id!="string")return null;let t=e.bead_id,r=e.merge_progress&&typeof e.merge_progress=="object"?e.merge_progress:{},n=Gm(r),s=e.cleanup_failed&&typeof e.cleanup_failed=="object"?e.cleanup_failed:null,o=["child_sweep","branch_cleanup","parent_close"].includes(typeof e.cleanup_cursor=="string"?e.cleanup_cursor:""),a=!o&&(e.cleanup_cursor==="repo_operations"||r.step==="repo_operations"),l=Wm(e.merge_sha)?e.merge_sha:null,c=!o&&l&&Array.isArray(e.repo_operations)?e.repo_operations.filter(A=>A&&typeof A=="object"&&zm(A,t,l)).sort(Hm):[],u=a?c:[],d=u.find(A=>Na.has(A.state));if(d)return Da(d);if(s)return s.step==="repo_operations"&&c[0]?Da(c[0],!0):null;let f=u.find(A=>pu.has(A.state)?A.state!=="succeeded"||e.cleanup_cursor==="repo_operations":!1);if(f)return Da(f);if(n){let A=yo(n.step,n.label);return A?{...A,active:!0,failed:!1}:null}let g=typeof e.cleanup_cursor=="string"?ns[e.cleanup_cursor]:null;if(!g)return null;let x=yo(g.step,g.label);return x?{...x,active:!0,failed:!1}:null}function wo(e){return!!e&&e.step!=="merge"&&e.failed!==!0}var fu={verify_failed:"\uAC80\uC99D \uC2E4\uD328",verify_cmd_failed:"\uAC80\uC99D \uC2E4\uD328",verify_script_failure:"\uAC80\uC99D \uC2E4\uD328",deploy_failed:"\uBC30\uD3EC \uC2E4\uD328",deploy_script_failure:"\uBC30\uD3EC \uC2E4\uD328",interrupted_without_terminal_exit:"\uC911\uB2E8\uB428"},_u={repo_ops_worktree_unowned:"\uBC30\uD3EC \uC6CC\uD06C\uD2B8\uB9AC\uAC00 \uC544\uC9C1 Worker \uC18C\uC720\uAC00 \uC544\uB2C8\uC5B4\uC11C \uC2A4\uD06C\uB9BD\uD2B8 \uC2E4\uD589 \uC804\uC5D0 \uC911\uB2E8\uB410\uC2B5\uB2C8\uB2E4.",verify_cmd_failed:"\uBA38\uC9C0 \uD6C4 \uAC80\uC99D \uBA85\uB839\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",gh_observation_failed:"GitHub\uC5D0\uC11C PR \uC0C1\uD0DC\uB97C \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",verify_script_failure:"\uAC80\uC99D \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",deploy_script_failure:"\uBC30\uD3EC \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",interrupted_without_terminal_exit:"\uC791\uC5C5\uC774 \uC885\uB8CC \uAE30\uB85D \uC5C6\uC774 \uC911\uB2E8\uB410\uC2B5\uB2C8\uB2E4.",base_unresolved:"PR\uC774 \uC5B4\uB290 base \uBE0C\uB79C\uCE58\uB85C \uBA38\uC9C0\uB418\uB294\uC9C0 \uD655\uC815\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_ref_unobserved:"PR\uC758 base \uBE0C\uB79C\uCE58\uB97C \uC544\uC9C1 \uAD00\uCE21\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",merge_sha_unobserved:"\uBA38\uC9C0 \uCEE4\uBC0B SHA\uB97C \uC544\uC9C1 \uAD00\uCE21\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_fetch_failed:"\uC6D0\uACA9 base \uBE0C\uB79C\uCE58\uB97C fetch\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_rev_unavailable:"fetch\uD55C \uC6D0\uACA9 base \uBE0C\uB79C\uCE58\uC758 \uCEE4\uBC0B\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_ff_diverged:"\uB85C\uCEEC base \uBE0C\uB79C\uCE58\uAC00 \uC6D0\uACA9\uACFC \uAC08\uB77C\uC838 fast-forward\uB85C \uC815\uB82C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",deployment_target_not_covering_merge:"\uBC30\uD3EC \uB300\uC0C1 base\uAC00 \uC774 \uBA38\uC9C0 \uCEE4\uBC0B\uC744 \uD3EC\uD568\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",deployment_candidate_ancestry_check_failed:"\uBC30\uD3EC \uB300\uC0C1 base\uAC00 \uC774 \uBA38\uC9C0 \uCEE4\uBC0B\uC744 \uD3EC\uD568\uD558\uB294\uC9C0 \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."};function mu(e){return typeof e!="string"||e.length===0?[]:e.split(":").filter(t=>t.length>0)}function qa(e){for(let t of mu(e))if(Object.hasOwn(fu,t))return fu[t];return null}function Fa(e){let t=null;for(let r of mu(e))Object.hasOwn(_u,r)&&(t=_u[r]);return t}function ko(e){let t=qa(e),r=Fa(e);return t&&r?`${t} \u2014 ${r}`:t||r?t||r:typeof e=="string"?e:""}function gu(e,t){let r=qa(e)??qa(t),n=Fa(t)??Fa(e);return r&&n?`${r} \u2014 ${n}`:r||n?r||n:typeof t=="string"?t:""}var bu=160;function Vm(e){return e.length>bu?`${e.slice(0,bu)}\u2026`:e}function Km(e){return!e||!e.reason?"":i`<div class="worker-banner__detail">
+  </section>`}var du={verify_failed:"\uAC80\uC99D \uC2E4\uD328",verify_cmd_failed:"\uAC80\uC99D \uC2E4\uD328",verify_script_failure:"\uAC80\uC99D \uC2E4\uD328",deploy_failed:"\uBC30\uD3EC \uC2E4\uD328",deploy_script_failure:"\uBC30\uD3EC \uC2E4\uD328",interrupted_without_terminal_exit:"\uC911\uB2E8\uB428"},pu={repo_ops_worktree_unowned:"\uBC30\uD3EC \uC6CC\uD06C\uD2B8\uB9AC\uAC00 \uC544\uC9C1 Worker \uC18C\uC720\uAC00 \uC544\uB2C8\uC5B4\uC11C \uC2A4\uD06C\uB9BD\uD2B8 \uC2E4\uD589 \uC804\uC5D0 \uC911\uB2E8\uB410\uC2B5\uB2C8\uB2E4.",verify_cmd_failed:"\uBA38\uC9C0 \uD6C4 \uAC80\uC99D \uBA85\uB839\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",gh_observation_failed:"GitHub\uC5D0\uC11C PR \uC0C1\uD0DC\uB97C \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",verify_script_failure:"\uAC80\uC99D \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",deploy_script_failure:"\uBC30\uD3EC \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",interrupted_without_terminal_exit:"\uC791\uC5C5\uC774 \uC885\uB8CC \uAE30\uB85D \uC5C6\uC774 \uC911\uB2E8\uB410\uC2B5\uB2C8\uB2E4.",base_unresolved:"PR\uC774 \uC5B4\uB290 base \uBE0C\uB79C\uCE58\uB85C \uBA38\uC9C0\uB418\uB294\uC9C0 \uD655\uC815\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_ref_unobserved:"PR\uC758 base \uBE0C\uB79C\uCE58\uB97C \uC544\uC9C1 \uAD00\uCE21\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",merge_sha_unobserved:"\uBA38\uC9C0 \uCEE4\uBC0B SHA\uB97C \uC544\uC9C1 \uAD00\uCE21\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_fetch_failed:"\uC6D0\uACA9 base \uBE0C\uB79C\uCE58\uB97C fetch\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_rev_unavailable:"fetch\uD55C \uC6D0\uACA9 base \uBE0C\uB79C\uCE58\uC758 \uCEE4\uBC0B\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4.",base_ff_diverged:"\uB85C\uCEEC base \uBE0C\uB79C\uCE58\uAC00 \uC6D0\uACA9\uACFC \uAC08\uB77C\uC838 fast-forward\uB85C \uC815\uB82C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",deployment_target_not_covering_merge:"\uBC30\uD3EC \uB300\uC0C1 base\uAC00 \uC774 \uBA38\uC9C0 \uCEE4\uBC0B\uC744 \uD3EC\uD568\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",deployment_candidate_ancestry_check_failed:"\uBC30\uD3EC \uB300\uC0C1 base\uAC00 \uC774 \uBA38\uC9C0 \uCEE4\uBC0B\uC744 \uD3EC\uD568\uD558\uB294\uC9C0 \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."};function fu(e){return typeof e!="string"||e.length===0?[]:e.split(":").filter(t=>t.length>0)}function Wa(e){for(let t of fu(e))if(Object.hasOwn(du,t))return du[t];return null}function za(e){let t=null;for(let r of fu(e))Object.hasOwn(pu,r)&&(t=pu[r]);return t}function Ao(e){let t=Wa(e),r=za(e);return t&&r?`${t} \u2014 ${r}`:t||r?t||r:typeof e=="string"?e:""}function _u(e,t){let r=Wa(e)??Wa(t),n=za(t)??za(e);return r&&n?`${r} \u2014 ${n}`:r||n?r||n:typeof t=="string"?t:""}var mu=160;function Km(e){return e.length>mu?`${e.slice(0,mu)}\u2026`:e}function Vm(e){return!e||!e.reason?"":l`<div class="worker-banner__detail">
     가드:
-    ${e.reason}${e.command?i` · <code>${Vm(e.command)}</code>`:""}
-  </div>`}function Ym(e){return e?i`<details class="worker-banner__raw">
+    ${e.reason}${e.command?l` · <code>${Km(e.command)}</code>`:""}
+  </div>`}function Ym(e){return e?l`<details class="worker-banner__raw">
     <summary>세부</summary>
     <dl class="worker-banner__kv">
       <div>
@@ -1568,12 +1622,12 @@ ${G.output}`),Z.join(`
         <dd>${e}</dd>
       </div>
     </dl>
-  </details>`:""}function ja(e){if(!Number.isFinite(e)||e<0)return"0s";let t=Math.floor(e/1e3),r=Math.floor(t/60),n=t%60;return r>0?`${r}m ${String(n).padStart(2,"0")}s`:`${n}s`}function hu(e){let t=e.failure?ko(e.failure.reason):"";return i`<div class="worker-banners">
-    ${e.failure?i`<div class="worker-banner worker-banner--failure" role="alert">
+  </details>`:""}function Zm(e){if(!Number.isFinite(e)||e<0)return"0s";let t=Math.floor(e/1e3),r=Math.floor(t/60),n=t%60;return r>0?`${r}m ${String(n).padStart(2,"0")}s`:`${n}s`}function gu(e){let t=e.failure?Ao(e.failure.reason):"";return l`<div class="worker-banners">
+    ${e.failure?l`<div class="worker-banner worker-banner--failure" role="alert">
           ⛔ ${e.failure.repo||"repo"} 세션 실패 —
           ${t}${t&&!t.endsWith(".")?".":""}
           자동 진행을 껐습니다, 수동 ▶ 필요.
-          ${e.failure.resume_attempt_id?i`<button
+          ${e.failure.resume_attempt_id?l`<button
                 type="button"
                 class="worker-banner__resume"
                 data-attempt-id=${e.failure.resume_attempt_id}
@@ -1582,7 +1636,7 @@ ${G.output}`),Z.join(`
               >
                 ↻ 이어하기
               </button>`:""}
-          ${e.failure.discard?.action?i`<button
+          ${e.failure.discard?.action?l`<button
                 type="button"
                 class="worker-banner__discard"
                 data-bead-id=${e.failure.bead_id}
@@ -1594,7 +1648,7 @@ ${G.output}`),Z.join(`
               >
                 ${e.failure.discard.label}
               </button>`:""}
-          ${e.failure.resume_attempt_id?i`<button
+          ${e.failure.resume_attempt_id?l`<button
                 type="button"
                 class="worker-banner__dismiss"
                 data-attempt-id=${e.failure.resume_attempt_id}
@@ -1603,11 +1657,30 @@ ${G.output}`),Z.join(`
               >
                 ✕
               </button>`:""}
-          ${Km(e.failure.cause_detail)}
+          ${Vm(e.failure.cause_detail)}
           ${Ym(e.failure.reason)}
-          ${Ir({discard:e.failure.discard})}
+          ${ls({discard:e.failure.discard})}
         </div>`:""}
-  </div>`}function Zm(e,t,r=null){let n=e.failed===!0,s=!!e.paused,o=n?e.status_label||(e.status==="orphaned"?"\uC911\uB2E8\uB428":"\uC2E4\uD328"):s?"\uC77C\uC2DC\uC815\uC9C0":typeof e.started_at=="number"?ja(t-e.started_at):"\u2014",a=e.exec_chips&&(e.exec_chips.orchestration||e.exec_chips.worker)?e.exec_chips:null,l=Pr(e),c=Ot(e.usage),u=lr(e.usage),d=e.conflict_resolution?s?"\uCDA9\uB3CC \uD574\uC18C \uC77C\uC2DC\uC815\uC9C0":"\uCDA9\uB3CC \uD574\uC18C":null,f=e.base_exception||null,g=e.landing,x=e.attempt_id&&e.attempt_id===r,A=e.discard?.action?i`<button
+  </div>`}function Qm(e){return e?l`${e.repo?l`<span
+        class="worker-card__repo rtile__repo"
+        title=${e.root_dir||""}
+        >${e.repo}</span
+      >`:""}${e.serial_lane_id?l`<span class="rtile__lane">${e.serial_lane_id}</span>`:""}`:""}function Xm(e,t,r){if(!e)return"";let n=e.workflow||null,s=e.last_activity||null,o=s&&typeof s.text=="string"?s.text:"",a=s&&typeof s.at=="number"?s.at:null,i=Array.isArray(e.legs)?e.legs:[],c=i.filter(p=>p&&p.state==="live"),u=i.filter(p=>p&&p.state!=="live"),d=xo(e.dependency_chips);return l`${n?vn(n,"in_progress"):""}
+  ${o?l`<div class="rtile__activity${r?" is-paused":""}">
+        <span class="rtile__activity-dot" aria-hidden="true"></span>
+        <span class="rtile__activity-text">${o}</span>
+        ${a!==null?l`<span class="rtile__activity-age"
+              >${ir(a,t)}</span
+            >`:""}
+      </div>`:""}${c.length>0||u.length>0?l`<div class="rtile__legs">
+        ${c.map(p=>l`<span class="rtile__leg rtile__leg--live"
+              >⟳ ${p.label}</span
+            >`)}${u.length>0?l`<span
+              class="rtile__leg rtile__leg--done"
+              title=${`\uC644\uB8CC\uB41C \uC704\uC784: ${u.map(p=>p.label).join(", ")}`}
+              >✓ ${u.length}</span
+            >`:""}
+      </div>`:""}${d}`}function Ha(e,t,r=null,n={}){let s=e.failed===!0,o=!!e.paused,a=s?e.status_label||(e.status==="orphaned"?"\uC911\uB2E8\uB428":"\uC2E4\uD328"):o?"\uC77C\uC2DC\uC815\uC9C0":typeof e.started_at=="number"?Zm(t-e.started_at):"\u2014",i=e.exec_chips&&(e.exec_chips.orchestration||e.exec_chips.worker)?e.exec_chips:null,c=Un(e),u=Wt(e.usage),d=$r(e.usage),p=e.conflict_resolution?o?"\uCDA9\uB3CC \uD574\uC18C \uC77C\uC2DC\uC815\uC9C0":"\uCDA9\uB3CC \uD574\uC18C":null,m=e.base_exception||null,v=e.landing,C=e.attempt_id&&e.attempt_id===r,F=n.monitor||null,H=Qm(F),re=Xm(F,t,o),V=e.discard?.action?l`<button
         type="button"
         class="rtile__discard"
         data-operation-id=${e.discard.operation?.operation_id||""}
@@ -1616,17 +1689,17 @@ ${G.output}`),Z.join(`
         aria-label=${e.discard.label}
       >
         ${e.discard.label}
-      </button>`:"";return i`<div
-    class="rtile${x?" rtile--sel":""}${s?" rtile--paused":""}${n?" rtile--failed":""}"
+      </button>`:"";return l`<div
+    class="rtile${C?" rtile--sel":""}${o?" rtile--paused":""}${s?" rtile--failed":""}"
     data-bead-id=${e.bead_id}
     data-attempt-id=${e.attempt_id||""}
   >
     <div class="rtile__hd">
       <span class="rtile__dot" aria-hidden="true"></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${e.bead_id}</span>
-      ${l?i`<span class="rtile__resumed" title=${l}>↻</span>`:""}
-      <span class="rtile__elapsed">${o}</span>
-      ${n?i`<button
+      ${H}${c?l`<span class="rtile__resumed" title=${c}>↻</span>`:""}
+      <span class="rtile__elapsed">${a}</span>
+      ${s?l`<button
               type="button"
               class="rtile__resume"
               ?disabled=${e.resume_eligible===!1}
@@ -1635,7 +1708,7 @@ ${G.output}`),Z.join(`
             >
               ↻ 이어하기
             </button>
-            ${A}
+            ${V}
             <button
               type="button"
               class="rtile__dismiss"
@@ -1643,7 +1716,7 @@ ${G.output}`),Z.join(`
               aria-label="실패 기록 닫기"
             >
               ✕
-            </button>`:i`<button
+            </button>`:l`<button
               type="button"
               class="rtile__session"
               title="라이브 세션 열기"
@@ -1651,14 +1724,14 @@ ${G.output}`),Z.join(`
             >
               ▤ 세션
             </button>
-            ${s?i`<button
+            ${o?l`<button
                   type="button"
                   class="rtile__resume"
                   title="같은 세션으로 이어서 재개"
                   aria-label="재개"
                 >
                   ▶
-                </button>`:i`<button
+                </button>`:l`<button
                   type="button"
                   class="rtile__pause"
                   ?disabled=${e.can_pause===!1}
@@ -1667,43 +1740,341 @@ ${G.output}`),Z.join(`
                 >
                   ⏸
                 </button>`}
-            ${A}`}
+            ${V}`}
     </div>
     <div class="rtile__title">${e.title}</div>
-    ${e.rollup?Ds(e.rollup,{parent_id:e.bead_id,expanded:e.rollup_expanded===!0,childChips:Yo}):""}
-    ${g?i`<div class="rtile__landing">
+    ${re}${e.rollup?Ws(e.rollup,{parent_id:e.bead_id,expanded:e.rollup_expanded===!0,childChips:ra}):""}
+    ${v?l`<div class="rtile__landing">
           <span
-            class="merge-step${g.failed?" merge-step--failed":""}"
-            style=${`--progress: ${g.percent}%`}
-            >${g.label}${g.index>0?i`<span class="merge-step__n"
-                  >${g.index}/${g.total}</span
+            class="merge-step${v.failed?" merge-step--failed":""}"
+            style=${`--progress: ${v.percent}%`}
+            >${v.label}${v.index>0?l`<span class="merge-step__n"
+                  >${v.index}/${v.total}</span
                 >`:""}</span
           >
         </div>`:""}
-    ${a||c.length>0||u||d||f?i`<div class="rtile__meta">
-          ${d?i`<span class="worker-mini__badge">${d}</span>`:""}
-          ${f?i`<span
+    ${i||u.length>0||d||p||m?l`<div class="rtile__meta">
+          ${p?l`<span class="worker-mini__badge">${p}</span>`:""}
+          ${m?l`<span
                 class="worker-mini__badge"
                 title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
-                >${f}</span
+                >${m}</span
               >`:""}
-          ${ho(e.exec_chips)}
-          ${c.length>0?c.map(L=>i`<span class="worker-usage" title=${L.tooltip}
-                    >${L.label}</span
-                  >`):u?i`<span
+          ${$o(e.exec_chips)}
+          ${u.length>0?u.map(q=>l`<span class="worker-usage" title=${q.tooltip}
+                    >${q.label}</span
+                  >`):d?l`<span
                   class="worker-usage"
-                  title=${xn(e.usage)}
-                  >${u}</span
+                  title=${Hn(e.usage)}
+                  >${d}</span
                 >`:""}
         </div>`:""}
-    ${Cn(e)} ${Ir(e)}
+    ${In(e)} ${ls(e)}
     <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->
-    ${n||s?"":i`<div class="rtile__accent" aria-hidden="true"></div>`}
-  </div>`}function Ba(e,t=Date.now(),r=null){let n=Array.isArray(e)?e:[];return i`<div class="worker-rungrid" id="worker-rungrid">
-    ${n.length===0?i`<div class="worker-rungrid__empty">실행 세션 없음</div>`:n.map(s=>Zm(s,t,r))}
-  </div>`}function on(e){return i`<svg
+    ${s||o?"":l`<div class="rtile__accent" aria-hidden="true"></div>`}
+  </div>`}function Ga(e,t=Date.now(),r=null){let n=Array.isArray(e)?e:[];return l`<div class="worker-rungrid" id="worker-rungrid">
+    ${n.length===0?l`<div class="worker-rungrid__empty">실행 세션 없음</div>`:n.map(s=>Ha(s,t,r))}
+  </div>`}function Ka(e,t){return`${e}\0${t}`}function Va(e){let t=new Map;for(let r of Array.isArray(e?.running)?e.running:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"running",state:"running"});for(let r of Array.isArray(e?.pr_wait)?e.pr_wait:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"pr_wait",state:"pr_wait"});for(let r of Array.isArray(e?.queue_groups)?e.queue_groups:[]){let n=Array.isArray(r.sublanes?.parallel)?r.sublanes.parallel:Array.isArray(r.items)?r.items:[];for(let s of n)t.set(s.id,{root_dir:s.root_dir,workspace_name:s.workspace_name,lane:"parallel",position:s.queue_position});for(let s of Array.isArray(r.sublanes?.serial)?r.sublanes.serial:[])for(let o of s.items)t.set(o.id,{root_dir:o.root_dir,workspace_name:o.workspace_name,lane:s.id,position:o.queue_position})}for(let r of Array.isArray(e?.runnable)?e.runnable:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"runnable",state:"runnable"});for(let r of Array.isArray(e?.done)?e.done:[])t.set(r.id,{root_dir:r.root_dir,workspace_name:r.workspace_name,lane:"done",state:"done"});return t}function Ya(e,t){let r=Array.isArray(t)?t:[],n=e.indexOf("-"),s=n>0?e.slice(0,n):e;return r.some(o=>typeof o?.issue_prefix=="string"&&o.issue_prefix===s)?"internal":r.length>0&&r.every(o=>typeof o?.issue_prefix=="string")?"external":"unknown"}function Jm(e,t){return e==="internal"&&t===void 0}function On(e){if(e.state==="running")return"\uC2E4\uD589\uC911";if(e.state==="pr_wait")return"PR \uB300\uAE30";if(e.state==="runnable")return"\uC2E4\uD589\uAC00\uB2A5";if(e.state==="done")return"\uC644\uB8CC";let t=e.lane==="parallel"?"\uBCD1\uB82C":e.lane;return`${e.workspace_name} \xB7 ${t} #${e.position}`}function hu(e,t,r,n){let s=r.get(e);if(!!(s&&t&&s.root_dir===t.root_dir&&s.lane===t.lane&&typeof s.position=="number"&&typeof t.position=="number"&&s.position<t.position))return{id:e,label:`\u{1F512} ${e} (\uAC19\uC740 \uB808\uC778 \uC55E)`,location_label:"\uAC19\uC740 \uB808\uC778 \uC55E",scope:null,same_lane_ahead:!0,missing_internal:!1};if(s)return{id:e,label:`\u{1F512} ${e} (${On(s)})`,location_label:On(s),scope:null,same_lane_ahead:!1,missing_internal:!1};let a=Ya(e,n),i=a==="internal"?"\uBBF8\uC801\uC7AC":a==="external"?"\uC678\uBD80":"\uC704\uCE58 \uBBF8\uD655\uC778";return{id:e,label:`\u{1F512} ${e} (${i})`,location_label:i,scope:a,same_lane_ahead:!1,missing_internal:Jm(a,s)}}function bu(e){let t=Array.isArray(e)?e:[],r=new Map,n=new Map,s=new Map;for(let i of t)for(let c of Array.isArray(i.sublanes?.serial)?i.sublanes.serial:[]){let u=Ka(i.root_dir,c.id);r.set(u,{root_dir:i.root_dir,workspace_name:i.name,lane:c.id}),s.set(u,[]);for(let d of Array.isArray(c.items)?c.items:[])n.set(d.id,u)}for(let i of t)for(let c of Array.isArray(i.sublanes?.serial)?i.sublanes.serial:[]){let u=Ka(i.root_dir,c.id),d=Array.isArray(c.items)?c.items[0]:null,m=!!d&&d.queue_index===0&&(!Array.isArray(c.occupied_by)||c.occupied_by.length===0)&&Array.isArray(d.blocked_by)?d.blocked_by:[],v=s.get(u);if(v)for(let C of m){let F=n.get(C);F&&F!==u&&!v.includes(F)&&v.push(F)}}let o=(i,c)=>{let u=new Set,d=[i];for(;d.length>0;){let p=d.pop();if(p===c)return!0;!p||u.has(p)||(u.add(p),d.push(...s.get(p)||[]))}return!1},a=new Map;for(let[i,c]of s){let u=[];for(let d of c){let p=r.get(d);o(d,i)&&p&&u.push(p)}u.length>0&&a.set(i,u)}return a}function yu(e){let t=Va(e),r=new Map;for(let n of[...Array.isArray(e?.runnable)?e.runnable:[],...Array.isArray(e?.queue)?e.queue:[],...Array.isArray(e?.running)?e.running:[],...Array.isArray(e?.pr_wait)?e.pr_wait:[]])r.has(n.id)||r.set(n.id,n);return Array.from(r.values()).map(n=>({id:n.id,title:n.title,root_dir:n.root_dir,workspace_name:n.workspace_name,location:t.has(n.id)?(()=>{let s=t.get(n.id),o=On(s);return s.state?`${s.workspace_name} \xB7 ${o}`:o})():""}))}function vu(e,t){return Ka(e,t)}var Za=new Set(["unavailable","not_applicable"]);function Dr(e,t){if(typeof e!="object"||e===null)return null;let r=e[t];return typeof r=="object"&&r!==null?r:null}function wu(e){return e.filter(t=>t!==null).join(" \xB7 ")}function Nr(e,t){return t===null?null:`${Mr[e]}: ${t.display} (${go[t.source]})`}function Qa(e){return e.filter(t=>t!==null).join(`
+`)}function So(e){if(typeof e!="object"||e===null)return null;let t=en(e);if(t==="")return null;let r=(n,s)=>typeof s=="string"&&s.length>0?`${n}: ${s}`:null;return{text:t,title:Qa(["\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \u2014 \uC774 attempt\uC5D0 \uAE30\uB85D\uB41C \uC2E4\uD589\uAC12",r("runner",e.runner),r(Mr.orchestration_model,e.model),r(Mr.orchestration_effort,e.effort),r(Mr.orchestration_speed,e.speed)])}}function sn(e,t){let r=Dr(e,"orchestration_model");if(r===null||r.resolution==="unavailable")return null;let n=Dr(e,"orchestration_effort"),s=Dr(e,"orchestration_speed"),o=wu([gr(t,r.value??""),r.display,n!==null&&n.value!==null?n.display:null,s!==null&&s.value==="fast"?"Fast":null]);return o===""?null:{text:o,title:Qa(["\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \u2014 \uD604\uC7AC \uD574\uC11D\uAC12 (\uD540 > \uD050 \uAE30\uBCF8\uAC12)",Nr("orchestration_model",r),Nr("orchestration_effort",n),Nr("orchestration_speed",s)])}}function eg(e,t){return e===null||e.value===null||Za.has(e.resolution)?null:e.value!=="inherit"?e.value:t?`inherit\u2192${t}`:"inherit"}function tg(e){return e===null||Za.has(e.resolution)?null:e.value==="auto"?"auto":e.display}function rg(e){return e===null?null:e.value==="auto"?"auto":Za.has(e.resolution)?null:e.display}function qr(e,t){if(typeof e!="object"||e===null)return null;let r=Dr(e,"impl_dispatch"),n=Dr(e,"impl_runtime"),s=Dr(e,"impl_model"),o=Dr(e,"impl_effort"),a=Dr(e,"impl_speed"),i=r!==null&&r.value==="main"?"\uBA54\uC778":wu([eg(n,t??null),tg(s),rg(o),a!==null&&a.value==="fast"?"Fast":null]);return i===""?null:{text:i,title:Qa(["\uC6CC\uCEE4(\uAD6C\uD604 \uC704\uC784) \u2014 \uD604\uC7AC \uD574\uC11D\uAC12 (\uD540 > \uC804\uC5ED kv > \uAE30\uBCF8). \uC2E4\uD589 \uC911\uC774\uBA74 \uC138\uC158\uC774 \uC2DC\uC791 \uC2DC \uACE0\uC815\uD55C \uAC12\uACFC \uB2E4\uB97C \uC218 \uC788\uC74C",Nr("impl_dispatch",r),Nr("impl_runtime",n),Nr("impl_model",s),Nr("impl_effort",o),Nr("impl_speed",a)])}}var Xt="",ng=["impl_runtime","impl_model","impl_effort"],sg=5,Eo=1;function Cr(e){return!!e&&typeof e=="object"&&!Array.isArray(e)}function To(e,t){let r=t.transport,n=typeof t.root_dir=="string"&&t.root_dir.length>0?t.root_dir:null,s=t.notify||(T=>he(T,"error",4e3)),o={},a={},i=[],c=!1,u=null,d={},p="",m="",v=!1,C=!1,F=!1,H=null,re=!1;function V(){let T=t.queue?t.queue():null;return Cr(T)?T:null}function q(){let T=V();return T?T.runner_catalog:null}function O(){let T=V();return T&&Cr(T.execution_defaults)?T.execution_defaults:null}function P(){let T=t.implPresetStore?.get();return Cr(T)&&Array.isArray(T.presets)?T:null}function I(){return n===null?{}:{root_dir:n}}async function $(T,Q){return re||!r?null:await r(T,Q)}function M(T){T&&Cr(T.queue)&&t.onQueueAdopt?.(T.queue)}async function K(T,Q){let Ee=V();if(!Ee||re)return null;let ee=await $(T,{...Q,...I(),expected_revision:Ee.revision});if(M(ee),n!==null&&ee&&ee.conflict){let Ne=ee.queue&&typeof ee.queue.revision=="number"?ee.queue.revision:V()?.revision??Ee.revision;ee=await $(T,{...Q,...I(),expected_revision:Ne}),M(ee)}return ee}async function pe(){c=!0,Le();try{let T=await $("get-session-defaults",{...I()});o=Cr(T?.values)?{...T.values}:{},a={...o},i=Array.isArray(T?.warnings)?T.warnings:[]}catch(T){i=["kv_read_failed"],s(`\uC138\uC158 \uAE30\uBCF8\uAC12\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${T instanceof Error?T.message:String(T)}`)}finally{c=!1,Le()}}async function _e(){let T=qc(o,a);if(Object.keys(T).length!==0){try{let Q=await $("set-session-defaults",{values:T,...I()});o=Cr(Q?.values)?{...Q.values}:{},a={...o},i=Array.isArray(Q?.warnings)?Q.warnings:[]}catch(Q){s(`\uC138\uC158 \uAE30\uBCF8\uAC12 \uC800\uC7A5 \uC2E4\uD328: ${Q instanceof Error?Q.message:String(Q)}`)}Le()}}function me(T,Q){if(ng.includes(T)){Te(T,Q);return}Q===Xt?delete a[T]:a[T]=Q,Le(),_e()}function ae(){let T=Qe().orchestration_model,Q=Qt({global:{orchestration_model:T??void 0},execution_defaults:O(),runner_catalog:q()}).orchestration_model.value;return Q?gr(q(),Q):null}function Ie(T,Q){typeof Q=="string"&&Q.length>0?a[T]=Q:delete a[T]}function Te(T,Q){let Ee=Q===Xt?void 0:Q,ee=Dc({impl_runtime:T==="impl_runtime"?Ee:a.impl_runtime,impl_model:T==="impl_model"?Ee:a.impl_model,impl_effort:T==="impl_effort"?Ee:a.impl_effort},q(),ae());Ie("impl_runtime",ee.impl_runtime),Ie("impl_model",ee.impl_model),Ie("impl_effort",ee.impl_effort),Le(),_e()}async function ne(){let T=V();if(!T)return;let Q={orchestration_model:T.orchestration_model??null,orchestration_effort:T.orchestration_effort??null,orchestration_speed:T.orchestration_speed??null},Ee=Fc(Q,{...Q,...d});if(Object.keys(Ee).length!==0){try{let ee=await K("worker-queue-set-orchestration-defaults",{values:Ee});if(ee&&ee.applied===!1){s("Worker \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: \uB2E4\uB978 \uD074\uB77C\uC774\uC5B8\uD2B8\uC640 \uCDA9\uB3CC");return}d={}}catch(ee){s(`Worker \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: ${ee instanceof Error?ee.message:String(ee)}`)}Le()}}function se(T,Q){d[T]=Q===Xt?null:Q,Le(),ne()}function we(T){if(u=T,!T){Le();return}let Q=q(),Ee=Qe(),ee=Ee.orchestration_model;ee&&!as(Q,T).includes(ee)&&(d.orchestration_model=null,ee=null);let Ne=Ee.orchestration_effort;Ne&&!Da(Q,T,ee||nr).includes(Ne)&&(d.orchestration_effort=null),Le(),ne()}async function A(T){if(!(!V()||T<Eo)){try{await K("worker-queue-set-slots",{slots:T})}catch(Q){s(`slots \uC800\uC7A5 \uC2E4\uD328: ${Q instanceof Error?Q.message:String(Q)}`)}Le()}}async function ue(T){if(!(!V()||T<Eo||T>sg)){try{await K("worker-queue-set-serial-lane-count",{count:T})}catch(Q){s(`\uC9C1\uB82C \uB808\uC778 \uC800\uC7A5 \uC2E4\uD328: ${Q instanceof Error?Q.message:String(Q)}`)}Le()}}async function E(T,Q){let Ee=T==="auto_advance"?"worker-automation-toggle":T==="auto_merge"?"worker-merge-auto-toggle":"worker-auto-repair-toggle";try{await K(Ee,{on:Q})}catch(ee){s(`\uC790\uB3D9\uD654 \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: ${ee instanceof Error?ee.message:String(ee)}`)}Le()}function D(){let T={},Q=Qe();for(let Ee of po){let ee=Tr.includes(Ee)?Q[Ee]:a[Ee];typeof ee=="string"&&ee.length>0&&(T[Ee]=ee)}return T}async function ce(){let T=P();if(!T)return;let Q=D();if(Object.keys(Q).length===0){s("\uC800\uC7A5\uD560 \uC2E4\uD589 \uC124\uC815\uC774 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uBA3C\uC800 \uC2E4\uD589 \uAC12\uC744 \uC120\uD0DD\uD558\uC138\uC694");return}let Ee=(T.presets||[]).find(Ne=>Ne.id===p),ee=m.trim()||(Ee?Ee.name:"");if(!ee){s("\uD504\uB9AC\uC14B \uC774\uB984\uC744 \uC785\uB825\uD558\uC138\uC694");return}try{let Ne=Ee?await $("impl-preset-update",{expected_revision:T.revision,id:Ee.id,name:ee,settings:Q}):await $("impl-preset-create",{expected_revision:T.revision,name:ee,settings:Q});if(Ne&&Ne.applied){if(m="",!Ee&&Array.isArray(Ne.presets)){let et=Ne.presets.find(st=>st.name===ee);p=et?et.id:p}Le()}else s("\uD504\uB9AC\uC14B \uC800\uC7A5 \uC2E4\uD328: \uB2E4\uB978 \uACF3\uC5D0\uC11C \uBC29\uAE08 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4"),Le()}catch(Ne){s(`\uD504\uB9AC\uC14B \uC800\uC7A5 \uC2E4\uD328: ${Ne instanceof Error?Ne.message:String(Ne)}`)}}async function $e(){let T=P();if(!(!T||p.length===0))try{let Q=await $("impl-preset-delete",{expected_revision:T.revision,id:p});Q&&Q.applied?(p="",Le()):(s("\uD504\uB9AC\uC14B \uC0AD\uC81C \uC2E4\uD328: \uB2E4\uB978 \uACF3\uC5D0\uC11C \uBC29\uAE08 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4"),Le())}catch(Q){s(`\uD504\uB9AC\uC14B \uC0AD\uC81C \uC2E4\uD328: ${Q instanceof Error?Q.message:String(Q)}`)}}function ge(T){o=Cr(T.values)?{...T.values}:{},a={...o},i=Array.isArray(T.warnings)?T.warnings:[],Cr(T.queue)&&(t.onQueueAdopt?.(T.queue),d={})}async function Oe(){let T=P(),Q=V();if(!T||!Q||p.length===0)return;let Ee=ee=>({preset_id:p,expected_revision:T.revision,expected_queue_revision:ee,...I()});try{let ee=await $("apply-impl-preset-global",Ee(Q.revision));if(ee&&ee.applied&&ge(ee),n!==null&&ee&&ee.queue_applied===!1){let Ne=ee.queue&&typeof ee.queue.revision=="number"?ee.queue.revision:V()?.revision??Q.revision;ee=await $("apply-impl-preset-global",Ee(Ne)),ee&&ee.applied&&ge(ee)}ee&&ee.applied?ee.queue_applied===!1&&s("\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uAC12\uC740 \uC801\uC6A9\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4 \u2014 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694"):ee&&ee.conflict&&s("\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328: \uD504\uB9AC\uC14B\uC774 \uBC29\uAE08 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4")}catch(ee){s(`\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328: ${ee instanceof Error?ee.message:String(ee)}`)}Le()}async function _t(){C=!0,F=!1,Le();try{let T=await $("get-worker-system-prompt",{});!T||typeof T!="object"||Array.isArray(T)?F=!0:H=T}catch{F=!0}finally{C=!1,Le()}}function He(){if(v=!v,v&&!H){_t();return}Le()}function pt(){let T=En({loading:C,error:F});if(T)return T;if(!H)return"";let Q=Array.isArray(H.variants)?H.variants:[];return l`<div class="settings-dialog__sp-body">
+      ${H.target_base_placeholder?l`<div class="prompt-block__meta">
+            \`${H.target_base_placeholder}\`는 디스패치 시점에 해석된
+            base로 치환됩니다.
+          </div>`:""}
+      ${Q.map(Ee=>l`<div class="settings-dialog__sp-variant" data-variant=${Ee.key}>
+            <div class="settings-dialog__sp-cond">${Ee.condition}</div>
+            ${Er(Ee.label,Ee.system_prompt)}
+          </div>`)}
+    </div>`}function tt(){return l`<section
+      class="settings-dialog__group"
+      data-seam="system-prompt"
+    >
+      <div class="settings-dialog__group-title">
+        워커 시스템 프롬프트
+        <span class="settings-dialog__hint">읽기 전용 — 서버가 조립</span>
+      </div>
+      <button
+        type="button"
+        class="settings-dialog__btn"
+        data-seam="system-prompt-toggle"
+        aria-expanded=${v?"true":"false"}
+        @click=${He}
+      >
+        ${v?"\uC811\uAE30":"\uC804\uBB38 \uBCF4\uAE30"}
+      </button>
+      ${v?pt():""}
+    </section>`}function Y(T,Q,Ee,ee,Ne,et,st){let Ye=Ne[T]??Xt,ct=Na(T,Ee,Ne,O(),q(),st),ft=ct.options.find(ot=>ot.value===Ye),ut=Ye===Xt?ct.full_value:ft?.full_value;return l`<select
+        class=${Ye===Xt?"settings-dialog__unset":""}
+        data-key=${T}
+        aria-label=${Q}
+        title=${ut||""}
+        ?disabled=${et===!0||ct.disabled}
+        .value=${nn(String(Ye))}
+        @change=${ot=>ee(T,String(ot.target.value))}
+      >
+        <option value=${Xt} ?selected=${Ye===Xt}>
+          ${ct.unset_label}
+        </option>
+        ${ct.options.map(ot=>l`<option
+              value=${ot.value}
+              title=${ot.full_value||""}
+              ?selected=${ot.value===Ye}
+            >
+              ${ot.label}
+            </option>`)}
+      </select>
+      ${Ye===Xt?l`<span class="settings-dialog__source-badge">기본</span>`:""}`}function Z(T,Q,Ee,ee,Ne,et=!1,st){return l`<div
+      class=${`settings-dialog__row${et?" settings-dialog__row--off":""}`}
+    >
+      <span class="settings-dialog__row-label">${Q}</span>
+      <span class="settings-dialog__controls">
+        ${Y(T,Q,Ee,ee,Ne,et,st)}
+      </span>
+    </div>`}function Se(T,Q,Ee,ee,Ne){return l`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">
+        <i
+          class="settings-dialog__stage-dot"
+          style=${`background: var(--stage-${Q}-on)`}
+        ></i>
+        ${T}
+      </span>
+      <span class="settings-dialog__controls">
+        ${Y(Ee,`${T} \uBAA8\uB378`,ee,me,a,!1)}
+        ${Y(Ne,`${T} effort`,mo,me,a,!1)}
+      </span>
+    </div>`}function Ze(T,Q,Ee,ee){return l`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">${Q}</span>
+      <span class="settings-dialog__controls">
+        <button
+          type="button"
+          class=${`settings-dialog__toggle${ee?" is-on":""}`}
+          data-automation=${T}
+          aria-pressed=${ee?"true":"false"}
+          aria-label=${Q}
+          @click=${()=>E(T,!ee)}
+        >
+          ${ee?"\uCF1C\uC9D0":"\uAEBC\uC9D0"}
+        </button>
+        <span class="settings-dialog__hint">${Ee}</span>
+      </span>
+    </div>`}function je(T,Q,Ee,ee){return l`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">${Q}</span>
+      <span class="settings-dialog__controls">
+        <span class="settings-dialog__stepper" data-stepper=${T}>
+          <button
+            type="button"
+            aria-label=${`${Q} \uAC10\uC18C`}
+            @click=${()=>ee(Ee-1)}
+          >
+            −
+          </button>
+          <span class="settings-dialog__stepper-value">${Ee}</span>
+          <button
+            type="button"
+            aria-label=${`${Q} \uC99D\uAC00`}
+            @click=${()=>ee(Ee+1)}
+          >
+            +
+          </button>
+        </span>
+      </span>
+    </div>`}function rt(T){return l`<div class="settings-dialog__preset-diff" data-preset-diff>
+      <div class="settings-dialog__preset-diff-head">
+        ${T.rows.length>0?`\uBCC0\uACBD ${T.rows.length}\uAC1C \xB7 \uC801\uC6A9\uD558\uBA74 \uC544\uB798\uC640 \uAC19\uC774 \uBC14\uB01D\uB2C8\uB2E4`:"\uD604\uC7AC \uC124\uC815\uACFC \uAC19\uC2B5\uB2C8\uB2E4 \u2014 \uC801\uC6A9\uD560 \uBCC0\uACBD\uC774 \uC5C6\uC2B5\uB2C8\uB2E4"}
+      </div>
+      ${T.rows.map(Q=>l`<div
+            class="settings-dialog__preset-diff-row"
+            data-diff-kind=${Q.kind}
+          >
+            <span class="settings-dialog__preset-diff-label">${Q.label}</span>
+            <span class="settings-dialog__preset-diff-value"
+              >${Q.before??"\uAE30\uBCF8"}</span
+            >
+            <span class="settings-dialog__preset-diff-arrow">→</span>
+            <span
+              class="settings-dialog__preset-diff-value settings-dialog__preset-diff-after"
+              >${Q.after??"\uAE30\uBCF8(\uD574\uC81C)"}</span
+            >
+          </div>`)}
+      ${T.ignored_keys.length>0?l`<div class="settings-dialog__preset-diff-note">
+            ${T.ignored_keys.join(", ")}은(는) 전역 적용이 쓰지 않는 키라
+            무시됩니다
+          </div>`:""}
+    </div>`}function Qe(){let T=V(),Q={};for(let Ee of Tr)Q[Ee]=Object.prototype.hasOwnProperty.call(d,Ee)?d[Ee]:T&&typeof T[Ee]=="string"?T[Ee]:null;return Q}function yt(){let T=q(),Q=a.impl_runtime,Ee=a.impl_model,ee=P(),Ne=V(),et=Qe(),st=as(T,u),Ye=Cn(T,void 0).filter(be=>be!==nr),ct=Da(T,u,et.orchestration_model||nr).filter(be=>be!==nr),ft=p?(ee?.presets||[]).find(be=>be.id===p):null,ut=ft?Nc(D(),Cr(ft.settings)?ft.settings:{}):null,ot=Ne&&typeof Ne.slots=="number"?Ne.slots:Eo+1,gt=Ne&&typeof Ne.serial_lane_count=="number"?Ne.serial_lane_count:Eo,U=O()?.supported===!0,J=Na("workflow_mode",ss,a,O(),T);return l`
+      ${i.length>0?l`<div class="settings-dialog__banner" role="alert">
+            워크스페이스 기본값을 일부 읽지 못했습니다 —
+            ${i.join(", ")}
+          </div>`:""}
+      ${U?"":l`<div
+            class="settings-dialog__banner settings-dialog__banner--projection"
+            data-execution-defaults-warning
+            role="alert"
+          >
+            실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
+          </div>`}
+      ${c?l`<div class="settings-dialog__empty">불러오는 중…</div>`:l`
+            <div class="settings-dialog__preset-bar">
+              <select
+                aria-label="실행 프리셋"
+                .value=${nn(p)}
+                @change=${be=>{p=String(be.target.value),Le()}}
+              >
+                <option value="" ?selected=${p===""}>
+                  실행 프리셋…
+                </option>
+                ${(ee?.presets||[]).map(be=>l`<option
+                      value=${be.id}
+                      ?selected=${be.id===p}
+                    >
+                      ${be.name}
+                    </option>`)}
+              </select>
+              <button
+                type="button"
+                class="settings-dialog__btn settings-dialog__btn--primary"
+                data-preset-apply-global
+                ?disabled=${!ut||ut.rows.length===0}
+                @click=${Oe}
+              >
+                적용
+              </button>
+              <input
+                type="text"
+                class="settings-dialog__preset-name"
+                placeholder=${p?"\uC774\uB984 (\uBE44\uC6B0\uBA74 \uC720\uC9C0)":"\uC0C8 \uD504\uB9AC\uC14B \uC774\uB984"}
+                aria-label="프리셋 이름"
+                .value=${nn(m)}
+                @input=${be=>{m=String(be.target.value)}}
+              />
+              <button
+                type="button"
+                class="settings-dialog__btn"
+                data-preset-save
+                title=${p?"\uD604\uC7AC \uD654\uBA74\uC758 \uC2E4\uD589 \uC124\uC815\uC744 \uC774 \uD504\uB9AC\uC14B\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4 (\uD504\uB9AC\uC14B \u2192 \uC124\uC815 \uBC29\uD5A5\uC774 \uC544\uB2D8)":"\uD604\uC7AC \uD654\uBA74\uC758 \uC2E4\uD589 \uC124\uC815\uC744 \uC0C8 \uD504\uB9AC\uC14B\uC73C\uB85C \uC800\uC7A5\uD569\uB2C8\uB2E4"}
+                @click=${ce}
+              >
+                ${p?"\uD604\uC7AC \uC124\uC815\uC73C\uB85C \uB36E\uC5B4\uC4F0\uAE30":"\uC0C8 \uD504\uB9AC\uC14B \uC800\uC7A5"}
+              </button>
+              <button
+                type="button"
+                class="settings-dialog__btn"
+                data-preset-delete
+                ?disabled=${p.length===0}
+                @click=${$e}
+              >
+                삭제
+              </button>
+            </div>
+            ${ut?rt(ut):""}
+
+            <div class="settings-dialog__group">
+              <div class="settings-dialog__group-title">오케스트레이션</div>
+              <div class="settings-dialog__row">
+                <span class="settings-dialog__row-label">런타임</span>
+                <span class="settings-dialog__controls">
+                  <select
+                    aria-label="런타임"
+                    data-key="orchestration_runtime_filter"
+                    .value=${nn(u||Xt)}
+                    @change=${be=>{let Ge=String(be.target.value);we(Ge===Xt?null:Ge)}}
+                  >
+                    <option value=${Xt} ?selected=${!u}>
+                      전체
+                    </option>
+                    <option
+                      value="claude"
+                      ?selected=${u==="claude"}
+                    >
+                      claude
+                    </option>
+                    <option
+                      value="codex"
+                      ?selected=${u==="codex"}
+                    >
+                      codex
+                    </option>
+                  </select>
+                  <span class="settings-dialog__hint"
+                    >모델 목록을 좁힙니다</span
+                  >
+                </span>
+              </div>
+              ${Z("orchestration_model","\uBAA8\uB378",st,se,et)}
+              ${Z("orchestration_effort","effort",ct,se,et)}
+              ${Z("orchestration_speed","\uC18D\uB3C4",ns,se,et)}
+            </div>
+
+            <div class="settings-dialog__group">
+              <div class="settings-dialog__group-title">워크플로우</div>
+              <div class="settings-dialog__row">
+                <span class="settings-dialog__row-label">모드</span>
+                <span class="settings-dialog__controls">
+                  <span class="settings-dialog__seg" role="group">
+                    <button
+                      type="button"
+                      data-mode=${Xt}
+                      aria-pressed=${String(!a.workflow_mode)}
+                      @click=${()=>me("workflow_mode",Xt)}
+                    >
+                      ${J.unset_label}
+                    </button>
+                    ${a.workflow_mode?"":l`<span class="settings-dialog__source-badge"
+                          >기본</span
+                        >`}
+                    ${ss.map(be=>l`<button
+                          type="button"
+                          data-mode=${be}
+                          aria-pressed=${String(a.workflow_mode===be)}
+                          @click=${()=>me("workflow_mode",be)}
+                        >
+                          ${be}
+                        </button>`)}
+                  </span>
+                </span>
+              </div>
+            </div>
+
+            <div class="settings-dialog__group">
+              <div class="settings-dialog__group-title">
+                리뷰 게이트
+                <span class="settings-dialog__hint">모델 · effort</span>
+              </div>
+              ${Se("\uC0AC\uC591 \uB9AC\uBDF0","spec","spec_review_model",os,"spec_review_effort")}
+              ${Se("\uACC4\uD68D \uB9AC\uBDF0","plan","plan_review_model",_o,"plan_review_effort")}
+              ${Se("\uAD6C\uD604 \uB9AC\uBDF0","impl","impl_review_model",os,"impl_review_effort")}
+            </div>
+
+            <div class="settings-dialog__group">
+              <div class="settings-dialog__group-title">
+                구현
+                <span class="settings-dialog__hint"
+                  >이슈 핀이 있으면 핀이 우선합니다</span
+                >
+              </div>
+              ${Z("impl_runtime","\uC704\uC784 \uB300\uC0C1",fo,me,a)}
+              ${Z("impl_model","\uBAA8\uB378",Cn(T,Q),me,a)}
+              ${Z("impl_effort","effort",Rn(T,Q,Ee),me,a)}
+              ${Z("impl_speed","\uC18D\uB3C4",ns,me,a)}
+              ${Z("quick_fix_impl_model","quick_fix \uAD6C\uD604 \uBAA8\uB378",Ye,me,a,!1,{...a,...et})}
+            </div>
+
+            <div class="settings-dialog__group">
+              <div class="settings-dialog__group-title">
+                자동화
+                <span class="settings-dialog__hint"
+                  >이 레포의 워커 큐가 스스로 진행하는 범위</span
+                >
+              </div>
+              ${Ze("auto_advance","\uC790\uB3D9\uD654","\uC2AC\uB86F\uC774 \uBE44\uBA74 \uB300\uAE30 \uC55E \uD589\uC774 \uCD9C\uBC1C\uD569\uB2C8\uB2E4",Ne?.auto_advance===!0)}
+              ${Ze("auto_merge","\uBA38\uC9C0","\uC790\uACA9\uC774 \uC0DD\uAE30\uB294 PR\uC744 \uACC4\uC18D \uBA38\uC9C0\uD569\uB2C8\uB2E4",Ne?.auto_merge===!0)}
+              ${Ze("auto_repair","\uC790\uB3D9 \uD574\uACB0","\uC2E4\uD328\uD55C \uC800\uC7A5\uC18C \uC791\uC5C5\uC744 \uC138\uC158\uC774 \uC790\uB3D9\uC73C\uB85C \uBCF5\uAD6C\uD569\uB2C8\uB2E4",Ne?.auto_repair===!0)}
+              ${je("slots","\uB3D9\uC2DC \uC2E4\uD589",ot,be=>A(be))}
+              ${je("serial-lane-count","\uC9C1\uB82C \uB808\uC778",gt,be=>ue(be))}
+            </div>
+            ${tt()}
+          `}
+    `}function Le(){re||Ve(yt(),e)}return{load(){return d={},pe()},render:Le,sessionDraft:()=>({...a}),destroy(){re=!0,Ve(l``,e)}}}function ds(e){return l`<svg
     class="mon-i"
     viewBox="0 0 16 16"
     aria-hidden="true"
@@ -1714,83 +2085,146 @@ ${G.output}`),Z.join(`
     stroke-linejoin="round"
   >
     ${e}
-  </svg>`}function Ua(){return on(Lr`<path d="M5.5 3.6 12 8l-6.5 4.4z" />`)}function Wa(){return on(Lr`<path d="M6 3.8v8.4M10 3.8v8.4" />`)}function yu(){return on(Lr`<rect x="4.3" y="4.3" width="7.4" height="7.4" rx="1.2" />`)}function vu(){return on(Lr`<path d="M4.4 4.4 11.6 11.6M11.6 4.4 4.4 11.6" />`)}function wu(){return on(Lr`<path
+  </svg>`}function ku(){return ds(mn`<path d="M5.5 3.6 12 8l-6.5 4.4z" />`)}function $u(){return ds(mn`<path d="M6 3.8v8.4M10 3.8v8.4" />`)}function xu(){return ds(mn`<path
       d="M4.6 5.6v4.8M4.6 8.2h2.2A3.2 3.2 0 0 0 10 5"
     />
     <circle cx="4.6" cy="4" r="1.5" />
     <circle cx="4.6" cy="12" r="1.5" />
-    <circle cx="11.4" cy="4" r="1.5" />`)}function ku(){return on(Lr`<rect x="2.6" y="2.6" width="7.4" height="7.4" rx="1.2" />
-    <path d="M6 13.4h6a1.4 1.4 0 0 0 1.4-1.4V6" />`)}function $u(){return on(Lr`<path d="M3 3.6 8.2 8 3 12.4z" />
-    <path d="M8.8 3.6 14 8l-5.2 4.4z" />`)}var os=1,Xm=6e4,Qm={auto_merge:"\uC790\uB3D9 \uBA38\uC9C0",merged:"\uBA38\uC9C0",merge:"\uBA38\uC9C0",pr_stop:"PR \uC911\uB2E8",stopped:"\uC911\uB2E8",failed:"\uC2E4\uD328"},Jm=new Set(["auto_merge","merged","merge","done"]),xu={running:3,paused:2,failed:1};function eg(e,t){let r=null,n=-1/0;for(let s of Object.values(e)){if(!s||s.bead_id!==t||s.status==="running")continue;let o=typeof s.finished_at=="number"?s.finished_at:typeof s.started_at=="number"?s.started_at:0;o>=n&&(n=o,r=s)}return r}function tg(e,t){let r=Object.values(e||{}),n=new Set,s=new Map;for(let a of r)!a||typeof a.bead_id!="string"||(typeof a.resumed_from=="string"&&a.resumed_from.length>0&&n.add(a.resumed_from),s.set(a.bead_id,a.attempt_id));let o=new Map;for(let a of r){if(!a||typeof a.bead_id!="string"||a.bead_id.length===0)continue;let l=null;if(a.status==="running")l="running";else if(a.status==="paused"&&!n.has(a.attempt_id))l="paused";else if(a.status==="failed"||a.status==="orphaned"){let f=t.get(a.bead_id),g=typeof f=="number"&&f>0&&typeof a.finished_at=="number"&&f>=a.finished_at;s.get(a.bead_id)===a.attempt_id&&!g&&typeof a.dismissed_at!="number"&&(l="failed")}if(!l)continue;let c=typeof a.started_at=="number"?a.started_at:null,u=o.get(a.bead_id);if(u){let f=xu[u.run_state],g=xu[l];if(f>g||f===g&&(u.started_at??0)>(c??0))continue}let d=typeof a.session_id=="string"&&a.session_id.length>0;o.set(a.bead_id,{attempt_id:typeof a.attempt_id=="string"?a.attempt_id:"",run_state:l,started_at:c,last_event_at:typeof a.last_event_at=="number"?a.last_event_at:null,runner:typeof a.runner=="string"?a.runner:null,model:typeof a.model=="string"?a.model:null,effort:typeof a.effort=="string"?a.effort:null,speed:typeof a.speed=="string"?a.speed:null,resumed_from:typeof a.resumed_from=="string"?a.resumed_from:null,continuation_mode:a.continuation_mode==="session"||a.continuation_mode==="fresh"?a.continuation_mode:null,usage:Jt(e,a.bead_id),can_pause:l==="running"&&d,can_resume:l!=="running"&&d&&!n.has(a.attempt_id)})}return o}function Au(e,t){let r=e[t];if(!r)return"";if(r.stale===!0)return"\u267B\uFE0F stale\u2192\uC7AC\uB9AC\uBDF0";let n=typeof r.reason=="string"?r.reason:"",s=n.indexOf(":");return s>0&&s<n.length-1?`\u26D4 ${n.slice(0,s)} (${n.slice(s+1)})`:`\u26D4 ${n}`}function Mt(e){return e&&typeof e=="object"?e:{}}function za(e,t,r){let n=Array.isArray(e)?e:[],s=Array.isArray(t)?t:[],o=r&&typeof r.done_since=="number"?r.done_since:void 0,a=new Map;for(let m of s)m&&typeof m.root_dir=="string"&&a.set(m.root_dir,m);let l=[],c=[],u=[],d=[],f=[],g=[],x=new Map,A=new Map,L=new Map;for(let m of n){if(!m||typeof m.root_dir!="string")continue;let E=m.root_dir,Y=m.name||E,ue=a.get(E),oe=ue&&typeof ue.revision=="number"?ue.revision:typeof m.revision=="number"?m.revision:0,de=Mt(m.attempts),Ue=Mt(m.bead_titles),et=Mt(m.pr_observations),qe=Mt(m.admission),X=Mt(m.revise_parked),te=Mt(m.merge_queue_state),Ae=Mt(m.cleanup_failed),_e=Mt(m.discard_operations),Pe=Mt(m.bead_blocked_by),le=Mt(m.pr_activity),Me=Array.isArray(m.repo_operations)?m.repo_operations:[],Oe=Array.isArray(m.merge_queue)?m.merge_queue:[],He=new Set(Oe.filter(U=>U&&typeof U.bead_id=="string").map(U=>U.bead_id)),$e=new Map(Oe.filter(U=>U&&typeof U.bead_id=="string").map(U=>[U.bead_id,U])),Ve=Array.isArray(m.queue)?m.queue:[],it=(Array.isArray(m.serial_lanes)?m.serial_lanes:[]).filter(U=>U&&/^s[1-5]$/.test(U.id)&&Array.isArray(U.entries)),Ie=Mt(m.lane_states),Je=typeof m.serial_lane_count=="number"?Math.max(0,Math.min(5,Math.floor(m.serial_lane_count))):Math.min(5,it.length);L.set(E,Je);let G=new Map(it.map(U=>[U.id,U])),Z=new Map;for(let U of it)for(let V of U.entries)V&&typeof V.bead_id=="string"&&Z.set(V.bead_id,U.id);let xe=Array.isArray(m.done)?m.done:[];for(let U of xe)U&&typeof U.bead_id=="string"&&g.push({id:U.bead_id,root_dir:E,workspace_name:Y});let De=new Map;for(let U of xe)U&&typeof U.bead_id=="string"&&typeof U.added_at=="number"&&De.set(U.bead_id,U.added_at);let We=U=>({id:U,title:Ue[U]||U,root_dir:E,workspace_name:Y,expected_revision:oe,draggable:!1}),Ge=new Set;for(let[U,V]of tg(de,De))Ge.add(U),c.push({...We(U),lane:"running",...Z.has(U)?{serial_lane_id:Z.get(U)}:{},attempt_id:V.attempt_id,run_state:V.run_state,can_pause:V.can_pause,can_resume:V.can_resume,started_at:V.started_at,last_event_at:V.last_event_at,runner:V.runner,model:V.model,effort:V.effort,speed:V.speed,resumed_from:V.resumed_from,continuation_mode:V.continuation_mode,usage:V.usage,discard:vr(_e,U,{attempt_id:V.attempt_id}),badges:V.run_state==="paused"?["\u23F8 \uC77C\uC2DC\uC815\uC9C0"]:V.run_state==="failed"?["\u26A0 \uC2E4\uD328"]:[],alert:V.run_state==="failed"});for(let U of Array.isArray(m.pr_wait)?m.pr_wait:[]){let V=U&&U.bead_id;if(typeof V!="string"||Ge.has(V))continue;Ge.add(V);let ve=Mt(et[V]),ot=Mt(ve.pr),ke=ve.gate?Mt(ve.gate):null,T=He.has(V),M=$e.get(V)?.continuation_action||null,P=!!M&&M.continuation===null,H=te.active===V,ce=U.external===!0,y=Ae[V]||null,C=Mt(le[V]),D=ss({bead_id:V,merge_sha:U.merge_sha,cleanup_cursor:U.cleanup_cursor,merge_progress:C.merge_progress||null,cleanup_failed:y,repo_operations:Me}),me=wo(D),fe=!!ke&&ke.base_badge==="\uCDA9\uB3CC",Ee=!!y&&["child_sweep","branch_cleanup","parent_close"].includes(y.step)&&!!ke&&ke.tier==="merged",Fe=ce&&!!y&&!!ke&&ke.tier==="merged",Ye=!!ke&&["closed_unmerged","review","undecidable"].includes(ke.tier),Qe=vr(_e,V,{external:ce,merge_active:H||D?.step==="merge",merge_queued:T,cleanup_active:me,merged:!!y||ke?.tier==="merged"}),W=!!Qe.operation;u.push({...We(V),lane:"pr_wait",pr_number:typeof ot.number=="number"?ot.number:null,pr_url:typeof ot.url=="string"?ot.url:void 0,external:ce,usage:Jt(de,V),merge_step:D,badges:P?["\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD \uD544\uC694"]:D?[ke?.tier==="merged"?"\uBA38\uC9C0\uB428":"\uBA38\uC9C0 \uC911"]:y?[sn(y.step)?`\uC815\uB9AC \uBA48\uCDA4 \xB7 ${sn(y.step)}`:"\uC815\uB9AC \uBA48\uCDA4"]:typeof ke?.gate_badge=="string"&&ke.gate_badge.length>0?[ke.gate_badge]:[],alert:D?D.failed===!0:!!y||Ye,reason:y&&D?.active!==!0?vo(y.step):"PR \uB300\uAE30",merge_action:ke?.tier==="merged"&&!Ee&&!Fe?!1:!T||P,merge_enabled:!W&&(P||ke?.enabled===!0||fe||Ee||Fe),merge_label:P?"\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD":Fe||Ee?"\uC815\uB9AC \uC7AC\uAC1C":fe&&!Ee?"\uCDA9\uB3CC \uD574\uC18C \uD6C4 \uBA38\uC9C0":void 0,merge_title:P?"\uC2E4\uD589 provider\uAC00 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4 \u2014 \uC774\uC5B4\uAC08 \uBC29\uC2DD\uC744 \uC120\uD0DD\uD558\uC138\uC694":W?Qe.error?`\uD3D0\uAE30 \uC2E4\uD328: ${Qe.error} \u2014 [\uC7AC\uC2DC\uB3C4]\uD558\uAC70\uB098 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC138\uC694`:`\uD3D0\uAE30 \uC9C4\uD589 \uC911 \u2014 ${Qe.progress||"\uC644\uB8CC\uB97C \uAE30\uB2E4\uB9AC\uC138\uC694"}`:Fe?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uC2E4\uD328\uD55C \uC815\uB9AC\uB97C \uC7AC\uAC1C\uD569\uB2C8\uB2E4":Ee?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uB0A8\uC740 \uC815\uB9AC\uB97C \uC2E4\uD328 \uB2E8\uACC4\uBD80\uD130 \uC7AC\uAC1C\uD569\uB2C8\uB2E4":fe?"\uCDA9\uB3CC \u2014 \uD050\uC5D0 \uB123\uC73C\uBA74 \uD574\uC18C \uC138\uC158\uC744 \uB744\uC6B0\uACE0 \uC644\uB8CC \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC7AC\uBA38\uC9C0\uD569\uB2C8\uB2E4":ke?.enabled===!0?`\uBA38\uC9C0 (${ke.gate_badge}) \u2014 \uD050\uC5D0 \uB123\uC5B4 \uC21C\uC11C\uB300\uB85C \uBA38\uC9C0\uD569\uB2C8\uB2E4`:`\uBA38\uC9C0 \uBD88\uAC00: ${ke?.reason||"\uAD00\uCE21 \uB300\uAE30"}`,cancel_action:T&&!P,cancel_enabled:!H,continuation_mismatch:M?.mismatch||null,discard:Qe,discard_action:Qe.action,discard_enabled:Qe.enabled,discard_title:Qe.title})}let ze=(U,V,ve,ot)=>{let ke=U&&U.bead_id;if(typeof ke!="string"||Ge.has(ke))return null;Ge.add(ke);let T=X[ke],M=vr(_e,ke),P=M.operation?M:null,H={...We(ke),lane:V,draggable:!P,discard:P||void 0,reason:Au(qe,ke),queue_position:ve+1,queue_index:ve,queue_length:ot,badges:T?["\u23F8 REVISE \uD30C\uD0B9"]:[],alert:!!T,revise_action:!!T,revise_enabled:!!T&&!P,revise_title:T?T.notes_tail?`REVISE findings (\uC790\uC138\uD788\uB294 \uCE74\uB4DC \uD074\uB9AD \u2192 \uC774\uC288 \uC0C1\uC138):
-${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC601\uD558\uB294 \uCC98\uBD84 \uC138\uC158\uC744 \uB744\uC6C1\uB2C8\uB2E4":""};return Object.hasOwn(Pe,ke)&&(H.blocked_by=Array.isArray(Pe[ke])?Pe[ke].filter(ce=>typeof ce=="string"&&ce.length>0):[]),H};for(let U=0;U<Ve.length;U++){let V=ze(Ve[U],"queue",U,Ve.length);if(!V)continue;d.push(V);let ve=x.get(E);ve?ve.push(V):x.set(E,[V])}let ct=[];for(let U=0;U<it.length;U++){let V=it[U],ve=[];for(let ke=0;ke<V.entries.length;ke++){let T=ze(V.entries[ke],V.id,ke,V.entries.length);T&&(ve.push(T),d.push(T))}if(ve.length===0)continue;let ot=Mt(Ie[V.id]);ct.push({id:V.id,index:U,items:ve,occupied_by:Array.isArray(ot.occupied_by)?ot.occupied_by.filter(ke=>typeof ke=="string"):[],corrections:Array.isArray(ot.corrections)?ot.corrections.length:0,cycle:ot.cycle===!0})}A.set(E,ct);let pt=Array.from({length:Je},(U,V)=>{let ve=`s${V+1}`,ot=G.get(ve),ke=ot&&Array.isArray(ot.entries)?ot.entries:[],T=Mt(Ie[ve]);return{id:ve,index:ke.length,length:ke.length,occupied_by:Array.isArray(T.occupied_by)?T.occupied_by.filter(M=>typeof M=="string"):[]}});for(let U of Array.isArray(m.runnable)?m.runnable:[]){let V=U&&U.bead_id;typeof V!="string"||Ge.has(V)||(Ge.add(V),l.push({...We(V),title:U.title||Ue[V]||V,lane:"runnable",draggable:!0,reason:Au(qe,V),created_at:U.created_at??void 0,updated_at:U.updated_at??void 0,labels:Array.isArray(U.labels)?U.labels:[],spec_reviewer:typeof U.spec_reviewer=="string"?U.spec_reviewer:void 0,plan_state:U.plan_state==="approved"||U.plan_state==="authored"?U.plan_state:"none",workflow:U.route?{route:U.route,chips:{route:U.route}}:null,blocked:U.blocked===!0,...Array.isArray(U.blocked_by)?{blocked_by:U.blocked_by.filter(ve=>typeof ve=="string"&&ve.length>0)}:{},place_index:Ve.length,place_lanes:pt}))}for(let U of xe){let V=U&&U.bead_id;if(typeof V!="string"||Ge.has(V)||(Ge.add(V),o!==void 0&&typeof U.added_at=="number"&&U.added_at<o))continue;let ve=eg(de,V);f.push({...We(V),lane:"done",done:!0,usage:Jt(de,V),done_at:typeof U.added_at=="number"?U.added_at:void 0,done_kind:ve&&typeof ve.done_kind=="string"?ve.done_kind:null})}}let z=new Map;s.forEach((m,E)=>{m&&typeof m.root_dir=="string"&&z.set(m.root_dir,E)});let ae=r&&r.running_sort==="repo"?"repo":"started";c.sort((m,E)=>{if(ae==="repo"){let oe=z.get(m.root_dir)??Number.MAX_SAFE_INTEGER,de=z.get(E.root_dir)??Number.MAX_SAFE_INTEGER;if(oe!==de)return oe-de}let Y=typeof m.started_at=="number"&&Number.isFinite(m.started_at)?m.started_at:null,ue=typeof E.started_at=="number"&&Number.isFinite(E.started_at)?E.started_at:null;return Y!==null&&ue!==null&&Y!==ue?Y-ue:Y===null&&ue!==null?1:Y!==null&&ue===null?-1:m.id.localeCompare(E.id)}),f.sort((m,E)=>(E.done_at??0)-(m.done_at??0));let se=s.length>0?s:n.map(m=>({root_dir:m&&m.root_dir,name:m&&m.name,auto_advance:m&&m.auto_advance,auto_merge:m&&m.auto_merge,slots:m&&m.slots,revision:m&&m.revision,runner_catalog:m&&m.runner_catalog})),q=[];for(let m of se){if(!m||typeof m.root_dir!="string")continue;let E=x.get(m.root_dir)||[],Y=A.get(m.root_dir)||[];q.push({root_dir:m.root_dir,name:m.name||m.root_dir,auto_advance:m.auto_advance===!0,auto_merge:m.auto_merge===!0,slots:typeof m.slots=="number"&&m.slots>=os?m.slots:os,revision:typeof m.revision=="number"?m.revision:0,runner_catalog:Mt(m.runner_catalog),items:E,sublanes:{parallel:E,serial:Y},serial_lane_count:L.get(m.root_dir)||0})}let N={runnable:l,queue:d,queue_groups:q,running:c,pr_wait:u,done:f,automation:{total:q.length,both_on:q.filter(m=>m.auto_advance&&m.auto_merge).length}},I=Pa(N);for(let m of g)I.has(m.id)||I.set(m.id,{root_dir:m.root_dir,workspace_name:m.workspace_name,lane:"done",state:"done"});for(let m of[...N.queue,...N.runnable]){if(!Object.hasOwn(m,"blocked_by"))continue;let E=I.get(m.id);m.blockers=(m.blocked_by||[]).map(Y=>au(Y,E,I,s)),m.blocker_warnings=m.blockers.filter(Y=>Y.missing_internal).map(Y=>`\u26A0 \uC120\uD589 ${Y.id}\uAC00 \uC5B4\uB290 \uB808\uC778\uC5D0\uB3C4 \uC5C6\uACE0 \uC2E4\uD589 \uC911\uB3C4 \uC544\uB2D8 \u2014 \uC218\uB3D9 \uAC1C\uC785 \uC804\uAE4C\uC9C0 \uC774 \uC790\uB9AC\uC5D0\uC11C \uC815\uC9C0`),m.blocker_warnings.length>0&&(m.alert=!0)}let j=iu(N.queue_groups);for(let m of N.queue_groups)for(let E of m.sublanes.serial){let Y=j.get(cu(m.root_dir,E.id));Y&&(E.cross_wait_peers=Y)}return N}function rg(e,t){if(typeof e!="number"||!Number.isFinite(e))return"";let n=t-e<Xm;return i`<span
-    class="mon-beat${n?" mon-beat--live":""}"
-    title=${`\uB9C8\uC9C0\uB9C9 \uC774\uBCA4\uD2B8 ${It(e)}`}
-    ><span class="mon-beat__dot" aria-hidden="true"></span>${n?"":i`<span class="mon-beat__age"
-          >${Gt(e,t)}</span
-        >`}</span
-  >`}function as(e){return i`<div class="mon-c__title">${e.title}</div>`}function is(e){return i`<span class="mon-c__id" title="클릭하면 상세로 이동"
-    >${e.id}</span
-  >`}function $o(e){return e.workspace_name?i`<span class="mon-c__repo" title=${e.root_dir||""}
-        >${e.workspace_name}</span
-      >`:""}function Ha(e){let t=Ot(e.usage),r=lr(e.usage);return t.length>0?t.map(n=>i`<span class="mon-c__usage" title=${n.tooltip}
-          >${n.label}</span
-        >`):r?i`<span class="mon-c__usage" title=${xn(e.usage)}
-        >${r}</span
-      >`:""}function Ga(e){return(Array.isArray(e.badges)?e.badges:[]).map(r=>i`<span class="mon-c__badge${e.alert?" mon-c__badge--alert":""}"
-        >${r}</span
-      >`)}function ng(e){return i`<span class="mon-c__ops">
-    ${e.run_state==="running"?i`<button
-          type="button"
-          class="mon-op mon-op--pause"
-          ?disabled=${e.can_pause===!1}
-          aria-label="일시정지"
-          title="일시정지 — 세션을 끊고 이어하기 가능 상태로 둡니다"
-        >
-          ${Wa()}
-        </button>`:i`<button
-          type="button"
-          class="mon-op mon-op--resume"
-          ?disabled=${e.can_resume===!1}
-          aria-label="이어하기"
-          title="이어하기"
-        >
-          ${Ua()}
-        </button>`}
-    ${e.discard?.action?i`<button
-          type="button"
-          class="mon-op mon-op--discard"
-          data-operation-id=${e.discard.operation?.operation_id||""}
-          data-discard-mode=${e.discard.confirmation}
-          ?disabled=${!e.discard.enabled}
-          aria-label=${e.discard.label}
-          title=${e.discard.title}
-        >
-          ${e.discard.label}
-        </button>`:""}
-    ${e.run_state==="failed"?i`<button
-          type="button"
-          class="mon-op mon-op--dismiss"
-          aria-label="실패 기록 닫기"
-          title="실패 기록 닫기"
-        >
-          ${vu()}
-        </button>`:""}
-  </span>`}function Su(e){if(!Object.hasOwn(e,"blocked_by"))return"";let t=Array.isArray(e.blockers)?e.blockers:[];return t.length===0?e.blocked?i`<span class="mon-blocker">🔒 blocked</span>`:"":t.map(r=>i`<span
-        class="mon-blocker${r.same_lane_ahead?" mon-blocker--normal":""}"
+    <circle cx="11.4" cy="4" r="1.5" />`)}function Au(){return ds(mn`<rect x="2.6" y="2.6" width="7.4" height="7.4" rx="1.2" />
+    <path d="M6 13.4h6a1.4 1.4 0 0 0 1.4-1.4V6" />`)}function Su(){return ds(mn`<circle cx="8" cy="8" r="2.1" />
+    <path
+      d="M8 1.9v1.8M8 12.3v1.8M1.9 8h1.8M12.3 8h1.8M3.7 3.7l1.3 1.3M11 11l1.3 1.3M12.3 3.7 11 5M5 11l-1.3 1.3"
+    />`)}function Eu(e){return`${e} \uC644\uB8CC\uB41C \uC774\uC288\uB4E4\uC774 \uC0DD\uC560 \uC804\uCCB4\uC5D0 \uC4F4 \uD1A0\uD070 \uB204\uC801 (\uC785\uB825+\uCD9C\uB825+\uCE90\uC2DC). \uC774 \uAE30\uAC04\uC5D0 \uC18C\uBAA8\uB41C \uC591\uC774 \uC544\uB2C8\uB2E4`}function Tu(e){let t=(Array.isArray(e)?e:[]).map(i=>i&&i.usage).filter(i=>i&&typeof i=="object"&&"providers"in i);if(t.length>0)return Wt(Vs(t));let r={};for(let i of kr)r[i]=0;let n=!1,s=0,o=0,a=0;for(let i of Array.isArray(e)?e:[]){let c=i&&i.usage;if(c&&typeof c=="object"){let u=!1;for(let d of kr){let p=c[d];typeof p=="number"&&Number.isFinite(p)&&(r[d]+=p,n=!0,u=!0)}if(u){o+=1;let d=c.total_cost_usd;typeof d=="number"&&Number.isFinite(d)&&(s+=d,a+=1)}}}return o>0&&a===o&&(r.total_cost_usd=s),n?$r(r):null}var Ru="beads-ui.monitor.deck";function og(){try{let e=window.localStorage.getItem(Ru);if(!e)return{quiet_open:!1};let t=JSON.parse(e);return{quiet_open:!!t&&typeof t=="object"&&t.quiet_open===!0}}catch{return{quiet_open:!1}}}function ag(e){try{window.localStorage.setItem(Ru,JSON.stringify(e))}catch{}}function hr(e){return!!e&&typeof e=="object"&&!Array.isArray(e)}function Fr(e,t){let r=hr(e?.counts)?e.counts:null,n=r?r[t]:null;return typeof n=="number"&&Number.isFinite(n)?n:0}function Cu(e){return Fr(e,"running")>0||Fr(e,"queue")>0||Fr(e,"pr_wait")>0||Fr(e,"runnable")>0}function ig(e,t){if(!hr(t))return e;let r={...e};for(let[n,s]of Object.entries(t))s!==void 0&&(r[n]=s);return r}function lg(e){if(!hr(e)||!hr(e.execution_defaults)||!hr(e.runner_catalog)||!hr(e.session_defaults))return null;let t={...e.session_defaults};for(let a of["orchestration_model","orchestration_effort","orchestration_speed"])typeof e[a]=="string"&&e[a].length>0&&(t[a]=e[a]);let r=Qt({global:t,execution_defaults:e.execution_defaults,runner_catalog:e.runner_catalog}),n=gr(e.runner_catalog,r.orchestration_model.value??""),s=sn(r,e.runner_catalog),o=qr(r,n);return s===null&&o===null?null:{orchestration:s,worker:o}}function Iu(e,t){let r=t.notify||(E=>he(E,"error",4e3)),n=document.createElement("div");n.className="mon2-deck__main",e.appendChild(n);let s=document.createElement("div");s.className="mon2-deck__panel",s.hidden=!0;let o=document.createElement("div");o.className="mon2-deck__panel-hd";let a=document.createElement("span");a.className="mon2-deck__panel-title";let i=document.createElement("button");i.type="button",i.className="mon2-deck__panel-close",i.setAttribute("aria-label","\uC2E4\uD589 \uC124\uC815 \uB2EB\uAE30"),i.textContent="\u2715",o.append(a,i);let c=document.createElement("div");c.className="mon2-deck__panel-body",s.append(o,c),e.appendChild(s);let u=og(),d=null,p=null,m=null,v=new Map;function C(){let E=t.workspacesState?t.workspacesState():[];return Array.isArray(E)?E.filter(D=>hr(D)):[]}function F(E){return C().find(D=>D.root_dir===E)||null}function H(E){return ig(F(E),v.get(E))}function re(){for(let E of C()){let D=v.get(E.root_dir);D&&typeof D.revision=="number"&&typeof E.revision=="number"&&E.revision>=D.revision&&v.delete(E.root_dir)}}async function V(E,D,ce){let $e=t.transport,ge=H(D);if(!(!$e||!hr(ge))){try{let Oe=await $e(E,{...ce,root_dir:D,expected_revision:ge.revision});if(hr(Oe?.queue)&&v.set(D,Oe.queue),Oe&&Oe.conflict){let _t=hr(Oe.queue)&&typeof Oe.queue.revision=="number"?Oe.queue.revision:H(D)?.revision;Oe=await $e(E,{...ce,root_dir:D,expected_revision:_t}),hr(Oe?.queue)&&v.set(D,Oe.queue)}}catch(Oe){r(`\uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: ${Oe instanceof Error?Oe.message:String(Oe)}`)}we()}}function q(E){d!==E&&(d=E,t.onFocusChange?.(d),we())}function O(E){q(d===E?null:E)}function P(E){if(p===E){$();return}I(),p=E;let D=F(E);a.textContent=`${D?.name||E} \uC2E4\uD589 \uC124\uC815 \xB7 Worker \uD0ED \u2699 \uC2E4\uD589 \uD0ED\uACFC \uAC19\uC740 \uC800\uC7A5\uC18C`,s.hidden=!1,m=To(c,{root_dir:E,queue:()=>H(E),transport:t.transport,implPresetStore:t.implPresetStore,notify:r,onQueueAdopt:ce=>{v.set(E,ce),we()}}),m.load(),we()}function I(){m?.destroy(),m=null}function $(E){I(),p=null,s.hidden=!0,a.textContent="",E!==!0&&we()}let M=()=>$();i.addEventListener("click",M);function K(E){E.key==="Escape"&&d!==null&&q(null)}document.addEventListener("keydown",K);function pe(E,D){let ce=Math.max(D,E,1);return l`<span
+      class="mon2-deck__rail"
+      role="img"
+      aria-label=${`\uC2AC\uB86F ${D}\uAC1C \uC911 ${E}\uAC1C \uC2E4\uD589 \uC911`}
+    >
+      ${Array.from({length:ce},($e,ge)=>ge<E?l`<i class="mon2-deck__slot is-run"></i>`:l`<i class="mon2-deck__slot"></i>`)}
+    </span>`}function _e(E){let D=E.auto_advance===!0,ce=E.auto_merge===!0;return l`<button
+        type="button"
+        class=${`mon2-deck__op mon2-deck__auto${D?" is-on":""}`}
+        data-act="auto"
+        aria-pressed=${D?"true":"false"}
+        aria-label=${`${E.name} \uC790\uB3D9\uD654`}
+        title=${D?"\uC790\uB3D9\uD654 \uCF1C\uC9D0 \u2014 \uC2AC\uB86F\uC774 \uBE44\uBA74 \uB2E4\uC74C \uD589\uC774 \uCD9C\uBC1C\uD569\uB2C8\uB2E4":"\uC790\uB3D9\uD654 \uAEBC\uC9D0 \u2014 \uB2E4\uC74C \uD589\uC740 \uC218\uB3D9\uC73C\uB85C\uB9CC \uCD9C\uBC1C\uD569\uB2C8\uB2E4"}
       >
-        <span>${r.label}</span>
+        ${D?$u():ku()}
+        <span class="mon2-deck__op-label">자동화</span>
+      </button>
+      <button
+        type="button"
+        class=${`mon2-deck__op mon2-deck__merge${ce?" is-on":""}`}
+        data-act="merge"
+        aria-pressed=${ce?"true":"false"}
+        aria-label=${`${E.name} \uC790\uB3D9 \uBA38\uC9C0`}
+        title=${ce?"\uC790\uB3D9 \uBA38\uC9C0 \uCF1C\uC9D0 \u2014 \uC790\uACA9\uC774 \uC0DD\uAE30\uB294 PR\uC744 \uACC4\uC18D \uBA38\uC9C0\uD569\uB2C8\uB2E4":"\uC790\uB3D9 \uBA38\uC9C0 \uAEBC\uC9D0"}
+      >
+        ${xu()}
+        <span class="mon2-deck__op-label">머지</span>
+      </button>
+      <button
+        type="button"
+        class=${`mon2-deck__op mon2-deck__gear${p===E.root_dir?" is-on":""}`}
+        data-act="gear"
+        aria-expanded=${p===E.root_dir?"true":"false"}
+        aria-label=${`${E.name} \uC2E4\uD589 \uC124\uC815`}
+        title="이 레포의 실행 설정"
+      >
+        ${Su()}
+      </button>`}function me(E){let D=lg(E);return D?l`<div class="mon2-deck__chips">
+      ${D.orchestration?l`<span class="mon2-deck__chip" title=${D.orchestration.title}
+            >오케 ${D.orchestration.text}</span
+          >`:""}
+      ${D.worker?l`<span class="mon2-deck__chip" title=${D.worker.title}
+            >워커 ${D.worker.text}</span
+          >`:""}
+    </div>`:""}function ae(E){let D=Fr(E,"running"),ce=typeof E.slots=="number"?E.slots:1;return l`<div
+      class=${`mon2-deck__tile${d===E.root_dir?" is-focus":""}`}
+      role="button"
+      tabindex="0"
+      data-root-dir=${E.root_dir}
+      aria-pressed=${d===E.root_dir?"true":"false"}
+      title="클릭하면 이 레포만 선명하게 봅니다 (Esc로 해제)"
+    >
+      <div class="mon2-deck__tile-hd">
+        <span class="mon2-deck__name" title=${E.root_dir}>${E.name}</span>
         <button
           type="button"
-          class="mon-blocker__remove"
-          data-blocker-id=${r.id}
-          aria-label=${`\uC120\uD589 ${r.id} \uC5F0\uACB0 \uD574\uC81C`}
-          title="직렬 연결 해제"
+          class="mon2-deck__worker"
+          data-act="worker"
+          title="이 레포의 Worker 탭으로 이동"
         >
-          ✕
+          Worker ↗
         </button>
-      </span>`)}function Eu(e){let t=Array.isArray(e.blocker_warnings)?e.blocker_warnings:[];return t.length>0?i`<div class="mon-blocker-warnings">
-        ${t.map(r=>i`<div class="mon-blocker-warning">${r}</div>`)}
-      </div>`:""}function Tu(){return i`<span class="mon-link mon-popover-owner">
+      </div>
+      <div class="mon2-deck__slots">
+        ${Au()} ${pe(D,ce)}
+        <span class="mon2-deck__counts"
+          >${D}/${ce} 실행 · 대기 ${Fr(E,"queue")} · PR
+          ${Fr(E,"pr_wait")}</span
+        >
+      </div>
+      <div class="mon2-deck__ops">${_e(E)}</div>
+      ${me(E)}
+    </div>`}function Ie(E){let D=typeof E.slots=="number"?E.slots:1;return l`<div
+      class=${`mon2-deck__pill${d===E.root_dir?" is-focus":""}`}
+      role="button"
+      tabindex="0"
+      data-root-dir=${E.root_dir}
+      aria-pressed=${d===E.root_dir?"true":"false"}
+    >
+      <span class="mon2-deck__name" title=${E.root_dir}>${E.name}</span>
+      ${pe(0,D)} ${_e(E)}
+      <button
+        type="button"
+        class="mon2-deck__worker"
+        data-act="worker"
+        title="이 레포의 Worker 탭으로 이동"
+      >
+        ↗
+      </button>
+    </div>`}function Te(E){let D=t.doneItems?t.doneItems():[],ce=t.rangeLabel?t.rangeLabel():"",$e=Tu(Array.isArray(D)?D:[]),ge=Oe=>E.reduce((_t,He)=>_t+Fr(He,Oe),0);return l`<div
+      class="mon2-deck__total"
+      title=${`visible \uB808\uD3EC ${E.length}\uACF3\uC758 \uD569\uACC4\uC785\uB2C8\uB2E4 \u2014 \uC2E4\uD589\xB7\uB300\uAE30\xB7PR\uC740 \uC9C0\uAE08, \uC644\uB8CC\uB294 ${ce}`}
+    >
+      <div class="mon2-deck__total-counts">
+        실행 ${ge("running")} · 대기 ${ge("queue")} · PR ${ge("pr_wait")} ·
+        ${ce} 완료 ${Array.isArray(D)?D.length:0}
+      </div>
+      ${$e===null?"":l`<div class="mon2-deck__total-tokens">
+            ${typeof $e=="string"?l`<span
+                  class="mon2-deck__tok"
+                  title=${Eu(ce)}
+                  >τ ${$e}</span
+                >`:$e.map(Oe=>l`<span
+                      class="mon2-deck__tok"
+                      data-provider=${Oe.provider}
+                      title=${Oe.tooltip}
+                      >τ ${Oe.label}</span
+                    >`)}
+          </div>`}
+    </div>`}function ne(){let E=C();if(E.length===0)return"";let D=E.filter($e=>Cu($e)),ce=E.filter($e=>!Cu($e));return l`<div class="mon2-deck__row">
+        ${Te(E)}
+        <div class="mon2-deck__strip">
+          ${D.map($e=>ae($e))}
+        </div>
+      </div>
+      ${ce.length===0?"":l`<div
+            class=${`mon2-deck__quiet${u.quiet_open?" is-open":""}`}
+          >
+            <button
+              type="button"
+              class="mon2-deck__quiet-toggle"
+              aria-expanded=${u.quiet_open?"true":"false"}
+            >
+              ${u.quiet_open?"\u25BE":"\u25B8"} 파이프라인 없음
+              ${ce.length}
+            </button>
+            ${u.quiet_open?l`<div class="mon2-deck__pills">
+                  ${ce.map($e=>Ie($e))}
+                </div>`:""}
+          </div>`}`}function se(){d!==null&&!F(d)&&(d=null,t.onFocusChange?.(null))}function we(){re(),se(),p!==null&&!F(p)&&$(!0),Ve(ne(),n),m?.render()}function A(E){let D=E.target;if(!D||typeof D.closest!="function")return;if(D.closest(".mon2-deck__quiet-toggle")){u={quiet_open:!u.quiet_open},ag(u),we();return}let $e=D.closest("[data-root-dir]");if(!$e)return;let ge=$e.getAttribute("data-root-dir")||"",Oe=D.closest("[data-act]")?.getAttribute("data-act");if(Oe==="worker"){t.gotoWorkerTab?.(ge);return}if(Oe==="auto"){V("worker-automation-toggle",ge,{on:H(ge)?.auto_advance!==!0});return}if(Oe==="merge"){V("worker-merge-auto-toggle",ge,{on:H(ge)?.auto_merge!==!0});return}if(Oe==="gear"){P(ge);return}O(ge)}function ue(E){if(E.key!=="Enter"&&E.key!==" ")return;let D=E.target;if(!D||typeof D.closest!="function")return;let ce=D.closest('[data-root-dir][role="button"]');!ce||ce!==D||(E.preventDefault(),O(ce.getAttribute("data-root-dir")||""))}return n.addEventListener("click",A),n.addEventListener("keydown",ue),{render:we,focusRoot:()=>d,panelRoot:()=>p,destroy(){document.removeEventListener("keydown",K),n.removeEventListener("click",A),n.removeEventListener("keydown",ue),i.removeEventListener("click",M),I(),Ve(l``,n),e.replaceChildren()}}}var Lu={running:3,paused:2,failed:1};function Ou(e,t){let r=Object.values(e||{}),n=new Set,s=new Map;for(let a of r)!a||typeof a.bead_id!="string"||(typeof a.resumed_from=="string"&&a.resumed_from.length>0&&n.add(a.resumed_from),s.set(a.bead_id,a.attempt_id));let o=new Map;for(let a of r){if(!a||typeof a.bead_id!="string"||a.bead_id.length===0)continue;let i=null;if(a.status==="running")i="running";else if(a.status==="paused"&&!n.has(a.attempt_id))i="paused";else if(a.status==="failed"||a.status==="orphaned"){let d=t.get(a.bead_id),p=typeof d=="number"&&d>0&&typeof a.finished_at=="number"&&d>=a.finished_at;s.get(a.bead_id)===a.attempt_id&&!p&&typeof a.dismissed_at!="number"&&(i="failed")}if(!i)continue;let c=typeof a.started_at=="number"?a.started_at:null,u=o.get(a.bead_id);if(u){let d=Lu[u.run_state],p=Lu[i];if(d>p||d===p&&(u.started_at??0)>(c??0))continue}o.set(a.bead_id,{attempt:a,run_state:i,started_at:c})}return{winners:o,resumed_from_ids:n}}var Pu=[{step:"merge",label:"\uBA38\uC9C0",index:1},{step:"base",label:"base",index:2},{step:"verify",label:"\uAC80\uC99D",index:3},{step:"deploy",label:"\uBC30\uD3EC",index:4},{step:"child",label:"\uC790\uC2DD",index:5},{step:"branch",label:"\uBE0C\uB79C\uCE58",index:6},{step:"close",label:"close",index:7}],ps=[{step:"base_containment",label:"base \uD3EC\uD568 \uD655\uC778"},{step:"repo_operations",label:"\uC800\uC7A5\uC18C \uC791\uC5C5"},{step:"child_sweep",label:"\uC790\uC2DD \uC815\uB9AC"},{step:"branch_cleanup",label:"\uBE0C\uB79C\uCE58 \uC815\uB9AC"},{step:"parent_close",label:"\uBD80\uBAA8 close"}];function Co(e,t){let r=Pu.find(s=>s.step===e);if(!r)return null;let n=Pu.length;return{step:r.step,label:t,index:r.index,total:n,percent:Math.round(r.index/n*100)}}function Mu(e){let t=ps.findIndex(r=>r.step===e);return ps.map((r,n)=>({step:r.step,label:r.label,state:t<0?"todo":n<t?"done":n===t?"stall":"todo"}))}function on(e){let t=ps.find(r=>r.step===e);return t?t.label:typeof e=="string"?e:""}function cg(e){let t=ps.findIndex(r=>r.step===e);return t<0?null:{index:t+1,total:ps.length}}function Ro(e){let t=cg(e);return t?`\uBA38\uC9C0 \uC644\uB8CC \xB7 \uC815\uB9AC ${t.total}\uB2E8\uACC4 \uC911 ${t.index}\uB2E8\uACC4\uC5D0\uC11C \uBA48\uCDA4`:"\uBA38\uC9C0\uB428 \xB7 \uC815\uB9AC \uBBF8\uC644"}var Ja=new Set(["queued","running","retry_pending","repairing"]),Du=new Set(["failed","succeeded"]),ug={queued:"\uB300\uAE30",running:"\uC911",retry_pending:"\uC7AC\uC2DC\uB3C4 \uB300\uAE30",repairing:"\uC790\uB3D9 \uD574\uACB0 \uC911",failed:"\uC2E4\uD328",succeeded:"\uC644\uB8CC \xB7 \uC815\uB9AC \uC7AC\uAC1C \uB300\uAE30"},fs={base_containment:{step:"base",label:"base \uD655\uC778 \uC911"},child_sweep:{step:"child",label:"\uC790\uC2DD \uC815\uB9AC \uC911"},branch_cleanup:{step:"branch",label:"\uBE0C\uB79C\uCE58 \uC815\uB9AC \uC911"},parent_close:{step:"close",label:"\uBD80\uBAA8 close \uC911"}},dg={merging:{step:"merge",label:"\uBA38\uC9C0 \uC911"},base_containment:fs.base_containment,child_sweep:fs.child_sweep,branch_cleanup:fs.branch_cleanup,parent_close:fs.parent_close};function pg(e){return typeof e=="string"&&/^[0-9a-f]{40}$/.test(e)}function fg(e,t,r){return!["verify","deploy"].includes(e.kind)||![...Ja,...Du].includes(e.state)||![null,void 0,""].includes(e.superseded_by)||!Array.isArray(e.subjects)?!1:e.subjects.some(n=>n&&typeof n=="object"&&n.bead_id===t&&n.merged_sha===r)}function _g(e,t){let r=(t.kind==="deploy"?2:1)-(e.kind==="deploy"?2:1);if(r!==0)return r;let n=u=>u.state==="succeeded"?1:2,s=n(t)-n(e);if(s!==0)return s;let o=typeof e.requested_at=="number"?e.requested_at:0,a=typeof t.requested_at=="number"?t.requested_at:0;if(o!==a)return a-o;let i=typeof e.operation_id=="string"?e.operation_id:"",c=typeof t.operation_id=="string"?t.operation_id:"";return i.localeCompare(c)}function Xa(e,t=!1){let r=e.kind,n=r==="verify"?"\uAC80\uC99D":"\uBC30\uD3EC",s=t?"failed":e.state,o=ug[s];if(!o)return null;let a=Co(r,`${n} ${o}`);return a?{...a,active:Ja.has(s),failed:s==="failed"}:null}function mg(e){return!e||typeof e!="object"?null:dg[e.step]||null}function _s(e){if(!e||typeof e.bead_id!="string")return null;let t=e.bead_id,r=e.merge_progress&&typeof e.merge_progress=="object"?e.merge_progress:{},n=mg(r),s=e.cleanup_failed&&typeof e.cleanup_failed=="object"?e.cleanup_failed:null,o=["child_sweep","branch_cleanup","parent_close"].includes(typeof e.cleanup_cursor=="string"?e.cleanup_cursor:""),a=!o&&(e.cleanup_cursor==="repo_operations"||r.step==="repo_operations"),i=pg(e.merge_sha)?e.merge_sha:null,c=!o&&i&&Array.isArray(e.repo_operations)?e.repo_operations.filter(C=>C&&typeof C=="object"&&fg(C,t,i)).sort(_g):[],u=a?c:[],d=u.find(C=>Ja.has(C.state));if(d)return Xa(d);if(s)return s.step==="repo_operations"&&c[0]?Xa(c[0],!0):null;let p=u.find(C=>Du.has(C.state)?C.state!=="succeeded"||e.cleanup_cursor==="repo_operations":!1);if(p)return Xa(p);if(n){let C=Co(n.step,n.label);return C?{...C,active:!0,failed:!1}:null}let m=typeof e.cleanup_cursor=="string"?fs[e.cleanup_cursor]:null;if(!m)return null;let v=Co(m.step,m.label);return v?{...v,active:!0,failed:!1}:null}function Io(e){return!!e&&e.step!=="merge"&&e.failed!==!0}var Nu=1,ms=[{value:"repo_spec",label:"\uB808\uD3EC \xB7 spec \uC6B0\uC120"},{value:"repo_updated",label:"\uB808\uD3EC \xB7 \uCD5C\uC2E0 \uC218\uC815"},{value:"updated_flat",label:"\uCD5C\uC2E0 \uC218\uC815(\uB808\uD3EC \uBB34\uC2DC)"}],ei=[{value:"all",label:"\uC804\uCCB4"},{value:"with",label:"spec \uC788\uC74C"},{value:"without",label:"spec \uC5C6\uC74C"}],Pn={show_blocked:!0,spec:"all"},qu={auto_merge:"\uC790\uB3D9 \uBA38\uC9C0",merged:"\uBA38\uC9C0",merge:"\uBA38\uC9C0",pr_stop:"PR \uC911\uB2E8",stopped:"\uC911\uB2E8",failed:"\uC2E4\uD328"};function gg(e,t){let r=null,n=-1/0;for(let s of Object.values(e)){if(!s||s.bead_id!==t||s.status==="running")continue;let o=typeof s.finished_at=="number"?s.finished_at:typeof s.started_at=="number"?s.started_at:0;o>=n&&(n=o,r=s)}return r}function hg(e,t){let{winners:r,resumed_from_ids:n}=Ou(e,t),s=new Map;for(let[o,a]of r){let i=a.attempt,c=a.run_state,u=a.started_at,d=typeof i.session_id=="string"&&i.session_id.length>0;s.set(o,{attempt_id:typeof i.attempt_id=="string"?i.attempt_id:"",run_state:c,started_at:u,last_event_at:typeof i.last_event_at=="number"?i.last_event_at:null,last_activity:i.last_activity&&typeof i.last_activity=="object"?i.last_activity:null,legs:Array.isArray(i.legs)?i.legs:[],runner:typeof i.runner=="string"?i.runner:null,model:typeof i.model=="string"?i.model:null,effort:typeof i.effort=="string"?i.effort:null,speed:typeof i.speed=="string"?i.speed:null,resumed_from:typeof i.resumed_from=="string"?i.resumed_from:null,continuation_mode:i.continuation_mode==="session"||i.continuation_mode==="fresh"?i.continuation_mode:null,status:typeof i.status=="string"?i.status:null,usage:lr(e,i.bead_id),can_pause:c==="running"&&d,can_resume:c!=="running"&&d&&!n.has(i.attempt_id)})}return s}function Fu(e,t){let r=e[t];if(!r)return"";if(r.stale===!0)return"\u267B\uFE0F stale\u2192\uC7AC\uB9AC\uBDF0";let n=typeof r.reason=="string"?r.reason:"",s=n.indexOf(":");return s>0&&s<n.length-1?`\u26D4 ${n.slice(0,s)} (${n.slice(s+1)})`:`\u26D4 ${n}`}function Rt(e){return e&&typeof e=="object"?e:{}}function bg(e,t,r){let n=Rt(t);if(Object.keys(n).length===0)return null;let s=e.execution_defaults,o=e.runner_catalog,a=e.session_defaults;if(!s||!o||!a)return null;let i=m=>Qt({pin:m,global:a,execution_defaults:s,runner_catalog:o,route:r}),c,u;try{c=i(n),u=i(null)}catch{return null}let d=ju(sn(c,o),sn(u,o)),p=ju(qr(c,null),qr(u,null));return d||p?{orchestration:d,worker:p}:null}function ju(e,t){return!e||t&&t.text===e.text?null:e}function yg(e){return{id:e.id,label:`\u{1F512} \uC120\uD589 ${e.id} (${e.location_label})`,title:`\uC774 \uC774\uC288\uB294 ${e.id}\uAC00 close\uB420 \uB54C\uAE4C\uC9C0 \uCD9C\uBC1C\uD558\uC9C0 \uC54A\uB294\uB2E4`}}function vg(e,t){let r=t.get(e);return r?{id:e,label:`\u2192 \uD6C4\uC18D ${e} (${On(r)})`,title:`\uC774 \uC774\uC288\uAC00 close\uB418\uBA74 ${e}\uAC00 \uC790\uAE30 \uB808\uD3EC \uD050\uC5D0\uC11C \uCD9C\uBC1C\uD55C\uB2E4`}:null}function wg(e,t,r){let n=new Map;for(let c of e)n.set(c,Array.from(r.get(c)||[]).filter(u=>e.includes(u)).length);let s=[],o=new Map,a=e.filter(c=>(n.get(c)||0)===0).sort();for(let c of a)o.set(c,0);let i=[...a];for(;i.length>0;){let c=i.shift();s.push(c);let u=Array.from(t.get(c)||[]).filter(p=>e.includes(p)).sort(),d=(o.get(c)||0)+(u.length>1?1:0);for(let p of u){let m=(n.get(p)||0)-1;n.set(p,m);let v=o.get(p);o.set(p,v===void 0?d:Math.min(v,d)),m===0&&i.push(p)}}return{order:s,indent:o,cycle:s.length!==e.length}}function kg(e,t,r){let n=new Map,s=new Map,o=new Set,a=(u,d,p)=>{let m=u.get(d);m?m.add(p):u.set(d,new Set([p]))};for(let[u,d]of e)for(let p of d)p!==u&&(o.add(p),o.add(u),a(n,p,u),a(s,u,p));let i=new Set,c=[];for(let u of Array.from(o).sort()){if(i.has(u))continue;let d=[],p=[u];for(i.add(u);p.length>0;){let V=p.pop();d.push(V);for(let q of[...n.get(V)||[],...s.get(V)||[]])i.has(q)||(i.add(q),p.push(q))}if(d.length<2)continue;let m=d.map(V=>t.get(V));if(m.every(V=>!!V&&/^s[1-5]$/.test(V.lane||""))&&m.every(V=>V&&m[0]&&V.root_dir===m[0].root_dir&&V.lane===m[0].lane))continue;let{order:C,indent:F,cycle:H}=wg(d.slice().sort(),n,s),re=H?d.slice().sort():C;c.push({key:re.join("\0"),cycle:H,nodes:re.map(V=>{let q=t.get(V);return{id:V,workspace_name:q?q.workspace_name:"",root_dir:q?q.root_dir:"",location_label:q?On(q):$g(V,r),indent:H?0:F.get(V)||0}})})}return c}function $g(e,t){let r=Ya(e,t);return r==="internal"?"\uBBF8\uC801\uC7AC":r==="external"?"\uC678\uBD80":"\uC704\uCE58 \uBBF8\uD655\uC778"}function Bu(e){if(typeof e=="number"&&Number.isFinite(e))return e;if(typeof e=="string"){let t=Date.parse(e);return Number.isFinite(t)?t:0}return 0}function ti(e,t,r){let n=Array.isArray(e)?e:[],s=Array.isArray(t)?t:[],o=r&&typeof r.done_since=="number"?r.done_since:void 0,a={...Pn,...r&&r.candidate_filter?r.candidate_filter:{}},i=r&&ms.some(A=>A.value===r.candidate_sort)?r.candidate_sort:"repo_spec",c=new Map;for(let A of s)A&&typeof A.root_dir=="string"&&c.set(A.root_dir,A);let u=[],d=[],p=[],m=[],v=[],C=[],F=new Map,H=new Map,re=new Map,V=new Map,q=new Map;for(let A of n){if(!A||typeof A.root_dir!="string")continue;let ue=A.root_dir,E=A.name||ue,D=c.get(ue),ce=D&&typeof D.revision=="number"?D.revision:typeof A.revision=="number"?A.revision:0,$e=Rt(A.attempts),ge=Rt(A.bead_titles),Oe=Rt(A.bead_times),_t=Rt(A.pr_observations),He=Rt(A.admission),pt=Rt(A.revise_parked),tt=Rt(A.merge_queue_state),Y=Rt(A.cleanup_failed),Z=Rt(A.discard_operations),Se=Rt(A.bead_blocked_by),Ze=Rt(A.bead_workflow),je=Rt(A.pr_activity),rt=Array.isArray(A.repo_operations)?A.repo_operations:[],Qe=Array.isArray(A.merge_queue)?A.merge_queue:[],yt=new Set(Qe.filter(U=>U&&typeof U.bead_id=="string").map(U=>U.bead_id)),Le=new Map(Qe.filter(U=>U&&typeof U.bead_id=="string").map(U=>[U.bead_id,U])),T=Array.isArray(A.queue)?A.queue:[],Q=(Array.isArray(A.serial_lanes)?A.serial_lanes:[]).filter(U=>U&&/^s[1-5]$/.test(U.id)&&Array.isArray(U.entries)),Ee=Rt(A.lane_states),ee=typeof A.serial_lane_count=="number"?Math.max(0,Math.min(5,Math.floor(A.serial_lane_count))):Math.min(5,Q.length);re.set(ue,ee),V.set(ue,T.length);let Ne=new Map(Q.map(U=>[U.id,U])),et=new Map;for(let U of Q)for(let J of U.entries)J&&typeof J.bead_id=="string"&&et.set(J.bead_id,U.id);for(let[U,J]of Object.entries(Se))Array.isArray(J)&&q.set(U,J.filter(be=>typeof be=="string"&&be.length>0));let st=Array.isArray(A.done)?A.done:[];for(let U of st)U&&typeof U.bead_id=="string"&&C.push({id:U.bead_id,root_dir:ue,workspace_name:E});let Ye=new Map;for(let U of st)U&&typeof U.bead_id=="string"&&typeof U.added_at=="number"&&Ye.set(U.bead_id,U.added_at);let ct=U=>({id:U,title:ge[U]||U,root_dir:ue,workspace_name:E,expected_revision:ce,draggable:!1,...Rt(Oe[U]).created_at?{created_at:Rt(Oe[U]).created_at}:{},...Rt(Oe[U]).updated_at?{updated_at:Rt(Oe[U]).updated_at}:{}}),ft=new Set;for(let[U,J]of hg($e,Ye))ft.add(U),d.push({...ct(U),lane:"running",...et.has(U)?{serial_lane_id:et.get(U)}:{},attempt_id:J.attempt_id,run_state:J.run_state,status:J.status||void 0,workflow:Ze[U]||null,can_pause:J.can_pause,can_resume:J.can_resume,started_at:J.started_at,last_event_at:J.last_event_at,last_activity:J.last_activity,legs:J.legs,runner:J.runner,model:J.model,effort:J.effort,speed:J.speed,resumed_from:J.resumed_from,continuation_mode:J.continuation_mode,usage:J.usage,exec_chips:{orchestration:So(J),worker:null},discard:yr(Z,U,{attempt_id:J.attempt_id}),badges:J.run_state==="paused"?["\u23F8 \uC77C\uC2DC\uC815\uC9C0"]:J.run_state==="failed"?["\u26A0 \uC2E4\uD328"]:[],alert:J.run_state==="failed"});for(let U of Array.isArray(A.pr_wait)?A.pr_wait:[]){let J=U&&U.bead_id;if(typeof J!="string"||ft.has(J))continue;ft.add(J);let be=Rt(_t[J]),Ge=Rt(be.pr),De=be.gate?Rt(be.gate):null,B=yt.has(J),te=Le.get(J)?.continuation_action||null,ve=!!te&&te.continuation===null,y=tt.active===J,R=U.external===!0,W=Y[J]||null,oe=Rt(je[J]),Ce=_s({bead_id:J,merge_sha:U.merge_sha,cleanup_cursor:U.cleanup_cursor,merge_progress:oe.merge_progress||null,cleanup_failed:W,repo_operations:rt}),Ae=Io(Ce),Me=!!De&&De.base_badge==="\uCDA9\uB3CC",Be=!!W&&["child_sweep","branch_cleanup","parent_close"].includes(W.step)&&!!De&&De.tier==="merged",At=R&&!!W&&!!De&&De.tier==="merged",vt=!!De&&["closed_unmerged","review","undecidable"].includes(De.tier),h=yr(Z,J,{external:R,merge_active:y||Ce?.step==="merge",merge_queued:B,cleanup_active:Ae,merged:!!W||De?.tier==="merged"}),x=!!h.operation;p.push({...ct(J),lane:"pr_wait",pr_number:typeof Ge.number=="number"?Ge.number:null,pr_url:typeof Ge.url=="string"?Ge.url:void 0,external:R,usage:lr($e,J),merge_step:Ce,badges:ve?["\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD \uD544\uC694"]:Ce?[De?.tier==="merged"?"\uBA38\uC9C0\uB428":"\uBA38\uC9C0 \uC911"]:W?[on(W.step)?`\uC815\uB9AC \uBA48\uCDA4 \xB7 ${on(W.step)}`:"\uC815\uB9AC \uBA48\uCDA4"]:typeof De?.gate_badge=="string"&&De.gate_badge.length>0?[De.gate_badge]:[],alert:Ce?Ce.failed===!0:!!W||vt,reason:W&&Ce?.active!==!0?Ro(W.step):"PR \uB300\uAE30",merge_action:De?.tier==="merged"&&!Be&&!At?!1:!B||ve,merge_enabled:!x&&(ve||De?.enabled===!0||Me||Be||At),merge_label:ve?"\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD":At||Be?"\uC815\uB9AC \uC7AC\uAC1C":Me&&!Be?"\uCDA9\uB3CC \uD574\uC18C \uD6C4 \uBA38\uC9C0":void 0,merge_title:ve?"\uC2E4\uD589 provider\uAC00 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4 \u2014 \uC774\uC5B4\uAC08 \uBC29\uC2DD\uC744 \uC120\uD0DD\uD558\uC138\uC694":x?h.error?`\uD3D0\uAE30 \uC2E4\uD328: ${h.error} \u2014 [\uC7AC\uC2DC\uB3C4]\uD558\uAC70\uB098 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC138\uC694`:`\uD3D0\uAE30 \uC9C4\uD589 \uC911 \u2014 ${h.progress||"\uC644\uB8CC\uB97C \uAE30\uB2E4\uB9AC\uC138\uC694"}`:At?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uC2E4\uD328\uD55C \uC815\uB9AC\uB97C \uC7AC\uAC1C\uD569\uB2C8\uB2E4":Be?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uB0A8\uC740 \uC815\uB9AC\uB97C \uC2E4\uD328 \uB2E8\uACC4\uBD80\uD130 \uC7AC\uAC1C\uD569\uB2C8\uB2E4":Me?"\uCDA9\uB3CC \u2014 \uD050\uC5D0 \uB123\uC73C\uBA74 \uD574\uC18C \uC138\uC158\uC744 \uB744\uC6B0\uACE0 \uC644\uB8CC \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC7AC\uBA38\uC9C0\uD569\uB2C8\uB2E4":De?.enabled===!0?`\uBA38\uC9C0 (${De.gate_badge}) \u2014 \uD050\uC5D0 \uB123\uC5B4 \uC21C\uC11C\uB300\uB85C \uBA38\uC9C0\uD569\uB2C8\uB2E4`:`\uBA38\uC9C0 \uBD88\uAC00: ${De?.reason||"\uAD00\uCE21 \uB300\uAE30"}`,cancel_action:B&&!ve,cancel_enabled:!y,continuation_mismatch:te?.mismatch||null,discard:h,discard_action:h.action,discard_enabled:h.enabled,discard_title:h.title})}let ut=(U,J,be,Ge)=>{let De=U&&U.bead_id;if(typeof De!="string"||ft.has(De))return null;ft.add(De);let B=pt[De],te=yr(Z,De),ve=te.operation?te:null,y={...ct(De),lane:J,draggable:!ve,discard:ve||void 0,reason:Fu(He,De),seq:be+1,queue_position:be+1,queue_index:be,queue_length:Ge,badges:B?["\u23F8 REVISE \uD30C\uD0B9"]:[],alert:!!B,revise_action:!!B,revise_enabled:!!B&&!ve,revise_title:B?B.notes_tail?`REVISE findings (\uC790\uC138\uD788\uB294 \uCE74\uB4DC \uD074\uB9AD \u2192 \uC774\uC288 \uC0C1\uC138):
+${B.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC601\uD558\uB294 \uCC98\uBD84 \uC138\uC158\uC744 \uB744\uC6C1\uB2C8\uB2E4":""};return Object.hasOwn(Se,De)&&(y.blocked_by=Array.isArray(Se[De])?Se[De].filter(R=>typeof R=="string"&&R.length>0):[]),y};for(let U=0;U<T.length;U++){let J=ut(T[U],"queue",U,T.length);if(!J)continue;m.push(J);let be=F.get(ue);be?be.push(J):F.set(ue,[J])}let ot=[];for(let U=0;U<Math.max(ee,Q.length);U++){let J=`s${U+1}`,be=Ne.get(J),Ge=be&&Array.isArray(be.entries)?be.entries:[],De=[];for(let ve=0;ve<Ge.length;ve++){let y=ut(Ge[ve],J,ve,Ge.length);y&&(De.push(y),m.push(y))}let B=Rt(Ee[J]),te=Array.isArray(B.occupied_by)?B.occupied_by.filter(ve=>typeof ve=="string"):[];De.length===0&&te.length===0&&(ee<=1||U>=ee)||ot.push({id:J,index:U,items:De,raw_length:Ge.length,occupied_by:te,corrections:Array.isArray(B.corrections)?B.corrections.length:0,cycle:B.cycle===!0,...De.length===0&&te.length===0?{empty:!0}:{}})}H.set(ue,ot);let gt=Array.from({length:ee},(U,J)=>{let be=`s${J+1}`,Ge=Ne.get(be),De=Ge&&Array.isArray(Ge.entries)?Ge.entries:[],B=Rt(Ee[be]);return{id:be,index:De.length,length:De.length,occupied_by:Array.isArray(B.occupied_by)?B.occupied_by.filter(te=>typeof te=="string"):[]}});for(let U of Array.isArray(A.runnable)?A.runnable:[]){let J=U&&U.bead_id;if(typeof J!="string"||ft.has(J))continue;ft.add(J);let be=U.workflow&&typeof U.workflow=="object"?U.workflow:null,Ge=be&&typeof be.route=="string"&&be.route||(typeof U.route=="string"?U.route:null),De=bg(Rt(D),U.exec_pins,Ge);Array.isArray(U.blocked_by)&&U.blocked_by.length>0&&q.set(J,U.blocked_by.filter(B=>typeof B=="string"&&B.length>0)),u.push({...ct(J),title:U.title||ge[J]||J,lane:"runnable",draggable:!0,reason:Fu(He,J),created_at:U.created_at??void 0,updated_at:U.updated_at??void 0,status:typeof U.status=="string"?U.status:void 0,labels:Array.isArray(U.labels)?U.labels:[],spec_id:typeof U.spec_id=="string"?U.spec_id:"",workflow:be||(Ge?{route:Ge,chips:{route:Ge}}:null),...De?{exec_chips:De}:{},blocked:U.blocked===!0,...Array.isArray(U.blocked_by)?{blocked_by:U.blocked_by.filter(B=>typeof B=="string"&&B.length>0)}:{},place_index:T.length,place_lanes:gt})}for(let U of st){let J=U&&U.bead_id;if(typeof J!="string"||ft.has(J)||(ft.add(J),o!==void 0&&typeof U.added_at=="number"&&U.added_at<o))continue;let be=gg($e,J),Ge=be&&typeof be.done_kind=="string"?be.done_kind:null;v.push({...ct(J),lane:"done",done:!0,done_layout:"three_line",usage:lr($e,J),work_ms:vo($e,J),done_at:typeof U.added_at=="number"?U.added_at:void 0,done_kind:Ge,badges:Ge&&qu[Ge]?[qu[Ge]]:[]})}}let O=new Map;s.forEach((A,ue)=>{A&&typeof A.root_dir=="string"&&O.set(A.root_dir,ue)});let P=r&&r.running_sort==="repo"?"repo":"started";d.sort((A,ue)=>{if(P==="repo"){let ce=O.get(A.root_dir)??Number.MAX_SAFE_INTEGER,$e=O.get(ue.root_dir)??Number.MAX_SAFE_INTEGER;if(ce!==$e)return ce-$e}let E=typeof A.started_at=="number"&&Number.isFinite(A.started_at)?A.started_at:null,D=typeof ue.started_at=="number"&&Number.isFinite(ue.started_at)?ue.started_at:null;return E!==null&&D!==null&&E!==D?E-D:E===null&&D!==null?1:E!==null&&D===null?-1:A.id.localeCompare(ue.id)}),v.sort((A,ue)=>(ue.done_at??0)-(A.done_at??0));let I=s.length>0?s:n.map(A=>({root_dir:A&&A.root_dir,name:A&&A.name,auto_advance:A&&A.auto_advance,auto_merge:A&&A.auto_merge,slots:A&&A.slots,revision:A&&A.revision,runner_catalog:A&&A.runner_catalog})),$=new Set(u.map(A=>A.root_dir)),M=[];for(let A of I){if(!A||typeof A.root_dir!="string")continue;let ue=F.get(A.root_dir)||[],E=H.get(A.root_dir)||[];!(ue.length>0||E.some(ce=>ce.items.length>0||ce.occupied_by.length>0))&&!$.has(A.root_dir)||M.push({root_dir:A.root_dir,name:A.name||A.root_dir,auto_advance:A.auto_advance===!0,auto_merge:A.auto_merge===!0,slots:typeof A.slots=="number"&&A.slots>=Nu?A.slots:Nu,revision:typeof A.revision=="number"?A.revision:0,runner_catalog:Rt(A.runner_catalog),items:ue,sublanes:{parallel:ue,serial:E},serial_lane_count:re.get(A.root_dir)||0,raw_queue_length:V.get(A.root_dir)||0})}let K={runnable:u,runnable_hidden:{blocked:0,spec:0},runnable_sections:[],runnable_flat:i==="updated_flat",queue:m,queue_groups:M,running:d,pr_wait:p,done:v,chains:[]},pe=Va(K);for(let A of C)pe.has(A.id)||pe.set(A.id,{root_dir:A.root_dir,workspace_name:A.workspace_name,lane:"done",state:"done"});let _e=new Map;for(let[A,ue]of q)for(let E of ue){let D=_e.get(E);D?D.includes(A)||D.push(A):_e.set(E,[A])}for(let A of[...K.queue,...K.runnable]){if(!Object.hasOwn(A,"blocked_by"))continue;let ue=pe.get(A.id);A.blockers=(A.blocked_by||[]).map(E=>hu(E,ue,pe,s)),A.blocker_warnings=A.blockers.filter(E=>E.missing_internal).map(E=>`\u26A0 \uC120\uD589 ${E.id}\uAC00 \uC5B4\uB290 \uB808\uC778\uC5D0\uB3C4 \uC5C6\uACE0 \uC2E4\uD589 \uC911\uB3C4 \uC544\uB2D8 \u2014 \uC218\uB3D9 \uAC1C\uC785 \uC804\uAE4C\uC9C0 \uC774 \uC790\uB9AC\uC5D0\uC11C \uC815\uC9C0`),A.blocker_warnings.length>0&&(A.alert=!0)}for(let A of[...K.queue,...K.runnable,...K.running,...K.pr_wait]){let ue=A.lane==="running"||A.lane==="pr_wait"?[]:(A.blockers||[]).map(yg),E=[];for(let $e of _e.get(A.id)||[]){let ge=vg($e,pe);ge&&E.push(ge)}let D=A.lane==="running"||A.lane==="pr_wait"?[]:A.blocker_warnings||[];if(ue.length===0&&E.length===0&&D.length===0)continue;let ce={predecessors:ue,successors:E,warnings:D};A.dependency_chips=ce}K.chains=kg(q,pe,s);let me=bu(K.queue_groups);for(let A of K.queue_groups)for(let ue of A.sublanes.serial){let E=me.get(vu(A.root_dir,ue.id));E&&(ue.cross_wait_peers=E)}let ae=K.runnable.length,Ie=K.runnable;a.show_blocked||(Ie=Ie.filter(A=>A.blocked!==!0));let Te=Ie.length;a.spec==="with"?Ie=Ie.filter(A=>!!A.spec_id):a.spec==="without"&&(Ie=Ie.filter(A=>!A.spec_id)),K.runnable_hidden={blocked:ae-Te,spec:Te-Ie.length};let ne=(A,ue)=>{let E=Bu(ue.updated_at)-Bu(A.updated_at);return E!==0?E:A.id.localeCompare(ue.id)},we=i==="repo_spec"?(A,ue)=>{let E=A.spec_id?0:1,D=ue.spec_id?0:1;return E!==D?E-D:ne(A,ue)}:ne;if(i==="updated_flat")K.runnable=Ie.slice().sort(ne),K.runnable_sections=[];else{let A=new Map;for(let D of Ie){let ce=A.get(D.root_dir);ce?ce.push(D):A.set(D.root_dir,[D])}let ue=[],E=[];for(let D of I){if(!D||typeof D.root_dir!="string")continue;let ce=(A.get(D.root_dir)||[]).slice().sort(we);A.delete(D.root_dir),ce.length!==0&&(ue.push({root_dir:D.root_dir,name:D.name||D.root_dir,items:ce.map($e=>({...$e,workspace_name:""}))}),E.push(...ce))}for(let[D,ce]of A){let $e=ce.slice().sort(we);ue.push({root_dir:D,name:$e[0]?.workspace_name||D,items:$e.map(ge=>({...ge,workspace_name:""}))}),E.push(...$e)}K.runnable=E,K.runnable_sections=ue}return K}var zu="bdui.monitor.done-range",Hu="bdui.monitor.running_sort",Gu="bdui.monitor.candidate_sort",Ku="beads-ui.monitor.candidate-filter",Vu="beads-ui.monitor.sections";function xg(){try{let e=window.localStorage.getItem(Ku);if(!e)return{...Pn};let t=JSON.parse(e);return!t||typeof t!="object"?{...Pn}:{show_blocked:typeof t.show_blocked=="boolean"?t.show_blocked:Pn.show_blocked,spec:ei.some(r=>r.value===t.spec)?t.spec:"all"}}catch{return{...Pn}}}function Uu(e){try{window.localStorage.setItem(Ku,JSON.stringify({show_blocked:e.show_blocked,spec:e.spec}))}catch{}}function Ag(){try{let e=window.localStorage.getItem(Gu);return ms.some(t=>t.value===e)?e:"repo_spec"}catch{return"repo_spec"}}function Sg(e){try{window.localStorage.setItem(Gu,e)}catch{}}function Eg(){try{let e=window.localStorage.getItem(Vu);if(!e)return{};let t=JSON.parse(e);return t&&typeof t=="object"?t:{}}catch{return{}}}function Wu(e){try{window.localStorage.setItem(Vu,JSON.stringify(e))}catch{}}function Tg(){try{let e=window.localStorage.getItem(zu);return ar(e)?e:er}catch{return er}}function Cg(e){try{window.localStorage.setItem(zu,e)}catch{}}function Rg(){try{return window.localStorage.getItem(Hu)==="repo"?"repo":"started"}catch{return"started"}}function Ig(e){try{window.localStorage.setItem(Hu,e)}catch{}}var Yu="tab:monitor:pipeline",Lg=1e3,Og=[{lane:"runnable",pane:"candidate",title:"\uC2E4\uD589\uAC00\uB2A5",empty:"\uC2E4\uD589 \uC790\uACA9\uC744 \uAC16\uCD98 \uC774\uC288 \uC5C6\uC74C"},{lane:"queue",pane:"queue",title:"\uB300\uAE30",empty:"\uD45C\uC2DC\uD560 \uB808\uD3EC \uC5C6\uC74C"},{lane:"running",pane:"running",title:"\uC2E4\uD589\uC911",empty:"\uC2E4\uD589 \uC911 \uC5C6\uC74C"},{lane:"pr_wait",pane:"pr_wait",title:"PR \uB300\uAE30",empty:"PR \uC5C6\uC74C"},{lane:"done",pane:"done",title:"\uC644\uB8CC",empty:"\uC644\uB8CC \uAE30\uB85D \uC5C6\uC74C"}];function Pg(){return l`<span class="mon-link mon-popover-owner">
     <button
       type="button"
       class="mon-link__trigger"
@@ -1813,435 +2247,205 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
       <span class="mon-link__empty" hidden>검색 결과 없음</span>
       <span class="mon-link__error" role="alert" hidden></span>
     </span>
-  </span>`}function sg(e,t){let r=typeof e.started_at=="number"?ja(t-e.started_at):"";return i`${as(e)}
-    <div class="mon-c__meta">
-      ${Ga(e)}${rg(e.last_event_at,t)}${is(e)}${$o(e)}
-      ${br(e)?i`<span class="mon-c__model">${br(e)}</span>`:""}
-      ${Pr(e)?i`<span
-            class="rtile__resumed"
-            title=${Pr(e)}
-            >↻</span
-          >`:""}
-      ${e.serial_lane_id?i`<span class="mon-c__lane">${e.serial_lane_id}</span>`:""}
-      ${r?i`<span class="mon-live__elapsed">${r}</span>`:""}
-      ${Ha(e)}${ng(e)}${Ir(e)}
-    </div>`}function og(e){let t=e.workflow,n=(t&&t.chips||{}).route||t&&t.route,s=typeof e.spec_reviewer=="string"?e.spec_reviewer:"",o=e.plan_state==="approved"?"plan \u2713":e.plan_state==="authored"?"plan \u270E":"plan \u2013",a=typeof e.reason=="string"&&e.reason.startsWith("\u26D4"),l=Gt(e.updated_at);return i`${as(e)}
-    <div class="mon-c__meta">
-      <span class="mon-c__grip" aria-hidden="true">⠿</span>${is(e)}
-      ${n?i`<span class="ctl-chip ctl-chip--route">${n}</span>`:""}
-      ${s?i`<span
-            class="ctl-chip mon-c__review${s==="skipped"?" mon-c__review--dim":""}"
-            >spec:${s}</span
-          >`:""}
-      ${n==="full_plan"?i`<span
-            class="ctl-chip mon-c__plan${e.plan_state==="none"?" mon-c__review--dim":""}"
-            >${o}</span
-          >`:""}
-      ${Ps(e.labels,null).map(c=>i`<span class="ctl-chip ctl-chip--label">${c}</span>`)}
-      ${$o(e)}
-      ${l?i`<span title=${`\uC218\uC815 ${It(e.updated_at)}`}
-            >수정 ${l}</span
-          >`:""}
-      ${e.reason?i`<span
-            class="mon-c__reason${a?" mon-c__reason--danger":""}"
-            >${e.reason}</span
-          >`:""}
-      ${Su(e)}
-      <span class="mon-c__ops">
-        ${Tu()}
-        <span class="mon-place mon-popover-owner">
-          <button
-            type="button"
-            class="worker-card__place"
-            data-bead-id=${e.id}
-            aria-haspopup="menu"
-            aria-expanded="false"
-            title="적재할 대기 레인 선택"
-          >
-            대기로 ↴
-          </button>
-          <span class="mon-place__popover mon-card-popover" role="menu" hidden>
-            <button
-              type="button"
-              class="mon-place__choice"
-              data-lane="parallel"
-              data-place-index=${String(e.place_index??0)}
-              role="menuitem"
-              aria-label=${`\uBCD1\uB82C \xB7 \uB300\uAE30 ${e.place_index??0}`}
-            >
-              <strong>병렬</strong><span>대기 ${e.place_index??0}</span>
-            </button>
-            ${(e.place_lanes||[]).map(c=>i`<button
-                  type="button"
-                  class="mon-place__choice"
-                  data-lane=${c.id}
-                  data-place-index=${String(c.index)}
-                  role="menuitem"
-                  aria-label=${`${c.id} \xB7 ${c.occupied_by.length>0?`\uC810\uC720 ${c.occupied_by.join(", ")}`:"\uBBF8\uC810\uC720"} \xB7 \uB300\uAE30 ${c.length}`}
-                >
-                  <strong>${c.id}</strong
-                  ><span
-                    >${c.occupied_by.length>0?`\uC810\uC720 ${c.occupied_by.join(", ")}`:"\uBBF8\uC810\uC720"}
-                    · 대기 ${c.length}</span
-                  >
-                </button>`)}
-          </span>
-        </span>
-      </span>
-    </div>
-    ${Eu(e)}`}function ag(e){let t=!!e.discard?.operation;return i`${as(e)}
-    <div class="mon-c__meta">
-      <span class="mon-c__grip" aria-hidden="true">⠿</span>
-      <span class="mon-live__pos">#${e.queue_position}</span>${is(e)}
-      ${Ga(e)}
-      ${e.reason?i`<span class="mon-c__reason">${e.reason}</span>`:""}
-      ${Su(e)}
-      <span class="mon-c__ops">
-        ${Tu()}
-        <button
-          type="button"
-          class="mon-op mon-op--up"
-          ?disabled=${t||(e.queue_position??1)<=1}
-          aria-label="한 칸 앞으로"
-          title="한 칸 앞으로"
-        >
-          ↑
-        </button>
-        <button
-          type="button"
-          class="mon-op mon-op--down"
-          ?disabled=${t||(e.queue_index??0)>=(e.queue_length??1)-1}
-          aria-label="한 칸 뒤로"
-          title="한 칸 뒤로"
-        >
-          ↓
-        </button>
-        <button
-          type="button"
-          class="mon-op mon-op--remove"
-          ?disabled=${t}
-          aria-label="대기 큐에서 제거"
-          title="대기 큐에서 제거"
-        >
-          ✕
-        </button>
-        ${t?i`<button
-              type="button"
-              class="worker-mini__discard"
-              data-bead-id=${e.id}
-              data-attempt-id=${e.discard?.attempt_id||""}
-              data-operation-id=${e.discard?.operation?.operation_id||""}
-              data-discard-mode=${e.discard?.confirmation||"unmerged"}
-              ?disabled=${!e.discard?.enabled}
-              aria-label=${e.discard?.label||"\uD3D0\uAE30"}
-              title=${e.discard?.title||""}
-            >
-              ${e.discard?.label||"\uD3D0\uAE30"}
-            </button>`:""}
-      </span>
-    </div>
-    ${Eu(e)} ${Ir(e)}
-    ${e.revise_action?i`<div class="mon-c__tail">
-          <button
-            type="button"
-            class="worker-mini__revise-fix"
-            data-bead-id=${e.id}
-            ?disabled=${e.revise_enabled===!1}
-            title=${e.revise_title||""}
-          >
-            finding 수용·수정
-          </button>
-          <button
-            type="button"
-            class="worker-mini__revise-approve"
-            data-bead-id=${e.id}
-            ?disabled=${e.revise_enabled===!1}
-            title="델타를 사용자 권한으로 승인해 영수증을 갱신하고 파킹을 해제합니다 (세션 없음)"
-          >
-            승인하고 진행
-          </button>
-        </div>`:""}`}function ig(e){let t=e.merge_step||null,r=!!(lr(e.usage)||t||e.merge_action||e.cancel_action||e.discard_action);return i`${as(e)}
-    <div class="mon-c__meta">
-      ${is(e)}${$o(e)}
-      ${e.pr_url&&e.pr_number?i`<a
-            class="mon-c__pr"
-            href=${e.pr_url}
-            target="_blank"
-            rel="noreferrer noopener"
-            title="PR 열기"
-            >#${e.pr_number} ↗</a
-          >`:""}
-      ${Ga(e)}
-      ${e.reason?i`<span class="mon-c__reason">${e.reason}</span>`:""}
-    </div>
-    ${r?i`<div class="mon-c__tail">
-          ${Ha(e)}${t?i`<span
-                class="merge-step${t.failed?" merge-step--failed":""}"
-                style=${`--progress: ${t.percent}%`}
-                >${t.label}${t.index>0?i`<span class="merge-step__n"
-                      >${t.index}/${t.total}</span
-                    >`:""}</span
-              >`:""}
-          ${e.merge_action?i`<button
-                type="button"
-                class="worker-mini__merge"
-                data-bead-id=${e.id}
-                ?disabled=${e.merge_enabled===!1}
-                title=${e.merge_title||""}
-              >
-                ${e.merge_label||"\uBA38\uC9C0"}
-              </button>`:""}
-          ${e.cancel_action?i`<button
-                type="button"
-                class="worker-mini__merge-cancel"
-                data-bead-id=${e.id}
-                ?disabled=${e.cancel_enabled===!1}
-                title=${e.cancel_title||""}
-              >
-                취소
-              </button>`:""}
-          ${e.discard_action?i`<button
-                type="button"
-                class="worker-mini__discard"
-                data-bead-id=${e.id}
-                data-attempt-id=${e.discard?.attempt_id||""}
-                data-operation-id=${e.discard?.operation?.operation_id||""}
-                data-discard-mode=${e.discard?.confirmation||"unmerged"}
-                ?disabled=${e.discard_enabled===!1}
-                title=${e.discard_title}
-              >
-                ${e.discard?.label||"\uD3D0\uAE30"}
-              </button>`:""}
-          ${Ir(e)}
-        </div>`:""}`}function lg(e,t){let r=e.done_kind||"",n=r?Qm[r]||r:"",s=Gt(e.done_at,t);return i`${as(e)}
-    <div class="mon-c__meta">
-      ${is(e)}${$o(e)}
-      ${n?i`<span
-            class="mon-live__kind${Jm.has(r)?" mon-live__kind--ok":" mon-live__kind--warn"}"
-            >${n}</span
-          >`:""}
-      ${Ha(e)}
-      ${s?i`<span title=${`\uC644\uB8CC ${It(e.done_at)}`}
-            >완료 ${s}</span
-          >`:""}
-    </div>`}function Cu(e,t){return e.lane==="running"?sg(e,t):e.lane==="runnable"?og(e):e.lane==="queue"||/^s[1-5]$/.test(e.lane)?ag(e):e.lane==="pr_wait"?ig(e):lg(e,t)}function Ru(e){let t=String(e.revision),r=e.sublanes?e.sublanes.parallel.length+e.sublanes.serial.reduce((n,s)=>n+s.items.length,0):e.items.length;return i`<header
-    class="mon-group__hd${r===0?" is-empty":""}"
-    data-root-dir=${e.root_dir}
-    data-revision=${t}
-  >
-    <span class="mon-group__name" title=${e.root_dir}>${e.name}</span>
-    <span class="mon-group__count">${r}</span>
-    <span class="mon-group__ops">
+  </span>`}function Zu(e,t){let r=Ct("views:monitor"),n=t.gotoIssue,s=t.pipelineStore,o=t.transport,a=t.getWorkspacePath,i=t.switchWorkspace,c=t.router,u=t.now||(()=>Date.now()),d=t.confirm||(h=>typeof globalThis.confirm!="function"||globalThis.confirm(h)),p=Tg(),m=Rg(),v=xg(),C=Ag(),F=Eg(),H=null,re=null,V=null;function q(){let h=Rr.find(x=>x.value===p);return h?h.label:""}let O=document.createElement("div");O.className="mon",e.appendChild(O);let P=document.createElement("div");P.className="mon2-drawer",e.appendChild(P);let I=ti(null,null),$=new Map,M=new Map,K=null,pe=null,_e=null,me=Tn(P,{transport:o,sessionLogStore:t.sessionLogStore,onClose:()=>{H=null,je()}});async function ae(h,x,N,j,ye=!0){if(!o||!N)return null;let ke=await o(h,{...x,root_dir:N,expected_revision:j});if(ke&&ke.conflict&&ye){ke.queue&&M.set(N,ke.queue);let qe=ke.queue&&typeof ke.queue.revision=="number"?ke.queue.revision:j;ke=await o(h,{...x,root_dir:N,expected_revision:qe})}return ke&&ke.queue&&N&&M.set(N,ke.queue),ke}function Ie(h,x){let N=M.get(h),j=s&&s.get?s.get():null,ye=(Array.isArray(j)?j:[]).find(qe=>qe?.root_dir===h);return(N||ye)?.merge_queue?.find(qe=>qe.bead_id===x)?.continuation_action}async function Te(h,x,N,j){let ye=await ae(h,x,N,j),ke=M.get(N)?.revision??ye?.queue?.revision??j;return wr(ye,(qe,ze)=>ae(h,{...x,continuation:qe,decision_token:ze},N,ke,!1),{refresh:qe=>ae(h,x,N,qe?.queue?.revision??M.get(N)?.revision??ke,!1)})}async function ne(h,x,N,j){let ye=await wr({continuation_mismatch:j},(qe,ze)=>ae("worker-merge-queue-add",{bead_id:x,continuation:qe,decision_token:ze},h,N,!1)),ke=ye?.queue?.merge_queue?.find(qe=>qe.bead_id===x)?.continuation_action;ye?.applied!==!0&&ke?.continuation===null&&ke.mismatch&&await ne(h,x,ye.queue.revision,ke.mismatch)}async function se(h,x,N){let j=await ae("worker-discard",h,x,N);if(j&&j.discarded===!0){he(ko(j),"success",5e3);return}if(j&&j.reason){he(`\uD3D0\uAE30 \uC2E4\uD328: ${j.reason}`,"error");return}if(j&&j.accepted&&j.pending==="merged_revert"){he("revert PR \uB300\uAE30 \uC0C1\uD0DC\uB85C \uC804\uD658\uD588\uC2B5\uB2C8\uB2E4","success");return}if(j&&j.accepted){he(`\uD3D0\uAE30 \uC9C4\uD589: ${j.phase||"\uBC31\uC5C5 \uC911"}`,"success");return}j&&!j.conflict&&he("\uD3D0\uAE30 \uAC70\uBD80: unknown","error")}async function we(h,x,N){return!o||!N?null:await o(h,{...x,root_dir:N})}async function A(){let h=new Map;for(let x of I.pr_wait)h.has(x.root_dir)||h.set(x.root_dir,x.expected_revision);for(let[x,N]of h)await ae("worker-merge-queue-add-all",{},x,N)}function ue(h,x){let N=F[h];return!!(N&&N[x]===!0)}function E(h,x){let N={...F[h]||{}};N[x]=!N[x],F={...F,[h]:N},Wu(F),je()}function D(h){let x=ue(h.root_dir,h.section);return l`<header class="mon2-sec__hd">
       <button
         type="button"
-        class="mon-ctl mon-ctl--advance${e.auto_advance?" is-active":""}"
-        data-root-dir=${e.root_dir}
-        data-revision=${t}
-        data-on=${e.auto_advance?"false":"true"}
-        aria-pressed=${e.auto_advance?"true":"false"}
-        title=${e.auto_advance?"\uC790\uB3D9\uD654 \uCF1C\uC9D0 \u2014 \uD074\uB9AD\uD558\uBA74 \uC790\uB3D9 \uC9C4\uD589\xB7\uC790\uB3D9 \uBA38\uC9C0\uB97C \uD568\uAED8 \uB055\uB2C8\uB2E4":"\uC790\uB3D9\uD654 \uAEBC\uC9D0 \u2014 \uD074\uB9AD\uD558\uBA74 \uC790\uB3D9 \uC9C4\uD589\xB7\uC790\uB3D9 \uBA38\uC9C0\uB97C \uD568\uAED8 \uCF2D\uB2C8\uB2E4"}
+        class="mon2-sec__toggle"
+        data-root-dir=${h.root_dir}
+        data-section=${h.section}
+        aria-expanded=${x?"false":"true"}
+        aria-label=${`${h.name} \uC139\uC158 ${x?"\uD3BC\uCE58\uAE30":"\uC811\uAE30"}`}
       >
-        ${e.auto_advance?Wa():Ua()}
-        <span class="mon-ctl__label">자동화</span>
+        ${x?"\u25B8":"\u25BE"}
       </button>
+      <span class="mon2-sec__name" title=${h.root_dir}>${h.name}</span>
+      <span class="mon2-sec__count">${h.count}</span>
+      ${typeof h.auto=="boolean"?l`<span
+            class="mon2-sec__auto${h.auto?" is-on":""}"
+            title=${h.auto?"\uC790\uB3D9\uD654 \uCF1C\uC9D0 \u2014 \uC2AC\uB86F\uC774 \uBE44\uBA74 \uB2E4\uC74C \uD589\uC774 \uCD9C\uBC1C":"\uC790\uB3D9\uD654 \uAEBC\uC9D0 \u2014 \uB2E4\uC74C \uD589\uC740 \uC218\uB3D9\uC73C\uB85C\uB9CC \uCD9C\uBC1C"}
+            >${h.auto?"\u25CF \uC790\uB3D9":"\u25CB \uC218\uB3D9"}</span
+          >`:""}
       <button
         type="button"
-        class="mon-ctl mon-ctl--merge-auto${e.auto_merge?" is-active":""}"
-        data-root-dir=${e.root_dir}
-        data-revision=${t}
-        data-on=${e.auto_merge?"false":"true"}
-        aria-pressed=${e.auto_merge?"true":"false"}
-        title=${e.auto_merge?"\uC790\uB3D9 \uBA38\uC9C0 \uCF1C\uC9D0 \u2014 \uD074\uB9AD\uD558\uBA74 \uB044\uACE0 \uC774 \uB808\uD3EC\uC758 \uBA38\uC9C0 \uB300\uAE30\uC5F4\uC744 \uBE44\uC6C1\uB2C8\uB2E4":"\uC790\uB3D9 \uBA38\uC9C0 \uAEBC\uC9D0 \u2014 \uD074\uB9AD\uD558\uBA74 \uC790\uACA9\uC774 \uC0DD\uAE30\uB294 PR\uC744 \uACC4\uC18D \uBA38\uC9C0\uD569\uB2C8\uB2E4"}
+        class="mon2-sec__worker"
+        data-root-dir=${h.root_dir}
+        title="이 레포의 Worker 탭으로 이동"
       >
-        ${wu()}
-        <span class="mon-ctl__label">머지</span>
+        Worker ↗
       </button>
-      <label class="mon-ctl mon-ctl--slots" title="동시에 실행할 세션 수">
-        ${ku()}
-        <span class="mon-ctl__label">슬롯</span>
-        <input
-          type="number"
-          class="mon-slots__input"
-          min=${os}
-          step="1"
-          data-root-dir=${e.root_dir}
-          data-revision=${t}
-          aria-label=${`${e.name} \uB3D9\uC2DC \uC2E4\uD589 \uC2AC\uB86F`}
-          .value=${String(e.slots)}
-        />
-      </label>
-    </span>
-  </header>`}function Iu(e){let{total:t,both_on:r}=e.automation,n=t>0&&r===t,s=e.running_sort==="repo"?"repo":"started",o=gr.find(l=>l.value===e.done_range)?.label||"",a=Array.isArray(e.token_total)?e.token_total:e.token_total?[{label:e.token_total,tooltip:e.token_tooltip}]:[];return i`<div class="mon-top">
-    <button
-      type="button"
-      class="mon-auto-all${n?" is-active":""}"
-      data-on=${n?"false":"true"}
-      aria-pressed=${n?"true":"false"}
-      ?disabled=${t===0}
-      title=${n?"\uC804 \uB808\uD3EC\uC758 \uC790\uB3D9 \uC9C4\uD589\xB7\uC790\uB3D9 \uBA38\uC9C0\uB97C \uD568\uAED8 \uB055\uB2C8\uB2E4 (\uBA38\uC9C0 \uB300\uAE30\uC5F4\uB3C4 \uBE44\uC6CC\uC9D1\uB2C8\uB2E4)":"\uC804 \uB808\uD3EC\uC758 \uC790\uB3D9 \uC9C4\uD589\xB7\uC790\uB3D9 \uBA38\uC9C0\uB97C \uD568\uAED8 \uCF2D\uB2C8\uB2E4"}
+    </header>`}function ce(h,x){return l`<div class="mon2-item" data-bead-id=${h.id}>
+      ${x}
+      <span class="mon2-item__ops">${Pg()}</span>
+    </div>`}function $e(h){return re!==h.id?null:{bead_id:h.id,lanes:[{id:"parallel",label:"\uBCD1\uB82C",count:h.place_index??0},...(h.place_lanes||[]).map(x=>({id:x.id,label:x.id,count:x.length}))]}}function ge(h){return ce(h,Ua(h,$e(h),{exec_chips_mode:"pinned_only"}))}function Oe(h){return ce(h,Ln(h))}function _t(){return I.runnable_flat?l`<div class="mon2-flat">
+        ${I.runnable.map(h=>ge(h))}
+      </div>`:l`${I.runnable_sections.map(h=>{let x=ue(h.root_dir,"runnable");return l`<section
+        class="mon2-sec${x?" is-collapsed":""}"
+        data-root-dir=${h.root_dir}
+        data-section="runnable"
+      >
+        ${D({root_dir:h.root_dir,name:h.name,count:h.items.length,section:"runnable"})}
+        ${x?"":l`<div class="mon2-sec__body" data-lane="candidate">
+              ${h.items.map(N=>ge(N))}
+            </div>`}
+      </section>`})}`}function He(h){return l`<div
+      class="mon2-lane${h.empty?" mon2-lane--empty":""}"
+      data-lane-length=${String(h.raw_length)}
     >
-      ${n?yu():$u()}
-      <span class="mon-auto-all__label"
-        >${n?"\uC804\uCCB4 \uC790\uB3D9\uD654 \uBA48\uCDA4":`\uC804\uCCB4 \uC790\uB3D9\uD654 ${r}/${t}`}</span
+      ${sr({id:"",lane:h.id,title:`\uC9C1\uB82C ${h.index+1}`,items:h.items,empty:"\uBE44\uC5B4 \uC788\uC74C \u2014 \uB4DC\uB798\uADF8\uB85C \uBC30\uCE58",body:h.items.length>0?l`${h.items.map(x=>Oe(x))}`:void 0,header_control:l`<span class="mon2-lane__badge"
+          >${h.occupied_by.length>0?"\uC810\uC720":""}</span
+        >`})}
+      ${h.empty?l`<div class="mon2-lane__hint">
+            직렬 ${h.index+1} 비어 있음
+          </div>`:""}
+      ${h.cycle?l`<div class="mon2-lane__cycle">
+            ⛔ 의존 사이클 — 자동 교정 불가
+          </div>`:""}
+      ${(h.cross_wait_peers||[]).map(x=>l`<div class="mon2-lane__cross-wait">
+            ⚠ 상호 정지 — ${x.workspace_name}·${x.lane}과 교차 대기
+          </div>`)}
+    </div>`}function pt(h){let x=ue(h.root_dir,"queue"),N=h.sublanes.parallel.length+h.sublanes.serial.reduce((j,ye)=>j+ye.items.length,0);return l`<section
+      class="mon2-sec${x?" is-collapsed":""}"
+      data-root-dir=${h.root_dir}
+      data-section="queue"
+    >
+      ${D({root_dir:h.root_dir,name:h.name,count:N,section:"queue",auto:h.auto_advance})}
+      ${x?"":l`<div class="mon2-sec__body worker-wait">
+            <div
+              class="mon2-lane"
+              data-lane-length=${String(h.raw_queue_length)}
+            >
+              ${sr({id:"",lane:"queue",title:"\uBCD1\uB82C",items:h.sublanes.parallel,empty:"\uBE44\uC5B4 \uC788\uC74C \u2014 \uB4DC\uB798\uADF8\uB85C \uBC30\uCE58",body:h.sublanes.parallel.length>0?l`${h.sublanes.parallel.map(j=>Oe(j))}`:void 0})}
+            </div>
+            ${h.sublanes.serial.map(j=>He(j))}
+          </div>`}
+    </section>`}function tt(){if(I.chains.length===0)return"";let h=F.chains===!0;return l`<section class="mon2-chains${h?" is-collapsed":""}">
+      <header class="mon2-chains__hd">
+        <button
+          type="button"
+          class="mon2-chains__toggle"
+          aria-expanded=${h?"false":"true"}
+          title="blocks 의존이 만든 레포 간 순서입니다 — 선행이 close되면 후속이 자기 레포 큐에서 출발합니다"
+        >
+          ${h?"\u25B8":"\u25BE"} 🔗 연결 체인 ${I.chains.length} · 레포 간
+          순서
+        </button>
+        <span class="mon2-chains__hint">blocks 의존 · 카드의 🔗로 연결</span>
+      </header>
+      ${h?"":l`<div class="mon2-chains__body">
+            ${I.chains.map(x=>l`<div class="mon2-chain">
+                  ${x.cycle?l`<div class="mon2-chain__cycle">⛔ 의존 사이클</div>`:""}
+                  ${x.nodes.map(N=>l`<div
+                        class="mon2-chain__node"
+                        style=${`--indent: ${N.indent}`}
+                        data-bead-id=${N.id}
+                        data-root-dir=${N.root_dir}
+                      >
+                        ${N.workspace_name?l`<span class="mon2-chain__repo"
+                              >${N.workspace_name}</span
+                            >`:""}
+                        <span class="mon2-chain__id worker-mini__id"
+                          >${N.id}</span
+                        >
+                        <span class="mon2-chain__where"
+                          >${N.location_label}</span
+                        >
+                      </div>`)}
+                </div>`)}
+          </div>`}
+    </section>`}function Y(h){return l`<div class="worker-rungrid">
+      ${I.running.length===0?l`<div class="worker-rungrid__empty">실행 세션 없음</div>`:I.running.map(x=>Ha({bead_id:x.id,attempt_id:x.attempt_id||"",title:x.title,runner:x.runner??null,model:x.model??null,effort:x.effort??null,speed:x.speed??null,started_at:x.started_at??null,resumed_from:x.resumed_from??null,continuation_mode:x.continuation_mode??null,paused:x.run_state==="paused",failed:x.run_state==="failed",status:x.status,status_label:x.run_state==="failed"?"\uC2E4\uD328":void 0,resume_eligible:x.can_resume!==!1,can_pause:x.can_pause!==!1,exec_chips:x.exec_chips||null,usage:x.usage||null,discard:x.discard},h,H,{monitor:{repo:x.workspace_name,root_dir:x.root_dir,serial_lane_id:x.serial_lane_id,workflow:x.workflow||null,last_activity:x.last_activity||null,legs:x.legs||[],dependency_chips:x.dependency_chips||null}}))}
+    </div>`}function Z(h){let x={runnable:I.runnable,queue:I.queue,running:I.running,pr_wait:I.pr_wait,done:I.done};return l`<div class="mon2-deck"></div>
+      <div class="worker-lanes mon2-lanes">
+        ${Og.map(N=>{let j=x[N.lane],ye=N.lane==="runnable"?I.runnable_flat?j.length>0?_t():void 0:I.runnable_sections.length>0?_t():void 0:N.lane==="queue"?I.queue_groups.length>0||I.chains.length>0?l`${tt()}${I.queue_groups.map(ke=>pt(ke))}`:void 0:N.lane==="running"?Y(h):j.length>0?l`${j.map(ke=>Ln(ke))}`:void 0;return sr({id:`monitor-${N.lane}`,lane:N.pane,title:N.lane==="done"?`\uC644\uB8CC\xB7${q()}`:N.title,items:j,empty:N.empty,body:ye,live:N.lane==="running"&&j.length>0,controls:N.lane==="runnable"?Se():void 0,header_control:Ze(N.lane,j.length)})})}
+      </div>`}function Se(){return l`<div class="worker-filter">
+      <label class="worker-filter__tgl" title="blocked 이슈 표시">
+        <input
+          type="checkbox"
+          class="mon-filter__blocked"
+          .checked=${v.show_blocked}
+        />
+        🔒
+        blocked${I.runnable_hidden.blocked>0?` ${I.runnable_hidden.blocked}`:""}
+      </label>
+      <div class="worker-filter__spec" role="group" aria-label="spec 필터">
+        ${ei.map(h=>l`<button
+              type="button"
+              class="mon-filter__spec worker-filter__chip${v.spec===h.value?" is-active":""}"
+              data-spec=${h.value}
+              aria-pressed=${v.spec===h.value?"true":"false"}
+            >
+              ${h.label}
+            </button>`)}
+        ${I.runnable_hidden.spec>0?l`<span class="worker-filter__hidden"
+              >숨김 ${I.runnable_hidden.spec}</span
+            >`:""}
+      </div>
+    </div>`}function Ze(h,x){return h==="runnable"?l`<select
+        class="mon-candidate-sort worker-sort"
+        aria-label="후보 정렬"
+        title="후보 정렬"
+        .value=${C}
       >
-    </button>
-    <div class="mon-kpi">
-      <span
-        class="mon-running-sort-group"
-        role="group"
+        ${ms.map(N=>l`<option
+              value=${N.value}
+              ?selected=${C===N.value}
+            >
+              ${N.label}
+            </option>`)}
+      </select>`:h==="running"?l`<select
+        class="mon-running-sort worker-sort"
         aria-label="실행중 정렬"
+        title="실행중 정렬"
+        .value=${m}
       >
-        <button
-          type="button"
-          class="mon-running-sort${s==="started"?" is-active":""}"
-          data-sort="started"
-          aria-pressed=${s==="started"?"true":"false"}
-        >
+        <option value="started" ?selected=${m==="started"}>
           시작순
-        </button>
-        <span aria-hidden="true">|</span>
-        <button
-          type="button"
-          class="mon-running-sort${s==="repo"?" is-active":""}"
-          data-sort="repo"
-          aria-pressed=${s==="repo"?"true":"false"}
-        >
+        </option>
+        <option value="repo" ?selected=${m==="repo"}>
           레포순
-        </button>
-      </span>
-      <span class="mon-kpi__chip mon-kpi__chip--running"
-        >실행 <b>${e.counts.running}</b></span
+        </option>
+      </select>`:h==="pr_wait"&&x>0?l`<button
+        type="button"
+        class="mon-lane-op mon-merge-all"
+        title="자격이 생기는 PR을 각 레포의 머지 큐에 한 번에 넣습니다"
       >
-      <span class="mon-kpi__chip mon-kpi__chip--queue"
-        >대기 <b>${e.counts.queue}</b></span
-      >
-      <span class="mon-kpi__chip mon-kpi__chip--pr"
-        >PR <b>${e.counts.pr_wait}</b></span
-      >
-      <select
-        class="mon-done-range"
+        일괄 머지
+      </button>`:h==="done"?l`<select
+        class="mon-done-range worker-sort"
         aria-label="완료 기간"
         title="완료 기간"
-        .value=${e.done_range}
+        .value=${p}
       >
-        ${gr.map(l=>i`<option
-              value=${l.value}
-              ?selected=${e.done_range===l.value}
-            >
-              ${l.label}
+        ${Rr.map(N=>l`<option value=${N.value} ?selected=${p===N.value}>
+              ${N.label}
             </option>`)}
-      </select>
-      ${a.map(l=>i`<span
-            class="mon-kpi__chip mon-kpi__chip--tokens"
-            title=${l.tooltip}
-            >${o} 완료 · 누적 ${l.label}</span
-          >`)}
-    </div>
-  </div>`}function Lu(e){return`${e} \uC644\uB8CC\uB41C \uC774\uC288\uB4E4\uC774 \uC0DD\uC560 \uC804\uCCB4\uC5D0 \uC4F4 \uD1A0\uD070 \uB204\uC801 (\uC785\uB825+\uCD9C\uB825+\uCE90\uC2DC). \uC774 \uAE30\uAC04\uC5D0 \uC18C\uBAA8\uB41C \uC591\uC774 \uC544\uB2C8\uB2E4`}function Ou(e){let t=(Array.isArray(e)?e:[]).map(l=>l&&l.usage).filter(l=>l&&typeof l=="object"&&"providers"in l);if(t.length>0)return Ot(Us(t));let r={};for(let l of xr)r[l]=0;let n=!1,s=0,o=0,a=0;for(let l of Array.isArray(e)?e:[]){let c=l&&l.usage;if(c&&typeof c=="object"){let u=!1;for(let d of xr){let f=c[d];typeof f=="number"&&Number.isFinite(f)&&(r[d]+=f,n=!0,u=!0)}if(u){o+=1;let d=c.total_cost_usd;typeof d=="number"&&Number.isFinite(d)&&(s+=d,a+=1)}}}return o>0&&a===o&&(r.total_cost_usd=s),n?lr(r):null}var Mu="bdui.monitor.done-range",Pu="bdui.monitor.running_sort",Du="beads-ui.monitor.candidate-filter",Va={show_blocked:!1};function cg(){try{let e=window.localStorage.getItem(Du);if(!e)return{...Va};let t=JSON.parse(e);return!t||typeof t!="object"?{...Va}:{show_blocked:t.show_blocked===!0}}catch{return{...Va}}}function ug(e){try{window.localStorage.setItem(Du,JSON.stringify({show_blocked:e.show_blocked}))}catch{}}function dg(e,t){if(t.show_blocked)return{visible:e,hidden_blocked:0};let r=e.filter(n=>n.blocked!==!0);return{visible:r,hidden_blocked:e.length-r.length}}function pg(){try{let e=window.localStorage.getItem(Mu);return Qt(e)?e:Ht}catch{return Ht}}function fg(e){try{window.localStorage.setItem(Mu,e)}catch{}}function _g(){try{return window.localStorage.getItem(Pu)==="repo"?"repo":"started"}catch{return"started"}}function mg(e){try{window.localStorage.setItem(Pu,e)}catch{}}var Nu="tab:monitor:pipeline",gg=1e3,bg=[{lane:"runnable",pane:"candidate",title:"\uC2E4\uD589\uAC00\uB2A5",empty:"\uC2E4\uD589 \uC790\uACA9\uC744 \uAC16\uCD98 \uC774\uC288 \uC5C6\uC74C"},{lane:"queue",pane:"queue",title:"\uB300\uAE30",empty:"\uD45C\uC2DC\uD560 \uB808\uD3EC \uC5C6\uC74C"},{lane:"running",pane:"running",title:"\uC2E4\uD589\uC911",empty:"\uC2E4\uD589 \uC911 \uC5C6\uC74C"},{lane:"pr_wait",pane:"pr_wait",title:"PR \uB300\uAE30",empty:"PR \uC5C6\uC74C"},{lane:"done",pane:"done",title:"\uC644\uB8CC",empty:"\uC644\uB8CC \uAE30\uB85D \uC5C6\uC74C"}];function xo(e,t){let r=(e.lane==="runnable"||e.lane==="queue")&&e.draggable!==!1;return i`<div
-    class="mon-card mon-card--${e.lane}${e.alert?" mon-card--alert":""}${e.blocked?" mon-card--blocked":""}"
-    draggable=${r?"true":"false"}
-    data-issue-id=${e.id}
-    data-root-dir=${e.root_dir}
-    data-revision=${String(e.expected_revision)}
-    data-lane=${e.lane}
-    data-attempt-id=${e.attempt_id||""}
-    data-place-index=${String(e.place_index??"")}
-    data-queue-index=${String(e.queue_index??"")}
-    data-queue-length=${String(e.queue_length??"")}
-  >
-    ${Cu(e,t)}
-  </div>`}function hg(e,t){let r=e.serial_lane_count>0||e.sublanes.serial.length>0,n=r?i`<section class="mon-sublane mon-sublane--parallel">
-        <header class="mon-sublane__hd">
-          <span class="mon-sublane__name">병렬</span>
-          <span class="mon-sublane__count"
-            >대기 ${e.sublanes.parallel.length}</span
-          >
-        </header>
-        <div class="mon-group__list">
-          ${e.sublanes.parallel.map(s=>xo(s,t))}
-        </div>
-      </section>`:i`<div class="mon-group__list">
-        ${e.items.map(s=>xo(s,t))}
-      </div>`;return i`<div class="mon-group" data-root-dir=${e.root_dir}>
-    ${Ru(e)} ${n}
-    ${r?e.sublanes.serial.map(s=>i`<section
-              class="mon-sublane mon-sublane--serial"
-              data-serial-lane=${s.id}
-            >
-              <header class="mon-sublane__hd">
-                <span class="mon-sublane__name">${s.id}</span>
-                <span class="mon-sublane__count"
-                  >대기 ${s.items.length}</span
-                >
-                ${s.occupied_by.length>0?i`<span class="mon-sublane__held"
-                      >${`\u25CF \uC810\uC720 \uC911 \xB7 ${s.occupied_by.join(", ")} (\uBA38\uC9C0\uAE4C\uC9C0 \uC720\uC9C0)`}</span
-                    >`:""}
-                ${s.corrections>0?i`<span class="mon-sublane__corrections"
-                      >순서 자동 교정 ${s.corrections}건</span
-                    >`:""}
-                ${s.cross_wait_peers?.map(o=>i`<span class="mon-sublane__cross-wait"
-                      >⚠ 상호 정지 — ${o.workspace_name}·${o.lane}과 교차
-                      대기</span
-                    >`)}
-              </header>
-              ${s.cycle?i`<div class="mon-sublane__cycle">
-                    ⛔ 의존 사이클 — 자동 교정 불가
-                  </div>`:""}
-              <div class="mon-group__list">
-                ${s.items.map(o=>xo(o,t))}
-              </div>
-            </section>`):""}
-  </div>`}function qu(e,t){let r=yt("views:monitor"),n=t.gotoIssue,s=t.pipelineStore,o=t.transport,a=t.getWorkspacePath,l=t.switchWorkspace,c=t.now||(()=>Date.now()),u=t.confirm||(T=>typeof globalThis.confirm!="function"||globalThis.confirm(T)),d=pg(),f=_g(),g=cg();function x(){let T=gr.find(M=>M.value===d);return T?T.label:""}let A=document.createElement("div");A.className="mon",e.appendChild(A);let L=za(null,null),z=new Map,ae=null,se=null;async function q(T,M,P,H,ce=!0){if(!o||!P)return null;let y=await o(T,{...M,root_dir:P,expected_revision:H});if(y&&y.conflict&&ce){y.queue&&z.set(P,y.queue);let C=y.queue&&typeof y.queue.revision=="number"?y.queue.revision:H;y=await o(T,{...M,root_dir:P,expected_revision:C})}return y&&y.queue&&P&&z.set(P,y.queue),y}function N(T,M){let P=z.get(T),H=s&&s.get?s.get():null,ce=(Array.isArray(H)?H:[]).find(C=>C?.root_dir===T);return(P||ce)?.merge_queue?.find(C=>C.bead_id===M)?.continuation_action}async function I(T,M,P,H){let ce=await q(T,M,P,H),y=z.get(P)?.revision??ce?.queue?.revision??H;return $r(ce,(C,D)=>q(T,{...M,continuation:C,decision_token:D},P,y,!1),{refresh:C=>q(T,M,P,C?.queue?.revision??z.get(P)?.revision??y,!1)})}async function j(T,M,P,H){let ce=await $r({continuation_mismatch:H},(C,D)=>q("worker-merge-queue-add",{bead_id:M,continuation:C,decision_token:D},T,P,!1)),y=ce?.queue?.merge_queue?.find(C=>C.bead_id===M)?.continuation_action;ce?.applied!==!0&&y?.continuation===null&&y.mismatch&&await j(T,M,ce.queue.revision,y.mismatch)}async function m(T,M,P){let H=await q("worker-discard",T,M,P);if(H&&H.discarded===!0){pe(bo(H),"success",5e3);return}if(H&&H.reason){pe(`\uD3D0\uAE30 \uC2E4\uD328: ${H.reason}`,"error");return}if(H&&H.accepted&&H.pending==="merged_revert"){pe("revert PR \uB300\uAE30 \uC0C1\uD0DC\uB85C \uC804\uD658\uD588\uC2B5\uB2C8\uB2E4","success");return}if(H&&H.accepted){pe(`\uD3D0\uAE30 \uC9C4\uD589: ${H.phase||"\uBC31\uC5C5 \uC911"}`,"success");return}H&&!H.conflict&&pe("\uD3D0\uAE30 \uAC70\uBD80: unknown","error")}async function E(T,M,P){return!o||!P?null:await o(T,{...M,root_dir:P})}async function Y(T){if(!o||!T&&!u("\uC804 \uB808\uD3EC\uC758 \uC790\uB3D9 \uC9C4\uD589\xB7\uC790\uB3D9 \uBA38\uC9C0\uB97C \uB055\uB2C8\uB2E4. \uAC01 \uB808\uD3EC\uC758 \uBA38\uC9C0 \uB300\uAE30\uC5F4\uB3C4 \uD568\uAED8 \uBE44\uC6CC\uC9D1\uB2C8\uB2E4. \uACC4\uC18D\uD560\uAE4C\uC694?"))return;let M=await o("monitor-auto-toggle",{on:T}),P=M&&Array.isArray(M.failed)?M.failed:[];P.length>0&&pe(`\uC790\uB3D9\uD654 ${T?"\uCF1C\uAE30":"\uB044\uAE30"} \uC77C\uBD80 \uC2E4\uD328: ${P.map(H=>H.root_dir).join(", ")}`,"error",3200)}async function ue(){let T=new Map;for(let M of L.pr_wait)T.has(M.root_dir)||T.set(M.root_dir,M.expected_revision);for(let[M,P]of T)await q("worker-merge-queue-add-all",{},M,P)}let oe=null,de=!1,Ue=null;function et(){Ue!==null&&clearTimeout(Ue),Ue=setTimeout(()=>{Ue=null,de=!1},0)}function qe(T){let M=T.target;return typeof M?.closest=="function"?M.closest(".mon-group"):null}function X(T){let M=qe(T);return!M||!oe?null:(M.getAttribute("data-root-dir")||"")===oe.root_dir?M:null}function te(){for(let T of Array.from(A.querySelectorAll(".mon-group--drag-over")))T.classList.remove("mon-group--drag-over")}function Ae(T){let M=T.target,P=typeof M?.closest=="function"?M.closest('.mon-card[draggable="true"]'):null;if(P){oe={bead_id:P.getAttribute("data-issue-id")||"",lane:P.getAttribute("data-lane")||"",root_dir:P.getAttribute("data-root-dir")||"",revision:Number(P.getAttribute("data-revision")||0)||0,queue_index:Number(P.getAttribute("data-queue-index")),queue_length:Number(P.getAttribute("data-queue-length")),place_index:Number(P.getAttribute("data-place-index"))},de=!0;try{T.dataTransfer?.setData("text/plain",oe.bead_id),T.dataTransfer&&(T.dataTransfer.effectAllowed="move")}catch{}}}function _e(T){let M=X(T);M&&(T.preventDefault(),T.dataTransfer&&(T.dataTransfer.dropEffect="move"),M.classList.add("mon-group--drag-over"))}function Pe(T){qe(T)?.classList.remove("mon-group--drag-over")}function le(){oe=null,te(),et()}function Me(T){let M=X(T),P=oe;if(oe=null,te(),!M||!P||!P.bead_id)return;T.preventDefault();let H=T.target,ce=typeof H?.closest=="function"?H.closest('.mon-card[data-lane="queue"]'):null,y=ce&&M.contains(ce)?Number(ce.getAttribute("data-queue-index")):NaN;if(P.lane==="runnable"){let me=Number.isFinite(y)?y:P.place_index;if(!Number.isFinite(me))return;q("worker-queue-place",{bead_id:P.bead_id,index:me},P.root_dir,P.revision);return}if(P.lane!=="queue"||ce&&ce.getAttribute("data-issue-id")===P.bead_id)return;let C=P.queue_index,D=Number.isFinite(y)?C>y?y:y-1:P.queue_length-1;!Number.isFinite(D)||D<0||D===C||q("worker-queue-reorder",{bead_id:P.bead_id,to_index:D},P.root_dir,P.revision)}function Oe(T){let M=dg(L.runnable,g),P={runnable:M.visible,queue:L.queue,running:L.running,pr_wait:L.pr_wait,done:L.done};return i`${Iu({automation:L.automation,counts:{running:L.running.length,queue:L.queue.length,pr_wait:L.pr_wait.length},running_sort:f,done_range:d,token_total:Ou(L.done),token_tooltip:Lu(x())})}
-      <div class="worker-lanes mon-lanes">
-        ${bg.map(H=>{let ce=P[H.lane],y=H.lane==="queue"?L.queue_groups.length>0?i`${L.queue_groups.map(C=>hg(C,T))}`:void 0:ce.length>0?i`${ce.map(C=>xo(C,T))}`:void 0;return pr({id:`monitor-${H.lane}`,lane:H.pane,title:H.lane==="done"?`\uC644\uB8CC\xB7${x()}`:H.title,items:ce,empty:H.empty,body:y,live:H.lane==="running"&&ce.length>0,header_control:H.lane==="runnable"?i`<span class="mon-candidate-filter">
-                    <label
-                      class="worker-filter__tgl"
-                      title="blocked 이슈 표시 (기본 숨김)"
-                    >
-                      <input
-                        type="checkbox"
-                        class="mon-filter__blocked"
-                        .checked=${g.show_blocked}
-                      />
-                      🔒 blocked
-                    </label>
-                    ${M.hidden_blocked>0?i`<span class="worker-filter__hidden"
-                          >숨김 ${M.hidden_blocked}건</span
-                        >`:""}
-                  </span>`:H.lane==="pr_wait"&&ce.length>0?i`<button
-                      type="button"
-                      class="mon-lane-op mon-merge-all"
-                      title="자격이 생기는 PR을 각 레포의 머지 큐에 한 번에 넣습니다"
-                    >
-                      일괄 머지
-                    </button>`:""})})}
-      </div>`}function He(){let T=s&&s.get?s.get():null,M=s&&s.getWorkspacesState?s.getWorkspacesState():[],P=c();L=za(T,M,{done_since:Zr(d,P),running_sort:f}),Ke(Oe(P),A)}function $e(T,M){let P=a?a():void 0;if(!M||!P||M===P||!l){n(T);return}l(M).then(()=>{n(T)}).catch(H=>{r("workspace switch for %s failed: %o",M,H)})}function Ve(T){return{root_dir:T.getAttribute("data-root-dir")||"",revision:Number(T.getAttribute("data-revision")||0)||0}}function it(T){if(typeof T=="string"&&T.length>0)return T;if(T&&typeof T=="object"){let M=T;if(typeof M.message=="string"&&M.message.length>0)return M.message;if(typeof M.error=="string"&&M.error.length>0)return M.error;if(M.error&&typeof M.error=="object"&&typeof M.error.message=="string")return M.error.message}return"\uC5F0\uACB0\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4"}function Ie(T,M){let P=T.querySelector(".mon-link__trigger"),H=T.querySelector(".mon-link__popover"),ce=T.querySelector(".mon-link__error");!P||!H||!ce||(De(),H.hidden=!1,P.setAttribute("aria-expanded","true"),ce.textContent=M,ce.hidden=!1)}async function Je(T,M,P){let H=M.getAttribute("data-root-dir")||"",ce=M.getAttribute("data-issue-id")||"";if(!(!ce||!P||P===ce))try{await E(T,{a:ce,b:P},H),De()}catch(y){Ie(M,it(y))}}function G(T,M){let{root_dir:P,revision:H}=Ve(T),ce=T.getAttribute("data-issue-id")||"",y=M.dataset.attemptId||T.getAttribute("data-attempt-id")||"",C=M.classList;if(C.contains("mon-link__trigger")){Ge(M);return}if(C.contains("mon-link__candidate")||C.contains("mon-link__direct")){let D=M.dataset.targetId||"";Je("dep-add",T,D);return}if(C.contains("mon-blocker__remove")){let D=M.dataset.blockerId||"";Je("dep-remove",T,D);return}if(C.contains("mon-place__choice")){let D=M.dataset.lane||"parallel",me=Number(M.dataset.placeIndex||0)||0;De(),q("worker-queue-place",{bead_id:ce,...D==="parallel"?{}:{lane:D},index:me},P,H);return}if(C.contains("worker-card__place")){We(M);return}if(C.contains("mon-op--up")||C.contains("mon-op--down")){let D=Number(T.getAttribute("data-queue-index")||0)||0,me=C.contains("mon-op--up")?D-1:D+1;if(me<0)return;q("worker-queue-reorder",{bead_id:ce,.../^s[1-5]$/.test(T.dataset.lane||"")?{lane:T.dataset.lane}:{},to_index:me},P,H);return}if(C.contains("mon-op--remove")){q("worker-queue-remove",{bead_id:ce},P,H);return}if(C.contains("mon-op--pause")){E("worker-attempt-pause",{attempt_id:y},P);return}if(C.contains("mon-op--discard")){if(!u(ts(ce,"unmerged")))return;m({bead_id:ce,...y?{attempt_id:y}:{},...M.dataset.operationId?{operation_id:M.dataset.operationId}:{}},P,H);return}if(C.contains("mon-op--resume")){kn().then(D=>{if(D!==null)return I("worker-attempt-resume",{attempt_id:y,...D!==""?{instructions:D}:{}},P,H)});return}if(C.contains("mon-op--dismiss")){q("worker-attempt-dismiss",{attempt_id:y},P,H);return}if(C.contains("worker-mini__merge")){let D=N(P,ce);D?.mismatch&&D.continuation===null?j(P,ce,H,D.mismatch):q("worker-merge-queue-add",{bead_id:ce},P,H);return}if(C.contains("worker-mini__merge-cancel")){q("worker-merge-queue-remove",{bead_id:ce},P,H);return}if(C.contains("worker-mini__discard")){let D=M.dataset.discardMode==="merged"?"merged":"unmerged";if(!u(ts(ce,D)))return;m({bead_id:ce,...y?{attempt_id:y}:{},...M.dataset.operationId?{operation_id:M.dataset.operationId}:{}},P,H);return}if(C.contains("worker-mini__revise-fix")){I("worker-revise-fix",{bead_id:ce},P,H);return}C.contains("worker-mini__revise-approve")&&q("worker-revise-approve",{bead_id:ce},P,H)}function Z(T){T.querySelector(".mon-link__list")?.replaceChildren();let P=T.querySelector(".mon-link__search");P&&(P.value="");let H=T.querySelector(".mon-link__direct");H&&(H.hidden=!0,H.dataset.targetId="",H.textContent="");let ce=T.querySelector(".mon-link__empty");ce&&(ce.hidden=!0);let y=T.querySelector(".mon-link__error");y&&(y.hidden=!0,y.textContent="")}function xe(T,M){let P=T.querySelector(".mon-link__list");if(!P)return;let H=document.createDocumentFragment(),ce=lu(L).filter(y=>y.id!==M);for(let y of ce){let C=document.createElement("button");C.type="button",C.className="mon-link__candidate",C.dataset.targetId=y.id,C.dataset.search=`${y.id} ${y.title} ${y.location}`.toLocaleLowerCase();let D=document.createElement("strong");D.textContent=y.id;let me=document.createElement("span");me.textContent=y.title;let fe=document.createElement("small");fe.textContent=y.location,C.append(D,me,fe),H.append(C)}P.replaceChildren(H)}function De(){for(let T of Array.from(A.querySelectorAll(".mon-card-popover"))){let M=T;M.hidden=!0,M.classList.contains("mon-link__popover")&&Z(M)}for(let T of Array.from(A.querySelectorAll('[aria-expanded="true"]')))T.setAttribute("aria-expanded","false")}function We(T){let P=T.closest(".mon-place")?.querySelector(".mon-place__popover")||null;if(!P)return;let H=P.hidden;De(),H&&(P.hidden=!1,T.setAttribute("aria-expanded","true"))}function Ge(T){let P=T.closest(".mon-link")?.querySelector(".mon-link__popover")||null;if(!P)return;let H=P.hidden;if(De(),H){let ce=T.closest(".mon-card");xe(P,ce?.getAttribute("data-issue-id")||""),P.hidden=!1,T.setAttribute("aria-expanded","true");let y=P.querySelector(".mon-link__search");y&&(ze(y),y.focus())}}function ze(T){let M=T.closest(".mon-link__popover"),P=T.closest(".mon-card");if(!M||!P)return;let H=T.value.trim(),ce=H.toLocaleLowerCase(),y=0,C=!1;for(let Fe of Array.from(M.querySelectorAll(".mon-link__candidate"))){let Ye=Fe,Qe=Ye.dataset.targetId||"",W=ce.length===0||(Ye.dataset.search||"").includes(ce);Ye.hidden=!W,W&&(y+=1),Qe.toLocaleLowerCase()===ce&&(C=!0)}let D=M.querySelector(".mon-link__direct"),me=P.getAttribute("data-issue-id")||"";if(D){let Fe=H.length>0&&!C&&ce!==me.toLocaleLowerCase();D.hidden=!Fe,D.dataset.targetId=Fe?H:"",D.textContent=Fe?`\uC9C1\uC811 \uC785\uB825 \xB7 ${H}`:"",Fe&&(y+=1)}let fe=M.querySelector(".mon-link__empty");fe&&(fe.hidden=y>0);let Ee=M.querySelector(".mon-link__error");Ee&&(Ee.hidden=!0,Ee.textContent="")}function ct(T){let M=T.target;M&&A.contains(M)&&typeof M.closest=="function"&&M.closest(".mon-popover-owner")||De()}function pt(T){if(T.key!=="Escape")return;let M=A.querySelector('[aria-expanded="true"]');De(),M?.focus()}function U(T){let M=de;de=!1;let P=T.target;if(!P||typeof P.closest!="function"||P.closest("dialog")||P.closest("a"))return;let H=P.closest(".mon-running-sort");if(H){T.preventDefault(),f=H.getAttribute("data-sort")==="repo"?"repo":"started",mg(f),He();return}let ce=P.closest(".mon-auto-all");if(ce){T.preventDefault(),Y(ce.getAttribute("data-on")==="true");return}if(P.closest(".mon-merge-all")){T.preventDefault(),ue();return}let C=P.closest(".mon-ctl--advance");if(C){T.preventDefault();let{root_dir:Fe,revision:Ye}=Ve(C);q("worker-automation-toggle",{on:C.getAttribute("data-on")==="true"},Fe,Ye);return}let D=P.closest(".mon-ctl--merge-auto");if(D){T.preventDefault();let{root_dir:Fe,revision:Ye}=Ve(D);q("worker-merge-auto-toggle",{on:D.getAttribute("data-on")==="true"},Fe,Ye);return}let me=P.closest(".mon-card");if(!me)return;let fe=P.closest("button");if(fe){T.preventDefault(),G(me,fe);return}let Ee=me.getAttribute("data-issue-id");Ee&&!M&&(T.preventDefault(),$e(Ee,me.getAttribute("data-root-dir")||""))}function V(T){let M=T.target;if(!M||typeof M.closest!="function")return;let P=M.closest(".mon-filter__blocked");if(P){g={show_blocked:P.checked},ug(g),He();return}let H=M.closest(".mon-done-range");if(H){d=Qt(H.value)?H.value:Ht,fg(d),He();return}let ce=M.closest(".mon-slots__input");if(!ce)return;let{root_dir:y,revision:C}=Ve(ce),D=Number(ce.value);if(!Number.isFinite(D))return;let me=Math.max(os,Math.floor(D));q("worker-queue-set-slots",{slots:me},y,C)}function ve(T){let M=T.target;M?.classList.contains("mon-link__search")&&ze(M)}e.addEventListener("click",U),e.addEventListener("change",V),e.addEventListener("input",ve),e.addEventListener("dragstart",Ae),e.addEventListener("dragover",_e),e.addEventListener("dragleave",Pe),e.addEventListener("drop",Me),e.addEventListener("dragend",le),document.addEventListener("click",ct),document.addEventListener("keydown",pt),s&&typeof s.subscribe=="function"&&(ae=s.subscribe(()=>{try{z.clear(),He()}catch{}}));function ot(){se!==null&&(clearInterval(se),se=null)}function ke(){Ue!==null&&(clearTimeout(Ue),Ue=null)}return{load(){r("load"),He(),se===null&&(se=setInterval(()=>{try{if(A.querySelector(".mon-card-popover:not([hidden])"))return;He()}catch{}},gg))},pause(){ot()},clear(){ot(),ke(),ae&&(ae(),ae=null),e.removeEventListener("click",U),e.removeEventListener("change",V),e.removeEventListener("input",ve),e.removeEventListener("dragstart",Ae),e.removeEventListener("dragover",_e),e.removeEventListener("dragleave",Pe),e.removeEventListener("drop",Me),e.removeEventListener("dragend",le),document.removeEventListener("click",ct),document.removeEventListener("keydown",pt),e.replaceChildren()}}}function Fu(e,t,r){let n=yt("views:nav"),{global_element:s,repo_element:o}=e,a=null;function l(g){return x=>{x.preventDefault(),n("click tab %s",g),r.gotoView(g)}}function c(){let g=t.getState();return g.view==="worker"||g.view==="monitor"?g.view:"board"}function u(){let g=c();return i`
+      </select>`:""}function je(){let h=s&&s.get?s.get():null,x=s&&s.getWorkspacesState?s.getWorkspacesState():[],N=u();I=ti(h,x,{done_since:Yr(p,N),running_sort:m,candidate_filter:v,candidate_sort:C}),$=new Map;for(let j of[...I.runnable,...I.queue,...I.running,...I.pr_wait,...I.done])$.has(j.id)||$.set(j.id,j);Ve(Z(N),O),rt()?.render(),Qe()}function rt(){if(_e)return _e;let h=O.querySelector(".mon2-deck");return h?(_e=Iu(h,{workspacesState:()=>s&&s.getWorkspacesState?s.getWorkspacesState():[],doneItems:()=>I.done,rangeLabel:q,transport:o,implPresetStore:t.execPresetStore,gotoWorkerTab:Le,onFocusChange:x=>{V=x,Qe()}}),_e):null}function Qe(){O.classList.toggle("has-focus",V!==null);for(let h of Array.from(O.querySelectorAll(".mon2-sec[data-root-dir]")))h.classList.toggle("is-focus",V!==null&&h.getAttribute("data-root-dir")===V);for(let h of Array.from(O.querySelectorAll(".mon2-item[data-bead-id], .rtile[data-bead-id], .worker-mini[data-bead-id], .worker-card[data-bead-id]"))){let x=$.get(h.getAttribute("data-bead-id")||"");h.classList.toggle("is-focus",V!==null&&!!x&&x.root_dir===V)}}function yt(h,x){let N=a?a():void 0;if(!x||!N||x===N||!i){n(h);return}i(x).then(()=>{n(h)}).catch(j=>{r("workspace switch for %s failed: %o",x,j)})}function Le(h){if(!h)return;let x=a?a():void 0,N=()=>{try{c?.gotoView("worker")}catch(j){r("gotoView(worker) failed: %o",j)}};if(!i||x&&x===h){N();return}i(h).then(N).catch(j=>{r("workspace switch for %s failed: %o",h,j),he("\uB808\uD3EC \uC804\uD658\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4","error")})}function T(h){tr(h).then(x=>{he(x?"\uBCF5\uC0AC\uB428":"\uBCF5\uC0AC \uC2E4\uD328",x?"success":"error",1400)})}function Q(h){let x=$.get(h)||null;return{item:x,root_dir:x?x.root_dir:"",revision:x?x.expected_revision:0}}function Ee(h){if(typeof h=="string"&&h.length>0)return h;if(h&&typeof h=="object"){let x=h;if(typeof x.message=="string"&&x.message.length>0)return x.message;if(typeof x.error=="string"&&x.error.length>0)return x.error;if(x.error&&typeof x.error=="object"&&typeof x.error.message=="string")return x.error.message}return"\uC5F0\uACB0\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4"}function ee(h,x){let N=h.querySelector(".mon-link__trigger"),j=h.querySelector(".mon-link__popover"),ye=h.querySelector(".mon-link__error");!N||!j||!ye||(Ye(),j.hidden=!1,N.setAttribute("aria-expanded","true"),ye.textContent=x,ye.hidden=!1)}async function Ne(h,x,N,j){let{root_dir:ye}=Q(N);if(!(!N||!j||j===N))try{await we(h,{a:N,b:j},ye),Ye()}catch(ke){ee(x,Ee(ke))}}function et(h){h.querySelector(".mon-link__list")?.replaceChildren();let x=h.querySelector(".mon-link__search");x&&(x.value="");let N=h.querySelector(".mon-link__direct");N&&(N.hidden=!0,N.dataset.targetId="",N.textContent="");let j=h.querySelector(".mon-link__empty");j&&(j.hidden=!0);let ye=h.querySelector(".mon-link__error");ye&&(ye.hidden=!0,ye.textContent="")}function st(h,x){let N=h.querySelector(".mon-link__list");if(!N)return;let j=document.createDocumentFragment(),ye=yu(I).filter(ke=>ke.id!==x);for(let ke of ye){let qe=document.createElement("button");qe.type="button",qe.className="mon-link__candidate",qe.dataset.targetId=ke.id,qe.dataset.search=`${ke.id} ${ke.title} ${ke.location}`.toLocaleLowerCase();let ze=document.createElement("strong");ze.textContent=ke.id;let kt=document.createElement("span");kt.textContent=ke.title;let mt=document.createElement("small");mt.textContent=ke.location,qe.append(ze,kt,mt),j.append(qe)}N.replaceChildren(j)}function Ye(){for(let h of Array.from(O.querySelectorAll(".mon-card-popover"))){let x=h;x.hidden=!0,x.classList.contains("mon-link__popover")&&et(x)}for(let h of Array.from(O.querySelectorAll('[aria-haspopup][aria-expanded="true"]')))h.setAttribute("aria-expanded","false")}function ct(h){let N=h.closest(".mon-link")?.querySelector(".mon-link__popover")||null;if(!N)return;let j=N.hidden;if(Ye(),j){let ye=h.closest(".mon2-item");st(N,ye?.getAttribute("data-bead-id")||""),N.hidden=!1,h.setAttribute("aria-expanded","true");let ke=N.querySelector(".mon-link__search");ke&&(ft(ke),ke.focus())}}function ft(h){let x=h.closest(".mon-link__popover"),N=h.closest(".mon2-item");if(!x||!N)return;let j=h.value.trim(),ye=j.toLocaleLowerCase(),ke=0,qe=!1;for(let Tt of Array.from(x.querySelectorAll(".mon-link__candidate"))){let Nt=Tt,nt=Nt.dataset.targetId||"",zt=ye.length===0||(Nt.dataset.search||"").includes(ye);Nt.hidden=!zt,zt&&(ke+=1),nt.toLocaleLowerCase()===ye&&(qe=!0)}let ze=x.querySelector(".mon-link__direct"),kt=N.getAttribute("data-bead-id")||"";if(ze){let Tt=j.length>0&&!qe&&ye!==kt.toLocaleLowerCase();ze.hidden=!Tt,ze.dataset.targetId=Tt?j:"",ze.textContent=Tt?`\uC9C1\uC811 \uC785\uB825 \xB7 ${j}`:"",Tt&&(ke+=1)}let mt=x.querySelector(".mon-link__empty");mt&&(mt.hidden=ke>0);let Ft=x.querySelector(".mon-link__error");Ft&&(Ft.hidden=!0,Ft.textContent="")}let ut=null,ot=!1,gt=null;function U(){gt!==null&&clearTimeout(gt),gt=setTimeout(()=>{gt=null,ot=!1},0)}function J(h){let x=h.target;return typeof x?.closest=="function"?x.closest(".worker-pane, .mon2-sec__body"):null}function be(h){let x=J(h);if(!x||!ut)return null;let j=x.closest(".mon2-sec")?.getAttribute("data-root-dir")||"";if(j!==ut.root_dir)return null;let ye=x.getAttribute("data-lane")||"";if(ye!=="candidate"&&ye!=="queue"&&!/^s[1-5]$/.test(ye))return null;let ke=x.closest(".mon2-lane");return{pane:x,lane:ye,root_dir:j,lane_length:Number(ke?.getAttribute("data-lane-length")||0)||0}}function Ge(){for(let h of Array.from(O.querySelectorAll(".worker-pane--drag-over")))h.classList.remove("worker-pane--drag-over")}function De(h){let x=h.target,N=typeof x?.closest=="function"?x.closest('.worker-mini[draggable="true"], .worker-card[draggable="true"]'):null;if(!N)return;let j=N.getAttribute("data-bead-id")||"",{item:ye}=Q(j);if(ye){ut={bead_id:j,lane:ye.lane,root_dir:ye.root_dir,revision:ye.expected_revision,queue_index:typeof ye.queue_index=="number"?ye.queue_index:-1,place_index:typeof ye.place_index=="number"?ye.place_index:0},ot=!0,re=null,O.classList.add("is-dragging");try{h.dataTransfer?.setData("text/plain",j),h.dataTransfer&&(h.dataTransfer.effectAllowed="move")}catch{}}}function B(h){let x=be(h);x&&(h.preventDefault(),h.dataTransfer&&(h.dataTransfer.dropEffect="move"),x.pane.classList.add("worker-pane--drag-over"))}function te(h){J(h)?.classList.remove("worker-pane--drag-over")}function ve(){ut=null,Ge(),O.classList.remove("is-dragging"),U()}function y(h){let x=be(h),N=ut;if(ut=null,Ge(),O.classList.remove("is-dragging"),!x||!N||!N.bead_id)return;h.preventDefault();let j=h.target,ye=typeof j?.closest=="function"?j.closest(".mon2-item"):null,ke=ye&&x.pane.contains(ye)&&ye.getAttribute("data-bead-id")||"",qe=ke?$.get(ke):void 0,ze=qe&&typeof qe.queue_index=="number"?qe.queue_index:NaN;if(x.lane==="candidate"){(N.lane==="queue"||/^s[1-5]$/.test(N.lane))&&ae("worker-queue-remove",{bead_id:N.bead_id},N.root_dir,N.revision);return}let kt=x.lane==="queue"?"parallel":x.lane;if(N.lane==="runnable"){let Nt=Number.isFinite(ze)?ze:x.lane_length;ae("worker-queue-place",{bead_id:N.bead_id,...kt==="parallel"?{}:{lane:kt},index:Nt},N.root_dir,N.revision);return}if((N.lane==="queue"?"parallel":N.lane)!==kt){let Nt=Number.isFinite(ze)?ze:x.lane_length;ae("worker-queue-place",{bead_id:N.bead_id,...kt==="parallel"?{}:{lane:kt},index:Nt},N.root_dir,N.revision);return}if(ke===N.bead_id)return;let Ft=N.queue_index,Tt=Number.isFinite(ze)?Ft>ze?ze:ze-1:x.lane_length-1;!Number.isFinite(Tt)||Tt<0||Tt===Ft||ae("worker-queue-reorder",{bead_id:N.bead_id,...kt==="parallel"?{}:{lane:kt},to_index:Tt},N.root_dir,N.revision)}function R(h){return{runner:h.runner||void 0,model:h.model||void 0,effort:h.effort||void 0,status:h.run_state==="running"?"running":h.run_state,worktree:h.root_dir}}function W(h,x){let{item:N,root_dir:j,revision:ye}=Q(x),ke=N?.attempt_id||"",qe=h.classList;if(qe.contains("mon-link__trigger")){ct(h);return}if(qe.contains("mon-link__candidate")||qe.contains("mon-link__direct")){let ze=h.closest(".mon2-item");ze&&Ne("dep-add",ze,x,h.dataset.targetId||"");return}if(qe.contains("worker-dep__remove")){let ze=h.closest(".mon2-item");ze&&Ne("dep-remove",ze,x,h.dataset.blockerId||"");return}if(qe.contains("worker-card__place")){re=re===x?null:x,je();return}if(qe.contains("worker-card__place-cancel")){re=null,je();return}if(qe.contains("worker-card__place-lane")){let ze=h.getAttribute("data-lane")||"parallel",kt=ze==="parallel"?N?.place_index??0:(N?.place_lanes||[]).find(mt=>mt.id===ze)?.index??0;re=null,ae("worker-queue-place",{bead_id:x,...ze==="parallel"?{}:{lane:ze},index:kt},j,ye),je();return}if(qe.contains("rtile__session")){H=ke,ke&&N&&me.open({attempt_id:ke,root_dir:j,meta:R(N)}),je();return}if(qe.contains("rtile__pause")){we("worker-attempt-pause",{attempt_id:ke},j);return}if(qe.contains("rtile__resume")){xn().then(ze=>{if(ze!==null)return Te("worker-attempt-resume",{attempt_id:ke,...ze!==""?{instructions:ze}:{}},j,ye)});return}if(qe.contains("rtile__dismiss")){ae("worker-attempt-dismiss",{attempt_id:ke},j,ye);return}if(qe.contains("rtile__discard")){if(!d(us(x,"unmerged")))return;se({bead_id:x,...ke?{attempt_id:ke}:{},...h.dataset.operationId?{operation_id:h.dataset.operationId}:{}},j,ye);return}if(qe.contains("worker-mini__merge")){let ze=Ie(j,x);ze?.mismatch&&ze.continuation===null?ne(j,x,ye,ze.mismatch):ae("worker-merge-queue-add",{bead_id:x},j,ye);return}if(qe.contains("worker-mini__merge-cancel")){ae("worker-merge-queue-remove",{bead_id:x},j,ye);return}if(qe.contains("worker-mini__discard")){let ze=h.dataset.discardMode==="merged"?"merged":"unmerged";if(!d(us(x,ze)))return;se({bead_id:x,...h.dataset.attemptId?{attempt_id:h.dataset.attemptId}:{},...h.dataset.operationId?{operation_id:h.dataset.operationId}:{}},j,ye);return}if(qe.contains("worker-mini__revise-fix")){Te("worker-revise-fix",{bead_id:x},j,ye);return}qe.contains("worker-mini__revise-approve")&&ae("worker-revise-approve",{bead_id:x},j,ye)}function oe(h){let x=ot;ot=!1;let N=h.target;if(!N||typeof N.closest!="function"||N.closest("dialog")||N.closest(".mon2-drawer")||N.closest("a"))return;let j=N.closest(".worker-card__id, .worker-mini__id, .rtile__id");if(j){h.preventDefault();let Nt=N.closest(".mon2-item, .rtile, .mon2-chain__node, .worker-mini")?.getAttribute("data-bead-id")||j.textContent?.trim()||"";Nt&&T(Nt);return}let ye=N.closest(".worker-mini__repo, .worker-card__repo, .mon2-sec__worker");if(ye){h.preventDefault();let Tt=ye.getAttribute("data-root-dir")||$.get(N.closest(".mon2-item, .rtile, .worker-mini")?.getAttribute("data-bead-id")||"")?.root_dir||ye.getAttribute("title")||"";Le(Tt);return}let ke=N.closest(".mon2-sec__toggle");if(ke){h.preventDefault(),E(ke.getAttribute("data-root-dir")||"",ke.getAttribute("data-section")||"runnable");return}if(N.closest(".mon2-chains__toggle")){h.preventDefault(),F={...F,chains:F.chains!==!0},Wu(F),je();return}let qe=N.closest(".mon2-chain__node");if(qe){h.preventDefault(),yt(qe.getAttribute("data-bead-id")||"",qe.getAttribute("data-root-dir")||"");return}if(N.closest(".mon-merge-all")){h.preventDefault(),A();return}let ze=N.closest(".mon-filter__spec");if(ze){h.preventDefault(),v={...v,spec:ze.getAttribute("data-spec")||"all"},Uu(v),je();return}let kt=N.closest(".mon2-item, .rtile, .worker-mini, .worker-card");if(!kt)return;let mt=kt.getAttribute("data-bead-id")||"",Ft=N.closest("button");if(Ft){h.preventDefault(),W(Ft,mt);return}mt&&!x&&(h.preventDefault(),yt(mt,Q(mt).root_dir))}function Ce(h){let x=h.target;x&&O.contains(x)&&typeof x.closest=="function"&&x.closest(".mon-popover-owner")||Ye()}function Ae(h){if(h.key!=="Escape")return;let x=O.querySelector('[aria-haspopup][aria-expanded="true"]');Ye(),x?.focus()}function Me(h){let x=h.target;if(!x||typeof x.closest!="function")return;let N=x.closest(".mon-filter__blocked");if(N){v={...v,show_blocked:N.checked},Uu(v),je();return}let j=x.closest(".mon-candidate-sort");if(j){C=ms.some(qe=>qe.value===j.value)?j.value:"repo_spec",Sg(C),je();return}let ye=x.closest(".mon-running-sort");if(ye){m=ye.value==="repo"?"repo":"started",Ig(m),je();return}let ke=x.closest(".mon-done-range");ke&&(p=ar(ke.value)?ke.value:er,Cg(p),je())}function Be(h){let x=h.target;x?.classList.contains("mon-link__search")&&ft(x)}e.addEventListener("click",oe),e.addEventListener("change",Me),e.addEventListener("input",Be),e.addEventListener("dragstart",De),e.addEventListener("dragover",B),e.addEventListener("dragleave",te),e.addEventListener("drop",y),e.addEventListener("dragend",ve),document.addEventListener("click",Ce),document.addEventListener("keydown",Ae),s&&typeof s.subscribe=="function"&&(K=s.subscribe(()=>{try{M.clear(),je()}catch{}}));function At(){pe!==null&&(clearInterval(pe),pe=null)}function vt(){gt!==null&&(clearTimeout(gt),gt=null)}return{load(){r("load"),je(),pe===null&&(pe=setInterval(()=>{try{if(O.querySelector(".mon-card-popover:not([hidden])"))return;je()}catch{}},Lg))},pause(){At()},clear(){At(),vt(),K&&(K(),K=null),me.destroy(),_e?.destroy(),_e=null,e.removeEventListener("click",oe),e.removeEventListener("change",Me),e.removeEventListener("input",Be),e.removeEventListener("dragstart",De),e.removeEventListener("dragover",B),e.removeEventListener("dragleave",te),e.removeEventListener("drop",y),e.removeEventListener("dragend",ve),document.removeEventListener("click",Ce),document.removeEventListener("keydown",Ae),e.replaceChildren()}}}function Qu(e,t,r){let n=Ct("views:nav"),{global_element:s,repo_element:o}=e,a=null;function i(m){return v=>{v.preventDefault(),n("click tab %s",m),r.gotoView(m)}}function c(){let m=t.getState();return m.view==="worker"||m.view==="monitor"?m.view:"board"}function u(){let m=c();return l`
       <a
         href="#/monitor"
-        class="ctl-tab ctl-tab--monitor ${g==="monitor"?"is-active":""}"
-        @click=${l("monitor")}
+        class="ctl-tab ctl-tab--monitor ${m==="monitor"?"is-active":""}"
+        @click=${i("monitor")}
       >
         <span class="ctl-tab__dots" aria-hidden="true"
           ><i></i><i></i><i></i><i></i
         ></span>
         Monitor
       </a>
-    `}function d(){let g=c();return i`
+    `}function d(){let m=c();return l`
       <div class="ctl-tabs">
         <a
           href="#/board"
-          class="ctl-tab ${g==="board"?"is-active":""}"
-          @click=${l("board")}
+          class="ctl-tab ${m==="board"?"is-active":""}"
+          @click=${i("board")}
           >Board</a
         >
         <a
           href="#/worker"
-          class="ctl-tab ${g==="worker"?"is-active":""}"
-          @click=${l("worker")}
+          class="ctl-tab ${m==="worker"?"is-active":""}"
+          @click=${i("worker")}
           >Worker</a
         >
       </div>
-    `}function f(){s&&Ke(u(),s),o&&Ke(d(),o)}return f(),a=t.subscribe(()=>f()),{destroy(){a&&(a(),a=null),s&&Ke(i``,s),o&&Ke(i``,o)}}}var ju=["bug","feature","task","epic","chore"];function Bu(e){switch((e||"").toString().toLowerCase()){case"bug":return"Bug";case"feature":return"Feature";case"task":return"Task";case"epic":return"Epic";case"chore":return"Chore";default:return""}}var Uu=["Critical","High","Medium","Low","Backlog"];function Wu(e,t){let r=document.createElement("dialog");r.id="new-issue-dialog",r.setAttribute("role","dialog"),r.setAttribute("aria-modal","true"),r.innerHTML=`
+    `}function p(){s&&Ve(u(),s),o&&Ve(d(),o)}return p(),a=t.subscribe(()=>p()),{destroy(){a&&(a(),a=null),s&&Ve(l``,s),o&&Ve(l``,o)}}}var Xu=["bug","feature","task","epic","chore"];function Ju(e){switch((e||"").toString().toLowerCase()){case"bug":return"Bug";case"feature":return"Feature";case"task":return"Task";case"epic":return"Epic";case"chore":return"Chore";default:return""}}var ed=["Critical","High","Medium","Low","Backlog"];function td(e,t){let r=document.createElement("dialog");r.id="new-issue-dialog",r.setAttribute("role","dialog"),r.setAttribute("aria-modal","true"),r.innerHTML=`
     <div class="new-issue__container" part="container">
       <header class="new-issue__header">
         <div class="new-issue__title">New Issue</div>
@@ -2273,15 +2477,15 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
         </form>
       </div>
     </div>
-  `,e.appendChild(r);let n=r.querySelector("#new-issue-form"),s=r.querySelector("#new-title"),o=r.querySelector("#new-type"),a=r.querySelector("#new-priority"),l=r.querySelector("#new-labels"),c=r.querySelector("#new-description"),u=r.querySelector("#new-issue-error"),d=r.querySelector("#btn-cancel"),f=r.querySelector("#btn-create"),g=r.querySelector(".new-issue__close");function x(){o.replaceChildren();let I=document.createElement("option");I.value="",I.textContent="\u2014 Select \u2014",o.appendChild(I);for(let j of ju){let m=document.createElement("option");m.value=j,m.textContent=Bu(j),o.appendChild(m)}a.replaceChildren();for(let j=0;j<=4;j+=1){let m=document.createElement("option");m.value=String(j);let E=Uu[j]||"Medium";m.textContent=`${j} \u2013 ${E}`,a.appendChild(m)}}x();function A(){try{typeof r.close=="function"?r.close():r.removeAttribute("open")}catch{r.removeAttribute("open")}}function L(I){s.disabled=I,o.disabled=I,a.disabled=I,l.disabled=I,c.disabled=I,d.disabled=I,f.disabled=I,f.textContent=I?"Creating\u2026":"Create"}function z(){u.textContent=""}function ae(I){u.textContent=I}function se(){try{let I=window.localStorage.getItem("beads-ui.new.type");I?o.value=I:o.value="";let j=window.localStorage.getItem("beads-ui.new.priority");j&&/^\d$/.test(j)?a.value=j:a.value="2"}catch{o.value="",a.value="2"}}function q(){let I=o.value||"",j=a.value||"";I.length>0&&window.localStorage.setItem("beads-ui.new.type",I),j.length>0&&window.localStorage.setItem("beads-ui.new.priority",j)}async function N(){z();let I=String(s.value||"").trim();if(I.length===0){ae("Title is required"),s.focus();return}let j=Number(a.value||"2");if(!(j>=0&&j<=4)){ae("Priority must be 0..4"),a.focus();return}let m=String(o.value||""),E=String(c.value||""),Y={title:I};m.length>0&&(Y.type=m),String(j).length>0&&(Y.priority=j),E.length>0&&(Y.description=E),L(!0);try{await t("create-issue",Y)}catch{L(!1),ae("Failed to create issue");return}q(),L(!1),A()}return r.addEventListener("cancel",I=>{I.preventDefault(),A()}),g.addEventListener("click",()=>A()),d.addEventListener("click",()=>A()),r.addEventListener("keydown",I=>{I.key==="Enter"&&(I.ctrlKey||I.metaKey)&&(I.preventDefault(),N())}),n.addEventListener("submit",I=>{I.preventDefault(),N()}),{open(){n.reset(),z(),se();try{"showModal"in r&&typeof r.showModal=="function"?r.showModal():r.setAttribute("open","")}catch{r.setAttribute("open","")}setTimeout(()=>{try{s.focus()}catch{}},0)},close(){A()}}}var yg=[["route","route \uCE69"],["fast_track","\u26A1 fast_track \uCE69"],["pr","PR \uCE69"],["from","\u21A9 from \uCE69"],["blocked","blocked \uC0AC\uC720 \uCE69"],["stepper","stepper"]];function vg(e,t){return Vo(e,t)?"shown":t.hidden_labels.includes(e)?"hidden_exact":"hidden_prefix"}function zu(e,t,r){return i`
+  `,e.appendChild(r);let n=r.querySelector("#new-issue-form"),s=r.querySelector("#new-title"),o=r.querySelector("#new-type"),a=r.querySelector("#new-priority"),i=r.querySelector("#new-labels"),c=r.querySelector("#new-description"),u=r.querySelector("#new-issue-error"),d=r.querySelector("#btn-cancel"),p=r.querySelector("#btn-create"),m=r.querySelector(".new-issue__close");function v(){o.replaceChildren();let P=document.createElement("option");P.value="",P.textContent="\u2014 Select \u2014",o.appendChild(P);for(let I of Xu){let $=document.createElement("option");$.value=I,$.textContent=Ju(I),o.appendChild($)}a.replaceChildren();for(let I=0;I<=4;I+=1){let $=document.createElement("option");$.value=String(I);let M=ed[I]||"Medium";$.textContent=`${I} \u2013 ${M}`,a.appendChild($)}}v();function C(){try{typeof r.close=="function"?r.close():r.removeAttribute("open")}catch{r.removeAttribute("open")}}function F(P){s.disabled=P,o.disabled=P,a.disabled=P,i.disabled=P,c.disabled=P,d.disabled=P,p.disabled=P,p.textContent=P?"Creating\u2026":"Create"}function H(){u.textContent=""}function re(P){u.textContent=P}function V(){try{let P=window.localStorage.getItem("beads-ui.new.type");P?o.value=P:o.value="";let I=window.localStorage.getItem("beads-ui.new.priority");I&&/^\d$/.test(I)?a.value=I:a.value="2"}catch{o.value="",a.value="2"}}function q(){let P=o.value||"",I=a.value||"";P.length>0&&window.localStorage.setItem("beads-ui.new.type",P),I.length>0&&window.localStorage.setItem("beads-ui.new.priority",I)}async function O(){H();let P=String(s.value||"").trim();if(P.length===0){re("Title is required"),s.focus();return}let I=Number(a.value||"2");if(!(I>=0&&I<=4)){re("Priority must be 0..4"),a.focus();return}let $=String(o.value||""),M=String(c.value||""),K={title:P};$.length>0&&(K.type=$),String(I).length>0&&(K.priority=I),M.length>0&&(K.description=M),F(!0);try{await t("create-issue",K)}catch{F(!1),re("Failed to create issue");return}q(),F(!1),C()}return r.addEventListener("cancel",P=>{P.preventDefault(),C()}),m.addEventListener("click",()=>C()),d.addEventListener("click",()=>C()),r.addEventListener("keydown",P=>{P.key==="Enter"&&(P.ctrlKey||P.metaKey)&&(P.preventDefault(),O())}),n.addEventListener("submit",P=>{P.preventDefault(),O()}),{open(){n.reset(),H(),V();try{"showModal"in r&&typeof r.showModal=="function"?r.showModal():r.setAttribute("open","")}catch{r.setAttribute("open","")}setTimeout(()=>{try{s.focus()}catch{}},0)},close(){C()}}}var Mg=[["route","route \uCE69"],["fast_track","\u26A1 fast_track \uCE69"],["pr","PR \uCE69"],["from","\u21A9 from \uCE69"],["blocked","blocked \uC0AC\uC720 \uCE69"],["stepper","stepper"]];function Dg(e,t){return ea(e,t)?"shown":t.hidden_labels.includes(e)?"hidden_exact":"hidden_prefix"}function rd(e,t,r){return l`
     <section class="settings-dialog__group">
       <div class="settings-dialog__group-title">라벨 표시</div>
       <p class="settings-dialog__hint-block">
         라벨을 눌러 표시/숨김을 전환합니다. prefix 규칙으로 숨겨진 라벨을 누르면
         그 라벨만 예외로 다시 표시됩니다.
       </p>
-      ${t.length===0?i`<div class="settings-dialog__empty">라벨 없음</div>`:i`<div class="settings-dialog__pills">
-            ${t.map(n=>{let s=vg(n,e);return i`<button
+      ${t.length===0?l`<div class="settings-dialog__empty">라벨 없음</div>`:l`<div class="settings-dialog__pills">
+            ${t.map(n=>{let s=Dg(n,e);return l`<button
                 type="button"
                 class=${`settings-dialog__pill settings-dialog__pill--${s}`}
                 data-label=${n}
@@ -2292,11 +2496,11 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
               </button>`})}
           </div>`}
     </section>
-  `}function Hu(e,t,r){return i`
+  `}function nd(e,t,r){return l`
     <section class="settings-dialog__group">
       <div class="settings-dialog__group-title">숨김 prefix</div>
       <div class="settings-dialog__prefixes">
-        ${e.hidden_prefixes.map(n=>i`<span class="settings-dialog__prefix">
+        ${e.hidden_prefixes.map(n=>l`<span class="settings-dialog__prefix">
               ${n}
               <button
                 type="button"
@@ -2326,11 +2530,11 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
         </button>
       </div>
     </section>
-  `}function Gu(e,t){return i`
+  `}function sd(e,t){return l`
     <section class="settings-dialog__group">
       <div class="settings-dialog__group-title">카드 표시 요소</div>
       <div class="settings-dialog__toggles">
-        ${yg.map(([r,n])=>i`<label class="settings-dialog__toggle">
+        ${Mg.map(([r,n])=>l`<label class="settings-dialog__toggle">
               <input
                 type="checkbox"
                 data-chip=${r}
@@ -2341,97 +2545,9 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
             </label>`)}
       </div>
     </section>
-  `}var wg=[{id:"execution",label:"\uC2E4\uD589",glyph:"\u25C6"},{id:"display",label:"\uD45C\uC2DC",glyph:"\u25EB"}],Ut="",kg=["impl_runtime","impl_model","impl_effort"];function Wt(e){return!!e&&typeof e=="object"&&!Array.isArray(e)}function Vu(e,t){let{transport:r,policyStore:n,labelOptions:s}=t,o=t.notify||(y=>pe(y,"error",4e3)),a=document.createElement("dialog");a.id="settings-dialog",a.className="settings-dialog",a.setAttribute("role","dialog"),a.setAttribute("aria-modal","true"),a.setAttribute("aria-label","\uC124\uC815"),e.appendChild(a);let l="execution",c=!1,u="",d={},f={},g=[],x=!1,A=null,L={},z="",ae="",se=!1,q=!1,N=!1,I=null;function j(){let y=t.queueStore?.get();return Wt(y)?y.runner_catalog:null}function m(){let y=t.queueStore?.get();return Wt(y)&&Wt(y.execution_defaults)?y.execution_defaults:null}function E(){let y=t.implPresetStore?.get();return Wt(y)&&Array.isArray(y.presets)?y:null}async function Y(){x=!0,ve();try{let y=await r("get-session-defaults",{});d=Wt(y?.values)?{...y.values}:{},f={...d},g=Array.isArray(y?.warnings)?y.warnings:[]}catch(y){g=["kv_read_failed"],o(`\uC138\uC158 \uAE30\uBCF8\uAC12\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4: ${y instanceof Error?y.message:String(y)}`)}finally{x=!1,ve()}}async function ue(){let y=Ic(d,f);if(Object.keys(y).length!==0){try{let C=await r("set-session-defaults",{values:y});d=Wt(C?.values)?{...C.values}:{},f={...d},g=Array.isArray(C?.warnings)?C.warnings:[]}catch(C){o(`\uC138\uC158 \uAE30\uBCF8\uAC12 \uC800\uC7A5 \uC2E4\uD328: ${C instanceof Error?C.message:String(C)}`)}ve()}}function oe(y,C){if(kg.includes(y)){et(y,C);return}C===Ut?delete f[y]:f[y]=C,ve(),ue()}function de(){let y=Z().orchestration_model,C=hr({global:{orchestration_model:y??void 0},execution_defaults:m(),runner_catalog:j()}).orchestration_model.value;return C?Rr(j(),C):null}function Ue(y,C){typeof C=="string"&&C.length>0?f[y]=C:delete f[y]}function et(y,C){let D=C===Ut?void 0:C,me=Cc({impl_runtime:y==="impl_runtime"?D:f.impl_runtime,impl_model:y==="impl_model"?D:f.impl_model,impl_effort:y==="impl_effort"?D:f.impl_effort},j(),de());Ue("impl_runtime",me.impl_runtime),Ue("impl_model",me.impl_model),Ue("impl_effort",me.impl_effort),ve(),ue()}async function qe(){let y=t.queueStore?.get();if(!Wt(y))return;let C={orchestration_model:y.orchestration_model??null,orchestration_effort:y.orchestration_effort??null,orchestration_speed:y.orchestration_speed??null},D=Lc(C,{...C,...L});if(Object.keys(D).length!==0){try{let me=await r("worker-queue-set-orchestration-defaults",{expected_revision:y.revision,values:D});if(me&&me.applied===!1){o("Worker \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: \uB2E4\uB978 \uD074\uB77C\uC774\uC5B8\uD2B8\uC640 \uCDA9\uB3CC");return}L={}}catch(me){o(`Worker \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: ${me instanceof Error?me.message:String(me)}`)}ve()}}function X(y,C){L[y]=C===Ut?null:C,ve(),qe()}function te(y){if(A=y,!y){ve();return}let C=j(),D=Z(),me=D.orchestration_model;me&&!Jn(C,y).includes(me)&&(L.orchestration_model=null,me=null);let fe=D.orchestration_effort;fe&&!Ea(C,y,me||Kt).includes(fe)&&(L.orchestration_effort=null),ve(),qe()}async function Ae(y){let C=t.queueStore?.get();if(!(!Wt(C)||y<1)){try{await r("worker-queue-set-slots",{expected_revision:C.revision,slots:y})}catch(D){o(`slots \uC800\uC7A5 \uC2E4\uD328: ${D instanceof Error?D.message:String(D)}`)}ve()}}function _e(){let y={},C=Z();for(let D of ao){let me=Cr.includes(D)?C[D]:f[D];typeof me=="string"&&me.length>0&&(y[D]=me)}return y}async function Pe(){let y=E();if(!y)return;let C=_e();if(Object.keys(C).length===0){o("\uC800\uC7A5\uD560 \uC2E4\uD589 \uC124\uC815\uC774 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uBA3C\uC800 \uC2E4\uD589 \uAC12\uC744 \uC120\uD0DD\uD558\uC138\uC694");return}let D=(y.presets||[]).find(fe=>fe.id===z),me=ae.trim()||(D?D.name:"");if(!me){o("\uD504\uB9AC\uC14B \uC774\uB984\uC744 \uC785\uB825\uD558\uC138\uC694");return}try{let fe=D?await r("impl-preset-update",{expected_revision:y.revision,id:D.id,name:me,settings:C}):await r("impl-preset-create",{expected_revision:y.revision,name:me,settings:C});if(fe&&fe.applied){if(ae="",!D&&Array.isArray(fe.presets)){let Ee=fe.presets.find(Fe=>Fe.name===me);z=Ee?Ee.id:z}ve()}else o("\uD504\uB9AC\uC14B \uC800\uC7A5 \uC2E4\uD328: \uB2E4\uB978 \uACF3\uC5D0\uC11C \uBC29\uAE08 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4"),ve()}catch(fe){o(`\uD504\uB9AC\uC14B \uC800\uC7A5 \uC2E4\uD328: ${fe instanceof Error?fe.message:String(fe)}`)}}async function le(){let y=E();if(!(!y||z.length===0))try{let C=await r("impl-preset-delete",{expected_revision:y.revision,id:z});C&&C.applied?(z="",ve()):(o("\uD504\uB9AC\uC14B \uC0AD\uC81C \uC2E4\uD328: \uB2E4\uB978 \uACF3\uC5D0\uC11C \uBC29\uAE08 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4"),ve())}catch(C){o(`\uD504\uB9AC\uC14B \uC0AD\uC81C \uC2E4\uD328: ${C instanceof Error?C.message:String(C)}`)}}async function Me(){let y=E(),C=t.queueStore?.get();if(!(!y||!Wt(C)||z.length===0)){try{let D=await r("apply-impl-preset-global",{preset_id:z,expected_revision:y.revision,expected_queue_revision:C.revision});D&&D.applied?(d=Wt(D.values)?{...D.values}:{},f={...d},g=Array.isArray(D.warnings)?D.warnings:[],Wt(D.queue)&&(t.queueStore?.set?.(D.queue),L={}),D.queue_applied===!1&&o("\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \uAC12\uC740 \uC801\uC6A9\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4 \u2014 \uB2E4\uC2DC \uC2DC\uB3C4\uD558\uC138\uC694")):D&&D.conflict&&o("\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328: \uD504\uB9AC\uC14B\uC774 \uBC29\uAE08 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4")}catch(D){o(`\uC2E4\uD589 \uD504\uB9AC\uC14B \uC801\uC6A9 \uC2E4\uD328: ${D instanceof Error?D.message:String(D)}`)}ve()}}async function Oe(){q=!0,N=!1,ve();try{let y=await r("get-worker-system-prompt",{});!y||typeof y!="object"||Array.isArray(y)?N=!0:I=y}catch{N=!0}finally{q=!1,ve()}}function He(){if(se=!se,se&&!I){Oe();return}ve()}function $e(){let y=Sn({loading:q,error:N});if(y)return y;if(!I)return"";let C=Array.isArray(I.variants)?I.variants:[];return i`<div class="settings-dialog__sp-body">
-      ${I.target_base_placeholder?i`<div class="prompt-block__meta">
-            \`${I.target_base_placeholder}\`는 디스패치 시점에 해석된
-            base로 치환됩니다.
-          </div>`:""}
-      ${C.map(D=>i`<div class="settings-dialog__sp-variant" data-variant=${D.key}>
-            <div class="settings-dialog__sp-cond">${D.condition}</div>
-            ${Tr(D.label,D.system_prompt)}
-          </div>`)}
-    </div>`}function Ve(){return i`<section
-      class="settings-dialog__group"
-      data-seam="system-prompt"
-    >
-      <div class="settings-dialog__group-title">
-        워커 시스템 프롬프트
-        <span class="settings-dialog__hint">읽기 전용 — 서버가 조립</span>
-      </div>
-      <button
-        type="button"
-        class="settings-dialog__btn"
-        data-seam="system-prompt-toggle"
-        aria-expanded=${se?"true":"false"}
-        @click=${He}
-      >
-        ${se?"\uC811\uAE30":"\uC804\uBB38 \uBCF4\uAE30"}
-      </button>
-      ${se?$e():""}
-    </section>`}function it(y,C,D,me,fe,Ee,Fe){let Ye=fe[y]??Ut,Qe=Ta(y,D,fe,m(),j(),Fe),W=Qe.options.find(be=>be.value===Ye),re=Ye===Ut?Qe.full_value:W?.full_value;return i`<select
-        class=${Ye===Ut?"settings-dialog__unset":""}
-        data-key=${y}
-        aria-label=${C}
-        title=${re||""}
-        ?disabled=${Ee===!0||Qe.disabled}
-        .value=${nn(String(Ye))}
-        @change=${be=>me(y,String(be.target.value))}
-      >
-        <option value=${Ut} ?selected=${Ye===Ut}>
-          ${Qe.unset_label}
-        </option>
-        ${Qe.options.map(be=>i`<option
-              value=${be.value}
-              title=${be.full_value||""}
-              ?selected=${be.value===Ye}
-            >
-              ${be.label}
-            </option>`)}
-      </select>
-      ${Ye===Ut?i`<span class="settings-dialog__source-badge">기본</span>`:""}`}function Ie(y,C,D,me,fe,Ee=!1,Fe){return i`<div
-      class=${`settings-dialog__row${Ee?" settings-dialog__row--off":""}`}
-    >
-      <span class="settings-dialog__row-label">${C}</span>
-      <span class="settings-dialog__controls">
-        ${it(y,C,D,me,fe,Ee,Fe)}
-      </span>
-    </div>`}function Je(y,C,D,me,fe){return i`<div class="settings-dialog__row">
-      <span class="settings-dialog__row-label">
-        <i
-          class="settings-dialog__stage-dot"
-          style=${`background: var(--stage-${C}-on)`}
-        ></i>
-        ${y}
-      </span>
-      <span class="settings-dialog__controls">
-        ${it(D,`${y} \uBAA8\uB378`,me,oe,f,!1)}
-        ${it(fe,`${y} effort`,co,oe,f,!1)}
-      </span>
-    </div>`}function G(y){return i`<div class="settings-dialog__preset-diff" data-preset-diff>
-      <div class="settings-dialog__preset-diff-head">
-        ${y.rows.length>0?`\uBCC0\uACBD ${y.rows.length}\uAC1C \xB7 \uC801\uC6A9\uD558\uBA74 \uC544\uB798\uC640 \uAC19\uC774 \uBC14\uB01D\uB2C8\uB2E4`:"\uD604\uC7AC \uC124\uC815\uACFC \uAC19\uC2B5\uB2C8\uB2E4 \u2014 \uC801\uC6A9\uD560 \uBCC0\uACBD\uC774 \uC5C6\uC2B5\uB2C8\uB2E4"}
-      </div>
-      ${y.rows.map(C=>i`<div
-            class="settings-dialog__preset-diff-row"
-            data-diff-kind=${C.kind}
-          >
-            <span class="settings-dialog__preset-diff-label">${C.label}</span>
-            <span class="settings-dialog__preset-diff-value"
-              >${C.before??"\uAE30\uBCF8"}</span
-            >
-            <span class="settings-dialog__preset-diff-arrow">→</span>
-            <span
-              class="settings-dialog__preset-diff-value settings-dialog__preset-diff-after"
-              >${C.after??"\uAE30\uBCF8(\uD574\uC81C)"}</span
-            >
-          </div>`)}
-      ${y.ignored_keys.length>0?i`<div class="settings-dialog__preset-diff-note">
-            ${y.ignored_keys.join(", ")}은(는) 전역 적용이 쓰지 않는 키라
-            무시됩니다
-          </div>`:""}
-    </div>`}function Z(){let y=t.queueStore?.get(),C={};for(let D of Cr)C[D]=Object.prototype.hasOwnProperty.call(L,D)?L[D]:Wt(y)&&typeof y[D]=="string"?y[D]:null;return C}function xe(){let y=j(),C=f.impl_runtime,D=f.impl_model,me=E(),fe=t.queueStore?.get(),Ee=Z(),Fe=Jn(y,A),Ye=En(y,void 0).filter(O=>O!==Kt),Qe=Ea(y,A,Ee.orchestration_model||Kt).filter(O=>O!==Kt),W=z?(me?.presets||[]).find(O=>O.id===z):null,re=W?Rc(_e(),Wt(W.settings)?W.settings:{}):null,be=Wt(fe)&&typeof fe.slots=="number"?fe.slots:2,k=m()?.supported===!0,S=Ta("workflow_mode",Xn,f,m(),y);return i`
+  `}var Ng=[{id:"execution",label:"\uC2E4\uD589",glyph:"\u25C6"},{id:"display",label:"\uD45C\uC2DC",glyph:"\u25EB"}];function od(e,t){let{transport:r,policyStore:n,labelOptions:s}=t,o=t.notify||(ae=>he(ae,"error",4e3)),a=document.createElement("dialog");a.id="settings-dialog",a.className="settings-dialog",a.setAttribute("role","dialog"),a.setAttribute("aria-modal","true"),a.setAttribute("aria-label","\uC124\uC815"),e.appendChild(a);let i="execution",c=!1,u="",d=null;function p(){if(d)return d;let ae=a.querySelector('[data-pane="execution"]');return ae?(d=To(ae,{root_dir:null,queue:()=>t.queueStore?.get()??null,transport:r,implPresetStore:t.implPresetStore,notify:o,onQueueAdopt:Ie=>t.queueStore?.set?.(Ie)}),d):null}function m(){return l`
       <section
-        class=${`settings-dialog__pane${l==="execution"?" settings-dialog__pane--active":""}`}
+        class=${`settings-dialog__pane${i==="execution"?" settings-dialog__pane--active":""}`}
         role="tabpanel"
         id="settings-pane-execution"
         aria-label="실행 설정"
@@ -2441,199 +2557,11 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
           세션 기본값과 Worker 오케스트레이션을 한곳에서 편집합니다. 저장소와
           저장 경로는 설정 그룹별로 유지됩니다.
         </p>
-        ${g.length>0?i`<div class="settings-dialog__banner" role="alert">
-              워크스페이스 기본값을 일부 읽지 못했습니다 —
-              ${g.join(", ")}
-            </div>`:""}
-        ${k?"":i`<div
-              class="settings-dialog__banner settings-dialog__banner--projection"
-              data-execution-defaults-warning
-              role="alert"
-            >
-              실행 기본값 projection을 확인할 수 없습니다 — 기본값 확인 불가
-            </div>`}
-        ${x?i`<div class="settings-dialog__empty">불러오는 중…</div>`:i`
-              <div class="settings-dialog__preset-bar">
-                <select
-                  aria-label="실행 프리셋"
-                  .value=${nn(z)}
-                  @change=${O=>{z=String(O.target.value),ve()}}
-                >
-                  <option value="" ?selected=${z===""}>
-                    실행 프리셋…
-                  </option>
-                  ${(me?.presets||[]).map(O=>i`<option
-                        value=${O.id}
-                        ?selected=${O.id===z}
-                      >
-                        ${O.name}
-                      </option>`)}
-                </select>
-                <button
-                  type="button"
-                  class="settings-dialog__btn settings-dialog__btn--primary"
-                  data-preset-apply-global
-                  ?disabled=${!re||re.rows.length===0}
-                  @click=${Me}
-                >
-                  적용
-                </button>
-                <input
-                  type="text"
-                  class="settings-dialog__preset-name"
-                  placeholder=${z?"\uC774\uB984 (\uBE44\uC6B0\uBA74 \uC720\uC9C0)":"\uC0C8 \uD504\uB9AC\uC14B \uC774\uB984"}
-                  aria-label="프리셋 이름"
-                  .value=${nn(ae)}
-                  @input=${O=>{ae=String(O.target.value)}}
-                />
-                <button
-                  type="button"
-                  class="settings-dialog__btn"
-                  data-preset-save
-                  title=${z?"\uD604\uC7AC \uD654\uBA74\uC758 \uC2E4\uD589 \uC124\uC815\uC744 \uC774 \uD504\uB9AC\uC14B\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4 (\uD504\uB9AC\uC14B \u2192 \uC124\uC815 \uBC29\uD5A5\uC774 \uC544\uB2D8)":"\uD604\uC7AC \uD654\uBA74\uC758 \uC2E4\uD589 \uC124\uC815\uC744 \uC0C8 \uD504\uB9AC\uC14B\uC73C\uB85C \uC800\uC7A5\uD569\uB2C8\uB2E4"}
-                  @click=${Pe}
-                >
-                  ${z?"\uD604\uC7AC \uC124\uC815\uC73C\uB85C \uB36E\uC5B4\uC4F0\uAE30":"\uC0C8 \uD504\uB9AC\uC14B \uC800\uC7A5"}
-                </button>
-                <button
-                  type="button"
-                  class="settings-dialog__btn"
-                  data-preset-delete
-                  ?disabled=${z.length===0}
-                  @click=${le}
-                >
-                  삭제
-                </button>
-              </div>
-              ${re?G(re):""}
-
-              <div class="settings-dialog__group">
-                <div class="settings-dialog__group-title">오케스트레이션</div>
-                <div class="settings-dialog__row">
-                  <span class="settings-dialog__row-label">런타임</span>
-                  <span class="settings-dialog__controls">
-                    <select
-                      aria-label="런타임"
-                      data-key="orchestration_runtime_filter"
-                      .value=${nn(A||Ut)}
-                      @change=${O=>{let J=String(O.target.value);te(J===Ut?null:J)}}
-                    >
-                      <option
-                        value=${Ut}
-                        ?selected=${!A}
-                      >
-                        전체
-                      </option>
-                      <option
-                        value="claude"
-                        ?selected=${A==="claude"}
-                      >
-                        claude
-                      </option>
-                      <option
-                        value="codex"
-                        ?selected=${A==="codex"}
-                      >
-                        codex
-                      </option>
-                    </select>
-                    <span class="settings-dialog__hint"
-                      >모델 목록을 좁힙니다</span
-                    >
-                  </span>
-                </div>
-                ${Ie("orchestration_model","\uBAA8\uB378",Fe,X,Ee)}
-                ${Ie("orchestration_effort","effort",Qe,X,Ee)}
-                ${Ie("orchestration_speed","\uC18D\uB3C4",Zn,X,Ee)}
-              </div>
-
-              <div class="settings-dialog__group">
-                <div class="settings-dialog__group-title">워크플로우</div>
-                <div class="settings-dialog__row">
-                  <span class="settings-dialog__row-label">모드</span>
-                  <span class="settings-dialog__controls">
-                    <span class="settings-dialog__seg" role="group">
-                      <button
-                        type="button"
-                        data-mode=${Ut}
-                        aria-pressed=${String(!f.workflow_mode)}
-                        @click=${()=>oe("workflow_mode",Ut)}
-                      >
-                        ${S.unset_label}
-                      </button>
-                      ${f.workflow_mode?"":i`<span class="settings-dialog__source-badge"
-                            >기본</span
-                          >`}
-                      ${Xn.map(O=>i`<button
-                            type="button"
-                            data-mode=${O}
-                            aria-pressed=${String(f.workflow_mode===O)}
-                            @click=${()=>oe("workflow_mode",O)}
-                          >
-                            ${O}
-                          </button>`)}
-                    </span>
-                  </span>
-                </div>
-              </div>
-
-              <div class="settings-dialog__group">
-                <div class="settings-dialog__group-title">
-                  리뷰 게이트
-                  <span class="settings-dialog__hint">모델 · effort</span>
-                </div>
-                ${Je("\uC0AC\uC591 \uB9AC\uBDF0","spec","spec_review_model",Qn,"spec_review_effort")}
-                ${Je("\uACC4\uD68D \uB9AC\uBDF0","plan","plan_review_model",lo,"plan_review_effort")}
-                ${Je("\uAD6C\uD604 \uB9AC\uBDF0","impl","impl_review_model",Qn,"impl_review_effort")}
-              </div>
-
-              <div class="settings-dialog__group">
-                <div class="settings-dialog__group-title">
-                  구현
-                  <span class="settings-dialog__hint"
-                    >이슈 핀이 있으면 핀이 우선합니다</span
-                  >
-                </div>
-                ${Ie("impl_runtime","\uC704\uC784 \uB300\uC0C1",io,oe,f)}
-                ${Ie("impl_model","\uBAA8\uB378",En(y,C),oe,f)}
-                ${Ie("impl_effort","effort",Tn(y,C,D),oe,f)}
-                ${Ie("impl_speed","\uC18D\uB3C4",Zn,oe,f)}
-                ${Ie("quick_fix_impl_model","quick_fix \uAD6C\uD604 \uBAA8\uB378",Ye,oe,f,!1,{...f,...Ee})}
-              </div>
-
-              <div class="settings-dialog__group">
-                <div class="settings-dialog__group-title">동시 실행</div>
-                <div class="settings-dialog__row">
-                  <span class="settings-dialog__row-label">slots</span>
-                  <span class="settings-dialog__controls">
-                    <span class="settings-dialog__stepper">
-                      <button
-                        type="button"
-                        aria-label="slots 감소"
-                        @click=${()=>Ae(be-1)}
-                      >
-                        −
-                      </button>
-                      <span class="settings-dialog__stepper-value"
-                        >${be}</span
-                      >
-                      <button
-                        type="button"
-                        aria-label="slots 증가"
-                        @click=${()=>Ae(be+1)}
-                      >
-                        +
-                      </button>
-                    </span>
-                  </span>
-                </div>
-              </div>
-              ${Ve()}
-            `}
+        <div class="settings-dialog__pane-body" data-pane="execution"></div>
       </section>
-    `}function De(){let y=n.get();return i`
+    `}function v(){let ae=n.get();return l`
       <section
-        class=${`settings-dialog__pane${l==="display"?" settings-dialog__pane--active":""}`}
+        class=${`settings-dialog__pane${i==="display"?" settings-dialog__pane--active":""}`}
         role="tabpanel"
         id="settings-pane-display"
         aria-label="표시 설정"
@@ -2642,15 +2570,15 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
         <p class="settings-dialog__pane-sub">
           이 워크스페이스의 라벨·칩 표시 정책입니다.
         </p>
-        ${y?i`
-              ${zu(y,s(),ct)}
-              ${Hu(y,u,{onDraft:C=>{u=C},onAdd:pt,onRemove:U})}
-              ${Gu(y,V)}
-            `:i`<div class="settings-dialog__empty">
+        ${ae?l`
+              ${rd(ae,s(),re)}
+              ${nd(ae,u,{onDraft:Ie=>{u=Ie},onAdd:V,onRemove:q})}
+              ${sd(ae,O)}
+            `:l`<div class="settings-dialog__empty">
               표시 정책을 불러오는 중…
             </div>`}
       </section>
-    `}async function We(y){let C=n.get();if(C)try{let D=await r("display-policy-set",{expected_revision:C.revision,policy:y(C)});Ge(D),D&&D.conflict&&D.policy&&(D=await r("display-policy-set",{expected_revision:D.policy.revision,policy:y(D.policy)}),Ge(D)),D&&D.conflict&&o("\uD45C\uC2DC \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: \uB2E4\uB978 \uD074\uB77C\uC774\uC5B8\uD2B8\uC640 \uCDA9\uB3CC")}catch{o("\uD45C\uC2DC \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328")}}function Ge(y){y&&y.policy&&typeof y.policy=="object"&&n.set(y.policy)}function ze(y){We(y)}function ct(y){let C=n.get();if(!C)return;let D=!$g(y,C);ze(me=>xg(y,me,D))}function pt(){let y=u.trim();y.length!==0&&(u="",ze(C=>C.hidden_prefixes.includes(y)?{hidden_prefixes:C.hidden_prefixes}:{hidden_prefixes:[...C.hidden_prefixes,y]}),ve())}function U(y){ze(C=>({hidden_prefixes:C.hidden_prefixes.filter(D=>D!==y)}))}function V(y){let C=n.get();if(!C)return;let D=C.chips[y]===!1;ze(()=>({chips:{[y]:D}}))}function ve(){Ke(i`
+    `}async function C(ae){let Ie=n.get();if(Ie)try{let Te=await r("display-policy-set",{expected_revision:Ie.revision,policy:ae(Ie)});F(Te),Te&&Te.conflict&&Te.policy&&(Te=await r("display-policy-set",{expected_revision:Te.policy.revision,policy:ae(Te.policy)}),F(Te)),Te&&Te.conflict&&o("\uD45C\uC2DC \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328: \uB2E4\uB978 \uD074\uB77C\uC774\uC5B8\uD2B8\uC640 \uCDA9\uB3CC")}catch{o("\uD45C\uC2DC \uC124\uC815 \uC800\uC7A5 \uC2E4\uD328")}}function F(ae){ae&&ae.policy&&typeof ae.policy=="object"&&n.set(ae.policy)}function H(ae){C(ae)}function re(ae){let Ie=n.get();if(!Ie)return;let Te=!qg(ae,Ie);H(ne=>Fg(ae,ne,Te))}function V(){let ae=u.trim();ae.length!==0&&(u="",H(Ie=>Ie.hidden_prefixes.includes(ae)?{hidden_prefixes:Ie.hidden_prefixes}:{hidden_prefixes:[...Ie.hidden_prefixes,ae]}),P())}function q(ae){H(Ie=>({hidden_prefixes:Ie.hidden_prefixes.filter(Te=>Te!==ae)}))}function O(ae){let Ie=n.get();if(!Ie)return;let Te=Ie.chips[ae]===!1;H(()=>({chips:{[ae]:Te}}))}function P(){Ve(l`
         <div class="settings-dialog__container">
           <nav
             class="settings-dialog__rail"
@@ -2658,137 +2586,136 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
             aria-orientation="vertical"
           >
             <div class="settings-dialog__rail-title">설정</div>
-            ${wg.map(y=>i`<button
+            ${Ng.map(ae=>l`<button
                   type="button"
                   class="settings-dialog__tab"
                   role="tab"
-                  data-tab=${y.id}
-                  aria-selected=${String(l===y.id)}
-                  aria-controls=${`settings-pane-${y.id}`}
-                  @click=${()=>ot(y.id)}
+                  data-tab=${ae.id}
+                  aria-selected=${String(i===ae.id)}
+                  aria-controls=${`settings-pane-${ae.id}`}
+                  @click=${()=>I(ae.id)}
                 >
-                  <span class="settings-dialog__glyph">${y.glyph}</span>
-                  ${y.label}
+                  <span class="settings-dialog__glyph">${ae.glyph}</span>
+                  ${ae.label}
                 </button>`)}
             <button
               type="button"
               class="settings-dialog__close"
               aria-label="닫기"
-              @click=${ce}
+              @click=${me}
             >
               닫기
             </button>
           </nav>
           <div class="settings-dialog__panes">
-            ${xe()} ${De()}
+            ${m()} ${v()}
           </div>
         </div>
-      `,a)}function ot(y){l=y,ve()}let ke=()=>{c=!1,t.onOpenChange?.(!1)};a.addEventListener("close",ke),a.addEventListener("cancel",ke);let T=y=>{y.target===a&&ce()};a.addEventListener("click",T);let M=null;n.subscribe&&(M=n.subscribe(()=>{c&&ve()}));let P=null;t.implPresetStore?.subscribe&&(P=t.implPresetStore.subscribe(()=>{c&&ve()}));function H(y="execution"){c||(c=!0,t.onOpenChange?.(!0),l=y,u="",L={},ve(),typeof a.showModal=="function"?a.showModal():a.setAttribute("open",""),Y())}function ce(){c&&(c=!1,t.onOpenChange?.(!1),typeof a.close=="function"?a.close():a.removeAttribute("open"))}return{open:H,close:ce,sessionDraft:()=>({...f}),destroy(){c=!1,a.removeEventListener("close",ke),a.removeEventListener("cancel",ke),a.removeEventListener("click",T),M&&(M(),M=null),P&&(P(),P=null),a.remove()}}}function $g(e,t){return t.visible_labels.includes(e)?!0:t.hidden_labels.includes(e)?!1:!t.hidden_prefixes.some(r=>r.length>0&&e.startsWith(r))}function xg(e,t,r){if(!r)return{hidden_labels:t.hidden_labels.includes(e)?t.hidden_labels:[...t.hidden_labels,e],visible_labels:t.visible_labels.filter(o=>o!==e)};let n=t.hidden_labels.filter(o=>o!==e);return t.hidden_prefixes.some(o=>o.length>0&&e.startsWith(o))?{hidden_labels:n,visible_labels:t.visible_labels.includes(e)?t.visible_labels:[...t.visible_labels,e]}:{hidden_labels:n}}var Ag=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],Ku="usage-meter-card",Sg="usage-meter-layer",Yu=600,Eg=["token_expired","relogin_required"];function Zu(e){return String(e).padStart(2,"0")}function Tg(e,t){let r=Math.max(0,Math.ceil((e-t)/6e4)),n=Math.floor(r/1440),s=Math.floor(r%1440/60),o=r%60;return n>0?`${n}d${s>0?` ${s}h`:""}`:s>0?`${s}h${o>0?` ${o}m`:""}`:`${o}m`}function Xu(e,t=Date.now()){let r=Date.parse(e);if(!Number.isFinite(r))return"";let n=new Date(r),s=new Date(t),o=`${Zu(n.getHours())}:${Zu(n.getMinutes())}`,l=n.getFullYear()===s.getFullYear()&&n.getMonth()===s.getMonth()&&n.getDate()===s.getDate()?o:`${Ag[n.getMonth()]} ${n.getDate()} ${o}`;return`${Tg(r,t)} \xB7 ${l}`}function Cg(e){let t=Math.max(0,Math.floor(e));return t<60?`${t}\uCD08 \uC804`:t<3600?`${Math.floor(t/60)}\uBD84 \uC804`:`${Math.floor(t/3600)}\uC2DC\uAC04 \uC804`}function Qu(e){return e>=85?"usage-meter__window--danger":e>=60?"usage-meter__window--warn":"usage-meter__window--success"}function Ju(e){let t=typeof e=="number"&&Number.isFinite(e)?e:0;return Math.min(100,Math.max(0,t))}var ed=[{key:"claude",label:"Claude",endpoint:"/api/claude-usage",switch_endpoint:"/api/claude-account/switch",tool:"cswap"},{key:"codex",label:"Codex",endpoint:"/api/codex-usage",switch_endpoint:"/api/codex-account/switch",tool:"codex-auth"}];function rd(e){let t=[];for(let r of e){if(!r||typeof r!="object")continue;let n=r;typeof n.key!="string"||n.key.length===0||typeof n.pct!="number"||!Number.isFinite(n.pct)||t.push({key:n.key,pct:n.pct,resetsAt:typeof n.resetsAt=="string"?n.resetsAt:""})}return t}function Rg(e){if(!e||typeof e!="object")return null;let t=e;return!Number.isInteger(t.number)||t.number<=0||typeof t.email!="string"||t.email.length===0||typeof t.status!="string"||t.status.length===0||typeof t.active!="boolean"||!Array.isArray(t.windows)?null:{number:t.number,email:t.email,alias:typeof t.alias=="string"&&t.alias.length>0?t.alias:null,plan:typeof t.plan=="string"&&t.plan.length>0?t.plan:null,active:t.active,status:t.status,windows:rd(t.windows),fetchedAt:typeof t.fetchedAt=="string"?t.fetchedAt:null,ageSeconds:typeof t.ageSeconds=="number"&&Number.isFinite(t.ageSeconds)?t.ageSeconds:null}}function Ig(e){if(!e||typeof e!="object")return null;let t=e,r=[];if(Array.isArray(t.accounts))for(let s of t.accounts){let o=Rg(s);o&&r.push(o)}let n=t.available===!0&&Array.isArray(t.windows);return!n&&r.length===0?null:{available:n,windows:n?rd(t.windows):[],ageSeconds:typeof t.ageSeconds=="number"&&Number.isFinite(t.ageSeconds)?t.ageSeconds:null,accounts:r}}function td(e,t){return`${e}:${t}`}function nd(e){let t=!1,r=null,n=new Map,s=null,o=new Map,a=new Map,l=0,c=null;function u(){Ke(i``,e),e.hidden=!0,f()}function d(){if(c===null){let X=e.ownerDocument;c=X.createElement("div"),c.id=Sg,c.className="usage-meter__layer",X.body.appendChild(c)}return c}function f(){c!==null&&(Ke(i``,c),c.remove(),c=null)}function g(X){r!==X&&(r===null&&(document.addEventListener("mousedown",A),document.addEventListener("keydown",z),window.addEventListener("resize",L)),r=X)}function x(){r!==null&&(r=null,document.removeEventListener("mousedown",A),document.removeEventListener("keydown",z),window.removeEventListener("resize",L))}function A(X){let te=X.target;te&&(e.contains(te)||c!==null&&c.contains(te))||(x(),de())}function L(){de()}function z(X){X.key==="Escape"&&(x(),de())}function ae(X){r===X?x():g(X),de()}function se(){x(),de()}async function q(X,te){if(n.has(X.key))return;let Ae=td(X.key,te);n.set(X.key,te),a.delete(Ae),de();let _e=null;try{_e=await(await fetch(X.switch_endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:te})})).json()}catch{_e=null}if(t)return;if(n.delete(X.key),!_e||_e.ok!==!0){let le=_e&&typeof _e.error=="string"&&_e.error.length>0?_e.error:"network_error";a.set(Ae,{kind:"error",text:`\uC804\uD658 \uC2E4\uD328 \u2014 ${le}`}),de();return}let Pe=Array.isArray(_e.warnings)?_e.warnings.filter(le=>typeof le=="string"&&le.length>0):[];Pe.length>0&&a.set(Ae,{kind:"warn",text:Pe.join(" \xB7 ")}),de(),await qe()}function N(X,te,Ae,_e){let Pe=Ju(X.pct),Me=`resets ${Xu(X.resetsAt,_e)}${te?` \xB7 ${Ae}`:""}`;return i`<span
-      class="usage-meter__window ${Qu(Pe)}"
-      style=${`--progress: ${Pe}%`}
-      title=${Me}
+      `,a),p()}function I(ae){i=ae,P()}let $=()=>{c=!1,t.onOpenChange?.(!1)};a.addEventListener("close",$),a.addEventListener("cancel",$);let M=ae=>{ae.target===a&&me()};a.addEventListener("click",M);let K=null;n.subscribe&&(K=n.subscribe(()=>{c&&P()}));let pe=null;t.implPresetStore?.subscribe&&(pe=t.implPresetStore.subscribe(()=>{c&&d?.render()}));function _e(ae="execution"){c||(c=!0,t.onOpenChange?.(!0),i=ae,u="",P(),typeof a.showModal=="function"?a.showModal():a.setAttribute("open",""),p()?.load())}function me(){c&&(c=!1,t.onOpenChange?.(!1),typeof a.close=="function"?a.close():a.removeAttribute("open"))}return{open:_e,close:me,sessionDraft:()=>d?.sessionDraft()??{},destroy(){c=!1,a.removeEventListener("close",$),a.removeEventListener("cancel",$),a.removeEventListener("click",M),K&&(K(),K=null),pe&&(pe(),pe=null),d?.destroy(),d=null,a.remove()}}}function qg(e,t){return t.visible_labels.includes(e)?!0:t.hidden_labels.includes(e)?!1:!t.hidden_prefixes.some(r=>r.length>0&&e.startsWith(r))}function Fg(e,t,r){if(!r)return{hidden_labels:t.hidden_labels.includes(e)?t.hidden_labels:[...t.hidden_labels,e],visible_labels:t.visible_labels.filter(o=>o!==e)};let n=t.hidden_labels.filter(o=>o!==e);return t.hidden_prefixes.some(o=>o.length>0&&e.startsWith(o))?{hidden_labels:n,visible_labels:t.visible_labels.includes(e)?t.visible_labels:[...t.visible_labels,e]}:{hidden_labels:n}}var jg=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],ad="usage-meter-card",Bg="usage-meter-layer",id=600,Ug=["token_expired","relogin_required"];function ld(e){return String(e).padStart(2,"0")}function Wg(e,t){let r=Math.max(0,Math.ceil((e-t)/6e4)),n=Math.floor(r/1440),s=Math.floor(r%1440/60),o=r%60;return n>0?`${n}d${s>0?` ${s}h`:""}`:s>0?`${s}h${o>0?` ${o}m`:""}`:`${o}m`}function cd(e,t=Date.now()){let r=Date.parse(e);if(!Number.isFinite(r))return"";let n=new Date(r),s=new Date(t),o=`${ld(n.getHours())}:${ld(n.getMinutes())}`,i=n.getFullYear()===s.getFullYear()&&n.getMonth()===s.getMonth()&&n.getDate()===s.getDate()?o:`${jg[n.getMonth()]} ${n.getDate()} ${o}`;return`${Wg(r,t)} \xB7 ${i}`}function zg(e){let t=Math.max(0,Math.floor(e));return t<60?`${t}\uCD08 \uC804`:t<3600?`${Math.floor(t/60)}\uBD84 \uC804`:`${Math.floor(t/3600)}\uC2DC\uAC04 \uC804`}function ud(e){return e>=85?"usage-meter__window--danger":e>=60?"usage-meter__window--warn":"usage-meter__window--success"}function dd(e){let t=typeof e=="number"&&Number.isFinite(e)?e:0;return Math.min(100,Math.max(0,t))}var pd=[{key:"claude",label:"Claude",endpoint:"/api/claude-usage",switch_endpoint:"/api/claude-account/switch",tool:"cswap"},{key:"codex",label:"Codex",endpoint:"/api/codex-usage",switch_endpoint:"/api/codex-account/switch",tool:"codex-auth"}];function _d(e){let t=[];for(let r of e){if(!r||typeof r!="object")continue;let n=r;typeof n.key!="string"||n.key.length===0||typeof n.pct!="number"||!Number.isFinite(n.pct)||t.push({key:n.key,pct:n.pct,resetsAt:typeof n.resetsAt=="string"?n.resetsAt:""})}return t}function Hg(e){if(!e||typeof e!="object")return null;let t=e;return!Number.isInteger(t.number)||t.number<=0||typeof t.email!="string"||t.email.length===0||typeof t.status!="string"||t.status.length===0||typeof t.active!="boolean"||!Array.isArray(t.windows)?null:{number:t.number,email:t.email,alias:typeof t.alias=="string"&&t.alias.length>0?t.alias:null,plan:typeof t.plan=="string"&&t.plan.length>0?t.plan:null,active:t.active,status:t.status,windows:_d(t.windows),fetchedAt:typeof t.fetchedAt=="string"?t.fetchedAt:null,ageSeconds:typeof t.ageSeconds=="number"&&Number.isFinite(t.ageSeconds)?t.ageSeconds:null}}function Gg(e){if(!e||typeof e!="object")return null;let t=e,r=[];if(Array.isArray(t.accounts))for(let s of t.accounts){let o=Hg(s);o&&r.push(o)}let n=t.available===!0&&Array.isArray(t.windows);return!n&&r.length===0?null:{available:n,windows:n?_d(t.windows):[],ageSeconds:typeof t.ageSeconds=="number"&&Number.isFinite(t.ageSeconds)?t.ageSeconds:null,accounts:r}}function fd(e,t){return`${e}:${t}`}function md(e){let t=!1,r=null,n=new Map,s=null,o=new Map,a=new Map,i=0,c=null;function u(){Ve(l``,e),e.hidden=!0,p()}function d(){if(c===null){let ne=e.ownerDocument;c=ne.createElement("div"),c.id=Bg,c.className="usage-meter__layer",ne.body.appendChild(c)}return c}function p(){c!==null&&(Ve(l``,c),c.remove(),c=null)}function m(ne){r!==ne&&(r===null&&(document.addEventListener("mousedown",C),document.addEventListener("keydown",H),window.addEventListener("resize",F)),r=ne)}function v(){r!==null&&(r=null,document.removeEventListener("mousedown",C),document.removeEventListener("keydown",H),window.removeEventListener("resize",F))}function C(ne){let se=ne.target;se&&(e.contains(se)||c!==null&&c.contains(se))||(v(),me())}function F(){me()}function H(ne){ne.key==="Escape"&&(v(),me())}function re(ne){r===ne?v():m(ne),me()}function V(){v(),me()}async function q(ne,se){if(n.has(ne.key))return;let we=fd(ne.key,se);n.set(ne.key,se),a.delete(we),me();let A=null;try{A=await(await fetch(ne.switch_endpoint,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({number:se})})).json()}catch{A=null}if(t)return;if(n.delete(ne.key),!A||A.ok!==!0){let E=A&&typeof A.error=="string"&&A.error.length>0?A.error:"network_error";a.set(we,{kind:"error",text:`\uC804\uD658 \uC2E4\uD328 \u2014 ${E}`}),me();return}let ue=Array.isArray(A.warnings)?A.warnings.filter(E=>typeof E=="string"&&E.length>0):[];ue.length>0&&a.set(we,{kind:"warn",text:ue.join(" \xB7 ")}),me(),await Te()}function O(ne,se,we,A){let ue=dd(ne.pct),D=`resets ${cd(ne.resetsAt,A)}${se?` \xB7 ${we}`:""}`;return l`<span
+      class="usage-meter__window ${ud(ue)}"
+      style=${`--progress: ${ue}%`}
+      title=${D}
     >
-      <span class="usage-meter__label">${X.key}</span>
+      <span class="usage-meter__label">${ne.key}</span>
       <span class="usage-meter__track" aria-hidden="true">
         <span class="usage-meter__fill"></span>
       </span>
-      <span class="usage-meter__pct">${Pe}%</span>
-    </span>`}function I(X,te,Ae){let _e=te.available&&typeof te.ageSeconds=="number"&&te.ageSeconds>Yu,Pe=_e&&typeof te.ageSeconds=="number"?`${Math.floor(te.ageSeconds/60)}\uBD84 \uC804 \uCE21\uC815`:"",le=te.accounts.filter($e=>!$e.active).length,Me=`usage-meter__group${_e?" usage-meter__group--stale":""}`,Oe=i`<span class="usage-meter__provider"
-        >${X.label}</span
+      <span class="usage-meter__pct">${ue}%</span>
+    </span>`}function P(ne,se,we){let A=se.available&&typeof se.ageSeconds=="number"&&se.ageSeconds>id,ue=A&&typeof se.ageSeconds=="number"?`${Math.floor(se.ageSeconds/60)}\uBD84 \uC804 \uCE21\uC815`:"",E=se.accounts.filter(ge=>!ge.active).length,D=`usage-meter__group${A?" usage-meter__group--stale":""}`,ce=l`<span class="usage-meter__provider"
+        >${ne.label}</span
       >
-      ${te.available?te.windows.map($e=>N($e,_e,Pe,Ae)):i`<span class="usage-meter__empty">사용량 없음</span>`}
-      ${le>0?i`<span class="usage-meter__badge">+${le}</span>`:""}`;if(te.accounts.length===0)return i`<span
-        class=${Me}
-        aria-label=${`${X.label} usage`}
-        >${Oe}</span
-      >`;let He=r===X.key;return i`<button
+      ${se.available?se.windows.map(ge=>O(ge,A,ue,we)):l`<span class="usage-meter__empty">사용량 없음</span>`}
+      ${E>0?l`<span class="usage-meter__badge">+${E}</span>`:""}`;if(se.accounts.length===0)return l`<span
+        class=${D}
+        aria-label=${`${ne.label} usage`}
+        >${ce}</span
+      >`;let $e=r===ne.key;return l`<button
       type="button"
-      class=${`usage-meter__toggle ${Me}`}
-      aria-label=${`${X.label} usage`}
-      aria-expanded=${He?"true":"false"}
-      aria-controls=${Ku}
-      @click=${()=>ae(X.key)}
+      class=${`usage-meter__toggle ${D}`}
+      aria-label=${`${ne.label} usage`}
+      aria-expanded=${$e?"true":"false"}
+      aria-controls=${ad}
+      @click=${()=>re(ne.key)}
     >
-      ${Oe}
-    </button>`}function j(X,te){return i`<span class="usage-meter" aria-label="Usage">
-      ${X.map(Ae=>I(Ae.provider,Ae.snapshot,te))}
-    </span>`}function m(X,te){let Ae=Ju(X.pct),_e=Xu(X.resetsAt,te);return i`<span
-      class="usage-meter__account-window ${Qu(Ae)}"
-      style=${`--progress: ${Ae}%`}
+      ${ce}
+    </button>`}function I(ne,se){return l`<span class="usage-meter" aria-label="Usage">
+      ${ne.map(we=>P(we.provider,we.snapshot,se))}
+    </span>`}function $(ne,se){let we=dd(ne.pct),A=cd(ne.resetsAt,se);return l`<span
+      class="usage-meter__account-window ${ud(we)}"
+      style=${`--progress: ${we}%`}
     >
-      <span class="usage-meter__account-key">${X.key}</span>
+      <span class="usage-meter__account-key">${ne.key}</span>
       <span class="usage-meter__account-track" aria-hidden="true">
         <span class="usage-meter__account-fill"></span>
       </span>
-      <span class="usage-meter__account-pct">${Ae}%</span>
+      <span class="usage-meter__account-pct">${we}%</span>
       <span class="usage-meter__account-reset"
-        >${_e.length>0?`\u21BB ${_e}`:""}</span
+        >${A.length>0?`\u21BB ${A}`:""}</span
       >
-    </span>`}function E(X,te){return Eg.includes(te)?`\uD1A0\uD070 \uB9CC\uB8CC \u2014 ${X.tool} \uC7AC\uB85C\uADF8\uC778 \uD544\uC694`:"\uC0AC\uC6A9\uB7C9 \uC5C6\uC74C"}function Y(X,te,Ae){let _e=te.status==="ok",Pe=typeof te.ageSeconds=="number"&&te.ageSeconds>Yu,le=a.get(td(X.key,te.number)),Me=n.get(X.key),Oe=Me!==void 0,He=Me===te.number,$e=["usage-meter__account"];return te.active&&$e.push("usage-meter__account--active"),_e||$e.push("usage-meter__account--unavailable"),Pe&&$e.push("usage-meter__account--stale"),i`<div class=${$e.join(" ")}>
+    </span>`}function M(ne,se){return Ug.includes(se)?`\uD1A0\uD070 \uB9CC\uB8CC \u2014 ${ne.tool} \uC7AC\uB85C\uADF8\uC778 \uD544\uC694`:"\uC0AC\uC6A9\uB7C9 \uC5C6\uC74C"}function K(ne,se,we){let A=se.status==="ok",ue=typeof se.ageSeconds=="number"&&se.ageSeconds>id,E=a.get(fd(ne.key,se.number)),D=n.get(ne.key),ce=D!==void 0,$e=D===se.number,ge=["usage-meter__account"];return se.active&&ge.push("usage-meter__account--active"),A||ge.push("usage-meter__account--unavailable"),ue&&ge.push("usage-meter__account--stale"),l`<div class=${ge.join(" ")}>
       <div class="usage-meter__account-head">
-        <span class="usage-meter__account-label" title=${te.email}
-          >${te.alias===null?te.email:te.alias}</span
+        <span class="usage-meter__account-label" title=${se.email}
+          >${se.alias===null?se.email:se.alias}</span
         >
-        ${te.plan===null?"":i`<span class="usage-meter__account-tag">${te.plan}</span>`}
-        ${te.active?i`<span
+        ${se.plan===null?"":l`<span class="usage-meter__account-tag">${se.plan}</span>`}
+        ${se.active?l`<span
               class="usage-meter__account-tag usage-meter__account-tag--active"
               >active</span
             >`:""}
-        ${te.ageSeconds===null?"":i`<span class="usage-meter__account-age"
-              >${Cg(te.ageSeconds)}</span
+        ${se.ageSeconds===null?"":l`<span class="usage-meter__account-age"
+              >${zg(se.ageSeconds)}</span
             >`}
-        ${te.active?"":i`<button
+        ${se.active?"":l`<button
               type="button"
               class="usage-meter__switch"
-              ?disabled=${Oe}
-              @click=${()=>{q(X,te.number)}}
+              ?disabled=${ce}
+              @click=${()=>{q(ne,se.number)}}
             >
-              ${He?"\uC804\uD658 \uC911\u2026":"\uC804\uD658"}
+              ${$e?"\uC804\uD658 \uC911\u2026":"\uC804\uD658"}
             </button>`}
       </div>
-      ${_e?i`<div class="usage-meter__account-windows">
-            ${te.windows.map(Ve=>m(Ve,Ae))}
-          </div>`:i`<div class="usage-meter__account-status">
-            ${E(X,te.status)}
+      ${A?l`<div class="usage-meter__account-windows">
+            ${se.windows.map(Oe=>$(Oe,we))}
+          </div>`:l`<div class="usage-meter__account-status">
+            ${M(ne,se.status)}
           </div>`}
-      ${le===void 0?"":i`<div
-            class="usage-meter__account-message usage-meter__account-message--${le.kind}"
+      ${E===void 0?"":l`<div
+            class="usage-meter__account-message usage-meter__account-message--${E.kind}"
           >
-            ${le.text}
+            ${E.text}
           </div>`}
-    </div>`}function ue(X,te,Ae){let _e=te.accounts.filter(Pe=>Pe.active).length;return i`<section class="usage-meter__section">
+    </div>`}function pe(ne,se,we){let A=se.accounts.filter(ue=>ue.active).length;return l`<section class="usage-meter__section">
       <h2 class="usage-meter__section-title">
-        ${X.label} · 활성 ${_e} / 전체
-        ${te.accounts.length}
+        ${ne.label} · 활성 ${A} / 전체
+        ${se.accounts.length}
       </h2>
-      ${te.accounts.map(Pe=>Y(X,Pe,Ae))}
-    </section>`}function oe(X,te){return i`<div
+      ${se.accounts.map(ue=>K(ne,ue,we))}
+    </section>`}function _e(ne,se){return l`<div
       class="usage-meter__card"
-      id=${Ku}
+      id=${ad}
       role="dialog"
-      aria-label=${`${X.provider.label} \uACC4\uC815 \uC0AC\uC6A9\uB7C9`}
+      aria-label=${`${ne.provider.label} \uACC4\uC815 \uC0AC\uC6A9\uB7C9`}
     >
-      ${ue(X.provider,X.snapshot,te)}
+      ${pe(ne.provider,ne.snapshot,se)}
       <p class="usage-meter__note">전환은 새로 시작하는 세션부터 적용됩니다.</p>
-    </div>`}function de(){let X=[];for(let _e of ed){let Pe=o.get(_e.key);Pe&&X.push({provider:_e,snapshot:Pe})}if(X.length===0){x(),u();return}let te=X.find(_e=>_e.provider.key===r&&_e.snapshot.accounts.length>0);te||x();let Ae=Date.now();Ke(j(X,Ae),e),e.hidden=!1,te?Ue(te,Ae):f()}function Ue(X,te){let Ae=d(),_e=e.getBoundingClientRect(),Pe=e.ownerDocument.documentElement.clientWidth;Ae.style.setProperty("--usage-meter-anchor-top",`${_e.bottom}px`),Ae.style.setProperty("--usage-meter-anchor-right",`${Math.max(0,Pe-_e.right)}px`),Ke(i`<div
+    </div>`}function me(){let ne=[];for(let A of pd){let ue=o.get(A.key);ue&&ne.push({provider:A,snapshot:ue})}if(ne.length===0){v(),u();return}let se=ne.find(A=>A.provider.key===r&&A.snapshot.accounts.length>0);se||v();let we=Date.now();Ve(I(ne,we),e),e.hidden=!1,se?ae(se,we):p()}function ae(ne,se){let we=d(),A=e.getBoundingClientRect(),ue=e.ownerDocument.documentElement.clientWidth;we.style.setProperty("--usage-meter-anchor-top",`${A.bottom}px`),we.style.setProperty("--usage-meter-anchor-right",`${Math.max(0,ue-A.right)}px`),Ve(l`<div
           class="usage-meter__scrim"
           aria-hidden="true"
-          @mousedown=${se}
+          @mousedown=${V}
         ></div>
-        ${oe(X,te)}`,Ae)}async function et(X){try{let te=await fetch(X.endpoint);return te.ok?Ig(await te.json()):null}catch{return null}}async function qe(){l+=1;let X=l,te=await Promise.all(ed.map(async Ae=>({provider:Ae,snapshot:await et(Ae)})));if(!(t||X!==l)){for(let Ae of te)Ae.snapshot?o.set(Ae.provider.key,Ae.snapshot):o.delete(Ae.provider.key);de()}}return u(),qe(),s=setInterval(()=>{qe()},6e4),{destroy(){t=!0,s!==null&&(clearInterval(s),s=null),x(),u()}}}function sd(e){let t=e.attempts?Object.values(e.attempts):[],r=new Map;for(let s of t)s&&r.set(s.bead_id,s.attempt_id);let n=new Map;for(let s of e.done||[])s&&typeof s.bead_id=="string"&&typeof s.added_at=="number"&&n.set(s.bead_id,s.added_at);return s=>{let o=r.get(s.bead_id)!==s.attempt_id,a=n.get(s.bead_id),l=typeof a=="number"&&a>0&&typeof s.finished_at=="number"&&a>=s.finished_at;return!o&&!l&&typeof s.dismissed_at!="number"}}var Ka=new Set(["unavailable","not_applicable"]);function Fr(e,t){if(typeof e!="object"||e===null)return null;let r=e[t];return typeof r=="object"&&r!==null?r:null}function od(e){return e.filter(t=>t!==null).join(" \xB7 ")}function jr(e,t){return t===null?null:`${qr[e]}: ${t.display} (${uo[t.source]})`}function Ya(e){return e.filter(t=>t!==null).join(`
-`)}function ad(e){if(typeof e!="object"||e===null)return null;let t=br(e);if(t==="")return null;let r=(n,s)=>typeof s=="string"&&s.length>0?`${n}: ${s}`:null;return{text:t,title:Ya(["\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \u2014 \uC774 attempt\uC5D0 \uAE30\uB85D\uB41C \uC2E4\uD589\uAC12",r("runner",e.runner),r(qr.orchestration_model,e.model),r(qr.orchestration_effort,e.effort),r(qr.orchestration_speed,e.speed)])}}function id(e,t){let r=Fr(e,"orchestration_model");if(r===null||r.resolution==="unavailable")return null;let n=Fr(e,"orchestration_effort"),s=Fr(e,"orchestration_speed"),o=od([Rr(t,r.value??""),r.display,n!==null&&n.value!==null?n.display:null,s!==null&&s.value==="fast"?"Fast":null]);return o===""?null:{text:o,title:Ya(["\uC624\uCF00\uC2A4\uD2B8\uB808\uC774\uC158 \u2014 \uD604\uC7AC \uD574\uC11D\uAC12 (\uD540 > \uD050 \uAE30\uBCF8\uAC12)",jr("orchestration_model",r),jr("orchestration_effort",n),jr("orchestration_speed",s)])}}function Lg(e,t){return e===null||e.value===null||Ka.has(e.resolution)?null:e.value!=="inherit"?e.value:t?`inherit\u2192${t}`:"inherit"}function Og(e){return e===null||Ka.has(e.resolution)?null:e.value==="auto"?"auto":e.display}function Mg(e){return e===null?null:e.value==="auto"?"auto":Ka.has(e.resolution)?null:e.display}function Za(e,t){if(typeof e!="object"||e===null)return null;let r=Fr(e,"impl_dispatch"),n=Fr(e,"impl_runtime"),s=Fr(e,"impl_model"),o=Fr(e,"impl_effort"),a=Fr(e,"impl_speed"),l=r!==null&&r.value==="main"?"\uBA54\uC778":od([Lg(n,t??null),Og(s),Mg(o),a!==null&&a.value==="fast"?"Fast":null]);return l===""?null:{text:l,title:Ya(["\uC6CC\uCEE4(\uAD6C\uD604 \uC704\uC784) \u2014 \uD604\uC7AC \uD574\uC11D\uAC12 (\uD540 > \uC804\uC5ED kv > \uAE30\uBCF8). \uC2E4\uD589 \uC911\uC774\uBA74 \uC138\uC158\uC774 \uC2DC\uC791 \uC2DC \uACE0\uC815\uD55C \uAC12\uACFC \uB2E4\uB97C \uC218 \uC788\uC74C",jr("impl_dispatch",r),jr("impl_runtime",n),jr("impl_model",s),jr("impl_effort",o),jr("impl_speed",a)])}}var Pg="worker-ineligible";function Xa(e){return Array.isArray(e)?e.filter(t=>typeof t=="string"):[]}function ld(e){return Xa(e).includes(Pg)}var Dg="worker-serial";function Qa(e){return Xa(e).includes(Dg)}function Ja(e,t,r){if(typeof t!="string"||typeof r!="string")return[];let n=e?.runners;if(!n||!Object.hasOwn(n,t))return[];let s=n[t],o=s?.models;if(!o||!Object.hasOwn(o,r))return[];let a=o[r]?.efforts;return Array.isArray(a)?a.slice():Array.isArray(s.efforts)?s.efforts.slice():[]}var Ng=new Set(["done","failed","orphaned","stopped","discarded"]),qg={spec_missing:"\uC2A4\uD399 \uC5C6\uC74C",route:"route \uBBF8\uB2EC",spec_review:"\uC2A4\uD399 \uB9AC\uBDF0 \uC5C6\uC74C",spec_conflict:"\uC2A4\uD399 \uCDA9\uB3CC",phase_child:"phase child",worker_ineligible:"worker \uC81C\uC678"},Fg={running:"\uC2E4\uD589 \uC911",success:"\uC131\uACF5",failure:"\uC2E4\uD328",cancelled:"\uCDE8\uC18C",interrupted:"\uC911\uB2E8"},jg={running:"running",success:"done",failure:"failed",cancelled:"stopped",interrupted:"orphaned"};function ei(e){return{runner:e.runner||void 0,model:e.model||void 0,effort:e.effort||void 0,status:jg[e.outcome]||(typeof e.job_id=="string"?"running":void 0),session_id:e.session_id||void 0}}function cd(e,t){let{queueStore:r,analysisStore:n,transport:s,getWorkspacePath:o,onOpenTranscript:a}=t,l=document.createElement("dialog");l.id="worker-parallel-analysis-dialog",l.className="pa",l.setAttribute("role","dialog"),l.setAttribute("aria-modal","true"),e.appendChild(l);let c=new Map,u=new Map,d=!1,f=null,g=null,x=null,A=new Set,L=!1,z=0,ae=null,se=new Set;function q(){return r&&r.get()||{revision:0,queue:[],serial_lanes:[],serial_lane_count:0,attempts:{},pr_wait:[]}}function N(){return n&&n.get()||{settings:{revision:0,runner:null,model:null,effort:null},job:null,runs:[],last_good:null}}function I(){return o&&o()||""}async function j(){if(!s)return;let k=++z;L=!0,x=null,A.clear(),fe();try{let S=await s("worker-parallel-analysis-targets",{root_dir:I()});if(k!==z||!Ee)return;let O=Array.isArray(S?.qualified)?S.qualified:[],J=Array.isArray(S?.excluded)?S.excluded:[];x={qualified:O,excluded:J};for(let Te of O)Te&&typeof Te.id=="string"&&A.add(Te.id)}catch{k===z&&Ee&&(x={qualified:[],excluded:[]},pe("\uBD84\uC11D \uB300\uC0C1\uC744 \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4","error",2800))}finally{k===z&&(L=!1,Ee&&fe())}}function m(k){return Array.isArray(k.runs)?k.runs:[]}function E(){let k=q(),S=new Set;for(let O of Object.values(k.attempts||{})){let J=O;J&&typeof J.bead_id=="string"&&!Ng.has(J.status)&&S.add(J.bead_id)}for(let O of Array.isArray(k.pr_wait)?k.pr_wait:[])O&&typeof O.bead_id=="string"&&S.add(O.bead_id);for(let O of Object.values(k.discard_operations||{})){let J=O;J&&J.phase!=="done"&&typeof J.bead_id=="string"&&S.add(J.bead_id)}return S}function Y(k){return k.filter(S=>ue(S)===null)}function ue(k){let S=q();for(let O of Array.isArray(S.serial_lanes)?S.serial_lanes:[])if(Array.isArray(O?.entries)&&O.entries.some(J=>J.bead_id===k))return O.id;return(Array.isArray(S.queue)?S.queue:[]).some(O=>O.bead_id===k)?"parallel":null}function oe(k,S){let O=c.get(k);return O||[...S.order]}function de(k){if(k.length<2)return!1;let S=ue(k[0]);if(!S||S==="parallel")return!1;let O=q(),J=(Array.isArray(O.serial_lanes)?O.serial_lanes:[]).find(ye=>ye.id===S)?.entries.map(ye=>ye.bead_id);if(!Array.isArray(J))return!1;let Te=k.map(ye=>J.indexOf(ye));return Te.every(ye=>ye>=0)&&Te.every((ye,Ce)=>Ce===0||ye>Te[Ce-1])}function Ue(){let k=q(),S=Array.isArray(k.serial_lanes)?k.serial_lanes:[],O=S.find(J=>Array.isArray(J.entries)&&J.entries.length===0);return O?O.id:S[0]?.id||"s1"}function et(k){let S=q().bead_titles||{};return typeof S[k]=="string"?S[k]:k}async function qe(k,S){if(!s||d)return null;d=!0,fe();try{return await s(k,S)}finally{d=!1,fe()}}async function X(k){n?.setPending?.(!0);try{let S=await qe("worker-parallel-analysis-start",{force:k,target_ids:Array.from(A)});S&&S.applied===!1&&S.reason&&(S.reason==="target_not_qualified"&&Array.isArray(S.detail)?pe(`\uBD84\uC11D \uB300\uC0C1 \uC790\uACA9 \uBCC0\uACBD: ${S.detail.join(", ")}`,"error",3200):pe(`\uBD84\uC11D \uC2E4\uD328: ${S.reason}`,"error",2800))}finally{n?.setPending?.(!1)}}async function te(){let k=N().job;!s||!k||await s("worker-parallel-analysis-cancel",{job_id:k.job_id})}async function Ae(k){if(!(!s||se.has(k))){se.add(k),fe();try{let S=await s("worker-parallel-analysis-prompt",{root_dir:I(),run_id:k});if(!Ee)return;if(S?.ok===!0&&typeof S.prompt=="string"){ae={run_id:k,prompt:S.prompt};return}pe(S?.reason==="not_found"?"\uC800\uC7A5\uB41C \uBD84\uC11D \uD504\uB86C\uD504\uD2B8\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":"\uBD84\uC11D \uD504\uB86C\uD504\uD2B8\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4","error",2800)}finally{se.delete(k),fe()}}}function _e(){ae=null,fe()}async function Pe(){if(!ae)return;let k=await ir(ae.prompt);pe(k?"\uBCF5\uC0AC\uB428":"\uBCF5\uC0AC \uC2E4\uD328",k?"success":"error",1400)}function le(k,S){a&&a(k,ei(S))}function Me(){return q().runner_catalog}function Oe(k){return Object.keys(Me()?.runners?.[k]?.models||{})}function He(k){let S=Oe(k),O=Me()?.runners?.[k]?.default_model;return typeof O=="string"&&S.includes(O)?O:S[0]||""}function $e(){let k=N().settings,S=f||k.runner||"claude",O=Oe(S),J=f?He(S):k.model||O[0]||"",Te=Ja(Me(),S,J),ye=k.effort||"",Ce=Te.includes(ye)?ye:Te[0]||"";return{runner:S,model:J,effort:Ce,models:O,efforts:Te}}async function Ve(k){let S=N().settings,O=await qe("worker-parallel-analysis-settings-update",{expected_revision:S.revision,runner:k.runner,model:k.model,effort:k.effort});(!O||O.applied!==!0)&&(f=null,fe(),O&&O.reason&&pe(`\uBD84\uC11D \uC124\uC815 \uAC70\uBD80: ${O.reason}`,"error",2800))}function it(k){f=k,fe();let S=$e();Ve({runner:k,model:S.model,effort:S.effort})}function Ie(k){let S=$e(),O=Ja(Me(),S.runner,k);Ve({runner:S.runner,model:k,effort:O.includes(S.effort)?S.effort:O[0]||""})}function Je(k){let S=$e();Ve({runner:S.runner,model:S.model,effort:k})}async function G(k,S){if(!s||d)return;let O=oe(k,S),J=N();if(O.length<2||!J.last_good){pe("\uC81C\uCD9C\uD558\uB824\uBA74 2\uAC1C \uC774\uC0C1\uC774\uC5B4\uC57C \uD569\uB2C8\uB2E4","warning");return}let Te=u.get(k)||Ue(),ye=()=>({snapshot_digest:J.last_good.identity_digest,group_index:k,lane:Te,ordered_bead_ids:O,expected_revision:q().revision});d=!0,fe();try{let Ce=await s("worker-parallel-analysis-submit",ye());Ce&&Ce.queue&&r&&r.set(Ce.queue),Ce&&Ce.applied!==!0&&Ce.conflict===!0&&(Ce=await s("worker-parallel-analysis-submit",ye()),Ce&&Ce.queue&&r&&r.set(Ce.queue)),Ce&&Ce.applied===!0?(c.delete(k),pe(`\uC9C1\uB82C \uB808\uC778 ${Te}\uC5D0 ${O.length}\uAC1C \uBC30\uCE58`,"success")):pe(`\uC81C\uCD9C \uAC70\uBD80: ${Ce?.reason||"conflict"} (\uD050 \uBB34\uBCC0\uACBD)`,"error",2800)}finally{d=!1,fe()}}function Z(k,S,O){c.set(k,oe(k,S).filter(J=>J!==O)),fe()}function xe(k){c.delete(k),fe()}function De(k,S,O,J){let Te=[...oe(k,S)],ye=Te.indexOf(O),Ce=ye+J;ye<0||Ce<0||Ce>=Te.length||(Te.splice(Ce,0,...Te.splice(ye,1)),c.set(k,Te),fe())}function We(){let k=N().settings,S=Object.keys(Me()?.runners||{}),O=$e();return i`<div class="pa-settings">
+        ${_e(ne,se)}`,we)}async function Ie(ne){try{let se=await fetch(ne.endpoint);return se.ok?Gg(await se.json()):null}catch{return null}}async function Te(){i+=1;let ne=i,se=await Promise.all(pd.map(async we=>({provider:we,snapshot:await Ie(we)})));if(!(t||ne!==i)){for(let we of se)we.snapshot?o.set(we.provider.key,we.snapshot):o.delete(we.provider.key);me()}}return u(),Te(),s=setInterval(()=>{Te()},6e4),{destroy(){t=!0,s!==null&&(clearInterval(s),s=null),v(),u()}}}function gd(e){let t=e.attempts?Object.values(e.attempts):[],r=new Map;for(let s of t)s&&r.set(s.bead_id,s.attempt_id);let n=new Map;for(let s of e.done||[])s&&typeof s.bead_id=="string"&&typeof s.added_at=="number"&&n.set(s.bead_id,s.added_at);return s=>{let o=r.get(s.bead_id)!==s.attempt_id,a=n.get(s.bead_id),i=typeof a=="number"&&a>0&&typeof s.finished_at=="number"&&a>=s.finished_at;return!o&&!i&&typeof s.dismissed_at!="number"}}var Kg="worker-ineligible";function ri(e){return Array.isArray(e)?e.filter(t=>typeof t=="string"):[]}function hd(e){return ri(e).includes(Kg)}var Vg="worker-serial";function ni(e){return ri(e).includes(Vg)}function si(e,t,r){if(typeof t!="string"||typeof r!="string")return[];let n=e?.runners;if(!n||!Object.hasOwn(n,t))return[];let s=n[t],o=s?.models;if(!o||!Object.hasOwn(o,r))return[];let a=o[r]?.efforts;return Array.isArray(a)?a.slice():Array.isArray(s.efforts)?s.efforts.slice():[]}var Yg=new Set(["done","failed","orphaned","stopped","discarded"]),Zg={spec_missing:"\uC2A4\uD399 \uC5C6\uC74C",route:"route \uBBF8\uB2EC",spec_review:"\uC2A4\uD399 \uB9AC\uBDF0 \uC5C6\uC74C",spec_conflict:"\uC2A4\uD399 \uCDA9\uB3CC",phase_child:"phase child",worker_ineligible:"worker \uC81C\uC678"},Qg={running:"\uC2E4\uD589 \uC911",success:"\uC131\uACF5",failure:"\uC2E4\uD328",cancelled:"\uCDE8\uC18C",interrupted:"\uC911\uB2E8"},Xg={running:"running",success:"done",failure:"failed",cancelled:"stopped",interrupted:"orphaned"};function oi(e){return{runner:e.runner||void 0,model:e.model||void 0,effort:e.effort||void 0,status:Xg[e.outcome]||(typeof e.job_id=="string"?"running":void 0),session_id:e.session_id||void 0}}function bd(e,t){let{queueStore:r,analysisStore:n,transport:s,getWorkspacePath:o,onOpenTranscript:a}=t,i=document.createElement("dialog");i.id="worker-parallel-analysis-dialog",i.className="pa",i.setAttribute("role","dialog"),i.setAttribute("aria-modal","true"),e.appendChild(i);let c=new Map,u=new Map,d=!1,p=null,m=null,v=null,C=new Set,F=!1,H=0,re=null,V=new Set;function q(){return r&&r.get()||{revision:0,queue:[],serial_lanes:[],serial_lane_count:0,attempts:{},pr_wait:[]}}function O(){return n&&n.get()||{settings:{revision:0,runner:null,model:null,effort:null},job:null,runs:[],last_good:null}}function P(){return o&&o()||""}async function I(){if(!s)return;let y=++H;F=!0,v=null,C.clear(),U();try{let R=await s("worker-parallel-analysis-targets",{root_dir:P()});if(y!==H||!J)return;let W=Array.isArray(R?.qualified)?R.qualified:[],oe=Array.isArray(R?.excluded)?R.excluded:[];v={qualified:W,excluded:oe};for(let Ce of W)Ce&&typeof Ce.id=="string"&&C.add(Ce.id)}catch{y===H&&J&&(v={qualified:[],excluded:[]},he("\uBD84\uC11D \uB300\uC0C1\uC744 \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4","error",2800))}finally{y===H&&(F=!1,J&&U())}}function $(y){return Array.isArray(y.runs)?y.runs:[]}function M(){let y=q(),R=new Set;for(let W of Object.values(y.attempts||{})){let oe=W;oe&&typeof oe.bead_id=="string"&&!Yg.has(oe.status)&&R.add(oe.bead_id)}for(let W of Array.isArray(y.pr_wait)?y.pr_wait:[])W&&typeof W.bead_id=="string"&&R.add(W.bead_id);for(let W of Object.values(y.discard_operations||{})){let oe=W;oe&&oe.phase!=="done"&&typeof oe.bead_id=="string"&&R.add(oe.bead_id)}return R}function K(y){return y.filter(R=>pe(R)===null)}function pe(y){let R=q();for(let W of Array.isArray(R.serial_lanes)?R.serial_lanes:[])if(Array.isArray(W?.entries)&&W.entries.some(oe=>oe.bead_id===y))return W.id;return(Array.isArray(R.queue)?R.queue:[]).some(W=>W.bead_id===y)?"parallel":null}function _e(y,R){let W=c.get(y);return W||[...R.order]}function me(y){if(y.length<2)return!1;let R=pe(y[0]);if(!R||R==="parallel")return!1;let W=q(),oe=(Array.isArray(W.serial_lanes)?W.serial_lanes:[]).find(Ae=>Ae.id===R)?.entries.map(Ae=>Ae.bead_id);if(!Array.isArray(oe))return!1;let Ce=y.map(Ae=>oe.indexOf(Ae));return Ce.every(Ae=>Ae>=0)&&Ce.every((Ae,Me)=>Me===0||Ae>Ce[Me-1])}function ae(){let y=q(),R=Array.isArray(y.serial_lanes)?y.serial_lanes:[],W=R.find(oe=>Array.isArray(oe.entries)&&oe.entries.length===0);return W?W.id:R[0]?.id||"s1"}function Ie(y){let R=q().bead_titles||{};return typeof R[y]=="string"?R[y]:y}async function Te(y,R){if(!s||d)return null;d=!0,U();try{return await s(y,R)}finally{d=!1,U()}}async function ne(y){n?.setPending?.(!0);try{let R=await Te("worker-parallel-analysis-start",{force:y,target_ids:Array.from(C)});R&&R.applied===!1&&R.reason&&(R.reason==="target_not_qualified"&&Array.isArray(R.detail)?he(`\uBD84\uC11D \uB300\uC0C1 \uC790\uACA9 \uBCC0\uACBD: ${R.detail.join(", ")}`,"error",3200):he(`\uBD84\uC11D \uC2E4\uD328: ${R.reason}`,"error",2800))}finally{n?.setPending?.(!1)}}async function se(){let y=O().job;!s||!y||await s("worker-parallel-analysis-cancel",{job_id:y.job_id})}async function we(y){if(!(!s||V.has(y))){V.add(y),U();try{let R=await s("worker-parallel-analysis-prompt",{root_dir:P(),run_id:y});if(!J)return;if(R?.ok===!0&&typeof R.prompt=="string"){re={run_id:y,prompt:R.prompt};return}he(R?.reason==="not_found"?"\uC800\uC7A5\uB41C \uBD84\uC11D \uD504\uB86C\uD504\uD2B8\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":"\uBD84\uC11D \uD504\uB86C\uD504\uD2B8\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4","error",2800)}finally{V.delete(y),U()}}}function A(){re=null,U()}async function ue(){if(!re)return;let y=await tr(re.prompt);he(y?"\uBCF5\uC0AC\uB428":"\uBCF5\uC0AC \uC2E4\uD328",y?"success":"error",1400)}function E(y,R){a&&a(y,oi(R))}function D(){return q().runner_catalog}function ce(y){return Object.keys(D()?.runners?.[y]?.models||{})}function $e(y){let R=ce(y),W=D()?.runners?.[y]?.default_model;return typeof W=="string"&&R.includes(W)?W:R[0]||""}function ge(){let y=O().settings,R=p||y.runner||"claude",W=ce(R),oe=p?$e(R):y.model||W[0]||"",Ce=si(D(),R,oe),Ae=y.effort||"",Me=Ce.includes(Ae)?Ae:Ce[0]||"";return{runner:R,model:oe,effort:Me,models:W,efforts:Ce}}async function Oe(y){let R=O().settings,W=await Te("worker-parallel-analysis-settings-update",{expected_revision:R.revision,runner:y.runner,model:y.model,effort:y.effort});(!W||W.applied!==!0)&&(p=null,U(),W&&W.reason&&he(`\uBD84\uC11D \uC124\uC815 \uAC70\uBD80: ${W.reason}`,"error",2800))}function _t(y){p=y,U();let R=ge();Oe({runner:y,model:R.model,effort:R.effort})}function He(y){let R=ge(),W=si(D(),R.runner,y);Oe({runner:R.runner,model:y,effort:W.includes(R.effort)?R.effort:W[0]||""})}function pt(y){let R=ge();Oe({runner:R.runner,model:R.model,effort:y})}async function tt(y,R){if(!s||d)return;let W=_e(y,R),oe=O();if(W.length<2||!oe.last_good){he("\uC81C\uCD9C\uD558\uB824\uBA74 2\uAC1C \uC774\uC0C1\uC774\uC5B4\uC57C \uD569\uB2C8\uB2E4","warning");return}let Ce=u.get(y)||ae(),Ae=()=>({snapshot_digest:oe.last_good.identity_digest,group_index:y,lane:Ce,ordered_bead_ids:W,expected_revision:q().revision});d=!0,U();try{let Me=await s("worker-parallel-analysis-submit",Ae());Me&&Me.queue&&r&&r.set(Me.queue),Me&&Me.applied!==!0&&Me.conflict===!0&&(Me=await s("worker-parallel-analysis-submit",Ae()),Me&&Me.queue&&r&&r.set(Me.queue)),Me&&Me.applied===!0?(c.delete(y),he(`\uC9C1\uB82C \uB808\uC778 ${Ce}\uC5D0 ${W.length}\uAC1C \uBC30\uCE58`,"success")):he(`\uC81C\uCD9C \uAC70\uBD80: ${Me?.reason||"conflict"} (\uD050 \uBB34\uBCC0\uACBD)`,"error",2800)}finally{d=!1,U()}}function Y(y,R,W){c.set(y,_e(y,R).filter(oe=>oe!==W)),U()}function Z(y){c.delete(y),U()}function Se(y,R,W,oe){let Ce=[..._e(y,R)],Ae=Ce.indexOf(W),Me=Ae+oe;Ae<0||Me<0||Me>=Ce.length||(Ce.splice(Me,0,...Ce.splice(Ae,1)),c.set(y,Ce),U())}function Ze(){let y=O().settings,R=Object.keys(D()?.runners||{}),W=ge();return l`<div class="pa-settings">
       <label class="pa-settings__field"
         >러너
         <select
           class="pa-settings__runner"
           aria-label="분석 러너"
-          @change=${J=>it(J.target.value)}
+          @change=${oe=>_t(oe.target.value)}
         >
-          ${S.map(J=>i`<option
-                value=${J}
-                ?selected=${O.runner===J}
+          ${R.map(oe=>l`<option
+                value=${oe}
+                ?selected=${W.runner===oe}
               >
-                ${J}
+                ${oe}
               </option>`)}
         </select>
       </label>
@@ -2797,13 +2724,13 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
         <select
           class="pa-settings__model"
           aria-label="분석 모델"
-          @change=${J=>Ie(J.target.value)}
+          @change=${oe=>He(oe.target.value)}
         >
-          ${O.models.map(J=>i`<option
-                value=${J}
-                ?selected=${O.model===J}
+          ${W.models.map(oe=>l`<option
+                value=${oe}
+                ?selected=${W.model===oe}
               >
-                ${J}
+                ${oe}
               </option>`)}
         </select>
       </label>
@@ -2812,258 +2739,258 @@ ${T.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC6
         <select
           class="pa-settings__effort-select"
           aria-label="분석 effort"
-          @change=${J=>Je(J.target.value)}
+          @change=${oe=>pt(oe.target.value)}
         >
-          ${O.efforts.map(J=>i`<option
-                value=${J}
-                ?selected=${O.effort===J}
+          ${W.efforts.map(oe=>l`<option
+                value=${oe}
+                ?selected=${W.effort===oe}
               >
-                ${J}
+                ${oe}
               </option>`)}
         </select>
       </label>
-      ${Ge(k)}
-    </div>`}function Ge(k){return!ct(k)||ze(k)?i`<span class="pa-settings__unset">분석 모델 설정 필요</span>`:k.compatible===!1?i`<span class="pa-settings__incompatible"
-        >설정 비호환 — 저장된 ${k.runner}/${k.model} · effort
-        ${k.effort} 을(를) 카탈로그가 더는 제공하지 않습니다</span
-      >`:k.is_default===!0?i`<span class="pa-settings__default">기본값</span>`:""}function ze(k){return k.is_default===!0&&k.compatible===!1}function ct(k){return!!(k.runner&&k.model&&k.effort)}function pt(k){return ct(k)&&k.compatible!==!1}function U(k){let S=Math.max(0,Math.floor(k/1e3)),O=Math.floor(S/60),J=S%60;return`${O}:${String(J).padStart(2,"0")}`}function V(k){let S=k.job;if(S){let O=typeof S.started_at=="number"?S.started_at:0,J=`${S.runner||"?"}/${S.model||"?"}`,Te=O?` \xB7 \uACBD\uACFC ${U(Date.now()-O)}`:"",ye=typeof S.session_id=="string"?S.session_id:"",Ce=m(k).find(je=>je.run_id===S.job_id);return i`<span class="pa-meta__progress">
+      ${je(y)}
+    </div>`}function je(y){return!Qe(y)||rt(y)?l`<span class="pa-settings__unset">분석 모델 설정 필요</span>`:y.compatible===!1?l`<span class="pa-settings__incompatible"
+        >설정 비호환 — 저장된 ${y.runner}/${y.model} · effort
+        ${y.effort} 을(를) 카탈로그가 더는 제공하지 않습니다</span
+      >`:y.is_default===!0?l`<span class="pa-settings__default">기본값</span>`:""}function rt(y){return y.is_default===!0&&y.compatible===!1}function Qe(y){return!!(y.runner&&y.model&&y.effort)}function yt(y){return Qe(y)&&y.compatible!==!1}function Le(y){let R=Math.max(0,Math.floor(y/1e3)),W=Math.floor(R/60),oe=R%60;return`${W}:${String(oe).padStart(2,"0")}`}function T(y){let R=y.job;if(R){let W=typeof R.started_at=="number"?R.started_at:0,oe=`${R.runner||"?"}/${R.model||"?"}`,Ce=W?` \xB7 \uACBD\uACFC ${Le(Date.now()-W)}`:"",Ae=typeof R.session_id=="string"?R.session_id:"",Me=$(y).find(Be=>Be.run_id===R.job_id);return l`<span class="pa-meta__progress">
         <span
-          >분석 중 — ${J} · effort ${S.effort||"?"}${Te}</span
+          >분석 중 — ${oe} · effort ${R.effort||"?"}${Ce}</span
         >
-        ${ye?i`<code class="pa-session-id" title=${ye}
-              >${ye.slice(0,8)}</code
+        ${Ae?l`<code class="pa-session-id" title=${Ae}
+              >${Ae.slice(0,8)}</code
             >`:""}
         <button
           type="button"
           class="pa-monitor"
-          @click=${()=>le(S.job_id,Ce||S)}
+          @click=${()=>E(R.job_id,Me||R)}
         >
           모니터링
         </button>
         <button
           type="button"
           class="pa-prompt-open"
-          ?disabled=${Ce?.prompt_saved!==!0||se.has(S.job_id)}
-          @click=${()=>{Ae(S.job_id)}}
+          ?disabled=${Me?.prompt_saved!==!0||V.has(R.job_id)}
+          @click=${()=>{we(R.job_id)}}
         >
           프롬프트
         </button>
-      </span>`}return ve()?i`<span class="pa-meta__progress"
+      </span>`}return Q()?l`<span class="pa-meta__progress"
           >준비 중 — 대상과 아티팩트 수집 중</span
-        >`:""}function ve(){return n?.isPending?.()===!0}function ot(k){let S=!!k.job,O=pt(k.settings),J=x!==null&&A.size===0,Te=S||d||ve()||L;return i`<div class="pa-meta">
-      ${k.last_good?i`<span class="pa-meta__at"
-            >분석 ${new Date(k.last_good.at||0).toLocaleString()}</span
-          >`:i`<span class="pa-meta__at">분석 결과 없음</span>`}
-      ${V(k)}
+        >`:""}function Q(){return n?.isPending?.()===!0}function Ee(y){let R=!!y.job,W=yt(y.settings),oe=v!==null&&C.size===0,Ce=R||d||Q()||F;return l`<div class="pa-meta">
+      ${y.last_good?l`<span class="pa-meta__at"
+            >분석 ${new Date(y.last_good.at||0).toLocaleString()}</span
+          >`:l`<span class="pa-meta__at">분석 결과 없음</span>`}
+      ${T(y)}
       <button
         type="button"
         class="pa-run"
-        ?disabled=${!O||Te||J}
-        @click=${()=>{X(!1)}}
+        ?disabled=${!W||Ce||oe}
+        @click=${()=>{ne(!1)}}
       >
         ✳ 분석
       </button>
       <button
         type="button"
         class="pa-rerun"
-        ?disabled=${!O||Te||J}
-        @click=${()=>{X(!0)}}
+        ?disabled=${!W||Ce||oe}
+        @click=${()=>{ne(!0)}}
       >
         재분석
       </button>
       <button
         type="button"
         class="pa-cancel"
-        ?disabled=${!S}
-        @click=${()=>{te()}}
+        ?disabled=${!R}
+        @click=${()=>{se()}}
       >
         취소
       </button>
-    </div>`}function ke(k){return typeof k=="string"&&k.length>0?k:"\uBBF8\uBC30\uCE58"}function T(k,S){S?A.add(k):A.delete(k),fe()}function M(k){let S=Array.isArray(k.scope)?k.scope:[],O=Array.isArray(k.overlaps)?k.overlaps:[];return S.length===0&&O.length===0?i``:i`<span class="pa-target__signals">
-      ${S.length>0?i`<details class="pa-target__scope" title=${S.join(`
+    </div>`}function ee(y){return typeof y=="string"&&y.length>0?y:"\uBBF8\uBC30\uCE58"}function Ne(y,R){R?C.add(y):C.delete(y),U()}function et(y){let R=Array.isArray(y.scope)?y.scope:[],W=Array.isArray(y.overlaps)?y.overlaps:[];return R.length===0&&W.length===0?l``:l`<span class="pa-target__signals">
+      ${R.length>0?l`<details class="pa-target__scope" title=${R.join(`
 `)}>
-            <summary>scope ${S.length}</summary>
+            <summary>scope ${R.length}</summary>
             <ul>
-              ${S.map(J=>i`<li><code>${J}</code></li>`)}
+              ${R.map(oe=>l`<li><code>${oe}</code></li>`)}
             </ul>
           </details>`:""}
-      ${O.length>0?i`<span
+      ${W.length>0?l`<span
             class="pa-target__overlaps"
-            title=${`\uACB9\uCE68: ${O.join(", ")}`}
-            >겹침 ${O.join(", ")}</span
+            title=${`\uACB9\uCE68: ${W.join(", ")}`}
+            >겹침 ${W.join(", ")}</span
           >`:""}
-    </span>`}function P(){let k=x?.qualified||[],S=x?.excluded||[];return i`<section class="pa-targets">
+    </span>`}function st(){let y=v?.qualified||[],R=v?.excluded||[];return l`<section class="pa-targets">
       <header class="pa-targets__header">
         <strong>분석 대상</strong>
         <span class="pa-targets__summary"
-          >${L?"\uC870\uD68C \uC911\u2026":`\uC790\uACA9 ${k.length} \xB7 \uC81C\uC678 ${S.length}`}</span
+          >${F?"\uC870\uD68C \uC911\u2026":`\uC790\uACA9 ${y.length} \xB7 \uC81C\uC678 ${R.length}`}</span
         >
       </header>
-      ${x&&k.length>0?i`<ul class="pa-targets__list">
-            ${k.map(O=>i`<li class="pa-target">
+      ${v&&y.length>0?l`<ul class="pa-targets__list">
+            ${y.map(W=>l`<li class="pa-target">
                   <label class="pa-target__label">
                     <input
                       type="checkbox"
                       class="pa-target__check"
-                      data-target-id=${O.id}
-                      .checked=${A.has(O.id)}
-                      @change=${J=>T(O.id,J.target.checked)}
+                      data-target-id=${W.id}
+                      .checked=${C.has(W.id)}
+                      @change=${oe=>Ne(W.id,oe.target.checked)}
                     />
-                    <span class="pa-target__title">${O.title}</span>
+                    <span class="pa-target__title">${W.title}</span>
                   </label>
                   <span class="pa-target__meta">
-                    ${M(O)}
-                    <span class="pa-target__route">${O.route}</span>
+                    ${et(W)}
+                    <span class="pa-target__route">${W.route}</span>
                     <span class="pa-target__lane"
-                      >${ke(O.lane)}</span
+                      >${ee(W.lane)}</span
                     >
                   </span>
                 </li>`)}
-          </ul>`:x&&k.length===0?i`<p class="pa-empty">자격 있는 분석 대상이 없습니다</p>`:""}
-      ${x&&S.length>0?i`<details class="pa-targets__excluded">
-            <summary>제외 대상 ${S.length}</summary>
+          </ul>`:v&&y.length===0?l`<p class="pa-empty">자격 있는 분석 대상이 없습니다</p>`:""}
+      ${v&&R.length>0?l`<details class="pa-targets__excluded">
+            <summary>제외 대상 ${R.length}</summary>
             <ul class="pa-targets__list">
-              ${S.map(O=>i`<li class="pa-target pa-target--excluded">
+              ${R.map(W=>l`<li class="pa-target pa-target--excluded">
                     <label class="pa-target__label">
                       <input type="checkbox" disabled />
-                      <span class="pa-target__title">${O.title}</span>
+                      <span class="pa-target__title">${W.title}</span>
                     </label>
                     <span class="pa-target__meta">
                       <span class="pa-target__reason"
-                        >${qg[O.reason]||O.reason}</span
+                        >${Zg[W.reason]||W.reason}</span
                       >
                       <span class="pa-target__lane"
-                        >${ke(O.lane)}</span
+                        >${ee(W.lane)}</span
                       >
                     </span>
                   </li>`)}
             </ul>
           </details>`:""}
-    </section>`}function H(k){let S=typeof k.session_id=="string"&&k.session_id.length>0,O=S?k.session_id:"";return i`<li class="pa-run-row">
-      <span class="pa-run-row__status pa-run-row__status--${k.outcome}"
-        >${Fg[k.outcome]||k.outcome}</span
+    </section>`}function Ye(y){let R=typeof y.session_id=="string"&&y.session_id.length>0,W=R?y.session_id:"";return l`<li class="pa-run-row">
+      <span class="pa-run-row__status pa-run-row__status--${y.outcome}"
+        >${Qg[y.outcome]||y.outcome}</span
       >
       <time class="pa-run-row__time"
-        >${new Date(k.started_at||0).toLocaleString()}</time
+        >${new Date(y.started_at||0).toLocaleString()}</time
       >
       <span class="pa-run-row__identity"
-        >${k.runner||"?"} / ${k.model||"?"} / ${k.effort||"?"}</span
+        >${y.runner||"?"} / ${y.model||"?"} / ${y.effort||"?"}</span
       >
-      ${S?i`<code class="pa-session-id" title=${O}
-            >${O.slice(0,8)}</code
-          >`:i`<span class="pa-run-row__no-session">세션 없음</span>`}
-      ${k.outcome==="failure"&&k.reason?i`<span class="pa-run-row__reason">${k.reason}</span>`:""}
+      ${R?l`<code class="pa-session-id" title=${W}
+            >${W.slice(0,8)}</code
+          >`:l`<span class="pa-run-row__no-session">세션 없음</span>`}
+      ${y.outcome==="failure"&&y.reason?l`<span class="pa-run-row__reason">${y.reason}</span>`:""}
       <span class="pa-run-row__actions">
         <button
           type="button"
           class="pa-run-row__monitor"
-          @click=${()=>le(k.run_id,k)}
+          @click=${()=>E(y.run_id,y)}
         >
           모니터링
         </button>
         <button
           type="button"
           class="pa-run-row__prompt"
-          ?disabled=${k.prompt_saved!==!0||se.has(k.run_id)}
-          @click=${()=>{Ae(k.run_id)}}
+          ?disabled=${y.prompt_saved!==!0||V.has(y.run_id)}
+          @click=${()=>{we(y.run_id)}}
         >
           프롬프트
         </button>
       </span>
-    </li>`}function ce(k){return i`<section class="pa-runs">
+    </li>`}function ct(y){return l`<section class="pa-runs">
       <header class="pa-runs__header"><strong>최근 실행</strong></header>
-      ${k.length>0?i`<ul class="pa-runs__list">
-            ${k.map(S=>H(S))}
-          </ul>`:i`<p class="pa-empty">실행 이력 없음</p>`}
-    </section>`}function y(){return ae?i`<div
+      ${y.length>0?l`<ul class="pa-runs__list">
+            ${y.map(R=>Ye(R))}
+          </ul>`:l`<p class="pa-empty">실행 이력 없음</p>`}
+    </section>`}function ft(){return re?l`<div
       class="pa-prompt-popup"
       role="dialog"
       aria-modal="true"
       aria-label="분석 프롬프트"
     >
-      <div class="pa-prompt-popup__backdrop" @click=${_e}></div>
+      <div class="pa-prompt-popup__backdrop" @click=${A}></div>
       <section class="pa-prompt-popup__panel">
         <header class="pa-prompt-popup__header">
           <div class="pa-prompt-popup__identity">
             <strong>분석 프롬프트</strong>
-            <code>${ae.run_id}</code>
+            <code>${re.run_id}</code>
           </div>
           <div class="pa-prompt-popup__actions">
-            <button type="button" @click=${()=>{Pe()}}>
+            <button type="button" @click=${()=>{ue()}}>
               복사
             </button>
             <button
               type="button"
               class="pa-prompt-popup__close"
               aria-label="분석 프롬프트 팝업 닫기"
-              @click=${_e}
+              @click=${A}
             >
               ✕
             </button>
           </div>
         </header>
         <pre class="pa-prompt-popup__content" tabindex="0">
-${ae.prompt}</pre
+${re.prompt}</pre
         >
       </section>
-    </div>`:""}function C(k,S){let O=oe(k,S),J=E(),Te=O.filter(tt=>J.has(tt)),ye=Y(O),Ce=de(O),je=Array.isArray(q().serial_lanes)?q().serial_lanes:[],Tt=u.get(k)||Ue(),ht=S.eligible!==!0||O.length<2||Te.length>0||ye.length>0||Ce||d;return i`<section class="pa-group" data-group-index=${String(k)}>
+    </div>`:""}function ut(y,R){let W=_e(y,R),oe=M(),Ce=W.filter(h=>oe.has(h)),Ae=K(W),Me=me(W),Be=Array.isArray(q().serial_lanes)?q().serial_lanes:[],At=u.get(y)||ae(),vt=R.eligible!==!0||W.length<2||Ce.length>0||Ae.length>0||Me||d;return l`<section class="pa-group" data-group-index=${String(y)}>
       <header class="pa-group__head">
-        <span class="pa-group__confidence">${S.confidence}</span>
-        ${S.categories.map(tt=>i`<span class="pa-group__category">${tt}</span>`)}
-        ${Ce?i`<span class="pa-group__applied">✓ 이미 반영됨</span>`:""}
-        ${S.eligible===!0?"":i`<span class="pa-group__weak">근거 부족 — 제출 불가</span>`}
-        ${ye.length>0?i`<span class="pa-group__stale"
-              >stale — ${ye.join(", ")} 대기 영역 이탈</span
+        <span class="pa-group__confidence">${R.confidence}</span>
+        ${R.categories.map(h=>l`<span class="pa-group__category">${h}</span>`)}
+        ${Me?l`<span class="pa-group__applied">✓ 이미 반영됨</span>`:""}
+        ${R.eligible===!0?"":l`<span class="pa-group__weak">근거 부족 — 제출 불가</span>`}
+        ${Ae.length>0?l`<span class="pa-group__stale"
+              >stale — ${Ae.join(", ")} 대기 영역 이탈</span
             >`:""}
       </header>
-      <p class="pa-group__reason">${S.reason}</p>
+      <p class="pa-group__reason">${R.reason}</p>
       <ol class="pa-group__members">
-        ${O.map((tt,Pt)=>i`<li class="pa-member" data-bead-id=${tt}>
-              <span class="pa-member__seq">${Pt+1}</span>
-              <span class="pa-member__title">${et(tt)}</span>
-              ${J.has(tt)?i`<span class="pa-member__active">실행 중</span>`:""}
+        ${W.map((h,x)=>l`<li class="pa-member" data-bead-id=${h}>
+              <span class="pa-member__seq">${x+1}</span>
+              <span class="pa-member__title">${Ie(h)}</span>
+              ${oe.has(h)?l`<span class="pa-member__active">실행 중</span>`:""}
               <button
                 type="button"
                 class="pa-member__up"
-                data-bead-id=${tt}
-                ?disabled=${Pt===0}
-                aria-label=${`${tt} \uC704\uB85C`}
-                @click=${()=>De(k,S,tt,-1)}
+                data-bead-id=${h}
+                ?disabled=${x===0}
+                aria-label=${`${h} \uC704\uB85C`}
+                @click=${()=>Se(y,R,h,-1)}
               >
                 ↑
               </button>
               <button
                 type="button"
                 class="pa-member__down"
-                data-bead-id=${tt}
-                ?disabled=${Pt===O.length-1}
-                aria-label=${`${tt} \uC544\uB798\uB85C`}
-                @click=${()=>De(k,S,tt,1)}
+                data-bead-id=${h}
+                ?disabled=${x===W.length-1}
+                aria-label=${`${h} \uC544\uB798\uB85C`}
+                @click=${()=>Se(y,R,h,1)}
               >
                 ↓
               </button>
               <button
                 type="button"
                 class="pa-member__exclude"
-                data-bead-id=${tt}
-                aria-label=${`${tt} \uC81C\uC678`}
-                @click=${()=>Z(k,S,tt)}
+                data-bead-id=${h}
+                aria-label=${`${h} \uC81C\uC678`}
+                @click=${()=>Y(y,R,h)}
               >
                 ✕
               </button>
             </li>`)}
       </ol>
       <ul class="pa-group__evidence">
-        ${S.evidence.map(tt=>i`<li class="pa-evidence">
-              <code>${tt.path}</code>
-              <span class="pa-evidence__locator">${tt.locator}</span>
+        ${R.evidence.map(h=>l`<li class="pa-evidence">
+              <code>${h.path}</code>
+              <span class="pa-evidence__locator">${h.locator}</span>
             </li>`)}
       </ul>
       <footer class="pa-group__foot">
         <button
           type="button"
           class="pa-group__restore"
-          @click=${()=>xe(k)}
+          @click=${()=>Z(y)}
         >
           제안으로 되돌리기
         </button>
@@ -3072,29 +2999,29 @@ ${ae.prompt}</pre
           <select
             class="pa-group__lane"
             aria-label="제출 대상 레인"
-            @change=${tt=>{u.set(k,tt.target.value),fe()}}
+            @change=${h=>{u.set(y,h.target.value),U()}}
           >
-            ${je.map((tt,Pt)=>i`<option
-                  value=${tt.id}
-                  ?selected=${Tt===tt.id}
+            ${Be.map((h,x)=>l`<option
+                  value=${h.id}
+                  ?selected=${At===h.id}
                 >
-                  직렬 ${Pt+1}
+                  직렬 ${x+1}
                 </option>`)}
           </select>
         </label>
         <button
           type="button"
           class="pa-group__submit"
-          ?disabled=${ht}
-          @click=${()=>{G(k,S)}}
+          ?disabled=${vt}
+          @click=${()=>{tt(y,R)}}
         >
           제출
         </button>
       </footer>
-    </section>`}function D(k){let S=Array.isArray(k.issues)?k.issues:[],O=S.filter(Te=>Te.verdict==="parallel_ok").length,J=S.filter(Te=>Te.verdict==="uncertain").length;return i`<div class="pa-summary">
-      <span>parallel_ok ${O}</span>
-      <span>uncertain ${J}</span>
-    </div>`}function me(){let k=Ee&&!!N().job;if(k&&g===null){g=setInterval(()=>fe(),1e3);return}!k&&g!==null&&(clearInterval(g),g=null)}function fe(){let k=N();f&&k.settings.runner===f&&(f=null);let S=k.last_good?.result;me(),Ke(i`
+    </section>`}function ot(y){let R=Array.isArray(y.issues)?y.issues:[],W=R.filter(Ce=>Ce.verdict==="parallel_ok").length,oe=R.filter(Ce=>Ce.verdict==="uncertain").length;return l`<div class="pa-summary">
+      <span>parallel_ok ${W}</span>
+      <span>uncertain ${oe}</span>
+    </div>`}function gt(){let y=J&&!!O().job;if(y&&m===null){m=setInterval(()=>U(),1e3);return}!y&&m!==null&&(clearInterval(m),m=null)}function U(){let y=O();p&&y.settings.runner===p&&(p=null);let R=y.last_good?.result;gt(),Ve(l`
         <div class="pa__container">
           <header class="pa__header">
             <div class="pa__title">병렬성 분석</div>
@@ -3102,28 +3029,28 @@ ${ae.prompt}</pre
               type="button"
               class="pa__close"
               aria-label="닫기"
-              @click=${be}
+              @click=${ve}
             >
               ×
             </button>
           </header>
           <div class="pa__body">
-            ${We()} ${ot(k)} ${P()}
-            ${S?i`${S.groups.map((O,J)=>C(J,O))}
-                ${S.groups.length===0?i`<p class="pa-empty">직렬 권장 그룹 없음</p>`:""}
-                ${D(S)}`:i`<p class="pa-empty">
+            ${Ze()} ${Ee(y)} ${st()}
+            ${R?l`${R.groups.map((W,oe)=>ut(oe,W))}
+                ${R.groups.length===0?l`<p class="pa-empty">직렬 권장 그룹 없음</p>`:""}
+                ${ot(R)}`:l`<p class="pa-empty">
                   아직 분석 결과가 없습니다 — [✳ 분석]을 눌러 시작하세요
                 </p>`}
-            ${ce(m(k))}
+            ${ct($(y))}
           </div>
         </div>
-        ${y()}
-      `,l)}let Ee=!1,Fe=()=>{Ee=!1,ae=null,z+=1,me()},Ye=k=>{k.target===k.currentTarget&&be()};l.addEventListener("close",Fe),l.addEventListener("cancel",Fe),l.addEventListener("click",Ye);let Qe=null;r&&r.subscribe&&(Qe=r.subscribe(()=>{Ee&&fe()}));let W=null;n&&n.subscribe&&(W=n.subscribe(()=>{Ee&&fe()}));function re(){Ee||(Ee=!0,fe(),j(),typeof l.showModal=="function"?l.showModal():l.setAttribute("open",""))}function be(){Ee&&(Ee=!1,ae=null,z+=1,me(),typeof l.close=="function"?l.close():l.removeAttribute("open"))}return{open:re,close:be,destroy(){Ee=!1,g!==null&&(clearInterval(g),g=null),l.removeEventListener("close",Fe),l.removeEventListener("cancel",Fe),l.removeEventListener("click",Ye),Qe&&(Qe(),Qe=null),W&&(W(),W=null),l.remove()}}}var ud=new Set(["sh","bash","zsh","dash","ksh"]),dd=/('(?:[^']*)'|"(?:\\.|[^"\\])*"|#.*|\$(?:\{[^}\n]*\}|[A-Za-z_][A-Za-z0-9_]*|[?#@*!$0-9-])|\b(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|in|function|select|time)\b)/g;function pd(e){let t=e.split("/");return t[t.length-1]||""}function Bg(e){let t=e.split(`
-`,1)[0];if(!t.startsWith("#!"))return!1;let r=t.slice(2).trim().split(/\s+/).filter(Boolean);if(r.length===0)return!1;let n=pd(r[0]);if(n!=="env")return ud.has(n);let s=r.slice(1).find(o=>!o.startsWith("-")&&!o.includes("="));return s!==void 0&&ud.has(pd(s))}function Ug(e){return e.startsWith("#")?"comment":e.startsWith("'")||e.startsWith('"')?"string":e.startsWith("$")?"variable":"keyword"}function Wg(e){let t=[],r=0;dd.lastIndex=0;for(let n of e.matchAll(dd)){let s=n.index;s>r&&t.push({text:e.slice(r,s),kind:"plain"}),t.push({text:n[0],kind:Ug(n[0])}),r=s+n[0].length}return r<e.length&&t.push({text:e.slice(r),kind:"plain"}),t.length===0&&t.push({text:e,kind:"plain"}),t}function zg(e){return{bad_request:"\uC2A4\uD06C\uB9BD\uD2B8 \uC694\uCCAD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",forbidden:"\uB4F1\uB85D\uB418\uC9C0 \uC54A\uC740 \uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB294 \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",lane_not_declared:"\uD604\uC7AC \uACE0\uC815 \uC120\uC5B8\uC5D0 \uD574\uB2F9 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",stale_declaration:"\uC800\uC7A5\uC18C \uC791\uC5C5 \uC120\uC5B8\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uCD5C\uC2E0 \uD654\uBA74\uC5D0\uC11C \uB2E4\uC2DC \uC5F4\uC5B4 \uC8FC\uC138\uC694.",too_large:"\uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uB108\uBB34 \uCEE4\uC11C \uD654\uBA74\uC5D0 \uD45C\uC2DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",unsupported_content:"\uD14D\uC2A4\uD2B8 \uD615\uC2DD\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB9CC \uD45C\uC2DC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",unreadable:"\uACE0\uC815\uB41C \uC2A4\uD06C\uB9BD\uD2B8 \uB0B4\uC6A9\uC744 \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."}[e]||"\uC2A4\uD06C\uB9BD\uD2B8\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."}function fd(e){let t=e.getWorkspacePath,r=e.fetchImpl||globalThis.fetch?.bind(globalThis),n=document.createElement("div");n.className="repo-ops-script-viewer-root",document.body.appendChild(n);let s=null,o="loading",a="",l="",c=0,u=null,d=!1;function f(I,j){return j?Wg(I).map(m=>m.kind==="plain"?m.text:i`<span
-            class="repo-ops-script-viewer__token repo-ops-script-viewer__token--${m.kind}"
-            >${m.text}</span
-          >`):I}function g(){if(!s)return i``;let I=o==="ready"&&Bg(a),j=o==="ready"?a.split(`
-`):[];return i`<div
+        ${ft()}
+      `,i)}let J=!1,be=()=>{J=!1,re=null,H+=1,gt()},Ge=y=>{y.target===y.currentTarget&&ve()};i.addEventListener("close",be),i.addEventListener("cancel",be),i.addEventListener("click",Ge);let De=null;r&&r.subscribe&&(De=r.subscribe(()=>{J&&U()}));let B=null;n&&n.subscribe&&(B=n.subscribe(()=>{J&&U()}));function te(){J||(J=!0,U(),I(),typeof i.showModal=="function"?i.showModal():i.setAttribute("open",""))}function ve(){J&&(J=!1,re=null,H+=1,gt(),typeof i.close=="function"?i.close():i.removeAttribute("open"))}return{open:te,close:ve,destroy(){J=!1,m!==null&&(clearInterval(m),m=null),i.removeEventListener("close",be),i.removeEventListener("cancel",be),i.removeEventListener("click",Ge),De&&(De(),De=null),B&&(B(),B=null),i.remove()}}}var yd=new Set(["sh","bash","zsh","dash","ksh"]),vd=/('(?:[^']*)'|"(?:\\.|[^"\\])*"|#.*|\$(?:\{[^}\n]*\}|[A-Za-z_][A-Za-z0-9_]*|[?#@*!$0-9-])|\b(?:if|then|else|elif|fi|for|while|until|do|done|case|esac|in|function|select|time)\b)/g;function wd(e){let t=e.split("/");return t[t.length-1]||""}function Jg(e){let t=e.split(`
+`,1)[0];if(!t.startsWith("#!"))return!1;let r=t.slice(2).trim().split(/\s+/).filter(Boolean);if(r.length===0)return!1;let n=wd(r[0]);if(n!=="env")return yd.has(n);let s=r.slice(1).find(o=>!o.startsWith("-")&&!o.includes("="));return s!==void 0&&yd.has(wd(s))}function eh(e){return e.startsWith("#")?"comment":e.startsWith("'")||e.startsWith('"')?"string":e.startsWith("$")?"variable":"keyword"}function th(e){let t=[],r=0;vd.lastIndex=0;for(let n of e.matchAll(vd)){let s=n.index;s>r&&t.push({text:e.slice(r,s),kind:"plain"}),t.push({text:n[0],kind:eh(n[0])}),r=s+n[0].length}return r<e.length&&t.push({text:e.slice(r),kind:"plain"}),t.length===0&&t.push({text:e,kind:"plain"}),t}function rh(e){return{bad_request:"\uC2A4\uD06C\uB9BD\uD2B8 \uC694\uCCAD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.",forbidden:"\uB4F1\uB85D\uB418\uC9C0 \uC54A\uC740 \uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB294 \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",lane_not_declared:"\uD604\uC7AC \uACE0\uC815 \uC120\uC5B8\uC5D0 \uD574\uB2F9 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.",stale_declaration:"\uC800\uC7A5\uC18C \uC791\uC5C5 \uC120\uC5B8\uC774 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uCD5C\uC2E0 \uD654\uBA74\uC5D0\uC11C \uB2E4\uC2DC \uC5F4\uC5B4 \uC8FC\uC138\uC694.",too_large:"\uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uB108\uBB34 \uCEE4\uC11C \uD654\uBA74\uC5D0 \uD45C\uC2DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",unsupported_content:"\uD14D\uC2A4\uD2B8 \uD615\uC2DD\uC758 \uC2A4\uD06C\uB9BD\uD2B8\uB9CC \uD45C\uC2DC\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",unreadable:"\uACE0\uC815\uB41C \uC2A4\uD06C\uB9BD\uD2B8 \uB0B4\uC6A9\uC744 \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."}[e]||"\uC2A4\uD06C\uB9BD\uD2B8\uB97C \uBD88\uB7EC\uC624\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4."}function kd(e){let t=e.getWorkspacePath,r=e.fetchImpl||globalThis.fetch?.bind(globalThis),n=document.createElement("div");n.className="repo-ops-script-viewer-root",document.body.appendChild(n);let s=null,o="loading",a="",i="",c=0,u=null,d=!1;function p(P,I){return I?th(P).map($=>$.kind==="plain"?$.text:l`<span
+            class="repo-ops-script-viewer__token repo-ops-script-viewer__token--${$.kind}"
+            >${$.text}</span
+          >`):P}function m(){if(!s)return l``;let P=o==="ready"&&Jg(a),I=o==="ready"?a.split(`
+`):[];return l`<div
       class="repo-ops-script-viewer"
       role="dialog"
       aria-modal="true"
@@ -3150,7 +3077,7 @@ ${ae.prompt}</pre
               type="button"
               class="repo-ops-script-viewer__copy"
               ?disabled=${o!=="ready"}
-              @click=${()=>{A()}}
+              @click=${()=>{C()}}
             >
               복사
             </button>
@@ -3165,77 +3092,77 @@ ${ae.prompt}</pre
           </div>
         </header>
         <div class="repo-ops-script-viewer__body" aria-live="polite">
-          ${o==="loading"?i`<div class="repo-ops-script-viewer__status">
+          ${o==="loading"?l`<div class="repo-ops-script-viewer__status">
                 스크립트 불러오는 중…
-              </div>`:o==="error"?i`<div
+              </div>`:o==="error"?l`<div
                   class="repo-ops-script-viewer__status repo-ops-script-viewer__status--error"
                 >
-                  ${l}
-                </div>`:i`<div class="repo-ops-script-viewer__code" tabindex="0">
-                  ${j.map((m,E)=>i`<div class="repo-ops-script-viewer__row">
+                  ${i}
+                </div>`:l`<div class="repo-ops-script-viewer__code" tabindex="0">
+                  ${I.map(($,M)=>l`<div class="repo-ops-script-viewer__row">
                         <span
                           class="repo-ops-script-viewer__line-number"
                           aria-hidden="true"
-                          >${E+1}</span
+                          >${M+1}</span
                         ><code class="repo-ops-script-viewer__code-line"
-                          >${f(m,I)}</code
+                          >${p($,P)}</code
                         >
                       </div>`)}
                 </div>`}
         </div>
       </section>
-    </div>`}function x(){Ke(g(),n)}async function A(){if(o!=="ready")return;let I=await ir(a);pe(I?"\uC2A4\uD06C\uB9BD\uD2B8 \uBCF5\uC0AC\uB428":"\uC2A4\uD06C\uB9BD\uD2B8 \uBCF5\uC0AC \uC2E4\uD328",I?"success":"error")}function L(I){I.key==="Escape"&&s&&(I.preventDefault(),q())}function z(){d||(document.addEventListener("keydown",L),d=!0)}function ae(){d&&(document.removeEventListener("keydown",L),d=!1)}async function se(I,j=null){let m=++c;z(),s={...I},u=j||(document.activeElement instanceof HTMLElement?document.activeElement:null),o="loading",a="",l="",x(),n.querySelector(".repo-ops-script-viewer__close")?.focus();let Y=t?t():"";if(!Y){o="error",l="\uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uD0DD\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",x();return}if(!r){o="error",l="\uC2A4\uD06C\uB9BD\uD2B8 \uC694\uCCAD \uAE30\uB2A5\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",x();return}let ue="/api/repo-ops-script?workspace="+encodeURIComponent(Y)+"&lane="+encodeURIComponent(I.lane)+"&base_sha="+encodeURIComponent(I.base_sha);try{let oe=await r(ue),de=await oe.json().catch(()=>({}));if(m!==c)return;if((t?t():"")!==Y){q();return}if(!oe.ok||!de||de.ok!==!0){o="error",l=zg(de&&typeof de.error=="string"?de.error:""),x();return}s={lane:de.lane,base_sha:de.base_sha,path:de.path,base_ref:de.base_ref},a=String(de.content),o="ready",x()}catch{if(m!==c)return;o="error",l="\uC2A4\uD06C\uB9BD\uD2B8 \uC694\uCCAD\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",x()}}function q(){c+=1,ae(),s=null,a="",x();let I=u;u=null,I?.isConnected&&I.focus()}function N(){q(),n.remove()}return{open:se,close:q,destroy:N}}function _d(e){let t=e.queueStore,r=e.transport,n=e.onChanged||(()=>{}),s=e.onOpenScript;function o(){return t&&t.get()||{}}function a(){let m=o();return typeof m.revision=="number"?m.revision:0}function l(m){t&&m&&m.queue&&typeof m.queue=="object"&&t.set(m.queue)}function c(){let m=o().workspace_info;return m&&typeof m=="object"?m:{}}function u(m,E){return i`<span
-      class="worker-repo-ops__vd-badge worker-repo-ops__vd-badge--${m}"
-      >${E}</span
-    >`}function d(m){if(typeof m!="number"||!Number.isFinite(m))return"";let E=m/6e4;return Number.isInteger(E)?`timeout ${E}\uBD84`:`timeout ${Math.round(m/1e3)}\uCD08`}function f(m){let E=d(m);return E?u("config",E):""}function g(m,E,Y){return i`<button
+    </div>`}function v(){Ve(m(),n)}async function C(){if(o!=="ready")return;let P=await tr(a);he(P?"\uC2A4\uD06C\uB9BD\uD2B8 \uBCF5\uC0AC\uB428":"\uC2A4\uD06C\uB9BD\uD2B8 \uBCF5\uC0AC \uC2E4\uD328",P?"success":"error")}function F(P){P.key==="Escape"&&s&&(P.preventDefault(),q())}function H(){d||(document.addEventListener("keydown",F),d=!0)}function re(){d&&(document.removeEventListener("keydown",F),d=!1)}async function V(P,I=null){let $=++c;H(),s={...P},u=I||(document.activeElement instanceof HTMLElement?document.activeElement:null),o="loading",a="",i="",v(),n.querySelector(".repo-ops-script-viewer__close")?.focus();let K=t?t():"";if(!K){o="error",i="\uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uD0DD\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.",v();return}if(!r){o="error",i="\uC2A4\uD06C\uB9BD\uD2B8 \uC694\uCCAD \uAE30\uB2A5\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.",v();return}let pe="/api/repo-ops-script?workspace="+encodeURIComponent(K)+"&lane="+encodeURIComponent(P.lane)+"&base_sha="+encodeURIComponent(P.base_sha);try{let _e=await r(pe),me=await _e.json().catch(()=>({}));if($!==c)return;if((t?t():"")!==K){q();return}if(!_e.ok||!me||me.ok!==!0){o="error",i=rh(me&&typeof me.error=="string"?me.error:""),v();return}s={lane:me.lane,base_sha:me.base_sha,path:me.path,base_ref:me.base_ref},a=String(me.content),o="ready",v()}catch{if($!==c)return;o="error",i="\uC2A4\uD06C\uB9BD\uD2B8 \uC694\uCCAD\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.",v()}}function q(){c+=1,re(),s=null,a="",v();let P=u;u=null,P?.isConnected&&P.focus()}function O(){q(),n.remove()}return{open:V,close:q,destroy:O}}function $d(e){let t=e.queueStore,r=e.transport,n=e.onChanged||(()=>{}),s=e.onOpenScript;function o(){return t&&t.get()||{}}function a(){let $=o();return typeof $.revision=="number"?$.revision:0}function i($){t&&$&&$.queue&&typeof $.queue=="object"&&t.set($.queue)}function c(){let $=o().workspace_info;return $&&typeof $=="object"?$:{}}function u($,M){return l`<span
+      class="worker-repo-ops__vd-badge worker-repo-ops__vd-badge--${$}"
+      >${M}</span
+    >`}function d($){if(typeof $!="number"||!Number.isFinite($))return"";let M=$/6e4;return Number.isInteger(M)?`timeout ${M}\uBD84`:`timeout ${Math.round($/1e3)}\uCD08`}function p($){let M=d($);return M?u("config",M):""}function m($,M,K){return l`<button
       type="button"
       class="worker-repo-ops__vd-cmd worker-repo-ops__vd-cmd--link"
-      .textContent=${Y.script}
-      @click=${ue=>{s&&s({lane:m,base_sha:E.base_sha,path:Y.script,base_ref:E.base_ref},ue.currentTarget)}}
-    ></button>`}function x(){let m=o().repo_ops_opt_out;return{verify:m?.verify===!0,deploy:m?.deploy===!0}}function A(m,E){return i`<label class="worker-repo-ops__lane-run">
+      .textContent=${K.script}
+      @click=${pe=>{s&&s({lane:$,base_sha:M.base_sha,path:K.script,base_ref:M.base_ref},pe.currentTarget)}}
+    ></button>`}function v(){let $=o().repo_ops_opt_out;return{verify:$?.verify===!0,deploy:$?.deploy===!0}}function C($,M){return l`<label class="worker-repo-ops__lane-run">
       <input
         type="checkbox"
-        .checked=${!E}
-        @change=${Y=>{se(m,!Y.target.checked)}}
+        .checked=${!M}
+        @change=${K=>{V($,!K.target.checked)}}
       />
       이 workspace에서 실행
-    </label>`}function L(m){let E=typeof m.base_sha=="string"?m.base_sha:"",Y=`${m.source_path||"repo-ops/config.toml"} @ ${m.base_ref||"?"}${E?`@${E.slice(0,7)}`:""}`,ue=x(),oe=!!m.verify&&ue.verify,de=!!m.deploy&&ue.deploy;return i`<section class="worker-repo-ops__vd" data-seam="repo-ops">
+    </label>`}function F($){let M=typeof $.base_sha=="string"?$.base_sha:"",K=`${$.source_path||"repo-ops/config.toml"} @ ${$.base_ref||"?"}${M?`@${M.slice(0,7)}`:""}`,pe=v(),_e=!!$.verify&&pe.verify,me=!!$.deploy&&pe.deploy;return l`<section class="worker-repo-ops__vd" data-seam="repo-ops">
       <p class="worker-repo-ops__vd-title">
         저장소 작업 선언
-        <span class="worker-repo-ops__vd-src">${Y}</span>
+        <span class="worker-repo-ops__vd-src">${K}</span>
       </p>
       <div
-        class="worker-repo-ops__lane${oe?" worker-repo-ops__lane--skipped":""}"
+        class="worker-repo-ops__lane${_e?" worker-repo-ops__lane--skipped":""}"
         data-lane="verify"
       >
         <span class="worker-repo-ops__lane-k">머지 전 검증</span>
         <span class="worker-repo-ops__lane-v"
-          >${m.verify?i`${g("verify",m,m.verify)}
-              ${f(m.verify.timeout_ms)}
-              ${oe?u("skipped","\uC774 workspace\uC5D0\uC11C \uAC74\uB108\uB700"):""}`:i`선언 없음${u("absent","verify \uC5C6\uC774 \uD310\uC815")}`}</span
+          >${$.verify?l`${m("verify",$,$.verify)}
+              ${p($.verify.timeout_ms)}
+              ${_e?u("skipped","\uC774 workspace\uC5D0\uC11C \uAC74\uB108\uB700"):""}`:l`선언 없음${u("absent","verify \uC5C6\uC774 \uD310\uC815")}`}</span
         >
         <span class="worker-repo-ops__lane-d"
-          >${oe?"\uC774 workspace\uC5D0\uC11C\uB294 \uAC80\uC99D \uC5C6\uC774 \uD310\uC815\uD569\uB2C8\uB2E4.":m.verify?"\uBA38\uC9C0 \uC804\uC5D0 \uC774 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uD1B5\uACFC\uD574\uC57C \uC790\uACA9\uC744 \uC5BB\uC2B5\uB2C8\uB2E4.":"\uBA38\uC9C0 \uC790\uACA9\uC740 PR/base/head \uC2E0\uC120\uB3C4\xB7mergeability\xB7\uB9AC\uBDF0 \uC601\uC218\uC99D\uC73C\uB85C\uB9CC \uD310\uC815\uD569\uB2C8\uB2E4."}</span
+          >${_e?"\uC774 workspace\uC5D0\uC11C\uB294 \uAC80\uC99D \uC5C6\uC774 \uD310\uC815\uD569\uB2C8\uB2E4.":$.verify?"\uBA38\uC9C0 \uC804\uC5D0 \uC774 \uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uD1B5\uACFC\uD574\uC57C \uC790\uACA9\uC744 \uC5BB\uC2B5\uB2C8\uB2E4.":"\uBA38\uC9C0 \uC790\uACA9\uC740 PR/base/head \uC2E0\uC120\uB3C4\xB7mergeability\xB7\uB9AC\uBDF0 \uC601\uC218\uC99D\uC73C\uB85C\uB9CC \uD310\uC815\uD569\uB2C8\uB2E4."}</span
         >
-        ${m.verify?A("verify",ue.verify):""}
+        ${$.verify?C("verify",pe.verify):""}
       </div>
       <div
-        class="worker-repo-ops__lane${de?" worker-repo-ops__lane--skipped":""}"
+        class="worker-repo-ops__lane${me?" worker-repo-ops__lane--skipped":""}"
         data-lane="deploy"
       >
         <span class="worker-repo-ops__lane-k">머지 후 배포</span>
         <span class="worker-repo-ops__lane-v"
-          >${m.deploy?i`${g("deploy",m,m.deploy)}
-              ${f(m.deploy.timeout_ms)}
-              ${de?u("skipped","\uC774 workspace\uC5D0\uC11C \uAC74\uB108\uB700"):""}`:i`선언 없음${u("absent","\uBC30\uD3EC \uC5C6\uC74C")}`}</span
+          >${$.deploy?l`${m("deploy",$,$.deploy)}
+              ${p($.deploy.timeout_ms)}
+              ${me?u("skipped","\uC774 workspace\uC5D0\uC11C \uAC74\uB108\uB700"):""}`:l`선언 없음${u("absent","\uBC30\uD3EC \uC5C6\uC74C")}`}</span
         >
         <span class="worker-repo-ops__lane-d"
-          >${de?"\uC774 workspace\uC5D0\uC11C\uB294 \uBC30\uD3EC \uC5C6\uC774 \uACE7\uBC14\uB85C \uC815\uB9AC\uB85C \uB118\uC5B4\uAC11\uB2C8\uB2E4.":m.deploy?i`Worker가 <code>.worktrees/.repo-ops-deploy</code>에서 대상
+          >${me?"\uC774 workspace\uC5D0\uC11C\uB294 \uBC30\uD3EC \uC5C6\uC774 \uACE7\uBC14\uB85C \uC815\uB9AC\uB85C \uB118\uC5B4\uAC11\uB2C8\uB2E4.":$.deploy?l`Worker가 <code>.worktrees/.repo-ops-deploy</code>에서 대상
                   SHA로 정렬한 뒤 1회 실행합니다.`:"\uBA38\uC9C0 \uD6C4 \uBC30\uD3EC \uB2E8\uACC4 \uC5C6\uC774 \uACE7\uBC14\uB85C \uC815\uB9AC\uB85C \uB118\uC5B4\uAC11\uB2C8\uB2E4."}</span
         >
-        ${m.deploy?A("deploy",ue.deploy):""}
+        ${$.deploy?C("deploy",pe.deploy):""}
       </div>
-    </section>`}function z(m){let E=m.repo_ops&&typeof m.repo_ops=="object"?m.repo_ops:null;return E&&(E.status==="resolved"||E.status==="absent")?L(E):E&&(E.status==="pending"||E.status==="error")?i`<section class="worker-repo-ops__vd" data-seam="repo-ops">
+    </section>`}function H($){let M=$.repo_ops&&typeof $.repo_ops=="object"?$.repo_ops:null;return M&&(M.status==="resolved"||M.status==="absent")?F(M):M&&(M.status==="pending"||M.status==="error")?l`<section class="worker-repo-ops__vd" data-seam="repo-ops">
         <p class="worker-repo-ops__vd-title">
           저장소 작업 선언
           <span class="worker-repo-ops__vd-ro"
@@ -3246,33 +3173,33 @@ ${ae.prompt}</pre
           class="worker-repo-ops__vd-line worker-repo-ops__vd-absent"
           data-seam="repo-ops-status"
         >
-          ${E.status==="pending"?"\uC120\uC5B8 \uD655\uC778 \uC911":i`선언 읽기
-              실패${E.error_code?i` — <code>${E.error_code}</code>`:""}`}
+          ${M.status==="pending"?"\uC120\uC5B8 \uD655\uC778 \uC911":l`선언 읽기
+              실패${M.error_code?l` — <code>${M.error_code}</code>`:""}`}
         </div>
-      </section>`:i`<section class="worker-repo-ops__vd" data-seam="repo-ops">
+      </section>`:l`<section class="worker-repo-ops__vd" data-seam="repo-ops">
       <p class="worker-repo-ops__vd-title">저장소 작업 선언</p>
       <div class="worker-repo-ops__vd-line worker-repo-ops__vd-absent">
         선언 확인 중
       </div>
-    </section>`}async function ae(m){if(!r)return;let E=await r("worker-auto-repair-toggle",{on:m,expected_revision:a()});if(l(E),E&&E.conflict){let Y=await r("worker-auto-repair-toggle",{on:m,expected_revision:a()});l(Y)}n()}async function se(m,E){if(!r)return;let Y=await r("worker-repo-ops-opt-out-toggle",{kind:m,opted_out:E,expected_revision:a()});if(l(Y),Y&&Y.conflict){let ue=await r("worker-repo-ops-opt-out-toggle",{kind:m,opted_out:E,expected_revision:a()});l(ue)}n()}let q={owned_deploy_worktree_fetch_detached_alignment_recreate:"\uC804\uC6A9 \uBC30\uD3EC \uC6CC\uD06C\uD2B8\uB9AC \uC815\uB82C\xB7\uBCF5\uAD6C",recovered_pre_execution_fetch_timeout_retry_once:"fetch \uD0C0\uC784\uC544\uC6C3 1\uD68C \uBCF5\uAD6C",repo_serial_lock_wait:"\uC800\uC7A5\uC18C \uC21C\uCC28 \uC2E4\uD589 \uB300\uAE30",restart_operation_adoption:"\uC7AC\uC2DC\uC791 \uD6C4 \uC791\uC5C5 \uC778\uACC4",exact_input_exit_zero_evidence_adoption:"\uB3D9\uC77C \uC785\uB825 \uC131\uACF5 \uC99D\uAC70 \uC778\uACC4",descendant_success_covers_ancestor_rows:"\uCD5C\uC2E0 SHA \uC131\uACF5\uC774 \uC774\uC804 \uD589 \uCEE4\uBC84",owned_verify_candidate_cleanup:"\uAC80\uC99D \uC784\uC2DC \uCCB4\uD06C\uC544\uC6C3 \uC815\uB9AC",script_retry:"\uC2A4\uD06C\uB9BD\uD2B8 \uC7AC\uC2DC\uB3C4",auto_repair_session:"\uC790\uB3D9 \uD574\uACB0 \uC138\uC158",user_triggered_session:"\uC0AC\uC6A9\uC790 \uD574\uACB0 \uC138\uC158",automatic:"\uC790\uB3D9",user_action_only:"\uC0AC\uC6A9\uC790 \uD074\uB9AD",script_identity_present:"\uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC788\uC744 \uB54C\uB9CC",per_completion_chain:"\uC644\uB8CC \uCCB4\uC778\uB2F9",unbounded:"\uD69F\uC218 \uC81C\uD55C \uC5C6\uC74C",bounded_single_script_retry_exceeded:"\uB2E8\uC77C \uC2A4\uD06C\uB9BD\uD2B8 \uC7AC\uC2DC\uB3C4 \uD55C\uB3C4 \uCD08\uACFC",baseline_failure_ignore:"\uAE30\uC874 \uC2E4\uD328 \uBB34\uC2DC",config_or_script_deletion_to_bypass_gate:"\uC124\uC815\xB7\uC2A4\uD06C\uB9BD\uD2B8 \uC0AD\uC81C\uB85C \uAC8C\uC774\uD2B8 \uC6B0\uD68C",credential_entry:"\uC790\uACA9\uC99D\uBA85 \uC785\uB825\xB7\uCD9C\uB825",destructive_action:"\uD30C\uAD34\uC801 \uC791\uC5C5",history_rewrite:"\uD788\uC2A4\uD1A0\uB9AC \uC7AC\uC791\uC131",agent_self_report_as_success:"\uC138\uC158 \uC790\uAE30\uBCF4\uACE0\uB97C \uC131\uACF5 \uCC98\uB9AC",unbounded_repair_session_retry:"\uBB34\uD55C \uD574\uACB0 \uC138\uC158 \uBC18\uBCF5"};function N(m,E,Y){return i`<div class="worker-repo-ops__policy-group" data-policy=${Y}>
-      <div class="worker-repo-ops__policy-label">${m}</div>
+    </section>`}async function re($){if(!r)return;let M=await r("worker-auto-repair-toggle",{on:$,expected_revision:a()});if(i(M),M&&M.conflict){let K=await r("worker-auto-repair-toggle",{on:$,expected_revision:a()});i(K)}n()}async function V($,M){if(!r)return;let K=await r("worker-repo-ops-opt-out-toggle",{kind:$,opted_out:M,expected_revision:a()});if(i(K),K&&K.conflict){let pe=await r("worker-repo-ops-opt-out-toggle",{kind:$,opted_out:M,expected_revision:a()});i(pe)}n()}let q={owned_deploy_worktree_fetch_detached_alignment_recreate:"\uC804\uC6A9 \uBC30\uD3EC \uC6CC\uD06C\uD2B8\uB9AC \uC815\uB82C\xB7\uBCF5\uAD6C",recovered_pre_execution_fetch_timeout_retry_once:"fetch \uD0C0\uC784\uC544\uC6C3 1\uD68C \uBCF5\uAD6C",repo_serial_lock_wait:"\uC800\uC7A5\uC18C \uC21C\uCC28 \uC2E4\uD589 \uB300\uAE30",restart_operation_adoption:"\uC7AC\uC2DC\uC791 \uD6C4 \uC791\uC5C5 \uC778\uACC4",exact_input_exit_zero_evidence_adoption:"\uB3D9\uC77C \uC785\uB825 \uC131\uACF5 \uC99D\uAC70 \uC778\uACC4",descendant_success_covers_ancestor_rows:"\uCD5C\uC2E0 SHA \uC131\uACF5\uC774 \uC774\uC804 \uD589 \uCEE4\uBC84",owned_verify_candidate_cleanup:"\uAC80\uC99D \uC784\uC2DC \uCCB4\uD06C\uC544\uC6C3 \uC815\uB9AC",script_retry:"\uC2A4\uD06C\uB9BD\uD2B8 \uC7AC\uC2DC\uB3C4",auto_repair_session:"\uC790\uB3D9 \uD574\uACB0 \uC138\uC158",user_triggered_session:"\uC0AC\uC6A9\uC790 \uD574\uACB0 \uC138\uC158",automatic:"\uC790\uB3D9",user_action_only:"\uC0AC\uC6A9\uC790 \uD074\uB9AD",script_identity_present:"\uC2A4\uD06C\uB9BD\uD2B8\uAC00 \uC788\uC744 \uB54C\uB9CC",per_completion_chain:"\uC644\uB8CC \uCCB4\uC778\uB2F9",unbounded:"\uD69F\uC218 \uC81C\uD55C \uC5C6\uC74C",bounded_single_script_retry_exceeded:"\uB2E8\uC77C \uC2A4\uD06C\uB9BD\uD2B8 \uC7AC\uC2DC\uB3C4 \uD55C\uB3C4 \uCD08\uACFC",baseline_failure_ignore:"\uAE30\uC874 \uC2E4\uD328 \uBB34\uC2DC",config_or_script_deletion_to_bypass_gate:"\uC124\uC815\xB7\uC2A4\uD06C\uB9BD\uD2B8 \uC0AD\uC81C\uB85C \uAC8C\uC774\uD2B8 \uC6B0\uD68C",credential_entry:"\uC790\uACA9\uC99D\uBA85 \uC785\uB825\xB7\uCD9C\uB825",destructive_action:"\uD30C\uAD34\uC801 \uC791\uC5C5",history_rewrite:"\uD788\uC2A4\uD1A0\uB9AC \uC7AC\uC791\uC131",agent_self_report_as_success:"\uC138\uC158 \uC790\uAE30\uBCF4\uACE0\uB97C \uC131\uACF5 \uCC98\uB9AC",unbounded_repair_session_retry:"\uBB34\uD55C \uD574\uACB0 \uC138\uC158 \uBC18\uBCF5"};function O($,M,K){return l`<div class="worker-repo-ops__policy-group" data-policy=${K}>
+      <div class="worker-repo-ops__policy-label">${$}</div>
       <ul class="worker-repo-ops__policy-list">
-        ${E.map(ue=>i`<li data-token=${ue}>
-              ${q[ue]||ue}
+        ${M.map(pe=>l`<li data-token=${pe}>
+              ${q[pe]||pe}
             </li>`)}
       </ul>
-    </div>`}function I(m){return i`<div
+    </div>`}function P($){return l`<div
       class="worker-repo-ops__policy-group"
       data-policy="resolution-ladder"
     >
       <div class="worker-repo-ops__policy-label">해결 사다리</div>
       <ol class="worker-repo-ops__policy-list">
-        ${m.map(E=>{let Y=[q[E.trigger]||E.trigger];return Number.isInteger(E.attempts_per_operation_attempt)?Y.push(`operation\uB2F9 ${E.attempts_per_operation_attempt}\uD68C`):Number.isInteger(E.attempts)?Y.push(`${q[E.budget]||E.budget} ${E.attempts}\uD68C`):Number.isInteger(E.sessions_per_user_action)&&Y.push(`${E.sessions_per_user_action}\uD68C`,q[E.user_actions]||E.user_actions),E.applies_when&&Y.push(q[E.applies_when]||E.applies_when),i`<li data-token=${E.id}>
-            <strong>${q[E.id]||E.id}</strong>
-            <span>${Y.filter(Boolean).join(" \xB7 ")}</span>
+        ${$.map(M=>{let K=[q[M.trigger]||M.trigger];return Number.isInteger(M.attempts_per_operation_attempt)?K.push(`operation\uB2F9 ${M.attempts_per_operation_attempt}\uD68C`):Number.isInteger(M.attempts)?K.push(`${q[M.budget]||M.budget} ${M.attempts}\uD68C`):Number.isInteger(M.sessions_per_user_action)&&K.push(`${M.sessions_per_user_action}\uD68C`,q[M.user_actions]||M.user_actions),M.applies_when&&K.push(q[M.applies_when]||M.applies_when),l`<li data-token=${M.id}>
+            <strong>${q[M.id]||M.id}</strong>
+            <span>${K.filter(Boolean).join(" \xB7 ")}</span>
           </li>`})}
       </ol>
-    </div>`}function j(){let m=o(),E=m.auto_repair!==!1,Y=m.repo_operation_policy&&typeof m.repo_operation_policy=="object"?m.repo_operation_policy:null,ue=Array.isArray(m.repo_operations)?m.repo_operations:[],oe=ue.find(qe=>qe.state==="repairing"),de=ue.filter(qe=>qe.state==="failed"||qe.state==="repairing"),Ue=de.length?Math.min(...de.map(qe=>typeof qe.repair?.remaining=="number"?qe.repair.remaining:0)):Y?.auto_repair?.resolution_ladder?.find(qe=>qe.id==="auto_repair_session")?.attempts??1,et=Array.isArray(Y?.auto_repair?.resolution_ladder)?Y.auto_repair.resolution_ladder:[];return i`<section
+    </div>`}function I(){let $=o(),M=$.auto_repair!==!1,K=$.repo_operation_policy&&typeof $.repo_operation_policy=="object"?$.repo_operation_policy:null,pe=Array.isArray($.repo_operations)?$.repo_operations:[],_e=pe.find(Te=>Te.state==="repairing"),me=pe.filter(Te=>Te.state==="failed"||Te.state==="repairing"),ae=me.length?Math.min(...me.map(Te=>typeof Te.repair?.remaining=="number"?Te.repair.remaining:0)):K?.auto_repair?.resolution_ladder?.find(Te=>Te.id==="auto_repair_session")?.attempts??1,Ie=Array.isArray(K?.auto_repair?.resolution_ladder)?K.auto_repair.resolution_ladder:[];return l`<section
       class="worker-repo-ops__repair"
       data-seam="auto-repair"
     >
@@ -3286,8 +3213,8 @@ ${ae.prompt}</pre
         <input
           type="checkbox"
           class="worker-repo-ops__repair-input"
-          .checked=${E}
-          @change=${qe=>{ae(qe.target.checked)}}
+          .checked=${M}
+          @change=${Te=>{re(Te.target.checked)}}
         />
         검증·배포 실패를 자동으로 해결 시도
       </label>
@@ -3295,58 +3222,58 @@ ${ae.prompt}</pre
         <span
           class="worker-repo-ops__repair-value"
           data-seam="auto-repair-value"
-          >${E?"\uCF1C\uC9D0":"\uAEBC\uC9D0"}</span
+          >${M?"\uCF1C\uC9D0":"\uAEBC\uC9D0"}</span
         >
         <span
           class="worker-repo-ops__repair-budget"
           data-seam="auto-repair-budget"
-          >남은 자동 해결 ${Ue}회</span
+          >남은 자동 해결 ${ae}회</span
         >
         <span
           class="worker-repo-ops__repair-session"
           data-seam="auto-repair-session"
-          >${oe?`\uD574\uACB0 \uC138\uC158 \uC2E4\uD589 \uC911 \xB7 ${oe.repair?.owner_bead||oe.operation_id}`:"\uC2E4\uD589 \uC911\uC778 \uD574\uACB0 \uC138\uC158 \uC5C6\uC74C"}</span
+          >${_e?`\uD574\uACB0 \uC138\uC158 \uC2E4\uD589 \uC911 \xB7 ${_e.repair?.owner_bead||_e.operation_id}`:"\uC2E4\uD589 \uC911\uC778 \uD574\uACB0 \uC138\uC158 \uC5C6\uC74C"}</span
         >
       </div>
-      ${Y?i`<details
+      ${K?l`<details
             class="worker-repo-ops__policy"
             data-seam="policy-lists"
           >
             <summary>
               Worker 자동 처리 기준
               <span class="worker-repo-ops__policy-count"
-                >자동 ${(Y.worker_automatic||[]).length} · 해결 사다리
-                ${et.length} · 금지
-                ${(Y.never_automatic||[]).length}</span
+                >자동 ${(K.worker_automatic||[]).length} · 해결 사다리
+                ${Ie.length} · 금지
+                ${(K.never_automatic||[]).length}</span
               >
             </summary>
-            ${N("Worker\uAC00 \uC790\uB3D9 \uCC98\uB9AC",Y.worker_automatic||[],"worker-automatic")}
-            ${Y.supported===!1||Y.schema_version!==2?i`<div
+            ${O("Worker\uAC00 \uC790\uB3D9 \uCC98\uB9AC",K.worker_automatic||[],"worker-automatic")}
+            ${K.supported===!1||K.schema_version!==2?l`<div
                   class="worker-repo-ops__policy-group"
                   data-policy="resolution-ladder"
                 >
-                  ${`\uACC4\uC57D \uC2A4\uD0A4\uB9C8 \uBD88\uC77C\uCE58 \u2014 \uC790\uB3D9 \uD574\uACB0\uC774 \uC815\uC9C0\uB418\uC5C8\uC2B5\uB2C8\uB2E4 (v${Y.schema_version})`}
-                </div>`:I(et)}
-            ${N("\uC790\uB3D9\uC73C\uB85C \uD558\uC9C0 \uC54A\uC74C",Y.never_automatic||[],"never-automatic")}
+                  ${`\uACC4\uC57D \uC2A4\uD0A4\uB9C8 \uBD88\uC77C\uCE58 \u2014 \uC790\uB3D9 \uD574\uACB0\uC774 \uC815\uC9C0\uB418\uC5C8\uC2B5\uB2C8\uB2E4 (v${K.schema_version})`}
+                </div>`:P(Ie)}
+            ${O("\uC790\uB3D9\uC73C\uB85C \uD558\uC9C0 \uC54A\uC74C",K.never_automatic||[],"never-automatic")}
           </details>`:""}
-    </section>`}return{template(){return i`<details class="worker-repo-ops-settings">
+    </section>`}return{template(){return l`<details class="worker-repo-ops-settings">
         <summary class="worker-repo-ops-settings__summary">
           저장소 작업 · 검증/배포 선언 · 자동 해결
         </summary>
-        ${z(c())} ${j()}
-      </details>`}}}var hd=20,Hg=5,Gg=new Set(["failed","repairing","running","queued","retry_pending"]),md={verify:"\uBA38\uC9C0 \uC804 \uAC80\uC99D",deploy:"\uBA38\uC9C0 \uD6C4 \uBC30\uD3EC"},gd={verify_script_failure:"\uAC80\uC99D \uC2E4\uD328 \uD574\uACB0",verify_script_failure_pre_merge:"\uAC80\uC99D \uC2E4\uD328 \uD574\uACB0 \uD6C4 \uBA38\uC9C0",deploy_script_failure:"\uBC30\uD3EC \uC2E4\uD328 \uD574\uACB0",interrupted_without_terminal_exit:"\uC911\uB2E8\uB41C \uC791\uC5C5 \uC9C4\uB2E8"};function Vg(e,t,r=hd){let n=[];for(let s of Array.isArray(e)?e:[])!s||typeof s!="object"||n.push({type:"operation",id:s.operation_id,at:typeof s.finished_at=="number"?s.finished_at:typeof s.requested_at=="number"?s.requested_at:null,operation:s});for(let s of Array.isArray(t)?t:[])!s||typeof s!="object"||n.push({type:"cleanup",id:s.bead_id,at:typeof s.at=="number"?s.at:null,cleanup:s});return n.sort((s,o)=>s.at===null&&o.at===null?String(s.id||"").localeCompare(String(o.id||"")):s.at===null?1:o.at===null?-1:o.at-s.at),n.slice(0,Math.max(0,r))}function Kg(e){if(e.type==="cleanup")return!0;let t=e.operation;return Gg.has(t.state)&&!t.dismissed&&!t.superseded_by}function Yg(e,t,r={}){let n=Vg(e,t,1/0),s=r.expanded===!0?hd:Hg,o=new Set(n.slice(0,s)),a=n.filter(l=>o.has(l)||Kg(l));return{visible:a,hidden:n.length-a.length}}function bd(e){if(e.type==="cleanup")return"warn";let t=e.operation.state;return t==="succeeded"?"ok":t==="failed"?"fail":"live"}function Zg(e){if(e.type==="cleanup")return"\uBA48\uCDA4";switch(e.operation.state){case"succeeded":return"\uC131\uACF5";case"failed":return"\uC2E4\uD328";case"repairing":return"\uC790\uB3D9 \uD574\uACB0 \uC911";case"retry_pending":return"\uC7AC\uC2DC\uB3C4 \uC911";case"running":return"\uC2E4\uD589 \uC911";default:return"\uB300\uAE30"}}function yd(e){let t=e.filter(r=>r.value);return t.length===0?"":i`<details class="worker-ev__details">
+        ${H(c())} ${I()}
+      </details>`}}}var Ed=20,nh=5,sh=new Set(["failed","repairing","running","queued","retry_pending"]),xd={verify:"\uBA38\uC9C0 \uC804 \uAC80\uC99D",deploy:"\uBA38\uC9C0 \uD6C4 \uBC30\uD3EC"},Ad={verify_script_failure:"\uAC80\uC99D \uC2E4\uD328 \uD574\uACB0",verify_script_failure_pre_merge:"\uAC80\uC99D \uC2E4\uD328 \uD574\uACB0 \uD6C4 \uBA38\uC9C0",deploy_script_failure:"\uBC30\uD3EC \uC2E4\uD328 \uD574\uACB0",interrupted_without_terminal_exit:"\uC911\uB2E8\uB41C \uC791\uC5C5 \uC9C4\uB2E8"};function oh(e,t,r=Ed){let n=[];for(let s of Array.isArray(e)?e:[])!s||typeof s!="object"||n.push({type:"operation",id:s.operation_id,at:typeof s.finished_at=="number"?s.finished_at:typeof s.requested_at=="number"?s.requested_at:null,operation:s});for(let s of Array.isArray(t)?t:[])!s||typeof s!="object"||n.push({type:"cleanup",id:s.bead_id,at:typeof s.at=="number"?s.at:null,cleanup:s});return n.sort((s,o)=>s.at===null&&o.at===null?String(s.id||"").localeCompare(String(o.id||"")):s.at===null?1:o.at===null?-1:o.at-s.at),n.slice(0,Math.max(0,r))}function ah(e){if(e.type==="cleanup")return!0;let t=e.operation;return sh.has(t.state)&&!t.dismissed&&!t.superseded_by}function ih(e,t,r={}){let n=oh(e,t,1/0),s=r.expanded===!0?Ed:nh,o=new Set(n.slice(0,s)),a=n.filter(i=>o.has(i)||ah(i));return{visible:a,hidden:n.length-a.length}}function Sd(e){if(e.type==="cleanup")return"warn";let t=e.operation.state;return t==="succeeded"?"ok":t==="failed"?"fail":"live"}function lh(e){if(e.type==="cleanup")return"\uBA48\uCDA4";switch(e.operation.state){case"succeeded":return"\uC131\uACF5";case"failed":return"\uC2E4\uD328";case"repairing":return"\uC790\uB3D9 \uD574\uACB0 \uC911";case"retry_pending":return"\uC7AC\uC2DC\uB3C4 \uC911";case"running":return"\uC2E4\uD589 \uC911";default:return"\uB300\uAE30"}}function Td(e){let t=e.filter(r=>r.value);return t.length===0?"":l`<details class="worker-ev__details">
     <summary>세부</summary>
     <dl class="worker-ev__kv">
-      ${t.map(r=>i`<div>
+      ${t.map(r=>l`<div>
             <dt>${r.term}</dt>
             <dd>${r.value}</dd>
           </div>`)}
     </dl>
-  </details>`}function vd(e,t="",r=!1){return!e&&!t?"":i`<p
+  </details>`}function Cd(e,t="",r=!1){return!e&&!t?"":l`<p
     class="worker-ev__explain${r?" worker-ev__explain--warn":""}"
   >
-    <span class="worker-ev__cause">${e}</span>${t?i`<br />${t}`:""}
-  </p>`}function Xg(e){if(e.state!=="failed"||e.superseded_by)return"";let t=e.repair||{},r=typeof t.remaining=="number"?t.remaining:0,n=e.failure_kind==="verify_script_failure"&&e.verify_stage==="pre_merge"?"verify_script_failure_pre_merge":e.failure_kind||"",s=r<=0;return i`<div class="worker-ev__acts">
+    <span class="worker-ev__cause">${e}</span>${t?l`<br />${t}`:""}
+  </p>`}function ch(e){if(e.state!=="failed"||e.superseded_by)return"";let t=e.repair||{},r=typeof t.remaining=="number"?t.remaining:0,n=e.failure_kind==="verify_script_failure"&&e.verify_stage==="pre_merge"?"verify_script_failure_pre_merge":e.failure_kind||"",s=r<=0;return l`<div class="worker-ev__acts">
     <button
       type="button"
       class="worker-ev__btn worker-ev__btn--primary worker-repo-op__resolve"
@@ -3354,19 +3281,19 @@ ${ae.prompt}</pre
       data-failure-kind=${e.failure_kind||""}
       title="해결 세션을 엽니다"
     >
-      ${Object.hasOwn(gd,n)?gd[n]:"\uC2E4\uD328 \uD574\uACB0 \uC138\uC158 \uC2DC\uC791"}
+      ${Object.hasOwn(Ad,n)?Ad[n]:"\uC2E4\uD328 \uD574\uACB0 \uC138\uC158 \uC2DC\uC791"}
     </button>
     <span class="worker-ev__btn-sub"
       >${s?"\uC790\uB3D9 \uD574\uACB0\uC744 \uB2E4 \uC37C\uC2B5\uB2C8\uB2E4 \xB7 \uB20C\uB7EC\uC11C \uD574\uACB0 \uC138\uC158\uC744 \uC5FD\uB2C8\uB2E4":`\uC790\uB3D9 \uD574\uACB0 ${r}\uD68C\uAC00 \uB0A8\uC544 \uC788\uC2B5\uB2C8\uB2E4`}</span
     >
-    ${t.attempt_id?i`<button
+    ${t.attempt_id?l`<button
           type="button"
           class="worker-ev__btn worker-repo-op__session"
           data-attempt-id=${t.attempt_id}
         >
           해결 세션 보기
         </button>`:""}
-    ${e.dismissed?"":i`<button
+    ${e.dismissed?"":l`<button
           type="button"
           class="worker-ev__btn worker-repo-op__dismiss"
           data-operation-id=${e.operation_id}
@@ -3374,46 +3301,46 @@ ${ae.prompt}</pre
         >
           기록 닫기
         </button>`}
-  </div>`}function Qg(e){let t=e.operation,r=t.state==="failed",n=t.failure?t.failure.code:"";return i`<li
+  </div>`}function uh(e){let t=e.operation,r=t.state==="failed",n=t.failure?t.failure.code:"";return l`<li
     class="worker-ev"
     data-operation-id=${t.operation_id}
     data-state=${t.state}
   >
     <span
       class="worker-ev__t"
-      title=${e.at?It(e.at):""}
-      >${go(e.at)||"\u2014"}</span
+      title=${e.at?Ht(e.at):""}
+      >${wo(e.at)||"\u2014"}</span
     >
     <span class="worker-ev__node" aria-hidden="true"
-      ><span class="worker-ev__dot worker-ev__dot--${bd(e)}"></span
+      ><span class="worker-ev__dot worker-ev__dot--${Sd(e)}"></span
     ></span>
     <div class="worker-ev__body">
       <div class="worker-ev__line1">
         <span class="worker-ev__what"
-          >${Object.hasOwn(md,t.kind)?md[t.kind]:t.kind}</span
+          >${Object.hasOwn(xd,t.kind)?xd[t.kind]:t.kind}</span
         >
         <span class="worker-ev__meta"
-          >${t.target_base}@${_o(t.target_sha)}${typeof t.elapsed_ms=="number"?` \xB7 ${mo(t.elapsed_ms)}`:""}</span
+          >${t.target_base}@${yo(t.target_sha)}${typeof t.elapsed_ms=="number"?` \xB7 ${cs(t.elapsed_ms)}`:""}</span
         >
-        <span class="worker-ev__st worker-ev__st--${bd(e)}"
-          >${Zg(e)}</span
+        <span class="worker-ev__st worker-ev__st--${Sd(e)}"
+          >${lh(e)}</span
         >
-        ${t.dismissed?i`<span class="worker-ev__st worker-ev__st--quiet">접수됨</span>`:""}
-        ${t.superseded_by?i`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`:""}
+        ${t.dismissed?l`<span class="worker-ev__st worker-ev__st--quiet">접수됨</span>`:""}
+        ${t.superseded_by?l`<span class="worker-ev__st worker-ev__st--quiet">덮임</span>`:""}
       </div>
-      ${r?vd(gu(t.failure_kind,n)):""}
-      ${Xg(t)}
-      ${yd([{term:"\uC2E4\uD328 \uCF54\uB4DC",value:r?n:""},{term:"script",value:[t.script_path||"",t.script_blob_sha?`blob ${_o(t.script_blob_sha)}`:"",Number.isInteger(t.exit_code)?`exit ${t.exit_code}`:""].filter(Boolean).join(" \xB7 ")},{term:"\uB85C\uADF8",value:t.log_path||""},{term:"\uCD9C\uB825",value:t.output_tail||""}])}
+      ${r?Cd(_u(t.failure_kind,n)):""}
+      ${ch(t)}
+      ${Td([{term:"\uC2E4\uD328 \uCF54\uB4DC",value:r?n:""},{term:"script",value:[t.script_path||"",t.script_blob_sha?`blob ${yo(t.script_blob_sha)}`:"",Number.isInteger(t.exit_code)?`exit ${t.exit_code}`:""].filter(Boolean).join(" \xB7 ")},{term:"\uB85C\uADF8",value:t.log_path||""},{term:"\uCD9C\uB825",value:t.output_tail||""}])}
     </div>
-  </li>`}function Jg(e){let t=e.cleanup,r=sn(t.step);return i`<li
+  </li>`}function dh(e){let t=e.cleanup,r=on(t.step);return l`<li
     class="worker-ev"
     data-bead-id=${t.bead_id}
     data-state="cleanup_stalled"
   >
     <span
       class="worker-ev__t"
-      title=${e.at?It(e.at):""}
-      >${go(e.at)||"\u2014"}</span
+      title=${e.at?Ht(e.at):""}
+      >${wo(e.at)||"\u2014"}</span
     >
     <span class="worker-ev__node" aria-hidden="true"
       ><span class="worker-ev__dot worker-ev__dot--warn"></span
@@ -3424,7 +3351,7 @@ ${ae.prompt}</pre
         <span class="worker-ev__st worker-ev__st--warn">멈춤</span>
       </div>
       <ol class="worker-stepper" aria-label="정리 단계">
-        ${du(t.step).map(n=>i`<li
+        ${Mu(t.step).map(n=>l`<li
               class="worker-step worker-step--${n.state}"
               data-step=${n.step}
             >
@@ -3432,7 +3359,7 @@ ${ae.prompt}</pre
               <span class="worker-step__lb">${n.label}</span>
             </li>`)}
       </ol>
-      ${vd(ko(t.reason),typeof t.retry_count=="number"&&t.retry_count>0?`${t.retry_count}\uD68C \uC790\uB3D9 \uC7AC\uC2DC\uB3C4 \uD6C4\uC5D0\uB3C4 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4 \u2014 \uC815\uB9AC\uB97C \uC7AC\uAC1C\uD558\uBA74 \uBA48\uCD98 \uB2E8\uACC4\uBD80\uD130 \uB2E4\uC2DC \uC9C4\uD589\uD569\uB2C8\uB2E4.`:"\uC815\uB9AC\uB97C \uC7AC\uAC1C\uD558\uBA74 \uBA48\uCD98 \uB2E8\uACC4\uBD80\uD130 \uB2E4\uC2DC \uC9C4\uD589\uD569\uB2C8\uB2E4.",!0)}
+      ${Cd(Ao(t.reason),typeof t.retry_count=="number"&&t.retry_count>0?`${t.retry_count}\uD68C \uC790\uB3D9 \uC7AC\uC2DC\uB3C4 \uD6C4\uC5D0\uB3C4 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4 \u2014 \uC815\uB9AC\uB97C \uC7AC\uAC1C\uD558\uBA74 \uBA48\uCD98 \uB2E8\uACC4\uBD80\uD130 \uB2E4\uC2DC \uC9C4\uD589\uD569\uB2C8\uB2E4.`:"\uC815\uB9AC\uB97C \uC7AC\uAC1C\uD558\uBA74 \uBA48\uCD98 \uB2E8\uACC4\uBD80\uD130 \uB2E4\uC2DC \uC9C4\uD589\uD569\uB2C8\uB2E4.",!0)}
       <div class="worker-ev__acts">
         <button
           type="button"
@@ -3441,7 +3368,7 @@ ${ae.prompt}</pre
         >
           정리 재개${r?` \u2014 ${r} \uB2E8\uACC4\uBD80\uD130`:""}
         </button>
-        ${t.repair_eligible?i`<button
+        ${t.repair_eligible?l`<button
               type="button"
               class="worker-ev__btn worker-ev__btn--primary worker-repo-op__resolve"
               data-operation-id=${`cleanup:${t.bead_id}`}
@@ -3450,9 +3377,9 @@ ${ae.prompt}</pre
               실패 해결 세션 시작
             </button>`:""}
       </div>
-      ${yd([{term:"\uC2E4\uD328 \uCF54\uB4DC",value:t.reason||""},{term:"\uC9C4\uB2E8",value:t.detail||""},{term:"\uB85C\uADF8",value:t.log_path||""},{term:"\uCD9C\uB825",value:t.output_tail||""}])}
+      ${Td([{term:"\uC2E4\uD328 \uCF54\uB4DC",value:t.reason||""},{term:"\uC9C4\uB2E8",value:t.detail||""},{term:"\uB85C\uADF8",value:t.log_path||""},{term:"\uCD9C\uB825",value:t.output_tail||""}])}
     </div>
-  </li>`}function eb(e){let t=typeof e.hidden=="number"?e.hidden:0,r=e.expanded===!0;return i`<section class="worker-repo-drawer" data-seam="repo-ops-timeline">
+  </li>`}function ph(e){let t=typeof e.hidden=="number"?e.hidden:0,r=e.expanded===!0;return l`<section class="worker-repo-drawer" data-seam="repo-ops-timeline">
     <div class="worker-repo-drawer__hd">
       <h3>저장소 작업 타임라인</h3>
       <span class="worker-repo-drawer__hint">${e.repo}</span>
@@ -3466,10 +3393,10 @@ ${ae.prompt}</pre
         ✕
       </button>
     </div>
-    ${e.events.length===0?i`<div class="worker-repo-drawer__empty">기록 없음</div>`:i`<ul class="worker-rail">
-          ${e.events.map(n=>n.type==="cleanup"?Jg(n):Qg(n))}
+    ${e.events.length===0?l`<div class="worker-repo-drawer__empty">기록 없음</div>`:l`<ul class="worker-rail">
+          ${e.events.map(n=>n.type==="cleanup"?dh(n):uh(n))}
         </ul>`}
-    ${t>0||r?i`<div class="worker-repo-drawer__more">
+    ${t>0||r?l`<div class="worker-repo-drawer__more">
           <button
             type="button"
             class="worker-ev__btn"
@@ -3478,46 +3405,46 @@ ${ae.prompt}</pre
             ${r?"\uC811\uAE30":`\uC774\uC804 ${t}\uAC1C \uB354 \uBCF4\uAE30`}
           </button>
         </div>`:""}
-  </section>`}function wd(e,t={}){let r=null;function n(){if(r===null){Ke(i``,e);return}let a=Yg(r.operations,r.cleanup_failures,{expanded:r.expanded});Ke(eb({events:a.visible,hidden:a.hidden,expanded:r.expanded,repo:r.repo}),e)}e.addEventListener("click",a=>{let l=a.target;if(l?.closest?.('[data-seam="repo-ops-close"]')){o();return}l?.closest?.('[data-seam="repo-ops-more"]')&&r&&(r.expanded=!r.expanded,n())});function s(a){r={operations:a.operations,cleanup_failures:a.cleanup_failures,repo:a.repo||"",expanded:!1},n()}function o(){r!==null&&(r=null,n(),t.onClose&&t.onClose())}return{open:s,close:o,isOpen:()=>r!==null,refresh(a){r&&(r={operations:a.operations,cleanup_failures:a.cleanup_failures,repo:a.repo||"",expanded:r.expanded},n())}}}var tb=yt("views:worker"),rb="tab:worker:ready",nb="tab:worker:blocked",sb="tab:worker:in-progress",ob="tab:worker:resolved",ab="tab:worker:closed",Ao=1,kd=5;function $d(e){return no(e).path.length>0}var ib=new Set(["quick_fix","spec_backed","full_plan"]);function xd(e){return typeof e=="string"&&ib.has(e)}var Td="beads-ui.worker.candidate-filter",ti={show_blocked:!1,spec:"all"};function lb(){try{let e=window.localStorage.getItem(Td);if(!e)return{...ti};let t=JSON.parse(e);if(!t||typeof t!="object")return{...ti};let r=t.spec;return{show_blocked:t.show_blocked===!0,spec:r==="with"||r==="without"?r:"all"}}catch{return{...ti}}}function cb(e){try{window.localStorage.setItem(Td,JSON.stringify(e))}catch{}}function ub(e,t){let r=l=>t.show_blocked||!l.blocked,n=l=>t.spec==="all"||(t.spec==="with"?l.has_spec:!l.has_spec),s=[],o=0,a=0;for(let l of e){let c=r(l),u=n(l);c&&u?s.push(l):!c&&u?o+=1:c&&!u&&(a+=1)}return{visible:s,hidden_blocked:o,hidden_spec:a}}var db=[{value:"all",label:"\uC804\uCCB4"},{value:"with",label:"spec \uC788\uC74C"},{value:"without",label:"spec \uC5C6\uC74C"}],Cd="bdui.worker.candidate_sort",pb=[{value:"spec",label:"spec \uC6B0\uC120"},{value:"board",label:"Board \uC21C\uC11C"},{value:"created",label:"\uCD5C\uC2E0 \uC0DD\uC131\uC21C"}],So="spec";function fb(){try{let e=window.localStorage.getItem(Cd);return e==="board"||e==="created"||e==="spec"?e:So}catch{return So}}function _b(e){try{window.localStorage.setItem(Cd,e)}catch{}}var Rd="bdui.worker.done-range";function mb(){try{let e=window.localStorage.getItem(Rd);return Qt(e)?e:Ht}catch{return Ht}}function gb(e){try{window.localStorage.setItem(Rd,e)}catch{}}var bb="(max-width: 640px)",Id="beads-ui.worker.lane-collapsed",ls={queue:!0,done:!0};function hb(){try{let e=window.localStorage.getItem(Id);if(!e)return{...ls};let t=JSON.parse(e);return!t||typeof t!="object"?{...ls}:{queue:typeof t.queue=="boolean"?t.queue:ls.queue,done:typeof t.done=="boolean"?t.done:ls.done}}catch{return{...ls}}}function yb(e){try{window.localStorage.setItem(Id,JSON.stringify(e))}catch{}}function Ad(e){let t=Array.isArray(e)&&e.length>0?e[0]:null;if(!t)return"";let r=typeof t.title=="string"?t.title:t.id||"";return r.length>22?`${r.slice(0,22)}\u2026`:r}function vb(e,t,r){let n=Array.isArray(e)?e.slice():[];return t==="created"?n.sort(Qr):(n.sort(Es(r)),t==="board"?n:[...n.filter($d),...n.filter(s=>!$d(s))])}function wb(e){let t=e&&e.parent;return(typeof t=="string"?t.length>0:!!(t&&t.id))||/\.\d+$/.test(e&&e.id||"")}function kb(e){let t=e?.blocked_info;if(t&&typeof t=="object"){let s=Array.isArray(t.blockers)?t.blockers.filter(o=>typeof o=="string"&&o.length>0):[];return s.length>0?`\u{1F512} ${s.join(", ")}`:"\u{1F512} blocked"}let n=(Array.isArray(e?.dependencies)?e.dependencies:[]).map(s=>{if(typeof s=="string")return s;if(!s||typeof s!="object")return"";let o=s.type??s.dependency_type;return o!==void 0&&o!=="blocks"?"":s.depends_on_id||s.id||""}).filter(Boolean);return n.length>0?`\u{1F512} ${n.join(", ")}`:"\u{1F512} blocked"}function Sd(e){switch(e){case"not_in_pr_wait":return"PR \uB300\uAE30 \uC0C1\uD0DC \uB3D9\uAE30\uD654 \uC2E4\uD328";case"resolution_round_cap":return"\uCDA9\uB3CC \uD574\uC18C 2\uD68C \uCD08\uACFC";case"resolution_timeout":return"\uCDA9\uB3CC \uD574\uC18C \uB300\uAE30 \uC2DC\uAC04 \uCD08\uACFC";case"resolution_refused":return"\uD574\uC18C \uC138\uC158 \uB514\uC2A4\uD328\uCE58 \uAC70\uBD80";case"worktree_missing":return"\uC6CC\uD06C\uD2B8\uB9AC \uC5C6\uC74C \u2014 \uC138\uC158\uC5D0\uC11C \uD574\uC18C \uD544\uC694";case"merge_unconfirmed_timeout":return"\uBA38\uC9C0 \uD655\uC778 \uC2DC\uAC04 \uCD08\uACFC";case"pr_closed_unmerged":return"PR \uB2EB\uD798";case"merge_error":return"\uBA38\uC9C0 \uC624\uB958";case"spec_id_missing":return"\uC2A4\uD399 ID \uAE30\uB85D \uC5C6\uC74C";default:return e}}function $b(e){if(e==="lane_occupied")return"\uC2E4\uD589 \uB808\uC778\uC5D0 \uB0A8\uC544 \uC788\uC5B4 \uBA38\uC9C0 \uB300\uC0C1\uC774 \uC544\uB2D9\uB2C8\uB2E4";let t="\uBA38\uC9C0 \uD050\uC5D0 \uB123\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (\uC774\uBBF8 \uB300\uAE30 \uC911\uC774\uAC70\uB098 \uB300\uC0C1 \uC544\uB2D8)";return typeof e=="string"&&e.length>0?`${t}: ${e}`:t}function xb(e,t=null){if(e==="worker_sessions_busy")return"\uD574\uC18C \uB300\uAE30 \u2014 \uC2E4\uD589 \uC2AC\uB86F \uB300\uAE30 \uC911";if(typeof e!="string"||!e.startsWith("completion_waiting:"))return null;let r=e.slice(19);if(r.length===0)return null;switch(r){case"gating":{let n=t?.repair_sessions_used;return typeof n=="number"&&n>0?"\uC218\uC815 \uACB0\uACFC \uC7AC\uD655\uC778 \uC911":"\uBA38\uC9C0 \uC870\uAC74 \uD655\uC778 \uC911"}case"repairing":return"\uC790\uB3D9 \uC218\uC815 \uC911";case"waiting_repair_pr":return"\uC218\uC815 PR \uB300\uAE30 \uC911";case"merging":return"\uBA38\uC9C0 \uC911";case"cleaning":return"\uB9C8\uBB34\uB9AC \uC911";case"paused":return"\uC790\uB3D9 \uC9C4\uD589 \uC77C\uC2DC\uC815\uC9C0";case"needs_human":return"\uD655\uC778 \uD544\uC694";default:return null}}function Ab(e){if(!e||typeof e!="object")return null;switch(e.state){case"waiting":return{badge:"\uCDA9\uB3CC \uD574\uC18C \uC911",live:!0};case"yielded":return{badge:"\uCDA9\uB3CC \uD574\uC18C \uACC4\uC18D \uC911 \xB7 \uC644\uB8CC \uD6C4 \uC6B0\uC120 \uBA38\uC9C0",live:!0};case"ready":return{badge:"\uCDA9\uB3CC \uD574\uC18C \uC644\uB8CC \xB7 \uC7AC\uAC80\uC99D \uB300\uAE30",live:!1};default:return null}}function Sb(e){if(!e||typeof e!="object")return null;switch(e.state){case"pending":return{badge:"implementation review \uB300\uAE30",live:!1,alert:!1};case"reviewing":return{badge:"implementation review \uC911",live:!0,alert:!1};case"revising":return{badge:"review \uC218\uC815 \uC911 \xB7 1\uD68C",live:!0,alert:!1};case"failed":{let r=(typeof e.failure_reason=="string"?e.failure_reason:"").replace(/[\u0000-\u001f\u007f]/g," ").slice(0,120);return{badge:r.trim().length>0?`review \uC790\uB3D9 \uC9C4\uD589 \uC2E4\uD328: ${r.trim()}`:"review \uC790\uB3D9 \uC9C4\uD589 \uC2E4\uD328",live:!1,alert:!0}}default:return null}}function ri(e,t){return typeof e!="string"||e.length===0||typeof t!="string"||t.length===0||t===e?null:`\u2192 ${t}`}function Eb(e){if(!e||typeof e!="object")return null;let t=Number.isInteger(e.repair_sessions_used)?Math.max(0,e.repair_sessions_used):0,r=Number.isInteger(e.repair_session_cap)?Math.max(0,e.repair_session_cap):0,n=e.current_repair&&typeof e.current_repair=="object"?e.current_repair:null,s=n&&typeof n.pr_number=="number"?n.pr_number:null,o="";switch(e.phase){case"gating":o=t>0?"\uC218\uC815 \uACB0\uACFC \uC7AC\uD655\uC778 \uC911":"\uBA38\uC9C0 \uC870\uAC74 \uD655\uC778 \uC911";break;case"repairing":o="\uC790\uB3D9 \uC218\uC815 \uC911";break;case"waiting_repair_pr":o=s?`\uC218\uC815 PR #${s} \uB300\uAE30 \uC911`:"\uC218\uC815 PR \uB300\uAE30 \uC911";break;case"merging":o=e.subject_role==="repair"?s?`\uC218\uC815 PR #${s} \uBA38\uC9C0 \uC911`:"\uC218\uC815 PR \uBA38\uC9C0 \uC911":"\uBA38\uC9C0 \uC911";break;case"cleaning":o="\uB9C8\uBB34\uB9AC \uC911";break;case"paused":o="\uC790\uB3D9 \uC9C4\uD589 \uC77C\uC2DC\uC815\uC9C0";break;case"needs_human":o="\uD655\uC778 \uD544\uC694";break;case"completed":return null;default:return null}let a=[o,`\uC790\uB3D9 \uC218\uC815 \uD69F\uC218 ${t}/${r}`];return e.head_sha&&a.push(`head ${e.head_sha}`),e.base_sha&&a.push(`base ${e.base_sha}`),(e.failure_stage||e.failure_reason)&&a.push(`${e.failure_stage||"failure"} \xB7 ${e.failure_reason||"\uC6D0\uC778 \uBBF8\uC0C1"}`),e.active_attempt_id&&a.push(`attempt ${e.active_attempt_id}`),n&&typeof n.bead_id=="string"&&a.push(`repair ${n.bead_id}`),e.evidence&&a.push(e.evidence),e.log_path&&a.push(e.log_path),{badge:o,title:a.join(`
-`),alert:e.phase==="needs_human",lock_actions:e.phase!=="paused"&&e.phase!=="needs_human",repair_pr_url:n&&typeof n.pr_url=="string"?n.pr_url:"",repair_pr_number:s}}function Ed(e){if(!e||typeof e!="object")return[];let t=e.blocking_codes;return Array.isArray(t)?t.filter(r=>typeof r=="string"&&r.length>0):[]}function Tb(e){let t=e.queue_failure?`\uBA38\uC9C0 \uC2E4\uD328 \uC6D0\uBB38: ${e.queue_failure}`:e.auto_skip?`\uC790\uB3D9 \uC81C\uC678 \uC6D0\uBB38: ${e.auto_skip}`:"",r=(n,s={})=>{let o=[s.title||"",t].filter(Boolean);return{label:n,title:o.join(`
-`),live:s.live===!0,alert:s.alert===!0}};return e.continuation_required?r("\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD \uD544\uC694",{alert:!0}):e.merge_step?e.gate?.tier==="merged"?r("\uBA38\uC9C0\uB428",{title:e.merge_step.label,alert:e.merge_step.failed===!0}):r("\uBA38\uC9C0 \uC911",{title:e.merge_step.label,live:!0}):e.conflict_badge?r(e.conflict_badge,{live:e.conflict_live===!0}):e.head_review&&e.head_review.state!=="failed"?r("\uB9AC\uBDF0 \uC9C4\uD589 \uC911",{title:e.head_review.badge,live:e.head_review.live===!0}):e.recovery?.lock_actions?r(e.recovery.badge,{title:e.recovery.title,live:!0}):e.cleanup_failed?r(e.cleanup_label?`\uC815\uB9AC \uBA48\uCDA4 \xB7 ${e.cleanup_label}`:"\uC815\uB9AC \uBA48\uCDA4",{title:e.cleanup_failed.reason||"",alert:!0}):e.base_exception?r("\uB2E4\uB978 base \uB300\uC0C1",{title:e.base_exception,alert:!0}):e.conflicting?r("\uCDA9\uB3CC \uD574\uACB0 \uD544\uC694",{alert:!0}):e.gate?.reason==="base_behind"?r("base \uAC31\uC2E0 \uD544\uC694",{alert:!0}):e.gate?.reason==="review_receipt_missing"||e.gate?.reason==="review_receipt_stale"?r("\uCD5C\uC885 \uBCC0\uACBD \uB9AC\uBDF0 \uD544\uC694",{title:e.gate.reason==="review_receipt_stale"?"\uB9AC\uBDF0 \uC601\uC218\uC99D\uC774 \uD604\uC7AC head\uC758 \uC870\uC0C1\uC774 \uC544\uB2C8\uAC70\uB098 \uC870\uC0C1 \uD655\uC778\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4 \u2014 \uD788\uC2A4\uD1A0\uB9AC \uC7AC\uC791\uC131\xB7\uBE0C\uB79C\uCE58 \uB9AC\uC14B \uBCF5\uAD6C \uACBD\uB85C\uB85C, \uAD00\uCE21\uB41C \uCD5C\uC885 head \uC804\uCCB4\uB97C \uB2E4\uC2DC \uB9AC\uBDF0\uD569\uB2C8\uB2E4":"\uB9AC\uBDF0 \uC601\uC218\uC99D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uAD00\uCE21\uB41C \uCD5C\uC885 head \uC804\uCCB4\uB97C \uB9AC\uBDF0\uD574\uC57C \uBA38\uC9C0\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4",alert:!0}):e.gate?.reason==="spec_id_missing"?r("\uC2A4\uD399 ID \uB204\uB77D",{title:"native spec_id \uBBF8\uAE30\uB85D \u2014 bd update --spec-id \uD544\uC694",alert:!0}):e.gate?.reason==="review_receipt_invalid"?r("\uB9AC\uBDF0 \uAE30\uB85D \uC624\uB958",{title:"review_receipt_invalid",alert:!0}):Ed(e.receipt_check).length>0?r("\uC601\uC218\uC99D \uD655\uC778 \uD544\uC694",{title:`\uC131\uB9BD\uD558\uC9C0 \uC54A\uB294 \uC2E4\uD589 \uC601\uC218\uC99D \u2014 ${Ed(e.receipt_check).join(", ")}`,alert:!0}):e.head_review?.state==="failed"?r("\uB9AC\uBDF0 \uC2E4\uD328",{title:e.head_review.failure_reason||"",alert:!0}):e.recovery?r(e.recovery.badge,{title:e.recovery.title,alert:!0}):e.gate?.tier==="verify"&&e.gate.gate_badge==="\uAC80\uC99D \uC2E4\uD328"?r("\uAC80\uC99D \uC2E4\uD328",{title:e.gate.reason||"",alert:!0}):e.queue_failure?r(`\uBA38\uC9C0 \uC2E4\uD328 \u2014 ${Sd(e.queue_failure)}`,{title:e.queue_failure,alert:!0}):e.auto_skip?r(`\uC790\uB3D9 \uC81C\uC678 \u2014 ${Sd(e.auto_skip)}`,{title:e.auto_skip,alert:!0}):e.queued&&!e.queue_active?r(`\uBA38\uC9C0 \uB300\uAE30 #${e.queue_position}`):e.gate?.enabled===!0?r("\uBA38\uC9C0 \uAC00\uB2A5"):e.gate?.tier==="merged"?r("\uBA38\uC9C0\uB428"):e.gate?.tier==="closed_unmerged"?r("\uB2EB\uD798",{alert:!0}):e.activity?r("\uD655\uC778 \uC911",{live:!0}):e.gate?.tier==="undecidable"||e.gate?.reason==="mergeability_unknown"?r("\uC0C1\uD0DC \uD655\uC778 \uC2E4\uD328",{title:e.gate.reason||"",alert:!0}):e.gate?.tier==="unobserved"||e.gate?.tier==="verify"||e.gate?.gate_badge==="\uAD00\uCE21 \uB300\uAE30"?r("\uD655\uC778 \uC911"):e.gate?.gate_badge?r(e.gate.gate_badge,{title:e.gate.reason||"",alert:e.gate.enabled!==!0}):null}function Cb(e,t,r,n,s=null,o=null,a=null,l=!1,c=null,u=!0,d=null,f=null,g=null,x={},A=!1,L=!1,z={}){let ae=!!c&&c.position>0,se=!!c?.continuation_action&&c.continuation_action.continuation===null,q=!!c&&c.active===!0,N=c&&c.failure||null,I=xb(c?c.waiting:null,g),j=r[e]||null,m=j&&j.gate?j.gate:null,E=j&&j.pr?j.pr:null,Y=Eb(g),ue=Ab(c?c.resolution:null),oe=Sb(c?c.head_review:null),de=c&&c.head_review||null,Ue=c&&c.authority||null,et=!!de&&["pending","reviewing","revising"].includes(de.state),qe=ae&&!q&&(de?.state==="failed"||!Ue||Ue.source==="automatic"&&!L),X=a==="paused"?"\uCDA9\uB3CC \uD574\uC18C \uC77C\uC2DC\uC815\uC9C0":ue?ue.badge:a==="running"?"\uCDA9\uB3CC \uD574\uC18C \uC911":I,te=!!m&&m.base_badge==="\uCDA9\uB3CC",Ae=!!m&&m.enabled===!0,_e=ss({bead_id:e,merge_sha:z.merge_sha,cleanup_cursor:z.cleanup_cursor,merge_progress:o&&o.merge_progress?o.merge_progress:null,cleanup_failed:n,repo_operations:z.repo_operations}),Pe=wo(_e),le=!!n&&["child_sweep","branch_cleanup","parent_close"].includes(n.step)&&!!m&&m.tier==="merged",Me=l&&!!n&&!!m&&m.tier==="merged",Oe=qe&&(Ae||te||m?.reason==="base_behind"||m?.reason==="review_receipt_missing"||m?.reason==="review_receipt_stale"||le||Me),He=l&&te&&u===!1,$e=vr(x,e,{external:l,merge_active:q||_e?.step==="merge",merge_queued:ae,conflict_active:!!a,cleanup_active:Pe,merged:!!n||m?.tier==="merged"}),Ve=!!$e.operation,it=!le&&!!n&&n.step==="repo_operations",Ie=Tb({continuation_required:se,merge_step:_e,conflict_badge:X,conflict_live:ue?.live===!0||a==="running",head_review:de&&oe?{...oe,state:de.state,failure_reason:de.failure_reason}:null,recovery:Y,cleanup_failed:n,cleanup_label:n?sn(n.step):null,base_exception:f,conflicting:te,gate:m,receipt_check:j&&j.receipt_check?j.receipt_check:null,queue_failure:N,auto_skip:d,queued:ae,queue_active:q,queue_position:c?c.position:0,activity:X?null:o&&o.activity||null}),Je=Ie?.live===!0&&Ie.title?i`<span title=${Ie.title}>${Ie.label}</span>`:Ie?.label||null;return{id:e,title:l?i`${t}<span class="muted"> · 세션</span>`:t,reason:n&&_e?.active!==!0?vo(n.step):"PR \uB300\uAE30",draggable:!1,done:!0,lane:"pr_wait",worker_serial:A,external:l,pr_number:E&&typeof E.number=="number"?E.number:null,pr_url:E&&typeof E.url=="string"?E.url:"",completion_badge:Ie?.live!==!0&&Ie?.title?Ie.label:null,completion_title:Ie?.title||"",completion_repair_pr_url:Y?Y.repair_pr_url:"",completion_repair_pr_number:Y?Y.repair_pr_number:null,badges:Je?[Je]:[],live_badge:Ie?.live===!0?Je:null,usage:s,alert:Ie?.alert===!0,merge_action:m?.tier==="merged"&&!le&&!Me||it?!1:!ae||se||qe,timeline_action:it,cancel_action:ae&&!se,cancel_enabled:(!q||et)&&!(Y&&Y.lock_actions),cancel_title:Y&&Y.lock_actions?`${Y.badge} \u2014 \uC911\uB2E8\uD558\uB824\uBA74 \uC0C1\uB2E8 \uC790\uB3D9 \uBA38\uC9C0 \uC911\uB2E8\uC744 \uC0AC\uC6A9\uD558\uC138\uC694`:q&&!et?"\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uCDE8\uC18C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":et?"review \uC9C4\uD589\uC744 \uCDE8\uC18C\uD558\uACE0 \uBA38\uC9C0 \uAD8C\uD55C\uC744 \uD3D0\uAE30\uD569\uB2C8\uB2E4":"\uBA38\uC9C0 \uD050\uC5D0\uC11C \uC774 \uD56D\uBAA9\uC744 \uBE8D\uB2C8\uB2E4 (\uB2E4\uC2DC [\uBA38\uC9C0]\uB85C \uB123\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4)",discard:$e,discard_action:$e.action,merge_step:_e,discard_enabled:$e.enabled,discard_title:$e.title,merge_enabled:!_e&&!a&&!Ve&&!f&&!(Y&&Y.lock_actions)&&!He&&!it&&(Ae||te||m?.reason==="base_behind"||m?.reason==="review_receipt_missing"||m?.reason==="review_receipt_stale"||le||Me||Oe),merge_label:se?"\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD":le||Me?"\uC815\uB9AC \uC7AC\uAC1C":te&&!_e&&!le?"\uCDA9\uB3CC \uD574\uC18C \uD6C4 \uBA38\uC9C0":m?.reason==="base_behind"?"base \uAC31\uC2E0 \uD6C4 \uBA38\uC9C0":m?.reason==="review_receipt_missing"||m?.reason==="review_receipt_stale"?"\uB9AC\uBDF0 \uD6C4 \uBA38\uC9C0":qe?"\uB2E4\uC2DC \uBA38\uC9C0":void 0,merge_title:Ve?$e.error?`\uD3D0\uAE30 \uC2E4\uD328: ${$e.error} \u2014 [\uC7AC\uC2DC\uB3C4]\uD558\uAC70\uB098 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC138\uC694`:`\uD3D0\uAE30 \uC9C4\uD589 \uC911 \u2014 ${$e.progress||"\uC644\uB8CC\uB97C \uAE30\uB2E4\uB9AC\uC138\uC694"}`:se?"\uC2E4\uD589 provider\uAC00 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4 \u2014 \uC774\uC5B4\uAC08 \uBC29\uC2DD\uC744 \uC120\uD0DD\uD558\uC138\uC694":_e?`\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 ${_e.label}`:Me?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uC2E4\uD328\uD55C \uC815\uB9AC\uB97C \uC7AC\uAC1C\uD569\uB2C8\uB2E4":He?"\uC6CC\uD06C\uD2B8\uB9AC \uC5C6\uC74C \u2014 \uC138\uC158\uC5D0\uC11C \uC9C1\uC811 \uD574\uC18C\uD558\uC138\uC694":a==="running"?"\uCDA9\uB3CC \uD574\uC18C \uC138\uC158 \uC2E4\uD589 \uC911 \u2014 \uC644\uB8CC \uD6C4 \uB2E4\uC2DC \uBA38\uC9C0\uD558\uC138\uC694":a==="paused"?"\uCDA9\uB3CC \uD574\uC18C \uC138\uC158 \uC77C\uC2DC\uC815\uC9C0 \u2014 \uC7AC\uAC1C \uD6C4 \uC644\uB8CC\uB418\uBA74 \uBA38\uC9C0\uD558\uC138\uC694":le?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uB0A8\uC740 \uC815\uB9AC\uB97C \uC2E4\uD328 \uB2E8\uACC4\uBD80\uD130 \uC7AC\uAC1C\uD569\uB2C8\uB2E4":te?"\uCDA9\uB3CC \u2014 \uD050\uC5D0 \uB123\uC73C\uBA74 \uD574\uC18C \uC138\uC158\uC744 \uB744\uC6B0\uACE0 \uC644\uB8CC \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC7AC\uBA38\uC9C0\uD569\uB2C8\uB2E4":m?.reason==="base_behind"?"base\uB97C \uC790\uB3D9 \uAC31\uC2E0\uD55C \uB4A4 \uBA38\uC9C0\uD569\uB2C8\uB2E4":m?.reason==="review_receipt_missing"||m?.reason==="review_receipt_stale"?"\uC790\uB3D9 \uB9AC\uBDF0 \uC138\uC158 \uD6C4 \uC2B9\uC778\uB418\uBA74 \uBA38\uC9C0\uD569\uB2C8\uB2E4":m?.reason==="spec_id_missing"?"native spec_id \uBBF8\uAE30\uB85D \u2014 bd update --spec-id\uB85C \uAE30\uB85D\uD55C \uB4A4 \uB2E4\uC2DC \uBA38\uC9C0\uD558\uC138\uC694":Ae?`\uBA38\uC9C0 (${m.gate_badge}) \u2014 \uD050\uC5D0 \uB123\uC5B4 \uC21C\uC11C\uB300\uB85C \uBA38\uC9C0\uD569\uB2C8\uB2E4 (\uCC28\uB840\uAC00 \uB418\uBA74 \uB2E4\uC2DC \uD655\uC778)`:m&&m.tier==="merged"?"\uBA38\uC9C0\uB428 \u2014 \uBA38\uC9C0 \uD6C4 \uC815\uB9AC \uC9C4\uD589 \uC911":`\uBA38\uC9C0 \uBD88\uAC00: ${m&&m.reason||"\uAD00\uCE21 \uB300\uAE30"}`}}function ni(e,t={}){let{transport:r,issueStores:n,queueStore:s,analysisStore:o,sessionLogStore:a,uiOrderStore:l,gotoIssue:c,getWorkspacePath:u,doneRange:d,onDoneRangeChange:f}=t,g=n?Cs(n,l):null,x=Os({transport:r,uiOrderStore:l}),A=null,L=[],z=lb(),ae=null,se=fb(),q=Qt(d)?d:mb(),N=new Map;function I(){let p=gr.find(v=>v.value===q);return p?p.label:"\uC624\uB298"}let j=hb(),m=!1,E=new Set,Y=new Set,ue=new Set,oe=new Set,de=new Set,Ue={},et=null,qe=0,X=null,te=[];function Ae(p){return et===p?Ue:{}}async function _e(){if(!r)return;let p=u?.()||"";if(et===p||X&&X.key===p&&X.generation===qe)return;let v=++qe;X={key:p,generation:v};let B=null;try{B=await Promise.resolve(r("get-session-defaults",{}))}catch(_){if(v!==qe)return;X=null,tb("get-session-defaults failed: %o",_),Ne();return}v===qe&&(Ue=B&&typeof B.values=="object"&&B.values!==null?{...B.values}:{},et=p,X=null,Ne())}function Pe(){et=null,qe+=1,_e()}let le=document.createElement("div");le.className="worker-console";let Me=document.createElement("div");Me.className="worker-top";let Oe=document.createElement("div");Oe.className="worker-drawer-overlay",Oe.hidden=!0;let He=document.createElement("div");He.className="worker-drawer-overlay__backdrop";let $e=document.createElement("div");$e.className="worker-drawer-host";let Ve=document.createElement("div");Ve.className="worker-drawer-host",Ve.hidden=!0,Oe.append(He,$e,Ve);let it=document.createElement("div");it.className="worker-lanes-host",le.append(Me,Oe,it),e.appendChild(le);let Ie=null,Je=null,G=ro($e,{transport:r,sessionLogStore:a,onClose:()=>{Ie=null,Je=null,Oe.hidden=!0,Ne()}}),Z=wd(Ve,{onClose:()=>{Ve.hidden=!0,Oe.hidden=!0,Ne()}}),xe=fd({getWorkspacePath:u||(()=>"")}),De=u&&u()||"",We=_d({queueStore:s,transport:r,onChanged:()=>Ne(),onOpenScript:(p,v)=>{xe.open(p,v)}}),Ge=o?cd(le,{queueStore:s,analysisStore:o,transport:r,getWorkspacePath:u,onOpenTranscript:(p,v)=>xt(p,v)}):null;function ze(){return s&&s.get()||{revision:0,auto_advance:!1,auto_merge:!1,slots:Ao,queue:[],serial_lanes:[],serial_lane_count:0,pr_wait:[],done:[]}}function ct(){let p=ze(),v=typeof p.serial_lane_count=="number"&&Number.isInteger(p.serial_lane_count)&&p.serial_lane_count>0?Math.min(p.serial_lane_count,5):0,B=Array.isArray(p.serial_lanes)?p.serial_lanes:[],_=[];for(let ee of B){if(_.length>=v)break;!ee||typeof ee.id!="string"||!/^s[1-5]$/.test(ee.id)||!Array.isArray(ee.entries)||_.push({id:ee.id,label:`\uC9C1\uB82C ${ee.id.slice(1)}`,count:ee.entries.length})}return _.length===0?null:[{id:"parallel",label:"\uBCD1\uB82C",count:(Array.isArray(p.queue)?p.queue:[]).length},..._]}function pt(p){if(!ae||!p.some(B=>B.id===ae))return null;let v=ct();return v?{bead_id:ae,lanes:v}:null}function U(){let p=ze();return typeof p.revision=="number"?p.revision:0}function V(p){p&&p.queue&&s&&s.set(p.queue)}function ve(){let p=ze().queue;return Array.isArray(p)?p.length:0}async function ot(p,v,B){if(!r)return;let _=()=>({bead_id:p,...v==="parallel"?{}:{lane:v},...B===void 0?{}:{index:B},expected_revision:U()}),h=await r("worker-queue-place",_());V(h),h&&h.conflict&&await r("worker-queue-place",_()).then(V)}async function ke(p,v,B){if(!r)return;let _=()=>({bead_id:p,...v==="parallel"?{}:{lane:v},to_index:B,expected_revision:U()}),h=await r("worker-queue-reorder",_());V(h),h&&h.conflict&&await r("worker-queue-reorder",_()).then(V)}async function T(p){if(!r)return;let v=await r("worker-queue-remove",{bead_id:p,expected_revision:U()});V(v),v&&v.conflict&&await r("worker-queue-remove",{bead_id:p,expected_revision:U()}).then(V)}async function M(p){if(!r||!p)return;let v=await r("worker-attempt-pause",{attempt_id:p});v&&v.paused===!1&&v.reason&&pe(`\uC77C\uC2DC\uC815\uC9C0 \uAC70\uBD80: ${v.reason}`,"error",2400)}async function P(p){if(!r||!p)return;let v=await kn();if(v===null)return;let B=async(h={})=>await r("worker-attempt-resume",{attempt_id:p,expected_revision:U(),...v!==""?{instructions:v}:{},...h}),_=await B();V(_),_&&_.conflict&&(_=await B(),V(_)),_=await $r(_,(h,ee)=>B({continuation:h,decision_token:ee}),{onResult:V,refresh:()=>B()}),_&&_.resumed===!1&&!_.conflict&&_.reason&&pe(`\uC774\uC5B4\uD558\uAE30 \uAC70\uBD80: ${_.reason}`,"error",2400)}async function H(p){if(!r||!p)return;let v=await r("worker-attempt-dismiss",{attempt_id:p,expected_revision:U()});V(v),v&&v.conflict&&(v=await r("worker-attempt-dismiss",{attempt_id:p,expected_revision:U()}),V(v)),v&&v.dismissed===!1&&!v.conflict&&v.reason&&pe(`\uBC30\uB108 \uB2EB\uAE30 \uAC70\uBD80: ${v.reason}`,"error",2400)}async function ce(p,v,B=!0){if(!r)return null;let _=r,h=await _(p,{...v,expected_revision:U()});return V(h),h&&h.conflict&&B&&(h=await _(p,{...v,expected_revision:U()}),V(h)),h}async function y(p){if(!r||!p)return;let v=ze().merge_queue?.find(_=>_.bead_id===p)?.continuation_action;if(v?.mismatch&&v.continuation===null){await D(p,v.mismatch);return}E.add(p),Ne();let B;try{B=await ce("worker-merge-queue-add",{bead_id:p})}finally{E.delete(p),Ne()}!B||B.conflict||B.applied||pe($b(B.reason),"error",2400)}async function C(p){if(!(!r||!p||Y.has(p))){Y.add(p),Ne();try{let v=await r("worker-cleanup-retry",{bead_id:p,expected_revision:U()});V(v),v&&!v.retried&&!v.conflict&&v.reason&&pe(`\uC815\uB9AC \uC7AC\uAC1C \uAC70\uBD80: ${v.reason}`,"error",2400)}finally{Y.delete(p),Ne()}}}async function D(p,v){let B=await $r({continuation_mismatch:v},(h,ee)=>ce("worker-merge-queue-add",{bead_id:p,continuation:h,decision_token:ee},!1)),_=B?.queue?.merge_queue?.find(h=>h.bead_id===p)?.continuation_action;if(B?.applied!==!0&&_?.continuation===null&&_.mismatch){await D(p,_.mismatch);return}B&&B.applied===!1&&!B.conflict&&pe("\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD\uC774 \uCD5C\uC2E0 \uC0C1\uD0DC\uC640 \uC77C\uCE58\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4","error",2800)}async function me(p){if(!r)return;let v=await ce("worker-merge-auto-toggle",{on:p});!v||v.conflict||pe(p?"\uC790\uB3D9 \uBA38\uC9C0 \uCF1C\uC9D0 \u2014 \uC790\uACA9\uC774 \uC0DD\uAE30\uB294 PR\uC744 \uACC4\uC18D \uBA38\uC9C0\uD569\uB2C8\uB2E4":"\uC790\uB3D9 \uBA38\uC9C0 \uAEBC\uC9D0 \u2014 \uB300\uAE30 \uD56D\uBAA9\uC744 \uBE44\uC6E0\uC2B5\uB2C8\uB2E4",p?"success":"info",2400)}async function fe(p){if(!r||!p)return;let v=await ce("worker-merge-queue-remove",{bead_id:p});v&&!v.conflict&&!v.applied&&v.reason==="merge_active"&&pe("\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uCDE8\uC18C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4","error",2400)}async function Ee(){await ce("worker-merge-queue-remove",{all:!0})}async function Fe(p,v=null,B="unmerged",_=null){if(!r||!p)return;let h=ts(p,B);if(!(!!_||typeof globalThis.confirm!="function"||globalThis.confirm(h)))return;let Q=await r("worker-discard",{bead_id:p,...v?{attempt_id:v}:{},..._?{operation_id:_}:{},expected_revision:U()});if(V(Q),Q&&Q.conflict&&(Q=await r("worker-discard",{bead_id:p,...v?{attempt_id:v}:{},..._?{operation_id:_}:{},expected_revision:U()}),V(Q)),Q&&Q.discarded===!0){pe(bo(Q),"success",5e3);return}if(Q&&Q.reason){pe(`\uD3D0\uAE30 \uC2E4\uD328: ${Q.reason}`,"error",2800);return}if(Q&&Q.accepted&&Q.pending==="merged_revert"){pe("revert PR \uB300\uAE30 \uC0C1\uD0DC\uB85C \uC804\uD658\uD588\uC2B5\uB2C8\uB2E4","success",2400);return}if(Q&&Q.accepted&&!Q.discarded){pe(`\uD3D0\uAE30 \uC9C4\uD589: ${Q.phase||"\uBC31\uC5C5 \uC911"}`,"success",2400);return}Q&&!Q.conflict&&pe("\uD3D0\uAE30 \uAC70\uBD80: unknown","error",2800)}async function Ye(p,v,B){if(!(!r||!v||!B||oe.has(v))){oe.add(v),Ne();try{let _=await r(p,{bead_id:v,action_id:B,expected_revision:U()});V(_),_?.conflict?pe("\uC774\uC804 \uC791\uC5C5 \uC0C1\uD0DC\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uCD5C\uC2E0 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC138\uC694.","error",2800):!_?.ok&&_?.reason&&pe(`\uC774\uC804 \uC791\uC5C5 \uCC98\uB9AC \uAC70\uBD80: ${String(_.reason)}`,"error",2800)}finally{oe.delete(v),Ne()}}}async function Qe(p,v){if(!r||!v||ue.has(v))return;ue.add(v),Ne();let B;try{let _=async(h={})=>await r(p,{bead_id:v,expected_revision:U(),...h});B=await _(),V(B),B&&B.conflict&&(B=await r(p,{bead_id:v,expected_revision:U()}),V(B)),p==="worker-revise-fix"&&(B=await $r(B,(h,ee)=>_({continuation:h,decision_token:ee}),{onResult:V,refresh:()=>_()}))}finally{ue.delete(v),Ne()}if(!(!B||B.conflict)){if(B.ok){pe(p==="worker-revise-fix"?"\uCC98\uBD84 \uC138\uC158\uC744 \uB744\uC6E0\uC2B5\uB2C8\uB2E4 \u2014 \uC218\uB9AC \uD6C4 \uAD6C\uD604\uC774 \uC7AC\uB514\uC2A4\uD328\uCE58\uB429\uB2C8\uB2E4":"\uB378\uD0C0 \uC2B9\uC778 \uC644\uB8CC \u2014 \uC601\uC218\uC99D \uAC31\uC2E0 + \uD30C\uD0B9 \uD574\uC81C","success",2800);return}pe(`\uCC98\uBD84 \uAC70\uBD80: ${B.reason||""}`,"error",3e3)}}async function W(p){if(!r)return;let v=await r("worker-automation-toggle",{on:p,expected_revision:U()});V(v),v&&v.conflict&&await r("worker-automation-toggle",{on:p,expected_revision:U()}).then(V)}async function re(p){if(!r||!p)return;let v=await r("worker-repo-operation-repair",{operation_id:p});if(V(v),v&&v.ok===!1){pe(`\uD574\uACB0 \uC138\uC158 \uAC70\uBD80: ${v.reason||""}`,"error",3e3);return}v&&v.ok===!0&&pe("\uD574\uACB0 \uC138\uC158\uC744 \uB744\uC6E0\uC2B5\uB2C8\uB2E4","success",2400)}async function be(p){if(!r||!p)return;let v=await r("worker-repo-operation-dismiss",{operation_id:p});V(v),v&&v.ok===!1&&pe(`\uAE30\uB85D \uB2EB\uAE30 \uAC70\uBD80: ${v.reason||""}`,"error",3e3)}async function k(p){if(!r||!Number.isFinite(p))return;let v=Math.max(Ao,Math.floor(p)),B=await r("worker-queue-set-slots",{slots:v,expected_revision:U()});V(B),B&&B.conflict&&await r("worker-queue-set-slots",{slots:v,expected_revision:U()}).then(V)}async function S(p){if(!r||!Number.isInteger(p)||p<1||p>kd)return;let v=ze(),B=(Array.isArray(v.serial_lanes)?v.serial_lanes:[]).slice(p).reduce((ee,Q)=>ee+(Array.isArray(Q?.entries)?Q.entries.length:0),0),_=()=>({count:p,expected_revision:U()}),h=await r("worker-queue-set-serial-lane-count",_());V(h),h&&h.conflict&&(h=await r("worker-queue-set-serial-lane-count",_()),V(h)),h&&h.applied&&B>0&&pe(`\uC9C1\uB82C \uB808\uC778 \uCD95\uC18C \u2014 ${B}\uAC1C \uD56D\uBAA9\uC774 \uBCD1\uB82C \uB300\uAE30\uB85C \uC774\uB3D9`)}function O(){let p=ze(),v=g?g.selectBoardColumn(rb,"ready"):[],B=g?g.selectBoardColumn(nb,"blocked"):[],_=g?g.selectBoardColumn(ab,"closed"):[],h=g?g.selectBoardColumn(sb,"in_progress"):[],ee=g?g.selectBoardColumn(ob,"resolved"):[],Q=Is([...v,...B,...h,...ee,..._]),Re=new Map;for(let b of[...v,...B,...h])b&&b.id&&!Re.has(b.id)&&Re.set(b.id,b);let ge={...Ae(u?.()||"")};for(let b of["orchestration_model","orchestration_effort","orchestration_speed"]){let F=p[b];typeof F=="string"&&(ge[b]=F)}function w(b,F){let ie=Re.get(b);if(!ie)return null;let Be=ie.metadata&&typeof ie.metadata=="object"?ie.metadata:{},lt=ie.workflow?.route,Rt=Be.route,St=xd(lt)?lt:xd(Rt)?Rt:null;return hr({pin:Be,global:ge,execution_defaults:p.execution_defaults??null,runner_catalog:p.runner_catalog??null,route:St,controller_runtime:F})}function K(b){let F=b.runner||null,ie=w(b.bead_id,F),Be=ad(b),lt=ie?Za(ie,F):null;return Be||lt?{orchestration:Be,worker:lt}:null}let R=new Map;function he(b){if(R.has(b))return R.get(b)??null;let F=w(b,null),ie=null;if(F){let Be=Rr(p.runner_catalog??null,F.orchestration_model.value??""),lt=Be===null?F:w(b,Be),Rt=id(lt,p.runner_catalog??null),St=Za(lt,Be);ie=Rt||St?{orchestration:Rt,worker:St}:null}return R.set(b,ie),ie}function at(b){let F=Ls(Q,b);return F.total===0?null:F}let nt=p.bead_titles||{},Ze=new Map;for(let[b,F]of Object.entries(nt))typeof F=="string"&&F.length>0&&Ze.set(b,F);for(let b of[...v,...B])Ze.set(b.id,b.title||b.id);let Xe=p.bead_times&&typeof p.bead_times=="object"&&!Array.isArray(p.bead_times)?p.bead_times:{},kt=p.bead_labels&&typeof p.bead_labels=="object"&&!Array.isArray(p.bead_labels)?p.bead_labels:{},zt=new Map;for(let[b,F]of Object.entries(kt))Array.isArray(F)&&zt.set(b,Qa(F));for(let b of[...v,...B]){let F=b.labels;Array.isArray(F)&&!zt.has(b.id)&&zt.set(b.id,Qa(F))}let an=new Map,ln=o?.get()?.last_good?.result?.groups;for(let b of Array.isArray(ln)?ln:[]){if(b?.eligible!==!0||!Array.isArray(b.members))continue;let F=b.members.map(Be=>{let lt=(Array.isArray(p.serial_lanes)?p.serial_lanes:[]).find(Rt=>Rt.entries.some(St=>St.bead_id===Be));return lt?lt.id:null});if(!(F.every(Be=>Be!==null)&&new Set(F).size===1))for(let Be of b.members)an.set(Be,b.members.filter(lt=>lt!==Be))}let cs=p.bead_blocked_by&&typeof p.bead_blocked_by=="object"&&!Array.isArray(p.bead_blocked_by)?p.bead_blocked_by:{},cn=new Map;for(let[b,F]of Object.entries(Xe))F&&typeof F=="object"&&cn.set(b,F);for(let b of[...v,...B])cn.set(b.id,{created_at:b.created_at,updated_at:b.updated_at});let Wr=b=>cn.get(b)||{},zr=p.pr_wait||[],un=p.pr_observations||{},us=p.pr_activity||{},Le=p.cleanup_failed||{},vt=Object.entries(Le).map(([b,F])=>({bead_id:b,step:F&&F.step?F.step:"",reason:F&&F.reason?F.reason:"",at:F&&typeof F.at=="number"?F.at:null,detail:F&&typeof F.detail=="string"?F.detail:null,output_tail:F&&typeof F.output_tail=="string"&&F.output_tail?F.output_tail:void 0,log_path:F&&typeof F.log_path=="string"&&F.log_path?F.log_path:void 0,retry_count:F&&typeof F.retry_count=="number"&&Number.isInteger(F.retry_count)&&F.retry_count>0?F.retry_count:0,failure_code:F&&typeof F.failure_code=="string"?F.failure_code:void 0,subject_id:F&&typeof F.subject_id=="string"?F.subject_id:void 0,repair_eligible:!!(F&&F.repair_eligible),repair:F&&F.repair?F.repair:void 0})),dn=p.queue||[],zd=new Set([...dn.map(b=>b.bead_id),...(Array.isArray(p.serial_lanes)?p.serial_lanes:[]).flatMap(b=>(Array.isArray(b?.entries)?b.entries:[]).map(F=>F.bead_id)),...zr.map(b=>b.bead_id),...p.done.map(b=>b.bead_id)]),Hd=new Set(B.map(b=>b.id)),Gd=l?l.get()?.order||{}:{},ii=new Set,li=[];for(let b of[...v,...B])zd.has(b.id)||ii.has(b.id)||wb(b)||(ii.add(b.id),li.push(b));L=vb(li,se,Gd);let Vd=p.admission||{},ci=b=>{let F=Vd[b];if(!F)return"";if(F.stale===!0)return"\u267B\uFE0F stale\u2192\uC7AC\uB9AC\uBDF0";let ie=typeof F.reason=="string"?F.reason:"",Be=ie.indexOf(":");return Be>0&&Be<ie.length-1?`\u26D4 ${ie.slice(0,Be)} (${ie.slice(Be+1)})`:`\u26D4 ${ie}`},Kd=L.map(b=>{let F=no(b),ie=F.path.length>0,Be=b.workflow?.route==="quick_fix"||b.metadata&&b.metadata.route==="quick_fix",lt=!Object.hasOwn(b,"description")||typeof b.description=="string"&&b.description.trim().length>0,Rt=Object.hasOwn(b,"labels")&&ld(b.labels),St=!Rt&&(Be?lt:ie&&!F.conflict),gt=Hd.has(b.id),or=[];gt&&or.push(kb(b)),Be&&!lt?or.push("missing_description"):!Be&&F.conflict?or.push("spec_id_conflict"):!Be&&!ie&&or.push("spec \uC5C6\uC74C");let hs=ci(b.id);return hs&&or.push(hs),{id:b.id,title:b.title||b.id,reason:or.join(" \xB7 "),draggable:St,lane:"candidate",created_at:b.created_at,updated_at:b.updated_at,workflow:b.workflow,is_quick_fix:Be,status:b.status,worker_ineligible:Rt,blocked:gt,has_spec:ie,exec_chips:he(b.id)}}),Eo=ub(Kd,z),Yd=Eo.visible,Zd=p.revise_parked||{},ds=p.discard_operations&&typeof p.discard_operations=="object"&&!Array.isArray(p.discard_operations)?p.discard_operations:{},To=(b,F)=>b.map((ie,Be)=>{let lt=F!=="done",Rt=F!=="done"&&F!=="queue",St=lt?Zd[ie.bead_id]:null,gt=lt?vr(ds,ie.bead_id):null,or=gt?.operation?gt:null,hs=lt&&zt.get(ie.bead_id)===!0,Oi=cs[ie.bead_id]||[],Oo=p.admission&&typeof p.admission=="object"?p.admission[ie.bead_id]:null,Mo=lt?su(Oo,!!or||oe.has(ie.bead_id)):null,cp=lt&&!Mo?ci(ie.bead_id):null,up=lt?[cp]:[],Mi=lt&&Oi.length>0&&typeof Oo?.reason=="string"&&Oo.reason.startsWith("not_ready")?[`\u23F8 ${Oi.join(", ")} \uC644\uB8CC \uB300\uAE30 (blocks)`]:[],Po=lt?an.get(ie.bead_id):void 0;return Po&&Po.length>0&&Mi.push(`\u2733 serial \uAD8C\uC7A5 \xB7 ${Po.join(", ")}\uC640`),{id:ie.bead_id,title:Ze.get(ie.bead_id)||ie.bead_id,reason:up.filter(Boolean).join(" \xB7 "),draggable:lt&&!or&&!Mo,done:F==="done",lane:F,seq:Rt?Be+1:void 0,worker_serial:hs,discard:or,stale_work:Mo,badges:[...Mi,...St?["\u23F8 REVISE \uD30C\uD0B9"]:[]],alert:!!St,revise_action:!!St,revise_enabled:!!St&&!or&&!ue.has(ie.bead_id),revise_title:St?St.notes_tail?`REVISE findings (\uC790\uC138\uD788\uB294 \uCE74\uB4DC \uD074\uB9AD \u2192 \uC774\uC288 \uC0C1\uC138):
-${St.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC601\uD558\uB294 \uCC98\uBD84 \uC138\uC158\uC744 \uB744\uC6C1\uB2C8\uB2E4":"",usage:F==="done"?Jt(p.attempts||{},ie.bead_id):null,work_ms:F==="done"?ru(p.attempts||{},ie.bead_id):null,done_at:F==="done"&&typeof ie.added_at=="number"?ie.added_at:void 0,exec_chips:lt?he(ie.bead_id):null,...Wr(ie.bead_id)}}),pn=p.attempts?Object.values(p.attempts):[],Co=new Set;for(let b of pn)b&&typeof b.resumed_from=="string"&&b.resumed_from.length>0&&Co.add(b.resumed_from);let ui=new Map;for(let b of pn)ui.set(b.bead_id,b.attempt_id);let ps=new Map;for(let b of pn)ps.set(b.attempt_id,b);function Ro(b){let F=new Set,ie=b;for(;ie&&!F.has(ie.attempt_id);){if(ie.conflict_resolution===!0)return!0;F.add(ie.attempt_id),ie=typeof ie.resumed_from=="string"&&ie.resumed_from.length>0&&ps.get(ie.resumed_from)||null}return!1}let fs=typeof p.declared_base=="string"?p.declared_base:null;function Xd(b){let F=null;for(let ie of pn)!ie||ie.bead_id!==b||Ro(ie)||(F===null||(typeof ie.started_at=="number"?ie.started_at:0)>=(typeof F.started_at=="number"?F.started_at:0))&&(F=ie);return F&&typeof F.target_base=="string"?F.target_base:null}let di=[],pi=[],Qd=sd(p),fi=b=>{let F=typeof b.session_id=="string"&&b.session_id.length>0,ie=Co.has(b.attempt_id);return{eligible:F&&!ie,reason:F?ie?"\uC774\uBBF8 \uC774\uC5B4\uBC1B\uC740 attempt (child attempt \uC874\uC7AC) \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00":null:"session_id \uC5C6\uB294 \uAD6C attempt \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00"}},sr=null;for(let b of pn){let F=b.status==="paused"&&!Co.has(b.attempt_id);if(b.status==="running"||F)pi.push({bead_id:b.bead_id,attempt_id:b.attempt_id,title:Ze.get(b.bead_id)||b.bead_id,runner:b.runner||null,model:b.model||null,effort:b.effort||null,speed:b.speed||null,continuation_mode:b.continuation_mode||null,started_at:typeof b.started_at=="number"?b.started_at:null,resumed_from:b.resumed_from||null,paused:F,conflict_resolution:Ro(b),base_exception:ri(fs,b.target_base),can_pause:typeof b.session_id=="string"&&b.session_id.length>0,discard:vr(ds,b.bead_id,{attempt_id:b.attempt_id}),usage:Jt(p.attempts||{},b.bead_id),rollup:at(b.bead_id),rollup_expanded:de.has(b.bead_id),exec_chips:K(b),...Wr(b.bead_id)});else if((b.status==="failed"||b.status==="orphaned")&&Qd(b)){let ie=fi(b);di.push({bead_id:b.bead_id,attempt_id:b.attempt_id,title:Ze.get(b.bead_id)||b.bead_id,runner:b.runner||null,model:b.model||null,effort:b.effort||null,speed:b.speed||null,continuation_mode:b.continuation_mode||null,started_at:typeof b.started_at=="number"?b.started_at:null,resumed_from:b.resumed_from||null,failed:!0,status:b.status,status_label:b.status==="orphaned"?"\uC911\uB2E8\uB428":"\uC2E4\uD328",discard:vr(ds,b.bead_id,{attempt_id:b.attempt_id}),resume_eligible:ie.eligible,resume_reason:ie.reason,conflict_resolution:Ro(b),base_exception:ri(fs,b.target_base),usage:Jt(p.attempts||{},b.bead_id),rollup:at(b.bead_id),rollup_expanded:de.has(b.bead_id),exec_chips:K(b),...Wr(b.bead_id)}),sr=b}}let _s=[...di,...pi].map(b=>{let F=ps.get(b.attempt_id),ie=F?.quickfix_landing;if(F?.quickfix_lane!==!0||!ie||typeof ie!="object")return b;let Be=typeof ie.reason=="string"&&ie.reason.length>0?ie.reason:null,lt=ss({bead_id:F.bead_id,merge_sha:ie.head_sha,cleanup_cursor:ie.cursor,cleanup_failed:Be?{step:ie.cursor,reason:Be}:null,repo_operations:Array.isArray(p.repo_operations)?p.repo_operations:[]});return lt?{...b,landing:lt}:b}),_i=null;if(sr){let b=fi(sr),F=sr.cause_detail;_i={bead_id:sr.bead_id,repo:sr.repo||"",reason:sr.cause||sr.status,cause_detail:F&&typeof F.reason=="string"?{reason:F.reason,command:typeof F.command=="string"?F.command:null}:null,resume_attempt_id:sr.attempt_id,resume_eligible:b.eligible,resume_reason:b.reason,discard:vr(ds,sr.bead_id,{attempt_id:sr.attempt_id})}}let mi=new Set(_s.map(b=>b.bead_id)),Io=Array.isArray(p.merge_queue)?p.merge_queue:[],gi=new Map,bi=new Map,hi=new Map,yi=new Map,vi=new Map;Io.forEach((b,F)=>{b&&typeof b.bead_id=="string"&&(gi.set(b.bead_id,F+1),bi.set(b.bead_id,b.resolution),hi.set(b.bead_id,b.continuation_action||null),yi.set(b.bead_id,b.head_review||null),vi.set(b.bead_id,b.authority||null))});let fn=p.merge_queue_state||{active:null,failures:{}},Jd=fn.failures||{},wi=fn.waiting&&typeof fn.waiting.bead_id=="string"&&typeof fn.waiting.reason=="string"?fn.waiting:null,ep=p.auto_merge_skips||{},ki=b=>{let F=ep[b];if(!F)return null;let ie=un[b],Be=ie&&ie.pr?ie.pr.head_sha:null;return Be&&Be===F.head_sha?F.reason||"":null},ms=new Map;for(let b of _s)b.failed!==!0&&b.conflict_resolution&&(b.paused?ms.has(b.bead_id)||ms.set(b.bead_id,"paused"):ms.set(b.bead_id,"running"));let $i=_s.filter(b=>!b.paused&&b.failed!==!0).length,xi=(p.workspace_info||{}).slots,Ai=typeof xi=="number"?xi:typeof p.slots=="number"?p.slots:Ao,tp=$i>Ai,gs=Zr(q),rp=(Array.isArray(p.done)?p.done.slice():[]).filter(b=>gs===void 0||typeof b.added_at!="number"||b.added_at>=gs).sort((b,F)=>(F.added_at||0)-(b.added_at||0)),Rn=To(rp,"done"),np=new Set((Array.isArray(p.done)?p.done:[]).map(b=>b?.bead_id).filter(b=>typeof b=="string")),Si=[],sp=u?.()||"";for(let b of _){let F=Jr(b.closed_at);if(typeof b.id!="string"||np.has(b.id)||F===null||gs!==void 0&&F<gs||typeof b.comment_count!="number"||b.comment_count<=0)continue;let ie=`${sp}\0${b.id}\0${String(b.updated_at)}\0${b.comment_count}`,Be=N.get(ie);Be===void 0&&r&&(N.set(ie,"pending"),Promise.resolve(r("get-comments",{id:b.id})).then(lt=>{let Rt=Array.isArray(lt)&&lt.some(St=>so(typeof St?.text=="string"?St.text:"")?.lane==="session");N.set(ie,Rt?"session":"not-session"),Ne()}).catch(()=>{N.set(ie,"failed"),Ne()})),Be==="session"&&Si.push({id:b.id,title:b.title||b.id,reason:"",draggable:!1,done:!0,lane:"done",selectable:!1,selected:!1,worker_serial:!1,badges:["\uC138\uC158 \uC791\uC5C5"],alert:!1,usage:null,work_ms:null,done_at:F,created_at:b.created_at,updated_at:b.updated_at})}Rn.push(...Si),Rn.sort((b,F)=>(F.done_at||0)-(b.done_at||0));let bs={};for(let b of xr)bs[b]=0;let Ei=!1,Ti=0,Lo=0,Ci=0;for(let b of Rn){let F=b.usage;if(F&&typeof F=="object"){let ie=!1;for(let Be of xr)Number.isFinite(F[Be])&&(bs[Be]+=F[Be],Ei=!0,ie=!0);ie&&(Lo+=1,Number.isFinite(F.total_cost_usd)&&(Ti+=F.total_cost_usd,Ci+=1))}}Lo>0&&Ci===Lo&&(bs.total_cost_usd=Ti);let Ri=Rn.map(b=>b.usage).filter(b=>b&&typeof b=="object"&&b.providers),op=Ri.length>0?Ot(Us(Ri)):Ei?lr(bs):null,ap=p.lane_states&&typeof p.lane_states=="object"&&!Array.isArray(p.lane_states)?p.lane_states:{},ip=Array.isArray(p.serial_lanes)?p.serial_lanes:[],Ii=b=>{if(zr.some(Be=>Be.bead_id===b))return"PR \uB300\uAE30 \xB7 \uC810\uC720";let F=pn.filter(Be=>Be&&Be.bead_id===b),ie=F.length>0?F[F.length-1].status:null;return ie==="failed"||ie==="orphaned"?"\uC2E4\uD328 \xB7 \uC810\uC720 \uC720\uC9C0":ie==="paused"?"\uC77C\uC2DC\uC815\uC9C0 \xB7 \uC810\uC720":"\uC2E4\uD589 \uC911 \xB7 \uC810\uC720"},Li=ip.filter(b=>b&&typeof b.id=="string"&&Array.isArray(b.entries)).map((b,F)=>{let ie=ap[b.id]||{},Be=new Map((Array.isArray(ie.corrections)?ie.corrections:[]).filter(gt=>gt&&typeof gt.bead_id=="string"&&typeof gt.after=="string").map(gt=>[gt.bead_id,gt.after])),lt=To(b.entries.filter(gt=>!mi.has(gt.bead_id)),b.id).map(gt=>Be.has(gt.id)?{...gt,badges:[`\u{1F517} ${Be.get(gt.id)} \uB4A4 (blocks \uC790\uB3D9)`,...gt.badges]}:gt),Rt=Array.isArray(ie.occupied_by)?ie.occupied_by.filter(gt=>typeof gt=="string"):[],St=Rt.map(gt=>({id:gt,title:Ze.get(gt)||gt,draggable:!1,lane:b.id,ghost:!0,badges:[Ii(gt)]}));return{id:b.id,index:F+1,rows:[...St,...lt],occupied:Rt.length>0,badge:Rt.length>0?Ii(Rt[0]):"\uB300\uAE30",cycle:ie.cycle===!0}}),lp=typeof p.serial_lane_count=="number"?p.serial_lane_count:Li.length;return{queue:p,idToTitle:Ze,candidates:Yd,candidate_hidden:{blocked:Eo.hidden_blocked,spec:Eo.hidden_spec},running:_s,live_count:$i,slots:Ai,over_cap:tp,failure:_i,waiting:To(dn.filter(b=>!mi.has(b.bead_id)),"queue"),serial_lanes:Li,serial_lane_count:lp,pr_wait:zr.map(b=>Cb(b.bead_id,Ze.get(b.bead_id)||b.bead_id,un,Le[b.bead_id]||null,Jt(p.attempts||{},b.bead_id),us[b.bead_id]||(E.has(b.bead_id)||Y.has(b.bead_id)?{activity:null,merge_progress:{step:"merging"}}:null),ms.get(b.bead_id)||null,b.external===!0,{position:gi.get(b.bead_id)||0,active:fn.active===b.bead_id,failure:Jd[b.bead_id]||null,waiting:wi?.bead_id===b.bead_id?wi.reason:null,resolution:bi.get(b.bead_id),continuation_action:hi.get(b.bead_id),head_review:yi.get(b.bead_id)||null,authority:vi.get(b.bead_id)||null},b.wt_present!==!1,p.auto_merge===!0?ki(b.bead_id):null,ri(fs,Xd(b.bead_id)),p.completion_status&&typeof p.completion_status=="object"&&!Array.isArray(p.completion_status)&&p.completion_status[b.bead_id]||null,p.discard_operations&&typeof p.discard_operations=="object"&&!Array.isArray(p.discard_operations)?p.discard_operations:{},ps.get(ui.get(b.bead_id)||"")?.worker_serial===!0,p.auto_merge===!0,{merge_sha:b.merge_sha,cleanup_cursor:b.cleanup_cursor,repo_operations:Array.isArray(p.repo_operations)?p.repo_operations:[]})).map(b=>({...b,...Wr(b.id)})),merge_queue_length:Io.length,merge_queue_running:Io.length>0,auto_excluded:zr.map(b=>b.bead_id).filter(b=>ki(b)!==null),declared_base:fs,done:Rn,token_total:op,cleanup_failures:vt,repo_operations:Array.isArray(p.repo_operations)?p.repo_operations:[]}}function J(){let v=!!o?.get()?.job,B=!v&&o?.isPending?.()===!0,_=v?"\uBD84\uC11D \uC911":B?"\uC900\uBE44 \uC911":"";return i`<button
+  </section>`}function Rd(e,t={}){let r=null;function n(){if(r===null){Ve(l``,e);return}let a=ih(r.operations,r.cleanup_failures,{expanded:r.expanded});Ve(ph({events:a.visible,hidden:a.hidden,expanded:r.expanded,repo:r.repo}),e)}e.addEventListener("click",a=>{let i=a.target;if(i?.closest?.('[data-seam="repo-ops-close"]')){o();return}i?.closest?.('[data-seam="repo-ops-more"]')&&r&&(r.expanded=!r.expanded,n())});function s(a){r={operations:a.operations,cleanup_failures:a.cleanup_failures,repo:a.repo||"",expanded:!1},n()}function o(){r!==null&&(r=null,n(),t.onClose&&t.onClose())}return{open:s,close:o,isOpen:()=>r!==null,refresh(a){r&&(r={operations:a.operations,cleanup_failures:a.cleanup_failures,repo:a.repo||"",expanded:r.expanded},n())}}}var fh=Ct("views:worker"),_h="tab:worker:ready",mh="tab:worker:blocked",gh="tab:worker:in-progress",hh="tab:worker:resolved",bh="tab:worker:closed",Lo=1,Id=5;function Ld(e){return lo(e).path.length>0}var yh=new Set(["quick_fix","spec_backed","full_plan"]);function Od(e){return typeof e=="string"&&yh.has(e)}var Nd="beads-ui.worker.candidate-filter",ai={show_blocked:!1,spec:"all"};function vh(){try{let e=window.localStorage.getItem(Nd);if(!e)return{...ai};let t=JSON.parse(e);if(!t||typeof t!="object")return{...ai};let r=t.spec;return{show_blocked:t.show_blocked===!0,spec:r==="with"||r==="without"?r:"all"}}catch{return{...ai}}}function wh(e){try{window.localStorage.setItem(Nd,JSON.stringify(e))}catch{}}function kh(e,t){let r=i=>t.show_blocked||!i.blocked,n=i=>t.spec==="all"||(t.spec==="with"?i.has_spec:!i.has_spec),s=[],o=0,a=0;for(let i of e){let c=r(i),u=n(i);c&&u?s.push(i):!c&&u?o+=1:c&&!u&&(a+=1)}return{visible:s,hidden_blocked:o,hidden_spec:a}}var $h=[{value:"all",label:"\uC804\uCCB4"},{value:"with",label:"spec \uC788\uC74C"},{value:"without",label:"spec \uC5C6\uC74C"}],qd="bdui.worker.candidate_sort",xh=[{value:"spec",label:"spec \uC6B0\uC120"},{value:"board",label:"Board \uC21C\uC11C"},{value:"created",label:"\uCD5C\uC2E0 \uC0DD\uC131\uC21C"}],Oo="spec";function Ah(){try{let e=window.localStorage.getItem(qd);return e==="board"||e==="created"||e==="spec"?e:Oo}catch{return Oo}}function Sh(e){try{window.localStorage.setItem(qd,e)}catch{}}var Fd="bdui.worker.done-range";function Eh(){try{let e=window.localStorage.getItem(Fd);return ar(e)?e:er}catch{return er}}function Th(e){try{window.localStorage.setItem(Fd,e)}catch{}}var Ch="(max-width: 640px)",jd="beads-ui.worker.lane-collapsed",gs={queue:!0,done:!0};function Rh(){try{let e=window.localStorage.getItem(jd);if(!e)return{...gs};let t=JSON.parse(e);return!t||typeof t!="object"?{...gs}:{queue:typeof t.queue=="boolean"?t.queue:gs.queue,done:typeof t.done=="boolean"?t.done:gs.done}}catch{return{...gs}}}function Ih(e){try{window.localStorage.setItem(jd,JSON.stringify(e))}catch{}}function Pd(e){let t=Array.isArray(e)&&e.length>0?e[0]:null;if(!t)return"";let r=typeof t.title=="string"?t.title:t.id||"";return r.length>22?`${r.slice(0,22)}\u2026`:r}function Lh(e,t,r){let n=Array.isArray(e)?e.slice():[];return t==="created"?n.sort(Qr):(n.sort(Ms(r)),t==="board"?n:[...n.filter(Ld),...n.filter(s=>!Ld(s))])}function Oh(e){let t=e&&e.parent;return(typeof t=="string"?t.length>0:!!(t&&t.id))||/\.\d+$/.test(e&&e.id||"")}function Ph(e){let t=e?.blocked_info;if(t&&typeof t=="object"){let s=Array.isArray(t.blockers)?t.blockers.filter(o=>typeof o=="string"&&o.length>0):[];return s.length>0?`\u{1F512} ${s.join(", ")}`:"\u{1F512} blocked"}let n=(Array.isArray(e?.dependencies)?e.dependencies:[]).map(s=>{if(typeof s=="string")return s;if(!s||typeof s!="object")return"";let o=s.type??s.dependency_type;return o!==void 0&&o!=="blocks"?"":s.depends_on_id||s.id||""}).filter(Boolean);return n.length>0?`\u{1F512} ${n.join(", ")}`:"\u{1F512} blocked"}function Md(e){switch(e){case"not_in_pr_wait":return"PR \uB300\uAE30 \uC0C1\uD0DC \uB3D9\uAE30\uD654 \uC2E4\uD328";case"resolution_round_cap":return"\uCDA9\uB3CC \uD574\uC18C 2\uD68C \uCD08\uACFC";case"resolution_timeout":return"\uCDA9\uB3CC \uD574\uC18C \uB300\uAE30 \uC2DC\uAC04 \uCD08\uACFC";case"resolution_refused":return"\uD574\uC18C \uC138\uC158 \uB514\uC2A4\uD328\uCE58 \uAC70\uBD80";case"worktree_missing":return"\uC6CC\uD06C\uD2B8\uB9AC \uC5C6\uC74C \u2014 \uC138\uC158\uC5D0\uC11C \uD574\uC18C \uD544\uC694";case"merge_unconfirmed_timeout":return"\uBA38\uC9C0 \uD655\uC778 \uC2DC\uAC04 \uCD08\uACFC";case"pr_closed_unmerged":return"PR \uB2EB\uD798";case"merge_error":return"\uBA38\uC9C0 \uC624\uB958";case"spec_id_missing":return"\uC2A4\uD399 ID \uAE30\uB85D \uC5C6\uC74C";default:return e}}function Mh(e){if(e==="lane_occupied")return"\uC2E4\uD589 \uB808\uC778\uC5D0 \uB0A8\uC544 \uC788\uC5B4 \uBA38\uC9C0 \uB300\uC0C1\uC774 \uC544\uB2D9\uB2C8\uB2E4";let t="\uBA38\uC9C0 \uD050\uC5D0 \uB123\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 (\uC774\uBBF8 \uB300\uAE30 \uC911\uC774\uAC70\uB098 \uB300\uC0C1 \uC544\uB2D8)";return typeof e=="string"&&e.length>0?`${t}: ${e}`:t}function Dh(e,t=null){if(e==="worker_sessions_busy")return"\uD574\uC18C \uB300\uAE30 \u2014 \uC2E4\uD589 \uC2AC\uB86F \uB300\uAE30 \uC911";if(typeof e!="string"||!e.startsWith("completion_waiting:"))return null;let r=e.slice(19);if(r.length===0)return null;switch(r){case"gating":{let n=t?.repair_sessions_used;return typeof n=="number"&&n>0?"\uC218\uC815 \uACB0\uACFC \uC7AC\uD655\uC778 \uC911":"\uBA38\uC9C0 \uC870\uAC74 \uD655\uC778 \uC911"}case"repairing":return"\uC790\uB3D9 \uC218\uC815 \uC911";case"waiting_repair_pr":return"\uC218\uC815 PR \uB300\uAE30 \uC911";case"merging":return"\uBA38\uC9C0 \uC911";case"cleaning":return"\uB9C8\uBB34\uB9AC \uC911";case"paused":return"\uC790\uB3D9 \uC9C4\uD589 \uC77C\uC2DC\uC815\uC9C0";case"needs_human":return"\uD655\uC778 \uD544\uC694";default:return null}}function Nh(e){if(!e||typeof e!="object")return null;switch(e.state){case"waiting":return{badge:"\uCDA9\uB3CC \uD574\uC18C \uC911",live:!0};case"yielded":return{badge:"\uCDA9\uB3CC \uD574\uC18C \uACC4\uC18D \uC911 \xB7 \uC644\uB8CC \uD6C4 \uC6B0\uC120 \uBA38\uC9C0",live:!0};case"ready":return{badge:"\uCDA9\uB3CC \uD574\uC18C \uC644\uB8CC \xB7 \uC7AC\uAC80\uC99D \uB300\uAE30",live:!1};default:return null}}function qh(e){if(!e||typeof e!="object")return null;switch(e.state){case"pending":return{badge:"implementation review \uB300\uAE30",live:!1,alert:!1};case"reviewing":return{badge:"implementation review \uC911",live:!0,alert:!1};case"revising":return{badge:"review \uC218\uC815 \uC911 \xB7 1\uD68C",live:!0,alert:!1};case"failed":{let r=(typeof e.failure_reason=="string"?e.failure_reason:"").replace(/[\u0000-\u001f\u007f]/g," ").slice(0,120);return{badge:r.trim().length>0?`review \uC790\uB3D9 \uC9C4\uD589 \uC2E4\uD328: ${r.trim()}`:"review \uC790\uB3D9 \uC9C4\uD589 \uC2E4\uD328",live:!1,alert:!0}}default:return null}}function ii(e,t){return typeof e!="string"||e.length===0||typeof t!="string"||t.length===0||t===e?null:`\u2192 ${t}`}function Fh(e){if(!e||typeof e!="object")return null;let t=Number.isInteger(e.repair_sessions_used)?Math.max(0,e.repair_sessions_used):0,r=Number.isInteger(e.repair_session_cap)?Math.max(0,e.repair_session_cap):0,n=e.current_repair&&typeof e.current_repair=="object"?e.current_repair:null,s=n&&typeof n.pr_number=="number"?n.pr_number:null,o="";switch(e.phase){case"gating":o=t>0?"\uC218\uC815 \uACB0\uACFC \uC7AC\uD655\uC778 \uC911":"\uBA38\uC9C0 \uC870\uAC74 \uD655\uC778 \uC911";break;case"repairing":o="\uC790\uB3D9 \uC218\uC815 \uC911";break;case"waiting_repair_pr":o=s?`\uC218\uC815 PR #${s} \uB300\uAE30 \uC911`:"\uC218\uC815 PR \uB300\uAE30 \uC911";break;case"merging":o=e.subject_role==="repair"?s?`\uC218\uC815 PR #${s} \uBA38\uC9C0 \uC911`:"\uC218\uC815 PR \uBA38\uC9C0 \uC911":"\uBA38\uC9C0 \uC911";break;case"cleaning":o="\uB9C8\uBB34\uB9AC \uC911";break;case"paused":o="\uC790\uB3D9 \uC9C4\uD589 \uC77C\uC2DC\uC815\uC9C0";break;case"needs_human":o="\uD655\uC778 \uD544\uC694";break;case"completed":return null;default:return null}let a=[o,`\uC790\uB3D9 \uC218\uC815 \uD69F\uC218 ${t}/${r}`];return e.head_sha&&a.push(`head ${e.head_sha}`),e.base_sha&&a.push(`base ${e.base_sha}`),(e.failure_stage||e.failure_reason)&&a.push(`${e.failure_stage||"failure"} \xB7 ${e.failure_reason||"\uC6D0\uC778 \uBBF8\uC0C1"}`),e.active_attempt_id&&a.push(`attempt ${e.active_attempt_id}`),n&&typeof n.bead_id=="string"&&a.push(`repair ${n.bead_id}`),e.evidence&&a.push(e.evidence),e.log_path&&a.push(e.log_path),{badge:o,title:a.join(`
+`),alert:e.phase==="needs_human",lock_actions:e.phase!=="paused"&&e.phase!=="needs_human",repair_pr_url:n&&typeof n.pr_url=="string"?n.pr_url:"",repair_pr_number:s}}function Dd(e){if(!e||typeof e!="object")return[];let t=e.blocking_codes;return Array.isArray(t)?t.filter(r=>typeof r=="string"&&r.length>0):[]}function jh(e){let t=e.queue_failure?`\uBA38\uC9C0 \uC2E4\uD328 \uC6D0\uBB38: ${e.queue_failure}`:e.auto_skip?`\uC790\uB3D9 \uC81C\uC678 \uC6D0\uBB38: ${e.auto_skip}`:"",r=(n,s={})=>{let o=[s.title||"",t].filter(Boolean);return{label:n,title:o.join(`
+`),live:s.live===!0,alert:s.alert===!0}};return e.continuation_required?r("\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD \uD544\uC694",{alert:!0}):e.merge_step?e.gate?.tier==="merged"?r("\uBA38\uC9C0\uB428",{title:e.merge_step.label,alert:e.merge_step.failed===!0}):r("\uBA38\uC9C0 \uC911",{title:e.merge_step.label,live:!0}):e.conflict_badge?r(e.conflict_badge,{live:e.conflict_live===!0}):e.head_review&&e.head_review.state!=="failed"?r("\uB9AC\uBDF0 \uC9C4\uD589 \uC911",{title:e.head_review.badge,live:e.head_review.live===!0}):e.recovery?.lock_actions?r(e.recovery.badge,{title:e.recovery.title,live:!0}):e.cleanup_failed?r(e.cleanup_label?`\uC815\uB9AC \uBA48\uCDA4 \xB7 ${e.cleanup_label}`:"\uC815\uB9AC \uBA48\uCDA4",{title:e.cleanup_failed.reason||"",alert:!0}):e.base_exception?r("\uB2E4\uB978 base \uB300\uC0C1",{title:e.base_exception,alert:!0}):e.conflicting?r("\uCDA9\uB3CC \uD574\uACB0 \uD544\uC694",{alert:!0}):e.gate?.reason==="base_behind"?r("base \uAC31\uC2E0 \uD544\uC694",{alert:!0}):e.gate?.reason==="review_receipt_missing"||e.gate?.reason==="review_receipt_stale"?r("\uCD5C\uC885 \uBCC0\uACBD \uB9AC\uBDF0 \uD544\uC694",{title:e.gate.reason==="review_receipt_stale"?"\uB9AC\uBDF0 \uC601\uC218\uC99D\uC774 \uD604\uC7AC head\uC758 \uC870\uC0C1\uC774 \uC544\uB2C8\uAC70\uB098 \uC870\uC0C1 \uD655\uC778\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4 \u2014 \uD788\uC2A4\uD1A0\uB9AC \uC7AC\uC791\uC131\xB7\uBE0C\uB79C\uCE58 \uB9AC\uC14B \uBCF5\uAD6C \uACBD\uB85C\uB85C, \uAD00\uCE21\uB41C \uCD5C\uC885 head \uC804\uCCB4\uB97C \uB2E4\uC2DC \uB9AC\uBDF0\uD569\uB2C8\uB2E4":"\uB9AC\uBDF0 \uC601\uC218\uC99D\uC774 \uC5C6\uC2B5\uB2C8\uB2E4 \u2014 \uAD00\uCE21\uB41C \uCD5C\uC885 head \uC804\uCCB4\uB97C \uB9AC\uBDF0\uD574\uC57C \uBA38\uC9C0\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4",alert:!0}):e.gate?.reason==="spec_id_missing"?r("\uC2A4\uD399 ID \uB204\uB77D",{title:"native spec_id \uBBF8\uAE30\uB85D \u2014 bd update --spec-id \uD544\uC694",alert:!0}):e.gate?.reason==="review_receipt_invalid"?r("\uB9AC\uBDF0 \uAE30\uB85D \uC624\uB958",{title:"review_receipt_invalid",alert:!0}):Dd(e.receipt_check).length>0?r("\uC601\uC218\uC99D \uD655\uC778 \uD544\uC694",{title:`\uC131\uB9BD\uD558\uC9C0 \uC54A\uB294 \uC2E4\uD589 \uC601\uC218\uC99D \u2014 ${Dd(e.receipt_check).join(", ")}`,alert:!0}):e.head_review?.state==="failed"?r("\uB9AC\uBDF0 \uC2E4\uD328",{title:e.head_review.failure_reason||"",alert:!0}):e.recovery?r(e.recovery.badge,{title:e.recovery.title,alert:!0}):e.gate?.tier==="verify"&&e.gate.gate_badge==="\uAC80\uC99D \uC2E4\uD328"?r("\uAC80\uC99D \uC2E4\uD328",{title:e.gate.reason||"",alert:!0}):e.queue_failure?r(`\uBA38\uC9C0 \uC2E4\uD328 \u2014 ${Md(e.queue_failure)}`,{title:e.queue_failure,alert:!0}):e.auto_skip?r(`\uC790\uB3D9 \uC81C\uC678 \u2014 ${Md(e.auto_skip)}`,{title:e.auto_skip,alert:!0}):e.queued&&!e.queue_active?r(`\uBA38\uC9C0 \uB300\uAE30 #${e.queue_position}`):e.gate?.enabled===!0?r("\uBA38\uC9C0 \uAC00\uB2A5"):e.gate?.tier==="merged"?r("\uBA38\uC9C0\uB428"):e.gate?.tier==="closed_unmerged"?r("\uB2EB\uD798",{alert:!0}):e.activity?r("\uD655\uC778 \uC911",{live:!0}):e.gate?.tier==="undecidable"||e.gate?.reason==="mergeability_unknown"?r("\uC0C1\uD0DC \uD655\uC778 \uC2E4\uD328",{title:e.gate.reason||"",alert:!0}):e.gate?.tier==="unobserved"||e.gate?.tier==="verify"||e.gate?.gate_badge==="\uAD00\uCE21 \uB300\uAE30"?r("\uD655\uC778 \uC911"):e.gate?.gate_badge?r(e.gate.gate_badge,{title:e.gate.reason||"",alert:e.gate.enabled!==!0}):null}function Bh(e,t,r,n,s=null,o=null,a=null,i=!1,c=null,u=!0,d=null,p=null,m=null,v={},C=!1,F=!1,H={}){let re=!!c&&c.position>0,V=!!c?.continuation_action&&c.continuation_action.continuation===null,q=!!c&&c.active===!0,O=c&&c.failure||null,P=Dh(c?c.waiting:null,m),I=r[e]||null,$=I&&I.gate?I.gate:null,M=I&&I.pr?I.pr:null,K=Fh(m),pe=Nh(c?c.resolution:null),_e=qh(c?c.head_review:null),me=c&&c.head_review||null,ae=c&&c.authority||null,Ie=!!me&&["pending","reviewing","revising"].includes(me.state),Te=re&&!q&&(me?.state==="failed"||!ae||ae.source==="automatic"&&!F),ne=a==="paused"?"\uCDA9\uB3CC \uD574\uC18C \uC77C\uC2DC\uC815\uC9C0":pe?pe.badge:a==="running"?"\uCDA9\uB3CC \uD574\uC18C \uC911":P,se=!!$&&$.base_badge==="\uCDA9\uB3CC",we=!!$&&$.enabled===!0,A=_s({bead_id:e,merge_sha:H.merge_sha,cleanup_cursor:H.cleanup_cursor,merge_progress:o&&o.merge_progress?o.merge_progress:null,cleanup_failed:n,repo_operations:H.repo_operations}),ue=Io(A),E=!!n&&["child_sweep","branch_cleanup","parent_close"].includes(n.step)&&!!$&&$.tier==="merged",D=i&&!!n&&!!$&&$.tier==="merged",ce=Te&&(we||se||$?.reason==="base_behind"||$?.reason==="review_receipt_missing"||$?.reason==="review_receipt_stale"||E||D),$e=i&&se&&u===!1,ge=yr(v,e,{external:i,merge_active:q||A?.step==="merge",merge_queued:re,conflict_active:!!a,cleanup_active:ue,merged:!!n||$?.tier==="merged"}),Oe=!!ge.operation,_t=!E&&!!n&&n.step==="repo_operations",He=jh({continuation_required:V,merge_step:A,conflict_badge:ne,conflict_live:pe?.live===!0||a==="running",head_review:me&&_e?{..._e,state:me.state,failure_reason:me.failure_reason}:null,recovery:K,cleanup_failed:n,cleanup_label:n?on(n.step):null,base_exception:p,conflicting:se,gate:$,receipt_check:I&&I.receipt_check?I.receipt_check:null,queue_failure:O,auto_skip:d,queued:re,queue_active:q,queue_position:c?c.position:0,activity:ne?null:o&&o.activity||null}),pt=He?.live===!0&&He.title?l`<span title=${He.title}>${He.label}</span>`:He?.label||null;return{id:e,title:i?l`${t}<span class="muted"> · 세션</span>`:t,reason:n&&A?.active!==!0?Ro(n.step):"PR \uB300\uAE30",draggable:!1,done:!0,lane:"pr_wait",worker_serial:C,external:i,pr_number:M&&typeof M.number=="number"?M.number:null,pr_url:M&&typeof M.url=="string"?M.url:"",completion_badge:He?.live!==!0&&He?.title?He.label:null,completion_title:He?.title||"",completion_repair_pr_url:K?K.repair_pr_url:"",completion_repair_pr_number:K?K.repair_pr_number:null,badges:pt?[pt]:[],live_badge:He?.live===!0?pt:null,usage:s,alert:He?.alert===!0,merge_action:$?.tier==="merged"&&!E&&!D||_t?!1:!re||V||Te,timeline_action:_t,cancel_action:re&&!V,cancel_enabled:(!q||Ie)&&!(K&&K.lock_actions),cancel_title:K&&K.lock_actions?`${K.badge} \u2014 \uC911\uB2E8\uD558\uB824\uBA74 \uC0C1\uB2E8 \uC790\uB3D9 \uBA38\uC9C0 \uC911\uB2E8\uC744 \uC0AC\uC6A9\uD558\uC138\uC694`:q&&!Ie?"\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uCDE8\uC18C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4":Ie?"review \uC9C4\uD589\uC744 \uCDE8\uC18C\uD558\uACE0 \uBA38\uC9C0 \uAD8C\uD55C\uC744 \uD3D0\uAE30\uD569\uB2C8\uB2E4":"\uBA38\uC9C0 \uD050\uC5D0\uC11C \uC774 \uD56D\uBAA9\uC744 \uBE8D\uB2C8\uB2E4 (\uB2E4\uC2DC [\uBA38\uC9C0]\uB85C \uB123\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4)",discard:ge,discard_action:ge.action,merge_step:A,discard_enabled:ge.enabled,discard_title:ge.title,merge_enabled:!A&&!a&&!Oe&&!p&&!(K&&K.lock_actions)&&!$e&&!_t&&(we||se||$?.reason==="base_behind"||$?.reason==="review_receipt_missing"||$?.reason==="review_receipt_stale"||E||D||ce),merge_label:V?"\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD":E||D?"\uC815\uB9AC \uC7AC\uAC1C":se&&!A&&!E?"\uCDA9\uB3CC \uD574\uC18C \uD6C4 \uBA38\uC9C0":$?.reason==="base_behind"?"base \uAC31\uC2E0 \uD6C4 \uBA38\uC9C0":$?.reason==="review_receipt_missing"||$?.reason==="review_receipt_stale"?"\uB9AC\uBDF0 \uD6C4 \uBA38\uC9C0":Te?"\uB2E4\uC2DC \uBA38\uC9C0":void 0,merge_title:Oe?ge.error?`\uD3D0\uAE30 \uC2E4\uD328: ${ge.error} \u2014 [\uC7AC\uC2DC\uB3C4]\uD558\uAC70\uB098 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC138\uC694`:`\uD3D0\uAE30 \uC9C4\uD589 \uC911 \u2014 ${ge.progress||"\uC644\uB8CC\uB97C \uAE30\uB2E4\uB9AC\uC138\uC694"}`:V?"\uC2E4\uD589 provider\uAC00 \uBCC0\uACBD\uB418\uC5C8\uC2B5\uB2C8\uB2E4 \u2014 \uC774\uC5B4\uAC08 \uBC29\uC2DD\uC744 \uC120\uD0DD\uD558\uC138\uC694":A?`\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 ${A.label}`:D?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uC2E4\uD328\uD55C \uC815\uB9AC\uB97C \uC7AC\uAC1C\uD569\uB2C8\uB2E4":$e?"\uC6CC\uD06C\uD2B8\uB9AC \uC5C6\uC74C \u2014 \uC138\uC158\uC5D0\uC11C \uC9C1\uC811 \uD574\uC18C\uD558\uC138\uC694":a==="running"?"\uCDA9\uB3CC \uD574\uC18C \uC138\uC158 \uC2E4\uD589 \uC911 \u2014 \uC644\uB8CC \uD6C4 \uB2E4\uC2DC \uBA38\uC9C0\uD558\uC138\uC694":a==="paused"?"\uCDA9\uB3CC \uD574\uC18C \uC138\uC158 \uC77C\uC2DC\uC815\uC9C0 \u2014 \uC7AC\uAC1C \uD6C4 \uC644\uB8CC\uB418\uBA74 \uBA38\uC9C0\uD558\uC138\uC694":E?"\uBA38\uC9C0 \uC644\uB8CC \u2014 \uD074\uB9AD\uD558\uBA74 \uB0A8\uC740 \uC815\uB9AC\uB97C \uC2E4\uD328 \uB2E8\uACC4\uBD80\uD130 \uC7AC\uAC1C\uD569\uB2C8\uB2E4":se?"\uCDA9\uB3CC \u2014 \uD050\uC5D0 \uB123\uC73C\uBA74 \uD574\uC18C \uC138\uC158\uC744 \uB744\uC6B0\uACE0 \uC644\uB8CC \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC7AC\uBA38\uC9C0\uD569\uB2C8\uB2E4":$?.reason==="base_behind"?"base\uB97C \uC790\uB3D9 \uAC31\uC2E0\uD55C \uB4A4 \uBA38\uC9C0\uD569\uB2C8\uB2E4":$?.reason==="review_receipt_missing"||$?.reason==="review_receipt_stale"?"\uC790\uB3D9 \uB9AC\uBDF0 \uC138\uC158 \uD6C4 \uC2B9\uC778\uB418\uBA74 \uBA38\uC9C0\uD569\uB2C8\uB2E4":$?.reason==="spec_id_missing"?"native spec_id \uBBF8\uAE30\uB85D \u2014 bd update --spec-id\uB85C \uAE30\uB85D\uD55C \uB4A4 \uB2E4\uC2DC \uBA38\uC9C0\uD558\uC138\uC694":we?`\uBA38\uC9C0 (${$.gate_badge}) \u2014 \uD050\uC5D0 \uB123\uC5B4 \uC21C\uC11C\uB300\uB85C \uBA38\uC9C0\uD569\uB2C8\uB2E4 (\uCC28\uB840\uAC00 \uB418\uBA74 \uB2E4\uC2DC \uD655\uC778)`:$&&$.tier==="merged"?"\uBA38\uC9C0\uB428 \u2014 \uBA38\uC9C0 \uD6C4 \uC815\uB9AC \uC9C4\uD589 \uC911":`\uBA38\uC9C0 \uBD88\uAC00: ${$&&$.reason||"\uAD00\uCE21 \uB300\uAE30"}`}}function li(e,t={}){let{transport:r,issueStores:n,queueStore:s,analysisStore:o,sessionLogStore:a,uiOrderStore:i,gotoIssue:c,getWorkspacePath:u,doneRange:d,onDoneRangeChange:p}=t,m=n?Ns(n,i):null,v=Bs({transport:r,uiOrderStore:i}),C=null,F=[],H=vh(),re=null,V=Ah(),q=ar(d)?d:Eh(),O=new Map;function P(){let f=Rr.find(w=>w.value===q);return f?f.label:"\uC624\uB298"}let I=Rh(),$=!1,M=new Set,K=new Set,pe=new Set,_e=new Set,me=new Set,ae={},Ie=null,Te=0,ne=null,se=[];function we(f){return Ie===f?ae:{}}async function A(){if(!r)return;let f=u?.()||"";if(Ie===f||ne&&ne.key===f&&ne.generation===Te)return;let w=++Te;ne={key:f,generation:w};let G=null;try{G=await Promise.resolve(r("get-session-defaults",{}))}catch(_){if(w!==Te)return;ne=null,fh("get-session-defaults failed: %o",_),j();return}w===Te&&(ae=G&&typeof G.values=="object"&&G.values!==null?{...G.values}:{},Ie=f,ne=null,j())}function ue(){Ie=null,Te+=1,A()}let E=document.createElement("div");E.className="worker-console";let D=document.createElement("div");D.className="worker-top";let ce=document.createElement("div");ce.className="worker-drawer-overlay",ce.hidden=!0;let $e=document.createElement("div");$e.className="worker-drawer-overlay__backdrop";let ge=document.createElement("div");ge.className="worker-drawer-host";let Oe=document.createElement("div");Oe.className="worker-drawer-host",Oe.hidden=!0,ce.append($e,ge,Oe);let _t=document.createElement("div");_t.className="worker-lanes-host",E.append(D,ce,_t),e.appendChild(E);let He=null,pt=null,tt=Tn(ge,{transport:r,sessionLogStore:a,onClose:()=>{He=null,pt=null,ce.hidden=!0,j()}}),Y=Rd(Oe,{onClose:()=>{Oe.hidden=!0,ce.hidden=!0,j()}}),Z=kd({getWorkspacePath:u||(()=>"")}),Se=u&&u()||"",Ze=$d({queueStore:s,transport:r,onChanged:()=>j(),onOpenScript:(f,w)=>{Z.open(f,w)}}),je=o?bd(E,{queueStore:s,analysisStore:o,transport:r,getWorkspacePath:u,onOpenTranscript:(f,w)=>Mt(f,w)}):null;function rt(){return s&&s.get()||{revision:0,auto_advance:!1,auto_merge:!1,slots:Lo,queue:[],serial_lanes:[],serial_lane_count:0,pr_wait:[],done:[]}}function Qe(){let f=rt(),w=typeof f.serial_lane_count=="number"&&Number.isInteger(f.serial_lane_count)&&f.serial_lane_count>0?Math.min(f.serial_lane_count,5):0,G=Array.isArray(f.serial_lanes)?f.serial_lanes:[],_=[];for(let le of G){if(_.length>=w)break;!le||typeof le.id!="string"||!/^s[1-5]$/.test(le.id)||!Array.isArray(le.entries)||_.push({id:le.id,label:`\uC9C1\uB82C ${le.id.slice(1)}`,count:le.entries.length})}return _.length===0?null:[{id:"parallel",label:"\uBCD1\uB82C",count:(Array.isArray(f.queue)?f.queue:[]).length},..._]}function yt(f){if(!re||!f.some(G=>G.id===re))return null;let w=Qe();return w?{bead_id:re,lanes:w}:null}function Le(){let f=rt();return typeof f.revision=="number"?f.revision:0}function T(f){f&&f.queue&&s&&s.set(f.queue)}function Q(){let f=rt().queue;return Array.isArray(f)?f.length:0}async function Ee(f,w,G){if(!r)return;let _=()=>({bead_id:f,...w==="parallel"?{}:{lane:w},...G===void 0?{}:{index:G},expected_revision:Le()}),b=await r("worker-queue-place",_());T(b),b&&b.conflict&&await r("worker-queue-place",_()).then(T)}async function ee(f,w,G){if(!r)return;let _=()=>({bead_id:f,...w==="parallel"?{}:{lane:w},to_index:G,expected_revision:Le()}),b=await r("worker-queue-reorder",_());T(b),b&&b.conflict&&await r("worker-queue-reorder",_()).then(T)}async function Ne(f){if(!r)return;let w=await r("worker-queue-remove",{bead_id:f,expected_revision:Le()});T(w),w&&w.conflict&&await r("worker-queue-remove",{bead_id:f,expected_revision:Le()}).then(T)}async function et(f){if(!r||!f)return;let w=await r("worker-attempt-pause",{attempt_id:f});w&&w.paused===!1&&w.reason&&he(`\uC77C\uC2DC\uC815\uC9C0 \uAC70\uBD80: ${w.reason}`,"error",2400)}async function st(f){if(!r||!f)return;let w=await xn();if(w===null)return;let G=async(b={})=>await r("worker-attempt-resume",{attempt_id:f,expected_revision:Le(),...w!==""?{instructions:w}:{},...b}),_=await G();T(_),_&&_.conflict&&(_=await G(),T(_)),_=await wr(_,(b,le)=>G({continuation:b,decision_token:le}),{onResult:T,refresh:()=>G()}),_&&_.resumed===!1&&!_.conflict&&_.reason&&he(`\uC774\uC5B4\uD558\uAE30 \uAC70\uBD80: ${_.reason}`,"error",2400)}async function Ye(f){if(!r||!f)return;let w=await r("worker-attempt-dismiss",{attempt_id:f,expected_revision:Le()});T(w),w&&w.conflict&&(w=await r("worker-attempt-dismiss",{attempt_id:f,expected_revision:Le()}),T(w)),w&&w.dismissed===!1&&!w.conflict&&w.reason&&he(`\uBC30\uB108 \uB2EB\uAE30 \uAC70\uBD80: ${w.reason}`,"error",2400)}async function ct(f,w,G=!0){if(!r)return null;let _=r,b=await _(f,{...w,expected_revision:Le()});return T(b),b&&b.conflict&&G&&(b=await _(f,{...w,expected_revision:Le()}),T(b)),b}async function ft(f){if(!r||!f)return;let w=rt().merge_queue?.find(_=>_.bead_id===f)?.continuation_action;if(w?.mismatch&&w.continuation===null){await ot(f,w.mismatch);return}M.add(f),j();let G;try{G=await ct("worker-merge-queue-add",{bead_id:f})}finally{M.delete(f),j()}!G||G.conflict||G.applied||he(Mh(G.reason),"error",2400)}async function ut(f){if(!(!r||!f||K.has(f))){K.add(f),j();try{let w=await r("worker-cleanup-retry",{bead_id:f,expected_revision:Le()});T(w),w&&!w.retried&&!w.conflict&&w.reason&&he(`\uC815\uB9AC \uC7AC\uAC1C \uAC70\uBD80: ${w.reason}`,"error",2400)}finally{K.delete(f),j()}}}async function ot(f,w){let G=await wr({continuation_mismatch:w},(b,le)=>ct("worker-merge-queue-add",{bead_id:f,continuation:b,decision_token:le},!1)),_=G?.queue?.merge_queue?.find(b=>b.bead_id===f)?.continuation_action;if(G?.applied!==!0&&_?.continuation===null&&_.mismatch){await ot(f,_.mismatch);return}G&&G.applied===!1&&!G.conflict&&he("\uC774\uC5B4\uD558\uAE30 \uC120\uD0DD\uC774 \uCD5C\uC2E0 \uC0C1\uD0DC\uC640 \uC77C\uCE58\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4","error",2800)}async function gt(f){if(!r)return;let w=await ct("worker-merge-auto-toggle",{on:f});!w||w.conflict||he(f?"\uC790\uB3D9 \uBA38\uC9C0 \uCF1C\uC9D0 \u2014 \uC790\uACA9\uC774 \uC0DD\uAE30\uB294 PR\uC744 \uACC4\uC18D \uBA38\uC9C0\uD569\uB2C8\uB2E4":"\uC790\uB3D9 \uBA38\uC9C0 \uAEBC\uC9D0 \u2014 \uB300\uAE30 \uD56D\uBAA9\uC744 \uBE44\uC6E0\uC2B5\uB2C8\uB2E4",f?"success":"info",2400)}async function U(f){if(!r||!f)return;let w=await ct("worker-merge-queue-remove",{bead_id:f});w&&!w.conflict&&!w.applied&&w.reason==="merge_active"&&he("\uBA38\uC9C0 \uC9C4\uD589 \uC911 \u2014 \uCDE8\uC18C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4","error",2400)}async function J(){await ct("worker-merge-queue-remove",{all:!0})}async function be(f,w=null,G="unmerged",_=null){if(!r||!f)return;let b=us(f,G);if(!(!!_||typeof globalThis.confirm!="function"||globalThis.confirm(b)))return;let ie=await r("worker-discard",{bead_id:f,...w?{attempt_id:w}:{},..._?{operation_id:_}:{},expected_revision:Le()});if(T(ie),ie&&ie.conflict&&(ie=await r("worker-discard",{bead_id:f,...w?{attempt_id:w}:{},..._?{operation_id:_}:{},expected_revision:Le()}),T(ie)),ie&&ie.discarded===!0){he(ko(ie),"success",5e3);return}if(ie&&ie.reason){he(`\uD3D0\uAE30 \uC2E4\uD328: ${ie.reason}`,"error",2800);return}if(ie&&ie.accepted&&ie.pending==="merged_revert"){he("revert PR \uB300\uAE30 \uC0C1\uD0DC\uB85C \uC804\uD658\uD588\uC2B5\uB2C8\uB2E4","success",2400);return}if(ie&&ie.accepted&&!ie.discarded){he(`\uD3D0\uAE30 \uC9C4\uD589: ${ie.phase||"\uBC31\uC5C5 \uC911"}`,"success",2400);return}ie&&!ie.conflict&&he("\uD3D0\uAE30 \uAC70\uBD80: unknown","error",2800)}async function Ge(f,w,G){if(!(!r||!w||!G||_e.has(w))){_e.add(w),j();try{let _=await r(f,{bead_id:w,action_id:G,expected_revision:Le()});T(_),_?.conflict?he("\uC774\uC804 \uC791\uC5C5 \uC0C1\uD0DC\uAC00 \uBC14\uB00C\uC5C8\uC2B5\uB2C8\uB2E4. \uCD5C\uC2E0 \uC0C1\uD0DC\uB97C \uD655\uC778\uD558\uC138\uC694.","error",2800):!_?.ok&&_?.reason&&he(`\uC774\uC804 \uC791\uC5C5 \uCC98\uB9AC \uAC70\uBD80: ${String(_.reason)}`,"error",2800)}finally{_e.delete(w),j()}}}async function De(f,w){if(!r||!w||pe.has(w))return;pe.add(w),j();let G;try{let _=async(b={})=>await r(f,{bead_id:w,expected_revision:Le(),...b});G=await _(),T(G),G&&G.conflict&&(G=await r(f,{bead_id:w,expected_revision:Le()}),T(G)),f==="worker-revise-fix"&&(G=await wr(G,(b,le)=>_({continuation:b,decision_token:le}),{onResult:T,refresh:()=>_()}))}finally{pe.delete(w),j()}if(!(!G||G.conflict)){if(G.ok){he(f==="worker-revise-fix"?"\uCC98\uBD84 \uC138\uC158\uC744 \uB744\uC6E0\uC2B5\uB2C8\uB2E4 \u2014 \uC218\uB9AC \uD6C4 \uAD6C\uD604\uC774 \uC7AC\uB514\uC2A4\uD328\uCE58\uB429\uB2C8\uB2E4":"\uB378\uD0C0 \uC2B9\uC778 \uC644\uB8CC \u2014 \uC601\uC218\uC99D \uAC31\uC2E0 + \uD30C\uD0B9 \uD574\uC81C","success",2800);return}he(`\uCC98\uBD84 \uAC70\uBD80: ${G.reason||""}`,"error",3e3)}}async function B(f){if(!r)return;let w=await r("worker-automation-toggle",{on:f,expected_revision:Le()});T(w),w&&w.conflict&&await r("worker-automation-toggle",{on:f,expected_revision:Le()}).then(T)}async function te(f){if(!r||!f)return;let w=await r("worker-repo-operation-repair",{operation_id:f});if(T(w),w&&w.ok===!1){he(`\uD574\uACB0 \uC138\uC158 \uAC70\uBD80: ${w.reason||""}`,"error",3e3);return}w&&w.ok===!0&&he("\uD574\uACB0 \uC138\uC158\uC744 \uB744\uC6E0\uC2B5\uB2C8\uB2E4","success",2400)}async function ve(f){if(!r||!f)return;let w=await r("worker-repo-operation-dismiss",{operation_id:f});T(w),w&&w.ok===!1&&he(`\uAE30\uB85D \uB2EB\uAE30 \uAC70\uBD80: ${w.reason||""}`,"error",3e3)}async function y(f){if(!r||!Number.isFinite(f))return;let w=Math.max(Lo,Math.floor(f)),G=await r("worker-queue-set-slots",{slots:w,expected_revision:Le()});T(G),G&&G.conflict&&await r("worker-queue-set-slots",{slots:w,expected_revision:Le()}).then(T)}async function R(f){if(!r||!Number.isInteger(f)||f<1||f>Id)return;let w=rt(),G=(Array.isArray(w.serial_lanes)?w.serial_lanes:[]).slice(f).reduce((le,ie)=>le+(Array.isArray(ie?.entries)?ie.entries.length:0),0),_=()=>({count:f,expected_revision:Le()}),b=await r("worker-queue-set-serial-lane-count",_());T(b),b&&b.conflict&&(b=await r("worker-queue-set-serial-lane-count",_()),T(b)),b&&b.applied&&G>0&&he(`\uC9C1\uB82C \uB808\uC778 \uCD95\uC18C \u2014 ${G}\uAC1C \uD56D\uBAA9\uC774 \uBCD1\uB82C \uB300\uAE30\uB85C \uC774\uB3D9`)}function W(){let f=rt(),w=m?m.selectBoardColumn(_h,"ready"):[],G=m?m.selectBoardColumn(mh,"blocked"):[],_=m?m.selectBoardColumn(bh,"closed"):[],b=m?m.selectBoardColumn(gh,"in_progress"):[],le=m?m.selectBoardColumn(hh,"resolved"):[],ie=Fs([...w,...G,...b,...le,..._]),Ue=new Map;for(let g of[...w,...G,...b])g&&g.id&&!Ue.has(g.id)&&Ue.set(g.id,g);let xe={...we(u?.()||"")};for(let g of["orchestration_model","orchestration_effort","orchestration_speed"]){let z=f[g];typeof z=="string"&&(xe[g]=z)}function k(g,z){let fe=Ue.get(g);if(!fe)return null;let Ke=fe.metadata&&typeof fe.metadata=="object"?fe.metadata:{},dt=fe.workflow?.route,Bt=Ke.route,qt=Od(dt)?dt:Od(Bt)?Bt:null;return Qt({pin:Ke,global:xe,execution_defaults:f.execution_defaults??null,runner_catalog:f.runner_catalog??null,route:qt,controller_runtime:z})}function X(g){let z=g.runner||null,fe=k(g.bead_id,z),Ke=So(g),dt=fe?qr(fe,z):null;return Ke||dt?{orchestration:Ke,worker:dt}:null}let L=new Map;function Re(g){if(L.has(g))return L.get(g)??null;let z=k(g,null),fe=null;if(z){let Ke=gr(f.runner_catalog??null,z.orchestration_model.value??""),dt=Ke===null?z:k(g,Ke),Bt=sn(dt,f.runner_catalog??null),qt=qr(dt,Ke);fe=Bt||qt?{orchestration:Bt,worker:qt}:null}return L.set(g,fe),fe}function lt(g){let z=js(ie,g);return z.total===0?null:z}let at=f.bead_titles||{},Xe=new Map;for(let[g,z]of Object.entries(at))typeof z=="string"&&z.length>0&&Xe.set(g,z);for(let g of[...w,...G])Xe.set(g.id,g.title||g.id);let Je=f.bead_times&&typeof f.bead_times=="object"&&!Array.isArray(f.bead_times)?f.bead_times:{},Ot=f.bead_labels&&typeof f.bead_labels=="object"&&!Array.isArray(f.bead_labels)?f.bead_labels:{},Jt=new Map;for(let[g,z]of Object.entries(Ot))Array.isArray(z)&&Jt.set(g,ni(z));for(let g of[...w,...G]){let z=g.labels;Array.isArray(z)&&!Jt.has(g.id)&&Jt.set(g.id,ni(z))}let an=new Map,ln=o?.get()?.last_good?.result?.groups;for(let g of Array.isArray(ln)?ln:[]){if(g?.eligible!==!0||!Array.isArray(g.members))continue;let z=g.members.map(Ke=>{let dt=(Array.isArray(f.serial_lanes)?f.serial_lanes:[]).find(Bt=>Bt.entries.some(qt=>qt.bead_id===Ke));return dt?dt.id:null});if(!(z.every(Ke=>Ke!==null)&&new Set(z).size===1))for(let Ke of g.members)an.set(Ke,g.members.filter(dt=>dt!==Ke))}let hs=f.bead_blocked_by&&typeof f.bead_blocked_by=="object"&&!Array.isArray(f.bead_blocked_by)?f.bead_blocked_by:{},cn=new Map;for(let[g,z]of Object.entries(Je))z&&typeof z=="object"&&cn.set(g,z);for(let g of[...w,...G])cn.set(g.id,{created_at:g.created_at,updated_at:g.updated_at});let Ur=g=>cn.get(g)||{},Wr=f.pr_wait||[],un=f.pr_observations||{},bs=f.pr_activity||{},We=f.cleanup_failed||{},It=Object.entries(We).map(([g,z])=>({bead_id:g,step:z&&z.step?z.step:"",reason:z&&z.reason?z.reason:"",at:z&&typeof z.at=="number"?z.at:null,detail:z&&typeof z.detail=="string"?z.detail:null,output_tail:z&&typeof z.output_tail=="string"&&z.output_tail?z.output_tail:void 0,log_path:z&&typeof z.log_path=="string"&&z.log_path?z.log_path:void 0,retry_count:z&&typeof z.retry_count=="number"&&Number.isInteger(z.retry_count)&&z.retry_count>0?z.retry_count:0,failure_code:z&&typeof z.failure_code=="string"?z.failure_code:void 0,subject_id:z&&typeof z.subject_id=="string"?z.subject_id:void 0,repair_eligible:!!(z&&z.repair_eligible),repair:z&&z.repair?z.repair:void 0})),dn=f.queue||[],Jd=new Set([...dn.map(g=>g.bead_id),...(Array.isArray(f.serial_lanes)?f.serial_lanes:[]).flatMap(g=>(Array.isArray(g?.entries)?g.entries:[]).map(z=>z.bead_id)),...Wr.map(g=>g.bead_id),...f.done.map(g=>g.bead_id)]),ep=new Set(G.map(g=>g.id)),tp=i?i.get()?.order||{}:{},pi=new Set,fi=[];for(let g of[...w,...G])Jd.has(g.id)||pi.has(g.id)||Oh(g)||(pi.add(g.id),fi.push(g));F=Lh(fi,V,tp);let rp=f.admission||{},_i=g=>{let z=rp[g];if(!z)return"";if(z.stale===!0)return"\u267B\uFE0F stale\u2192\uC7AC\uB9AC\uBDF0";let fe=typeof z.reason=="string"?z.reason:"",Ke=fe.indexOf(":");return Ke>0&&Ke<fe.length-1?`\u26D4 ${fe.slice(0,Ke)} (${fe.slice(Ke+1)})`:`\u26D4 ${fe}`},np=F.map(g=>{let z=lo(g),fe=z.path.length>0,Ke=g.workflow?.route==="quick_fix"||g.metadata&&g.metadata.route==="quick_fix",dt=!Object.hasOwn(g,"description")||typeof g.description=="string"&&g.description.trim().length>0,Bt=Object.hasOwn(g,"labels")&&hd(g.labels),qt=!Bt&&(Ke?dt:fe&&!z.conflict),St=ep.has(g.id),dr=[];St&&dr.push(Ph(g)),Ke&&!dt?dr.push("missing_description"):!Ke&&z.conflict?dr.push("spec_id_conflict"):!Ke&&!fe&&dr.push("spec \uC5C6\uC74C");let Ss=_i(g.id);return Ss&&dr.push(Ss),{id:g.id,title:g.title||g.id,reason:dr.join(" \xB7 "),draggable:qt,lane:"candidate",created_at:g.created_at,updated_at:g.updated_at,workflow:g.workflow,is_quick_fix:Ke,status:g.status,worker_ineligible:Bt,blocked:St,has_spec:fe,exec_chips:Re(g.id)}}),Po=kh(np,H),sp=Po.visible,op=f.revise_parked||{},ys=f.discard_operations&&typeof f.discard_operations=="object"&&!Array.isArray(f.discard_operations)?f.discard_operations:{},Mo=(g,z)=>g.map((fe,Ke)=>{let dt=z!=="done",Bt=z!=="done"&&z!=="queue",qt=dt?op[fe.bead_id]:null,St=dt?yr(ys,fe.bead_id):null,dr=St?.operation?St:null,Ss=dt&&Jt.get(fe.bead_id)===!0,qi=hs[fe.bead_id]||[],jo=f.admission&&typeof f.admission=="object"?f.admission[fe.bead_id]:null,Bo=dt?uu(jo,!!dr||_e.has(fe.bead_id)):null,bp=dt&&!Bo?_i(fe.bead_id):null,yp=dt?[bp]:[],Fi=dt&&qi.length>0&&typeof jo?.reason=="string"&&jo.reason.startsWith("not_ready")?[`\u23F8 ${qi.join(", ")} \uC644\uB8CC \uB300\uAE30 (blocks)`]:[],Uo=dt?an.get(fe.bead_id):void 0;return Uo&&Uo.length>0&&Fi.push(`\u2733 serial \uAD8C\uC7A5 \xB7 ${Uo.join(", ")}\uC640`),{id:fe.bead_id,title:Xe.get(fe.bead_id)||fe.bead_id,reason:yp.filter(Boolean).join(" \xB7 "),draggable:dt&&!dr&&!Bo,done:z==="done",lane:z,seq:Bt?Ke+1:void 0,worker_serial:Ss,discard:dr,stale_work:Bo,badges:[...Fi,...qt?["\u23F8 REVISE \uD30C\uD0B9"]:[]],alert:!!qt,revise_action:!!qt,revise_enabled:!!qt&&!dr&&!pe.has(fe.bead_id),revise_title:qt?qt.notes_tail?`REVISE findings (\uC790\uC138\uD788\uB294 \uCE74\uB4DC \uD074\uB9AD \u2192 \uC774\uC288 \uC0C1\uC138):
+${qt.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC601\uD558\uB294 \uCC98\uBD84 \uC138\uC158\uC744 \uB744\uC6C1\uB2C8\uB2E4":"",usage:z==="done"?lr(f.attempts||{},fe.bead_id):null,work_ms:z==="done"?vo(f.attempts||{},fe.bead_id):null,done_at:z==="done"&&typeof fe.added_at=="number"?fe.added_at:void 0,exec_chips:dt?Re(fe.bead_id):null,...Ur(fe.bead_id)}}),pn=f.attempts?Object.values(f.attempts):[],Do=new Set;for(let g of pn)g&&typeof g.resumed_from=="string"&&g.resumed_from.length>0&&Do.add(g.resumed_from);let mi=new Map;for(let g of pn)mi.set(g.bead_id,g.attempt_id);let vs=new Map;for(let g of pn)vs.set(g.attempt_id,g);function No(g){let z=new Set,fe=g;for(;fe&&!z.has(fe.attempt_id);){if(fe.conflict_resolution===!0)return!0;z.add(fe.attempt_id),fe=typeof fe.resumed_from=="string"&&fe.resumed_from.length>0&&vs.get(fe.resumed_from)||null}return!1}let ws=typeof f.declared_base=="string"?f.declared_base:null;function ap(g){let z=null;for(let fe of pn)!fe||fe.bead_id!==g||No(fe)||(z===null||(typeof fe.started_at=="number"?fe.started_at:0)>=(typeof z.started_at=="number"?z.started_at:0))&&(z=fe);return z&&typeof z.target_base=="string"?z.target_base:null}let gi=[],hi=[],ip=gd(f),bi=g=>{let z=typeof g.session_id=="string"&&g.session_id.length>0,fe=Do.has(g.attempt_id);return{eligible:z&&!fe,reason:z?fe?"\uC774\uBBF8 \uC774\uC5B4\uBC1B\uC740 attempt (child attempt \uC874\uC7AC) \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00":null:"session_id \uC5C6\uB294 \uAD6C attempt \u2014 \uC774\uC5B4\uD558\uAE30 \uBD88\uAC00"}},ur=null;for(let g of pn){let z=g.status==="paused"&&!Do.has(g.attempt_id);if(g.status==="running"||z)hi.push({bead_id:g.bead_id,attempt_id:g.attempt_id,title:Xe.get(g.bead_id)||g.bead_id,runner:g.runner||null,model:g.model||null,effort:g.effort||null,speed:g.speed||null,continuation_mode:g.continuation_mode||null,started_at:typeof g.started_at=="number"?g.started_at:null,resumed_from:g.resumed_from||null,paused:z,conflict_resolution:No(g),base_exception:ii(ws,g.target_base),can_pause:typeof g.session_id=="string"&&g.session_id.length>0,discard:yr(ys,g.bead_id,{attempt_id:g.attempt_id}),usage:lr(f.attempts||{},g.bead_id),rollup:lt(g.bead_id),rollup_expanded:me.has(g.bead_id),exec_chips:X(g),...Ur(g.bead_id)});else if((g.status==="failed"||g.status==="orphaned")&&ip(g)){let fe=bi(g);gi.push({bead_id:g.bead_id,attempt_id:g.attempt_id,title:Xe.get(g.bead_id)||g.bead_id,runner:g.runner||null,model:g.model||null,effort:g.effort||null,speed:g.speed||null,continuation_mode:g.continuation_mode||null,started_at:typeof g.started_at=="number"?g.started_at:null,resumed_from:g.resumed_from||null,failed:!0,status:g.status,status_label:g.status==="orphaned"?"\uC911\uB2E8\uB428":"\uC2E4\uD328",discard:yr(ys,g.bead_id,{attempt_id:g.attempt_id}),resume_eligible:fe.eligible,resume_reason:fe.reason,conflict_resolution:No(g),base_exception:ii(ws,g.target_base),usage:lr(f.attempts||{},g.bead_id),rollup:lt(g.bead_id),rollup_expanded:me.has(g.bead_id),exec_chips:X(g),...Ur(g.bead_id)}),ur=g}}let ks=[...gi,...hi].map(g=>{let z=vs.get(g.attempt_id),fe=z?.quickfix_landing;if(z?.quickfix_lane!==!0||!fe||typeof fe!="object")return g;let Ke=typeof fe.reason=="string"&&fe.reason.length>0?fe.reason:null,dt=_s({bead_id:z.bead_id,merge_sha:fe.head_sha,cleanup_cursor:fe.cursor,cleanup_failed:Ke?{step:fe.cursor,reason:Ke}:null,repo_operations:Array.isArray(f.repo_operations)?f.repo_operations:[]});return dt?{...g,landing:dt}:g}),yi=null;if(ur){let g=bi(ur),z=ur.cause_detail;yi={bead_id:ur.bead_id,repo:ur.repo||"",reason:ur.cause||ur.status,cause_detail:z&&typeof z.reason=="string"?{reason:z.reason,command:typeof z.command=="string"?z.command:null}:null,resume_attempt_id:ur.attempt_id,resume_eligible:g.eligible,resume_reason:g.reason,discard:yr(ys,ur.bead_id,{attempt_id:ur.attempt_id})}}let vi=new Set(ks.map(g=>g.bead_id)),qo=Array.isArray(f.merge_queue)?f.merge_queue:[],wi=new Map,ki=new Map,$i=new Map,xi=new Map,Ai=new Map;qo.forEach((g,z)=>{g&&typeof g.bead_id=="string"&&(wi.set(g.bead_id,z+1),ki.set(g.bead_id,g.resolution),$i.set(g.bead_id,g.continuation_action||null),xi.set(g.bead_id,g.head_review||null),Ai.set(g.bead_id,g.authority||null))});let fn=f.merge_queue_state||{active:null,failures:{}},lp=fn.failures||{},Si=fn.waiting&&typeof fn.waiting.bead_id=="string"&&typeof fn.waiting.reason=="string"?fn.waiting:null,cp=f.auto_merge_skips||{},Ei=g=>{let z=cp[g];if(!z)return null;let fe=un[g],Ke=fe&&fe.pr?fe.pr.head_sha:null;return Ke&&Ke===z.head_sha?z.reason||"":null},$s=new Map;for(let g of ks)g.failed!==!0&&g.conflict_resolution&&(g.paused?$s.has(g.bead_id)||$s.set(g.bead_id,"paused"):$s.set(g.bead_id,"running"));let Ti=ks.filter(g=>!g.paused&&g.failed!==!0).length,Ci=(f.workspace_info||{}).slots,Ri=typeof Ci=="number"?Ci:typeof f.slots=="number"?f.slots:Lo,up=Ti>Ri,xs=Yr(q),dp=(Array.isArray(f.done)?f.done.slice():[]).filter(g=>xs===void 0||typeof g.added_at!="number"||g.added_at>=xs).sort((g,z)=>(z.added_at||0)-(g.added_at||0)),Mn=Mo(dp,"done"),pp=new Set((Array.isArray(f.done)?f.done:[]).map(g=>g?.bead_id).filter(g=>typeof g=="string")),Ii=[],fp=u?.()||"";for(let g of _){let z=Xr(g.closed_at);if(typeof g.id!="string"||pp.has(g.id)||z===null||xs!==void 0&&z<xs||typeof g.comment_count!="number"||g.comment_count<=0)continue;let fe=`${fp}\0${g.id}\0${String(g.updated_at)}\0${g.comment_count}`,Ke=O.get(fe);Ke===void 0&&r&&(O.set(fe,"pending"),Promise.resolve(r("get-comments",{id:g.id})).then(dt=>{let Bt=Array.isArray(dt)&&dt.some(qt=>co(typeof qt?.text=="string"?qt.text:"")?.lane==="session");O.set(fe,Bt?"session":"not-session"),j()}).catch(()=>{O.set(fe,"failed"),j()})),Ke==="session"&&Ii.push({id:g.id,title:g.title||g.id,reason:"",draggable:!1,done:!0,lane:"done",selectable:!1,selected:!1,worker_serial:!1,badges:["\uC138\uC158 \uC791\uC5C5"],alert:!1,usage:null,work_ms:null,done_at:z,created_at:g.created_at,updated_at:g.updated_at})}Mn.push(...Ii),Mn.sort((g,z)=>(z.done_at||0)-(g.done_at||0));let As={};for(let g of kr)As[g]=0;let Li=!1,Oi=0,Fo=0,Pi=0;for(let g of Mn){let z=g.usage;if(z&&typeof z=="object"){let fe=!1;for(let Ke of kr)Number.isFinite(z[Ke])&&(As[Ke]+=z[Ke],Li=!0,fe=!0);fe&&(Fo+=1,Number.isFinite(z.total_cost_usd)&&(Oi+=z.total_cost_usd,Pi+=1))}}Fo>0&&Pi===Fo&&(As.total_cost_usd=Oi);let Mi=Mn.map(g=>g.usage).filter(g=>g&&typeof g=="object"&&g.providers),_p=Mi.length>0?Wt(Vs(Mi)):Li?$r(As):null,mp=f.lane_states&&typeof f.lane_states=="object"&&!Array.isArray(f.lane_states)?f.lane_states:{},gp=Array.isArray(f.serial_lanes)?f.serial_lanes:[],Di=g=>{if(Wr.some(Ke=>Ke.bead_id===g))return"PR \uB300\uAE30 \xB7 \uC810\uC720";let z=pn.filter(Ke=>Ke&&Ke.bead_id===g),fe=z.length>0?z[z.length-1].status:null;return fe==="failed"||fe==="orphaned"?"\uC2E4\uD328 \xB7 \uC810\uC720 \uC720\uC9C0":fe==="paused"?"\uC77C\uC2DC\uC815\uC9C0 \xB7 \uC810\uC720":"\uC2E4\uD589 \uC911 \xB7 \uC810\uC720"},Ni=gp.filter(g=>g&&typeof g.id=="string"&&Array.isArray(g.entries)).map((g,z)=>{let fe=mp[g.id]||{},Ke=new Map((Array.isArray(fe.corrections)?fe.corrections:[]).filter(St=>St&&typeof St.bead_id=="string"&&typeof St.after=="string").map(St=>[St.bead_id,St.after])),dt=Mo(g.entries.filter(St=>!vi.has(St.bead_id)),g.id).map(St=>Ke.has(St.id)?{...St,badges:[`\u{1F517} ${Ke.get(St.id)} \uB4A4 (blocks \uC790\uB3D9)`,...St.badges]}:St),Bt=Array.isArray(fe.occupied_by)?fe.occupied_by.filter(St=>typeof St=="string"):[],qt=Bt.map(St=>({id:St,title:Xe.get(St)||St,draggable:!1,lane:g.id,ghost:!0,badges:[Di(St)]}));return{id:g.id,index:z+1,rows:[...qt,...dt],occupied:Bt.length>0,badge:Bt.length>0?Di(Bt[0]):"\uB300\uAE30",cycle:fe.cycle===!0}}),hp=typeof f.serial_lane_count=="number"?f.serial_lane_count:Ni.length;return{queue:f,idToTitle:Xe,candidates:sp,candidate_hidden:{blocked:Po.hidden_blocked,spec:Po.hidden_spec},running:ks,live_count:Ti,slots:Ri,over_cap:up,failure:yi,waiting:Mo(dn.filter(g=>!vi.has(g.bead_id)),"queue"),serial_lanes:Ni,serial_lane_count:hp,pr_wait:Wr.map(g=>Bh(g.bead_id,Xe.get(g.bead_id)||g.bead_id,un,We[g.bead_id]||null,lr(f.attempts||{},g.bead_id),bs[g.bead_id]||(M.has(g.bead_id)||K.has(g.bead_id)?{activity:null,merge_progress:{step:"merging"}}:null),$s.get(g.bead_id)||null,g.external===!0,{position:wi.get(g.bead_id)||0,active:fn.active===g.bead_id,failure:lp[g.bead_id]||null,waiting:Si?.bead_id===g.bead_id?Si.reason:null,resolution:ki.get(g.bead_id),continuation_action:$i.get(g.bead_id),head_review:xi.get(g.bead_id)||null,authority:Ai.get(g.bead_id)||null},g.wt_present!==!1,f.auto_merge===!0?Ei(g.bead_id):null,ii(ws,ap(g.bead_id)),f.completion_status&&typeof f.completion_status=="object"&&!Array.isArray(f.completion_status)&&f.completion_status[g.bead_id]||null,f.discard_operations&&typeof f.discard_operations=="object"&&!Array.isArray(f.discard_operations)?f.discard_operations:{},vs.get(mi.get(g.bead_id)||"")?.worker_serial===!0,f.auto_merge===!0,{merge_sha:g.merge_sha,cleanup_cursor:g.cleanup_cursor,repo_operations:Array.isArray(f.repo_operations)?f.repo_operations:[]})).map(g=>({...g,...Ur(g.id)})),merge_queue_length:qo.length,merge_queue_running:qo.length>0,auto_excluded:Wr.map(g=>g.bead_id).filter(g=>Ei(g)!==null),declared_base:ws,done:Mn,token_total:_p,cleanup_failures:It,repo_operations:Array.isArray(f.repo_operations)?f.repo_operations:[]}}function oe(){let w=!!o?.get()?.job,G=!w&&o?.isPending?.()===!0,_=w?"\uBD84\uC11D \uC911":G?"\uC900\uBE44 \uC911":"";return l`<button
       type="button"
       class=${_?"worker-analysis-btn worker-analysis-btn--running":"worker-analysis-btn"}
       aria-busy=${_?"true":"false"}
       title="대기 이슈의 병렬 실행 가능성을 분석해 직렬 그룹을 제안합니다 (클릭할 때만 실행)"
     >
       ✳ 병렬성
-      분석${_?i`<span class="worker-analysis-btn__badge">${_}</span>`:""}
-    </button>`}function Te(p){let v=p.waiting.length>0?p.waiting[0].id:"\u2014",B=i`<button
+      분석${_?l`<span class="worker-analysis-btn__badge">${_}</span>`:""}
+    </button>`}function Ce(f){let w=f.waiting.length>0?f.waiting[0].id:"\u2014",G=l`<button
       type="button"
-      class="worker-play${p.queue.auto_advance?" is-active":""}"
+      class="worker-play${f.queue.auto_advance?" is-active":""}"
     >
-      ${p.queue.auto_advance?"\u23F8 \uC790\uB3D9\uD654 \uBA48\uCDA4":"\u25B6 \uC790\uB3D9\uD654"}
-    </button>`,_=tt(p),h=p.over_cap?i`<span
+      ${f.queue.auto_advance?"\u23F8 \uC790\uB3D9\uD654 \uBA48\uCDA4":"\u25B6 \uC790\uB3D9\uD654"}
+    </button>`,_=h(f),b=f.over_cap?l`<span
           class="worker-overcap"
           title="수동 재개(▶)는 슬롯 cap을 초과할 수 있습니다 — 자동 진행은 cap을 지킵니다"
           >cap 초과</span
-        >`:"",ee=i`<span class="worker-kpi__chip worker-kpi__chip--running"
-        >실행 <b>${p.live_count}</b></span
+        >`:"",le=l`<span class="worker-kpi__chip worker-kpi__chip--running"
+        >실행 <b>${f.live_count}</b></span
       >
       <span class="worker-kpi__chip worker-kpi__chip--pr"
-        >PR 대기 <b>${p.pr_wait.length}</b></span
+        >PR 대기 <b>${f.pr_wait.length}</b></span
       >
       <span class="worker-kpi__chip worker-kpi__chip--done"
-        >${I()} 완료 <b>${p.done.length}</b></span
-      >`,Q=i`<span
+        >${P()} 완료 <b>${f.done.length}</b></span
+      >`,ie=l`<span
       class="worker-kpi__chip worker-kpi__chip--base"
-      title=${p.declared_base?"\uC774 \uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uC5B8\uD55C target base (docs/agents/repo-ops.toml). \uB514\uC2A4\uD328\uCE58 \uC2DC\uC810\uC758 \uAC80\uC99D\uC740 \uBCC4\uB3C4":"\uC120\uC5B8 \uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 \u2014 target base \uD655\uC778 \uBD88\uAC00"}
-      >base ${p.declared_base||"?"}</span
-    >`,Re=i`<label class="worker-tgl worker-slots"
+      title=${f.declared_base?"\uC774 \uC6CC\uD06C\uC2A4\uD398\uC774\uC2A4\uAC00 \uC120\uC5B8\uD55C target base (docs/agents/repo-ops.toml). \uB514\uC2A4\uD328\uCE58 \uC2DC\uC810\uC758 \uAC80\uC99D\uC740 \uBCC4\uB3C4":"\uC120\uC5B8 \uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4 \u2014 target base \uD655\uC778 \uBD88\uAC00"}
+      >base ${f.declared_base||"?"}</span
+    >`,Ue=l`<label class="worker-tgl worker-slots"
         >동시 실행
         <input
           type="number"
           class="worker-slots__input"
-          min=${Ao}
+          min=${Lo}
           step="1"
-          .value=${String(p.slots)}
+          .value=${String(f.slots)}
           title="동시에 실행할 세션 수 (최소 1 = 순차 실행)"
       /></label>
       <label
@@ -3525,38 +3452,38 @@ ${St.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC
         title="고정 직렬 레인 수 (1~5). 축소 시 잘린 레인의 대기 항목은 병렬 대기로 돌아갑니다"
         >직렬 레인
         <select class="worker-serial-lane-count" aria-label="직렬 레인 수">
-          ${Array.from({length:kd},(K,R)=>R+1).map(K=>i`<option
-                value=${String(K)}
-                ?selected=${p.serial_lane_count===K}
+          ${Array.from({length:Id},(X,L)=>L+1).map(X=>l`<option
+                value=${String(X)}
+                ?selected=${f.serial_lane_count===X}
               >
-                ${K}
+                ${X}
               </option>`)}
         </select>
       </label>
-      ${o?J():""} `,ge=hu({failure:p.failure}),w=nu(p.repo_operations,p.cleanup_failures);return m?i`<div class="worker-ribbon">
-          ${B} ${_}
-          <div class="worker-kpi worker-kpi--ribbon">${h}${ee}</div>
+      ${o?oe():""} `,xe=gu({failure:f.failure}),k=cu(f.repo_operations,f.cleanup_failures);return $?l`<div class="worker-ribbon">
+          ${G} ${_}
+          <div class="worker-kpi worker-kpi--ribbon">${b}${le}</div>
         </div>
         <div class="worker-ctrl worker-ctrl--mobile">
-          <div class="worker-ctrl__ops">${Re}</div>
-          <div class="worker-kpi">${Q}</div>
+          <div class="worker-ctrl__ops">${Ue}</div>
+          <div class="worker-kpi">${ie}</div>
         </div>
-        ${w}${We.template()}${ge}`:i`<div class="worker-ctrl">
-        <div class="worker-ctrl__ops">${B}${_}${Re}</div>
+        ${k}${Ze.template()}${xe}`:l`<div class="worker-ctrl">
+        <div class="worker-ctrl__ops">${G}${_}${Ue}</div>
         <div class="worker-kpi">
-          ${h}${ee}${Q}
-          ${(Array.isArray(p.token_total)?p.token_total:p.token_total?[{label:p.token_total,tooltip:`${I()} \uC644\uB8CC\uB41C \uC774\uC288\uB4E4\uC774 \uC0DD\uC560 \uC804\uCCB4\uC5D0 \uC4F4 \uD1A0\uD070 \uB204\uC801 (\uC785\uB825+\uCD9C\uB825+\uCE90\uC2DC). \uC774 \uAE30\uAC04\uC5D0 \uC18C\uBAA8\uB41C \uC591\uC774 \uC544\uB2C8\uB2E4`}]:[]).map(K=>i`<span
+          ${b}${le}${ie}
+          ${(Array.isArray(f.token_total)?f.token_total:f.token_total?[{label:f.token_total,tooltip:`${P()} \uC644\uB8CC\uB41C \uC774\uC288\uB4E4\uC774 \uC0DD\uC560 \uC804\uCCB4\uC5D0 \uC4F4 \uD1A0\uD070 \uB204\uC801 (\uC785\uB825+\uCD9C\uB825+\uCE90\uC2DC). \uC774 \uAE30\uAC04\uC5D0 \uC18C\uBAA8\uB41C \uC591\uC774 \uC544\uB2C8\uB2E4`}]:[]).map(X=>l`<span
                 class="worker-kpi__chip worker-kpi__chip--tokens"
-                title=${K.tooltip}
-                >${I()} 완료 · 누적 ${K.label}</span
+                title=${X.tooltip}
+                >${P()} 완료 · 누적 ${X.label}</span
               >`)}
           <span class="worker-kpi__next worker-stat"
-            >다음 <b>${v}</b></span
+            >다음 <b>${w}</b></span
           >
         </div>
       </div>
-      ${w}${We.template()}${ge}`}function ye(p){if(p.running.length===0&&p.pr_wait.length===0)return"";let v=p.running.some(B=>!B.paused&&B.failed!==!0);return i`<section
-      class="worker-now${v?" worker-pane--live":""}"
+      ${k}${Ze.template()}${xe}`}function Ae(f){if(f.running.length===0&&f.pr_wait.length===0)return"";let w=f.running.some(G=>!G.paused&&G.failed!==!0);return l`<section
+      class="worker-now${w?" worker-pane--live":""}"
       id="worker-now"
     >
       <header class="worker-now__hd">
@@ -3566,179 +3493,179 @@ ${St.notes_tail}`:"notes\uC758 REVISE finding\uC744 \uC2A4\uD399\uC5D0 \uBC18\uC
         ></span>
         <span class="worker-now__title">지금</span>
         <span class="worker-now__count"
-          >${p.running.length+p.pr_wait.length}</span
+          >${f.running.length+f.pr_wait.length}</span
         >
       </header>
-      ${p.running.length>0?Ba(p.running,Date.now(),Ie):""}
-      ${p.pr_wait.map(B=>Oa(B))}
-    </section>`}function Ce(p){let v=p.candidate_hidden;return i`<div class="worker-filter">
+      ${f.running.length>0?Ga(f.running,Date.now(),He):""}
+      ${f.pr_wait.map(G=>Ln(G))}
+    </section>`}function Me(f){let w=f.candidate_hidden;return l`<div class="worker-filter">
       <label class="worker-filter__tgl" title="blocked 이슈 표시 (기본 숨김)">
         <input
           type="checkbox"
           class="worker-filter__blocked"
-          .checked=${z.show_blocked}
+          .checked=${H.show_blocked}
         />
-        🔒 blocked${v.blocked>0?` ${v.blocked}`:""}
+        🔒 blocked${w.blocked>0?` ${w.blocked}`:""}
       </label>
       <div class="worker-filter__spec" role="group" aria-label="spec 필터">
-        ${db.map(B=>i`<button
+        ${$h.map(G=>l`<button
               type="button"
-              class="worker-filter__chip${z.spec===B.value?" is-active":""}"
-              data-spec=${B.value}
-              aria-pressed=${z.spec===B.value?"true":"false"}
+              class="worker-filter__chip${H.spec===G.value?" is-active":""}"
+              data-spec=${G.value}
+              aria-pressed=${H.spec===G.value?"true":"false"}
             >
-              ${B.label}
+              ${G.label}
             </button>`)}
-        ${v.spec>0?i`<span class="worker-filter__hidden">숨김 ${v.spec}</span>`:""}
+        ${w.spec>0?l`<span class="worker-filter__hidden">숨김 ${w.spec}</span>`:""}
       </div>
-    </div>`}function je(){return i`<select
+    </div>`}function Be(){return l`<select
       class="worker-sort"
       aria-label="후보 정렬"
       title="후보 정렬"
-      .value=${se}
+      .value=${V}
     >
-      ${pb.map(p=>i`<option value=${p.value} ?selected=${se===p.value}>
-            ${p.label}
+      ${xh.map(f=>l`<option value=${f.value} ?selected=${V===f.value}>
+            ${f.label}
           </option>`)}
-    </select>`}function Tt(){return i`<div class="worker-done-controls">
+    </select>`}function At(){return l`<div class="worker-done-controls">
       <select
         class="worker-sort worker-done-range"
         aria-label="완료 기간"
         title="완료 기간"
         .value=${q}
       >
-        ${gr.map(p=>i`<option value=${p.value} ?selected=${q===p.value}>
-              ${p.label}
+        ${Rr.map(f=>l`<option value=${f.value} ?selected=${q===f.value}>
+              ${f.label}
             </option>`)}
       </select>
-    </div>`}function ht(p){let v=i`<span
-      class="worker-lane__badge${p.occupied?" worker-lane__badge--held":""}"
-      >${p.badge}</span
-    >`,B=p.cycle?i`<div class="worker-lane__cycle">
+    </div>`}function vt(f){let w=l`<span
+      class="worker-lane__badge${f.occupied?" worker-lane__badge--held":""}"
+      >${f.badge}</span
+    >`,G=f.cycle?l`<div class="worker-lane__cycle">
           ⚠ blocks 순환 감지 — 자동 정렬을 생략했습니다
-        </div>`:"";return pr({id:`worker-pane-lane-${p.id}`,lane:p.id,title:`\uC9C1\uB82C ${p.index}`,items:p.rows,empty:"\uBE44\uC5B4 \uC788\uC74C \u2014 \uD589\uC744 \uC5EC\uAE30\uB85C \uB4DC\uB798\uADF8",header_control:v,controls:B})}function tt(p){let v=p.queue.auto_merge===!0;if(p.merge_queue_running)return i`<button
+        </div>`:"";return sr({id:`worker-pane-lane-${f.id}`,lane:f.id,title:`\uC9C1\uB82C ${f.index}`,items:f.rows,empty:"\uBE44\uC5B4 \uC788\uC74C \u2014 \uD589\uC744 \uC5EC\uAE30\uB85C \uB4DC\uB798\uADF8",header_control:w,controls:G})}function h(f){let w=f.queue.auto_merge===!0;if(f.merge_queue_running)return l`<button
         type="button"
-        class="worker-merge-all worker-merge-all--stop${v?" is-active":""}"
-        title=${v?"\uC790\uB3D9 \uBA38\uC9C0\uB97C \uB044\uACE0 \uB300\uAE30 \uC911\uC778 \uD56D\uBAA9\uC744 \uBAA8\uB450 \uBE8D\uB2C8\uB2E4 (\uC9C4\uD589 \uC911\uC778 \uD56D\uBAA9\uC740 \uB05D\uAE4C\uC9C0 \uC218\uD589)":"\uB300\uAE30 \uC911\uC778 \uD56D\uBAA9\uC744 \uBAA8\uB450 \uBE8D\uB2C8\uB2E4 (\uC9C4\uD589 \uC911\uC778 \uD56D\uBAA9\uC740 \uB05D\uAE4C\uC9C0 \uC218\uD589)"}
+        class="worker-merge-all worker-merge-all--stop${w?" is-active":""}"
+        title=${w?"\uC790\uB3D9 \uBA38\uC9C0\uB97C \uB044\uACE0 \uB300\uAE30 \uC911\uC778 \uD56D\uBAA9\uC744 \uBAA8\uB450 \uBE8D\uB2C8\uB2E4 (\uC9C4\uD589 \uC911\uC778 \uD56D\uBAA9\uC740 \uB05D\uAE4C\uC9C0 \uC218\uD589)":"\uB300\uAE30 \uC911\uC778 \uD56D\uBAA9\uC744 \uBAA8\uB450 \uBE8D\uB2C8\uB2E4 (\uC9C4\uD589 \uC911\uC778 \uD56D\uBAA9\uC740 \uB05D\uAE4C\uC9C0 \uC218\uD589)"}
       >
-        ${v?"\u23F8 \uC790\uB3D9 \uBA38\uC9C0 \uC911\uB2E8":"\uC77C\uAD04 \uBA38\uC9C0 \uC911\uB2E8"} ${p.merge_queue_length}
-      </button>`;if(v)return i`<button
+        ${w?"\u23F8 \uC790\uB3D9 \uBA38\uC9C0 \uC911\uB2E8":"\uC77C\uAD04 \uBA38\uC9C0 \uC911\uB2E8"} ${f.merge_queue_length}
+      </button>`;if(w)return l`<button
         type="button"
         class="worker-merge-all worker-merge-all--stop is-active"
         title="자동 머지 켜짐 — 자격이 생기는 PR을 계속 큐에 넣습니다. 클릭하면 끕니다"
       >
         ⏸ 자동 머지
-      </button>`;let B=new Set(p.auto_excluded),_=p.pr_wait.filter(h=>h.merge_action&&h.merge_enabled&&!B.has(h.id)).length;return i`<button
+      </button>`;let G=new Set(f.auto_excluded),_=f.pr_wait.filter(b=>b.merge_action&&b.merge_enabled&&!G.has(b.id)).length;return l`<button
       type="button"
       class="worker-merge-all"
       title="켜 두면 자격이 생기는 PR을 계속 큐에 넣어 순서대로 충돌 해소·머지합니다"
     >
       ▶ 자동 머지${_>0?` ${_}`:""}
-    </button>`}function Pt(p){let v=pr({id:"worker-pane-candidate",lane:"candidate",title:"\uD6C4\uBCF4 \xB7 Board \uC5F0\uB3D9",items:p.candidates,src:!0,empty:"\uD6C4\uBCF4 \uC5C6\uC74C",header_control:je(),controls:Ce(p),place_menu:pt(p.candidates)});return m?i`<div class="worker-lanes worker-lanes--mobile">
-        ${ye(p)}
-        ${pr({id:"worker-pane-queue",lane:"queue",title:"\uBCD1\uB82C \uB300\uAE30",items:p.waiting,empty:"\uB4DC\uB798\uADF8 \uB610\uB294 [\uB300\uAE30\uB85C \u21B4]\uB85C \uBC30\uCE58",collapsible:!0,collapsed:j.queue,preview:Ad(p.waiting)})}
-        ${p.serial_lanes.map(B=>ht(B))}
-        ${v}
-        ${pr({id:"worker-pane-done",lane:"done",title:"\uC644\uB8CC",items:p.done,empty:`${I()} \uC644\uB8CC \uC5C6\uC74C`,controls:Tt(),collapsible:!0,collapsed:j.done,preview:Array.isArray(p.token_total)?p.token_total.map(B=>B.label).join(" \xB7 "):p.token_total||Ad(p.done)})}
-      </div>`:i`<div class="worker-lanes">
-      ${v}
+    </button>`}function x(f){let w=sr({id:"worker-pane-candidate",lane:"candidate",title:"\uD6C4\uBCF4 \xB7 Board \uC5F0\uB3D9",items:f.candidates,src:!0,empty:"\uD6C4\uBCF4 \uC5C6\uC74C",header_control:Be(),controls:Me(f),place_menu:yt(f.candidates)});return $?l`<div class="worker-lanes worker-lanes--mobile">
+        ${Ae(f)}
+        ${sr({id:"worker-pane-queue",lane:"queue",title:"\uBCD1\uB82C \uB300\uAE30",items:f.waiting,empty:"\uB4DC\uB798\uADF8 \uB610\uB294 [\uB300\uAE30\uB85C \u21B4]\uB85C \uBC30\uCE58",collapsible:!0,collapsed:I.queue,preview:Pd(f.waiting)})}
+        ${f.serial_lanes.map(G=>vt(G))}
+        ${w}
+        ${sr({id:"worker-pane-done",lane:"done",title:"\uC644\uB8CC",items:f.done,empty:`${P()} \uC644\uB8CC \uC5C6\uC74C`,controls:At(),collapsible:!0,collapsed:I.done,preview:Array.isArray(f.token_total)?f.token_total.map(G=>G.label).join(" \xB7 "):f.token_total||Pd(f.done)})}
+      </div>`:l`<div class="worker-lanes">
+      ${w}
       <div class="worker-wait">
-        ${pr({id:"worker-pane-queue",lane:"queue",title:"\uBCD1\uB82C \uB300\uAE30",items:p.waiting,empty:"\uB4DC\uB798\uADF8\uB85C \uBC30\uCE58"})}
-        ${p.serial_lanes.map(B=>ht(B))}
+        ${sr({id:"worker-pane-queue",lane:"queue",title:"\uBCD1\uB82C \uB300\uAE30",items:f.waiting,empty:"\uB4DC\uB798\uADF8\uB85C \uBC30\uCE58"})}
+        ${f.serial_lanes.map(G=>vt(G))}
       </div>
-      ${pr({id:"worker-pane-running",lane:"running",title:`\uC2E4\uD589 \uC911 \xB7 \uC2AC\uB86F ${p.slots}`,items:p.running,live:p.running.some(B=>!B.paused&&B.failed!==!0),body:Ba(p.running,Date.now(),Ie)})}
-      ${pr({id:"worker-pane-pr-wait",lane:"pr_wait",title:"PR \uB300\uAE30",items:p.pr_wait,empty:"PR \uB300\uAE30 \uC5C6\uC74C"})}
-      ${pr({id:"worker-pane-done",lane:"done",title:`\uC644\uB8CC \xB7 ${I()} ${p.done.length}`,items:p.done,empty:`${I()} \uC644\uB8CC \uC5C6\uC74C`,controls:Tt()})}
-    </div>`}function wr(p){j={...j,[p]:!j[p]},yb(j),Ne()}function Ne(){let p=O();Ke(Te(p),Me),Ke(Pt(p),it)}function jt(){if(typeof window.matchMedia!="function")return;let p=window.matchMedia(bb);m=!!p.matches;let v=B=>{let _=!!(B&&typeof B.matches=="boolean"?B.matches:p.matches);_!==m&&(m=_,Ne())};typeof p.addEventListener=="function"?(p.addEventListener("change",v),te.push(()=>p.removeEventListener("change",v))):typeof p.addListener=="function"&&(p.addListener(v),te.push(()=>p.removeListener(v)))}let Yt=null;function tr(p){Yt=p.target instanceof Element?p.target:null}function rr(p){let B=p.target?.closest?.('.worker-mini[draggable="true"], .worker-card[draggable="true"]');if(!B)return;if(Yt&&B.contains(Yt)&&Yt.closest("input, button, a")){p.preventDefault();return}let _=B.dataset.beadId||"",h=B.dataset.lane||"";A={bead_id:_,from_lane:h};try{p.dataTransfer?.setData("text/plain",_),p.dataTransfer&&(p.dataTransfer.effectAllowed="move")}catch{}}function fr(p){let v=p.target?.closest?.(".worker-pane");if(!v)return;let B=v.dataset.lane||"";B!=="candidate"&&B!=="queue"&&!/^s[1-5]$/.test(B)||(p.preventDefault(),p.dataTransfer&&(p.dataTransfer.dropEffect="move"),v.classList.add("worker-pane--drag-over"))}function Ct(p){p.target?.closest?.(".worker-pane")?.classList.remove("worker-pane--drag-over")}function _r(p,v){let B=L.find(Q=>Q.id===p);if(!B)return;let _=L.filter(Q=>Q.id!==p),h=_.length;if(v){let Q=v.dataset.beadId;if(Q===p)return;let Re=_.findIndex(ge=>ge.id===Q);Re>=0&&(h=Re)}let ee=_.slice();ee.splice(h,0,B),x.applyReorder(p,ee,h)}function nr(p){let v=p.target?.closest?.(".worker-pane");if(!v)return;p.preventDefault(),v.classList.remove("worker-pane--drag-over");let B=v.dataset.lane||"",_=A?.bead_id||p.dataTransfer?.getData("text/plain")||"",h=A?.from_lane||"";if(A=null,!_)return;let ee=p.target?.closest?.(".worker-mini, .worker-card"),Q=Array.from(v.querySelectorAll(".worker-mini, .worker-card")),Re=Q.length;if(ee){let ge=Q.indexOf(ee);ge>=0&&(Re=ge)}if(Re=Math.max(0,Re-v.querySelectorAll(".worker-mini--ghost").length),v.classList.contains("worker-pane--collapsed")&&(Re=ve()),B==="candidate"){if(h==="candidate"){_r(_,ee);return}(h==="queue"||/^s[1-5]$/.test(h))&&T(_);return}if(B==="queue"||/^s[1-5]$/.test(B)){let ge=B==="queue"?"parallel":B;h===B?ke(_,ge,Re):ot(_,ge)}}function mr(p){z=p,cb(p),Ne()}function rt(p){se=p==="board"||p==="created"||p==="spec"?p:So,_b(se),Ne()}function Zt(p){q=Qt(p)?p:Ht,gb(q),f?.(q),Ne()}function Se(p){let v=p.target?.closest?.(".worker-serial-lane-count");if(v){let Re=Number.parseInt(v.value,10);Number.isFinite(Re)&&S(Re).then(Ne);return}let B=p.target?.closest?.(".worker-filter__blocked");if(B){mr({...z,show_blocked:B.checked});return}let _=p.target?.closest?.(".worker-done-range");if(_){Zt(_.value);return}let h=p.target?.closest?.(".worker-sort");if(h){rt(h.value||So);return}let ee=p.target?.closest?.(".worker-slots__input");if(!ee)return;let Q=Number.parseInt(ee.value,10);if(!Number.isFinite(Q)){Ne();return}k(Q).then(Ne)}function $(p){return p?{runner:p.runner||void 0,model:p.model||void 0,effort:p.effort||void 0,worktree:p.worktree||void 0,status:p.status||void 0,session_id:p.session_id||void 0}:{}}function ne(){let p=O();return{operations:p.repo_operations,cleanup_failures:p.cleanup_failures,repo:u&&u()||""}}function we(){Ie&&G.close(),Ve.hidden=!1,Oe.hidden=!1,Z.open(ne()),Ne()}function ut(p){let v=ze(),B=v.attempts?v.attempts[p]:null;Ie=p,Je=null,Z.close(),Ve.hidden=!0,Oe.hidden=!1,G.open({attempt_id:p,meta:$(B)}),Ne()}function xt(p,v){Ie=null,Je=p,Z.close(),Ve.hidden=!0,Oe.hidden=!1,G.open({attempt_id:p,meta:v,hide_prompt:!0}),Ne()}function _t(){if(Z.isOpen()&&Z.refresh(ne()),Je){let B=(o?.get()?.runs||[]).find(_=>_.run_id===Je);B?G.updateMeta(ei(B)):G.close();return}if(!Ie)return;let p=ze(),v=p.attempts?p.attempts[Ie]:null;if(v){G.updateMeta($(v));return}G.close()}function At(p){let v=p.target;if(v?.closest?.(".worker-mini__serial, .worker-mini__grip")||v?.closest?.("#worker-parallel-analysis-dialog"))return;if(v?.closest?.(".worker-analysis-btn")){Ge?.open();return}if(v?.closest?.(".worker-repo-strip")||v?.closest?.(".worker-mini__timeline")){we();return}let B=v?.closest?.(".worker-repo-op__session");if(B){let Le=B.dataset.attemptId;Le&&ut(Le);return}let _=v?.closest?.(".worker-repo-op__resolve");if(_){re(_.dataset.operationId||"");return}let h=v?.closest?.(".worker-repo-op__dismiss");if(h){be(h.dataset.operationId||"");return}let ee=v?.closest?.(".worker-cleanup__resume");if(ee){let Le=ee.dataset.beadId;Le&&C(Le);return}let Q=v?.closest?.(".worker-banner__resume");if(Q){let Le=Q.dataset.attemptId;Le&&P(Le);return}let Re=v?.closest?.(".worker-banner__discard");if(Re){let Le=Re.dataset.confirmation==="merged"?"merged":"unmerged";Fe(Re.dataset.beadId||"",Re.dataset.attemptId||null,Le,Re.dataset.operationId||null);return}let ge=v?.closest?.(".worker-banner__dismiss");if(ge){let Le=ge.dataset.attemptId;Le&&H(Le);return}if(v?.closest?.(".worker-play")){W(!ze().auto_advance);return}let w=v?.closest?.(".worker-merge-all");if(w){w.classList.contains("worker-merge-all--stop")?ze().auto_merge===!0?me(!1):Ee():me(!0);return}let K=v?.closest?.(".worker-pane__hd--toggle");if(K){let Le=K.dataset.lane;(Le==="queue"||Le==="done")&&wr(Le);return}let R=v?.closest?.(".worker-card__place-lane");if(R){let Le=R.dataset.beadId,vt=R.dataset.lane;Le&&(vt==="parallel"||/^s[1-5]$/.test(vt||""))&&(ae=null,Ne(),ot(Le,vt));return}if(v?.closest?.(".worker-card__place-cancel")){ae=null,Ne();return}let at=v?.closest?.(".worker-card__place");if(at){let Le=at.dataset.beadId;Le&&!at.disabled&&(ct()?(ae=Le,Ne()):ot(Le,"parallel"));return}let nt=v?.closest?.(".worker-filter__chip");if(nt){let Le=nt.dataset.spec;(Le==="all"||Le==="with"||Le==="without")&&mr({...z,spec:Le});return}let Ze=v?.closest?.(".worker-mini__merge");if(Ze){let Le=Ze.dataset.beadId||"";ze().cleanup_failed?.[Le]?C(Le):y(Le);return}let Xe=v?.closest?.(".worker-mini__merge-cancel");if(Xe){fe(Xe.dataset.beadId||"");return}let kt=v?.closest?.(".worker-mini__discard");if(kt){Fe(kt.dataset.beadId||"",kt.dataset.attemptId||null,kt.dataset.discardMode==="merged"?"merged":"unmerged",kt.dataset.operationId||null);return}let zt=v?.closest?.(".worker-mini__stale-continue");if(zt){Ye("worker-stale-work-continue",zt.dataset.beadId||"",zt.dataset.actionId||"");return}let an=v?.closest?.(".worker-mini__stale-backup");if(an){Ye("worker-stale-work-backup-fresh",an.dataset.beadId||"",an.dataset.actionId||"");return}let ln=v?.closest?.(".worker-mini__stale-recheck");if(ln){Ye("worker-stale-work-recheck",ln.dataset.beadId||"",ln.dataset.actionId||"");return}let cs=v?.closest?.(".worker-mini__revise-fix");if(cs){Qe("worker-revise-fix",cs.dataset.beadId||"");return}let cn=v?.closest?.(".worker-mini__revise-approve");if(cn){Qe("worker-revise-approve",cn.dataset.beadId||"");return}if(v?.closest?.(".worker-mini__pr"))return;if(v?.closest?.(".rtile__discard")){let Le=v?.closest?.(".rtile"),vt=Le?.dataset?.beadId,dn=Le?.dataset?.attemptId;vt&&Fe(vt,dn||null,"unmerged",v?.closest?.(".rtile__discard")?.dataset.operationId||null);return}if(v?.closest?.(".rtile__dismiss")){let vt=v?.closest?.(".rtile")?.dataset?.attemptId;vt&&H(vt);return}if(v?.closest?.(".rtile__pause")){let vt=v?.closest?.(".rtile")?.dataset?.attemptId;vt&&M(vt);return}if(v?.closest?.(".rtile__resume")){let vt=v?.closest?.(".rtile")?.dataset?.attemptId;vt&&P(vt);return}if(v?.closest?.(".rtile__session")){let vt=v?.closest?.(".rtile")?.dataset?.attemptId;vt&&ut(vt);return}if(v?.closest?.(".worker-drawer-overlay__backdrop")){Z.close(),G.close();return}if(v?.closest?.(".worker-drawer-host"))return;let Wr=v?.closest?.(".rtile .board-card__roll-toggle");if(Wr){let Le=Wr.dataset.rollParent;Le&&(de.has(Le)?de.delete(Le):de.add(Le),Ne());return}let zr=v?.closest?.(".rtile .board-card__roll-child");if(zr){let Le=zr.dataset.childId;Le&&c&&c(Le);return}let un=v?.closest?.(".rtile");if(un){if(v?.closest?.(".rtile__id")){let vt=un.dataset.beadId;vt&&ir(vt).then(dn=>{dn?pe("\uBCF5\uC0AC\uB428","success",1200):pe("\uBCF5\uC0AC \uC2E4\uD328","error",1600)});return}let Le=un.dataset.beadId;Le&&c&&c(Le);return}let us=v?.closest?.(".worker-mini, .worker-card");if(us){let Le=us.dataset.beadId;if(v?.closest?.(".worker-mini__id, .worker-card__id")){Le&&ir(Le).then(vt=>{vt?pe("\uBCF5\uC0AC\uB428","success",1200):pe("\uBCF5\uC0AC \uC2E4\uD328","error",1600)});return}Le&&c&&c(Le)}}return e.addEventListener("pointerdown",tr),e.addEventListener("dragstart",rr),e.addEventListener("dragover",fr),e.addEventListener("dragleave",Ct),e.addEventListener("drop",nr),e.addEventListener("click",At),e.addEventListener("change",Se),jt(),g&&te.push(g.subscribe(()=>{for(let[p,v]of N)v==="failed"&&N.delete(p);Ne()})),s&&te.push(s.subscribe(()=>{let p=u&&u()||"";p!==De&&(De=p,xe.close()),Ne(),_t()})),o&&typeof o.subscribe=="function"&&te.push(o.subscribe(()=>{_t(),Ne()})),Ne(),{load(){_e(),Ne()},refreshSessionDefaults:Pe,destroy(){for(let p of te.splice(0))try{p()}catch{}e.removeEventListener("pointerdown",tr),e.removeEventListener("dragstart",rr),e.removeEventListener("dragover",fr),e.removeEventListener("dragleave",Ct),e.removeEventListener("drop",nr),e.removeEventListener("click",At),e.removeEventListener("change",Se);try{G.destroy()}catch{}Oe.hidden=!0;try{Ge?.destroy()}catch{}try{xe.destroy()}catch{}Ke(i``,e)}}}function si(e){if(!e)return"Unknown";let t=e.split("/").filter(Boolean);return t.length>0?t[t.length-1]:"Unknown"}function Ld(e,t,r,n=async()=>{},s=async()=>{}){let o=yt("views:workspace-picker"),a=null,l=!1,c=!1,u=!1;async function d(j){let E=j.target.value,ue=t.getState().workspace?.current?.path||"";if(E&&E!==ue){o("switching workspace to %s",E),l=!0,I();try{await r(E)}catch(oe){o("workspace switch failed: %o",oe)}finally{l=!1,I()}}}async function f(){let j=t.getState(),m=j.workspace?.current?.path||j.workspace?.available?.[0]?.path||"";if(!(!m||c)){o("git-pulling workspace %s",m),c=!0,I();try{await n(m)}catch(E){o("workspace git pull failed: %o",E)}finally{c=!1,I()}}}function g(j){let m=j.target;m&&e.contains(m)||L()}function x(j){j.key==="Escape"&&L()}function A(){u||(u=!0,document.addEventListener("mousedown",g),document.addEventListener("keydown",x),I())}function L(){u&&(u=!1,document.removeEventListener("mousedown",g),document.removeEventListener("keydown",x),I())}function z(){u?L():A()}async function ae(j){let m=j.target,E=m.value,Y=m.checked;o("toggling visibility %s \u2192 %s",E,String(Y));try{await s(E,Y)}catch(ue){o("workspace visibility toggle failed: %o",ue)}}function se(j){return j?i`
+      ${sr({id:"worker-pane-running",lane:"running",title:`\uC2E4\uD589 \uC911 \xB7 \uC2AC\uB86F ${f.slots}`,items:f.running,live:f.running.some(G=>!G.paused&&G.failed!==!0),body:Ga(f.running,Date.now(),He)})}
+      ${sr({id:"worker-pane-pr-wait",lane:"pr_wait",title:"PR \uB300\uAE30",items:f.pr_wait,empty:"PR \uB300\uAE30 \uC5C6\uC74C"})}
+      ${sr({id:"worker-pane-done",lane:"done",title:`\uC644\uB8CC \xB7 ${P()} ${f.done.length}`,items:f.done,empty:`${P()} \uC644\uB8CC \uC5C6\uC74C`,controls:At()})}
+    </div>`}function N(f){I={...I,[f]:!I[f]},Ih(I),j()}function j(){let f=W();Ve(Ce(f),D),Ve(x(f),_t)}function ye(){if(typeof window.matchMedia!="function")return;let f=window.matchMedia(Ch);$=!!f.matches;let w=G=>{let _=!!(G&&typeof G.matches=="boolean"?G.matches:f.matches);_!==$&&($=_,j())};typeof f.addEventListener=="function"?(f.addEventListener("change",w),se.push(()=>f.removeEventListener("change",w))):typeof f.addListener=="function"&&(f.addListener(w),se.push(()=>f.removeListener(w)))}let ke=null;function qe(f){ke=f.target instanceof Element?f.target:null}function ze(f){let G=f.target?.closest?.('.worker-mini[draggable="true"], .worker-card[draggable="true"]');if(!G)return;if(ke&&G.contains(ke)&&ke.closest("input, button, a")){f.preventDefault();return}let _=G.dataset.beadId||"",b=G.dataset.lane||"";C={bead_id:_,from_lane:b};try{f.dataTransfer?.setData("text/plain",_),f.dataTransfer&&(f.dataTransfer.effectAllowed="move")}catch{}}function kt(f){let w=f.target?.closest?.(".worker-pane");if(!w)return;let G=w.dataset.lane||"";G!=="candidate"&&G!=="queue"&&!/^s[1-5]$/.test(G)||(f.preventDefault(),f.dataTransfer&&(f.dataTransfer.dropEffect="move"),w.classList.add("worker-pane--drag-over"))}function mt(f){f.target?.closest?.(".worker-pane")?.classList.remove("worker-pane--drag-over")}function Ft(f,w){let G=F.find(ie=>ie.id===f);if(!G)return;let _=F.filter(ie=>ie.id!==f),b=_.length;if(w){let ie=w.dataset.beadId;if(ie===f)return;let Ue=_.findIndex(xe=>xe.id===ie);Ue>=0&&(b=Ue)}let le=_.slice();le.splice(b,0,G),v.applyReorder(f,le,b)}function Tt(f){let w=f.target?.closest?.(".worker-pane");if(!w)return;f.preventDefault(),w.classList.remove("worker-pane--drag-over");let G=w.dataset.lane||"",_=C?.bead_id||f.dataTransfer?.getData("text/plain")||"",b=C?.from_lane||"";if(C=null,!_)return;let le=f.target?.closest?.(".worker-mini, .worker-card"),ie=Array.from(w.querySelectorAll(".worker-mini, .worker-card")),Ue=ie.length;if(le){let xe=ie.indexOf(le);xe>=0&&(Ue=xe)}if(Ue=Math.max(0,Ue-w.querySelectorAll(".worker-mini--ghost").length),w.classList.contains("worker-pane--collapsed")&&(Ue=Q()),G==="candidate"){if(b==="candidate"){Ft(_,le);return}(b==="queue"||/^s[1-5]$/.test(b))&&Ne(_);return}if(G==="queue"||/^s[1-5]$/.test(G)){let xe=G==="queue"?"parallel":G;b===G?ee(_,xe,Ue):Ee(_,xe)}}function Nt(f){H=f,wh(f),j()}function nt(f){V=f==="board"||f==="created"||f==="spec"?f:Oo,Sh(V),j()}function zt(f){q=ar(f)?f:er,Th(q),p?.(q),j()}function Fe(f){let w=f.target?.closest?.(".worker-serial-lane-count");if(w){let Ue=Number.parseInt(w.value,10);Number.isFinite(Ue)&&R(Ue).then(j);return}let G=f.target?.closest?.(".worker-filter__blocked");if(G){Nt({...H,show_blocked:G.checked});return}let _=f.target?.closest?.(".worker-done-range");if(_){zt(_.value);return}let b=f.target?.closest?.(".worker-sort");if(b){nt(b.value||Oo);return}let le=f.target?.closest?.(".worker-slots__input");if(!le)return;let ie=Number.parseInt(le.value,10);if(!Number.isFinite(ie)){j();return}y(ie).then(j)}function S(f){return f?{runner:f.runner||void 0,model:f.model||void 0,effort:f.effort||void 0,worktree:f.worktree||void 0,status:f.status||void 0,session_id:f.session_id||void 0}:{}}function de(){let f=W();return{operations:f.repo_operations,cleanup_failures:f.cleanup_failures,repo:u&&u()||""}}function Pe(){He&&tt.close(),Oe.hidden=!1,ce.hidden=!1,Y.open(de()),j()}function ht(f){let w=rt(),G=w.attempts?w.attempts[f]:null;He=f,pt=null,Y.close(),Oe.hidden=!0,ce.hidden=!1,tt.open({attempt_id:f,meta:S(G)}),j()}function Mt(f,w){He=null,pt=f,Y.close(),Oe.hidden=!0,ce.hidden=!1,tt.open({attempt_id:f,meta:w,hide_prompt:!0}),j()}function $t(){if(Y.isOpen()&&Y.refresh(de()),pt){let G=(o?.get()?.runs||[]).find(_=>_.run_id===pt);G?tt.updateMeta(oi(G)):tt.close();return}if(!He)return;let f=rt(),w=f.attempts?f.attempts[He]:null;if(w){tt.updateMeta(S(w));return}tt.close()}function Dt(f){let w=f.target;if(w?.closest?.(".worker-mini__serial, .worker-mini__grip")||w?.closest?.("#worker-parallel-analysis-dialog"))return;if(w?.closest?.(".worker-analysis-btn")){je?.open();return}if(w?.closest?.(".worker-repo-strip")||w?.closest?.(".worker-mini__timeline")){Pe();return}let G=w?.closest?.(".worker-repo-op__session");if(G){let We=G.dataset.attemptId;We&&ht(We);return}let _=w?.closest?.(".worker-repo-op__resolve");if(_){te(_.dataset.operationId||"");return}let b=w?.closest?.(".worker-repo-op__dismiss");if(b){ve(b.dataset.operationId||"");return}let le=w?.closest?.(".worker-cleanup__resume");if(le){let We=le.dataset.beadId;We&&ut(We);return}let ie=w?.closest?.(".worker-banner__resume");if(ie){let We=ie.dataset.attemptId;We&&st(We);return}let Ue=w?.closest?.(".worker-banner__discard");if(Ue){let We=Ue.dataset.confirmation==="merged"?"merged":"unmerged";be(Ue.dataset.beadId||"",Ue.dataset.attemptId||null,We,Ue.dataset.operationId||null);return}let xe=w?.closest?.(".worker-banner__dismiss");if(xe){let We=xe.dataset.attemptId;We&&Ye(We);return}if(w?.closest?.(".worker-play")){B(!rt().auto_advance);return}let k=w?.closest?.(".worker-merge-all");if(k){k.classList.contains("worker-merge-all--stop")?rt().auto_merge===!0?gt(!1):J():gt(!0);return}let X=w?.closest?.(".worker-pane__hd--toggle");if(X){let We=X.dataset.lane;(We==="queue"||We==="done")&&N(We);return}let L=w?.closest?.(".worker-card__place-lane");if(L){let We=L.dataset.beadId,It=L.dataset.lane;We&&(It==="parallel"||/^s[1-5]$/.test(It||""))&&(re=null,j(),Ee(We,It));return}if(w?.closest?.(".worker-card__place-cancel")){re=null,j();return}let lt=w?.closest?.(".worker-card__place");if(lt){let We=lt.dataset.beadId;We&&!lt.disabled&&(Qe()?(re=We,j()):Ee(We,"parallel"));return}let at=w?.closest?.(".worker-filter__chip");if(at){let We=at.dataset.spec;(We==="all"||We==="with"||We==="without")&&Nt({...H,spec:We});return}let Xe=w?.closest?.(".worker-mini__merge");if(Xe){let We=Xe.dataset.beadId||"";rt().cleanup_failed?.[We]?ut(We):ft(We);return}let Je=w?.closest?.(".worker-mini__merge-cancel");if(Je){U(Je.dataset.beadId||"");return}let Ot=w?.closest?.(".worker-mini__discard");if(Ot){be(Ot.dataset.beadId||"",Ot.dataset.attemptId||null,Ot.dataset.discardMode==="merged"?"merged":"unmerged",Ot.dataset.operationId||null);return}let Jt=w?.closest?.(".worker-mini__stale-continue");if(Jt){Ge("worker-stale-work-continue",Jt.dataset.beadId||"",Jt.dataset.actionId||"");return}let an=w?.closest?.(".worker-mini__stale-backup");if(an){Ge("worker-stale-work-backup-fresh",an.dataset.beadId||"",an.dataset.actionId||"");return}let ln=w?.closest?.(".worker-mini__stale-recheck");if(ln){Ge("worker-stale-work-recheck",ln.dataset.beadId||"",ln.dataset.actionId||"");return}let hs=w?.closest?.(".worker-mini__revise-fix");if(hs){De("worker-revise-fix",hs.dataset.beadId||"");return}let cn=w?.closest?.(".worker-mini__revise-approve");if(cn){De("worker-revise-approve",cn.dataset.beadId||"");return}if(w?.closest?.(".worker-mini__pr"))return;if(w?.closest?.(".rtile__discard")){let We=w?.closest?.(".rtile"),It=We?.dataset?.beadId,dn=We?.dataset?.attemptId;It&&be(It,dn||null,"unmerged",w?.closest?.(".rtile__discard")?.dataset.operationId||null);return}if(w?.closest?.(".rtile__dismiss")){let It=w?.closest?.(".rtile")?.dataset?.attemptId;It&&Ye(It);return}if(w?.closest?.(".rtile__pause")){let It=w?.closest?.(".rtile")?.dataset?.attemptId;It&&et(It);return}if(w?.closest?.(".rtile__resume")){let It=w?.closest?.(".rtile")?.dataset?.attemptId;It&&st(It);return}if(w?.closest?.(".rtile__session")){let It=w?.closest?.(".rtile")?.dataset?.attemptId;It&&ht(It);return}if(w?.closest?.(".worker-drawer-overlay__backdrop")){Y.close(),tt.close();return}if(w?.closest?.(".worker-drawer-host"))return;let Ur=w?.closest?.(".rtile .board-card__roll-toggle");if(Ur){let We=Ur.dataset.rollParent;We&&(me.has(We)?me.delete(We):me.add(We),j());return}let Wr=w?.closest?.(".rtile .board-card__roll-child");if(Wr){let We=Wr.dataset.childId;We&&c&&c(We);return}let un=w?.closest?.(".rtile");if(un){if(w?.closest?.(".rtile__id")){let It=un.dataset.beadId;It&&tr(It).then(dn=>{dn?he("\uBCF5\uC0AC\uB428","success",1200):he("\uBCF5\uC0AC \uC2E4\uD328","error",1600)});return}let We=un.dataset.beadId;We&&c&&c(We);return}let bs=w?.closest?.(".worker-mini, .worker-card");if(bs){let We=bs.dataset.beadId;if(w?.closest?.(".worker-mini__id, .worker-card__id")){We&&tr(We).then(It=>{It?he("\uBCF5\uC0AC\uB428","success",1200):he("\uBCF5\uC0AC \uC2E4\uD328","error",1600)});return}We&&c&&c(We)}}return e.addEventListener("pointerdown",qe),e.addEventListener("dragstart",ze),e.addEventListener("dragover",kt),e.addEventListener("dragleave",mt),e.addEventListener("drop",Tt),e.addEventListener("click",Dt),e.addEventListener("change",Fe),ye(),m&&se.push(m.subscribe(()=>{for(let[f,w]of O)w==="failed"&&O.delete(f);j()})),s&&se.push(s.subscribe(()=>{let f=u&&u()||"";f!==Se&&(Se=f,Z.close()),j(),$t()})),o&&typeof o.subscribe=="function"&&se.push(o.subscribe(()=>{$t(),j()})),j(),{load(){A(),j()},refreshSessionDefaults:ue,destroy(){for(let f of se.splice(0))try{f()}catch{}e.removeEventListener("pointerdown",qe),e.removeEventListener("dragstart",ze),e.removeEventListener("dragover",kt),e.removeEventListener("dragleave",mt),e.removeEventListener("drop",Tt),e.removeEventListener("click",Dt),e.removeEventListener("change",Fe);try{tt.destroy()}catch{}ce.hidden=!0;try{je?.destroy()}catch{}try{Z.destroy()}catch{}Ve(l``,e)}}}function ci(e){if(!e)return"Unknown";let t=e.split("/").filter(Boolean);return t.length>0?t[t.length-1]:"Unknown"}function Bd(e,t,r,n=async()=>{},s=async()=>{}){let o=Ct("views:workspace-picker"),a=null,i=!1,c=!1,u=!1;async function d(I){let M=I.target.value,pe=t.getState().workspace?.current?.path||"";if(M&&M!==pe){o("switching workspace to %s",M),i=!0,P();try{await r(M)}catch(_e){o("workspace switch failed: %o",_e)}finally{i=!1,P()}}}async function p(){let I=t.getState(),$=I.workspace?.current?.path||I.workspace?.available?.[0]?.path||"";if(!(!$||c)){o("git-pulling workspace %s",$),c=!0,P();try{await n($)}catch(M){o("workspace git pull failed: %o",M)}finally{c=!1,P()}}}function m(I){let $=I.target;$&&e.contains($)||F()}function v(I){I.key==="Escape"&&F()}function C(){u||(u=!0,document.addEventListener("mousedown",m),document.addEventListener("keydown",v),P())}function F(){u&&(u=!1,document.removeEventListener("mousedown",m),document.removeEventListener("keydown",v),P())}function H(){u?F():C()}async function re(I){let $=I.target,M=$.value,K=$.checked;o("toggling visibility %s \u2192 %s",M,String(K));try{await s(M,K)}catch(pe){o("workspace visibility toggle failed: %o",pe)}}function V(I){return I?l`
       <button
         type="button"
         class="workspace-picker__git-pull-button"
-        @click=${f}
-        ?disabled=${l||c}
+        @click=${p}
+        ?disabled=${i||c}
         aria-label="Git Pull"
         title="Git Pull"
       >
         <span aria-hidden="true">⬇</span>
       </button>
-    `:i``}function q(j,m){return i`
+    `:l``}function q(I,$){return l`
       <div class="workspace-picker__manage">
         <button
           type="button"
           class="workspace-picker__manage-button"
-          @click=${z}
+          @click=${H}
           aria-haspopup="true"
           aria-expanded=${u?"true":"false"}
           aria-label="프로젝트 관리"
         >
           프로젝트 관리
         </button>
-        ${u?i`
+        ${u?l`
               <div
                 class="workspace-picker__manage-popover"
                 role="menu"
                 aria-label="프로젝트 표시 선택"
               >
-                ${j.map(E=>i`
+                ${I.map(M=>l`
                     <label
                       class="workspace-picker__manage-row"
-                      title="${E.path}"
+                      title="${M.path}"
                     >
                       <input
                         type="checkbox"
                         class="workspace-picker__manage-checkbox"
-                        value="${E.path}"
-                        .checked=${!m.has(E.path)}
-                        @change=${ae}
+                        value="${M.path}"
+                        .checked=${!$.has(M.path)}
+                        @change=${re}
                       />
                       <span class="workspace-picker__manage-name"
-                        >${si(E.path)}</span
+                        >${ci(M.path)}</span
                       >
                     </label>
                   `)}
               </div>
             `:""}
       </div>
-    `}function N(){let j=t.getState(),m=j.workspace?.current,E=j.workspace?.available||[],Y=new Set(j.workspace?.hidden||[]),ue=m?.path||E[0]?.path||"";if(E.length===0)return i``;let oe=E.filter(de=>!Y.has(de.path)||de.path===ue);if(oe.length<=1){let de=oe[0]||E[0],Ue=si(de.path);return i`
+    `}function O(){let I=t.getState(),$=I.workspace?.current,M=I.workspace?.available||[],K=new Set(I.workspace?.hidden||[]),pe=$?.path||M[0]?.path||"";if(M.length===0)return l``;let _e=M.filter(me=>!K.has(me.path)||me.path===pe);if(_e.length<=1){let me=_e[0]||M[0],ae=ci(me.path);return l`
         <div class="workspace-picker workspace-picker--single">
-          <span class="workspace-picker__label" title="${de.path}"
-            >${Ue}</span
+          <span class="workspace-picker__label" title="${me.path}"
+            >${ae}</span
           >
-          ${q(E,Y)}
-          ${se(ue)}
-          ${c?i`<span
+          ${q(M,K)}
+          ${V(pe)}
+          ${c?l`<span
                 class="workspace-picker__loading"
                 aria-hidden="true"
               ></span>`:""}
         </div>
-      `}return i`
+      `}return l`
       <div class="workspace-picker">
         <select
           class="workspace-picker__select"
           @change=${d}
-          ?disabled=${l||c}
+          ?disabled=${i||c}
           aria-label="Select project workspace"
         >
-          ${oe.map(de=>i`
+          ${_e.map(me=>l`
               <option
-                value="${de.path}"
-                ?selected=${de.path===ue}
-                title="${de.path}"
+                value="${me.path}"
+                ?selected=${me.path===pe}
+                title="${me.path}"
               >
-                ${si(de.path)}
+                ${ci(me.path)}
               </option>
             `)}
         </select>
-        ${q(E,Y)}
-        ${se(ue)}
-        ${l||c?i`<span
+        ${q(M,K)}
+        ${V(pe)}
+        ${i||c?l`<span
               class="workspace-picker__loading"
               aria-hidden="true"
             ></span>`:""}
       </div>
-    `}function I(){Ke(N(),e)}return I(),a=t.subscribe(()=>I()),{destroy(){a&&(a(),a=null),document.removeEventListener("mousedown",g),document.removeEventListener("keydown",x),Ke(i``,e)}}}var Od=["update-status","edit-text","update-priority","create-issue","dep-add","dep-remove","update-assignee","update-exec-settings","update-impl-target","get-session-defaults","set-session-defaults","update-workflow-meta","label-add","label-remove","subscribe-list","unsubscribe-list","snapshot","upsert","delete","get-comments","add-comment","delete-issue","list-workspaces","set-workspace","set-workspace-visibility","get-workspace","workspace-changed","git-pull-workspace","subscribe-worker-queue","unsubscribe-worker-queue","worker-queue-snapshot","worker-queue-place","worker-queue-reorder","worker-queue-toggle","worker-automation-toggle","worker-auto-repair-toggle","worker-repo-ops-opt-out-toggle","worker-repo-operation-repair","worker-repo-operation-dismiss","worker-queue-set-slots","worker-queue-set-serial-lane-count","subscribe-worker-parallel-analysis","unsubscribe-worker-parallel-analysis","worker-parallel-analysis-snapshot","worker-parallel-analysis-targets","worker-parallel-analysis-prompt","worker-parallel-analysis-start","worker-parallel-analysis-cancel","worker-parallel-analysis-settings-update","worker-parallel-analysis-submit","worker-queue-set-orchestration-defaults","worker-queue-remove","worker-attempt-pause","worker-attempt-stop","worker-attempt-resume","worker-attempt-dismiss","worker-cleanup-retry","worker-merge-queue-add","worker-merge-queue-add-all","worker-merge-auto-toggle","worker-merge-queue-remove","worker-discard","worker-stale-work-continue","worker-stale-work-backup-fresh","worker-stale-work-recheck","worker-pr-discard","worker-revise-fix","worker-revise-approve","subscribe-ui-order","unsubscribe-ui-order","ui-order-set","ui-order-snapshot","subscribe-display-policy","unsubscribe-display-policy","display-policy-set","display-policy-snapshot","subscribe-session-log","unsubscribe-session-log","session-log-snapshot","session-log-append","get-attempt-prompt","get-bead-prompt","get-worker-system-prompt","subscribe-monitor-pipeline","unsubscribe-monitor-pipeline","monitor-pipeline-snapshot","subscribe-impl-presets","unsubscribe-impl-presets","impl-presets-snapshot","impl-preset-create","impl-preset-update","impl-preset-delete","apply-impl-preset","apply-impl-preset-global","monitor-auto-toggle"];function oi(){let e=Date.now().toString(36),t=Math.random().toString(36).slice(2,8);return`${e}-${t}`}function Md(e,t,r=oi()){return{id:r,type:e,payload:t}}function Pd(e={}){let t=yt("ws"),r={initialMs:e.backoff?.initialMs??1e3,maxMs:e.backoff?.maxMs??3e4,factor:e.backoff?.factor??2,jitterRatio:e.backoff?.jitterRatio??.2},n=()=>e.url&&e.url.length>0?e.url:typeof location<"u"?(location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws":"ws://localhost/ws",s=null,o="closed",a=0,l=null,c=!0,u=new Map,d=[],f=new Map,g=new Set;function x(N){for(let I of Array.from(g))try{I(N)}catch{}}function A(){if(!c||l)return;o="reconnecting",t("ws reconnecting\u2026"),x(o);let N=Math.min(r.maxMs||0,(r.initialMs||0)*Math.pow(r.factor||1,a)),I=(r.jitterRatio||0)*N,j=Math.max(0,Math.round(N+(Math.random()*2-1)*I));t("ws retry in %d ms (attempt %d)",j,a+1),l=setTimeout(()=>{l=null,q()},j)}function L(N){try{s?.send(JSON.stringify(N))}catch(I){t("ws send failed",I)}}function z(){for(o="open",t("ws open"),x(o),a=0;d.length;){let N=d.shift();N&&L(N)}}function ae(N){let I;try{I=JSON.parse(String(N.data))}catch{t("ws received non-JSON message");return}if(!I||typeof I.id!="string"||typeof I.type!="string"){t("ws received invalid envelope");return}if(u.has(I.id)){let m=u.get(I.id);u.delete(I.id),I.ok?m?.resolve(I.payload):m?.reject(I.error||new Error("ws error"));return}let j=f.get(I.type);if(j&&j.size>0)for(let m of Array.from(j))try{m(I.payload)}catch(E){t("ws event handler error",E)}else t("ws received unhandled message type: %s",I.type)}function se(){o="closed",t("ws closed"),x(o);for(let[N,I]of u.entries())I.reject(new Error("ws disconnected")),u.delete(N);a+=1,A()}function q(){if(!c)return;let N=n();try{s=new WebSocket(N),t("ws connecting %s",N),o="connecting",x(o),s.addEventListener("open",z),s.addEventListener("message",ae),s.addEventListener("error",()=>{}),s.addEventListener("close",se)}catch(I){t("ws connect failed %o",I),A()}}return q(),{send(N,I){if(!Od.includes(N))return Promise.reject(new Error(`unknown message type: ${N}`));let j=oi(),m=Md(N,I,j);return t("send %s id=%s",N,j),new Promise((E,Y)=>{u.set(j,{resolve:E,reject:Y,type:N}),s&&s.readyState===s.OPEN?L(m):(t("queue %s id=%s (state=%s)",N,j,o),d.push(m))})},on(N,I){f.has(N)||f.set(N,new Set);let j=f.get(N);return j?.add(I),()=>{j?.delete(I)}},onConnection(N){return g.add(N),()=>{g.delete(N)}},reconnect(){c=!0,l&&(clearTimeout(l),l=null),a=0,q()},close(){c=!1,l&&(clearTimeout(l),l=null);try{s?.close()}catch{}},getState(){return o}}}function Rb(){let e=window.__BDUI_BOOTSTRAP__;return{workspace_config:{default_workspace:typeof e?.workspace_config?.default_workspace=="string"&&e.workspace_config.default_workspace.length>0?e.workspace_config.default_workspace:null}}}async function Ib(e,t){try{let n=await(await fetch("/api/config")).json();e.setState({config:n})}catch(r){t("config refresh failed",r)}}var ai=[["tab:board:ready","ready-issues"],["tab:board:blocked","blocked-issues"],["tab:board:in-progress","in-progress-issues"],["tab:board:resolved","resolved-issues"],["tab:board:deferred","deferred-issues"],["tab:board:closed","closed-issues"]],Dd=[["tab:worker:ready","ready-issues"],["tab:worker:blocked","blocked-issues"],["tab:worker:in-progress","in-progress-issues"],["tab:worker:resolved","resolved-issues"],["tab:worker:closed","closed-issues"]],Br="tab:worker:closed",Lb="bdui.worker.done-range",Nd=Nu,qd="worker:queue",Fd="worker:parallel-analysis",jd="ui:order",Bd="ui:display-policy",Ud="exec:presets",Ur="tab:board:closed",Wd="beads-ui.board.closed-range";function Ob(e){let t=yt("main");t("bootstrap start");let r=i`
+    `}function P(){Ve(O(),e)}return P(),a=t.subscribe(()=>P()),{destroy(){a&&(a(),a=null),document.removeEventListener("mousedown",m),document.removeEventListener("keydown",v),Ve(l``,e)}}}var Ud=["update-status","edit-text","update-priority","create-issue","dep-add","dep-remove","update-assignee","update-exec-settings","update-impl-target","get-session-defaults","set-session-defaults","update-workflow-meta","label-add","label-remove","subscribe-list","unsubscribe-list","snapshot","upsert","delete","get-comments","add-comment","delete-issue","list-workspaces","set-workspace","set-workspace-visibility","get-workspace","workspace-changed","git-pull-workspace","subscribe-worker-queue","unsubscribe-worker-queue","worker-queue-snapshot","worker-queue-place","worker-queue-reorder","worker-queue-toggle","worker-automation-toggle","worker-auto-repair-toggle","worker-repo-ops-opt-out-toggle","worker-repo-operation-repair","worker-repo-operation-dismiss","worker-queue-set-slots","worker-queue-set-serial-lane-count","subscribe-worker-parallel-analysis","unsubscribe-worker-parallel-analysis","worker-parallel-analysis-snapshot","worker-parallel-analysis-targets","worker-parallel-analysis-prompt","worker-parallel-analysis-start","worker-parallel-analysis-cancel","worker-parallel-analysis-settings-update","worker-parallel-analysis-submit","worker-queue-set-orchestration-defaults","worker-queue-remove","worker-attempt-pause","worker-attempt-stop","worker-attempt-resume","worker-attempt-dismiss","worker-cleanup-retry","worker-merge-queue-add","worker-merge-queue-add-all","worker-merge-auto-toggle","worker-merge-queue-remove","worker-discard","worker-stale-work-continue","worker-stale-work-backup-fresh","worker-stale-work-recheck","worker-pr-discard","worker-revise-fix","worker-revise-approve","subscribe-ui-order","unsubscribe-ui-order","ui-order-set","ui-order-snapshot","subscribe-display-policy","unsubscribe-display-policy","display-policy-set","display-policy-snapshot","subscribe-session-log","unsubscribe-session-log","session-log-snapshot","session-log-append","get-attempt-prompt","get-bead-prompt","get-worker-system-prompt","subscribe-monitor-pipeline","unsubscribe-monitor-pipeline","monitor-pipeline-snapshot","subscribe-impl-presets","unsubscribe-impl-presets","impl-presets-snapshot","impl-preset-create","impl-preset-update","impl-preset-delete","apply-impl-preset","apply-impl-preset-global","monitor-auto-toggle"];function ui(){let e=Date.now().toString(36),t=Math.random().toString(36).slice(2,8);return`${e}-${t}`}function Wd(e,t,r=ui()){return{id:r,type:e,payload:t}}function zd(e={}){let t=Ct("ws"),r={initialMs:e.backoff?.initialMs??1e3,maxMs:e.backoff?.maxMs??3e4,factor:e.backoff?.factor??2,jitterRatio:e.backoff?.jitterRatio??.2},n=()=>e.url&&e.url.length>0?e.url:typeof location<"u"?(location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws":"ws://localhost/ws",s=null,o="closed",a=0,i=null,c=!0,u=new Map,d=[],p=new Map,m=new Set;function v(O){for(let P of Array.from(m))try{P(O)}catch{}}function C(){if(!c||i)return;o="reconnecting",t("ws reconnecting\u2026"),v(o);let O=Math.min(r.maxMs||0,(r.initialMs||0)*Math.pow(r.factor||1,a)),P=(r.jitterRatio||0)*O,I=Math.max(0,Math.round(O+(Math.random()*2-1)*P));t("ws retry in %d ms (attempt %d)",I,a+1),i=setTimeout(()=>{i=null,q()},I)}function F(O){try{s?.send(JSON.stringify(O))}catch(P){t("ws send failed",P)}}function H(){for(o="open",t("ws open"),v(o),a=0;d.length;){let O=d.shift();O&&F(O)}}function re(O){let P;try{P=JSON.parse(String(O.data))}catch{t("ws received non-JSON message");return}if(!P||typeof P.id!="string"||typeof P.type!="string"){t("ws received invalid envelope");return}if(u.has(P.id)){let $=u.get(P.id);u.delete(P.id),P.ok?$?.resolve(P.payload):$?.reject(P.error||new Error("ws error"));return}let I=p.get(P.type);if(I&&I.size>0)for(let $ of Array.from(I))try{$(P.payload)}catch(M){t("ws event handler error",M)}else t("ws received unhandled message type: %s",P.type)}function V(){o="closed",t("ws closed"),v(o);for(let[O,P]of u.entries())P.reject(new Error("ws disconnected")),u.delete(O);a+=1,C()}function q(){if(!c)return;let O=n();try{s=new WebSocket(O),t("ws connecting %s",O),o="connecting",v(o),s.addEventListener("open",H),s.addEventListener("message",re),s.addEventListener("error",()=>{}),s.addEventListener("close",V)}catch(P){t("ws connect failed %o",P),C()}}return q(),{send(O,P){if(!Ud.includes(O))return Promise.reject(new Error(`unknown message type: ${O}`));let I=ui(),$=Wd(O,P,I);return t("send %s id=%s",O,I),new Promise((M,K)=>{u.set(I,{resolve:M,reject:K,type:O}),s&&s.readyState===s.OPEN?F($):(t("queue %s id=%s (state=%s)",O,I,o),d.push($))})},on(O,P){p.has(O)||p.set(O,new Set);let I=p.get(O);return I?.add(P),()=>{I?.delete(P)}},onConnection(O){return m.add(O),()=>{m.delete(O)}},reconnect(){c=!0,i&&(clearTimeout(i),i=null),a=0,q()},close(){c=!1,i&&(clearTimeout(i),i=null);try{s?.close()}catch{}},getState(){return o}}}function Uh(){let e=window.__BDUI_BOOTSTRAP__;return{workspace_config:{default_workspace:typeof e?.workspace_config?.default_workspace=="string"&&e.workspace_config.default_workspace.length>0?e.workspace_config.default_workspace:null}}}async function Wh(e,t){try{let n=await(await fetch("/api/config")).json();e.setState({config:n})}catch(r){t("config refresh failed",r)}}var di=[["tab:board:ready","ready-issues"],["tab:board:blocked","blocked-issues"],["tab:board:in-progress","in-progress-issues"],["tab:board:resolved","resolved-issues"],["tab:board:deferred","deferred-issues"],["tab:board:closed","closed-issues"]],Hd=[["tab:worker:ready","ready-issues"],["tab:worker:blocked","blocked-issues"],["tab:worker:in-progress","in-progress-issues"],["tab:worker:resolved","resolved-issues"],["tab:worker:closed","closed-issues"]],jr="tab:worker:closed",zh="bdui.worker.done-range",Gd=Yu,Kd="worker:queue",Vd="worker:parallel-analysis",Yd="ui:order",Zd="ui:display-policy",Qd="exec:presets",Br="tab:board:closed",Xd="beads-ui.board.closed-range";function Hh(e){let t=Ct("main");t("bootstrap start");let r=l`
     <section id="board-root" class="route board"></section>
     <section id="worker-root" class="route worker" hidden></section>
     <section id="monitor-root" class="route monitor" hidden></section>
     <section id="detail-panel" class="route detail" hidden></section>
-  `;Ke(r,e);let n=document.getElementById("global-nav"),s=document.getElementById("top-nav"),o=document.getElementById("repo-scope"),a=document.getElementById("usage-meter"),l=document.getElementById("board-root"),c=document.getElementById("worker-root"),u=document.getElementById("monitor-root"),d=document.getElementById("detail-panel");if(a&&nd(a),l&&c&&u&&d){let Pe=function(_,h){let ee="Request failed",Q="";if(_&&typeof _=="object"){let ge=_;if(typeof ge.message=="string"&&ge.message.length>0&&(ee=ge.message),typeof ge.details=="string")Q=ge.details;else if(ge.details&&typeof ge.details=="object")try{Q=JSON.stringify(ge.details,null,2)}catch{Q=""}}else typeof _=="string"&&_.length>0&&(ee=_);let Re=h&&h.length>0?`Failed to load ${h}`:"Request failed";_e.open(Re,ee,Q)},V=function(_){return`${rt.getState().workspace.current?.path||""}\0${_}`},ve=function(){xe&&(xe().catch(()=>{}),xe=null),De=null,We=null},ke=function(_){Ge=_;let h=()=>{Ge!==_||rt.getState().selected_id!==_||(Ge=null,ot(_))};if(!pt){ct.then(h);return}h()},H=function(_,h,ee,Q,Re){return ee!==P[h]?(Re().catch(()=>{}),!1):(_.set(Q,Re),!0)},y=function(){let _=rt.getState();Ee(_.view==="board"),be(_.view==="worker"),Te(_.view==="monitor"),S(_.view==="board"||_.view==="worker"||ce||!!_.selected_id)},me=function(){let _=Zr(C);return _===void 0?{type:"closed-issues"}:{type:"closed-issues",params:{since:_}}},fe=function(){let _=Zr(D);return _===void 0?{type:"closed-issues"}:{type:"closed-issues",params:{since:_}}},Ee=function(_){if(_)for(let[h,ee]of ai){if(T.has(h)||M.has(h))continue;let Q=h===Ur?me():{type:ee};try{He.register(h,Q)}catch(w){t("register %s store failed: %o",h,w)}M.add(h);let Re=P.board,ge=!1;Oe.subscribeList(h,Q).then(w=>{ge=!H(T,"board",Re,h,w)}).catch(w=>{t("subscribe %s failed: %o",h,w),Pe(w,"board")}).finally(()=>{M.delete(h),ge&&y()})}else Qe()},Qe=function(){P.board+=1;for(let[_]of ai){let h=T.get(_);h&&(h().catch(()=>{}),T.delete(_));try{He.unregister(_)}catch(ee){t("unregister %s failed: %o",_,ee)}}},be=function(_){if(!_){k();return}for(let[h,ee]of Dd){if(W.has(h)||M.has(h))continue;let Q=h===Br?fe():{type:ee};try{He.register(h,Q)}catch(w){t("register %s store failed: %o",h,w)}M.add(h);let Re=P.worker,ge=!1;Oe.subscribeList(h,Q).then(w=>{ge=!H(W,"worker",Re,h,w)}).catch(w=>{t("subscribe %s failed: %o",h,w),Pe(w,"worker")}).finally(()=>{M.delete(h),ge&&y()})}},k=function(){P.worker+=1;for(let[_]of Dd){let h=W.get(_);h&&(h().catch(()=>{}),W.delete(_));try{He.unregister(_)}catch(ee){t("unregister %s failed: %o",_,ee)}}},S=function(_){if(!_){O();return}re||(Me("subscribe-worker-queue",{id:qd}).catch(h=>{t("subscribe-worker-queue failed: %o",h)}),Me("subscribe-worker-parallel-analysis",{id:Fd}).catch(h=>{t("subscribe-worker-parallel-analysis failed: %o",h)}),re=()=>(Me("unsubscribe-worker-parallel-analysis",{id:Fd}),Me("unsubscribe-worker-queue",{id:qd})))},O=function(){re&&(re().catch(()=>{}),re=null),Ve.clear()},Te=function(_){if(!_){ye();return}J||(Me("subscribe-monitor-pipeline",{id:Nd}).catch(h=>{t("subscribe-monitor-pipeline failed: %o",h)}),J=()=>Me("unsubscribe-monitor-pipeline",{id:Nd}))},ye=function(){J&&(J().catch(()=>{}),J=null)},je=function(){Ce||(Me("subscribe-ui-order",{id:jd}).catch(_=>{t("subscribe-ui-order failed: %o",_)}),Ce=()=>Me("unsubscribe-ui-order",{id:jd}))},Tt=function(){Ce&&(Ce().catch(()=>{}),Ce=null),Ie.clear()},tt=function(){ht||(Me("subscribe-display-policy",{id:Bd}).catch(_=>{t("subscribe-display-policy failed: %o",_)}),ht=()=>Me("unsubscribe-display-policy",{id:Bd}))},Pt=function(){ht&&(ht().catch(()=>{}),ht=null),Je.clear()},Ne=function(){wr||(Me("subscribe-impl-presets",{id:Ud}).catch(_=>{t("subscribe-impl-presets failed: %o",_)}),wr=()=>Me("unsubscribe-impl-presets",{id:Ud}))},Ct=function(_){if(!_)return"Unknown";let h=_.split("/").filter(Boolean);return h.length>0?h[h.length-1]:"Unknown"};var f=Pe,g=V,x=ve,A=ke,L=H,z=y,ae=me,se=fe,q=Ee,N=Qe,I=be,j=k,m=S,E=O,Y=Te,ue=ye,oe=je,de=Tt,Ue=tt,et=Pt,qe=Ne,X=Ct;let te=document.getElementById("header-loading"),Ae=bl(te),_e=tu(e),le=Pd(),Me=Ae.wrapSend((_,h)=>le.send(_,h)),Oe=cl(Me),He=ul(),$e=fl(),Ve=pl(),it=Ki(),Ie=dl(),Je=Gi(),G=Vi(),Z=Yi();le.on("impl-presets-snapshot",_=>{let h=_;h&&typeof h.revision=="number"&&Array.isArray(h.presets)&&G.set({revision:h.revision,presets:h.presets})}),le.on("monitor-pipeline-snapshot",_=>{let h=_;if(!(!h||!Array.isArray(h.workspaces)))try{it.set(h.workspaces,h.workspaces_state)}catch{}}),le.on("ui-order-snapshot",_=>{let h=_;if(h&&typeof h.revision=="number")try{Ie.set({revision:h.revision,order:h.order&&typeof h.order=="object"?h.order:{}})}catch{}}),le.on("display-policy-snapshot",_=>{let h=_;if(h&&h.policy&&typeof h.policy=="object")try{Je.set(h.policy)}catch{}}),le.on("session-log-snapshot",_=>{let h=_;if(h&&typeof h.id=="string")try{Z.set(h.id,Array.isArray(h.lines)?h.lines:[],typeof h.last_event_at=="number"?h.last_event_at:null)}catch{}}),le.on("session-log-append",_=>{let h=_;if(h&&typeof h.id=="string")try{Z.append(h.id,h.event)}catch{}}),le.on("snapshot",_=>{let h=_,ee=h&&typeof h.id=="string"?h.id:"",Q=ee?He.getStore(ee):null;if(Q&&h&&h.type==="snapshot")try{Q.applyPush(h)}catch{}}),le.on("upsert",_=>{let h=_,ee=h&&typeof h.id=="string"?h.id:"",Q=ee?He.getStore(ee):null;if(Q&&h&&h.type==="upsert")try{Q.applyPush(h)}catch{}}),le.on("delete",_=>{let h=_,ee=h&&typeof h.id=="string"?h.id:"",Q=ee?He.getStore(ee):null;if(Q&&h&&h.type==="delete")try{Q.applyPush(h)}catch{}});let xe=null,De=null,We=null,Ge=null,ze=()=>{},ct=new Promise(_=>{ze=()=>_(void 0)}),pt=!1,U=!1;async function ot(_){let h=V(_);if(h===De||h===We)return;We=h;let ee=`detail:${_}`,Q={type:"issue-detail",params:{id:_}};try{He.register(ee,Q)}catch(Re){t("register detail store failed: %o",Re)}try{let Re=await Oe.subscribeList(ee,Q);if(rt.getState().selected_id!==_||V(_)!==h){await Re().catch(()=>{});return}xe&&await xe().catch(()=>{}),xe=Re,De=h}catch(Re){t("detail subscribe failed: %o",Re),Pe(Re,"issue details")}finally{We===h&&(We=null)}}let T=new Map,M=new Set,P={board:0,worker:0},ce=!1,C=Ht;try{let _=window.localStorage.getItem(Wd);Qt(_)&&(C=_)}catch{}let D=Ht;try{let _=window.localStorage.getItem(Lb);Qt(_)&&(D=_)}catch{}async function Fe(_){if(!Qt(_)||_===C)return;C=_;try{window.localStorage.setItem(Wd,_)}catch{}let h=T.get(Ur);if(!h)return;T.delete(Ur),await h().catch(()=>{});let ee=me();try{He.register(Ur,ee)}catch(Q){t("register %s store failed: %o",Ur,Q)}try{let Q=await Oe.subscribeList(Ur,ee);T.set(Ur,Q)}catch(Q){t("re-subscribe %s failed: %o",Ur,Q),Pe(Q,"board")}}async function Ye(_){if(!Qt(_)||_===D)return;D=_;let h=W.get(Br);if(!h)return;W.delete(Br),await h().catch(()=>{});let ee=fe();try{He.register(Br,ee)}catch(Q){t("register %s store failed: %o",Br,Q)}try{let Q=await Oe.subscribeList(Br,ee);W.set(Br,Q)}catch(Q){t("re-subscribe %s failed: %o",Br,Q),Pe(Q,"worker")}}let W=new Map,re=null,J=null,Ce=null,ht=null,wr=null;async function jt(){ht=null,Je.clear(),wr=null,G.clear(),re=null,J=null,T.clear(),W.clear(),P.board+=1,P.worker+=1,Ne();let _=rt.getState().workspace.current?.path;if(_)try{await le.send("set-workspace",{path:_})}catch(ee){t("workspace restore after reconnect failed: %o",ee);return}tt();let h=rt.getState();Ee(h.view==="board"),be(h.view==="worker"),Te(h.view==="monitor"),S(h.view==="board"||h.view==="worker"||!!h.selected_id)}async function Yt(){t("clearing all subscriptions for workspace switch"),Qe(),k(),O(),$e.clear(),Tt(),je(),Pt(),tt(),ve();let _=rt.getState();if(_.selected_id)try{He.unregister(`detail:${_.selected_id}`)}catch{}let h=rt.getState();Ee(h.view==="board"),be(h.view==="worker"),Te(h.view==="monitor"),S(h.view==="board"||h.view==="worker"||!!h.selected_id),h.selected_id&&ke(h.selected_id)}async function tr(_){t("requesting workspace switch to %s",_),U=!0;try{let h=await le.send("set-workspace",{path:_});t("workspace switch result: %o",h),h&&h.workspace&&(rt.setState({workspace:{current:{path:h.workspace.root_dir,database:h.workspace.db_path}}}),window.localStorage.setItem("beads-ui.workspace",_),h.changed&&(await Yt(),pe("Switched to "+Ct(_),"success",2e3)))}catch(h){throw t("workspace switch failed: %o",h),pe("Failed to switch workspace","error",3e3),h}finally{U=!1}}async function rr(_){t("requesting workspace git pull for %s",_);try{let h=await le.send("git-pull-workspace",{});t("workspace git pull result: %o",h);let ee=h?.status;if(ee==="up_to_date"){pe("Already up to date","success",2e3);return}if(ee==="stash_pop_conflict"){pe("Git pulled, but stash pop conflicted (check git stash list)","warning",4e3);return}pe("Git pulled "+Ct(_),"success",2e3)}catch(h){t("workspace git pull failed: %o",h);let ee=h?.code,Q=h?.message;if(ee==="rebase_conflict"){pe("Git pull conflicts \u2014 reverted (manual resolve required)","error",4e3);return}if(ee==="rebase_conflict_abort_failed"){pe("Git pull conflicts AND rebase --abort failed \u2014 repo left mid-rebase, run 'git rebase --abort' manually","error",6e3);return}if(ee==="busy"){pe("Git pull skipped: another operation is running","warning",3e3);return}let Re=Q?`: ${Q}`:"";throw pe(`Git pull failed${Re}`,"error",3e3),h}}async function fr(_,h){t("setting workspace visibility %s \u2192 %s",_,String(h));try{await le.send("set-workspace-visibility",{path:_,visible:h}),await _r()}catch(ee){t("workspace visibility update failed: %o",ee),pe("Failed to update project visibility","error",3e3)}}async function _r(){try{let _=await le.send("list-workspaces",{});if(t("workspaces loaded: %o",_),_&&Array.isArray(_.workspaces)){let h=_.workspaces.map(ge=>({path:ge.path,database:ge.database,pid:ge.pid,version:ge.version})),ee=_.current?{path:_.current.root_dir,database:_.current.db_path}:null,Q=Array.isArray(_.hidden)?_.hidden.filter(ge=>typeof ge=="string"):[];rt.setState({workspace:{current:ee,available:h,hidden:Q}});let Re=window.localStorage.getItem("beads-ui.workspace");Re&&(!h.some(w=>w.path===Re)||Q.includes(Re)?window.localStorage.removeItem("beads-ui.workspace"):ee&&Re!==ee.path&&(t("restoring saved workspace preference: %s",Re),await tr(Re)))}}catch(_){t("failed to load workspaces: %o",_)}}le.on("workspace-changed",_=>{t("workspace-changed event: %o",_),_&&_.root_dir&&(rt.setState({workspace:{current:{path:_.root_dir,database:_.db_path}}}),_r(),Yt())});let nr=!1;if(typeof le.onConnection=="function"){let _=h=>{t("ws state %s",h),h==="reconnecting"||h==="closed"?(nr=!0,pe("Connection lost. Reconnecting\u2026","error",4e3)):h==="open"&&nr&&(nr=!1,pe("Reconnected","success",2200),Ib(rt,(ee,Q)=>{t(`${ee}: %o`,Q)}),jt())};le.onConnection(_)}let mr="board";try{let _=window.localStorage.getItem("beads-ui.view");(_==="board"||_==="worker"||_==="monitor")&&(mr=_)}catch(_){t("view parse error: %o",_)}let rt=gl({config:Rb(),view:mr});le.on("worker-queue-snapshot",_=>{let h=_;if(!h||!h.queue)return;let ee=rt.getState().workspace.current?.path;if(typeof ee=="string"&&ee.length>0&&h.root_dir!==ee){t("dropping worker-queue snapshot for %s",String(h.root_dir));return}try{$e.set(h.queue)}catch{}}),le.on("worker-parallel-analysis-snapshot",_=>{let h=_;if(!h)return;let ee=rt.getState().workspace.current?.path;if(!(typeof ee=="string"&&ee.length>0&&typeof h.root_dir=="string"&&h.root_dir!==ee))try{Ve.set({settings:h.settings,job:h.job??null,runs:Array.isArray(h.runs)?h.runs:[],last_good:h.last_good??null})}catch{}});let Zt=_l(rt);Zt.start();let Se=new Set(["get-comments","dep-add","dep-remove","impl-preset-create","impl-preset-update","impl-preset-delete","apply-impl-preset","apply-impl-preset-global","get-session-defaults","set-session-defaults"]),$=async(_,h)=>{try{return await Me(_,h)}catch(ee){if(Se.has(_))throw ee;return[]}};Fu({global_element:n,repo_element:s},rt,Zt);let ne=document.getElementById("workspace-picker");ne&&Ld(ne,rt,tr,rr,fr);let we=Wu(e,(_,h)=>Me(_,h));try{let _=document.getElementById("new-issue-btn");_&&_.addEventListener("click",()=>we.open())}catch{}let ut=Vu(e,{policyStore:Je,queueStore:$e,implPresetStore:G,transport:(_,h)=>Me(_,h),onOpenChange:_=>{let h=ce;ce=_,y(),h&&_===!1&&_t.refreshSessionDefaults()},labelOptions:()=>{let _=new Set;for(let[h]of ai)for(let ee of He.snapshotFor(h)||[]){let Q=ee.labels;if(Array.isArray(Q))for(let Re of Q)typeof Re=="string"&&Re.length>0&&_.add(Re)}return Array.from(_).sort()}});try{let _=document.getElementById("display-settings-btn");_&&(_.setAttribute("aria-label","\uC124\uC815"),_.setAttribute("title","\uC124\uC815"),_.addEventListener("click",()=>ut.open()))}catch{}let xt=Cl(l,{gotoIssue:_=>Zt.gotoIssue(_),issueStores:He,transport:$,workerQueueStore:$e,uiOrderStore:Ie,displayPolicyStore:Je,closedRange:C,onClosedRangeChange:_=>{Fe(_)},onNewIssue:()=>we.open()}),_t=ni(c,{transport:$,issueStores:He,queueStore:$e,analysisStore:Ve,sessionLogStore:Z,uiOrderStore:Ie,gotoIssue:_=>rt.setState({selected_id:_}),getWorkspacePath:()=>rt.getState().workspace.current?.path,doneRange:D,onDoneRangeChange:_=>{Ye(_)}}),At=qu(u,{transport:$,pipelineStore:it,execPresetStore:G,gotoIssue:_=>Zt.gotoIssue(_),getWorkspacePath:()=>rt.getState().workspace.current?.path,switchWorkspace:_=>tr(_)}),p=eu(d,{issueStores:He,transport:$,queueStore:$e,execPresetStore:G,sessionLogStore:Z,getWorkspacePath:()=>rt.getState().workspace.current?.path,onNavigate:_=>{rt.getState().view==="worker"?rt.setState({selected_id:_}):Zt.gotoIssue(_)},onClose:()=>{let _=rt.getState();rt.setState({selected_id:null});try{Zt.gotoView(_.view==="worker"||_.view==="monitor"?_.view:"board")}catch{}},onOpenExecPresets:()=>{ut.open("execution")}}),v=rt.getState().selected_id;v&&(d.hidden=!1,p.load(v),ke(v)),rt.subscribe(_=>{let h=_.selected_id;h?(d.hidden=!1,p.load(h),U||ke(h)):(p.clear(),d.hidden=!0,ve())});let B=_=>{l.hidden=_.view!=="board",c.hidden=_.view!=="worker",u.hidden=_.view!=="monitor",o&&o.classList.toggle("is-quiet",_.view==="monitor"),Ee(_.view==="board"),be(_.view==="worker"),Te(_.view==="monitor"),S(_.view==="board"||_.view==="worker"||ce||!!_.selected_id),!_.selected_id&&_.view==="board"&&xt.load(),_.view==="worker"&&_t.load(),_.view==="monitor"?At.load():At.pause(),window.localStorage.setItem("beads-ui.view",_.view)};rt.subscribe(B),B(rt.getState()),je(),tt(),Ne(),_r().finally(()=>{pt=!0,ze()}),window.addEventListener("keydown",_=>{let h=_.ctrlKey||_.metaKey,ee=String(_.key||"").toLowerCase(),Q=_.target,Re=Q&&Q.tagName?String(Q.tagName).toLowerCase():"",ge=Re==="input"||Re==="textarea"||Re==="select"||Q&&typeof Q.isContentEditable=="boolean"&&Q.isContentEditable;h&&ee==="n"&&(ge||(_.preventDefault(),we.open()))})}}typeof window<"u"&&typeof document<"u"&&window.addEventListener("DOMContentLoaded",()=>{try{let r=window.localStorage.getItem("beads-ui.theme"),n=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches,s=r==="dark"||r==="light"?r:n?"dark":"light";document.documentElement.setAttribute("data-theme",s);let o=document.getElementById("theme-switch");o&&(o.checked=s==="dark")}catch{}let e=document.getElementById("theme-switch");e&&e.addEventListener("change",()=>{let r=e.checked?"dark":"light";document.documentElement.setAttribute("data-theme",r),window.localStorage.setItem("beads-ui.theme",r)});let t=document.getElementById("app");t&&Ob(t)});export{Ob as bootstrap,Rb as readBootstrapConfig,Ib as refreshConfigSnapshot};
+  `;Ve(r,e);let n=document.getElementById("global-nav"),s=document.getElementById("top-nav"),o=document.getElementById("repo-scope"),a=document.getElementById("usage-meter"),i=document.getElementById("board-root"),c=document.getElementById("worker-root"),u=document.getElementById("monitor-root"),d=document.getElementById("detail-panel");if(a&&md(a),i&&c&&u&&d){let ue=function(_,b){let le="Request failed",ie="";if(_&&typeof _=="object"){let xe=_;if(typeof xe.message=="string"&&xe.message.length>0&&(le=xe.message),typeof xe.details=="string")ie=xe.details;else if(xe.details&&typeof xe.details=="object")try{ie=JSON.stringify(xe.details,null,2)}catch{ie=""}}else typeof _=="string"&&_.length>0&&(le=_);let Ue=b&&b.length>0?`Failed to load ${b}`:"Request failed";A.open(Ue,le,ie)},T=function(_){return`${nt.getState().workspace.current?.path||""}\0${_}`},Q=function(){Z&&(Z().catch(()=>{}),Z=null),Se=null,Ze=null},ee=function(_){je=_;let b=()=>{je!==_||nt.getState().selected_id!==_||(je=null,Ee(_))};if(!yt){Qe.then(b);return}b()},Ye=function(_,b,le,ie,Ue){return le!==st[b]?(Ue().catch(()=>{}),!1):(_.set(ie,Ue),!0)},ft=function(){let _=nt.getState();J(_.view==="board"),ve(_.view==="worker"),Ce(_.view==="monitor"),R(_.view==="board"||_.view==="worker"||ct||!!_.selected_id)},gt=function(){let _=Yr(ut);return _===void 0?{type:"closed-issues"}:{type:"closed-issues",params:{since:_}}},U=function(){let _=Yr(ot);return _===void 0?{type:"closed-issues"}:{type:"closed-issues",params:{since:_}}},J=function(_){if(_)for(let[b,le]of di){if(Ne.has(b)||et.has(b))continue;let ie=b===Br?gt():{type:le};try{$e.register(b,ie)}catch(k){t("register %s store failed: %o",b,k)}et.add(b);let Ue=st.board,xe=!1;ce.subscribeList(b,ie).then(k=>{xe=!Ye(Ne,"board",Ue,b,k)}).catch(k=>{t("subscribe %s failed: %o",b,k),ue(k,"board")}).finally(()=>{et.delete(b),xe&&ft()})}else De()},De=function(){st.board+=1;for(let[_]of di){let b=Ne.get(_);b&&(b().catch(()=>{}),Ne.delete(_));try{$e.unregister(_)}catch(le){t("unregister %s failed: %o",_,le)}}},ve=function(_){if(!_){y();return}for(let[b,le]of Hd){if(B.has(b)||et.has(b))continue;let ie=b===jr?U():{type:le};try{$e.register(b,ie)}catch(k){t("register %s store failed: %o",b,k)}et.add(b);let Ue=st.worker,xe=!1;ce.subscribeList(b,ie).then(k=>{xe=!Ye(B,"worker",Ue,b,k)}).catch(k=>{t("subscribe %s failed: %o",b,k),ue(k,"worker")}).finally(()=>{et.delete(b),xe&&ft()})}},y=function(){st.worker+=1;for(let[_]of Hd){let b=B.get(_);b&&(b().catch(()=>{}),B.delete(_));try{$e.unregister(_)}catch(le){t("unregister %s failed: %o",_,le)}}},R=function(_){if(!_){W();return}te||(D("subscribe-worker-queue",{id:Kd}).catch(b=>{t("subscribe-worker-queue failed: %o",b)}),D("subscribe-worker-parallel-analysis",{id:Vd}).catch(b=>{t("subscribe-worker-parallel-analysis failed: %o",b)}),te=()=>(D("unsubscribe-worker-parallel-analysis",{id:Vd}),D("unsubscribe-worker-queue",{id:Kd})))},W=function(){te&&(te().catch(()=>{}),te=null),Oe.clear()},Ce=function(_){if(!_){Ae();return}oe||(D("subscribe-monitor-pipeline",{id:Gd}).catch(b=>{t("subscribe-monitor-pipeline failed: %o",b)}),oe=()=>D("unsubscribe-monitor-pipeline",{id:Gd}))},Ae=function(){oe&&(oe().catch(()=>{}),oe=null)},Be=function(){Me||(D("subscribe-ui-order",{id:Yd}).catch(_=>{t("subscribe-ui-order failed: %o",_)}),Me=()=>D("unsubscribe-ui-order",{id:Yd}))},At=function(){Me&&(Me().catch(()=>{}),Me=null),He.clear()},h=function(){vt||(D("subscribe-display-policy",{id:Zd}).catch(_=>{t("subscribe-display-policy failed: %o",_)}),vt=()=>D("unsubscribe-display-policy",{id:Zd}))},x=function(){vt&&(vt().catch(()=>{}),vt=null),pt.clear()},j=function(){N||(D("subscribe-impl-presets",{id:Qd}).catch(_=>{t("subscribe-impl-presets failed: %o",_)}),N=()=>D("unsubscribe-impl-presets",{id:Qd}))},mt=function(_){if(!_)return"Unknown";let b=_.split("/").filter(Boolean);return b.length>0?b[b.length-1]:"Unknown"};var p=ue,m=T,v=Q,C=ee,F=Ye,H=ft,re=gt,V=U,q=J,O=De,P=ve,I=y,$=R,M=W,K=Ce,pe=Ae,_e=Be,me=At,ae=h,Ie=x,Te=j,ne=mt;let se=document.getElementById("header-loading"),we=kl(se),A=lu(e),E=zd(),D=we.wrapSend((_,b)=>E.send(_,b)),ce=_l(D),$e=ml(),ge=bl(),Oe=hl(),_t=Ji(),He=gl(),pt=Qi(),tt=Xi(),Y=el();E.on("impl-presets-snapshot",_=>{let b=_;b&&typeof b.revision=="number"&&Array.isArray(b.presets)&&tt.set({revision:b.revision,presets:b.presets})}),E.on("monitor-pipeline-snapshot",_=>{let b=_;if(!(!b||!Array.isArray(b.workspaces)))try{_t.set(b.workspaces,b.workspaces_state)}catch{}}),E.on("ui-order-snapshot",_=>{let b=_;if(b&&typeof b.revision=="number")try{He.set({revision:b.revision,order:b.order&&typeof b.order=="object"?b.order:{}})}catch{}}),E.on("display-policy-snapshot",_=>{let b=_;if(b&&b.policy&&typeof b.policy=="object")try{pt.set(b.policy)}catch{}}),E.on("session-log-snapshot",_=>{let b=_;if(b&&typeof b.id=="string")try{Y.set(b.id,Array.isArray(b.lines)?b.lines:[],typeof b.last_event_at=="number"?b.last_event_at:null)}catch{}}),E.on("session-log-append",_=>{let b=_;if(b&&typeof b.id=="string")try{Y.append(b.id,b.event)}catch{}}),E.on("snapshot",_=>{let b=_,le=b&&typeof b.id=="string"?b.id:"",ie=le?$e.getStore(le):null;if(ie&&b&&b.type==="snapshot")try{ie.applyPush(b)}catch{}}),E.on("upsert",_=>{let b=_,le=b&&typeof b.id=="string"?b.id:"",ie=le?$e.getStore(le):null;if(ie&&b&&b.type==="upsert")try{ie.applyPush(b)}catch{}}),E.on("delete",_=>{let b=_,le=b&&typeof b.id=="string"?b.id:"",ie=le?$e.getStore(le):null;if(ie&&b&&b.type==="delete")try{ie.applyPush(b)}catch{}});let Z=null,Se=null,Ze=null,je=null,rt=()=>{},Qe=new Promise(_=>{rt=()=>_(void 0)}),yt=!1,Le=!1;async function Ee(_){let b=T(_);if(b===Se||b===Ze)return;Ze=b;let le=`detail:${_}`,ie={type:"issue-detail",params:{id:_}};try{$e.register(le,ie)}catch(Ue){t("register detail store failed: %o",Ue)}try{let Ue=await ce.subscribeList(le,ie);if(nt.getState().selected_id!==_||T(_)!==b){await Ue().catch(()=>{});return}Z&&await Z().catch(()=>{}),Z=Ue,Se=b}catch(Ue){t("detail subscribe failed: %o",Ue),ue(Ue,"issue details")}finally{Ze===b&&(Ze=null)}}let Ne=new Map,et=new Set,st={board:0,worker:0},ct=!1,ut=er;try{let _=window.localStorage.getItem(Xd);ar(_)&&(ut=_)}catch{}let ot=er;try{let _=window.localStorage.getItem(zh);ar(_)&&(ot=_)}catch{}async function be(_){if(!ar(_)||_===ut)return;ut=_;try{window.localStorage.setItem(Xd,_)}catch{}let b=Ne.get(Br);if(!b)return;Ne.delete(Br),await b().catch(()=>{});let le=gt();try{$e.register(Br,le)}catch(ie){t("register %s store failed: %o",Br,ie)}try{let ie=await ce.subscribeList(Br,le);Ne.set(Br,ie)}catch(ie){t("re-subscribe %s failed: %o",Br,ie),ue(ie,"board")}}async function Ge(_){if(!ar(_)||_===ot)return;ot=_;let b=B.get(jr);if(!b)return;B.delete(jr),await b().catch(()=>{});let le=U();try{$e.register(jr,le)}catch(ie){t("register %s store failed: %o",jr,ie)}try{let ie=await ce.subscribeList(jr,le);B.set(jr,ie)}catch(ie){t("re-subscribe %s failed: %o",jr,ie),ue(ie,"worker")}}let B=new Map,te=null,oe=null,Me=null,vt=null,N=null;async function ye(){vt=null,pt.clear(),N=null,tt.clear(),te=null,oe=null,Ne.clear(),B.clear(),st.board+=1,st.worker+=1,j();let _=nt.getState().workspace.current?.path;if(_)try{await E.send("set-workspace",{path:_})}catch(le){t("workspace restore after reconnect failed: %o",le);return}h();let b=nt.getState();J(b.view==="board"),ve(b.view==="worker"),Ce(b.view==="monitor"),R(b.view==="board"||b.view==="worker"||!!b.selected_id)}async function ke(){t("clearing all subscriptions for workspace switch"),De(),y(),W(),ge.clear(),At(),Be(),x(),h(),Q();let _=nt.getState();if(_.selected_id)try{$e.unregister(`detail:${_.selected_id}`)}catch{}let b=nt.getState();J(b.view==="board"),ve(b.view==="worker"),Ce(b.view==="monitor"),R(b.view==="board"||b.view==="worker"||!!b.selected_id),b.selected_id&&ee(b.selected_id)}async function qe(_){t("requesting workspace switch to %s",_),Le=!0;try{let b=await E.send("set-workspace",{path:_});t("workspace switch result: %o",b),b&&b.workspace&&(nt.setState({workspace:{current:{path:b.workspace.root_dir,database:b.workspace.db_path}}}),window.localStorage.setItem("beads-ui.workspace",_),b.changed&&(await ke(),he("Switched to "+mt(_),"success",2e3)))}catch(b){throw t("workspace switch failed: %o",b),he("Failed to switch workspace","error",3e3),b}finally{Le=!1}}async function ze(_){t("requesting workspace git pull for %s",_);try{let b=await E.send("git-pull-workspace",{});t("workspace git pull result: %o",b);let le=b?.status;if(le==="up_to_date"){he("Already up to date","success",2e3);return}if(le==="stash_pop_conflict"){he("Git pulled, but stash pop conflicted (check git stash list)","warning",4e3);return}he("Git pulled "+mt(_),"success",2e3)}catch(b){t("workspace git pull failed: %o",b);let le=b?.code,ie=b?.message;if(le==="rebase_conflict"){he("Git pull conflicts \u2014 reverted (manual resolve required)","error",4e3);return}if(le==="rebase_conflict_abort_failed"){he("Git pull conflicts AND rebase --abort failed \u2014 repo left mid-rebase, run 'git rebase --abort' manually","error",6e3);return}if(le==="busy"){he("Git pull skipped: another operation is running","warning",3e3);return}let Ue=ie?`: ${ie}`:"";throw he(`Git pull failed${Ue}`,"error",3e3),b}}async function kt(_,b){t("setting workspace visibility %s \u2192 %s",_,String(b));try{await E.send("set-workspace-visibility",{path:_,visible:b}),await Ft()}catch(le){t("workspace visibility update failed: %o",le),he("Failed to update project visibility","error",3e3)}}async function Ft(){try{let _=await E.send("list-workspaces",{});if(t("workspaces loaded: %o",_),_&&Array.isArray(_.workspaces)){let b=_.workspaces.map(xe=>({path:xe.path,database:xe.database,pid:xe.pid,version:xe.version})),le=_.current?{path:_.current.root_dir,database:_.current.db_path}:null,ie=Array.isArray(_.hidden)?_.hidden.filter(xe=>typeof xe=="string"):[];nt.setState({workspace:{current:le,available:b,hidden:ie}});let Ue=window.localStorage.getItem("beads-ui.workspace");Ue&&(!b.some(k=>k.path===Ue)||ie.includes(Ue)?window.localStorage.removeItem("beads-ui.workspace"):le&&Ue!==le.path&&(t("restoring saved workspace preference: %s",Ue),await qe(Ue)))}}catch(_){t("failed to load workspaces: %o",_)}}E.on("workspace-changed",_=>{t("workspace-changed event: %o",_),_&&_.root_dir&&(nt.setState({workspace:{current:{path:_.root_dir,database:_.db_path}}}),Ft(),ke())});let Tt=!1;if(typeof E.onConnection=="function"){let _=b=>{t("ws state %s",b),b==="reconnecting"||b==="closed"?(Tt=!0,he("Connection lost. Reconnecting\u2026","error",4e3)):b==="open"&&Tt&&(Tt=!1,he("Reconnected","success",2200),Wh(nt,(le,ie)=>{t(`${le}: %o`,ie)}),ye())};E.onConnection(_)}let Nt="board";try{let _=window.localStorage.getItem("beads-ui.view");(_==="board"||_==="worker"||_==="monitor")&&(Nt=_)}catch(_){t("view parse error: %o",_)}let nt=wl({config:Uh(),view:Nt});E.on("worker-queue-snapshot",_=>{let b=_;if(!b||!b.queue)return;let le=nt.getState().workspace.current?.path;if(typeof le=="string"&&le.length>0&&b.root_dir!==le){t("dropping worker-queue snapshot for %s",String(b.root_dir));return}try{ge.set(b.queue)}catch{}}),E.on("worker-parallel-analysis-snapshot",_=>{let b=_;if(!b)return;let le=nt.getState().workspace.current?.path;if(!(typeof le=="string"&&le.length>0&&typeof b.root_dir=="string"&&b.root_dir!==le))try{Oe.set({settings:b.settings,job:b.job??null,runs:Array.isArray(b.runs)?b.runs:[],last_good:b.last_good??null})}catch{}});let zt=yl(nt);zt.start();let Fe=new Set(["get-comments","dep-add","dep-remove","impl-preset-create","impl-preset-update","impl-preset-delete","apply-impl-preset","apply-impl-preset-global","get-session-defaults","set-session-defaults"]),S=async(_,b)=>{try{return await D(_,b)}catch(le){if(Fe.has(_))throw le;return[]}};Qu({global_element:n,repo_element:s},nt,zt);let de=document.getElementById("workspace-picker");de&&Bd(de,nt,qe,ze,kt);let Pe=td(e,(_,b)=>D(_,b));try{let _=document.getElementById("new-issue-btn");_&&_.addEventListener("click",()=>Pe.open())}catch{}let ht=od(e,{policyStore:pt,queueStore:ge,implPresetStore:tt,transport:(_,b)=>D(_,b),onOpenChange:_=>{let b=ct;ct=_,ft(),b&&_===!1&&$t.refreshSessionDefaults()},labelOptions:()=>{let _=new Set;for(let[b]of di)for(let le of $e.snapshotFor(b)||[]){let ie=le.labels;if(Array.isArray(ie))for(let Ue of ie)typeof Ue=="string"&&Ue.length>0&&_.add(Ue)}return Array.from(_).sort()}});try{let _=document.getElementById("display-settings-btn");_&&(_.setAttribute("aria-label","\uC124\uC815"),_.setAttribute("title","\uC124\uC815"),_.addEventListener("click",()=>ht.open()))}catch{}let Mt=Ml(i,{gotoIssue:_=>zt.gotoIssue(_),issueStores:$e,transport:S,workerQueueStore:ge,uiOrderStore:He,displayPolicyStore:pt,closedRange:ut,onClosedRangeChange:_=>{be(_)},onNewIssue:()=>Pe.open()}),$t=li(c,{transport:S,issueStores:$e,queueStore:ge,analysisStore:Oe,sessionLogStore:Y,uiOrderStore:He,gotoIssue:_=>nt.setState({selected_id:_}),getWorkspacePath:()=>nt.getState().workspace.current?.path,doneRange:ot,onDoneRangeChange:_=>{Ge(_)}}),Dt=Zu(u,{transport:S,pipelineStore:_t,execPresetStore:tt,sessionLogStore:Y,router:zt,gotoIssue:_=>zt.gotoIssue(_),getWorkspacePath:()=>nt.getState().workspace.current?.path,switchWorkspace:_=>qe(_)}),f=iu(d,{issueStores:$e,transport:S,queueStore:ge,execPresetStore:tt,sessionLogStore:Y,getWorkspacePath:()=>nt.getState().workspace.current?.path,onNavigate:_=>{nt.getState().view==="worker"?nt.setState({selected_id:_}):zt.gotoIssue(_)},onClose:()=>{let _=nt.getState();nt.setState({selected_id:null});try{zt.gotoView(_.view==="worker"||_.view==="monitor"?_.view:"board")}catch{}},onOpenExecPresets:()=>{ht.open("execution")}}),w=nt.getState().selected_id;w&&(d.hidden=!1,f.load(w),ee(w)),nt.subscribe(_=>{let b=_.selected_id;b?(d.hidden=!1,f.load(b),Le||ee(b)):(f.clear(),d.hidden=!0,Q())});let G=_=>{i.hidden=_.view!=="board",c.hidden=_.view!=="worker",u.hidden=_.view!=="monitor",o&&o.classList.toggle("is-quiet",_.view==="monitor"),J(_.view==="board"),ve(_.view==="worker"),Ce(_.view==="monitor"),R(_.view==="board"||_.view==="worker"||ct||!!_.selected_id),!_.selected_id&&_.view==="board"&&Mt.load(),_.view==="worker"&&$t.load(),_.view==="monitor"?Dt.load():Dt.pause(),window.localStorage.setItem("beads-ui.view",_.view)};nt.subscribe(G),G(nt.getState()),Be(),h(),j(),Ft().finally(()=>{yt=!0,rt()}),window.addEventListener("keydown",_=>{let b=_.ctrlKey||_.metaKey,le=String(_.key||"").toLowerCase(),ie=_.target,Ue=ie&&ie.tagName?String(ie.tagName).toLowerCase():"",xe=Ue==="input"||Ue==="textarea"||Ue==="select"||ie&&typeof ie.isContentEditable=="boolean"&&ie.isContentEditable;b&&le==="n"&&(xe||(_.preventDefault(),Pe.open()))})}}typeof window<"u"&&typeof document<"u"&&window.addEventListener("DOMContentLoaded",()=>{try{let r=window.localStorage.getItem("beads-ui.theme"),n=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches,s=r==="dark"||r==="light"?r:n?"dark":"light";document.documentElement.setAttribute("data-theme",s);let o=document.getElementById("theme-switch");o&&(o.checked=s==="dark")}catch{}let e=document.getElementById("theme-switch");e&&e.addEventListener("change",()=>{let r=e.checked?"dark":"light";document.documentElement.setAttribute("data-theme",r),window.localStorage.setItem("beads-ui.theme",r)});let t=document.getElementById("app");t&&Hh(t)});export{Hh as bootstrap,Uh as readBootstrapConfig,Wh as refreshConfigSnapshot};
 //# sourceMappingURL=main.bundle.js.map

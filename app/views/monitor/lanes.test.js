@@ -1,30 +1,17 @@
-import { render } from 'lit-html';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vitest';
 import {
+  CANDIDATE_FILTER_DEFAULT,
+  MIN_SLOTS,
+  activeByBead,
+  buildChains,
   buildLanes,
-  monitorGroupHeaderTemplate,
-  monitorPrCard,
-  monitorQueueRow,
-  monitorRunnableCard,
-  monitorRunningTile,
-  monitorTopBarTemplate
+  latestTerminalAttempt
 } from './lanes.js';
 
-const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
 
-/** @type {HTMLElement} */
-let mount;
-
-beforeEach(() => {
-  document.body.innerHTML = '<div id="m"></div>';
-  mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-});
-
 /**
- * One workspace entry of the aggregated payload's heavy array.
- *
  * @param {Partial<Record<string, any>>} [patch]
  * @returns {Record<string, any>}
  */
@@ -32,8 +19,9 @@ function workspace(patch = {}) {
   return {
     root_dir: WS_A,
     name: 'repo-a',
-    revision: 1,
+    revision: 3,
     queue: [],
+    serial_lanes: [],
     pr_wait: [],
     done: [],
     runnable: [],
@@ -45,8 +33,6 @@ function workspace(patch = {}) {
 }
 
 /**
- * One `workspaces_state` entry — every VISIBLE repo, pipeline-empty ones too.
- *
  * @param {Partial<Record<string, any>>} [patch]
  * @returns {Record<string, any>}
  */
@@ -54,2013 +40,726 @@ function state(patch = {}) {
   return {
     root_dir: WS_A,
     name: 'repo-a',
-    auto_advance: true,
-    auto_merge: true,
+    auto_advance: false,
+    auto_merge: false,
     slots: 1,
-    revision: 1,
-    exec_defaults: {},
+    revision: 3,
+    issue_prefix: 'A',
     ...patch
   };
 }
 
 /**
- * A full `monitorTopBarTemplate()` model with §7's period/token fields
- * defaulted to their inert values, so tests unrelated to §7 don't have to
- * restate them.
- *
- * @param {Partial<Parameters<typeof monitorTopBarTemplate>[0]>} [patch]
- * @returns {Parameters<typeof monitorTopBarTemplate>[0]}
+ * @param {string} id
+ * @param {Partial<Record<string, any>>} [patch]
  */
-function topBarModel(patch = {}) {
-  return {
-    automation: { total: 0, both_on: 0 },
-    counts: { running: 0, queue: 0, pr_wait: 0 },
-    done_range: 'today',
-    token_total: null,
-    token_tooltip: '',
-    ...patch
-  };
+function runnable(id, patch = {}) {
+  return { bead_id: id, title: `title ${id}`, ...patch };
 }
 
-/**
- * @param {Record<string, any>[]} items
- * @returns {string[]}
- */
-function ids(items) {
-  return items.map((i) => i.id);
-}
-
-describe('monitor lane builder exclusive priority (UI-qrfo §8)', () => {
-  test('preserves attempt runner for Codex provider projection in a lane card', () => {
+describe('monitor lane exclusive priority (UI-qrfo §8)', () => {
+  test('keeps a running bead out of the waiting lane it still occupies', () => {
     const lanes = buildLanes(
       [
         workspace({
-          queue: [{ bead_id: 'A-run', added_at: NOW }],
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
           attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-run',
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
               status: 'running',
-              runner: 'codex',
-              started_at: NOW - 1_000,
-              usage: {
-                input_tokens: 5,
-                output_tokens: 3,
-                cache_read_input_tokens: 100
-              }
+              started_at: 10
             }
           }
         })
       ],
-      []
+      [state()]
     );
 
-    const usage =
-      /** @type {import('../../utils/token-usage.js').UsageProjection} */ (
-        lanes.running[0]?.usage
-      );
-
-    expect(usage.providers.codex?.subtotal).toBe(8);
-    expect(usage.providers).not.toHaveProperty('claude');
+    expect(lanes.running.map((r) => r.id)).toEqual(['A-1']);
+    expect(lanes.queue.map((r) => r.id)).toEqual(['A-2']);
   });
 
-  test('keeps a running bead out of the waiting lane it still sits in', () => {
+  test('keeps a pr_wait bead out of the runnable lane', () => {
     const lanes = buildLanes(
       [
         workspace({
-          queue: [{ bead_id: 'A-run', added_at: NOW }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-run',
-              status: 'running',
-              started_at: NOW - 1_000
-            }
-          }
+          pr_wait: [{ bead_id: 'A-1' }],
+          runnable: [runnable('A-1')]
         })
       ],
-      []
+      [state()]
     );
 
-    expect(ids(lanes.running)).toEqual(['A-run']);
-    expect(ids(lanes.queue)).toEqual([]);
+    expect(lanes.pr_wait.map((r) => r.id)).toEqual(['A-1']);
+    expect(lanes.runnable).toHaveLength(0);
   });
 
-  test('shows a conflict-resolution bead only in the running lane', () => {
+  test('carries the repo coordinate and its own CAS revision on every item', () => {
     const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-pr',
-              status: 'running',
-              conflict_resolution: true,
-              started_at: NOW - 1_000
-            }
-          }
-        })
-      ],
-      []
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state({ revision: 9 })]
     );
 
-    expect(ids(lanes.running)).toEqual(['A-pr']);
-    expect(ids(lanes.pr_wait)).toEqual([]);
-  });
-
-  test('keeps a queued bead out of the runnable lane', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-1', added_at: NOW }],
-          runnable: [{ bead_id: 'A-1', title: '이미 적재됨' }]
-        })
-      ],
-      []
-    );
-
-    expect(ids(lanes.queue)).toEqual(['A-1']);
-    expect(ids(lanes.runnable)).toEqual([]);
-  });
-
-  test('keeps a runnable bead out of the done lane', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [{ bead_id: 'A-1', title: '실행 가능' }],
-          done: [{ bead_id: 'A-1', added_at: NOW - 1_000 }]
-        })
-      ],
-      []
-    );
-
-    expect(ids(lanes.runnable)).toEqual(['A-1']);
-    expect(ids(lanes.done)).toEqual([]);
-  });
-
-  test('draws one bead in exactly one lane across all five sources', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-1', added_at: NOW }],
-          pr_wait: [{ bead_id: 'A-1', added_at: NOW }],
-          done: [{ bead_id: 'A-1', added_at: NOW }],
-          runnable: [{ bead_id: 'A-1', title: 'x' }],
-          attempts: {
-            a1: { attempt_id: 'a1', bead_id: 'A-1', status: 'running' }
-          }
-        })
-      ],
-      []
-    );
-
-    const placed = [
-      lanes.runnable,
-      lanes.queue,
-      lanes.running,
-      lanes.pr_wait,
-      lanes.done
-    ].filter((lane) => lane.length > 0);
-    expect(placed).toHaveLength(1);
-    expect(ids(lanes.running)).toEqual(['A-1']);
+    expect(lanes.queue[0].root_dir).toBe(WS_A);
+    expect(lanes.queue[0].workspace_name).toBe('repo-a');
+    expect(lanes.queue[0].expected_revision).toBe(9);
   });
 });
 
-describe('monitor serial waiting lanes (UI-2gi1 §5)', () => {
-  test('omits empty serial lanes from the group sublanes', () => {
+describe('monitor 실행가능 repo sections (UI-eey2 §5)', () => {
+  test('groups candidates per repo in workspaces_state order', () => {
     const lanes = buildLanes(
       [
-        workspace({
-          serial_lanes: [
-            { id: 's1', entries: [] },
-            { id: 's2', entries: [{ bead_id: 'A-serial' }] }
-          ],
-          lane_states: { s1: { occupied_by: ['A-running'] } }
-        })
-      ],
-      [state()]
-    );
-
-    const ids = lanes.queue_groups[0].sublanes.serial.map((lane) => lane.id);
-
-    expect(ids).toEqual(['s2']);
-  });
-
-  test('projects serial lane state badges into the group sublane', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
-          lane_states: {
-            s1: {
-              occupied_by: ['A-owner', 'A-owner-2'],
-              corrections: [{ bead_id: 'A-serial', after: 'A-owner' }],
-              cycle: true
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    const lane = lanes.queue_groups[0].sublanes.serial[0];
-
-    expect(lane).toMatchObject({
-      occupied_by: ['A-owner', 'A-owner-2'],
-      corrections: 1,
-      cycle: true
-    });
-  });
-
-  test('defaults missing serial lane state', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
-        })
-      ],
-      [state()]
-    );
-
-    const lane = lanes.queue_groups[0].sublanes.serial[0];
-
-    expect(lane).toMatchObject({
-      occupied_by: [],
-      corrections: 0,
-      cycle: false
-    });
-  });
-
-  test('keeps a serial member out of runnable and done lanes', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }],
-          runnable: [{ bead_id: 'A-serial', title: '중복 후보' }],
-          done: [{ bead_id: 'A-serial', added_at: NOW }]
-        })
-      ],
-      [state()]
-    );
-
-    expect(ids(lanes.queue)).toEqual(['A-serial']);
-    expect(ids(lanes.runnable)).toEqual([]);
-    expect(ids(lanes.done)).toEqual([]);
-  });
-
-  test('includes serial members in the aggregate waiting KPI source', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-parallel' }],
-          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-serial' }] }]
-        })
-      ],
-      [state()]
-    );
-
-    expect(ids(lanes.queue)).toEqual(['A-parallel', 'A-serial']);
-  });
-
-  test('projects a running bead serial lane chip', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          serial_lanes: [{ id: 's2', entries: [{ bead_id: 'A-running' }] }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-running',
-              status: 'running'
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunningTile(lanes.running[0], NOW), mount);
-
-    expect(mount.querySelector('.mon-c__lane')?.textContent).toBe('s2');
-  });
-
-  test('numbers a serial card inside its own lane', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          serial_lanes: [
-            {
-              id: 's1',
-              entries: [{ bead_id: 'A-first' }, { bead_id: 'A-second' }]
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    const item = lanes.queue_groups[0].sublanes.serial[0].items[1];
-
-    expect(item).toMatchObject({
-      lane: 's1',
-      queue_position: 2,
-      queue_index: 1,
-      queue_length: 2
-    });
-  });
-
-  test('preserves legacy lane placement when serial fields are absent', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-wait' }],
-          runnable: [{ bead_id: 'A-next', title: '다음' }],
-          done: [{ bead_id: 'A-done', added_at: NOW }]
-        })
-      ],
-      [state()]
-    );
-
-    const placement = {
-      queue: ids(lanes.queue),
-      runnable: ids(lanes.runnable),
-      done: ids(lanes.done),
-      group: ids(lanes.queue_groups[0].items)
-    };
-
-    expect(placement).toEqual({
-      queue: ['A-wait'],
-      runnable: ['A-next'],
-      done: ['A-done'],
-      group: ['A-wait']
-    });
-  });
-});
-
-describe('monitor waiting lane repo groups (UI-qrfo §6)', () => {
-  test('splits the waiting lane into one group per repo', () => {
-    const lanes = buildLanes(
-      [
-        workspace({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
         workspace({
           root_dir: WS_B,
           name: 'repo-b',
-          queue: [{ bead_id: 'B-1', added_at: NOW }]
-        })
-      ],
-      [state(), state({ root_dir: WS_B, name: 'repo-b' })]
-    );
-
-    expect(lanes.queue_groups.map((g) => [g.root_dir, ids(g.items)])).toEqual([
-      [WS_A, ['A-1']],
-      [WS_B, ['B-1']]
-    ]);
-  });
-
-  test('numbers the ordinals inside each group', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [
-            { bead_id: 'A-1', added_at: NOW },
-            { bead_id: 'A-2', added_at: NOW }
-          ]
+          runnable: [runnable('B-1')]
         }),
+        workspace({ runnable: [runnable('A-1')] })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.runnable_sections.map((s) => s.name)).toEqual([
+      'repo-a',
+      'repo-b'
+    ]);
+    expect(lanes.runnable_flat).toBe(false);
+  });
+
+  test('omits a repo with no candidate', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.runnable_sections.map((s) => s.root_dir)).toEqual([WS_A]);
+  });
+
+  test('drops the repo badge from a card its section header already names', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
+    );
+
+    expect(lanes.runnable_sections[0].items[0].workspace_name).toBe('');
+  });
+
+  test('keeps the repo badge on a flat sort that has no section header', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()],
+      { candidate_sort: 'updated_flat' }
+    );
+
+    expect(lanes.runnable_sections).toEqual([]);
+    expect(lanes.runnable_flat).toBe(true);
+    expect(lanes.runnable[0].workspace_name).toBe('repo-a');
+  });
+});
+
+describe('monitor 실행가능 filter and sort (UI-eey2 §5)', () => {
+  const repo = workspace({
+    runnable: [
+      runnable('A-1', { blocked: true, spec_id: 'docs/a.md', updated_at: 30 }),
+      runnable('A-2', { spec_id: '', updated_at: 50 }),
+      runnable('A-3', { spec_id: 'docs/c.md', updated_at: 10 })
+    ]
+  });
+
+  test('shows blocked candidates by default', () => {
+    expect(CANDIDATE_FILTER_DEFAULT.show_blocked).toBe(true);
+
+    const lanes = buildLanes([repo], [state()]);
+
+    expect(lanes.runnable.map((r) => r.id).sort()).toEqual([
+      'A-1',
+      'A-2',
+      'A-3'
+    ]);
+    expect(lanes.runnable_hidden.blocked).toBe(0);
+  });
+
+  test('hides blocked candidates and counts them when the toggle is off', () => {
+    const lanes = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: false, spec: 'all' }
+    });
+
+    expect(lanes.runnable.map((r) => r.id).sort()).toEqual(['A-2', 'A-3']);
+    expect(lanes.runnable_hidden.blocked).toBe(1);
+  });
+
+  test('filters on the runnable projection spec_id', () => {
+    const with_spec = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: true, spec: 'with' }
+    });
+    const without_spec = buildLanes([repo], [state()], {
+      candidate_filter: { show_blocked: true, spec: 'without' }
+    });
+
+    expect(with_spec.runnable.map((r) => r.id).sort()).toEqual(['A-1', 'A-3']);
+    expect(without_spec.runnable.map((r) => r.id)).toEqual(['A-2']);
+    expect(without_spec.runnable_hidden.spec).toBe(2);
+  });
+
+  test('sorts spec-bearing candidates first inside their repo section', () => {
+    const lanes = buildLanes([repo], [state()], {
+      candidate_sort: 'repo_spec'
+    });
+
+    expect(lanes.runnable_sections[0].items.map((r) => r.id)).toEqual([
+      'A-1',
+      'A-3',
+      'A-2'
+    ]);
+  });
+
+  test('sorts by newest update inside their repo section', () => {
+    const lanes = buildLanes([repo], [state()], {
+      candidate_sort: 'repo_updated'
+    });
+
+    expect(lanes.runnable_sections[0].items.map((r) => r.id)).toEqual([
+      'A-2',
+      'A-1',
+      'A-3'
+    ]);
+  });
+
+  test('produces one flat newest-first list across repos', () => {
+    const lanes = buildLanes(
+      [
+        repo,
         workspace({
           root_dir: WS_B,
           name: 'repo-b',
-          queue: [{ bead_id: 'B-1', added_at: NOW }]
+          runnable: [runnable('B-1', { updated_at: 40 })]
         })
       ],
-      [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })],
+      { candidate_sort: 'updated_flat' }
     );
 
-    expect(
-      lanes.queue_groups.map((g) =>
-        g.items.map((i) => [i.id, i.queue_position])
-      )
-    ).toEqual([
-      [
-        ['A-1', 1],
-        ['A-2', 2]
-      ],
-      [['B-1', 1]]
+    expect(lanes.runnable.map((r) => r.id)).toEqual([
+      'A-2',
+      'B-1',
+      'A-1',
+      'A-3'
     ]);
   });
+});
 
-  // 자동 진행이 꺼져 큐가 빈 레포가 바로 그 상태를 풀어야 하는 레포다 — 그
-  // 레포의 헤더가 사라지면 제어할 방법 자체가 없어진다.
-  test('renders a group for a repo whose waiting queue is empty', () => {
+describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
+  test('keeps an empty-queue section when that repo has candidates to drag', () => {
     const lanes = buildLanes(
-      [],
-      [state({ root_dir: WS_B, name: 'repo-b', auto_advance: false })]
-    );
-
-    expect(lanes.queue_groups.map((g) => [g.root_dir, g.items.length])).toEqual(
-      [[WS_B, 0]]
-    );
-  });
-
-  test('carries the runtime catalog into an empty repo group', () => {
-    const runner_catalog = {
-      runners: {
-        codex: {
-          models: {
-            sol: {
-              orchestration_efforts: ['low', 'max', 'ultra'],
-              speed_tiers: ['default', 'fast']
-            }
-          }
-        }
-      }
-    };
-
-    const lanes = buildLanes([], [state({ runner_catalog })]);
-
-    expect(lanes.queue_groups[0].runner_catalog).toBe(runner_catalog);
-    expect(lanes.queue_groups[0].runner_catalog).toEqual(runner_catalog);
-    expect(
-      lanes.queue_groups[0].runner_catalog.runners.codex.models.sol
-    ).toMatchObject({
-      orchestration_efforts: ['low', 'max', 'ultra'],
-      speed_tiers: ['default', 'fast']
-    });
-  });
-
-  // 파이프라인이 빈 workspace는 무거운 배열에 없다 — CAS 토큰은 그룹이
-  // `workspaces_state`에서 받아 헤더에 실어 두는 것 말고는 도달할 길이 없다.
-  test('carries the empty repo own revision on all three group controls', () => {
-    const lanes = buildLanes(
-      [],
-      [state({ root_dir: WS_B, name: 'repo-b', revision: 42, slots: 3 })]
-    );
-
-    render(monitorGroupHeaderTemplate(lanes.queue_groups[0]), mount);
-
-    const controls = Array.from(
-      mount.querySelectorAll(
-        '.mon-ctl--advance, .mon-ctl--merge-auto, .mon-slots__input'
-      )
-    );
-    expect(controls).toHaveLength(3);
-    expect(controls.map((el) => el.getAttribute('data-revision'))).toEqual([
-      '42',
-      '42',
-      '42'
-    ]);
-    expect(controls.map((el) => el.getAttribute('data-root-dir'))).toEqual([
-      WS_B,
-      WS_B,
-      WS_B
-    ]);
-  });
-
-  test('reflects the repo automation flags on the two toggles', () => {
-    const lanes = buildLanes(
-      [],
-      [state({ auto_advance: true, auto_merge: false })]
-    );
-
-    render(monitorGroupHeaderTemplate(lanes.queue_groups[0]), mount);
-
-    expect(
-      mount.querySelector('.mon-ctl--advance')?.getAttribute('data-on')
-    ).toBe('false');
-    expect(
-      mount.querySelector('.mon-ctl--merge-auto')?.getAttribute('data-on')
-    ).toBe('true');
-  });
-
-  test('falls back to the pipeline array when no workspace state arrives', () => {
-    const lanes = buildLanes(
-      [workspace({ queue: [{ bead_id: 'A-1', added_at: NOW }] })],
-      []
+      [workspace({ runnable: [runnable('A-1')] })],
+      [state()]
     );
 
     expect(lanes.queue_groups.map((g) => g.root_dir)).toEqual([WS_A]);
-  });
-});
-
-describe('monitor top bar (UI-qrfo §6)', () => {
-  test('counts a repo as automated only when both axes are on', () => {
-    const lanes = buildLanes(
-      [],
-      [
-        state(),
-        state({ root_dir: WS_B, name: 'repo-b', auto_merge: false }),
-        state({ root_dir: '/tmp/c', name: 'repo-c' })
-      ]
-    );
-
-    expect(lanes.automation).toEqual({ total: 3, both_on: 2 });
+    expect(lanes.queue_groups[0].sublanes.parallel).toHaveLength(0);
   });
 
-  test('renders the partial state as a fraction', () => {
-    render(
-      monitorTopBarTemplate(
-        topBarModel({
-          automation: { total: 4, both_on: 3 },
-          counts: { running: 1, queue: 2, pr_wait: 3 }
-        })
-      ),
-      mount
-    );
-
-    expect(mount.querySelector('.mon-auto-all')?.textContent?.trim()).toBe(
-      '전체 자동화 3/4'
-    );
-    expect(mount.querySelector('.mon-auto-all')?.getAttribute('data-on')).toBe(
-      'true'
-    );
-  });
-
-  test('renders the all-on state as the stop label', () => {
-    render(
-      monitorTopBarTemplate(
-        topBarModel({
-          automation: { total: 4, both_on: 4 },
-          counts: { running: 0, queue: 0, pr_wait: 0 }
-        })
-      ),
-      mount
-    );
-
-    expect(mount.querySelector('.mon-auto-all')?.textContent?.trim()).toBe(
-      '전체 자동화 멈춤'
-    );
-    expect(mount.querySelector('.mon-auto-all')?.getAttribute('data-on')).toBe(
-      'false'
-    );
-  });
-
-  test('renders the overall counts', () => {
-    render(
-      monitorTopBarTemplate(
-        topBarModel({
-          automation: { total: 1, both_on: 0 },
-          counts: { running: 5, queue: 6, pr_wait: 7 }
-        })
-      ),
-      mount
-    );
-
-    expect(
-      Array.from(mount.querySelectorAll('.mon-kpi__chip b')).map(
-        (el) => el.textContent
-      )
-    ).toEqual(['5', '6', '7']);
-  });
-
-  test('selects the current done-range option in the period select', () => {
-    render(monitorTopBarTemplate(topBarModel({ done_range: '7d' })), mount);
-
-    const selected = /** @type {HTMLOptionElement|null} */ (
-      mount.querySelector('.mon-done-range option[selected]')
-    );
-    expect(selected?.getAttribute('value')).toBe('7d');
-  });
-
-  test('renders no token chip when the total is null', () => {
-    render(monitorTopBarTemplate(topBarModel()), mount);
-
-    expect(mount.querySelector('.mon-kpi__chip--tokens')).toBe(null);
-  });
-
-  test('renders the token chip with its tooltip when a total is given', () => {
-    render(
-      monitorTopBarTemplate(
-        topBarModel({
-          token_total: 'τ 2.0k',
-          token_tooltip: '오늘 완료된 이슈들이 생애 전체에 쓴 토큰 누적'
-        })
-      ),
-      mount
-    );
-
-    const chip = mount.querySelector('.mon-kpi__chip--tokens');
-    expect(chip?.textContent?.trim()).toBe('오늘 완료 · 누적 τ 2.0k');
-    expect(chip?.getAttribute('title')).toBe(
-      '오늘 완료된 이슈들이 생애 전체에 쓴 토큰 누적'
-    );
-  });
-
-  test('renders provider totals as separate top-bar chips', () => {
-    render(
-      monitorTopBarTemplate(
-        topBarModel({
-          token_total: [
-            {
-              provider: 'claude',
-              label: 'Claude τ 15',
-              tooltip: 'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성'
-            },
-            {
-              provider: 'codex',
-              label: 'Codex τ 8',
-              tooltip: 'Codex subtotal = 입력 + 출력; subset 제외'
-            }
-          ]
-        })
-      ),
-      mount
-    );
-
-    const chips = Array.from(
-      mount.querySelectorAll('.mon-kpi__chip--tokens')
-    ).map((chip) => chip.textContent?.trim());
-
-    expect(chips).toEqual([
-      '오늘 완료 · 누적 Claude τ 15',
-      '오늘 완료 · 누적 Codex τ 8'
-    ]);
-  });
-});
-
-describe('monitor lane ordering (ported from buildSections, UI-nprg)', () => {
-  test('orders running items by started_at ascending by default', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-new',
-              status: 'running',
-              started_at: NOW - 1_000
-            },
-            a2: {
-              attempt_id: 'a2',
-              bead_id: 'A-old',
-              status: 'running',
-              started_at: NOW - 90_000
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(ids(lanes.running)).toEqual(['A-old', 'A-new']);
-  });
-
-  test('puts missing running start times last with a bead id tie-break', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            a1: { attempt_id: 'a1', bead_id: 'A-z', status: 'running' },
-            a2: {
-              attempt_id: 'a2',
-              bead_id: 'A-started',
-              status: 'running',
-              started_at: NOW
-            },
-            a3: { attempt_id: 'a3', bead_id: 'A-a', status: 'running' }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(ids(lanes.running)).toEqual(['A-started', 'A-a', 'A-z']);
-  });
-
-  test('groups running items by workspace state order in repo mode', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-first',
-              status: 'running',
-              started_at: NOW - 90_000
-            }
-          }
-        }),
-        workspace({
-          root_dir: WS_B,
-          name: 'repo-b',
-          attempts: {
-            b1: {
-              attempt_id: 'b1',
-              bead_id: 'B-later',
-              status: 'running',
-              started_at: NOW - 1_000
-            }
-          }
-        }),
-        workspace({
-          root_dir: '/tmp/example/repo-unknown',
-          name: 'repo-unknown',
-          attempts: {
-            c1: {
-              attempt_id: 'c1',
-              bead_id: 'C-unknown',
-              status: 'running',
-              started_at: NOW - 120_000
-            }
-          }
-        })
-      ],
-      [state({ root_dir: WS_B, name: 'repo-b' }), state()],
-      { running_sort: 'repo' }
-    );
-
-    expect(ids(lanes.running)).toEqual(['B-later', 'A-first', 'C-unknown']);
-  });
-
-  test('orders done items by completion time descending across repos', () => {
-    const lanes = buildLanes(
-      [
-        workspace({ done: [{ bead_id: 'A-old', added_at: NOW - 60_000 }] }),
-        workspace({
-          root_dir: WS_B,
-          name: 'repo-b',
-          done: [{ bead_id: 'B-new', added_at: NOW - 1_000 }]
-        })
-      ],
-      []
-    );
-
-    expect(ids(lanes.done)).toEqual(['B-new', 'A-old']);
-  });
-
-  test('keeps the waiting lane in dispatch order with its lane positions', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [
-            { bead_id: 'A-1', added_at: NOW },
-            { bead_id: 'A-2', added_at: NOW }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.queue.map((i) => [i.id, i.queue_position])).toEqual([
-      ['A-1', 1],
-      ['A-2', 2]
-    ]);
-  });
-
-  // 순번은 레인에서의 디스패치 순서다 — 실행중으로 빠진 버드를 건너뛴 뒤의
-  // 인덱스를 쓰면 남은 카드가 자기 자리를 잘못 말한다.
-  test('numbers a waiting bead by its lane slot, not the rendered index', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [
-            { bead_id: 'A-run', added_at: NOW },
-            { bead_id: 'A-next', added_at: NOW }
-          ],
-          attempts: {
-            a1: { attempt_id: 'a1', bead_id: 'A-run', status: 'running' }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.queue.map((i) => [i.id, i.queue_position])).toEqual([
-      ['A-next', 2]
-    ]);
-  });
-});
-
-describe('monitor lane item decoration (ported from buildSections, UI-nprg)', () => {
-  test('uses the decorated bead title and falls back to the id', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [
-            { bead_id: 'A-1', added_at: NOW },
-            { bead_id: 'A-2', added_at: NOW }
-          ],
-          bead_titles: { 'A-1': '제목 있음' }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.queue.map((i) => i.title)).toEqual(['제목 있음', 'A-2']);
-  });
-
-  test('carries the owning repo on every item', () => {
-    const lanes = buildLanes(
-      [
-        workspace({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
-        workspace({
-          root_dir: WS_B,
-          name: 'repo-b',
-          queue: [{ bead_id: 'B-1', added_at: NOW }]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.queue.map((i) => [i.root_dir, i.workspace_name])).toEqual([
-      [WS_A, 'repo-a'],
-      [WS_B, 'repo-b']
-    ]);
-  });
-
-  test('derives the PR number from the observations', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': { pr: { number: 91, url: 'https://x/91' } }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].pr_number).toBe(91);
-    expect(lanes.pr_wait[0].pr_url).toBe('https://x/91');
-  });
-
-  // 아래 네 판정은 Worker 탭 `prWaitRow`와 같은 값이어야 한다 — 서버가 거부할
-  // 조작을 모니터가 제시하면 클릭이 실패로만 돌아온다.
-  test('keeps merge disabled while the gate is closed', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': { gate: { enabled: false, tier: 'verify' } }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_action).toBe(true);
-    expect(lanes.pr_wait[0].merge_enabled).toBe(false);
-  });
-
-  test('projects exact deploy progress with fixed numbering', () => {
-    const merge_sha = 'a'.repeat(40);
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [
-            {
-              bead_id: 'A-pr',
-              added_at: NOW,
-              merge_sha,
-              cleanup_cursor: 'repo_operations'
-            }
-          ],
-          pr_observations: {
-            'A-pr': {
-              gate: {
-                enabled: false,
-                tier: 'merged',
-                gate_badge: '머지됨'
-              }
-            }
-          },
-          repo_operations: [
-            {
-              operation_id: 'deploy-1',
-              kind: 'deploy',
-              state: 'running',
-              requested_at: 1,
-              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
-              superseded_by: null
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_step).toMatchObject({
-      label: '배포 중',
-      index: 4,
-      total: 7,
-      percent: 57
-    });
-  });
-
-  test('renders progress and hides merge on an already merged row', () => {
-    const merge_sha = 'a'.repeat(40);
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [
-            {
-              bead_id: 'A-pr',
-              added_at: NOW,
-              merge_sha,
-              cleanup_cursor: 'repo_operations'
-            }
-          ],
-          pr_observations: {
-            'A-pr': {
-              gate: {
-                enabled: false,
-                tier: 'merged',
-                gate_badge: '머지됨'
-              }
-            }
-          },
-          repo_operations: [
-            {
-              operation_id: 'verify-1',
-              kind: 'verify',
-              state: 'running',
-              requested_at: 1,
-              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
-              superseded_by: null
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    render(monitorPrCard(lanes.pr_wait[0]), mount);
-
-    expect(mount.textContent?.replace(/\s+/g, '')).toContain('검증중3/7');
-    expect(mount.querySelector('.worker-mini__merge')).toBeNull();
-    expect(lanes.pr_wait[0].discard?.enabled).toBe(false);
-  });
-
-  test('names an exact deploy cleanup failure', () => {
-    const merge_sha = 'a'.repeat(40);
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [
-            {
-              bead_id: 'A-pr',
-              added_at: NOW,
-              merge_sha,
-              cleanup_cursor: 'repo_operations'
-            }
-          ],
-          pr_observations: {
-            'A-pr': { gate: { enabled: false, tier: 'merged' } }
-          },
-          cleanup_failed: {
-            'A-pr': { step: 'repo_operations', reason: 'deploy failed' }
-          },
-          repo_operations: [
-            {
-              operation_id: 'deploy-1',
-              kind: 'deploy',
-              state: 'failed',
-              requested_at: 1,
-              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
-              superseded_by: null
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_step).toMatchObject({
-      label: '배포 실패',
-      index: 4,
-      failed: true
-    });
-  });
-
-  test('keeps an exact retry ahead of a stale cleanup failure', () => {
-    const merge_sha = 'a'.repeat(40);
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [
-            {
-              bead_id: 'A-pr',
-              added_at: NOW,
-              merge_sha,
-              cleanup_cursor: 'repo_operations'
-            }
-          ],
-          pr_observations: {
-            'A-pr': {
-              gate: {
-                enabled: false,
-                tier: 'merged',
-                gate_badge: '머지됨'
-              }
-            }
-          },
-          cleanup_failed: {
-            'A-pr': { step: 'repo_operations', reason: 'previous failure' }
-          },
-          repo_operations: [
-            {
-              operation_id: 'deploy-2',
-              kind: 'deploy',
-              state: 'repairing',
-              requested_at: 2,
-              subjects: [{ bead_id: 'A-pr', merged_sha: merge_sha }],
-              superseded_by: null
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_step?.label).toBe('배포 자동 해결 중');
-    expect(lanes.pr_wait[0].badges).toEqual(['머지됨']);
-    expect(lanes.pr_wait[0].alert).toBe(false);
-    expect(lanes.pr_wait[0].reason).toBe('PR 대기');
-  });
-
-  test('projects the no-CI eligibility badge', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': {
-              gate: {
-                enabled: true,
-                tier: 'eligible',
-                gate_badge: '머지 가능'
-              }
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].badges).toContain('머지 가능');
-  });
-
-  test('enables merge on a conflicting gate so the click dispatches resolution', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': { gate: { enabled: false, base_badge: '충돌' } }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_enabled).toBe(true);
-    expect(lanes.pr_wait[0].merge_label).toBe('충돌 해소 후 머지');
-  });
-
-  test('projects a durable continuation decision as an action-required card', () => {
-    const mismatch = {
-      continuation_required: true,
-      prior_available: true,
-      prior: { runner: 'codex' },
-      current: { runner: 'claude' },
-      decision_token: { source_attempt_id: 'a1' }
-    };
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          merge_queue: [
-            {
-              bead_id: 'A-pr',
-              continuation_action: {
-                subject_bead_id: 'A-pr',
-                continuation: null,
-                decision_token: null,
-                mismatch
-              }
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0]).toMatchObject({
-      merge_action: true,
-      merge_enabled: true,
-      merge_label: '이어하기 선택',
-      continuation_mismatch: mismatch
-    });
-    expect(lanes.pr_wait[0].badges).toContain('이어하기 선택 필요');
-  });
-
-  test('enables merge as a cleanup retry on a merged gate with a recorded failure', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': { gate: { enabled: false, tier: 'merged' } }
-          },
-          cleanup_failed: { 'A-pr': { step: 'child_sweep', reason: 'x' } }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_enabled).toBe(true);
-    expect(lanes.pr_wait[0].merge_label).toBe('정리 재개');
-    expect(lanes.pr_wait[0].badges).toContain('정리 멈춤 · 자식 정리');
-  });
-
-  test('hides cleanup action for a merged external row without a failure', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW, external: true }],
-          pr_observations: {
-            'A-pr': { gate: { enabled: false, tier: 'merged' } }
-          },
-          cleanup_failed: {}
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_enabled).toBe(false);
-    expect(lanes.pr_wait[0].merge_label).toBeUndefined();
-  });
-
-  test('keeps cleanup disabled while a failed discard awaits retry', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': { gate: { enabled: false, tier: 'merged' } }
-          },
-          cleanup_failed: { 'A-pr': { step: 'verify', reason: 'x' } },
-          discard_operations: {
-            op1: {
-              operation_id: 'op1',
-              bead_id: 'A-pr',
-              requested_at: 1,
-              mode: 'merged_revert',
-              phase: 'revert_pr_created',
-              last_error: 'revert_pr_failed'
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].merge_enabled).toBe(false);
-    expect(lanes.pr_wait[0].merge_title).toContain(
-      '폐기 실패: revert_pr_failed'
-    );
-    expect(lanes.pr_wait[0].discard?.enabled).toBe(true);
-    expect(lanes.pr_wait[0].discard?.label).toBe('재시도');
-  });
-
-  test('offers discard on an already merged worker-owned row', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }],
-          pr_observations: {
-            'A-pr': { gate: { enabled: true, tier: 'merged' } }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].discard_action).toBe(true);
-    expect(lanes.pr_wait[0].discard?.confirmation).toBe('merged');
-  });
-
-  test('hides discard on an external PR row', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW, external: true }]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].discard_action).toBe(false);
-  });
-
-  test('marks an external PR row and renders it with no number', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          pr_wait: [{ bead_id: 'A-pr', added_at: NOW, external: true }]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.pr_wait[0].external).toBe(true);
-    expect(lanes.pr_wait[0].pr_number).toBe(null);
-  });
-
-  test('derives the completion kind from the latest terminal attempt', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          done: [{ bead_id: 'A-done', added_at: NOW - 1_000 }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-done',
-              status: 'done',
-              finished_at: NOW - 2_000,
-              done_kind: 'pr_stop'
-            },
-            a2: {
-              attempt_id: 'a2',
-              bead_id: 'A-done',
-              status: 'done',
-              finished_at: NOW - 1_000,
-              done_kind: 'auto_merge'
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.done[0].done_kind).toBe('auto_merge');
-  });
-
-  test('omits the completion kind when no attempt matches', () => {
-    const lanes = buildLanes(
-      [workspace({ done: [{ bead_id: 'A-done', added_at: NOW - 1_000 }] })],
-      []
-    );
-
-    expect(lanes.done[0].done_kind).toBe(null);
-    expect(lanes.done[0].done_at).toBe(NOW - 1_000);
-  });
-
-  test('renders the full done history when no period filter is given', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          done: [
-            { bead_id: 'A-old', added_at: NOW - 40 * 86_400_000 },
-            { bead_id: 'A-new', added_at: NOW - 1_000 }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(ids(lanes.done)).toEqual(['A-new', 'A-old']);
-  });
-
-  test('gives every item its own repo CAS revision', () => {
-    const lanes = buildLanes(
-      [
-        workspace({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
-        workspace({
-          root_dir: WS_B,
-          name: 'repo-b',
-          queue: [{ bead_id: 'B-1', added_at: NOW }]
-        })
-      ],
-      [state({ revision: 4 }), state({ root_dir: WS_B, revision: 9 })]
-    );
-
-    expect(lanes.queue.map((i) => i.expected_revision)).toEqual([4, 9]);
-  });
-
-  test('places a runnable card at the tail of that repo waiting queue', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [
-            { bead_id: 'A-1', added_at: NOW },
-            { bead_id: 'A-2', added_at: NOW }
-          ],
-          runnable: [
-            { bead_id: 'A-3', title: '실행 가능', route: 'spec_backed' }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.runnable[0].place_index).toBe(2);
-  });
-
-  test('surfaces the admission refusal on a runnable card', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [{ bead_id: 'A-3', title: '실행 가능' }],
-          admission: { 'A-3': { reason: 'spec_missing:docs/x.md' } }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.runnable[0].reason).toBe('⛔ spec_missing (docs/x.md)');
-  });
-
-  test('carries the server labels onto the runnable item', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              labels: ['worker-ineligible']
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect(lanes.runnable[0].labels).toEqual(['worker-ineligible']);
-  });
-
-  test('carries review progress fields onto the runnable item', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              spec_reviewer: 'codex',
-              plan_state: 'approved'
-            }
-          ]
-        })
-      ],
-      []
-    );
-
-    expect([
-      lanes.runnable[0].spec_reviewer,
-      lanes.runnable[0].plan_state
-    ]).toEqual(['codex', 'approved']);
-  });
-
-  test('leaves the runnable labels empty when the server sends none', () => {
-    const lanes = buildLanes(
-      [workspace({ runnable: [{ bead_id: 'A-3', title: '실행 가능' }] })],
-      []
-    );
-
-    expect(lanes.runnable[0].labels).toEqual([]);
-  });
-});
-
-describe('monitor 완료 레인 기간 필터 (UI-qrfo §7)', () => {
-  test('excludes a done entry completed before the period lower bound', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          done: [
-            { bead_id: 'A-old', added_at: NOW - 10 * 86_400_000 },
-            { bead_id: 'A-new', added_at: NOW - 1_000 }
-          ]
-        })
-      ],
-      [],
-      { done_since: NOW - 86_400_000 }
-    );
-
-    expect(ids(lanes.done)).toEqual(['A-new']);
-  });
-
-  test('keeps a done entry completed exactly at the period lower bound', () => {
-    const lanes = buildLanes(
-      [workspace({ done: [{ bead_id: 'A-boundary', added_at: NOW }] })],
-      [],
-      { done_since: NOW }
-    );
-
-    expect(ids(lanes.done)).toEqual(['A-boundary']);
-  });
-
-  // Worker 탭과 같은 규약(§10) — 판정할 수 없는 엔트리를 지우는 쪽이 더 나쁜
-  // 오답이므로, 기간이 아무리 좁아도 이 엔트리는 항상 남는다.
-  test('keeps a done entry with no added_at regardless of the selected period', () => {
-    const lanes = buildLanes(
-      [workspace({ done: [{ bead_id: 'A-legacy' }] })],
-      [],
-      { done_since: NOW }
-    );
-
-    expect(ids(lanes.done)).toEqual(['A-legacy']);
-  });
-
-  test('does not filter across repos when one repo has no matching entry', () => {
-    const lanes = buildLanes(
-      [
-        workspace({ done: [{ bead_id: 'A-old', added_at: NOW - 100_000 }] }),
-        workspace({
-          root_dir: WS_B,
-          name: 'repo-b',
-          done: [{ bead_id: 'B-new', added_at: NOW - 1_000 }]
-        })
-      ],
-      [],
-      { done_since: NOW - 50_000 }
-    );
-
-    expect(ids(lanes.done)).toEqual(['B-new']);
-  });
-});
-
-describe('monitor running lane attempt states (UI-qrfo §8 조작)', () => {
-  test('offers resume on a leaf paused attempt', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-1', added_at: NOW }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-1',
-              status: 'paused',
-              session_id: 's1',
-              started_at: NOW - 5_000
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.running[0].run_state).toBe('paused');
-    expect(lanes.running[0].can_resume).toBe(true);
-  });
-
-  test('offers dismiss on an unhandled failure', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-1',
-              status: 'failed',
-              finished_at: NOW - 5_000
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.running[0].run_state).toBe('failed');
-    expect(lanes.running[0].attempt_id).toBe('a1');
-  });
-
-  test('drops a failure a later done entry already resolved', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          done: [{ bead_id: 'A-1', added_at: NOW - 1_000 }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-1',
-              status: 'failed',
-              finished_at: NOW - 5_000
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.running).toEqual([]);
-    expect(ids(lanes.done)).toEqual(['A-1']);
-  });
-
-  test('prefers the live attempt over a paused one on the same bead', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-1',
-              status: 'paused',
-              started_at: NOW - 10_000
-            },
-            a2: {
-              attempt_id: 'a2',
-              bead_id: 'A-1',
-              status: 'running',
-              started_at: NOW - 1_000
-            }
-          }
-        })
-      ],
-      []
-    );
-
-    expect(lanes.running).toHaveLength(1);
-    expect(lanes.running[0].run_state).toBe('running');
-  });
-});
-
-describe('monitor lane fail-quiet', () => {
-  test('renders nothing at all before the first snapshot', () => {
-    const lanes = buildLanes(null, null);
-
-    expect(lanes.queue_groups).toEqual([]);
-    expect(lanes.automation).toEqual({ total: 0, both_on: 0 });
-  });
-
-  test('leaves the runnable lane empty when the server sends no such key', () => {
-    const lanes = buildLanes([workspace()], [state()]);
-
-    expect(lanes.runnable).toEqual([]);
-  });
-});
-
-describe('monitor 카드 문법 (UI-gwkl §2.2)', () => {
-  test('gives a running tile a title block outside its meta line', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          bead_titles: { 'A-run': '모니터 탭 시각 디자인 개선·모바일 호환' },
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-run',
-              status: 'running',
-              started_at: NOW - 65_000,
-              last_event_at: NOW
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunningTile(lanes.running[0], NOW), mount);
-
-    expect(mount.querySelector('.mon-c__title')?.textContent?.trim()).toBe(
-      '모니터 탭 시각 디자인 개선·모바일 호환'
-    );
-    expect(mount.querySelector('.mon-c__meta .mon-c__title')).toBe(null);
-    expect(mount.querySelector('.mon-c__meta .mon-c__id')?.textContent).toBe(
-      'A-run'
-    );
-    expect(mount.querySelector('.mon-c__meta .mon-live__elapsed')).not.toBe(
-      null
-    );
-  });
-
-  // 실패는 카드에서 가장 먼저 읽혀야 하는 사실이다.
-  test('leads the running meta line with the failure state', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-run',
-              status: 'failed',
-              started_at: NOW - 1_000,
-              finished_at: NOW
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunningTile(lanes.running[0], NOW), mount);
-
-    const first = mount.querySelector('.mon-c__meta')?.firstElementChild;
-    expect(first?.className).toContain('mon-c__badge--alert');
-    expect(first?.textContent).toContain('실패');
-  });
-
-  // 좌측 레일은 1fr이라 현재보다 좁다 — 대기 행만 한 줄로 두면 제목 압축이
-  // 그대로 재발한다 (spec 리뷰 finding 1).
-  test('gives a waiting row the same title-first two-line structure', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          bead_titles: { 'A-1': '대기 중인 아주 긴 한글 제목' },
-          queue: [{ bead_id: 'A-1', added_at: NOW }]
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorQueueRow(lanes.queue[0]), mount);
-
-    expect(mount.querySelector('.mon-c__title')?.textContent?.trim()).toBe(
-      '대기 중인 아주 긴 한글 제목'
-    );
-    expect(mount.querySelector('.mon-c__meta .mon-c__title')).toBe(null);
-    expect(
-      mount.querySelector('.mon-c__meta .mon-live__pos')?.textContent
-    ).toBe('#1');
-    expect(mount.querySelector('.mon-c__meta .mon-c__id')?.textContent).toBe(
-      'A-1'
-    );
-  });
-
-  test('keeps a failed post-runner discard reachable from the queue row', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          queue: [{ bead_id: 'A-1', added_at: NOW }],
-          attempts: {
-            a1: {
-              attempt_id: 'a1',
-              bead_id: 'A-1',
-              status: 'discarded'
-            }
-          },
-          discard_operations: {
-            'op-queue': {
-              operation_id: 'op-queue',
-              bead_id: 'A-1',
-              attempt_id: 'a1',
-              requested_at: 1,
-              mode: 'unmerged',
-              phase: 'runner_terminated',
-              backup: { path: '/state/op-queue' },
-              last_error: 'pr_observe_failed'
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorQueueRow(lanes.queue[0]), mount);
-
-    expect(lanes.queue[0].draggable).toBe(false);
-    expect(
-      mount.querySelector('.worker-mini__discard')?.textContent?.trim()
-    ).toBe('재시도');
-    expect(mount.textContent).toContain('/state/op-queue');
-    expect(
-      /** @type {HTMLButtonElement} */ (mount.querySelector('.mon-op--remove'))
-        .disabled
-    ).toBe(true);
-  });
-
-  // 큐잉 판단이 일어나는 화면이 실행가능 레인이므로, 라우팅 라벨은 여기서
-  // 읽혀야 한다 (UI-lzfa §4.2).
-  test('renders the bead labels as chips on a runnable card', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              route: 'spec_backed',
-              labels: ['worker-ineligible', 'frontend']
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-    expect(
-      Array.from(
-        mount.querySelectorAll('.mon-c__meta .ctl-chip--label'),
-        (el) => el.textContent
-      )
-    ).toEqual(['worker-ineligible', 'frontend']);
-  });
-
-  test('draws no label chip on a runnable card with no labels', () => {
-    const lanes = buildLanes(
-      [workspace({ runnable: [{ bead_id: 'A-3', title: '실행 가능' }] })],
-      [state()]
-    );
-
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-    expect(mount.querySelectorAll('.ctl-chip--label').length).toBe(0);
-  });
-
-  test('renders the spec reviewer chip on a runnable card', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              route: 'spec_backed',
-              spec_reviewer: 'codex',
-              plan_state: 'none'
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-    expect(mount.querySelector('.mon-c__review')?.textContent).toBe(
-      'spec:codex'
-    );
-  });
-
-  test('omits the spec reviewer chip when a quick fix has no reviewer', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              route: 'quick_fix',
-              spec_reviewer: '',
-              plan_state: 'none'
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-    expect(mount.querySelector('.mon-c__review')).toBe(null);
-  });
-
-  test('dims a skipped spec reviewer chip', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              route: 'spec_backed',
-              spec_reviewer: 'skipped',
-              plan_state: 'none'
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-    expect(mount.querySelector('.mon-c__review')?.classList).toContain(
-      'mon-c__review--dim'
-    );
-  });
-
-  for (const [plan_state, label, dimmed] of [
-    ['approved', 'plan ✓', false],
-    ['authored', 'plan ✎', false],
-    ['none', 'plan –', true]
-  ]) {
-    test(`renders the ${plan_state} full-plan chip`, () => {
-      const lanes = buildLanes(
-        [
-          workspace({
-            runnable: [
-              {
-                bead_id: 'A-3',
-                title: '실행 가능',
-                route: 'full_plan',
-                spec_reviewer: 'codex',
-                plan_state
-              }
-            ]
-          })
-        ],
-        [state()]
-      );
-
-      render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-      const chip = mount.querySelector('.mon-c__plan');
-      expect([
-        chip?.textContent,
-        chip?.classList.contains('mon-c__review--dim')
-      ]).toEqual([label, dimmed]);
-    });
-  }
-
-  test('omits the plan chip from a spec-backed runnable card', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-3',
-              title: '실행 가능',
-              route: 'spec_backed',
-              spec_reviewer: 'codex',
-              plan_state: 'none'
-            }
-          ]
-        })
-      ],
-      [state()]
-    );
-
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
-
-    expect(mount.querySelector('.mon-c__plan')).toBe(null);
-  });
-});
-
-describe('monitor 그룹 컨트롤 라벨 (UI-gwkl §2.3)', () => {
-  test('labels all three group controls and keeps their CAS attributes', () => {
-    const lanes = buildLanes(
-      [],
-      [
-        state({
-          root_dir: WS_B,
-          name: 'repo-b',
-          revision: 9,
-          auto_advance: false
-        })
-      ]
-    );
-
-    render(monitorGroupHeaderTemplate(lanes.queue_groups[0]), mount);
-
-    expect(
-      Array.from(mount.querySelectorAll('.mon-ctl__label')).map((el) =>
-        el.textContent?.trim()
-      )
-    ).toEqual(['자동화', '머지', '슬롯']);
-    const advance = mount.querySelector('.mon-ctl--advance');
-    expect(advance?.getAttribute('data-on')).toBe('true');
-    expect(advance?.getAttribute('data-revision')).toBe('9');
-    expect(advance?.getAttribute('data-root-dir')).toBe(WS_B);
-    expect(advance?.getAttribute('title')).toBe(
-      '자동화 꺼짐 — 클릭하면 자동 진행·자동 머지를 함께 켭니다'
-    );
-  });
-
-  // 이모지는 폰트마다 크기·색이 제각각이라 라벨보다 시각적으로 앞선다.
-  test('draws an svg icon on every control and no emoji glyph', () => {
+  test('omits a repo with neither queue nor candidates', () => {
     const lanes = buildLanes([], [state()]);
 
-    render(monitorGroupHeaderTemplate(lanes.queue_groups[0]), mount);
+    expect(lanes.queue_groups).toEqual([]);
+  });
 
-    for (const selector of [
-      '.mon-ctl--advance',
-      '.mon-ctl--merge-auto',
-      '.mon-ctl--slots'
-    ]) {
-      expect(
-        mount.querySelector(
-          `${selector} svg.mon-i path, ${selector} svg.mon-i rect, ${selector} svg.mon-i circle`
-        )
-      ).not.toBe(null);
-    }
-    expect(/[▶🔀⧉⚙]/u.test(mount.textContent || '')).toBe(false);
+  test('carries the raw server queue length for drop-tail math', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    // DOM에는 실행중으로 빠진 A-1이 없지만 서버 배열에는 남아 있다.
+    expect(lanes.queue_groups[0].sublanes.parallel).toHaveLength(1);
+    expect(lanes.queue_groups[0].raw_queue_length).toBe(2);
+  });
+
+  test('reports the automation state the section header reads', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state({ auto_advance: true })]
+    );
+
+    expect(lanes.queue_groups[0].auto_advance).toBe(true);
+    expect(lanes.queue_groups[0].slots).toBeGreaterThanOrEqual(MIN_SLOTS);
+  });
+
+  test('marks a configured but empty serial lane so it can collapse to a hint', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 2,
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial;
+    expect(serial.map((lane) => lane.id)).toEqual(['s1', 's2']);
+    expect(serial[0].empty).toBeUndefined();
+    expect(serial[1].empty).toBe(true);
+  });
+
+  test('omits the hint entirely when the only configured serial lane is empty', () => {
+    const lanes = buildLanes(
+      [workspace({ serial_lane_count: 1, queue: [{ bead_id: 'A-1' }] })],
+      [state()]
+    );
+
+    expect(lanes.queue_groups[0].sublanes.serial).toEqual([]);
+  });
+
+  test('keeps a non-empty single serial lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue_groups[0].sublanes.serial.map((l) => l.id)).toEqual([
+      's1'
+    ]);
   });
 });
 
-describe('monitor blocker rendering (UI-2gi1 §6.2–§6.4)', () => {
-  test('renders a same-lane predecessor as a gray normal-wait chip', () => {
+describe('monitor dependency chips (UI-eey2 §5.1)', () => {
+  test('names the direction and the location on a 선행 chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.queue.find((r) => r.id === 'A-2');
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
+      '🔒 선행 A-1 (실행가능)'
+    );
+    expect(row?.dependency_chips?.predecessors?.[0].title).toBe(
+      '이 이슈는 A-1가 close될 때까지 출발하지 않는다'
+    );
+  });
+
+  test('derives the reverse 후속 chip on the blocker card', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const blocker = lanes.runnable.find((r) => r.id === 'A-1');
+    expect(blocker?.dependency_chips?.successors?.[0].label).toBe(
+      '→ 후속 A-2 (repo-a · 병렬 #1)'
+    );
+    expect(blocker?.dependency_chips?.successors?.[0].title).toBe(
+      '이 이슈가 close되면 A-2가 자기 레포 큐에서 출발한다'
+    );
+  });
+
+  test('omits a successor that is in no lane at all', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-1')],
+          bead_blocked_by: { 'A-9': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    const blocker = lanes.runnable.find((r) => r.id === 'A-1');
+    expect(blocker?.dependency_chips?.successors ?? []).toEqual([]);
+  });
+
+  test('gives a running tile successors but no 선행 chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 1
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect(tile.dependency_chips?.predecessors).toEqual([]);
+    expect(tile.dependency_chips?.successors?.[0].id).toBe('A-2');
+  });
+});
+
+describe('monitor 🔗 연결 체인 (UI-eey2 §6.4)', () => {
+  test('builds a chain from a cross-repo blocks edge', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }],
+          bead_blocked_by: { 'B-1': ['A-1'] }
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.chains).toHaveLength(1);
+    expect(lanes.chains[0].nodes.map((n) => n.id)).toEqual(['A-1', 'B-1']);
+    expect(lanes.chains[0].nodes[0].location_label).toBe('repo-a · 병렬 #1');
+  });
+
+  test('drops a chain whose nodes all sit in one serial lane', () => {
     const lanes = buildLanes(
       [
         workspace({
           serial_lane_count: 1,
           serial_lanes: [
-            {
-              id: 's1',
-              entries: [{ bead_id: 'A-first' }, { bead_id: 'A-second' }]
-            }
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
           ],
-          bead_blocked_by: { 'A-second': ['A-first'] }
+          bead_blocked_by: { 'A-2': ['A-1'] }
         })
       ],
-      [state({ issue_prefix: 'A' })]
+      [state()]
     );
 
-    render(monitorQueueRow(lanes.queue[1]), mount);
-
-    expect(mount.querySelector('.mon-blocker--normal')?.textContent).toContain(
-      '🔒 A-first (같은 레인 앞)'
-    );
-    expect(mount.querySelector('.mon-blocker-warning')).toBe(null);
+    expect(lanes.chains).toEqual([]);
   });
 
-  test('omits blocker chips when the partial cache has no bead entry', () => {
-    const lanes = buildLanes(
-      [workspace({ queue: [{ bead_id: 'A-wait' }] })],
-      [state({ issue_prefix: 'A' })]
-    );
-
-    render(monitorQueueRow(lanes.queue[0]), mount);
-
-    expect(mount.querySelector('.mon-blocker')).toBe(null);
-  });
-
-  test('renders the exact unloaded internal blocker warning', () => {
+  test('keeps a chain inside one parallel queue', () => {
     const lanes = buildLanes(
       [
         workspace({
-          queue: [{ bead_id: 'A-wait' }],
-          bead_blocked_by: { 'A-wait': ['A-missing'] }
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
         })
       ],
-      [state({ issue_prefix: 'A' })]
+      [state()]
     );
 
-    render(monitorQueueRow(lanes.queue[0]), mount);
-
-    expect(mount.querySelector('.mon-blocker')?.textContent).toContain(
-      '🔒 A-missing (미적재)'
-    );
-    expect(mount.querySelector('.mon-blocker-warning')?.textContent).toBe(
-      '⚠ 선행 A-missing가 어느 레인에도 없고 실행 중도 아님 — 수동 개입 전까지 이 자리에서 정지'
-    );
+    expect(lanes.chains).toHaveLength(1);
   });
 
-  test('keeps an older completed blocker located outside the done display range', () => {
+  test('indents a branch one step and leaves a linear chain flat', () => {
+    const locations = new Map();
+    const chains = buildChains(
+      new Map([
+        ['B', ['A']],
+        ['C', ['A']],
+        ['D', ['B']]
+      ]),
+      locations,
+      []
+    );
+
+    const indents = Object.fromEntries(
+      chains[0].nodes.map((n) => [n.id, n.indent])
+    );
+    expect(indents).toEqual({ A: 0, B: 1, C: 1, D: 1 });
+  });
+
+  test('reports a cycle instead of ordering it', () => {
+    const chains = buildChains(
+      new Map([
+        ['A', ['B']],
+        ['B', ['A']]
+      ]),
+      new Map(),
+      []
+    );
+
+    expect(chains[0].cycle).toBe(true);
+    expect(chains[0].nodes.map((n) => n.id)).toEqual(['A', 'B']);
+  });
+
+  test('labels an unplaced node from its prefix scope', () => {
+    const chains = buildChains(
+      new Map([['A-2', ['Z-9']]]),
+      new Map([
+        [
+          'A-2',
+          {
+            root_dir: WS_A,
+            workspace_name: 'repo-a',
+            lane: 'parallel',
+            position: 1
+          }
+        ]
+      ]),
+      [state()]
+    );
+
+    const node = chains[0].nodes.find((n) => n.id === 'Z-9');
+    expect(node?.location_label).toBe('외부');
+  });
+});
+
+describe('monitor 완료 lane (UI-eey2 §8)', () => {
+  test('asks for the three-line layout so the repo badge cannot squeeze the title', () => {
     const lanes = buildLanes(
       [
         workspace({
-          queue: [{ bead_id: 'A-wait' }],
-          done: [{ bead_id: 'A-done', added_at: NOW - 10_000 }],
-          bead_blocked_by: { 'A-wait': ['A-done'] }
-        })
-      ],
-      [state({ issue_prefix: 'A' })],
-      { done_since: NOW }
-    );
-
-    render(monitorQueueRow(lanes.queue[0]), mount);
-
-    expect(mount.querySelector('.mon-blocker')?.textContent).toContain(
-      '🔒 A-done (완료)'
-    );
-    expect(mount.querySelector('.mon-blocker-warning')).toBe(null);
-  });
-
-  test('renders the Worker-matching lock fallback for a blocked runnable', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          runnable: [
-            {
-              bead_id: 'A-blocked',
-              title: '대기 중',
-              blocked: true,
-              blocked_by: []
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 10,
+              finished_at: 40,
+              done_kind: 'auto_merge'
             }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].done_layout).toBe('three_line');
+    expect(lanes.done[0].work_ms).toBe(30);
+    expect(lanes.done[0].badges).toEqual(['자동 머지']);
+    expect(lanes.done[0].workspace_name).toBe('repo-a');
+  });
+
+  test('drops entries older than the period bound but keeps undated ones', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [
+            { bead_id: 'A-1', added_at: 10 },
+            { bead_id: 'A-2', added_at: 200 },
+            { bead_id: 'A-3' }
           ]
         })
       ],
-      [state({ issue_prefix: 'A' })]
+      [state()],
+      { done_since: 100 }
     );
 
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
+    expect(lanes.done.map((r) => r.id).sort()).toEqual(['A-2', 'A-3']);
+  });
+});
 
-    expect(mount.querySelector('.mon-blocker')?.textContent).toBe('🔒 blocked');
+describe('monitor exec chips (UI-eey2 §5)', () => {
+  const execution_defaults = {
+    supported: true,
+    schema_version: 1,
+    source_commit: 'abc',
+    digest: 'd',
+    session: { impl_runtime: 'claude' },
+    orchestration: {
+      runtime: 'claude',
+      model: 'sonnet',
+      model_id: 'claude-sonnet',
+      effort: null,
+      speed: null
+    }
+  };
+
+  test('draws no chip when the row carries no execution pin', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { exec_pins: {} })] })],
+      [
+        state({
+          execution_defaults,
+          runner_catalog: { runtimes: {} },
+          session_defaults: {}
+        })
+      ]
+    );
+
+    expect(lanes.runnable[0].exec_chips).toBeUndefined();
   });
 
-  test('omits the lock display when a blocked runnable lacks blocked_by', () => {
+  test('omits the chip row entirely when the repo defaults are unknown', () => {
     const lanes = buildLanes(
       [
         workspace({
-          runnable: [
-            {
-              bead_id: 'A-blocked',
-              title: '대기 중',
-              blocked: true
-            }
-          ]
+          runnable: [runnable('A-1', { exec_pins: { impl_runtime: 'codex' } })]
         })
       ],
-      [state({ issue_prefix: 'A' })]
+      [state()]
     );
 
-    render(monitorRunnableCard(lanes.runnable[0]), mount);
+    expect(lanes.runnable[0].exec_chips).toBeUndefined();
+  });
+});
 
-    expect(mount.querySelector('.mon-blocker')).toBe(null);
+describe('monitor lane fail-quiet', () => {
+  test('builds empty lanes from a null payload', () => {
+    const lanes = buildLanes(null, null);
+
+    expect(lanes.runnable).toEqual([]);
+    expect(lanes.queue).toEqual([]);
+    expect(lanes.running).toEqual([]);
+    expect(lanes.pr_wait).toEqual([]);
+    expect(lanes.done).toEqual([]);
+    expect(lanes.chains).toEqual([]);
+    expect(lanes.runnable_sections).toEqual([]);
+  });
+
+  test('renders a legacy runnable row that carries no workflow projection', () => {
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { route: 'quick_fix' })] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].workflow).toEqual({
+      route: 'quick_fix',
+      chips: { route: 'quick_fix' }
+    });
+  });
+
+  test('uses the server workflow projection when Phase 1 supplies one', () => {
+    const workflow = { route: 'full_plan', stages: { spec: { fill: 'full' } } };
+    const lanes = buildLanes(
+      [workspace({ runnable: [runnable('A-1', { workflow })] })],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].workflow).toBe(workflow);
+  });
+
+  test('feeds the bead_workflow projection into the running tile stepper', () => {
+    const workflow = {
+      route: 'spec_backed',
+      stages: { spec: { fill: 'full' } }
+    };
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_workflow: { 'A-1': workflow },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 5
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].workflow).toBe(workflow);
+  });
+
+  test('omits the stepper for a running bead the cache has not filled yet', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 5
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].workflow).toBeNull();
+  });
+
+  test('carries the running attempt activity and legs overlay through', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 5,
+              last_activity: { at: 9, kind: 'tool', text: 'npm test' },
+              legs: [{ label: '구현 unit 1 · codex', state: 'live' }]
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].last_activity?.text).toBe('npm test');
+    expect(lanes.running[0].legs?.[0].state).toBe('live');
+  });
+});
+
+describe('monitor attempt folding', () => {
+  test('prefers the live attempt over an older paused one', () => {
+    const map = activeByBead(
+      {
+        t1: {
+          attempt_id: 't1',
+          bead_id: 'A-1',
+          status: 'paused',
+          started_at: 10,
+          session_id: 's'
+        },
+        t2: {
+          attempt_id: 't2',
+          bead_id: 'A-1',
+          status: 'running',
+          started_at: 5,
+          session_id: 's'
+        }
+      },
+      new Map()
+    );
+
+    expect(map.get('A-1')?.attempt_id).toBe('t2');
+  });
+
+  test('picks the newest ended attempt for the completion kind', () => {
+    const attempt = latestTerminalAttempt(
+      {
+        t1: { attempt_id: 't1', bead_id: 'A-1', finished_at: 10 },
+        t2: { attempt_id: 't2', bead_id: 'A-1', finished_at: 20 }
+      },
+      'A-1'
+    );
+
+    expect(attempt.attempt_id).toBe('t2');
   });
 });
