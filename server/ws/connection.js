@@ -101,6 +101,7 @@ import {
   handleWorkerQueueToggle,
   handleWorkerRepoOperationDismiss,
   handleWorkerRepoOperationRepair,
+  handleWorkerRepoOpsOptOutToggle,
   handleWorkerReviseApprove,
   handleWorkerReviseFix,
   handleWorkerStaleWorkBackupFresh,
@@ -536,6 +537,9 @@ export async function handleMessage(ws, data) {
       return;
     case 'worker-auto-repair-toggle':
       handleWorkerAutoRepairToggle(ws, req);
+      return;
+    case 'worker-repo-ops-opt-out-toggle':
+      handleWorkerRepoOpsOptOutToggle(ws, req);
       return;
     case 'worker-repo-operation-repair':
       await handleWorkerRepoOperationRepair(ws, req);

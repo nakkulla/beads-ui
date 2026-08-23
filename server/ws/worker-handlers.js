@@ -504,6 +504,35 @@ function receiptWarningFor(queue, bead_id) {
 }
 
 /**
+ * The verify declaration state this workspace actually judges by (UI-lsti §3).
+ *
+ * The single owner of the opt-out rule on the wire: a workspace that opted out
+ * of the declared `[verify]` lane reports `absent` — exactly what a repository
+ * with no declaration reports — so the PR row's gate and badges take the
+ * existing "verify 선언 없음" path instead of a new one. The DISPLAY projection
+ * (`workspace_info.repo_ops`) is deliberately untouched: the declaration is
+ * still true, and the settings panel keeps showing the script it names.
+ *
+ * @param {import('../worker/repo-ops-display.js').RepoOpsDisplay} repo_ops
+ * @param {Record<string, unknown>} queue
+ * @returns {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }}
+ */
+export function effectiveVerifyPolicy(repo_ops, queue) {
+  const policy = repoOpsVerifyPolicy(repo_ops);
+  const opt_out = /** @type {any} */ (queue).repo_ops_opt_out;
+  if (!opt_out || opt_out.verify !== true) {
+    return policy;
+  }
+  // opt-out은 '선언 부재처럼' 이지 '선언이 깨졌다'가 아니다. `invalid`은 fail-closed
+  // 상태이므로 덮어쓰지 않는다 — 읽을 수 없는 선언을 건너뛰기로 승격시키면
+  // 사용자가 끄지 않은 게이트가 사라진다.
+  if (policy.declaration_state !== 'present') {
+    return policy;
+  }
+  return { declaration_state: 'absent', base_sha: policy.base_sha };
+}
+
+/**
  * Project the PR observation cache onto the beads currently in `pr_wait`, each
  * with its evaluated merge gate (worker-phase2 §4/§5).
  *
@@ -1502,6 +1531,13 @@ export function decorateQueue(workspace_key, raw_queue) {
   // sanitized tail, and the policy is read from the pinned contract copy so no
   // policy sentence is authored here.
   public_queue.auto_repair = overlaid.auto_repair !== false;
+  // The workspace's per-kind opt-out from the DECLARED operations (UI-lsti §3).
+  // A legacy queue with no key travels as both kinds running, which is the
+  // state every such workspace is actually in.
+  public_queue.repo_ops_opt_out = {
+    verify: /** @type {any} */ (overlaid).repo_ops_opt_out?.verify === true,
+    deploy: /** @type {any} */ (overlaid).repo_ops_opt_out?.deploy === true
+  };
   public_queue.repo_operations = projectRepoOperations(
     overlaid.repo_operations,
     overlaid.attempts
@@ -1562,7 +1598,7 @@ export function decorateQueue(workspace_key, raw_queue) {
     completion_status: completion.statuses
   };
   const repo_ops = repoOpsDisplayFor(workspace_key);
-  const verify_policy = repoOpsVerifyPolicy(repo_ops);
+  const verify_policy = effectiveVerifyPolicy(repo_ops, queue);
   /** @type {number|null} */
   let slots = null;
   try {
@@ -2515,6 +2551,52 @@ export function handleWorkerAutoRepairToggle(ws, req) {
       );
     });
   }
+}
+
+/**
+ * Handle `worker-repo-ops-opt-out-toggle`. Payload:
+ * `{ kind: 'verify'|'deploy', opted_out: boolean, expected_revision }`.
+ *
+ * The workspace's own decision to treat a DECLARED verify/deploy lane as
+ * undeclared (UI-lsti §3). Deliberately not a config edit: the declaration
+ * belongs to the repository and every other workspace keeps reading it, and
+ * operations that already exist keep running — this only stops NEW ones from
+ * being created here.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ */
+export function handleWorkerRepoOpsOptOutToggle(ws, req) {
+  const p = /** @type {any} */ (req.payload || {});
+  if (
+    (p.kind !== 'verify' && p.kind !== 'deploy') ||
+    typeof p.opted_out !== 'boolean'
+  ) {
+    ws.send(
+      JSON.stringify(
+        makeError(
+          req,
+          'bad_request',
+          "payload requires { kind: 'verify'|'deploy', opted_out: boolean }"
+        )
+      )
+    );
+    return;
+  }
+  const key = mutationWorkspaceOf(ws, req);
+  if (key === null) {
+    return;
+  }
+  replyMutation(
+    ws,
+    req,
+    key,
+    queueStore().setRepoOpsOptOut(key, {
+      expected_revision: revisionOf(p),
+      kind: p.kind,
+      opted_out: p.opted_out
+    })
+  );
 }
 
 /**

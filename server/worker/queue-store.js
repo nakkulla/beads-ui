@@ -410,6 +410,13 @@
  * empty map; every non-done operation fences its bead from other drivers.
  * @property {boolean} auto_repair - Whether a terminal RepoOperation may ask
  * the later repair adapter to dispatch. This unit stores the setting only.
+ * @property {{ verify: boolean, deploy: boolean }} repo_ops_opt_out - Per-kind
+ * workspace opt-out from the repository's DECLARED verify/deploy operations
+ * (UI-lsti §1). `true` makes this workspace treat that kind as undeclared when
+ * it creates NEW operations; the declaration itself, other workspaces, and
+ * operations that already exist are untouched. A legacy queue file has no key,
+ * which normalizes to both kinds running — the state every such workspace was
+ * actually in.
  * @property {Record<string, RepoOperation>} repo_operations - Worker-owned
  * one-shot repository operation journal.
  * @property {RepoOperationMigration|null} repo_operation_migration - The
@@ -1280,6 +1287,7 @@ const KNOWN_QUEUE_FIELDS = new Set([
   'review_model',
   'ship_failure',
   'auto_repair',
+  'repo_ops_opt_out',
   'repo_operations',
   'repo_operation_migration'
 ]);
@@ -1323,6 +1331,7 @@ function emptyQueue() {
     completion_intents: {},
     discard_operations: {},
     auto_repair: true,
+    repo_ops_opt_out: { verify: false, deploy: false },
     repo_operations: {},
     repo_operation_migration: null
   };
@@ -2680,6 +2689,16 @@ function normalizeQueue(raw) {
   recoverLegacyCompletionAnchors(q);
   q.discard_operations = normalizeDiscardOperations(raw.discard_operations);
   q.auto_repair = raw.auto_repair !== false;
+  // 부재·비객체·비불리언은 모두 '실행'으로 읽는다: opt-out은 사용자가 명시적으로
+  // 켠 설정이며, 읽을 수 없는 값이 게이트를 건너뛰게 만들어서는 안 된다.
+  q.repo_ops_opt_out = {
+    verify: isRecord(raw.repo_ops_opt_out)
+      ? raw.repo_ops_opt_out.verify === true
+      : false,
+    deploy: isRecord(raw.repo_ops_opt_out)
+      ? raw.repo_ops_opt_out.deploy === true
+      : false
+  };
   if (isRecord(raw.repo_operations)) {
     for (const [operation_id, operation] of Object.entries(
       raw.repo_operations
@@ -3658,6 +3677,34 @@ export function createQueueStore(options = {}) {
     toggleAutoRepair(workspace, input) {
       return applyMutation(workspace, input.expected_revision, (next) => {
         next.auto_repair = input.on === true;
+        return true;
+      });
+    },
+
+    /**
+     * Opt this workspace out of (or back into) one DECLARED repository
+     * operation kind (UI-lsti §1). The same CAS shape as
+     * {@link toggleAutoRepair}, and the same narrow authority: it stores a
+     * setting and nothing else. An unknown kind or a non-boolean value is
+     * refused WITHOUT a write, so a malformed request never advances the
+     * revision that other clients are racing against.
+     *
+     * @param {string} workspace
+     * @param {{ expected_revision: number, kind: 'verify'|'deploy', opted_out: boolean }} input
+     * @returns {QueueOpResult}
+     */
+    setRepoOpsOptOut(workspace, input) {
+      return applyMutation(workspace, input.expected_revision, (next) => {
+        if (input.kind !== 'verify' && input.kind !== 'deploy') {
+          return false;
+        }
+        if (typeof input.opted_out !== 'boolean') {
+          return false;
+        }
+        next.repo_ops_opt_out = {
+          ...next.repo_ops_opt_out,
+          [input.kind]: input.opted_out
+        };
         return true;
       });
     },

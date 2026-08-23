@@ -3519,3 +3519,74 @@ describe('worker/pr-actions — legacy migration seams (master spec §11)', () =
     expect(env.calls).toContain(`bd:setStatus:${BEAD}:closed`);
   });
 });
+
+describe('worker/pr-actions — workspace repo-ops opt-out (UI-lsti §2)', () => {
+  /**
+   * The coordinator's answer for a workspace that opted out of the declared
+   * verify lane: the declaration is still `present`, but the script the caller
+   * would build a candidate from is gone.
+   *
+   * @param {Record<string, any>} [overrides]
+   */
+  function optedOutOperations(overrides = {}) {
+    return {
+      hasConfig: vi.fn(async () => ({
+        ok: true,
+        present: true,
+        verify_script_path: null,
+        verify_timeout_ms: null,
+        verify_opted_out: true,
+        deploy_opted_out: false
+      })),
+      ensureVerify: vi.fn(async () => ({
+        ok: true,
+        inert: true,
+        opted_out: true
+      })),
+      ensureDeploy: vi.fn(async () => ({ ok: true, inert: true })),
+      waitForTerminal: vi.fn(),
+      waitForDeployTerminal: vi.fn(async () => ({ state: 'succeeded' })),
+      verifyReceipt: vi.fn(),
+      findExactDeployOperation: vi.fn(async () => null),
+      deploymentEvidence: vi.fn(async () => ({ state: 'succeeded' })),
+      ...overrides
+    };
+  }
+
+  test('merges on review receipts alone when verify is opted out', async () => {
+    const operations = optedOutOperations();
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(operations.ensureVerify).not.toHaveBeenCalled();
+    expect(env.runVerify).not.toHaveBeenCalled();
+    expect(env.gh.mergeSquash).toHaveBeenCalled();
+  });
+
+  test('closes the row without waiting for a deploy that is opted out', async () => {
+    const operations = optedOutOperations({
+      ensureDeploy: vi.fn(async () => ({
+        ok: true,
+        inert: true,
+        opted_out: true
+      }))
+    });
+    const env = makeActions({
+      repoOperations: operations,
+      details: [prOf({ head_sha: 'a'.repeat(40) })]
+    });
+
+    const result = await env.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+    expect(operations.waitForDeployTerminal).not.toHaveBeenCalled();
+    expect(env.store.snapshot(WS).done).toEqual(
+      expect.arrayContaining([expect.objectContaining({ bead_id: BEAD })])
+    );
+  });
+});
