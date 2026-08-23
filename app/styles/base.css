@@ -1116,6 +1116,7 @@ body {
   color: var(--text-secondary);
   line-height: 1.7;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /* notes는 줄 단위 계보 텍스트(게이트 영수증·REVISE findings)라 마크다운으로
