@@ -687,18 +687,21 @@ a {
 }
 
 /* 카드 안의 막대는 900px 축약 규칙에 걸리지 않도록 헤더와 별도 클래스를 쓰고,
-   색 modifier(--usage-meter-color)만 헤더와 공유한다. */
+   색 modifier(--usage-meter-color)만 헤더와 공유한다. 창은 한 줄에 하나씩
+   쌓고 키·막대·%·리셋을 subgrid 열로 맞춘다 — 리셋 문구가 붙으면 창 하나가
+   카드 반폭을 넘겨 flex-wrap으로는 열이 어긋난다. */
 .usage-meter__account-windows {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
   align-items: center;
-  gap: var(--sp-4) var(--sp-10);
+  gap: var(--sp-4) var(--sp-8);
 }
 
 .usage-meter__account-window {
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: subgrid;
+  grid-column: 1 / -1;
   align-items: center;
-  gap: var(--sp-5);
   color: var(--text-primary);
   white-space: nowrap;
 }
@@ -729,6 +732,14 @@ a {
   color: var(--text-primary);
   font-size: var(--fs-chip-lg);
   font-variant-numeric: tabular-nums;
+}
+
+.usage-meter__account-reset {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--fs-chip);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
 }
 
 .usage-meter__account-status {

@@ -514,12 +514,16 @@ export function createUsageMeter(mount_element) {
   /**
    * One usage window of a card row. The color modifier is shared with the
    * header because it only carries `--usage-meter-color`; the bar element
-   * itself is a separate class so the 900px header rule cannot fold it.
+   * itself is a separate class so the 900px header rule cannot fold it. The
+   * reset is spelled out here because the header only has room for it in a
+   * tooltip, which touch devices cannot open.
    *
    * @param {UsageWindow} window
+   * @param {number} now_ms
    */
-  function renderAccountWindow(window) {
+  function renderAccountWindow(window, now_ms) {
     const pct = clampPct(window.pct);
+    const reset_time = formatResetTime(window.resetsAt, now_ms);
     return html`<span
       class="usage-meter__account-window ${colorClass(pct)}"
       style=${`--progress: ${pct}%`}
@@ -529,6 +533,9 @@ export function createUsageMeter(mount_element) {
         <span class="usage-meter__account-fill"></span>
       </span>
       <span class="usage-meter__account-pct">${pct}%</span>
+      <span class="usage-meter__account-reset"
+        >${reset_time.length > 0 ? `↻ ${reset_time}` : ''}</span
+      >
     </span>`;
   }
 
@@ -548,8 +555,9 @@ export function createUsageMeter(mount_element) {
    *
    * @param {ProviderDescriptor} provider
    * @param {UsageAccount} account
+   * @param {number} now_ms
    */
-  function renderAccount(provider, account) {
+  function renderAccount(provider, account, now_ms) {
     const is_ok = account.status === 'ok';
     const stale =
       typeof account.ageSeconds === 'number' &&
@@ -602,7 +610,9 @@ export function createUsageMeter(mount_element) {
       </div>
       ${is_ok
         ? html`<div class="usage-meter__account-windows">
-            ${account.windows.map((window) => renderAccountWindow(window))}
+            ${account.windows.map((window) =>
+              renderAccountWindow(window, now_ms)
+            )}
           </div>`
         : html`<div class="usage-meter__account-status">
             ${statusText(provider, account.status)}
@@ -620,8 +630,9 @@ export function createUsageMeter(mount_element) {
   /**
    * @param {ProviderDescriptor} provider
    * @param {ProviderSnapshot} snapshot
+   * @param {number} now_ms
    */
-  function renderSection(provider, snapshot) {
+  function renderSection(provider, snapshot, now_ms) {
     const active_count = snapshot.accounts.filter(
       (account) => account.active
     ).length;
@@ -630,7 +641,9 @@ export function createUsageMeter(mount_element) {
         ${provider.label} · 활성 ${active_count} / 전체
         ${snapshot.accounts.length}
       </h2>
-      ${snapshot.accounts.map((account) => renderAccount(provider, account))}
+      ${snapshot.accounts.map((account) =>
+        renderAccount(provider, account, now_ms)
+      )}
     </section>`;
   }
 
@@ -638,15 +651,16 @@ export function createUsageMeter(mount_element) {
    * The card of the open provider only.
    *
    * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }} entry
+   * @param {number} now_ms
    */
-  function renderCard(entry) {
+  function renderCard(entry, now_ms) {
     return html`<div
       class="usage-meter__card"
       id=${CARD_ID}
       role="dialog"
       aria-label=${`${entry.provider.label} 계정 사용량`}
     >
-      ${renderSection(entry.provider, entry.snapshot)}
+      ${renderSection(entry.provider, entry.snapshot, now_ms)}
       <p class="usage-meter__note">전환은 새로 시작하는 세션부터 적용됩니다.</p>
     </div>`;
   }
@@ -687,7 +701,7 @@ export function createUsageMeter(mount_element) {
               aria-hidden="true"
               @mousedown=${onScrimMousedown}
             ></div>
-            ${renderCard(open_entry)}`
+            ${renderCard(open_entry, now_ms)}`
         : ''}`,
       mount_element
     );
