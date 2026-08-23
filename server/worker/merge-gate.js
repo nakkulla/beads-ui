@@ -57,8 +57,13 @@
  * `receipt_state` reads the same way, so a surface that never learned about
  * receipts keeps its prior behaviour instead of silently refusing every merge.
  *
+ * `waived` is a hold a MANUAL merge authority (UI-58w8) bound to this exact
+ * head has overridden: the receipt finding is a record defect, not a product
+ * defect, so a person's own click decides it. The codes stay attached for the
+ * board; only the hold is lifted. Automatic enrolment never waives.
+ *
  * @typedef {Object} ReceiptGateState
- * @property {'ok'|'unbacked'|'probe_error'|'undecidable'} state
+ * @property {'ok'|'unbacked'|'probe_error'|'undecidable'|'waived'} state
  * @property {string[]} codes - Blocking violation codes, most relevant first.
  */
 
@@ -407,7 +412,8 @@ export function evaluateMergeGate(entry, input) {
   //
   // A probe error holds, exactly like the ancestry probe: refusing is
   // recoverable through a user's own merge, passing on an unproven receipt is
-  // not.
+  // not. That user's own merge is the manual click authority, which arrives
+  // here as `waived` and falls through like `ok`.
   const receipt_state = input.receipt_state;
   if (receipt_state && receipt_state.state === 'probe_error') {
     return verdict(

@@ -679,14 +679,45 @@ export function createPrActions(deps) {
       !Array.isArray(issue.metadata)
         ? issue.metadata
         : null;
+    const receipt_state = await receiptGateStateOf(metadata, bead_id, head_sha);
     return {
       review_receipt_state: await reviewReceiptState(
         issue,
         head_sha,
         probeAncestry
       ),
-      receipt_state: await receiptGateStateOf(metadata, bead_id, head_sha)
+      receipt_state:
+        receipt_state.state !== 'ok' &&
+        manualMergeAuthorityCovers(bead_id, head_sha)
+          ? { state: 'waived', codes: receipt_state.codes }
+          : receipt_state
     };
+  }
+
+  /**
+   * Whether a MANUAL merge authority (UI-58w8 §1) bound to exactly this head is
+   * queued for the bead. A person's [머지] click is the "user's own merge" the
+   * receipt hold defers to (UI-bu6d §4): the receipt finding is a record
+   * defect, so the click lifts the hold while the codes stay on the board.
+   * Automatic enrolment carries no such authority, and a head that moved since
+   * the click is not covered — the authority binds what the person saw.
+   *
+   * @param {string} bead_id
+   * @param {string} head_sha
+   */
+  function manualMergeAuthorityCovers(bead_id, head_sha) {
+    const q = deps.store.snapshot(workspace);
+    const entry = Array.isArray(q.merge_queue)
+      ? q.merge_queue.find(
+          (/** @type {any} */ item) => item && item.bead_id === bead_id
+        )
+      : null;
+    const authority = entry && entry.authority ? entry.authority : null;
+    return (
+      authority !== null &&
+      authority.source === 'manual' &&
+      authority.requested_head_sha === String(head_sha).toLowerCase()
+    );
   }
 
   /**

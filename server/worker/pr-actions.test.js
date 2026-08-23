@@ -876,6 +876,56 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(h.gh.mergeSquash).not.toHaveBeenCalled();
   });
 
+  test('merges an unbacked receipt under a manual authority bound to this head', async () => {
+    const head_sha = 'a'.repeat(40);
+    const store = seedStore();
+    const queued = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        { bead_id: BEAD, head_sha, target_base: 'main', external: false }
+      ]
+    });
+    expect(queued.ok).toBe(true);
+    const h = makeActions({
+      store,
+      details: [prOf({ head_sha })],
+      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: true, action: 'merged' });
+  });
+
+  test('keeps holding an unbacked receipt when the manual authority binds another head', async () => {
+    const store = seedStore();
+    const queued = store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [
+        {
+          bead_id: BEAD,
+          head_sha: 'b'.repeat(40),
+          target_base: 'main',
+          external: false
+        }
+      ]
+    });
+    expect(queued.ok).toBe(true);
+    const h = makeActions({
+      store,
+      details: [prOf({ head_sha: 'a'.repeat(40) })],
+      bdMetadata: { exec_receipt: `main:bead@${'e'.repeat(40)}` }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'receipt_unbacked:main_receipt_unbacked'
+    });
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
   test('merges once the receipt names the dispatch that backs it', async () => {
     const h = makeActions({
       bdMetadata: {

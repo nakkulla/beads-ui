@@ -124,6 +124,13 @@ scheduler의 세션 성공 verdict 직후, **경로 분기(external-PR 해소·q
   하나라도 있으면 자동 머지 자격 미달 — 기존 verify-receipt 미충족 보류와
   같은 방식으로 사유(`receipt_unbacked:<code>`)를 노출하고 보류한다.
   사용자가 보드에서 원인을 보고 수동으로 해소한다.
+- 보류는 **자동 머지 자격**에만 걸린다. 사용자의 `[머지]` 클릭은 그 head에
+  결속된 manual 머지 권위(UI-58w8 §1, `merge_queue[].authority.source =
+  'manual'`)를 남기며, 게이트는 이 권위가 관측 head와 같은 SHA를 가리키면
+  영수증 tier를 `waived`로 통과시킨다(2026-08-24 보정). 영수증 위반은 산출물
+  결함이 아닌 기록 문제이므로 사람의 클릭이 곧 해소 판단이다. 위반 코드는
+  보드에 그대로 남고, 자동 등록(`automatic`)은 면제되지 않으며, 클릭 이후
+  head가 움직이면 권위가 그 head를 덮지 않아 다시 보류된다.
 - 게이트 시점 probe 오류는 기존 ancestry probe 관례를 따른다: 게이트에서는
   보류(fail-closed), 보드 표시층에서는 fail-quiet.
 
