@@ -401,11 +401,6 @@ a {
   margin-right: var(--sp-4);
 }
 
-/* 다계정 카드는 이 마운트를 기준으로 위치를 잡는다. */
-.usage-meter-mount {
-  position: relative;
-}
-
 .usage-meter__group {
   display: inline-flex;
   align-items: center;
@@ -556,12 +551,16 @@ a {
   font-size: var(--fs-chip);
 }
 
-/* 데스크톱: 헤더 아래 우측 정렬 팝오버. 그림자는 헤더의 다른 팝오버
+/* 카드·스크림은 헤더 안이 아니라 body 직속 레이어(.usage-meter__layer)에
+   렌더된다. 헤더의 backdrop-filter가 fixed 자손의 containing block이 되어,
+   헤더 안에 두면 모바일 하단 시트가 헤더 하단에 붙어 뷰포트 위로 자란다.
+   데스크톱: 마운트의 뷰포트 rect를 앵커(--usage-meter-anchor-*)로 받는
+   fixed 팝오버. 그림자는 헤더의 다른 팝오버
    (.workspace-picker__manage-popover)와 같은 --fg 규약을 따른다. */
 .usage-meter__card {
-  position: absolute;
-  top: calc(100% + var(--sp-8));
-  right: 0;
+  position: fixed;
+  top: calc(var(--usage-meter-anchor-top, 0px) + var(--sp-8));
+  right: var(--usage-meter-anchor-right, 0px);
   z-index: 60;
   width: 380px;
   max-width: calc(100vw - 24px);

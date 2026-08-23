@@ -24,6 +24,11 @@ const MONTH_NAMES = [
 ];
 
 const CARD_ID = 'usage-meter-card';
+// Body-level host of the open card and its scrim. The header carries a
+// `backdrop-filter`, which makes it the containing block of every
+// `position: fixed` descendant: rendered inside the mount, the mobile bottom
+// sheet anchored `bottom: 0` to the header and grew upward out of the viewport.
+const LAYER_ID = 'usage-meter-layer';
 const STALE_AGE_SECONDS = 600;
 const RELOGIN_STATUSES = ['token_expired', 'relogin_required'];
 
@@ -280,11 +285,36 @@ export function createUsageMeter(mount_element) {
   // A poll started before an account switch can settle after the post-switch
   // refresh; only the newest refresh may write the snapshots.
   let refresh_generation = 0;
+  /** @type {HTMLElement | null} */
+  let layer_element = null;
 
   /** Hide the fail-quiet mount and discard its previous snapshot. */
   function hide() {
     render(html``, mount_element);
     mount_element.hidden = true;
+    removeLayer();
+  }
+
+  /** The body-level layer, created on first use. */
+  function ensureLayer() {
+    if (layer_element === null) {
+      const doc = mount_element.ownerDocument;
+      layer_element = doc.createElement('div');
+      layer_element.id = LAYER_ID;
+      layer_element.className = 'usage-meter__layer';
+      doc.body.appendChild(layer_element);
+    }
+    return layer_element;
+  }
+
+  /** Clear and detach the body-level layer. */
+  function removeLayer() {
+    if (layer_element === null) {
+      return;
+    }
+    render(html``, layer_element);
+    layer_element.remove();
+    layer_element = null;
   }
 
   /**
@@ -300,6 +330,7 @@ export function createUsageMeter(mount_element) {
     if (open_provider === null) {
       document.addEventListener('mousedown', onDocMousedown);
       document.addEventListener('keydown', onDocKeydown);
+      window.addEventListener('resize', onWindowResize);
     }
     open_provider = provider_key;
   }
@@ -312,20 +343,31 @@ export function createUsageMeter(mount_element) {
     open_provider = null;
     document.removeEventListener('mousedown', onDocMousedown);
     document.removeEventListener('keydown', onDocKeydown);
+    window.removeEventListener('resize', onWindowResize);
   }
 
   /**
-   * Close on an outside mousedown. Anything inside the mount (the meter, the
-   * card, its buttons) keeps the card open; the scrim closes it explicitly.
+   * Close on an outside mousedown. Anything inside the mount (the meter) or
+   * the layer (the card, its buttons) keeps the card open; the scrim closes it
+   * explicitly.
    *
    * @param {MouseEvent} ev
    */
   function onDocMousedown(ev) {
     const target = /** @type {Node | null} */ (ev.target);
-    if (target && mount_element.contains(target)) {
+    if (
+      target &&
+      (mount_element.contains(target) ||
+        (layer_element !== null && layer_element.contains(target)))
+    ) {
       return;
     }
     closeCard();
+    renderProviders();
+  }
+
+  /** The desktop popover anchors to the header group; re-anchor on resize. */
+  function onWindowResize() {
     renderProviders();
   }
 
@@ -693,19 +735,42 @@ export function createUsageMeter(mount_element) {
     }
 
     const now_ms = Date.now();
-    render(
-      html`${renderMeter(entries, now_ms)}
-      ${open_entry
-        ? html`<div
-              class="usage-meter__scrim"
-              aria-hidden="true"
-              @mousedown=${onScrimMousedown}
-            ></div>
-            ${renderCard(open_entry, now_ms)}`
-        : ''}`,
-      mount_element
-    );
+    render(renderMeter(entries, now_ms), mount_element);
     mount_element.hidden = false;
+    if (open_entry) {
+      renderLayer(open_entry, now_ms);
+    } else {
+      removeLayer();
+    }
+  }
+
+  /**
+   * Render the scrim and card into the body-level layer. The desktop popover
+   * is `position: fixed` there, so it takes the mount's viewport rect as its
+   * anchor; the mobile sheet ignores the anchor and docks to the bottom.
+   *
+   * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }} entry
+   * @param {number} now_ms
+   */
+  function renderLayer(entry, now_ms) {
+    const layer = ensureLayer();
+    const rect = mount_element.getBoundingClientRect();
+    const viewport_width =
+      mount_element.ownerDocument.documentElement.clientWidth;
+    layer.style.setProperty('--usage-meter-anchor-top', `${rect.bottom}px`);
+    layer.style.setProperty(
+      '--usage-meter-anchor-right',
+      `${Math.max(0, viewport_width - rect.right)}px`
+    );
+    render(
+      html`<div
+          class="usage-meter__scrim"
+          aria-hidden="true"
+          @mousedown=${onScrimMousedown}
+        ></div>
+        ${renderCard(entry, now_ms)}`,
+      layer
+    );
   }
 
   /**

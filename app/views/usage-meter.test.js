@@ -529,7 +529,7 @@ describe('usage meter account card', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
 
-    expect(mount.querySelector('.usage-meter__card')).not.toBeNull();
+    expect(document.querySelector('.usage-meter__card')).not.toBeNull();
     expect(toggleButton(mount)?.getAttribute('aria-expanded')).toBe('true');
     meter.destroy();
   });
@@ -557,10 +557,60 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     const resets = Array.from(
-      mount.querySelectorAll('.usage-meter__account-reset'),
+      document.querySelectorAll('.usage-meter__account-reset'),
       (node) => node.textContent?.trim()
     );
     expect(resets).toEqual(['↻ 2h 24m · 13:40', '↻ 2h 24m · 13:40']);
+    meter.destroy();
+  });
+
+  test('renders the card and scrim in a body-level layer outside the mount', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const layer = document.getElementById('usage-meter-layer');
+    expect(layer?.parentElement).toBe(document.body);
+    expect(layer?.querySelector('.usage-meter__card')).not.toBeNull();
+    expect(layer?.querySelector('.usage-meter__scrim')).not.toBeNull();
+    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    meter.destroy();
+  });
+
+  test('keeps the card open on a mousedown inside the card', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    document
+      .querySelector('.usage-meter__card')
+      ?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    expect(document.querySelector('.usage-meter__card')).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('removes the layer when the card closes', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(document.getElementById('usage-meter-layer')).toBeNull();
     meter.destroy();
   });
 
@@ -575,7 +625,7 @@ describe('usage meter account card', () => {
     await openCard(mount);
     document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
 
-    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    expect(document.querySelector('.usage-meter__card')).toBeNull();
     meter.destroy();
   });
 
@@ -590,7 +640,7 @@ describe('usage meter account card', () => {
     await openCard(mount);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
-    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    expect(document.querySelector('.usage-meter__card')).toBeNull();
     meter.destroy();
   });
 
@@ -607,7 +657,7 @@ describe('usage meter account card', () => {
     /** @type {HTMLButtonElement} */ (toggleButton(mount)).click();
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(mount.querySelector('.usage-meter__card')).not.toBeNull();
+    expect(document.querySelector('.usage-meter__card')).not.toBeNull();
     meter.destroy();
   });
 
@@ -621,11 +671,11 @@ describe('usage meter account card', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount, 'Codex');
 
-    const titles = mount.querySelectorAll('.usage-meter__section-title');
+    const titles = document.querySelectorAll('.usage-meter__section-title');
     expect(titles.length).toBe(1);
     expect(titles[0].textContent).toContain('Codex');
     expect(
-      mount.querySelector('.usage-meter__card')?.getAttribute('aria-label')
+      document.querySelector('.usage-meter__card')?.getAttribute('aria-label')
     ).toBe('Codex 계정 사용량');
     expect(toggleButton(mount, 'Codex')?.getAttribute('aria-expanded')).toBe(
       'true'
@@ -647,7 +697,7 @@ describe('usage meter account card', () => {
     await openCard(mount, 'Claude');
     /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Codex')).click();
 
-    const titles = mount.querySelectorAll('.usage-meter__section-title');
+    const titles = document.querySelectorAll('.usage-meter__section-title');
     expect(titles.length).toBe(1);
     expect(titles[0].textContent).toContain('Codex');
     meter.destroy();
@@ -664,7 +714,7 @@ describe('usage meter account card', () => {
     await openCard(mount, 'Claude');
     /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Claude')).click();
 
-    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    expect(document.querySelector('.usage-meter__card')).toBeNull();
     expect(toggleButton(mount, 'Claude')?.getAttribute('aria-expanded')).toBe(
       'false'
     );
@@ -714,7 +764,7 @@ describe('usage meter account card', () => {
     claude_accounts = [];
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    expect(document.querySelector('.usage-meter__card')).toBeNull();
     expect(toggleButton(mount, 'Codex')?.getAttribute('aria-expanded')).toBe(
       'false'
     );
@@ -734,7 +784,7 @@ describe('usage meter account card', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
 
-    const labels = mount.querySelectorAll('.usage-meter__account-label');
+    const labels = document.querySelectorAll('.usage-meter__account-label');
     expect(labels[0].textContent).toBe('work');
     expect(labels[0].getAttribute('title')).toBe('one@example.com');
     expect(labels[1].textContent).toBe('two@example.com');
@@ -754,9 +804,9 @@ describe('usage meter account card', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
 
-    expect(mount.querySelector('.usage-meter__account-tag')?.textContent).toBe(
-      'pro'
-    );
+    expect(
+      document.querySelector('.usage-meter__account-tag')?.textContent
+    ).toBe('pro');
     meter.destroy();
   });
 
@@ -771,9 +821,11 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     expect(
-      mount.querySelector('.usage-meter__account-status')?.textContent?.trim()
+      document
+        .querySelector('.usage-meter__account-status')
+        ?.textContent?.trim()
     ).toBe('토큰 만료 — cswap 재로그인 필요');
-    expect(mount.querySelector('.usage-meter__account-window')).toBeNull();
+    expect(document.querySelector('.usage-meter__account-window')).toBeNull();
     meter.destroy();
   });
 
@@ -788,7 +840,9 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     expect(
-      mount.querySelector('.usage-meter__account-status')?.textContent?.trim()
+      document
+        .querySelector('.usage-meter__account-status')
+        ?.textContent?.trim()
     ).toBe('사용량 없음');
     meter.destroy();
   });
@@ -804,7 +858,7 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     );
     expect(button.disabled).toBe(false);
     meter.destroy();
@@ -824,7 +878,7 @@ describe('usage meter account card', () => {
     await openCard(mount);
 
     expect(
-      mount
+      document
         .querySelector('.usage-meter__section-title')
         ?.textContent?.replace(/\s+/g, ' ')
         .trim()
@@ -843,7 +897,7 @@ describe('usage meter account card', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
 
-    expect(mount.querySelector('.usage-meter__note')?.textContent).toBe(
+    expect(document.querySelector('.usage-meter__note')?.textContent).toBe(
       '전환은 새로 시작하는 세션부터 적용됩니다.'
     );
     meter.destroy();
@@ -896,7 +950,7 @@ describe('usage meter account switch', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     ).click();
     await vi.waitFor(() =>
       expect(
@@ -921,16 +975,16 @@ describe('usage meter account switch', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     ).click();
     await vi.waitFor(() =>
       expect(
-        mount.querySelector('.usage-meter__account-message--warn')
+        document.querySelector('.usage-meter__account-message--warn')
       ).not.toBeNull()
     );
 
     expect(
-      mount
+      document
         .querySelector('.usage-meter__account-message--warn')
         ?.textContent?.trim()
     ).toBe('stale keychain');
@@ -944,21 +998,21 @@ describe('usage meter account switch', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     ).click();
     await vi.waitFor(() =>
       expect(
-        mount.querySelector('.usage-meter__account-message--error')
+        document.querySelector('.usage-meter__account-message--error')
       ).not.toBeNull()
     );
 
     expect(
-      mount
+      document
         .querySelector('.usage-meter__account-message--error')
         ?.textContent?.trim()
     ).toBe('전환 실패 — not_found');
     const button = /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     );
     expect(button.disabled).toBe(false);
     meter.destroy();
@@ -987,16 +1041,16 @@ describe('usage meter account switch', () => {
     const meter = createUsageMeter(mount);
     await openCard(mount);
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     ).click();
     await vi.waitFor(() =>
       expect(
-        mount.querySelector('.usage-meter__account-message--error')
+        document.querySelector('.usage-meter__account-message--error')
       ).not.toBeNull()
     );
 
     expect(
-      mount
+      document
         .querySelector('.usage-meter__account-message--error')
         ?.textContent?.trim()
     ).toBe('전환 실패 — network_error');
@@ -1040,7 +1094,7 @@ describe('usage meter account switch', () => {
      */
     function switchButton(index) {
       return /** @type {HTMLButtonElement} */ (
-        mount.querySelectorAll('.usage-meter__switch')[index]
+        document.querySelectorAll('.usage-meter__switch')[index]
       );
     }
     switchButton(0).click();
@@ -1117,14 +1171,14 @@ describe('usage meter account switch', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     /** @type {HTMLButtonElement} */ (toggleButton(mount)).click();
     /** @type {HTMLButtonElement} */ (
-      mount.querySelector('.usage-meter__switch')
+      document.querySelector('.usage-meter__switch')
     ).click();
     await vi.advanceTimersByTimeAsync(1);
     releaseStalePoll(undefined);
     await vi.advanceTimersByTimeAsync(1);
 
     expect(
-      mount.querySelector(
+      document.querySelector(
         '.usage-meter__account--active .usage-meter__account-label'
       )?.textContent
     ).toBe('account-3@example.com');
