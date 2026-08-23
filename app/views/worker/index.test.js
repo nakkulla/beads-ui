@@ -7350,7 +7350,7 @@ describe('running tile stage accent (UI-58y2)', () => {
   });
 });
 
-describe('mobile sticky ribbon (UI-58y2)', () => {
+describe('mobile ribbon (UI-58y2)', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
     window.localStorage.clear();
@@ -7423,29 +7423,6 @@ describe('mobile sticky ribbon (UI-58y2)', () => {
     expect(mount.querySelector('.worker-ribbon .worker-banner--failure')).toBe(
       null
     );
-  });
-
-  test('publishes the measured header height as the ribbon sticky offset', () => {
-    document.body.innerHTML =
-      '<header class="app-header"></header><div id="m"></div>';
-    const header = /** @type {HTMLElement} */ (
-      document.querySelector('.app-header')
-    );
-    header.getBoundingClientRect = () =>
-      /** @type {any} */ ({ height: 96, width: 0, top: 0, left: 0 });
-
-    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
-    createWorkerView(mount, {
-      issueStores: seedCandidates(),
-      queueStore: createWorkerQueueStore(),
-      transport: vi.fn()
-    });
-
-    expect(
-      /** @type {HTMLElement} */ (
-        mount.querySelector('.worker-console')
-      ).style.getPropertyValue('--worker-ribbon-top')
-    ).toBe('96px');
   });
 });
 

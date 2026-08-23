@@ -1652,9 +1652,6 @@ export function createWorkerView(mount_element, options = {}) {
   const console_el = document.createElement('div');
   console_el.className = 'worker-console';
   const top_el = document.createElement('div');
-  // Named so the mobile block can pin it as the sticky ribbon (UI-58y2): the
-  // sticky element has to be this wrapper, not the bar inside it, or the ribbon
-  // unsticks as soon as its own parent scrolls past.
   top_el.className = 'worker-top';
   const drawer_overlay_el = document.createElement('div');
   drawer_overlay_el.className = 'worker-drawer-overlay';
@@ -4268,32 +4265,6 @@ export function createWorkerView(mount_element, options = {}) {
   }
 
   /**
-   * Publish the sticky app header's measured height as `--worker-ribbon-top`
-   * (UI-58y2). The mobile layout scrolls the PAGE, so the ribbon's sticky stop
-   * has to clear the header — and the header wraps to two rows on a phone, so
-   * its height cannot be a constant. Measuring is the only honest source.
-   */
-  function watchHeaderOffset() {
-    const header = document.querySelector('.app-header');
-    if (!header) {
-      return;
-    }
-    const apply = () => {
-      const height = Math.round(header.getBoundingClientRect().height);
-      console_el.style.setProperty('--worker-ribbon-top', `${height}px`);
-    };
-    apply();
-    if (typeof ResizeObserver === 'function') {
-      const ro = new ResizeObserver(apply);
-      ro.observe(header);
-      unsubscribers.push(() => ro.disconnect());
-    } else {
-      window.addEventListener('resize', apply);
-      unsubscribers.push(() => window.removeEventListener('resize', apply));
-    }
-  }
-
-  /**
    * Track the mobile breakpoint (UI-58y2). Registered as an unsubscriber like
    * every other live source so a destroyed view stops re-rendering; a runtime
    * with no `matchMedia` simply never registers one and stays desktop.
@@ -5205,7 +5176,6 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
 
   watchViewport();
-  watchHeaderOffset();
 
   if (selectors) {
     unsubscribers.push(

@@ -7862,19 +7862,12 @@ button.detail-session__leg:focus-visible {
     overflow: visible;
   }
 
-  /* 렌더 호스트일 뿐이므로 박스를 없앤다: 그래야 안쪽 리본의 sticky 기준이 이
-     래퍼가 아니라 문서가 되어, 배너를 지나 스크롤해도 리본이 남는다. */
-  .worker-top {
-    display: contents;
-  }
-
-  /* sticky 리본 (§모바일 1): 자동 진행 토글 + 실행/PR/완료 카운트만 한 줄로
-     고정한다. `top`은 sticky 앱 헤더의 실측 높이 — 헤더가 폰에서 두 줄로
-     접히므로 상수로 둘 수 없다(JS가 `--worker-ribbon-top`을 채운다). */
+  /* 리본 (§모바일 1): 자동 진행 토글 + 실행/PR/완료 카운트를 한 줄로 묶는다.
+     고정하지는 않는다 — 앱 헤더의 sticky 범위는 `body`의 height:100% 박스로
+     끝나므로 페이지를 한 화면 넘게 내리면 헤더가 밀려 사라지고, 리본만 붙어
+     있으면 상단이 헤더 없이 리본만 뜬 어긋난 상태가 된다. 둘 다 같이
+     스크롤아웃하는 쪽으로 통일한다. */
   .worker-ribbon {
-    position: sticky;
-    top: var(--worker-ribbon-top, 0px);
-    z-index: 6;
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
