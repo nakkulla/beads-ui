@@ -2621,6 +2621,12 @@ export function createWorkerView(mount_element, options = {}) {
     // 정렬"), THEN exclude queued beads and project to candidate rows. Blocked ids
     // are tracked so the row reason keeps the blocked/ready distinction after the
     // merge collapses the two sources into one order.
+    //
+    // `worker-ineligible` is deliberately NOT an exclusion here (UI-8881):
+    // the Worker tab observes candidates rather than listing only runnable
+    // ones, so such a bead stays visible as an observation-only card and the
+    // row's `worker_ineligible` flag disables its drag/place affordances.
+    // Execution safety keeps living in the server's admission/dispatch guards.
     /** @type {Set<string>} */
     const blocked_ids = new Set(blocked.map((/** @type {any} */ it) => it.id));
     const order = uiOrderStore ? uiOrderStore.get()?.order || {} : {};
@@ -2629,13 +2635,7 @@ export function createWorkerView(mount_element, options = {}) {
     /** @type {any[]} */
     const merged = [];
     for (const it of [...ready, ...blocked]) {
-      if (
-        queued.has(it.id) ||
-        seen.has(it.id) ||
-        isPhaseChild(it) ||
-        (Object.hasOwn(it, 'labels') &&
-          isWorkerIneligible(/** @type {any} */ (it).labels))
-      ) {
+      if (queued.has(it.id) || seen.has(it.id) || isPhaseChild(it)) {
         continue;
       }
       seen.add(it.id);
@@ -2732,6 +2732,10 @@ export function createWorkerView(mount_element, options = {}) {
         workflow: it.workflow,
         is_quick_fix,
         status: it.status,
+        // Observation-only marker (UI-8881): the card template owns the shading,
+        // chip, and refused affordances from this one boolean, so no template or
+        // stylesheet re-reads the label strings.
+        worker_ineligible,
         // Filter inputs (UI-ki09); the card template ignores them.
         blocked: is_blocked,
         has_spec

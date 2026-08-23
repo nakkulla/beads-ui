@@ -413,20 +413,28 @@ function stubProviders(claude_payload, codex_payload = { available: false }) {
 }
 
 /**
+ * The first provider toggle in source order, or the toggle of one provider.
+ *
  * @param {HTMLElement} mount
+ * @param {string} [label]
  */
-function toggleButton(mount) {
+function toggleButton(mount, label) {
+  const selector =
+    label === undefined
+      ? '.usage-meter__toggle'
+      : `.usage-meter__toggle[aria-label="${label} usage"]`;
   return /** @type {HTMLButtonElement | null} */ (
-    mount.querySelector('.usage-meter__toggle')
+    mount.querySelector(selector)
   );
 }
 
 /**
  * @param {HTMLElement} mount
+ * @param {string} [label]
  */
-async function openCard(mount) {
-  await vi.waitFor(() => expect(toggleButton(mount)).not.toBeNull());
-  /** @type {HTMLButtonElement} */ (toggleButton(mount)).click();
+async function openCard(mount, label) {
+  await vi.waitFor(() => expect(toggleButton(mount, label)).not.toBeNull());
+  /** @type {HTMLButtonElement} */ (toggleButton(mount, label)).click();
 }
 
 describe('usage meter account badge', () => {
@@ -570,6 +578,116 @@ describe('usage meter account card', () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(mount.querySelector('.usage-meter__card')).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('shows only the clicked provider section in the card', async () => {
+    const mount = mountMeter();
+    stubProviders(
+      { available: false, accounts: [accountRow({ number: 1 })] },
+      { available: false, accounts: [accountRow({ number: 1 })] }
+    );
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount, 'Codex');
+
+    const titles = mount.querySelectorAll('.usage-meter__section-title');
+    expect(titles.length).toBe(1);
+    expect(titles[0].textContent).toContain('Codex');
+    expect(
+      mount.querySelector('.usage-meter__card')?.getAttribute('aria-label')
+    ).toBe('Codex 계정 사용량');
+    expect(toggleButton(mount, 'Codex')?.getAttribute('aria-expanded')).toBe(
+      'true'
+    );
+    expect(toggleButton(mount, 'Claude')?.getAttribute('aria-expanded')).toBe(
+      'false'
+    );
+    meter.destroy();
+  });
+
+  test('switches the card to the other provider without closing it', async () => {
+    const mount = mountMeter();
+    stubProviders(
+      { available: false, accounts: [accountRow({ number: 1 })] },
+      { available: false, accounts: [accountRow({ number: 1 })] }
+    );
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount, 'Claude');
+    /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Codex')).click();
+
+    const titles = mount.querySelectorAll('.usage-meter__section-title');
+    expect(titles.length).toBe(1);
+    expect(titles[0].textContent).toContain('Codex');
+    meter.destroy();
+  });
+
+  test('closes the card when its own provider toggle is clicked again', async () => {
+    const mount = mountMeter();
+    stubProviders({
+      available: false,
+      accounts: [accountRow({ number: 1 })]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount, 'Claude');
+    /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Claude')).click();
+
+    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    expect(toggleButton(mount, 'Claude')?.getAttribute('aria-expanded')).toBe(
+      'false'
+    );
+    meter.destroy();
+  });
+
+  test('leaves a provider without accounts as a static group', async () => {
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubProviders(
+      { available: false, accounts: [accountRow({ number: 1 })] },
+      usageResponse([{ key: '5h', pct: 10, resetsAt: reset_at }])
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.waitFor(() =>
+      expect(toggleButton(mount, 'Claude')).not.toBeNull()
+    );
+
+    expect(toggleButton(mount, 'Codex')).toBeNull();
+    expect(
+      mount.querySelector('.usage-meter__group[aria-label="Codex usage"]')
+    ).not.toBeNull();
+    meter.destroy();
+  });
+
+  test('closes the card when a poll drops the open provider accounts', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    let claude_accounts = [accountRow({ number: 1 })];
+    const fetchMock = vi.fn((/** @type {string} */ url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve(
+            url === '/api/codex-usage'
+              ? { available: false, accounts: [accountRow({ number: 1 })] }
+              : { available: false, accounts: claude_accounts }
+          )
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    /** @type {HTMLButtonElement} */ (toggleButton(mount, 'Claude')).click();
+    claude_accounts = [];
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mount.querySelector('.usage-meter__card')).toBeNull();
+    expect(toggleButton(mount, 'Codex')?.getAttribute('aria-expanded')).toBe(
+      'false'
+    );
     meter.destroy();
   });
 
@@ -897,7 +1015,8 @@ describe('usage meter account switch', () => {
     }
     switchButton(0).click();
     await vi.waitFor(() => expect(switchButton(0).disabled).toBe(true));
-    switchButton(1).click();
+    await openCard(mount, 'Codex');
+    switchButton(0).click();
     await vi.waitFor(() =>
       expect(fetchMock).toHaveBeenCalledWith(
         '/api/codex-account/switch',
@@ -905,6 +1024,7 @@ describe('usage meter account switch', () => {
       )
     );
 
+    await openCard(mount, 'Claude');
     expect(switchButton(0).disabled).toBe(true);
     releaseClaudeSwitch(undefined);
     meter.destroy();

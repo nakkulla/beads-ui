@@ -638,6 +638,10 @@ export function staleWorkProjection(admission, locked = false) {
  * @property {number} [seq] - 1-based execution order number in a serial lane.
  * @property {boolean} [worker_serial] - Legacy `worker-serial` label residue:
  * renders a display-only strikethrough chip. Never a scheduling input.
+ * @property {boolean} [worker_ineligible] - Candidate carries the
+ * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
+ * wears the ⛔ chip, and refuses drag and queue placement. The candidate
+ * projection computes it once; the template never re-reads label strings.
  */
 
 /**
@@ -987,7 +991,11 @@ export function miniRow(item) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null) {
-  const draggable = item.draggable && !item.done;
+  // Observation-only rows (UI-8881) are refused here as well as by the
+  // projection, so the card cannot become draggable through a caller that
+  // forgot the conjunction.
+  const worker_ineligible = item.worker_ineligible === true;
+  const draggable = item.draggable && !item.done && !worker_ineligible;
   const menu_open = draggable && place_menu && place_menu.bead_id === item.id;
   const workflow = item.workflow;
   const chips = (workflow && workflow.chips) || {};
@@ -1001,7 +1009,11 @@ export function candidateCard(item, place_menu = null) {
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
   return html`<div
-    class="worker-card${draggable ? '' : ' worker-card--static'}"
+    class="worker-card${draggable
+      ? ''
+      : ' worker-card--static'}${worker_ineligible
+      ? ' worker-card--ineligible'
+      : ''}"
     draggable=${draggable ? 'true' : 'false'}
     data-bead-id=${item.id}
     data-lane=${item.lane}
@@ -1016,6 +1028,13 @@ export function candidateCard(item, place_menu = null) {
           >`
         : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span>
+      ${worker_ineligible
+        ? html`<span
+            class="ctl-chip worker-card__ineligible"
+            title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
+            >⛔ worker-ineligible</span
+          >`
+        : ''}
       ${workflow && route
         ? html`<span
             class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
@@ -1075,9 +1094,11 @@ export function candidateCard(item, place_menu = null) {
               ?disabled=${!draggable}
               title=${draggable
                 ? '대기 큐 맨 뒤에 추가'
-                : missing_description
-                  ? 'description이 없어 대기 큐에 넣을 수 없습니다'
-                  : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
+                : worker_ineligible
+                  ? 'worker-ineligible label로 워커에서 실행할 수 없습니다'
+                  : missing_description
+                    ? 'description이 없어 대기 큐에 넣을 수 없습니다'
+                    : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
             >
               대기로 ↴
             </button>`}
