@@ -71,3 +71,25 @@ function readMetadata(issue) {
     ? /** @type {Record<string, unknown>} */ (row.metadata)
     : {};
 }
+
+/**
+ * Resolve the spec evidence class for display. Wraps {@link resolveSpecDraft}
+ * with the single mapping from durable keys to evidence: publication evidence
+ * (`spec_id`, native or metadata) is `published`, an authoring-time metadata
+ * `spec_path` alone is `draft`, and neither is `none`. Consumers branch on
+ * `evidence` instead of enumerating `source` values, so a later key-vocabulary
+ * change stays inside this module.
+ *
+ * @param {unknown} issue
+ * @returns {{ path: string, source: 'native'|'metadata'|'draft'|'none', conflict: boolean, evidence: 'published'|'draft'|'none' }}
+ */
+export function resolveSpecEvidence(issue) {
+  const resolved = resolveSpecDraft(issue);
+  if (resolved.source === 'draft') {
+    return { ...resolved, evidence: 'draft' };
+  }
+  return {
+    ...resolved,
+    evidence: resolved.source === 'none' ? 'none' : 'published'
+  };
+}

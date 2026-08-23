@@ -181,11 +181,14 @@ autorun stale lane의 plan 브랜치를 정의하며, stale해진 `plan_review`�
 
 | | `none` | `dim` | `full` |
 |---|---|---|---|
-| **spec** | `spec_id` 없음 | 리시트 없음 | 리시트 있음 |
+| **spec** | 발행 증거(`spec_id`)도 draft(`spec_path`)도 없음 · draft 경로의 문서가 부재로 증명됨 | draft 문서 있음 또는 존재 판정 불가 | 발행 증거 있음(리시트 없으면 글리프 없음, 있으면 글리프) |
 | **plan** | `plan_path` 없음 · authoring receipt 없이 예약된 경로의 문서가 아직 없음 | 문서 있음 + 유효 승인 없음 · authoring receipt가 있으나 문서가 유실된 오류 상태 | 유효 승인 있음 · 키 부재 + `resolved`/`closed`(legacy) |
 | **impl** | 미착수 | `in_progress` 또는 `pr_url` 있음 | 리시트 있음 · **리시트 없고 `resolved`/`closed`** |
 | **pr** | `pr_url` 없음 | *(사용하지 않음)* | `pr_url` 있음 |
 | **merge** | PR 없음 | `pr_url` + `resolved` | `closed` |
+
+spec 행은 `2026-08-23-stepper-spec-draft-stage-design.md` §2가 3단계로 교체했다 —
+발행 전 draft가 `dim`을 차지하고, 발행 증거는 리시트 유무와 무관하게 `full`이다.
 
 ### 4.1 신규 규칙 — 리시트 없는 완료도 impl을 채운다
 
