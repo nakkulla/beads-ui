@@ -1185,6 +1185,159 @@ describe('RepoOperation coordinator', () => {
     ).toBe('descendant-deploy');
   });
 
+  /**
+   * Two stored verify rows for one PR line: `failed-verify` on HEAD and a
+   * second row on ADVANCED_HEAD. The fake git answers ancestry only for
+   * HEAD → ADVANCED_HEAD.
+   *
+   * @param {ReturnType<typeof coordinatorFor>['store']} store
+   */
+  function seedVerifyRows(store) {
+    for (const [operation_id, head_sha] of [
+      ['failed-verify', HEAD],
+      ['descendant-verify', ADVANCED_HEAD]
+    ]) {
+      store.ensureRepoOperation(root, {
+        operation_id,
+        repo_id: root,
+        kind: 'verify',
+        subjects: [{ bead_id: 'UI-1', merged_sha: head_sha }],
+        effective_base_sha: BASE,
+        target_base: 'main',
+        target_tree: operation_id === 'failed-verify' ? TREE : FINAL_TREE,
+        verify_head_sha: head_sha,
+        deploy_worktree: path.join(root, operation_id),
+        script_path: 'repo-ops/script/verify',
+        script_mode: '100755',
+        script_blob_sha: '5'.repeat(40)
+      });
+    }
+    const failed = store.snapshot(root).repo_operations['failed-verify'];
+    store.startRepoOperation(root, {
+      operation_id: 'failed-verify',
+      attempt_id: failed.attempt_id,
+      process_identity: { pid: 1, pgid: 1, started_at: 1 },
+      log_path: path.join(root, 'failed.log')
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'failed-verify',
+      attempt_id: failed.attempt_id,
+      exit_code: 1,
+      signal: null
+    });
+  }
+
+  /** @param {string[]} ancestors - Head SHAs the fake git treats as ancestors of ADVANCED_HEAD. */
+  function gitForVerifyAncestry(ancestors) {
+    return vi.fn(async (/** @type {string[]} */ args) => ({
+      code:
+        args[0] === 'merge-base' &&
+        ancestors.includes(String(args[2])) &&
+        args[3] === ADVANCED_HEAD
+          ? 0
+          : 1,
+      stdout: '',
+      stderr: ''
+    }));
+  }
+
+  test('supersedes an ancestor failed verify when a descendant head verifies green', async () => {
+    const runner = {
+      start: () => ({ ok: false, code: 'unused' }),
+      readMarker: () => ({ exit_code: 0, signal: null }),
+      readLaunchMarker: () => null,
+      processController: { probe: () => ({ state: 'owned' }) }
+    };
+    const { store, coordinator } = coordinatorFor({
+      runner,
+      gitRun: gitForVerifyAncestry([HEAD]),
+      verifyCheckout: {
+        materialize: vi.fn(async () => ({
+          ok: true,
+          path: root,
+          tree_sha: TREE
+        })),
+        verify: vi.fn(async () => ({ ok: true })),
+        cleanup: vi.fn(async () => {})
+      }
+    });
+    seedVerifyRows(store);
+    const descendant =
+      store.snapshot(root).repo_operations['descendant-verify'];
+    store.startRepoOperation(root, {
+      operation_id: 'descendant-verify',
+      attempt_id: descendant.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'descendant.log')
+    });
+
+    await coordinator.reconcile(root);
+
+    const operations = store.snapshot(root).repo_operations;
+    expect(operations['descendant-verify'].state).toBe('succeeded');
+    expect(operations['failed-verify'].superseded_by).toBe('descendant-verify');
+  });
+
+  test('covers a stored failed verify against an existing success on first reconcile', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerifyAncestry([HEAD])
+    });
+    seedVerifyRows(store);
+    const descendant =
+      store.snapshot(root).repo_operations['descendant-verify'];
+    store.startRepoOperation(root, {
+      operation_id: 'descendant-verify',
+      attempt_id: descendant.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'descendant.log')
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'descendant-verify',
+      attempt_id: descendant.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+    expect(
+      store.snapshot(root).repo_operations['failed-verify'].superseded_by
+    ).toBeNull();
+
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['failed-verify'].superseded_by
+    ).toBe('descendant-verify');
+  });
+
+  test('keeps a failed verify whose head is not an ancestor of the green head', async () => {
+    const git = gitForVerifyAncestry([]);
+    const { store, coordinator } = coordinatorFor({ gitRun: git });
+    seedVerifyRows(store);
+    const descendant =
+      store.snapshot(root).repo_operations['descendant-verify'];
+    store.startRepoOperation(root, {
+      operation_id: 'descendant-verify',
+      attempt_id: descendant.attempt_id,
+      process_identity: { pid: 2, pgid: 2, started_at: 1 },
+      log_path: path.join(root, 'descendant.log')
+    });
+    store.settleRepoOperation(root, {
+      operation_id: 'descendant-verify',
+      attempt_id: descendant.attempt_id,
+      exit_code: 0,
+      signal: null
+    });
+
+    await coordinator.reconcile(root);
+    await coordinator.reconcile(root);
+
+    expect(
+      store.snapshot(root).repo_operations['failed-verify'].superseded_by
+    ).toBeNull();
+    expect(
+      git.mock.calls.filter((call) => call[0][0] === 'merge-base')
+    ).toHaveLength(1);
+  });
+
   test('supersedes a failed deploy without a target sha when its subjects are carried', async () => {
     const runner = {
       start: () => ({ ok: false, code: 'unused' }),
