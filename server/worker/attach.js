@@ -71,7 +71,10 @@ import {
 } from './repair-session-adapter.js';
 import { createRepoOperationCoordinator } from './repo-operation-coordinator.js';
 import { createRepoOperationMigration } from './repo-operation-migration.js';
-import { repoOpsDisplayFor, repoOpsVerifyPolicy } from './repo-ops-display.js';
+import {
+  effectiveVerifyPolicy,
+  repoOpsDisplayFor
+} from './repo-ops-display.js';
 import { createRevertBuilder } from './revert-builder.js';
 import { createReviseDisposition } from './revise-disposition.js';
 import { createRunner } from './runner/index.js';
@@ -1256,8 +1259,14 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       // The enrollment scan is synchronous, so it reads the ladder through the
       // cached projection (UI-kfl4): advisory shortlisting only — every item it
       // queues is re-gated by `gateNow` against a fresh pin before it merges.
+      // Opt-out aware (UI-lsti §3): a workspace that skips its declared
+      // `[verify]` lane never produces a receipt, so the raw declaration would
+      // hold every row at `verify_missing` and auto-merge would never enroll.
       verifyState: () =>
-        repoOpsVerifyPolicy(repoOpsDisplayFor(keyFor(workspace_root))),
+        effectiveVerifyPolicy(
+          repoOpsDisplayFor(keyFor(workspace_root)),
+          runtime.queueStore.snapshot(keyFor(workspace_root))
+        ),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       // Persist alone leaves items in a queue nobody drains (UI-yk55 §4.2).
       kick: () => mergeQueue.kick(),
@@ -2042,7 +2051,11 @@ export function enrollWorkerMergeCandidates(workspace_root, input = {}) {
     createAutoMerge({
       workspace: key,
       store: getWorkerRuntime().queueStore,
-      verifyState: () => repoOpsVerifyPolicy(repoOpsDisplayFor(key)),
+      verifyState: () =>
+        effectiveVerifyPolicy(
+          repoOpsDisplayFor(key),
+          getWorkerRuntime().queueStore.snapshot(key)
+        ),
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kick: () => kickWorkerMergeQueue(key),
       log

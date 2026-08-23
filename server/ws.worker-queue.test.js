@@ -2078,6 +2078,71 @@ describe('ws worker merge queue (UI-5v7d §3)', () => {
     expect(kick).toHaveBeenCalled();
   });
 
+  /**
+   * A resolved declaration with a `[verify]` lane at the same base the bead
+   * observed — the shape that makes the gate demand a receipt.
+   */
+  function recordDeclaredVerify() {
+    const repo_ops = {
+      status: 'resolved',
+      source_path: 'repo-ops/config.toml',
+      base_ref: 'main',
+      base_sha: 'e'.repeat(40),
+      verify: { script: 'repo-ops/script/verify', timeout_ms: 1000 },
+      deploy: null,
+      error_code: null
+    };
+    recordRepoOpsDisplay('', /** @type {any} */ (repo_ops));
+    recordRepoOpsDisplay(process.cwd(), /** @type {any} */ (repo_ops));
+  }
+
+  test('the auto-merge toggle holds a row whose declared verify has no receipt', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    recordDeclaredVerify();
+    registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      on: true,
+      expected_revision: getWorkerRuntime().queueStore.snapshot('').revision
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getWorkerRuntime().queueStore.snapshot('').merge_queue).toEqual([]);
+  });
+
+  test('the auto-merge toggle enrolls a row whose verify lane is opted out', async () => {
+    parkInPrWait('UI-1');
+    observeGreen('UI-1');
+    recordDeclaredVerify();
+    const store = getWorkerRuntime().queueStore;
+    store.setRepoOpsOptOut('', {
+      expected_revision: store.snapshot('').revision,
+      kind: 'verify',
+      opted_out: true
+    });
+    const kick = registerDriver();
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-merge-auto-toggle', {
+      on: true,
+      expected_revision: store.snapshot('').revision
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(
+      store
+        .snapshot('')
+        .merge_queue.map((/** @type {any} */ entry) => entry.bead_id)
+    ).toEqual(['UI-1']);
+    expect(kick).toHaveBeenCalled();
+  });
+
   test('automation ON starts dispatch, observes PRs, and enrolls eligible rows', async () => {
     parkInPrWait('UI-1');
     observeGreen('UI-1');

@@ -77,8 +77,8 @@ import {
   projectRepoOperationPolicy
 } from '../worker/repo-operation-policy.js';
 import {
+  effectiveVerifyPolicy,
   repoOpsDisplayFor,
-  repoOpsVerifyPolicy,
   repoOpsVerifyReceiptState
 } from '../worker/repo-ops-display.js';
 import {
@@ -102,6 +102,10 @@ import {
   log
 } from './context.js';
 import { targetWorkspaceOf } from './workspace-target.js';
+
+// Re-exported so the opt-out rule keeps one import site per consumer lane
+// (UI-lsti §3): the wire projection here, the auto-merge enroller in attach.js.
+export { effectiveVerifyPolicy };
 
 /**
  * Server-wide single queue store (from the shared Worker runtime) so all
@@ -501,35 +505,6 @@ function receiptWarningFor(queue, bead_id) {
         )
       )
     : null;
-}
-
-/**
- * The verify declaration state this workspace actually judges by (UI-lsti §3).
- *
- * The single owner of the opt-out rule on the wire: a workspace that opted out
- * of the declared `[verify]` lane reports `absent` — exactly what a repository
- * with no declaration reports — so the PR row's gate and badges take the
- * existing "verify 선언 없음" path instead of a new one. The DISPLAY projection
- * (`workspace_info.repo_ops`) is deliberately untouched: the declaration is
- * still true, and the settings panel keeps showing the script it names.
- *
- * @param {import('../worker/repo-ops-display.js').RepoOpsDisplay} repo_ops
- * @param {Record<string, unknown>} queue
- * @returns {{ declaration_state: 'present'|'absent'|'invalid', base_sha: string|null }}
- */
-export function effectiveVerifyPolicy(repo_ops, queue) {
-  const policy = repoOpsVerifyPolicy(repo_ops);
-  const opt_out = /** @type {any} */ (queue).repo_ops_opt_out;
-  if (!opt_out || opt_out.verify !== true) {
-    return policy;
-  }
-  // opt-out은 '선언 부재처럼' 이지 '선언이 깨졌다'가 아니다. `invalid`은 fail-closed
-  // 상태이므로 덮어쓰지 않는다 — 읽을 수 없는 선언을 건너뛰기로 승격시키면
-  // 사용자가 끄지 않은 게이트가 사라진다.
-  if (policy.declaration_state !== 'present') {
-    return policy;
-  }
-  return { declaration_state: 'absent', base_sha: policy.base_sha };
 }
 
 /**
