@@ -557,6 +557,34 @@ export function staleWorkProjection(admission, locked = false) {
 }
 
 /**
+ * The 오케/워커 execution-settings chips (worker-card-exec-chips §4).
+ *
+ * The prefix label lives here rather than in the formatter: the formatter owns
+ * the settings text, the template owns how that text is introduced.
+ *
+ * @param {import('../../utils/exec-settings-chip.js').ExecChips|null|undefined} chips
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function execChipsTemplate(chips) {
+  if (!chips || (!chips.orchestration && !chips.worker)) {
+    return '';
+  }
+  return html`${chips.orchestration
+    ? html`<span
+        class="exec-chip exec-chip--orch"
+        title=${chips.orchestration.title}
+        ><span class="exec-chip__k">오케</span
+        ><span class="exec-chip__v">${chips.orchestration.text}</span></span
+      >`
+    : ''}${chips.worker
+    ? html`<span class="exec-chip exec-chip--worker" title=${chips.worker.title}
+        ><span class="exec-chip__k">워커</span
+        ><span class="exec-chip__v">${chips.worker.text}</span></span
+      >`
+    : ''}`;
+}
+
+/**
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
