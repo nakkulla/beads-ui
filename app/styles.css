@@ -7706,6 +7706,12 @@ button.detail-session__leg:focus-visible {
     gap: var(--space-4, 8px);
   }
 
+  /* The capsule wraps as one block; inside it the picker row and the tab row
+     split onto two lines. */
+  .repo-scope {
+    flex-wrap: wrap;
+  }
+
   .header-actions {
     flex-wrap: wrap;
     gap: var(--space-4, 8px);

@@ -171,7 +171,11 @@ export function bootstrap(root_element) {
   render(shell, root_element);
 
   /** @type {HTMLElement|null} */
-  const nav_mount = document.getElementById('top-nav');
+  const global_nav_mount = document.getElementById('global-nav');
+  /** @type {HTMLElement|null} */
+  const repo_nav_mount = document.getElementById('top-nav');
+  /** @type {HTMLElement|null} */
+  const repo_scope_mount = document.getElementById('repo-scope');
   /** @type {HTMLElement|null} */
   const usage_mount = document.getElementById('usage-meter');
   /** @type {HTMLElement|null} */
@@ -1401,9 +1405,11 @@ export function bootstrap(root_element) {
       }
     };
 
-    if (nav_mount) {
-      createTopNav(nav_mount, store, router);
-    }
+    createTopNav(
+      { global_element: global_nav_mount, repo_element: repo_nav_mount },
+      store,
+      router
+    );
 
     const workspace_mount = document.getElementById('workspace-picker');
     if (workspace_mount) {
@@ -1591,6 +1597,9 @@ export function bootstrap(root_element) {
       board_root.hidden = s.view !== 'board';
       worker_root.hidden = s.view !== 'worker';
       monitor_root.hidden = s.view !== 'monitor';
+      if (repo_scope_mount) {
+        repo_scope_mount.classList.toggle('is-quiet', s.view === 'monitor');
+      }
       ensureBoardSubscriptions(s.view === 'board');
       ensureWorkerSubscriptions(s.view === 'worker');
       ensureMonitorPipelineChannel(s.view === 'monitor');
