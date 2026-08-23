@@ -52,6 +52,42 @@ os.execve(script, [script, *sys.argv[3:]], env)
 ' "$0" "$lock_file" "$@"
 fi
 
+# The restart marker is this deploy's only durable trace for a consumer that
+# never saw the operation. It lives beside the lockfile, under the same owner
+# root; the lock branch above resolved that root before the re-exec, so the
+# locked body resolves it again.
+marker_common_dir="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)" ||
+    fail "cannot resolve the main repository directory"
+marker_dir="$(dirname "$marker_common_dir")/.worktrees"
+marker_file="$marker_dir/.repo-ops-deploy.restart.json"
+marker_started=0
+marker_started_at=0
+marker_result='failed'
+marker_instance_id=''
+
+# A reader may open this file at any moment, so every write lands atomically
+# through a same-directory temp file.
+write_marker() {
+    mkdir -p "$marker_dir" || return 1
+    marker_tmp="$marker_file.tmp.$$"
+    printf '%s\n' "$1" >"$marker_tmp" || return 1
+    mv -f "$marker_tmp" "$marker_file" || return 1
+}
+
+# `$?` must be read before anything else runs: only an exit-0 script deployed,
+# so a failure after the success flag is set still records `failed`.
+finish_marker() {
+    marker_exit_status=$?
+    [ "$marker_started" -eq 1 ] || return "$marker_exit_status"
+    if [ "$marker_exit_status" -eq 0 ] && [ "$marker_result" = 'ok' ] &&
+        [ -n "$marker_instance_id" ]; then
+        write_marker "{\"schema\": 1, \"target_sha\": \"$REPO_OPS_TARGET_SHA\", \"target_base\": \"$REPO_OPS_TARGET_BASE\", \"started_at\": $marker_started_at, \"result\": \"ok\", \"instance_id\": \"$marker_instance_id\", \"finished_at\": $(date +%s)000}" || true
+    else
+        write_marker "{\"schema\": 1, \"target_sha\": \"$REPO_OPS_TARGET_SHA\", \"target_base\": \"$REPO_OPS_TARGET_BASE\", \"started_at\": $marker_started_at, \"result\": \"failed\", \"finished_at\": $(date +%s)000}" || true
+    fi
+    return "$marker_exit_status"
+}
+
 read_head() {
     git -C "$repo_root" rev-parse --verify HEAD^{commit}
 }
@@ -61,6 +97,14 @@ start_head="$(read_head)" || fail "cannot read start HEAD"
 
 npm ci || fail "npm ci failed"
 npm run build || fail "npm run build failed"
+
+# POSIX sh has no millisecond clock, and these timestamps are diagnostic only:
+# the consumer judges on instance identity, never on time.
+marker_started_at="$(date +%s)000"
+write_marker "{\"schema\": 1, \"target_sha\": \"$REPO_OPS_TARGET_SHA\", \"target_base\": \"$REPO_OPS_TARGET_BASE\", \"started_at\": $marker_started_at}" ||
+    fail "cannot write the restart marker"
+marker_started=1
+trap finish_marker EXIT
 
 # The restart kills the server this operation was launched from. The one-shot
 # executor is detached precisely so it outlives that and still records the exit
@@ -95,6 +139,14 @@ import fs from "node:fs";
 const url = process.env.REPO_OPS_HEALTH_URL;
 const expect_sha = process.env.REPO_OPS_EXPECT_SHA;
 const expect_root = process.env.REPO_OPS_EXPECT_ROOT;
+// The caller pins the identity of the first target-SHA runtime it sees, so
+// every verdict from that point on carries the id. The reason word itself must
+// stay byte-identical because the shell surfaces it verbatim.
+let instance_id = "";
+function report(reason) {
+  process.stdout.write(instance_id ? `${reason} ${instance_id}` : reason);
+  process.exit(0);
+}
 let body = null;
 try {
   const response = await fetch(url, {
@@ -107,13 +159,22 @@ try {
 }
 const runtime = body && typeof body === "object" ? body.runtime : null;
 if (!runtime || typeof runtime !== "object") {
-  process.stdout.write("unreachable");
-  process.exit(0);
+  report("unreachable");
 }
 if (runtime.source_sha !== expect_sha) {
-  process.stdout.write("source_sha_mismatch");
-  process.exit(0);
+  report("source_sha_mismatch");
 }
+// The verdict is a single whitespace-separated token pair, so an id outside
+// this alphabet cannot be carried at all. An uncarried id proves nothing, and
+// `ok` exists only for the instance the end marker will name, so a runtime that
+// reports no usable id is never healthy for this deploy.
+if (
+  typeof runtime.instance_id !== "string" ||
+  !/^[A-Za-z0-9._-]{1,128}$/.test(runtime.instance_id)
+) {
+  report("runtime_identity_missing");
+}
+instance_id = runtime.instance_id;
 let resolved = null;
 try {
   resolved = fs.realpathSync(String(runtime.source_repo || ""));
@@ -121,8 +182,7 @@ try {
   resolved = null;
 }
 if (resolved !== expect_root) {
-  process.stdout.write("source_repo_mismatch");
-  process.exit(0);
+  report("source_repo_mismatch");
 }
 // Identity alone would let a bd JSON compatibility regression deploy green:
 // the process is the right code, but it can no longer read what bd emits. The
@@ -130,59 +190,77 @@ if (resolved !== expect_root) {
 const diagnostics = body.diagnostics;
 const bd = diagnostics && typeof diagnostics === "object" ? diagnostics.bd : null;
 if (!bd || typeof bd !== "object") {
-  process.stdout.write("bd_diagnostics_missing");
-  process.exit(0);
+  report("bd_diagnostics_missing");
 }
 if (typeof bd.version !== "string" || bd.version.length === 0) {
-  process.stdout.write("bd_diagnostics_version_missing");
-  process.exit(0);
+  report("bd_diagnostics_version_missing");
 }
 const observations = bd.producer_observations;
 if (!observations || typeof observations !== "object") {
-  process.stdout.write("bd_diagnostics_observations_missing");
-  process.exit(0);
+  report("bd_diagnostics_observations_missing");
 }
 for (const mode of ["default", "envelope_opt_in"]) {
   const observed = observations[mode];
   if (!observed || typeof observed !== "object" || typeof observed.format !== "string") {
-    process.stdout.write("bd_diagnostics_observation_unhealthy");
-    process.exit(0);
+    report("bd_diagnostics_observation_unhealthy");
   }
 }
 const supported = Array.isArray(bd.consumer_supported_formats) ? bd.consumer_supported_formats : [];
 for (const required of ["bare", "envelope_v2"]) {
   if (!supported.includes(required)) {
-    process.stdout.write("bd_consumer_support_missing");
-    process.exit(0);
+    report("bd_consumer_support_missing");
   }
 }
 const workspace_probe = bd.workspace_probe;
 if (!workspace_probe || typeof workspace_probe !== "object" || workspace_probe.ok !== true) {
-  process.stdout.write("bd_workspace_probe_red");
-  process.exit(0);
+  report("bd_workspace_probe_red");
 }
 const failures = bd.active_protocol_failures;
 if (!failures || typeof failures !== "object" || failures.workspace_count !== 0) {
-  process.stdout.write("bd_protocol_failure_active");
-  process.exit(0);
+  report("bd_protocol_failure_active");
 }
-process.stdout.write("ok");
+report("ok");
 '
 }
 
+# The first target-SHA runtime this poll observes is the one whose `ok` counts.
+# Pinning its id is what makes the end marker provable: a manual restart or a
+# crash reboot mid-poll answers with a different id and fails the deploy instead
+# of certifying a runtime this script never brought up.
 attempt=0
-probe_result="unreachable"
+probe_reason="unreachable"
+probe_instance=""
+pinned_instance_id=""
 while [ "$attempt" -lt "$HEALTH_ATTEMPTS" ]; do
-    probe_result="$(health_probe)" || probe_result="unreachable"
-    [ "$probe_result" = "ok" ] && break
+    probe_output="$(health_probe)" || probe_output="unreachable"
+    probe_reason="${probe_output%% *}"
+    case "$probe_output" in
+        *' '*) probe_instance="${probe_output#* }" ;;
+        *) probe_instance="" ;;
+    esac
+    if [ -n "$probe_instance" ]; then
+        if [ -z "$pinned_instance_id" ]; then
+            pinned_instance_id="$probe_instance"
+        elif [ "$probe_instance" != "$pinned_instance_id" ]; then
+            fail "runtime health readback failed: runtime_identity_changed"
+        fi
+    fi
+    if [ "$probe_reason" = "ok" ]; then
+        [ -n "$probe_instance" ] ||
+            fail "runtime health readback failed: runtime_identity_missing"
+        break
+    fi
     attempt=$((attempt + 1))
     sleep "$HEALTH_POLL_SECONDS"
 done
-[ "$probe_result" = "ok" ] || fail "runtime health readback failed: $probe_result"
+[ "$probe_reason" = "ok" ] || fail "runtime health readback failed: $probe_reason"
+marker_instance_id="$pinned_instance_id"
 
 end_head="$(read_head)" || fail "cannot read end HEAD"
 [ "$end_head" = "$REPO_OPS_TARGET_SHA" ] || fail "end HEAD differs from REPO_OPS_TARGET_SHA"
 end_status="$(git -C "$repo_root" status --porcelain --untracked-files=all)" || fail "cannot read end worktree status"
 [ -z "$end_status" ] || fail "worktree is not tracked-clean"
+
+marker_result='ok'
 
 printf 'repo-ops deploy ok: base=%s target=%s\n' "$REPO_OPS_TARGET_BASE" "$REPO_OPS_TARGET_SHA"

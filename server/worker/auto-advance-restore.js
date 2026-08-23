@@ -2,7 +2,11 @@
  * Process-wide, fail-closed restoration of pre-restart auto-advance state after
  * one verified self-deploy chain reaches terminal success.
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { createUnhandledFailurePredicate } from './attempt-failure.js';
+
+const RESTART_MARKER_NAME = '.repo-ops-deploy.restart.json';
 
 /**
  * @typedef {Object} RestoreRegistration
@@ -17,7 +21,7 @@ import { createUnhandledFailurePredicate } from './attempt-failure.js';
  */
 
 /**
- * @param {{ runtime_identity: { source_repo?: unknown, source_sha?: unknown, process_started_at?: unknown }|null }} deps
+ * @param {{ runtime_identity: { source_repo?: unknown, source_sha?: unknown, process_started_at?: unknown, instance_id?: unknown }|null }} deps
  */
 export function createAutoAdvanceRestoreController(deps) {
   /** @type {Map<string, RestoreRegistration>} */
@@ -115,6 +119,77 @@ export function createAutoAdvanceRestoreController(deps) {
   }
 
   /**
+   * The directory the deploy script writes its restart marker under: the parent
+   * of the common git directory, so a linked-worktree registration resolves the
+   * same owner root the script did.
+   *
+   * @param {RestoreRegistration} registration
+   */
+  async function ownerRoot(registration) {
+    const result = await registration.gitRun(
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: registration.repo }
+    );
+    if (result.code !== 0) {
+      return null;
+    }
+    const first = String(result.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    return first ? path.dirname(first) : null;
+  }
+
+  /**
+   * Judge the restart marker a deploy script left behind, including one a
+   * session owned and the Worker never recorded.
+   *
+   * The instance binding is what replaces a consume ledger: a marker names the
+   * exact runtime its health readback certified, so no later manual restart or
+   * crash reboot can ever match it, not even at the same SHA.
+   *
+   * @param {RestoreRegistration} registration
+   */
+  async function markerCertifiesThisRuntime(registration) {
+    const identity = deps.runtime_identity;
+    if (
+      !identity ||
+      typeof identity.source_sha !== 'string' ||
+      typeof identity.instance_id !== 'string'
+    ) {
+      return false;
+    }
+    let marker = null;
+    try {
+      const owner_root = await ownerRoot(registration);
+      if (owner_root === null) {
+        return false;
+      }
+      marker = JSON.parse(
+        fs.readFileSync(
+          path.join(owner_root, '.worktrees', RESTART_MARKER_NAME),
+          'utf8'
+        )
+      );
+    } catch {
+      // An absent, unreadable or unparsable marker is not evidence.
+      return false;
+    }
+    if (
+      !marker ||
+      typeof marker !== 'object' ||
+      marker.schema !== 1 ||
+      marker.result !== 'ok' ||
+      marker.target_sha !== identity.source_sha.toLowerCase() ||
+      typeof marker.instance_id !== 'string' ||
+      marker.instance_id !== identity.instance_id
+    ) {
+      return false;
+    }
+    return await sameRepository(registration);
+  }
+
+  /**
    * Re-evaluate frozen candidates after one locked coordinator pass.
    *
    * @param {string} workspace
@@ -156,6 +231,14 @@ export function createAutoAdvanceRestoreController(deps) {
       } catch {
         // Judgment errors stay OFF and are retried by a later pass.
       }
+    }
+    try {
+      if (await markerCertifiesThisRuntime(registration)) {
+        triggered = true;
+        return true;
+      }
+    } catch {
+      // A marker judgment error stays OFF and is retried by a later pass.
     }
     return false;
   }
