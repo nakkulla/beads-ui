@@ -7,7 +7,7 @@ import path from 'node:path';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
- * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: false }} UsageUnavailable
  * @typedef {{ available: true, provider: 'codex', windows: UsageWindow[], fetchedAt: string, ageSeconds: number }} CodexUsageActive
  * @typedef {(UsageUnavailable | CodexUsageActive) & { accounts?: UsageAccount[] }} CodexUsagePayload
@@ -156,6 +156,9 @@ function normalizeAccountRow(input, active_account_key, now) {
   if (!Number.isInteger(row.number) || row.number <= 0) {
     return null;
   }
+  if (typeof row.account_key !== 'string') {
+    return null;
+  }
   if (typeof row.email !== 'string' || row.email.length === 0) {
     return null;
   }
@@ -171,6 +174,7 @@ function normalizeAccountRow(input, active_account_key, now) {
   const fetched_at = windows ? epochToIso(row.usage.updated_at) : null;
   if (!windows || !fetched_at) {
     return {
+      key: row.account_key,
       number: row.number,
       email: row.email,
       alias,
@@ -184,6 +188,7 @@ function normalizeAccountRow(input, active_account_key, now) {
   }
 
   return {
+    key: row.account_key,
     number: row.number,
     email: row.email,
     alias,
@@ -459,6 +464,27 @@ export function invalidateCache() {
   cached_payload = null;
   cache_expires_at = 0;
   in_flight = null;
+}
+
+/**
+ * List normalized Codex accounts through the route's shared cache.
+ *
+ * @param {{ runCodexAuth?: () => Promise<{ code: number, stdout: string, stderr: string }>, now?: () => number }} [options]
+ * @returns {Promise<{ ok: true, accounts: UsageAccount[], active_key: string|null }|{ ok: false, error: string }>}
+ */
+export async function listAccounts(options = {}) {
+  const runCodexAuth = options.runCodexAuth || run_codex_auth_command;
+  const now = options.now || (() => Date.now());
+  const payload = withCurrentAge(await getCodexUsage(runCodexAuth, now), now);
+  if (!Array.isArray(payload.accounts)) {
+    return { ok: false, error: 'codex_account_list_unavailable' };
+  }
+  const active = payload.accounts.find((account) => account.active);
+  return {
+    ok: true,
+    accounts: payload.accounts,
+    active_key: active?.key ?? null
+  };
 }
 
 /**

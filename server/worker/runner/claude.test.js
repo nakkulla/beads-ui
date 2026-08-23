@@ -71,6 +71,45 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
     );
   });
 
+  test('wraps pinned argv with cswap while preserving env', () => {
+    const spec = claudeSpec({
+      env: { ROUTING_TOKEN: 'route' },
+      cswap_path: '/opt/bin/cswap'
+    });
+    const baseline = spec.buildArgv(BEAD, WS, { model: 'opus' });
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'opus',
+      claude_account: 'user@example.com'
+    });
+
+    expect(built.command).toBe('/opt/bin/cswap');
+    expect(built.args).toEqual([
+      'run',
+      'user@example.com',
+      '--share-history',
+      '--',
+      ...baseline.args
+    ]);
+    expect(built.env).toEqual(baseline.env);
+  });
+
+  test('keeps the unpinned argv unchanged', () => {
+    const spec = claudeSpec({ cswap_path: '/opt/bin/cswap' });
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'opus' });
+
+    expect(built.command).toBe('claude');
+    expect(built.args.slice(0, 6)).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--model',
+      'opus'
+    ]);
+  });
+
   test('exposes the verified detached process identity', () => {
     const spawn_impl = makeFixtureSpawn({
       pid: 5150,

@@ -5,6 +5,7 @@ import {
   __resetCacheForTest,
   createClaudeUsageHandler,
   invalidateCache,
+  listAccounts,
   normalizeClaudeUsage
 } from './claude-usage.js';
 
@@ -313,6 +314,7 @@ describe('claude account rows', () => {
       available: false,
       accounts: [
         {
+          key: 'user@example.com',
           number: 1,
           email: 'user@example.com',
           alias: null,
@@ -416,5 +418,43 @@ describe('claude usage cache invalidation', () => {
     await pending;
 
     expect(second.body).toMatchObject({ email: 'new@example.com' });
+  });
+});
+
+describe('claude account listing', () => {
+  test('returns normalized keys and the active key', async () => {
+    const runCswap = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify({
+        accounts: [
+          accountRow({ active: false, email: 'old@example.com' }),
+          accountRow({ number: 2, email: 'active@example.com' })
+        ]
+      }),
+      stderr: ''
+    });
+
+    const result = await listAccounts({ runCswap });
+
+    expect(result).toMatchObject({
+      ok: true,
+      active_key: 'active@example.com',
+      accounts: [{ key: 'active@example.com' }, { key: 'old@example.com' }]
+    });
+  });
+
+  test('returns an error when cswap fails', async () => {
+    const runCswap = vi.fn().mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: 'failed'
+    });
+
+    const result = await listAccounts({ runCswap });
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'claude_account_list_unavailable'
+    });
   });
 });

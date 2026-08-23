@@ -64,4 +64,17 @@ describe('runner/session spawn env inheritance (F2)', () => {
     expect(env.PATH).toBe(process.env.PATH);
     expect(env[COLLIDE]).toBe('from-process-env');
   });
+
+  test('passes an account-isolated CODEX_HOME to the child', async () => {
+    const spawn_impl = makeFixtureSpawn({ lines: [resultLine()] });
+    const runner = createRunner('claude', { spawn_impl });
+
+    await runner.spawn({ id: 'UI-3' }, WS, {
+      env: { CODEX_HOME: '/state/bdui/codex-homes/account' }
+    }).done;
+
+    expect(spawn_impl.captured.calls[0].options.env.CODEX_HOME).toBe(
+      '/state/bdui/codex-homes/account'
+    );
+  });
 });

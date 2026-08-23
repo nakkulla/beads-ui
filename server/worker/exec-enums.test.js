@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import * as enums from './exec-enums.js';
 import {
+  ACCOUNT_KEYS,
   BEAD_APPLY_KEYS,
   EXEC_SETTING_KEYS,
   IMPL_PRESET_KEYS,
@@ -38,6 +39,18 @@ const EXPECTED_KEYS = [
 ];
 
 describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
+  test('keeps account pins outside every preset and exec axis', () => {
+    expect(ACCOUNT_KEYS).toEqual(['claude_account', 'codex_account']);
+
+    for (const key of ACCOUNT_KEYS) {
+      expect(BEAD_APPLY_KEYS).not.toContain(key);
+      expect(WORKSPACE_KV_KEYS).not.toContain(key);
+      expect(IMPL_PRESET_KEYS).not.toContain(key);
+      expect(PRESET_KV_KEYS).not.toContain(key);
+      expect(EXEC_SETTING_KEYS).not.toContain(key);
+    }
+  });
+
   test('covers all 15 full-profile preset keys', () => {
     expect(IMPL_PRESET_KEYS).toHaveLength(15);
     expect(IMPL_PRESET_KEYS).toEqual([

@@ -469,6 +469,8 @@ function makeFakeBd(config) {
           c.orchestration_speed === null
             ? undefined
             : (c.orchestration_speed ?? undefined),
+        claude_account: c.claude_account ?? undefined,
+        codex_account: c.codex_account ?? undefined,
         spec_review_model: c.spec_review_model ?? undefined,
         impl_model: c.impl_model ?? undefined,
         workflow_mode: c.workflow_mode ?? null,
@@ -574,7 +576,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -655,6 +657,12 @@ function setup(opts) {
   const scheduler = createScheduler({
     store,
     makeRunner: opts.makeRunner || runner.factory,
+    accountCatalog: opts.accountCatalog,
+    resolveCswapPath: opts.resolveCswapPath,
+    prepareCodexAccountHome: opts.prepareCodexAccountHome,
+    codexAccountHomeDir: opts.codexAccountHomeDir,
+    codexRoot: opts.codexRoot,
+    homeDir: opts.homeDir,
     bd,
     worktree,
     verify,
@@ -755,6 +763,33 @@ function seedActiveDiscard(store, bead_id, attempt_id = null) {
       source_snapshot: { repo: '/repo', branch: bead_id }
     }
   });
+}
+
+/**
+ * @param {Record<string, unknown>} [overrides]
+ * @returns {any}
+ */
+function accountDeps(overrides = {}) {
+  return {
+    accountCatalog: {
+      resolveClaude: vi.fn(async (email) => ({
+        ok: true,
+        account: { key: email, email }
+      })),
+      resolveCodex: vi.fn(async (key) => ({
+        ok: true,
+        account: { key, email: 'codex@example.com' }
+      }))
+    },
+    resolveCswapPath: vi.fn(() => '/opt/bin/cswap'),
+    prepareCodexAccountHome: vi.fn(async ({ home_dir }) => ({
+      ok: true,
+      home_dir
+    })),
+    codexAccountHomeDir: vi.fn((key) => `/state/codex-homes/${key}`),
+    codexRoot: '/codex-root',
+    ...overrides
+  };
 }
 
 const COMPLETION_FAILURE = {
@@ -895,6 +930,50 @@ describe('scheduler completion repair dispatch', () => {
     expect(
       env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
     ).toBe(1);
+  });
+
+  test('applies current snapshot pins on a completion repair relaunch', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: {
+        B1: {
+          claude_account: 'repair@example.com',
+          codex_account: 'repair-codex'
+        }
+      },
+      gitRun: ownedGit(),
+      slots: 1,
+      ...deps
+    });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'account-repair-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'account-repair-attempt',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      attempt_id: 'account-repair-attempt'
+    });
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      claude_account: 'repair@example.com',
+      env: { CODEX_HOME: '/state/codex-homes/repair-codex' }
+    });
+    expect(
+      env.store.snapshot(WS).attempts['account-repair-attempt']
+    ).toMatchObject({
+      claude_account: 'repair@example.com',
+      codex_account: 'repair-codex'
+    });
   });
 
   test('admits a post-merge failure whose subject matches the merged sha', async () => {
@@ -3632,6 +3711,126 @@ describe('scheduler exec-setting global defaults (worker-global-exec-defaults §
   });
 });
 
+describe('scheduler launch account pins', () => {
+  test('applies one dispatch snapshot and records both account pins', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: {
+        B1: {
+          claude_account: 'claude@example.com',
+          codex_account: 'codex-key'
+        }
+      },
+      slots: 1,
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      claude_account: 'claude@example.com',
+      cswap_path: '/opt/bin/cswap',
+      env: { CODEX_HOME: '/state/codex-homes/codex-key' }
+    });
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      claude_account: 'claude@example.com',
+      codex_account: 'codex-key'
+    });
+    expect(deps.prepareCodexAccountHome).toHaveBeenCalledWith({
+      key: 'codex-key',
+      auth_file: path.join(
+        '/codex-root',
+        'accounts',
+        `${Buffer.from('codex-key').toString('base64url')}.auth.json`
+      ),
+      codex_root: '/codex-root',
+      home_dir: '/state/codex-homes/codex-key'
+    });
+  });
+
+  test('leaves a Claude pin unapplied on a Codex orchestration runner', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: {
+        B1: {
+          model: 'sol',
+          effort: 'high',
+          claude_account: 'claude@example.com',
+          codex_account: 'codex-key'
+        }
+      },
+      slots: 1,
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(deps.accountCatalog.resolveClaude).not.toHaveBeenCalled();
+    expect(env.runner.settingsFor('B1')).not.toHaveProperty('claude_account');
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      runner: 'codex',
+      claude_account: null,
+      codex_account: 'codex-key'
+    });
+  });
+
+  test.each([
+    'claude_account_unknown',
+    'claude_account_ambiguous',
+    'claude_account_list_unavailable',
+    'cswap_unavailable',
+    'codex_account_unknown',
+    'codex_account_list_unavailable',
+    'codex_home_prepare_failed'
+  ])('fails %s before spawning without account fallback', async (reason) => {
+    const claude_failure = reason.startsWith('claude_account_');
+    const codex_failure = reason.startsWith('codex_account_');
+    const deps = accountDeps();
+    if (claude_failure) {
+      deps.accountCatalog.resolveClaude.mockResolvedValue({
+        ok: false,
+        reason
+      });
+    }
+    if (codex_failure) {
+      deps.accountCatalog.resolveCodex.mockResolvedValue({ ok: false, reason });
+    }
+    if (reason === 'cswap_unavailable') {
+      deps.resolveCswapPath.mockReturnValue(null);
+    }
+    if (reason === 'codex_home_prepare_failed') {
+      deps.prepareCodexAccountHome.mockResolvedValue({
+        ok: false,
+        reason,
+        detail: 'auth_file_not_regular'
+      });
+    }
+    const is_codex = codex_failure || reason === 'codex_home_prepare_failed';
+    const env = setup({
+      config: {
+        B1: is_codex
+          ? { codex_account: 'codex-key' }
+          : { claude_account: 'claude@example.com' }
+      },
+      slots: 1,
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnOrder).toEqual([]);
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      status: 'failed',
+      cause: reason,
+      claude_account: null,
+      codex_account: null
+    });
+  });
+});
+
 describe('scheduler resume (spec §1)', () => {
   /**
    * Seed a terminal attempt directly into the store (no dispatch), so a resume
@@ -3825,6 +4024,44 @@ describe('scheduler resume (spec §1)', () => {
     expect(result.ok).toBe(true);
     expect(env.runner.cwdFor('B1')).toBe('/wt/B1');
     expect(env.runner.settingsFor('B1').resume_session_id).toBe('sid-abc');
+  });
+
+  test('applies current snapshot pins on a prior_session relaunch', async () => {
+    const deps = accountDeps();
+    const env = setup({
+      config: {
+        B1: {
+          status: 'open',
+          claude_account: 'current@example.com',
+          codex_account: 'current-codex'
+        }
+      },
+      slots: 1,
+      gitRun: ownedWorktreeGit(),
+      ...deps
+    });
+    seedAttempt(
+      env.store,
+      'account-prior',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+
+    const result = await env.scheduler.resume(WS, 'account-prior', {
+      continuation: 'prior_session'
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.settingsFor('B1')).toMatchObject({
+      resume_session_id: 'sid-abc',
+      claude_account: 'current@example.com',
+      env: { CODEX_HOME: '/state/codex-homes/current-codex' }
+    });
+    expect(
+      env.store.snapshot(WS).attempts[String(result.attempt_id)]
+    ).toMatchObject({
+      claude_account: 'current@example.com',
+      codex_account: 'current-codex'
+    });
   });
 
   test('binds a closed repo repair target and ends without a session', async () => {
@@ -4209,6 +4446,27 @@ describe('scheduler resume (spec §1)', () => {
       continuation_mismatch: {
         current: { runner: 'codex', effort: 'xhigh' }
       }
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('rejects a decision token after an account pin changes', async () => {
+    const config = {
+      B1: { model: 'sol', effort: 'high', codex_account: 'codex-one' }
+    };
+    const env = setup({ config, slots: 1 });
+    seedAttempt(env.store, 'account-digest', resumablePrior());
+    const mismatch = await env.scheduler.resume(WS, 'account-digest');
+    config.B1.codex_account = 'codex-two';
+
+    const result = await env.scheduler.resume(WS, 'account-digest', {
+      continuation: 'fresh_current',
+      decision_token: mismatch.continuation_mismatch.decision_token
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'continuation_decision_stale'
     });
     expect(env.runner.spawnOrder).toEqual([]);
   });

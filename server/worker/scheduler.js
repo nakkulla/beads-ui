@@ -45,10 +45,14 @@
  */
 import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
+import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
 import { observeBaseDrift } from './base-drift.js';
 import { observeClaudeEffort as defaultObserveClaudeEffort } from './claude-effort-observer.js';
+import { prepareCodexAccountHome as defaultPrepareCodexAccountHome } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
@@ -66,6 +70,7 @@ import {
 import { repairSessionPrompt } from './repair-session-adapter.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
+import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
 import * as default_usage_receipts from './usage-receipts.js';
 
 const log = debug('worker:scheduler');
@@ -302,6 +307,8 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {string} [effort] - orchestration_effort.
  * @property {string} [orchestration_speed] - Effective outer launch speed
  * (`default` or `fast`).
+ * @property {string} [claude_account] - Per-bead cswap email pin.
+ * @property {string} [codex_account] - Per-bead codex-auth account key pin.
  * @property {string} [spec_review_model] - spec_review_model (per-bead exec setting).
  * @property {string} [spec_review_effort] - spec_review_effort (per-bead exec setting).
  * @property {string} [impl_review_model] - impl_review_model (per-bead exec setting).
@@ -342,6 +349,12 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * preset before launch state changes, so the scheduler never reads mutable
  * preset/default state itself.
  * @property {(runner_name: string) => { name: string, spawn: (bead: any, workspace: string, settings: any) => RunnerHandle }} makeRunner
+ * @property {{ resolveClaude: (email: string) => Promise<any>, resolveCodex: (key: string) => Promise<any> }} [accountCatalog]
+ * @property {() => string|null} [resolveCswapPath]
+ * @property {typeof defaultPrepareCodexAccountHome} [prepareCodexAccountHome]
+ * @property {(key: string) => string} [codexAccountHomeDir]
+ * @property {string} [codexRoot]
+ * @property {string} [homeDir]
  * @property {{
  *   snapshotBead: (bead_id: string) => Promise<BeadSnapshot>,
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
@@ -1540,7 +1553,7 @@ export function createScheduler(deps) {
    *
    * @param {string} workspace
    * @param {BeadSnapshot} bead_snapshot
-   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any }|{ ok: false, reason: string }}
+   * @returns {{ ok: true, preset_id: string|null, preset_revision: number|null, settings: Readonly<Record<string, string>>, exec: any, accounts: { claude: string|null, codex: string|null } }|{ ok: false, reason: string }}
    */
   function resolveDispatchSettings(workspace, bead_snapshot) {
     if (
@@ -1553,13 +1566,112 @@ export function createScheduler(deps) {
       };
     }
     try {
-      return deps.execPresetCoordinator.resolveForDispatch(
+      const resolved = deps.execPresetCoordinator.resolveForDispatch(
         workspace,
         bead_snapshot
       );
+      if (!resolved.ok) {
+        return resolved;
+      }
+      return {
+        ...resolved,
+        accounts: {
+          claude:
+            typeof bead_snapshot.claude_account === 'string'
+              ? bead_snapshot.claude_account
+              : null,
+          codex:
+            typeof bead_snapshot.codex_account === 'string'
+              ? bead_snapshot.codex_account
+              : null
+        }
+      };
     } catch {
       return { ok: false, reason: 'default_exec_preset_resolution_failed' };
     }
+  }
+
+  /**
+   * Resolve pins and prepare launch-only account settings without fallback.
+   *
+   * @param {{ claude: string|null, codex: string|null }} accounts
+   * @param {string} runner_name
+   */
+  async function resolveLaunchAccounts(accounts, runner_name) {
+    /** @type {{ claude_account: string|null, codex_account: string|null, cswap_path?: string, env?: Record<string, string> }} */
+    const applied = { claude_account: null, codex_account: null };
+    if (accounts.claude !== null && runner_name === 'claude') {
+      if (!deps.accountCatalog) {
+        return { ok: false, reason: 'claude_account_list_unavailable' };
+      }
+      let claude;
+      try {
+        claude = await deps.accountCatalog.resolveClaude(accounts.claude);
+      } catch {
+        return { ok: false, reason: 'claude_account_list_unavailable' };
+      }
+      if (!claude.ok) {
+        return claude;
+      }
+      const cswap_path = (deps.resolveCswapPath || defaultResolveCswapPath)();
+      if (!cswap_path) {
+        return { ok: false, reason: 'cswap_unavailable' };
+      }
+      applied.claude_account = accounts.claude;
+      applied.cswap_path = cswap_path;
+    }
+
+    if (accounts.codex !== null) {
+      if (!deps.accountCatalog) {
+        return { ok: false, reason: 'codex_account_list_unavailable' };
+      }
+      let codex;
+      try {
+        codex = await deps.accountCatalog.resolveCodex(accounts.codex);
+      } catch {
+        return { ok: false, reason: 'codex_account_list_unavailable' };
+      }
+      if (!codex.ok) {
+        return codex;
+      }
+      const home_dir = deps.homeDir || os.homedir();
+      const process_codex_root = process.env.CODEX_HOME;
+      const codex_root =
+        deps.codexRoot ||
+        (typeof process_codex_root === 'string' && process_codex_root.length > 0
+          ? process_codex_root
+          : path.join(home_dir, '.codex'));
+      const encoded_key = Buffer.from(accounts.codex, 'utf8').toString(
+        'base64url'
+      );
+      const auth_file = path.join(
+        codex_root,
+        'accounts',
+        `${encoded_key}.auth.json`
+      );
+      const account_home_dir = (
+        deps.codexAccountHomeDir || defaultCodexAccountHomeDir
+      )(accounts.codex);
+      const prepared = await (
+        deps.prepareCodexAccountHome || defaultPrepareCodexAccountHome
+      )({
+        key: accounts.codex,
+        auth_file,
+        codex_root,
+        home_dir: account_home_dir
+      });
+      if (!prepared.ok) {
+        log(
+          'codex account HOME preparation failed: %s (%s)',
+          prepared.detail,
+          account_home_dir
+        );
+        return prepared;
+      }
+      applied.codex_account = accounts.codex;
+      applied.env = { CODEX_HOME: prepared.home_dir };
+    }
+    return { ok: true, ...applied };
   }
 
   /**
@@ -4616,6 +4728,7 @@ export function createScheduler(deps) {
         model: exec.orchestration_model ?? null,
         effort: exec.orchestration_effort ?? null,
         speed: exec.orchestration_speed ?? 'default',
+        accounts: resolved_exec.accounts,
         quickfix_lane,
         prior_wf: prior,
         stamped_keys,
@@ -5011,6 +5124,7 @@ export function createScheduler(deps) {
    *   model: string|null,
    *   effort: string|null,
    *   speed: string,
+   *   accounts: { claude: string|null, codex: string|null },
    *   prior_wf: string|null,
    *   stamped_keys: string[],
    *   wt_path: string,
@@ -5040,6 +5154,7 @@ export function createScheduler(deps) {
       model,
       effort,
       speed,
+      accounts = { claude: null, codex: null },
       prior_wf,
       wt_path,
       spawnBead,
@@ -5166,6 +5281,23 @@ export function createScheduler(deps) {
       return { ok: false, reason: 'worktree_missing' };
     }
 
+    deps.store.updateAttempt(workspace, {
+      attempt_id,
+      patch: { claude_account: null, codex_account: null }
+    });
+    const account_settings = await resolveLaunchAccounts(accounts, runner_name);
+    if (!account_settings.ok) {
+      await finalizeLaunchRefusal(input, account_settings.reason, false);
+      return { ok: false, reason: account_settings.reason };
+    }
+    if (account_settings.claude_account !== null) {
+      settings.claude_account = account_settings.claude_account;
+      settings.cswap_path = account_settings.cswap_path;
+    }
+    if (account_settings.env) {
+      settings.env = { ...(settings.env || {}), ...account_settings.env };
+    }
+
     /** @type {RunnerHandle} */
     let handle;
     try {
@@ -5217,6 +5349,8 @@ export function createScheduler(deps) {
         model: model ?? null,
         effort: effort ?? null,
         speed,
+        claude_account: account_settings.claude_account,
+        codex_account: account_settings.codex_account,
         ...prompt_patch
       }
     });
@@ -6098,6 +6232,7 @@ export function createScheduler(deps) {
       model: launch_model,
       effort: launch_effort,
       speed: launch_speed,
+      accounts: resolved_exec.accounts,
       prior_wf: prior,
       stamped_keys,
       wt_path:
@@ -6189,7 +6324,8 @@ export function createScheduler(deps) {
         model: resolved.exec.orchestration_model ?? null,
         effort: resolved.exec.orchestration_effort ?? null,
         speed: resolved.exec.orchestration_speed ?? 'default',
-        exec_values: current_exec_values
+        exec_values: current_exec_values,
+        accounts: resolved.accounts
       })
     };
     const runner_mismatch = prior_runner !== resolved.exec.runner;
@@ -6313,6 +6449,7 @@ export function createScheduler(deps) {
       launch_effort,
       launch_speed,
       exec_values,
+      accounts: resolved.accounts,
       exec_restore_values,
       stamped_keys,
       decision_token,
@@ -6459,6 +6596,7 @@ export function createScheduler(deps) {
       launch_effort,
       launch_speed,
       exec_values,
+      accounts,
       exec_restore_values,
       stamped_keys,
       preset_id,
@@ -6686,6 +6824,7 @@ export function createScheduler(deps) {
       model: launch_model,
       effort: launch_effort,
       speed: launch_speed,
+      accounts,
       prior_wf,
       stamped_keys,
       wt_path,
@@ -7048,6 +7187,8 @@ export function createScheduler(deps) {
     let stamped_keys;
     /** @type {Record<string, string|null>|null} */
     let exec_values;
+    /** @type {{ claude: string|null, codex: string|null }} */
+    let accounts;
     /** @type {string|null} */
     let preset_id;
     /** @type {number|null} */
@@ -7101,6 +7242,7 @@ export function createScheduler(deps) {
       launch_speed = continuation.launch_speed;
       stamped_keys = continuation.stamped_keys;
       exec_values = continuation.exec_values;
+      accounts = continuation.accounts;
       exec_restore_values = continuation.exec_restore_values;
       preset_id = continuation.preset_id;
       preset_revision = continuation.preset_revision;
@@ -7137,6 +7279,7 @@ export function createScheduler(deps) {
       launch_speed = exec.orchestration_speed ?? 'default';
       stamped_keys = exec.stamped_keys;
       exec_values = execValuesFor(exec);
+      accounts = resolved_exec.accounts;
       const restore_capture = await captureExecRestoreValues(
         bead_id,
         stamped_keys
@@ -7332,6 +7475,7 @@ export function createScheduler(deps) {
       model: launch_model,
       effort: launch_effort,
       speed: launch_speed,
+      accounts,
       prior_wf,
       stamped_keys,
       wt_path,

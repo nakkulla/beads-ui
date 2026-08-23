@@ -12,6 +12,7 @@
  *
  * @import { AdapterSpec, RunnerEvent, RunnerHandle, EngineDeps } from './session.js'
  */
+import { resolveCswapPath } from '../../routes/claude-usage.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
 
@@ -279,7 +280,7 @@ function verdict(ctx) {
 /**
  * Build the claude adapter spec.
  *
- * @param {{ env?: Record<string, string|undefined> }} [options]
+ * @param {{ env?: Record<string, string|undefined>, cswap_path?: string|null }} [options]
  * @returns {AdapterSpec}
  */
 export function claudeSpec(options = {}) {
@@ -346,9 +347,23 @@ export function claudeSpec(options = {}) {
       // path records what was ACTUALLY sent (UI-rxp3 §3) — the recording reads
       // this one assembly rather than repeating it, which is what makes the two
       // incapable of drifting.
+      const claude_account =
+        typeof s.claude_account === 'string' && s.claude_account.length > 0
+          ? s.claude_account
+          : null;
+      const cswap_path = claude_account
+        ? typeof s.cswap_path === 'string' && s.cswap_path.length > 0
+          ? s.cswap_path
+          : options.cswap_path || resolveCswapPath()
+        : null;
+      if (claude_account && !cswap_path) {
+        throw new Error('cswap_unavailable');
+      }
       return {
-        command: 'claude',
-        args,
+        command: cswap_path || 'claude',
+        args: claude_account
+          ? ['run', claude_account, '--share-history', '--', ...args]
+          : args,
         env: { CLAUDE_HOOK_SUPPRESS: '1', ...routing_env },
         system_prompt,
         task_prompt

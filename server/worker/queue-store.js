@@ -62,6 +62,10 @@
  * the runner's own session file (Claude project JSONL / Codex rollout). Null
  * for legacy attempts and runners without an observer.
  * @property {string|null} speed - Orchestration service tier snapshot.
+ * @property {string|null} claude_account - Claude account email applied to the
+ * launch, or null when the runner did not apply a Claude pin.
+ * @property {string|null} codex_account - Codex account key applied to the
+ * launch, or null when no Codex pin was applied.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.
  * @property {{ pinned?: string, observed?: string, landed?: boolean, via?: string, shas?: string[], pushed?: string[], inherited?: string[], skipped?: string, error?: string }|null} base_drift -
@@ -1940,6 +1944,10 @@ export function makeAttempt(fields) {
         ? fields.observed_effort
         : null,
     speed: typeof fields.speed === 'string' ? fields.speed : null,
+    claude_account:
+      typeof fields.claude_account === 'string' ? fields.claude_account : null,
+    codex_account:
+      typeof fields.codex_account === 'string' ? fields.codex_account : null,
     exit: fields.exit ?? null,
     verify_result: fields.verify_result ?? null,
     base_drift: isRecord(fields.base_drift)

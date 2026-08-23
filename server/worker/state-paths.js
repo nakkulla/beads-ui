@@ -150,6 +150,17 @@ export function execPresetsFilePath() {
 }
 
 /**
+ * Absolute account-isolated Codex HOME for one durable account key.
+ *
+ * @param {string} key
+ * @returns {string} `$XDG_STATE_HOME/bdui/codex-homes/<base64url(key)>`.
+ */
+export function codexAccountHomeDir(key) {
+  const encoded_key = Buffer.from(key, 'utf8').toString('base64url');
+  return path.join(stateHome(), 'bdui', 'codex-homes', encoded_key);
+}
+
+/**
  * Absolute directory that holds a workspace's full verify-run output logs
  * (UI-0x54). Shares the per-workspace state dir with the queue file so a verify
  * failure's evidence outlives the detached worktree the run happened in — that

@@ -36,10 +36,13 @@ import { runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
+import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
+import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createRuntimeIdentity } from '../runtime-identity.js';
 import { resolveSpecId } from '../spec-id.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
+import { createAccountCatalog } from './account-catalog.js';
 import { validateAdmission } from './admission.js';
 import { createAutoAdvanceRestoreController } from './auto-advance-restore.js';
 import { createAutoMerge } from './auto-merge.js';
@@ -293,6 +296,10 @@ export function createLiveBd(config) {
           typeof md.orchestration_speed === 'string'
             ? md.orchestration_speed
             : undefined,
+        claude_account:
+          typeof md.claude_account === 'string' ? md.claude_account : undefined,
+        codex_account:
+          typeof md.codex_account === 'string' ? md.codex_account : undefined,
         // The per-step exec keys (dotfiles-mqcj). They reach `policy.js` only
         // through this snapshot, so the bead-over-global layering and the
         // stamp/revert duty both depend on every one of them being read here.
@@ -406,6 +413,7 @@ export function defaultProbePid(pid) {
  *   verify?: any,
  *   gh?: any,
  *   makeRunner?: (name: string) => any,
+ *   accountCatalog?: ReturnType<typeof createAccountCatalog>,
  *   spawn_impl?: (command: string, args: string[], options: any) => any,
  *   kill_impl?: (pid: number, signal?: NodeJS.Signals|number) => void,
  *   probePid?: (pid: number|null) => { alive: boolean, started_at: number|null },
@@ -667,6 +675,12 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         kill_impl: options.kill_impl,
         ...(processController ? { process_controller: processController } : {})
       }));
+  const accountCatalog =
+    options.accountCatalog ||
+    createAccountCatalog({
+      listClaude: listClaudeAccounts,
+      listCodex: listCodexAccounts
+    });
 
   // The outward attempt-lifecycle push (UI-2yoq). Config is read per call, so a
   // machine that never opted into `[worker.notify]` pushes nothing and a toggle
@@ -719,6 +733,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     store: runtime.queueStore,
     execPresetCoordinator: runtime.execPresetCoordinator,
     makeRunner,
+    accountCatalog,
     bd,
     worktree,
     verify,

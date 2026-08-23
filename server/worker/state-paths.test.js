@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
+  codexAccountHomeDir,
   delegationMonitorDir,
   delegationMonitorRootDir,
   discardBackupDir,
@@ -111,6 +112,24 @@ describe('execPresetsFilePath', () => {
     expect(execPresetsFilePath()).toBe(
       path.join('/state', 'bdui', 'exec-presets.json')
     );
+  });
+});
+
+describe('codexAccountHomeDir', () => {
+  test('encodes the account key as unpadded base64url', () => {
+    const key = 'acct/+=';
+
+    const result = codexAccountHomeDir(key);
+
+    expect(result).toBe(
+      path.join(
+        '/state',
+        'bdui',
+        'codex-homes',
+        Buffer.from(key).toString('base64url')
+      )
+    );
+    expect(path.basename(result)).not.toMatch(/[+/=]/);
   });
 });
 

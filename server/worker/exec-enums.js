@@ -126,6 +126,9 @@ export const BEAD_APPLY_KEYS = [
   'impl_speed'
 ];
 
+/** Worker-only per-bead account pins, intentionally outside every preset axis. */
+export const ACCOUNT_KEYS = ['claude_account', 'codex_account'];
+
 /**
  * The 12 keys that may be STORED workspace-wide through
  * `bd kv workflow_session_defaults` (dotfiles `workflow.yaml

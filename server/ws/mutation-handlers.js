@@ -6,6 +6,7 @@ import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
 import { sharedVisibleWorkspacesStore } from '../visible-workspaces-store.js';
 import {
+  ACCOUNT_KEYS,
   AUTO_LITERAL,
   execSettingEnums,
   sessionDefaultEnums,
@@ -300,6 +301,15 @@ export function buildImplTargetArgs(id, target) {
  * @returns {string | null}
  */
 function validateExecSetting(key, value) {
+  if (ACCOUNT_KEYS.includes(key)) {
+    if (value === '') {
+      return null;
+    }
+    if (value.length > 256 || /\s/.test(value)) {
+      return `invalid value for ${key}: ${value}`;
+    }
+    return null;
+  }
   const enums = execSettingEnumsForBead();
   if (!Object.prototype.hasOwnProperty.call(enums, key)) {
     return `unknown exec-setting key: ${key}`;
