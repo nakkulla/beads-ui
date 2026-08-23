@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createSessionLogStore } from '../../data/session-log-store.js';
 import { createSubscriptionIssueStores } from '../../data/subscription-issue-stores.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
@@ -7,6 +7,10 @@ import { createDetailPanel } from './index.js';
 describe('views/detail-panel', () => {
   beforeEach(() => {
     document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   test('renders id / title / status from the detail snapshot store', () => {
@@ -111,6 +115,95 @@ describe('views/detail-panel', () => {
     updated_at: 1700000000000,
     created_at: 1700000000000
   };
+
+  test('loads each account catalog once per open issue and refreshes after reopen', async () => {
+    const fetchMock = vi.fn((/** @type {string} */ url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({ available: false, accounts: [], endpoint: url })
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const panel = createDetailPanel(mount, { onClose: vi.fn() });
+
+    panel.load('UI-accounts');
+    panel.load('UI-accounts');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    panel.clear();
+    panel.load('UI-accounts');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      '/api/claude-usage',
+      '/api/codex-usage',
+      '/api/claude-usage',
+      '/api/codex-usage'
+    ]);
+    panel.destroy();
+  });
+
+  test('sends selected account through update-exec-settings', async () => {
+    const fetchMock = vi.fn((url) =>
+      Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            available: false,
+            accounts:
+              url === '/api/claude-usage'
+                ? [
+                    {
+                      key: 'claude@example.com',
+                      email: 'claude@example.com',
+                      active: true,
+                      status: 'ok'
+                    }
+                  ]
+                : [
+                    {
+                      key: 'codex-key',
+                      email: 'codex@example.com',
+                      plan: 'team',
+                      active: true,
+                      status: 'ok'
+                    }
+                  ]
+          })
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const transport = vi.fn((/** @type {string} */ type) =>
+      Promise.resolve(type === 'get-session-defaults' ? { values: {} } : [])
+    );
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      { ...baseIssue, metadata: {} },
+      /** @type {any} */ (transport)
+    );
+    await vi.waitFor(() =>
+      expect(
+        mount.querySelector(
+          'select[data-exec-key="codex_account"] option[value="codex-key"]'
+        )
+      ).not.toBe(null)
+    );
+    const select = /** @type {HTMLSelectElement} */ (
+      mount.querySelector('select[data-exec-key="codex_account"]')
+    );
+
+    select.value = 'codex-key';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('update-exec-settings', {
+      id: 'UI-1',
+      key: 'codex_account',
+      value: 'codex-key'
+    });
+    panel.destroy();
+  });
 
   test('workflow detail separates normalized plan review and approval', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));

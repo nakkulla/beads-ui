@@ -21,6 +21,7 @@ import {
   buildImplPresetApplyPayload,
   buildThreeStatePayload
 } from './effective-settings.js';
+import { execAccountsTemplate } from './exec-accounts.js';
 import {
   EXEC_KEYS,
   modelRunnerOf,
@@ -102,6 +103,11 @@ export function createDetailPanel(mount_element, options) {
    * @type {Record<string, string>}
    */
   let session_defaults = {};
+  /** @type {{ claude: { accounts: any[], active: any }|null, codex: { accounts: any[], active: any }|null }} */
+  let exec_account_catalog = { claude: null, codex: null };
+  /** @type {string|null} */
+  let exec_account_catalog_loaded_for = null;
+  let exec_account_catalog_request_seq = 0;
 
   // Inline edit state. These live in the closure (not derived from `current`),
   // so an incoming subscription push re-render never wipes an open editor or the
@@ -118,6 +124,63 @@ export function createDetailPanel(mount_element, options) {
     title_draft = '';
     desc_draft = '';
     label_draft = '';
+  }
+
+  function resetExecAccountCatalog() {
+    exec_account_catalog = { claude: null, codex: null };
+    exec_account_catalog_loaded_for = null;
+    exec_account_catalog_request_seq += 1;
+  }
+
+  /**
+   * @param {string} endpoint
+   * @returns {Promise<{ accounts: any[], active: any }|null>}
+   */
+  async function fetchExecAccountProvider(endpoint) {
+    try {
+      const response = await fetch(endpoint);
+      if (!response.ok) {
+        return null;
+      }
+      const payload = await response.json();
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        !Array.isArray(payload.accounts)
+      ) {
+        return null;
+      }
+      const accounts = payload.accounts.filter(
+        (/** @type {unknown} */ row) =>
+          row !== null && typeof row === 'object' && !Array.isArray(row)
+      );
+      return {
+        accounts,
+        active:
+          accounts.find(
+            (/** @type {any} */ account) => account.active === true
+          ) || null
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * @param {string} id
+   */
+  async function loadExecAccountCatalog(id) {
+    exec_account_catalog_loaded_for = id;
+    const seq = ++exec_account_catalog_request_seq;
+    const [claude, codex] = await Promise.all([
+      fetchExecAccountProvider('/api/claude-usage'),
+      fetchExecAccountProvider('/api/codex-usage')
+    ]);
+    if (seq !== exec_account_catalog_request_seq || id !== current_id) {
+      return;
+    }
+    exec_account_catalog = { claude, codex };
+    doRender();
   }
 
   // Comments state (UI-ucq6 §변경 3). Comments do not ride the issue snapshot,
@@ -1811,6 +1874,11 @@ export function createDetailPanel(mount_element, options) {
               onPresetApply: () => void applyImplPreset()
             }
           )}
+          ${execAccountsTemplate({
+            md: effective.metadata,
+            catalog: exec_account_catalog,
+            handlers: { onExecChange }
+          })}
           ${propsTemplate(status, priority_val)} ${timesTemplate(data)}
           ${descTemplate(description)}
           ${commentsTemplate(comments, comment_handlers, {
@@ -1857,11 +1925,15 @@ export function createDetailPanel(mount_element, options) {
         resetEditors();
         resetComments();
         resetTaskPrompt();
+        resetExecAccountCatalog();
       }
       current_id = id;
       current = null;
       refreshFromStore();
       void loadSessionDefaults();
+      if (exec_account_catalog_loaded_for !== id) {
+        void loadExecAccountCatalog(id);
+      }
     },
     clear() {
       current_id = null;
@@ -1874,6 +1946,7 @@ export function createDetailPanel(mount_element, options) {
       resetEditors();
       resetComments();
       resetTaskPrompt();
+      resetExecAccountCatalog();
       md_viewer.close();
       transcript_drawer.close();
       render(html``, mount_element);
@@ -1902,6 +1975,7 @@ export function createDetailPanel(mount_element, options) {
       }
       current_id = null;
       current = null;
+      resetExecAccountCatalog();
       selected_preset_id = '';
       applying_preset = false;
       skipped_orchestration_keys = [];
