@@ -6,6 +6,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { checkHealth } from './health.js';
 import { registerWorkspace } from './registry-watcher.js';
+import {
+  claudeAccountSwitchHandler,
+  codexAccountSwitchHandler
+} from './routes/account-switch.js';
 import { claudeUsageHandler } from './routes/claude-usage.js';
 import { codexUsageHandler } from './routes/codex-usage.js';
 import { docHandler } from './routes/doc.js';
@@ -93,6 +97,10 @@ export function createApp(config) {
 
   // Fail-quiet Codex usage snapshot from the versioned codex-auth contract.
   app.get('/api/codex-usage', codexUsageHandler);
+
+  // Switch the active account of one provider from the usage card.
+  app.post('/api/claude-account/switch', claudeAccountSwitchHandler);
+  app.post('/api/codex-account/switch', codexAccountSwitchHandler);
 
   // Register workspace endpoint - allows CLI to register workspaces dynamically
   // when the server is already running
