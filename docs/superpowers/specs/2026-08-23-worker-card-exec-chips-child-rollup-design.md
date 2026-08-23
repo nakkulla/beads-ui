@@ -133,22 +133,34 @@ export function formatWorkerChip(rows, controller_runtime)           // 세 표�
 ```js
 /** @type {Record<string, string>} */ let session_defaults = {};
 /** @type {string|null} */            let session_defaults_key = null;   // 값이 속한 workspace path
-let session_defaults_stale = true;
-/** @type {Promise<void>|null} */     let session_defaults_inflight = null;
+let session_defaults_generation = 0;       // refresh/전환마다 +1; 늦게 온 응답을 버리는 기준
+/** @type {{ key: string, generation: number }|null} */ let session_defaults_inflight = null;
 ```
 
-- `ensureSessionDefaults()`: `key = getWorkspacePath?.() || ''`. `!stale &&
-  key === session_defaults_key`이면 즉시 반환; in-flight가 있으면 반환;
-  `transport`가 없으면 반환. 아니면 `transport('get-session-defaults', {})`를
-  호출해 `res.values`가 객체면 `session_defaults = { ...res.values }`, 아니면
-  `{}`; 성공·실패 모두 `session_defaults_key = key`, `stale = false`로 두고
+- `sessionDefaultsFor(key)`: `session_defaults_key === key`이면
+  `session_defaults`, 아니면 `{}`. 렌더(§2.2)는 항상 이 함수로 읽는다 — 다른
+  workspace의 값이 새 workspace 렌더에 쓰이는 일이 없다.
+- `ensureSessionDefaults()`: `key = getWorkspacePath?.() || ''`. (1)
+  `transport`가 없으면 반환. (2) `session_defaults_key === key`이면 반환(이미
+  이 workspace의 값을 들고 있다; `refreshSessionDefaults()`는 key를 `null`로
+  지워 이 조건을 깨뜨린다). (3) in-flight가 있고 그 `key`가 같고 `generation
+  === session_defaults_generation`이면 반환(같은 요청이 이미 진행 중). (4) 그
+  외에는 `generation = ++session_defaults_generation`, `inflight = { key,
+  generation }`로 두고 `transport('get-session-defaults', {})`를 호출한다 —
+  따라서 전환·refresh가 진행 중 요청과 겹치면 새 요청이 즉시 나간다. 응답
+  (성공·실패) 처리 시 `generation !== session_defaults_generation`이면
+  **버린다**(늦게 온 이전 workspace·이전 refresh의 응답은 캐시도 `inflight`도
+  건드리지 못한다). 최신이면 `session_defaults = res.values가 객체면
+  { ...res.values } 아니면 {}`, `session_defaults_key = key`, `inflight = null`,
   `doRender()`. 실패는 `debug` 로그만 남기고 전역 레이어 없이 해석한다
   (fail-quiet; 다음 갱신 시점에 재시도).
-- `refreshSessionDefaults()` (공개 API): `stale = true` 후
+- `refreshSessionDefaults()` (공개 API): `session_defaults_key = null`,
+  `session_defaults_generation += 1`(진행 중 요청 무효화) 후
   `void ensureSessionDefaults()`.
 - `load()`: 기존 `doRender()` 앞에 `void ensureSessionDefaults()`. `load()`는
-  라우트가 Worker일 때 store 변경마다 호출되므로 위 key/stale 가드가 중복 요청을
-  막는다. 워크스페이스 전환은 key 불일치로 감지된다.
+  라우트가 Worker일 때 store 변경마다 호출되므로 위 key/in-flight 가드가 중복
+  요청을 막는다. 워크스페이스 전환은 key 불일치로 감지되고, 전환 직후 렌더는
+  `sessionDefaultsFor(new_key) === {}`로 이전 값을 쓰지 않는다.
 - `app/main.js`: 설정 다이얼로그 `onOpenChange`에서 `open === false`일 때
   `worker_view.refreshSessionDefaults()`를 호출한다(전역 기본값·전역 프리셋
   적용은 이 다이얼로그에서만 일어난다). `worker_view`는 다이얼로그보다 뒤에
@@ -171,8 +183,12 @@ function execRowsFor(bead_id, controller_runtime)
 - 있으면 `resolveExecutionSettings({ pin: issue.metadata ?? {}, global:
   { ...session_defaults, ...큐 스냅샷의 orchestration_model/effort/speed(문자열인
   것만) }, execution_defaults: q.execution_defaults ?? null, runner_catalog:
-  q.runner_catalog ?? null, route: metadata.route(문자열) ?? null,
-  controller_runtime })`. 이 입력 조립은 상세 패널 `execDefaults()`/
+  q.runner_catalog ?? null, route, controller_runtime })`. `route`는 서버
+  enrichment의 `issue.workflow.route`가 `quick_fix|spec_backed|full_plan` 중
+  하나이면 그것을, 아니면 `metadata.route`(같은 세 값 중 하나일 때)를, 둘 다
+  없으면 `null`을 쓴다 — Board 카드가 보여주는 route(파생 포함)와 같은 값이어야
+  `impl_dispatch`의 route 기본값(`quick_fix → main`)이 칩에도 같은 답으로
+  나온다. 나머지 입력 조립은 상세 패널 `execDefaults()`/
   `effectiveSettingsCardTemplate`와 같은 규칙이다.
 
 | 표면 | `orchestration` | `worker` | `controller_runtime` |
@@ -288,7 +304,8 @@ Worker 뷰 `onClick` 위임: `.rtile` 기본 클릭(이슈 상세) 분기보다 
 `lanes.js`에 `export function execChipsTemplate(chips)`를 둔다: `chips`가
 null이거나 두 칩이 모두 null이면 `''`; 아니면 각 칩을
 `<span class="exec-chip exec-chip--orch|--worker" title=${chip.title}><span
-class="exec-chip__k">오케|워커</span>${chip.text}</span>`으로 그린다.
+class="exec-chip__k">오케|워커</span><span class="exec-chip__v">${chip.text}</span></span>`
+으로 그린다.
 
 | 표면 | 위치 |
 |---|---|
@@ -301,19 +318,23 @@ class="exec-chip__k">오케|워커</span>${chip.text}</span>`으로 그린다.
 CSS(`app/styles.css` Worker 섹션):
 
 ```css
-.exec-chip { display: inline-flex; align-items: baseline; gap: var(--sp-3); min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.exec-chip { display: inline-flex; align-items: baseline; gap: var(--sp-3); min-width: 0; max-width: 100%; }
 .exec-chip__k { flex: 0 0 auto; font-size: var(--fs-chip); color: var(--text-dim); }   /* 접두 라벨은 본문보다 한 단계 흐리게 */
+.exec-chip__v { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }  /* 칩은 한 줄: 넘치면 말줄임, 전체는 title */
 .worker-mini__exec { display: flex; flex-wrap: wrap; gap: var(--sp-6); font-size: var(--fs-caption); color: var(--text-muted); }
 .worker-card .worker-mini__exec { margin-top: var(--sp-4); }
 .rtile .board-card__roll { border-top: none; margin-top: var(--sp-4); padding-top: 0; }  /* 타일 안에서는 footer가 아니라 한 줄 */
 ```
 
 `.rtile__meta`의 색·크기(`--fs-chip-lg`, `--text-dim`)는 `.exec-chip`이
-상속한다. 종전 `.rtile__runner` 규칙(긴 토큰 보호: `min-width: 0`,
-`max-width: 100%`, `overflow-wrap: anywhere`)은 `.exec-chip`으로 옮기고
-`.rtile__runner`·`.rtile__child` 규칙은 지운다;
-`app/styles.worker-theme.test.js`의 해당 테스트도 `.exec-chip`을 보게 옮긴다.
-모바일 한 열 레이아웃에서 칩은 줄바꿈만 한다(추가 규칙 없음).
+상속한다. 종전 `.rtile__runner` 규칙(긴 토큰 보호)은 `.exec-chip`의
+`min-width: 0; max-width: 100%`와 `.exec-chip__v`의 `white-space: nowrap;
+overflow: hidden; text-overflow: ellipsis`가 대신한다(줄바꿈이 아니라
+말줄임 — 칩은 한 줄, 전체 값은 `title`에 있다). `.rtile__runner`·`.rtile__child`
+규칙은 지우고, `app/styles.worker-theme.test.js`의 `.rtile__runner` 테스트는
+`.exec-chip`(`min-width: 0`, `max-width: 100%`)과 `.exec-chip__v`
+(`white-space: nowrap`, `text-overflow: ellipsis`)를 단언하게 바꾼다. 모바일 한
+열 레이아웃에서 칩들은 meta 줄 안에서 줄바꿈되고 각 칩은 여전히 한 줄이다.
 
 ### 5. 오류 처리·fail-quiet 정리
 
@@ -354,15 +375,20 @@ CSS(`app/styles.css` Worker 섹션):
   한 줄·카드 변형과 후보 카드의 `.worker-mini__exec` 위치; 완료 행·PR 대기 행
   미표시.
 - `app/views/worker/index.test.js`: `load()` 시 `get-session-defaults` 1회 호출과
-  중복 호출 억제; `refreshSessionDefaults()`·workspace key 변경 시 재호출; 응답
-  실패 fail-quiet; 전역값이 워커 칩에 반영(핀 > 전역 > 기본); 이슈 없는 bead
+  중복 호출 억제; `refreshSessionDefaults()`·workspace key 변경 시 재호출; 진행
+  중 요청과 겹친 workspace 전환/refresh에서 늦게 온 이전 응답이 버려지고 새
+  요청이 보장되며 전환 직후 렌더가 이전 workspace 값을 쓰지 않음; 응답 실패
+  fail-quiet; `workflow.route`가 파생 `quick_fix`인 bead(metadata.route 없음)의
+  워커 칩이 `메인`; 전역값이 워커 칩에 반영(핀 > 전역 > 기본); 이슈 없는 bead
   칩 생략; resolved 구독 포함 인덱스로 `children N/M`; 타일 토글 클릭이 상세를
   열지 않고 펼침을 토글; child 행 클릭이 `gotoIssue(child)`; ghost 행 칩 없음;
   기존 `.rtile__child` 단언은 `.board-card__roll-current`로 옮긴다.
 - `app/views/board/card.test.js`·`app/views/board/index.test.js`: 기존 테스트
   무수정 통과(동작·DOM 불변 증거).
-- `app/main.*.test.js`: 기존 통과; 설정 다이얼로그 닫힘 → Worker 뷰 갱신은
-  `worker/index.test.js`의 공개 API 테스트로 덮고 main 쪽은 배선 한 줄이다.
+- `app/main.exec-presets.test.js`: 새 케이스 — `#/worker` 라우트에서 ⚙ 다이얼로그를
+  열었다 닫으면 `CLIENT.sent`에 `get-session-defaults` 요청이 (닫기 전 대비)
+  하나 더 기록된다(설정 다이얼로그 닫힘 → `worker_view.refreshSessionDefaults()`
+  배선의 통합 증거). 그 외 `app/main.*.test.js`는 기존 통과.
 
 ## 수동 관측 (advisory)
 
