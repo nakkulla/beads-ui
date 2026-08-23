@@ -4107,12 +4107,50 @@ html[data-theme='dark'] {
   color: var(--text-dim);
 }
 
-/* runner·model은 왼쪽에, 토큰은 오른쪽 끝에 — 좁은 타일에서는 둘 다 다음 줄로
-   내려가므로 생략하지 않는다. */
-.rtile__runner {
+/* --- 실행 설정 칩 (worker-card-exec-chips §4) --- */
+
+/* 칩은 한 줄이다: 넘치면 말줄임하고 전체 값은 `title`이 들고 있다. 색·크기는
+   담는 줄(`.rtile__meta`·`.worker-mini__exec`)에서 상속한다. */
+.exec-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-3);
   min-width: 0;
   max-width: 100%;
-  overflow-wrap: anywhere;
+}
+
+/* 접두 라벨은 본문보다 한 단계 흐리게 — 값이 읽히는 것이 먼저다. */
+.exec-chip__k {
+  flex: 0 0 auto;
+  font-size: var(--fs-chip);
+  color: var(--text-dim);
+}
+
+.exec-chip__v {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.worker-mini__exec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
+.worker-card .worker-mini__exec {
+  margin-top: var(--sp-4);
+}
+
+/* 타일 안에서 rollup은 카드의 footer가 아니라 그냥 한 줄이다. */
+.rtile .board-card__roll {
+  border-top: none;
+  margin-top: var(--sp-4);
+  padding-top: 0;
 }
 
 .rtile__meta .worker-usage {
@@ -6381,18 +6419,6 @@ html[data-theme='dark'] {
 
 .worker-card__place-cancel {
   color: var(--text-muted);
-}
-
-/* --- 실행 타일 현재 단계 줄 (UI-53es §2) --- */
-
-/* 제목 바로 아래, 제목보다 한 단계 낮은 명도 — 이 줄은 "무엇"이 아니라
-   "지금 어디까지"를 말한다. */
-.rtile__child {
-  font-size: var(--fs-chip-lg);
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* --- 모니터 탭 (UI-qrfo §8) --- */

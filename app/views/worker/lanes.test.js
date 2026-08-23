@@ -1015,3 +1015,86 @@ describe('execChipsTemplate', () => {
     ).toBe('워커 툴팁');
   });
 });
+
+describe('exec chip placement', () => {
+  const CHIPS = {
+    orchestration: { text: 'claude · opus', title: '오케 툴팁' },
+    worker: { text: 'codex · 5.6-sol', title: '워커 툴팁' }
+  };
+
+  /**
+   * @param {Element} el
+   * @returns {string[]} Direct-child class markers, in document order.
+   */
+  function childMarkers(el) {
+    return Array.from(el.children, (child) => child.className);
+  }
+
+  test('puts the waiting one-line row exec chips after the line', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      exec_chips: /** @type {any} */ (CHIPS)
+    });
+
+    const markers = childMarkers(row);
+    expect(markers.indexOf('worker-mini__exec')).toBe(
+      markers.indexOf('worker-mini__line') + 1
+    );
+    expect(row.querySelectorAll('.worker-mini__exec .exec-chip')).toHaveLength(
+      2
+    );
+  });
+
+  test('omits the exec line on a waiting row without chips', () => {
+    const row = renderRow({ lane: 'queue', done: false });
+
+    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+  });
+
+  test('puts the card-variant exec chips between the body and the foot', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      revise_action: true,
+      revise_enabled: true,
+      exec_chips: /** @type {any} */ (CHIPS)
+    });
+
+    const markers = childMarkers(row);
+    expect(markers.indexOf('worker-mini__exec')).toBe(
+      markers.indexOf('worker-mini__body') + 1
+    );
+    expect(markers.indexOf('worker-mini__exec')).toBeLessThan(
+      markers.indexOf('worker-mini__foot')
+    );
+  });
+
+  test('puts the candidate card exec chips before the foot', () => {
+    const card = renderCandidate({ exec_chips: /** @type {any} */ (CHIPS) });
+
+    const markers = childMarkers(card);
+    expect(markers.indexOf('worker-mini__exec')).toBeGreaterThan(
+      markers.indexOf('worker-card__title')
+    );
+    expect(markers.indexOf('worker-mini__exec')).toBeLessThan(
+      markers.findIndex((marker) => marker.startsWith('worker-card__foot'))
+    );
+  });
+
+  test('renders no exec chips on a done row', () => {
+    const row = renderRow({ exec_chips: /** @type {any} */ (CHIPS) });
+
+    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+  });
+
+  test('renders no exec chips on a PR-wait row', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      exec_chips: /** @type {any} */ (CHIPS)
+    });
+
+    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+  });
+});

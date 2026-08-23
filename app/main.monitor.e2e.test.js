@@ -486,7 +486,7 @@ describe('subscription lifecycle after a reconnect', () => {
 });
 
 describe('worker tab direct entry (UI-53es §2)', () => {
-  test('subscribes in_progress issues and renders the running tile child line', async () => {
+  test('subscribes the child columns and renders the running tile rollup', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/worker';
     document.body.innerHTML = '<main id="app"></main>';
@@ -496,6 +496,7 @@ describe('worker tab direct entry (UI-53es §2)', () => {
     await Promise.resolve();
 
     expect(subscribedListIds(client)).toContain('tab:worker:in-progress');
+    expect(subscribedListIds(client)).toContain('tab:worker:resolved');
     expect(subscribedListIds(client)).toContain('tab:worker:closed');
 
     client._trigger('snapshot', {
@@ -535,8 +536,9 @@ describe('worker tab direct entry (UI-53es §2)', () => {
     const tile = document.querySelector(
       '#worker-root .rtile[data-bead-id="UI-run"]'
     );
-    expect(tile?.querySelector('.rtile__child')?.textContent).toContain(
-      'T2: 서버 배선'
-    );
+    expect(
+      tile?.querySelector('.board-card__roll-current')?.textContent
+    ).toContain('T2: 서버 배선');
+    expect(tile?.querySelector('.rtile__child')).toBe(null);
   });
 });

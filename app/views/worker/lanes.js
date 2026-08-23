@@ -666,6 +666,9 @@ export function execChipsTemplate(chips) {
  * @property {number} [seq] - 1-based execution order number in a serial lane.
  * @property {boolean} [worker_serial] - Legacy `worker-serial` label residue:
  * renders a display-only strikethrough chip. Never a scheduling input.
+ * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
+ * 실행 설정 칩 (worker-card-exec-chips §2.2): 대기 행과 후보 카드가 "이 설정으로
+ * 돌아간다"를 적재 전에 미리 보여 준다. 완료 행·PR 대기 행은 싣지 않는다.
  * @property {boolean} [worker_ineligible] - Candidate carries the
  * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
  * wears the ⛔ chip, and refuses drag and queue placement. The candidate
@@ -935,6 +938,18 @@ export function miniRow(item) {
           승인하고 진행
         </button>`
     : '';
+  // 실행 설정 칩은 대기 행만 얻는다 (§4): PR 대기 행은 이미 실행이 끝났고
+  // 완료 행은 2줄 변형이라 실을 자리가 없다. 칩이 하나도 없으면 줄 자체를 그리지
+  // 않는다 — 빈 div는 카드에 여백만 남긴다.
+  const exec_el =
+    item.lane !== 'pr_wait' &&
+    !item.done &&
+    item.exec_chips &&
+    (item.exec_chips.orchestration || item.exec_chips.worker)
+      ? html`<div class="worker-mini__exec">
+          ${execChipsTemplate(item.exec_chips)}
+        </div>`
+      : '';
   const has_foot = !!(
     usage_label ||
     merging ||
@@ -987,7 +1002,7 @@ export function miniRow(item) {
               ${grip}${seq_el}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
-            ${has_foot
+            ${exec_el}${has_foot
               ? html`<div class="worker-mini__foot">
                   ${usage_el}${merge_step_el}
                   <span class="worker-mini__actions"
@@ -1003,7 +1018,7 @@ export function miniRow(item) {
           html`<div class="worker-mini__line">
               ${grip}${seq_el}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
-            ${discardReceiptTemplate(item)} ${timesMeta(item)}`}
+            ${exec_el}${discardReceiptTemplate(item)} ${timesMeta(item)}`}
   </div>`;
 }
 
@@ -1073,6 +1088,12 @@ export function candidateCard(item, place_menu = null) {
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow ? stepperTemplate(workflow, item.status) : ''}
+    ${item.exec_chips &&
+    (item.exec_chips.orchestration || item.exec_chips.worker)
+      ? html`<div class="worker-mini__exec">
+          ${execChipsTemplate(item.exec_chips)}
+        </div>`
+      : ''}
     <div
       class="worker-card__foot${item.reason
         ? ''

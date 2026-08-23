@@ -44,10 +44,16 @@ import {
   cmpCreatedDescThenPriority,
   cmpEffectiveRank
 } from '../../data/sort.js';
-import { parentIdOf } from '../../utils/child-rollup.js';
+import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
-import { selectCurrentChild } from '../../utils/current-child.js';
+import {
+  formatAttemptOrchestrationChip,
+  formatOrchestrationChip,
+  formatWorkerChip
+} from '../../utils/exec-settings-chip.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { debug } from '../../utils/logging.js';
 import { coerceTimestampMs } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
@@ -61,6 +67,7 @@ import {
 } from '../../utils/token-usage.js';
 import { isWorkerIneligible } from '../../utils/worker-eligibility.js';
 import { isWorkerSerial } from '../../utils/worker-serial.js';
+import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { createReorderController } from '../reorder.js';
 import {
   discardCompletionMessage,
@@ -86,14 +93,23 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 
 export { mergeStepView } from './merge-steps.js';
 
+const log = debug('views:worker');
+
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
 /**
- * The Worker tab's own in_progress subscription (UI-53es §2). It exists for one
- * reason: the running tile's 현재 단계 줄 needs the bead's in_progress CHILD,
- * and a child is an in_progress issue like any other.
+ * The Worker tab's own in_progress subscription (UI-53es §2). It is one of the
+ * five columns the running tile's child rollup counts from
+ * (worker-card-exec-chips §3.3) — an in_progress child is where the tile's
+ * 현재 단계 줄 comes from, and the rollup's N/M needs the finished ones too.
  */
 const IN_PROGRESS_KEY = 'tab:worker:in-progress';
+/**
+ * Resolved children (worker-card-exec-chips §3.3). Subscribed for the rollup
+ * alone: a resolved bead is never a candidate and never a queue row, but a
+ * resolved CHILD is exactly what makes `children N/M` move.
+ */
+const RESOLVED_KEY = 'tab:worker:resolved';
 const CLOSED_KEY = 'tab:worker:closed';
 
 /**
@@ -114,6 +130,24 @@ const SERIAL_LANE_MAX = 5;
  */
 function hasSpec(issue) {
   return resolveSpecId(issue).path.length > 0;
+}
+
+/**
+ * The three workflow routes an execution resolution accepts
+ * (worker-card-exec-chips §2.2). Anything else — an unknown string, a missing
+ * key — resolves as no route, which is what makes `impl_dispatch` fall back to
+ * its non-route default instead of guessing one.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const WORKFLOW_ROUTES = new Set(['quick_fix', 'spec_backed', 'full_plan']);
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isWorkflowRoute(value) {
+  return typeof value === 'string' && WORKFLOW_ROUTES.has(value);
 }
 
 /**
@@ -1384,7 +1418,7 @@ function prWaitRow(
  *
  * @param {HTMLElement} mount_element - Element to render into.
  * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
- * @returns {{ load: () => void, destroy: () => void }}
+ * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
   const {
@@ -1495,8 +1529,117 @@ export function createWorkerView(mount_element, options = {}) {
   const revise_pending = new Set();
   /** @type {Set<string>} Beads with one stale-work action in flight. */
   const stale_work_pending = new Set();
+  /**
+   * Beads whose running-tile child rollup is EXPANDED
+   * (worker-card-exec-chips §3.3). Only the expanded ones are remembered — the
+   * list is collapsed by default — and the set lives as long as the view, so a
+   * queue-snapshot re-render never forgets what the user opened.
+   *
+   * @type {Set<string>}
+   */
+  const rollup_expanded_ids = new Set();
+  /**
+   * The workspace-global execution kv (`bd kv workflow_session_defaults`), the
+   * `전역` layer of the exec chips (worker-card-exec-chips §2.1). The Worker
+   * launcher never reads that kv, so without this cache a bead with no pin
+   * would resolve to bare defaults and the chip would lie.
+   *
+   * @type {Record<string, string>}
+   */
+  let session_defaults = {};
+  /**
+   * Workspace path the cached values belong to. Renders read through
+   * {@link sessionDefaultsFor}, so another workspace's kv can never colour this
+   * workspace's chips.
+   *
+   * @type {string|null}
+   */
+  let session_defaults_key = null;
+  /**
+   * Bumped on every refresh and on every fresh request. A response whose
+   * generation is no longer current is DISCARDED — that is what keeps a slow
+   * reply from the previous workspace out of the new one's cache.
+   *
+   * @type {number}
+   */
+  let session_defaults_generation = 0;
+  /** @type {{ key: string, generation: number }|null} */
+  let session_defaults_inflight = null;
   /** @type {Array<() => void>} */
   const unsubscribers = [];
+
+  /**
+   * The global layer for `key`'s renders. A mismatch reads as "no global
+   * layer", never as another workspace's values.
+   *
+   * @param {string} key
+   * @returns {Record<string, string>}
+   */
+  function sessionDefaultsFor(key) {
+    return session_defaults_key === key ? session_defaults : {};
+  }
+
+  /**
+   * Fetch the workspace kv once per workspace. `load()` runs on every store
+   * change while the Worker route is up, so the key guard (already have it) and
+   * the in-flight guard (already asking for it) are what keep this to one
+   * request; a workspace switch or a refresh breaks both by changing the key or
+   * the generation, so the new request goes out immediately instead of waiting
+   * for the old one.
+   */
+  async function ensureSessionDefaults() {
+    if (!transport) {
+      return;
+    }
+    const key = getWorkspacePath?.() || '';
+    if (session_defaults_key === key) {
+      return;
+    }
+    if (
+      session_defaults_inflight &&
+      session_defaults_inflight.key === key &&
+      session_defaults_inflight.generation === session_defaults_generation
+    ) {
+      return;
+    }
+    const generation = ++session_defaults_generation;
+    session_defaults_inflight = { key, generation };
+    /** @type {any} */
+    let res = null;
+    try {
+      res = await Promise.resolve(transport('get-session-defaults', {}));
+    } catch (err) {
+      if (generation !== session_defaults_generation) {
+        return;
+      }
+      session_defaults_inflight = null;
+      // Fail-quiet (§5): the chips resolve with no global layer rather than
+      // with a fabricated one, and the next refresh point tries again.
+      log('get-session-defaults failed: %o', err);
+      return;
+    }
+    if (generation !== session_defaults_generation) {
+      return;
+    }
+    session_defaults =
+      res && typeof res.values === 'object' && res.values !== null
+        ? { ...res.values }
+        : {};
+    session_defaults_key = key;
+    session_defaults_inflight = null;
+    doRender();
+  }
+
+  /**
+   * Drop the cache and ask again. Clearing the key breaks the "already have it"
+   * guard and bumping the generation invalidates whatever is in flight, so a
+   * reply already on its way cannot re-seat the stale values.
+   */
+  function refreshSessionDefaults() {
+    session_defaults_key = null;
+    session_defaults_generation += 1;
+    void ensureSessionDefaults();
+  }
 
   // Persistent console shell: the control bar + banners (top) and the lane row
   // (bottom) render into their own targets, and the transcript drawer lives in
@@ -2391,35 +2534,146 @@ export function createWorkerView(mount_element, options = {}) {
     const closed = selectors
       ? selectors.selectBoardColumn(CLOSED_KEY, 'closed')
       : [];
-    // 실행 타일의 현재 단계 줄이 읽는 자식 집합 (UI-53es §2). 후보 레인에는
-    // 쓰이지 않는다 — in_progress bead는 후보가 아니다.
+    // 실행 타일의 child rollup이 읽는 자식 집합 (worker-card-exec-chips §3.3).
+    // 후보 레인에는 쓰이지 않는다 — in_progress bead는 후보가 아니다.
     const in_progress = selectors
       ? selectors.selectBoardColumn(IN_PROGRESS_KEY, 'in_progress')
       : [];
-    /** @type {Map<string, Array<{ id: string, title?: string, status?: string, updated_at?: number|string }>>} */
-    const children_by_parent = new Map();
-    for (const it of in_progress) {
-      const parent = parentIdOf(it);
-      if (!parent) {
-        continue;
+    const resolved = selectors
+      ? selectors.selectBoardColumn(RESOLVED_KEY, 'resolved')
+      : [];
+    // Board와 같은 5집합에서 센다 (§3.3). 완료 레인 기간(`done_range`) 밖에서
+    // 닫힌 child는 N에도 M에도 들어가지 않는다 — Board가 이미 그런 한계를
+    // 가지며, 두 탭의 기간이 다르면 N/M도 다를 수 있다.
+    const children_by_parent = buildChildrenIndex([
+      ...ready,
+      ...blocked,
+      ...in_progress,
+      ...resolved,
+      ...closed
+    ]);
+    // 실행 설정 칩의 핀(bead metadata) 레이어 (§2.2). 구독 집합에 없는 bead는
+    // 핀을 볼 수 없으므로 전역값만으로 해석하지 않는다 — 틀린 칩보다 없는 칩.
+    /** @type {Map<string, any>} */
+    const issue_by_id = new Map();
+    for (const it of [...ready, ...blocked, ...in_progress]) {
+      if (it && it.id && !issue_by_id.has(it.id)) {
+        issue_by_id.set(it.id, it);
       }
-      const arr = children_by_parent.get(parent);
-      if (arr) {
-        arr.push(it);
-      } else {
-        children_by_parent.set(parent, [it]);
+    }
+    // 상세 패널 `execDefaults()`와 같은 조립: 워크스페이스 kv 위에 큐 스냅샷의
+    // orchestration 3키를 덮는다.
+    /** @type {Record<string, any>} */
+    const exec_global_values = {
+      ...sessionDefaultsFor(getWorkspacePath?.() || '')
+    };
+    for (const key of [
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]) {
+      const value = /** @type {any} */ (q)[key];
+      if (typeof value === 'string') {
+        exec_global_values[key] = value;
       }
     }
     /**
-     * The current in_progress child's title, or null (fail-quiet).
+     * Resolve one bead's execution settings the way the issue detail's
+     * effective-settings card does. `route` comes from the server enrichment
+     * first and the pinned metadata second, so `impl_dispatch`'s route default
+     * (`quick_fix → main`) answers here exactly as it does on the Board card.
      *
      * @param {string} bead_id
-     * @returns {string|null}
+     * @param {string|null} controller_runtime
+     * @returns {Record<string, import('../../utils/execution-defaults.js').ExecutionValue>|null}
      */
-    const currentChildTitleOf = (bead_id) => {
-      const child = selectCurrentChild(children_by_parent.get(bead_id) || []);
-      return child ? child.title || child.id : null;
-    };
+    function execRowsFor(bead_id, controller_runtime) {
+      const issue = issue_by_id.get(bead_id);
+      if (!issue) {
+        return null;
+      }
+      const metadata =
+        issue.metadata && typeof issue.metadata === 'object'
+          ? issue.metadata
+          : {};
+      const enriched = issue.workflow?.route;
+      const pinned = metadata.route;
+      const route = isWorkflowRoute(enriched)
+        ? enriched
+        : isWorkflowRoute(pinned)
+          ? pinned
+          : null;
+      return resolveExecutionSettings({
+        pin: metadata,
+        global: exec_global_values,
+        execution_defaults: q.execution_defaults ?? null,
+        runner_catalog: q.runner_catalog ?? null,
+        route,
+        controller_runtime
+      });
+    }
+    /**
+     * The running tile's chips: the attempt's RECORDED orchestration tuple plus
+     * the worker delegation resolved for its bead. The attempt's own runner is
+     * the controller an `inherit` delegation would follow.
+     *
+     * @param {any} attempt
+     * @returns {{ orchestration: any, worker: any }|null}
+     */
+    function attemptExecChips(attempt) {
+      const controller_runtime = attempt.runner || null;
+      const rows = execRowsFor(attempt.bead_id, controller_runtime);
+      const orchestration = formatAttemptOrchestrationChip(attempt);
+      const worker = rows ? formatWorkerChip(rows, controller_runtime) : null;
+      return orchestration || worker ? { orchestration, worker } : null;
+    }
+    /** @type {Map<string, { orchestration: any, worker: any }|null>} */
+    const exec_chips_cache = new Map();
+    /**
+     * The waiting row / candidate card chips: what this bead WOULD run with.
+     * Resolved twice on purpose — the controller runtime is derived from the
+     * orchestration model, which only the first resolution knows, and it is in
+     * turn an input to `impl_runtime: inherit` (same two-pass the detail panel's
+     * `effectiveOrchestrationRuntime()` uses).
+     *
+     * @param {string} bead_id
+     * @returns {{ orchestration: any, worker: any }|null}
+     */
+    function beadExecChips(bead_id) {
+      if (exec_chips_cache.has(bead_id)) {
+        return exec_chips_cache.get(bead_id) ?? null;
+      }
+      const probe = execRowsFor(bead_id, null);
+      /** @type {{ orchestration: any, worker: any }|null} */
+      let chips = null;
+      if (probe) {
+        const ctl = modelRunnerOf(
+          q.runner_catalog ?? null,
+          probe.orchestration_model.value ?? ''
+        );
+        const rows = ctl === null ? probe : execRowsFor(bead_id, ctl);
+        const orchestration = formatOrchestrationChip(
+          rows,
+          q.runner_catalog ?? null
+        );
+        const worker = formatWorkerChip(rows, ctl);
+        chips = orchestration || worker ? { orchestration, worker } : null;
+      }
+      exec_chips_cache.set(bead_id, chips);
+      return chips;
+    }
+    /**
+     * The running tile's child rollup, or null when the bead has no children —
+     * an empty block would claim "0/0" where the truth is "not that kind of
+     * bead" (§3.3).
+     *
+     * @param {string} bead_id
+     * @returns {import('../../utils/child-rollup.js').ChildRollup|null}
+     */
+    function runningRollup(bead_id) {
+      const rollup = rollupFor(children_by_parent, bead_id);
+      return rollup.total === 0 ? null : rollup;
+    }
 
     // Server-decorated titles for the queue/pr_wait/done beads (UI-12k6). Those
     // lanes hold resolved/closed beads that are in no subscribed column, so
@@ -2721,7 +2975,10 @@ export function createWorkerView(mount_element, options = {}) {
         worker_ineligible,
         // Filter inputs (UI-ki09); the card template ignores them.
         blocked: is_blocked,
-        has_spec
+        has_spec,
+        // "이 설정으로 돌아간다"를 적재 전에 미리 본다
+        // (worker-card-exec-chips §2.2).
+        exec_chips: beadExecChips(it.id)
       };
     });
     // DISPLAY-only projection: `candidate_issues` above stays the unfiltered
@@ -2828,6 +3085,9 @@ export function createWorkerView(mount_element, options = {}) {
             lane === 'done' && typeof e.added_at === 'number'
               ? e.added_at
               : undefined,
+          // 대기 행만 실행 설정 칩을 얻는다 (worker-card-exec-chips §2.2):
+          // 완료 행은 이미 끝났으므로 "돌아갈 설정"이 없다.
+          exec_chips: waiting_lane ? beadExecChips(e.bead_id) : null,
           ...timesOf(e.bead_id)
         };
       });
@@ -2984,9 +3244,11 @@ export function createWorkerView(mount_element, options = {}) {
           // 스냅샷의 decorateQueue가 실행 중 attempt에 라이브 값을 실어
           // 보내므로 합계에 현재 진행분이 포함되고 계속 올라간다.
           usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
-          // 큐 스냅샷에는 페이즈명이 없다 — 진행중 child 제목이 "지금 어디까지"
-          // 를 말하는 유일한 사실이다 (UI-53es §2).
-          current_child: currentChildTitleOf(a.bead_id),
+          // 큐 스냅샷에는 페이즈명이 없다 — child 진행도가 "지금 어디까지"를
+          // 말하는 유일한 사실이다 (worker-card-exec-chips §3.3).
+          rollup: runningRollup(a.bead_id),
+          rollup_expanded: rollup_expanded_ids.has(a.bead_id),
+          exec_chips: attemptExecChips(a),
           ...timesOf(a.bead_id)
         });
       } else if (a.status === 'failed' || a.status === 'orphaned') {
@@ -3019,7 +3281,9 @@ export function createWorkerView(mount_element, options = {}) {
             conflict_resolution: resolvesConflict(a),
             base_exception: baseException(declared_base, a.target_base),
             usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
-            current_child: currentChildTitleOf(a.bead_id),
+            rollup: runningRollup(a.bead_id),
+            rollup_expanded: rollup_expanded_ids.has(a.bead_id),
+            exec_chips: attemptExecChips(a),
             ...timesOf(a.bead_id)
           });
           latest_failed = a;
@@ -4848,6 +5112,34 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('.worker-drawer-host')) {
       return;
     }
+    // rollup 토글·child 행은 타일의 기본 클릭(이슈 상세)보다 앞선다 (§3.4):
+    // 뒤에 두면 어느 쪽을 눌러도 부모 이슈가 열려 버린다. Board와 달리 여기서는
+    // 템플릿에 핸들러를 주지 않고 DOM에 실린 id로 위임 처리한다.
+    const rollup_toggle = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile .board-card__roll-toggle')
+    );
+    if (rollup_toggle) {
+      const parent_id = rollup_toggle.dataset.rollParent;
+      if (parent_id) {
+        if (rollup_expanded_ids.has(parent_id)) {
+          rollup_expanded_ids.delete(parent_id);
+        } else {
+          rollup_expanded_ids.add(parent_id);
+        }
+        doRender();
+      }
+      return;
+    }
+    const rollup_child = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.rtile .board-card__roll-child')
+    );
+    if (rollup_child) {
+      const child_id = rollup_child.dataset.childId;
+      if (child_id && gotoIssue) {
+        gotoIssue(child_id);
+      }
+      return;
+    }
     // 타일 기본 클릭 = 이슈 상세 (UI-k59y §3): 다른 모든 레인 표면과 같은 규칙.
     const rtile = /** @type {HTMLElement|null} */ (target?.closest?.('.rtile'));
     if (rtile) {
@@ -4955,8 +5247,10 @@ export function createWorkerView(mount_element, options = {}) {
 
   return {
     load() {
+      void ensureSessionDefaults();
       doRender();
     },
+    refreshSessionDefaults,
     destroy() {
       for (const off of unsubscribers.splice(0)) {
         try {

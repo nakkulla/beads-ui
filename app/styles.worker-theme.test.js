@@ -284,11 +284,14 @@ describe('worker console styles', () => {
   });
 
   test('keeps running tile metadata readable when it has a long token', () => {
-    const runnerRule =
-      workerBlock.match(/(?:^|\n)\.rtile__runner\s*{([^}]*)}/)?.[1] || '';
+    const chipRule =
+      workerBlock.match(/(?:^|\n)\.exec-chip\s*{([^}]*)}/)?.[1] || '';
+    const valueRule =
+      workerBlock.match(/(?:^|\n)\.exec-chip__v\s*{([^}]*)}/)?.[1] || '';
 
-    expect(runnerRule).toContain('min-width: 0');
-    expect(runnerRule).toContain('max-width: 100%');
-    expect(runnerRule).toContain('overflow-wrap: anywhere');
+    expect(chipRule).toContain('min-width: 0');
+    expect(chipRule).toContain('max-width: 100%');
+    expect(valueRule).toContain('white-space: nowrap');
+    expect(valueRule).toContain('text-overflow: ellipsis');
   });
 });

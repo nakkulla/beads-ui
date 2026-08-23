@@ -96,10 +96,13 @@ const BOARD_SUBS = [
  * the Board but under Worker-scoped client ids so the Worker tab keeps its
  * candidate stores independent of Board tab (de)registration.
  *
- * `tab:worker:in-progress` is what makes the running tile's 현재 단계 줄 work
+ * `tab:worker:in-progress` is what makes the running tile's child rollup work
  * (UI-53es §2): the child titles live in the in_progress issue set, which the
  * Board owned alone — entering Worker directly used to subscribe ready/blocked
- * only, so the line had no data to render.
+ * only, so the line had no data to render. `tab:worker:resolved` completes the
+ * same five-column child set the Board counts `children N/M` from
+ * (worker-card-exec-chips §3.3); without it the Worker tile could see a child
+ * start but never see it finish.
  *
  * @type {ReadonlyArray<[string, string]>}
  */
@@ -107,6 +110,7 @@ const WORKER_SUBS = [
   ['tab:worker:ready', 'ready-issues'],
   ['tab:worker:blocked', 'blocked-issues'],
   ['tab:worker:in-progress', 'in-progress-issues'],
+  ['tab:worker:resolved', 'resolved-issues'],
   ['tab:worker:closed', 'closed-issues']
 ];
 
@@ -1450,6 +1454,13 @@ export function bootstrap(root_element) {
       onOpenChange: (open) => {
         settings_dialog_open = open;
         syncSubscriptionsToView();
+        // 전역 kv 기본값·전역 프리셋 적용은 이 다이얼로그에서만 일어난다
+        // (worker-card-exec-chips §2.1). Worker 탭의 실행 설정 칩은 그 kv를
+        // 캐시하므로, 닫힘이 곧 "다시 읽어라" 신호다. `worker_view`는 아래에서
+        // 만들어지지만 다이얼로그는 bootstrap 이후에만 닫힐 수 있다.
+        if (open === false) {
+          worker_view.refreshSessionDefaults();
+        }
       },
       labelOptions: () => {
         /** @type {Set<string>} */
