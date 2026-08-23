@@ -2,8 +2,14 @@ import { describe, expect, test, vi } from 'vitest';
 import { createTopNav } from './nav.js';
 
 function setup() {
-  document.body.innerHTML = '<div id="m"></div>';
-  const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+  document.body.innerHTML =
+    '<nav id="global-nav"></nav><nav id="repo-nav"></nav>';
+  const global_mount = /** @type {HTMLElement} */ (
+    document.getElementById('global-nav')
+  );
+  const repo_mount = /** @type {HTMLElement} */ (
+    document.getElementById('repo-nav')
+  );
   const store = {
     state: { view: 'board' },
     getState() {
@@ -21,38 +27,97 @@ function setup() {
     _fn: /** @type {(s: any) => void} */ (() => {})
   };
   const router = { gotoView: vi.fn() };
-  return { mount, store, router };
+  return { global_mount, repo_mount, store, router };
 }
 
 describe('views/nav', () => {
-  test('renders three tabs and routes between Board, Worker and Monitor', async () => {
-    const { mount, store, router } = setup();
+  test('renders Monitor on the global mount and routes to it', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+
     createTopNav(
-      mount,
+      { global_element: global_mount, repo_element: repo_mount },
       /** @type {any} */ (store),
       /** @type {any} */ (router)
     );
-    const links = mount.querySelectorAll('a.ctl-tab');
-    expect(links.length).toBe(3);
+    const links = global_mount.querySelectorAll('a.ctl-tab');
     links[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(router.gotoView).toHaveBeenCalledWith('board');
-    links[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    expect(router.gotoView).toHaveBeenCalledWith('worker');
-    links[2].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(links.length).toBe(1);
+    expect(links[0].classList.contains('ctl-tab--monitor')).toBe(true);
+    expect(links[0].getAttribute('href')).toBe('#/monitor');
     expect(router.gotoView).toHaveBeenCalledWith('monitor');
   });
 
-  test('marks the Monitor tab active on the monitor view', async () => {
-    const { mount, store, router } = setup();
+  test('renders Board and Worker on the repo mount and routes between them', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+
+    createTopNav(
+      { global_element: global_mount, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+    const links = repo_mount.querySelectorAll('a.ctl-tab');
+    links[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    links[1].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(links.length).toBe(2);
+    expect(router.gotoView).toHaveBeenCalledWith('board');
+    expect(router.gotoView).toHaveBeenCalledWith('worker');
+  });
+
+  test('marks only the global Monitor link active on the monitor view', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
     store.set({ view: 'monitor' });
 
     createTopNav(
-      mount,
+      { global_element: global_mount, repo_element: repo_mount },
       /** @type {any} */ (store),
       /** @type {any} */ (router)
     );
 
-    const active = mount.querySelector('a.ctl-tab.is-active');
+    const active = global_mount.querySelector('a.ctl-tab.is-active');
     expect(active?.textContent?.trim()).toBe('Monitor');
+    expect(repo_mount.querySelectorAll('a.ctl-tab.is-active').length).toBe(0);
+  });
+
+  test('marks only the Board tab active on the board view', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+
+    createTopNav(
+      { global_element: global_mount, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+
+    const active = repo_mount.querySelectorAll('a.ctl-tab.is-active');
+    expect(active.length).toBe(1);
+    expect(active[0].textContent?.trim()).toBe('Board');
+    expect(global_mount.querySelectorAll('a.ctl-tab.is-active').length).toBe(0);
+  });
+
+  test('renders the remaining mount when one mount is null', async () => {
+    const { repo_mount, store, router } = setup();
+
+    createTopNav(
+      { global_element: null, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+
+    expect(repo_mount.querySelectorAll('a.ctl-tab').length).toBe(2);
+  });
+
+  test('clears both mounts on destroy', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+    const nav = createTopNav(
+      { global_element: global_mount, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+
+    nav.destroy();
+
+    expect(global_mount.querySelectorAll('a.ctl-tab').length).toBe(0);
+    expect(repo_mount.querySelectorAll('a.ctl-tab').length).toBe(0);
   });
 });

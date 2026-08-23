@@ -5,6 +5,7 @@ scope:
   - server/worker/account-catalog.js
   - server/worker/codex-account-home.js
   - server/worker/state-paths.js
+  - server/worker/exec-enums.js
   - server/worker/attach.js
   - server/worker/scheduler.js
   - server/worker/runner/claude.js
@@ -117,7 +118,7 @@ Worker는 이슈마다 오케스트레이션 모델·effort·속도와 구현 �
   - 쓰기 방식: scratch HOME의 `auth.json`을 scratch 대상 파일로 symlink한 뒤
     더미 API 키로 `codex login --with-api-key` → **symlink 보존, 대상 파일만
     갱신(제자리 쓰기)**. OAuth refresh 쓰기는 토큰 만료(8/29~9/1)로 직접 관측
-    하지 못했다 → §4.3의 재결속 규칙을 방어적으로 둔다.
+    하지 못했다 → §4.3은 링크가 끊긴 상태를 고치지 않고 fail-closed로 거부한다.
   - `codex exec`는 stdin이 열려 있으면 "Reading additional input from stdin…"
     으로 대기한다(Worker는 이미 stdin을 넘기지 않는다).
 
@@ -144,8 +145,9 @@ Worker는 이슈마다 오케스트레이션 모델·effort·속도와 구현 �
   `exec_values`, 12키 완전성 판정)에는 **넣지 않는다**. 계정은 기계 로컬 사실
   이라 전역 기본값을 두지 않는다 — pin이 없으면 env를 주입하지 않고 현재 활성
   로그인이 쓰인다.
-- **dotfiles 유닛(cross-repo, 닫힌 작업)**: dotfiles rig에 quick_fix Bead를 만들고
-  `UI-24ow`가 그 Bead를 외부 `blocks`로 의존한다. 범위 — `workflow-state.yaml`
+- **dotfiles 유닛(cross-repo, 닫힌 작업)**: dotfiles rig의 quick_fix Bead
+  `dotfiles-a27g`(route=quick_fix, 2026-08-23 생성·readback)를 `UI-24ow`가 외부
+  `blocks`로 의존한다(`bd ready`에서 제외 확인). 범위 — `workflow-state.yaml`
   `metadata.parent_keys`에 `claude_account: {type: string, consumer: worker}`,
   `codex_account: {type: string, consumer: worker}` 추가, `consumer_surface.metadata.keys`
   2항목 추가, checker 상수·테스트 갱신, 단어 예산 압축; 검증 —
@@ -187,11 +189,21 @@ export function createAccountCatalog({ listClaude, listCodex })
 
 - `server/worker/attach.js snapshotBead`가 `md.claude_account`/`md.codex_account`
   (문자열일 때만)를 `BeadSnapshot`에 투영한다.
-- `launchSession` 앞단(`resolveDispatchSettings` 성공 직후, 스폰 전)에서
-  **런치마다** 현재 pin을 읽는다 — 신규·연속(`resume`) 구분 없음. Claude·Codex
-  모두 히스토리가 공유되므로(§4.2 `--share-history`, §4.3 미러) 계정이 바뀌어도
-  `--resume`/`codex exec resume`이 동작한다. 계정 변경은 `runner_mismatch`
-  같은 연속 결정 대화를 만들지 않는다.
+- 해석 시점은 실행 설정과 **같다**: 모든 런치 경로(신규 dispatch, 연속
+  `prior_session`/`fresh_current`, 충돌 해소·completion repair 재런치)는 이미
+  `resolveDispatchSettings(workspace, snapshot)`으로 그 런치의 Bead snapshot에서
+  `exec`를 해석한다. 같은 호출이 같은 snapshot의 `claude_account`/`codex_account`를
+  `resolved.accounts = { claude: string|null, codex: string|null }`로 함께
+  돌려주고, 각 호출 지점이 그대로 `launchSession(input.accounts)`에 넘긴다.
+  `launchSession`은 다른 곳에서 계정을 읽지 않는다(하나의 snapshot = 하나의
+  런치). 모델·effort와 같은 freshness다 — 비동기 사전 점검 뒤 snapshot을 다시
+  읽지 않는다.
+- 연속 결정 토큰(`decision_token.effective_exec_digest`)의 digest 입력에
+  `accounts`를 포함한다. 점검 중 pin이 바뀌면 토큰이 맞지 않아 기존 규칙대로
+  재결정한다. `exec_values`(12키)와 `runner_mismatch` 판정에는 넣지 않는다 —
+  Claude·Codex 모두 히스토리가 공유되므로(§4.2 `--share-history`, §4.3 미러)
+  계정이 바뀌어도 `--resume`/`codex exec resume`이 동작하고, 계정 변경만으로는
+  연속 결정 대화를 열지 않는다.
 - attempt 레코드에 적용값 `claude_account: string|null`, `codex_account:
   string|null`을 기록한다(진단용; 미적용이면 `null`). `exec_values`에는 넣지
   않는다. Worker 타일 표시는 범위 밖(UI-eyz0 후속).
@@ -235,17 +247,26 @@ export function createAccountCatalog({ listClaude, listCodex })
 - `server/worker/state-paths.js codexAccountHomeDir(key)` =
   `$XDG_STATE_HOME/bdui/codex-homes/<base64url(key)>/`.
 - `server/worker/codex-account-home.js prepareCodexAccountHome({ key, auth_file, codex_root, home_dir })`
-  — 매 런치 멱등 준비:
-  1. `home_dir`을 0700으로 만든다(있으면 그대로).
-  2. `codex_root`의 최상위 항목(`auth.json` 제외) 각각에 대해 `home_dir/<name>`이
-     없을 때만(`lexists`) `codex_root/<name>`으로의 symlink를 만든다. 있는 항목은
-     symlink든 실제 파일/디렉터리든 건드리지 않고, 어떤 것도 삭제하지 않는다.
-     동시 런치의 `EEXIST`는 성공으로 본다.
-  3. `home_dir/auth.json`: `auth_file`을 가리키는 symlink여야 한다. 없으면 생성;
-     다른 대상의 symlink면 교체; **일반 파일이면**(rename 쓰기 등으로 링크가
-     끊긴 비정상 상태) 그 mtime이 `auth_file`보다 새로울 때만 바이트를
-     `auth_file`에 0600으로 덮어쓴 뒤 symlink로 재결속하고 경고 로그를 남긴다.
-     오래됐으면 버리고 재결속만 한다.
+  — 매 런치 멱등 준비. 모든 판정은 `lstat`(symlink를 따라가지 않음)로 하고,
+  정해진 모양이 아니면 **고치지 않고 거부**한다:
+  1. 전제: `auth_file`은 실제 일반 파일(symlink 아님)이어야 한다. `home_dir`은
+     없으면 0700으로 만들고, 있으면 실제 디렉터리(symlink 아님)여야 한다.
+     어긋나면 `codex_home_prepare_failed`(detail `auth_file_not_regular` /
+     `home_not_directory`).
+  2. `codex_root`의 최상위 항목(`auth.json` 제외) 각각: `home_dir/<name>`이 없으면
+     `codex_root/<name>`으로의 symlink를 만든다(동시 런치의 `EEXIST`는 성공).
+     있으면 — 기대 대상(`codex_root/<name>`)을 가리키는 symlink면 통과, 다른
+     대상의 symlink면 거부(detail `mirror_link_mismatch:<name>`), symlink가 아닌
+     실제 파일/디렉터리면 codex가 런타임에 만든 사설 항목으로 보고 통과한다.
+     어떤 것도 삭제하거나 덮어쓰지 않는다.
+  3. `home_dir/auth.json`: 없으면 `auth_file`로의 symlink 생성(임시 이름으로
+     만든 뒤 `rename`); `auth_file`을 가리키는 symlink면 통과; 다른 대상의
+     symlink면 같은 원자적 방식으로 교체(live 세션은 이미 열어 둔 경로/fd를 계속
+     쓴다); **symlink가 아닌 일반 파일이면 거부**(detail `auth_json_not_symlink`) —
+     자동 복사·되돌리기는 하지 않는다. 실증(§1.3)상 codex는 제자리 쓰기이므로 이
+     상태는 비정상이며, 그 파일이 최신 토큰을 가질 수 있으니 운영자가 확인·정리
+     할 때까지 건드리지 않는 것이 안전하다. 런치 실패 사유에 경로를 담아
+     드러낸다.
   4. 반환 `{ ok: true, home_dir }` 또는 `{ ok: false, reason: 'codex_home_prepare_failed', detail }`.
 - 성공하면 `settings.env.CODEX_HOME = home_dir`로 주입한다(`settings.env`는
   `routing_env`보다 아래 층이지만 `codex.js`는 `CODEX_HOME`을 쓰지 않는다).
@@ -311,8 +332,14 @@ export function createAccountCatalog({ listClaude, listCodex })
 
 - 단위(`node --test`, 기존 규약):
   - `codex-account-home.test.js`: tmp 루트로 미러 생성·멱등 재실행(없는 항목만
-    추가, 삭제 없음)·`auth.json` 재결속 세 분기(없음/다른 대상/일반 파일 신·구)·
-    `EEXIST` 허용·준비 실패 사유.
+    추가, 삭제 없음)·`auth.json` 분기(없음→생성, 같은 대상→통과, 다른 대상→원자
+    교체, 일반 파일→거부)·symlink 이상 거부(`home_dir`이 symlink, `auth_file`이
+    symlink, 미러 항목이 다른 대상의 symlink)·codex가 만든 사설 항목 통과·
+    `EEXIST` 허용·실패 detail 문자열.
+  - scheduler 런치 테스트(해석 시점): 신규 dispatch·`prior_session` 연속·
+    completion repair 재런치 각각에서 같은 snapshot의 pin이 `launchSession`으로
+    전달되고 attempt에 기록되는지; pin 변경 후 `decision_token` digest가 달라져
+    이전 토큰이 거부되는지.
   - `runner/claude.test.js`: `settings.claude_account`가 있을 때
     `command`/`args`가 `cswap run <email> --share-history -- <기존 args>`로
     감싸이고 env는 불변; 없을 때 기존 argv 그대로(스냅샷 유지).
@@ -331,7 +358,10 @@ export function createAccountCatalog({ listClaude, listCodex })
 - 수동(구현 후, 공유 서버 배포 뒤): 이슈 하나에 Claude·Codex 계정을 pin하고
   dispatch → attempt 레코드의 `claude_account`/`codex_account`, 세션 로그 첫 줄의
   cswap 배너, `$XDG_STATE_HOME/bdui/codex-homes/<b64>/` 생성과 `auth.json`
-  symlink, `codex-auth list --json`의 해당 계정 사용량 변화를 확인한다.
+  symlink의 `readlink`가 `<codex_root>/accounts/<base64url(key)>.auth.json`과
+  정확히 같은지, 그리고 세션이 정상 종료(인증 실패 없음)하는지를 **결정적 합격
+  조건**으로 본다. `codex-auth list --json`의 사용량 변화는 캐시·반올림 때문에
+  보이지 않을 수 있으므로 보조 관측일 뿐 합격 조건이 아니다.
 - dotfiles 유닛의 검증 bundle은 §2에 있다.
 
 ## 구현 unit 후보 (advisory)
@@ -347,9 +377,11 @@ export function createAccountCatalog({ listClaude, listCodex })
 ## 남은 위험
 
 - OAuth refresh 쓰기 방식은 `codex login` 경로로만 관측했다. rename 쓰기로
-  밝혀지면 §4.3 3단계 재결속이 다음 런치에서 계정 파일을 따라잡지만, 그 사이
-  codex-auth `switch`는 한 세대 이전 토큰을 설치할 수 있다(refresh 토큰 회전
-  여부에 따라 재로그인 필요). 수동 검증 항목에 포함한다.
+  밝혀지면 그 계정의 `auth.json`이 일반 파일로 남아 이후 런치는 §4.3 3단계에서
+  `codex_home_prepare_failed(auth_json_not_symlink)`로 멈추고, 최신 토큰은 그
+  파일에 보존된다(운영자가 계정 파일로 옮기고 링크를 복구). 그 사이 codex-auth
+  `switch`는 한 세대 이전 토큰을 설치할 수 있다. 발생하면 복구 절차를 후속
+  Bead로 다룬다.
 - cswap `run`은 EXPERIMENTAL이다. CLI 표면(`run NUM|EMAIL [--share-history] --`)이
   바뀌면 런치가 실패로 드러나며(`exit≠0`), 조용히 다른 계정으로 가지 않는다.
 - launchd 아래에서 첫 부트스트랩 시 cswap/claude의 Keychain 쓰기가 막히면 해당

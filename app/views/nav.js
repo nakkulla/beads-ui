@@ -2,14 +2,17 @@ import { html, render } from 'lit-html';
 import { debug } from '../utils/logging.js';
 
 /**
- * Render the three-tab control-tower navigation (Board / Worker / Monitor).
+ * Render the header navigation split by scope: the global mount gets the
+ * cross-repo Monitor link, the repo mount gets the Board / Worker tabs that
+ * belong to the selected workspace.
  *
- * @param {HTMLElement} mount_element
+ * @param {{ global_element: HTMLElement | null, repo_element: HTMLElement | null }} mounts
  * @param {{ getState: () => any, subscribe: (fn: (s: any) => void) => () => void }} store
  * @param {{ gotoView: (v: 'board'|'worker'|'monitor') => void }} router
  */
-export function createTopNav(mount_element, store, router) {
+export function createTopNav(mounts, store, router) {
   const log = debug('views:nav');
+  const { global_element, repo_element } = mounts;
   /** @type {(() => void) | null} */
   let unsubscribe = null;
 
@@ -25,12 +28,36 @@ export function createTopNav(mount_element, store, router) {
     };
   }
 
-  function template() {
+  /**
+   * @returns {'board'|'worker'|'monitor'}
+   */
+  function activeView() {
     const s = store.getState();
-    const active =
-      s.view === 'worker' || s.view === 'monitor' ? s.view : 'board';
+    return s.view === 'worker' || s.view === 'monitor' ? s.view : 'board';
+  }
+
+  function globalTemplate() {
+    const active = activeView();
     return html`
-      <div class="ctl-tabs" aria-label="Primary">
+      <a
+        href="#/monitor"
+        class="ctl-tab ctl-tab--monitor ${active === 'monitor'
+          ? 'is-active'
+          : ''}"
+        @click=${onClick('monitor')}
+      >
+        <span class="ctl-tab__dots" aria-hidden="true"
+          ><i></i><i></i><i></i><i></i
+        ></span>
+        Monitor
+      </a>
+    `;
+  }
+
+  function repoTemplate() {
+    const active = activeView();
+    return html`
+      <div class="ctl-tabs">
         <a
           href="#/board"
           class="ctl-tab ${active === 'board' ? 'is-active' : ''}"
@@ -43,18 +70,17 @@ export function createTopNav(mount_element, store, router) {
           @click=${onClick('worker')}
           >Worker</a
         >
-        <a
-          href="#/monitor"
-          class="ctl-tab ${active === 'monitor' ? 'is-active' : ''}"
-          @click=${onClick('monitor')}
-          >Monitor</a
-        >
       </div>
     `;
   }
 
   function doRender() {
-    render(template(), mount_element);
+    if (global_element) {
+      render(globalTemplate(), global_element);
+    }
+    if (repo_element) {
+      render(repoTemplate(), repo_element);
+    }
   }
 
   doRender();
@@ -66,7 +92,12 @@ export function createTopNav(mount_element, store, router) {
         unsubscribe();
         unsubscribe = null;
       }
-      render(html``, mount_element);
+      if (global_element) {
+        render(html``, global_element);
+      }
+      if (repo_element) {
+        render(html``, repo_element);
+      }
     }
   };
 }
