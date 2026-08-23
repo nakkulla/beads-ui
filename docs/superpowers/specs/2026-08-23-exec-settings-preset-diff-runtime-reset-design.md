@@ -5,6 +5,13 @@ scope:
   - app/views/settings-dialog/session-model.js
   - app/views/settings-dialog/session-model.test.js
   - app/styles.css
+  - app/utils/execution-defaults.js
+  - app/views/detail-panel/exec-settings.js
+  - server/ws/exec-preset-handlers.js
+  - server/session-defaults.js
+  - server/worker/exec-enums.js
+  - server/worker/runner-catalog.js
+  - server/worker/queue-store.js
 ---
 
 # 실행 설정 — 프리셋 diff 미리보기·적용/덮어쓰기 분리와 runtime 변경 시 비호환 모델 리셋
@@ -152,6 +159,30 @@ export function narrowImplTarget(target, catalog, controller_runtime)
     정해진 모델 ?? auto)`에 있으면 유지, 아니면 `undefined`.
 - `impl_runtime`은 항상 그대로 돌려준다.
 
+#### 3.1a effort 어휘 보정 (`session-model.js`)
+
+현재 `implEffortOptions`는 모델 항목의 `efforts`만 읽어, runner 수준 `efforts`만
+가진 claude 카탈로그(`server/worker/runner-catalog.js` BUILTIN.claude: 모델에
+`efforts` 없음, runner에 `['low','medium','high','xhigh']`)에서는 `auto` 외의
+effort를 하나도 내놓지 않는다. 이대로 §3.1의 합법성 검사에 쓰면 합법인 claude
+effort가 전부 해제된다. 따라서:
+
+- `implEffortOptions`는 `effortsOf`(`detail-panel/exec-settings.js`)와 같은 규칙
+  `model_entry.efforts ?? runner_entry.efforts`로 모델별 값이 없을 때 runner 수준
+  값으로 폴백한다. 이 보정은 같은 함수를 쓰는 구현 effort 드롭다운에도 그대로
+  반영된다(claude 선택 시 effort 목록이 비어 있던 기존 공백도 함께 닫힘).
+- 오케스트레이션 effort는 구현 effort와 **다른 어휘**다: 모델의
+  `orchestration_efforts`(codex sol/terra는 `max`, `ultra` 포함) → 없으면 모델
+  `efforts` → 없으면 runner `efforts`
+  (`orchestrationEffortsOf`와 같은 폴백). `session-model.js`에
+  `orchestrationEffortOptions(catalog, runtime, model)`을 새로 두고(반환은
+  `implEffortOptions`와 같은 `[AUTO_LITERAL, ...합집합]` 형태; `runtime`이
+  `null`/`undefined`면 전체 runner, `model`이 `auto`/빈 값이면 해당 runner 모델
+  전체의 합집합), 다이얼로그의 오케스트레이션 effort 드롭다운
+  (`executionPane`의 `orchestration_efforts`)과 §3.2의 필터 리셋 판정이 모두 이
+  함수를 쓴다. 드롭다운과 리셋 판정이 같은 어휘를 봐야 "목록에는 없는데 값은
+  살아 있는" 불일치가 생기지 않는다.
+
 #### 3.2 다이얼로그 연결 (`index.js`)
 
 - `onSessionChange(key, value)`에서 `key ∈ {impl_runtime, impl_model, impl_effort}`면
@@ -170,9 +201,12 @@ export function narrowImplTarget(target, catalog, controller_runtime)
   필터가 `claude`/`codex`로 바뀌고 현재 `orchestration_model`(draft 우선, 없으면
   queue 값)이 `orchestrationModelOptions(catalog, 필터)`에 없으면
   `worker_draft.orchestration_model = null`로, 그리고 현재
-  `orchestration_effort`가 `implEffortOptions(catalog, 필터, auto)`에 없으면
-  `worker_draft.orchestration_effort = null`로 두고 `saveOrchestration()`을 한 번
-  호출한다. 필터가 `전체`로 돌아갈 때는 아무것도 바꾸지 않는다. 모델이 이미
+  `orchestration_effort`가 `orchestrationEffortOptions(catalog, 필터, auto)`
+  (§3.1a — `orchestration_efforts` 어휘, 모델이 비었으므로 필터 runner 전체의
+  합집합)에 없으면 `worker_draft.orchestration_effort = null`로 두고
+  `saveOrchestration()`을 한 번 호출한다. 모델이 필터 안에 있어 유지되는 경우에도
+  effort는 `orchestrationEffortOptions(catalog, 필터, 그 모델)`로 같은 검사를
+  한다. 필터가 `전체`로 돌아갈 때는 아무것도 바꾸지 않는다. 모델이 이미
   `null`(기본)이면 건드리지 않는다 — 기본값이 다른 runtime의 모델이라도 그것은
   projection이 보여주는 워커 기본값이며 저장값이 아니다.
 - 사용자에게 보이는 결과: runtime을 `claude`로 바꾸는 순간 `sol`이 `기본`으로
@@ -197,6 +231,13 @@ export function narrowImplTarget(target, catalog, controller_runtime)
   runtime 미설정+`sol` 유지; `inherit`+controller `null`+`sol` 유지;
   `inherit`+controller `claude`+`sol` 해제; effort가 새 모델/runtime 합집합 밖이면
   해제, `auto`면 유지.
+- `implEffortOptions`: runner 수준 `efforts`만 가진 claude 형태 카탈로그(모델 항목에
+  `efforts` 없음)에서 runner 값을 돌려준다; 모델별 `efforts`가 있으면 그것이
+  우선한다. `narrowImplTarget`이 그 카탈로그에서 `claude`+`opus`+`high`를 그대로
+  유지한다.
+- `orchestrationEffortOptions`: codex `sol`에서 `ultra`·`max`를 포함한다;
+  `orchestration_efforts`가 없는 모델은 `efforts`로, 그것도 없으면 runner
+  `efforts`로 폴백한다; `runtime=codex, model=auto`는 codex 모델 전체의 합집합이다.
 
 `app/views/settings-dialog/index.test.js`
 - 프리셋 선택 시 `[data-preset-diff]`가 렌더되고 행 수·`data-diff-kind`·라벨이
@@ -212,7 +253,11 @@ export function narrowImplTarget(target, catalog, controller_runtime)
   함께 실린다(effort가 불법이면 `impl_effort: null`도).
 - 오케스트레이션 런타임 필터를 `codex`로 바꾸면 `orchestration_model=opus`가
   `null`로 패치되어 queue 저장 요청이 한 번 간다; 필터를 `전체`로 돌리면 요청이
-  없다.
+  없다. 같은 전환에서 `orchestration_effort=ultra`는 codex 어휘에 있으므로 유지되고
+  (패치에 실리지 않음), 반대로 `codex`→`claude` 전환에서 `ultra`는 `null`로 함께
+  패치된다.
+- 오케스트레이션 effort 드롭다운이 필터 `codex`·모델 `sol`에서 `ultra`를 옵션으로
+  제공한다(기존 `filters the model list by the UI-only runtime choice` 옆에 추가).
 
 Pre-Handoff Validation: `npm run tsc`, `npm test`, `npm run lint`,
 `npm run prettier:write`, 이후 `npm run build`로 `app/main.bundle.js`·`.map`을 갱신해
@@ -232,6 +277,9 @@ Pre-Handoff Validation: `npm run tsc`, `npm test`, `npm run lint`,
 5. 위임 대상을 바꿔 모델이 불법이 되면 `set-session-defaults` 요청이 한 번만
    가고, 그 `values`에 runtime과 해제된 키(`null`)가 함께 실린다.
 6. 오케스트레이션 런타임 필터를 바꿔 모델이 필터 밖이면 queue 패치 한 번으로
-   `orchestration_model`이 `null`이 된다.
-7. 서버 디렉터리(`server/`)에 변경이 없다.
-8. `npm run tsc`·`npm test`·`npm run lint`가 통과하고 번들이 재빌드돼 있다.
+   `orchestration_model`이 `null`이 되고, effort는 `orchestration_efforts` 어휘로
+   판정해 합법이면 유지·불법이면 같은 패치에서 `null`이 된다(§3.1a·테스트 범위).
+7. runner 수준 `efforts`만 가진 claude 카탈로그에서 `claude`+`opus`+`high`는
+   runtime 재선택 뒤에도 유지되고, 구현 effort 드롭다운이 그 runner 값을 제공한다.
+8. 서버 디렉터리(`server/`)에 변경이 없다.
+9. `npm run tsc`·`npm test`·`npm run lint`가 통과하고 번들이 재빌드돼 있다.
