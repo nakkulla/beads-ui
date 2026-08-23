@@ -12,17 +12,20 @@
  * (`worker-final.html`); one column on mobile.
  */
 import { html } from 'lit-html';
-import {
-  formatAttemptTuple,
-  formatContinuationLineage
-} from '../../utils/attempt-display.js';
+import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import {
   formatUsageTotalWithCost,
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
+import { childExecChips } from '../board/card.js';
+import { childRollupTemplate } from '../child-rollup.js';
 import { failureText } from './failure-labels.js';
-import { discardReceiptTemplate, timesMeta } from './lanes.js';
+import {
+  discardReceiptTemplate,
+  execChipsTemplate,
+  timesMeta
+} from './lanes.js';
 
 /**
  * @typedef {Object} RunningTile
@@ -50,9 +53,15 @@ import { discardReceiptTemplate, timesMeta } from './lanes.js';
  * button renders disabled until it lands (§2.1).
  * @property {number|string} [created_at] - Bead 생성 시각 (UI-d7pw §4.1).
  * @property {number|string} [updated_at] - Bead 수정 시각 (UI-d7pw §4.1).
- * @property {string|null} [current_child] - 현재 진행중 child 이슈 제목
- * (UI-53es §2) — 큐 스냅샷에 페이즈명이 없으므로 이것이 "지금 어느 단계인가"에
- * 답하는 유일한 사실이다. 없으면 줄 자체를 생략한다 (fail-quiet).
+ * @property {import('../../utils/child-rollup.js').ChildRollup|null} [rollup] -
+ * Child 진행도 (worker-card-exec-chips §3.3) — 큐 스냅샷에 페이즈명이 없으므로
+ * `children N/M` + 현재 child 줄이 "지금 어디까지"에 답하는 유일한 사실이다.
+ * child가 없는 bead는 null이고 블록 자체가 생략된다 (fail-quiet).
+ * @property {boolean} [rollup_expanded] - 이 bead의 child 목록이 펼쳐져 있는지.
+ * 기본은 접힘이고, 펼침 상태는 뷰가 소유한다.
+ * @property {import('../../utils/exec-settings-chip.js').ExecChips|null} [exec_chips] -
+ * 오케(이 attempt의 기록값) + 워커(현재 해석값) 실행 설정 칩 (§2.2); 둘 다
+ * 없으면 null이고 meta 줄이 그만큼 짧아진다.
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Live token usage
  * of this attempt (UI-raqh §1); absent/null renders nothing.
  * @property {boolean} [conflict_resolution] - Attempt dispatched to resolve a
@@ -274,7 +283,12 @@ function runningTile(tile, now, selected_attempt = null) {
       : typeof tile.started_at === 'number'
         ? formatElapsed(now - tile.started_at)
         : '—';
-  const meta = formatAttemptTuple(tile);
+  // 오케 칩이 종전 `formatAttemptTuple` 줄을 대신한다 (§4); 워커 칩만 있어도
+  // meta 줄은 그려져야 하므로 표시 조건은 두 칩의 존재로 판정한다.
+  const exec_chips =
+    tile.exec_chips && (tile.exec_chips.orchestration || tile.exec_chips.worker)
+      ? tile.exec_chips
+      : null;
   const lineage = formatContinuationLineage(tile);
   const provider_badges = providerUsageBadges(tile.usage);
   const usage_label = formatUsageTotalWithCost(tile.usage);
@@ -368,10 +382,12 @@ function runningTile(tile, now, selected_attempt = null) {
             ${discard_button}`}
     </div>
     <div class="rtile__title">${tile.title}</div>
-    ${tile.current_child
-      ? html`<div class="rtile__child" title="현재 진행중 child">
-          └ ${tile.current_child}
-        </div>`
+    ${tile.rollup
+      ? childRollupTemplate(tile.rollup, {
+          parent_id: tile.bead_id,
+          expanded: tile.rollup_expanded === true,
+          childChips: childExecChips
+        })
       : ''}
     ${landing
       ? html`<div class="rtile__landing">
@@ -386,7 +402,7 @@ function runningTile(tile, now, selected_attempt = null) {
           >
         </div>`
       : ''}
-    ${meta ||
+    ${exec_chips ||
     provider_badges.length > 0 ||
     usage_label ||
     conflict_badge ||
@@ -402,7 +418,7 @@ function runningTile(tile, now, selected_attempt = null) {
                 >${base_badge}</span
               >`
             : ''}
-          ${meta ? html`<span class="rtile__runner">${meta}</span>` : ''}
+          ${execChipsTemplate(tile.exec_chips)}
           ${provider_badges.length > 0
             ? provider_badges.map(
                 (badge) =>

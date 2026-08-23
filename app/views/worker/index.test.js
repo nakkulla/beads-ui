@@ -2178,7 +2178,7 @@ describe('views/worker', () => {
     expect(candidateOrder(mount)).toEqual(['A', 'C', 'B']);
   });
 
-  test('running tile shows the current in_progress child title (UI-53es §2)', () => {
+  test('running tile shows the current in_progress child in its rollup', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const stores = seedCandidates();
     const now = Date.now();
@@ -2220,12 +2220,12 @@ describe('views/worker', () => {
     });
 
     expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__child')
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-current')
         ?.textContent
     ).toContain('T2: 서버 배선');
   });
 
-  test('running tile omits the child line when the bead has no in_progress child', () => {
+  test('running tile omits the rollup block when the bead has no child', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const queueStore = createWorkerQueueStore();
     queueStore.set(
@@ -2249,7 +2249,10 @@ describe('views/worker', () => {
     });
 
     expect(
-      mount.querySelector('.rtile[data-bead-id="S1"] .rtile__child')
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll')
+    ).toBeNull();
+    expect(
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-current')
     ).toBeNull();
   });
 
@@ -10797,5 +10800,520 @@ describe('worker 분석 버튼·추천 overlay (UI-04vo seam E/J)', () => {
       mount.querySelector('.worker-mini[data-bead-id="A"]')
     );
     expect(row.textContent).not.toContain('serial 권장');
+  });
+});
+
+describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /** The `execution_defaults` projection every live snapshot carries. */
+  const PROJECTION = {
+    supported: true,
+    schema_version: 1,
+    session: {
+      workflow_mode_default: 'standard',
+      review: {
+        default: 'codex',
+        reviewers: {
+          codex: { model: 'gpt-5.6-sol', effort: 'xhigh' },
+          fable: { model: 'fable', effort: 'high' }
+        }
+      },
+      implementation: {
+        default: {
+          dispatch: 'delegated',
+          runtime: 'inherit',
+          model: 'auto',
+          effort: 'auto',
+          speed: 'default'
+        },
+        route_defaults: { quick_fix: { dispatch: 'main' } },
+        model_catalog: {
+          claude: ['opus', 'fable'],
+          codex: { sol: 'gpt-5.6-sol', terra: 'gpt-5.6-terra' }
+        }
+      }
+    },
+    orchestration: {
+      runtime: 'claude',
+      model: 'opus',
+      model_id: 'opus',
+      effort: null,
+      speed: 'default'
+    }
+  };
+
+  /**
+   * @param {Partial<any>} [over]
+   * @returns {any}
+   */
+  function execQueue(over = {}) {
+    return queueOf({ execution_defaults: PROJECTION, ...over });
+  }
+
+  /**
+   * A transport that answers `get-session-defaults` with `values` and records
+   * every request type it saw.
+   *
+   * @param {Record<string, string>} values
+   */
+  function sessionDefaultsTransport(values) {
+    /** @type {string[]} */
+    const types = [];
+    const send = vi.fn(async (/** @type {string} */ type) => {
+      types.push(type);
+      return type === 'get-session-defaults' ? { values, warnings: [] } : null;
+    });
+    return { types, send };
+  }
+
+  /**
+   * @param {string[]} types
+   * @returns {number}
+   */
+  function defaultsCalls(types) {
+    return types.filter((type) => type === 'get-session-defaults').length;
+  }
+
+  test('asks for the workspace session defaults once per load', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { types, send } = sessionDefaultsTransport({});
+
+    const view = createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    view.load();
+    await flush();
+
+    expect(defaultsCalls(types)).toBe(1);
+  });
+
+  test('asks again after refreshSessionDefaults', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { types, send } = sessionDefaultsTransport({});
+    const view = createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    view.refreshSessionDefaults();
+    await flush();
+
+    expect(defaultsCalls(types)).toBe(2);
+  });
+
+  test('asks again when the workspace path changes', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { types, send } = sessionDefaultsTransport({});
+    let workspace = '/repo-a';
+    const view = createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: send,
+      getWorkspacePath: () => workspace
+    });
+    view.load();
+    await flush();
+
+    workspace = '/repo-b';
+    view.load();
+    await flush();
+
+    expect(defaultsCalls(types)).toBe(2);
+  });
+
+  test('discards a late reply from the previous workspace and re-asks', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    /** @type {Array<(value: any) => void>} */
+    const resolvers = [];
+    /** @type {string[]} */
+    const types = [];
+    const send = vi.fn((/** @type {string} */ type) => {
+      types.push(type);
+      if (type !== 'get-session-defaults') {
+        return Promise.resolve(null);
+      }
+      return new Promise((resolve) => resolvers.push(resolve));
+    });
+    let workspace = '/repo-a';
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      { id: 'RD-1', title: 'ready', status: 'open', metadata: {} }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(execQueue({ queue: [{ bead_id: 'RD-1', added_at: 1 }] }));
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => workspace
+    });
+    view.load();
+    await flush();
+
+    workspace = '/repo-b';
+    view.load();
+    await flush();
+    resolvers[0]({ values: { impl_runtime: 'codex' }, warnings: [] });
+    await flush();
+
+    expect(defaultsCalls(types)).toBe(2);
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .exec-chip--worker .exec-chip__v'
+      )?.textContent
+    ).not.toContain('codex');
+  });
+
+  test('re-asks when a refresh overlaps an in-flight request', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    /** @type {Array<(value: any) => void>} */
+    const resolvers = [];
+    /** @type {string[]} */
+    const types = [];
+    const send = vi.fn((/** @type {string} */ type) => {
+      types.push(type);
+      if (type !== 'get-session-defaults') {
+        return Promise.resolve(null);
+      }
+      return new Promise((resolve) => resolvers.push(resolve));
+    });
+    const view = createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    view.refreshSessionDefaults();
+    await flush();
+    resolvers[0]({ values: { impl_runtime: 'codex' }, warnings: [] });
+    await flush();
+
+    expect(defaultsCalls(types)).toBe(2);
+  });
+
+  test('renders the chips without a global layer when the request fails', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const send = vi.fn(async (/** @type {string} */ type) => {
+      if (type === 'get-session-defaults') {
+        throw new Error('kv unreadable');
+      }
+      return null;
+    });
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      { id: 'RD-1', title: 'ready', status: 'open', metadata: {} }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(execQueue({ queue: [{ bead_id: 'RD-1', added_at: 1 }] }));
+
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    const chip = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .exec-chip--worker'
+      )
+    );
+    expect(chip.querySelector('.exec-chip__v')?.textContent).toBe(
+      'inherit→claude · auto · auto'
+    );
+    expect(chip.getAttribute('title')).toContain(
+      '위임 대상: inherit (claude) (기본)'
+    );
+    expect(chip.getAttribute('title')).not.toContain('(전역)');
+  });
+
+  test('drops the global layer on screen when a refresh request fails', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    let fail = false;
+    const send = vi.fn(async (/** @type {string} */ type) => {
+      if (type !== 'get-session-defaults') {
+        return null;
+      }
+      if (fail) {
+        throw new Error('kv unreadable');
+      }
+      return { values: { impl_runtime: 'codex' }, warnings: [] };
+    });
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      { id: 'RD-1', title: 'ready', status: 'open', metadata: {} }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(execQueue({ queue: [{ bead_id: 'RD-1', added_at: 1 }] }));
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+    const selector = '.worker-mini[data-bead-id="RD-1"] .exec-chip--worker';
+    expect(mount.querySelector(selector)?.getAttribute('title')).toContain(
+      '(전역)'
+    );
+
+    fail = true;
+    view.refreshSessionDefaults();
+    await flush();
+
+    expect(mount.querySelector(selector)?.getAttribute('title')).not.toContain(
+      '(전역)'
+    );
+  });
+
+  test('reads a derived quick_fix route as a 메인 worker chip', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { send } = sessionDefaultsTransport({});
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'QF-1',
+        title: 'quick fix',
+        status: 'open',
+        metadata: {},
+        workflow: { route: 'quick_fix', route_source: 'derived' }
+      }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(execQueue({ queue: [{ bead_id: 'QF-1', added_at: 1 }] }));
+
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="QF-1"] .exec-chip--worker .exec-chip__v'
+      )?.textContent
+    ).toBe('메인');
+  });
+
+  test('layers the pin over the global kv over the base default', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { send } = sessionDefaultsTransport({
+      impl_runtime: 'codex',
+      impl_effort: 'high'
+    });
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'ready',
+        status: 'open',
+        metadata: { impl_effort: 'low' }
+      }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(execQueue({ queue: [{ bead_id: 'RD-1', added_at: 1 }] }));
+
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    expect(
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .exec-chip--worker .exec-chip__v'
+      )?.textContent
+    ).toBe('codex · auto · low');
+  });
+
+  test('omits the chips for a bead that is in no subscribed column', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { send } = sessionDefaultsTransport({});
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      execQueue({
+        queue: [{ bead_id: 'GONE-1', added_at: 1 }],
+        bead_titles: { 'GONE-1': 'unsubscribed bead' }
+      })
+    );
+
+    const view = createWorkerView(mount, {
+      issueStores: createTestIssueStores(),
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="GONE-1"]')
+    );
+    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+  });
+
+  test('gives a serial-lane ghost row no exec chips', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { send } = sessionDefaultsTransport({});
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      { id: 'RD-1', title: 'ready', status: 'open', metadata: {} }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      execQueue({
+        serial_lanes: [{ id: 's1', entries: [] }],
+        lane_states: { s1: { occupied_by: ['RD-1'], order: [] } }
+      })
+    );
+
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+
+    const ghost = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini--ghost[data-bead-id="RD-1"]')
+    );
+    expect(ghost.querySelector('.worker-mini__exec')).toBeNull();
+  });
+
+  test('counts resolved children in the running tile rollup', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedCandidates();
+    seed(stores, 'tab:worker:in-progress', [
+      { id: 'S1.2', title: 'T2', status: 'in_progress', parent: 'S1' }
+    ]);
+    seed(stores, 'tab:worker:resolved', [
+      { id: 'S1.1', title: 'T1', status: 'resolved', parent: 'S1' }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      execQueue({
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-toggle')
+        ?.textContent
+    ).toContain('children 1/2');
+  });
+
+  test('toggles the tile rollup instead of opening the parent detail', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedCandidates();
+    seed(stores, 'tab:worker:in-progress', [
+      { id: 'S1.1', title: 'T1', status: 'in_progress', parent: 'S1' }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      execQueue({
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const gotoIssue = vi.fn();
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn(),
+      gotoIssue
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-toggle')
+    ).click();
+
+    expect(gotoIssue).not.toHaveBeenCalled();
+    expect(
+      mount.querySelectorAll(
+        '.rtile[data-bead-id="S1"] .board-card__roll-child'
+      )
+    ).toHaveLength(1);
+  });
+
+  test('opens the child issue from a tile rollup child row', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const stores = seedCandidates();
+    seed(stores, 'tab:worker:in-progress', [
+      { id: 'S1.1', title: 'T1', status: 'in_progress', parent: 'S1' }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      execQueue({
+        attempts: {
+          a1: {
+            attempt_id: 'a1',
+            bead_id: 'S1',
+            status: 'running',
+            started_at: Date.now() - 3000
+          }
+        }
+      })
+    );
+    const gotoIssue = vi.fn();
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: vi.fn(),
+      gotoIssue
+    });
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-toggle')
+    ).click();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="S1"] .board-card__roll-child')
+    ).click();
+
+    expect(gotoIssue).toHaveBeenCalledWith('S1.1');
   });
 });

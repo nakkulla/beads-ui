@@ -184,6 +184,65 @@ describe('main exec-preset subscription lifecycle', () => {
     ).toHaveLength(0);
   });
 
+  test('re-reads the worker session defaults when the settings dialog closes', async () => {
+    window.location.hash = '#/worker';
+    bootstrap(setupShell());
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      document.getElementById('display-settings-btn')
+    ).click();
+    await settle();
+    const before = CLIENT.sent.filter(
+      (/** @type {{ type: string }} */ message) =>
+        message.type === 'get-session-defaults'
+    ).length;
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('#settings-dialog .settings-dialog__close')
+    ).click();
+    await settle();
+
+    expect(
+      CLIENT.sent.filter(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'get-session-defaults'
+      )
+    ).toHaveLength(before + 1);
+  });
+
+  test('re-reads once when the dialog also fires its own close event', async () => {
+    window.location.hash = '#/worker';
+    bootstrap(setupShell());
+    await settle();
+
+    /** @type {HTMLButtonElement} */ (
+      document.getElementById('display-settings-btn')
+    ).click();
+    await settle();
+    const before = CLIENT.sent.filter(
+      (/** @type {{ type: string }} */ message) =>
+        message.type === 'get-session-defaults'
+    ).length;
+
+    /** @type {HTMLButtonElement} */ (
+      document.querySelector('#settings-dialog .settings-dialog__close')
+    ).click();
+    // A real <dialog> notifies twice: once from `close()` and once from the
+    // element's own `close` event. Only the true→false transition may re-read.
+    document
+      .getElementById('settings-dialog')
+      ?.dispatchEvent(new Event('close'));
+    await settle();
+
+    expect(
+      CLIENT.sent.filter(
+        (/** @type {{ type: string }} */ message) =>
+          message.type === 'get-session-defaults'
+      )
+    ).toHaveLength(before + 1);
+  });
+
   test('opens the unified settings dialog from the nav-bar ⚙', async () => {
     bootstrap(setupShell());
     await settle();

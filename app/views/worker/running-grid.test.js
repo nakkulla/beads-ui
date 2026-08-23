@@ -1,5 +1,9 @@
 import { render } from 'lit-html';
 import { beforeEach, describe, expect, test } from 'vitest';
+import {
+  formatAttemptOrchestrationChip,
+  formatWorkerChip
+} from '../../utils/exec-settings-chip.js';
 import { bannersTemplate, runningGridTemplate } from './running-grid.js';
 
 describe('worker failed running tile template', () => {
@@ -80,8 +84,14 @@ describe('worker failed running tile template', () => {
     expect(mount.querySelector('.rtile__elapsed')?.textContent).toBe('중단됨');
   });
 
-  test('renders effort, Fast, and fresh-session lineage from the attempt', () => {
+  test('renders the recorded attempt tuple as the orchestration chip', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const attempt = {
+      runner: 'codex',
+      model: 'sol',
+      effort: 'ultra',
+      speed: 'fast'
+    };
 
     render(
       runningGridTemplate([
@@ -95,18 +105,238 @@ describe('worker failed running tile template', () => {
           speed: 'fast',
           started_at: null,
           resumed_from: 'attempt-2',
-          continuation_mode: 'fresh'
+          continuation_mode: 'fresh',
+          exec_chips: {
+            orchestration: formatAttemptOrchestrationChip(attempt),
+            worker: null
+          }
         }
       ]),
       mount
     );
 
-    expect(mount.querySelector('.rtile__runner')?.textContent).toBe(
-      'codex · sol · ultra · Fast'
-    );
+    expect(
+      mount.querySelector('.exec-chip--orch .exec-chip__v')?.textContent
+    ).toBe('codex · sol · ultra · Fast');
+    expect(mount.querySelector('.rtile__runner')).toBeNull();
     expect(mount.querySelector('.rtile__resumed')?.getAttribute('title')).toBe(
       '새 session으로 이어받음 (from attempt-2)'
     );
+  });
+
+  test('renders the worker chip next to the orchestration chip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const rows = {
+      impl_dispatch: {
+        value: 'session',
+        source: 'base',
+        display: 'session',
+        full_value: 'session',
+        resolution: 'default'
+      },
+      impl_runtime: {
+        value: 'inherit',
+        source: 'base',
+        display: 'inherit',
+        full_value: 'inherit',
+        resolution: 'default'
+      },
+      impl_model: {
+        value: 'auto',
+        source: 'base',
+        display: 'auto (실행 시 결정)',
+        full_value: null,
+        resolution: 'dynamic'
+      },
+      impl_effort: {
+        value: 'auto',
+        source: 'base',
+        display: 'auto (실행 시 결정)',
+        full_value: null,
+        resolution: 'dynamic'
+      },
+      impl_speed: {
+        value: 'default',
+        source: 'base',
+        display: 'default',
+        full_value: 'default',
+        resolution: 'default'
+      }
+    };
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-4',
+          attempt_id: 'attempt-4',
+          title: 'delegating work',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          exec_chips: {
+            orchestration: formatAttemptOrchestrationChip({
+              runner: 'claude',
+              model: 'opus'
+            }),
+            worker: formatWorkerChip(/** @type {any} */ (rows), 'claude')
+          }
+        }
+      ]),
+      mount
+    );
+
+    expect(
+      mount.querySelector('.exec-chip--worker .exec-chip__v')?.textContent
+    ).toBe('inherit→claude · auto · auto');
+  });
+
+  test('omits the meta row when the tile carries no chips at all', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-5',
+          attempt_id: 'attempt-5',
+          title: 'bare work',
+          runner: null,
+          model: null,
+          started_at: null,
+          exec_chips: null
+        }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__meta')).toBeNull();
+    expect(mount.querySelectorAll('.exec-chip')).toHaveLength(0);
+  });
+
+  test('draws the meta row for a worker-only chip', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-6',
+          attempt_id: 'attempt-6',
+          title: 'legacy attempt',
+          runner: null,
+          model: null,
+          started_at: null,
+          exec_chips: {
+            orchestration: null,
+            worker: { text: '메인', title: '워커 툴팁' }
+          }
+        }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.rtile__meta')).not.toBeNull();
+    expect(mount.querySelector('.exec-chip--orch')).toBeNull();
+    expect(
+      mount.querySelector('.exec-chip--worker .exec-chip__v')?.textContent
+    ).toBe('메인');
+  });
+
+  test('renders the child rollup collapsed with its current child line', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-7',
+          attempt_id: 'attempt-7',
+          title: 'parent work',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          rollup: {
+            total: 3,
+            count: 1,
+            current: { id: 'UI-7.2', title: 'T2: 서버 배선' },
+            children: [
+              { id: 'UI-7.1', title: 'T1', status: 'closed' },
+              { id: 'UI-7.2', title: 'T2: 서버 배선', status: 'in_progress' },
+              { id: 'UI-7.3', title: 'T3', status: 'open' }
+            ]
+          }
+        }
+      ]),
+      mount
+    );
+
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+
+    expect(
+      tile.querySelector('.board-card__roll-toggle')?.textContent
+    ).toContain('children 1/3');
+    expect(
+      tile.querySelector('.board-card__roll-current')?.textContent
+    ).toContain('T2: 서버 배선');
+    expect(tile.querySelector('.board-card__roll-list')).toBeNull();
+    expect(tile.querySelector('.rtile__child')).toBeNull();
+  });
+
+  test('expands the child rollup list when the tile says it is expanded', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-8',
+          attempt_id: 'attempt-8',
+          title: 'parent work',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          rollup_expanded: true,
+          rollup: {
+            total: 2,
+            count: 0,
+            current: null,
+            children: [
+              { id: 'UI-8.1', title: 'T1', status: 'open' },
+              { id: 'UI-8.2', title: 'T2', status: 'open' }
+            ]
+          }
+        }
+      ]),
+      mount
+    );
+
+    const rows = mount.querySelectorAll('.board-card__roll-child');
+
+    expect(rows).toHaveLength(2);
+    expect(
+      Array.from(
+        rows,
+        (row) => /** @type {HTMLElement} */ (row).dataset.childId
+      )
+    ).toEqual(['UI-8.1', 'UI-8.2']);
+  });
+
+  test('omits the rollup block when the tile has no rollup', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningGridTemplate([
+        {
+          bead_id: 'UI-9',
+          attempt_id: 'attempt-9',
+          title: 'childless work',
+          runner: 'claude',
+          model: 'opus',
+          started_at: null,
+          rollup: null
+        }
+      ]),
+      mount
+    );
+
+    expect(mount.querySelector('.board-card__roll')).toBeNull();
+    expect(mount.querySelector('.rtile__child')).toBeNull();
   });
 
   test('renders a landing progress line only on the tile carrying its projection', () => {
