@@ -60,18 +60,30 @@ Worker는 재시작 시 `auto_advance`를 무조건 OFF로 내리고(fail-closed
 
 - **종료 마커** — 스크립트 종료 시 같은 파일을 같은 내용에 다음 필드를 더해
   덮어쓴다:
-  - 성공(`exit 0` 도달): `"result": "ok", "finished_at": <epoch_ms>`
-  - restart 이후 실패(health readback 실패, 종료 HEAD 불일치, tracked-clean
-    실패): `"result": "failed", "finished_at": <epoch_ms>`
+  - 성공(`exit 0` 도달): `"result": "ok", "instance_id": "<uuid>",
+    "finished_at": <epoch_ms>` — `instance_id`는 health readback이 `ok`로
+    관측한 **새 런타임의 정확한 `runtime.instance_id`**(healthz JSON)다.
+  - restart 이후 실패(health readback 실패, 폴링 중 런타임 신원 변경, 종료
+    HEAD 불일치, tracked-clean 실패): `"result": "failed", "finished_at":
+    <epoch_ms>` (`instance_id` 없음)
 
   구현은 `trap ... EXIT` + 상태 플래그로 한다: 시작 마커를 쓴 뒤부터 trap이
   활성화되고, 정상 종료 직전에 플래그를 `ok`로 바꾼다. 시작 마커를 쓰기 전의
   실패(락·npm ci·build·restart 자체 실패)는 마커를 남기지 않거나 시작 마커만
   남는데, 두 경우 모두 소비자 판정에서 복원으로 이어지지 않는다(§2).
 
-epoch_ms는 `date +%s`초 단위에 `000`을 붙여 만들어도 판정에 충분하다(비교
-상대인 `process_started_at`과 초 단위 이상으로만 구분되면 된다). POSIX sh
-범위를 벗어나는 도구는 쓰지 않는다.
+**런타임 신원 고정(health 폴링)**: 기존 `health_probe`는 healthz JSON을 이미
+파싱하므로, `source_sha`가 target과 일치하는 응답의 `runtime.instance_id`를
+함께 출력하도록 확장한다. 폴링 루프는 **restart 이후 처음 관측한 target-SHA
+런타임의 `instance_id`를 고정**하고, 이후 응답의 `instance_id`가 그것과
+다르면 즉시 `runtime_identity_changed`로 실패한다(폴링 중 같은 SHA로 수동
+재시작되거나 크래시 후 재기동된 경우). `ok`는 고정한 그 인스턴스에서만
+성립하며, 종료 마커의 `instance_id`가 바로 그 값이다.
+
+`started_at`/`finished_at`은 진단용이다. 판정은 `instance_id` 정확 일치로만
+하므로 초 단위(`date +%s` + `000`)로 충분하고, 관측된 `process_started_at`
+역시 초 단위(`…000`)라는 사실에 의존하지 않는다. POSIX sh 범위를 벗어나는
+도구는 쓰지 않는다.
 
 Worker 경로도 같은 스크립트를 지나므로 마커가 동일하게 남는다. 복원은
 프로세스 전역 `triggered` 플래그로 한 번만 일어나므로 `repo_operations` 후보와
@@ -87,22 +99,22 @@ schema 불일치는 조용히 건너뛴다(fail-quiet, 기존 catch 정책과 �
 마커가 다음을 모두 만족하면 터미널 성공으로 보고 `triggered = true`:
 
 1. `target_sha === runtime_identity.source_sha` (소문자 비교)
-2. `started_at`이 유한 수이고 `started_at < runtime_identity.process_started_at`
-   — 마커가 이 프로세스보다 먼저 시작된 배포의 것
-3. `result === "ok"`이고 `finished_at`이 유한 수이며
-   `finished_at > runtime_identity.process_started_at`
-   — 배포의 health readback이 이 프로세스 부팅 뒤에 끝났다 = 이 부팅이 바로 그
-   배포의 restart
+2. `result === "ok"`
+3. `instance_id === runtime_identity.instance_id` — 정확 문자열 일치. 배포
+   스크립트가 health readback으로 관측한 런타임이 **바로 이 프로세스**임을
+   증명한다
 4. `sameRepository(registration)` (기존 root-commit 비교 재사용)
 
-`finished_at`이 아직 없으면(스크립트가 health 폴링 중) 이번 pass는 건너뛰고
-다음 reconcile pass가 재판정한다 — reconcile은 부팅 직후와 주기 폴러에서 반복
-실행되므로 별도 대기 로직이 필요 없다. `result === "failed"`이거나 조건 3의
-시간 관계가 성립하지 않으면 후보가 아니다.
+`result`가 아직 없으면(스크립트가 health 폴링 중) 이번 pass는 건너뛰고 다음
+reconcile pass가 재판정한다 — reconcile은 부팅 직후와 주기 폴러에서 반복
+실행되므로 별도 대기 로직이 필요 없다. `result === "failed"`이거나
+`instance_id`가 없거나 다르면 후보가 아니다. `started_at`/`finished_at`은
+판정에 쓰지 않는다(초 단위 타임스탬프의 경계 비교에 의존하지 않기 위함).
 
-조건 3이 소비(consume) 기록을 대체한다: 이후의 수동 재시작·크래시 부팅에서는
-`finished_at < process_started_at`이 되므로 같은 마커가 다시 복원을 일으킬 수
-없다. 별도의 마커 삭제·rename·소비 장부를 두지 않는다.
+조건 3이 소비(consume) 기록을 대체한다: `instance_id`는 프로세스마다 새로
+발급되는 UUID이므로, 이후의 수동 재시작·크래시 재기동 프로세스는 마커의
+`instance_id`와 절대 일치하지 않는다. 같은 SHA라도 마찬가지다. 별도의 마커
+삭제·rename·소비 장부를 두지 않는다.
 
 `restoreAll()`은 변경하지 않는다. 따라서 복원의 나머지 전제 — 종료 직전 디스크
 값이 `auto_advance: true`였고(`autoAdvanceAtShutdown`), 현재 in-memory 값이
@@ -110,8 +122,8 @@ OFF이며, 미처리 실패 attempt가 없다 — 는 그대로다. 사용자가
 세션 배포가 있어도 되살아나지 않는다.
 
 `beforeReconcile`의 `repo_operations` 후보 동결은 손대지 않는다. 마커 후보는
-동결이 필요 없다: 조건 2·3의 시간 창이 "부팅 시점에 진행 중이던 배포"를
-그 자체로 식별한다.
+동결이 필요 없다: 조건 3의 인스턴스 결속이 "이 프로세스를 띄운 배포"를 그
+자체로 식별한다.
 
 ## 3. 데이터 흐름 (오늘 사례 기준)
 
@@ -119,10 +131,11 @@ OFF이며, 미처리 실패 attempt가 없다 — 는 그대로다. 사용자가
 2. 실행기가 워크트리를 target으로 정렬하고 스크립트 spawn.
 3. 스크립트: `npm ci` → `npm run build` → **시작 마커 쓰기** →
    `bdui-shared restart`(기존 서버 사망) → health 폴링.
-4. 새 서버 부팅: `ensureLoaded`가 `auto_advance=false` 강제, persisted true를
-   `autoAdvanceAtShutdown`에 보관. 첫 reconcile pass에서 마커는 `finished_at`
-   부재 → 판정 보류.
-5. 스크립트 health readback 성공 → **종료 마커(`result:"ok"`) 쓰기** → exit 0.
+4. 새 서버 부팅(새 `instance_id` 발급): `ensureLoaded`가 `auto_advance=false`
+   강제, persisted true를 `autoAdvanceAtShutdown`에 보관. 첫 reconcile pass에서
+   마커는 `result` 부재 → 판정 보류.
+5. 스크립트 health readback 성공(고정한 `instance_id`에서 `ok`) → **종료
+   마커(`result:"ok"`, 그 `instance_id`) 쓰기** → exit 0.
 6. 다음 reconcile pass: 조건 1–4 성립 → `triggered` → `restoreAll()` →
    `auto_advance=true`, 대기 중이던 lane 작업 dispatch 재개.
 
@@ -130,7 +143,9 @@ OFF이며, 미처리 실패 attempt가 없다 — 는 그대로다. 사용자가
 
 | 상황 | 판정 |
 | --- | --- |
-| 수동 `bdui-shared restart` / 크래시 재부팅 | 기존 마커의 `finished_at < process_started_at` → 후보 아님, OFF 유지 |
+| 수동 `bdui-shared restart` / 크래시 재부팅 | 새 프로세스의 `instance_id` ≠ 마커 → 후보 아님, OFF 유지 (같은 SHA여도 동일) |
+| health 폴링 중 같은 SHA로 수동 재시작·크래시 재기동 | 고정한 `instance_id`와 다른 응답 → 스크립트 `runtime_identity_changed` 실패, `result:"failed"` → OFF |
+| restart와 health 확인이 같은 초에 일어남 | 판정이 시간 비교를 쓰지 않으므로 영향 없음 |
 | 스크립트가 health 폴링 중 강제 종료 | `result:"ok"` 미도달(trap이 `failed` 기록 또는 시작 마커만 잔존) → OFF |
 | health readback 실패 | `result:"failed"` → OFF (실패 처리는 세션 소유) |
 | superseded (이미 target이 ancestor) | 실행기가 스크립트 spawn 전에 반환 → 마커 변화 없음 |
@@ -143,13 +158,16 @@ OFF이며, 미처리 실패 attempt가 없다 — 는 그대로다. 사용자가
 
 - `server/worker/auto-advance-restore.session-marker.test.js` (신규, vitest):
   fake `runtime_identity`·fixture 마커로 §2 조건별 복원/비복원 — 성공 복원,
-  `result:"failed"`, finish 부재(보류 후 후속 pass 복원), stale finish(수동
-  재시작 시나리오), target_sha 불일치, 파싱 불가, `restoreAll` 전제
-  (`autoAdvanceAtShutdown` false면 미복원) 유지.
+  `result:"failed"`, result 부재(보류 후 후속 pass 복원), `instance_id` 불일치
+  (수동 재시작·크래시 시나리오, 같은 SHA), `instance_id` 누락, target_sha
+  불일치, 파싱 불가, `restoreAll` 전제(`autoAdvanceAtShutdown` false면 미복원)
+  유지. 타임스탬프가 `process_started_at`과 같은 초여도 복원되는 케이스 포함.
 - deploy 스크립트 테스트 (기존 `repo-ops-deploy-worktree.integration.test.js`
-  패턴): PATH에 stub `bdui-shared`/`npm`을 두고 실행해 (a) restart 직전 시작
-  마커 존재·원자성, (b) 성공 경로 종료 마커 `result:"ok"`, (c) health 실패
-  경로 `result:"failed"`를 검증.
+  패턴): PATH에 stub `bdui-shared`/`npm`을 두고 stub healthz 서버(또는
+  `BDUI_DEPLOY_HEALTH_URL`)로 실행해 (a) restart 직전 시작 마커 존재·원자성,
+  (b) 성공 경로 종료 마커 `result:"ok"` + 관측한 `instance_id`, (c) health
+  실패 경로 `result:"failed"`, (d) 폴링 중 `instance_id`가 바뀌면
+  `runtime_identity_changed`로 실패하고 `result:"failed"`를 남김을 검증.
 - Pre-Handoff 번들: `npm run tsc`, `npm test`, `npm run lint`,
   `npm run prettier:write`, `npm run build`(번들 포함 — 단, 이 변경은 frontend
   소스를 건드리지 않으므로 번들 diff가 없어야 정상).
