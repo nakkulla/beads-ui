@@ -155,10 +155,12 @@ a {
   letter-spacing: 0.02em;
 }
 
-/* Header layout: group title + tabs on the left */
+/* Header layout: group title + tabs on the left. The children are boxes
+   (Monitor link led by a glyph grid, textless divider, bordered repo capsule),
+   so baseline alignment scatters them vertically; center them instead. */
 .header-left {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--space-6);
 }
 
