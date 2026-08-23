@@ -197,6 +197,11 @@ function normalizeActiveAccount(rows) {
   if (!active || !active.usage || typeof active.usage !== 'object') {
     return unavailable();
   }
+  // An explicit non-ok status is fail-quiet at the top level even when a stale
+  // usage object survives on the row; the row itself still ships in accounts[].
+  if (typeof active.usageStatus === 'string' && active.usageStatus !== 'ok') {
+    return unavailable();
+  }
   if (
     typeof active.email !== 'string' ||
     active.email.length === 0 ||

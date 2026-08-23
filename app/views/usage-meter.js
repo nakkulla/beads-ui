@@ -274,6 +274,9 @@ export function createUsageMeter(mount_element) {
   const provider_snapshots = new Map();
   /** @type {Map<string, RowMessage>} */
   const row_messages = new Map();
+  // A poll started before an account switch can settle after the post-switch
+  // refresh; only the newest refresh may write the snapshots.
+  let refresh_generation = 0;
 
   /** Hide the fail-quiet mount and discard its previous snapshot. */
   function hide() {
@@ -326,6 +329,7 @@ export function createUsageMeter(mount_element) {
     }
   }
 
+  /** Open or close the card from the header toggle. */
   function onToggleClick() {
     if (is_open) {
       closeCard();
@@ -335,6 +339,7 @@ export function createUsageMeter(mount_element) {
     renderProviders();
   }
 
+  /** Close the mobile bottom sheet from its scrim. */
   function onScrimMousedown() {
     closeCard();
     renderProviders();
@@ -681,13 +686,15 @@ export function createUsageMeter(mount_element) {
 
   /** Refresh every provider independently, then render one coherent tick. */
   async function refresh() {
+    refresh_generation += 1;
+    const generation = refresh_generation;
     const results = await Promise.all(
       PROVIDERS.map(async (provider) => ({
         provider,
         snapshot: await fetchProvider(provider)
       }))
     );
-    if (destroyed) {
+    if (destroyed || generation !== refresh_generation) {
       return;
     }
     for (const result of results) {

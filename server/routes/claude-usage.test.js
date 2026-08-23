@@ -302,6 +302,17 @@ describe('claude account rows', () => {
       ]
     });
   });
+
+  test('reports the top level unavailable when the active status is not ok', () => {
+    const expired_active = accountRow({
+      active: true,
+      usageStatus: 'token_expired'
+    });
+
+    const result = normalizeClaudeUsage({ accounts: [expired_active] });
+
+    expect(result.available).toBe(false);
+  });
 });
 
 describe('claude usage cache invalidation', () => {

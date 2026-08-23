@@ -909,4 +909,75 @@ describe('usage meter account switch', () => {
     releaseClaudeSwitch(undefined);
     meter.destroy();
   });
+  test('drops a poll that settles after a newer refresh', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    /**
+     * @param {number} active_number
+     */
+    function claudePayload(active_number) {
+      return {
+        available: false,
+        accounts: [
+          accountRow({
+            number: active_number,
+            email: `account-${active_number}@example.com`,
+            active: true
+          }),
+          accountRow({
+            number: active_number === 1 ? 2 : 1,
+            email: `account-${active_number === 1 ? 2 : 1}@example.com`
+          })
+        ]
+      };
+    }
+    /** @type {(value: unknown) => void} */
+    let releaseStalePoll = () => {};
+    const stale_poll = new Promise((resolve) => {
+      releaseStalePoll = resolve;
+    });
+    let claude_calls = 0;
+    const fetchMock = vi.fn((/** @type {string} */ url) => {
+      if (url === '/api/claude-account/switch') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ ok: true, switched: true })
+        });
+      }
+      if (url !== '/api/claude-usage') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ available: false })
+        });
+      }
+      claude_calls += 1;
+      const stale = claude_calls === 2;
+      const response = {
+        ok: true,
+        json: () => Promise.resolve(claudePayload(stale ? 1 : claude_calls))
+      };
+      return stale
+        ? stale_poll.then(() => response)
+        : Promise.resolve(response);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    /** @type {HTMLButtonElement} */ (toggleButton(mount)).click();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.usage-meter__switch')
+    ).click();
+    await vi.advanceTimersByTimeAsync(1);
+    releaseStalePoll(undefined);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(
+      mount.querySelector(
+        '.usage-meter__account--active .usage-meter__account-label'
+      )?.textContent
+    ).toBe('account-3@example.com');
+    meter.destroy();
+  });
 });
