@@ -111,6 +111,19 @@ describe('runner/preamble unattended framing (UI-rxp3 §1)', () => {
     expect(UNATTENDED_PREAMBLE).toContain('턴이 끝나는 즉시 종료된다');
     expect(guardContractDirective()).not.toContain('백그라운드 태스크');
   });
+
+  test('names the user-only receipt keys the session cannot write', () => {
+    for (const key of [
+      '`impl_dispatch`',
+      '`impl_entry`',
+      '`plan_approval`',
+      '`workflow_mode_source=user`'
+    ]) {
+      expect(UNATTENDED_PREAMBLE).toContain(key);
+    }
+    expect(UNATTENDED_PREAMBLE).toContain('영수증 위조로 fail-closed');
+    expect(UNATTENDED_PREAMBLE).toContain('main 실행 근거가 아니다');
+  });
 });
 
 describe('runner/preamble PR-submit directive (worker-phase2 §1)', () => {
