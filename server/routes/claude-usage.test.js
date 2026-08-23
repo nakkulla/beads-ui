@@ -85,6 +85,22 @@ describe('claude usage normalization', () => {
     });
   });
 
+  test('treats a missing scoped array as no scoped windows', () => {
+    const account = activeAccount();
+    const usage = /** @type {any} */ (account.usage);
+    delete usage.scoped;
+
+    const payload = normalizeClaudeUsage({ accounts: [account] });
+
+    expect(payload).toMatchObject({
+      available: true,
+      windows: [
+        { key: '5h', pct: 26 },
+        { key: '7d', pct: 74 }
+      ]
+    });
+  });
+
   test('returns unavailable when a required usage window is missing', () => {
     const account = activeAccount();
     const usage = /** @type {any} */ (account.usage);

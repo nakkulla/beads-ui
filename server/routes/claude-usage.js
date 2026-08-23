@@ -77,9 +77,14 @@ export function normalizeClaudeUsage(input) {
     account.usageFetchedAt.length === 0 ||
     typeof account.usageAgeSeconds !== 'number' ||
     !Number.isFinite(account.usageAgeSeconds) ||
-    account.usageAgeSeconds < 0 ||
-    !Array.isArray(account.usage.scoped)
+    account.usageAgeSeconds < 0
   ) {
+    return unavailable();
+  }
+  // cswap omits `scoped` when an account has no model-scoped window.
+  const scoped_input =
+    account.usage.scoped === undefined ? [] : account.usage.scoped;
+  if (!Array.isArray(scoped_input)) {
     return unavailable();
   }
 
@@ -91,7 +96,7 @@ export function normalizeClaudeUsage(input) {
 
   /** @type {UsageWindow[]} */
   const scoped_windows = [];
-  for (const scoped of account.usage.scoped) {
+  for (const scoped of scoped_input) {
     if (!scoped || typeof scoped.name !== 'string') {
       return unavailable();
     }
