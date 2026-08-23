@@ -8,6 +8,7 @@ scope:
   - app/views/worker/repo-ops-settings.js
   - app/views/worker/repo-ops-timeline.js
   - app/views/worker/index.js
+  - app/styles.css
 ---
 
 # UI-lsti — 저장소 작업 verify/deploy를 workspace 단위로 opt-out하고 타임라인은 최근 항목만 펼친다
@@ -85,6 +86,13 @@ config를 지우는 커밋 말고는 방법이 없고, 그 커밋은 다른 work
   `{ kind: 'verify'|'deploy', opted_out: boolean, expected_revision }`.
   핸들러는 `worker-auto-repair-toggle`과 같은 CAS/충돌 응답 형식, 성공 시 fanout.
 - `decorateQueue`가 `public_queue.repo_ops_opt_out`을 그대로 내보낸다.
+- `decorateQueue`의 PR 행 투영: `prObservationsFor(workspace_key, queue,
+  verify_policy)`에 넘기는 `verify_policy`는 `repoOpsVerifyPolicy(repo_ops)` 결과를
+  `queue.repo_ops_opt_out.verify === true`일 때 `declaration_state: 'absent'`로
+  바꾼 값이다(`base_sha`는 유지). 표시용 `repo_ops`(선언 캐시)는 그대로 내보내므로
+  선언 패널은 스크립트를 계속 보이고, PR 행만 "verify 선언 없음"과 같은 배지
+  상태가 된다(검증 배지 없음). 서버 유틸 `effectiveVerifyPolicy(repo_ops, queue)`
+  한 곳이 이 규칙을 소유하고 직접 테스트한다.
 - `app/protocol.js` 요청 enum에 이름 추가.
 
 ### 4. 선언 패널 — `app/views/worker/repo-ops-settings.js`
@@ -100,18 +108,31 @@ config를 지우는 커밋 말고는 방법이 없고, 그 커밋은 다른 work
   `badge('skipped', '이 workspace에서 건너뜀')`을 붙인다.
 - 선언 없음(`repo_ops.verify === null`)이면 체크박스를 그리지 않는다(건너뛸 것이
   없다).
+- 스타일(`app/styles.css`): `.worker-repo-ops__lane--skipped`는 lane 값·설명을
+  `opacity: .55`로 흐리고, `.worker-repo-ops__lane-run`(체크박스 label)은 기존
+  `.worker-repo-ops__repair-toggle`과 같은 인라인 라벨 규칙을 재사용한다.
+  `badge('skipped', …)`는 기존 `absent` 배지 색을 쓴다. 타임라인 "더 보기" 버튼은
+  기존 `.worker-ev__btn` 클래스를 재사용하고 rail 아래 여백만 추가한다.
 
 ### 5. 타임라인 — `app/views/worker/repo-ops-timeline.js`
 
-- `RECENT_LIMIT = 5` 추가. `timelineEvents()`는 현행대로 최대 `TIMELINE_LIMIT`을
-  만든다.
-- drawer 모델에 `expanded: boolean`(drawer-local, 열 때 `false`)을 두고 템플릿이
-  표시 집합을 고른다: 앞 `RECENT_LIMIT`개 + **항상 보이는 행**(operation
-  `state ∈ {failed, repairing, running, queued, retry_pending}`이며 `dismissed`
-  아님·`superseded_by` 없음, cleanup 항목 전체). 숨긴 수 `hidden > 0`이면 rail
-  아래 `<button data-seam="repo-ops-more">이전 ${hidden}개 더 보기</button>`,
-  펼친 뒤에는 `접기`.
-- 펼침 상태는 drawer가 열려 있는 동안만 유지(닫으면 초기화).
+- `RECENT_LIMIT = 5` 추가. 새 순수 함수
+  `timelineView(operations, cleanup_failures, { expanded })`가 **전체** 이벤트
+  목록(`timelineEvents(..., Infinity)` — 선행 20개 자르기 없음)에서 표시 집합을
+  고른다:
+  - `unresolved` = operation `state ∈ {failed, repairing, running, queued,
+    retry_pending}`이며 `dismissed` 아님·`superseded_by` 없음인 행 + cleanup 항목
+    전체. **나이에 관계없이 항상 표시**(20개보다 오래돼도 포함).
+  - `expanded=false`: `visible` = 최신 `RECENT_LIMIT`개 ∪ `unresolved`(시간순 유지),
+    `hidden` = 전체 − visible 수.
+  - `expanded=true`: `visible` = 최신 `TIMELINE_LIMIT`(20)개 ∪ `unresolved`,
+    `hidden` = 그 밖의 수(0이면 버튼 없음).
+  - `hidden > 0`이면 rail 아래 `<button data-seam="repo-ops-more">이전 ${hidden}개
+    더 보기</button>`, 펼친 상태에서는 같은 seam이 `접기`.
+- drawer 모델에 `expanded: boolean`을 둔다. `open()`은 `false`로 초기화,
+  `refresh()`는 이벤트만 갱신하고 `expanded`를 **보존**한다(큐 스냅샷 갱신으로
+  접히지 않는다), `close()`는 모델을 비운다. 더 보기 클릭은 `expanded`를 토글하고
+  재렌더한다.
 
 ### 6. 계약 문안 (dotfiles, 별도 quick_fix Bead)
 
@@ -158,15 +179,20 @@ RED → GREEN seam:
    deploy opt-out 시 `ensureDeploy` inert·runner 미호출; opt-out 해제 후 정상 생성.
 3. `server/worker/pr-actions.test.js` — verify opt-out workspace에서 `gateNow`가
    `verify_attempted:false`로 eligible; deploy opt-out에서 머지 후 cleanup이
-   `ensureDeploy` 없이 `closeCoveredRow`로 간다.
+   `ensureDeploy`로부터 `{ok:true, inert:true, opted_out:true}`를 받아
+   `waitForDeployTerminal` 호출 없이 `closeCoveredRow`로 간다(호출부는 현행 inert
+   분기 그대로, 생략하지 않는다).
 4. `server/ws/*` — `worker-repo-ops-opt-out-toggle` 왕복과 fanout의
-   `repo_ops_opt_out` 노출.
+   `repo_ops_opt_out` 노출; `effectiveVerifyPolicy`가 opt-out 시
+   `declaration_state:'absent'`를 돌려 `pr_observations[].verify_receipt_state`에
+   검증 배지가 없고, 표시용 `repo_ops.verify`는 그대로인 단언.
 5. `app/views/worker/repo-operations.test.js` — 체크박스 렌더·클릭 → 전송
    payload, opt-out lane의 `--skipped` 클래스와 배지, 선언 없음이면 체크박스
    없음.
-6. `app/views/worker/repo-ops-timeline.test.js` — 8개 이벤트 중 5개만 보이고
-   "이전 3개 더 보기", 오래된 failed 미해결 행은 접힌 상태에서도 보임, 더 보기
-   클릭 후 전체.
+6. `app/views/worker/repo-ops-timeline.test.js` — `timelineView`: 8개 이벤트 중
+   5개만 보이고 "이전 3개 더 보기"; 25개 중 가장 오래된(21번째 이후) failed
+   미해결 행이 접힌 상태와 펼친 상태 모두에서 보임; 더 보기 클릭 후 20개+미해결;
+   `refresh()` 뒤에도 `expanded`가 유지됨.
 
 회귀: Pre-Handoff Validation(`npm run tsc`·`npm test`·`npm run lint`·
 `npm run prettier:write`·`npm run build`).
