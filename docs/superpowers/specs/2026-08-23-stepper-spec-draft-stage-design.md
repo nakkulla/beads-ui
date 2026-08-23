@@ -171,5 +171,17 @@ draft-only spec_path out of the spec stage"). 그래서 spec을 저작 중인 Be
    테스트 통과.
 6. `npm run tsc`·`npm test`·`npm run lint`·`npm run prettier:write`·`npm run build`
    통과, 번들 갱신 포함.
-7. 배포 후 공유 beads-ui 보드에서 spec 저작 중인 Bead(이 spec의 UI-rcqn 자신이
-   첫 실측 대상) 카드의 spec 칸이 `dim`으로 보인다.
+7. 배포 후 검증은 기계 판정으로 한다(시각 확인은 보조이며 필수 아님). 머지
+   SHA를 `M`이라 할 때,
+   (a) 공유 서버 `/healthz`가 보고하는 sha가 `M`이고,
+   (b) 배포 워크트리 `.worktrees/.repo-ops-deploy`(HEAD = `M`)의
+   `server/workflow-enrich.js`를 `node --input-type=module -e`로 import해,
+   `spec_id` 없이 metadata `spec_path`만 있는 **합성 issue**
+   (`{ status: 'open', metadata: { route: 'spec_backed', spec_path: <docs/
+   하위에 실제로 존재하는 .md 경로> } }`)를 그 워크트리 경로를 `workspace_root`로
+   넘겨 `enrichIssueWorkflow(issue, workspace_root).stages.spec`을 출력했을 때
+   `{ fill: 'dim', glyph: null, stale: false }`이고, 같은 issue에 존재하지 않는
+   경로를 주면 `fill: 'none'`이다. 명령·exit code·출력을 완료 보고에 적는다.
+   발행된 Bead(예: UI-rcqn 자신)는 `spec_id`가 있어 `full`이 되므로 draft 실측
+   대상이 아니다. 실제 spec 저작 중인 open Bead가 그 시점에 있으면 `bd show --json`
+   출력으로 같은 판정을 한 번 더 하되, 없어도 기준은 (a)+(b)로 충족된다.
