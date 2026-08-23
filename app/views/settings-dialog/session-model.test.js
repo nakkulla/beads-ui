@@ -80,10 +80,15 @@ describe('session key lists', () => {
     ).toBe(false);
   });
 
-  test('drops impl_dispatch from the eleven workspace kv keys', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(11);
+  test('drops impl_dispatch from the twelve workspace kv keys', () => {
+    expect(WORKSPACE_KV_KEYS).toHaveLength(12);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
+  });
+
+  test('mirrors the server kv-only quick_fix_impl_model key last', () => {
+    expect(WORKSPACE_KV_KEYS.at(-1)).toBe('quick_fix_impl_model');
+    expect(IMPL_PRESET_KEYS).not.toContain('quick_fix_impl_model');
   });
 
   test('offers 위임 and 메인 as the two execution modes', () => {
@@ -283,6 +288,15 @@ describe('buildSessionDefaultsPatch', () => {
     const patch = buildSessionDefaultsPatch({}, { workflow_mode: 'standard' });
 
     expect(patch).toEqual({ workflow_mode: 'standard' });
+  });
+
+  test('diffs quick_fix_impl_model like any other workspace kv key', () => {
+    const patch = buildSessionDefaultsPatch(
+      { quick_fix_impl_model: 'sol' },
+      { quick_fix_impl_model: 'terra' }
+    );
+
+    expect(patch).toEqual({ quick_fix_impl_model: 'terra' });
   });
 });
 

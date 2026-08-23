@@ -7,12 +7,14 @@ import {
   IMPL_RUNTIMES,
   ORCHESTRATION_KEYS,
   PLAN_REVIEW_MODELS,
+  PRESET_KV_KEYS,
   REVIEW_EFFORTS,
   REVIEW_STEP_MODELS,
   WORKSPACE_KV_KEYS,
   execSettingEnums,
   implPresetEnums,
   inferImplRuntime,
+  sessionDefaultEnums,
   validateExecSettings,
   validateImplPresetSettings,
   validateImplSettings
@@ -52,17 +54,41 @@ describe('worker/exec-enums static vocabularies (dotfiles-mqcj)', () => {
   });
 
   test('drops impl_dispatch from the workspace kv list', () => {
-    expect(WORKSPACE_KV_KEYS).toHaveLength(11);
+    expect(WORKSPACE_KV_KEYS).toHaveLength(12);
 
     expect(WORKSPACE_KV_KEYS).not.toContain('impl_dispatch');
   });
 
-  test('keeps the workspace kv list a subset of the per-bead list', () => {
+  test('appends quick_fix_impl_model as the kv-only route-scoped key', () => {
+    expect(WORKSPACE_KV_KEYS.at(-1)).toBe('quick_fix_impl_model');
+  });
+
+  test('exceeds the per-bead list by the one kv-only key', () => {
     const extra = WORKSPACE_KV_KEYS.filter(
       (key) => !BEAD_APPLY_KEYS.includes(key)
     );
 
-    expect(extra).toEqual([]);
+    expect(extra).toEqual(['quick_fix_impl_model']);
+  });
+
+  test('keeps quick_fix_impl_model out of the preset-carried kv list', () => {
+    expect(PRESET_KV_KEYS).toHaveLength(11);
+    expect(PRESET_KV_KEYS).not.toContain('quick_fix_impl_model');
+
+    expect(PRESET_KV_KEYS.every((key) => IMPL_PRESET_KEYS.includes(key))).toBe(
+      true
+    );
+  });
+
+  test('offers the catalog model tokens to quick_fix_impl_model without auto', () => {
+    const catalog = resolveCatalog({ warn: () => {} });
+
+    const session_enums = sessionDefaultEnums(catalog);
+
+    expect(session_enums.quick_fix_impl_model).toEqual(
+      Object.keys(catalog.model_index)
+    );
+    expect(session_enums.quick_fix_impl_model).not.toContain('auto');
   });
 
   test('retires the merged SESSION_DEFAULT_KEYS surface', () => {

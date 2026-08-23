@@ -510,16 +510,27 @@ export function createSettingsDialog(mount_element, options) {
    * @param {(key: string, value: string) => void} onChange
    * @param {Record<string, string|null|undefined>} source
    * @param {boolean} [disabled]
+   * @param {Record<string, string|null|undefined>} [resolution_source] - Label
+   * resolution input when the row's own source is not the whole workspace layer.
    * @returns {TemplateResult}
    */
-  function selectControl(key, label, choices, onChange, source, disabled) {
+  function selectControl(
+    key,
+    label,
+    choices,
+    onChange,
+    source,
+    disabled,
+    resolution_source
+  ) {
     const selected = source[key] ?? UNSET;
     const view = buildExecutionOptionView(
       key,
       choices,
       source,
       executionProjection(),
-      runnerCatalog()
+      runnerCatalog(),
+      resolution_source
     );
     const selected_option = view.options.find(
       (option) => option.value === selected
@@ -567,15 +578,32 @@ export function createSettingsDialog(mount_element, options) {
    * @param {(key: string, value: string) => void} onChange
    * @param {Record<string, string|null|undefined>} source
    * @param {boolean} [disabled]
+   * @param {Record<string, string|null|undefined>} [resolution_source]
    * @returns {TemplateResult}
    */
-  function selectRow(key, label, choices, onChange, source, disabled = false) {
+  function selectRow(
+    key,
+    label,
+    choices,
+    onChange,
+    source,
+    disabled = false,
+    resolution_source
+  ) {
     return html`<div
       class=${`settings-dialog__row${disabled ? ' settings-dialog__row--off' : ''}`}
     >
       <span class="settings-dialog__row-label">${label}</span>
       <span class="settings-dialog__controls">
-        ${selectControl(key, label, choices, onChange, source, disabled)}
+        ${selectControl(
+          key,
+          label,
+          choices,
+          onChange,
+          source,
+          disabled,
+          resolution_source
+        )}
       </span>
     </div>`;
   }
@@ -652,6 +680,12 @@ export function createSettingsDialog(mount_element, options) {
     const orchestration_models = orchestrationModelOptions(
       catalog,
       worker_runtime_filter
+    );
+    // Every catalog token, runtime-independent: the delegation runtime is DERIVED
+    // from this key's model, so the 위임 대상 row must not narrow it. `auto` is
+    // out of the contract's vocabulary here.
+    const quick_fix_models = implModelOptions(catalog, undefined).filter(
+      (token) => token !== AUTO_LITERAL
     );
     const orchestration_efforts = implEffortOptions(
       catalog,
@@ -928,6 +962,15 @@ export function createSettingsDialog(mount_element, options) {
                   IMPL_SPEEDS,
                   onSessionChange,
                   session_draft
+                )}
+                ${selectRow(
+                  'quick_fix_impl_model',
+                  'quick_fix 구현 모델',
+                  quick_fix_models,
+                  onSessionChange,
+                  session_draft,
+                  false,
+                  { ...session_draft, ...orchestration }
                 )}
               </div>
 

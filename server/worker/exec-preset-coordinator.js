@@ -15,7 +15,7 @@ import {
 import {
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
-  WORKSPACE_KV_KEYS,
+  PRESET_KV_KEYS,
   execSettingEnums,
   implPresetEnums,
   validateImplPresetSettings
@@ -214,7 +214,7 @@ export function createExecPresetCoordinator(options) {
     const enums = execSettingEnums();
     /** @type {Record<string, string>} */
     const candidates = {};
-    for (const key of WORKSPACE_KV_KEYS) {
+    for (const key of PRESET_KV_KEYS) {
       const value = legacy_settings[key];
       const allowed = enums[key];
       if (

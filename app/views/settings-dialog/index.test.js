@@ -309,6 +309,46 @@ describe('createSettingsDialog session tab', () => {
     expect(options).toEqual(['', 'auto', 'sol']);
   });
 
+  test('offers the quick_fix implementation model without the auto literal', async () => {
+    const { root, dialog } = mount();
+    dialog.open();
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="quick_fix_impl_model"]')
+    );
+    const values = Array.from(select.options).map((option) => option.value);
+
+    expect(values).toEqual(['', 'opus', 'sol']);
+    expect(select.options[0].textContent).toContain(
+      '기본값 사용 — 메인 (orchestration opus)'
+    );
+  });
+
+  test('names the workspace orchestration model in the quick_fix unset label', async () => {
+    const { root, dialog } = mount({
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'sol',
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="quick_fix_impl_model"]')
+    );
+
+    expect(select.options[0].textContent).toContain(
+      '기본값 사용 — 메인 (orchestration 5.6-sol)'
+    );
+  });
+
   test('preserves the edit and notifies when the save fails', async () => {
     const transport = vi.fn(async (/** @type {string} */ type) => {
       if (type === 'get-session-defaults') {
