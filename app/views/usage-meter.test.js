@@ -534,6 +534,36 @@ describe('usage meter account card', () => {
     meter.destroy();
   });
 
+  test('spells out each window reset in the card', async () => {
+    const mount = mountMeter();
+    const now_ms = new Date(2026, 7, 6, 11, 16).getTime();
+    vi.useFakeTimers({ now: now_ms, toFake: ['Date'] });
+    const reset_at = new Date(2026, 7, 6, 13, 40).toISOString();
+    stubProviders({
+      ...usageResponse([{ key: '5h', pct: 10, resetsAt: reset_at }]),
+      accounts: [
+        accountRow({
+          number: 1,
+          active: true,
+          windows: [
+            { key: '5h', pct: 10, resetsAt: reset_at },
+            { key: '7d', pct: 40, resetsAt: reset_at }
+          ]
+        })
+      ]
+    });
+
+    const meter = createUsageMeter(mount);
+    await openCard(mount);
+
+    const resets = Array.from(
+      mount.querySelectorAll('.usage-meter__account-reset'),
+      (node) => node.textContent?.trim()
+    );
+    expect(resets).toEqual(['↻ 2h 24m · 13:40', '↻ 2h 24m · 13:40']);
+    meter.destroy();
+  });
+
   test('closes the card on an outside mousedown', async () => {
     const mount = mountMeter();
     stubProviders({
