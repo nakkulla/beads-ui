@@ -262,7 +262,10 @@ function rowKey(provider_key, account_number) {
  */
 export function createUsageMeter(mount_element) {
   let destroyed = false;
-  let is_open = false;
+  // Provider key of the open card section. One provider at a time: each header
+  // group is its own toggle, so the card shows only that provider's accounts.
+  /** @type {string | null} */
+  let open_provider = null;
   // provider key -> the account number currently switching. Keyed per provider
   // because the server allows one concurrent switch per provider, not one
   // globally, so a Codex switch must not be swallowed while Claude switches.
@@ -284,22 +287,29 @@ export function createUsageMeter(mount_element) {
     mount_element.hidden = true;
   }
 
-  /** Attach the document listeners that close the card. */
-  function openCard() {
-    if (is_open) {
+  /**
+   * Open the card on one provider, attaching the document listeners that
+   * close it. Switching from another provider keeps the listeners.
+   *
+   * @param {string} provider_key
+   */
+  function openCard(provider_key) {
+    if (open_provider === provider_key) {
       return;
     }
-    is_open = true;
-    document.addEventListener('mousedown', onDocMousedown);
-    document.addEventListener('keydown', onDocKeydown);
+    if (open_provider === null) {
+      document.addEventListener('mousedown', onDocMousedown);
+      document.addEventListener('keydown', onDocKeydown);
+    }
+    open_provider = provider_key;
   }
 
   /** Detach the document listeners. Callers re-render. */
   function closeCard() {
-    if (!is_open) {
+    if (open_provider === null) {
       return;
     }
-    is_open = false;
+    open_provider = null;
     document.removeEventListener('mousedown', onDocMousedown);
     document.removeEventListener('keydown', onDocKeydown);
   }
@@ -329,12 +339,17 @@ export function createUsageMeter(mount_element) {
     }
   }
 
-  /** Open or close the card from the header toggle. */
-  function onToggleClick() {
-    if (is_open) {
+  /**
+   * Toggle the card from one provider's header group: the same provider
+   * closes it, another provider switches the section without closing.
+   *
+   * @param {string} provider_key
+   */
+  function onToggleClick(provider_key) {
+    if (open_provider === provider_key) {
       closeCard();
     } else {
-      openCard();
+      openCard(provider_key);
     }
     renderProviders();
   }
@@ -430,7 +445,9 @@ export function createUsageMeter(mount_element) {
   }
 
   /**
-   * One provider group of the collapsed header meter.
+   * One provider group of the collapsed header meter. With accounts[] the
+   * group is the toggle for that provider's card section; without it the
+   * group stays a static span.
    *
    * @param {ProviderDescriptor} provider
    * @param {ProviderSnapshot} snapshot
@@ -448,11 +465,12 @@ export function createUsageMeter(mount_element) {
     const inactive_count = snapshot.accounts.filter(
       (account) => !account.active
     ).length;
-    return html`<span
-      class="usage-meter__group${stale ? ' usage-meter__group--stale' : ''}"
-      aria-label=${`${provider.label} usage`}
-    >
-      <span class="usage-meter__provider">${provider.label}</span>
+    const group_class = `usage-meter__group${
+      stale ? ' usage-meter__group--stale' : ''
+    }`;
+    const content = html`<span class="usage-meter__provider"
+        >${provider.label}</span
+      >
       ${snapshot.available
         ? snapshot.windows.map((window) =>
             renderHeaderWindow(window, stale, stale_note, now_ms)
@@ -460,8 +478,25 @@ export function createUsageMeter(mount_element) {
         : html`<span class="usage-meter__empty">사용량 없음</span>`}
       ${inactive_count > 0
         ? html`<span class="usage-meter__badge">+${inactive_count}</span>`
-        : ''}
-    </span>`;
+        : ''}`;
+    if (snapshot.accounts.length === 0) {
+      return html`<span
+        class=${group_class}
+        aria-label=${`${provider.label} usage`}
+        >${content}</span
+      >`;
+    }
+    const is_open = open_provider === provider.key;
+    return html`<button
+      type="button"
+      class=${`usage-meter__toggle ${group_class}`}
+      aria-label=${`${provider.label} usage`}
+      aria-expanded=${is_open ? 'true' : 'false'}
+      aria-controls=${CARD_ID}
+      @click=${() => onToggleClick(provider.key)}
+    >
+      ${content}
+    </button>`;
   }
 
   /**
@@ -600,18 +635,18 @@ export function createUsageMeter(mount_element) {
   }
 
   /**
-   * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} entries
+   * The card of the open provider only.
+   *
+   * @param {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }} entry
    */
-  function renderCard(entries) {
+  function renderCard(entry) {
     return html`<div
       class="usage-meter__card"
       id=${CARD_ID}
       role="dialog"
-      aria-label="계정 사용량"
+      aria-label=${`${entry.provider.label} 계정 사용량`}
     >
-      ${entries
-        .filter((entry) => entry.snapshot.accounts.length > 0)
-        .map((entry) => renderSection(entry.provider, entry.snapshot))}
+      ${renderSection(entry.provider, entry.snapshot)}
       <p class="usage-meter__note">전환은 새로 시작하는 세션부터 적용됩니다.</p>
     </div>`;
   }
@@ -632,34 +667,27 @@ export function createUsageMeter(mount_element) {
       return;
     }
 
-    const has_accounts = entries.some(
-      (entry) => entry.snapshot.accounts.length > 0
+    // The open provider must still have accounts to show; a poll that drops
+    // them closes the card instead of rendering an empty section.
+    const open_entry = entries.find(
+      (entry) =>
+        entry.provider.key === open_provider &&
+        entry.snapshot.accounts.length > 0
     );
-    if (!has_accounts) {
+    if (!open_entry) {
       closeCard();
     }
 
     const now_ms = Date.now();
-    const meter = renderMeter(entries, now_ms);
     render(
-      html`${has_accounts
-        ? html`<button
-            type="button"
-            class="usage-meter__toggle"
-            aria-expanded=${is_open ? 'true' : 'false'}
-            aria-controls=${CARD_ID}
-            @click=${onToggleClick}
-          >
-            ${meter}
-          </button>`
-        : meter}
-      ${is_open
+      html`${renderMeter(entries, now_ms)}
+      ${open_entry
         ? html`<div
               class="usage-meter__scrim"
               aria-hidden="true"
               @mousedown=${onScrimMousedown}
             ></div>
-            ${renderCard(entries)}`
+            ${renderCard(open_entry)}`
         : ''}`,
       mount_element
     );

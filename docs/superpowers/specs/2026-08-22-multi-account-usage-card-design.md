@@ -38,8 +38,11 @@ scope:
 
 - 접힌 상태(헤더)는 지금과 같다 — 활성 계정 창만 보이고, provider별로 다른
   계정이 있으면 `+N` 배지가 붙는다.
-- 미터를 클릭하면 카드가 열려 **관리되는 모든 계정**의 사용량이 provider별로
-  보인다. 모바일에서는 같은 카드가 하단 시트로 올라온다.
+- provider 그룹(Claude/Codex)을 클릭하면 카드가 열려 **그 provider의 관리되는
+  모든 계정** 사용량이 보인다. 열린 상태에서 다른 provider 그룹을 클릭하면
+  닫히지 않고 그 provider 섹션으로 바뀐다. 모바일에서는 같은 카드가 하단
+  시트로 올라온다. (UI-ax9x: 최초 발행은 미터 전체 단일 토글·전 provider
+  섹션이었으나, 배지가 provider별이므로 클릭 대상과 카드 내용을 일치시켰다.)
 - 카드의 비활성 계정 행에서 **[전환] 버튼 클릭 즉시** `cswap switch` /
   `codex-auth switch`를 실행해 활성 계정을 바꾼다.
 
@@ -186,16 +189,18 @@ scope:
   (accounts 중 active === true인 행 수)`로 계산하므로 활성 계정 판정이 실패해
   활성 행이 0개인 경우에도 수치가 맞는다. `N ≤ 0`이면 배지 없음.
   `accounts[]`가 없으면 배지도 없다.
-- 미터 전체를 `<button class="usage-meter__toggle" aria-expanded
-  aria-controls>`로 감싼다. 어떤 provider에도 `accounts[]`가 없으면 버튼 대신
-  기존 정적 렌더(카드 없음).
+- `accounts[]`가 있는 provider 그룹은 각자 `<button class="usage-meter__toggle
+  usage-meter__group" aria-expanded aria-controls>`가 된다. `accounts[]`가 없는
+  provider 그룹은 기존 정적 `span` 렌더를 유지하고, 어떤 provider에도 없으면
+  카드도 없다.
 
 ### 카드(펼친 상태, A안)
 
 - 위치: 데스크톱은 헤더 아래 우측 정렬 팝오버(폭 380px, 최대 화면 폭−24px).
   `≤640px`(기존 브레이크포인트)에서는 하단 시트 + 스크림.
-- 구조: provider 섹션 헤더(`Claude · 활성 A / 전체 N`, `A`는 정규화된
-  행의 실제 활성 개수로 0일 수 있음) → 계정 행.
+- 구조: 열린 provider 하나의 섹션만 — 섹션 헤더(`Claude · 활성 A / 전체 N`,
+  `A`는 정규화된 행의 실제 활성 개수로 0일 수 있음) → 계정 행. 카드
+  `aria-label`은 `<provider> 계정 사용량`.
 - 계정 행:
   - 라벨: `alias`가 있으면 alias(이메일은 `title`), 없으면 이메일 전체.
   - 태그: Codex는 `plan` 태그 항상, 활성 행은 `active` 태그와 강조 배경.
@@ -211,9 +216,10 @@ scope:
     돌려주고, 그 결과가 행 아래에 표시된다. 토큰 만료 계정으로의 전환이
     바로 재로그인 복구 경로이기 때문이다.
 - 카드 하단 고정 안내 한 줄: "전환은 새로 시작하는 세션부터 적용됩니다."
-- 닫힘: outside `mousedown`, `Escape`(`workspace-picker`의 문서 리스너 패턴
-  재사용). 60초 폴링 갱신은 열린 상태를 유지한 채 내용만 바꾼다. `destroy()`
-  에서 리스너를 해제한다.
+- 닫힘: 열린 provider 그룹 재클릭, outside `mousedown`, `Escape`
+  (`workspace-picker`의 문서 리스너 패턴 재사용). 60초 폴링 갱신은 열린
+  provider를 유지한 채 내용만 바꾸되, 그 provider의 `accounts[]`가 사라지면
+  닫는다. `destroy()`에서 리스너를 해제한다.
 
 ### 전환 흐름
 
@@ -258,7 +264,9 @@ scope:
   시작된 in-flight 조회가 완료돼도 캐시에 쓰이지 않음, 무효화 후 GET이 새
   프로세스를 실행함, 무효화 후 도착한 GET이 이전 in-flight 결과를 받지 않음.
 - `app/views/usage-meter.test.js`: 배지 개수와 0일 때 숨김, `accounts` 없을 때
-  정적 렌더, 카드 열림/outside·Esc 닫힘, 폴링 갱신 중 열린 상태 유지, 행
+  정적 렌더, provider별 카드 열림·다른 provider로 전환·재클릭 닫힘·
+  `accounts` 없는 provider는 정적 그룹, outside·Esc 닫힘, 폴링 갱신 중 열린
+  상태 유지·열린 provider의 `accounts` 소실 시 닫힘, 행
   라벨(alias 우선)·plan 태그·상태 문구, `status !== "ok"` 행에서도 [전환]
   버튼이 활성, 활성 행 0개일 때 배지·섹션 수치, 전환 성공→`fetch` 재호출,
   실패→행 오류 문구, 모바일 시트 클래스.
