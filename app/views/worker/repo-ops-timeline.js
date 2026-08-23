@@ -29,6 +29,30 @@ import { cleanupStepLabel, cleanupStepperView } from './merge-steps.js';
 export const TIMELINE_LIMIT = 20;
 
 /**
+ * How many events the drawer opens with. The rail's first screen answers "what
+ * just happened", so it starts at the handful a reader can take in; the older
+ * twenty stay one click away rather than pushing the recent ones off-screen.
+ *
+ * @type {number}
+ */
+export const RECENT_LIMIT = 5;
+
+/**
+ * Operation states that still WANT something from a person or a runner. A row
+ * in one of these is never folded away by age: an old failure is exactly the
+ * one a reader must not have to hunt for.
+ *
+ * @type {Set<string>}
+ */
+const UNRESOLVED_STATES = new Set([
+  'failed',
+  'repairing',
+  'running',
+  'queued',
+  'retry_pending'
+]);
+
+/**
  * What each operation kind is called in the timeline. `verify` and `deploy` are
  * durable vocabulary; these are the human names for the same two lanes.
  *
@@ -109,6 +133,48 @@ export function timelineEvents(
     return right.at - left.at;
   });
   return events.slice(0, Math.max(0, limit));
+}
+
+/**
+ * Whether one event still needs attention. A stopped cleanup always does — it
+ * exists only because the post-merge cursor could not finish.
+ *
+ * @param {any} event
+ * @returns {boolean}
+ */
+function isUnresolved(event) {
+  if (event.type === 'cleanup') {
+    return true;
+  }
+  const operation = event.operation;
+  return (
+    UNRESOLVED_STATES.has(operation.state) &&
+    !operation.dismissed &&
+    !operation.superseded_by
+  );
+}
+
+/**
+ * Choose what the rail shows (UI-lsti §5): the newest handful plus every
+ * unresolved row, in one newest-first order, and the count of everything else.
+ *
+ * The derivation runs over the WHOLE event list rather than a pre-cut twenty,
+ * because the unresolved rule is about attention, not recency — a failure older
+ * than the twentieth event must still surface.
+ *
+ * @param {any} operations - Projected `repo_operations` cards.
+ * @param {any} cleanup_failures - Projected `cleanup_failed` entries.
+ * @param {{ expanded?: boolean }} [options]
+ * @returns {{ visible: any[], hidden: number }}
+ */
+export function timelineView(operations, cleanup_failures, options = {}) {
+  const all = timelineEvents(operations, cleanup_failures, Infinity);
+  const limit = options.expanded === true ? TIMELINE_LIMIT : RECENT_LIMIT;
+  const recent = new Set(all.slice(0, limit));
+  const visible = all.filter(
+    (event) => recent.has(event) || isUnresolved(event)
+  );
+  return { visible, hidden: all.length - visible.length };
 }
 
 /**
@@ -424,10 +490,12 @@ function cleanupEventTemplate(event) {
 /**
  * The drawer body.
  *
- * @param {{ events: any[], repo: string }} model
+ * @param {{ events: any[], repo: string, hidden?: number, expanded?: boolean }} model
  * @returns {TemplateResult}
  */
 export function repoOpsTimelineTemplate(model) {
+  const hidden = typeof model.hidden === 'number' ? model.hidden : 0;
+  const expanded = model.expanded === true;
   return html`<section class="worker-repo-drawer" data-seam="repo-ops-timeline">
     <div class="worker-repo-drawer__hd">
       <h3>저장소 작업 타임라인</h3>
@@ -451,6 +519,17 @@ export function repoOpsTimelineTemplate(model) {
               : operationEventTemplate(event)
           )}
         </ul>`}
+    ${hidden > 0 || expanded
+      ? html`<div class="worker-repo-drawer__more">
+          <button
+            type="button"
+            class="worker-ev__btn"
+            data-seam="repo-ops-more"
+          >
+            ${expanded ? '접기' : `이전 ${hidden}개 더 보기`}
+          </button>
+        </div>`
+      : ''}
   </section>`;
 }
 
@@ -463,17 +542,37 @@ export function repoOpsTimelineTemplate(model) {
  * @param {{ onClose?: () => void }} [options]
  */
 export function createRepoOpsDrawer(mount_element, options = {}) {
-  /** @type {{ events: any[], repo: string }|null} */
+  /** @type {{ operations: any, cleanup_failures: any, repo: string, expanded: boolean }|null} */
   let model = null;
 
   function doRender() {
-    render(model ? repoOpsTimelineTemplate(model) : html``, mount_element);
+    if (model === null) {
+      render(html``, mount_element);
+      return;
+    }
+    const view = timelineView(model.operations, model.cleanup_failures, {
+      expanded: model.expanded
+    });
+    render(
+      repoOpsTimelineTemplate({
+        events: view.visible,
+        hidden: view.hidden,
+        expanded: model.expanded,
+        repo: model.repo
+      }),
+      mount_element
+    );
   }
 
   mount_element.addEventListener('click', (ev) => {
     const target = /** @type {HTMLElement} */ (ev.target);
     if (target?.closest?.('[data-seam="repo-ops-close"]')) {
       close();
+      return;
+    }
+    if (target?.closest?.('[data-seam="repo-ops-more"]') && model) {
+      model.expanded = !model.expanded;
+      doRender();
     }
   });
 
@@ -482,8 +581,10 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
    */
   function open(input) {
     model = {
-      events: timelineEvents(input.operations, input.cleanup_failures),
-      repo: input.repo || ''
+      operations: input.operations,
+      cleanup_failures: input.cleanup_failures,
+      repo: input.repo || '',
+      expanded: false
     };
     doRender();
   }
@@ -505,7 +606,9 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
     /** @returns {boolean} */
     isOpen: () => model !== null,
     /**
-     * Re-derive from a fresh snapshot while the drawer stays open.
+     * Re-derive from a fresh snapshot while the drawer stays open. The fold
+     * state is the READER's, not the snapshot's: a queue push must never
+     * collapse a timeline someone just opened.
      *
      * @param {{ operations: any, cleanup_failures: any, repo?: string }} input
      */
@@ -513,7 +616,13 @@ export function createRepoOpsDrawer(mount_element, options = {}) {
       if (!model) {
         return;
       }
-      open(input);
+      model = {
+        operations: input.operations,
+        cleanup_failures: input.cleanup_failures,
+        repo: input.repo || '',
+        expanded: model.expanded
+      };
+      doRender();
     }
   };
 }

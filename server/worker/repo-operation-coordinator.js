@@ -722,6 +722,21 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
+   * This workspace's per-kind opt-out from the declared repository operations
+   * (UI-lsti §2). Read fresh on every decision — the setting is a durable queue
+   * field a user can flip between two operations.
+   *
+   * @returns {{ verify: boolean, deploy: boolean }}
+   */
+  function optOutOf() {
+    const stored = deps.store.snapshot(deps.workspace).repo_ops_opt_out;
+    return {
+      verify: stored?.verify === true,
+      deploy: stored?.deploy === true
+    };
+  }
+
+  /**
    * @param {any} candidate
    */
   function verifyCandidateMatches(candidate) {
@@ -780,6 +795,9 @@ export function createRepoOperationCoordinator(deps) {
     });
     if (!policy.policy || !policy.target) {
       return policy;
+    }
+    if (optOutOf().verify) {
+      return { ok: true, inert: true, opted_out: true };
     }
     const declaration = policy.policy.verify;
     if (!declaration) {
@@ -1362,6 +1380,9 @@ export function createRepoOperationCoordinator(deps) {
       gitRun: deps.gitRun
     });
     if (!policy.policy || !policy.target) return policy;
+    if (optOutOf().deploy) {
+      return { ok: true, inert: true, opted_out: true };
+    }
     if (!policy.policy.deploy && !policy.target.deploy)
       return { ok: true, inert: true };
     if (
@@ -1717,11 +1738,21 @@ export function createRepoOperationCoordinator(deps) {
     if (!resolved.ok && resolved.code) {
       return resolved;
     }
+    const opt_out = optOutOf();
+    // `present`는 선언 사실이므로 opt-out과 무관하게 불변이다. verify를
+    // 건너뛰는 workspace는 script를 null로 받아, 호출부가 이미 가진 "verify
+    // 선언 없음" 분기를 그대로 탄다 — 새 분기를 만들지 않는다.
     return {
       ok: true,
       present: resolved.config_blob_sha !== null,
-      verify_script_path: resolved.verify?.script ?? null,
-      verify_timeout_ms: resolved.verify?.timeout_ms ?? null
+      verify_script_path: opt_out.verify
+        ? null
+        : (resolved.verify?.script ?? null),
+      verify_timeout_ms: opt_out.verify
+        ? null
+        : (resolved.verify?.timeout_ms ?? null),
+      verify_opted_out: opt_out.verify,
+      deploy_opted_out: opt_out.deploy
     };
   }
 

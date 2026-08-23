@@ -700,7 +700,9 @@ describe('RepoOperation coordinator', () => {
       ok: true,
       present: true,
       verify_script_path: null,
-      verify_timeout_ms: null
+      verify_timeout_ms: null,
+      verify_opted_out: false,
+      deploy_opted_out: false
     });
   });
 
@@ -2977,5 +2979,140 @@ describe('RepoOperation acknowledgement and display cache (UI-q0uy §4.6)', () =
       status: 'error',
       error_code: 'repo_ops_base_unresolved'
     });
+  });
+});
+
+describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
+  /**
+   * @param {'verify'|'deploy'} kind
+   * @param {any} store
+   */
+  function optOut(kind, store) {
+    store.setRepoOpsOptOut(root, {
+      expected_revision: store.snapshot(root).revision,
+      kind,
+      opted_out: true
+    });
+  }
+
+  test('reports an opted-out verify lane as declared but with no script', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true })
+    });
+    optOut('verify', store);
+
+    const result = await coordinator.hasConfig(BASE);
+
+    expect(result).toEqual({
+      ok: true,
+      present: true,
+      verify_script_path: null,
+      verify_timeout_ms: null,
+      verify_opted_out: true,
+      deploy_opted_out: false
+    });
+  });
+
+  test('reports an opted-out deploy lane without hiding the verify script', async () => {
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true })
+    });
+    optOut('deploy', store);
+
+    const result = await coordinator.hasConfig(BASE);
+
+    expect(result).toMatchObject({
+      present: true,
+      verify_script_path: 'repo-ops/script/verify',
+      verify_opted_out: false,
+      deploy_opted_out: true
+    });
+  });
+
+  test('makes ensureVerify inert without materializing a candidate', async () => {
+    const materialize = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize }
+    });
+    optOut('verify', store);
+
+    const result = await coordinator.ensureVerify(verifyCandidate());
+
+    expect(result).toEqual({ ok: true, inert: true, opted_out: true });
+    expect(materialize).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('creates the verify operation again once the workspace opts back in', async () => {
+    const materialize = vi.fn(async () => ({
+      ok: true,
+      path: root,
+      tree_sha: TREE
+    }));
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize, cleanup: vi.fn() }
+    });
+    optOut('verify', store);
+    store.setRepoOpsOptOut(root, {
+      expected_revision: store.snapshot(root).revision,
+      kind: 'verify',
+      opted_out: false
+    });
+
+    const result = await coordinator.ensureVerify(verifyCandidate());
+
+    expect(result.inert).toBeUndefined();
+    expect(materialize).toHaveBeenCalled();
+  });
+
+  test('makes ensureDeploy inert without asking the runner to spawn', async () => {
+    const start = vi.fn();
+    const { store, coordinator } = coordinatorFor({
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    optOut('deploy', store);
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    expect(result).toEqual({ ok: true, inert: true, opted_out: true });
+    expect(start).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('leaves the deploy lane running when only verify is opted out', async () => {
+    const { store, coordinator } = coordinatorFor();
+    optOut('verify', store);
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    expect(result.inert).toBeUndefined();
+    expect(typeof result.operation_id).toBe('string');
   });
 });

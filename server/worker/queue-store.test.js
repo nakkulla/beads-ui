@@ -7307,3 +7307,188 @@ describe('worker/queue-store — external OPEN PR 레인 reconcile (UI-75xw)', (
     });
   });
 });
+
+describe('worker/queue-store repo_ops_opt_out (UI-lsti §1)', () => {
+  test('defaults both kinds to running the declared operation', () => {
+    const store = createQueueStore();
+
+    const queue = store.snapshot(WS);
+
+    expect(queue.repo_ops_opt_out).toEqual({ verify: false, deploy: false });
+  });
+
+  test('opts one kind out under the expected revision', () => {
+    const store = createQueueStore();
+
+    const result = store.setRepoOpsOptOut(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      kind: 'verify',
+      opted_out: true
+    });
+
+    expect(result.queue.repo_ops_opt_out).toEqual({
+      verify: true,
+      deploy: false
+    });
+  });
+
+  test('leaves the other kind untouched', () => {
+    const store = createQueueStore();
+    store.setRepoOpsOptOut(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      kind: 'deploy',
+      opted_out: true
+    });
+
+    const result = store.setRepoOpsOptOut(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      kind: 'verify',
+      opted_out: true
+    });
+
+    expect(result.queue.repo_ops_opt_out).toEqual({
+      verify: true,
+      deploy: true
+    });
+  });
+
+  test('opts a kind back in', () => {
+    const store = createQueueStore();
+    store.setRepoOpsOptOut(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      kind: 'deploy',
+      opted_out: true
+    });
+
+    const result = store.setRepoOpsOptOut(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      kind: 'deploy',
+      opted_out: false
+    });
+
+    expect(result.queue.repo_ops_opt_out.deploy).toBe(false);
+  });
+
+  test('reports a conflict on a stale revision without mutating', () => {
+    const store = createQueueStore();
+    const stale = store.snapshot(WS).revision;
+    store.setRepoOpsOptOut(WS, {
+      expected_revision: stale,
+      kind: 'verify',
+      opted_out: true
+    });
+
+    const result = store.setRepoOpsOptOut(WS, {
+      expected_revision: stale,
+      kind: 'deploy',
+      opted_out: true
+    });
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(result.queue.repo_ops_opt_out).toEqual({
+      verify: true,
+      deploy: false
+    });
+  });
+
+  test('refuses an unknown kind', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS).revision;
+
+    const result = store.setRepoOpsOptOut(WS, {
+      expected_revision: before,
+      kind: /** @type {any} */ ('publish'),
+      opted_out: true
+    });
+
+    expect(result).toMatchObject({ ok: false, conflict: false });
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('refuses a non-boolean opted_out', () => {
+    const store = createQueueStore();
+    const before = store.snapshot(WS).revision;
+
+    const result = store.setRepoOpsOptOut(WS, {
+      expected_revision: before,
+      kind: 'verify',
+      opted_out: /** @type {any} */ ('yes')
+    });
+
+    expect(result).toMatchObject({ ok: false, conflict: false });
+    expect(store.snapshot(WS).revision).toBe(before);
+  });
+
+  test('round-trips the setting through a fresh store instance', () => {
+    const first = createQueueStore();
+    first.setRepoOpsOptOut(WS, {
+      expected_revision: first.snapshot(WS).revision,
+      kind: 'deploy',
+      opted_out: true
+    });
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.repo_ops_opt_out).toEqual({
+      verify: false,
+      deploy: true
+    });
+  });
+
+  test('reads a legacy queue file with no key as both kinds running', () => {
+    const store = createQueueStore();
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    delete raw.repo_ops_opt_out;
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.repo_ops_opt_out).toEqual({
+      verify: false,
+      deploy: false
+    });
+  });
+
+  test('takes only booleans from a malformed persisted value', () => {
+    const store = createQueueStore();
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.repo_ops_opt_out = { verify: 'true', deploy: true };
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.repo_ops_opt_out).toEqual({
+      verify: false,
+      deploy: true
+    });
+  });
+
+  test('normalizes a non-object persisted value to both kinds running', () => {
+    const store = createQueueStore();
+    store.setSlots(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      slots: 3
+    });
+    const file = queueFilePath(WS);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.repo_ops_opt_out = 'verify';
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    const reloaded = createQueueStore().snapshot(WS);
+
+    expect(reloaded.repo_ops_opt_out).toEqual({
+      verify: false,
+      deploy: false
+    });
+  });
+});

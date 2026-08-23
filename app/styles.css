@@ -3250,6 +3250,13 @@ html[data-theme='dark'] {
   color: var(--chip-neutral);
 }
 
+/* A lane this workspace opted out of reads as the same NEUTRAL absence: the
+   declaration is still true, only this workspace stops acting on it. */
+.worker-repo-ops__vd-badge--skipped {
+  border-color: var(--border-chip);
+  color: var(--chip-neutral);
+}
+
 .worker-repo-ops__repair {
   display: grid;
   gap: var(--sp-6);
@@ -3416,6 +3423,11 @@ html[data-theme='dark'] {
 .worker-repo-drawer__empty {
   color: var(--text-dim);
   font-size: var(--fs-body-sm);
+}
+
+/* rail 아래 접기/더 보기 자리. 버튼 자체는 기존 `.worker-ev__btn`을 그대로 쓴다. */
+.worker-repo-drawer__more {
+  padding-top: var(--sp-8);
 }
 
 /* 시간축 rail: 성공은 조용한 한 줄, 실패는 원인 문장과 그 자리의 행동. */
@@ -3748,6 +3760,22 @@ html[data-theme='dark'] {
 .worker-repo-ops__lane-d {
   grid-column: 2;
   color: var(--text-dim);
+  font-size: var(--fs-caption);
+}
+
+/* 흐려지는 것은 값과 설명뿐이다 — lane 이름과 체크박스는 또렷하게 남아야
+   사용자가 어느 행을 다시 켤 수 있는지 읽을 수 있다. */
+.worker-repo-ops__lane--skipped .worker-repo-ops__lane-v,
+.worker-repo-ops__lane--skipped .worker-repo-ops__lane-d {
+  opacity: 0.55;
+}
+
+.worker-repo-ops__lane-run {
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  color: var(--text-secondary);
   font-size: var(--fs-caption);
 }
 
