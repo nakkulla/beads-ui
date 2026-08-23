@@ -6,6 +6,7 @@ scope:
   - app/views/worker/transcript-drawer.js
   - app/views/worker/transcript-render.js
   - app/views/settings-dialog/
+  - app/views/settings-dialog/execution-pane.js
   - app/utils/transcript-lines.js
   - app/main.js
   - app/styles.css
@@ -13,6 +14,8 @@ scope:
   - server/ws/monitor-handlers.js
   - server/ws/worker-handlers.js
   - server/ws/session-defaults-handlers.js
+  - server/ws/exec-preset-handlers.js
+  - server/session-defaults.js
   - server/worker/runnable-cache.js
   - server/worker/title-cache.js
   - server/worker/session-log.js
@@ -50,7 +53,7 @@ scope:
    (`monitor/lanes.js idChip`은 "클릭하면 상세로 이동"). `[대기로 ↴]`가 데스크톱
    에도 항상 보인다(Worker는 coarse pointer/좁은 화면에서만). 레포 라벨은 클릭
    동작이 없다. blocker 경고 `⚠ 선행 X가 어느 레인에도 없고 실행 중도 아님`이
-   닫힌 선행에 대해 영구히 남는다 — `bead_blocked_by`가 blocker의 `status`를
+   닫힌 선행에 대해 영구히 남았다(§10으로 착지 완료) — `bead_blocked_by`가 blocker의 `status`를
    보지 않고 모든 `blocks` 의존을 싣고(`title-cache.js recordFromIssue`), 워커
    큐를 거치지 않고 닫힌 Bead는 `done` 배열에 없어 클라이언트 위치 맵에서
    "내부인데 미적재"로 판정되기 때문이다(UI-2gi1 §6.4의 맹점).
@@ -68,9 +71,10 @@ scope:
   말한다.
 - **서버가 사실을, 클라이언트가 표시를.** 단계·활동·blocker 상태는 서버 투영
   으로 싣고 클라이언트는 분류 판단 없이 그린다(stepper spec §3.1의 규약 그대로).
-- **신규 ws op 최소.** 기존 `worker-*` 변경 op는 이미 `root_dir`을 받는다
+- **신규 ws op 없음.** 기존 `worker-*` 변경 op는 이미 `root_dir`을 받는다
   (`mutationWorkspaceOf`). 추가는 `get/set-session-defaults`·
-  `subscribe-session-log`의 선택적 `root_dir`뿐이다.
+  `subscribe-session-log`·`get-attempt-prompt`의 선택적 `root_dir`과
+  `apply-impl-preset-global`의 `root_dir` 의미 확장(kv까지)뿐이다(§9.5).
 - **기본은 접고, 중요한 것만 펼친다**(사용자 결정 2026-08-23). 첫 화면에
   보이는 것은 "지금 돌고 있는 것·다음에 출발할 것·손이 필요한 것"이다. 부차
   정보는 접힘(파이프라인 없는 레포, 완료된 위임 칩, 빈 직렬 레인, 토큰 누적),
@@ -121,8 +125,10 @@ scope:
 
 ### 4.2 활성 타일 (파이프라인이 있는 레포)
 
-`running>0 || queue>0 || pr_wait>0`인 레포. 한 타일(236px 고정폭, 가로 스크롤
-strip)에:
+`counts.running>0 || counts.queue>0 || counts.pr_wait>0 || counts.runnable>0`인
+레포(§9.4 `counts`). 실행가능 후보만 있는 레포도 활성이다 — 후보를 끌어다 놓을
+대기 섹션(§6)이 그 레포에 있어야 하기 때문이다. 한 타일(236px 고정폭, 가로
+스크롤 strip)에:
 
 | 줄 | 내용 | 동작 |
 |---|---|---|
@@ -143,32 +149,46 @@ strip)에:
 포커스 동작. 펼침 상태는 `localStorage` `beads-ui.monitor.deck`
 (`{ quiet_open: bool }`)에 기억한다. 조용한 레포가 0이면 줄 자체를 그리지
 않는다. 대기 레인의 빈 레포 그룹 헤더(현행 `mon-group` 빈 그룹)는 없앤다 —
-설정 제어가 데크로 옮겨 가므로 대기 레인은 큐가 있는 레포만 보인다(§6).
+설정 제어가 데크로 옮겨 가므로 대기 레인은 큐나 실행가능 후보가 있는 레포만
+보인다(§6).
 
 ### 4.4 레포 실행 설정 패널 (`⚙`)
 
-데크 바로 아래 인라인 패널(목업 `#rs`). **기존 통합 설정 다이얼로그의 `실행`
-탭을 레포 바인딩 가능하게 만들어 재사용**한다 — 새 폼을 만들지 않는다.
+데크 바로 아래 인라인 패널(목업 `#rs`). 새 폼을 만들지 않고 **통합 설정
+다이얼로그의 `실행` 탭 본문을 재사용 가능한 pane으로 떼어 내** 두 곳(다이얼로그
+·모니터 패널)이 같은 코드를 마운트한다(spec gate finding 4 — 현행
+`createSettingsDialog`는 고정 id의 native `<dialog>` 전체를 만들고 open/close만
+돌려주므로 그대로는 인라인 재사용이 불가능하다).
 
-- `createSettingsDialog`가 `options.workspace_override?: { root_dir, queue: () =>
-  QueueLike|null, sessionDefaultsTransport }`를 받게 한다. override가 있으면
-  `get/set-session-defaults`·`worker-queue-set-orchestration-defaults`·
-  `worker-queue-set-slots`·`worker-queue-set-serial-lane-count`·
-  `apply-impl-preset-global` payload에 `root_dir`을 싣고, CAS revision·
-  `runner_catalog`·`execution_defaults`·orchestration 값은 override의 `queue()`
-  (= 그 레포의 `workspaces_state` 행, §9.4)에서 읽는다. override가 없으면 현행
-  동작 그대로(Worker/Board ⚙).
-- 모니터 패널은 다이얼로그의 `실행` 탭 본문만 인라인 마운트하고(`표시` 탭은
-  레포 무관 표시 정책이라 모니터에서 열지 않는다), 헤더에 `<레포명> 실행 설정 ·
-  Worker 탭 ⚙ 실행 탭과 같은 저장소`를 쓴다.
-- 자동화 섹션(자동화/머지/자동 해결 토글, 동시 실행, 직렬 레인)은 다이얼로그
-  `실행` 탭에 이미 있는 항목은 그대로, 없는 항목(자동 해결·직렬 레인)은 같은
-  탭에 **추가**한다(Worker/Board ⚙에서도 같이 보이게 — 한 곳에서 한 번 추가).
-- 패널은 한 번에 한 레포만 연다. 다른 `⚙`을 누르면 바꿔 연다.
+- **`app/views/settings-dialog/execution-pane.js`** `createExecutionPane(
+  mount_element, binding)`를 새로 둔다. 다이얼로그 `실행` 탭의 상태·렌더·
+  저장 로직(세션 기본값 draft/baseline, orchestration draft, runtime filter,
+  preset diff/apply, slots)을 이 모듈로 옮기고 `createSettingsDialog`는 자기
+  탭 영역에 이 pane을 마운트한다(동작·DOM 클래스·기존 테스트 보호 — id 충돌을
+  피하려 pane 내부는 id 대신 클래스·`data-*`만 쓴다). 반환:
+  `{ load(), render(), destroy() }`.
+- `binding = { root_dir: string|null, queue: () => QueueLike|null, transport,
+  implPresetStore, notify }`. `root_dir`이 `null`이면 현행(연결 workspace,
+  payload에 `root_dir` 없음). 문자열이면 **pane이 보내는 모든 op**에
+  `root_dir`을 싣고, 그 레포 revision으로 CAS 1회 재시도한다:
+  `get-session-defaults` · `set-session-defaults` · `worker-queue-set-orchestration-defaults`
+  · `worker-queue-set-slots` · `worker-queue-set-serial-lane-count` ·
+  `worker-automation-toggle` · `worker-merge-auto-toggle` ·
+  `worker-auto-repair-toggle` · `apply-impl-preset-global`(§9.5). CAS revision·
+  `runner_catalog`·`execution_defaults`·orchestration·`auto_advance`·`auto_merge`·
+  `auto_repair`·`slots`·`serial_lane_count`는 `binding.queue()`에서 읽는다 —
+  다이얼로그는 `queueStore.get()`, 모니터는 그 레포의 `workspaces_state` 행(§9.4).
+- pane에 **자동화 섹션**을 추가한다: 자동화/머지/자동 해결 토글, 동시 실행,
+  직렬 레인 — 다이얼로그에 이미 있는 slots는 이 섹션으로 옮기고, 없던 항목은
+  여기서 한 번 추가한다(Worker/Board ⚙에서도 같이 보인다).
+- 모니터 패널은 pane 하나를 마운트하고(`표시` 탭은 레포 무관 표시 정책이라
+  모니터에서 열지 않는다) 헤더에 `<레포명> 실행 설정 · Worker 탭 ⚙ 실행 탭과
+  같은 저장소`를 쓴다. 한 번에 한 레포만 연다 — 다른 `⚙`을 누르면 기존 pane을
+  `destroy()`하고 새 binding으로 다시 마운트한다.
 
 ## 5. 실행가능 레인
 
-- 소스: `workspaces[].runnable[]`(§9.1로 `workflow`·`exec_chips` 재료 추가).
+- 소스: `workspaces[].runnable[]`(§9.1로 `workflow`·`exec_pins` 재료 추가).
 - **레포 섹션**으로 묶는다(`.mon2-sec`): sticky 헤더 = 접기 캐럿 · 레포명 ·
   건수 · `Worker ↗`. 섹션 순서 = 데크 순서(= `workspaces_state` 순서). 빈 섹션은
   그리지 않는다. 접힘 상태는 `localStorage` `beads-ui.monitor.sections`
@@ -222,6 +242,11 @@ strip)에:
 
 ## 6. 대기 레인
 
+- 레포 섹션은 **큐가 비어 있지 않거나 실행가능 후보가 있는** 레포마다 하나씩
+  그린다(spec gate finding 1): 데스크톱은 드래그가 유일한 적재 수단이므로 후보가
+  있는 레포에는 비어 있어도 같은 레포 드롭 타깃이 있어야 한다. 빈 큐 섹션은
+  `병렬` pane 하나에 `비어 있음 — 드래그로 배치` 문구만 보인다. 둘 다 없는
+  레포는 섹션을 그리지 않는다(§4.3 한 줄 요약으로 충분).
 - 레포 섹션(§5와 같은 헤더) 안에 Worker와 같은 `.worker-wait` 스택: `병렬`
   pane + 비어 있지 않은 직렬 레인 pane(`s1..sN`). **빈 직렬 레인은 평소엔
   한 줄 힌트(`직렬 2 비어 있음`)로 접혀 있다가 드래그가 시작되면 드롭 타깃
@@ -280,7 +305,7 @@ revision이 전부 workspace 단위라 레포 간 전역 순서는 존재하지 
 
 ## 7. 실행중 레인 — 진행 상세
 
-타일 = Worker `runningTile`에 모니터 전용 줄 세 개를 더한 형태(running-grid.js의
+타일 = Worker `runningTile`에 모니터 전용 줄 네 개를 더한 형태(running-grid.js의
 타일을 옵션으로 확장; Worker 탭 렌더는 옵션 미사용으로 불변).
 
 | 줄 | 내용 | 소스 |
@@ -289,13 +314,13 @@ revision이 전부 workspace 단위라 레포 간 전역 순서는 존재하지 
 | 제목 | | |
 | **stepper** | `stepperTemplate(bead_workflow[bead_id], 'in_progress')` — 현재 칸 깜빡임 | §9.2 |
 | **활동 줄** | `● <최근 활동 요약> <n초 전>` — 예: `⚡ npm test — 통과 41 · 41초 전`, `구현 리뷰 통과 → PR 생성 중`, `✓ spec 게이트 — codex APPROVE`. 일시정지면 회색 점 | §9.3 `last_activity` |
-| **위임 칩** | 진행 중인 위임만 펼쳐 `⟳ 구현 unit 3/4 · codex`; 끝난 위임은 `✓ n` 한 칩으로 접고 툴팁에 목록(`완료된 위임: spec review · codex, …`). 진행 중도 끝난 것도 없으면 줄 생략 | §9.3 `legs` |
-| **후속 칩** | `→ 후속 <id> (<repo> · <lane> #n)` — 이 세션이 끝나면 출발할 이슈(§5.1). 없으면 줄 생략 | 역방향 간선 |
+| **위임 칩** | 진행 중인 위임만 펼쳐 `⟳ 구현 unit 3 · codex`; 끝난 위임은 `✓ n` 한 칩으로 접고 툴팁에 목록(`완료된 위임: review-consult · codex, 구현 unit 1 · codex …`). 진행 중도 끝난 것도 없으면 줄 생략 | §9.3 `legs` |
+| **후속 칩** | `→ 후속 <id> (<repo> · <lane> #n)` — 이 이슈가 close되면 출발할 이슈(§5.1; 세션 종료가 아니라 close다 — PR·머지가 남을 수 있다). 없으면 줄 생략 | 역방향 간선 |
 | meta | 오케/워커 exec 칩 · 계정 칩(있으면) · 토큰/비용 | 현행 |
 
 - `▤ 세션`은 모니터 안에서 `createTranscriptDrawer`를 연다(Worker 드로어 재사용).
-  `subscribe-session-log`에 `root_dir`을 싣는다(§9.5). 드로어는 모니터 루트
-  하단에 한 개 마운트.
+  `open({ …, root_dir })`로 `subscribe-session-log`·`get-attempt-prompt` 둘 다에
+  `root_dir`을 싣는다(§9.5). 드로어는 모니터 루트 하단에 한 개 마운트.
 - 정렬·heartbeat·운영 버튼(일시정지/재개/폐기/실패 닫기/이어하기 대화상자)은
   현행 op·CAS 규약 유지.
 
@@ -337,10 +362,10 @@ revision이 전부 workspace 단위라 레포 간 전역 순서는 존재하지 
 - **신선도**: 실행 중 세션이 metadata를 쓰면 5분 TTL은 길다. 두 갱신 훅을 더한다.
   (a) 서버 자신의 Bead metadata 쓰기(`server/worker/bd-metadata.js` 경유)
   readback을 `titleCache.refreshFromIssue`로 흘린다. (b) 세션 로그에서 그 bead를
-  대상으로 한 `bd update|close|dep` 명령(Claude `Bash` tool_use / Codex
-  `command_execution`)을 관측하면 해당 레코드를 만료시켜(`titleCache.expire(
-  workspace, bead_id)`) 다음 스냅샷 fill을 유도한다. 둘 다 실패해도 TTL이
-  따라잡는다.
+  대상으로 한 `bd update|close|dep` 명령의 **완료**(Claude: `Bash` tool_use의 짝
+  `tool_result` 도착 / Codex: `command_execution` `item.completed`, §9.3)를
+  관측하면 해당 레코드를 만료시켜(`titleCache.expire(workspace, bead_id)`) 다음
+  스냅샷 fill을 유도한다. 둘 다 실패해도 TTL이 따라잡는다.
 - 실행 중 카드의 `status` 인자는 `'in_progress'`로 고정해 현재 칸이 깜빡이게
   한다(stepper `currentStageKey` 규약).
 
@@ -349,19 +374,31 @@ revision이 전부 workspace 단위라 레포 간 전역 순서는 존재하지 
 `worker-handlers.js attemptsWithUsage()`가 RUNNING attempt에 얹는 비영속 필드에
 추가한다(둘 다 `last_event_at`과 같은 live-only·재시작 시 소실·fail-quiet):
 
-- `last_activity: { at: number, kind: 'assistant'|'tool'|'gate'|'phase'|'result'|'error', text: string, tool?: string, command?: string, path?: string } | null`
-  — `session-log.js publish()`가 이벤트를 받을 때마다 갱신. 요약기는
-  `app/views/worker/transcript-render.js`의 순수 파서(`parseTranscript`와 내부
-  `parseClaude/parseCodex/parseDelegationMonitor`)를 **`app/utils/
-  transcript-lines.js`로 옮기고** transcript-render.js는 re-export한다(드로어
-  무변경). 서버는 그 모듈로 이벤트 1건 → DisplayLine을 얻어 `text`를 160자로
-  자른다. `thinking` 줄은 활동으로 치지 않는다(마지막 비-thinking 줄 유지).
-  delegation 스트림(`launch_id`)의 이벤트도 같은 attempt의 활동으로 합친다.
-- `legs: Array<{ kind: 'implementation'|'review'|'spec_review'|'plan_review'|'other', runtime: string|null, model: string|null, state: 'live'|'done'|'failed', label: string }>`
-  — 기존 `delegation_sessions[]`(codex 위임 런치)와 `usage_legs[]`(role 태그)를
-  합쳐 파생. 위임 런치가 끝나지 않았으면 `live`. 라벨은 서버가 만든다
-  (`구현 unit 3/4 · codex`, `spec review · codex`) — unit 번호는
-  `delegation_sessions` 순번.
+- `last_activity: { at: number, kind: 'assistant'|'tool'|'gate'|'phase'|'result'|'error', text: string, tool?: string, command?: string, path?: string, result?: string } | null`
+  — attempt마다 **상태를 가진 reducer**가 만든다(spec gate finding 6: Claude의
+  `tool_use`는 뒤따르는 `tool_result`와 짝을 맞춰야 `npm test — 통과 41` 같은
+  결과 요약이 나오므로 이벤트 1건 → 줄 변환으로는 부족하다).
+  `app/views/worker/transcript-render.js`의 순수 파서를 **`app/utils/
+  transcript-lines.js`로 옮기며** 증분 API를 만든다: `createTranscriptReducer()`
+  → `{ push(event): DisplayLine[] }`(내부 `toolsById` 짝맞춤 보존);
+  `parseTranscript(events)`는 reducer를 돌려 같은 결과를 내고
+  transcript-render.js는 둘 다 re-export한다(드로어 무변경, 기존 파서 테스트
+  전부 통과). `parseCodex`는 main-session `item.completed` 중 `command_execution`
+  항목도 `tool` 줄(command + exit/결과 요약)로 투영하도록 넓힌다 — 현행은
+  버린다. 서버 `session-log.js`는 attempt(+delegation `launch_id`)별 reducer를
+  들고 `publish()`마다 `push`해 마지막 비-`thinking` 줄을 `last_activity`로
+  보관한다(`text` 160자 절단, 재시작 시 소실 — live-only). §9.2 (b)의 캐시
+  만료는 **명령 완료 시점**에 건다: Claude는 `bd update|close|dep` 명령
+  `tool_use`의 짝 `tool_result`가 도착했을 때, Codex는 그 `command_execution`
+  `item.completed`일 때 — 시작 시점에 만료하면 명령이 끝나기 전 옛 값을 다시
+  채울 수 있다.
+- `legs: Array<{ role: 'implementation'|'review-consult'|null, runtime: string|null, model: string|null, state: 'live'|'done'|'failed', ordinal: number, label: string }>`
+  — 기존 `delegation_sessions[]`(위임 런치)와 `usage_legs[]`(role 태그)만으로
+  파생한다(spec gate finding 7 — 새 producer 계약·durable 어휘를 만들지
+  않는다). 현행 role 어휘는 `implementation`·`review-consult` 둘뿐이고 총
+  unit 수는 알 수 없으므로 라벨은 `구현 unit 3 · codex`, `review-consult ·
+  codex`처럼 **순번만** 적는다(총수 없음). 위임 런치가 끝나지 않았으면
+  `live`. spec/plan/impl 리뷰 구분은 stepper(§9.2)가 맡는다.
 
 ### 9.4 `workspaces_state[]` 확장
 
@@ -369,12 +406,19 @@ revision이 전부 workspace 단위라 레포 간 전역 순서는 존재하지 
 runner_catalog }`에 더한다:
 `serial_lane_count, auto_repair, orchestration_model, orchestration_effort,
 orchestration_speed, execution_defaults, session_defaults: Record<string,string>,
-session_defaults_warnings: string[], counts: { running, queue, pr_wait, done_total }`.
+session_defaults_warnings: string[], counts: { running, pr_wait, queue, runnable }`.
 - `session_defaults`는 `server/session-defaults.js` 읽기를 레포별로 캐시
   (`set-session-defaults` 성공 시 그 레포만 무효화, 그 외 5분 TTL). 읽기 실패는
-  `{}` + warning.
-- `counts`는 raw queue에서 계산(모니터가 `workspaces[]` 없는 조용한 레포도
-  데크에 그리기 위함).
+  `{}` + warning. **읽기는 비동기이고 `workspaces_state` 생성은 동기이므로**
+  cold/expired 캐시는 빈 값(`{}`)을 싣고 fill을 큐잉하며, fill 완료가 모니터
+  집계 rebuild(`schedulePush`)를 예약한다 — `issue_prefix` 캐시와 같은 규약
+  (spec gate finding 5). 첫 스냅샷이 빈 기본값이면 다음 스냅샷이 채운다.
+- `counts`는 클라이언트 `buildLanes()`와 **같은 배타 우선순위**로 센다(spec
+  gate finding 2): `running`(live attempt) > `pr_wait` > `queue`(병렬 `queue`
+  ∪ `serial_lanes[].entries`, 실행 중으로 빠진 버드 제외) > `runnable`(runnable
+  cache 중 앞 레인에 없는 것). 한 버드는 한 칸에만 센다. 완료 수는 기간에
+  따르므로 서버가 싣지 않는다 — 데크 합계의 `<기간> 완료 n`은 클라이언트가
+  `workspaces[].done[]`을 `done_since`로 걸러 센다(현행 KPI 산식 그대로).
 
 ### 9.5 ws op의 `root_dir`
 
@@ -382,36 +426,49 @@ session_defaults_warnings: string[], counts: { running, queue, pr_wait, done_tot
   `targetWorkspaceOf(ws, payload)`로 검증(미등록/숨김 → `bad_request`), 그 루트의
   bd kv를 읽고/쓴다. 부재 시 현행(연결 workspace). `set` 성공 시 §9.4 캐시
   무효화 + 모니터 집계 rebuild 트리거.
-- `subscribe-session-log`: 선택적 `root_dir`. 존재 시 그 workspace의 attempt를
-  구독한다(검증·권한 규약은 현행 "connection workspace의 exact attempt" 문장을
-  "대상 workspace의 exact attempt"로 일반화). 구독 레지스트리 키는 이미
-  client_id라 충돌 없음.
+- `apply-impl-preset-global`(`server/ws/exec-preset-handlers.js`): 현행은
+  `root_dir`을 **queue 변경에만** 쓰고 kv 읽기·쓰기·readback은 연결 workspace에서
+  한다(spec gate finding 3) — 다른 레포 패널에서 적용하면 대상 레포 queue와
+  현재 레포 session defaults가 갈라진다. `root_dir`이 있으면 kv read/write/
+  readback 전부를 검증된 대상 root(`cwd`)에서 수행하도록 고치고, 성공 시 §9.4
+  캐시 무효화를 그 root에 건다. 연결 레포 A에서 `root_dir=B`로 적용했을 때 B의
+  queue·kv만 바뀌고 A는 불변인 테스트를 둔다. workspace-bound kv helper
+  (`server/session-defaults.js`의 읽기/쓰기)는 `cwd` 인자를 받는 형태로
+  일반화한다.
+- `subscribe-session-log` / `get-attempt-prompt`: 선택적 `root_dir`. 존재 시 그
+  workspace의 attempt를 구독·조회한다(검증·권한 규약은 현행 "connection
+  workspace의 exact attempt" 문장을 "대상 workspace의 exact attempt"로 일반화).
+  구독 레지스트리 키는 이미 client_id라 충돌 없음. 드로어 `open()` 입력에
+  `root_dir?`를 더해 두 op에 같은 값을 싣는다(spec gate finding 8 — 프롬프트
+  토글이 다른 레포 세션에서 `기록 없음`으로 오답하지 않게).
 
 ### 9.6 모니터 집계 rebuild 트리거
 
 §9.2/9.3 갱신은 기존 queue-changed/usage-tick/last_event fanout을 타므로 새
-트리거가 필요 없다. §9.4 `session_defaults`·`set-session-defaults`만 새
-rebuild 원인이다.
+트리거가 필요 없다. 새 rebuild 원인은 둘이다: §9.4 `session_defaults` 캐시의
+async fill 완료와 `set-session-defaults` 성공(해당 레포 무효화 → 즉시 push).
 
-## 10. blocker 경고 정정
+## 10. blocker 경고 정정 — 착지 완료 기록
 
-- `title-cache.js recordFromIssue`: `dependencies[]` 중 `dependency_type ===
-  'blocks'`이고 **`status !== 'closed'`인 것만** `blocked_by`에 넣는다. 같은
-  rig의 의존은 `bd show`가 `status`를 싣는다(실증: `bd show UI-24ow --json`의
-  `UI-rewk: closed`). `status`가 없는 foreign 의존(예: `dotfiles-a27g`)은 그대로
-  두되 `foreign_blocked_by: string[]`로 분리해 싣는다.
-- 모니터 집계(`monitor-handlers.js`)는 foreign blocker id의 prefix가 visible
-  workspace의 `issue_prefix`와 일치하면 그 루트에서 `bd show <id> --json`으로
-  status를 읽어(프로세스 캐시, 성공 5분/실패 1분 TTL) `closed`면 제외한다. 읽지
-  못하면 남긴다.
-- 클라이언트(`blockers.js`) 3분기 유지(내부/외부/판정 불가). 바뀌는 것은 입력:
-  닫힌 blocker가 더 이상 들어오지 않으므로 "내부인데 미적재" 경고는 **진짜
-  열려 있고 어느 레인에도 없는** 선행에만 남는다. 칩 문구: 같은 레인 앞 ·
-  `(<repo> · <lane> #n)` · `(실행중)` · `(PR 대기)` · `(미적재)` · `(외부)` ·
-  `(위치 미확인)` — 현행 어휘 유지. `(완료)` 표기는 사라진다(완료된 선행은
-  blocker가 아니다).
+**이미 quick_fix로 착지했다**(2026-08-24, `ddb55ee898eb37b5c976fd68d0f76174d3f1aed5`
+main 직접 push·배포). 이 절은 설계의 일부가 아니라 완료 기록이며 Phase·테스트
+계획에 다시 들어가지 않는다(spec gate finding 9).
+
+- `server/worker/title-cache.js recordFromIssue`: `dependencies[]` 중
+  `dependency_type === 'blocks'`이고 **`status !== 'closed'`인 것만** `blocked_by`에
+  넣는다(같은 rig 의존은 `bd show`가 `status`를 싣는다). foreign 의존(status
+  없음)은 그대로 `blocked_by`에 남는다 — 별도 필드는 없다.
+- `server/ws/monitor-handlers.js pruneClosedForeignBlockers`: 집계 시
+  `bead_blocked_by`의 각 blocker id 중 prefix가 **다른** visible workspace의
+  `issue_prefix`와 일치하면 그 루트에서 `bd show <id> --json`으로 status를 읽어
+  (프로세스 캐시, 성공 5분/실패 1분 TTL, closed 판명 시 push 예약) `closed`면
+  뺀다. 같은 rig·미소유 prefix·미확인은 그대로(fail-visible).
+- `app/protocol.md`: `bead_blocked_by` = 열린 blocker만.
+- 결과: 클라이언트(`blockers.js`) 3분기(내부/외부/판정 불가)는 그대로이되 닫힌
+  선행이 입력에서 사라져 "내부인데 미적재" 경고는 **진짜 열려 있고 어느
+  레인에도 없는** 선행에만 남고, `(완료)` 표기는 나오지 않는다.
 - `runnable[].blocked_by`(`bd ready --explain` 출처)는 열린 blocker만 싣는 것이
-  `bd ready` 의미이므로 변경 없음 — 검증 테스트만 추가.
+  `bd ready` 의미이므로 변경 없음.
 
 ## 11. 공통 상호작용
 
@@ -466,17 +523,23 @@ rebuild 원인이다.
 서버
 - `runnable-cache`: `workflow`·`exec_pins` 투영 / enrich 실패 시 `null` /
   `spec_id` 유무.
-- `title-cache`: 닫힌 의존 제외, foreign 의존 분리, `workflow` 레코드, `expire`
-  후 재fill.
-- `session-log`: `last_activity` 갱신(Claude tool_use/assistant, Codex
-  agent_message, delegation monitor), thinking 무시, 160자 절단, bd 쓰기 명령
-  관측 → expire 콜백.
+- `title-cache`: `workflow` 레코드, `expire` 후 재fill(닫힌 의존 제외는 §10으로
+  착지 완료).
+- `session-log`: reducer 기반 `last_activity`(Claude tool_use→tool_result 짝맞춤
+  결과 요약, assistant, Codex agent_message·main-session command_execution,
+  delegation monitor), thinking 무시, 160자 절단, bd 쓰기 명령의 **완료**
+  관측(Claude tool_result / Codex item.completed) → expire 콜백.
+- `transcript-lines`: `createTranscriptReducer().push` 누적 결과 ==
+  `parseTranscript` 결과(기존 fixture 전부), `command_execution` 투영.
 - `worker-handlers attemptsWithUsage`: `last_activity`/`legs` overlay, 비실행
   attempt에는 없음.
-- `monitor-handlers`: `workspaces_state` 확장 필드, foreign blocker status 해석
-  (closed 제외·실패 시 유지), `session_defaults` 캐시 무효화.
-- `session-defaults-handlers`/`worker-handlers`: `root_dir` 검증·cwd 전달·부재 시
-  현행 동작.
+- `monitor-handlers`: `workspaces_state` 확장 필드와 `counts` 배타 집계(실행 중
+  버드 중복 없음·직렬 레인 포함·runnable), `session_defaults` async fill → push
+  예약(첫 빈 스냅샷 뒤 채워진 스냅샷), `set-session-defaults` 무효화.
+- `session-defaults-handlers`/`worker-handlers`/`exec-preset-handlers`: `root_dir`
+  검증·cwd 전달·부재 시 현행 동작 불변; `apply-impl-preset-global`은 연결 레포 A
+  에서 `root_dir=B` 적용 시 B의 queue·kv만 바뀌고 A 불변; `subscribe-session-log`·
+  `get-attempt-prompt` 대상 workspace 일반화.
 - `app/utils/transcript-lines` 이동 후 기존 transcript-render 테스트 전부 통과.
 
 클라이언트
@@ -490,8 +553,9 @@ rebuild 원인이다.
   (실행 중으로 빠진 버드 포함), `[대기로 ↴]`·`↑↓✕` 표시 조건(CSS 가드 테스트),
   데크 토글 op + root_dir + CAS 재시도, 포커스 필터 클래스, ⚙ 패널 마운트/교체,
   `▤ 세션` 드로어 `root_dir` 구독.
-- `settings-dialog`: `workspace_override` 있을 때 모든 op에 `root_dir`, 없을 때
-  payload 불변(기존 테스트 보호).
+- `settings-dialog/execution-pane`: `root_dir` null이면 payload 불변(기존
+  다이얼로그 테스트 보호), 문자열이면 열거된 모든 op에 `root_dir` + CAS 재시도,
+  자동화 섹션 토글/slots/직렬 레인, `destroy()` 후 리스너·타이머 없음.
 - CSS 가드(`styles.*-theme.test.js` 방식): 새 블록에 raw hex 없음, `.mon-lanes`
   3열 grid·스와이프 규칙 제거, 모바일 order 규칙 존재.
 - Pre-Handoff Validation 전체(`tsc`/`test`/`lint`/`prettier`/`build` + 번들).
@@ -506,7 +570,7 @@ rebuild 원인이다.
 - 스케줄러·큐 스토어 계약 변경 없음.
 - Worker 탭 렌더 변경 없음(템플릿 옵션 추가·다이얼로그 `자동 해결/직렬 레인`
   행 추가·§11.1 헤더 리본 모바일 CSS는 예외로 명시).
-- 새 ws op 없음(`root_dir` 선택 필드 3곳과 snapshot 필드 추가만).
+- 새 ws op 없음(`root_dir` 선택 필드 추가·확장과 snapshot 필드 추가만).
 - 레포 간 드래그(다른 레포 큐로 이동) 없음 — 서버에 개념이 없다.
 - 이슈별 계정 핀 편집은 상세 패널(UI-24ow) 소유; 모니터는 칩 표시만.
 - `exec-preset` 편집 UI는 다이얼로그 소유(모니터 패널은 적용만).
@@ -515,10 +579,11 @@ rebuild 원인이다.
 
 ## 15. 구현 unit 후보 (full_plan Phase 제안 — 구속력 없음)
 
-1. **Phase 1 — 서버 투영·계약** (§9·§10): runnable `workflow/exec_pins`,
-   `bead_workflow`, `last_activity/legs`, `workspaces_state` 확장,
-   `root_dir` 3곳, blocker 정정, `transcript-lines` 추출, `protocol.md`.
-   검증: 서버 단위 테스트 + 기존 스냅샷 테스트.
+1. **Phase 1 — 서버 투영·계약** (§9): runnable `workflow/exec_pins`,
+   `bead_workflow`, `last_activity/legs`(reducer), `workspaces_state` 확장
+   (`counts`·`session_defaults` async fill), `root_dir`(session-defaults 2 ·
+   exec-preset apply · session-log · attempt-prompt), `transcript-lines` 추출,
+   `protocol.md`. 검증: 서버 단위 테스트 + 기존 스냅샷·파서 테스트.
    (scope: `server/`, `app/utils/transcript-lines.js`, `app/protocol.md`)
 2. **Phase 2 — 모니터 레인 재구성** (§3·§5–§8·§11): Worker 템플릿 재사용,
    레포 섹션, 필터/정렬, 드래그/모바일, ID 복사, 레포 배지 이동, 실행 타일 진행
@@ -526,10 +591,10 @@ rebuild 원인이다.
    (scope: `app/views/monitor/`, `app/views/worker/{lanes,running-grid,
    transcript-drawer}.js`, `app/styles.css`(§11.1 헤더 리본 포함), `app/main.js`)
 3. **Phase 3 — 레포 데크·설정 패널** (§4): 데크·조용한 레포·포커스 필터·
-   스위치·⚙ 패널(`settings-dialog` `workspace_override`·자동 해결/직렬 레인 행).
+   스위치·⚙ 패널(`settings-dialog/execution-pane.js` 추출 + binding·자동화
+   섹션·다이얼로그 재마운트).
    (scope: `app/views/monitor/deck.js`, `app/views/settings-dialog/`,
    `app/styles.css`)
 
-§10(blocker 정정)은 독립 결함이라 **quick_fix로 먼저 분리 착수**한다(사용자
-결정 2026-08-24; Bead 없는 quick_fix — 이 spec §10만 구현·직접 push·배포).
-Phase 1은 그 결과 위에서 시작한다.
+§10(blocker 정정)은 quick_fix로 이미 착지했다(`ddb55ee`). Phase 1은 그 결과
+위에서 시작한다.
