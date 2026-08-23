@@ -7,6 +7,7 @@ import {
   __resetCacheForTest,
   createCodexAuthRunner,
   createCodexUsageHandler,
+  invalidateCache,
   normalizeCodexUsage
 } from './codex-usage.js';
 
@@ -49,6 +50,44 @@ function usageSnapshot(overrides = {}) {
       }
     ],
     ...overrides
+  };
+}
+
+/**
+ * An account row carrying the fields the multi-account card consumes.
+ *
+ * @param {Record<string, unknown>} [overrides]
+ */
+function accountRow(overrides = {}) {
+  return {
+    number: 1,
+    account_key: 'account-1',
+    email: 'user@example.com',
+    alias: null,
+    plan: 'pro',
+    usage: {
+      source: 'api',
+      updated_at: 1_786_334_358,
+      primary: {
+        used_percent: 26,
+        window_minutes: 300,
+        resets_at: 1_786_344_000
+      }
+    },
+    ...overrides
+  };
+}
+
+/**
+ * @param {unknown[]} accounts
+ * @param {string} [active_account_key]
+ */
+function listSnapshot(accounts, active_account_key = 'account-1') {
+  return {
+    schema_version: 1,
+    command: 'list',
+    active_account_key,
+    accounts
   };
 }
 
@@ -218,7 +257,7 @@ describe('codex usage normalization', () => {
 });
 
 describe('codex-auth runner', () => {
-  test('spawns list --active --json without a shell', async () => {
+  test('spawns list --json without a shell', async () => {
     const spawn_process = vi.fn(() =>
       spawnedChild((child) => child.emit('close', 0))
     );
@@ -228,7 +267,7 @@ describe('codex-auth runner', () => {
 
     expect(spawn_process).toHaveBeenCalledWith(
       'codex-auth',
-      ['list', '--active', '--json'],
+      ['list', '--json'],
       { shell: false, windowsHide: true }
     );
   });
@@ -257,7 +296,7 @@ describe('codex-auth runner', () => {
     expect(spawn_process).toHaveBeenNthCalledWith(
       2,
       '/private/home/.local/bin/codex-auth',
-      ['list', '--active', '--json'],
+      ['list', '--json'],
       { shell: false, windowsHide: true }
     );
   });
@@ -390,5 +429,173 @@ describe('GET /api/codex-usage', () => {
     await responses;
 
     expect(runCodexAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('codex account rows', () => {
+  test('keeps the plan of every same-email account', () => {
+    const payload = normalizeCodexUsage(
+      listSnapshot([
+        accountRow(),
+        accountRow({ number: 2, account_key: 'account-2', plan: 'max' })
+      ]),
+      () => 1_786_334_400_000
+    );
+
+    expect(payload).toMatchObject({
+      accounts: [
+        { number: 1, email: 'user@example.com', plan: 'pro' },
+        { number: 2, email: 'user@example.com', plan: 'max' }
+      ]
+    });
+  });
+
+  test('marks the row matching active_account_key as active', () => {
+    const payload = normalizeCodexUsage(
+      listSnapshot(
+        [
+          accountRow({ active: true }),
+          accountRow({ number: 2, account_key: 'account-2', active: false })
+        ],
+        'account-2'
+      ),
+      () => 1_786_334_400_000
+    );
+
+    expect(payload).toMatchObject({
+      accounts: [
+        { number: 2, active: true },
+        { number: 1, active: false }
+      ]
+    });
+  });
+
+  test('lists the active account first and then ascending numbers', () => {
+    const payload = normalizeCodexUsage(
+      listSnapshot(
+        [
+          accountRow({ number: 2, account_key: 'account-2' }),
+          accountRow({ number: 3, account_key: 'account-3' }),
+          accountRow({ number: 1, account_key: 'account-1' })
+        ],
+        'account-3'
+      ),
+      () => 1_786_334_400_000
+    );
+
+    expect(payload).toMatchObject({
+      accounts: [{ number: 3 }, { number: 1 }, { number: 2 }]
+    });
+  });
+
+  test('marks a row without a usable snapshot as unavailable', () => {
+    const payload = normalizeCodexUsage(
+      listSnapshot([
+        accountRow(),
+        accountRow({
+          number: 2,
+          account_key: 'account-2',
+          usage: { source: 'none' }
+        })
+      ]),
+      () => 1_786_334_400_000
+    );
+
+    expect(payload).toMatchObject({
+      accounts: [
+        { number: 1, status: 'ok' },
+        { number: 2, status: 'unavailable', windows: [], fetchedAt: null }
+      ]
+    });
+  });
+
+  test('omits account keys and credits from every row', () => {
+    const payload = normalizeCodexUsage(
+      listSnapshot([accountRow({ credits: 42 })]),
+      () => 1_786_334_400_000
+    );
+
+    expect(JSON.stringify(payload)).not.toMatch(/account-1|credits/);
+  });
+});
+
+describe('codex usage cache invalidation', () => {
+  test('runs a new process for a GET that arrives after invalidation', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(usageSnapshot()),
+      stderr: ''
+    });
+
+    await requestUsage(runCodexAuth);
+    invalidateCache();
+    await requestUsage(runCodexAuth);
+
+    expect(runCodexAuth).toHaveBeenCalledTimes(2);
+  });
+
+  test('never caches a lookup that started before invalidation', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () =>
+        resolve({
+          code: 0,
+          stdout: JSON.stringify(usageSnapshot()),
+          stderr: ''
+        });
+    });
+    const runCodexAuth = vi
+      .fn()
+      .mockReturnValueOnce(gate)
+      .mockResolvedValue({
+        code: 0,
+        stdout: JSON.stringify(usageSnapshot()),
+        stderr: ''
+      });
+
+    const pending = requestUsage(runCodexAuth);
+    await vi.waitFor(() => expect(runCodexAuth).toHaveBeenCalled());
+    invalidateCache();
+    release();
+    await pending;
+    await requestUsage(runCodexAuth);
+
+    expect(runCodexAuth).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not hand the pre-invalidation result to a later GET', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () =>
+        resolve({
+          code: 0,
+          stdout: JSON.stringify(listSnapshot([accountRow()])),
+          stderr: ''
+        });
+    });
+    const runCodexAuth = vi
+      .fn()
+      .mockReturnValueOnce(gate)
+      .mockResolvedValue({
+        code: 0,
+        stdout: JSON.stringify(
+          listSnapshot(
+            [accountRow({ number: 9, account_key: 'account-9' })],
+            'account-9'
+          )
+        ),
+        stderr: ''
+      });
+
+    const pending = requestUsage(runCodexAuth);
+    await vi.waitFor(() => expect(runCodexAuth).toHaveBeenCalled());
+    invalidateCache();
+    const second = await requestUsage(runCodexAuth);
+    release();
+    await pending;
+
+    expect(second.body).toMatchObject({ accounts: [{ number: 9 }] });
   });
 });

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   __resetCacheForTest,
   createClaudeUsageHandler,
+  invalidateCache,
   normalizeClaudeUsage
 } from './claude-usage.js';
 
@@ -23,6 +24,29 @@ function activeAccount(overrides = {}) {
     usageAgeSeconds: 209,
     ...overrides
   };
+}
+
+/**
+ * An account row carrying the fields the multi-account card consumes.
+ *
+ * @param {Record<string, unknown>} [overrides]
+ */
+function accountRow(overrides = {}) {
+  return { ...activeAccount(), number: 1, usageStatus: 'ok', ...overrides };
+}
+
+/**
+ * @param {Record<string, unknown>} [overrides]
+ */
+function expiredRow(overrides = {}) {
+  return accountRow({
+    active: false,
+    usageStatus: 'token_expired',
+    usage: null,
+    usageFetchedAt: null,
+    usageAgeSeconds: null,
+    ...overrides
+  });
 }
 
 /**
@@ -196,5 +220,177 @@ describe('GET /api/claude-usage', () => {
     await responses;
 
     expect(runCswap).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('claude account rows', () => {
+  test('lists the active account first and then ascending numbers', () => {
+    const payload = normalizeClaudeUsage({
+      accounts: [
+        accountRow({ number: 3, active: false, email: 'c@example.com' }),
+        accountRow({ number: 2, active: true, email: 'b@example.com' }),
+        accountRow({ number: 1, active: false, email: 'a@example.com' })
+      ]
+    });
+
+    expect(payload).toMatchObject({
+      accounts: [{ number: 2 }, { number: 1 }, { number: 3 }]
+    });
+  });
+
+  test('passes the cswap usageStatus through unchanged', () => {
+    const payload = normalizeClaudeUsage({
+      accounts: [accountRow(), expiredRow({ number: 2 })]
+    });
+
+    expect(payload).toMatchObject({
+      accounts: [{ status: 'ok' }, { status: 'token_expired' }]
+    });
+  });
+
+  test('empties windows and timestamps on a row that is not ok', () => {
+    const payload = normalizeClaudeUsage({
+      accounts: [expiredRow({ number: 2, alias: 'work' })]
+    });
+
+    expect(payload).toMatchObject({
+      accounts: [
+        {
+          number: 2,
+          alias: 'work',
+          plan: null,
+          windows: [],
+          fetchedAt: null,
+          ageSeconds: null
+        }
+      ]
+    });
+  });
+
+  test('drops only the malformed row and keeps the rest', () => {
+    const broken = accountRow({ number: 2, active: false });
+    delete (/** @type {any} */ (broken).usage.fiveHour);
+
+    const payload = normalizeClaudeUsage({
+      accounts: [accountRow(), broken, accountRow({ number: 7, active: false })]
+    });
+
+    expect(payload).toMatchObject({
+      accounts: [{ number: 1 }, { number: 7 }]
+    });
+  });
+
+  test('returns account rows even when the active account is unavailable', () => {
+    const payload = normalizeClaudeUsage({
+      accounts: [expiredRow({ number: 1, active: true })]
+    });
+
+    expect(payload).toEqual({
+      available: false,
+      accounts: [
+        {
+          number: 1,
+          email: 'user@example.com',
+          alias: null,
+          plan: null,
+          active: true,
+          status: 'token_expired',
+          windows: [],
+          fetchedAt: null,
+          ageSeconds: null
+        }
+      ]
+    });
+  });
+
+  test('reports the top level unavailable when the active status is not ok', () => {
+    const expired_active = accountRow({
+      active: true,
+      usageStatus: 'token_expired'
+    });
+
+    const result = normalizeClaudeUsage({ accounts: [expired_active] });
+
+    expect(result.available).toBe(false);
+  });
+});
+
+describe('claude usage cache invalidation', () => {
+  test('runs a new process for a GET that arrives after invalidation', async () => {
+    const runCswap = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify({ accounts: [activeAccount()] }),
+      stderr: ''
+    });
+
+    await requestUsage(runCswap);
+    invalidateCache();
+    await requestUsage(runCswap);
+
+    expect(runCswap).toHaveBeenCalledTimes(2);
+  });
+
+  test('never caches a lookup that started before invalidation', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () =>
+        resolve({
+          code: 0,
+          stdout: JSON.stringify({ accounts: [activeAccount()] }),
+          stderr: ''
+        });
+    });
+    const runCswap = vi
+      .fn()
+      .mockReturnValueOnce(gate)
+      .mockResolvedValue({
+        code: 0,
+        stdout: JSON.stringify({ accounts: [activeAccount()] }),
+        stderr: ''
+      });
+
+    const pending = requestUsage(runCswap);
+    await vi.waitFor(() => expect(runCswap).toHaveBeenCalled());
+    invalidateCache();
+    release();
+    await pending;
+    await requestUsage(runCswap);
+
+    expect(runCswap).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not hand the pre-invalidation result to a later GET', async () => {
+    /** @type {() => void} */
+    let release = () => {};
+    const gate = new Promise((resolve) => {
+      release = () =>
+        resolve({
+          code: 0,
+          stdout: JSON.stringify({
+            accounts: [activeAccount({ email: 'old@example.com' })]
+          }),
+          stderr: ''
+        });
+    });
+    const runCswap = vi
+      .fn()
+      .mockReturnValueOnce(gate)
+      .mockResolvedValue({
+        code: 0,
+        stdout: JSON.stringify({
+          accounts: [activeAccount({ email: 'new@example.com' })]
+        }),
+        stderr: ''
+      });
+
+    const pending = requestUsage(runCswap);
+    await vi.waitFor(() => expect(runCswap).toHaveBeenCalled());
+    invalidateCache();
+    const second = await requestUsage(runCswap);
+    release();
+    await pending;
+
+    expect(second.body).toMatchObject({ email: 'new@example.com' });
   });
 });
