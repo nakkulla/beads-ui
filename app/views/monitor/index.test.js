@@ -4,6 +4,8 @@ import { createMonitorView } from './index.js';
 const NOW = 1_700_000_000_000;
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
+/** A `counts` projection that makes a repo ACTIVE for the deck (§4.2). */
+const RUNNING_COUNTS = { running: 1, pr_wait: 0, queue: 0, runnable: 0 };
 /** @type {Array<ReturnType<typeof createMonitorView>>} */
 const active_views = [];
 
@@ -202,14 +204,26 @@ describe('views/monitor five vertical lanes (UI-eey2 §3)', () => {
     );
   });
 
-  test('leaves an empty deck mount point for the repo deck', () => {
-    const { mount, view } = setup();
+  test('mounts the repo deck into the deck container', () => {
+    const { mount, view } = setup({
+      workspaces_state: [state({ counts: RUNNING_COUNTS })]
+    });
 
     view.load();
 
     const deck = el(mount, '.mon2-deck');
     expect(deck).toBeTruthy();
-    expect(deck.children).toHaveLength(0);
+    expect(
+      deck.querySelector('.mon2-deck__tile')?.getAttribute('data-root-dir')
+    ).toBe(WS_A);
+  });
+
+  test('draws no deck row when no workspace state arrived', () => {
+    const { mount, view } = setup();
+
+    view.load();
+
+    expect(el(mount, '.mon2-deck__row')).toBe(null);
   });
 
   test('keeps an empty lane visible with its empty line', () => {
@@ -1292,5 +1306,76 @@ describe('views/monitor live clock', () => {
 
     expect(mount.children).toHaveLength(0);
     vi.useRealTimers();
+  });
+});
+
+describe('views/monitor focus filter (UI-eey2 §4.2)', () => {
+  /**
+   * Two repos, each with one candidate, so a focus decision has something to
+   * dim on the other side.
+   *
+   * @returns {ReturnType<typeof setup>}
+   */
+  function twoRepos() {
+    return setup({
+      workspaces: [
+        workspace({ runnable: [{ bead_id: 'A-1', title: 'a' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          runnable: [{ bead_id: 'B-1', title: 'b' }]
+        })
+      ],
+      workspaces_state: [
+        state({ counts: { running: 0, pr_wait: 0, queue: 0, runnable: 1 } }),
+        state({
+          root_dir: WS_B,
+          name: 'repo-b',
+          issue_prefix: 'B',
+          counts: { running: 0, pr_wait: 0, queue: 0, runnable: 1 }
+        })
+      ]
+    });
+  }
+
+  test('marks the clicked repo and blurs the rest through the root class', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"]`);
+
+    expect(el(mount, '.mon').classList.contains('has-focus')).toBe(true);
+    expect(
+      el(mount, `#monitor-runnable .mon2-sec[data-root-dir="${WS_A}"]`)
+        .classList
+    ).toContain('is-focus');
+    expect(
+      el(mount, `#monitor-runnable .mon2-sec[data-root-dir="${WS_B}"]`)
+        .classList
+    ).not.toContain('is-focus');
+  });
+
+  test('marks the focused repo cards by their bead ownership', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"]`);
+
+    expect(
+      el(mount, '.mon2-item[data-bead-id="A-1"]').classList.contains('is-focus')
+    ).toBe(true);
+    expect(
+      el(mount, '.mon2-item[data-bead-id="B-1"]').classList.contains('is-focus')
+    ).toBe(false);
+  });
+
+  test('drops the root class when the same tile is clicked again', () => {
+    const { mount, view } = twoRepos();
+
+    view.load();
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"]`);
+    click(mount, `.mon2-deck__tile[data-root-dir="${WS_A}"]`);
+
+    expect(el(mount, '.mon').classList.contains('has-focus')).toBe(false);
   });
 });

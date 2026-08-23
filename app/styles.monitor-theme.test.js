@@ -60,6 +60,26 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(ribbon).toMatch(/\.usage-meter__group\s*{[^}]*width:\s*100%/);
   });
 
+  test('blurs the unfocused lanes instead of hiding them (§4.2)', () => {
+    const block = monitorBlock();
+    const focus = block.slice(block.indexOf('.mon.has-focus'));
+
+    expect(focus).toContain('opacity: 0.38');
+    expect(focus).toContain('filter: saturate(0.6)');
+    expect(focus).toMatch(
+      /\.mon2-deck__tile:not\(\.is-focus\)[^}]*}\s*$|opacity: 0\.55/
+    );
+  });
+
+  test('stacks the deck and keeps the tile strip swipeable on mobile', () => {
+    const block = monitorBlock();
+    const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
+
+    expect(mq).toContain('.mon2-deck__row');
+    expect(mq).toContain('flex-direction: column');
+    expect(mq).toMatch(/\.mon2-deck__strip\s*{[^}]*overflow-x:\s*auto/);
+  });
+
   test('consumes design tokens only (no raw hex in the monitor block)', () => {
     const hex = monitorBlock().match(/#[0-9a-fA-F]{3,8}\b/g) || [];
 

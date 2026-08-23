@@ -6622,9 +6622,285 @@ html[data-theme='dark'] {
   flex: 1.05 1 0;
 }
 
-/* Phase 3의 레포 데크 마운트 지점. 지금은 비어 있고 자리도 차지하지 않는다. */
+/* --- 레포 데크 (§4) ------------------------------------------------------
+   모든 visible 레포를 한 줄에 세우는 signature 줄. 합계 칸은 고정폭으로 왼쪽에
+   서고, 타일은 236px 고정폭 strip으로 가로 스크롤한다 — 레포 수가 늘어도 타일
+   하나의 독해 폭은 변하지 않아야 한다. */
 .mon2-deck:empty {
   display: none;
+}
+
+.mon2-deck {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-10);
+}
+
+.mon2-deck__row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--sp-8);
+  min-width: 0;
+}
+
+.mon2-deck__total {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--sp-3);
+  padding: var(--sp-6) var(--sp-10);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+  white-space: nowrap;
+}
+
+.mon2-deck__total-tokens {
+  display: flex;
+  gap: var(--sp-6);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.mon2-deck__tok {
+  font-family: var(--font-mono);
+}
+
+.mon2-deck__strip {
+  flex: 1 1 auto;
+  display: flex;
+  gap: var(--sp-8);
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: var(--sp-2);
+}
+
+.mon2-deck__tile {
+  flex: 0 0 236px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding: var(--sp-6) var(--sp-8);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-card);
+  cursor: pointer;
+}
+
+.mon2-deck__tile:focus-visible,
+.mon2-deck__pill:focus-visible {
+  outline: 1px solid var(--layer-global);
+  outline-offset: 1px;
+}
+
+.mon2-deck__tile.is-focus,
+.mon2-deck__pill.is-focus {
+  border-color: var(--layer-global-border);
+  background: var(--layer-global-bg);
+}
+
+.mon2-deck__tile-hd {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+}
+
+.mon2-deck__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-title);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon2-deck__worker {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-caption);
+}
+
+.mon2-deck__worker:hover {
+  color: var(--text-primary);
+}
+
+.mon2-deck__slots {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+/* 슬롯 레일: 한 칸 = 슬롯 1개. 실행 중인 칸만 채워지고, 빈 칸은 점선이라
+   "지금 출발할 자리가 있다"가 형태로 읽힌다. */
+.mon2-deck__rail {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--sp-2);
+}
+
+.mon2-deck__slot {
+  width: var(--sp-6);
+  height: var(--sp-10);
+  border: 1px dashed var(--border-empty-fill);
+  border-radius: var(--r-2);
+}
+
+.mon2-deck__slot.is-run {
+  border: 1px solid var(--stage-impl-on);
+  background: var(--stage-impl-on);
+}
+
+.mon2-deck__counts {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon2-deck__ops {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+}
+
+.mon2-deck__op {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-caption);
+}
+
+.mon2-deck__op.is-on {
+  border-color: var(--border-tile-run);
+  color: var(--accent-success);
+}
+
+.mon2-deck__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+}
+
+.mon2-deck__chip {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+/* 조용한 레포 (§4.3): 기본은 접고, 펼치면 pill 한 줄씩. */
+.mon2-deck__quiet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+}
+
+.mon2-deck__quiet-toggle {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--fs-caption);
+}
+
+.mon2-deck__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-5);
+}
+
+.mon2-deck__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-2) var(--sp-6);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--r-9);
+  background: var(--bg-panel);
+  cursor: pointer;
+}
+
+.mon2-deck__pill .mon2-deck__name {
+  flex: 0 0 auto;
+}
+
+/* `⚙` 실행 설정 패널 (§4.4): 데크 바로 아래 인라인. 한 번에 한 레포만 연다. */
+.mon2-deck__panel {
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+}
+
+.mon2-deck__panel[hidden] {
+  display: none;
+}
+
+.mon2-deck__panel-hd {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-6) var(--sp-10);
+  border-bottom: 1px solid var(--border-panel);
+  color: var(--text-secondary);
+  font-size: var(--fs-chip);
+}
+
+.mon2-deck__panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon2-deck__panel-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.mon2-deck__panel-body {
+  padding: var(--sp-8) var(--sp-10);
+}
+
+.mon2-deck__panel-body .settings-dialog__group {
+  break-inside: avoid;
+}
+
+/* 포커스 필터 (§4.2): 숨기지 않고 흐린다 — 다른 레포에서 지금 무엇이 도는지는
+   흐려도 보여야 한다. 타일은 제어 표면이라 덜 흐리게 둔다. */
+.mon.has-focus .mon2-sec:not(.is-focus),
+.mon.has-focus .mon2-item:not(.is-focus),
+.mon.has-focus .rtile:not(.is-focus),
+.mon.has-focus .worker-mini:not(.is-focus) {
+  opacity: 0.38;
+  filter: saturate(0.6);
+}
+
+.mon.has-focus .mon2-deck__tile:not(.is-focus),
+.mon.has-focus .mon2-deck__pill:not(.is-focus) {
+  opacity: 0.55;
 }
 
 /* 레포 섹션 (§5·§6): 레포는 카드의 부가 정보가 아니라 좌표이므로, 헤더가
@@ -6956,6 +7232,31 @@ html[data-theme='dark'] {
 /* 모바일 (§3): Worker와 같은 세로 스택이되 관제 우선 순서로 둔다 — DOM은
    데스크톱 생애주기 독해 순서 그대로이고 `order`만 바꾼다. */
 @media (max-width: 640px) {
+  /* 데크는 세로로 쌓고(합계 → 타일), 타일 strip만 가로로 스와이프한다. 설정
+     패널은 한 열로 내려온다. */
+  .mon2-deck__row {
+    flex-direction: column;
+  }
+
+  .mon2-deck__total {
+    white-space: normal;
+  }
+
+  .mon2-deck__strip {
+    flex: 1 1 auto;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mon2-deck__panel-body {
+    padding: var(--sp-6);
+  }
+
+  .mon2-deck__panel-body .settings-dialog__row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
   .mon2-lanes > .worker-pane--lane-running {
     order: 0;
   }

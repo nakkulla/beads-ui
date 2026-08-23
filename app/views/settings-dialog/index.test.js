@@ -196,7 +196,7 @@ describe('createSettingsDialog tabs', () => {
 
     const groups = Array.from(
       root.querySelectorAll(
-        '#settings-pane-execution > .settings-dialog__preset-bar, #settings-pane-execution > .settings-dialog__group'
+        '#settings-pane-execution .settings-dialog__preset-bar, #settings-pane-execution .settings-dialog__group'
       )
     ).map((element) =>
       element.classList.contains('settings-dialog__preset-bar')
@@ -212,7 +212,7 @@ describe('createSettingsDialog tabs', () => {
       '워크플로우',
       '리뷰 게이트',
       '구현',
-      '동시 실행',
+      '자동화',
       '워커 시스템 프롬프트'
     ]);
   });
@@ -672,6 +672,19 @@ describe('createSettingsDialog execution tab orchestration', () => {
       'worker-queue-set-orchestration-defaults',
       { expected_revision: 3, values: { orchestration_model: 'opus' } }
     );
+  });
+
+  test('mounts the shared execution pane bound to the connected workspace', async () => {
+    const { root, dialog, transport } = mount();
+    dialog.open();
+    await settle();
+
+    const toggles = Array.from(
+      root.querySelectorAll('#settings-pane-execution [data-automation]')
+    ).map((button) => button.getAttribute('data-automation'));
+
+    expect(toggles).toEqual(['auto_advance', 'auto_merge', 'auto_repair']);
+    expect(transport).toHaveBeenCalledWith('get-session-defaults', {});
   });
 
   test('offers session and orchestration keys on the execution tab', async () => {

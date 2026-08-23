@@ -13,8 +13,10 @@
  * revision을 다른 레포에 쓰면 항상 충돌한다. 충돌은 Worker 탭과 같은 규약으로
  * 1회 재시도한다 (응답이 실어 온 최신 revision으로).
  *
- * `.mon2-deck`은 Phase 3의 레포 데크 마운트 지점이다 — 이 Phase는 빈 컨테이너만
- * 남긴다.
+ * `.mon2-deck`은 레포 데크(§4)의 마운트 지점이다. 데크는 자기 DOM을 스스로
+ * 소유하고, 이 뷰는 데크가 알려 준 포커스 레포를 **클래스로만** 반영한다 —
+ * 필터는 숨김이 아니라 흐림이므로, 다른 레포에서 지금 무엇이 도는지는 흐려도
+ * 보여야 한다.
  */
 import { html, render } from 'lit-html';
 import {
@@ -38,6 +40,7 @@ import {
 import { runningTile } from '../worker/running-grid.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
 import { buildSerialLinkCandidates } from './blockers.js';
+import { createRepoDeck } from './deck.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   CANDIDATE_SORT_OPTIONS,
@@ -332,6 +335,13 @@ export function createMonitorView(mount_element, options) {
   let place_menu_bead = null;
 
   /**
+   * 데크가 소유하는 포커스 필터의 현재 대상 (§4.2). 여기서는 클래스만 반영한다.
+   *
+   * @type {string|null}
+   */
+  let focus_root = null;
+
+  /**
    * @returns {string}
    */
   function doneRangeLabel() {
@@ -364,6 +374,8 @@ export function createMonitorView(mount_element, options) {
   let unsubscribe_pipeline = null;
   /** @type {any} */
   let tick_timer = null;
+  /** @type {ReturnType<typeof createRepoDeck>|null} */
+  let deck = null;
 
   const drawer = createTranscriptDrawer(drawer_el, {
     transport,
@@ -1124,6 +1136,72 @@ export function createMonitorView(mount_element, options) {
       }
     }
     render(monitorTemplate(now), console_el);
+    ensureDeck()?.render();
+    applyFocusClasses();
+  }
+
+  /**
+   * Attach the repo deck to the container the lanes template leaves for it. The
+   * container holds no bindings, so lit never re-creates it and the deck's own
+   * DOM survives every lane re-render.
+   *
+   * @returns {ReturnType<typeof createRepoDeck>|null}
+   */
+  function ensureDeck() {
+    if (deck) {
+      return deck;
+    }
+    const host = /** @type {HTMLElement|null} */ (
+      console_el.querySelector('.mon2-deck')
+    );
+    if (!host) {
+      return null;
+    }
+    deck = createRepoDeck(host, {
+      workspacesState: () =>
+        pipelineStore && pipelineStore.getWorkspacesState
+          ? pipelineStore.getWorkspacesState()
+          : [],
+      doneItems: () => lanes.done,
+      rangeLabel: doneRangeLabel,
+      transport,
+      implPresetStore: options.execPresetStore,
+      gotoWorkerTab,
+      onFocusChange: (root_dir) => {
+        focus_root = root_dir;
+        applyFocusClasses();
+      }
+    });
+    return deck;
+  }
+
+  /**
+   * Apply the focus filter (§4.2): 숨기지 않고 흐린다. 흐림 자체는 CSS가
+   * 소유하고, 여기서는 루트 `has-focus`와 선명하게 남을 요소의 `is-focus`만
+   * 붙인다. 카드는 자기 `root_dir`을 DOM에 싣지 않으므로 bead id로 되짚는다.
+   */
+  function applyFocusClasses() {
+    console_el.classList.toggle('has-focus', focus_root !== null);
+    for (const section of Array.from(
+      console_el.querySelectorAll('.mon2-sec[data-root-dir]')
+    )) {
+      section.classList.toggle(
+        'is-focus',
+        focus_root !== null &&
+          section.getAttribute('data-root-dir') === focus_root
+      );
+    }
+    for (const card of Array.from(
+      console_el.querySelectorAll(
+        '.mon2-item[data-bead-id], .rtile[data-bead-id], .worker-mini[data-bead-id], .worker-card[data-bead-id]'
+      )
+    )) {
+      const item = item_by_bead.get(card.getAttribute('data-bead-id') || '');
+      card.classList.toggle(
+        'is-focus',
+        focus_root !== null && !!item && item.root_dir === focus_root
+      );
+    }
   }
 
   /**
@@ -2187,6 +2265,8 @@ export function createMonitorView(mount_element, options) {
         unsubscribe_pipeline = null;
       }
       drawer.destroy();
+      deck?.destroy();
+      deck = null;
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
       mount_element.removeEventListener('input', onInput);
