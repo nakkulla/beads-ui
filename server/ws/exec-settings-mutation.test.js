@@ -297,6 +297,65 @@ describe('handleUpdateExecSettings', () => {
     expect(runBdInWorkspace).not.toHaveBeenCalled();
     expect(sent[0].ok).toBe(false);
   });
+
+  test.each(['claude_account', 'codex_account'])(
+    'writes a valid %s pin without catalog lookup',
+    async (key) => {
+      const { ws, sent } = fakeWs();
+
+      await handleUpdateExecSettings(ws, {
+        id: 'account-set',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value: 'account@example.com' }
+      });
+
+      expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+        'update',
+        'UI-1',
+        '--set-metadata',
+        `${key}=account@example.com`
+      ]);
+      expect(sent[0].ok).toBe(true);
+    }
+  );
+
+  test.each(['claude_account', 'codex_account'])(
+    'unsets %s on an empty value',
+    async (key) => {
+      const { ws, sent } = fakeWs();
+
+      await handleUpdateExecSettings(ws, {
+        id: 'account-unset',
+        type: 'update-exec-settings',
+        payload: { id: 'UI-1', key, value: '' }
+      });
+
+      expect(runBdInWorkspace).toHaveBeenCalledWith(ws, [
+        'update',
+        'UI-1',
+        '--unset-metadata',
+        key
+      ]);
+      expect(sent[0].ok).toBe(true);
+    }
+  );
+
+  test.each([
+    ['claude_account', 'two words'],
+    ['codex_account', 'line\nbreak'],
+    ['claude_account', 'x'.repeat(257)]
+  ])('rejects malformed %s pins', async (key, value) => {
+    const { ws, sent } = fakeWs();
+
+    await handleUpdateExecSettings(ws, {
+      id: 'account-invalid',
+      type: 'update-exec-settings',
+      payload: { id: 'UI-1', key, value }
+    });
+
+    expect(runBdInWorkspace).not.toHaveBeenCalled();
+    expect(sent[0].error.code).toBe('bad_request');
+  });
 });
 
 describe('handleUpdateImplTarget', () => {

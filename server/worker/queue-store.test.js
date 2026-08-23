@@ -2922,6 +2922,56 @@ describe('worker/queue-store attempt discard (§2.2)', () => {
     ).toBe(null);
   });
 
+  test('account pins survive updateAttempt and a cold reload', () => {
+    const store = createQueueStore();
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: { attempt_id: 'att-accounts', bead_id: 'UI-accounts' }
+    });
+
+    const updated = store.updateAttempt(WS, {
+      attempt_id: 'att-accounts',
+      patch: {
+        claude_account: 'claude@example.com',
+        codex_account: 'codex-key'
+      }
+    });
+    const reloaded = createQueueStore().load(WS);
+
+    expect(updated.queue.attempts['att-accounts']).toMatchObject({
+      claude_account: 'claude@example.com',
+      codex_account: 'codex-key'
+    });
+    expect(reloaded.attempts['att-accounts']).toMatchObject({
+      claude_account: 'claude@example.com',
+      codex_account: 'codex-key'
+    });
+  });
+
+  test('normalizes absent and malformed account pins to null', () => {
+    const legacy = makeAttempt({
+      attempt_id: 'legacy-accounts',
+      bead_id: 'UI-legacy'
+    });
+    const malformed = makeAttempt(
+      /** @type {any} */ ({
+        attempt_id: 'malformed-accounts',
+        bead_id: 'UI-malformed',
+        claude_account: 3,
+        codex_account: false
+      })
+    );
+
+    expect(legacy).toMatchObject({
+      claude_account: null,
+      codex_account: null
+    });
+    expect(malformed).toMatchObject({
+      claude_account: null,
+      codex_account: null
+    });
+  });
+
   test('normalizes absent delegation sessions to an empty list', () => {
     const store = createQueueStore();
 

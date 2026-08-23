@@ -9132,6 +9132,16 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-chip);
 }
 
+.exec-accounts .detail-kv__vgroup {
+  flex-wrap: wrap;
+}
+
+.exec-accounts .detail-effective__hint {
+  flex: 1 0 100%;
+  margin-left: 0;
+  text-align: right;
+}
+
 /* Worker 화면 인라인 운영 설정 (검증·배포 선언 + auto_repair) — 접힘 기본. */
 .worker-repo-ops-settings {
   margin-top: var(--sp-10);

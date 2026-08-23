@@ -1376,7 +1376,9 @@ describe('worker/attach createLiveBd bd show parsing', () => {
                 plan_review_model: 'fable',
                 plan_review_effort: 'xhigh',
                 impl_model: 'luna',
-                impl_effort: 'max'
+                impl_effort: 'max',
+                claude_account: 'user@example.com',
+                codex_account: 'account-key'
               }
             }
           ]
@@ -1400,8 +1402,39 @@ describe('worker/attach createLiveBd bd show parsing', () => {
       plan_review_model: 'fable',
       plan_review_effort: 'xhigh',
       impl_model: 'luna',
-      impl_effort: 'max'
+      impl_effort: 'max',
+      claude_account: 'user@example.com',
+      codex_account: 'account-key'
     });
+  });
+
+  test('snapshotBead ignores non-string account pins', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-1',
+              status: 'open',
+              metadata: { claude_account: 3, codex_account: false }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-1' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-1');
+
+    expect(snap.claude_account).toBeUndefined();
+    expect(snap.codex_account).toBeUndefined();
   });
 
   test('snapshotBead no longer reads the retired review_model key', async () => {

@@ -2,12 +2,13 @@
  * @import { Request, RequestHandler, Response } from 'express'
  */
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string | null }} UsageWindow
- * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
+ * @typedef {{ key: string, number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: false }} UsageUnavailable
  * @typedef {{ available: true, email: string, windows: UsageWindow[], fetchedAt: string, ageSeconds: number }} ClaudeUsageActive
  * @typedef {(UsageUnavailable | ClaudeUsageActive) & { accounts?: UsageAccount[] }} ClaudeUsagePayload
@@ -122,6 +123,7 @@ function normalizeAccountRow(input) {
 
   if (row.usageStatus !== 'ok') {
     return {
+      key: row.email,
       number: row.number,
       email: row.email,
       alias,
@@ -147,6 +149,7 @@ function normalizeAccountRow(input) {
   }
 
   return {
+    key: row.email,
     number: row.number,
     email: row.email,
     alias,
@@ -242,11 +245,10 @@ export function normalizeClaudeUsage(input) {
   }
 
   const payload = normalizeActiveAccount(root.accounts);
-  const accounts = normalizeAccounts(root.accounts);
-  if (accounts.length === 0) {
-    return payload;
-  }
-  return { ...payload, accounts };
+  // A parsed list keeps its `accounts` array even when every row dropped: an
+  // empty catalog is a SUCCESSFUL list, and `listAccounts` must not read that
+  // as the tool being unavailable.
+  return { ...payload, accounts: normalizeAccounts(root.accounts) };
 }
 
 /**
@@ -313,14 +315,51 @@ function runProcess(bin) {
 /**
  * Resolve cswap from PATH, then the launchd-safe user-local fallback.
  *
+ * An empty PATH element is skipped rather than read as the current directory:
+ * this resolver also feeds the worker launcher, whose cwd is an arbitrary
+ * worktree, so a repo-local file named `cswap` must never win.
+ *
+ * @param {{ path_env?: string, home_dir?: string, access?: (path: string, mode?: number) => void, stat?: (path: string) => { isFile: () => boolean } }} [options]
+ * @returns {string|null}
+ */
+export function resolveCswapPath(options = {}) {
+  const path_env = options.path_env ?? process.env.PATH ?? '';
+  const home_dir = options.home_dir ?? os.homedir();
+  const access = options.access ?? fs.accessSync;
+  const stat = options.stat ?? fs.statSync;
+  /** @param {string} candidate */
+  const executableFile = (candidate) => {
+    try {
+      access(candidate, fs.constants.X_OK);
+      return stat(candidate).isFile();
+    } catch {
+      return false;
+    }
+  };
+  for (const entry of path_env.split(path.delimiter)) {
+    if (entry.length === 0) {
+      continue;
+    }
+    const candidate = path.resolve(entry, 'cswap');
+    if (executableFile(candidate)) {
+      return candidate;
+    }
+  }
+  const fallback = path.join(home_dir, '.local', 'bin', 'cswap');
+  return executableFile(fallback) ? fallback : null;
+}
+
+/**
+ * Resolve and run cswap using the shared launchd-safe lookup rule.
+ *
  * @returns {Promise<{ code: number, stdout: string, stderr: string }>}
  */
 async function runCswapCommand() {
-  const from_path = await runProcess('cswap');
-  if (!from_path.not_found) {
-    return from_path;
+  const cswap_path = resolveCswapPath();
+  if (!cswap_path) {
+    return { code: 127, stdout: '', stderr: 'cswap unavailable' };
   }
-  return runProcess(path.join(os.homedir(), '.local', 'bin', 'cswap'));
+  return runProcess(cswap_path);
 }
 
 /**
@@ -382,6 +421,27 @@ export function invalidateCache() {
   cached_payload = null;
   cache_expires_at = 0;
   in_flight = null;
+}
+
+/**
+ * List normalized Claude accounts through the route's shared cache.
+ *
+ * @param {{ runCswap?: () => Promise<{ code: number, stdout: string, stderr: string }>, now?: () => number }} [options]
+ * @returns {Promise<{ ok: true, accounts: UsageAccount[], active_key: string|null }|{ ok: false, error: string }>}
+ */
+export async function listAccounts(options = {}) {
+  const runCswap = options.runCswap || runCswapCommand;
+  const now = options.now || (() => Date.now());
+  const payload = await getClaudeUsage(runCswap, now);
+  if (!Array.isArray(payload.accounts)) {
+    return { ok: false, error: 'claude_account_list_unavailable' };
+  }
+  const active = payload.accounts.find((account) => account.active);
+  return {
+    ok: true,
+    accounts: payload.accounts,
+    active_key: active?.key ?? null
+  };
 }
 
 /**
