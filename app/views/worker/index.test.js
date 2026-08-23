@@ -482,9 +482,21 @@ describe('views/worker', () => {
     expect(reason).not.toContain('DEP-OLD');
   });
 
-  test('excludes worker-ineligible issues from the candidate lane', () => {
-    const stores = seedCandidates();
+  // UI-8881 seam 1: the 08-10 enforcement spec dropped these rows entirely; the
+  // candidate lane now SHOWS them as observation-only cards instead. Server
+  // admission/dispatch stays the execution boundary.
+  test('renders a worker-ineligible issue as an observation-only candidate', () => {
+    // One snapshot, not a second `seed()` on the same store: `applyPush`
+    // discards a snapshot whose revision is not newer, so layering would leave
+    // the bead out of the feed entirely and prove nothing.
+    const stores = createTestIssueStores();
     seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'ready with spec',
+        status: 'open',
+        metadata: { spec_id: 'SPEC-1' }
+      },
       {
         id: 'NO-WORKER',
         title: 'interactive only',
@@ -501,9 +513,17 @@ describe('views/worker', () => {
       transport: vi.fn()
     });
 
-    expect(
+    const card = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-card[data-bead-id="NO-WORKER"]')
-    ).toBeNull();
+    );
+    expect(card).not.toBeNull();
+    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(
+      mount
+        .querySelector('.worker-card[data-bead-id="RD-1"]')
+        ?.getAttribute('draggable')
+    ).toBe('true');
   });
 
   test('clicking a card ID copies the bead id and never opens the detail', async () => {
@@ -5551,6 +5571,276 @@ describe('candidate sort — view (UI-raqh §2)', () => {
       mount.querySelector('#worker-pane-candidate .worker-sort')
     );
     expect(select.value).toBe('spec');
+  });
+});
+
+describe('worker-ineligible candidates (UI-8881)', () => {
+  /**
+   * Ready feed carrying one `worker-ineligible` spec candidate (`INEL`) and one
+   * plain spec candidate (`OK`), plus a rank-only third row for sort coverage.
+   *
+   * @param {Partial<any>} [over] - Overrides merged into the ineligible issue.
+   */
+  function seedIneligible(over = {}) {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'INEL',
+        title: 'ineligible with spec',
+        status: 'open',
+        created_at: 100,
+        metadata: { spec_id: 'S' },
+        labels: ['worker-ineligible'],
+        ...over
+      },
+      {
+        id: 'MID',
+        title: 'plain without spec',
+        status: 'open',
+        created_at: 200,
+        metadata: {}
+      },
+      {
+        id: 'OK',
+        title: 'plain with spec',
+        status: 'open',
+        created_at: 300,
+        metadata: { spec_id: 'S' }
+      }
+    ]);
+    return stores;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('keeps a label-less spec candidate draggable', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedIneligible(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const ok = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="OK"]')
+    );
+    expect(ok.getAttribute('draggable')).toBe('true');
+    expect(ok.classList.contains('worker-card--ineligible')).toBe(false);
+  });
+
+  test('treats a non-array labels payload as eligible without throwing', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedIneligible({ labels: 'worker-ineligible' }),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const inel = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="INEL"]')
+    );
+    expect(inel.getAttribute('draggable')).toBe('true');
+    expect(inel.classList.contains('worker-card--ineligible')).toBe(false);
+  });
+
+  test('ignores non-string label entries without throwing', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedIneligible({ labels: [7, null, 'worker-ineligible'] }),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const inel = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="INEL"]')
+    );
+    expect(inel.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(inel.getAttribute('draggable')).toBe('false');
+  });
+
+  test('copies the id and opens the detail from an ineligible card', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const gotoIssue = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    createWorkerView(mount, {
+      issueStores: seedIneligible(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn(),
+      gotoIssue
+    });
+
+    const id_el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="INEL"] .worker-card__id')
+    );
+    id_el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(writeText).toHaveBeenCalledWith('INEL');
+    expect(gotoIssue).not.toHaveBeenCalled();
+
+    const title_el = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="INEL"] .worker-card__title'
+      )
+    );
+    title_el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(gotoIssue).toHaveBeenCalledWith('INEL');
+  });
+
+  test('hides an ineligible blocked candidate until show_blocked is on', () => {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', []);
+    seed(stores, 'tab:worker:blocked', [
+      {
+        id: 'INEL-BL',
+        title: 'ineligible blocked',
+        status: 'open',
+        metadata: { spec_id: 'S' },
+        labels: ['worker-ineligible'],
+        dependencies: ['DEP-1']
+      }
+    ]);
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(candidateOrder(mount)).toEqual([]);
+
+    document.body.innerHTML = '<div id="m2"></div>';
+    const mount2 = /** @type {HTMLElement} */ (document.getElementById('m2'));
+    presetCandidateFilter({ show_blocked: true });
+    createWorkerView(mount2, {
+      issueStores: stores,
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(
+      mount2.querySelector('.worker-card[data-bead-id="INEL-BL"]')
+    ).not.toBeNull();
+  });
+
+  test('applies the spec filter to an ineligible candidate unchanged', () => {
+    presetCandidateFilter({ spec: 'without' });
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createWorkerView(mount, {
+      issueStores: seedIneligible(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(candidateOrder(mount)).toEqual(['MID']);
+
+    document.body.innerHTML = '<div id="m2"></div>';
+    const mount2 = /** @type {HTMLElement} */ (document.getElementById('m2'));
+    presetCandidateFilter({ spec: 'with' });
+    createWorkerView(mount2, {
+      issueStores: seedIneligible(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    expect(candidateOrder(mount2).sort()).toEqual(['INEL', 'OK']);
+  });
+
+  test('sorts an ineligible row with the shared candidate comparators', () => {
+    const uiOrderStore = createUiOrderStore();
+    uiOrderStore.set({
+      revision: 1,
+      order: { MID: 10, OK: 20, INEL: 30 }
+    });
+    /** @type {Array<[string, string[]]>} */
+    const cases = [
+      ['board', ['MID', 'OK', 'INEL']],
+      ['created', ['OK', 'MID', 'INEL']],
+      ['spec', ['OK', 'INEL', 'MID']]
+    ];
+
+    for (const [mode, expected] of cases) {
+      document.body.innerHTML = '<div id="ms"></div>';
+      window.localStorage.setItem('bdui.worker.candidate_sort', mode);
+      const mount = /** @type {HTMLElement} */ (document.getElementById('ms'));
+      createWorkerView(mount, {
+        issueStores: seedIneligible(),
+        queueStore: createWorkerQueueStore(),
+        uiOrderStore,
+        transport: vi.fn()
+      });
+
+      expect(candidateOrder(mount)).toEqual(expected);
+    }
+  });
+
+  test('accepts an ineligible card as a reorder drop target', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const uiOrderStore = createUiOrderStore();
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'board');
+    uiOrderStore.set({
+      revision: 4,
+      order: { INEL: 0, MID: RANK_STEP, OK: 2 * RANK_STEP }
+    });
+    const transport = vi.fn().mockResolvedValue({
+      applied: true,
+      revision: 5,
+      order: { INEL: 0, MID: RANK_STEP, OK: -RANK_STEP }
+    });
+    createWorkerView(mount, {
+      issueStores: seedIneligible(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore,
+      transport
+    });
+
+    expect(candidateOrder(mount)).toEqual(['INEL', 'MID', 'OK']);
+
+    dragOnto(mount, 'OK', 'INEL');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('ui-order-set', {
+      expected_revision: 4,
+      entries: [{ bead_id: 'OK', rank: -RANK_STEP }]
+    });
+    expect(candidateOrder(mount)).toEqual(['OK', 'INEL', 'MID']);
+  });
+
+  test('sends no mutation when a drag starts on an ineligible card', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const uiOrderStore = createUiOrderStore();
+    window.localStorage.setItem('bdui.worker.candidate_sort', 'board');
+    uiOrderStore.set({
+      revision: 4,
+      order: { INEL: 0, MID: RANK_STEP, OK: 2 * RANK_STEP }
+    });
+    const transport = vi.fn().mockResolvedValue({ applied: true });
+    createWorkerView(mount, {
+      issueStores: seedIneligible(),
+      queueStore: createWorkerQueueStore(),
+      uiOrderStore,
+      transport
+    });
+
+    dragOnto(mount, 'INEL', 'OK');
+    drag(mount, 'INEL', 'worker-pane-queue');
+    await flush();
+
+    expect(transport).not.toHaveBeenCalled();
+    expect(candidateOrder(mount)).toEqual(['INEL', 'MID', 'OK']);
   });
 });
 
