@@ -58,13 +58,23 @@ function candidate(bead_id) {
  *   snapshots?: Record<string, any>,
  *   runnable?: Record<string, Array<Record<string, any>>>,
  *   fail?: string[],
- *   runnableFails?: string[]
+ *   runnableFails?: string[],
+ *   issuePrefixes?: Record<string, string|null>,
+ *   foreignStatus?: Record<string, string|null>,
+ *   foreignStatusCalls?: Array<[string, string]>
  * }} input
  */
 function build(input) {
   return buildMonitorPipeline({
     listWorkspaces: () => (input.workspaces || []).map((path) => ({ path })),
     listHidden: () => input.hidden || [],
+    issuePrefixFor: (key) => (input.issuePrefixes || {})[key] ?? null,
+    foreignBlockerStatusFor: (bead_id, owner_root) => {
+      if (input.foreignStatusCalls) {
+        input.foreignStatusCalls.push([bead_id, owner_root]);
+      }
+      return (input.foreignStatus || {})[bead_id] ?? null;
+    },
     snapshotFor: (key) => {
       if ((input.fail || []).includes(key)) {
         throw new Error('snapshot boom');
@@ -308,6 +318,96 @@ describe('buildMonitorPipeline serial lanes (UI-2gi1 §4)', () => {
       expect(without_pipeline).toEqual([]);
       expect(with_runnable[0].runnable).toEqual([candidate('A-9')]);
     }
+  });
+});
+
+describe('buildMonitorPipeline foreign blocker status (UI-eey2 §10)', () => {
+  // 워커 큐를 거치지 않고 닫힌 다른 rig의 선행은 `done` 배열에 없어 클라이언트가
+  // "내부인데 미적재"로 오판했다. 닫힌 선행은 blocker가 아니므로 집계에서 뺀다.
+  test('drops a foreign blocker whose owning rig says it is closed', () => {
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'UI', [WS_B]: 'dotfiles' },
+      foreignStatus: { 'dotfiles-a27g': 'closed' },
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'UI-24ow' }],
+          bead_blocked_by: { 'UI-24ow': ['dotfiles-a27g', 'UI-rewk'] }
+        })
+      }
+    });
+
+    expect(out[0].bead_blocked_by).toEqual({ 'UI-24ow': ['UI-rewk'] });
+  });
+
+  test('keeps a foreign blocker whose status is still unknown', () => {
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'UI', [WS_B]: 'dotfiles' },
+      foreignStatus: {},
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'UI-1' }],
+          bead_blocked_by: { 'UI-1': ['dotfiles-a27g'] }
+        })
+      }
+    });
+
+    expect(out[0].bead_blocked_by).toEqual({ 'UI-1': ['dotfiles-a27g'] });
+  });
+
+  test('resolves a foreign blocker in the rig that owns its prefix', () => {
+    /** @type {Array<[string, string]>} */
+    const calls = [];
+    build({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'UI', [WS_B]: 'dotfiles' },
+      foreignStatusCalls: calls,
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'UI-1' }],
+          bead_blocked_by: { 'UI-1': ['dotfiles-a27g'] }
+        })
+      }
+    });
+
+    expect(calls).toEqual([['dotfiles-a27g', WS_B]]);
+  });
+
+  test('never consults the resolver for a same-rig or unowned blocker', () => {
+    /** @type {Array<[string, string]>} */
+    const calls = [];
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'UI', [WS_B]: 'dotfiles' },
+      foreignStatus: { 'UI-x': 'closed', 'ext-1': 'closed' },
+      foreignStatusCalls: calls,
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'UI-1' }],
+          bead_blocked_by: { 'UI-1': ['UI-x', 'ext-1'] }
+        })
+      }
+    });
+
+    expect(calls).toEqual([]);
+    expect(out[0].bead_blocked_by).toEqual({ 'UI-1': ['UI-x', 'ext-1'] });
+  });
+
+  test('leaves bead_blocked_by untouched when no other rig prefix is known', () => {
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      issuePrefixes: { [WS_A]: 'UI', [WS_B]: null },
+      foreignStatus: { 'dotfiles-a27g': 'closed' },
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'UI-1' }],
+          bead_blocked_by: { 'UI-1': ['dotfiles-a27g'] }
+        })
+      }
+    });
+
+    expect(out[0].bead_blocked_by).toEqual({ 'UI-1': ['dotfiles-a27g'] });
   });
 });
 

@@ -47,6 +47,13 @@ import {
  */
 const PUSH_DEBOUNCE_MS = 250;
 const ISSUE_PREFIX_RETRY_MS = 5_000;
+/**
+ * Foreign blocker status cache TTLs (UI-eey2 §10). A closed foreign blocker
+ * stays closed, so a long positive TTL is safe; a failed lookup retries sooner
+ * because the usual cause (bd busy, rig unreadable) is transient.
+ */
+const FOREIGN_STATUS_TTL_MS = 5 * 60_000;
+const FOREIGN_STATUS_RETRY_MS = 60_000;
 
 /**
  * Server-global subscriber set. No workspace key: a monitor subscription is one
@@ -166,6 +173,159 @@ function prewarmVisibleIssuePrefixes() {
 }
 
 /**
+ * Process-local status cache for FOREIGN blockers (UI-eey2 §10): a `blocks`
+ * dependency whose id belongs to another visible rig. `bd show` in the
+ * dependant's rig carries no `status` for such an edge, so the title cache
+ * cannot drop it when closed; the monitor — the one place that knows every
+ * visible rig's prefix — resolves it with one `bd show` in the owning rig.
+ * Display-only: a closed blocker is simply not a blocker, exactly as `bd ready`
+ * already judges it. Never scheduling input.
+ *
+ * @type {Map<string, { status: string|null, until: number, in_flight: boolean }>}
+ */
+const foreign_blocker_status_cache = new Map();
+
+/**
+ * Rig prefix of a bead id — the part before the first `-` (same split as the
+ * client's `classifyBlockerPrefix`).
+ *
+ * @param {string} bead_id
+ */
+function prefixOfBeadId(bead_id) {
+  const split_at = bead_id.indexOf('-');
+  return split_at > 0 ? bead_id.slice(0, split_at) : bead_id;
+}
+
+/**
+ * Cached status of a foreign blocker, kicking one async `bd show` in the owning
+ * rig when the cache is cold or expired. `null` until known.
+ *
+ * @param {string} bead_id
+ * @param {string} owner_root - Visible workspace whose prefix owns the id.
+ * @returns {string|null}
+ */
+function foreignBlockerStatusFor(bead_id, owner_root) {
+  const key = `${path.resolve(owner_root)}\u0000${bead_id}`;
+  const hit = foreign_blocker_status_cache.get(key);
+  const now = Date.now();
+  if (hit && (hit.in_flight || hit.until > now)) {
+    return hit.status;
+  }
+  foreign_blocker_status_cache.set(key, {
+    status: hit?.status ?? null,
+    until: hit?.until ?? 0,
+    in_flight: true
+  });
+  void runBdJsonProjected('show', ['show', bead_id, '--json'], {
+    cwd: path.resolve(owner_root),
+    expected_id: bead_id
+  })
+    .then((result) => {
+      const status =
+        result.ok === true &&
+        result.data &&
+        typeof (/** @type {any} */ (result.data).status) === 'string'
+          ? /** @type {any} */ (result.data).status
+          : null;
+      foreign_blocker_status_cache.set(key, {
+        status,
+        until:
+          Date.now() +
+          (status === null ? FOREIGN_STATUS_RETRY_MS : FOREIGN_STATUS_TTL_MS),
+        in_flight: false
+      });
+      if (status === 'closed') {
+        schedulePush();
+      }
+    })
+    .catch((err) => {
+      foreign_blocker_status_cache.set(key, {
+        status: hit?.status ?? null,
+        until: Date.now() + FOREIGN_STATUS_RETRY_MS,
+        in_flight: false
+      });
+      log('monitor: foreign blocker lookup failed for %s: %o', bead_id, err);
+    });
+  return hit?.status ?? null;
+}
+
+/**
+ * Drop CLOSED foreign blockers from a workspace's `bead_blocked_by` projection
+ * (UI-eey2 §10). Same-rig blockers are left alone — the title cache already
+ * excluded the closed ones from that source. Unknown status keeps the id
+ * (fail-visible until the lookup lands); an id whose prefix matches no other
+ * visible rig is untouched.
+ *
+ * @param {Record<string, any>} projected - Mutated in place.
+ * @param {string} root_dir
+ * @param {string[]} roots - Every visible workspace root.
+ * @param {(root_dir: string) => string|null} issuePrefixFor
+ * @param {(bead_id: string, owner_root: string) => string|null} statusFor
+ */
+function pruneClosedForeignBlockers(
+  projected,
+  root_dir,
+  roots,
+  issuePrefixFor,
+  statusFor
+) {
+  const map = projected.bead_blocked_by;
+  if (!map || typeof map !== 'object' || Array.isArray(map)) {
+    return;
+  }
+  /** @type {string|null} */
+  let self_prefix = null;
+  try {
+    self_prefix = issuePrefixFor(root_dir);
+  } catch {
+    self_prefix = null;
+  }
+  /** @type {Map<string, string>} */
+  const owner_by_prefix = new Map();
+  for (const other of roots) {
+    if (other === root_dir) {
+      continue;
+    }
+    /** @type {string|null} */
+    let prefix = null;
+    try {
+      prefix = issuePrefixFor(other);
+    } catch {
+      prefix = null;
+    }
+    if (typeof prefix === 'string' && prefix.length > 0) {
+      owner_by_prefix.set(prefix, other);
+    }
+  }
+  if (owner_by_prefix.size === 0) {
+    return;
+  }
+  /** @type {Record<string, unknown>} */
+  const out = {};
+  for (const [bead_id, blockers] of Object.entries(map)) {
+    if (!Array.isArray(blockers)) {
+      out[bead_id] = blockers;
+      continue;
+    }
+    out[bead_id] = blockers.filter((blocker) => {
+      if (typeof blocker !== 'string') {
+        return true;
+      }
+      const prefix = prefixOfBeadId(blocker);
+      if (self_prefix !== null && prefix === self_prefix) {
+        return true;
+      }
+      const owner_root = owner_by_prefix.get(prefix);
+      if (!owner_root) {
+        return true;
+      }
+      return statusFor(blocker, owner_root) !== 'closed';
+    });
+  }
+  projected.bead_blocked_by = out;
+}
+
+/**
  * Whether a workspace still has anything worth a monitor row.
  *
  * `runnable` counts (UI-qrfo §4): a repo whose only content is a spec-reviewed
@@ -276,7 +436,9 @@ function serialLaneBeadIds(snapshot) {
  *   listWorkspaces?: () => Array<{ path: string }>,
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
- *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
+ *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   issuePrefixFor?: (root_dir: string) => string|null,
+ *   foreignBlockerStatusFor?: (bead_id: string, owner_root: string) => string|null
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -289,11 +451,15 @@ export function buildMonitorPipeline(options = {}) {
     options.runnableFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
+  const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
+  const foreignStatusFor =
+    options.foreignBlockerStatusFor || foreignBlockerStatusFor;
 
   /** @type {Array<Record<string, unknown>>} */
   const out = [];
+  const roots = visibleWorkspaceRoots(options);
 
-  for (const root_dir of visibleWorkspaceRoots(options)) {
+  for (const root_dir of roots) {
     /** @type {Record<string, any>} */
     let decorated;
     try {
@@ -308,6 +474,17 @@ export function buildMonitorPipeline(options = {}) {
     const done = Array.isArray(decorated.done) ? decorated.done : [];
     /** @type {Record<string, any>} */
     const projected = { ...decorated, done };
+    try {
+      pruneClosedForeignBlockers(
+        projected,
+        root_dir,
+        roots,
+        issuePrefixFor,
+        foreignStatusFor
+      );
+    } catch (err) {
+      log('monitor: foreign blocker prune failed for %s: %o', root_dir, err);
+    }
     /** @type {Array<Record<string, unknown>>} */
     let runnable = [];
     try {
@@ -1056,6 +1233,7 @@ export function detachMonitorPipeline(ws) {
  * channel arms on its first subscriber.
  */
 export function __resetMonitorPipelineForTest() {
+  foreign_blocker_status_cache.clear();
   SUBSCRIBERS.clear();
   if (push_timer !== null) {
     clearTimeout(push_timer);

@@ -185,12 +185,17 @@ export function createTitleCache(options = {}) {
     const blocked_by = [];
     if (raw_issue && Array.isArray(raw_issue.dependencies)) {
       for (const dep of raw_issue.dependencies) {
+        // A closed blocker no longer blocks — `bd ready` ignores it, so the
+        // chip/warning projection must too (UI-eey2 §10). `bd show` carries
+        // `status` only for same-rig dependencies; a foreign dependency has
+        // no status here and stays listed for the cross-rig resolver.
         if (
           dep &&
           typeof dep === 'object' &&
           dep.dependency_type === 'blocks' &&
           typeof dep.id === 'string' &&
-          dep.id.length > 0
+          dep.id.length > 0 &&
+          dep.status !== 'closed'
         ) {
           blocked_by.push(dep.id);
         }

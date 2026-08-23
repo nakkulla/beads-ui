@@ -112,6 +112,13 @@ Runnable rows inside `workspaces[].runnable` additionally carry
 of the shared `ready_explain` snapshot. A legacy snapshot without that source
 uses `false` / `[]` and does not remove the candidate.
 
+`workspaces[].bead_blocked_by` is the worker snapshot's map with one more
+filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
+up (`bd show` in that rig, process-cached) and dropped once it reports `closed`.
+Unknown status keeps the id. The map therefore lists open blockers only, on
+either side of a rig boundary; a closed predecessor never renders as `(완료)` or
+`(미적재)`.
+
 ## Worker queue channel (worker-phase2 §3/§4/§6)
 
 Per-workspace subscription + CAS-guarded mutations + a whole-queue push.
@@ -261,9 +268,13 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   lanes carry the hold-until-merge meaning now.
 - `worker-queue-snapshot` additionally carries `serial_lanes` /
   `serial_lane_count` (durable), plus the non-persisted `bead_blocked_by`
-  (direct `blocks` blocker ids, partial cache) and `lane_states` — per serial
-  lane `{ occupied_by, order, corrections, cycle }` derived fresh on every
-  snapshot from durable occupancy and blocks edges.
+  (direct `blocks` blocker ids, partial cache — OPEN blockers only: a same-rig
+  dependency whose `status` is `closed` is dropped at the source, matching what
+  `bd ready` already ignores; a foreign dependency carries no status on the edge
+  and stays listed here, and the monitor aggregation drops it once the owning
+  rig reports it `closed`) and `lane_states` — per serial lane
+  `{ occupied_by, order, corrections, cycle }` derived fresh on every snapshot
+  from durable occupancy and blocks edges.
 - `worker-queue-remove` payload: `{ bead_id, expected_revision }`
 - `worker-attempt-pause` payload: `{ attempt_id }` — pauses (⏸) a running
   attempt while preserving its resumable state. Reply

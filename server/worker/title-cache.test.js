@@ -6,7 +6,7 @@ import { createTitleCache } from './title-cache.js';
  * id absent from the map exits non-zero, which is the "cannot read this bead"
  * failure the cache negative-caches.
  *
- * @param {Record<string, string | { title: string, labels?: unknown }>} titles
+ * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown }>} titles
  * @param {{ deferred?: boolean }} [options]
  */
 function fakeBd(titles, options = {}) {
@@ -84,6 +84,34 @@ describe('worker title cache (UI-12k6)', () => {
     await vi.waitFor(() =>
       expect(cache.labelsFor('/ws', ['UI-1'])).toEqual({
         'UI-1': ['worker-serial', 'frontend']
+      })
+    );
+  });
+
+  // A closed blocker no longer blocks (UI-eey2 §10): `bd ready` ignores it, so
+  // the chip/warning projection drops it at the source. A foreign dependency
+  // (no `status` on the edge) stays — the monitor resolves its status.
+  test('drops a closed blocks dependency from blocked_by and keeps the rest', async () => {
+    const bd = fakeBd({
+      'UI-3': {
+        title: '후속',
+        dependencies: [
+          { id: 'UI-1', dependency_type: 'blocks', status: 'closed' },
+          { id: 'UI-2', dependency_type: 'blocks', status: 'open' },
+          { id: 'dotfiles-9', dependency_type: 'blocks' },
+          { id: 'UI-8', dependency_type: 'related', status: 'open' }
+        ]
+      }
+    });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson)
+    });
+
+    cache.blockedByFor('/ws', ['UI-3']);
+
+    await vi.waitFor(() =>
+      expect(cache.blockedByFor('/ws', ['UI-3'])).toEqual({
+        'UI-3': ['UI-2', 'dotfiles-9']
       })
     );
   });
