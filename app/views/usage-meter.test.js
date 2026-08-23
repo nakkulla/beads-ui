@@ -358,7 +358,7 @@ describe('usage meter rendering', () => {
     expect(styles).toMatch(/\.usage-meter__group\s*{/);
     expect(styles).toMatch(/\.usage-meter__provider\s*{/);
     expect(styles).not.toMatch(
-      /@media \(max-width: 900px\)[\s\S]*?\.usage-meter-mount\s*{[\s\S]*?display: none;/
+      /@media \(max-width: 900px\)[\s\S]*?\.usage-meter-mount\s*{[^}]*display: none;/
     );
     expect(styles).toMatch(
       /@media \(max-width: 900px\)[\s\S]*?\.usage-meter__track\s*{[\s\S]*?display: none;/

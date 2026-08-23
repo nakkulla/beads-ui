@@ -140,8 +140,10 @@ a {
   padding: var(--space-6) var(--space-9) 0 var(--space-9);
   border-bottom: 1px solid var(--border);
   display: flex;
+  flex-wrap: wrap;
   align-items: start;
   justify-content: space-between;
+  row-gap: var(--space-4);
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--panel-bg) 80%, transparent),
@@ -377,10 +379,14 @@ a {
   }
 }
 
+/* 헤더가 뷰포트보다 넓어지면 액션 묶음이 둘째 줄로 내려간다. 그때도 오른쪽
+   정렬을 지키도록 auto margin으로 민다. */
 .header-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-5);
+  margin-left: auto;
 }
 
 /* Provider usage meters: active account windows, in source order. */
@@ -474,8 +480,18 @@ a {
    있는 폭까지 줄이는 것이 목적이므로, 어느 창의 몇 %인지 읽을 수 없게 만드는
    축약은 하지 않는다. */
 @media (max-width: 900px) {
+  /* 미터는 provider 그룹 단위로 줄바꿈한다. 한 줄 inline-flex는 줄어들 수
+     없어 창이 늘면(5h·7d·모델) 뷰포트 밖으로 잘렸다. 줄 머리에 구분선이 남지
+     않도록 그룹 사이 세로선은 지우고 간격으로만 나눈다. */
+  .usage-meter-mount {
+    min-width: 0;
+    max-width: 100%;
+  }
+
   .usage-meter {
-    gap: var(--sp-8);
+    flex-wrap: wrap;
+    gap: var(--sp-4) var(--sp-14);
+    margin-right: 0;
   }
 
   .usage-meter__group {
@@ -483,7 +499,8 @@ a {
   }
 
   .usage-meter__group + .usage-meter__group {
-    padding-left: var(--sp-8);
+    padding-left: 0;
+    border-left: 0;
   }
 
   .usage-meter__window {
@@ -7764,7 +7781,6 @@ button.detail-session__leg:focus-visible {
   /* App shell header: wrap instead of forcing title+picker+tabs+actions onto one
      line; buttons/icons keep their size, only spacing shrinks (§1.1). */
   .app-header {
-    flex-wrap: wrap;
     gap: var(--space-4, 8px);
     padding: var(--space-4, 8px) var(--space-5, 12px) 0;
   }
@@ -7781,7 +7797,6 @@ button.detail-session__leg:focus-visible {
   }
 
   .header-actions {
-    flex-wrap: wrap;
     gap: var(--space-4, 8px);
   }
 
