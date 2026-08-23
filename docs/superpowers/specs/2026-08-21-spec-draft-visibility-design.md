@@ -50,11 +50,16 @@ opt-in 호출에서도 `spec_id`가 존재하면 `spec_path` 값과 달라도 `s
 변경하지 않는다. draft opt-in을 `artifacts.js`에서만 활성화하는 §1의 설계가
 이를 구조적으로 보장하고, 수용 기준 4의 회귀 테스트가 고정한다.
 
+`2026-08-23-stepper-spec-draft-stage-design.md` §2가 표시(`fill`)의 draft 단계를
+도입해 stepper spec 칸이 draft에서 `dim`이 됐지만, 게이트·stale·Worker admission의
+발행 증거 전용 판정은 그대로이며, 수용 기준 4가 가리키는 회귀 테스트는 그 spec
+§6의 새 테스트로 대체됐다.
+
 ## 제외 범위
 
 - 서버 라우트·경로 안전 정책 변경 없음.
 - 리뷰 코멘트·승인 등 UI 액션 없음(읽기 전용 뷰).
-- `workflow-enrich.js` stage 판정 변경 없음.
+- `workflow-enrich.js` stage 판정 변경 없음 — 이후 `2026-08-23-stepper-spec-draft-stage-design.md` §2가 표시용 draft 단계만 추가했고 게이트·stale 불참은 유지된다.
 
 ## 수용 기준과 검증
 

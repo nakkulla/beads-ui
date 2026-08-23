@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { resolveSpecDraft, resolveSpecId } from './spec-id.js';
+import {
+  resolveSpecDraft,
+  resolveSpecEvidence,
+  resolveSpecId
+} from './spec-id.js';
 
 describe('resolveSpecId', () => {
   test.each([
@@ -98,6 +102,82 @@ describe('resolveSpecDraft', () => {
       path: '',
       source: 'none',
       conflict: false
+    });
+  });
+});
+
+describe('resolveSpecEvidence', () => {
+  test('reports published for a spec_id with no draft pointer', () => {
+    const issue = { spec_id: 'docs/specs/published.md' };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/published.md',
+      source: 'native',
+      conflict: false,
+      evidence: 'published'
+    });
+  });
+
+  test('reports published for a metadata-only spec_id', () => {
+    const issue = { metadata: { spec_id: 'docs/specs/legacy.md' } };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/legacy.md',
+      source: 'metadata',
+      conflict: false,
+      evidence: 'published'
+    });
+  });
+
+  test('reports draft with the draft path when only spec_path exists', () => {
+    const issue = { metadata: { spec_path: ' docs/specs/draft.md ' } };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/draft.md',
+      source: 'draft',
+      conflict: false,
+      evidence: 'draft'
+    });
+  });
+
+  test('prefers the published path when spec_id and spec_path differ', () => {
+    const issue = {
+      spec_id: 'docs/specs/published.md',
+      metadata: { spec_path: 'docs/specs/draft.md' }
+    };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/published.md',
+      source: 'native',
+      conflict: false,
+      evidence: 'published'
+    });
+  });
+
+  test.each([
+    ['neither key', { metadata: { route: 'spec_backed' } }],
+    ['blank spec_path', { metadata: { spec_path: '   ' } }],
+    ['missing issue', null]
+  ])('reports none for %s', (_name, issue) => {
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: '',
+      source: 'none',
+      conflict: false,
+      evidence: 'none'
+    });
+  });
+
+  test('carries the conflicting-dual flag through unchanged', () => {
+    const issue = {
+      spec_id: 'docs/specs/native.md',
+      metadata: { spec_id: 'docs/specs/legacy.md' }
+    };
+
+    expect(resolveSpecEvidence(issue)).toEqual({
+      path: 'docs/specs/native.md',
+      source: 'native',
+      conflict: true,
+      evidence: 'published'
     });
   });
 });

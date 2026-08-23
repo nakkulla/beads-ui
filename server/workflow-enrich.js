@@ -24,7 +24,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import { debug } from './logging.js';
 import { resolveRealpathWithinDocs } from './path-safety.js';
-import { resolveSpecId } from './spec-id.js';
+import { resolveSpecEvidence, resolveSpecId } from './spec-id.js';
 
 const log = debug('workflow-enrich');
 
@@ -549,7 +549,9 @@ export function implFreshness(workspace_root, receipt_sha, bead_id) {
  * @param {string | null} head - precomputed HEAD (avoids re-shelling per issue)
  * @param {string | undefined | null} bead_id - issue id (impl branch name)
  * @param {string | null} status - issue status, or null to always probe
- * @param {string} [spec_path] - Canonical native-first spec path.
+ * @param {string} [published_spec_path] - Canonical native-first published spec
+ * path. Only publication evidence takes part in the stale probe; an
+ * authoring-time draft path never does.
  * @returns {{ spec_stale: boolean, impl_stale: boolean, spec_receipt: ParsedReceipt | null, impl_receipt: ParsedReceipt | null }}
  */
 function computeStaleWithHead(
@@ -558,7 +560,7 @@ function computeStaleWithHead(
   head,
   bead_id,
   status,
-  spec_path = resolveSpecId({ metadata: md }).path
+  published_spec_path = resolveSpecId({ metadata: md }).path
 ) {
   const spec_receipt = parseReceipt(md.spec_review);
   const impl_receipt = parseReceipt(md.impl_review);
@@ -569,7 +571,7 @@ function computeStaleWithHead(
   // this enrichment path runs for every rendered issue.
   const spec_stale =
     !!spec_receipt &&
-    spec_path.length > 0 &&
+    published_spec_path.length > 0 &&
     pathChangedSince(
       workspace_root,
       head,
@@ -579,7 +581,7 @@ function computeStaleWithHead(
         md.last_checked_sha,
         spec_receipt.sha
       ),
-      spec_path
+      published_spec_path
     );
   const impl_stale =
     !!impl_receipt &&
@@ -704,39 +706,51 @@ function makeStage(fill, glyph, stale, receipt) {
 }
 
 /**
- * Compute the SPEC stage (spec §4).
+ * Compute the SPEC stage (2026-08-23 spec-draft-stage spec §2).
  *
- * @param {string} spec_path
+ * Three display steps driven by the evidence class, never by the `source`
+ * value: no document at all is `none`, an authoring-time draft whose document
+ * exists (or cannot be checked) is `dim`, and publication evidence is `full` —
+ * publication itself is the completed-stage fact, so a published spec without a
+ * valid receipt fills without a glyph. A draft cell never carries a glyph and
+ * never goes stale; the raw `spec_review` string still rides along on every row.
+ *
+ * @param {{ path: string, evidence: 'published'|'draft'|'none' }} spec_evidence
  * @param {Record<string, any>} md
  * @param {ParsedReceipt | null} receipt
  * @param {boolean} stale
+ * @param {string | undefined | null} workspace_root
  * @returns {WorkflowStage}
  */
-function specStage(spec_path, md, receipt, stale) {
+function specStage(spec_evidence, md, receipt, stale, workspace_root) {
   const raw = typeof md.spec_review === 'string' ? md.spec_review : null;
-  if (!spec_path) {
+  if (spec_evidence.evidence === 'none') {
     return makeStage('none', null, false, raw);
   }
+  if (spec_evidence.evidence === 'draft') {
+    const exists = docArtifactExists(workspace_root, spec_evidence.path);
+    return makeStage(exists === false ? 'none' : 'dim', null, false, raw);
+  }
   if (!receipt) {
-    return makeStage('dim', null, false, raw);
+    return makeStage('full', null, false, raw);
   }
   return makeStage('full', classifyGlyph(receipt), stale, raw);
 }
 
 /**
- * Determine whether a reserved plan path currently resolves to a readable
+ * Determine whether a reserved document path currently resolves to a readable
  * markdown file inside the workspace docs tree. A missing workspace keeps the
  * older fail-quiet behavior because absence cannot be proven.
  *
  * @param {string | undefined | null} workspace_root
- * @param {string} plan_path
+ * @param {string} doc_path
  * @returns {boolean | null}
  */
-function planArtifactExists(workspace_root, plan_path) {
+function docArtifactExists(workspace_root, doc_path) {
   if (!workspace_root) {
     return null;
   }
-  const resolved = resolveRealpathWithinDocs(workspace_root, plan_path);
+  const resolved = resolveRealpathWithinDocs(workspace_root, doc_path);
   if (!resolved.ok) {
     return false;
   }
@@ -777,7 +791,7 @@ function planStage(md, status, workspace_root, head) {
     Object.hasOwn(md, 'plan_approval');
   if (
     !has_authoring_history &&
-    planArtifactExists(workspace_root, md.plan_path) === false
+    docArtifactExists(workspace_root, md.plan_path) === false
   ) {
     return {
       ...makeStage('none', null, false, null),
@@ -918,7 +932,8 @@ function mergeStage(md, status) {
  */
 export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   const md = (issue && issue.metadata) || {};
-  const spec = resolveSpecId(issue);
+  const spec = resolveSpecEvidence(issue);
+  const published_spec_path = resolveSpecId(issue).path;
   const status = String((issue && issue.status) || 'open');
   const bead_id = (issue && issue.id) || null;
   const resolved_head = head === undefined ? gitHead(workspace_root) : head;
@@ -929,7 +944,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       resolved_head,
       bead_id,
       status,
-      spec.path
+      published_spec_path
     );
 
   const route = deriveRoute(md);
@@ -950,7 +965,7 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
 
   /** @type {WorkflowSummary['stages']} */
   const stages = {
-    spec: specStage(spec.path, md, spec_receipt, spec_stale),
+    spec: specStage(spec, md, spec_receipt, spec_stale, workspace_root),
     impl: implStage(md, status, impl_receipt, impl_stale),
     // pr is a binary fact; the wait-for-merge state lives in merge's `dim`
     // (spec §4.2), so this stage never uses `dim`.
