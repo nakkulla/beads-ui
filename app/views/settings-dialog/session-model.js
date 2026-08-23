@@ -6,6 +6,8 @@
  * `metadata.parent_keys`) and are mirrored on the server in
  * `server/worker/exec-enums.js`. Nothing here may widen them. Concrete unset
  * labels come from the pinned projection through the shared resolver.
+ *
+ * @typedef {{ key: string, label: string, before: string|null, after: string|null, kind: 'added'|'removed'|'changed' }} PresetDiffRow
  */
 import { buildOptionView } from '../../utils/execution-defaults.js';
 
@@ -51,6 +53,16 @@ export const ORCHESTRATION_KEYS = [
 
 /** The fifteen keys an execution preset carries. */
 export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
+
+/**
+ * The eleven kv keys a preset actually CARRIES — the workspace kv list minus the
+ * keys no preset can supply. Mirrors `server/worker/exec-enums.js
+ * PRESET_KV_KEYS`, which is exactly the list a global apply REPLACES, so the
+ * kv-only `quick_fix_impl_model` survives an apply instead of being cleared.
+ */
+export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
+  IMPL_PRESET_KEYS.includes(key)
+);
 
 /** 실행 방식: 위임(기존 runtime matrix) 또는 메인(컨트롤러 직접 구현). */
 export const IMPL_DISPATCHES = ['delegated', 'main'];
@@ -134,15 +146,17 @@ export function implModelOptions(catalog, runtime) {
 }
 
 /**
- * Effort options for the implementation target: the chosen model's own efforts,
- * or the target runtime's union while the model is `자동`.
+ * Union of one effort vocabulary over every catalog model the runtime/model
+ * pair still admits. `vocabularyOf` names WHICH vocabulary — implementation and
+ * orchestration efforts are different lists over the same catalog.
  *
  * @param {any} catalog
- * @param {string|undefined} runtime
- * @param {string|undefined} model
+ * @param {string|null|undefined} runtime
+ * @param {string|null|undefined} model
+ * @param {(entry: Record<string, any>, model_entry: any) => unknown} vocabularyOf
  * @returns {string[]}
  */
-export function implEffortOptions(catalog, runtime, model) {
+function effortUnion(catalog, runtime, model, vocabularyOf) {
   if (!isRecord(catalog) || !isRecord(catalog.runners)) {
     return [AUTO_LITERAL];
   }
@@ -159,7 +173,7 @@ export function implEffortOptions(catalog, runtime, model) {
       if (model && model !== AUTO_LITERAL && model_name !== model) {
         continue;
       }
-      const list = isRecord(model_entry) ? model_entry.efforts : null;
+      const list = vocabularyOf(entry, model_entry);
       if (!Array.isArray(list)) {
         continue;
       }
@@ -171,6 +185,52 @@ export function implEffortOptions(catalog, runtime, model) {
     }
   }
   return [AUTO_LITERAL, ...efforts];
+}
+
+/**
+ * Effort options for the implementation target: the chosen model's own efforts,
+ * or the target runtime's union while the model is `자동`. A model that declares
+ * no `efforts` inherits its runner's list — the same fallback the detail panel's
+ * `effortsOf` applies, without which a runner-level-only catalog (claude) offers
+ * nothing but `auto`.
+ *
+ * @param {any} catalog
+ * @param {string|undefined} runtime
+ * @param {string|undefined} model
+ * @returns {string[]}
+ */
+export function implEffortOptions(catalog, runtime, model) {
+  return effortUnion(catalog, runtime, model, (entry, model_entry) =>
+    isRecord(model_entry) && Array.isArray(model_entry.efforts)
+      ? model_entry.efforts
+      : entry.efforts
+  );
+}
+
+/**
+ * Effort options for the OUTER Worker leg, whose vocabulary is its own key:
+ * `orchestration_efforts` when the model declares it, then the implementation
+ * `efforts`, then the runner's list (`orchestrationEffortsOf`). The dialog's
+ * orchestration effort row and the runtime-filter reset both read this, so a
+ * value can never survive a list that no longer offers it.
+ *
+ * @param {any} catalog
+ * @param {string|null|undefined} runtime
+ * @param {string|null|undefined} model
+ * @returns {string[]}
+ */
+export function orchestrationEffortOptions(catalog, runtime, model) {
+  return effortUnion(catalog, runtime, model, (entry, model_entry) => {
+    if (
+      isRecord(model_entry) &&
+      Array.isArray(model_entry.orchestration_efforts)
+    ) {
+      return model_entry.orchestration_efforts;
+    }
+    return isRecord(model_entry) && Array.isArray(model_entry.efforts)
+      ? model_entry.efforts
+      : entry.efforts;
+  });
 }
 
 /**
@@ -188,6 +248,134 @@ export function orchestrationModelOptions(catalog, runtime) {
     ? pairs.filter(([runner]) => runner === runtime)
     : pairs;
   return selected.flatMap(([, models]) => models);
+}
+
+/**
+ * Drop the implementation model/effort a newly chosen delegation target cannot
+ * run, so one edit saves one coherent triple.
+ *
+ * Unlike the detail panel's `normalizeImplTarget`, an UNKNOWN effective runtime
+ * changes nothing: this layer is the workspace default, where a model without a
+ * runtime is legal by contract (the kv model's runtime is DERIVED from the
+ * catalog), so an unresolvable `inherit` is "cannot judge", not "illegal".
+ *
+ * @param {{ impl_runtime?: string, impl_model?: string, impl_effort?: string }} target
+ * @param {any} catalog
+ * @param {string|null} controller_runtime - The controller's runtime an
+ * `inherit` target would adopt, or `null` when this context cannot know it.
+ * @returns {{ impl_runtime: string|undefined, impl_model: string|undefined, impl_effort: string|undefined }}
+ */
+export function narrowImplTarget(target, catalog, controller_runtime) {
+  const narrowed = {
+    impl_runtime: target?.impl_runtime,
+    impl_model: target?.impl_model,
+    impl_effort: target?.impl_effort
+  };
+  const effective_runtime =
+    narrowed.impl_runtime === 'claude' || narrowed.impl_runtime === 'codex'
+      ? narrowed.impl_runtime
+      : narrowed.impl_runtime === 'inherit'
+        ? controller_runtime
+        : null;
+  if (!effective_runtime) {
+    return narrowed;
+  }
+  if (
+    narrowed.impl_model &&
+    !implModelOptions(catalog, effective_runtime).includes(narrowed.impl_model)
+  ) {
+    narrowed.impl_model = undefined;
+  }
+  if (
+    narrowed.impl_effort &&
+    !implEffortOptions(
+      catalog,
+      effective_runtime,
+      narrowed.impl_model || AUTO_LITERAL
+    ).includes(narrowed.impl_effort)
+  ) {
+    narrowed.impl_effort = undefined;
+  }
+  return narrowed;
+}
+
+/**
+ * Korean labels for the fourteen keys a preset diff can name — the same
+ * vocabulary the dialog's own rows use.
+ *
+ * @type {Record<string, string>}
+ */
+export const PRESET_DIFF_LABELS = {
+  workflow_mode: '워크플로 모드',
+  spec_review_model: '스펙 리뷰어',
+  spec_review_effort: '스펙 리뷰 effort',
+  plan_review_model: '계획 리뷰어',
+  plan_review_effort: '계획 리뷰 effort',
+  impl_review_model: '구현 리뷰어',
+  impl_review_effort: '구현 리뷰 effort',
+  impl_runtime: '위임 대상',
+  impl_model: '구현 모델',
+  impl_effort: '구현 effort',
+  impl_speed: '구현 속도',
+  orchestration_model: '워커 모델',
+  orchestration_effort: '워커 effort',
+  orchestration_speed: '워커 속도'
+};
+
+/** Exactly the keys a global preset apply replaces, in declaration order. */
+const PRESET_DIFF_KEYS = [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS];
+
+/**
+ * Declared keys a preset may carry that a global apply does NOT write:
+ * `impl_dispatch` is `user_write_only`, and `quick_fix_impl_model` has no preset
+ * layer at all.
+ */
+const PRESET_IGNORED_KEYS = [...IMPL_PRESET_KEYS, ...WORKSPACE_KV_KEYS].filter(
+  (key, index, list) =>
+    list.indexOf(key) === index && !PRESET_DIFF_KEYS.includes(key)
+);
+
+/**
+ * Preview what applying a preset globally would change, key by key.
+ *
+ * The comparison set is the one the SERVER replaces, not the workspace kv list:
+ * a key the apply preserves must never be previewed as cleared.
+ *
+ * @param {Record<string, string>} current - `executionDraftSettings()`.
+ * @param {Record<string, string>} preset - `preset.settings` (sparse).
+ * @returns {{ rows: PresetDiffRow[], ignored_keys: string[] }}
+ */
+export function buildPresetDiff(current, preset) {
+  const before_values = isRecord(current) ? current : {};
+  const after_values = isRecord(preset) ? preset : {};
+  /** @type {PresetDiffRow[]} */
+  const rows = [];
+  for (const key of PRESET_DIFF_KEYS) {
+    const before = before_values[key] ?? null;
+    const after = after_values[key] ?? null;
+    if (before === after) {
+      continue;
+    }
+    rows.push({
+      key,
+      label: PRESET_DIFF_LABELS[key] || key,
+      before,
+      after,
+      kind: before === null ? 'added' : after === null ? 'removed' : 'changed'
+    });
+  }
+  /** @type {string[]} */
+  const ignored_keys = [];
+  for (const key of [...PRESET_IGNORED_KEYS, ...Object.keys(after_values)]) {
+    if (
+      !PRESET_DIFF_KEYS.includes(key) &&
+      !ignored_keys.includes(key) &&
+      Object.hasOwn(after_values, key)
+    ) {
+      ignored_keys.push(key);
+    }
+  }
+  return { rows, ignored_keys };
 }
 
 /**

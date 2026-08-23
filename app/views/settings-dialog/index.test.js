@@ -24,8 +24,26 @@ const CATALOG = {
   runners: {
     claude: { models: { opus: { id: 'opus', efforts: ['low', 'high'] } } },
     codex: {
-      models: { sol: { id: 'gpt-5.6-sol', efforts: ['medium'] } }
+      models: {
+        sol: {
+          id: 'gpt-5.6-sol',
+          efforts: ['medium'],
+          orchestration_efforts: ['medium', 'ultra']
+        }
+      }
     }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
+/** The claude shape: efforts live on the runner, not on each model. */
+const RUNNER_LEVEL_CATALOG = {
+  runners: {
+    claude: {
+      models: { opus: { id: 'opus' } },
+      efforts: ['low', 'medium', 'high', 'xhigh']
+    },
+    codex: { models: { sol: { id: 'gpt-5.6-sol', efforts: ['medium'] } } }
   },
   model_index: { opus: 'claude', sol: 'codex' }
 };
@@ -349,6 +367,86 @@ describe('createSettingsDialog session tab', () => {
     );
   });
 
+  test('clears an incompatible model and effort in one delegation write', async () => {
+    const { root, dialog, transport } = mount({
+      values: { impl_model: 'sol', impl_effort: 'medium' }
+    });
+    dialog.open();
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="impl_runtime"]')
+    );
+    select.value = 'claude';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    const calls = transport.mock.calls.filter(
+      (/** @type {any[]} */ call) => call[0] === 'set-session-defaults'
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({
+      values: {
+        impl_runtime: 'claude',
+        impl_model: null,
+        impl_effort: null
+      }
+    });
+  });
+
+  test('keeps a runner-level effort the model itself does not declare', async () => {
+    const { root, dialog, transport } = mount({
+      values: { impl_model: 'opus', impl_effort: 'high' },
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: RUNNER_LEVEL_CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="impl_runtime"]')
+    );
+    select.value = 'claude';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(transport).toHaveBeenCalledWith('set-session-defaults', {
+      values: { impl_runtime: 'claude' }
+    });
+  });
+
+  test('offers the runner efforts for a model that declares none', async () => {
+    const { root, dialog } = mount({
+      values: { impl_runtime: 'claude', impl_model: 'opus' },
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: RUNNER_LEVEL_CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+
+    const options = Array.from(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="impl_effort"]')
+      ).options
+    ).map((option) => option.value);
+
+    expect(options).toEqual(['', 'auto', 'low', 'medium', 'high', 'xhigh']);
+  });
+
   test('preserves the edit and notifies when the save fails', async () => {
     const transport = vi.fn(async (/** @type {string} */ type) => {
       if (type === 'get-session-defaults') {
@@ -439,6 +537,126 @@ describe('createSettingsDialog execution tab orchestration', () => {
     expect(options).toEqual(['', 'sol']);
   });
 
+  test('offers the outer worker effort vocabulary of the filtered model', async () => {
+    const { root, dialog } = mount({
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'sol',
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+    const filter = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+    );
+    filter.value = 'codex';
+    filter.dispatchEvent(new Event('change'));
+
+    const options = Array.from(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="orchestration_effort"]')
+      ).options
+    ).map((option) => option.value);
+
+    expect(options).toEqual(['', 'medium', 'ultra']);
+  });
+
+  test('clears a stored model the new runtime filter cannot offer', async () => {
+    const { root, dialog, transport } = mount({
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'opus',
+        orchestration_effort: 'ultra',
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+    const filter = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+    );
+    filter.value = 'codex';
+    filter.dispatchEvent(new Event('change'));
+    await settle();
+
+    const calls = transport.mock.calls.filter(
+      (/** @type {any[]} */ call) =>
+        call[0] === 'worker-queue-set-orchestration-defaults'
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({
+      expected_revision: 3,
+      values: { orchestration_model: null }
+    });
+  });
+
+  test('clears an effort the new runtime filter has no vocabulary for', async () => {
+    const { root, dialog, transport } = mount({
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'sol',
+        orchestration_effort: 'ultra',
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+    const filter = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+    );
+    filter.value = 'claude';
+    filter.dispatchEvent(new Event('change'));
+    await settle();
+
+    const calls = transport.mock.calls.filter(
+      (/** @type {any[]} */ call) =>
+        call[0] === 'worker-queue-set-orchestration-defaults'
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({
+      expected_revision: 3,
+      values: { orchestration_model: null, orchestration_effort: null }
+    });
+  });
+
+  test('stores nothing when the runtime filter returns to 전체', async () => {
+    const { root, dialog, transport } = mount({
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: 'opus',
+        orchestration_effort: 'ultra',
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+    const filter = /** @type {HTMLSelectElement} */ (
+      root.querySelector('select[data-key="orchestration_runtime_filter"]')
+    );
+    filter.value = '';
+    filter.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(transport).not.toHaveBeenCalledWith(
+      'worker-queue-set-orchestration-defaults',
+      expect.anything()
+    );
+  });
+
   test('stores an orchestration edit under the queue revision', async () => {
     const { root, dialog, transport } = mount();
     dialog.open();
@@ -498,6 +716,85 @@ describe('createSettingsDialog implementation presets', () => {
       }
     ]
   };
+
+  test('renders no diff preview while no preset is selected', async () => {
+    const { root, dialog } = mount({ presets: PRESETS });
+    dialog.open('execution');
+    await settle();
+
+    expect(root.querySelector('[data-preset-diff]')).toBe(null);
+    expect(root.querySelector('[data-preset-save]')?.textContent?.trim()).toBe(
+      '새 프리셋 저장'
+    );
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        root.querySelector('[data-preset-apply-global]')
+      ).disabled
+    ).toBe(true);
+    dialog.destroy();
+  });
+
+  test('previews every key the apply would change for the chosen preset', async () => {
+    const { root, dialog } = mount({
+      presets: PRESETS,
+      values: { impl_runtime: 'claude', impl_speed: 'fast' }
+    });
+    dialog.open('execution');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[aria-label="실행 프리셋"]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const rows = Array.from(
+      root.querySelectorAll('[data-preset-diff] [data-diff-kind]')
+    ).map((row) => [
+      row.getAttribute('data-diff-kind'),
+      row.textContent?.replace(/\s+/g, ' ').trim()
+    ]);
+    expect(rows).toEqual([
+      ['changed', '위임 대상 claude → codex'],
+      ['added', '구현 모델 기본 → sol'],
+      ['removed', '구현 속도 fast → 기본(해제)']
+    ]);
+    expect(root.querySelector('[data-preset-diff]')?.textContent).toContain(
+      '변경 3개 · 적용하면 아래와 같이 바뀝니다'
+    );
+    expect(root.querySelector('[data-preset-save]')?.textContent?.trim()).toBe(
+      '현재 설정으로 덮어쓰기'
+    );
+    expect(
+      root.querySelector('[data-preset-apply-global]')?.textContent?.trim()
+    ).toBe('적용');
+    dialog.destroy();
+  });
+
+  test('disables the apply button for a preset equal to the current settings', async () => {
+    const { root, dialog } = mount({
+      presets: PRESETS,
+      values: { impl_runtime: 'codex', impl_model: 'sol' }
+    });
+    dialog.open('execution');
+    await settle();
+
+    const select = /** @type {HTMLSelectElement} */ (
+      root.querySelector('[aria-label="실행 프리셋"]')
+    );
+    select.value = 'p1';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(root.querySelector('[data-preset-diff]')?.textContent).toContain(
+      '현재 설정과 같습니다 — 적용할 변경이 없습니다'
+    );
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        root.querySelector('[data-preset-apply-global]')
+      ).disabled
+    ).toBe(true);
+    dialog.destroy();
+  });
 
   test('creates a preset from the current explicit execution values', async () => {
     const calls = /** @type {any[]} */ ([]);
@@ -629,9 +926,11 @@ describe('createSettingsDialog implementation presets', () => {
     );
     select.value = 'p1';
     select.dispatchEvent(new Event('change', { bubbles: true }));
-    /** @type {HTMLButtonElement} */ (
+    const save = /** @type {HTMLButtonElement} */ (
       root.querySelector('[data-preset-save]')
-    ).click();
+    );
+    expect(save.textContent?.trim()).toBe('현재 설정으로 덮어쓰기');
+    save.click();
     await settle();
 
     const update = calls.find(([type]) => type === 'impl-preset-update');
@@ -708,9 +1007,11 @@ describe('createSettingsDialog implementation presets', () => {
     );
     select.value = 'p1';
     select.dispatchEvent(new Event('change', { bubbles: true }));
-    /** @type {HTMLButtonElement} */ (
+    const apply = /** @type {HTMLButtonElement} */ (
       root.querySelector('[data-preset-apply-global]')
-    ).click();
+    );
+    expect(apply.disabled).toBe(false);
+    apply.click();
     await settle();
 
     expect(transport).toHaveBeenCalledWith('apply-impl-preset-global', {

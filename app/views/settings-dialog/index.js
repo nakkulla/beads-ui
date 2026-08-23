@@ -15,7 +15,9 @@
  */
 import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
+import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
+import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import { chipsSection, labelsSection, prefixesSection } from './display-tab.js';
 import {
@@ -30,9 +32,12 @@ import {
   WORKFLOW_MODES,
   buildExecutionOptionView,
   buildOrchestrationPatch,
+  buildPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
+  narrowImplTarget,
+  orchestrationEffortOptions,
   orchestrationModelOptions
 } from './session-model.js';
 
@@ -44,6 +49,9 @@ export const SETTINGS_TABS = [
 
 /** The `(기본)` sentinel a select uses for "no explicit value". */
 const UNSET = '';
+
+/** The three coupled implementation keys one runtime change re-narrows. */
+const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 
 /**
  * @param {unknown} value
@@ -187,11 +195,71 @@ export function createSettingsDialog(mount_element, options) {
    * @param {string} value
    */
   function onSessionChange(key, value) {
+    if (IMPL_TARGET_KEYS.includes(key)) {
+      onImplTargetChange(key, value);
+      return;
+    }
     if (value === UNSET) {
       delete session_draft[key];
     } else {
       session_draft[key] = value;
     }
+    doRender();
+    void saveSessionDefaults();
+  }
+
+  /**
+   * The runtime an `inherit` delegation would adopt: the runner behind the
+   * effective orchestration model, or `null` when neither the draft nor the
+   * projection names one.
+   *
+   * @returns {string|null}
+   */
+  function controllerRuntime() {
+    const chosen = currentOrchestrationValues().orchestration_model;
+    const resolved = resolveExecutionSettings({
+      global: { orchestration_model: chosen ?? undefined },
+      execution_defaults: executionProjection(),
+      runner_catalog: runnerCatalog()
+    }).orchestration_model.value;
+    return resolved ? modelRunnerOf(runnerCatalog(), resolved) : null;
+  }
+
+  /**
+   * @param {string} key
+   * @param {string|undefined} value
+   */
+  function writeImplTargetKey(key, value) {
+    if (typeof value === 'string' && value.length > 0) {
+      session_draft[key] = value;
+    } else {
+      delete session_draft[key];
+    }
+  }
+
+  /**
+   * Edit one of the three coupled implementation keys, then drop whatever the
+   * new delegation target cannot run. One render and ONE save: the patch
+   * builder sends the cleared keys as `null` alongside the edited one.
+   *
+   * @param {string} key
+   * @param {string} value
+   */
+  function onImplTargetChange(key, value) {
+    const next = value === UNSET ? undefined : value;
+    const narrowed = narrowImplTarget(
+      {
+        impl_runtime:
+          key === 'impl_runtime' ? next : session_draft.impl_runtime,
+        impl_model: key === 'impl_model' ? next : session_draft.impl_model,
+        impl_effort: key === 'impl_effort' ? next : session_draft.impl_effort
+      },
+      runnerCatalog(),
+      controllerRuntime()
+    );
+    writeImplTargetKey('impl_runtime', narrowed.impl_runtime);
+    writeImplTargetKey('impl_model', narrowed.impl_model);
+    writeImplTargetKey('impl_effort', narrowed.impl_effort);
     doRender();
     void saveSessionDefaults();
   }
@@ -238,6 +306,42 @@ export function createSettingsDialog(mount_element, options) {
    */
   function onWorkerChange(key, value) {
     worker_draft[key] = value === UNSET ? null : value;
+    doRender();
+    void saveOrchestration();
+  }
+
+  /**
+   * Narrow the UI-only runtime filter, clearing the stored orchestration values
+   * the new filter can no longer offer. Returning to `전체` narrows nothing, and
+   * an unset model stays unset — its default belongs to the projection, not to
+   * this layer.
+   *
+   * @param {string|null} filter
+   */
+  function onWorkerRuntimeFilterChange(filter) {
+    worker_runtime_filter = filter;
+    if (!filter) {
+      doRender();
+      return;
+    }
+    const catalog = runnerCatalog();
+    const current = currentOrchestrationValues();
+    let model = current.orchestration_model;
+    if (model && !orchestrationModelOptions(catalog, filter).includes(model)) {
+      worker_draft.orchestration_model = null;
+      model = null;
+    }
+    const effort = current.orchestration_effort;
+    if (
+      effort &&
+      !orchestrationEffortOptions(
+        catalog,
+        filter,
+        model || AUTO_LITERAL
+      ).includes(effort)
+    ) {
+      worker_draft.orchestration_effort = null;
+    }
     doRender();
     void saveOrchestration();
   }
@@ -649,6 +753,46 @@ export function createSettingsDialog(mount_element, options) {
     </div>`;
   }
 
+  /**
+   * The `현재 → 프리셋` preview for the selected preset. A global apply REPLACES
+   * the compared keys, so a key the preset omits reads as `기본(해제)`.
+   *
+   * @param {{ rows: import('./session-model.js').PresetDiffRow[], ignored_keys: string[] }} diff
+   * @returns {TemplateResult}
+   */
+  function presetDiffTemplate(diff) {
+    return html`<div class="settings-dialog__preset-diff" data-preset-diff>
+      <div class="settings-dialog__preset-diff-head">
+        ${diff.rows.length > 0
+          ? `변경 ${diff.rows.length}개 · 적용하면 아래와 같이 바뀝니다`
+          : '현재 설정과 같습니다 — 적용할 변경이 없습니다'}
+      </div>
+      ${diff.rows.map(
+        (row) =>
+          html`<div
+            class="settings-dialog__preset-diff-row"
+            data-diff-kind=${row.kind}
+          >
+            <span class="settings-dialog__preset-diff-label">${row.label}</span>
+            <span class="settings-dialog__preset-diff-value"
+              >${row.before ?? '기본'}</span
+            >
+            <span class="settings-dialog__preset-diff-arrow">→</span>
+            <span
+              class="settings-dialog__preset-diff-value settings-dialog__preset-diff-after"
+              >${row.after ?? '기본(해제)'}</span
+            >
+          </div>`
+      )}
+      ${diff.ignored_keys.length > 0
+        ? html`<div class="settings-dialog__preset-diff-note">
+            ${diff.ignored_keys.join(', ')}은(는) 전역 적용이 쓰지 않는 키라
+            무시됩니다
+          </div>`
+        : ''}
+    </div>`;
+  }
+
   /** @returns {Record<string, string|null>} */
   function currentOrchestrationValues() {
     const queue = options.queueStore?.get();
@@ -687,11 +831,22 @@ export function createSettingsDialog(mount_element, options) {
     const quick_fix_models = implModelOptions(catalog, undefined).filter(
       (token) => token !== AUTO_LITERAL
     );
-    const orchestration_efforts = implEffortOptions(
+    const orchestration_efforts = orchestrationEffortOptions(
       catalog,
-      worker_runtime_filter || undefined,
+      worker_runtime_filter,
       orchestration.orchestration_model || AUTO_LITERAL
     ).filter((effort) => effort !== AUTO_LITERAL);
+    const selected_preset = preset_choice
+      ? (state?.presets || []).find(
+          (/** @type {any} */ preset) => preset.id === preset_choice
+        )
+      : null;
+    const preset_diff = selected_preset
+      ? buildPresetDiff(
+          executionDraftSettings(),
+          isRecord(selected_preset.settings) ? selected_preset.settings : {}
+        )
+      : null;
     const slots =
       isRecord(queue) && typeof queue.slots === 'number' ? queue.slots : 2;
     const projection_available = executionProjection()?.supported === true;
@@ -760,10 +915,10 @@ export function createSettingsDialog(mount_element, options) {
                   type="button"
                   class="settings-dialog__btn settings-dialog__btn--primary"
                   data-preset-apply-global
-                  ?disabled=${preset_choice.length === 0}
+                  ?disabled=${!preset_diff || preset_diff.rows.length === 0}
                   @click=${onApplyPresetGlobally}
                 >
-                  전역 기본값으로 적용
+                  적용
                 </button>
                 <input
                   type="text"
@@ -783,9 +938,12 @@ export function createSettingsDialog(mount_element, options) {
                   type="button"
                   class="settings-dialog__btn"
                   data-preset-save
+                  title=${preset_choice
+                    ? '현재 화면의 실행 설정을 이 프리셋에 저장합니다 (프리셋 → 설정 방향이 아님)'
+                    : '현재 화면의 실행 설정을 새 프리셋으로 저장합니다'}
                   @click=${onSavePreset}
                 >
-                  ${preset_choice ? '갱신' : '저장'}
+                  ${preset_choice ? '현재 설정으로 덮어쓰기' : '새 프리셋 저장'}
                 </button>
                 <button
                   type="button"
@@ -797,6 +955,7 @@ export function createSettingsDialog(mount_element, options) {
                   삭제
                 </button>
               </div>
+              ${preset_diff ? presetDiffTemplate(preset_diff) : ''}
 
               <div class="settings-dialog__group">
                 <div class="settings-dialog__group-title">오케스트레이션</div>
@@ -811,8 +970,9 @@ export function createSettingsDialog(mount_element, options) {
                         const next = String(
                           /** @type {HTMLSelectElement} */ (ev.target).value
                         );
-                        worker_runtime_filter = next === UNSET ? null : next;
-                        doRender();
+                        onWorkerRuntimeFilterChange(
+                          next === UNSET ? null : next
+                        );
                       }}
                     >
                       <option

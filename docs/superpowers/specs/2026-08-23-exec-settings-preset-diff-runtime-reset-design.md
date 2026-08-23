@@ -85,9 +85,20 @@ export function buildPresetDiff(current, preset)
 ```
 
 - 비교 키와 순서는 전역 적용이 실제로 쓰는 집합과 같다:
-  `[...WORKSPACE_KV_KEYS, ...ORCHESTRATION_KEYS]`(11 + 3 = 14개, 선언 순서).
-  `impl_dispatch`는 전역 적용이 쓰지 않으므로(`user_write_only`) 비교하지 않고,
-  프리셋이 그 키를 가지면 `ignored_keys`에 넣는다.
+  `[...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS]`(11 + 3 = 14개, 선언 순서).
+  `PRESET_KV_KEYS`는 `session-model.js`에 새로 두는
+  `server/worker/exec-enums.js PRESET_KV_KEYS`의 미러다
+  (`WORKSPACE_KV_KEYS.filter((key) => IMPL_PRESET_KEYS.includes(key))` — 두 상수는
+  이미 이 파일에 있다). **`WORKSPACE_KV_KEYS`를 쓰면 안 된다**: UI-g820 이후 그
+  목록에는 프리셋이 담을 수 없는 kv 전용 키 `quick_fix_impl_model`이 들어 있고,
+  `handleApplyImplPresetGlobal`은 바로 그 이유로 `PRESET_KV_KEYS`만 치환한다. 전역
+  적용이 보존하는 키를 diff가 `기본(해제)` 행으로 예고하면 미리보기가 거짓말을
+  한다.
+- 비교 집합 밖의 키는 `ignored_keys`다: 프리셋이 가진 키 중 비교 집합에 없는 것을
+  선언 순서로 모은다. 실제로 나타날 수 있는 것은 `impl_dispatch`뿐이고
+  (`user_write_only`라 전역 적용이 쓰지 않는다), `quick_fix_impl_model`은
+  `validateImplPresetSettings`가 프리셋 저장 자체를 막으므로 나타나지 않지만 —
+  같은 경로로 방어한다.
 - 행 생성 규칙(각 키에 대해 `before = current[key] ?? null`,
   `after = preset[key] ?? null`):
 
@@ -123,7 +134,7 @@ export function buildPresetDiff(current, preset)
   - 행: `<div class="settings-dialog__preset-diff-row" data-diff-kind="added|removed|changed">`
     안에 라벨 · before · `→` · after. `removed`의 after는 `기본(해제)`.
   - `ignored_keys`가 비어 있지 않으면 꼬리 한 줄:
-    `impl_dispatch는 이슈별 값이라 전역 적용에서는 무시됩니다`.
+    `<키 목록>은(는) 전역 적용이 쓰지 않는 키라 무시됩니다`(키는 쉼표로 연결).
 - 「적용」 `?disabled`는 `rows.length === 0`일 때도 true다(§1 표).
 - 스타일(`app/styles.css` settings-dialog 블록 근처): 바와 같은 `--bg-drawer`
   배경, 1px 실선 `--border-chip`, `--r-7` 모서리, 행은 4열 grid
@@ -216,6 +227,11 @@ effort가 전부 해제된다. 따라서:
 
 - 서버 핸들러·enum·프리셋 저장소(`exec-preset-store`, `exec-preset-handlers`,
   `session-defaults`)·WS 메시지 형식. 정합성 서버 검사는 별도 작업으로 남긴다.
+  `PRESET_KV_KEYS`는 서버에 이미 있으므로 프런트 미러만 추가한다.
+- UI-g820이 넣은 `quick_fix 구현 모델` 행과 `selectRow`/`selectControl`/
+  `buildExecutionOptionView`의 `resolution_source`(=`resolution_draft`) 인자.
+  그 행은 `onSessionChange`를 그대로 쓰고 §3.2의 세 키에 들어가지 않으므로
+  `onImplTargetChange` 경로를 타지 않는다.
 - 디테일 패널의 프리셋 적용·`normalizeImplTarget`.
 - 프리셋 select, 이름 입력, 삭제의 동작과 `onSavePreset`/`onApplyPresetGlobally`의
   요청 본문.
@@ -225,8 +241,12 @@ effort가 전부 해제된다. 따라서:
 
 `app/views/settings-dialog/session-model.test.js`
 - `buildPresetDiff`: added/removed/changed 행만 만들고 `same`은 뺀다; 키 순서는
-  `WORKSPACE_KV_KEYS` 뒤 `ORCHESTRATION_KEYS`; `impl_dispatch`는 비교하지 않고
+  `PRESET_KV_KEYS` 뒤 `ORCHESTRATION_KEYS`; `impl_dispatch`는 비교하지 않고
   `ignored_keys`로 돌려준다; 빈 프리셋 vs 빈 현재값은 행 0개.
+- `buildPresetDiff`가 `quick_fix_impl_model`을 비교 집합에서 제외한다: 현재
+  설정에 그 값이 있고 프리셋에 없어도 `removed` 행이 생기지 않는다(전역 적용이
+  보존하는 키다). `PRESET_KV_KEYS`가 `quick_fix_impl_model`을 담지 않고 길이가
+  11이다.
 - `narrowImplTarget`: `claude`+`sol` → 모델·effort 해제; `codex`+`auto` 유지;
   runtime 미설정+`sol` 유지; `inherit`+controller `null`+`sol` 유지;
   `inherit`+controller `claude`+`sol` 해제; effort가 새 모델/runtime 합집합 밖이면
@@ -282,4 +302,7 @@ Pre-Handoff Validation: `npm run tsc`, `npm test`, `npm run lint`,
 7. runner 수준 `efforts`만 가진 claude 카탈로그에서 `claude`+`opus`+`high`는
    runtime 재선택 뒤에도 유지되고, 구현 effort 드롭다운이 그 runner 값을 제공한다.
 8. 서버 디렉터리(`server/`)에 변경이 없다.
-9. `npm run tsc`·`npm test`·`npm run lint`가 통과하고 번들이 재빌드돼 있다.
+9. diff 비교 집합이 `[...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS]`(14키)와 정확히
+   같고, `quick_fix_impl_model`과 `impl_dispatch`는 어떤 상태에서도 diff 행으로
+   나타나지 않는다.
+10. `npm run tsc`·`npm test`·`npm run lint`가 통과하고 번들이 재빌드돼 있다.

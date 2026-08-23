@@ -4,14 +4,18 @@ import {
   IMPL_DISPATCHES,
   IMPL_PRESET_KEYS,
   ORCHESTRATION_KEYS,
+  PRESET_KV_KEYS,
   REVIEW_EFFORTS,
   WORKSPACE_KV_KEYS,
   buildExecutionOptionView,
   buildOrchestrationPatch,
+  buildPresetDiff,
   buildSessionDefaultsPatch,
   implEffortOptions,
   implModelOptions,
   isDelegationDisabled,
+  narrowImplTarget,
+  orchestrationEffortOptions,
   orchestrationModelOptions
 } from './session-model.js';
 
@@ -70,6 +74,34 @@ const CATALOG = {
   }
 };
 
+/** The claude shape: efforts live on the runner, not on each model. */
+const RUNNER_LEVEL_CATALOG = {
+  runners: {
+    claude: {
+      models: { opus: {}, haiku: { efforts: ['low'] } },
+      efforts: ['low', 'medium', 'high', 'xhigh']
+    }
+  }
+};
+
+/** The outer Worker vocabulary differs per model from the inner one. */
+const ORCHESTRATION_CATALOG = {
+  runners: {
+    claude: { models: { opus: {} }, efforts: ['low', 'high'] },
+    codex: {
+      models: {
+        sol: {
+          efforts: ['low', 'xhigh'],
+          orchestration_efforts: ['low', 'xhigh', 'max', 'ultra']
+        },
+        terra: { efforts: ['high'] },
+        luna: {}
+      },
+      efforts: ['minimal']
+    }
+  }
+};
+
 describe('session key lists', () => {
   test('names the twelve per-bead keys and no orchestration key', () => {
     expect(BEAD_APPLY_KEYS).toHaveLength(12);
@@ -89,6 +121,22 @@ describe('session key lists', () => {
   test('mirrors the server kv-only quick_fix_impl_model key last', () => {
     expect(WORKSPACE_KV_KEYS.at(-1)).toBe('quick_fix_impl_model');
     expect(IMPL_PRESET_KEYS).not.toContain('quick_fix_impl_model');
+  });
+
+  test('names the eleven kv keys a global preset apply replaces', () => {
+    expect(PRESET_KV_KEYS).toEqual([
+      'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]);
   });
 
   test('offers 위임 and 메인 as the two execution modes', () => {
@@ -158,6 +206,241 @@ describe('implEffortOptions', () => {
       'xhigh',
       'high'
     ]);
+  });
+
+  test('falls back to the runner efforts for a model that declares none', () => {
+    expect(implEffortOptions(RUNNER_LEVEL_CATALOG, 'claude', 'opus')).toEqual([
+      'auto',
+      'low',
+      'medium',
+      'high',
+      'xhigh'
+    ]);
+  });
+
+  test('prefers the model efforts over the runner list', () => {
+    expect(implEffortOptions(RUNNER_LEVEL_CATALOG, 'claude', 'haiku')).toEqual([
+      'auto',
+      'low'
+    ]);
+  });
+});
+
+describe('orchestrationEffortOptions', () => {
+  test('offers the outer worker vocabulary of the chosen model', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'sol')
+    ).toEqual(['auto', 'low', 'xhigh', 'max', 'ultra']);
+  });
+
+  test('falls back to the model efforts without an orchestration list', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'terra')
+    ).toEqual(['auto', 'high']);
+  });
+
+  test('falls back to the runner efforts when the model declares neither', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'luna')
+    ).toEqual(['auto', 'minimal']);
+  });
+
+  test('unions every model of the runtime while the model is 자동', () => {
+    expect(
+      orchestrationEffortOptions(ORCHESTRATION_CATALOG, 'codex', 'auto')
+    ).toEqual(['auto', 'low', 'xhigh', 'max', 'ultra', 'high', 'minimal']);
+  });
+});
+
+describe('narrowImplTarget', () => {
+  test('drops a model and effort the new delegation target cannot run', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'claude', impl_model: 'sol', impl_effort: 'medium' },
+      CATALOG,
+      null
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'claude',
+      impl_model: undefined,
+      impl_effort: undefined
+    });
+  });
+
+  test('keeps 자동 on both dependent keys', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'codex', impl_model: 'auto', impl_effort: 'auto' },
+      CATALOG,
+      null
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'codex',
+      impl_model: 'auto',
+      impl_effort: 'auto'
+    });
+  });
+
+  test('changes nothing while no runtime is set', () => {
+    const narrowed = narrowImplTarget(
+      { impl_model: 'sol', impl_effort: 'medium' },
+      CATALOG,
+      null
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: undefined,
+      impl_model: 'sol',
+      impl_effort: 'medium'
+    });
+  });
+
+  test('keeps an inherited target whose controller runtime is unknown', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'inherit', impl_model: 'sol' },
+      CATALOG,
+      null
+    );
+
+    expect(narrowed.impl_model).toBe('sol');
+  });
+
+  test('drops a model the inherited controller runtime cannot run', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'inherit', impl_model: 'sol' },
+      CATALOG,
+      'claude'
+    );
+
+    expect(narrowed.impl_model).toBe(undefined);
+  });
+
+  test('drops an effort outside the surviving model union', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'codex', impl_model: 'sol', impl_effort: 'high' },
+      CATALOG,
+      null
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'codex',
+      impl_model: 'sol',
+      impl_effort: undefined
+    });
+  });
+
+  test('keeps a runner-level effort the model itself does not declare', () => {
+    const narrowed = narrowImplTarget(
+      { impl_runtime: 'claude', impl_model: 'opus', impl_effort: 'high' },
+      RUNNER_LEVEL_CATALOG,
+      null
+    );
+
+    expect(narrowed).toEqual({
+      impl_runtime: 'claude',
+      impl_model: 'opus',
+      impl_effort: 'high'
+    });
+  });
+});
+
+describe('buildPresetDiff', () => {
+  test('reports added, removed and changed keys and skips equal ones', () => {
+    const diff = buildPresetDiff(
+      { impl_runtime: 'claude', impl_model: 'opus', impl_speed: 'fast' },
+      { impl_runtime: 'codex', impl_model: 'opus', impl_effort: 'high' }
+    );
+
+    expect(diff.rows).toEqual([
+      {
+        key: 'impl_runtime',
+        label: '위임 대상',
+        before: 'claude',
+        after: 'codex',
+        kind: 'changed'
+      },
+      {
+        key: 'impl_effort',
+        label: '구현 effort',
+        before: null,
+        after: 'high',
+        kind: 'added'
+      },
+      {
+        key: 'impl_speed',
+        label: '구현 속도',
+        before: 'fast',
+        after: null,
+        kind: 'removed'
+      }
+    ]);
+  });
+
+  test('orders rows by the preset kv keys before the orchestration keys', () => {
+    const diff = buildPresetDiff(
+      {},
+      {
+        orchestration_model: 'sol',
+        impl_model: 'sol',
+        workflow_mode: 'fast_track'
+      }
+    );
+
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'workflow_mode',
+      'impl_model',
+      'orchestration_model'
+    ]);
+  });
+
+  test('compares exactly the fourteen keys a global apply writes', () => {
+    const every_key = Object.fromEntries(
+      [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS, ...WORKSPACE_KV_KEYS].map(
+        (key) => [key, 'x']
+      )
+    );
+
+    const diff = buildPresetDiff({}, every_key);
+
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed',
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]);
+    expect(diff.ignored_keys).toEqual(['quick_fix_impl_model']);
+  });
+
+  test('returns impl_dispatch as ignored rather than comparing it', () => {
+    const diff = buildPresetDiff({}, { impl_dispatch: 'main' });
+
+    expect(diff.rows).toEqual([]);
+    expect(diff.ignored_keys).toEqual(['impl_dispatch']);
+  });
+
+  test('never previews the kv-only quick_fix model as cleared', () => {
+    const diff = buildPresetDiff(
+      { quick_fix_impl_model: 'sol' },
+      { impl_runtime: 'codex' }
+    );
+
+    expect(diff.rows.map((row) => row.key)).toEqual(['impl_runtime']);
+  });
+
+  test('returns no rows for an empty preset against empty settings', () => {
+    const diff = buildPresetDiff({}, {});
+
+    expect(diff).toEqual({ rows: [], ignored_keys: [] });
   });
 });
 
