@@ -7305,6 +7305,7 @@ html[data-theme='dark'] {
 
 .detail-session {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-6);
   padding: var(--sp-5) var(--sp-8);
@@ -7536,6 +7537,7 @@ button.detail-session__leg:focus-visible {
 
 .detail-session__time {
   margin-left: auto;
+  white-space: nowrap;
   color: var(--text-dim);
   font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;

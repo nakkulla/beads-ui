@@ -1052,13 +1052,26 @@ body {
 
 .detail-overlay__close {
   position: absolute;
-  top: var(--sp-10);
-  right: var(--sp-12);
+  top: var(--sp-6);
+  right: var(--sp-8);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
   border: none;
+  border-radius: var(--r-6);
   background: none;
   color: var(--text-dim);
-  font-size: var(--fs-body-lg);
+  font-size: var(--fs-title);
+  line-height: 1;
   cursor: pointer;
+}
+
+.detail-overlay__close:hover {
+  color: var(--text-primary);
+  background: var(--bg-card);
 }
 
 .detail-overlay__id {
@@ -1660,10 +1673,24 @@ select.detail-kv__v:disabled {
 
   .detail-overlay__panel {
     width: 100vw;
-    max-height: 100vh;
+    max-height: 100dvh;
     border: none;
     border-radius: 0;
     box-shadow: none;
+  }
+
+  /* 손가락 표적: ✕를 44px 박스로 키우고 ID 줄 높이에 맞춘다. 제목 줄은 그만큼
+     오른쪽을 비워 ✎와 ✕가 겹치지 않게 한다. */
+  .detail-overlay__close {
+    top: var(--sp-2);
+    right: var(--sp-4);
+    min-width: 44px;
+    min-height: 44px;
+    font-size: var(--fs-title-lg);
+  }
+
+  .detail-title-row {
+    padding-right: 44px;
   }
 
   .detail-kv {
