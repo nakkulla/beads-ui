@@ -830,6 +830,16 @@ export function createRepoOperationCoordinator(deps) {
         code: materialized.code || 'verify_candidate_mismatch'
       };
     }
+    // materialize는 await다 — 그 사이 사용자가 opt-out을 켰다면 작업을 사전기록
+    // 하기 전에 멈춘다. opt-out은 "새 작업을 만들지 않는다"는 뜻이므로 판정은
+    // 진입 시점이 아니라 생성 직전 값이 소유한다. 이미 만든 checkout은 되돌린다.
+    if (optOutOf().verify) {
+      await verify_checkout.cleanup({
+        repo: deps.repo,
+        path: materialized.path
+      });
+      return { ok: true, inert: true, opted_out: true };
+    }
     const operation_id = verifyOperationId({
       effective_base_sha: candidate.base_sha,
       target_base: candidate.target_base,
@@ -1409,6 +1419,11 @@ export function createRepoOperationCoordinator(deps) {
       if (contained.code !== 0) {
         return { ok: false, code: 'repo_operation_subject_not_contained' };
       }
+    }
+    // containment 검사는 await다 — verify와 같은 이유로, 사전기록(그리고 그 앞의
+    // bootstrap attach 변이) 직전 값이 판정을 소유한다.
+    if (optOutOf().deploy) {
+      return { ok: true, inert: true, opted_out: true };
     }
     const effective_base_sha = previous_sha || target_sha;
     const operation_id = operationId({

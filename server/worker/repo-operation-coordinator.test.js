@@ -3067,6 +3067,65 @@ describe('repo-operation-coordinator workspace opt-out (UI-lsti §2)', () => {
     expect(materialize).toHaveBeenCalled();
   });
 
+  test('stops a verify candidate opted out while the checkout materializes', async () => {
+    const cleanup = vi.fn(async () => ({ ok: true }));
+    /** @type {any} */
+    let opened_store = null;
+    const materialize = vi.fn(async () => {
+      optOut('verify', opened_store);
+      return { ok: true, path: root, tree_sha: TREE };
+    });
+    const { store, coordinator } = coordinatorFor({
+      gitRun: gitForVerify({ verify: true }),
+      verifyCheckout: { materialize, cleanup }
+    });
+    opened_store = store;
+
+    const result = await coordinator.ensureVerify(verifyCandidate());
+
+    expect(result).toEqual({ ok: true, inert: true, opted_out: true });
+    expect(cleanup).toHaveBeenCalledWith({ repo: root, path: root });
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
+  test('stops a deploy operation opted out while subjects are checked', async () => {
+    const start = vi.fn();
+    /** @type {any} */
+    let opened_store = null;
+    const bootstrap_git = gitForBootstrap();
+    const { store, coordinator } = coordinatorFor({
+      gitRun: vi.fn(async (/** @type {string[]} */ args) => {
+        if (args[0] === 'merge-base') {
+          optOut('deploy', opened_store);
+        }
+        return bootstrap_git(args);
+      }),
+      runner: {
+        start,
+        readMarker: () => null,
+        readLaunchMarker: () => null,
+        processController: { probe: () => ({ state: 'owned' }) }
+      }
+    });
+    opened_store = store;
+
+    const result = await coordinator.ensureDeploy({
+      target_base: 'main',
+      target_sha: TARGET,
+      subjects: [{ bead_id: 'UI-1', merged_sha: HEAD }],
+      bootstrap_provenance: {
+        approved_source_path: 'docs/spec.md',
+        approved_source_sha: APPROVED,
+        requested_by: 'operator',
+        requested_at: 1
+      }
+    });
+
+    expect(result).toEqual({ ok: true, inert: true, opted_out: true });
+    expect(start).not.toHaveBeenCalled();
+    expect(store.snapshot(root).repo_operations).toEqual({});
+  });
+
   test('makes ensureDeploy inert without asking the runner to spawn', async () => {
     const start = vi.fn();
     const { store, coordinator } = coordinatorFor({
