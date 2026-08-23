@@ -1614,8 +1614,12 @@ export function createWorkerView(mount_element, options = {}) {
       }
       session_defaults_inflight = null;
       // Fail-quiet (§5): the chips resolve with no global layer rather than
-      // with a fabricated one, and the next refresh point tries again.
+      // with a fabricated one, and the next refresh point tries again. The
+      // re-render is the point — `refreshSessionDefaults` already dropped the
+      // key, so without it the last frame keeps showing a 전역 layer the state
+      // no longer has.
       log('get-session-defaults failed: %o', err);
+      doRender();
       return;
     }
     if (generation !== session_defaults_generation) {

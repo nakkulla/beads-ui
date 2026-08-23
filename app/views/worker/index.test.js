@@ -11044,6 +11044,46 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     expect(chip.getAttribute('title')).not.toContain('(전역)');
   });
 
+  test('drops the global layer on screen when a refresh request fails', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    let fail = false;
+    const send = vi.fn(async (/** @type {string} */ type) => {
+      if (type !== 'get-session-defaults') {
+        return null;
+      }
+      if (fail) {
+        throw new Error('kv unreadable');
+      }
+      return { values: { impl_runtime: 'codex' }, warnings: [] };
+    });
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      { id: 'RD-1', title: 'ready', status: 'open', metadata: {} }
+    ]);
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(execQueue({ queue: [{ bead_id: 'RD-1', added_at: 1 }] }));
+    const view = createWorkerView(mount, {
+      issueStores: stores,
+      queueStore,
+      transport: send,
+      getWorkspacePath: () => '/repo-a'
+    });
+    view.load();
+    await flush();
+    const selector = '.worker-mini[data-bead-id="RD-1"] .exec-chip--worker';
+    expect(mount.querySelector(selector)?.getAttribute('title')).toContain(
+      '(전역)'
+    );
+
+    fail = true;
+    view.refreshSessionDefaults();
+    await flush();
+
+    expect(mount.querySelector(selector)?.getAttribute('title')).not.toContain(
+      '(전역)'
+    );
+  });
+
   test('reads a derived quick_fix route as a 메인 worker chip', async () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { send } = sessionDefaultsTransport({});

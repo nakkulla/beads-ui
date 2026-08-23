@@ -1452,13 +1452,16 @@ export function bootstrap(root_element) {
       implPresetStore: exec_preset_store,
       transport: (type, payload) => tracked_send(type, payload),
       onOpenChange: (open) => {
+        const was_open = settings_dialog_open;
         settings_dialog_open = open;
         syncSubscriptionsToView();
         // 전역 kv 기본값·전역 프리셋 적용은 이 다이얼로그에서만 일어난다
         // (worker-card-exec-chips §2.1). Worker 탭의 실행 설정 칩은 그 kv를
         // 캐시하므로, 닫힘이 곧 "다시 읽어라" 신호다. `worker_view`는 아래에서
         // 만들어지지만 다이얼로그는 bootstrap 이후에만 닫힐 수 있다.
-        if (open === false) {
+        // 닫기는 `close()`와 <dialog>의 `close` 이벤트에서 두 번 통지되므로
+        // true→false 전환에서만 다시 읽는다 — 아니면 닫을 때마다 두 번 요청한다.
+        if (was_open && open === false) {
           worker_view.refreshSessionDefaults();
         }
       },
