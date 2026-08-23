@@ -1,11 +1,11 @@
 import { html } from 'lit-html';
-import { cmpChildOrder } from '../../data/sort.js';
 import { isChipEnabled, visibleLabels } from '../../utils/label-policy.js';
 import {
   coerceTimestampMs,
   formatRelativeTime,
   formatTimestampLocal
 } from '../../utils/relative-time.js';
+import { childRollupTemplate } from '../child-rollup.js';
 import { stepperTemplate } from './stepper.js';
 
 /**
@@ -45,15 +45,14 @@ import { stepperTemplate } from './stepper.js';
  */
 
 /**
- * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, workflow?: { chips?: BoardCardChips }, created_at?: number | string }} BoardCardChild
+ * The rollup row/shape the shared `childRollupTemplate` consumes. Aliased
+ * rather than restated so Board and Worker cannot drift into two child shapes.
+ *
+ * @typedef {import('../../utils/child-rollup.js').ChildRow} BoardCardChild
  */
 
 /**
- * @typedef {Object} BoardCardRollup
- * @property {number} total
- * @property {number} count
- * @property {BoardCardChild | null} current
- * @property {BoardCardChild[]} children
+ * @typedef {import('../../utils/child-rollup.js').ChildRollup} BoardCardRollup
  */
 
 /**
@@ -400,25 +399,6 @@ function chipsTemplate(issue, ctx) {
 }
 
 /**
- * @param {string | undefined} status
- * @returns {string}
- */
-function statusDotClass(status) {
-  switch (status) {
-    case 'in_progress':
-      return 'board-card__dot board-card__dot--progress';
-    case 'resolved':
-      return 'board-card__dot board-card__dot--resolved';
-    case 'closed':
-      return 'board-card__dot board-card__dot--closed';
-    case 'blocked':
-      return 'board-card__dot board-card__dot--blocked';
-    default:
-      return 'board-card__dot';
-  }
-}
-
-/**
  * Created/updated meta (UX v3 spec §1): two Korean relative times with a
  * local-timezone absolute tooltip each. Replaces the old single elapsed.
  *
@@ -461,74 +441,42 @@ function timesTemplate(issue) {
  *
  * @param {BoardCardIssue} issue
  * @param {BoardCardContext} ctx
- * @returns {TemplateResult}
+ * @returns {TemplateResult | string}
  */
 function rollTemplate(issue, ctx) {
   const rollup = ctx.rollupFor
     ? ctx.rollupFor(issue.id)
     : { total: 0, count: 0, current: null, children: [] };
-  const total = rollup.total || 0;
-  // Expanded unless the caller explicitly collapsed this card (default open).
-  const expanded = ctx.isExpanded ? ctx.isExpanded(issue.id) : true;
-  const ordered =
-    total > 0 ? rollup.children.slice().sort(cmpChildOrder) : rollup.children;
-  return html`
-    <div class="board-card__roll">
-      <div class="board-card__roll-meta">
-        ${total > 0
-          ? html`<button
-              type="button"
-              class="board-card__roll-toggle"
-              aria-expanded=${expanded ? 'true' : 'false'}
-              @click=${(/** @type {Event} */ ev) =>
-                ctx.onRollupToggle && ctx.onRollupToggle(ev, issue.id)}
-            >
-              children ${rollup.count}/${total} ${expanded ? '▴' : '▾'}
-            </button>`
-          : html`<span class="board-card__roll-none">children 없음</span>`}
-        ${timesTemplate(issue)}
-      </div>
-      ${total > 0 && rollup.current
-        ? html`<div class="board-card__roll-current">
-            └
-            <span class="board-card__cur-child"
-              >● ${rollup.current.title || rollup.current.id}</span
-            >
-          </div>`
-        : ''}
-      ${expanded && total > 0
-        ? html`<div class="board-card__roll-list">
-            ${ordered.map(
-              (c, i) =>
-                html`<button
-                  type="button"
-                  class="board-card__roll-child"
-                  @click=${(/** @type {Event} */ ev) =>
-                    ctx.onChildClick && ctx.onChildClick(ev, c.id)}
-                >
-                  <span class=${statusDotClass(c.status)}>●</span>
-                  <span class="board-card__roll-child-ord">${i + 1}</span>
-                  <span class="board-card__roll-child-title"
-                    >${c.title || c.id}</span
-                  >
-                  ${formatPlannedExecution(
-                    c.workflow?.chips?.planned_execution,
-                    c.workflow?.chips?.exec_receipt
-                  )
-                    ? html`<span class="board-card__roll-child-chips">
-                        ${plannedExecutionChip(
-                          c.workflow?.chips?.planned_execution,
-                          c.workflow?.chips?.exec_receipt
-                        )}
-                        ${compactExecutionChip(c.workflow?.chips?.exec_receipt)}
-                      </span>`
-                    : ''}
-                </button>`
-            )}
-          </div>`
-        : ''}
-    </div>
-  `;
+  return childRollupTemplate(rollup, {
+    parent_id: issue.id,
+    // Expanded unless the caller explicitly collapsed this card (default open).
+    expanded: ctx.isExpanded ? ctx.isExpanded(issue.id) : true,
+    trailing: timesTemplate(issue),
+    empty_label: 'children 없음',
+    childChips: childExecChips,
+    onToggle: (ev) => ctx.onRollupToggle && ctx.onRollupToggle(ev, issue.id),
+    onChildClick: (ev, child_id) =>
+      ctx.onChildClick && ctx.onChildClick(ev, child_id)
+  });
+}
+
+/**
+ * Per-child execution chips inside a rollup row: the planned delegation and the
+ * receipt of what actually ran. Null when the child has neither.
+ *
+ * @param {any} child
+ * @returns {TemplateResult | null}
+ */
+export function childExecChips(child) {
+  const planned_execution = child?.workflow?.chips?.planned_execution;
+  const exec_receipt = child?.workflow?.chips?.exec_receipt;
+  if (!formatPlannedExecution(planned_execution, exec_receipt)) {
+    return null;
+  }
+  return html`<span class="board-card__roll-child-chips">
+    ${plannedExecutionChip(planned_execution, exec_receipt)}
+    ${compactExecutionChip(exec_receipt)}
+  </span>`;
 }
 
 /**

@@ -44,6 +44,7 @@ import {
   cmpCreatedDescThenPriority,
   cmpEffectiveRank
 } from '../../data/sort.js';
+import { parentIdOf } from '../../utils/child-rollup.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
 import { selectCurrentChild } from '../../utils/current-child.js';
@@ -450,24 +451,6 @@ function isPhaseChild(issue) {
   const has_parent =
     typeof raw === 'string' ? raw.length > 0 : !!(raw && raw.id);
   return has_parent || /\.\d+$/.test((issue && issue.id) || '');
-}
-
-/**
- * The flattened `parent` edge (same field Board's `parentIdOf` reads), or ''
- * for a top-level issue.
- *
- * @param {any} issue
- * @returns {string}
- */
-function parentIdOf(issue) {
-  const raw = issue && issue.parent;
-  if (typeof raw === 'string') {
-    return raw;
-  }
-  if (raw && raw.id) {
-    return String(raw.id);
-  }
-  return '';
 }
 
 /**

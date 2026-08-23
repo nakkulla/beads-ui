@@ -1,7 +1,11 @@
 import { html, render } from 'lit-html';
 import { DEFAULT_CLOSED_RANGE } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
-import { selectCurrentChild } from '../../utils/current-child.js';
+import {
+  buildChildrenIndex,
+  rollupFor as computeRollup,
+  parentIdOf
+} from '../../utils/child-rollup.js';
 import { debug } from '../../utils/logging.js';
 import { showToast } from '../../utils/toast.js';
 import { createReorderController } from '../reorder.js';
@@ -14,11 +18,7 @@ import { filterBarTemplate } from './filter-bar.js';
  */
 
 /**
- * A child row preserved for a parent card's compact rollup (spec §3.3). Carries
- * enough to render (title/status) and to order with `cmpChildOrder`
- * (metadata.task_order / title / created_at).
- *
- * @typedef {{ id: string, title?: string, status?: string, metadata?: Record<string, unknown> | null, workflow?: Record<string, any>, created_at?: number | string, updated_at?: number | string }} ChildRow
+ * @typedef {import('../../utils/child-rollup.js').ChildRow} ChildRow
  */
 
 /**
@@ -406,45 +406,12 @@ export function createBoardView(mount_element, options) {
 
   /**
    * Rebuild the parent→children index from the already-subscribed issue set so
-   * the card rollup is computed client-side (no server round-trip). Dedupes by
-   * id across columns; reads the `parent` edge (string id or `{ id }`).
+   * the card rollup is computed client-side (no server round-trip).
    *
    * @param {IssueLite[]} all
    */
   function rebuildChildrenIndex(all) {
-    /** @type {Map<string, IssueLite>} */
-    const seen = new Map();
-    for (const it of all) {
-      if (it && it.id && !seen.has(it.id)) {
-        seen.set(it.id, it);
-      }
-    }
-    /** @type {Map<string, ChildRow[]>} */
-    const map = new Map();
-    for (const it of seen.values()) {
-      const parent = parentIdOf(it);
-      if (!parent) {
-        continue;
-      }
-      let arr = map.get(parent);
-      if (!arr) {
-        arr = [];
-        map.set(parent, arr);
-      }
-      // Preserve the ordering keys (metadata.task_order / created_at) so the
-      // card can sort the compact rows with cmpChildOrder (spec §3.3), plus
-      // `updated_at` — the key `selectCurrentChild` orders on (UI-53es §2).
-      arr.push({
-        id: it.id,
-        title: it.title,
-        status: it.status,
-        metadata: /** @type {any} */ (it).metadata,
-        workflow: /** @type {any} */ (it).workflow,
-        created_at: it.created_at,
-        updated_at: it.updated_at
-      });
-    }
-    children_by_parent = map;
+    children_by_parent = buildChildrenIndex(all);
   }
 
   /**
@@ -455,19 +422,7 @@ export function createBoardView(mount_element, options) {
    * @returns {{ total: number, count: number, current: ChildRow | null, children: ChildRow[] }}
    */
   function rollupFor(id) {
-    const children = children_by_parent.get(id) || [];
-    let count = 0;
-    for (const c of children) {
-      if (c.status === 'resolved' || c.status === 'closed') {
-        count += 1;
-      }
-    }
-    // 어느 child가 "현재"인지는 Board·모니터·Worker 타일이 공유하는 계약이다
-    // (UI-53es §2) — 여기서 따로 고르면 세 화면의 답이 갈린다.
-    const current = /** @type {ChildRow | null} */ (
-      selectCurrentChild(children)
-    );
-    return { total: children.length, count, current, children };
+    return computeRollup(children_by_parent, id);
   }
 
   /**
@@ -1283,24 +1238,6 @@ export function createBoardView(mount_element, options) {
       col_by_id = new Map();
     }
   };
-}
-
-/**
- * Read the parent id off an issue's flattened `parent` edge (bd JSON). Returns
- * '' for a top-level issue (no parent).
- *
- * @param {IssueLite} issue
- * @returns {string}
- */
-function parentIdOf(issue) {
-  const raw = issue && /** @type {any} */ (issue).parent;
-  if (typeof raw === 'string') {
-    return raw;
-  }
-  if (raw && raw.id) {
-    return String(raw.id);
-  }
-  return '';
 }
 
 /**
