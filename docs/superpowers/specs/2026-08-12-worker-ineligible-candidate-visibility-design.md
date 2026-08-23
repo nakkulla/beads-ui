@@ -1,8 +1,22 @@
+---
+scope:
+  - app/views/worker/index.js
+  - app/views/worker/lanes.js
+  - app/styles.css
+  - app/views/worker/index.test.js
+  - app/views/worker/lanes.test.js
+  - app/main.bundle.js
+  - app/main.bundle.js.map
+---
+
 # Worker 후보의 worker-ineligible 비활성 표시 설계
 
 - Bead: `UI-8881`
 - Route: `spec_backed`
 - Workflow mode: `standard`
+- 작성: 2026-08-12 · 갱신: 2026-08-23 (quick_fix 후보 실행 레인, `[대기로 ↴]`
+  레인 선택 메뉴, `repo-ops/config.toml` 배포 선언 등 현행 코드에 맞춰 사실 관계를
+  정정)
 - 선행 계약: `docs/superpowers/specs/2026-08-10-worker-ineligible-runtime-enforcement-design.md`
 
 ## 문제
@@ -63,14 +77,19 @@ frontend 후보 projection과 UI 완료 조건만 대체한다.
 - 중복 ID
 - phase child
 
-`worker-ineligible`은 이 제외 조건에서 제거한다. 각 candidate row를 만들 때 기존
-`isWorkerIneligible(labels)` 공용 predicate로 상태를 계산하고
-`worker_ineligible: boolean`을 row에 싣는다.
+`worker-ineligible`은 이 제외 조건에서 제거한다. 현재 코드는 candidate row를 만들
+때 이미 `Object.hasOwn(it, 'labels') && isWorkerIneligible(it.labels)`로
+`worker_ineligible`을 계산해 `eligible` 판정에만 쓰고 row에는 싣지 않는다. 이번
+변경은 같은 값을 `worker_ineligible: boolean`으로 row에 실어 카드 template이
+소비하게 한다. labels 키가 없는 payload는 기존과 같이 `false`로 두고 서버
+admission에 맡긴다.
 
-실행 가능성은 다음 조건의 conjunction이다.
+실행 가능성은 기존 판정에 `worker_ineligible`을 conjunction으로 얹은 값이다
+(quick_fix 실행 레인 도입 뒤의 현행 규칙을 그대로 보존한다).
 
 ```text
-!worker_ineligible && !is_quick_fix && has_spec && !spec.conflict
+!worker_ineligible &&
+  (is_quick_fix ? has_description : has_spec && !spec.conflict)
 ```
 
 이 값 하나가 `draggable`과 `[대기로 ↴]`의 enabled 상태를 함께 결정한다. label
@@ -110,17 +129,20 @@ frontend 후보 projection과 UI 완료 조건만 대체한다.
 
 - grip을 렌더하지 않는다.
 - root는 `draggable="false"`다.
-- `[대기로 ↴]`는 disabled다.
+- `[대기로 ↴]`는 disabled다. disabled이므로 레인 선택 메뉴(UI-16b8
+  `place_menu`)도 열리지 않는다.
 - disabled button tooltip은
-  `worker-ineligible label로 워커에서 실행할 수 없습니다`다.
+  `worker-ineligible label로 워커에서 실행할 수 없습니다`다. 기존 tooltip 분기
+  (`missing_description`, `spec 없음`)보다 우선한다.
 - 카드 본문 클릭은 기존처럼 상세 overlay를 연다.
 - ID 클릭은 기존처럼 ID를 복사하고 상세 열기로 전파하지 않는다.
 - keyboard focus와 클릭 event routing은 기존 candidate card 규칙을 유지한다.
 
 quick_fix, spec 없음, spec conflict와 `worker-ineligible`이 함께 존재할 수 있다.
 이 경우 header의 ineligible chip은 항상 표시하고, footer reason은 기존 reason 조합을
-그대로 보존한다. queue placement tooltip은 `worker-ineligible`을 우선해 가장 강한
-실행 차단 이유를 설명한다.
+그대로 보존한다(footer reason 문자열에 `worker-ineligible`을 추가하지 않는다 —
+이유는 chip이 소유한다). queue placement tooltip은 `worker-ineligible`을 우선해
+가장 강한 실행 차단 이유를 설명한다.
 
 ## 오류와 호환성
 
@@ -161,6 +183,10 @@ quick_fix, spec 없음, spec conflict와 `worker-ineligible`이 함께 존재할
 
 ### RED-GREEN seam 1: candidate projection
 
+기존 `app/views/worker/index.test.js`의
+`excludes worker-ineligible issues from the candidate lane`(08-10 계약)은 이 설계와
+정면으로 충돌하므로 아래 1번으로 대체한다(삭제가 아니라 기대를 뒤집는다).
+
 1. Ready feed의 `worker-ineligible` + spec 보유 Bead가 후보 카드로 보인다.
 2. row는 `worker_ineligible=true`, `draggable=false`다.
 3. label이 없는 기존 spec 보유 후보는 계속 draggable이다.
@@ -199,36 +225,27 @@ frontend source 변경 뒤 `app/main.bundle.js`와 `app/main.bundle.js.map`을 �
 
 ## 배포와 runtime 검증
 
-현재 `docs/agents/repo-ops.toml`의 canonical 선언은 다음 managed deploy adapter다.
+현재 canonical 선언은 `repo-ops/config.toml`이다(과거 `docs/agents/repo-ops.toml`의
+managed adapter 선언은 폐기됐다).
 
 ```toml
 [deploy]
-adapter = "managed"
-cmd = ["scripts/managed-self-deploy.js"]
+script = "repo-ops/script/deploy"
 timeout_ms = 600000
 ```
 
-PR에는 `npm run build`로 생성한 bundle과 map을 포함한다. Merge 뒤 배포 owner는
-핀된 merged candidate release에서 선언된 adapter를 실행하며, controller가 과거의
-직접 restart 명령으로 이를 대체하지 않는다. 순서는 다음과 같다.
+PR에는 `npm run build`로 생성한 bundle과 map을 포함한다. 머지 뒤 배포 절차·lock
+계약·실패 사다리는 `AGENTS.md` "Post‑Merge Runtime Validation"이 소유하며 이
+문서는 복제하지 않는다. 이 unit의 머지 후 **필수** 작업은 공유 서비스 배포와 그
+health/SHA 확인뿐이며, 선언된 `[deploy]` handler(build → restart → process
+source/SHA·port·`/healthz` readback)가 이를 수행하고 영수증화한다. 따라서
+interactive-only 잔여는 없다.
 
-1. managed adapter가 candidate release와 install marker를 검증한다.
-2. 검증된 release로 runtime pointer를 atomic cutover하고 readback한다.
-3. restart handoff를 durable journal에 먼저 기록한 뒤 adapter 내부에서
-   `bdui-shared restart`를 실행한다.
-4. 새 process가 runtime marker, pointer, candidate SHA와 일치하고 health check가
-   green인지 readback한 뒤에만 terminal deployment receipt를 기록한다.
-5. controller는 merged `main`에서 `npm run build`가 tracked bundle/map에 추가 diff를
-   만들지 않는지 확인하고, 실제 process source/SHA, listening port, `/healthz`를
-   독립 확인한다.
-6. 실제 `worker-ineligible` Bead가 Worker 후보에서 음영·chip·비활성 상태로
-   보이며 queue placement가 불가능한지 확인한다.
-
-github.com에서 직접 merge해 자동 cleanup이 시작되지 않은 경우에는 beads-ui의
-`[정리]` 또는 workflow-owned `pr-finish` 경로로 같은 deployment reconciler를
-시작한다. Adapter가 중간에 실패하거나 restart handoff가 불명확하면 blind restart를
-겹쳐 실행하지 않는다. durable journal과 failure code를 기준으로 reconcile을 재개하며,
-terminal receipt와 위 live readback이 모두 확인되기 전에는 배포 완료를 선언하지 않는다.
+카드 표현·drag 차단·`[대기로 ↴]` 비활성·필터/정렬 동작은 `Test scope`의 seam
+1–3이 결정적으로 검증하는 항목이며, 실제 공유 UI에서 `worker-ineligible` Bead가
+음영·chip·비활성으로 보이는지 눈으로 확인하는 것은 **advisory 수동 관측**이다.
+사용자나 controller가 배포 뒤 기회가 있을 때 확인하되, 완료 조건이나 Worker
+eligibility의 전제가 아니다.
 
 ## 완료 조건
 
@@ -238,5 +255,8 @@ terminal receipt와 위 live readback이 모두 확인되기 전에는 배포 �
 4. 상세 열기와 ID 복사는 유지된다.
 5. Monitor와 server execution guard 의미는 변하지 않는다.
 6. focused tests, 전체 frontend/backend 검증, build가 통과한다.
-7. managed deployment receipt와 merged shared service의 process source/SHA, port,
-   health, 실제 후보 카드 behavior가 확인된다.
+7. 선언된 `[deploy]` 배포가 terminal success에 도달하고, 그 영수증이 merged
+   shared service의 process source/SHA, port, `/healthz`를 확인한다.
+
+실제 후보 카드 behavior의 육안 확인은 위 "배포와 runtime 검증"의 advisory 수동
+관측이며 완료 조건이 아니다.

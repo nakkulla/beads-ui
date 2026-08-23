@@ -333,6 +333,49 @@ function dragOnto(mount, bead_id, onto_bead_id) {
 }
 
 /**
+ * Simulate dragging a row and dropping it ONTO an existing row of another
+ * pane, so the drop's over-target is that row rather than the pane itself.
+ *
+ * @param {HTMLElement} mount
+ * @param {string} bead_id
+ * @param {string} pane_id
+ * @param {string} onto_bead_id
+ */
+function dragOntoRow(mount, bead_id, pane_id, onto_bead_id) {
+  let stored = '';
+  const dt = {
+    getData: () => stored,
+    /**
+     * @param {string} _t
+     * @param {string} v
+     */
+    setData: (_t, v) => {
+      stored = v;
+    },
+    effectAllowed: '',
+    dropEffect: ''
+  };
+  const src = /** @type {HTMLElement} */ (
+    mount.querySelector(
+      `.worker-mini[data-bead-id="${bead_id}"], .worker-card[data-bead-id="${bead_id}"]`
+    )
+  );
+  src.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+  const ds = new Event('dragstart', { bubbles: true });
+  Object.defineProperty(ds, 'dataTransfer', { value: dt });
+  src.dispatchEvent(ds);
+
+  const onto = /** @type {HTMLElement} */ (
+    mount.querySelector(
+      `#${pane_id} .worker-mini[data-bead-id="${onto_bead_id}"]`
+    )
+  );
+  const drop = new Event('drop', { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, 'dataTransfer', { value: dt });
+  onto.dispatchEvent(drop);
+}
+
+/**
  * Preseed the candidate display filter (UI-ki09). blocked rows are hidden by
  * default, so a test about blocked candidates asks for them explicitly.
  *
@@ -515,8 +558,31 @@ describe('views/worker', () => {
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
       bead_id: 'RD-1',
-      index: 0,
       expected_revision: 0
+    });
+  });
+
+  test('dropping a candidate onto an existing waiting row still sends no index', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    const transport = vi
+      .fn()
+      .mockResolvedValue(
+        reply(queueOf({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] }))
+      );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    queueStore.set(queueOf({ queue: [{ bead_id: 'QQ-1', added_at: 1 }] }));
+
+    dragOntoRow(mount, 'RD-1', 'worker-pane-queue', 'QQ-1');
+    await flush();
+
+    expect(transport).toHaveBeenCalledWith('worker-queue-place', {
+      bead_id: 'RD-1',
+      expected_revision: 1
     });
   });
 
@@ -6484,7 +6550,6 @@ describe('mobile control-first layout (UI-58y2)', () => {
 
     expect(transport).toHaveBeenCalledWith('worker-queue-place', {
       bead_id: 'RD-1',
-      index: 1,
       expected_revision: 1
     });
   });

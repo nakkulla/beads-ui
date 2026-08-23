@@ -4267,7 +4267,10 @@ export function createWorkerView(mount_element, options = {}) {
       if (from_lane === to_lane) {
         void reorderBead(bead_id, target_lane, index);
       } else {
-        void placeBead(bead_id, target_lane, index);
+        // 레인에 처음 들어오는 드롭은 index를 보내지 않는다 (UI-mwju): 후보
+        // 카드의 [대기로 ↴]/배치 메뉴와 같은 "맨 뒤에 붙이기" 의미로 맞춘다.
+        // 서버 `queue-store.place`는 index가 없으면 append한다.
+        void placeBead(bead_id, target_lane);
       }
     }
   }

@@ -107,6 +107,15 @@ export function createRepoOperationCoordinator(deps) {
     deps.sleep ||
     ((/** @type {number} */ ms) =>
       new Promise((resolve) => setTimeout(resolve, ms)));
+  /**
+   * Workspaces whose stored failed verify rows were already checked against
+   * existing successes. Settlement-time sweeps keep the rows covered from then
+   * on, so one pass per coordinator lifetime is enough and later reconciles
+   * spend no git calls on it.
+   *
+   * @type {Set<string>}
+   */
+  const verify_coverage_swept = new Set();
 
   /**
    * Resolve an operation's historical/effective policy without publishing it
@@ -318,8 +327,146 @@ export function createRepoOperationCoordinator(deps) {
   }
 
   /**
-   * Durably cover failed deploy rows when terminal settlement proves a
-   * successful descendant, regardless of which row settled last.
+   * The PR heads one verify record stands for. `verify_head_shas` collects
+   * every head that adopted the record; the original `verify_head_sha` is the
+   * fallback for a row written before the list existed.
+   *
+   * @param {any} operation
+   * @returns {string[]}
+   */
+  function verifyHeadsOf(operation) {
+    /** @type {string[]} */
+    const heads = Array.isArray(operation.verify_head_shas)
+      ? operation.verify_head_shas.filter(
+          (/** @type {unknown} */ sha) => typeof sha === 'string' && sha
+        )
+      : [];
+    if (
+      heads.length === 0 &&
+      typeof operation.verify_head_sha === 'string' &&
+      operation.verify_head_sha
+    ) {
+      heads.push(operation.verify_head_sha);
+    }
+    return heads;
+  }
+
+  /**
+   * A later verify success covers a failed verify row when one of the success
+   * heads descends from one of the failed row's heads: the same PR line moved
+   * past the failing commit and the candidate built on it passed. Rows keyed
+   * by candidate tree never collide, so without this the failed row would
+   * outlive the merge it blocked and keep asking for resolution.
+   *
+   * @param {any} failed
+   * @param {any} succeeded
+   */
+  async function verifyCovers(failed, succeeded) {
+    const failed_heads = verifyHeadsOf(failed);
+    const succeeded_heads = verifyHeadsOf(succeeded);
+    for (const failed_head of failed_heads) {
+      for (const succeeded_head of succeeded_heads) {
+        if (
+          failed_head === succeeded_head ||
+          (await isCoveredByDescendant(failed_head, succeeded_head))
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Durably cover failed verify rows when a same-repo verify success on a
+   * descendant head exists, regardless of which row settled last. Mirrors the
+   * deploy branch of {@link sweepDescendantCoverage} with head ancestry in
+   * place of target containment.
+   *
+   * @param {string} workspace
+   * @param {string} operation_id
+   * @param {any} settled
+   */
+  async function sweepVerifyCoverage(workspace, operation_id, settled) {
+    const queue = deps.store.snapshot(workspace);
+    if (settled.state === 'succeeded') {
+      for (const [failed_id, failed] of Object.entries(queue.repo_operations)) {
+        if (
+          failed.kind !== 'verify' ||
+          failed.repo_id !== settled.repo_id ||
+          failed.state !== 'failed' ||
+          failed.superseded_by ||
+          !(await verifyCovers(failed, settled))
+        ) {
+          continue;
+        }
+        try {
+          deps.store.supersedeRepoOperation(workspace, {
+            operation_id: failed_id,
+            successor_id: operation_id
+          });
+        } catch {
+          continue;
+        }
+      }
+      return;
+    }
+    if (settled.superseded_by) {
+      return;
+    }
+    for (const [succeeded_id, succeeded] of Object.entries(
+      queue.repo_operations
+    )) {
+      if (
+        succeeded.kind !== 'verify' ||
+        succeeded.repo_id !== settled.repo_id ||
+        succeeded.state !== 'succeeded' ||
+        !(await verifyCovers(settled, succeeded))
+      ) {
+        continue;
+      }
+      try {
+        deps.store.supersedeRepoOperation(workspace, {
+          operation_id,
+          successor_id: succeeded_id
+        });
+      } catch {
+        return;
+      }
+      return;
+    }
+  }
+
+  /**
+   * Cover the failed verify rows a workspace already holds — rows settled
+   * before the verify coverage sweep existed, or while the server was down —
+   * against the successes stored next to them.
+   *
+   * @param {string} workspace
+   */
+  async function sweepStoredVerifyCoverage(workspace) {
+    try {
+      const queue = deps.store.snapshot(workspace);
+      for (const [operation_id, operation] of Object.entries(
+        queue.repo_operations
+      )) {
+        if (
+          operation.kind !== 'verify' ||
+          operation.state !== 'failed' ||
+          operation.superseded_by
+        ) {
+          continue;
+        }
+        await sweepVerifyCoverage(workspace, operation_id, operation);
+      }
+    } catch {
+      return;
+    }
+  }
+
+  /**
+   * Durably cover failed deploy and verify rows when terminal settlement
+   * proves a successful descendant, regardless of which row settled last.
    *
    * @param {string} workspace
    * @param {string} operation_id
@@ -330,9 +477,15 @@ export function createRepoOperationCoordinator(deps) {
       const settled = queue.repo_operations[operation_id];
       if (
         !settled ||
-        settled.kind !== 'deploy' ||
         (settled.state !== 'succeeded' && settled.state !== 'failed')
       ) {
+        return;
+      }
+      if (settled.kind === 'verify') {
+        await sweepVerifyCoverage(workspace, operation_id, settled);
+        return;
+      }
+      if (settled.kind !== 'deploy') {
         return;
       }
       if (settled.state === 'succeeded') {
@@ -1776,6 +1929,10 @@ export function createRepoOperationCoordinator(deps) {
    * @returns {Promise<boolean>}
    */
   async function reconcileLocked(workspace) {
+    if (!verify_coverage_swept.has(workspace)) {
+      verify_coverage_swept.add(workspace);
+      await sweepStoredVerifyCoverage(workspace);
+    }
     const queue = deps.store.snapshot(workspace);
     for (const [operation_id, operation] of Object.entries(
       queue.repo_operations
