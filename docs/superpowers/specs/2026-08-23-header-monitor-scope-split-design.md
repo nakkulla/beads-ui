@@ -98,8 +98,8 @@ JS가 클래스를 쓰는 이유: nav.js가 조상 요소를 건드리지 않게
 | `.repo-scope` | `display:inline-flex; align-items:stretch; gap:var(--sp-2); padding:var(--sp-2); border:1px solid var(--border-card); border-radius:var(--r-9); background:var(--bg-drawer); transition: opacity .18s ease, filter .18s ease` |
 | `.repo-scope__sep` | `width:1px; margin:var(--sp-4) var(--sp-2); background:var(--border-card)` |
 | `.repo-scope .header-workspace` | `padding: 0 var(--sp-6) 0 var(--sp-4)` |
-| `.repo-scope .workspace-picker__select` | 테두리·배경 투명, `height:24px`, `font-weight:600`, `color:var(--text-title)`, `min-width:0`; `:hover`/`:focus`에서 기존 테두리 색 복귀(드롭다운임이 드러나게) |
-| `.repo-scope .workspace-picker__manage-button`, `.repo-scope .workspace-picker__git-pull-button` | 테두리·배경 투명, 높이 22px, `color:var(--text-muted)`; `:hover`/`:focus`에서 기존 테두리·`--text-primary` 복귀 |
+| `.repo-scope .workspace-picker__select` | `border-color:transparent; background-color:transparent`(테두리 폭·스타일과 화살표 `background-image`는 보존 — `border`·`background` 단축 속성을 쓰지 않는다), `height:24px`, `font-weight:600`, `color:var(--text-title)`, `min-width:0`; `:hover`/`:focus`에서 기존 `border-color` 규칙이 그대로 복귀(드롭다운임이 드러나게) |
+| `.repo-scope .workspace-picker__manage-button`, `.repo-scope .workspace-picker__git-pull-button` | `border-color:transparent; background-color:transparent`(같은 이유로 단축 속성 금지), 높이 22px, `color:var(--text-muted)`; `:hover`/`:focus`에서 기존 `border-color` 규칙 복귀 + `color:var(--text-primary)` |
 | `.repo-scope .ctl-tab` | `padding:var(--sp-3) var(--sp-11,11px); border-radius:var(--r-7); font-size:13.5px` (캡슐 안에서 한 단 작게) |
 | `.repo-scope.is-quiet` | `opacity:.45; filter:saturate(.6)` |
 | `.repo-scope.is-quiet:hover, .repo-scope.is-quiet:focus-within` | `opacity:1; filter:none` |
