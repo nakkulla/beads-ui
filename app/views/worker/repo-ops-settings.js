@@ -118,6 +118,42 @@ export function createRepoOpsSettings(options) {
   }
 
   /**
+   * @returns {{ verify: boolean, deploy: boolean }} This workspace's per-kind
+   * opt-out from the declared operations. A snapshot without the key is a
+   * workspace that runs both.
+   */
+  function currentOptOut() {
+    const stored = currentQueue().repo_ops_opt_out;
+    return {
+      verify: stored?.verify === true,
+      deploy: stored?.deploy === true
+    };
+  }
+
+  /**
+   * The per-lane 「이 workspace에서 실행」 checkbox (UI-lsti §4). Drawn only on a
+   * DECLARED lane: there is nothing to skip where nothing is declared.
+   *
+   * @param {'verify'|'deploy'} lane
+   * @param {boolean} opted_out
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function laneRunToggle(lane, opted_out) {
+    return html`<label class="worker-repo-ops__lane-run">
+      <input
+        type="checkbox"
+        .checked=${!opted_out}
+        @change=${(/** @type {Event} */ ev) =>
+          void saveRepoOpsOptOut(
+            lane,
+            !(/** @type {HTMLInputElement} */ (ev.target).checked)
+          )}
+      />
+      이 workspace에서 실행
+    </label>`;
+  }
+
+  /**
    * The 저장소 작업 선언 card (UI-q0uy §4.5): `repo-ops/config.toml` read from
    * the pinned base SHA consumed by the Worker.
    *
@@ -129,39 +165,66 @@ export function createRepoOpsSettings(options) {
     const source = `${repo_ops.source_path || 'repo-ops/config.toml'} @ ${
       repo_ops.base_ref || '?'
     }${sha ? `@${sha.slice(0, 7)}` : ''}`;
+    const opt_out = currentOptOut();
+    // 선언이 없으면 opt-out 값은 무해한 잔여물이다 — 건너뛸 대상이 없으므로
+    // 흐림·배지·체크박스 어느 것도 그리지 않는다.
+    const verify_skipped = Boolean(repo_ops.verify) && opt_out.verify;
+    const deploy_skipped = Boolean(repo_ops.deploy) && opt_out.deploy;
     return html`<section class="worker-repo-ops__vd" data-seam="repo-ops">
       <p class="worker-repo-ops__vd-title">
         저장소 작업 선언
         <span class="worker-repo-ops__vd-src">${source}</span>
       </p>
-      <div class="worker-repo-ops__lane" data-lane="verify">
+      <div
+        class="worker-repo-ops__lane${verify_skipped
+          ? ' worker-repo-ops__lane--skipped'
+          : ''}"
+        data-lane="verify"
+      >
         <span class="worker-repo-ops__lane-k">머지 전 검증</span>
         <span class="worker-repo-ops__lane-v"
           >${repo_ops.verify
             ? html`${laneScriptButton('verify', repo_ops, repo_ops.verify)}
-              ${laneTimeoutBadge(repo_ops.verify.timeout_ms)}`
+              ${laneTimeoutBadge(repo_ops.verify.timeout_ms)}
+              ${verify_skipped
+                ? badge('skipped', '이 workspace에서 건너뜀')
+                : ''}`
             : html`선언 없음${badge('absent', 'verify 없이 판정')}`}</span
         >
         <span class="worker-repo-ops__lane-d"
-          >${repo_ops.verify
-            ? '머지 전에 이 스크립트가 통과해야 자격을 얻습니다.'
-            : '머지 자격은 PR/base/head 신선도·mergeability·리뷰 영수증으로만 판정합니다.'}</span
+          >${verify_skipped
+            ? '이 workspace에서는 검증 없이 판정합니다.'
+            : repo_ops.verify
+              ? '머지 전에 이 스크립트가 통과해야 자격을 얻습니다.'
+              : '머지 자격은 PR/base/head 신선도·mergeability·리뷰 영수증으로만 판정합니다.'}</span
         >
+        ${repo_ops.verify ? laneRunToggle('verify', opt_out.verify) : ''}
       </div>
-      <div class="worker-repo-ops__lane" data-lane="deploy">
+      <div
+        class="worker-repo-ops__lane${deploy_skipped
+          ? ' worker-repo-ops__lane--skipped'
+          : ''}"
+        data-lane="deploy"
+      >
         <span class="worker-repo-ops__lane-k">머지 후 배포</span>
         <span class="worker-repo-ops__lane-v"
           >${repo_ops.deploy
             ? html`${laneScriptButton('deploy', repo_ops, repo_ops.deploy)}
-              ${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}`
+              ${laneTimeoutBadge(repo_ops.deploy.timeout_ms)}
+              ${deploy_skipped
+                ? badge('skipped', '이 workspace에서 건너뜀')
+                : ''}`
             : html`선언 없음${badge('absent', '배포 없음')}`}</span
         >
         <span class="worker-repo-ops__lane-d"
-          >${repo_ops.deploy
-            ? html`Worker가 <code>.worktrees/.repo-ops-deploy</code>에서 대상
-                SHA로 정렬한 뒤 1회 실행합니다.`
-            : '머지 후 배포 단계 없이 곧바로 정리로 넘어갑니다.'}</span
+          >${deploy_skipped
+            ? '이 workspace에서는 배포 없이 곧바로 정리로 넘어갑니다.'
+            : repo_ops.deploy
+              ? html`Worker가 <code>.worktrees/.repo-ops-deploy</code>에서 대상
+                  SHA로 정렬한 뒤 1회 실행합니다.`
+              : '머지 후 배포 단계 없이 곧바로 정리로 넘어갑니다.'}</span
         >
+        ${repo_ops.deploy ? laneRunToggle('deploy', opt_out.deploy) : ''}
       </div>
     </section>`;
   }
@@ -236,6 +299,34 @@ export function createRepoOpsSettings(options) {
       const retried = await transport(
         /** @type {any} */ ('worker-auto-repair-toggle'),
         { on, expected_revision: currentRevision() }
+      );
+      adopt(retried);
+    }
+    doRender();
+  }
+
+  /**
+   * Send the per-kind workspace opt-out (UI-lsti §4). Same CAS-and-retry shape
+   * as {@link saveAutoRepair}: the click that lost a race is re-applied once
+   * against the revision the server just returned, rather than silently
+   * dropping the user's decision.
+   *
+   * @param {'verify'|'deploy'} kind
+   * @param {boolean} opted_out
+   */
+  async function saveRepoOpsOptOut(kind, opted_out) {
+    if (!transport) {
+      return;
+    }
+    const res = await transport(
+      /** @type {any} */ ('worker-repo-ops-opt-out-toggle'),
+      { kind, opted_out, expected_revision: currentRevision() }
+    );
+    adopt(res);
+    if (res && res.conflict) {
+      const retried = await transport(
+        /** @type {any} */ ('worker-repo-ops-opt-out-toggle'),
+        { kind, opted_out, expected_revision: currentRevision() }
       );
       adopt(retried);
     }

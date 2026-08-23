@@ -730,14 +730,29 @@ describe('저장소 작업 타임라인 (UI-q0uy §4.2)', () => {
     ).toEqual(['op-timed', 'op-timeless']);
   });
 
-  test('caps the rail at twenty events', () => {
+  // UI-lsti §5: 평평한 20개 자르기는 「최근 5개 + 미해결 전부」로 바뀌었다.
+  test('folds settled events down to the five newest', () => {
+    const { mount } = mountWorker({
+      repo_operations: Array.from({ length: 25 }, (_unused, index) =>
+        operationCard({
+          operation_id: `op-${index}`,
+          finished_at: index,
+          state: 'succeeded'
+        })
+      )
+    });
+
+    expect(openTimeline(mount).querySelectorAll('.worker-ev')).toHaveLength(5);
+  });
+
+  test('never folds an unresolved event away', () => {
     const { mount } = mountWorker({
       repo_operations: Array.from({ length: 25 }, (_unused, index) =>
         operationCard({ operation_id: `op-${index}`, finished_at: index })
       )
     });
 
-    expect(openTimeline(mount).querySelectorAll('.worker-ev')).toHaveLength(20);
+    expect(openTimeline(mount).querySelectorAll('.worker-ev')).toHaveLength(25);
   });
 });
 
@@ -1334,5 +1349,200 @@ describe('저장소 작업 선언 설정 (UI-q0uy §4.5)', () => {
     expect(
       dialog.querySelector('.worker-repo-ops__vd-group[data-vd="verify"]')
     ).toBeNull();
+  });
+});
+
+describe('workspace verify/deploy opt-out (UI-lsti §4)', () => {
+  /**
+   * @param {Record<string, any>} [over]
+   * @param {any} [transport]
+   */
+  function mountDeclared(over = {}, transport = vi.fn()) {
+    return mountWorker(
+      {
+        workspace_info: {
+          verify_cmd: null,
+          repo_ops: repoOps({
+            verify: { script: 'repo-ops/script/verify', timeout_ms: 300_000 }
+          })
+        },
+        ...over
+      },
+      transport
+    );
+  }
+
+  test('runs both declared lanes by default', () => {
+    const { mount } = mountDeclared();
+
+    const inputs = mount.querySelectorAll('.worker-repo-ops__lane-run input');
+
+    expect(
+      Array.from(inputs).map(
+        (input) => /** @type {HTMLInputElement} */ (input).checked
+      )
+    ).toEqual([true, true]);
+  });
+
+  test('unchecks the lane this workspace opted out of', () => {
+    const { mount } = mountDeclared({
+      repo_ops_opt_out: { verify: true, deploy: false }
+    });
+
+    expect(
+      /** @type {HTMLInputElement} */ (
+        mount.querySelector(
+          '[data-lane="verify"] .worker-repo-ops__lane-run input'
+        )
+      ).checked
+    ).toBe(false);
+  });
+
+  test('sends the opt-out mutation when a lane is unchecked', () => {
+    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
+    const { mount } = mountDeclared({}, transport);
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector(
+        '[data-lane="deploy"] .worker-repo-ops__lane-run input'
+      )
+    );
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('worker-repo-ops-opt-out-toggle', {
+      kind: 'deploy',
+      opted_out: true,
+      expected_revision: 3
+    });
+  });
+
+  test('sends the opt-in mutation when a lane is re-checked', () => {
+    const transport = vi.fn(async () => ({ ok: true, queue: queueOf() }));
+    const { mount } = mountDeclared(
+      { repo_ops_opt_out: { verify: true, deploy: false } },
+      transport
+    );
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector(
+        '[data-lane="verify"] .worker-repo-ops__lane-run input'
+      )
+    );
+    input.checked = true;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+
+    expect(transport).toHaveBeenCalledWith('worker-repo-ops-opt-out-toggle', {
+      kind: 'verify',
+      opted_out: false,
+      expected_revision: 3
+    });
+  });
+
+  test('dims only the opted-out lane', () => {
+    const { mount } = mountDeclared({
+      repo_ops_opt_out: { verify: false, deploy: true }
+    });
+
+    expect(
+      mount
+        .querySelector('[data-lane="deploy"]')
+        ?.classList.contains('worker-repo-ops__lane--skipped')
+    ).toBe(true);
+    expect(
+      mount
+        .querySelector('[data-lane="verify"]')
+        ?.classList.contains('worker-repo-ops__lane--skipped')
+    ).toBe(false);
+  });
+
+  test('badges the opted-out lane as skipped in this workspace', () => {
+    const { mount } = mountDeclared({
+      repo_ops_opt_out: { verify: true, deploy: false }
+    });
+
+    expect(
+      mount.querySelector(
+        '[data-lane="verify"] .worker-repo-ops__vd-badge--skipped'
+      )?.textContent
+    ).toBe('이 workspace에서 건너뜀');
+  });
+
+  test('keeps the declared script and timeout visible while opted out', () => {
+    const { mount } = mountDeclared({
+      repo_ops_opt_out: { verify: true, deploy: false }
+    });
+
+    expect(
+      mount.querySelector('[data-lane="verify"] .worker-repo-ops__vd-cmd')
+        ?.textContent
+    ).toBe('repo-ops/script/verify');
+    expect(
+      mount.querySelector(
+        '[data-lane="verify"] .worker-repo-ops__vd-badge--config'
+      )?.textContent
+    ).toBe('timeout 5분');
+  });
+
+  test('says an opted-out verify lane judges without verification', () => {
+    const { mount } = mountDeclared({
+      repo_ops_opt_out: { verify: true, deploy: false }
+    });
+
+    expect(
+      mount.querySelector('[data-lane="verify"] .worker-repo-ops__lane-d')
+        ?.textContent
+    ).toBe('이 workspace에서는 검증 없이 판정합니다.');
+  });
+
+  test('says an opted-out deploy lane goes straight to cleanup', () => {
+    const { mount } = mountDeclared({
+      repo_ops_opt_out: { verify: false, deploy: true }
+    });
+
+    expect(
+      mount.querySelector('[data-lane="deploy"] .worker-repo-ops__lane-d')
+        ?.textContent
+    ).toBe('이 workspace에서는 배포 없이 곧바로 정리로 넘어갑니다.');
+  });
+
+  test('offers no checkbox on an undeclared lane', () => {
+    const { mount } = mountWorker({
+      workspace_info: { verify_cmd: null, repo_ops: repoOps() }
+    });
+
+    expect(
+      mount.querySelector('[data-lane="verify"] .worker-repo-ops__lane-run')
+    ).toBeNull();
+    expect(
+      mount.querySelector('[data-lane="deploy"] .worker-repo-ops__lane-run')
+    ).not.toBeNull();
+  });
+
+  test('retries once with the fresh revision after a CAS conflict', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce({
+        conflict: true,
+        queue: queueOf({ revision: 9 })
+      })
+      .mockResolvedValueOnce({ ok: true, queue: queueOf({ revision: 10 }) });
+    const { mount } = mountDeclared({}, transport);
+
+    const input = /** @type {HTMLInputElement} */ (
+      mount.querySelector(
+        '[data-lane="verify"] .worker-repo-ops__lane-run input'
+      )
+    );
+    input.checked = false;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(transport).toHaveBeenNthCalledWith(
+      2,
+      'worker-repo-ops-opt-out-toggle',
+      { kind: 'verify', opted_out: true, expected_revision: 9 }
+    );
   });
 });

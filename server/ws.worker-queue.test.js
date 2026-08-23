@@ -3429,3 +3429,101 @@ describe('ws worker-queue 직렬 레인 (UI-04vo Phase 3)', () => {
     expect(snap.lane_states.s2.occupied_by).toEqual([]);
   });
 });
+
+describe('worker repo-ops opt-out toggle (UI-lsti §3)', () => {
+  test('persists an opt-out and pushes it in the fanout snapshot', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    sock.sent = [];
+
+    await send(sock, 'm1', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'verify',
+      opted_out: true,
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').payload).toMatchObject({
+      applied: true,
+      conflict: false,
+      queue: { revision: 1, repo_ops_opt_out: { verify: true, deploy: false } }
+    });
+    expect(queueSnapshots(sock).at(-1).repo_ops_opt_out).toEqual({
+      verify: true,
+      deploy: false
+    });
+  });
+
+  test('opts a kind back in', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'deploy',
+      opted_out: true,
+      expected_revision: 0
+    });
+    sock.sent = [];
+
+    await send(sock, 'm2', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'deploy',
+      opted_out: false,
+      expected_revision: 1
+    });
+
+    expect(queueSnapshots(sock).at(-1).repo_ops_opt_out).toEqual({
+      verify: false,
+      deploy: false
+    });
+  });
+
+  test('answers a stale revision with a conflict and the current queue', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await send(sock, 'm1', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'verify',
+      opted_out: true,
+      expected_revision: 0
+    });
+
+    await send(sock, 'm2', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'deploy',
+      opted_out: true,
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm2').payload).toMatchObject({
+      applied: false,
+      conflict: true,
+      queue: { revision: 1, repo_ops_opt_out: { verify: true, deploy: false } }
+    });
+  });
+
+  test('rejects an unknown kind as a bad request', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'publish',
+      opted_out: true,
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').error.code).toBe('bad_request');
+  });
+
+  test('rejects a non-boolean opted_out as a bad request', async () => {
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    await send(sock, 'm1', 'worker-repo-ops-opt-out-toggle', {
+      kind: 'verify',
+      opted_out: 'yes',
+      expected_revision: 0
+    });
+
+    expect(replyFor(sock, 'm1').error.code).toBe('bad_request');
+  });
+
+  test('is a client-sendable MESSAGE_TYPE', () => {
+    expect(MESSAGE_TYPES).toContain('worker-repo-ops-opt-out-toggle');
+  });
+});
