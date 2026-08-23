@@ -94,8 +94,14 @@ beads-ui는 이 계약의 소비자다. 어휘 정의·해석 순서는 dotfiles
   전체 카탈로그 토큰(runtime 무관 — runtime은 유도값이므로 `위임 대상` 선택에
   좁히지 않는다).
 - 행 라벨은 기존 `selectControl` 경로(`buildExecutionOptionView` →
-  `resolveExecutionSettings`)를 그대로 타므로, unset 라벨과 선택지 라벨은 §5의 행
-  해석이 공급한다: unset `기본값 사용 — 메인 (orchestration <compactModelId>)`,
+  `resolveExecutionSettings`)를 타되, 이 행만은 해석 입력의 `global`에
+  `{ ...session_draft, ...currentOrchestrationValues() }`를 넘긴다. projection의
+  `orchestration.model`은 고정 fallback(`ORCHESTRATION_MODEL_FALLBACK`)이고 실제
+  워크스페이스 orchestration 모델은 queue 값(Worker 탭 초안 우선)이므로, 세션
+  초안만 넘기면 unset 라벨이 실제 모델 대신 fallback 모델을 보인다. 선택·저장
+  원본은 여전히 `session_draft`다(`buildSessionDefaultsPatch`는 kv 키만 diff하고
+  orchestration 키는 `buildOrchestrationPatch`가 따로 diff한다). 결과: unset
+  `기본값 사용 — 메인 (orchestration <compactModelId(실제 orchestration 모델)>)`,
   선택지는 `compactModelId(full id)`, `title`에 full id.
 - 그룹 hint(`이슈 핀이 있으면 핀이 우선합니다`)는 이 행에도 참이므로 유지.
 
@@ -125,8 +131,10 @@ beads-ui는 이 계약의 소비자다. 어휘 정의·해석 순서는 dotfiles
   projection·catalog가 둘 다 비어 토큰을 판정할 수 없으면 값은 `explicit`로 표시하되
   유도 runtime이 없으므로 §5.2 전환도 하지 않는다(fail-quiet).
 - 미설정: `result(null, 'base', '메인 (orchestration <compactModelId(orchestration_model.full_value)>)', null, 'default')`.
-  orchestration 모델 행이 `unavailable`이면 `메인`만. 이 행은 orchestration 행 계산
-  뒤에 만든다.
+  `orchestration_model` 행은 `global.orchestration_model`(호출자가 합친 실제
+  워크스페이스 값) → projection fallback 순으로 이미 해석되므로 그 `full_value`를
+  그대로 쓴다. orchestration 모델 행이 `unavailable`이면 `메인`만. 이 행은
+  orchestration 행 계산 뒤에 만든다.
 - 설정·유효: `result(token, 'global', compactModelId(full), full, 'explicit')`.
   full id는 `implementationModelId(token, derived_runtime, session, runner_catalog)`.
 - projection 미지원(`session === null`): 기존 `unavailableResult` 규칙(설정값은
@@ -207,10 +215,12 @@ RED → GREEN seam (이 저장소):
 2. `server/ws/exec-settings-mutation.test.js`(또는 session-defaults 커버 파일) —
    `set-session-defaults`가 `quick_fix_impl_model=terra` 저장·readback, `auto`와 미지
    토큰 거부; 읽기가 미지 토큰을 `invalid_value:quick_fix_impl_model`로 drop.
-3. `server/ws/exec-preset-apply.test.js` — workspace apply가 기존 kv의
-   `quick_fix_impl_model`을 보존한다.
-4. `app/utils/execution-defaults.test.js` — (a) `quick_fix_impl_model` 행 unset 라벨
-   `메인 (orchestration opus)`(테스트 projection의 orchestration 모델 기준)과 설정 시
+3. `server/worker/exec-enums.test.js` — `PRESET_KV_KEYS`가 `quick_fix_impl_model`을
+   포함하지 않고 `WORKSPACE_KV_KEYS`는 포함한다(키 목록 확장 뒤 preset 운반 목록에서
+   제외됨을 고정하는 실제 RED seam; 상수가 아직 없으므로 편집 전 RED).
+4. `app/utils/execution-defaults.test.js` — (a) `quick_fix_impl_model` 행 unset 라벨이
+   `global.orchestration_model`이 있으면 그 모델(`메인 (orchestration 5.6-sol)` 등),
+   없으면 projection fallback(`메인 (orchestration opus)`)을 따르고, 설정 시
    `compactModelId`; (b) route=quick_fix·핀 없음·kv `terra` → `impl_dispatch`
    `위임 (전역 quick_fix)`/global, `impl_runtime` `codex (유도)`, `impl_model` `5.6-terra`;
    (c) 핀 `impl_dispatch=main`이면 현행; (d) route=spec_backed면 현행; (e) 핀
@@ -220,10 +230,13 @@ RED → GREEN seam (이 저장소):
 5. `app/views/settings-dialog/session-model.test.js` — `WORKSPACE_KV_KEYS` 12키,
    `buildSessionDefaultsPatch`가 이 키를 diff에 포함.
 6. `app/views/settings-dialog/index.test.js` — 실행 탭에 `quick_fix 구현 모델`
-   select가 있고 `auto` 옵션이 없다.
+   select가 있고 `auto` 옵션이 없으며, queue의 `orchestration_model`이 projection
+   fallback과 다를 때 unset 라벨이 queue 모델을 보인다.
 
-회귀: 기존 `execution-defaults.test.js`의 quick_fix route 기본값 테스트, Pre-Handoff
-Validation(`npm run tsc`·`npm test`·`npm run lint`·`npm run prettier:write`·
+회귀(RED→GREEN seam 아님): `server/ws/exec-preset-apply.test.js`에 workspace apply가
+기존 kv의 `quick_fix_impl_model`을 보존한다는 단언(현행도 통과하는 보존 동작을 키
+목록 확장 뒤에도 고정), 기존 `execution-defaults.test.js`의 quick_fix route 기본값
+테스트, Pre-Handoff Validation(`npm run tsc`·`npm test`·`npm run lint`·`npm run prettier:write`·
 `npm run build`).
 
 ## 구현 unit 후보 (advisory)
