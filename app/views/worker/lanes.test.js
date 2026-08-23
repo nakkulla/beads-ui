@@ -480,6 +480,123 @@ describe('candidate card', () => {
   });
 });
 
+describe('worker-ineligible candidate card (UI-8881)', () => {
+  const INELIGIBLE_TITLE =
+    'worker-ineligible label로 워커에서 실행할 수 없습니다';
+
+  test('marks the card with the ineligible modifier and chip', () => {
+    const card = renderCandidate({ draggable: false, worker_ineligible: true });
+
+    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(
+      card.querySelector('.worker-card__ineligible')?.textContent?.trim()
+    ).toBe('⛔ worker-ineligible');
+  });
+
+  test('places the chip after the id and before the route chip', () => {
+    const card = renderCandidate({ draggable: false, worker_ineligible: true });
+    const head = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__head')
+    );
+
+    const kids = Array.from(head.children);
+    const id_index = kids.findIndex((el) =>
+      el.classList.contains('worker-card__id')
+    );
+    const chip_index = kids.findIndex((el) =>
+      el.classList.contains('worker-card__ineligible')
+    );
+    const route_index = kids.findIndex((el) =>
+      el.classList.contains('ctl-chip--route')
+    );
+
+    expect(id_index).toBeGreaterThanOrEqual(0);
+    expect(chip_index).toBeGreaterThan(id_index);
+    expect(route_index).toBeGreaterThan(chip_index);
+  });
+
+  test('suppresses the grip and refuses the drag affordance', () => {
+    const card = renderCandidate({ worker_ineligible: true });
+
+    expect(card.getAttribute('draggable')).toBe('false');
+    expect(card.querySelector('.worker-card__grip')).toBeNull();
+  });
+
+  test('disables the queue button with the worker-ineligible tooltip', () => {
+    const card = renderCandidate({ draggable: false, worker_ineligible: true });
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.disabled).toBe(true);
+    expect(place.title).toBe(INELIGIBLE_TITLE);
+  });
+
+  test('prefers the worker-ineligible tooltip over missing_description', () => {
+    const card = renderCandidate({
+      draggable: false,
+      worker_ineligible: true,
+      reason: 'missing_description'
+    });
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.title).toBe(INELIGIBLE_TITLE);
+    expect(card.querySelector('.worker-card__reason')?.textContent).toBe(
+      'missing_description'
+    );
+  });
+
+  test('prefers the worker-ineligible tooltip over the spec-missing branch', () => {
+    const card = renderCandidate({
+      draggable: false,
+      worker_ineligible: true,
+      reason: 'spec 없음'
+    });
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.title).toBe(INELIGIBLE_TITLE);
+    expect(card.querySelector('.worker-card__reason')?.textContent).toBe(
+      'spec 없음'
+    );
+  });
+
+  test('keeps the lane menu closed for an ineligible candidate', () => {
+    const card = renderCandidate(
+      { worker_ineligible: true },
+      {
+        bead_id: 'UI-qf',
+        lanes: [{ id: 'parallel', label: '병렬', count: 3 }]
+      }
+    );
+
+    expect(card.querySelector('.worker-card__place-menu')).toBeNull();
+    expect(card.querySelector('.worker-card__place')).not.toBeNull();
+  });
+
+  test('keeps the id and title elements a click can still reach', () => {
+    const card = renderCandidate({
+      worker_ineligible: true,
+      title: '관측 전용 후보'
+    });
+
+    expect(card.querySelector('.worker-card__id')?.textContent).toBe('UI-qf');
+    expect(card.querySelector('.worker-card__title')?.textContent).toBe(
+      '관측 전용 후보'
+    );
+  });
+
+  test('leaves an eligible candidate free of the ineligible markers', () => {
+    const card = renderCandidate({});
+
+    expect(card.classList.contains('worker-card--ineligible')).toBe(false);
+    expect(card.querySelector('.worker-card__ineligible')).toBeNull();
+  });
+});
+
 describe('discard receipts', () => {
   test('uses the shared state-specific confirmation wording', () => {
     expect(discardConfirmationMessage('UI-x1', 'unmerged')).toContain(

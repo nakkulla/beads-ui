@@ -6239,6 +6239,44 @@ html[data-theme='dark'] {
   color: var(--accent-danger);
 }
 
+/* worker-ineligible 후보 (UI-8881 §카드 표현): 관측은 되지만 워커가 실행할 수
+   없는 카드. 실패·긴급 경고가 아니므로 danger 배경 없이 기존 중립 token만
+   섞은 음영을 쓴다. 카드 root에 opacity를 걸지 않는 것이 핵심이다 — 부모를
+   흐리면 실행 불가 이유를 설명하는 chip까지 같이 흐려진다. */
+.worker-card--ineligible {
+  border-color: var(--border-chip);
+  background: color-mix(in srgb, var(--bg-card) 88%, var(--text-dim));
+}
+
+.worker-card--ineligible .worker-card__id,
+.worker-card--ineligible .worker-card__title,
+.worker-card--ineligible .worker-mini__meta {
+  color: var(--text-dim);
+}
+
+/* route chip은 자기 token으로 색을 그리므로 중립 token으로 갈아끼워 대비를
+   낮춘다. opacity를 쓰면 `.ctl-chip--route.is-derived`의 0.55와 같은 specificity로
+   충돌하므로 색 치환이 맞다. */
+.worker-card--ineligible .ctl-chip--route {
+  border-color: var(--border-chip);
+  color: var(--text-dim);
+}
+
+/* stepper는 단계별 색을 직접 그리는 그래픽이라 token 치환 대상이 아니다 —
+   요소 단위 opacity로만 낮춘다 (카드 root에는 걸지 않는다). */
+.worker-card--ineligible .stp {
+  opacity: 0.65;
+}
+
+/* 이유 chip은 음영을 따라가지 않는다: 기존 warning token으로 정상 대비를
+   유지해야 "왜 못 도는지"가 카드에서 가장 먼저 읽힌다. */
+.worker-card__ineligible {
+  flex: 0 0 auto;
+  border-color: var(--accent-warn);
+  color: var(--accent-warn);
+  white-space: nowrap;
+}
+
 /* 버튼식 큐 적재 (UI-fmwh §4.2): 드래그 가능 여부와 무관하게 항상 보이는
    보완재. 자격 조건은 템플릿이 드래그와 동일하게 결정한다. */
 .worker-card__place {
