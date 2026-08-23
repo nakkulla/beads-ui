@@ -280,6 +280,30 @@ describe('claude account rows', () => {
     });
   });
 
+  test('keeps an unused window without resetsAt as a null reset', () => {
+    const unused = accountRow({
+      number: 3,
+      active: false,
+      usage: {
+        fiveHour: { pct: 0 },
+        sevenDay: { pct: 18, resetsAt: '2026-08-25T10:59:59Z' }
+      }
+    });
+
+    const payload = normalizeClaudeUsage({ accounts: [accountRow(), unused] });
+
+    const accounts = payload.accounts || [];
+    expect(accounts).toHaveLength(2);
+    expect(accounts[1]).toMatchObject({
+      number: 3,
+      status: 'ok',
+      windows: [
+        { key: '5h', pct: 0, resetsAt: null },
+        { key: '7d', pct: 18, resetsAt: '2026-08-25T10:59:59Z' }
+      ]
+    });
+  });
+
   test('returns account rows even when the active account is unavailable', () => {
     const payload = normalizeClaudeUsage({
       accounts: [expiredRow({ number: 1, active: true })]

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 /**
- * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
+ * @typedef {{ key: string, pct: number, resetsAt: string | null }} UsageWindow
  * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
  * @typedef {{ available: false }} UsageUnavailable
  * @typedef {{ available: true, email: string, windows: UsageWindow[], fetchedAt: string, ageSeconds: number }} ClaudeUsageActive
@@ -35,7 +35,8 @@ function unavailable() {
 }
 
 /**
- * Normalize one cswap usage window.
+ * Normalize one cswap usage window. cswap omits `resetsAt` on a window with no
+ * usage yet (pct 0), so only `pct` is required; a missing reset is `null`.
  *
  * @param {string} key
  * @param {unknown} input
@@ -46,15 +47,14 @@ function normalizeWindow(key, input) {
     return null;
   }
   const window = /** @type {any} */ (input);
-  if (
-    typeof window.pct !== 'number' ||
-    !Number.isFinite(window.pct) ||
-    typeof window.resetsAt !== 'string' ||
-    window.resetsAt.length === 0
-  ) {
+  if (typeof window.pct !== 'number' || !Number.isFinite(window.pct)) {
     return null;
   }
-  return { key, pct: window.pct, resetsAt: window.resetsAt };
+  const resets_at =
+    typeof window.resetsAt === 'string' && window.resetsAt.length > 0
+      ? window.resetsAt
+      : null;
+  return { key, pct: window.pct, resetsAt: resets_at };
 }
 
 /**
