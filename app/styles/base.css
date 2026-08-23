@@ -130,7 +130,7 @@ body {
   border: 0;
 }
 
-/* --- nav (2-tab control tower) --- */
+/* --- nav (global scope + repo scope control tower) --- */
 .ctl-tabs {
   display: flex;
   gap: var(--sp-4);
@@ -155,6 +155,130 @@ body {
   color: var(--text-title);
   background: var(--bg-card);
   border-color: var(--border-card);
+}
+
+/* Separates the global scope (Monitor) from the repo scope capsule. */
+.header-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border-chip);
+}
+
+/* Repo scope capsule: everything bound to the selected workspace lives inside
+   this border — picker, manage, git pull, Board, Worker. */
+.repo-scope {
+  display: inline-flex;
+  align-items: stretch;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-9);
+  background: var(--bg-drawer);
+  transition:
+    opacity 0.18s ease,
+    filter 0.18s ease;
+}
+
+.repo-scope__sep {
+  width: 1px;
+  margin: var(--sp-4) var(--sp-2);
+  background: var(--border-card);
+}
+
+.repo-scope .header-workspace {
+  padding: 0 var(--sp-6) 0 var(--sp-4);
+}
+
+/* Longhand only: the shorthands would drop the select arrow background-image
+   and the hover border-width/style that styles.css owns. */
+.repo-scope .workspace-picker__select {
+  height: 24px;
+  min-width: 0;
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--text-title);
+  font-weight: 600;
+}
+
+.repo-scope .workspace-picker__manage-button,
+.repo-scope .workspace-picker__git-pull-button {
+  height: 22px;
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--text-muted);
+}
+
+.repo-scope .workspace-picker__manage-button:hover,
+.repo-scope .workspace-picker__manage-button:focus,
+.repo-scope .workspace-picker__git-pull-button:hover,
+.repo-scope .workspace-picker__git-pull-button:focus {
+  color: var(--text-primary);
+}
+
+.repo-scope .ctl-tab {
+  padding: var(--sp-3) var(--sp-11, 11px);
+  border-radius: var(--r-7);
+  font-size: 13.5px;
+}
+
+/* Monitor is cross-repo, so the capsule recedes while it is active. The floor
+   is .45 so the repo name stays readable. */
+.repo-scope.is-quiet {
+  opacity: 0.45;
+  filter: saturate(0.6);
+}
+
+.repo-scope.is-quiet:hover,
+.repo-scope.is-quiet:focus-within {
+  opacity: 1;
+  filter: none;
+}
+
+.ctl-tab--monitor {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-7);
+  padding-left: var(--sp-10);
+}
+
+.ctl-tab__dots {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 5px);
+  gap: var(--sp-2);
+}
+
+.ctl-tab__dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.ctl-tab--monitor.is-active .ctl-tab__dots i {
+  opacity: 1;
+}
+
+.ctl-tab--monitor.is-active .ctl-tab__dots i:nth-child(1) {
+  background: var(--stage-spec-on);
+}
+
+.ctl-tab--monitor.is-active .ctl-tab__dots i:nth-child(2) {
+  background: var(--stage-plan-on);
+}
+
+.ctl-tab--monitor.is-active .ctl-tab__dots i:nth-child(3) {
+  background: var(--stage-impl-on);
+}
+
+.ctl-tab--monitor.is-active .ctl-tab__dots i:nth-child(4) {
+  background: var(--accent-success);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .repo-scope {
+    transition: none;
+  }
 }
 
 /* --- board view --- */
