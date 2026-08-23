@@ -574,7 +574,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -664,6 +664,7 @@ function setup(opts) {
     usageReceipts: opts.usageReceipts,
     delegationMonitor: opts.delegationMonitor,
     observeClaudeEffort: opts.observeClaudeEffort,
+    observeCodexEffort: opts.observeCodexEffort,
     admission: opts.admission,
     resolveBase: opts.resolveBase,
     notify: opts.notify,
@@ -9674,6 +9675,75 @@ describe('scheduler Claude effort observation', () => {
     env.runner.eventsFor('C1').emit('session_id', 'thread-1');
 
     expect(observeClaudeEffort).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler Codex effort observation (UI-vriu)', () => {
+  test('records rollout effort from the thread id and attempt start', async () => {
+    const observeCodexEffort = vi.fn(() => 'high');
+    const observeClaudeEffort = vi.fn(() => 'low');
+    const env = setup({
+      config: { C1: { model: 'sol', effort: null } },
+      observeCodexEffort,
+      observeClaudeEffort
+    });
+    seedQueue(env.store, ['C1']);
+    await env.scheduler.tick(WS);
+
+    env.runner.eventsFor('C1').emit('session_id', 'thread-1');
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(attempt.runner).toBe('codex');
+    expect(attempt.observed_effort).toBe('high');
+    expect(observeCodexEffort).toHaveBeenCalledWith({
+      session_id: 'thread-1',
+      started_at: attempt.started_at
+    });
+    expect(observeClaudeEffort).not.toHaveBeenCalled();
+  });
+
+  test('retries missing rollout effort when the attempt terminates', async () => {
+    const observeCodexEffort = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce('xhigh');
+    const env = setup({
+      config: { C1: { model: 'sol', effort: null } },
+      observeCodexEffort
+    });
+    seedQueue(env.store, ['C1']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('C1').emit('session_id', 'thread-1');
+
+    env.runner.finish('C1', { success: true });
+    await flush();
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(observeCodexEffort).toHaveBeenCalledTimes(2);
+    expect(attempt.observed_effort).toBe('xhigh');
+  });
+
+  test('skips explicit codex effort and swallows observer failures', async () => {
+    const observeCodexEffort = vi.fn(() => {
+      throw new Error('rollout exploded');
+    });
+    const env = setup({
+      config: {
+        C1: { model: 'sol', effort: 'medium' },
+        C2: { model: 'sol', effort: null }
+      },
+      slots: 2,
+      observeCodexEffort
+    });
+    seedQueue(env.store, ['C1', 'C2']);
+    await env.scheduler.tick(WS);
+    env.runner.eventsFor('C1').emit('session_id', 'thread-1');
+    env.runner.eventsFor('C2').emit('session_id', 'thread-2');
+
+    const attempts = Object.values(env.store.snapshot(WS).attempts);
+    expect(observeCodexEffort).toHaveBeenCalledTimes(1);
+    expect(attempts.every((a) => a.observed_effort === null)).toBe(true);
+    expect(attempts.map((a) => a.status)).toEqual(['running', 'running']);
   });
 });
 

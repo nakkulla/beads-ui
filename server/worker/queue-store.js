@@ -58,8 +58,9 @@
  * `--resume`/transcript tracking; null until the runner emits it (spec §2).
  * @property {string|null} model - Model snapshot.
  * @property {string|null} effort - Effort snapshot.
- * @property {string|null} observed_effort - Claude session-file effort observed
- * after launch. Null for legacy attempts and runners without an observer.
+ * @property {string|null} observed_effort - Effort observed after launch from
+ * the runner's own session file (Claude project JSONL / Codex rollout). Null
+ * for legacy attempts and runners without an observer.
  * @property {string|null} speed - Orchestration service tier snapshot.
  * @property {number|null} exit - Process exit code.
  * @property {unknown} verify_result - Worker independent-verification result.

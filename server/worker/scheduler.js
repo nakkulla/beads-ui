@@ -49,6 +49,7 @@ import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { observeBaseDrift } from './base-drift.js';
 import { observeClaudeEffort as defaultObserveClaudeEffort } from './claude-effort-observer.js';
+import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
@@ -406,6 +407,8 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * production reader; tests may inject a deterministic in-memory seam.
  * @property {(input: { cwd: string, session_id: string }) => string|null} [observeClaudeEffort]
  * Fail-quiet Claude session-file effort observer.
+ * @property {(input: { session_id: string, started_at: number|null }) => string|null} [observeCodexEffort]
+ * Fail-quiet Codex rollout-file effort observer.
  * @property {(workspace: string) => void} [notifyQueueChanged]
  * Fired after autonomous queue transitions (dispatch records, admission
  * refusals, session done/fail) so ws subscribers get a fresh snapshot without
@@ -630,6 +633,8 @@ export function createScheduler(deps) {
     deps.delegationMonitor || default_delegation_monitor;
   const observeClaudeEffort =
     deps.observeClaudeEffort || defaultObserveClaudeEffort;
+  const observeCodexEffort =
+    deps.observeCodexEffort || defaultObserveCodexEffort;
   /** @type {Map<string, number>} */
   const receipt_recovery_cursor = new Map();
   let attempt_seq = 0;
@@ -5258,7 +5263,7 @@ export function createScheduler(deps) {
     function backfillObservedEffort(session_id) {
       const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
       if (
-        runner_name !== 'claude' ||
+        (runner_name !== 'claude' && runner_name !== 'codex') ||
         typeof session_id !== 'string' ||
         session_id.length === 0 ||
         attempt?.effort != null ||
@@ -5269,12 +5274,20 @@ export function createScheduler(deps) {
       /** @type {string|null} */
       let observed_effort = null;
       try {
-        observed_effort = observeClaudeEffort({
-          cwd: init_cwd,
-          session_id
-        });
+        observed_effort =
+          runner_name === 'claude'
+            ? observeClaudeEffort({ cwd: init_cwd, session_id })
+            : observeCodexEffort({
+                session_id,
+                started_at: attempt?.started_at ?? null
+              });
       } catch (err) {
-        log('claude effort observation failed for %s: %o', attempt_id, err);
+        log(
+          '%s effort observation failed for %s: %o',
+          runner_name,
+          attempt_id,
+          err
+        );
         return;
       }
       if (
