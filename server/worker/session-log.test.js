@@ -519,6 +519,30 @@ describe('worker/session-log onBeadWrite (UI-eey2 §9.2)', () => {
     expect(onBeadWrite.mock.calls.map((c) => c[1])).toEqual(['UI-1', 'UI-2']);
   });
 
+  test('ignores a bd dep read', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd dep list UI-1 --json' }
+    });
+
+    expect(onBeadWrite).not.toHaveBeenCalled();
+  });
+
+  test('fires on a bd dep remove', () => {
+    const onBeadWrite = vi.fn();
+    const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });
+
+    log.publish(WS, 'a1', {
+      type: 'item.completed',
+      item: { type: 'command_execution', command: 'bd dep remove UI-1 UI-2' }
+    });
+
+    expect(onBeadWrite.mock.calls.map((c) => c[1])).toEqual(['UI-1', 'UI-2']);
+  });
+
   test('ignores bd reads and non-bd commands', () => {
     const onBeadWrite = vi.fn();
     const log = createSessionLog({ emitChanged: () => {}, onBeadWrite });

@@ -75,6 +75,13 @@ export const LAST_ACTIVITY_TEXT_LIMIT = 160;
  */
 const BD_WRITE_SUBCOMMANDS = new Set(['update', 'close', 'dep']);
 
+/**
+ * `bd dep` carries reads as well as writes, so it alone needs a second word:
+ * `bd dep list` is a read and must not expire anything, while `bd dep add`
+ * changes exactly the projection the stepper draws.
+ */
+const BD_DEP_WRITE_VERBS = new Set(['add', 'remove', 'rm', 'delete', 'del']);
+
 /** A bead id token: rig prefix, a dash, then the id (phase children add `.n`). */
 const BEAD_ID_RE = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\.[0-9]+)*$/;
 
@@ -85,7 +92,8 @@ const BEAD_ID_RE = /^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\.[0-9]+)*$/;
  *
  * Every id-shaped argument is returned rather than only the first, because
  * `bd dep add A B` changes the projection of BOTH ends and an extra cache
- * expiry costs one refill.
+ * expiry costs one refill. `bd dep` READS (`list`, `tree`, …) name nothing:
+ * expiring on a read would refill the cache on every dependency inspection.
  *
  * @param {unknown} command
  * @returns {string[]}
@@ -103,8 +111,14 @@ export function beadWriteTargets(command) {
     if (!BD_WRITE_SUBCOMMANDS.has(match[1])) {
       continue;
     }
-    for (const token of String(match[2] || '').split(/\s+/)) {
-      if (token.length === 0 || token.startsWith('-') || token.includes('=')) {
+    const words = String(match[2] || '')
+      .split(/\s+/)
+      .filter((word) => word.length > 0);
+    if (match[1] === 'dep' && !BD_DEP_WRITE_VERBS.has(words[0])) {
+      continue;
+    }
+    for (const token of words) {
+      if (token.startsWith('-') || token.includes('=')) {
         continue;
       }
       if (BEAD_ID_RE.test(token) && !seen.has(token)) {

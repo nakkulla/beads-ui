@@ -418,6 +418,36 @@ describe('monitor session_defaults cache (UI-eey2 §9.4)', () => {
     expect(state.session_defaults_warnings).toEqual(['db locked']);
   });
 
+  test('ships an empty layer again once the entry expires', async () => {
+    kv_answer = async () => ({
+      ok: true,
+      value: { schema: 1, impl_runtime: 'codex' }
+    });
+    const ws = fakeWs();
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+    await vi.advanceTimersByTimeAsync(250);
+    const filled = ws.snapshots();
+    expect(
+      filled[filled.length - 1].payload.workspaces_state[0].session_defaults
+    ).toEqual({ impl_runtime: 'codex' });
+    kv_reads = [];
+    // Hang every later read so the entry cannot silently refresh itself while
+    // the clock advances; the refill stays in flight and the TTL runs out.
+    kv_answer = () => new Promise(() => {});
+
+    // Past the 5-minute success TTL: the stale value must not ride along while
+    // the refill is in flight (spec §9.4 cold/expired ships `{}`).
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    refresh_listener?.(WS_A);
+    await vi.advanceTimersByTimeAsync(250);
+
+    const pushed = ws.snapshots();
+    expect(
+      pushed[pushed.length - 1].payload.workspaces_state[0].session_defaults
+    ).toEqual({});
+    expect(kv_reads).toEqual([WS_A]);
+  });
+
   test('re-reads the repo an invalidation named', async () => {
     const ws = fakeWs();
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));

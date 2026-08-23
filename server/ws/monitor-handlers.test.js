@@ -759,6 +759,96 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
     });
   });
 
+  test('counts a paused and an unhandled failed bead as running', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-paused', added_at: NOW }],
+          attempts: {
+            'att-p': {
+              attempt_id: 'att-p',
+              bead_id: 'A-paused',
+              status: 'paused',
+              session_id: 's-1'
+            },
+            'att-f': {
+              attempt_id: 'att-f',
+              bead_id: 'A-failed',
+              status: 'failed',
+              finished_at: NOW
+            }
+          }
+        })
+      },
+      runnable: { [WS_A]: [candidate('A-failed')] }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 2,
+      pr_wait: 0,
+      queue: 0,
+      runnable: 0
+    });
+  });
+
+  test('counts one bead once when it carries several running attempts', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          attempts: {
+            'att-1': {
+              attempt_id: 'att-1',
+              bead_id: 'A-run',
+              status: 'running',
+              started_at: NOW - 1000
+            },
+            'att-2': {
+              attempt_id: 'att-2',
+              bead_id: 'A-run',
+              status: 'running',
+              started_at: NOW
+            }
+          }
+        })
+      }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 1,
+      pr_wait: 0,
+      queue: 0,
+      runnable: 0
+    });
+  });
+
+  test('leaves a failure the done lane already resolved out of running', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          done: [{ bead_id: 'A-failed', added_at: NOW }],
+          attempts: {
+            'att-f': {
+              attempt_id: 'att-f',
+              bead_id: 'A-failed',
+              status: 'failed',
+              finished_at: NOW - 1000
+            }
+          }
+        })
+      }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 0,
+      pr_wait: 0,
+      queue: 0,
+      runnable: 0
+    });
+  });
+
   test('keeps counting the other lanes when the runnable lookup throws', () => {
     const out = buildMonitorWorkspacesState({
       listWorkspaces: () => [{ path: WS_A }],

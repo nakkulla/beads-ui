@@ -18,6 +18,7 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
+import { activeAttemptStates } from '../../utils/active-attempts.js';
 import {
   formatAttemptOrchestrationChip,
   formatOrchestrationChip,
@@ -103,13 +104,6 @@ const DONE_KIND_LABELS = {
   stopped: '중단',
   failed: '실패'
 };
-
-/**
- * Which live state wins when one bead carries several unfinished attempts.
- *
- * @type {Record<string, number>}
- */
-const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
 
 /**
  * @typedef {MiniItem & {
@@ -261,66 +255,20 @@ export function latestTerminalAttempt(attempts, bead_id) {
  * @returns {Map<string, any>}
  */
 export function activeByBead(attempts, done_at_by_bead) {
-  const values = /** @type {any[]} */ (Object.values(attempts || {}));
-  /** @type {Set<string>} */
-  const resumed_from_ids = new Set();
-  /** @type {Map<string, string>} */
-  const last_attempt_by_bead = new Map();
-  for (const a of values) {
-    if (!a || typeof a.bead_id !== 'string') {
-      continue;
-    }
-    if (typeof a.resumed_from === 'string' && a.resumed_from.length > 0) {
-      resumed_from_ids.add(a.resumed_from);
-    }
-    last_attempt_by_bead.set(a.bead_id, a.attempt_id);
-  }
+  const { winners, resumed_from_ids } = activeAttemptStates(
+    attempts,
+    done_at_by_bead
+  );
 
   /** @type {Map<string, any>} */
   const map = new Map();
-  for (const a of values) {
-    if (!a || typeof a.bead_id !== 'string' || a.bead_id.length === 0) {
-      continue;
-    }
-    /** @type {'running'|'paused'|'failed'|null} */
-    let run_state = null;
-    if (a.status === 'running') {
-      run_state = 'running';
-    } else if (a.status === 'paused' && !resumed_from_ids.has(a.attempt_id)) {
-      run_state = 'paused';
-    } else if (a.status === 'failed' || a.status === 'orphaned') {
-      const done_at = done_at_by_bead.get(a.bead_id);
-      const resolved_by_done =
-        typeof done_at === 'number' &&
-        done_at > 0 &&
-        typeof a.finished_at === 'number' &&
-        done_at >= a.finished_at;
-      if (
-        last_attempt_by_bead.get(a.bead_id) === a.attempt_id &&
-        !resolved_by_done &&
-        typeof a.dismissed_at !== 'number'
-      ) {
-        run_state = 'failed';
-      }
-    }
-    if (!run_state) {
-      continue;
-    }
-    const started_at = typeof a.started_at === 'number' ? a.started_at : null;
-    const prior = map.get(a.bead_id);
-    if (prior) {
-      const prior_rank = RUN_STATE_RANK[prior.run_state];
-      const rank = RUN_STATE_RANK[run_state];
-      if (
-        prior_rank > rank ||
-        (prior_rank === rank && (prior.started_at ?? 0) > (started_at ?? 0))
-      ) {
-        continue;
-      }
-    }
+  for (const [bead_id, state] of winners) {
+    const a = state.attempt;
+    const run_state = state.run_state;
+    const started_at = state.started_at;
     const has_session =
       typeof a.session_id === 'string' && a.session_id.length > 0;
-    map.set(a.bead_id, {
+    map.set(bead_id, {
       attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
       run_state,
       started_at,
@@ -640,7 +588,7 @@ export function buildChains(blocked_by_map, locations, states) {
     );
     const listed = cycle ? component.slice().sort() : order;
     chains.push({
-      key: listed.join(' '),
+      key: listed.join('\u0000'),
       cycle,
       nodes: listed.map((id) => {
         const location = locations.get(id);

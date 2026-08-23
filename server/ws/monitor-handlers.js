@@ -17,6 +17,7 @@
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { activeBeadIds } from '../../app/utils/active-attempts.js';
 import { runBdJsonProjected } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
@@ -205,7 +206,10 @@ const session_defaults_cache = new Map();
  */
 function cachedSessionDefaultsFor(root_dir) {
   const hit = session_defaults_cache.get(path.resolve(root_dir));
-  return hit
+  // An EXPIRED entry is as good as a cold one (spec §9.4): shipping the value it
+  // is about to replace would show execution settings the repo no longer has,
+  // and the empty layer is exactly what an absent kv key means anyway.
+  return hit && hit.expires_at > Date.now()
     ? { values: hit.values, warnings: hit.warnings }
     : { values: {}, warnings: [] };
 }
@@ -641,20 +645,21 @@ export function buildMonitorPipeline(options = {}) {
  * @returns {{ running: number, pr_wait: number, queue: number, runnable: number }}
  */
 function laneCountsFor(root_dir, queue, runnableFor) {
-  /** @type {Set<string>} */
-  const claimed = new Set();
-  let running = 0;
-  const attempts = queue.attempts || {};
-  for (const attempt of Object.values(attempts)) {
-    const row = /** @type {any} */ (attempt);
-    if (!row || row.status !== 'running') {
-      continue;
-    }
-    running += 1;
-    if (typeof row.bead_id === 'string' && row.bead_id.length > 0) {
-      claimed.add(row.bead_id);
+  // The 실행중 레인 is per BEAD and admits leaf paused / unhandled failures, not
+  // just `status === 'running'` — so the count uses the CLIENT'S OWN classifier
+  // (`app/utils/active-attempts.js`) rather than a second predicate that would
+  // drift from the lane it summarizes.
+  /** @type {Map<string, number>} */
+  const done_at_by_bead = new Map();
+  for (const entry of Array.isArray(queue.done) ? queue.done : []) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id === 'string' && typeof entry.added_at === 'number') {
+      done_at_by_bead.set(bead_id, entry.added_at);
     }
   }
+  /** @type {Set<string>} */
+  const claimed = activeBeadIds(queue.attempts || {}, done_at_by_bead);
+  const running = claimed.size;
   let pr_wait = 0;
   for (const entry of Array.isArray(queue.pr_wait) ? queue.pr_wait : []) {
     const bead_id = entry && entry.bead_id;
