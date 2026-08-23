@@ -123,11 +123,20 @@ describe('session key lists', () => {
     expect(IMPL_PRESET_KEYS).not.toContain('quick_fix_impl_model');
   });
 
-  test('drops the kv-only quick_fix key from the eleven preset kv keys', () => {
-    expect(PRESET_KV_KEYS).toHaveLength(11);
-
-    expect(PRESET_KV_KEYS).not.toContain('quick_fix_impl_model');
-    expect(PRESET_KV_KEYS).not.toContain('impl_dispatch');
+  test('names the eleven kv keys a global preset apply replaces', () => {
+    expect(PRESET_KV_KEYS).toEqual([
+      'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]);
   });
 
   test('offers 위임 and 메인 as the two execution modes', () => {
@@ -382,6 +391,34 @@ describe('buildPresetDiff', () => {
       'impl_model',
       'orchestration_model'
     ]);
+  });
+
+  test('compares exactly the fourteen keys a global apply writes', () => {
+    const every_key = Object.fromEntries(
+      [...PRESET_KV_KEYS, ...ORCHESTRATION_KEYS, ...WORKSPACE_KV_KEYS].map(
+        (key) => [key, 'x']
+      )
+    );
+
+    const diff = buildPresetDiff({}, every_key);
+
+    expect(diff.rows.map((row) => row.key)).toEqual([
+      'workflow_mode',
+      'spec_review_model',
+      'spec_review_effort',
+      'plan_review_model',
+      'plan_review_effort',
+      'impl_review_model',
+      'impl_review_effort',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed',
+      'orchestration_model',
+      'orchestration_effort',
+      'orchestration_speed'
+    ]);
+    expect(diff.ignored_keys).toEqual(['quick_fix_impl_model']);
   });
 
   test('returns impl_dispatch as ignored rather than comparing it', () => {

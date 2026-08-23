@@ -36,6 +36,18 @@ const CATALOG = {
   model_index: { opus: 'claude', sol: 'codex' }
 };
 
+/** The claude shape: efforts live on the runner, not on each model. */
+const RUNNER_LEVEL_CATALOG = {
+  runners: {
+    claude: {
+      models: { opus: { id: 'opus' } },
+      efforts: ['low', 'medium', 'high', 'xhigh']
+    },
+    codex: { models: { sol: { id: 'gpt-5.6-sol', efforts: ['medium'] } } }
+  },
+  model_index: { opus: 'claude', sol: 'codex' }
+};
+
 const EXECUTION_DEFAULTS = {
   supported: true,
   schema_version: 1,
@@ -382,9 +394,18 @@ describe('createSettingsDialog session tab', () => {
     });
   });
 
-  test('keeps a runner-level effort the catalog offers for the new runtime', async () => {
+  test('keeps a runner-level effort the model itself does not declare', async () => {
     const { root, dialog, transport } = mount({
-      values: { impl_model: 'opus', impl_effort: 'high' }
+      values: { impl_model: 'opus', impl_effort: 'high' },
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: RUNNER_LEVEL_CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
     });
     dialog.open();
     await settle();
@@ -399,6 +420,31 @@ describe('createSettingsDialog session tab', () => {
     expect(transport).toHaveBeenCalledWith('set-session-defaults', {
       values: { impl_runtime: 'claude' }
     });
+  });
+
+  test('offers the runner efforts for a model that declares none', async () => {
+    const { root, dialog } = mount({
+      values: { impl_runtime: 'claude', impl_model: 'opus' },
+      queue: {
+        revision: 3,
+        slots: 2,
+        runner_catalog: RUNNER_LEVEL_CATALOG,
+        execution_defaults: EXECUTION_DEFAULTS,
+        orchestration_model: null,
+        orchestration_effort: null,
+        orchestration_speed: null
+      }
+    });
+    dialog.open();
+    await settle();
+
+    const options = Array.from(
+      /** @type {HTMLSelectElement} */ (
+        root.querySelector('select[data-key="impl_effort"]')
+      ).options
+    ).map((option) => option.value);
+
+    expect(options).toEqual(['', 'auto', 'low', 'medium', 'high', 'xhigh']);
   });
 
   test('preserves the edit and notifies when the save fails', async () => {
@@ -573,13 +619,15 @@ describe('createSettingsDialog execution tab orchestration', () => {
     filter.dispatchEvent(new Event('change'));
     await settle();
 
-    expect(transport).toHaveBeenCalledWith(
-      'worker-queue-set-orchestration-defaults',
-      {
-        expected_revision: 3,
-        values: { orchestration_model: null, orchestration_effort: null }
-      }
+    const calls = transport.mock.calls.filter(
+      (/** @type {any[]} */ call) =>
+        call[0] === 'worker-queue-set-orchestration-defaults'
     );
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({
+      expected_revision: 3,
+      values: { orchestration_model: null, orchestration_effort: null }
+    });
   });
 
   test('stores nothing when the runtime filter returns to 전체', async () => {
