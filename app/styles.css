@@ -7719,6 +7719,28 @@ button.detail-session__leg:focus-visible {
   font-size: var(--fs-body-sm);
 }
 
+/* 보고서·댓글 본문의 긴 SHA·경로·key=value 토큰은 줄바꿈 지점이 없어 좁은
+   화면에서 패널을 가로로 늘렸다. 토큰 안에서라도 꺾고, 코드 블록·표는 제 안에서
+   가로 스크롤한다. */
+.detail-report__body,
+.detail-comment__body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-report__body pre,
+.detail-comment__body pre {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.detail-report__body table,
+.detail-comment__body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
 .detail-comment__body > :first-child {
   margin-top: 0;
 }

@@ -1050,10 +1050,23 @@ body {
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
 }
 
+/* ID + ✕ 한 줄. 패널 스크롤 컨테이너에 sticky로 붙어 긴 상세에서도 닫기가 항상
+   보인다. 음수 margin으로 패널 padding을 덮어 바 배경이 가장자리까지 닿는다. */
+.detail-overlay__bar {
+  position: sticky;
+  top: calc(-1 * var(--sp-12));
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-8);
+  margin: calc(-1 * var(--sp-12)) calc(-1 * var(--sp-14)) 0;
+  padding: var(--sp-6) var(--sp-8) var(--sp-4) var(--sp-14);
+  background: var(--bg-panel);
+}
+
 .detail-overlay__close {
-  position: absolute;
-  top: var(--sp-6);
-  right: var(--sp-8);
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1679,18 +1692,15 @@ select.detail-kv__v:disabled {
     box-shadow: none;
   }
 
-  /* 손가락 표적: ✕를 44px 박스로 키우고 ID 줄 높이에 맞춘다. 제목 줄은 그만큼
-     오른쪽을 비워 ✎와 ✕가 겹치지 않게 한다. */
+  /* 손가락 표적: ✕를 44px 박스로 키운다. */
   .detail-overlay__close {
-    top: var(--sp-2);
-    right: var(--sp-4);
     min-width: 44px;
     min-height: 44px;
     font-size: var(--fs-title-lg);
   }
 
-  .detail-title-row {
-    padding-right: 44px;
+  .detail-overlay__bar {
+    padding-right: var(--sp-4);
   }
 
   .detail-kv {

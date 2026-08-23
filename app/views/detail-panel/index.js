@@ -1820,22 +1820,24 @@ export function createDetailPanel(mount_element, options) {
       <div class="detail-overlay" role="dialog" aria-modal="true">
         <div class="detail-overlay__backdrop" @click=${() => onClose()}></div>
         <div class="detail-overlay__panel">
-          <button
-            type="button"
-            class="detail-overlay__close"
-            aria-label="닫기"
-            @click=${() => onClose()}
-          >
-            ✕
-          </button>
-          <button
-            type="button"
-            class="detail-overlay__id"
-            title="ID 복사"
-            @click=${onCopyId}
-          >
-            ${id}
-          </button>
+          <div class="detail-overlay__bar">
+            <button
+              type="button"
+              class="detail-overlay__id"
+              title="ID 복사"
+              @click=${onCopyId}
+            >
+              ${id}
+            </button>
+            <button
+              type="button"
+              class="detail-overlay__close"
+              aria-label="닫기"
+              @click=${() => onClose()}
+            >
+              ✕
+            </button>
+          </div>
           ${titleTemplate(title, total_usage)}
           ${summaryHeaderTemplate(effective)}
           ${effectiveSettingsCardTemplate(

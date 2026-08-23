@@ -1196,22 +1196,24 @@ ${G.output}`),Z.join(`
       <div class="detail-overlay" role="dialog" aria-modal="true">
         <div class="detail-overlay__backdrop" @click=${()=>n()}></div>
         <div class="detail-overlay__panel">
-          <button
-            type="button"
-            class="detail-overlay__close"
-            aria-label="닫기"
-            @click=${()=>n()}
-          >
-            ✕
-          </button>
-          <button
-            type="button"
-            class="detail-overlay__id"
-            title="ID 복사"
-            @click=${Te}
-          >
-            ${K}
-          </button>
+          <div class="detail-overlay__bar">
+            <button
+              type="button"
+              class="detail-overlay__id"
+              title="ID 복사"
+              @click=${Te}
+            >
+              ${K}
+            </button>
+            <button
+              type="button"
+              class="detail-overlay__close"
+              aria-label="닫기"
+              @click=${()=>n()}
+            >
+              ✕
+            </button>
+          </div>
           ${v(R,he)}
           ${Nc(Xe)}
           ${Dc({metadata:Xe.metadata,workspace_values:C(),catalog:me(),execution_defaults:fe(),expanded:L,presets:Fe()?.presets||[],preset_id:g,preset_busy:x,skipped_orchestration_keys:A},{onToggle:kt=>{L=kt,ge()},onEdit:(kt,zt)=>{if(kt==="impl_runtime"||kt==="impl_model"||kt==="impl_effort"){Tt(kt,zt??"");return}je(kt,zt??"")},onPresetSelect:kt=>{g=kt,A=[],ge()},onPresetApply:()=>{W()}})}
