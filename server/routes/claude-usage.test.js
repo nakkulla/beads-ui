@@ -6,7 +6,8 @@ import {
   createClaudeUsageHandler,
   invalidateCache,
   listAccounts,
-  normalizeClaudeUsage
+  normalizeClaudeUsage,
+  resolveCswapPath
 } from './claude-usage.js';
 
 /**
@@ -106,7 +107,8 @@ describe('claude usage normalization', () => {
         { key: 'Fable', pct: 46, resetsAt: '2026-08-09T16:00:00Z' }
       ],
       fetchedAt: '2026-08-06T02:16:46Z',
-      ageSeconds: 209
+      ageSeconds: 209,
+      accounts: []
     });
   });
 
@@ -133,7 +135,7 @@ describe('claude usage normalization', () => {
 
     const payload = normalizeClaudeUsage({ accounts: [account] });
 
-    expect(payload).toEqual({ available: false });
+    expect(payload).toEqual({ available: false, accounts: [] });
   });
 });
 
@@ -421,6 +423,30 @@ describe('claude usage cache invalidation', () => {
   });
 });
 
+describe('cswap path resolution', () => {
+  test('skips an executable PATH entry that is not a regular file', () => {
+    const result = resolveCswapPath({
+      path_env: '/dir:/bin',
+      home_dir: '/home/user',
+      access: () => undefined,
+      stat: (candidate) => ({ isFile: () => candidate === '/bin/cswap' })
+    });
+
+    expect(result).toEqual('/bin/cswap');
+  });
+
+  test('returns null when no candidate is an executable file', () => {
+    const result = resolveCswapPath({
+      path_env: '/dir',
+      home_dir: '/home/user',
+      access: () => undefined,
+      stat: () => ({ isFile: () => false })
+    });
+
+    expect(result).toEqual(null);
+  });
+});
+
 describe('claude account listing', () => {
   test('returns normalized keys and the active key', async () => {
     const runCswap = vi.fn().mockResolvedValue({
@@ -441,6 +467,18 @@ describe('claude account listing', () => {
       active_key: 'active@example.com',
       accounts: [{ key: 'active@example.com' }, { key: 'old@example.com' }]
     });
+  });
+
+  test('returns a successful empty list when every row is unusable', async () => {
+    const runCswap = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify({ accounts: [{ number: 'nope' }] }),
+      stderr: ''
+    });
+
+    const result = await listAccounts({ runCswap });
+
+    expect(result).toEqual({ ok: true, accounts: [], active_key: null });
   });
 
   test('returns an error when cswap fails', async () => {

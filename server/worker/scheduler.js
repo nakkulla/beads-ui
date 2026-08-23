@@ -1666,7 +1666,10 @@ export function createScheduler(deps) {
           prepared.detail,
           account_home_dir
         );
-        return prepared;
+        // §4.3 requires the failing path to be visible: the seven launch
+        // reasons are a closed vocabulary, so the operator-actionable detail
+        // rides alongside it rather than widening that vocabulary.
+        return { ...prepared, home_dir: account_home_dir };
       }
       applied.codex_account = accounts.codex;
       applied.env = { CODEX_HOME: prepared.home_dir };
@@ -5287,7 +5290,17 @@ export function createScheduler(deps) {
     });
     const account_settings = await resolveLaunchAccounts(accounts, runner_name);
     if (!account_settings.ok) {
-      await finalizeLaunchRefusal(input, account_settings.reason, false);
+      await finalizeLaunchRefusal(
+        input,
+        account_settings.reason,
+        false,
+        typeof account_settings.detail === 'string'
+          ? {
+              reason: account_settings.detail,
+              command: account_settings.home_dir ?? null
+            }
+          : null
+      );
       return { ok: false, reason: account_settings.reason };
     }
     if (account_settings.claude_account !== null) {
@@ -5516,8 +5529,16 @@ export function createScheduler(deps) {
    * @param {any} input
    * @param {string} cause
    * @param {boolean} dismissed
+   * @param {{ reason: string, command: string|null }|null} [cause_detail] - The
+   * operator-actionable specifics behind a closed-vocabulary `cause`, such as
+   * which account-HOME path failed which mirror check.
    */
-  async function finalizeLaunchRefusal(input, cause, dismissed) {
+  async function finalizeLaunchRefusal(
+    input,
+    cause,
+    dismissed,
+    cause_detail = null
+  ) {
     removeGuardHook(input.workspace, input.attempt_id);
     usage_receipts.removeEmptyUsageReceiptInbox(
       input.workspace,
@@ -5538,6 +5559,7 @@ export function createScheduler(deps) {
         status: 'failed',
         cause,
         finished_at: now(),
+        ...(cause_detail ? { cause_detail } : {}),
         ...(dismissed ? { dismissed_at: now() } : {})
       }
     });
@@ -5545,7 +5567,7 @@ export function createScheduler(deps) {
       bead_id: input.bead_id,
       cause,
       repo: input.repo,
-      cause_detail: null
+      cause_detail
     });
     try {
       await revertWorkflowMode(

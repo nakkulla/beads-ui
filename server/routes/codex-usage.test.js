@@ -169,7 +169,8 @@ describe('codex usage normalization', () => {
         }
       ],
       fetchedAt: new Date(1_786_334_358_000).toISOString(),
-      ageSeconds: 42
+      ageSeconds: 42,
+      accounts: []
     });
   });
 
@@ -194,13 +195,19 @@ describe('codex usage normalization', () => {
   });
 
   test.each([
-    ['unknown schema', { schema_version: 2 }],
-    ['wrong command', { command: 'status' }],
-    ['missing active account', { active_account_key: 'missing' }]
-  ])('returns unavailable for %s', (_name, overrides) => {
+    // A rejected ROOT never parses a list, so it carries no `accounts`; a
+    // parsed list that yields no usable row carries an empty one.
+    ['unknown schema', { schema_version: 2 }, { available: false }],
+    ['wrong command', { command: 'status' }, { available: false }],
+    [
+      'missing active account',
+      { active_account_key: 'missing' },
+      { available: false, accounts: [] }
+    ]
+  ])('returns unavailable for %s', (_name, overrides, expected) => {
     const payload = normalizeCodexUsage(usageSnapshot(overrides));
 
-    expect(payload).toEqual({ available: false });
+    expect(payload).toEqual(expected);
   });
 
   test.each([
@@ -227,7 +234,7 @@ describe('codex usage normalization', () => {
 
     const payload = normalizeCodexUsage(snapshot);
 
-    expect(payload).toEqual({ available: false });
+    expect(payload).toEqual({ available: false, accounts: [] });
   });
 
   test('omits identity, credits and refresh errors from the response', () => {
@@ -252,7 +259,8 @@ describe('codex usage normalization', () => {
         }
       ],
       fetchedAt: new Date(1_786_334_358_000).toISOString(),
-      ageSeconds: 42
+      ageSeconds: 42,
+      accounts: []
     });
   });
 });
@@ -637,6 +645,18 @@ describe('codex account listing', () => {
       active_key: 'account-2',
       accounts: [{ key: 'account-2' }, { key: 'account-1' }]
     });
+  });
+
+  test('returns a successful empty list when every row is unusable', async () => {
+    const runCodexAuth = vi.fn().mockResolvedValue({
+      code: 0,
+      stdout: JSON.stringify(listSnapshot([accountRow({ account_key: 7 })])),
+      stderr: ''
+    });
+
+    const result = await listAccounts({ runCodexAuth });
+
+    expect(result).toEqual({ ok: true, accounts: [], active_key: null });
   });
 
   test('returns an error when codex-auth fails', async () => {

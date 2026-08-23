@@ -284,6 +284,9 @@ export function normalizeCodexUsage(input, now = () => Date.now()) {
   }
 
   const payload = normalizeActiveAccount(root, now);
+  // A parsed list keeps its `accounts` array even when every row dropped: an
+  // empty catalog is a SUCCESSFUL list, and `listAccounts` must not read that
+  // as the tool being unavailable.
   const accounts = normalizeAccounts(
     root.accounts,
     typeof root.active_account_key === 'string'
@@ -291,9 +294,6 @@ export function normalizeCodexUsage(input, now = () => Date.now()) {
       : null,
     now
   );
-  if (accounts.length === 0) {
-    return payload;
-  }
   return { ...payload, accounts };
 }
 

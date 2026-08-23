@@ -3829,6 +3829,31 @@ describe('scheduler launch account pins', () => {
       codex_account: null
     });
   });
+
+  test('records the failing mirror detail and account HOME path', async () => {
+    const deps = accountDeps();
+    deps.prepareCodexAccountHome.mockResolvedValue({
+      ok: false,
+      reason: 'codex_home_prepare_failed',
+      detail: 'auth_json_not_symlink'
+    });
+    const env = setup({
+      config: { B1: { codex_account: 'codex-key' } },
+      slots: 1,
+      ...deps
+    });
+    seedQueue(env.store, ['B1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.store.snapshot(WS).attempts['B1-1000-1']).toMatchObject({
+      cause: 'codex_home_prepare_failed',
+      cause_detail: {
+        reason: 'auth_json_not_symlink',
+        command: '/state/codex-homes/codex-key'
+      }
+    });
+  });
 });
 
 describe('scheduler resume (spec §1)', () => {

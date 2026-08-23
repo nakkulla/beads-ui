@@ -245,11 +245,10 @@ export function normalizeClaudeUsage(input) {
   }
 
   const payload = normalizeActiveAccount(root.accounts);
-  const accounts = normalizeAccounts(root.accounts);
-  if (accounts.length === 0) {
-    return payload;
-  }
-  return { ...payload, accounts };
+  // A parsed list keeps its `accounts` array even when every row dropped: an
+  // empty catalog is a SUCCESSFUL list, and `listAccounts` must not read that
+  // as the tool being unavailable.
+  return { ...payload, accounts: normalizeAccounts(root.accounts) };
 }
 
 /**
@@ -316,32 +315,38 @@ function runProcess(bin) {
 /**
  * Resolve cswap from PATH, then the launchd-safe user-local fallback.
  *
- * @param {{ path_env?: string, home_dir?: string, access?: (path: string, mode?: number) => void }} [options]
+ * An empty PATH element is skipped rather than read as the current directory:
+ * this resolver also feeds the worker launcher, whose cwd is an arbitrary
+ * worktree, so a repo-local file named `cswap` must never win.
+ *
+ * @param {{ path_env?: string, home_dir?: string, access?: (path: string, mode?: number) => void, stat?: (path: string) => { isFile: () => boolean } }} [options]
  * @returns {string|null}
  */
 export function resolveCswapPath(options = {}) {
   const path_env = options.path_env ?? process.env.PATH ?? '';
   const home_dir = options.home_dir ?? os.homedir();
   const access = options.access ?? fs.accessSync;
+  const stat = options.stat ?? fs.statSync;
+  /** @param {string} candidate */
+  const executableFile = (candidate) => {
+    try {
+      access(candidate, fs.constants.X_OK);
+      return stat(candidate).isFile();
+    } catch {
+      return false;
+    }
+  };
   for (const entry of path_env.split(path.delimiter)) {
     if (entry.length === 0) {
       continue;
     }
     const candidate = path.resolve(entry, 'cswap');
-    try {
-      access(candidate, fs.constants.X_OK);
+    if (executableFile(candidate)) {
       return candidate;
-    } catch {
-      // Continue to the next PATH entry.
     }
   }
   const fallback = path.join(home_dir, '.local', 'bin', 'cswap');
-  try {
-    access(fallback, fs.constants.X_OK);
-    return fallback;
-  } catch {
-    return null;
-  }
+  return executableFile(fallback) ? fallback : null;
 }
 
 /**

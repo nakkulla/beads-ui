@@ -1,8 +1,12 @@
+import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { prepareCodexAccountHome } from './codex-account-home.js';
+
+const execFileAsync = promisify(execFile);
 
 /** @type {string[]} */
 const temp_roots = [];
@@ -164,6 +168,20 @@ describe('worker/codex-account-home', () => {
     expect(
       await fs.readFile(path.join(paths.home_dir, 'config.toml'), 'utf8')
     ).toBe('private');
+  });
+
+  test('rejects a mirror entry that is neither a file nor a directory', async () => {
+    const paths = await fixture();
+    await fs.mkdir(paths.home_dir);
+    await execFileAsync('mkfifo', [path.join(paths.home_dir, 'config.toml')]);
+
+    const result = await prepareCodexAccountHome(paths.input);
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'codex_home_prepare_failed',
+      detail: 'mirror_link_mismatch:config.toml'
+    });
   });
 
   test('accepts EEXIST from a concurrent mirror creator', async () => {

@@ -29,6 +29,17 @@ async function linkMatches(link_path, expected_target) {
 }
 
 /**
+ * Whether a non-symlink mirror entry is one codex could have created itself.
+ * Only a real file or directory qualifies; a FIFO, socket, or device node is
+ * not a shape this mirror ever produces, so it stays fail-closed.
+ *
+ * @param {import('node:fs').Stats} entry_stat
+ */
+function isPrivateEntry(entry_stat) {
+  return entry_stat.isFile() || entry_stat.isDirectory();
+}
+
+/**
  * Create a mirror link, accepting a concurrent creator after reinspection.
  *
  * @param {string} link_path
@@ -40,7 +51,13 @@ async function ensureMirrorLink(link_path, expected_target, name) {
   const existing = await lstatOrNull(link_path);
   if (existing) {
     if (!existing.isSymbolicLink()) {
-      return { ok: true };
+      return isPrivateEntry(existing)
+        ? { ok: true }
+        : {
+            ok: false,
+            reason: 'codex_home_prepare_failed',
+            detail: `mirror_link_mismatch:${name}`
+          };
     }
     return (await linkMatches(link_path, expected_target))
       ? { ok: true }
@@ -60,7 +77,7 @@ async function ensureMirrorLink(link_path, expected_target, name) {
     }
     const raced = await lstatOrNull(link_path);
     if (!raced || !raced.isSymbolicLink()) {
-      return raced
+      return raced && isPrivateEntry(raced)
         ? { ok: true }
         : {
             ok: false,
