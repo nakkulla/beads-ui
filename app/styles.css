@@ -493,8 +493,9 @@ a {
   }
 }
 
-/* 다계정 카드: 헤더 미터를 토글 버튼으로 감싸고, 그 아래에 계정 목록 카드를
-   띄운다. 버튼 크롬은 지우고 미터 레이아웃만 남긴다. */
+/* 다계정 카드: accounts[]가 있는 provider 그룹이 각자 토글 버튼이 되고, 그
+   아래에 그 provider의 계정 목록 카드를 띄운다. 버튼 크롬은 지우고 그룹
+   레이아웃만 남긴다(그룹 사이 구분선 padding은 `__group + __group`이 보존). */
 .usage-meter__toggle {
   display: inline-flex;
   align-items: center;
