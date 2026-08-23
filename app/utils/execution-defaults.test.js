@@ -246,6 +246,156 @@ describe('resolveExecutionSettings', () => {
     expect(missing).toEqual(without_route);
   });
 
+  test('labels the unset quick_fix model row with the effective orchestration model', () => {
+    const from_projection = resolveExecutionSettings({
+      execution_defaults: PROJECTION
+    });
+    const from_workspace = resolveExecutionSettings({
+      global: { orchestration_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(from_projection.quick_fix_impl_model).toEqual({
+      value: null,
+      source: 'base',
+      display: '메인 (orchestration opus)',
+      full_value: null,
+      resolution: 'default'
+    });
+    expect(from_workspace.quick_fix_impl_model.display).toBe(
+      '메인 (orchestration 5.6-terra)'
+    );
+  });
+
+  test('compacts a stored quick_fix model token to its catalog id', () => {
+    const rows = resolveExecutionSettings({
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.quick_fix_impl_model).toEqual({
+      value: 'terra',
+      source: 'global',
+      display: '5.6-terra',
+      full_value: 'gpt-5.6-terra',
+      resolution: 'explicit'
+    });
+  });
+
+  test('reports the quick_fix model row as unavailable without a projection', () => {
+    const rows = resolveExecutionSettings({ execution_defaults: null });
+
+    expect(rows.quick_fix_impl_model).toMatchObject({
+      value: null,
+      display: '기본값 확인 불가',
+      resolution: 'unavailable'
+    });
+  });
+
+  test('delegates a quick_fix bead to the runtime the kv model derives', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch).toEqual({
+      value: 'delegated',
+      source: 'global',
+      display: '위임 (전역 quick_fix)',
+      full_value: 'delegated',
+      resolution: 'explicit'
+    });
+    expect(rows.impl_runtime).toMatchObject({
+      value: 'codex',
+      source: 'global',
+      display: 'codex (유도)'
+    });
+    expect(rows.impl_model).toMatchObject({
+      value: 'terra',
+      source: 'global',
+      display: '5.6-terra',
+      full_value: 'gpt-5.6-terra'
+    });
+  });
+
+  test('keeps a pinned main dispatch ahead of the quick_fix kv model', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      pin: { impl_dispatch: 'main' },
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch.display).toBe('메인');
+    expect(rows.impl_model.display).toBe('해당 없음');
+  });
+
+  test('leaves a non-quick_fix route untouched by the kv model', () => {
+    const with_kv = resolveExecutionSettings({
+      route: 'spec_backed',
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+    const without_kv = resolveExecutionSettings({
+      route: 'spec_backed',
+      execution_defaults: PROJECTION
+    });
+
+    for (const key of [
+      'impl_dispatch',
+      'impl_runtime',
+      'impl_model',
+      'impl_effort',
+      'impl_speed'
+    ]) {
+      expect(with_kv[key]).toEqual(without_kv[key]);
+    }
+  });
+
+  test('keeps a pinned implementation model ahead of the quick_fix kv model', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      pin: { impl_model: 'sol' },
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_model).toMatchObject({
+      value: 'sol',
+      source: 'pin',
+      display: '5.6-sol'
+    });
+    expect(rows.impl_runtime.display).toBe('codex (유도)');
+  });
+
+  test('skips the dispatch flip when the pinned runtime contradicts the kv model', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      pin: { impl_runtime: 'claude' },
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.impl_dispatch.display).toBe('메인');
+    expect(rows.impl_runtime.display).toBe('해당 없음');
+  });
+
+  test('marks a quick_fix model no runtime offers as incompatible without flipping', () => {
+    const rows = resolveExecutionSettings({
+      route: 'quick_fix',
+      global: { quick_fix_impl_model: 'nebula' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(rows.quick_fix_impl_model).toMatchObject({
+      value: 'nebula',
+      display: 'nebula (비호환)',
+      resolution: 'incompatible'
+    });
+    expect(rows.impl_dispatch.display).toBe('메인');
+  });
+
   test('surfaces unknown transport effort tokens as incompatible', () => {
     const projection = structuredClone(PROJECTION);
     projection.session.implementation.effort_by_transport[
@@ -357,6 +507,29 @@ describe('buildOptionView', () => {
       label: 'sol (비호환)',
       full_value: 'sol'
     });
+  });
+
+  test('reads the quick_fix kv implication only when given the bead route', () => {
+    const routed = buildOptionView({
+      key: 'impl_dispatch',
+      choices: ['delegated', 'main'],
+      layer: 'pin',
+      global: { quick_fix_impl_model: 'terra' },
+      route: 'quick_fix',
+      execution_defaults: PROJECTION
+    });
+    const unrouted = buildOptionView({
+      key: 'impl_dispatch',
+      choices: ['delegated', 'main'],
+      layer: 'pin',
+      global: { quick_fix_impl_model: 'terra' },
+      execution_defaults: PROJECTION
+    });
+
+    expect(routed.unset_label).toBe(
+      '기본값 사용 — 위임 (전역 quick_fix) (전역)'
+    );
+    expect(unrouted.unset_label).toBe('기본값 사용 — 위임 (harness)');
   });
 
   test('resolves the unset option against the remaining layers only', () => {

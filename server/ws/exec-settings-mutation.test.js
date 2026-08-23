@@ -544,6 +544,25 @@ describe('handleGetSessionDefaults', () => {
     expect(sent[0].payload.warnings).toContain('invalid_value:workflow_mode');
   });
 
+  test('drops an unknown quick_fix_impl_model token and warns', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, quick_fix_impl_model: 'nebula' }
+    });
+
+    await handleGetSessionDefaults(ws, {
+      id: 'g4b',
+      type: 'get-session-defaults',
+      payload: {}
+    });
+
+    expect(sent[0].payload.values).toEqual({});
+    expect(sent[0].payload.warnings).toContain(
+      'invalid_value:quick_fix_impl_model'
+    );
+  });
+
   test('propagates a bd read failure as an error reply', async () => {
     const { ws, sent } = fakeWs();
     kvGetJsonInWorkspace.mockResolvedValue({ ok: false, error: 'db locked' });
@@ -701,6 +720,46 @@ describe('handleSetSessionDefaults', () => {
       impl_effort: 'auto'
     });
   });
+
+  test('stores quick_fix_impl_model as a workspace kv key', async () => {
+    const { ws, sent } = fakeWs();
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, quick_fix_impl_model: 'terra' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleSetSessionDefaults(ws, {
+      id: 's6b',
+      type: 'set-session-defaults',
+      payload: { values: { quick_fix_impl_model: 'terra' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workflow_session_defaults',
+      { schema: 1, quick_fix_impl_model: 'terra' }
+    );
+    expect(sent[0].payload.values).toEqual({ quick_fix_impl_model: 'terra' });
+  });
+
+  test.each(['auto', 'nebula'])(
+    'rejects %s as a quick_fix_impl_model without writing',
+    async (token) => {
+      const { ws, sent } = fakeWs();
+
+      await handleSetSessionDefaults(ws, {
+        id: 's6c',
+        type: 'set-session-defaults',
+        payload: { values: { quick_fix_impl_model: token } }
+      });
+
+      expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+      expect(sent[0].error.code).toBe('bad_request');
+    }
+  );
 
   test('replies with an error when the kv write fails', async () => {
     const { ws, sent } = fakeWs();

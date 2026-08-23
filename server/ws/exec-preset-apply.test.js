@@ -425,6 +425,41 @@ describe('handleApplyImplPresetGlobal (profile replacement path)', () => {
     });
   });
 
+  test('preserves the kv-only quick_fix_impl_model across a workspace apply', async () => {
+    const { ws, sent } = fakeWs();
+    const preset_id = seedPreset(ws, sent, { impl_runtime: 'codex' });
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, quick_fix_impl_model: 'terra' }
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: {
+          schema: 1,
+          quick_fix_impl_model: 'terra',
+          impl_runtime: 'codex'
+        }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+
+    await handleApplyImplPresetGlobal(ws, {
+      id: 'apply-global',
+      type: 'apply-impl-preset-global',
+      payload: {
+        preset_id,
+        expected_revision: 1,
+        expected_queue_revision: 0
+      }
+    });
+
+    expect(kvSetJsonInWorkspace.mock.calls[0][2]).toEqual({
+      schema: 1,
+      quick_fix_impl_model: 'terra',
+      impl_runtime: 'codex'
+    });
+  });
+
   test('clears a review session key the preset does not carry', async () => {
     const { ws, sent } = fakeWs();
     const preset_id = seedPreset(ws, sent, { impl_speed: 'fast' });

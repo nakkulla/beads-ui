@@ -21,7 +21,7 @@ import {
 import {
   BEAD_APPLY_KEYS,
   ORCHESTRATION_KEYS,
-  WORKSPACE_KV_KEYS,
+  PRESET_KV_KEYS,
   implPresetEnums,
   validateImplPresetSettings
 } from '../worker/exec-enums.js';
@@ -447,9 +447,12 @@ export async function handleApplyImplPresetGlobal(ws, req) {
     );
     return;
   }
+  // The preset replaces the kv keys it CAN carry and no others: iterating the
+  // whole kv list would clear `quick_fix_impl_model` on every apply, since no
+  // preset is able to name it.
   /** @type {Record<string, string|null>} */
   const patch = {};
-  for (const key of WORKSPACE_KV_KEYS) {
+  for (const key of PRESET_KV_KEYS) {
     patch[key] = Object.hasOwn(resolved.preset.settings, key)
       ? resolved.preset.settings[key]
       : null;

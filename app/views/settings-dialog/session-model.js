@@ -30,14 +30,17 @@ export const BEAD_APPLY_KEYS = [
 ];
 
 /**
- * The eleven keys `bd kv workflow_session_defaults` may STORE, in dialog
+ * The twelve keys `bd kv workflow_session_defaults` may STORE, in dialog
  * display order. `impl_dispatch` is absent by contract
  * (`write_rule: user_write_only`): a workspace-global dispatch would decide for
  * every later bead, so the session-defaults group offers no such row.
+ * `quick_fix_impl_model` is the one kv-only route-scoped key — it has no
+ * per-bead layer, so no preset and no pin can carry it.
  */
-export const WORKSPACE_KV_KEYS = BEAD_APPLY_KEYS.filter(
-  (key) => key !== 'impl_dispatch'
-);
+export const WORKSPACE_KV_KEYS = [
+  ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
+  'quick_fix_impl_model'
+];
 
 /** The three orchestration keys the workspace queue stores as values. */
 export const ORCHESTRATION_KEYS = [
@@ -197,6 +200,9 @@ export function orchestrationModelOptions(catalog, runtime) {
  * @param {Record<string, string|null|undefined>} draft
  * @param {Record<string, any>|null|undefined} execution_defaults
  * @param {Record<string, any>|null|undefined} runner_catalog
+ * @param {Record<string, string|null|undefined>} [resolution_draft] - Values the
+ * OTHER keys resolve against when the session draft is not the whole workspace
+ * layer; `draft` stays the edited and saved source.
  * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
  */
 export function buildExecutionOptionView(
@@ -204,13 +210,15 @@ export function buildExecutionOptionView(
   choices,
   draft,
   execution_defaults,
-  runner_catalog
+  runner_catalog,
+  resolution_draft
 ) {
   return buildOptionView({
     key,
     choices,
     layer: 'global',
     global: draft,
+    resolution_global: resolution_draft,
     execution_defaults,
     runner_catalog
   });

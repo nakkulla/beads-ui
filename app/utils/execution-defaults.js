@@ -17,6 +17,7 @@ export const EXECUTION_SETTING_KEYS = [
   'impl_model',
   'impl_effort',
   'impl_speed',
+  'quick_fix_impl_model',
   'orchestration_model',
   'orchestration_effort',
   'orchestration_speed'
@@ -202,6 +203,61 @@ function runtimeModelTokens(runtime, session, runner_catalog) {
 }
 
 /**
+ * Every runtime name either the projection or the resolved runner catalog knows.
+ *
+ * @param {Record<string, any>|null} session
+ * @param {Record<string, any>|null} runner_catalog
+ * @returns {string[]}
+ */
+function knownRuntimes(session, runner_catalog) {
+  /** @type {string[]} */
+  const runtimes = [];
+  const projected = session?.implementation?.model_catalog;
+  if (isRecord(projected)) {
+    runtimes.push(...Object.keys(projected));
+  }
+  const runners = runner_catalog?.runners;
+  if (isRecord(runners)) {
+    for (const runtime of Object.keys(runners)) {
+      if (!runtimes.includes(runtime)) {
+        runtimes.push(runtime);
+      }
+    }
+  }
+  return runtimes;
+}
+
+/**
+ * The runtime a bare implementation model token belongs to, derived from the
+ * catalog's globally-unique model names — the same derivation the contract uses
+ * for `quick_fix_impl_model`, which stores no runtime of its own.
+ *
+ * `offered` says whether ANY runtime published a token list at all: with no
+ * list, a token nobody matched is undecidable rather than wrong.
+ *
+ * @param {string|null} token
+ * @param {Record<string, any>|null} session
+ * @param {Record<string, any>|null} runner_catalog
+ * @returns {{ runtime: string|null, offered: boolean }}
+ */
+function deriveModelRuntime(token, session, runner_catalog) {
+  if (token === null) {
+    return { runtime: null, offered: false };
+  }
+  let offered = false;
+  for (const runtime of knownRuntimes(session, runner_catalog)) {
+    const tokens = runtimeModelTokens(runtime, session, runner_catalog);
+    if (tokens.length > 0) {
+      offered = true;
+    }
+    if (tokens.includes(token)) {
+      return { runtime, offered: true };
+    }
+  }
+  return { runtime: null, offered };
+}
+
+/**
  * Mark a stored token the pinned projection does not recognize. The raw value
  * survives verbatim with a `비호환` marker (spec §9.2) — this consumer never
  * falls back to another reviewer, model, or effort, and never rewrites what the
@@ -265,6 +321,15 @@ export function resolveExecutionSettings(input) {
   const runner_catalog = isRecord(input.runner_catalog)
     ? input.runner_catalog
     : null;
+  // The kv-only `quick_fix_impl_model` layer: read from `global` alone, since
+  // the contract gives it no bead-metadata pin. Its runtime is DERIVED from the
+  // token, and that derivation feeds both its own row and the dispatch flip.
+  const quick_fix_model = usableString(global_values.quick_fix_impl_model);
+  const quick_fix_derived = deriveModelRuntime(
+    quick_fix_model,
+    session,
+    runner_catalog
+  );
   /** @type {Record<string, ExecutionValue>} */
   const rows = {};
 
@@ -401,6 +466,51 @@ export function resolveExecutionSettings(input) {
             );
     }
 
+    // A valid `quick_fix_impl_model` delegates a quick_fix bead that pinned no
+    // dispatch of its own, and the token's runtime becomes the delegation
+    // target. A pinned runtime that contradicts it — or an `inherit` pin whose
+    // controller runtime is unknown — leaves every row exactly as it was.
+    const pinned_runtime = usableString(pin.impl_runtime);
+    const effective_pinned_runtime =
+      pinned_runtime === 'inherit'
+        ? usableString(input.controller_runtime)
+        : pinned_runtime;
+    const quick_fix_delegated =
+      route === 'quick_fix' &&
+      usableString(pin.impl_dispatch) === null &&
+      quick_fix_derived.runtime !== null &&
+      (pinned_runtime === null ||
+        effective_pinned_runtime === quick_fix_derived.runtime);
+    if (quick_fix_delegated) {
+      const derived_runtime = /** @type {string} */ (quick_fix_derived.runtime);
+      const derived_model = /** @type {string} */ (quick_fix_model);
+      rows.impl_dispatch = result(
+        'delegated',
+        'global',
+        '위임 (전역 quick_fix)',
+        'delegated',
+        'explicit'
+      );
+      if (pinned_runtime === null) {
+        rows.impl_runtime = result(
+          derived_runtime,
+          'global',
+          `${derived_runtime} (유도)`,
+          derived_runtime,
+          'explicit'
+        );
+      }
+      if (usableString(pin.impl_model) === null) {
+        rows.impl_model = result(
+          derived_model,
+          'global',
+          derived_model,
+          derived_model,
+          'explicit'
+        );
+      }
+    }
+
     if (rows.impl_dispatch.value === 'main') {
       rows.impl_dispatch.display = '메인';
       for (const key of [
@@ -412,7 +522,7 @@ export function resolveExecutionSettings(input) {
         rows[key] = result(null, 'base', '해당 없음', null, 'not_applicable');
       }
     } else {
-      if (rows.impl_dispatch.value === 'delegated') {
+      if (rows.impl_dispatch.value === 'delegated' && !quick_fix_delegated) {
         rows.impl_dispatch.display = '위임';
       }
       if (rows.impl_runtime.value === 'inherit') {
@@ -563,6 +673,44 @@ export function resolveExecutionSettings(input) {
     rows[key] = explicitResult(chosen.value, chosen.source);
   }
 
+  if (session) {
+    // Built last on purpose: its unset label quotes the orchestration model row,
+    // which the loop above has only just resolved against the real workspace
+    // value rather than the projection's fixed fallback.
+    if (quick_fix_model === null) {
+      const orchestration_model = rows.orchestration_model.full_value;
+      rows.quick_fix_impl_model = result(
+        null,
+        'base',
+        orchestration_model === null
+          ? '메인'
+          : `메인 (orchestration ${compactModelId(orchestration_model)})`,
+        null,
+        'default'
+      );
+    } else if (quick_fix_derived.runtime !== null) {
+      const full_value = implementationModelId(
+        quick_fix_model,
+        quick_fix_derived.runtime,
+        session,
+        runner_catalog
+      );
+      rows.quick_fix_impl_model = result(
+        quick_fix_model,
+        'global',
+        compactModelId(full_value),
+        full_value,
+        'explicit'
+      );
+    } else if (quick_fix_derived.offered) {
+      rows.quick_fix_impl_model = incompatibleResult(
+        result(quick_fix_model, 'global', '', null, 'explicit')
+      );
+    } else {
+      rows.quick_fix_impl_model = explicitResult(quick_fix_model, 'global');
+    }
+  }
+
   return rows;
 }
 
@@ -599,6 +747,13 @@ export function unsetOptionLabel(unset, with_source) {
  * list no longer offers is kept as an option — dropping it would render a
  * pinned value as unset.
  *
+ * `route` is the bead's own route where one exists: the per-bead editor has it,
+ * the settings dialog edits the global layer and has none. `resolution_global`
+ * fills the OTHER keys' values when the edited draft is not the whole workspace
+ * layer — the dialog's session draft holds no orchestration value, so a label
+ * derived from one would otherwise read the projection fallback. The edited key
+ * itself is never taken from it.
+ *
  * @param {{
  *   key: string,
  *   choices: ReadonlyArray<string>,
@@ -607,6 +762,8 @@ export function unsetOptionLabel(unset, with_source) {
  *   global?: Record<string, any>|null,
  *   execution_defaults?: Record<string, any>|null,
  *   runner_catalog?: Record<string, any>|null,
+ *   route?: string|null,
+ *   resolution_global?: Record<string, any>|null,
  *   controller_runtime?: string|null
  * }} input
  * @returns {{ unset_label: string, full_value: string|null, unavailable: boolean, disabled: boolean, options: Array<{ value: string, label: string, full_value: string|null }> }}
@@ -614,15 +771,23 @@ export function unsetOptionLabel(unset, with_source) {
 export function buildOptionView(input) {
   const pin = isRecord(input.pin) ? input.pin : {};
   const global_values = isRecord(input.global) ? input.global : {};
+  /** @type {Record<string, any>} */
+  const resolution_extra = isRecord(input.resolution_global)
+    ? { ...input.resolution_global }
+    : {};
+  delete resolution_extra[input.key];
   /** @param {Record<string, any>} layer_values */
-  const resolveWith = (layer_values) =>
-    resolveExecutionSettings({
-      pin: input.layer === 'pin' ? layer_values : pin,
-      global: input.layer === 'pin' ? global_values : layer_values,
+  const resolveWith = (layer_values) => {
+    const own = { ...resolution_extra, ...layer_values };
+    return resolveExecutionSettings({
+      pin: input.layer === 'pin' ? own : pin,
+      global: input.layer === 'pin' ? global_values : own,
       execution_defaults: input.execution_defaults,
       runner_catalog: input.runner_catalog,
+      route: input.route,
       controller_runtime: input.controller_runtime
     });
+  };
 
   const own_values = input.layer === 'pin' ? pin : global_values;
   const unset_values = { ...own_values };

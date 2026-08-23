@@ -282,6 +282,10 @@ export function effectiveSettingsCardTemplate(model, handlers) {
                     global: model.workspace_values,
                     execution_defaults: model.execution_defaults,
                     runner_catalog: model.catalog,
+                    route:
+                      typeof model.metadata?.route === 'string'
+                        ? model.metadata.route
+                        : null,
                     controller_runtime: model.controller_runtime || null
                   });
                   return rowTemplate(row, {

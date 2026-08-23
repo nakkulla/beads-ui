@@ -127,7 +127,7 @@ export const BEAD_APPLY_KEYS = [
 ];
 
 /**
- * The 11 keys that may be STORED workspace-wide through
+ * The 12 keys that may be STORED workspace-wide through
  * `bd kv workflow_session_defaults` (dotfiles `workflow.yaml
  * workspace_kv_defaults.allowed_keys`).
  *
@@ -136,11 +136,16 @@ export const BEAD_APPLY_KEYS = [
  * what `write_rule: user_write_only` forbids. A value left in an older kv
  * object therefore drops per key with a warning, never failing the layer.
  *
+ * The list is NOT a subset of the per-bead list: it carries one kv-only
+ * route-scoped key, `quick_fix_impl_model`, which has no bead-metadata layer at
+ * all (dotfiles `workflow-state.yaml route_scoped`).
+ *
  * @type {ReadonlyArray<string>}
  */
-export const WORKSPACE_KV_KEYS = BEAD_APPLY_KEYS.filter(
-  (key) => key !== 'impl_dispatch'
-);
+export const WORKSPACE_KV_KEYS = [
+  ...BEAD_APPLY_KEYS.filter((key) => key !== 'impl_dispatch'),
+  'quick_fix_impl_model'
+];
 
 /**
  * The three orchestration keys stored directly as workspace queue values.
@@ -162,9 +167,25 @@ export const ORCHESTRATION_KEYS = [
 export const IMPL_PRESET_KEYS = [...BEAD_APPLY_KEYS, ...ORCHESTRATION_KEYS];
 
 /**
+ * The 11 kv keys a full-profile preset actually CARRIES — the workspace kv list
+ * minus the keys no preset can supply. Preset application replaces exactly this
+ * list, so the kv-only `quick_fix_impl_model` survives an apply instead of being
+ * cleared by a profile that was never able to name it.
+ *
+ * @type {ReadonlyArray<string>}
+ */
+export const PRESET_KV_KEYS = WORKSPACE_KV_KEYS.filter((key) =>
+  IMPL_PRESET_KEYS.includes(key)
+);
+
+/**
  * Allowed values per per-bead session key. `impl_model`/`impl_effort` add the
  * `auto` literal to their catalog vocabulary; every other key reuses the
  * existing metadata enum so the kv layer cannot diverge from the pin layer.
+ *
+ * `quick_fix_impl_model` is kv-only and takes the bare catalog tokens: the
+ * contract forbids `auto` there because the runtime is DERIVED from the token's
+ * catalog uniqueness.
  *
  * @param {ResolvedCatalog} [catalog]
  * @returns {Record<string, ReadonlyArray<string>>}
@@ -183,7 +204,8 @@ export function sessionDefaultEnums(catalog = runtimeCatalog()) {
     impl_runtime: IMPL_RUNTIMES,
     impl_model: [AUTO_LITERAL, ...base.impl_model],
     impl_effort: [AUTO_LITERAL, ...base.impl_effort],
-    impl_speed: IMPL_SPEEDS
+    impl_speed: IMPL_SPEEDS,
+    quick_fix_impl_model: base.impl_model
   };
 }
 
