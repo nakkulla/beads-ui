@@ -159,6 +159,32 @@ describe('parallel-analysis target qualification (UI-04vo seam F)', () => {
     expect(reasons['UI-child']).toBe('phase_child');
   });
 
+  test('prefers native spec_id over legacy metadata and flags conflicts', () => {
+    const result = qualifyTargets([
+      issueOf({
+        id: 'UI-native',
+        spec_id: 'docs/native.md',
+        metadata: { route: 'spec_backed', spec_review: RECEIPT }
+      }),
+      issueOf({
+        id: 'UI-both',
+        spec_id: 'docs/native.md',
+        metadata: {
+          route: 'spec_backed',
+          spec_id: 'docs/legacy.md',
+          spec_review: RECEIPT
+        }
+      })
+    ]);
+
+    const by_id = Object.fromEntries(result.targets.map((t) => [t.id, t]));
+    expect(by_id['UI-native'].spec_id).toBe('docs/native.md');
+    const reasons = Object.fromEntries(
+      result.excluded.map((e) => [e.id, e.reason])
+    );
+    expect(reasons['UI-both']).toBe('spec_conflict');
+  });
+
   test('bundles a plan only from the safe docs markdown allowlist', () => {
     const result = qualifyTargets([
       issueOf({

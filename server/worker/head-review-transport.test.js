@@ -409,6 +409,15 @@ describe('worker/head-review-transport — review runs', () => {
     expect(calls.spawn[0].bead.prompt).toContain('docs/spec.md');
   });
 
+  test('reads a native-only spec_id into the review prompt', async () => {
+    const { t, calls, issue } = transport();
+    issue.spec_id = 'docs/native-spec.md';
+
+    await t.runReview(reviewPacket());
+
+    expect(calls.spawn[0].bead.prompt).toContain('docs/native-spec.md');
+  });
+
   test('maps a claude-family reviewer onto the claude runner', async () => {
     const { t, calls } = transport();
 

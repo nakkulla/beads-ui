@@ -25,6 +25,7 @@
  */
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { resolveSpecId } from '../spec-id.js';
 import { REVIEW_EFFORTS, REVIEW_STEP_MODELS } from './exec-enums.js';
 import {
   DEFAULT_REVIEWER,
@@ -232,9 +233,10 @@ export function createHeadReviewTransport(deps) {
   /**
    * Read Bead metadata, distinguishing ABSENCE from an unreadable record —
    * only the caller knows which of the two may fall through to a default.
+   * The raw issue rides along for native top-level fields (`spec_id`).
    *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, metadata: Record<string, any> }>}
+   * @returns {Promise<{ ok: boolean, issue: unknown, metadata: Record<string, any> }>}
    */
   async function metadataOf(bead_id) {
     try {
@@ -242,11 +244,12 @@ export function createHeadReviewTransport(deps) {
       const md = issue && typeof issue === 'object' ? issue.metadata : null;
       return {
         ok: true,
+        issue,
         metadata: md && typeof md === 'object' && !Array.isArray(md) ? md : {}
       };
     } catch (err) {
       log('head-review metadata read failed for %s: %o', bead_id, err);
-      return { ok: false, metadata: {} };
+      return { ok: false, issue: null, metadata: {} };
     }
   }
 
@@ -660,10 +663,10 @@ export function createHeadReviewTransport(deps) {
   async function runReview(packet) {
     const receipt = await readReceipt(String(packet.bead_id));
     const spec_read = await metadataOf(String(packet.bead_id));
-    const spec_id =
-      typeof spec_read.metadata.spec_id === 'string'
-        ? spec_read.metadata.spec_id
-        : null;
+    // Native-first spec authority (resolveSpecId): top-level issue.spec_id
+    // wins; metadata.spec_id is historical dual-read compatibility only.
+    const spec_path = resolveSpecId(spec_read.issue).path;
+    const spec_id = spec_path.length > 0 ? spec_path : null;
     const prompt = [
       `Bead ${packet.bead_id} 수동 머지 continuation implementation review.`,
       '',

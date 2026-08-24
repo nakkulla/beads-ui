@@ -10,6 +10,7 @@
  * must not invalidate an analysis of unchanged artifacts.
  */
 import crypto from 'node:crypto';
+import { resolveSpecId } from '../spec-id.js';
 import { parseArtifactScope } from './artifact-scope.js';
 
 /**
@@ -200,6 +201,7 @@ export function qualifyTargets(issues) {
       ? issue.labels.filter((l) => typeof l === 'string')
       : [];
     const deps = Array.isArray(issue.dependencies) ? issue.dependencies : [];
+    const spec = resolveSpecId(issue);
     const reason = (() => {
       if (issue.status !== 'open') {
         return 'closed';
@@ -213,15 +215,12 @@ export function qualifyTargets(issues) {
       if (md.route !== 'spec_backed' && md.route !== 'full_plan') {
         return 'route';
       }
-      // Native-first spec authority: the metadata key is the analyzable input;
-      // a legacy-only or conflicting spec reference is not analysis authority.
-      const native = typeof md.spec_id === 'string' ? md.spec_id.trim() : '';
-      const legacy =
-        typeof issue.spec_id === 'string' ? issue.spec_id.trim() : '';
-      if (native.length === 0 && legacy.length === 0) {
+      // Native-first spec authority (resolveSpecId): top-level issue.spec_id
+      // wins; metadata.spec_id is historical dual-read compatibility only.
+      if (spec.path.length === 0) {
         return 'spec_missing';
       }
-      if (native.length > 0 && legacy.length > 0 && native !== legacy) {
+      if (spec.conflict) {
         return 'spec_conflict';
       }
       if (
@@ -244,10 +243,7 @@ export function qualifyTargets(issues) {
       });
       continue;
     }
-    const spec_id =
-      typeof md.spec_id === 'string' && md.spec_id.trim().length > 0
-        ? md.spec_id.trim()
-        : String(issue.spec_id).trim();
+    const spec_id = spec.path;
     targets.push({
       id: issue.id,
       title: typeof issue.title === 'string' ? issue.title : null,
