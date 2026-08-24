@@ -17,7 +17,11 @@ scope:
   대체한다(§2.5).
 - 사용자 결정(2026-08-24): ① 기존 leg 구조 재사용, ② `role='subagent'` +
   `agent_type` 원문, ③ 토큰은 종료 영수증으로만 표시(라이브 하한값 없음), ④ 표시
-  화면은 Codex 위임과 같은 두 곳(세션 이력 행, 모니터 타일 leg 칩)만.
+  화면은 Codex 위임과 같은 두 곳(세션 이력 행, 모니터 타일 leg 칩)만, ⑤ 설계
+  B 승인: 세션 이력 행 클릭으로 서브에이전트 transcript를 기존 drawer에서 열고,
+  부모 transcript에서는 서브에이전트 줄을 `Agent` 호출 아래로 접어 구분한다
+  (§6.3–6.4). ④의 "두 곳"은 서브에이전트 **행**이 놓이는 화면을 말하며, ⑤의
+  transcript 표시는 새 화면이 아니라 기존 drawer 안의 표현이다.
 
 ## 1. 문제
 
@@ -86,36 +90,51 @@ row를 만들지 않는다"는 Codex 위임 producer 계약을 정하던 범위 
 
 ### 5.1 `liftDelegation(raw)` — `server/worker/runner/claude.js`
 
-`liftUsage`와 나란히 두는 순수 함수. 라이브 경로(`scheduler`의 runner 이벤트
-구독)와 복구 경로(`session-monitor.handleLine`, `usage-replay`)가 **같은 함수**를
-호출한다. 반환은 다음 셋 중 하나 또는 `null`.
+`liftUsage`와 나란히 두는 **무상태** 순수 함수: 현재 줄 하나에서 읽을 수 있는
+사실만 돌려주고, 과거 줄에 의존하는 판단은 하지 않는다. 라이브 경로
+(`scheduler`의 runner 이벤트 구독)와 복구 경로(`session-monitor.handleLine`,
+`usage-replay`)가 **같은 함수**를 호출한다. 반환은 다음 셋 중 하나 또는 `null`.
 
 | 신호 | 원천 | 반환 |
 | --- | --- | --- |
 | 시작 | `parent_tool_use_id` 없는 `assistant` 메시지의 `tool_use{name:'Agent'}` | `{ kind:'start', launch_id: tool_use.id, agent_type: input.subagent_type ?? null, model_alias: input.model ?? null, at }` |
 | 진행 | `parent_tool_use_id`가 있는 `assistant`/`user`/`tool_progress` | `{ kind:'progress', launch_id: parent_tool_use_id, model: assistant.message.model ?? null, at }` |
-| 종료 | `parent_tool_use_id` 없는 `user`의 `tool_result{tool_use_id}` (시작이 관측된 id) | `{ kind:'end', launch_id, status: 'done'\|'failed', at, receipt: UsageLeg\|null }` |
+| 종료 | `parent_tool_use_id` 없는 `user`의 `tool_result{tool_use_id}` 블록과 같은 줄의 최상위 `tool_use_result` | `{ kind:'end', launch_id: tool_use_id, is_error, result_status: tool_use_result.status ?? null, agent_id: tool_use_result.agentId ?? null, agent_type: tool_use_result.agentType ?? null, model: tool_use_result.resolvedModel ?? null, usage: 4필드 정수일 때 {4필드} 아니면 null, total_tokens, at }` |
 
-- `at`은 이벤트 `timestamp`(ISO)가 있으면 그것, 없으면 수신 시각.
-- `status`: `tool_result.is_error===true` 또는 `tool_use_result.status`가
-  `'completed'`가 아니면 `failed`, 그 외 `done`.
-- `receipt`: `tool_use_result.usage`의 4필드가 모두 정수일 때만
-  `{ receipt_id: launch_id, provider:'claude', role:'subagent', agent_type,
-  model: resolvedModel ?? progress에서 본 model ?? model_alias, session_id:
-  agentId, turn_id: launch_id, effort: null, usage:{4필드,
-  reasoning_output_tokens:0}, completed_at: at }`. 결손이면 `null`(세션만 종료).
-  `totalTokens`가 4필드 합과 다르면 redacted 경고 로그만 남기고 값은 그대로 쓴다.
-- 시작을 못 본 `parent_tool_use_id`(재생 경계 이전 시작)는 진행 이벤트에서 세션을
-  `running`으로 지연 생성한다(`agent_type` 없음, `started_at`은 첫 관측 시각).
+- `at`은 이벤트 최상위 `timestamp`(ISO)가 있으면 그 epoch ms, 없으면 `null`.
+  수신 시각은 쓰지 않는다 — 라이브와 재생이 같은 줄에서 같은 값을 내야 한다.
+- `Agent`가 아닌 `tool_result`(시작을 본 적 없는 id 포함)는 파서가 구분하지
+  못하므로 `end` 후보로 그대로 반환하고, 채택 여부는 §5.2가 정한다.
 
 ### 5.2 in-memory 세션 저장소 — `server/worker/delegation-store.js`
 
-`usage-store.js`와 같은 형태: `(workspace, attempt_id) → Map<launch_id,
-DelegationSession>`. `apply(workspace, attempt_id, lifted)`가 §5.1 결과를 세션에
-반영하고, `end`의 `receipt`는 `usage_legs` 후보 목록에 쌓는다.
-`get(workspace, attempt_id)`는 `{ sessions: DelegationSession[], legs: UsageLeg[] }`.
-`markReplayed`/`clear`는 `usage-store`와 동일 규칙. prompt·result 본문·cwd는
-저장하지 않는다.
+`usage-store.js`와 같은 형태: `(workspace, attempt_id) → { sessions:
+Map<launch_id, DelegationSession>, legs: UsageLeg[] }`. **누적 상태 결합과 영수증
+생성은 전부 여기가 소유한다.** `apply(workspace, attempt_id, lifted)`:
+
+- `start`: 세션 생성 `{ launch_id, provider:'claude', role:'subagent', agent_type,
+  model: model_alias, effort: null, session_id: launch_id, turn_id: launch_id,
+  status:'running', started_at: at, completed_at: null, last_event_at: at }`.
+  `at`이 `null`이면 `started_at`·`last_event_at`도 `null`.
+- `progress`: 세션이 없으면(재생 경계 이전 시작) 위와 같은 꼴로 `agent_type:null,
+  model:null`인 running 세션을 지연 생성한다. `model`이 오면 확정하고
+  `last_event_at`은 `at`이 `null`이 아닐 때만 갱신한다.
+- `end`: 해당 `launch_id` 세션이 없으면 무시(`Agent`가 아닌 tool_result). 있으면
+  `status`는 `is_error===true` 또는 `result_status`가 `null`이 아니면서
+  `'completed'`가 아닐 때 `failed`, 그 외 `done`; `completed_at`·`last_event_at`은
+  `at`; `agent_type`·`model`은 `end` 값이 있으면 그것으로 확정. `usage`가 있으면
+  leg를 추가한다: `{ receipt_id: launch_id, provider:'claude', role:'subagent',
+  agent_type, agent_id, model, session_id: launch_id, turn_id: launch_id, effort:
+  null, usage:{4필드, reasoning_output_tokens:0}, completed_at: at }`. `usage`가
+  없으면 leg 없이 세션만 닫는다. `total_tokens`가 4필드 합과 다르면 값은 그대로
+  쓰고 redacted 경고 로그만 남긴다.
+- `session_id`는 시작부터 종료까지 `launch_id`로 고정한다 — running 중에는
+  `agentId`가 없고, `attemptLegs`의 세션↔영수증 매칭 키가 `session_id+turn_id`이기
+  때문이다. `agentId`는 leg의 선택 필드 `agent_id`로만 보존한다.
+
+`get(workspace, attempt_id)`는 `{ sessions, legs }`; `clear`는 `usage-store`와 동일.
+재생 여부 표식은 두지 않는다(세션·leg 값이 라이브와 동일하므로 partial 개념이
+없다). prompt·result 본문·cwd는 저장하지 않는다.
 
 ### 5.3 스키마 확장 — `server/worker/queue-store.js`
 
@@ -125,13 +144,17 @@ DelegationSession>`. `apply(workspace, attempt_id, lifted)`가 §5.1 결과를 �
 // UsageLeg
 provider: 'codex' | 'claude'
 role: 'implementation' | 'review-consult' | 'subagent'
-agent_type?: string            // provider==='claude'일 때만
-// DelegationSession: 같은 provider/role/agent_type 확장
+agent_type?: string|null       // provider==='claude'일 때만
+agent_id?: string|null         // provider==='claude'일 때만 (tool_use_result.agentId)
+// DelegationSession: provider/role/agent_type 같은 확장.
+//   provider==='claude'이면 started_at·last_event_at·completed_at은 number|null
+//   (timestamp 없는 줄에서 시작한 세션), session_id/turn_id는 launch_id와 같다.
 ```
 
 검증 규칙: `provider:'claude'`는 `role:'subagent'`만, `provider:'codex'`는 기존 두
-role만 허용하고 `agent_type`은 claude leg에서만 선택 필드다. 그 외 조합은 기존과
-같이 normalize 단계에서 버린다. `isUsageLeg`/`normalizeUsageLegs`/
+role만 허용하고 `agent_type`·`agent_id`는 claude 항목에서만 선택 필드다. Codex
+세션의 시간 필드 필수 규칙은 그대로다. 그 외 조합은 기존과 같이 normalize 단계에서
+버린다. UI의 경과·최근 활동 표시는 `null` 시간을 빈 셀로 둔다. `isUsageLeg`/`normalizeUsageLegs`/
 `normalizeDelegationSessions`/`finalizeDelegationSessions`가 이 규칙을 공유하며,
 `receipt_id`/`launch_id` 중복 제거·"첫 기록 우선"·터미널 시 `running→interrupted`
 규칙은 그대로 적용된다.
@@ -168,7 +191,8 @@ role만 허용하고 `agent_type`은 claude leg에서만 선택 필드다. 그 �
 
 기존 중첩 leg 행 렌더러가 `provider:'claude'` 항목을 받는다. 라벨
 `Claude · <agent_type> · <model short>`; `agent_type` 결손이면 그 조각 생략.
-상태 아이콘(running/done/failed/interrupted)·short ID(`session_id` 앞 8자)·
+상태 아이콘(running/done/failed/interrupted)·short ID(leg `agent_id`가 있으면 그 앞
+8자, 없으면 `launch_id` 뒤 8자)·
 경과·최근 활동은 Codex 행과 같은 열. 토큰은 `usage_legs`에 영수증이 있을 때만
 subtotal+breakdown(Claude 공식)을 표시하고, 없으면 셀을 비운다(`0` 금지). 이슈
 헤딩의 Claude 합계에 leg가 더해진다. 행 클릭은 기존 `onOpenDelegation(attempt_id,
@@ -212,19 +236,24 @@ launch_id`인 줄과 종료 `tool_result` 줄만** 스냅샷으로 돌려준다(
 - 부모 종료 시 `running` 세션: 기존 `finalizeDelegationSessions`로 `interrupted`.
 - 구형 durable 기록(`agent_type` 없음, `provider:'codex'`만): 그대로 렌더.
 - `parent_tool_use_id`가 `null`인 기존 fixture·스트림: 동작 불변.
-- 재시작 재생: 세션 로그가 유일한 SoT이므로 `usage` 재생과 같은 partial 표기 규칙
-  (`replayed`)을 세션에도 적용.
+- 재시작 재생: 세션 로그가 유일한 SoT이고 시간 값은 줄의 `timestamp`에서만 오므로
+  라이브와 재생 결과가 바이트 단위로 같다. 별도 partial 표기는 없다.
 
 ## 8. Test scope
 
-- Seam A — `runner/claude.js liftDelegation`: 새 fixture
-  `server/worker/__fixtures__/claude-subagent.jsonl`(Agent tool_use → `parent_tool_use_id`
-  자식 assistant/user/tool_progress → tool_result + tool_use_result). 케이스: 시작,
-  진행(model 확정), 정상 종료+영수증, `is_error` 종료, `tool_use_result` 결손,
-  시작 없는 진행(지연 생성).
+- Seam A — `runner/claude.js liftDelegation`(파싱만): 새 fixture
+  `server/worker/__fixtures__/claude-subagent.jsonl`(Agent tool_use →
+  `parent_tool_use_id` 자식 assistant/user/tool_progress → tool_result +
+  tool_use_result). 케이스: 시작 줄, 진행 줄(model 포함/미포함), 종료 줄(usage
+  있음·없음·`is_error`), `timestamp` 없는 줄 → `at:null`, 기존 fixture(`null`
+  parent)에서 전부 `null`.
+- Seam A′ — `delegation-store.apply`(상태·영수증): 시작→진행→종료 순서로 세션
+  상태 전이와 leg 생성, 시작 없는 진행의 지연 생성, 세션 없는 `end` 무시,
+  `result_status`/`is_error`별 status, `total_tokens` 불일치 경고, `at:null` 시간
+  규칙.
 - Seam B — `usage-replay`/`session-monitor`: 같은 fixture 재생 결과가 라이브 경로와
-  동일한 `delegation_sessions`/`usage_legs`; codex runner에서는 no-op; 부모 종료 시
-  `running→interrupted`.
+  **동일한 바이트**의 `delegation_sessions`/`usage_legs`; codex runner에서는 no-op;
+  부모 종료 시 `running→interrupted`.
 - Seam C — `queue-store` normalize: claude leg/session 수용, `agent_type` 없는 codex
   항목 불변, `provider:'claude'+role:'implementation'` 등 잘못된 조합 거부, 중복
   `receipt_id` 첫 기록 우선.
@@ -235,13 +264,23 @@ launch_id`인 줄과 종료 `tool_result` 줄만** 스냅샷으로 돌려준다(
   폴백, `launch_id` live append 재발행.
 - 회귀: 기존 Codex fixture 5종·`claude-success`/`claude-tools` 테스트 전부 통과.
 
-## 9. 구현 후 검증
+## 9. 검증
+
+**머지 전(PR 전 필수, 구현 세션 소유)**
 
 - `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`, `npm run build`.
-- 실제 Claude attempt(서브에이전트 1개 이상 호출)를 Worker로 실행해: 세션 이력에
-  서브에이전트 행이 running→done으로 바뀌고 토큰이 종료 후 채워지는지, 모니터
-  타일 `⟳` 칩, 행 클릭 transcript, 부모 transcript 접힘을 스크린샷으로 확인.
-- 서버 재시작 후 같은 attempt의 행·토큰이 유지되는지 확인.
+- 구현 워크트리에서 `BDUI_FRONTEND_MODE=live bdui start --host 127.0.0.1 --port
+  3001`로 ad-hoc 서버를 띄우고, 실제 Claude attempt(서브에이전트 1개 이상 호출)를
+  Worker로 실행해: 세션 이력에 서브에이전트 행이 running→done으로 바뀌고 토큰이
+  종료 후 채워지는지, 모니터 타일 `⟳` 칩, 행 클릭 transcript, 부모 transcript
+  접힘을 스크린샷으로 확인하고 PR 본문에 첨부한다.
+- 같은 ad-hoc 서버를 재시작해 행·토큰이 유지되는지 확인한다.
+
+**머지 후(선언된 `[deploy]`가 수송)**
+
+- `repo-ops/config.toml [deploy]`(`repo-ops/script/deploy`)가 공유 서비스 빌드·
+  재시작·소스 SHA·HTTP 응답 확인을 수행한다. 이 스펙은 그 밖의 머지 후 수동 작업을
+  요구하지 않는다.
 
 ## 10. 구현 unit 후보
 
