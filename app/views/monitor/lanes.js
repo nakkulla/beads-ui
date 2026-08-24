@@ -20,6 +20,7 @@
  */
 import {
   activeAttemptStates,
+  headReviewAttemptStates,
   isImplementationAttempt
 } from '../../utils/active-attempts.js';
 import {
@@ -119,6 +120,7 @@ const DONE_KIND_LABELS = {
  *   workspace_name: string,
  *   expected_revision: number,
  *   kind?: 'session',
+ *   non_occupying?: boolean,
  *   attempt_id?: string|null,
  *   run_state?: 'running'|'paused'|'failed',
  *   can_pause?: boolean,
@@ -1280,6 +1282,57 @@ export function buildLanes(workspaces, workspaces_state, options) {
               ? ['⚠ 실패']
               : [],
         alert: live.run_state === 'failed'
+      });
+    }
+
+    // 돌고 있는 head review·repair 세션 (UI-hk74 §7). **비점유** 타일이다:
+    // `claimed`에 넣지 않으므로 그 bead는 PR 대기 레인의 점유자로 그대로 남고,
+    // 여기에는 지금 실제로 돌고 있는 리뷰/수리 세션이 함께 보일 뿐이다. 점유
+    // 계산(`activeByBead`)은 구현 attempt만 본다 — 그대로 둔다.
+    for (const [bead_id, review] of headReviewAttemptStates(attempts)) {
+      if (running.some((item) => item.id === bead_id)) {
+        continue;
+      }
+      const a = review.attempt;
+      const label = review.kind === 'head_review' ? '리뷰' : '수리';
+      running.push({
+        ...base(bead_id),
+        lane: 'running',
+        kind: 'session',
+        attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
+        run_state: /** @type {const} */ ('running'),
+        status: 'running',
+        non_occupying: true,
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
+        // 리뷰 세션은 사람이 재개·일시정지할 대상이 아니다: 저널이 그 lifecycle의
+        // 주인이고, 여기서 손대면 CAS가 늦은 결과로 만들 수 있다.
+        can_pause: false,
+        can_resume: false,
+        started_at: review.started_at,
+        last_event_at:
+          typeof a.last_event_at === 'number' ? a.last_event_at : null,
+        last_activity:
+          a.last_activity && typeof a.last_activity === 'object'
+            ? a.last_activity
+            : null,
+        legs: Array.isArray(a.legs) ? a.legs : [],
+        runner: typeof a.runner === 'string' ? a.runner : null,
+        model: typeof a.model === 'string' ? a.model : null,
+        effort: typeof a.effort === 'string' ? a.effort : null,
+        speed: typeof a.speed === 'string' ? a.speed : null,
+        resumed_from: null,
+        continuation_mode: null,
+        usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
+        exec_chips: {
+          orchestration: formatAttemptOrchestrationChip(a),
+          worker: null
+        },
+        // 이 bead는 머지 큐 안에 있다 — 폐기는 [취소] 뒤에야 열린다.
+        discard: discardProjection(discard_operations, bead_id, {
+          merge_queued: true
+        }),
+        badges: [review.origin === 'auto' ? `${label} · 자동` : label],
+        alert: false
       });
     }
 

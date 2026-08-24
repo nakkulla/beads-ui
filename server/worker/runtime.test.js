@@ -152,6 +152,45 @@ describe('worker/runtime session-log attempt paths (UI-hk74 §7)', () => {
     expect(lines).toEqual([]);
   });
 
+  test('refuses a symlink inside the state dir that points outside it', () => {
+    const rt = createWorkerRuntime();
+    const outside = path.join(tmp_state, 'secret.log.jsonl');
+    fs.writeFileSync(outside, `${JSON.stringify({ type: 'assistant' })}\n`);
+    const link = path.join(
+      workspaceStateDir(WS),
+      'head-review-attempts',
+      'review_authority-1_aaa.log.jsonl'
+    );
+    fs.mkdirSync(path.dirname(link), { recursive: true });
+    fs.symlinkSync(outside, link);
+    recordHeadReview(rt, { log_path: link, status: 'done' });
+
+    const lines = rt.sessionLog.read(WS, 'review:authority-1:aaa');
+
+    expect(lines).toEqual([]);
+  });
+
+  test('refuses a path that escapes through a linked parent directory', () => {
+    const rt = createWorkerRuntime();
+    const outside_dir = path.join(tmp_state, 'outside-logs');
+    fs.mkdirSync(outside_dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(outside_dir, 'review.log.jsonl'),
+      `${JSON.stringify({ type: 'assistant' })}\n`
+    );
+    const linked_dir = path.join(workspaceStateDir(WS), 'linked-attempts');
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.symlinkSync(outside_dir, linked_dir);
+    recordHeadReview(rt, {
+      log_path: path.join(linked_dir, 'review.log.jsonl'),
+      status: 'done'
+    });
+
+    const lines = rt.sessionLog.read(WS, 'review:authority-1:aaa');
+
+    expect(lines).toEqual([]);
+  });
+
   test('keeps an implementation attempt on the session log path', () => {
     const rt = createWorkerRuntime();
     rt.queueStore.appendAttempt(WS, {

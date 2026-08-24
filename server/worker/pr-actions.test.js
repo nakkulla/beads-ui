@@ -994,6 +994,46 @@ describe('merge click — the three branches (worker-phase2 §6)', () => {
     expect(result).toMatchObject({ ok: true, action: 'merged' });
   });
 
+  test('judges the receipt against the implementation attempt, not a review', async () => {
+    const store = seedStore();
+    store.updateAttempt(WS, {
+      attempt_id: 'a1',
+      patch: {
+        receipt_baseline: {
+          exec_receipt: null,
+          impl_entry: null,
+          plan_approval: null,
+          workflow_mode_source: null,
+          impl_dispatch: null
+        }
+      }
+    });
+    // A LATER head review attempt for the same bead. It carries no baseline,
+    // so winning "latest" would silently skip every baseline-dependent check.
+    store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:x',
+      patch: {
+        bead_id: BEAD,
+        kind: 'head_review',
+        status: 'done',
+        finished_at: 9_999
+      }
+    });
+    const h = makeActions({
+      store,
+      bdMetadata: {
+        exec_receipt: `main:bead@${'e'.repeat(40)}`,
+        impl_dispatch: 'main'
+      }
+    });
+
+    const result = await h.actions.merge(BEAD);
+
+    expect(result).toMatchObject({ ok: false });
+    expect(String(result.reason)).toMatch(/^receipt_unbacked:/);
+    expect(h.gh.mergeSquash).not.toHaveBeenCalled();
+  });
+
   test('holds a takeover receipt whose lineage no attempt can prove', async () => {
     const h = makeActions({
       bdMetadata: { exec_receipt: `main:takeover@${'e'.repeat(40)}` }

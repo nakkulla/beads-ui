@@ -47,6 +47,7 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -1299,6 +1300,7 @@ export function createScheduler(deps) {
       return (
         attempt.bead_id === bead_id &&
         attempt.repo === repo &&
+        isImplementationAttempt(attempt) &&
         (attempt.status === 'failed' ||
           attempt.status === 'orphaned' ||
           attempt.status === 'paused') &&
@@ -5059,6 +5061,10 @@ export function createScheduler(deps) {
       .filter(
         (attempt) =>
           attempt?.bead_id === input.bead_id &&
+          // The relaunch source is the owner Bead's own implementation lineage
+          // (UI-hk74 §7): a head-review attempt has no worktree of its own to
+          // prove ownership of, and resuming from one would repair nothing.
+          isImplementationAttempt(attempt) &&
           !resumed_from.has(attempt.attempt_id)
       )
       .sort(
@@ -5935,7 +5941,7 @@ export function createScheduler(deps) {
     let source = null;
     let source_at = -1;
     for (const a of Object.values(q.attempts || {})) {
-      if (!a || a.bead_id !== bead_id) {
+      if (!a || a.bead_id !== bead_id || !isImplementationAttempt(a)) {
         continue;
       }
       if (typeof a.session_id !== 'string' || a.session_id.length === 0) {
@@ -6025,6 +6031,7 @@ export function createScheduler(deps) {
       if (
         a &&
         a.bead_id === bead_id &&
+        isImplementationAttempt(a) &&
         typeof a.session_id === 'string' &&
         a.session_id.length > 0
       ) {

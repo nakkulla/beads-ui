@@ -591,6 +591,147 @@ describe('monitor 🔗 연결 체인 (UI-eey2 §6.4)', () => {
   });
 });
 
+describe('monitor 세션 타일 — head review·repair (UI-hk74 §7)', () => {
+  test('draws a running head review as its own session tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 10,
+              finished_at: 40
+            },
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 50,
+              kind: 'head_review',
+              origin: 'auto',
+              runner: 'codex'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0]).toMatchObject({
+      id: 'A-1',
+      attempt_id: 'r1',
+      kind: 'session',
+      non_occupying: true,
+      can_pause: false,
+      can_resume: false,
+      badges: ['리뷰 · 자동']
+    });
+  });
+
+  test('labels a clicked repair round without the automatic marker', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          attempts: {
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 50,
+              kind: 'head_repair',
+              origin: 'click'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].badges).toEqual(['수리']);
+  });
+
+  test('leaves the bead in PR 대기 while its review runs', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          attempts: {
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 50,
+              kind: 'head_review',
+              origin: 'auto'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait.map((item) => item.id)).toEqual(['A-1']);
+  });
+
+  test('never displaces the bead own running implementation tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            },
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 50,
+              kind: 'head_review',
+              origin: 'auto'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toHaveLength(1);
+    expect(lanes.running[0].attempt_id).toBe('t1');
+  });
+
+  test('draws no tile for a settled head review', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1', added_at: 1 }],
+          attempts: {
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 50,
+              finished_at: 60,
+              kind: 'head_review',
+              origin: 'auto'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running).toEqual([]);
+  });
+});
+
 describe('monitor 완료 lane (UI-eey2 §8)', () => {
   test('asks for the three-line layout so the repo badge cannot squeeze the title', () => {
     const lanes = buildLanes(

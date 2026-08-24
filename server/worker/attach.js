@@ -1782,15 +1782,20 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('auto-merge start failed for %s: %o', key, err);
   }
-  try {
-    att.completionIntent.start();
-  } catch (err) {
-    log('completion-intent start failed for %s: %o', key, err);
-  }
+  // BEFORE the completion coordinator (UI-hk74 review F2): the reconcile is
+  // what settles an attempt whose marker was lost and fails its journal, and
+  // the coordinator now re-drives every non-terminal journal. Starting the
+  // coordinator first would let one pass reach a journal whose marker-less
+  // attempt has not been repudiated yet and spawn a second reviewer for it.
   try {
     att.headReviewTransport?.reconcileAttempts?.();
   } catch (err) {
     log('head-review attempt reconcile failed for %s: %o', key, err);
+  }
+  try {
+    att.completionIntent.start();
+  } catch (err) {
+    log('completion-intent start failed for %s: %o', key, err);
   }
   try {
     att.beadsChanges?.start();

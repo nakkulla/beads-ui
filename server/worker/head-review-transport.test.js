@@ -9,6 +9,7 @@ import {
   parseRepairResultLine,
   parseVerdictLine
 } from './head-review-transport.js';
+import { workspaceStateDir } from './state-paths.js';
 
 /** @type {string} */
 let tmp_state;
@@ -137,12 +138,33 @@ function repairPacket(extra = {}) {
  * terminal-wins rule the real `upsertHeadReviewAttempt` enforces.
  *
  * @param {Record<string, any>} [attempts]
+ * @param {any[]} [merge_queue]
  */
-function attemptStore(attempts = {}) {
+function attemptStore(attempts = {}, merge_queue = []) {
   const terminal = new Set(['done', 'failed', 'orphaned', 'stopped']);
   return {
     attempts,
-    snapshot: () => ({ attempts }),
+    merge_queue,
+    snapshot: () => ({ attempts, merge_queue }),
+    setHeadReviewState: (
+      /** @type {string} */ _ws,
+      /** @type {any} */ input
+    ) => {
+      const entry = merge_queue.find(
+        (/** @type {any} */ item) => item.bead_id === input.bead_id
+      );
+      const review = entry ? entry.head_review : null;
+      if (
+        !review ||
+        review.authority_id !== input.authority_id ||
+        review.head_sha !== input.head_sha ||
+        review.state !== input.expected_state
+      ) {
+        return { ok: false };
+      }
+      entry.head_review = { ...review, ...input.patch };
+      return { ok: true };
+    },
     upsertHeadReviewAttempt: (
       /** @type {string} */ _ws,
       /** @type {{ attempt_id: string, patch: Record<string, any> }} */ input
@@ -838,6 +860,87 @@ describe('worker/head-review-transport — attempt history', () => {
     });
   });
 
+  test('fails the journal of an attempt whose marker never landed', () => {
+    const store = attemptStore(
+      {
+        'review:authority-9:x': {
+          attempt_id: 'review:authority-9:x',
+          bead_id: 'UI-1',
+          kind: 'head_review',
+          status: 'running'
+        }
+      },
+      [
+        {
+          bead_id: 'UI-root',
+          authority: { id: 'authority-9' },
+          head_review: {
+            authority_id: 'authority-9',
+            head_sha: HEAD,
+            state: 'reviewing',
+            review_attempt_id: 'review:authority-9:x'
+          }
+        }
+      ]
+    );
+    const { t } = transport({ store });
+
+    t.reconcileAttempts();
+
+    expect(store.merge_queue[0].head_review).toMatchObject({
+      state: 'failed',
+      failure_reason: 'auto_review_journal_missing'
+    });
+  });
+
+  test('leaves a journal alone when its attempt has a marker', async () => {
+    const store = attemptStore({}, [
+      {
+        bead_id: 'UI-root',
+        authority: { id: 'authority-1' },
+        head_review: {
+          authority_id: 'authority-1',
+          head_sha: HEAD,
+          state: 'reviewing',
+          review_attempt_id: 'review:authority-1:x'
+        }
+      }
+    ]);
+    const { t } = transport({
+      store,
+      makeRunner: (/** @type {string} */ name) => ({
+        name,
+        spawn: () => ({ pid: 99, done: new Promise(() => {}) })
+      })
+    });
+    void t.runReview(reviewPacket());
+    while (!store.attempts['review:authority-1:x']) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    t.reconcileAttempts();
+
+    expect(store.merge_queue[0].head_review.state).toBe('reviewing');
+  });
+
+  test('spawns nothing when the attempt marker cannot be prerecorded', async () => {
+    const store = attemptStore();
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceStateDir(WS), 'head-review-attempts'),
+      'not a directory'
+    );
+    const { t, calls } = transport({ store });
+
+    const result = await t.runReview(reviewPacket());
+
+    expect(calls.spawn).toHaveLength(0);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'attempt_marker_unwritable'
+    });
+  });
+
   test('leaves an adoptable marker alone during reconcile', async () => {
     const store = attemptStore();
     const { t } = transport({
@@ -919,6 +1022,64 @@ describe('worker/head-review-transport — upstream violation note', () => {
 
     expect(second).toBe(false);
     expect(comments).toHaveLength(1);
+  });
+
+  test('never repeats a comment whose first attempt failed', async () => {
+    let fail = true;
+    /** @type {any[]} */
+    const comments = [];
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async () => {
+          if (fail) {
+            throw new Error('bd down');
+          }
+          comments.push(1);
+        }
+      }
+    });
+    const input = {
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_missing'
+    };
+
+    await t.recordUpstreamViolation(input);
+    fail = false;
+    const second = await t.recordUpstreamViolation(input);
+
+    expect(second).toBe(false);
+    expect(comments).toHaveLength(0);
+  });
+
+  test('writes no comment when the marker cannot be claimed', async () => {
+    /** @type {any[]} */
+    const comments = [];
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceStateDir(WS), 'head-review-violations'),
+      'not a directory'
+    );
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async () => {
+          comments.push(1);
+        }
+      }
+    });
+
+    const recorded = await t.recordUpstreamViolation({
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_missing'
+    });
+
+    expect(recorded).toBe(false);
+    expect(comments).toHaveLength(0);
   });
 
   test('reports a failed comment without throwing so dispatch continues', async () => {

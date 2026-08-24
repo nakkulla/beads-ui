@@ -2424,6 +2424,71 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
     expect(action).toEqual({ kind: 'reconcile_op' });
   });
 
+  test('holds the retry delay over the operation that failed', () => {
+    const failed_op = mergeOperation();
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: intent({
+        phase: 'retrying',
+        auto_resolution: retryResolution({
+          op: {
+            ...retryResolution().op,
+            completion_op_id: failed_op.op_id
+          }
+        }),
+        active_op: failed_op
+      }),
+      now: 999
+    });
+
+    expect(action).toBe(null);
+  });
+
+  test('spends a retry on the operation that failed once it is due', () => {
+    const failed_op = mergeOperation();
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: intent({
+        phase: 'retrying',
+        auto_resolution: retryResolution({
+          op: {
+            ...retryResolution().op,
+            completion_op_id: failed_op.op_id
+          }
+        }),
+        active_op: failed_op
+      }),
+      now: 9_000_000
+    });
+
+    expect(action).toEqual({ kind: 'retry_failed_op' });
+  });
+
+  test('exhausts a retry whose failed operation is still journaled', () => {
+    const failed_op = mergeOperation();
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: intent({
+        phase: 'retrying',
+        auto_resolution: retryResolution({
+          attempts: 3,
+          next_at: null,
+          op: {
+            ...retryResolution().op,
+            completion_op_id: failed_op.op_id
+          }
+        }),
+        active_op: failed_op
+      }),
+      now: 9_000_000
+    });
+
+    expect(action).toEqual({
+      kind: 'needs_human',
+      reason: 'retry_exhausted:repair_dispatch_failed'
+    });
+  });
+
   test('terminalizes a retry that exhausted its budget', () => {
     const action = decideCompletionAction({
       auto_merge: true,
@@ -2530,7 +2595,7 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
     expect(action).toEqual({ kind: 'dispatch_auto_review' });
   });
 
-  test('waits while a dispatched review is still running', () => {
+  test('re-drives a dispatched review so a restart adopts its marker', () => {
     const action = decideCompletionAction({
       auto_merge: true,
       intent: intent({
@@ -2541,7 +2606,25 @@ describe('worker/completion-intent auto-resolution decisions (UI-hk74 §4)', () 
       now: 1
     });
 
-    expect(action).toBe(null);
+    expect(action).toEqual({ kind: 'dispatch_auto_review' });
+  });
+
+  test('re-drives a prerecorded repair round', () => {
+    const action = decideCompletionAction({
+      auto_merge: true,
+      intent: intent({
+        phase: 'reviewing',
+        auto_resolution: reviewResolution()
+      }),
+      head_review: {
+        state: 'revising',
+        review_attempt_id: 'review-1',
+        repair_attempt_id: 'repair-1'
+      },
+      now: 1
+    });
+
+    expect(action).toEqual({ kind: 'dispatch_auto_review' });
   });
 
   test('returns an approved review to the gate', () => {
@@ -2689,6 +2772,40 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
       store.snapshot(DRIVER_WS).completion_intents['UI-root']
     ).toMatchObject({
       phase: 'waiting_metadata',
+      auto_resolution: { last_error: 'metadata_check_unreadable' }
+    });
+  });
+
+  test('keeps the watch in place when the gate could not read the bead', async () => {
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () => ({
+      ...redGate(),
+      authority_unreadable: true,
+      verdict: {
+        enabled: false,
+        tier: 'blocked',
+        reason: 'review_receipt_invalid'
+      }
+    }));
+    const driver = settleDriver(store, { prActions: { completionGate } });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'receipt_unbacked:unit_plan_mismatch' },
+      current
+    );
+    await driver.onAction(
+      'UI-root',
+      { kind: 'resume_metadata_check' },
+      current
+    );
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'waiting_metadata',
+      terminal_reason: null,
       auto_resolution: { last_error: 'metadata_check_unreadable' }
     });
   });
@@ -2939,6 +3056,102 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
       terminal_reason: {
         reason: 'retry_exhausted:completion_gate_spawn_failed'
       }
+    });
+  });
+
+  test('re-dispatches a repair on the repair Bead the record pinned', async () => {
+    const store = seededCompletionStore();
+    const ensureLinkedBead = vi.fn(async () => ({ bead_id: 'UI-other' }));
+    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
+    const driver = settleDriver(store, {
+      completionRepair: {
+        probeOwnership: vi.fn(async () => ({ state: 'base_owned' })),
+        ensureLinkedBead
+      },
+      scheduler: { dispatchCompletionRepair },
+      now: () => 10_000
+    });
+    const failure_key = createCompletionFailureKey({
+      stage: 'repair_create',
+      reason: 'repair_needed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      evidence: {}
+    });
+    store.prepareCompletionOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'completion-create',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: 'UI-repair',
+        status: 'prepared'
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'repair_dispatch_failed' },
+      current
+    );
+    await driver.onAction('UI-root', { kind: 'retry_failed_op' }, current);
+
+    expect(ensureLinkedBead).not.toHaveBeenCalled();
+    expect(dispatchCompletionRepair).toHaveBeenCalledWith(
+      DRIVER_WS,
+      expect.objectContaining({
+        op: expect.objectContaining({ repair_bead_id: 'UI-repair' })
+      })
+    );
+  });
+
+  test('holds retrying and the record until the re-run reads back', async () => {
+    const store = seededCompletionStore();
+    const dispatchCompletionRepair = vi.fn(async () => ({ ok: true }));
+    const driver = settleDriver(store, {
+      completionRepair: {
+        probeOwnership: vi.fn(async () => ({ state: 'base_owned' })),
+        ensureLinkedBead: vi.fn(async () => ({ bead_id: 'UI-repair' }))
+      },
+      scheduler: { dispatchCompletionRepair },
+      now: () => 10_000
+    });
+    const failure_key = createCompletionFailureKey({
+      stage: 'repair_create',
+      reason: 'repair_needed',
+      subject_sha: 'a'.repeat(40),
+      base_sha: 'b'.repeat(40),
+      evidence: {}
+    });
+    store.prepareCompletionOp(DRIVER_WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'completion-create',
+        kind: 'create_repair',
+        failure_key,
+        attempt_id: null,
+        repair_bead_id: 'UI-repair',
+        status: 'prepared'
+      }
+    });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'repair_dispatch_failed' },
+      current
+    );
+    await driver.onAction('UI-root', { kind: 'retry_failed_op' }, current);
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'retrying',
+      auto_resolution: { class: 'retry', attempts: 1 }
     });
   });
 

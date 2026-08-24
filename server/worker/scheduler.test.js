@@ -4127,6 +4127,44 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
+  test('resumes a repo repair from the implementation lineage leaf', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
+    };
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      repairSession,
+      gitRun: ownedWorktreeGit()
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+    // A newer head review attempt with no repo of its own (UI-hk74 §7): taking
+    // the lineage leaf would answer `repair_attempt_source_missing`.
+    env.store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:x',
+      patch: {
+        bead_id: 'B1',
+        kind: 'head_review',
+        status: 'done',
+        started_at: 9_999_999
+      }
+    });
+
+    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
+      bead_id: 'B1',
+      operation_id: 'cleanup:B1',
+      packet: {}
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.cwdFor('B1')).toBe('/repo');
+  });
+
   test('switches an unresolved repo repair to fresh in the shared checkout', async () => {
     const repairSession = {
       judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))

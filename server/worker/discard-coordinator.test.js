@@ -962,6 +962,33 @@ describe('worker discard coordinator unmerged lifecycle', () => {
     expect(env.worktree.withTopologyLock).toHaveBeenCalledTimes(3);
   });
 
+  test('discards the implementation attempt, not a later review attempt', async () => {
+    const env = setup();
+    // A head review attempt for the SAME bead, recorded after the one that
+    // opened the PR (UI-hk74 §7). Taking the "last attempt" slot would point
+    // the rollback at the reviewer's session.
+    env.store.upsertHeadReviewAttempt(workspace, {
+      attempt_id: 'review:authority-1:x',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'head_review',
+        status: 'done',
+        repo: '/repo',
+        finished_at: 9_999
+      }
+    });
+
+    const result = await env.coordinator.discard({
+      bead_id: 'UI-1',
+      expected_revision: env.store.snapshot(workspace).revision
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    expect(
+      env.store.snapshot(workspace).discard_operations['discard-1'].attempt_id
+    ).toBe('att-1');
+  });
+
   test('archives complete direct phase child JSON before mutation', async () => {
     const child = {
       id: 'UI-1.1',

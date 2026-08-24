@@ -29,6 +29,7 @@
  *
  * @import { Queue } from './queue-store.js'
  */
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
@@ -108,7 +109,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
   /** @type {{ number: number, url: string, at: number }|null} */
   let best = null;
   for (const a of attempts) {
-    if (!a || a.bead_id !== bead_id) {
+    if (!a || a.bead_id !== bead_id || !isImplementationAttempt(a)) {
       continue;
     }
     const vr = /** @type {any} */ (a.verify_result);

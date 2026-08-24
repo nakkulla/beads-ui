@@ -11917,6 +11917,59 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
   };
 
   /**
+   * The gate an automatic resolution actually sits behind: closed, and closed
+   * for a reason no re-click allow-list names.
+   */
+  const HELD_GATE = {
+    enabled: false,
+    tier: 'blocked',
+    gate_badge: '영수증',
+    base_badge: '최신',
+    reason: 'receipt_unbacked:unit_plan_mismatch'
+  };
+
+  /**
+   * The row an automatic resolution really produces (UI-hk74 §4/§6): enrolled
+   * in the merge queue under an AUTOMATIC authority, with a gate that is not
+   * open. Both are what made the earlier green-gate, unqueued fixture unable to
+   * prove §9's requirement.
+   *
+   * @param {Record<string, any>} completion_status
+   * @returns {any}
+   */
+  function autoResolutionRow(completion_status) {
+    return prWaitQueue({
+      pr_observations: {
+        'RD-1': {
+          pr: {
+            number: 1,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate: HELD_GATE
+        }
+      },
+      merge_queue: [
+        {
+          bead_id: 'RD-1',
+          resolution_rounds: 0,
+          authority: {
+            source: 'automatic',
+            requested_head_sha: 'a'.repeat(40)
+          }
+        }
+      ],
+      merge_queue_state: { active: null, failures: {} },
+      auto_merge: true,
+      completion_status
+    });
+  }
+
+  /**
    * A PR-wait row for `RD-1` with a green gate, over which each test lays the
    * one completion projection it is about.
    *
@@ -12082,10 +12135,22 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
     expect(title).toContain('마지막 오류: npm ci exited 1');
   });
 
-  test('keeps [머지] clickable while an automatic resolution runs', () => {
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLButtonElement}
+   */
+  function mergeButton(mount) {
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    );
+  }
+
+  test('keeps [머지] active on a queued retrying row behind a closed gate', () => {
     const mount = render(
-      prWaitQueue({
-        completion_status: completionOf('retrying', {
+      autoResolutionRow(
+        completionOf('retrying', {
           class: 'retry',
           origin_reason: 'verify_cmd_failed',
           attempts: 1,
@@ -12093,17 +12158,61 @@ describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
           next_at: null,
           last_error: null
         })
-      })
-    );
-
-    const merge = /** @type {HTMLButtonElement} */ (
-      mount.querySelector(
-        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
       )
     );
 
+    const merge = mergeButton(mount);
+
     expect(merge).not.toBeNull();
     expect(merge.disabled).toBe(false);
+  });
+
+  test('keeps [머지] active on a queued waiting_metadata row', () => {
+    const mount = render(
+      autoResolutionRow(
+        completionOf('waiting_metadata', {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+          attempts: 0,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      )
+    );
+
+    const merge = mergeButton(mount);
+
+    expect(merge).not.toBeNull();
+    expect(merge.disabled).toBe(false);
+  });
+
+  test('keeps [머지] active on a queued automatic review row', () => {
+    const mount = render(
+      autoResolutionRow(
+        completionOf('reviewing', {
+          class: 'auto_review',
+          origin_reason: 'review_receipt_missing',
+          attempts: 1,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      )
+    );
+
+    const merge = mergeButton(mount);
+
+    expect(merge).not.toBeNull();
+    expect(merge.disabled).toBe(false);
+  });
+
+  test('leaves a queued row with no automatic resolution untouched', () => {
+    const mount = render(autoResolutionRow(completionOf('gating', null)));
+
+    const merge = mergeButton(mount);
+
+    expect(merge).toBeNull();
   });
 
   test('prefers 정정 대기 over the receipt merge-failure text on the same row', () => {

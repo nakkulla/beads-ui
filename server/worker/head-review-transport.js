@@ -728,15 +728,29 @@ export function createHeadReviewTransport(deps) {
     // pass would start a SECOND process for the same attempt. With this
     // marker the next pass adopts instead — and an adoption that cannot
     // recover a result fails closed rather than re-running.
-    writeMarker(input.attempt_id, {
-      attempt_id: input.attempt_id,
-      pid: null,
-      runner: mapped.runner,
-      log_path,
-      started_at,
-      usage: null,
-      terminal: null
-    });
+    //
+    // A prerecord that did not land is therefore a PRECONDITION failure, not a
+    // logging one (UI-hk74 review F2): spawning anyway would put a reviewer on
+    // this head with nothing to adopt it by, and the next pass would put a
+    // second one there.
+    if (
+      !writeMarker(input.attempt_id, {
+        attempt_id: input.attempt_id,
+        pid: null,
+        runner: mapped.runner,
+        log_path,
+        started_at,
+        usage: null,
+        terminal: null
+      })
+    ) {
+      recordAttempt(input, {
+        status: 'failed',
+        cause: 'attempt_marker_unwritable',
+        finished_at: now()
+      });
+      return { ok: false, reason: 'attempt_marker_unwritable' };
+    }
     // The history record is deliberately opened here too, so the Worker's
     // attempt lane shows a review that is running rather than only one that
     // finished (UI-hk74 §7). `log_path` POINTS at the session log; the log
@@ -944,8 +958,11 @@ export function createHeadReviewTransport(deps) {
    * - marker terminal, attempt still `running` — the result is copied forward
    *   (the history write was the half that was lost);
    * - no marker at all under a `running` attempt — nothing was ever dispatched
-   *   for it, so it settles `failed` rather than sitting as a session that will
-   *   never end. The journal rule stops the row for a human separately.
+   *   for it, so it settles `failed` AND its journal is failed with
+   *   `auto_review_journal_missing`, which is the state §7 pins for this
+   *   window. Failing the journal is not decoration: the coordinator re-drives
+   *   every non-terminal journal, and a marker-less one would spawn a second
+   *   reviewer for a head that already had one.
    *
    * A marker with no terminal is a LIVE or adoptable attempt and is left alone:
    * the journal drive adopts it, and settling it here would race that.
@@ -997,7 +1014,52 @@ export function createHeadReviewTransport(deps) {
           cause: 'attempt_marker_missing',
           finished_at: now()
         });
+        failJournalForAttempt(attempt_id, 'auto_review_journal_missing');
       }
+    }
+  }
+
+  /**
+   * Repudiate the journal that owns one unrecoverable attempt (UI-hk74 §7).
+   *
+   * The journal is found BY the attempt id rather than by bead id: the queue
+   * entry is keyed on the completion root while the attempt records the merge
+   * SUBJECT, and a linked repair makes those two different beads.
+   *
+   * Fail-quiet, like every other write on this reconcile path — a journal that
+   * moved under us has already been decided by whoever moved it.
+   *
+   * @param {string} attempt_id
+   * @param {string} reason
+   */
+  function failJournalForAttempt(attempt_id, reason) {
+    if (!deps.store || typeof deps.store.setHeadReviewState !== 'function') {
+      return;
+    }
+    try {
+      const queue = /** @type {any} */ (deps.store.snapshot(deps.workspace));
+      const lane = Array.isArray(queue.merge_queue) ? queue.merge_queue : [];
+      const entry = lane.find((/** @type {any} */ item) => {
+        const review = item?.head_review;
+        return (
+          !!review &&
+          (review.review_attempt_id === attempt_id ||
+            review.repair_attempt_id === attempt_id)
+        );
+      });
+      const review = entry?.head_review;
+      if (!review || review.state === 'failed' || review.state === 'approved') {
+        return;
+      }
+      deps.store.setHeadReviewState(deps.workspace, {
+        bead_id: entry.bead_id,
+        authority_id: review.authority_id,
+        head_sha: review.head_sha,
+        expected_state: review.state,
+        patch: { state: 'failed', failure_reason: reason }
+      });
+    } catch (err) {
+      log('head-review journal repudiation failed for %s: %o', attempt_id, err);
     }
   }
 
@@ -1151,18 +1213,44 @@ export function createHeadReviewTransport(deps) {
    * Written at most once per (root, head) — the marker file is the ledger — and
    * a write that fails is logged and forgotten: the review still has to run.
    *
+   * The marker is claimed BEFORE the comment, with an exclusive `wx` create
+   * (UI-hk74 review F9). Writing the comment first left the only duplicate
+   * guard behind the irreversible effect: a crash in between, or a marker the
+   * filesystem refused, put a second identical comment on the same (root,
+   * head) at the next pass. Exclusive creation makes the claim the atomic
+   * step, so only ONE caller can ever reach the comment.
+   *
+   * A comment that then fails deliberately KEEPS the marker: at-most-once is
+   * the invariant this record exists for, and a failed `bd comment` whose
+   * acknowledgement was merely lost is indistinguishable from one that never
+   * landed. §6 asks only that the failure not block the dispatch, and it does
+   * not — the caller ignores this return.
+   *
    * @param {{ root_bead_id: string, head_sha: string, reason: string, prior_receipt?: string|null, gate_reason?: string|null }} input
    * @returns {Promise<boolean>} Whether a note was appended by THIS call.
    */
   async function recordUpstreamViolation(input) {
     const head_sha = String(input.head_sha).toLowerCase();
     const marker_path = violationMarkerPath(input.root_bead_id, head_sha);
+    if (typeof deps.bd.comment !== 'function') {
+      return false;
+    }
     try {
-      if (fs.existsSync(marker_path)) {
-        return false;
-      }
+      fs.mkdirSync(path.dirname(marker_path), { recursive: true });
+      fs.writeFileSync(
+        marker_path,
+        JSON.stringify({
+          root_bead_id: input.root_bead_id,
+          head_sha,
+          reason: input.reason,
+          at: now()
+        }),
+        { flag: 'wx' }
+      );
     } catch (err) {
-      log('upstream violation marker unreadable for %s: %o', marker_path, err);
+      // `EEXIST` is the ordinary "already recorded" answer; anything else is a
+      // filesystem the ledger cannot use, and both refuse the comment.
+      log('upstream violation marker not claimed for %s: %o', marker_path, err);
       return false;
     }
     const kind = String(input.reason).startsWith('review_receipt_stale')
@@ -1176,9 +1264,6 @@ export function createHeadReviewTransport(deps) {
       `- 게이트 사유: ${input.gate_reason || input.reason}`
     ].join('\n');
     try {
-      if (typeof deps.bd.comment !== 'function') {
-        return false;
-      }
       await deps.bd.comment(input.root_bead_id, comment);
     } catch (err) {
       log(
@@ -1187,24 +1272,6 @@ export function createHeadReviewTransport(deps) {
         err
       );
       return false;
-    }
-    try {
-      fs.mkdirSync(path.dirname(marker_path), { recursive: true });
-      fs.writeFileSync(
-        marker_path,
-        JSON.stringify({
-          root_bead_id: input.root_bead_id,
-          head_sha,
-          reason: input.reason,
-          at: now()
-        })
-      );
-    } catch (err) {
-      log(
-        'upstream violation marker write failed for %s: %o',
-        marker_path,
-        err
-      );
     }
     return true;
   }

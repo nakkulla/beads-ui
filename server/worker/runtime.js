@@ -13,6 +13,7 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
+import fs from 'node:fs';
 import path from 'node:path';
 import { isAnalyzerEffortValid } from '../../app/data/analyzer-efforts.js';
 import { kvGetJson, kvSetJson } from '../bd.js';
@@ -185,8 +186,24 @@ export function createWorkerRuntime() {
       if (typeof recorded !== 'string' || recorded.length === 0) {
         return null;
       }
-      const root = path.resolve(workspaceStateDir(workspace));
-      const resolved = path.resolve(recorded);
+      // Containment is judged on CANONICAL paths, never on the lexical ones
+      // (UI-hk74 review F4): `path.resolve` collapses `..` but follows no
+      // link, so a symlink written inside the state directory would pass a
+      // string-prefix test while pointing at any file the server can read.
+      // Resolving both sides through `realpath` removes every link from the
+      // comparison AND from the path the reader is handed back.
+      /** @type {string} */
+      let root;
+      /** @type {string} */
+      let resolved;
+      try {
+        root = fs.realpathSync(workspaceStateDir(workspace));
+        resolved = fs.realpathSync(recorded);
+      } catch {
+        // Absent file, unreadable directory, or a broken link: fail quiet to
+        // the default session-log path, exactly as an unrecorded log does.
+        return null;
+      }
       return resolved === root || resolved.startsWith(`${root}${path.sep}`)
         ? resolved
         : null;

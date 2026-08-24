@@ -833,6 +833,20 @@ const UNLOCKED_COMPLETION_PHASES = new Set([
 ]);
 
 /**
+ * The three phases the completion coordinator is resolving on its own
+ * (UI-hk74 §4). Named apart from {@link UNLOCKED_COMPLETION_PHASES} because
+ * §9 gives them an action a `paused` or `needs_human` row does not have: the
+ * click ends the automatic wait and hands the saga back to the gate.
+ *
+ * @type {Set<string>}
+ */
+const AUTO_RESOLUTION_PHASES = new Set([
+  'waiting_metadata',
+  'reviewing',
+  'retrying'
+]);
+
+/**
  * The badge for an intent the completion coordinator is resolving WITHOUT a
  * person (UI-hk74 §9). Null for every other phase, and null for one of the
  * three whose `auto_resolution` record did not travel — fail-quiet, because a
@@ -1400,11 +1414,21 @@ function prWaitRow(
   // enrolment sitting under a global toggle that is off. For all three the
   // way forward is a fresh [머지] click, which the server re-validates from a
   // new authoritative observation before issuing a new manual authority.
+  // A row the coordinator is resolving without a person (§4). It IS queued —
+  // the automatic review lane enrols it — so without this it falls into the
+  // "queued rows have nothing to click but [취소]" branch and loses the button
+  // §9 requires. Same shape as the three cases beside it: the click is the way
+  // forward and the server re-validates before acting on it.
+  const auto_resolution_phase =
+    !!completion &&
+    typeof completion === 'object' &&
+    AUTO_RESOLUTION_PHASES.has(completion.phase);
   const needs_reclick =
     queued &&
     !queue_active &&
     (journal?.state === 'failed' ||
       !authority ||
+      auto_resolution_phase ||
       (authority.source === 'automatic' && !auto_merge_on));
   const conflict_badge =
     conflict_session === 'paused'
@@ -1589,6 +1613,13 @@ function prWaitRow(
       // (UI-58w8 §1): stale receipt and BEHIND are exactly the gates the new
       // authority's continuation exists to carry, and the server re-observes
       // the PR before it issues one.
+      // §9: the click is ACTIVE in the three automatic-resolution phases,
+      // whatever the gate currently says. It is not a re-click on a terminal
+      // gate (the UI-vkk8 §2 rule `reclick_continuable` guards): the server
+      // has a defined effect for it — end the wait, clear `auto_resolution`,
+      // return to `gating`, and promote the automatic authority to manual,
+      // which is exactly the authority that waives the receipt hold those
+      // phases are usually waiting on.
       (enabled ||
         conflicting ||
         gate?.reason === 'base_behind' ||
@@ -1596,7 +1627,8 @@ function prWaitRow(
         gate?.reason === 'review_receipt_stale' ||
         cleanup_retry ||
         external_cleanup ||
-        reclick_continuable),
+        reclick_continuable ||
+        (auto_resolution_phase && !queue_active)),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).

@@ -522,6 +522,8 @@ function receiptWarningFor(queue, bead_id) {
     if (
       !attempt ||
       attempt.bead_id !== bead_id ||
+      // The warning describes the IMPLEMENTATION receipt (UI-hk74 §7).
+      !isImplementationAttempt(attempt) ||
       !attempt.receipt_check ||
       typeof attempt.receipt_check !== 'object'
     ) {
@@ -2625,7 +2627,10 @@ export function handleGetBeadPrompt(ws, req) {
   }
   const key = workspaceKeyOf(ws);
   const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
-    (/** @type {any} */ a) => a && a.bead_id === bead_id
+    // The panel asks what the bead's own dispatch was told to do; a head-review
+    // prompt is a different question the same bead id would answer (UI-hk74 §7).
+    (/** @type {any} */ a) =>
+      a && a.bead_id === bead_id && isImplementationAttempt(a)
   );
   // Newest first by start time; an attempt that never started (a refusal
   // recorded before the spawn) sorts last and carries no prompt anyway.

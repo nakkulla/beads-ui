@@ -1170,12 +1170,17 @@ function normalizeCompletionAutoResolution(value) {
  * Move an intent to `phase` under the auto-resolution invariants of UI-hk74 §4.
  * Every mutator that assigns a phase goes through here.
  *
- * A retry deliberately KEEPS its record while it re-runs: the re-run itself
- * moves the saga to `return_phase`, and dropping the counter there would let a
- * failure that classifies again start from a refunded budget — the unbounded
- * loop the 3-attempt cap exists to prevent. Clearing is explicit
- * (`clearCompletionAutoResolution`, a consumed operation, terminalization, or a
- * human click); `paused` parks instead of clearing.
+ * A live resolution HOLDS the phase (UI-hk74 review F1). The re-run of a
+ * failed effect goes through the ordinary owners, and those owners assign
+ * `return_phase` — `prepareCompletionOp(phase:'repairing')` is the plain case.
+ * Letting that assignment through produced an intent in `repairing` still
+ * carrying `auto_resolution`, which the normalizer drops on the next cold
+ * load: the whole retry budget vanished across a restart and the next failure
+ * started again at `attempts = 0`, so the 3-attempt cap bounded nothing. The
+ * record and its phase therefore travel together, and BOTH are released at the
+ * one moment the §3 success condition reads back — `clearCompletionAutoResolution`,
+ * a consumed operation, terminalization, or a human click. `paused` parks
+ * instead of clearing.
  *
  * @param {CompletionIntent} intent
  * @param {CompletionPhase} phase
@@ -1192,6 +1197,14 @@ function applyCompletionPhase(intent, phase) {
   if (phase === 'paused' && intent.auto_resolution) {
     intent.paused_resolution = intent.auto_resolution;
     intent.auto_resolution = null;
+    intent.phase = phase;
+    return true;
+  }
+  if (intent.auto_resolution && !COMPLETION_AUTO_RESOLUTION_PHASES.has(phase)) {
+    // Held, not refused: the caller's own effect (the journalled operation it
+    // is opening) must still land, and only the resolution's success may move
+    // the saga out of its waiting phase.
+    return true;
   }
   intent.phase = phase;
   return true;
@@ -3453,6 +3466,8 @@ function completeIntentForDone(q, bead_id) {
   }
   intent.phase = 'completed';
   intent.active_op = null;
+  intent.auto_resolution = null;
+  intent.paused_resolution = null;
   intent.terminal_reason = null;
 }
 
@@ -3506,6 +3521,28 @@ export function createQueueStore(options = {}) {
       },
       head_review: null
     };
+  }
+
+  /**
+   * Re-stamp every UNSETTLED head-review/repair attempt of one authority as
+   * human-asked (UI-hk74 §6). Monotonic on purpose: `click` outranks `auto`
+   * and never returns, because the click that produced it is durable while the
+   * transport's in-memory packet still carries the old value.
+   *
+   * @param {Queue} next
+   * @param {string} authority_id
+   */
+  function promoteAttemptOrigins(next, authority_id) {
+    for (const attempt of Object.values(next.attempts)) {
+      if (
+        (attempt.kind === 'head_review' || attempt.kind === 'head_repair') &&
+        attempt.authority_id === authority_id &&
+        attempt.origin === 'auto' &&
+        !TERMINAL_ATTEMPT_STATUSES.has(String(attempt.status))
+      ) {
+        attempt.origin = 'click';
+      }
+    }
   }
 
   /** @type {Map<string, Queue>} */
@@ -4939,6 +4976,13 @@ export function createQueueStore(options = {}) {
           return false;
         }
         const merged = { ...(current || {}), ...patch, attempt_id };
+        // `origin` is monotonic (UI-hk74 §6): once a [머지] click promoted the
+        // authority, the transport's later settle patches still carry the
+        // `auto` value its packet captured at dispatch, and letting one land
+        // would erase the promotion this record exists to show.
+        if (current?.origin === 'click') {
+          merged.origin = 'click';
+        }
         if (
           typeof merged.bead_id !== 'string' ||
           merged.bead_id.length === 0 ||
@@ -6579,6 +6623,11 @@ export function createQueueStore(options = {}) {
               // attempt's recorded origin becomes `click`.
               existing.authority.source = 'manual';
               existing.authority.granted_at = now();
+              // …and it becomes `click` HERE, in the promoting mutation. The
+              // running attempt captured `origin: 'auto'` when its dispatch
+              // began and would otherwise settle under that value, leaving the
+              // history claiming automation owned a round a person asked for.
+              promoteAttemptOrigins(next, existing.authority.id);
               changed += 1;
               continue;
             }
@@ -7093,6 +7142,12 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
+        if (clear === true) {
+          // A consumed operation is the readback boundary of whatever the retry
+          // re-ran, so the resolution record has nothing left to bound. Cleared
+          // BEFORE the phase move, because a live record holds the phase.
+          intent.auto_resolution = null;
+        }
         if (
           next_phase !== undefined &&
           !applyCompletionPhase(intent, next_phase)
@@ -7104,10 +7159,7 @@ export function createQueueStore(options = {}) {
           intent.subject = normalized_subject;
         }
         if (clear === true) {
-          // A consumed operation is the readback boundary of whatever the retry
-          // re-ran, so the resolution record has nothing left to bound.
           intent.active_op = null;
-          intent.auto_resolution = null;
         }
         if (next_phase === 'paused') {
           next.merge_queue = next.merge_queue.filter(
@@ -7333,12 +7385,20 @@ export function createQueueStore(options = {}) {
      * Record one resolution attempt's progress. Only the bounded per-attempt
      * fields move; class, origin, and return phase are fixed at entry.
      *
+     * `supersede_op_id` retires the terminal-failed operation the record was
+     * opened on, in the SAME revision that spends the retry (UI-hk74 §3 /
+     * review F1). The two must be one write: spending the budget without
+     * releasing the journal leaves a re-run that can never open its operation,
+     * and releasing it without spending leaves a re-run that costs nothing.
+     * Only that exact `op_id` is retired, so a live operation someone else
+     * opened is never dropped by a stale retry.
+     *
      * @param {string} workspace
-     * @param {{ root_bead_id: string, patch: { attempts?: number, next_at?: number|null, last_error?: string|null } }} input
+     * @param {{ root_bead_id: string, patch: { attempts?: number, next_at?: number|null, last_error?: string|null }, supersede_op_id?: string|null }} input
      * @returns {QueueOpResult}
      */
     updateCompletionAutoResolution(workspace, input) {
-      const { root_bead_id, patch } = input;
+      const { root_bead_id, patch, supersede_op_id } = input;
       return applyUnconditional(workspace, (next) => {
         const intent = next.completion_intents[root_bead_id];
         const current = intent?.auto_resolution;
@@ -7354,6 +7414,12 @@ export function createQueueStore(options = {}) {
           COMPLETION_AUTO_RESOLUTION_PHASE[merged.class] !== intent.phase
         ) {
           return false;
+        }
+        if (typeof supersede_op_id === 'string' && supersede_op_id.length > 0) {
+          if (intent.active_op?.op_id !== supersede_op_id) {
+            return false;
+          }
+          intent.active_op = null;
         }
         intent.auto_resolution = merged;
         return true;

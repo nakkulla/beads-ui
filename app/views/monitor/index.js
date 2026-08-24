@@ -1743,7 +1743,9 @@ export function createMonitorView(mount_element, options) {
       ...lanes.pr_wait,
       ...lanes.done
     ]) {
-      if (!item_by_bead.has(item.id)) {
+      // 비점유 타일(head review·repair 세션, UI-hk74 §7)은 그 bead의 위치를
+      // 주장하지 않는다 — 위치는 PR 대기 행이 답한다.
+      if (!item.non_occupying && !item_by_bead.has(item.id)) {
         item_by_bead.set(item.id, item);
       }
     }

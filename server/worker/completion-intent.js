@@ -270,11 +270,22 @@ function decideAutoResolution(intent, head_review, now) {
     return { kind: 'needs_human', reason: 'auto_resolution_invalid' };
   }
   if (intent.phase === 'retrying') {
-    // Waiting out the failing operation IS the first step of the retry. Deciding
-    // this before the generic reconcile is what keeps the delay and the 3-attempt
-    // cap on the path: reached the other way round, every retry would re-run at
-    // once and forever.
-    if (intent.active_op) {
+    // Waiting out a LIVE operation IS the first step of the retry, and deciding
+    // it before the generic reconcile is what keeps the delay and the 3-attempt
+    // cap on the path.
+    //
+    // "Live" is exactly "not the operation this record was opened on" (review
+    // F1). `settleFailure` deliberately preserves the failing op, so treating
+    // every `active_op` as live sent the retry straight back through the
+    // generic reconcile — which RE-RUNS the failing effect (`create_repair`
+    // re-creates, `retry_cleanup` replays) immediately, before `next_at` and
+    // without spending an attempt. That is the bypass the ordering was
+    // supposed to close. The retried op is retired by the same write that
+    // spends the budget, so anything found here afterwards is genuinely new.
+    if (
+      intent.active_op &&
+      intent.active_op.op_id !== resolution.op.completion_op_id
+    ) {
       return { kind: 'reconcile_op' };
     }
     if (resolution.attempts >= COMPLETION_RETRY_MAX) {
@@ -306,9 +317,16 @@ function decideAutoResolution(intent, head_review, now) {
       reason: head_review.failure_reason || 'auto_review_failed'
     };
   }
-  return head_review.review_attempt_id === null
-    ? { kind: 'dispatch_auto_review' }
-    : null;
+  // An in-progress journal is RE-DRIVEN, never left alone (UI-hk74 review F2).
+  // The drive is idempotent on the attempt marker: a terminal marker settles
+  // the attempt, a live one is adopted by its recorded pid, and only a journal
+  // with no marker at all spawns. Returning null on a journal that had already
+  // minted `review_attempt_id` stranded every restart in the middle of a
+  // review — including the marker-only crash window §7 asks reconcile to adopt.
+  // The opposite window (attempt recorded, marker lost) is closed before this
+  // ever runs: the transport's own startup reconcile fails that journal, and a
+  // failed journal is answered above.
+  return { kind: 'dispatch_auto_review' };
 }
 
 /**
@@ -775,6 +793,12 @@ export function createCompletionActionDriver(deps) {
         );
         return;
       }
+    }
+    // Membership, not creation, is the §3 success condition for this family, so
+    // it is checked whether the Bead was just created or carried in from the
+    // retry record — a `repair_bead_record_failed` re-run has the id already and
+    // must still get it into the intent.
+    if (!current.repair_bead_ids.includes(linked.bead_id)) {
       const recorded = deps.store.recordCompletionRepairBead(deps.workspace, {
         root_bead_id,
         op_id: create_op.op_id,
@@ -1503,8 +1527,11 @@ export function createCompletionActionDriver(deps) {
    * @param {string} root_bead_id
    * @param {'resume_root'|'create_repair'} kind
    * @param {any} fact
+   * @param {{ repair_bead_id?: string|null, continuation?: { continuation: 'prior_session'|'fresh_current', decision_token: string }|null }|null} [pinned] - The
+   * §3 durable inputs a RETRY re-runs on. Absent on a first dispatch, which
+   * has nothing pinned yet and reads the live record instead.
    */
-  async function startRepair(root_bead_id, kind, fact) {
+  async function startRepair(root_bead_id, kind, fact, pinned = null) {
     const queue = deps.store.snapshot(deps.workspace);
     const current = queue.completion_intents?.[root_bead_id];
     const failure_key = fact?.failure_key;
@@ -1543,11 +1570,19 @@ export function createCompletionActionDriver(deps) {
       const continuation_action = queue.merge_queue?.find(
         (/** @type {any} */ entry) => entry.bead_id === root_bead_id
       )?.continuation_action;
-      const continuation =
-        continuation_action?.subject_bead_id === current.subject.bead_id &&
-        (continuation_action.continuation === 'prior_session' ||
-          continuation_action.continuation === 'fresh_current') &&
-        continuation_action.decision_token
+      // A retry re-dispatches on the SAME continuation decision the failed run
+      // carried (§3): re-reading the live record would let a decision the user
+      // has since changed — or one the failure itself never persisted — silently
+      // become a different dispatch.
+      const continuation = pinned?.continuation
+        ? {
+            continuation: pinned.continuation.continuation,
+            decision_token: pinned.continuation.decision_token
+          }
+        : continuation_action?.subject_bead_id === current.subject.bead_id &&
+            (continuation_action.continuation === 'prior_session' ||
+              continuation_action.continuation === 'fresh_current') &&
+            continuation_action.decision_token
           ? {
               continuation: continuation_action.continuation,
               decision_token: continuation_action.decision_token
@@ -1624,7 +1659,13 @@ export function createCompletionActionDriver(deps) {
         kind: 'create_repair',
         failure_key,
         attempt_id: null,
-        repair_bead_id: null,
+        // §3: a repair Bead already created by the failed run is carried into
+        // the re-run, so it reads back and records instead of creating a
+        // second linked Bead for the same failure.
+        repair_bead_id:
+          typeof pinned?.repair_bead_id === 'string'
+            ? pinned.repair_bead_id
+            : null,
         status: 'prepared'
       }
     });
@@ -1689,6 +1730,15 @@ export function createCompletionActionDriver(deps) {
         recordResolutionError(root_bead_id, 'metadata_check_unreadable');
         return;
       }
+      // §10: a gate that could not READ the Bead is not a verdict about it.
+      // Without this, an unreachable `bd` turned every `waiting_metadata` row
+      // into `needs_human` through `review_receipt_invalid`, which the policy
+      // table classifies as human — the exact opposite of "keep the phase and
+      // wait for the next event".
+      if (gated?.authority_unreadable === true) {
+        recordResolutionError(root_bead_id, 'metadata_check_unreadable');
+        return;
+      }
       const fact = factFromGate(gated);
       if (fact.state === 'undecidable') {
         const again = classifyCompletionFailure(fact.reason);
@@ -1740,15 +1790,31 @@ export function createCompletionActionDriver(deps) {
   /**
    * Re-run the gate for a retry whose original failure was a gate/verify spawn.
    *
+   * The §3 durable inputs for this family are `head_sha` and `base_sha`, and
+   * the gate re-runs on the subject they were copied from. A subject that has
+   * MOVED since makes the pinned spawn moot — there is nothing left to re-run
+   * for that commit — and the answer for it is the same `gating` the retry
+   * would return to anyway, so it settles as success rather than burning the
+   * remaining budget on a failure about a commit nobody is merging.
+   *
    * @param {string} root_bead_id
+   * @param {any} op - The pinned `auto_resolution.op`.
    * @returns {Promise<boolean>} Whether the gate produced a verdict at all.
    */
-  async function retryGate(root_bead_id) {
+  async function retryGate(root_bead_id, op) {
     const intent = deps.store.snapshot(deps.workspace).completion_intents?.[
       root_bead_id
     ];
     if (!intent) {
       return false;
+    }
+    if (
+      (typeof op?.head_sha === 'string' &&
+        intent.subject.head_sha !== op.head_sha) ||
+      (typeof op?.base_sha === 'string' &&
+        intent.subject.base_sha !== op.base_sha)
+    ) {
+      return true;
     }
     try {
       const gated = await deps.prActions.completionGate(
@@ -1813,8 +1879,18 @@ export function createCompletionActionDriver(deps) {
     if (
       !before ||
       before.phase !== 'retrying' ||
-      resolution?.class !== 'retry' ||
-      before.active_op
+      resolution?.class !== 'retry'
+    ) {
+      return;
+    }
+    // The failing operation is still journaled — `settleFailure` preserves it —
+    // and retiring it is part of spending the attempt (review F1). Only the
+    // exact op the record names may go; anything else is a live operation this
+    // retry has no claim on, and the caller waits for it instead.
+    const stale_op_id = before.active_op ? before.active_op.op_id : null;
+    if (
+      stale_op_id !== null &&
+      stale_op_id !== resolution.op.completion_op_id
     ) {
       return;
     }
@@ -1838,7 +1914,8 @@ export function createCompletionActionDriver(deps) {
             ? now() + COMPLETION_RETRY_DELAYS_MS[attempts]
             : null,
         last_error: null
-      }
+      },
+      supersede_op_id: stale_op_id
     });
     if (!bumped.ok) {
       terminalize(
@@ -1850,10 +1927,18 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     notify();
+    // Every re-run reads the §3 durable inputs, never a fresh observation: the
+    // record is what makes a retry after a restart repeat the SAME effect
+    // rather than open a second repair Bead or ask the continuation question
+    // again.
     const fact = { failure_key: resolution.op.failure_key, evidence: null };
+    const pinned = {
+      repair_bead_id: resolution.op.repair_bead_id,
+      continuation: resolution.op.continuation
+    };
     let gate_ok = false;
     if (policy.effect === 'create_repair') {
-      await startRepair(root_bead_id, 'create_repair', fact);
+      await startRepair(root_bead_id, 'create_repair', fact, pinned);
     } else if (policy.effect === 'dispatch_repair') {
       // A repair Bead in the record means the create half already landed, so the
       // re-run is the linked-repair dispatch; without one the failure belonged to
@@ -1861,12 +1946,13 @@ export function createCompletionActionDriver(deps) {
       await startRepair(
         root_bead_id,
         resolution.op.repair_bead_id ? 'create_repair' : 'resume_root',
-        fact
+        fact,
+        pinned
       );
     } else if (policy.effect === 'retry_cleanup') {
       await startCleanupReplay(root_bead_id, fact);
     } else {
-      gate_ok = await retryGate(root_bead_id);
+      gate_ok = await retryGate(root_bead_id, resolution.op);
     }
     const after_queue = deps.store.snapshot(deps.workspace);
     const after = after_queue.completion_intents?.[root_bead_id];

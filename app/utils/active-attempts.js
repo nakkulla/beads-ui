@@ -41,6 +41,57 @@ export function isImplementationAttempt(attempt) {
 }
 
 /**
+ * @typedef {Object} HeadReviewAttemptState
+ * @property {any} attempt
+ * @property {'head_review'|'head_repair'} kind
+ * @property {'click'|'auto'|null} origin
+ * @property {number|null} started_at
+ */
+/**
+ * The head-review lane's still-running attempts, folded onto their beads
+ * (UI-hk74 §7).
+ *
+ * Deliberately SEPARATE from {@link activeAttemptStates}: occupancy is an
+ * implementation-attempt question and stays exactly as it was, while these
+ * sessions are real running work a person must be able to see. The monitor
+ * draws them as NON-OCCUPYING tiles — the bead itself keeps its PR 대기 seat.
+ *
+ * Only `running` counts. A settled review is history, and the 완료 레인 배지
+ * already reports it.
+ *
+ * @param {Record<string, any>} attempts
+ * @returns {Map<string, HeadReviewAttemptState>}
+ */
+export function headReviewAttemptStates(attempts) {
+  const values = /** @type {any[]} */ (Object.values(attempts || {}));
+  /** @type {Map<string, HeadReviewAttemptState>} */
+  const winners = new Map();
+  for (const a of values) {
+    if (
+      !a ||
+      typeof a.bead_id !== 'string' ||
+      a.bead_id.length === 0 ||
+      (a.kind !== 'head_review' && a.kind !== 'head_repair') ||
+      a.status !== 'running'
+    ) {
+      continue;
+    }
+    const started_at = typeof a.started_at === 'number' ? a.started_at : null;
+    const prior = winners.get(a.bead_id);
+    if (prior && (prior.started_at ?? 0) > (started_at ?? 0)) {
+      continue;
+    }
+    winners.set(a.bead_id, {
+      attempt: a,
+      kind: a.kind,
+      origin: a.origin === 'click' || a.origin === 'auto' ? a.origin : null,
+      started_at
+    });
+  }
+  return winners;
+}
+
+/**
  * @typedef {Object} ActiveAttemptState
  * @property {any} attempt - The raw attempt record that won its bead.
  * @property {'running'|'paused'|'failed'} run_state

@@ -7626,6 +7626,149 @@ describe('worker/queue-store completion auto-resolution (UI-hk74)', () => {
     return createQueueStore();
   }
 
+  const FAILURE_KEY = {
+    stage: 'repair_create',
+    reason: 'repair_bead_create_failed',
+    subject_sha: HEAD_SHA,
+    base_sha: BASE_SHA,
+    result_digest: 'd'.repeat(64)
+  };
+
+  test('holds the retrying phase while a re-run opens its operation', () => {
+    const store = writeIntent({
+      phase: 'retrying',
+      auto_resolution: resolutionOf()
+    });
+
+    const prepared = store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'completion-abc',
+        kind: 'create_repair',
+        failure_key: FAILURE_KEY,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    expect(prepared.ok).toBe(true);
+    expect(prepared.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'retrying',
+      active_op: { kind: 'create_repair' }
+    });
+  });
+
+  test('preserves the retry budget across a re-run and a cold reload', () => {
+    const store = writeIntent({
+      phase: 'retrying',
+      auto_resolution: resolutionOf({ attempts: 2 })
+    });
+    store.prepareCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      phase: 'repairing',
+      op: {
+        op_id: 'completion-abc',
+        kind: 'create_repair',
+        failure_key: FAILURE_KEY,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const reloaded =
+      createQueueStore().snapshot(WS).completion_intents['UI-root'];
+
+    expect(reloaded).toMatchObject({
+      phase: 'retrying',
+      auto_resolution: { attempts: 2 }
+    });
+  });
+
+  test('releases the phase and the record together on a consumed operation', () => {
+    const store = writeIntent({
+      phase: 'retrying',
+      auto_resolution: resolutionOf(),
+      active_op: {
+        op_id: 'completion-abc',
+        kind: 'retry_cleanup',
+        failure_key: FAILURE_KEY,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const advanced = store.advanceCompletionOp(WS, {
+      root_bead_id: 'UI-root',
+      op_id: 'completion-abc',
+      status: 'consumed',
+      next_phase: 'cleaning',
+      clear: true
+    });
+
+    expect(advanced.ok).toBe(true);
+    expect(advanced.queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'cleaning',
+      auto_resolution: null
+    });
+  });
+
+  test('retires the named failed operation with the budget it spends', () => {
+    const store = writeIntent({
+      phase: 'retrying',
+      auto_resolution: resolutionOf(),
+      active_op: {
+        op_id: 'completion-abc',
+        kind: 'create_repair',
+        failure_key: FAILURE_KEY,
+        attempt_id: null,
+        repair_bead_id: null,
+        status: 'prepared'
+      }
+    });
+
+    const bumped = store.updateCompletionAutoResolution(WS, {
+      root_bead_id: 'UI-root',
+      patch: { attempts: 2, next_at: null, last_error: null },
+      supersede_op_id: 'completion-abc'
+    });
+
+    expect(bumped.ok).toBe(true);
+    expect(bumped.queue.completion_intents['UI-root']).toMatchObject({
+      active_op: null,
+      auto_resolution: { attempts: 2 }
+    });
+  });
+
+  test('refuses to retire an operation the record does not name', () => {
+    const store = writeIntent({
+      phase: 'retrying',
+      auto_resolution: resolutionOf(),
+      active_op: {
+        op_id: 'completion-live',
+        kind: 'dispatch_repair',
+        failure_key: FAILURE_KEY,
+        attempt_id: 'attempt-1',
+        repair_bead_id: 'UI-repair',
+        status: 'dispatched'
+      }
+    });
+
+    const bumped = store.updateCompletionAutoResolution(WS, {
+      root_bead_id: 'UI-root',
+      patch: { attempts: 2 },
+      supersede_op_id: 'completion-abc'
+    });
+
+    expect(bumped.ok).toBe(false);
+    expect(store.snapshot(WS).completion_intents['UI-root']).toMatchObject({
+      active_op: { op_id: 'completion-live' }
+    });
+  });
+
   test('round-trips an auto_resolution in its own phase', () => {
     const store = writeIntent({
       phase: 'retrying',
@@ -8103,6 +8246,109 @@ describe('worker/queue-store — 자동 리뷰 enrolment (UI-hk74 §6)', () => {
       queue.merge_queue.find((entry) => entry.bead_id === 'UI-root')
         ?.head_review ?? null
     ).toBe(null);
+  });
+
+  test('promotes a running review attempt origin on the click', () => {
+    const store = enrolableStore();
+    store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+    const authority_id = String(
+      store
+        .snapshot(WS)
+        .merge_queue.find((entry) => entry.bead_id === 'UI-root')?.authority?.id
+    );
+    store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review-1',
+      patch: {
+        bead_id: 'UI-root',
+        kind: 'head_review',
+        origin: 'auto',
+        authority_id,
+        head_sha: HEAD,
+        status: 'running'
+      }
+    });
+    store.setHeadReviewState(WS, {
+      bead_id: 'UI-root',
+      authority_id,
+      head_sha: HEAD,
+      expected_state: 'pending',
+      patch: { state: 'reviewing', review_attempt_id: 'review-1' }
+    });
+
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
+    });
+
+    expect(store.snapshot(WS).attempts['review-1'].origin).toBe('click');
+  });
+
+  test('keeps a promoted origin when the transport settles the attempt', () => {
+    const store = enrolableStore();
+    store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review-1',
+      patch: {
+        bead_id: 'UI-root',
+        kind: 'head_review',
+        origin: 'click',
+        status: 'running'
+      }
+    });
+
+    store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review-1',
+      patch: { origin: 'auto', status: 'done' }
+    });
+
+    expect(store.snapshot(WS).attempts['review-1'].origin).toBe('click');
+  });
+
+  test('leaves a settled review attempt origin alone on the click', () => {
+    const store = enrolableStore();
+    store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+    const authority_id = String(
+      store
+        .snapshot(WS)
+        .merge_queue.find((entry) => entry.bead_id === 'UI-root')?.authority?.id
+    );
+    store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review-old',
+      patch: {
+        bead_id: 'UI-root',
+        kind: 'head_review',
+        origin: 'auto',
+        authority_id,
+        status: 'done'
+      }
+    });
+    store.setHeadReviewState(WS, {
+      bead_id: 'UI-root',
+      authority_id,
+      head_sha: HEAD,
+      expected_state: 'pending',
+      patch: { state: 'reviewing', review_attempt_id: 'review-old' }
+    });
+
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
+    });
+
+    expect(store.snapshot(WS).attempts['review-old'].origin).toBe('auto');
   });
 
   test('refuses a second enrolment over an existing journal', () => {
