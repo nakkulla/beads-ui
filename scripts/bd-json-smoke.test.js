@@ -107,6 +107,14 @@ describe('buildEnv', () => {
     }
   });
 
+  test('disables the bd Dolt auto-start so init spawns no workspace server', () => {
+    const root = makeTempRoot();
+
+    const env = buildEnv(root);
+
+    expect(env.BEADS_DOLT_AUTO_START).toBe('0');
+  });
+
   test('points HOME and the XDG directories inside the temp root', () => {
     const root = makeTempRoot();
 
@@ -193,6 +201,11 @@ describe('smoke isolation guards', () => {
     expect(SMOKE_SOURCE).toContain("server.kill('SIGTERM')");
     expect(SMOKE_SOURCE).toContain("server.kill('SIGKILL')");
     expect(SMOKE_SOURCE).not.toContain('pkill');
+  });
+
+  test('stops a workspace-local bd Dolt server before removing its data dir', () => {
+    expect(SMOKE_SOURCE).toContain("'dolt-server.pid'");
+    expect(SMOKE_SOURCE).toContain("['dolt', 'stop']");
   });
 
   test('never falls back to live state when a preflight fails', () => {

@@ -159,6 +159,12 @@ export function buildEnv(temp_root) {
   env.XDG_RUNTIME_DIR = xdg_runtime;
   env.TMPDIR = path.join(temp_root, 'tmp');
   mkdirSync(env.TMPDIR, { recursive: true });
+  // `bd init --server --external` still auto-starts a workspace-local
+  // `dolt sql-server` (detached, tracked only by `.beads/dolt-server.pid`)
+  // unless auto-start is off. That server outlived the temp root on every
+  // smoke run and leaked as an orphan listener; bd reaches our own server
+  // through the socket regardless, so the smoke never needs it.
+  env.BEADS_DOLT_AUTO_START = '0';
   return env;
 }
 
@@ -792,6 +798,16 @@ async function runSmokeBody() {
 
     return { ok: failures.length === 0, failures, evidence };
   } finally {
+    // Belt and braces for the auto-start guard above: a bd that ignored it
+    // records the workspace-local server in this pid file, and `bd dolt stop`
+    // is the only owner-side way to end that server before its data dir goes.
+    if (existsSync(path.join(workspace, '.beads', 'dolt-server.pid'))) {
+      try {
+        await runBd(context, bd_bin, ['dolt', 'stop']);
+      } catch {
+        // Best effort only; the guard above is the real fix.
+      }
+    }
     if (server && server.pid) {
       try {
         server.kill('SIGTERM');
