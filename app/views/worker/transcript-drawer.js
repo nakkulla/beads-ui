@@ -256,6 +256,7 @@ function formatAgo(at, now_ms) {
  * @property {string} [runner] - claude/codex/ccx.
  * @property {string} [model]
  * @property {string} [role]
+ * @property {string} [agent_type] - Claude subagent type (UI-2mpn §6.1).
  * @property {string} [effort]
  * @property {string} [worktree] - Worktree path shown in the bar.
  * @property {string} [status] - running/done/failed (for the bar label).
@@ -484,39 +485,140 @@ export function createTranscriptDrawer(mount_element, options = {}) {
    * {@link FOLD_AT} renders as before — folding two lines hides more than it
    * saves.
    *
-   * @param {import('./transcript-render.js').DisplayLine[]} lines
-   * @returns {Array<{ kind: 'line', idx: number, line: import('./transcript-render.js').DisplayLine } | { kind: 'group', idx: number, tool: string, lines: Array<{ idx: number, line: import('./transcript-render.js').DisplayLine }> }>}
+   * Runs over already-positioned entries rather than the raw list, so the SAME
+   * rule applies inside a subagent fold: a child's read sweep collapses within
+   * its own group and never joins a run outside it (UI-2mpn §6.4).
+   *
+   * @param {Array<{ idx: number, line: import('./transcript-render.js').DisplayLine }>} entries
+   * @returns {any[]}
    */
-  function segmentsOf(lines) {
+  function foldRuns(entries) {
     /** @type {any[]} */
     const out = [];
     let i = 0;
-    while (i < lines.length) {
-      const line = lines[i];
+    while (i < entries.length) {
+      const { idx, line } = entries[i];
       if (line.kind === 'tool') {
         let j = i;
         while (
-          j < lines.length &&
-          lines[j].kind === 'tool' &&
-          lines[j].tool === line.tool
+          j < entries.length &&
+          entries[j].line.kind === 'tool' &&
+          entries[j].line.tool === line.tool
         ) {
           j += 1;
         }
-        if (j - i >= FOLD_AT && !unfolded.has(i)) {
+        if (j - i >= FOLD_AT && !unfolded.has(idx)) {
           out.push({
             kind: 'group',
-            idx: i,
+            idx,
             tool: line.tool || '',
-            lines: lines.slice(i, j).map((l, k) => ({ idx: i + k, line: l }))
+            lines: entries.slice(i, j)
           });
           i = j;
           continue;
         }
       }
-      out.push({ kind: 'line', idx: i, line });
+      out.push({ kind: 'line', idx, line });
       i += 1;
     }
     return out;
+  }
+
+  /**
+   * Split the transcript into top-level segments, folding every Claude subagent
+   * under the `Agent` call that launched it (UI-2mpn §6.4).
+   *
+   * A child line is never dropped — it is moved: the `Agent` line becomes the
+   * group's header and each line tagged with its launch id renders inside,
+   * collapsed until clicked. Children whose header is behind the snapshot
+   * boundary still group, under an anonymous header, because a line that says
+   * whose work it is beats a line mixed into the parent's.
+   *
+   * @param {import('./transcript-render.js').DisplayLine[]} lines
+   * @returns {any[]}
+   */
+  function segmentsOf(lines) {
+    /** @type {any[]} */
+    const slots = [];
+    /** @type {Map<string, any>} */
+    const by_launch = new Map();
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      const parent = line.parent_tool_use_id;
+      if (typeof parent === 'string' && parent.length > 0) {
+        let seg = by_launch.get(parent);
+        if (!seg) {
+          seg = {
+            kind: 'subagent',
+            idx: i,
+            launch_id: parent,
+            agent_type: null,
+            header: null,
+            lines: []
+          };
+          by_launch.set(parent, seg);
+          slots.push(seg);
+        }
+        seg.lines.push({ idx: i, line });
+        continue;
+      }
+      if (
+        line.kind === 'tool' &&
+        line.tool === 'Agent' &&
+        typeof line.launch_id === 'string' &&
+        line.launch_id.length > 0
+      ) {
+        const agent_type = subagentTypeOf(line);
+        const existing = by_launch.get(line.launch_id);
+        if (existing) {
+          existing.header = { idx: i, line };
+          existing.agent_type = agent_type;
+          continue;
+        }
+        const seg = {
+          kind: 'subagent',
+          idx: i,
+          launch_id: line.launch_id,
+          agent_type,
+          header: { idx: i, line },
+          lines: []
+        };
+        by_launch.set(line.launch_id, seg);
+        slots.push(seg);
+        continue;
+      }
+      slots.push({ kind: 'entry', idx: i, line });
+    }
+    /** @type {any[]} */
+    const out = [];
+    let i = 0;
+    while (i < slots.length) {
+      if (slots[i].kind !== 'entry') {
+        out.push(slots[i]);
+        i += 1;
+        continue;
+      }
+      let j = i;
+      while (j < slots.length && slots[j].kind === 'entry') {
+        j += 1;
+      }
+      out.push(...foldRuns(slots.slice(i, j)));
+      i = j;
+    }
+    return out;
+  }
+
+  /**
+   * The `subagent_type` an `Agent` tool line was called with, or null.
+   *
+   * @param {import('./transcript-render.js').DisplayLine} line
+   * @returns {string|null}
+   */
+  function subagentTypeOf(line) {
+    const input = /** @type {any} */ (line.input);
+    return input && typeof input.subagent_type === 'string'
+      ? input.subagent_type
+      : null;
   }
 
   /**
@@ -692,7 +794,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     // ≤640px can hide it (title keeps the full path) without dropping the rest.
     const metaBits = (
       launch_id
-        ? [meta.model, meta.effort]
+        ? [meta.agent_type, meta.model, meta.effort]
         : [meta.runner, meta.model, meta.effort]
     )
       .filter(Boolean)
@@ -782,9 +884,11 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         ${lines.length === 0
           ? html`<div class="sv__empty">세션 로그 없음</div>`
           : segmentsOf(lines).map((seg) =>
-              seg.kind === 'group'
-                ? groupTemplate(seg)
-                : lineTemplate(seg.idx, seg.line)
+              seg.kind === 'subagent'
+                ? subagentTemplate(seg)
+                : seg.kind === 'group'
+                  ? groupTemplate(seg)
+                  : lineTemplate(seg.idx, seg.line)
             )}
       </div>
       ${pending || thinking
@@ -824,6 +928,54 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       <span class="sv__group-name">${seg.tool}</span>
       <span class="sv__group-count">${seg.lines.length}</span>
       <span class="sv__group-caret" aria-hidden="true">▸</span>
+    </div>`;
+  }
+
+  /**
+   * One folded Claude subagent (UI-2mpn §6.4): the `Agent` call as the header,
+   * its child lines indented under it, collapsed by default.
+   *
+   * @param {{ idx: number, launch_id: string, agent_type: string|null, header: { idx: number, line: import('./transcript-render.js').DisplayLine }|null, lines: Array<{ idx: number, line: import('./transcript-render.js').DisplayLine }> }} seg
+   */
+  function subagentTemplate(seg) {
+    const open = unfolded.has(seg.idx);
+    const header = seg.header ? seg.header.line : null;
+    // No header means the snapshot began mid-subagent, so nothing is known
+    // about how it ended — the state glyph is omitted rather than guessed.
+    const state = !header
+      ? ''
+      : header.is_error === true
+        ? '✗'
+        : typeof header.result === 'string'
+          ? '✓'
+          : '⟳';
+    const detail = header && header.command ? header.command : '';
+    return html`<div class="sv__sub${open ? ' sv__sub--open' : ''}">
+      <div
+        class="sv__sub-head"
+        role="button"
+        tabindex="0"
+        title="펼치기"
+        @click=${() => unfoldGroup(seg.idx)}
+      >
+        <span class="sv__sub-icon" aria-hidden="true">🤖</span>
+        <span class="sv__sub-name">${seg.agent_type || 'subagent'}</span>
+        ${detail ? html`<span class="sv__sub-detail">${detail}</span>` : ''}
+        <span class="sv__sub-count">${seg.lines.length}줄</span>
+        ${state ? html`<span class="sv__sub-state">${state}</span>` : ''}
+        ${open
+          ? ''
+          : html`<span class="sv__sub-caret" aria-hidden="true">▸</span>`}
+      </div>
+      ${open
+        ? html`<div class="sv__sub-body">
+            ${foldRuns(seg.lines).map((child) =>
+              child.kind === 'group'
+                ? groupTemplate(child)
+                : lineTemplate(child.idx, child.line)
+            )}
+          </div>`
+        : ''}
     </div>`;
   }
 

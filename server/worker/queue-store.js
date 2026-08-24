@@ -112,11 +112,12 @@
  * Null on an attempt whose runner reported none and on every record written
  * before the field existed — the display is fail-quiet, so a null simply
  * renders nothing.
- * @property {UsageLeg[]} usage_legs - Completed nested provider usage receipts.
- * Legacy attempts normalize this optional field to an empty list.
+ * @property {UsageLeg[]} usage_legs - Completed nested provider usage receipts
+ * (Codex delegation units and Claude subagents alike). Legacy attempts
+ * normalize this optional field to an empty list.
  * @property {DelegationSession[]} delegation_sessions - Validated delegated
- * Codex session summaries. Legacy attempts normalize this optional field to an
- * empty list.
+ * session summaries, same two providers. Legacy attempts normalize this
+ * optional field to an empty list.
  *
  * RETIRED merge-axis fields (worker-phase2 §2). New attempts never write them,
  * but attempt history is immutable (§9), so the shape is preserved so a legacy
@@ -261,30 +262,47 @@
  * failure identity the session was asked to repair.
  */
 /**
+ * One completed nested provider receipt. Two providers share the shape and no
+ * durable field was added for the second (UI-2mpn §5.3): `provider:'codex'`
+ * carries the two Codex roles, a UTC-second `completed_at` string, and neither
+ * `agent_type` nor `agent_id`; `provider:'claude'` carries `role:'subagent'`,
+ * the two optional Claude-only agent fields, and epoch-ms (or null) times,
+ * because a stream line with no `timestamp` gives the parser nothing to date
+ * the receipt with and inventing a clock read would break replay equality.
+ *
  * @typedef {Object} UsageLeg
  * @property {string} receipt_id
- * @property {'codex'} provider
- * @property {'implementation'|'review-consult'} role
+ * @property {'codex'|'claude'} provider
+ * @property {'implementation'|'review-consult'|'subagent'} role
+ * @property {string|null} [agent_type] - Claude only: the `subagent_type` the
+ * `Agent` call named, or the `agentType` its result reported.
+ * @property {string|null} [agent_id] - Claude only: `tool_use_result.agentId`,
+ * preserved for display since the matching key stays the launch id.
  * @property {string} session_id
  * @property {string} turn_id
- * @property {string} model
+ * @property {string|null} model
  * @property {string|null} effort
  * @property {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number, reasoning_output_tokens: number }} usage
- * @property {string} completed_at
+ * @property {string|number|null} completed_at
  */
 /**
+ * One delegated session summary, on the same two-provider split as
+ * {@link UsageLeg}. For `provider:'claude'`, `session_id` and `turn_id` are
+ * both the launch id and every time field is `number|null`.
+ *
  * @typedef {Object} DelegationSession
  * @property {string} launch_id
- * @property {'codex'} provider
- * @property {'implementation'|'review-consult'} role
- * @property {string} model
+ * @property {'codex'|'claude'} provider
+ * @property {'implementation'|'review-consult'|'subagent'} role
+ * @property {string|null} [agent_type] - Claude only.
+ * @property {string|null} model
  * @property {string|null} effort
  * @property {string} session_id
  * @property {string|null} turn_id
  * @property {'running'|'done'|'failed'|'interrupted'} status
- * @property {number} started_at
- * @property {string|null} completed_at
- * @property {number} last_event_at
+ * @property {number|null} started_at
+ * @property {string|number|null} completed_at
+ * @property {number|null} last_event_at
  */
 /**
  * @typedef {Object} StaleWorkSummary
@@ -3124,13 +3142,21 @@ function completeIntentForDone(q, bead_id) {
  * connections (and thus all clients dragging concurrently) observe one coherent
  * in-memory revision, making the CAS authoritative in-process.
  *
- * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs') }} [options]
+ * @param {{ now?: () => number, randomUUID?: () => string, filePathFor?: (workspace: string) => string, fs?: typeof import('node:fs'), delegationStore?: ReturnType<typeof import('./delegation-store.js').createDelegationStore> }} [options]
  */
 export function createQueueStore(options = {}) {
   const now = options.now || (() => Date.now());
   const randomUUID = options.randomUUID || (() => nodeCrypto.randomUUID());
   const filePathFor = options.filePathFor || queueFilePath;
   const fs = options.fs || nodeFs;
+  /**
+   * The process-wide live subagent tally (UI-2mpn §5.2), when one is wired. A
+   * Claude subagent has no receipt file to scan, so terminal settlement is the
+   * only moment its sessions and receipts can become durable.
+   *
+   * @type {ReturnType<typeof import('./delegation-store.js').createDelegationStore>|null}
+   */
+  const delegation_store = options.delegationStore || null;
 
   /**
    * Provenance fields for a row the automatic enroller queues. An automatic
@@ -3307,16 +3333,26 @@ export function createQueueStore(options = {}) {
     } catch {
       // Terminal settlement still persists without optional monitor evidence.
     }
+    // The live Claude subagent state joins the same two lists, then the entry
+    // is dropped: the store holds only LIVE attempts, and this write is the
+    // moment the attempt stops being one (UI-2mpn §5.4).
+    const live_delegations = delegation_store
+      ? delegation_store.get(workspace, attempt_id)
+      : { sessions: [], legs: [] };
+    if (delegation_store) {
+      delegation_store.clearAttempt(workspace, attempt_id);
+    }
     return {
       patch: {
         ...patch,
-        ...(receipts_read
+        ...(receipts_read || live_delegations.legs.length > 0
           ? {
               usage_legs: normalizeUsageLegs([
                 ...(Array.isArray(current.usage_legs)
                   ? current.usage_legs
                   : []),
-                ...scanned_receipts.legs
+                ...scanned_receipts.legs,
+                ...live_delegations.legs
               ])
             }
           : {}),
@@ -3328,6 +3364,7 @@ export function createQueueStore(options = {}) {
         // from a re-observed stream. Matches the terminal recovery path's order.
         delegation_sessions: finalizeDelegationSessions(
           [
+            ...live_delegations.sessions,
             ...scanned_sessions,
             ...(Array.isArray(current.delegation_sessions)
               ? current.delegation_sessions

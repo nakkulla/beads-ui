@@ -564,3 +564,113 @@ describe('provider and role usage projection (UI-orfj Phase 1)', () => {
     expect(projected?.roles.orchestrator?.codex?.legs).toHaveLength(2);
   });
 });
+
+describe('claude subagent legs (UI-2mpn §5.5)', () => {
+  /**
+   * @param {Partial<Record<string, any>>} [over]
+   * @returns {Record<string, any>}
+   */
+  function attemptWithSubagent(over = {}) {
+    return {
+      outer: {
+        attempt_id: 'outer',
+        bead_id: 'UI-1',
+        runner: 'claude',
+        usage: {
+          input_tokens: 1,
+          output_tokens: 2,
+          cache_read_input_tokens: 3,
+          cache_creation_input_tokens: 4
+        },
+        usage_legs: [
+          {
+            receipt_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+            provider: 'claude',
+            role: 'subagent',
+            agent_type: 'general-purpose',
+            agent_id: 'agt_9f3c21d4c0',
+            model: 'claude-sonnet-4-5-20250929',
+            session_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+            turn_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+            effort: null,
+            usage: {
+              input_tokens: 30,
+              output_tokens: 200,
+              cache_read_input_tokens: 1000,
+              cache_creation_input_tokens: 100,
+              reasoning_output_tokens: 0
+            },
+            completed_at: 3000
+          }
+        ],
+        ...over
+      }
+    };
+  }
+
+  test('adds a subagent receipt to the Claude headline', () => {
+    const projected = sumAttemptUsage(attemptWithSubagent(), 'UI-1');
+
+    expect(projected?.providers.claude?.subtotal).toBe(1340);
+  });
+
+  test('leaves the Codex headline untouched by a subagent receipt', () => {
+    const projected = sumAttemptUsage(attemptWithSubagent(), 'UI-1');
+
+    expect(projected?.providers.codex).toBeUndefined();
+  });
+
+  test('projects the receipt into a subagent role leg', () => {
+    const projected = sumAttemptUsage(attemptWithSubagent(), 'UI-1');
+
+    expect(projected?.roles.subagent?.claude?.legs).toEqual([
+      {
+        provider: 'claude',
+        role: 'subagent',
+        attempt_id: 'outer',
+        receipt_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+        agent_type: 'general-purpose',
+        agent_id: 'agt_9f3c21d4c0',
+        model: 'claude-sonnet-4-5-20250929',
+        session_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+        turn_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+        completed_at: 3000,
+        usage: {
+          input_tokens: 30,
+          output_tokens: 200,
+          cache_read_input_tokens: 1000,
+          cache_creation_input_tokens: 100,
+          reasoning_output_tokens: 0
+        },
+        subtotal: 1330
+      }
+    ]);
+  });
+
+  test('makes no role leg for a session that reported no receipt', () => {
+    const attempts = attemptWithSubagent({ usage_legs: [] });
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.roles.subagent).toBeUndefined();
+    expect(projected?.providers.claude?.subtotal).toBe(10);
+  });
+
+  test('skips a claude leg whose role belongs to codex', () => {
+    const attempts = attemptWithSubagent();
+    attempts.outer.usage_legs[0].role = 'implementation';
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.providers.claude?.subtotal).toBe(10);
+  });
+
+  test('counts a repeated receipt id once', () => {
+    const attempts = attemptWithSubagent();
+    attempts.outer.usage_legs.push({ ...attempts.outer.usage_legs[0] });
+
+    const projected = sumAttemptUsage(attempts, 'UI-1');
+
+    expect(projected?.providers.claude?.subtotal).toBe(1340);
+  });
+});

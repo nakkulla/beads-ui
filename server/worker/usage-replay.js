@@ -15,7 +15,14 @@
  * Events after the restart are gone for good, so the result is marked
  * `replayed` — a partial tally that says so beats a missing badge.
  *
+ * The same pass rebuilds the attempt's subagent sessions and receipts (UI-2mpn
+ * §5.4) through the adapter's `liftDelegation` — same lines, same lift, same
+ * store the live path writes. Those values carry no `replayed` marker because
+ * they cannot be partial: every field comes from the line's own `timestamp`, so
+ * a replayed session is byte-identical to the live one.
+ *
  * @import { createUsageStore } from './usage-store.js'
+ * @import { createDelegationStore } from './delegation-store.js'
  * @import { createSessionLog } from './session-log.js'
  */
 import { adapterSpec } from './runner/index.js';
@@ -30,6 +37,7 @@ import { adapterSpec } from './runner/index.js';
  * @param {{
  *   session_log: ReturnType<typeof createSessionLog>,
  *   usage_store: ReturnType<typeof createUsageStore>,
+ *   delegation_store?: ReturnType<typeof createDelegationStore>,
  *   workspace: string,
  *   attempt_id: string,
  *   end_offset?: number,
@@ -44,13 +52,28 @@ import { adapterSpec } from './runner/index.js';
 export function replayUsage(input) {
   const { session_log, usage_store, workspace, attempt_id, end_offset } = input;
   try {
-    const { liftUsage } = adapterSpec(input.runner ?? null);
+    const spec = adapterSpec(input.runner ?? null);
+    const { liftUsage } = spec;
+    // Undefined on the codex adapter, which is exactly the skip: a codex log
+    // has no subagent lines to lift, and calling a claude parser over it would
+    // only spend the pass.
+    const liftDelegation =
+      input.delegation_store && typeof spec.liftDelegation === 'function'
+        ? spec.liftDelegation
+        : null;
     let recorded = 0;
     const lines =
       typeof end_offset === 'number'
         ? session_log.read(workspace, attempt_id, { end_offset })
         : session_log.read(workspace, attempt_id);
     for (const raw of lines) {
+      if (liftDelegation && input.delegation_store) {
+        input.delegation_store.apply(
+          workspace,
+          attempt_id,
+          liftDelegation(raw)
+        );
+      }
       const lifted = liftUsage(raw);
       if (!lifted) {
         continue;

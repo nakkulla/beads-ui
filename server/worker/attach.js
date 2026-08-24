@@ -741,6 +741,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       store: runtime.queueStore,
       sessionLog: runtime.sessionLog,
       usage: runtime.usageStore,
+      delegation: runtime.delegationStore,
       probePid,
       kill_impl: options.kill_impl,
       ...(processController ? { processController } : {}),
@@ -758,6 +759,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     quickfixLanding,
     sessionLog: runtime.sessionLog,
     usage: runtime.usageStore,
+    delegation: runtime.delegationStore,
     admission,
     // Dispatch-time re-resolution (worker-base-scope-alignment §1): the cut and
     // the admission pin are taken from a base read HERE, not one captured at
@@ -1470,6 +1472,7 @@ function recoverRunningAttempts(att, key) {
   try {
     const q = att.runtime.queueStore.snapshot(key);
     const usage_store = att.runtime.usageStore;
+    const delegation_store = att.runtime.delegationStore;
     const session_log = att.runtime.sessionLog;
     for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
       const a = /** @type {any} */ (attempt);
@@ -1484,6 +1487,10 @@ function recoverRunningAttempts(att, key) {
         replayUsage({
           session_log,
           usage_store,
+          // Rebuilds the attempt's subagent rows and receipts off the same
+          // lines (UI-2mpn §5.4); the monitor started below continues at the
+          // same boundary, so the two never overlap.
+          delegation_store,
           workspace: key,
           attempt_id,
           // The adapter that WROTE this log, so the replay lifts usage the way

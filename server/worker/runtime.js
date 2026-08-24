@@ -17,6 +17,7 @@ import { isAnalyzerEffortValid } from '../../app/data/analyzer-efforts.js';
 import { kvGetJson, kvSetJson } from '../bd.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
 import { createActivityStore } from './activity-store.js';
+import { createDelegationStore } from './delegation-store.js';
 import { createExecPresetCoordinator } from './exec-preset-coordinator.js';
 import { createExternalPrStore } from './external-pr.js';
 import { createGh } from './gh.js';
@@ -43,6 +44,7 @@ import { createUsageStore } from './usage-store.js';
  * @property {ReturnType<typeof createPrObservationStore>} prObservations
  * @property {ReturnType<typeof createExternalPrStore>} externalPrs
  * @property {ReturnType<typeof createUsageStore>} usageStore
+ * @property {ReturnType<typeof createDelegationStore>} delegationStore
  * @property {ReturnType<typeof createActivityStore>} activityStore
  * @property {ReturnType<typeof createTitleCache>} titleCache
  * @property {ReturnType<typeof createRunnableCache>} runnableCache
@@ -100,7 +102,11 @@ export function validateAnalyzerSelection(selection) {
  * @returns {WorkerRuntime}
  */
 export function createWorkerRuntime() {
-  const queueStore = createQueueStore();
+  // Process-wide live subagent tally (UI-2mpn §5.2), on the same contract as
+  // the usage store below. Built BEFORE the queue store because the terminal
+  // settlement drains it into the durable patch in the same mutation.
+  const delegationStore = createDelegationStore();
+  const queueStore = createQueueStore({ delegationStore });
   const execPresetCoordinator = createExecPresetCoordinator({
     queueStore,
     presetStore: createExecPresetStore(),
@@ -180,6 +186,7 @@ export function createWorkerRuntime() {
     prObservations,
     externalPrs,
     usageStore,
+    delegationStore,
     activityStore,
     titleCache,
     runnableCache,

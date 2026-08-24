@@ -4707,6 +4707,54 @@ html[data-theme='dark'] {
   color: var(--text-dim);
 }
 
+/* Claude `Agent` 호출과 그 서브에이전트 줄 — 부모 줄과 섞이면 누구의 작업인지
+   읽을 수 없으므로 호출을 헤더로 삼아 아래로 접는다. 기본은 접힘. */
+.sv__sub {
+  margin: var(--sp-2) 0;
+}
+
+.sv__sub-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-8);
+  padding: var(--sp-3) var(--sp-12);
+  border-left: 2px solid var(--border-chip);
+  font-family: var(--font-mono);
+  font-size: var(--fs-chip-lg);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sv__sub-head:hover {
+  color: var(--text-primary);
+}
+
+.sv__sub-detail {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.sv__sub-count {
+  padding: 0 var(--sp-6);
+  border-radius: var(--r-10);
+  background: var(--bg-app);
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.sv__sub-state,
+.sv__sub-caret {
+  color: var(--text-dim);
+}
+
+.sv__sub-body {
+  margin-left: var(--sp-12);
+  border-left: 2px solid var(--border-empty-fill);
+}
+
 .sv__tool {
   margin: var(--sp-2) 0 var(--sp-2) var(--sp-2);
   padding-left: var(--sp-12);

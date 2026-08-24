@@ -7,6 +7,7 @@ import {
   consumeUsageReceiptFiles,
   ensureUsageReceiptInbox,
   gcUsageReceiptInboxes,
+  normalizeUsageLegs,
   readAttemptUsageReceipts
 } from './usage-receipts.js';
 
@@ -398,5 +399,105 @@ describe('attempt usage receipts', () => {
         process.env.XDG_STATE_HOME = prior;
       }
     }
+  });
+});
+
+describe('nested usage legs across providers (UI-2mpn §5.3)', () => {
+  const codex_leg = {
+    receipt_id: 'r-1',
+    provider: 'codex',
+    role: 'implementation',
+    session_id: 'thread-1',
+    turn_id: 'turn-1',
+    model: 'gpt-5.6-sol',
+    effort: null,
+    usage: {
+      input_tokens: 1,
+      output_tokens: 2,
+      cache_read_input_tokens: 3,
+      cache_creation_input_tokens: 4,
+      reasoning_output_tokens: 5
+    },
+    completed_at: '2026-08-24T01:00:09Z'
+  };
+  const claude_leg = {
+    receipt_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+    provider: 'claude',
+    role: 'subagent',
+    agent_type: 'general-purpose',
+    agent_id: 'agt_9f3c21d4c0',
+    session_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+    turn_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+    model: 'claude-sonnet-4-5-20250929',
+    effort: null,
+    usage: {
+      input_tokens: 30,
+      output_tokens: 200,
+      cache_read_input_tokens: 1000,
+      cache_creation_input_tokens: 100,
+      reasoning_output_tokens: 0
+    },
+    completed_at: 3000
+  };
+
+  test('accepts a claude subagent receipt unchanged', () => {
+    const result = normalizeUsageLegs([claude_leg]);
+
+    expect(result).toEqual([claude_leg]);
+  });
+
+  test('accepts a claude receipt whose result line carried no timestamp', () => {
+    const undated = { ...claude_leg, completed_at: null };
+
+    const result = normalizeUsageLegs([undated]);
+
+    expect(result).toEqual([undated]);
+  });
+
+  test('accepts a claude receipt whose model was never reported', () => {
+    const unnamed = { ...claude_leg, model: null };
+
+    const result = normalizeUsageLegs([unnamed]);
+
+    expect(result).toEqual([unnamed]);
+  });
+
+  test('leaves a codex receipt with no agent fields unchanged', () => {
+    const result = normalizeUsageLegs([codex_leg]);
+
+    expect(result).toEqual([codex_leg]);
+  });
+
+  test('rejects a claude receipt carrying a codex role', () => {
+    const result = normalizeUsageLegs([
+      { ...claude_leg, role: 'implementation' }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  test('rejects a claude receipt dated with a codex UTC string', () => {
+    const result = normalizeUsageLegs([
+      { ...claude_leg, completed_at: '2026-08-24T01:00:09Z' }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  test('rejects a codex receipt carrying agent_type', () => {
+    const result = normalizeUsageLegs([
+      { ...codex_leg, agent_type: 'general-purpose' }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  test('keeps the first record when a receipt id repeats', () => {
+    const result = normalizeUsageLegs([
+      claude_leg,
+      { ...claude_leg, agent_type: 'Explore' }
+    ]);
+
+    expect(result).toEqual([claude_leg]);
   });
 });

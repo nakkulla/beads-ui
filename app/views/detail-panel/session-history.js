@@ -37,8 +37,18 @@ const USAGE_BREAKDOWN = [
  */
 const REPLAYED_NOTE = '서버 재시작 복구 — 부분 집계';
 
-/** @type {ReadonlyArray<'implementation'|'review-consult'>} */
-const DELEGATION_ROLES = ['implementation', 'review-consult'];
+/**
+ * The delegated-leg rows, in render order, each with the provider that reports
+ * it (UI-2mpn §6.1). Claude subagents reuse the exact row shape Codex units
+ * have: same status glyph, same short-id, time, and token columns.
+ *
+ * @type {ReadonlyArray<{ role: 'implementation'|'review-consult'|'subagent', provider: 'codex'|'claude' }>}
+ */
+const DELEGATION_ROLES = [
+  { role: 'implementation', provider: 'codex' },
+  { role: 'review-consult', provider: 'codex' },
+  { role: 'subagent', provider: 'claude' }
+];
 
 /** @type {ReadonlyArray<'running'|'done'|'failed'|'interrupted'>} */
 const DELEGATION_STATUSES = ['running', 'done', 'failed', 'interrupted'];
@@ -108,10 +118,18 @@ function outerProjection(projection) {
 }
 
 /**
- * @param {string|undefined} completed_at
+ * A receipt's completion time as `HH:MM`. Codex writes an ISO string; a Claude
+ * subagent receipt carries epoch ms, or null when the stream line it came from
+ * had no `timestamp` of its own — which renders an empty cell, never a zero
+ * o'clock (UI-2mpn §5.3).
+ *
+ * @param {string|number|null|undefined} completed_at
  * @returns {string}
  */
 function completedTime(completed_at) {
+  if (typeof completed_at === 'number') {
+    return shortTime(completed_at);
+  }
   if (typeof completed_at !== 'string') {
     return '';
   }
@@ -120,21 +138,84 @@ function completedTime(completed_at) {
 }
 
 /**
+ * A model string without the dated build suffix Claude appends
+ * (`claude-opus-4-5-20251101` → `claude-opus-4-5`). Nothing is mapped to an
+ * alias: shortening is dropping a segment the row has no space for, not
+ * renaming a model the stream reported.
+ *
+ * @param {string|null|undefined} model
+ * @returns {string}
+ */
+function shortModel(model) {
+  return typeof model === 'string' ? model.replace(/-\d{8}$/, '') : '';
+}
+
+/**
+ * The short id a delegated row shows. A Claude subagent's `agentId` only exists
+ * once it finished, so a running row falls back to the tail of its launch id —
+ * the head is the constant `toolu_01` prefix and would identify nothing.
+ *
+ * @param {DelegationSession} session
+ * @param {Record<string, any>|null} leg
+ * @returns {{ text: string, title: string }}
+ */
+function shortIdOf(session, leg) {
+  if (session.provider !== 'claude') {
+    return {
+      text: session.session_id.slice(0, 8),
+      title: session.session_id
+    };
+  }
+  const agent_id = leg && typeof leg.agent_id === 'string' ? leg.agent_id : '';
+  return agent_id.length > 0
+    ? { text: agent_id.slice(0, 8), title: agent_id }
+    : { text: session.launch_id.slice(-8), title: session.launch_id };
+}
+
+/**
  * @typedef {Object} DelegationSession
  * @property {string} launch_id
- * @property {'codex'} provider
- * @property {'implementation'|'review-consult'} role
- * @property {string} model
+ * @property {'codex'|'claude'} provider
+ * @property {'implementation'|'review-consult'|'subagent'} role
+ * @property {string|null} [agent_type]
+ * @property {string|null} model
  * @property {string|null} [effort]
  * @property {string} session_id
  * @property {string|null} turn_id
  * @property {'running'|'done'|'failed'|'interrupted'} status
- * @property {number} started_at
- * @property {string|null} completed_at
- * @property {number} last_event_at
+ * @property {number|null} started_at
+ * @property {string|number|null} completed_at
+ * @property {number|null} last_event_at
  */
 
 /**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function optionalName(value) {
+  return (
+    value === null || (typeof value === 'string' && value.trim().length > 0)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {boolean}
+ */
+function epochOrNull(value) {
+  return (
+    value === null || (typeof value === 'number' && Number.isFinite(value))
+  );
+}
+
+/**
+ * Whether a wire record is a delegated-session row this view can render.
+ *
+ * A Claude subagent row is admitted under its own half of the contract
+ * (UI-2mpn §5.3): its times are epoch ms or null, because they come from the
+ * parent stream lines' own `timestamp` and a line that carries none leaves the
+ * field empty rather than inventing one.
+ *
  * @param {unknown} candidate
  * @returns {DelegationSession|null}
  */
@@ -143,21 +224,37 @@ function validDelegation(candidate) {
     return null;
   }
   const session = /** @type {Record<string, any>} */ (candidate);
+  const claude = session.provider === 'claude';
   if (
     typeof session.launch_id !== 'string' ||
     session.launch_id.length === 0 ||
-    session.provider !== 'codex' ||
-    !DELEGATION_ROLES.includes(session.role) ||
-    typeof session.model !== 'string' ||
-    session.model.length === 0 ||
-    !(
-      !('effort' in session) ||
-      session.effort === null ||
-      (typeof session.effort === 'string' && session.effort.trim().length > 0)
+    !DELEGATION_ROLES.some(
+      (entry) =>
+        entry.role === session.role && entry.provider === session.provider
     ) ||
+    !(claude
+      ? optionalName(session.model)
+      : typeof session.model === 'string' && session.model.length > 0) ||
+    !(!('effort' in session) || optionalName(session.effort)) ||
+    !(!('agent_type' in session) || optionalName(session.agent_type)) ||
     typeof session.session_id !== 'string' ||
     session.session_id.length === 0 ||
     !DELEGATION_STATUSES.includes(session.status) ||
+    !(session.turn_id === null || typeof session.turn_id === 'string')
+  ) {
+    return null;
+  }
+  if (claude) {
+    if (
+      !epochOrNull(session.started_at) ||
+      !epochOrNull(session.last_event_at) ||
+      !epochOrNull(session.completed_at)
+    ) {
+      return null;
+    }
+    return /** @type {DelegationSession} */ (session);
+  }
+  if (
     typeof session.started_at !== 'number' ||
     !Number.isFinite(session.started_at) ||
     typeof session.last_event_at !== 'number' ||
@@ -166,8 +263,7 @@ function validDelegation(candidate) {
       session.completed_at === null ||
       (typeof session.completed_at === 'string' &&
         Number.isFinite(Date.parse(session.completed_at)))
-    ) ||
-    !(session.turn_id === null || typeof session.turn_id === 'string')
+    )
   ) {
     return null;
   }
@@ -178,14 +274,15 @@ function validDelegation(candidate) {
  * Existing static receipt markup. Legacy usage-only rows and identity conflicts
  * keep this exact non-interactive projection.
  *
- * @param {'implementation'|'review-consult'} role
+ * @param {'implementation'|'review-consult'|'subagent'} role
+ * @param {'codex'|'claude'} provider
  * @param {Record<string, any>} leg
  * @returns {TemplateResult}
  */
-function staticLegTemplate(role, leg) {
+function staticLegTemplate(role, provider, leg) {
   const badges = providerUsageBadges({
     providers: {
-      codex: {
+      [provider]: {
         subtotal: leg.subtotal,
         breakdown: leg.usage,
         ...(leg.replayed ? { replayed: true } : {})
@@ -235,7 +332,7 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
   const badges = terminal_leg
     ? providerUsageBadges({
         providers: {
-          codex: {
+          [session.provider]: {
             subtotal: terminal_leg.subtotal,
             breakdown: terminal_leg.usage,
             ...(terminal_leg.replayed ? { replayed: true } : {})
@@ -251,6 +348,17 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
       : terminal_leg
         ? completedTime(terminal_leg.completed_at)
         : '';
+  // `Claude · <agent_type> · <model>` for a subagent; the Codex row keeps its
+  // lowercase provider + effort tuple. A missing piece drops out rather than
+  // rendering a gap (UI-2mpn §6.1).
+  const meta = (
+    session.provider === 'claude'
+      ? ['Claude', session.agent_type, shortModel(session.model)]
+      : ['codex', session.model, session.effort]
+  )
+    .filter(Boolean)
+    .join(' · ');
+  const short_id = shortIdOf(session, terminal_leg);
   return html`<button
     type="button"
     class="detail-session__leg detail-session__usage-detail detail-session__leg--${session.status}"
@@ -266,14 +374,12 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
       >${session.role}</span
     >
     <span class="detail-session__leg-meta detail-session__usage-value"
-      >${['codex', session.model, session.effort]
-        .filter(Boolean)
-        .join(' · ')}</span
+      >${meta}</span
     >
     <span
       class="detail-session__leg-sid detail-session__sid"
-      title=${session.session_id}
-      >${session.session_id.slice(0, 8)}</span
+      title=${short_id.title}
+      >${short_id.text}</span
     >
     ${time
       ? html`<span class="detail-session__leg-time detail-session__time"
@@ -296,7 +402,11 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
 function sameDelegationIdentity(session, leg) {
   return (
     session.role === leg.role &&
-    session.model === leg.model &&
+    // A subagent's model is only known once its result reported one, so a
+    // running row with a null model must still join the receipt that named it.
+    (session.model === null ||
+      leg.model === undefined ||
+      session.model === leg.model) &&
     session.session_id === leg.session_id
   );
 }
@@ -326,24 +436,28 @@ function delegationLegs(attempt, projection, handlers) {
     launch_ids.add(session.launch_id);
     sessions.push(session);
   }
-  sessions.sort((left, right) => left.started_at - right.started_at);
+  // A subagent that started on a line with no `timestamp` has no start time to
+  // sort by; those rows keep their arrival order at the front.
+  sessions.sort(
+    (left, right) => (left.started_at || 0) - (right.started_at || 0)
+  );
 
-  /** @type {Record<'implementation'|'review-consult', Record<string, any>[]>} */
-  const usage_by_role = { implementation: [], 'review-consult': [] };
-  if (projection) {
-    for (const role of DELEGATION_ROLES) {
-      const summary = projection.roles[role]?.codex;
-      usage_by_role[role] = summary ? [...summary.legs] : [];
-    }
+  /** @type {Record<string, Record<string, any>[]>} */
+  const usage_by_role = {};
+  for (const { role, provider } of DELEGATION_ROLES) {
+    const summary = projection ? projection.roles[role]?.[provider] : null;
+    usage_by_role[role] = summary ? [...summary.legs] : [];
   }
-  const all_usage = DELEGATION_ROLES.flatMap((role) => usage_by_role[role]);
+  const all_usage = DELEGATION_ROLES.flatMap(({ role }) => usage_by_role[role]);
   /** @type {Set<string>} */
   const joined_receipts = new Set();
   /** @type {TemplateResult[]} */
   const rows = [];
 
-  for (const role of DELEGATION_ROLES) {
-    for (const session of sessions.filter((entry) => entry.role === role)) {
+  for (const { role, provider } of DELEGATION_ROLES) {
+    for (const session of sessions.filter(
+      (entry) => entry.role === role && entry.provider === provider
+    )) {
       const leg =
         all_usage.find((entry) => entry.receipt_id === session.launch_id) ||
         null;
@@ -359,7 +473,7 @@ function delegationLegs(attempt, projection, handlers) {
     }
     for (const leg of usage_by_role[role]) {
       if (!joined_receipts.has(leg.receipt_id)) {
-        rows.push(staticLegTemplate(role, leg));
+        rows.push(staticLegTemplate(role, provider, leg));
       }
     }
   }
@@ -448,9 +562,10 @@ function usageDetail(usage, provider) {
  * @property {UsageRecord|null} [usage] - This attempt's token usage (UI-d7pw
  * §2.2); absent/null renders no badge and no [τ 자세히] button.
  * @property {Array<Record<string, any>>} [usage_legs] - Durable completed
- * nested Codex receipts. Missing/invalid rows stay absent.
+ * nested receipts, Codex units and Claude subagents alike. Missing/invalid rows
+ * stay absent.
  * @property {Array<Record<string, any>>} [delegation_sessions] - Durable/live
- * normalized Codex delegation summaries.
+ * normalized delegation summaries, same two providers.
  * @property {string|null} [exec_default_preset_id] - Outer launch preset id.
  * @property {number|null} [exec_default_preset_revision] - Pinned preset revision.
  * @property {Record<string, string|null>|null} [exec_values] - Outer resolved values.

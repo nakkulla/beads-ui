@@ -1207,3 +1207,161 @@ describe('transcript drawer root_dir (UI-eey2 §9.5)', () => {
     drawer.destroy();
   });
 });
+
+describe('transcript drawer subagent folding (UI-2mpn §6.4)', () => {
+  const AGENT_EVENT = {
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_agent_1',
+          name: 'Agent',
+          input: { description: '스펙 조사', subagent_type: 'general-purpose' }
+        }
+      ]
+    }
+  };
+
+  /**
+   * @param {string} text
+   */
+  function childText(text) {
+    return {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_agent_1',
+      message: { content: [{ type: 'text', text }] }
+    };
+  }
+
+  test('folds a subagent under its Agent call by default', () => {
+    store.set('session-log:att-sub', [
+      TEXT_EVENT,
+      AGENT_EVENT,
+      childText('첫 줄'),
+      childText('둘째 줄')
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-sub' });
+
+    const head = mount.querySelector('.sv__sub-head');
+    expect(head?.textContent).toContain('general-purpose');
+    expect(head?.textContent).toContain('2줄');
+    expect(mount.querySelector('.sv__sub-body')).toBe(null);
+  });
+
+  test('shows the child lines after the header is clicked', () => {
+    store.set('session-log:att-sub2', [
+      AGENT_EVENT,
+      childText('첫 줄'),
+      childText('둘째 줄')
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-sub2' });
+
+    /** @type {HTMLElement} */ (mount.querySelector('.sv__sub-head')).click();
+
+    expect(mount.querySelector('.sv__sub-body')?.textContent).toContain(
+      '둘째 줄'
+    );
+  });
+
+  test('reports a running subagent whose Agent call has no result yet', () => {
+    store.set('session-log:att-sub3', [AGENT_EVENT, childText('작업 중')]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-sub3' });
+
+    expect(mount.querySelector('.sv__sub-state')?.textContent).toBe('⟳');
+  });
+
+  test('reports a finished subagent once its tool_result landed', () => {
+    store.set('session-log:att-sub4', [
+      AGENT_EVENT,
+      childText('작업 중'),
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_agent_1',
+              content: '요약'
+            }
+          ]
+        }
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-sub4' });
+
+    expect(mount.querySelector('.sv__sub-state')?.textContent).toBe('✓');
+  });
+
+  test('groups orphaned child lines under an anonymous header', () => {
+    store.set('session-log:att-sub5', [childText('스냅샷 경계 이후')]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'att-sub5' });
+
+    expect(mount.querySelector('.sv__sub-name')?.textContent).toBe('subagent');
+    expect(mount.querySelector('.sv__sub-state')).toBe(null);
+  });
+
+  test('folds a same-tool run inside a subagent group independently', () => {
+    /**
+     * @param {number} n
+     */
+    const childRead = (n) => ({
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_agent_1',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: `c${n}`,
+            name: 'Read',
+            input: { file_path: `/repo/c${n}.js` }
+          }
+        ]
+      }
+    });
+    store.set('session-log:att-sub6', [
+      AGENT_EVENT,
+      childRead(1),
+      childRead(2),
+      childRead(3),
+      childRead(4),
+      childRead(5)
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-sub6' });
+
+    /** @type {HTMLElement} */ (mount.querySelector('.sv__sub-head')).click();
+
+    expect(
+      mount.querySelector('.sv__sub-body .sv__group-count')?.textContent
+    ).toBe('5');
+  });
+});

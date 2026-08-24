@@ -506,3 +506,93 @@ describe('delegation session summaries', () => {
     expect(result).toEqual([running]);
   });
 });
+
+describe('claude subagent session summaries (UI-2mpn §5.3)', () => {
+  const codex_running = {
+    launch_id: 'launch-1',
+    provider: 'codex',
+    role: 'implementation',
+    model: 'gpt-5.6-sol',
+    effort: null,
+    session_id: 'thread-1',
+    turn_id: null,
+    status: 'running',
+    started_at: 1,
+    completed_at: null,
+    last_event_at: 1
+  };
+  const subagent = {
+    launch_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+    provider: 'claude',
+    role: 'subagent',
+    agent_type: 'general-purpose',
+    model: 'claude-sonnet-4-5-20250929',
+    effort: null,
+    session_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+    turn_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+    status: 'done',
+    started_at: 1000,
+    completed_at: 3000,
+    last_event_at: 3000
+  };
+
+  it('accepts a claude subagent summary unchanged', () => {
+    const result = normalizeDelegationSessions([subagent]);
+
+    expect(result).toEqual([subagent]);
+  });
+
+  it('accepts a done subagent whose stream lines carried no timestamp', () => {
+    const undated = {
+      ...subagent,
+      started_at: null,
+      completed_at: null,
+      last_event_at: null
+    };
+
+    const result = normalizeDelegationSessions([undated]);
+
+    expect(result).toEqual([undated]);
+  });
+
+  it('rejects a claude summary carrying a codex role', () => {
+    const result = normalizeDelegationSessions([
+      { ...subagent, role: 'implementation' }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('rejects a codex summary carrying agent_type', () => {
+    const result = normalizeDelegationSessions([
+      { ...codex_running, agent_type: 'general-purpose' }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('rejects a running subagent that already reports a completion time', () => {
+    const result = normalizeDelegationSessions([
+      { ...subagent, status: 'running', completed_at: 3000 }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  it('interrupts a running subagent after the outer attempt terminates', () => {
+    const live = { ...subagent, status: 'running', completed_at: null };
+
+    const result = finalizeDelegationSessions([live], true);
+
+    expect(result).toEqual([{ ...live, status: 'interrupted' }]);
+  });
+
+  it('keeps the first record when a launch id repeats across providers', () => {
+    const result = normalizeDelegationSessions([
+      subagent,
+      { ...codex_running, launch_id: subagent.launch_id }
+    ]);
+
+    expect(result).toEqual([subagent]);
+  });
+});

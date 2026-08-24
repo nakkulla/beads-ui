@@ -22,11 +22,11 @@
  */
 
 /**
- * @typedef {'orchestrator'|'implementation'|'review-consult'} UsageRole
+ * @typedef {'orchestrator'|'implementation'|'review-consult'|'subagent'} UsageRole
  */
 
 /**
- * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string, usage: UsageRecord, subtotal: number, replayed?: boolean }} UsageLeg
+ * @typedef {{ provider: UsageProvider, role: UsageRole, attempt_id: string, receipt_id?: string, agent_type?: string, agent_id?: string, model?: string, effort?: string, session_id?: string, turn_id?: string, completed_at?: string|number, usage: UsageRecord, subtotal: number, replayed?: boolean }} UsageLeg
  */
 
 /**
@@ -82,8 +82,18 @@ export const SUM_FIELDS = [
  */
 const USAGE_FIELDS = [...SUM_FIELDS, 'reasoning_output_tokens'];
 
-/** @type {readonly UsageRole[]} */
-const NESTED_ROLES = ['implementation', 'review-consult'];
+/**
+ * The nested (delegated) roles each provider is allowed to report, keyed by the
+ * provider that reports them (UI-2mpn §5.5). A leg whose provider/role pair is
+ * not in this table is not a receipt this projection knows, so it is skipped —
+ * which is the same fail-quiet rule the single-provider filter applied before.
+ *
+ * @type {Readonly<Record<UsageProvider, readonly UsageRole[]>>}
+ */
+const NESTED_ROLES = {
+  codex: ['implementation', 'review-consult'],
+  claude: ['subagent']
+};
 
 /**
  * @param {UsageRecord|null|undefined} usage
@@ -539,6 +549,10 @@ export function sumAttemptUsage(attempts, bead_id) {
     'review-consult': {
       claude: createAccumulator(),
       codex: createAccumulator()
+    },
+    subagent: {
+      claude: createAccumulator(),
+      codex: createAccumulator()
     }
   };
   /** @type {Set<string>} */
@@ -575,10 +589,16 @@ export function sumAttemptUsage(attempts, bead_id) {
       ? attempt.usage_legs
       : [];
     for (const candidate of usage_legs) {
+      // Provider-keyed, not codex-only (UI-2mpn §5.5): a Claude subagent
+      // receipt lands in the CLAUDE headline under the Claude formula, and the
+      // Codex subtotal is untouched by it. Everything else about the loop —
+      // receipt-id dedupe, first record wins — is unchanged.
+      const leg_provider =
+        candidate && candidate.provider === 'claude' ? 'claude' : 'codex';
       if (
         !candidate ||
-        candidate.provider !== 'codex' ||
-        !NESTED_ROLES.includes(candidate.role) ||
+        (candidate.provider !== 'codex' && candidate.provider !== 'claude') ||
+        !NESTED_ROLES[leg_provider].includes(candidate.role) ||
         !hasReportedUsage(candidate.usage)
       ) {
         continue;
@@ -595,13 +615,19 @@ export function sumAttemptUsage(attempts, bead_id) {
       const usage = reportedUsage(candidate.usage);
       /** @type {UsageLeg} */
       const leg = {
-        provider: 'codex',
+        provider: leg_provider,
         role: candidate.role,
         attempt_id: String(attempt.attempt_id || ''),
         usage,
-        subtotal: providerSubtotal('codex', usage)
+        subtotal: providerSubtotal(leg_provider, usage)
       };
       leg.receipt_id = receipt_id;
+      if (typeof candidate.agent_type === 'string') {
+        leg.agent_type = candidate.agent_type;
+      }
+      if (typeof candidate.agent_id === 'string') {
+        leg.agent_id = candidate.agent_id;
+      }
       if (typeof candidate.model === 'string') {
         leg.model = candidate.model;
       }
@@ -619,14 +645,18 @@ export function sumAttemptUsage(attempts, bead_id) {
       if (typeof candidate.turn_id === 'string') {
         leg.turn_id = candidate.turn_id;
       }
-      if (typeof candidate.completed_at === 'string') {
+      if (
+        typeof candidate.completed_at === 'string' ||
+        (typeof candidate.completed_at === 'number' &&
+          Number.isFinite(candidate.completed_at))
+      ) {
         leg.completed_at = candidate.completed_at;
       }
       if (usage.replayed === true) {
         leg.replayed = true;
       }
-      addLeg(providers.codex, leg, false);
-      addLeg(roles[leg.role].codex, leg, false);
+      addLeg(providers[leg_provider], leg, false);
+      addLeg(roles[leg.role][leg_provider], leg, false);
     }
   }
   /** @type {Partial<Record<UsageProvider, ProviderUsageSummary>>} */
@@ -654,7 +684,8 @@ export function sumAttemptUsage(attempts, bead_id) {
   for (const role of /** @type {UsageRole[]} */ ([
     'orchestrator',
     'implementation',
-    'review-consult'
+    'review-consult',
+    'subagent'
   ])) {
     /** @type {Partial<Record<UsageProvider, RoleUsageSummary>>} */
     const projected_role = {};

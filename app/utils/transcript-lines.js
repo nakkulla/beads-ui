@@ -54,6 +54,15 @@
  * @property {string} [reviewer] - Reviewer selector (kind='gate').
  * @property {string} [verdict] - Gate verdict APPROVE/REVISE/… (kind='gate').
  * @property {string} [time] - Optional timestamp text (kind='gate').
+ * @property {string} [parent_tool_use_id] - The `Agent` launch this line came
+ * from, when it is a Claude subagent line (UI-2mpn §6.4). Present ONLY on child
+ * lines, which is what lets the drawer fold them under their launch and the
+ * server's activity overlay leave them out.
+ * @property {string} [launch_id] - The `tool_use.id` of an `Agent` tool line —
+ * the other end of the same pairing, and the only place the id a child's
+ * `parent_tool_use_id` names is visible on a display line.
+ * @property {boolean} [is_error] - Whether the paired `tool_result` reported a
+ * failure (kind='tool'). Absent means "no result yet, or it did not say".
  */
 
 /**
@@ -70,6 +79,7 @@ const TOOL_ICONS = {
   Grep: '🔎',
   Glob: '🔎',
   Task: '🤖',
+  Agent: '🤖',
   WebFetch: '🌐',
   WebSearch: '🌐'
 };
@@ -224,6 +234,18 @@ function toolLine(block) {
   if (tool === 'Grep' || tool === 'Glob') {
     line.command = String(input.pattern || input.query || '');
   }
+  if (tool === 'Agent') {
+    // The launch id is what the child lines' `parent_tool_use_id` points at, so
+    // the fold header needs it on the line itself (UI-2mpn §6.4); the
+    // description is the only human summary of what the subagent was asked to
+    // do, and it rides the existing detail column.
+    if (typeof block.id === 'string' && block.id.length > 0) {
+      line.launch_id = block.id;
+    }
+    if (typeof input.description === 'string') {
+      line.command = input.description;
+    }
+  }
   return line;
 }
 
@@ -280,6 +302,11 @@ function classifyText(text) {
  * @returns {DisplayLine[]}
  */
 function parseClaude(raw, toolsById) {
+  const parent_tool_use_id =
+    typeof raw.parent_tool_use_id === 'string' &&
+    raw.parent_tool_use_id.length > 0
+      ? raw.parent_tool_use_id
+      : null;
   if (raw.type === 'assistant') {
     const msg = /** @type {any} */ (raw.message);
     const content = msg && Array.isArray(msg.content) ? msg.content : [];
@@ -304,7 +331,7 @@ function parseClaude(raw, toolsById) {
         out.push(line);
       }
     }
-    return out;
+    return parent_tool_use_id ? tagDelegated(out, parent_tool_use_id) : out;
   }
   if (raw.type === 'user') {
     // A user turn only carries tool_result blocks in unattended runs; pair each
@@ -318,6 +345,9 @@ function parseClaude(raw, toolsById) {
           const summary = summarizeOutput(c.content);
           line.result = summary;
           line.output = typeof c.content === 'string' ? c.content : summary;
+          if (c.is_error === true) {
+            line.is_error = true;
+          }
         }
       }
     }
@@ -325,16 +355,33 @@ function parseClaude(raw, toolsById) {
   }
   if (raw.type === 'result') {
     const success = raw.is_error === false && raw.subtype === 'success';
-    return [
-      {
-        kind: 'result',
-        success,
-        text:
-          typeof raw.result === 'string' ? raw.result : success ? 'DONE' : ''
-      }
-    ];
+    /** @type {DisplayLine} */
+    const line = {
+      kind: 'result',
+      success,
+      text: typeof raw.result === 'string' ? raw.result : success ? 'DONE' : ''
+    };
+    return parent_tool_use_id
+      ? tagDelegated([line], parent_tool_use_id)
+      : [line];
   }
   return [];
+}
+
+/**
+ * Stamp the launch a batch of lines belongs to (UI-2mpn §6.4). Subagent lines
+ * are kept, not dropped: the drawer needs them to fill the fold, and the tag is
+ * what tells it — and the server's activity overlay — whose work they are.
+ *
+ * @param {DisplayLine[]} lines
+ * @param {string} parent_tool_use_id
+ * @returns {DisplayLine[]}
+ */
+function tagDelegated(lines, parent_tool_use_id) {
+  for (const line of lines) {
+    line.parent_tool_use_id = parent_tool_use_id;
+  }
+  return lines;
 }
 
 /**
@@ -555,9 +602,15 @@ function rawObjectOf(entry) {
  * reducer holds that pairing across pushes; the back-fill MUTATES the tool line
  * object it already returned, exactly as the batch parse does.
  *
+ * @param {{ skip_delegated?: boolean }} [options] - `skip_delegated` drops
+ * Claude subagent events outright (UI-2mpn §6.4). The server's activity overlay
+ * sets it so a child's tool call never reports as the parent attempt's last
+ * activity; the drawer leaves it off, because it folds those lines rather than
+ * hiding them.
  * @returns {{ push: (event: unknown) => DisplayLine[] }}
  */
-export function createTranscriptReducer() {
+export function createTranscriptReducer(options = {}) {
+  const skip_delegated = options.skip_delegated === true;
   /** @type {Map<string, DisplayLine>} */
   const toolsById = new Map();
   return {
@@ -568,6 +621,13 @@ export function createTranscriptReducer() {
     push(event) {
       const raw = rawObjectOf(event);
       if (!raw) {
+        return [];
+      }
+      if (
+        skip_delegated &&
+        typeof raw.parent_tool_use_id === 'string' &&
+        raw.parent_tool_use_id.length > 0
+      ) {
         return [];
       }
       return raw.schema === 'codex-delegation-monitor-v1'

@@ -100,6 +100,38 @@ function isTokenCount(value) {
 
 /**
  * @param {unknown} value
+ * @returns {value is number|null}
+ */
+function isEpochMillisecondOrNull(value) {
+  return (
+    value === null ||
+    (typeof value === 'number' &&
+      Number.isInteger(value) &&
+      Number.isFinite(value) &&
+      value >= 0)
+  );
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is string|null}
+ */
+function isOptionalName(value) {
+  return value === null || nonEmptyString(value);
+}
+
+/**
+ * Whether a value is a valid nested usage receipt.
+ *
+ * The provider decides which half of the contract applies (UI-2mpn §5.3): a
+ * Codex receipt keeps the producer-written UTC-second `completed_at` and its two
+ * roles, while a Claude subagent receipt is derived from the parent stream and
+ * therefore carries epoch-ms (or null) time plus the two optional agent fields.
+ * A cross combination — `provider:'claude'` with `role:'implementation'`,
+ * `agent_type` on a Codex leg — is not a receipt this reader knows, so it is
+ * dropped exactly like any other malformed record.
+ *
+ * @param {unknown} value
  * @returns {value is import('./queue-store.js').UsageLeg}
  */
 export function isUsageLeg(value) {
@@ -108,23 +140,36 @@ export function isUsageLeg(value) {
   }
   if (
     !nonEmptyString(value.receipt_id) ||
-    value.provider !== 'codex' ||
-    (value.role !== 'implementation' && value.role !== 'review-consult') ||
     !nonEmptyString(value.session_id) ||
     !nonEmptyString(value.turn_id) ||
-    !nonEmptyString(value.model) ||
     !(
       !('effort' in value) ||
       value.effort === null ||
       nonEmptyString(value.effort)
     ) ||
-    !isUtcSecond(value.completed_at) ||
     !isRecord(value.usage) ||
-    !hasExactKeys(value.usage, USAGE_KEYS)
+    !hasExactKeys(value.usage, USAGE_KEYS) ||
+    !Object.values(value.usage).every(isTokenCount)
   ) {
     return false;
   }
-  return Object.values(value.usage).every(isTokenCount);
+  if (value.provider === 'claude') {
+    return (
+      value.role === 'subagent' &&
+      isOptionalName(value.model) &&
+      (!('agent_type' in value) || isOptionalName(value.agent_type)) &&
+      (!('agent_id' in value) || isOptionalName(value.agent_id)) &&
+      isEpochMillisecondOrNull(value.completed_at)
+    );
+  }
+  return (
+    value.provider === 'codex' &&
+    (value.role === 'implementation' || value.role === 'review-consult') &&
+    !('agent_type' in value) &&
+    !('agent_id' in value) &&
+    nonEmptyString(value.model) &&
+    isUtcSecond(value.completed_at)
+  );
 }
 
 /**
@@ -149,8 +194,14 @@ export function normalizeUsageLegs(raw) {
     ids.add(value.receipt_id);
     out.push({
       receipt_id: value.receipt_id,
-      provider: 'codex',
+      provider: value.provider,
       role: value.role,
+      ...(value.provider === 'claude'
+        ? {
+            agent_type: 'agent_type' in value ? value.agent_type : null,
+            agent_id: 'agent_id' in value ? value.agent_id : null
+          }
+        : {}),
       session_id: value.session_id,
       turn_id: value.turn_id,
       model: value.model,

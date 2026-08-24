@@ -43,6 +43,17 @@ const DELEGATION_SESSION_KEYS_WITH_EFFORT = new Set([
   ...DELEGATION_SESSION_KEYS,
   'effort'
 ]);
+/**
+ * The Claude subagent variant of the same summary (UI-2mpn §5.3). It is derived
+ * from the parent stream rather than delivered by a producer, so `agent_type` is
+ * always present (null when the `Agent` call named none) and every time field is
+ * epoch ms or null.
+ */
+const CLAUDE_SESSION_KEYS = new Set([
+  ...DELEGATION_SESSION_KEYS,
+  'effort',
+  'agent_type'
+]);
 const SESSION_EVENT_KEYS = new Set(['type']);
 const TERMINAL_EVENT_KEYS = new Set(['type', 'status']);
 const FAILED_EVENT_KEYS = new Set(['type', 'status', 'error_code']);
@@ -327,16 +338,66 @@ function validateFile(file, file_system) {
 
 /**
  * @param {unknown} value
+ * @returns {value is number|null}
+ */
+function isEpochMillisecondOrNull(value) {
+  return value === null || isEpochMillisecond(value);
+}
+
+/**
+ * Whether a value is a valid Claude subagent summary (UI-2mpn §5.3).
+ *
+ * A subagent's times come from its lines' own `timestamp`, and a stream line
+ * that carries none leaves the field null rather than stamping a clock read —
+ * that is what makes a replayed session byte-identical to the live one, so the
+ * mandatory-time rules the Codex contract keeps cannot apply here.
+ *
+ * @param {Record<string, unknown>} value
+ * @returns {boolean}
+ */
+function isClaudeSession(value) {
+  if (
+    !hasExactKeys(value, CLAUDE_SESSION_KEYS) ||
+    value.role !== 'subagent' ||
+    !(value.agent_type === null || nonEmptyString(value.agent_type)) ||
+    !(value.model === null || nonEmptyString(value.model)) ||
+    !(value.effort === null || nonEmptyString(value.effort)) ||
+    !nonEmptyString(value.session_id) ||
+    !nonEmptyString(value.turn_id) ||
+    !SESSION_STATUSES.has(String(value.status)) ||
+    !isEpochMillisecondOrNull(value.started_at) ||
+    !isEpochMillisecondOrNull(value.last_event_at) ||
+    !isEpochMillisecondOrNull(value.completed_at)
+  ) {
+    return false;
+  }
+  if (
+    typeof value.started_at === 'number' &&
+    typeof value.last_event_at === 'number' &&
+    value.last_event_at < value.started_at
+  ) {
+    return false;
+  }
+  return !(value.status === 'running' && value.completed_at !== null);
+}
+
+/**
+ * @param {unknown} value
  * @returns {value is import('./queue-store.js').DelegationSession}
  */
 export function isDelegationSession(value) {
   if (!isRecord(value)) {
     return false;
   }
+  if (!nonEmptyString(value.launch_id)) {
+    return false;
+  }
+  if (value.provider === 'claude') {
+    return isClaudeSession(value);
+  }
   if (
     (!hasExactKeys(value, DELEGATION_SESSION_KEYS) &&
       !hasExactKeys(value, DELEGATION_SESSION_KEYS_WITH_EFFORT)) ||
-    !nonEmptyString(value.launch_id) ||
     value.provider !== 'codex' ||
     !isRole(value.role) ||
     !nonEmptyString(value.model) ||
@@ -386,8 +447,11 @@ export function normalizeDelegationSessions(raw) {
     ids.add(value.launch_id);
     out.push({
       launch_id: value.launch_id,
-      provider: 'codex',
+      provider: value.provider,
       role: value.role,
+      ...(value.provider === 'claude'
+        ? { agent_type: /** @type {string|null} */ (value.agent_type) }
+        : {}),
       model: value.model,
       effort:
         'effort' in value && typeof value.effort === 'string'
