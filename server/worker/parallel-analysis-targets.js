@@ -131,13 +131,21 @@ export function calculateScopeOverlaps(targets) {
 }
 
 /**
+ * The union of the declared `scope:` prefixes of `artifact_paths`, read from the
+ * pinned base. Exported since UI-qm12 §4.1: the lane-chip scope cache reads the
+ * SAME artifacts at the same base, and a second reader would be a second
+ * definition of what "declared scope" means.
+ *
+ * `fail_on_read_error` makes ONE unreadable artifact collapse the whole result
+ * to null — a partial union would silently under-declare.
+ *
  * @param {(args: string[]) => Promise<{ code: number, stdout: string }>} gitRun
  * @param {string} base_sha
  * @param {string[]} artifact_paths
  * @param {boolean} [fail_on_read_error]
  * @returns {Promise<string[]|null>}
  */
-async function scopeAtBase(
+export async function scopeAtBase(
   gitRun,
   base_sha,
   artifact_paths,

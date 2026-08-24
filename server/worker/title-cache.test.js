@@ -6,7 +6,7 @@ import { createTitleCache } from './title-cache.js';
  * id absent from the map exits non-zero, which is the "cannot read this bead"
  * failure the cache negative-caches.
  *
- * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown }>} titles
+ * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown, spec_id?: unknown, metadata?: unknown }>} titles
  * @param {{ deferred?: boolean }} [options]
  */
 function fakeBd(titles, options = {}) {
@@ -757,5 +757,80 @@ describe('worker title cache — workflow projection (UI-eey2 §9.2)', () => {
       expect.objectContaining({ id: 'UI-1' }),
       '/ws/repo'
     );
+  });
+});
+
+describe('scope artifacts projection (UI-qm12 §4.2)', () => {
+  test('projects the native spec path as the only artifact', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '스펙만 있는 이슈',
+      spec_id: 'docs/specs/thing.md'
+    });
+
+    const out = cache.scopeArtifactsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': ['docs/specs/thing.md'] });
+  });
+
+  test('adds the pinned plan path after the spec path', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '계획까지 있는 이슈',
+      spec_id: 'docs/specs/thing.md',
+      metadata: { plan_path: 'docs/plans/thing.md' }
+    });
+
+    const out = cache.scopeArtifactsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({
+      'UI-1': ['docs/specs/thing.md', 'docs/plans/thing.md']
+    });
+  });
+
+  test('omits a bead that declares no spec', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: '빠른 수정',
+      metadata: { route: 'quick_fix' }
+    });
+
+    const out = cache.scopeArtifactsFor('/ws', ['UI-2']);
+
+    expect(out).toEqual({});
+  });
+
+  test('ignores a non-string plan path', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '망가진 계획 핀',
+      spec_id: 'docs/specs/thing.md',
+      metadata: { plan_path: 7 }
+    });
+
+    const out = cache.scopeArtifactsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({ 'UI-1': ['docs/specs/thing.md'] });
+  });
+
+  test('reads the spec path off the same bd fill as the title', async () => {
+    const bd = fakeBd({
+      'UI-1': { title: '적재된 이슈', spec_id: 'docs/specs/thing.md' }
+    });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => null
+    });
+
+    cache.scopeArtifactsFor('/ws', ['UI-1']);
+    await bd.settled();
+
+    expect(cache.scopeArtifactsFor('/ws', ['UI-1'])).toEqual({
+      'UI-1': ['docs/specs/thing.md']
+    });
   });
 });

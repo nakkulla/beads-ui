@@ -28,6 +28,7 @@ import { workerLabels } from '../../app/utils/worker-eligibility.js';
 import { isBdProtocolFailure } from '../bd-json.js';
 import { runBdJsonProjected } from '../bd.js';
 import { debug } from '../logging.js';
+import { resolveSpecId } from '../spec-id.js';
 import { enrichIssueWorkflow } from '../workflow-enrich.js';
 
 const log = debug('worker:title-cache');
@@ -66,6 +67,11 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * @property {Record<string, unknown>|null} workflow - The stepper projection
  * `enrichIssueWorkflow` derives from the SAME `bd show` payload (UI-eey2 §9.2),
  * or null when it could not be computed.
+ * @property {string} spec_id - Native-first resolved spec path (UI-qm12 §4.2),
+ * `''` when the bead has none. Read off the SAME `bd show` payload, so the
+ * declared-scope artifacts cost no extra process.
+ * @property {string|null} plan_path - `metadata.plan_path`, when it is a
+ * non-empty string.
  * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
  */
 
@@ -228,6 +234,12 @@ export function createTitleCache(options = {}) {
         }
       }
     }
+    const metadata =
+      raw_issue && raw_issue.metadata && typeof raw_issue.metadata === 'object'
+        ? /** @type {Record<string, unknown>} */ (raw_issue.metadata)
+        : {};
+    const plan_path =
+      typeof metadata.plan_path === 'string' ? metadata.plan_path.trim() : '';
     return {
       title,
       created_at: stampOf(raw_issue && raw_issue.created_at),
@@ -235,6 +247,8 @@ export function createTitleCache(options = {}) {
       labels: workerLabels(raw_issue && raw_issue.labels),
       blocked_by,
       workflow: workflowFromIssue(issue, workspace),
+      spec_id: resolveSpecId(raw_issue).path,
+      plan_path: plan_path.length > 0 ? plan_path : null,
       at: now()
     };
   }
@@ -541,6 +555,35 @@ export function createTitleCache(options = {}) {
      */
     workflowFor(workspace, ids) {
       return collect(workspace, ids, (rec) => rec.workflow);
+    },
+
+    /**
+     * The artifacts whose front-matter declares each bead's scope (UI-qm12
+     * §4.2): `[spec_id]`, plus `plan_path` when the bead pins one. Same
+     * partiality contract as the projections above — a bead whose record has
+     * not landed is ABSENT — with one extra exclusion: a bead with no spec has
+     * nothing to read, so it is omitted rather than carrying an empty list.
+     * quick_fix and unpublished beads therefore never reach the scope cache.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, string[]>}
+     */
+    scopeArtifactsFor(workspace, ids) {
+      const projected = collect(workspace, ids, (rec) => {
+        if (rec.spec_id.length === 0) {
+          return [];
+        }
+        return rec.plan_path ? [rec.spec_id, rec.plan_path] : [rec.spec_id];
+      });
+      /** @type {Record<string, string[]>} */
+      const out = {};
+      for (const [bead_id, artifacts] of Object.entries(projected)) {
+        if (artifacts.length > 0) {
+          out[bead_id] = artifacts;
+        }
+      }
+      return out;
     },
 
     /**

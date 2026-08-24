@@ -1,4 +1,9 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
+import {
+  __resetScopeCacheForTest,
+  __setScopeCacheForTest,
+  createScopeCache
+} from '../worker/scope-cache.js';
 import { emitMonitorPipelineSnapshot } from './context.js';
 import {
   buildMonitorPipeline,
@@ -1144,5 +1149,134 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       runnable: 0,
       session_active: 0
     });
+  });
+});
+
+/**
+ * A scope cache reading from a blob map at a fixed base, so the pipeline sees
+ * real cache states without touching git.
+ *
+ * @param {Record<string, string>} blobs
+ */
+function scopeCacheOver(blobs) {
+  const gitRun = vi.fn(async (/** @type {string[]} */ args) => {
+    const target = String(args[2] || '');
+    const content = blobs[target.slice(target.indexOf(':') + 1)];
+    return typeof content === 'string'
+      ? { code: 0, stdout: content }
+      : { code: 128, stdout: '' };
+  });
+  const resolveBase = vi.fn(
+    async () =>
+      /** @type {import('../worker/target-base.js').TargetBaseResult} */ ({
+        ok: true,
+        base: 'main',
+        declared: true,
+        remote: 'origin',
+        remote_ref: 'refs/remotes/origin/main',
+        base_oid: 'a'.repeat(40),
+        local_only: false
+      })
+  );
+  return createScopeCache({
+    contextFor: () => ({ repo: WS_A, resolveBase, gitRun })
+  });
+}
+
+/**
+ * An artifact whose front matter declares `prefixes`.
+ *
+ * @param {string[]} prefixes
+ * @returns {string}
+ */
+function scopeArtifact(prefixes) {
+  return ['---', 'scope:', ...prefixes.map((p) => `  - ${p}`), '---', ''].join(
+    '\n'
+  );
+}
+
+describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
+  afterEach(() => {
+    __resetScopeCacheForTest();
+  });
+
+  test('attaches the declared scope to a runnable candidate on a cache hit', async () => {
+    const cache = scopeCacheOver({
+      'docs/specs/thing.md': scopeArtifact(['server/worker/'])
+    });
+    await cache.fill(WS_A, ['docs/specs/thing.md']);
+    __setScopeCacheForTest(cache);
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [candidate('A-1')] }
+    });
+
+    expect(out[0].runnable).toEqual([
+      { ...candidate('A-1'), scope: ['server/worker/'] }
+    ]);
+  });
+
+  test('reads the plan artifact alongside the spec when the row pins one', async () => {
+    const cache = scopeCacheOver({
+      'docs/specs/thing.md': scopeArtifact(['server/']),
+      'docs/plans/thing.md': scopeArtifact(['app/'])
+    });
+    await cache.fill(WS_A, ['docs/specs/thing.md', 'docs/plans/thing.md']);
+    __setScopeCacheForTest(cache);
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: {
+        [WS_A]: [{ ...candidate('A-1'), plan_path: 'docs/plans/thing.md' }]
+      }
+    });
+
+    expect(
+      /** @type {any[]} */ (out[0].runnable).map((item) => item.scope)
+    ).toEqual([['app/', 'server/']]);
+  });
+
+  test('omits the scope field while the read has not landed', () => {
+    __setScopeCacheForTest(
+      scopeCacheOver({ 'docs/specs/thing.md': scopeArtifact(['server/']) })
+    );
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [candidate('A-1')] }
+    });
+
+    expect(
+      Object.hasOwn(/** @type {any[]} */ (out[0].runnable)[0], 'scope')
+    ).toBe(false);
+  });
+
+  test('omits the scope field when the artifacts cannot be read', async () => {
+    const cache = scopeCacheOver({});
+    await cache.fill(WS_A, ['docs/specs/thing.md']);
+    __setScopeCacheForTest(cache);
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [candidate('A-1')] }
+    });
+
+    expect(
+      Object.hasOwn(/** @type {any[]} */ (out[0].runnable)[0], 'scope')
+    ).toBe(false);
+  });
+
+  test('leaves the cached runnable row itself unmodified', async () => {
+    const cache = scopeCacheOver({
+      'docs/specs/thing.md': scopeArtifact(['server/'])
+    });
+    await cache.fill(WS_A, ['docs/specs/thing.md']);
+    __setScopeCacheForTest(cache);
+    const cached_row = candidate('A-1');
+
+    build({ workspaces: [WS_A], runnable: { [WS_A]: [cached_row] } });
+
+    expect(Object.hasOwn(cached_row, 'scope')).toBe(false);
   });
 });

@@ -148,6 +148,13 @@ row — no extra bd call — and is `null` when it could not be computed.
 (the per-bead preset axes plus `claude_account`/`codex_account`); the rest of
 `metadata` never travels, so the whole backlog's metadata stays off the wire.
 
+Runnable rows carry `plan_path: string|null` and, on a scope-cache hit only,
+`scope: string[]` (UI-qm12 §4.4). `scope` is read from the SAME artifact set as
+a queued bead's `bead_scope` entry (`[spec_id, plan_path?]`) at the pinned base,
+so loading a candidate into a lane cannot change its overlap verdict. The field
+is ADDITIVE: absent means 판정 불가 — not read yet, unreadable, or no spec — and
+never "no declared scope".
+
 `workspaces[].session_active[]` (UI-yrzu §4.1) is that repo's beads an
 interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
 `status: 'in_progress'` with no active worker attempt and no membership in
@@ -213,6 +220,27 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `null`. Freshness rides two hooks besides the 5-minute TTL — the server's own
   `bd show` readbacks after a metadata write, and the observation of a
   `bd update|close|dep` COMPLETING inside a running session's log.
+- `bead_scope: Record<bead_id, { scope: string[], artifacts: string[] }|null>`
+  (UI-qm12 §4.3) is the DECLARED scope — the spec front-matter `scope:` read at
+  the workspace's pinned base — of the beads the waiting and running lanes
+  render: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING attempts. `pr_wait` and
+  `done` are outside the set. Non-persisted and PARTIAL on the same contract as
+  `bead_titles`, and fail-quiet at every level: nothing here can block or delay
+  a snapshot push. Three values, deliberately distinct:
+  - NO ENTRY — the scope has not been read yet, or the bead has no spec at all
+    (quick_fix, unpublished). Draw nothing.
+  - `{ scope: [], artifacts }` — every artifact (spec, and the plan when the
+    bead pins one) was read successfully at the base and declared no valid scope
+    entry. This is 판정 불가 made visible, not "parallel is fine".
+  - `null` — the read FAILED (artifact absent at the base, git error, unresolved
+    base). Draw nothing.
+
+  `artifacts` lists the paths the scope was read from, spec first, plan second.
+  The client derives pairwise overlaps from this map itself, exactly as it
+  derives dependency chains from `bead_blocked_by`; the server ships facts only.
+  An older server omits the whole key, which consumers read as "skip the overlap
+  derivation entirely".
+
 - `execution_defaults` is the read-only display projection paired with
   `runner_catalog`. Shape:
   `{ supported, schema_version, source_commit, digest, session, orchestration }`.

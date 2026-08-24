@@ -85,6 +85,13 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * @property {string} title
  * @property {string} route - The `metadata.route` that qualified it.
  * @property {string} spec_id - The native-first resolved spec path.
+ * @property {string|null} plan_path - `metadata.plan_path` when it is a
+ * non-empty string (UI-qm12 §4.4). Carried so a runnable bead's declared scope
+ * is read from the SAME artifact set as the queued beads' — loading it into a
+ * lane must not change the overlap verdict.
+ * @property {string[]} [scope] - The declared scope at the pinned base,
+ * attached ADDITIVELY by the monitor pipeline on a scope-cache hit. Absent
+ * means 판정 불가 (not yet read, unreadable, or no spec), never "no scope".
  * @property {string} spec_reviewer - Reviewer token from `spec_review`.
  * @property {'approved'|'authored'|'none'} plan_state
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
@@ -309,11 +316,14 @@ function qualify(row, blocked_by = null, enrich = undefined) {
   if (isPhaseChild(row)) {
     return null;
   }
+  const plan_path =
+    typeof meta.plan_path === 'string' ? meta.plan_path.trim() : '';
   return {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     route,
     spec_id,
+    plan_path: plan_path.length > 0 ? plan_path : null,
     spec_reviewer,
     plan_state: is_quick_fix ? 'none' : planState(meta, route),
     blocked: blocked_by !== null,

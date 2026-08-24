@@ -38,6 +38,7 @@ import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
+import { scopeCache } from '../worker/scope-cache.js';
 import {
   emitMonitorPipelineSnapshot,
   kvGetJsonAtRoot,
@@ -623,6 +624,38 @@ function serialLaneBeadIds(snapshot) {
 }
 
 /**
+ * Attach each runnable candidate's declared scope (UI-qm12 §4.4) from the same
+ * process-wide cache the queue decoration reads, over the same artifact set
+ * (`[spec_id, plan_path?]`) — loading a bead into a lane must not change its
+ * overlap verdict.
+ *
+ * ADDITIVE and SYNCHRONOUS: a hit gets a `scope` field on a COPY of the row —
+ * the cache owns the original — and a miss or a read failure gets no field at
+ * all, which §5.2 reads as 판정 불가. The fill a miss schedules delivers its
+ * value through the next push, never by blocking this one.
+ *
+ * @param {Array<Record<string, unknown>>} runnable
+ * @param {string} root_dir
+ * @returns {Array<Record<string, unknown>>}
+ */
+function withRunnableScope(root_dir, runnable) {
+  const cache = scopeCache();
+  if (!cache) {
+    return runnable;
+  }
+  return runnable.map((item) => {
+    const spec_id = typeof item.spec_id === 'string' ? item.spec_id : '';
+    if (spec_id.length === 0) {
+      return item;
+    }
+    const plan_path = typeof item.plan_path === 'string' ? item.plan_path : '';
+    const artifacts = plan_path.length > 0 ? [spec_id, plan_path] : [spec_id];
+    const peeked = cache.peek(root_dir, artifacts);
+    return peeked.state === 'hit' ? { ...item, scope: peeked.scope } : item;
+  });
+}
+
+/**
  * Build the cross-workspace pipeline payload.
  *
  * Fail-quiet per workspace (UI-nprg §에러 처리): one repo whose snapshot,
@@ -698,7 +731,12 @@ export function buildMonitorPipeline(options = {}) {
       log('monitor: runnable lookup failed for %s: %o', root_dir, err);
       runnable = [];
     }
-    projected.runnable = runnable;
+    try {
+      projected.runnable = withRunnableScope(root_dir, runnable);
+    } catch (err) {
+      log('monitor: runnable scope attach failed for %s: %o', root_dir, err);
+      projected.runnable = runnable;
+    }
     /** @type {Array<Record<string, unknown>>} */
     let session_active = [];
     try {
