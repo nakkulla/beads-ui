@@ -3,6 +3,7 @@ scope:
   - server/worker/scope-cache.js
   - server/worker/title-cache.js
   - server/worker/parallel-analysis-targets.js
+  - server/worker/runnable-cache.js
   - server/ws/worker-handlers.js
   - server/ws/monitor-handlers.js
   - app/utils/scope-overlap.js
@@ -75,25 +76,37 @@ scope:
 
 ### 4.1 `server/worker/scope-cache.js` (신규, `createScopeCache`)
 
-- 키 `${workspace_key}\0${base_oid}\0${artifact_paths.join('\0')}` →
-  `{ scope: string[]|null, at: number }`. `null`은 읽기 실패(파일 없음·git
-  오류)다.
-- TTL: 양성 5분(title-cache `POSITIVE_TTL_MS`와 동일), 음성 60초.
+- 인스턴스 소유: 모듈이 `createScopeCache(options)`(테스트용 factory)와
+  프로세스 단일 인스턴스 `scopeCache()`를 함께 export한다. `decorateQueue`와
+  `buildMonitorPipeline`은 둘 다 `scopeCache()`를 읽으므로 같은 값을 본다.
+- 키(동기 조회용) `${workspace_key}\0${artifact_paths.join('\0')}` → 값
+  `{ base_oid: string, scope: string[]|null, at: number }`. 동기 `peek`는
+  base를 알 필요가 없다 — base 비교는 `fill`이 한다.
+- TTL: 양성 5분(title-cache `POSITIVE_TTL_MS`와 동일), 음성 60초. TTL이 지난
+  키는 `peek`가 마지막 값을 그대로 돌려주면서 `fill`을 예약한다(stale-while-
+  revalidate). 값이 없으면 `miss`.
 - API:
-  - `peek(workspace_key, artifact_paths)` → `{ state: 'hit', scope } |
-    { state: 'miss' } | { state: 'failed' }`. 동기. miss면 `fill`을 예약한다
-    (같은 키의 fill은 중복 예약하지 않는다 — in-flight 집합).
+  - `peek(workspace_key, artifact_paths)` → `{ state: 'hit', scope: string[] }
+    | { state: 'miss' } | { state: 'failed' }`. 동기. `miss`이거나 TTL 만료면
+    `fill`을 예약한다(같은 키의 fill은 중복 예약하지 않는다 — in-flight 집합).
+    `failed`는 값의 `scope === null`이다.
   - `fill(workspace_key, artifact_paths)`: `workerAnalysisContext(workspace)`
-    → `resolveBase({force:false})` → `base_oid` → `scopeAtBase(gitRun,
-    base_oid, artifact_paths, false)`(읽기 실패 항목은 `[]` 기여). context가
-    없거나 base 미해석이면 그 키를 `failed`로 음성 캐시한다.
-  - `onFilled(listener)`: fill이 끝나면 `workspace_key`로 통지. 큐 스냅샷의
-    title-cache 채움이 재푸시를 일으키는 기존 훅에 같은 리스너를 붙여 partial
-    항목이 다음 스냅샷에 도착하게 한다.
-- base가 바뀌면 키가 달라져 자연히 재읽는다. spec 파일이 base에서 바뀌면
-  커밋으로 base가 움직이므로 같은 경로로 갱신된다. 별도 invalidate는 없다.
+    → `resolveBase({force:false})` → `base_oid`. 기존 값의 `base_oid`와 같고
+    TTL 안이면 읽지 않고 `at`만 갱신한다. 다르거나 값이 없으면
+    `scopeAtBase(gitRun, base_oid, artifact_paths, true)`로 읽는다 —
+    **어느 한 artifact라도 `cat-file`이 실패하면 전체가 `null`**(§4.3의 읽기
+    실패). 성공하면 합집합 scope를(빈 배열 포함) 저장한다. context가 없거나
+    base 미해석이면 `scope: null`, `base_oid: ''`로 음성 캐시한다.
+  - `onFilled(listener)`: fill이 끝나면 `workspace_key`로 통지. 큐 스냅샷
+    푸시 경로에서 title-cache 채움이 `requestSnapshot`/`schedulePush`를
+    일으키는 기존 훅과 같은 자리에 리스너를 붙여, partial 항목이 다음
+    스냅샷에 도착하게 한다.
+- base가 바뀌면 다음 refill이 `base_oid` 불일치를 보고 다시 읽는다. spec
+  파일이 base에서 바뀌면 커밋으로 base가 움직이므로 같은 경로로 갱신된다.
+  별도 invalidate는 없다.
 - `scopeAtBase`는 `parallel-analysis-targets.js`에서 `export`로 승격한다
-  (동작 불변).
+  (동작 불변). `fail_on_read_error=true`가 "artifact 하나라도 못 읽으면
+  `null`"이라는 현재 의미 그대로다.
 
 ### 4.2 title-cache 레코드 확장 (`server/worker/title-cache.js`)
 
@@ -106,13 +119,15 @@ scope:
 
 ### 4.3 스냅샷 필드 `bead_scope` (`decorateQueue`)
 
-- `bead_scope: Record<bead_id, { scope: string[], artifact: string } | null>`.
-  - 항목 없음 = 아직 안 읽음 또는 스펙 없음 → 클라이언트는 아무 칩도 그리지
-    않는다.
-  - `{ scope: [], artifact }` = 스펙은 있는데 scope 선언이 없다 → `scope 없음`
-    칩.
-  - `null` = 읽기 실패 → 칩 없음.
-  - `artifact`는 scope를 읽은 spec 경로(툴팁용).
+- `bead_scope: Record<bead_id, { scope: string[], artifacts: string[] } | null>`.
+  - 항목 없음 = 아직 안 읽음(`miss`) 또는 스펙 없음(quick_fix·미발행) →
+    클라이언트는 아무 칩도 그리지 않는다.
+  - `{ scope: [], artifacts }` = 모든 artifact(spec, 있으면 plan)를 base에서
+    **성공적으로 읽었는데** 유효한 scope 항목이 없다 → `scope 없음` 칩. spec
+    파일이 base에 없거나 읽기 오류가 난 경우는 여기 오지 않는다.
+  - `null` = 읽기 실패(`failed`: artifact 부재·git 오류·base 미해석) → 칩
+    없음.
+  - `artifacts`는 scope를 읽은 경로 목록(spec, plan 순; 툴팁용).
 - 대상 집합 = `beadWorkflowFor`와 같은 집합에서 PR 대기를 뺀 것(병렬 큐 ∪
   직렬 레인 ∪ 실행 중). 각 bead에 대해 `scopeArtifactsFor`로 경로를 얻고
   `scope_cache.peek`가 `hit`이면 항목을 쓴다. `miss`는 항목 생략,
@@ -122,10 +137,14 @@ scope:
 
 ### 4.4 실행가능 항목의 `scope` (`buildMonitorPipeline`)
 
-- runnable 부착 직후, 각 항목의 `spec_id`(비어 있지 않을 때)로
-  `scope_cache.peek`를 호출해 `hit`이면 `scope: string[]`를 additive로 붙인다.
-  `miss`/`failed`이면 필드를 생략한다. `RunnableItem` typedef에 optional
-  `scope`를 추가한다.
+- `RunnableItem`에 `plan_path: string|null`(`metadata.plan_path` 문자열일
+  때만)을 추가해 대기·실행 중 bead와 **같은 artifact 집합**(`[spec_id,
+  plan_path?]`)을 읽는다 — 같은 bead가 큐에 적재되는 순간 겹침 결과가 달라지지
+  않아야 한다.
+- runnable 부착 직후, 각 항목의 `spec_id`(비어 있지 않을 때)로 그 artifact
+  집합을 `scopeCache().peek`에 넘겨 `hit`이면 `scope: string[]`를 additive로
+  붙인다. `miss`/`failed`이면 필드를 생략한다(§5.2는 생략을 "판정 불가"로
+  읽는다). `RunnableItem` typedef에 optional `scope`를 추가한다.
 - 모니터 파이프라인은 동기이므로 여기서 fill을 기다리지 않는다 — miss가 예약한
   fill의 `onFilled`가 다음 푸시를 만든다.
 
@@ -162,6 +181,12 @@ scope:
 - 레포 간 비교는 하지 않는다. `bead_scope` 키가 아예 없는 구서버 스냅샷이면
   계산 전체를 건너뛴다.
 - `MonitorItem` typedef에 `overlap_chips?`, `scope_state?`를 추가한다.
+- **연결 레인 행에도 싣는다.** UI-e6hw는 blocks 체인에 속한 병렬 항목을
+  `parallel_rows`에서 숨기고 `chain_lanes[].rows`(`MonitorChainLaneRow`)로
+  따로 그린다. 비교 집합은 위와 같지만(숨김과 무관하게 큐 멤버는 전부 포함),
+  결과는 그 bead의 `MonitorItem`과 같은 id의 `MonitorChainLaneRow`에도
+  `overlap_chips`/`scope_state`로 복사한다. 그래야 체인에 숨은 병렬 멤버도
+  화면 어딘가에서 칩을 갖는다.
 
 ### 5.3 렌더 (`app/views/worker/lanes.js` `dependencyChipsTemplate`, 모니터 `miniRow`)
 
@@ -175,6 +200,9 @@ scope:
   "겹침 판정 불가 — 스펙에 scope 선언 필요". 실행 중 행에는 붙이지 않는다.
 - 모니터는 §5.2의 `overlap_chips`·`scope_state`를 `dependency_chips`에 합쳐
   `miniRow`에 넘긴다(`index.js`의 기존 `monitor.dependency_chips` 전달 경로).
+  UI-e6hw의 연결 레인 행 렌더(`chainRow`)도 같은 `dependencyChipsTemplate`을
+  호출하므로 그 행의 `overlap_chips`/`scope_state`를 같은 방식으로 합쳐 넘긴다
+  — 칩·팝오버 마크업은 한 벌이다.
 - 겹침 칩 클릭 → 팝오버 `mon-overlap__popover`(`role="dialog"`, 카드 안에
   절대 배치, 바깥 클릭·Esc로 닫힘): 상대 id·제목·위치, 겹치는 경로 목록,
   [같은 직렬 레인으로] 버튼 또는 그 자리의 안내 문장(§5.4). `+n` 칩 클릭은
@@ -183,20 +211,29 @@ scope:
 ### 5.4 1클릭 직렬 배치 (`app/views/monitor/index.js`)
 
 기존 `worker-queue-place { bead_id, lane, index, root_dir, expected_revision }`만
-쓴다. 나 = 팝오버를 연 카드(대기 또는 실행가능), 상대 = 팝오버 행의 이슈.
-버튼 판정은 클릭 시점의 최신 모델로 한다(팝오버는 상대 id만 기억한다).
+쓴다. 나 = 팝오버를 연 행(대기·실행가능·실행 중 어느 것이든), 상대 = 팝오버
+행의 이슈. 버튼 판정은 클릭 시점의 최신 모델로 한다(팝오버는 상대 id만
+기억한다).
 
-| 상대 위치 | 동작 |
-| --- | --- |
-| 직렬 레인 `s_k`에 대기 중, 또는 `s_k`에서 출발한 실행 중(`serial_lane_id`) | `place(나, s_k, 끝)` 1 op |
-| 병렬 큐 또는 실행가능 | 빈 직렬 레인(`entries` 없음·`occupied_by` 없음) 중 첫 번째 `s_e`로 `place(상대, s_e, 0)` → `place(나, s_e, 1)` 2 op. 두 번째 op의 `expected_revision`은 첫 응답의 revision. 첫 실패에서 중단 |
-| 병렬에서 출발한 실행 중 | 버튼 없음. 문장 "실행 중 — 순서를 만들려면 직렬 레인에 두세요" |
-| 이미 나와 같은 직렬 레인 | 버튼 없음(순서가 이미 있다) |
+용어: 한 항목의 **직렬 레인** = 대기 중이면 그 레인, 실행 중이면 출발한 레인
+(`serial_lane_id`). 병렬 큐·실행가능·병렬에서 출발한 실행 중은 직렬 레인이
+없다. **이동 가능** = 대기(병렬/직렬) 또는 실행가능(실행 중은 이동 불가).
 
-- 빈 직렬 레인이 없으면 버튼 비활성 + 툴팁 "빈 직렬 레인 없음 — Worker 탭에서
-  레인 수 조절".
-- 내가 실행가능(미적재)이면 첫 op가 나를 큐에 적재한다 — 기존 드래그 적재와
-  같은 op다.
+| 나 | 상대 | 동작 |
+| --- | --- | --- |
+| 어느 쪽이든 | 둘 다 같은 직렬 레인 | 버튼 없음(순서가 이미 있다) |
+| 이동 가능 | 직렬 레인 `s_k` 있음 | `place(나, s_k, 끝)` 1 op |
+| 직렬 레인 `s_m` 있음(대기 또는 거기서 출발한 실행 중) | 이동 가능, 직렬 레인 없음 | `place(상대, s_m, 끝)` 1 op |
+| 이동 가능, 직렬 레인 없음 | 이동 가능, 직렬 레인 없음 | 빈 직렬 레인(`entries` 없음·`occupied_by` 없음) 중 첫 번째 `s_e`로 `place(상대, s_e, 0)` → `place(나, s_e, 1)` 2 op. 두 번째 op의 `expected_revision`은 첫 응답의 revision. 첫 실패에서 중단 |
+| 이동 불가(병렬에서 출발한 실행 중) | 이동 불가 | 버튼 없음. 문장 "둘 다 실행 중 — 순서를 만들 수 없습니다" |
+| 이동 불가(병렬에서 출발한 실행 중) | 이동 가능, 직렬 레인 없음 | 버튼 없음. 문장 "실행 중 — 순서를 만들려면 상대를 직렬 레인에 두세요" |
+| 이동 가능, 직렬 레인 없음 | 이동 불가(병렬에서 출발한 실행 중) | 버튼 없음. 문장 "실행 중 — 종료 후 출발하려면 직렬 레인에 두세요" |
+
+- 규칙 요약: 어느 한쪽에 직렬 레인이 있으면 그 레인을 쓴다(1 op, 빈 레인
+  불필요). 둘 다 없을 때만 빈 레인 2 op. 실행 중인 항목은 옮기지 않는다.
+- 2 op 분기에서 빈 직렬 레인이 없으면 버튼 비활성 + 툴팁 "빈 직렬 레인 없음 —
+  Worker 탭에서 레인 수 조절".
+- 실행가능(미적재) 항목을 옮기는 `place`는 기존 드래그 적재와 같은 op다.
 - 낙관적 투영 없음. 다음 스냅샷이 실제 상태를 그린다(UI-e6hw §3).
 
 ### 5.5 모바일 (≤640px)
@@ -217,10 +254,13 @@ scope:
 ## 7. 테스트 계획
 
 - `server/worker/scope-cache.test.js`: peek miss → fill 예약(중복 없음) →
-  `onFilled` 통지 → hit; base 변경 시 재읽기; 음성 캐시 TTL; context 없음/git
-  실패 → `failed`.
+  `onFilled` 통지 → hit; TTL 만료 시 stale 값 반환 + refill; refill에서
+  `base_oid` 동일이면 읽지 않음·다르면 재읽기; spec 부재/git 실패 →
+  `scope: null`(`failed`, `[]`가 아님); context 없음/base 미해석 → `failed`;
+  factory와 단일 인스턴스가 분리됨.
 - `server/worker/title-cache.test.js`: 레코드 `spec_id`/`plan_path`,
-  `scopeArtifactsFor`가 스펙 없는 bead를 생략.
+  `scopeArtifactsFor`가 스펙 없는 bead를 생략하고 plan이 있으면 둘 다 싣는다.
+- `server/worker/runnable-cache.test.js`: 항목에 `plan_path` 투영.
 - `server/ws/worker-handlers.test.js`: `bead_scope`가 §4.3 집합에 partial로
   실림(hit 항목만, failed는 `null`, PR 대기 제외).
 - `server/ws/monitor-handlers.test.js`: runnable 항목에 `scope` additive 부착,
@@ -229,11 +269,14 @@ scope:
   `parallel-analysis-targets.test.js`의 겹침 케이스 통과 유지).
 - `app/views/monitor/lanes.test.js`: 실행중×대기·대기×실행가능·직렬×병렬 쌍의
   `overlap_chips`와 위치 라벨; 빈 scope 쌍 미비교; `scope_state='missing'`;
-  레포 간 미비교; `bead_scope` 없는 스냅샷에서 계산 생략.
+  레포 간 미비교; `bead_scope` 없는 스냅샷에서 계산 생략; blocks 체인에 숨은
+  병렬 멤버의 `MonitorChainLaneRow`에 칩 복사.
 - `app/views/worker/lanes.test.js`: 칩 순서·`+n` 접기·회색 칩·실행 중 행에
   회색 칩 없음.
-- `app/views/monitor/index.test.js`: 팝오버 버튼 4분기(§5.4 표), 2 op 순서와
-  revision 전달, 첫 op 실패 시 중단, 빈 레인 없음 비활성.
+- `app/views/monitor/index.test.js`: 팝오버 버튼 분기(§5.4 표의 모든 행 —
+  같은 레인·상대 직렬 1 op·내 직렬 1 op·둘 다 없음 2 op·실행 중 세 문장),
+  2 op 순서와 revision 전달, 첫 op 실패 시 중단, 빈 레인 없음 비활성,
+  `chainRow`에서 같은 팝오버 동작.
 - 배포 후 실제 겹치는 대기 쌍으로 스크린샷 확인(모니터 재설계 관례).
 
 ## 8. 비범위
