@@ -576,7 +576,7 @@ function makeFakeBd(config) {
 }
 
 /**
- * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
+ * @param {{ config: Record<string, any>, store?: any, slots?: number, verifyOk?: boolean, verify?: any, quickfixLanding?: any, probePid?: (pid: number|null) => { alive: boolean, started_at: number|null }, processController?: any, makeRunner?: (name: string) => any, accountCatalog?: any, resolveCswapPath?: () => string|null, prepareCodexAccountHome?: any, codexAccountHomeDir?: (key: string) => string, codexRoot?: string, homeDir?: string, admission?: any, resolveBase?: any, notify?: any, disposition?: any, repairSession?: any, externalPrs?: Record<string, any>, execPresetCoordinator?: any, notifyQueueChanged?: (workspace: string) => void, usage?: null, usageReceipts?: any, delegationMonitor?: any, observeClaudeEffort?: (input: { cwd: string, session_id: string }) => string|null, observeClaudeSubagentEffort?: (input: { cwd: string, session_id: string, agent_id: string }) => string|null, delegation?: any, observeCodexEffort?: (input: { session_id: string, started_at: number|null }) => string|null, sessionLog?: any, sessionMonitors?: any, guardHook?: any, gitRun?: any, fs?: { existsSync: (path: string) => boolean }, onCompletionAttemptSettled?: any, onDeploymentRecoveryAttemptSettled?: any }} opts
  */
 function setup(opts) {
   const store = /** @type {ReturnType<typeof createQueueStore>} */ (
@@ -671,7 +671,9 @@ function setup(opts) {
     usage,
     usageReceipts: opts.usageReceipts,
     delegationMonitor: opts.delegationMonitor,
+    delegation: opts.delegation,
     observeClaudeEffort: opts.observeClaudeEffort,
+    observeClaudeSubagentEffort: opts.observeClaudeSubagentEffort,
     observeCodexEffort: opts.observeCodexEffort,
     admission: opts.admission,
     resolveBase: opts.resolveBase,
@@ -9940,6 +9942,110 @@ describe('scheduler Claude effort observation', () => {
     const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(observeClaudeEffort).toHaveBeenCalledTimes(2);
     expect(attempt.observed_effort).toBe('high');
+  });
+
+  test('retries missing effort on the first assistant lines', async () => {
+    const observeClaudeEffort = vi
+      .fn()
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce(null)
+      .mockReturnValueOnce('high');
+    const env = setup({
+      config: { A1: { model: 'opus', effort: null } },
+      observeClaudeEffort
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('session_id', 'session-1');
+
+    events.emit('raw', { type: 'assistant', message: {} });
+    events.emit('raw', { type: 'assistant', message: {} });
+    events.emit('raw', { type: 'assistant', message: {} });
+
+    const attempt = Object.values(env.store.snapshot(WS).attempts)[0];
+    expect(observeClaudeEffort).toHaveBeenCalledTimes(3);
+    expect(attempt.observed_effort).toBe('high');
+  });
+
+  test('stops rereading after the assistant retry limit', async () => {
+    const observeClaudeEffort = vi.fn(() => null);
+    const env = setup({
+      config: { A1: { model: 'opus', effort: null } },
+      observeClaudeEffort
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('session_id', 'session-1');
+
+    for (let i = 0; i < 6; i += 1) {
+      events.emit('raw', { type: 'assistant', message: {} });
+    }
+
+    // One at session id + three bounded assistant retries.
+    expect(observeClaudeEffort).toHaveBeenCalledTimes(4);
+  });
+
+  test('pins a subagent effort on its session once the receipt names the agent', async () => {
+    const observeClaudeSubagentEffort = vi.fn(() => 'low');
+    const delegation = {
+      apply: vi.fn(() => true),
+      setEffort: vi.fn(() => true),
+      get: () => ({ sessions: [], legs: [] }),
+      clearAttempt: () => {}
+    };
+    const env = setup({
+      config: { A1: { model: 'opus', effort: 'high' } },
+      observeClaudeSubagentEffort,
+      delegation
+    });
+    seedQueue(env.store, ['A1']);
+    await env.scheduler.tick(WS);
+    const events = env.runner.eventsFor('A1');
+    events.emit('raw', {
+      type: 'system',
+      subtype: 'init',
+      cwd: '/observed/worktree'
+    });
+    events.emit('session_id', 'session-1');
+
+    events.emit('raw', {
+      type: 'user',
+      timestamp: '2026-08-24T04:20:00.000Z',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+            content: 'done'
+          }
+        ]
+      },
+      tool_use_result: {
+        agentId: 'agt_9f3c21d4c0',
+        status: 'completed',
+        totalTokens: 10,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0
+        }
+      }
+    });
+
+    expect(observeClaudeSubagentEffort).toHaveBeenCalledWith({
+      cwd: '/observed/worktree',
+      session_id: 'session-1',
+      agent_id: 'agt_9f3c21d4c0'
+    });
+    expect(delegation.setEffort).toHaveBeenCalledWith(
+      WS,
+      expect.any(String),
+      'toolu_01AgentAAAAAAAAAAAAAAAA',
+      'low'
+    );
   });
 
   test('skips explicit effort and codex runner attempts', async () => {

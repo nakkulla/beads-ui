@@ -686,6 +686,22 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     ).toBe('Claude · general-purpose · claude-sonnet-4-5');
   });
 
+  test('appends the observed effort to a finished subagent label', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done', { effort: 'low' })],
+          usage_legs: [receipt({ effort: 'low' })]
+        }
+      ])
+    );
+
+    expect(
+      host.querySelector('.detail-session__leg-meta')?.textContent?.trim()
+    ).toBe('Claude · general-purpose · claude-sonnet-4-5 · low');
+  });
+
   test('omits the agent type from the label when the call named none', () => {
     const host = mount(
       sessionHistoryTemplate([

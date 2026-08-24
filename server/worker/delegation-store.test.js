@@ -240,6 +240,28 @@ describe('worker/delegation-store (UI-2mpn §5.2)', () => {
     expect(store.get(WS, ATTEMPT).legs[0].usage.input_tokens).toBe(30);
   });
 
+  test('pins an observed effort on the closed session and its receipt', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+    store.apply(WS, ATTEMPT, end());
+
+    const changed = store.setEffort(WS, ATTEMPT, LAUNCH, 'low');
+
+    expect(changed).toBe(true);
+    const { sessions, legs } = store.get(WS, ATTEMPT);
+    expect(sessions[0].effort).toBe('low');
+    expect(legs[0].effort).toBe('low');
+  });
+
+  test('reports no change for an empty effort or an unknown launch', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+
+    expect(store.setEffort(WS, ATTEMPT, LAUNCH, '')).toBe(false);
+    expect(store.setEffort(WS, ATTEMPT, 'toolu_other', 'low')).toBe(false);
+    expect(store.get(WS, ATTEMPT).sessions[0].effort).toBe(null);
+  });
+
   test('ignores an end for a launch it never saw start', () => {
     const store = createDelegationStore();
 

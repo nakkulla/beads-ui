@@ -833,7 +833,7 @@ ${i}</pre
     ${s?l`<span class="detail-session__usage" title=${s.tooltip}
           >${s.label}</span
         >`:""}
-  </div>`}function Um(e,t,r,n){let s=e.status==="running"?null:t,a=(s?Ut({providers:{[e.provider]:{subtotal:s.subtotal,breakdown:s.usage,...s.replayed?{replayed:!0}:{}}},roles:{}}):[])[0],i=e.status==="running"?bo(e.last_event_at):s?Wa(s.completed_at):"",c=(e.provider==="claude"?["Claude",e.agent_type,qm(e.model)]:["codex",e.model,e.effort]).filter(Boolean).join(" \xB7 "),u=Fm(e,s);return l`<button
+  </div>`}function Um(e,t,r,n){let s=e.status==="running"?null:t,a=(s?Ut({providers:{[e.provider]:{subtotal:s.subtotal,breakdown:s.usage,...s.replayed?{replayed:!0}:{}}},roles:{}}):[])[0],i=e.status==="running"?bo(e.last_event_at):s?Wa(s.completed_at):"",c=(e.provider==="claude"?["Claude",e.agent_type,qm(e.model),e.effort]:["codex",e.model,e.effort]).filter(Boolean).join(" \xB7 "),u=Fm(e,s);return l`<button
     type="button"
     class="detail-session__leg detail-session__usage-detail detail-session__leg--${e.status}"
     data-launch-id=${e.launch_id}

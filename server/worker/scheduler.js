@@ -51,7 +51,10 @@ import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
 import { observeBaseDrift } from './base-drift.js';
-import { observeClaudeEffort as defaultObserveClaudeEffort } from './claude-effort-observer.js';
+import {
+  observeClaudeEffort as defaultObserveClaudeEffort,
+  observeClaudeSubagentEffort as defaultObserveClaudeSubagentEffort
+} from './claude-effort-observer.js';
 import { prepareCodexAccountHome as defaultPrepareCodexAccountHome } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
@@ -207,6 +210,8 @@ const TERMINAL_ATTEMPT_STATUSES = new Set([
 
 /** Maximum terminal receipt inboxes inspected per reconciliation pass. */
 const TERMINAL_RECEIPT_RECOVERY_MAX = 32;
+// Assistant lines a fresh session may take before its project JSONL holds one.
+const SESSION_EFFORT_RETRY_LIMIT = 3;
 
 /**
  * Project a session's `blocked_detail` onto the attempt's durable
@@ -424,6 +429,7 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * Attempt-scoped delegated-session monitor adapter. The default is the
  * production reader; tests may inject a deterministic in-memory seam.
  * @property {(input: { cwd: string, session_id: string }) => string|null} [observeClaudeEffort]
+ * @property {(input: { cwd: string, session_id: string, agent_id: string }) => string|null} [observeClaudeSubagentEffort]
  * Fail-quiet Claude session-file effort observer.
  * @property {(input: { session_id: string, started_at: number|null }) => string|null} [observeCodexEffort]
  * Fail-quiet Codex rollout-file effort observer.
@@ -651,6 +657,8 @@ export function createScheduler(deps) {
     deps.delegationMonitor || default_delegation_monitor;
   const observeClaudeEffort =
     deps.observeClaudeEffort || defaultObserveClaudeEffort;
+  const observeClaudeSubagentEffort =
+    deps.observeClaudeSubagentEffort || defaultObserveClaudeSubagentEffort;
   const observeCodexEffort =
     deps.observeCodexEffort || defaultObserveCodexEffort;
   /** @type {Map<string, number>} */
@@ -5396,6 +5404,7 @@ export function createScheduler(deps) {
     deps.sessionLog.attach(workspace, attempt_id, handle.events);
     let init_cwd = wt_path;
     let session_effort_attempted = false;
+    let session_effort_retries = 0;
     handle.events.on('raw', (raw) => {
       // Claude subagent sessions and their terminal receipts (UI-2mpn §5.4).
       // The RAW line is the subject, not the normalized event: a subagent's
@@ -5403,14 +5412,31 @@ export function createScheduler(deps) {
       // and the replay path lifts the same line with the same function.
       if (runner_name === 'claude' && deps.delegation) {
         try {
-          if (
-            deps.delegation.apply(workspace, attempt_id, liftDelegation(raw))
-          ) {
+          const lifted = liftDelegation(raw);
+          if (deps.delegation.apply(workspace, attempt_id, lifted)) {
             scheduleUsageFanout(workspace);
+          }
+          if (lifted && lifted.kind === 'end' && lifted.agent_id !== null) {
+            backfillSubagentEffort(lifted.launch_id, lifted.agent_id);
           }
         } catch (err) {
           log('delegation lift failed for %s: %o', attempt_id, err);
         }
+      }
+      // The orchestrator's own effort lands in its project JSONL only with its
+      // first `assistant` record — after `system/init` named the session — so
+      // the session-id observation above misses a fresh session. Retry on the
+      // first assistant lines, bounded so a session that never records one
+      // does not reread a growing file per turn.
+      if (
+        raw &&
+        typeof raw === 'object' &&
+        raw.type === 'assistant' &&
+        session_effort_retries < SESSION_EFFORT_RETRY_LIMIT
+      ) {
+        session_effort_retries += 1;
+        const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+        backfillObservedEffort(attempt?.session_id ?? null);
       }
       if (
         raw &&
@@ -5467,6 +5493,42 @@ export function createScheduler(deps) {
         attempt_id,
         patch: { observed_effort }
       });
+    }
+
+    /**
+     * Read a closed Claude subagent's effort off its own JSONL and pin it on
+     * the live session + receipt (fail-quiet, like the orchestrator's).
+     *
+     * @param {string} launch_id
+     * @param {string} agent_id
+     */
+    function backfillSubagentEffort(launch_id, agent_id) {
+      if (!deps.delegation) {
+        return;
+      }
+      const attempt = deps.store.snapshot(workspace).attempts?.[attempt_id];
+      const session_id = attempt?.session_id;
+      if (typeof session_id !== 'string' || session_id.length === 0) {
+        return;
+      }
+      /** @type {string|null} */
+      let effort = null;
+      try {
+        effort = observeClaudeSubagentEffort({
+          cwd: init_cwd,
+          session_id,
+          agent_id
+        });
+      } catch (err) {
+        log('subagent effort observation failed for %s: %o', launch_id, err);
+        return;
+      }
+      if (typeof effort !== 'string' || effort.trim().length === 0) {
+        return;
+      }
+      if (deps.delegation.setEffort(workspace, attempt_id, launch_id, effort)) {
+        scheduleUsageFanout(workspace);
+      }
     }
 
     // Persist the runner session id when it arrives (stream first event). The
