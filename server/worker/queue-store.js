@@ -260,6 +260,24 @@
  * dispatch shape.
  * @property {CompletionFailureKey|null} completion_failure_key - SHA-bound
  * failure identity the session was asked to repair.
+ * @property {'implementation'|'head_review'|'head_repair'} kind - Which lane
+ * produced this attempt (UI-hk74 §7). Head review and its bounded repair used
+ * to live only in `head-review-attempts/*.json`, invisible to the attempt
+ * history, the token totals, and the monitor. Legacy records normalize to
+ * `implementation`, which is what every attempt written before this field was
+ * added actually is.
+ * @property {'click'|'auto'|null} origin - Whether a human click or the
+ * automatic resolution lane asked for this attempt. Null on an ordinary
+ * implementation attempt, which answers to neither.
+ * @property {'bead'|'harness'|null} reviewer_source - Which layer of the
+ * manual-continuation selection ladder resolved the reviewer. Recorded because
+ * the ladder is a dotfiles contract and "which layer answered" is the only way
+ * to see it was followed.
+ * @property {string|null} authority_id - Merge authority this attempt was
+ * dispatched under, so a late result can fail its CAS against a replaced one.
+ * @property {string|null} head_sha - Head the review was bound to.
+ * @property {string|null} log_path - `head-review-attempts/<id>.log.jsonl` the
+ * session log view reads. The transcript is NOT copied into the queue.
  */
 /**
  * One completed nested provider receipt. Two providers share the shape and no
@@ -594,7 +612,7 @@
  * @property {number} at - Epoch ms of the disposition.
  */
 /**
- * @typedef {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} CompletionPhase
+ * @typedef {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} CompletionPhase
  */
 /**
  * @typedef {Object} CompletionSubject
@@ -635,6 +653,45 @@
  * @typedef {CompletionTerminal & { resumed_at: number }} CompletionResumedTerminal
  */
 /**
+ * The durable inputs one automatic resolution attempt re-runs its original
+ * effect with (UI-hk74 §3 second table). Every field is nullable because the
+ * five retry families need different subsets and a class that needs none still
+ * carries the record: an absent key and a null key must not read differently
+ * after a restart.
+ *
+ * @typedef {Object} CompletionAutoResolutionOp
+ * @property {string|null} completion_op_id - `op_id` of the operation that
+ * failed, preserved because {@link CompletionIntent.active_op} may settle
+ * independently.
+ * @property {CompletionFailureKey|null} failure_key
+ * @property {string|null} repair_bead_id
+ * @property {{ continuation: 'prior_session'|'fresh_current', decision_token: string }|null} continuation
+ * @property {string|null} continuation_mismatch
+ * @property {string|null} operation_id - RepoOperation superseded by a verify
+ * re-run.
+ * @property {string|null} head_sha
+ * @property {string|null} base_sha
+ * @property {string|null} merged_sha
+ * @property {string|null} cleanup_cursor
+ */
+/**
+ * Non-terminal automatic resolution state (UI-hk74 §4). Present ONLY while the
+ * intent sits in the phase its `class` names; every other phase drops it, so a
+ * stale record can never grant a second budget.
+ *
+ * @typedef {Object} CompletionAutoResolution
+ * @property {'metadata_watch'|'auto_review'|'retry'} class
+ * @property {string} origin_reason - The full terminal reason string that would
+ * have been recorded had the failure terminalized.
+ * @property {string} origin_stage
+ * @property {CompletionPhase} return_phase - Where a successful resolution
+ * returns the saga.
+ * @property {number} attempts
+ * @property {number|null} next_at - `retry` only.
+ * @property {string|null} last_error
+ * @property {CompletionAutoResolutionOp} op
+ */
+/**
  * @typedef {Object} CompletionIntent
  * @property {string} target_base
  * @property {CompletionPhase} phase
@@ -645,6 +702,10 @@
  * after a nested linked repair merges, oldest first.
  * @property {CompletionOperation|null} active_op
  * @property {CompletionTerminal|null} terminal_reason
+ * @property {CompletionAutoResolution|null} auto_resolution
+ * @property {CompletionAutoResolution|null} paused_resolution - The resolution
+ * parked by an `auto_merge` OFF boundary, restored verbatim on resume so a
+ * pause never refunds the retry budget.
  * @property {CompletionResumedTerminal} [resumed_terminal]
  */
 /**
@@ -704,10 +765,73 @@ const COMPLETION_PHASES = [
   'waiting_repair_pr',
   'merging',
   'cleaning',
+  'waiting_metadata',
+  'reviewing',
+  'retrying',
   'paused',
   'needs_human',
   'completed'
 ];
+
+/**
+ * The one binding between an automatic resolution class and the phase that
+ * holds it (UI-hk74 §4). Both directions are invariants the normalizer
+ * enforces: a class in the wrong phase is a corrupt record, not a hint.
+ *
+ * @type {Readonly<Record<CompletionAutoResolution['class'], CompletionPhase>>}
+ */
+export const COMPLETION_AUTO_RESOLUTION_PHASE = Object.freeze({
+  metadata_watch: /** @type {CompletionPhase} */ ('waiting_metadata'),
+  auto_review: /** @type {CompletionPhase} */ ('reviewing'),
+  retry: /** @type {CompletionPhase} */ ('retrying')
+});
+
+/** @type {Set<CompletionPhase>} */
+const COMPLETION_AUTO_RESOLUTION_PHASES = new Set(
+  Object.values(COMPLETION_AUTO_RESOLUTION_PHASE)
+);
+
+/**
+ * Phases a resolution may return to on success (UI-hk74 §3). Deliberately
+ * excludes every terminal, paused, and auto-resolution phase: returning into
+ * another wait would make "success" mean nothing.
+ *
+ * @type {Set<CompletionPhase>}
+ */
+const COMPLETION_RETURN_PHASES = new Set(
+  /** @type {CompletionPhase[]} */ ([
+    'gating',
+    'repairing',
+    'waiting_repair_pr',
+    'merging',
+    'cleaning'
+  ])
+);
+
+/**
+ * Delayed-retry budget (UI-hk74 §3). Shared by the durable bound here and the
+ * coordinator's own ladder, which must agree or `retry_exhausted` would fire at
+ * two different counts.
+ *
+ * @type {number}
+ */
+export const COMPLETION_RETRY_MAX = 3;
+
+/**
+ * Phases that must NOT start a pre-merge verify run (UI-hk74 §8). `reviewing`
+ * is absent on purpose: the gate demands a verify receipt immediately after an
+ * approval, so suppressing it there would only add one verify's latency.
+ *
+ * @type {Set<string>}
+ */
+export const COMPLETION_VERIFY_SUPPRESSED_PHASES = new Set([
+  'needs_human',
+  'waiting_metadata',
+  'retrying'
+]);
+
+/** @type {NonNullable<Attempt['kind']>[]} */
+const ATTEMPT_KINDS = ['implementation', 'head_review', 'head_repair'];
 
 /** @type {CompletionOperation['kind'][]} */
 const COMPLETION_OP_KINDS = [
@@ -740,6 +864,8 @@ const MAX_REPAIR_SESSIONS = 2;
 const COMPLETION_EVIDENCE_MAX = 4_000;
 
 const COMPLETION_LOG_PATH_MAX = 1_000;
+
+const COMPLETION_REASON_MAX = 500;
 
 const ATTEMPT_CONTROL_TRANSITIONS = {
   requested: new Set(['signaled', 'failed']),
@@ -943,6 +1069,131 @@ function normalizeCompletionResumedTerminal(value) {
 }
 
 /**
+ * @param {unknown} value
+ * @returns {CompletionAutoResolutionOp}
+ */
+function normalizeCompletionAutoResolutionOp(value) {
+  const raw = isRecord(value) ? value : {};
+  /**
+   * @param {unknown} field
+   * @returns {string|null}
+   */
+  const text = (field) =>
+    typeof field === 'string' && field.length > 0
+      ? field.slice(0, COMPLETION_LOG_PATH_MAX)
+      : null;
+  const continuation = isRecord(raw.continuation) ? raw.continuation : {};
+  const continuation_kind = continuation.continuation;
+  return {
+    completion_op_id: text(raw.completion_op_id),
+    failure_key: normalizeCompletionFailureKey(raw.failure_key),
+    repair_bead_id: text(raw.repair_bead_id),
+    continuation:
+      (continuation_kind === 'prior_session' ||
+        continuation_kind === 'fresh_current') &&
+      typeof continuation.decision_token === 'string' &&
+      continuation.decision_token.length > 0
+        ? {
+            continuation: continuation_kind,
+            decision_token: continuation.decision_token
+          }
+        : null,
+    continuation_mismatch: text(raw.continuation_mismatch),
+    operation_id: text(raw.operation_id),
+    head_sha: isSha(raw.head_sha) ? raw.head_sha : null,
+    base_sha: isSha(raw.base_sha) ? raw.base_sha : null,
+    merged_sha: isSha(raw.merged_sha) ? raw.merged_sha : null,
+    cleanup_cursor: text(raw.cleanup_cursor)
+  };
+}
+
+/**
+ * Read one automatic resolution record. Fail-closed (UI-hk74 §10): anything the
+ * shape cannot vouch for returns null, and the caller turns that into
+ * `needs_human` rather than resuming automation on a guess.
+ *
+ * @param {unknown} value
+ * @returns {CompletionAutoResolution|null}
+ */
+function normalizeCompletionAutoResolution(value) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const resolution_class = value.class;
+  const return_phase = value.return_phase;
+  const next_at = value.next_at;
+  if (
+    typeof resolution_class !== 'string' ||
+    !Object.hasOwn(COMPLETION_AUTO_RESOLUTION_PHASE, resolution_class) ||
+    typeof value.origin_reason !== 'string' ||
+    value.origin_reason.length === 0 ||
+    typeof value.origin_stage !== 'string' ||
+    value.origin_stage.length === 0 ||
+    typeof return_phase !== 'string' ||
+    !COMPLETION_RETURN_PHASES.has(
+      /** @type {CompletionPhase} */ (return_phase)
+    ) ||
+    typeof value.attempts !== 'number' ||
+    !Number.isInteger(value.attempts) ||
+    value.attempts < 0 ||
+    value.attempts > COMPLETION_RETRY_MAX ||
+    (next_at !== null &&
+      (typeof next_at !== 'number' ||
+        !Number.isFinite(next_at) ||
+        resolution_class !== 'retry')) ||
+    (value.last_error !== null &&
+      value.last_error !== undefined &&
+      typeof value.last_error !== 'string')
+  ) {
+    return null;
+  }
+  return {
+    class: /** @type {CompletionAutoResolution['class']} */ (resolution_class),
+    origin_reason: value.origin_reason.slice(0, COMPLETION_REASON_MAX),
+    origin_stage: value.origin_stage,
+    return_phase: /** @type {CompletionPhase} */ (return_phase),
+    attempts: value.attempts,
+    next_at: typeof next_at === 'number' ? next_at : null,
+    last_error:
+      typeof value.last_error === 'string'
+        ? value.last_error.slice(-COMPLETION_EVIDENCE_MAX)
+        : null,
+    op: normalizeCompletionAutoResolutionOp(value.op)
+  };
+}
+
+/**
+ * Move an intent to `phase` under the auto-resolution invariants of UI-hk74 §4.
+ * Every mutator that assigns a phase goes through here.
+ *
+ * A retry deliberately KEEPS its record while it re-runs: the re-run itself
+ * moves the saga to `return_phase`, and dropping the counter there would let a
+ * failure that classifies again start from a refunded budget — the unbounded
+ * loop the 3-attempt cap exists to prevent. Clearing is explicit
+ * (`clearCompletionAutoResolution`, a consumed operation, terminalization, or a
+ * human click); `paused` parks instead of clearing.
+ *
+ * @param {CompletionIntent} intent
+ * @param {CompletionPhase} phase
+ * @returns {boolean} False when the phase would contradict the record.
+ */
+function applyCompletionPhase(intent, phase) {
+  if (
+    COMPLETION_AUTO_RESOLUTION_PHASES.has(phase) &&
+    (!intent.auto_resolution ||
+      COMPLETION_AUTO_RESOLUTION_PHASE[intent.auto_resolution.class] !== phase)
+  ) {
+    return false;
+  }
+  if (phase === 'paused' && intent.auto_resolution) {
+    intent.paused_resolution = intent.auto_resolution;
+    intent.auto_resolution = null;
+  }
+  intent.phase = phase;
+  return true;
+}
+
+/**
  * Preserve a malformed record as a terminal saga instead of dropping it and
  * silently granting a fresh repair budget on the next intake.
  *
@@ -986,6 +1237,8 @@ function invalidCompletionIntent(root_bead_id, value) {
     repair_bead_ids,
     subject_stack: [],
     active_op: null,
+    auto_resolution: null,
+    paused_resolution: null,
     terminal_reason: {
       reason: 'intent_state_invalid',
       stage: 'state',
@@ -1031,6 +1284,16 @@ function normalizeCompletionIntent(root_bead_id, value) {
   const resumed_terminal = normalizeCompletionResumedTerminal(
     value.resumed_terminal
   );
+  const in_auto_phase = COMPLETION_AUTO_RESOLUTION_PHASES.has(
+    /** @type {CompletionPhase} */ (phase)
+  );
+  const auto_resolution = in_auto_phase
+    ? normalizeCompletionAutoResolution(value.auto_resolution)
+    : null;
+  const paused_resolution =
+    phase === 'paused'
+      ? normalizeCompletionAutoResolution(value.paused_resolution)
+      : null;
   const valid_repair_ids =
     repair_bead_ids !== null &&
     repair_bead_ids.every(
@@ -1059,7 +1322,10 @@ function normalizeCompletionIntent(root_bead_id, value) {
     (value.active_op !== null && !active_op) ||
     (value.terminal_reason !== null && !terminal_reason) ||
     (phase === 'needs_human' && !terminal_reason) ||
-    (phase !== 'needs_human' && terminal_reason)
+    (phase !== 'needs_human' && terminal_reason) ||
+    (in_auto_phase &&
+      (!auto_resolution ||
+        COMPLETION_AUTO_RESOLUTION_PHASE[auto_resolution.class] !== phase))
   ) {
     return invalidCompletionIntent(root_bead_id, value);
   }
@@ -1071,6 +1337,8 @@ function normalizeCompletionIntent(root_bead_id, value) {
     repair_bead_ids: /** @type {string[]} */ (repair_bead_ids),
     subject_stack: /** @type {CompletionSubject[]} */ (subject_stack),
     active_op,
+    auto_resolution,
+    paused_resolution,
     terminal_reason
   };
   return resumed_terminal ? { ...normalized, resumed_terminal } : normalized;
@@ -2089,7 +2357,28 @@ export function makeAttempt(fields) {
         : null,
     completion_failure_key: normalizeCompletionFailureKey(
       fields.completion_failure_key
-    )
+    ),
+    kind:
+      typeof fields.kind === 'string' && ATTEMPT_KINDS.includes(fields.kind)
+        ? fields.kind
+        : 'implementation',
+    origin:
+      fields.origin === 'click' || fields.origin === 'auto'
+        ? fields.origin
+        : null,
+    reviewer_source:
+      fields.reviewer_source === 'bead' || fields.reviewer_source === 'harness'
+        ? fields.reviewer_source
+        : null,
+    authority_id:
+      typeof fields.authority_id === 'string' && fields.authority_id.length > 0
+        ? fields.authority_id
+        : null,
+    head_sha: isSha(fields.head_sha) ? fields.head_sha.toLowerCase() : null,
+    log_path:
+      typeof fields.log_path === 'string' && fields.log_path.length > 0
+        ? fields.log_path.slice(0, COMPLETION_LOG_PATH_MAX)
+        : null
   };
 }
 
@@ -3008,7 +3297,17 @@ function resumeCompletionIntentRecord(next, root_bead_id) {
   ) {
     return false;
   }
-  intent.phase = intent.subject.merged_sha === null ? 'gating' : 'cleaning';
+  const parked = intent.paused_resolution;
+  if (parked) {
+    // The OFF boundary parked a live resolution, so resuming restores it
+    // verbatim — same class, same attempts, same schedule. A pause that handed
+    // back a fresh budget would be an unbounded retry ladder with extra steps.
+    intent.auto_resolution = parked;
+    intent.paused_resolution = null;
+    intent.phase = COMPLETION_AUTO_RESOLUTION_PHASE[parked.class];
+  } else {
+    intent.phase = intent.subject.merged_sha === null ? 'gating' : 'cleaning';
+  }
   if (!next.merge_queue.some((entry) => entry.bead_id === root_bead_id)) {
     insertRunnableMergeEntry(next, {
       bead_id: root_bead_id,
@@ -4588,6 +4887,57 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Prerecord, adopt, or settle ONE head review / head repair attempt
+     * (UI-hk74 §7). The three moments share this method because they are the
+     * same idempotent write from different points in the same lifecycle, and
+     * because {@link appendAttempt} is the wrong tool here: it replaces the
+     * record wholesale, so a restart adopting a marker would reset a session
+     * that had already finished. A terminal record therefore wins over any
+     * patch — the marker is the slower writer, never the authority on a
+     * settled attempt.
+     *
+     * @param {string} workspace
+     * @param {{ attempt_id: string, patch: Partial<Attempt> }} input
+     * @returns {QueueOpResult}
+     */
+    upsertHeadReviewAttempt(workspace, input) {
+      const { attempt_id, patch } = input;
+      /** @type {string|null} */
+      let reason = null;
+      const result = applyUnconditional(workspace, (next) => {
+        if (
+          typeof attempt_id !== 'string' ||
+          attempt_id.length === 0 ||
+          !isRecord(patch)
+        ) {
+          reason = 'head_review_attempt_invalid';
+          return false;
+        }
+        const current = next.attempts[attempt_id];
+        if (current && TERMINAL_ATTEMPT_STATUSES.has(String(current.status))) {
+          reason = 'head_review_attempt_terminal';
+          return false;
+        }
+        const merged = { ...(current || {}), ...patch, attempt_id };
+        if (
+          typeof merged.bead_id !== 'string' ||
+          merged.bead_id.length === 0 ||
+          (merged.kind !== 'head_review' && merged.kind !== 'head_repair')
+        ) {
+          reason = 'head_review_attempt_invalid';
+          return false;
+        }
+        next.attempts[attempt_id] = makeAttempt(
+          /** @type {Partial<Attempt> & { attempt_id: string, bead_id: string }} */ (
+            merged
+          )
+        );
+        return true;
+      });
+      return reason === null ? result : { ...result, reason };
+    },
+
+    /**
      * Atomically prerecord a conflict-resolution attempt and bind its owning
      * merge queue item before the resolver process can outlive the driver.
      *
@@ -6163,6 +6513,17 @@ export function createQueueStore(options = {}) {
               intent.subject.merged_sha === null ? 'gating' : 'cleaning';
             intent.terminal_reason = null;
             changed += 1;
+          } else if (
+            intent &&
+            COMPLETION_AUTO_RESOLUTION_PHASES.has(intent.phase)
+          ) {
+            // Manual authority outranks automation (UI-hk74 §4): the click ends
+            // the wait wherever it stands and hands the saga back to the gate.
+            intent.auto_resolution = null;
+            intent.paused_resolution = null;
+            intent.phase =
+              intent.subject.merged_sha === null ? 'gating' : 'cleaning';
+            changed += 1;
           }
           if (next.auto_merge_skips[bead_id]) {
             delete next.auto_merge_skips[bead_id];
@@ -6595,7 +6956,9 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        intent.phase = phase;
+        if (!applyCompletionPhase(intent, phase)) {
+          return false;
+        }
         intent.active_op = normalized_op;
         return true;
       });
@@ -6683,15 +7046,21 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        active_op.status = status;
-        if (next_phase !== undefined) {
-          intent.phase = next_phase;
+        if (
+          next_phase !== undefined &&
+          !applyCompletionPhase(intent, next_phase)
+        ) {
+          return false;
         }
+        active_op.status = status;
         if (normalized_subject) {
           intent.subject = normalized_subject;
         }
         if (clear === true) {
+          // A consumed operation is the readback boundary of whatever the retry
+          // re-ran, so the resolution record has nothing left to bound.
           intent.active_op = null;
+          intent.auto_resolution = null;
         }
         if (next_phase === 'paused') {
           next.merge_queue = next.merge_queue.filter(
@@ -6736,8 +7105,10 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
+        if (!applyCompletionPhase(intent, phase)) {
+          return false;
+        }
         intent.subject = normalized_subject;
-        intent.phase = phase;
         return true;
       });
     },
@@ -6777,10 +7148,101 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
+        if (!applyCompletionPhase(intent, phase)) {
+          return false;
+        }
         intent.subject_stack.pop();
         intent.subject = normalized_subject;
-        intent.phase = phase;
         return true;
+      });
+    },
+
+    /**
+     * Enter one non-terminal automatic resolution (UI-hk74 §4). The active
+     * operation journal is deliberately UNTOUCHED: the failing effect's own
+     * duplicate-prevention record is what a re-run must still answer to, and
+     * `settleFailure` copies the parts a re-run needs into `resolution.op`.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, resolution: CompletionAutoResolution }} input
+     * @returns {QueueOpResult}
+     */
+    startCompletionAutoResolution(workspace, input) {
+      const { root_bead_id, resolution } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized = normalizeCompletionAutoResolution(resolution);
+        if (
+          !intent ||
+          !normalized ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed' ||
+          intent.phase === 'paused'
+        ) {
+          return false;
+        }
+        intent.auto_resolution = normalized;
+        intent.paused_resolution = null;
+        return applyCompletionPhase(
+          intent,
+          COMPLETION_AUTO_RESOLUTION_PHASE[normalized.class]
+        );
+      });
+    },
+
+    /**
+     * Record one resolution attempt's progress. Only the bounded per-attempt
+     * fields move; class, origin, and return phase are fixed at entry.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, patch: { attempts?: number, next_at?: number|null, last_error?: string|null } }} input
+     * @returns {QueueOpResult}
+     */
+    updateCompletionAutoResolution(workspace, input) {
+      const { root_bead_id, patch } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const current = intent?.auto_resolution;
+        if (!intent || !current || !isRecord(patch)) {
+          return false;
+        }
+        const merged = normalizeCompletionAutoResolution({
+          ...current,
+          ...patch
+        });
+        if (
+          !merged ||
+          COMPLETION_AUTO_RESOLUTION_PHASE[merged.class] !== intent.phase
+        ) {
+          return false;
+        }
+        intent.auto_resolution = merged;
+        return true;
+      });
+    },
+
+    /**
+     * Close one resolution after its success condition read back, returning the
+     * saga to the phase the original failure interrupted.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, phase: CompletionPhase }} input
+     * @returns {QueueOpResult}
+     */
+    clearCompletionAutoResolution(workspace, input) {
+      const { root_bead_id, phase } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        if (
+          !intent ||
+          intent.auto_resolution === null ||
+          !COMPLETION_RETURN_PHASES.has(phase)
+        ) {
+          return false;
+        }
+        intent.auto_resolution = null;
+        intent.paused_resolution = null;
+        return applyCompletionPhase(intent, phase);
       });
     },
 
@@ -6806,7 +7268,7 @@ export function createQueueStore(options = {}) {
         ) {
           return false;
         }
-        intent.phase = 'paused';
+        applyCompletionPhase(intent, 'paused');
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id
         );
@@ -6845,6 +7307,8 @@ export function createQueueStore(options = {}) {
           return false;
         }
         intent.phase = 'needs_human';
+        intent.auto_resolution = null;
+        intent.paused_resolution = null;
         intent.terminal_reason = normalized_terminal;
         next.merge_queue = next.merge_queue.filter(
           (entry) => entry.bead_id !== root_bead_id

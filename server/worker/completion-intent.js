@@ -8,6 +8,10 @@
  */
 import { createHash } from 'node:crypto';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
+import {
+  COMPLETION_AUTO_RESOLUTION_PHASE,
+  COMPLETION_RETRY_MAX
+} from './queue-store.js';
 import { repoOperationPolicySupported } from './repo-operation-policy.js';
 import { isCleanupResolutionFailure } from './resolution-ladder.js';
 
@@ -56,6 +60,178 @@ export function createCompletionFailureKey(input) {
 }
 
 /**
+ * How long a failed operation waits before each delayed re-run (UI-hk74 §3).
+ * The ladder widens because the failures it covers are environmental: a second
+ * immediate attempt would land in the same broken minute the first one did.
+ *
+ * @type {number[]}
+ */
+export const COMPLETION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000];
+
+/**
+ * The §3 policy table: which class of automatic resolution — if any — owns a
+ * terminal reason. Matching is on the token before the first `:`, so a reason
+ * that carries detail (`receipt_unbacked:unit_plan_mismatch`) classifies by its
+ * family. Every `human` entry is listed explicitly even though it is also the
+ * default: the table is the contract, and a reader must be able to see that
+ * `reconciliation_ambiguous` is a deliberate human case rather than an
+ * oversight that happened to fall through.
+ *
+ * @type {Readonly<Record<string, 'metadata_watch'|'auto_review'|'retry'|'human'>>}
+ */
+export const COMPLETION_FAILURE_POLICY = Object.freeze({
+  receipt_unbacked: 'metadata_watch',
+  spec_id_missing: 'metadata_watch',
+  review_receipt_missing: 'auto_review',
+  review_receipt_stale: 'auto_review',
+  repair_bead_create_failed: 'retry',
+  repair_bead_readback_failed: 'retry',
+  repair_bead_record_failed: 'retry',
+  repair_dispatch_failed: 'retry',
+  continuation_persist_failed: 'retry',
+  cleanup_prerecord_failed: 'retry',
+  cleanup_settlement_record_failed: 'retry',
+  completion_gate_spawn_failed: 'retry',
+  verify_cmd_failed: 'retry',
+  reconciliation_ambiguous: 'human',
+  resolution_lineage_ambiguous: 'human',
+  repair_resume_lineage_ambiguous: 'human',
+  repair_attempt_missing: 'human',
+  cleanup_journal_conflict: 'human',
+  cleanup_completion_unrecorded: 'human',
+  repair_session_budget_exhausted: 'human',
+  intent_state_invalid: 'human',
+  ownership_undecidable: 'human'
+});
+
+/**
+ * @typedef {'create_repair'|'dispatch_repair'|'gate'|'verify'|'retry_cleanup'} CompletionRetryEffect
+ */
+/**
+ * @typedef {Object} CompletionRetryPolicy
+ * @property {string} return_phase - Where a confirmed success returns the saga.
+ * @property {CompletionRetryEffect} effect - Which existing owner re-runs.
+ * @property {string[]} inputs - Durable `auto_resolution.op` keys the re-run
+ * reads. A key listed here and absent at re-run time is not fatal on its own —
+ * the effect owner decides — but it is what the record exists to carry.
+ * @property {string[]} optional_inputs
+ * @property {string} success - The readback that ends the resolution.
+ */
+/**
+ * The §3 second table: what each retryable reason actually re-runs, on which
+ * durable inputs, and what counts as success. Kept as data because the five
+ * families differ in all three and a single "just try again" would either
+ * duplicate a repair Bead or declare success on a spawn that never ran.
+ *
+ * @type {Readonly<Record<string, CompletionRetryPolicy>>}
+ */
+export const COMPLETION_RETRY_POLICY = Object.freeze({
+  repair_bead_create_failed: {
+    return_phase: 'repairing',
+    effect: 'create_repair',
+    inputs: ['failure_key'],
+    optional_inputs: ['repair_bead_id'],
+    success: 'repair_bead_recorded'
+  },
+  repair_bead_readback_failed: {
+    return_phase: 'repairing',
+    effect: 'create_repair',
+    inputs: ['failure_key'],
+    optional_inputs: ['repair_bead_id'],
+    success: 'repair_bead_recorded'
+  },
+  repair_bead_record_failed: {
+    return_phase: 'repairing',
+    effect: 'create_repair',
+    inputs: ['failure_key'],
+    optional_inputs: ['repair_bead_id'],
+    success: 'repair_bead_recorded'
+  },
+  repair_dispatch_failed: {
+    return_phase: 'repairing',
+    effect: 'dispatch_repair',
+    inputs: ['repair_bead_id'],
+    optional_inputs: ['continuation'],
+    success: 'repair_attempt_dispatched'
+  },
+  continuation_persist_failed: {
+    return_phase: 'repairing',
+    effect: 'dispatch_repair',
+    inputs: ['repair_bead_id'],
+    optional_inputs: ['continuation'],
+    success: 'repair_attempt_dispatched'
+  },
+  completion_gate_spawn_failed: {
+    return_phase: 'gating',
+    effect: 'gate',
+    inputs: ['head_sha', 'base_sha'],
+    optional_inputs: [],
+    success: 'verify_operation_created'
+  },
+  verify_cmd_failed: {
+    return_phase: 'gating',
+    effect: 'verify',
+    inputs: ['operation_id', 'head_sha', 'base_sha'],
+    optional_inputs: [],
+    success: 'verify_settled'
+  },
+  cleanup_prerecord_failed: {
+    return_phase: 'cleaning',
+    effect: 'retry_cleanup',
+    inputs: ['merged_sha', 'cleanup_cursor'],
+    optional_inputs: [],
+    success: 'cleanup_step_recorded'
+  },
+  cleanup_settlement_record_failed: {
+    return_phase: 'cleaning',
+    effect: 'retry_cleanup',
+    inputs: ['merged_sha', 'cleanup_cursor'],
+    optional_inputs: [],
+    success: 'cleanup_step_recorded'
+  }
+});
+
+/**
+ * @typedef {Object} CompletionFailureClass
+ * @property {'metadata_watch'|'auto_review'|'retry'|'human'} class
+ * @property {string|null} phase - Non-terminal phase that owns the resolution.
+ * @property {string} return_phase
+ * @property {CompletionRetryPolicy|null} retry
+ */
+/**
+ * Classify one terminal reason against the §3 tables. Anything the tables do
+ * not name is `human` — the fail-closed default this Bead exists to make
+ * narrower, not to remove.
+ *
+ * @param {unknown} reason
+ * @returns {CompletionFailureClass}
+ */
+export function classifyCompletionFailure(reason) {
+  const text = typeof reason === 'string' ? reason : '';
+  const token = text.split(':', 1)[0];
+  const resolution_class = Object.hasOwn(COMPLETION_FAILURE_POLICY, token)
+    ? COMPLETION_FAILURE_POLICY[token]
+    : 'human';
+  if (resolution_class === 'human') {
+    return { class: 'human', phase: null, return_phase: 'gating', retry: null };
+  }
+  const retry =
+    resolution_class === 'retry' &&
+    Object.hasOwn(COMPLETION_RETRY_POLICY, token)
+      ? COMPLETION_RETRY_POLICY[token]
+      : null;
+  if (resolution_class === 'retry' && !retry) {
+    return { class: 'human', phase: null, return_phase: 'gating', retry: null };
+  }
+  return {
+    class: resolution_class,
+    phase: COMPLETION_AUTO_RESOLUTION_PHASE[resolution_class],
+    return_phase: retry ? retry.return_phase : 'gating',
+    retry
+  };
+}
+
+/**
  * @typedef {'green'|'conflict'|'verify_red'|'pr_owned'|'base_owned'|'repair_created'|'cleanup_repairable'|'cleanup_pending'|'repair_pr_open'|'repair_pr_merged'|'completed'|'stale'|'undecidable'|'waiting'} CompletionFactState
  */
 /**
@@ -65,15 +241,78 @@ export function createCompletionFailureKey(input) {
  * @typedef {CompletionFact & { gated?: any, source?: string, failure_key?: any, evidence?: any }} ObservedCompletionFact
  */
 /**
- * @typedef {{ kind: 'gate'|'probe'|'enter_cleanup'|'resume_intent'|'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'pause'|'needs_human'|'complete', reason?: string }} CompletionAction
+ * @typedef {{ kind: 'gate'|'probe'|'enter_cleanup'|'resume_intent'|'resume_root'|'create_repair'|'dispatch_repair'|'merge_subject'|'retry_cleanup'|'reconcile_op'|'resume_metadata_check'|'dispatch_auto_review'|'retry_failed_op'|'pause'|'needs_human'|'complete', reason?: string }} CompletionAction
  */
+
+/**
+ * Decide the next action for an intent parked in one of the three
+ * auto-resolution phases (UI-hk74 §4).
+ *
+ * @param {any} intent
+ * @param {any} head_review - The `merge_queue[].head_review` journal for this
+ * root, which is the ONLY truth about a `reviewing` intent.
+ * @param {number} now
+ * @returns {CompletionAction|null}
+ */
+function decideAutoResolution(intent, head_review, now) {
+  const resolution = intent.auto_resolution;
+  if (
+    !resolution ||
+    !Object.hasOwn(COMPLETION_AUTO_RESOLUTION_PHASE, resolution.class) ||
+    COMPLETION_AUTO_RESOLUTION_PHASE[
+      /** @type {'metadata_watch'|'auto_review'|'retry'} */ (resolution.class)
+    ] !== intent.phase
+  ) {
+    return { kind: 'needs_human', reason: 'auto_resolution_invalid' };
+  }
+  if (intent.phase === 'retrying') {
+    // Waiting out the failing operation IS the first step of the retry. Deciding
+    // this before the generic reconcile is what keeps the delay and the 3-attempt
+    // cap on the path: reached the other way round, every retry would re-run at
+    // once and forever.
+    if (intent.active_op) {
+      return { kind: 'reconcile_op' };
+    }
+    if (resolution.attempts >= COMPLETION_RETRY_MAX) {
+      return {
+        kind: 'needs_human',
+        reason: `retry_exhausted:${resolution.origin_reason}`
+      };
+    }
+    if (typeof resolution.next_at === 'number' && now < resolution.next_at) {
+      return null;
+    }
+    return { kind: 'retry_failed_op' };
+  }
+  if (intent.phase === 'waiting_metadata') {
+    return { kind: 'resume_metadata_check' };
+  }
+  if (!head_review) {
+    // Enrolment writes the journal in the same revision that sets `reviewing`,
+    // so a missing journal is never "not yet" — it is a torn write, and a second
+    // dispatch on top of an unknown first one is the lineage risk §10 refuses.
+    return { kind: 'needs_human', reason: 'auto_review_journal_missing' };
+  }
+  if (head_review.state === 'approved') {
+    return { kind: 'gate' };
+  }
+  if (head_review.state === 'failed') {
+    return {
+      kind: 'needs_human',
+      reason: head_review.failure_reason || 'auto_review_failed'
+    };
+  }
+  return head_review.review_attempt_id === null
+    ? { kind: 'dispatch_auto_review' }
+    : null;
+}
 
 /**
  * Decide one next action from an already-normalized durable intent and one
  * authoritative fact. The function is pure so reconciliation and live paths
  * share the same judgment.
  *
- * @param {{ auto_merge: boolean, intent: any, fact?: CompletionFact|null }} input
+ * @param {{ auto_merge: boolean, intent: any, fact?: CompletionFact|null, head_review?: any, now?: number }} input
  * @returns {CompletionAction|null}
  */
 export function decideCompletionAction(input) {
@@ -89,6 +328,17 @@ export function decideCompletionAction(input) {
     return intent.active_op || intent.phase === 'paused'
       ? null
       : { kind: 'pause' };
+  }
+  if (
+    intent.phase === 'retrying' ||
+    intent.phase === 'waiting_metadata' ||
+    intent.phase === 'reviewing'
+  ) {
+    return decideAutoResolution(
+      intent,
+      input.head_review || null,
+      typeof input.now === 'number' ? input.now : 0
+    );
   }
   if (intent.active_op) {
     return { kind: 'reconcile_op' };
@@ -174,6 +424,8 @@ export function decideCompletionAction(input) {
  *   onAction?: (root_bead_id: string, action: CompletionAction, intent: any) => Promise<void>|void,
  *   adoptLegacy?: (root_bead_id: string, intent: any, queue: any) => Promise<boolean>|boolean,
  *   onAttemptSettled?: (input: any) => Promise<void>|void,
+ *   now?: () => number,
+ *   retryWakeMs?: number,
  *   log?: (...args: any[]) => void
  * }} deps
  */
@@ -182,7 +434,13 @@ export function createCompletionIntentCoordinator(deps) {
   const observe = deps.observe || (() => ({ state: 'waiting' }));
   const onAction = deps.onAction || (() => {});
   const adoptLegacy = deps.adoptLegacy || (() => false);
+  const now = deps.now || (() => Date.now());
   const log = deps.log || (() => {});
+  // A delayed retry is the one transition no queue event announces: its due
+  // time passes in silence. One coarse timer covers every waiting row, which is
+  // why the ladder's shortest step is a minute (UI-hk74 §5).
+  const retry_wake_ms =
+    typeof deps.retryWakeMs === 'number' ? deps.retryWakeMs : 60_000;
   let stopped = true;
   let pending = false;
   let running = false;
@@ -190,6 +448,8 @@ export function createCompletionIntentCoordinator(deps) {
   let current = Promise.resolve();
   /** @type {(() => void)|null} */
   let unsubscribe = null;
+  /** @type {ReturnType<typeof setInterval>|null} */
+  let retry_timer = null;
 
   /**
    * @returns {Promise<void>}
@@ -232,11 +492,20 @@ export function createCompletionIntentCoordinator(deps) {
       return;
     }
     const intent = intents[root_bead_id];
-    const fact = await observe(root_bead_id, intent, queue);
+    // A row parked on metadata or a retry delay decides from its own durable
+    // record alone, so observing it would spend a `gh` round trip on a fact the
+    // judgment discards. `reviewing` still observes: an approved journal hands
+    // straight back to the gate, which needs the pinned subject.
+    const fact =
+      intent?.phase === 'waiting_metadata' || intent?.phase === 'retrying'
+        ? /** @type {CompletionFact} */ ({ state: 'waiting' })
+        : await observe(root_bead_id, intent, queue);
     const action = decideCompletionAction({
       auto_merge: queue.auto_merge === true,
       intent,
-      fact
+      fact,
+      head_review: head?.head_review || null,
+      now: now()
     });
     if (action) {
       await onAction(root_bead_id, action, intent);
@@ -305,12 +574,24 @@ export function createCompletionIntentCoordinator(deps) {
           }
         });
       }
+      if (retry_timer === null && retry_wake_ms > 0) {
+        retry_timer = setInterval(() => {
+          wake();
+        }, retry_wake_ms);
+        if (typeof retry_timer.unref === 'function') {
+          retry_timer.unref();
+        }
+      }
       wake();
     },
 
     stop() {
       stopped = true;
       pending = false;
+      if (retry_timer !== null) {
+        clearInterval(retry_timer);
+        retry_timer = null;
+      }
       if (unsubscribe) {
         try {
           unsubscribe();
@@ -375,6 +656,7 @@ function operationIdentity(
  *   scheduler: { dispatchCompletionRepair: (workspace: string, input: any) => Promise<any> },
  *   notifyChanged?: (workspace: string) => void,
  *   kickMerge?: () => Promise<unknown>|unknown,
+ *   dispatchAutoReview?: (root_bead_id: string) => Promise<unknown>|unknown,
  *   now?: () => number,
  *   log?: (...args: any[]) => void
  * }} deps
@@ -383,6 +665,14 @@ export function createCompletionActionDriver(deps) {
   const facts = new Map();
   const now = deps.now || (() => Date.now());
   const log = deps.log || (() => {});
+  /**
+   * Roots whose metadata re-check is running. The check is driven by bd issue
+   * events and by every reconciliation pass, both of which can arrive while a
+   * `gh`-backed gate is still in flight.
+   *
+   * @type {Set<string>}
+   */
+  const metadata_checks = new Set();
 
   function notify() {
     if (typeof deps.notifyChanged === 'function') {
@@ -425,7 +715,7 @@ export function createCompletionActionDriver(deps) {
     ];
     let create_op = current?.active_op;
     if (!current || create_op?.kind !== 'create_repair') {
-      terminalize(
+      settleFailure(
         root_bead_id,
         'repair_create_journal_missing',
         'repair_create',
@@ -445,7 +735,7 @@ export function createCompletionActionDriver(deps) {
           failure_key: create_op.failure_key
         });
       } catch (err) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'repair_bead_create_failed',
           'repair_create',
@@ -459,7 +749,7 @@ export function createCompletionActionDriver(deps) {
         typeof linked.bead_id !== 'string' ||
         linked.bead_id.length === 0
       ) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'repair_bead_readback_failed',
           'repair_create',
@@ -473,7 +763,7 @@ export function createCompletionActionDriver(deps) {
         repair_bead_id: linked.bead_id
       });
       if (!recorded.ok) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'repair_bead_record_failed',
           'repair_create',
@@ -508,7 +798,7 @@ export function createCompletionActionDriver(deps) {
       }
     );
     if (!result.ok) {
-      terminalize(
+      settleFailure(
         root_bead_id,
         result.reason || 'repair_dispatch_failed',
         'repair_dispatch',
@@ -653,7 +943,7 @@ export function createCompletionActionDriver(deps) {
     if (dirty) {
       const leaf = legacyResolutionLeaf(queue, intent.subject.bead_id);
       if (!leaf.attempt_id) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           leaf.reason || 'resolution_lineage_ambiguous',
           'conflict_resolution',
@@ -689,7 +979,7 @@ export function createCompletionActionDriver(deps) {
    */
   async function startCleanupReplay(root_bead_id, fact) {
     if (typeof deps.prActions.resumeCompletionCleanup !== 'function') {
-      terminalize(
+      settleFailure(
         root_bead_id,
         'cleanup_replay_unavailable',
         'post_merge_cleanup',
@@ -732,7 +1022,7 @@ export function createCompletionActionDriver(deps) {
         }
       });
       if (!prepared.ok) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'cleanup_prerecord_failed',
           'post_merge_cleanup',
@@ -745,7 +1035,7 @@ export function createCompletionActionDriver(deps) {
     }
     const op = current.active_op;
     if (op?.kind !== 'retry_cleanup') {
-      terminalize(
+      settleFailure(
         root_bead_id,
         'cleanup_journal_conflict',
         'post_merge_cleanup',
@@ -762,7 +1052,7 @@ export function createCompletionActionDriver(deps) {
           (/** @type {any} */ entry) => entry.bead_id === root_bead_id
         )
       ) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'cleanup_completion_unrecorded',
           'post_merge_cleanup',
@@ -780,7 +1070,7 @@ export function createCompletionActionDriver(deps) {
       clear: true
     });
     if (!advanced.ok) {
-      terminalize(
+      settleFailure(
         root_bead_id,
         'cleanup_settlement_record_failed',
         'post_merge_cleanup',
@@ -793,6 +1083,10 @@ export function createCompletionActionDriver(deps) {
   }
 
   /**
+   * The `human` branch of {@link settleFailure} (UI-hk74 §4) — nothing else
+   * calls it. Reaching it means the §3 tables have no automatic answer for this
+   * reason, so `needs_human` again means what it says.
+   *
    * @param {string} root_bead_id
    * @param {string} reason
    * @param {string} stage
@@ -824,6 +1118,149 @@ export function createCompletionActionDriver(deps) {
         at: now()
       }
     });
+    notify();
+  }
+
+  /**
+   * Snapshot the durable inputs a re-run of the failed effect needs (UI-hk74
+   * §3/§4). Read from the failing operation and the pinned subject rather than
+   * from the caller, so a re-run after a restart works from the same evidence
+   * the first run had.
+   *
+   * @param {any} intent
+   * @param {any} queue
+   * @param {{ failure_key?: any, continuation?: any, continuation_mismatch?: unknown, operation_id?: unknown }} extras
+   */
+  function autoResolutionOp(intent, queue, extras) {
+    const op = intent?.active_op || null;
+    const subject = intent?.subject || {};
+    const cleanup = queue?.cleanup_failed?.[subject.bead_id] || null;
+    return {
+      completion_op_id: op?.op_id ?? null,
+      failure_key: op?.failure_key ?? extras.failure_key ?? null,
+      repair_bead_id: op?.repair_bead_id ?? null,
+      continuation: extras.continuation ?? null,
+      continuation_mismatch:
+        typeof extras.continuation_mismatch === 'string'
+          ? extras.continuation_mismatch
+          : null,
+      operation_id:
+        typeof extras.operation_id === 'string' ? extras.operation_id : null,
+      head_sha: subject.head_sha ?? null,
+      base_sha: subject.base_sha ?? null,
+      merged_sha: subject.merged_sha ?? null,
+      cleanup_cursor: typeof cleanup?.step === 'string' ? cleanup.step : null
+    };
+  }
+
+  /**
+   * The single entry point for "this completion effect failed" (UI-hk74 §4).
+   * The §3 tables decide whether the saga stops for a human or parks in a
+   * non-terminal phase that tries to resolve itself; `terminalize` is now only
+   * this function's `human` branch.
+   *
+   * @param {string} root_bead_id
+   * @param {string} reason
+   * @param {string} stage
+   * @param {any} [failure_key]
+   * @param {any} [evidence]
+   * @param {{ continuation?: any, continuation_mismatch?: unknown, operation_id?: unknown }} [extras]
+   */
+  function settleFailure(
+    root_bead_id,
+    reason,
+    stage,
+    failure_key = null,
+    evidence = null,
+    extras = {}
+  ) {
+    const policy = classifyCompletionFailure(reason);
+    if (policy.class === 'human') {
+      terminalize(root_bead_id, reason, stage, failure_key, evidence);
+      return;
+    }
+    const queue = deps.store.snapshot(deps.workspace);
+    const intent = queue.completion_intents?.[root_bead_id];
+    if (!intent) {
+      terminalize(root_bead_id, reason, stage, failure_key, evidence);
+      return;
+    }
+    const existing = intent.auto_resolution;
+    if (policy.class === 'retry') {
+      // A re-run that fails again continues the SAME ladder. Reading the count
+      // back from the record is what makes the cap survive the re-run leaving
+      // `retrying` while its operation is in flight.
+      const carried = existing?.class === 'retry' ? existing : null;
+      const attempts = carried ? carried.attempts : 0;
+      if (attempts >= COMPLETION_RETRY_MAX) {
+        terminalize(
+          root_bead_id,
+          `retry_exhausted:${carried ? carried.origin_reason : reason}`,
+          stage,
+          failure_key,
+          evidence
+        );
+        return;
+      }
+      const started = deps.store.startCompletionAutoResolution(deps.workspace, {
+        root_bead_id,
+        resolution: {
+          class: 'retry',
+          origin_reason: carried ? carried.origin_reason : reason,
+          origin_stage: carried ? carried.origin_stage : stage,
+          return_phase: policy.return_phase,
+          attempts,
+          next_at: now() + COMPLETION_RETRY_DELAYS_MS[attempts],
+          last_error: reason,
+          op: carried
+            ? carried.op
+            : autoResolutionOp(intent, queue, { ...extras, failure_key })
+        }
+      });
+      if (!started.ok) {
+        terminalize(root_bead_id, reason, stage, failure_key, evidence);
+        return;
+      }
+      notify();
+      return;
+    }
+    if (policy.class === 'auto_review') {
+      const entry = Array.isArray(queue.merge_queue)
+        ? queue.merge_queue.find(
+            (/** @type {any} */ item) => item?.bead_id === root_bead_id
+          )
+        : null;
+      // One automatic review per root. A gate that asks for a receipt again
+      // after one has already been produced is saying the automatic lane cannot
+      // satisfy it, which is a human question.
+      if (existing?.class === 'auto_review' || entry?.head_review) {
+        terminalize(
+          root_bead_id,
+          `auto_review_exhausted:${reason}`,
+          stage,
+          failure_key,
+          evidence
+        );
+        return;
+      }
+    }
+    const started = deps.store.startCompletionAutoResolution(deps.workspace, {
+      root_bead_id,
+      resolution: {
+        class: policy.class,
+        origin_reason: reason,
+        origin_stage: stage,
+        return_phase: policy.return_phase,
+        attempts: policy.class === 'auto_review' ? 1 : 0,
+        next_at: null,
+        last_error: null,
+        op: autoResolutionOp(intent, queue, { ...extras, failure_key })
+      }
+    });
+    if (!started.ok) {
+      terminalize(root_bead_id, reason, stage, failure_key, evidence);
+      return;
+    }
     notify();
   }
 
@@ -1008,7 +1445,7 @@ export function createCompletionActionDriver(deps) {
     const current = queue.completion_intents?.[root_bead_id];
     const failure_key = fact?.failure_key;
     if (!current || !failure_key) {
-      terminalize(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
+      settleFailure(root_bead_id, 'repair_evidence_missing', 'repair_dispatch');
       return;
     }
     // This is an AUTOMATIC dispatch, so it answers to the same two gates the
@@ -1022,7 +1459,7 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (current.repair_sessions_used >= REPAIR_SESSION_CAP) {
-      terminalize(
+      settleFailure(
         root_bead_id,
         'repair_session_budget_exhausted',
         'repair_dispatch',
@@ -1075,24 +1512,29 @@ export function createCompletionActionDriver(deps) {
           mismatch: result.continuation_mismatch
         });
         if (!persisted.ok) {
-          terminalize(
+          settleFailure(
             root_bead_id,
             'continuation_persist_failed',
             'repair_dispatch',
             failure_key,
-            fact.evidence
+            fact.evidence,
+            {
+              continuation: continuation.continuation ? continuation : null,
+              continuation_mismatch: String(result.continuation_mismatch)
+            }
           );
         }
         notify();
         return;
       }
       if (!result.ok) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           result.reason || 'repair_dispatch_failed',
           'repair_dispatch',
           failure_key,
-          fact.evidence
+          fact.evidence,
+          { continuation: continuation.continuation ? continuation : null }
         );
       } else if (continuation_action) {
         deps.store.clearMergeContinuation(deps.workspace, {
@@ -1123,7 +1565,7 @@ export function createCompletionActionDriver(deps) {
       }
     });
     if (!prepared.ok) {
-      terminalize(
+      settleFailure(
         root_bead_id,
         'repair_create_prerecord_failed',
         'repair_create',
@@ -1133,6 +1575,238 @@ export function createCompletionActionDriver(deps) {
     }
     notify();
     await continueCreateRepair(root_bead_id, fact);
+  }
+
+  /**
+   * Re-read the gate for a root whose metadata was said to be corrected
+   * (UI-hk74 §3/§5). The completion gate re-runs `checkReceipts` and the native
+   * `spec_id` read, so "did the human fix it" needs no second reader.
+   *
+   * An unreadable gate — the bd read failing, most of all — leaves the phase
+   * exactly where it is (§10). The wait is unbounded by design: nothing is
+   * being consumed while it holds.
+   *
+   * @param {string} root_bead_id
+   */
+  async function runMetadataCheck(root_bead_id) {
+    if (metadata_checks.has(root_bead_id)) {
+      return;
+    }
+    metadata_checks.add(root_bead_id);
+    try {
+      const intent = deps.store.snapshot(deps.workspace).completion_intents?.[
+        root_bead_id
+      ];
+      const resolution = intent?.auto_resolution;
+      if (
+        !intent ||
+        intent.phase !== 'waiting_metadata' ||
+        resolution?.class !== 'metadata_watch'
+      ) {
+        return;
+      }
+      let gated;
+      try {
+        gated = await deps.prActions.completionGate(
+          intent.subject.bead_id,
+          intent.subject.role
+        );
+      } catch (err) {
+        log('metadata check failed for %s: %o', root_bead_id, err);
+        recordResolutionError(root_bead_id, 'metadata_check_unreadable');
+        return;
+      }
+      const fact = factFromGate(gated);
+      if (fact.state === 'undecidable') {
+        const again = classifyCompletionFailure(fact.reason);
+        if (again.class === 'metadata_watch') {
+          recordResolutionError(root_bead_id, fact.reason || 'unknown');
+          return;
+        }
+        settleFailure(
+          root_bead_id,
+          fact.reason || 'ownership_undecidable',
+          resolution.origin_stage,
+          fact.failure_key,
+          fact.evidence
+        );
+        return;
+      }
+      if (gated?.ok !== true) {
+        recordResolutionError(root_bead_id, gated?.reason || 'gate_unreadable');
+        return;
+      }
+      const cleared = deps.store.clearCompletionAutoResolution(deps.workspace, {
+        root_bead_id,
+        phase: 'gating'
+      });
+      if (cleared.ok) {
+        notify();
+      }
+    } finally {
+      metadata_checks.delete(root_bead_id);
+    }
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {string} last_error
+   */
+  function recordResolutionError(root_bead_id, last_error) {
+    const updated = deps.store.updateCompletionAutoResolution(deps.workspace, {
+      root_bead_id,
+      patch: { last_error }
+    });
+    if (updated.ok) {
+      notify();
+    }
+  }
+
+  /**
+   * Re-run the gate for a retry whose original failure was a gate/verify spawn.
+   *
+   * @param {string} root_bead_id
+   * @returns {Promise<boolean>} Whether the gate produced a verdict at all.
+   */
+  async function retryGate(root_bead_id) {
+    const intent = deps.store.snapshot(deps.workspace).completion_intents?.[
+      root_bead_id
+    ];
+    if (!intent) {
+      return false;
+    }
+    try {
+      const gated = await deps.prActions.completionGate(
+        intent.subject.bead_id,
+        intent.subject.role
+      );
+      return gated?.ok === true;
+    } catch (err) {
+      log('retry gate failed for %s: %o', root_bead_id, err);
+      return false;
+    }
+  }
+
+  /**
+   * Read back the §3 success condition of one retry family. Each family names
+   * a different durable record, so "it did not throw" is never the test.
+   *
+   * @param {CompletionRetryPolicy} policy
+   * @param {any} before - Intent as it stood before the re-run.
+   * @param {any} after_queue
+   * @param {string} root_bead_id
+   * @param {boolean} gate_ok
+   */
+  function retrySucceeded(policy, before, after_queue, root_bead_id, gate_ok) {
+    const after = after_queue.completion_intents?.[root_bead_id];
+    if (!after) {
+      return false;
+    }
+    if (policy.effect === 'create_repair') {
+      return (
+        after.repair_bead_ids.length > before.repair_bead_ids.length ||
+        after.active_op?.kind === 'dispatch_repair'
+      );
+    }
+    if (policy.effect === 'dispatch_repair') {
+      return typeof after.active_op?.attempt_id === 'string';
+    }
+    if (policy.effect === 'retry_cleanup') {
+      return (
+        after.active_op?.kind === 'retry_cleanup' ||
+        after.phase === 'completed' ||
+        (Array.isArray(after_queue.done) &&
+          after_queue.done.some(
+            (/** @type {any} */ entry) => entry?.bead_id === root_bead_id
+          ))
+      );
+    }
+    return gate_ok;
+  }
+
+  /**
+   * Spend one delayed retry (UI-hk74 §3/§4). The budget is consumed BEFORE the
+   * effect runs: a crash between the two must cost an attempt, or a re-run that
+   * kills the process would loop forever at no charge.
+   *
+   * @param {string} root_bead_id
+   */
+  async function runRetry(root_bead_id) {
+    const before_queue = deps.store.snapshot(deps.workspace);
+    const before = before_queue.completion_intents?.[root_bead_id];
+    const resolution = before?.auto_resolution;
+    if (
+      !before ||
+      before.phase !== 'retrying' ||
+      resolution?.class !== 'retry' ||
+      before.active_op
+    ) {
+      return;
+    }
+    const policy = classifyCompletionFailure(resolution.origin_reason).retry;
+    if (!policy || policy.return_phase !== resolution.return_phase) {
+      terminalize(
+        root_bead_id,
+        'auto_resolution_invalid',
+        resolution.origin_stage,
+        resolution.op.failure_key
+      );
+      return;
+    }
+    const attempts = resolution.attempts + 1;
+    const bumped = deps.store.updateCompletionAutoResolution(deps.workspace, {
+      root_bead_id,
+      patch: {
+        attempts,
+        next_at:
+          attempts < COMPLETION_RETRY_MAX
+            ? now() + COMPLETION_RETRY_DELAYS_MS[attempts]
+            : null,
+        last_error: null
+      }
+    });
+    if (!bumped.ok) {
+      terminalize(
+        root_bead_id,
+        'auto_resolution_invalid',
+        resolution.origin_stage,
+        resolution.op.failure_key
+      );
+      return;
+    }
+    notify();
+    const fact = { failure_key: resolution.op.failure_key, evidence: null };
+    let gate_ok = false;
+    if (policy.effect === 'create_repair') {
+      await startRepair(root_bead_id, 'create_repair', fact);
+    } else if (policy.effect === 'dispatch_repair') {
+      // A repair Bead in the record means the create half already landed, so the
+      // re-run is the linked-repair dispatch; without one the failure belonged to
+      // the root's own resume.
+      await startRepair(
+        root_bead_id,
+        resolution.op.repair_bead_id ? 'create_repair' : 'resume_root',
+        fact
+      );
+    } else if (policy.effect === 'retry_cleanup') {
+      await startCleanupReplay(root_bead_id, fact);
+    } else {
+      gate_ok = await retryGate(root_bead_id);
+    }
+    const after_queue = deps.store.snapshot(deps.workspace);
+    const after = after_queue.completion_intents?.[root_bead_id];
+    if (!after || after.auto_resolution === null) {
+      return;
+    }
+    if (
+      retrySucceeded(policy, before, after_queue, root_bead_id, gate_ok) &&
+      deps.store.clearCompletionAutoResolution(deps.workspace, {
+        root_bead_id,
+        phase: policy.return_phase
+      }).ok
+    ) {
+      notify();
+    }
   }
 
   /**
@@ -1175,7 +1849,7 @@ export function createCompletionActionDriver(deps) {
           op.attempt_id
         ];
         if (!attempt) {
-          terminalize(
+          settleFailure(
             root_bead_id,
             'repair_attempt_missing',
             'reconciliation',
@@ -1200,7 +1874,7 @@ export function createCompletionActionDriver(deps) {
               adopted.reason !== 'legacy_descendant_missing' &&
               adopted.reason !== 'legacy_adoption_not_applicable'
             ) {
-              terminalize(
+              settleFailure(
                 root_bead_id,
                 'repair_resume_lineage_ambiguous',
                 'reconciliation',
@@ -1230,7 +1904,7 @@ export function createCompletionActionDriver(deps) {
         });
         return;
       }
-      terminalize(
+      settleFailure(
         root_bead_id,
         'reconciliation_ambiguous',
         'reconciliation',
@@ -1239,6 +1913,18 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'gate') {
+      const parked = deps.store.snapshot(deps.workspace).completion_intents?.[
+        root_bead_id
+      ]?.auto_resolution;
+      if (
+        parked &&
+        deps.store.clearCompletionAutoResolution(deps.workspace, {
+          root_bead_id,
+          phase: 'gating'
+        }).ok
+      ) {
+        notify();
+      }
       if (fact.gated?.subject) {
         const recorded = deps.store.setCompletionSubject(deps.workspace, {
           root_bead_id,
@@ -1265,7 +1951,7 @@ export function createCompletionActionDriver(deps) {
         !fact.gated?.subject ||
         typeof fact.gated.subject.merged_sha !== 'string'
       ) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'root_cleanup_pin_missing',
           'post_merge_cleanup',
@@ -1280,7 +1966,7 @@ export function createCompletionActionDriver(deps) {
         subject: fact.gated.subject
       });
       if (!cleaning.ok) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'root_cleanup_transition_failed',
           'post_merge_cleanup',
@@ -1309,7 +1995,7 @@ export function createCompletionActionDriver(deps) {
           evidence: ownership.evidence || fact.evidence
         });
       } else {
-        terminalize(
+        settleFailure(
           root_bead_id,
           ownership.reason || 'ownership_undecidable',
           'base_probe',
@@ -1336,7 +2022,7 @@ export function createCompletionActionDriver(deps) {
           subject
         });
         if (!pinned.ok) {
-          terminalize(
+          settleFailure(
             root_bead_id,
             'merge_subject_pin_failed',
             'merge_subject'
@@ -1374,7 +2060,7 @@ export function createCompletionActionDriver(deps) {
           }
         });
         if (!prepared.ok) {
-          terminalize(
+          settleFailure(
             root_bead_id,
             'merge_prerecord_failed',
             'merge_subject',
@@ -1393,6 +2079,24 @@ export function createCompletionActionDriver(deps) {
       await startCleanupReplay(root_bead_id, fact);
       return;
     }
+    if (action.kind === 'resume_metadata_check') {
+      await runMetadataCheck(root_bead_id);
+      return;
+    }
+    if (action.kind === 'retry_failed_op') {
+      await runRetry(root_bead_id);
+      return;
+    }
+    if (action.kind === 'dispatch_auto_review') {
+      // The reviewer transport owns this effect. Until it is wired the row waits
+      // in `reviewing` on its prerecorded journal, which is the one state a
+      // second dispatch could not corrupt.
+      if (typeof deps.dispatchAutoReview === 'function') {
+        await deps.dispatchAutoReview(root_bead_id);
+        notify();
+      }
+      return;
+    }
     if (action.kind === 'pause') {
       const paused = deps.store.pauseCompletionIntent(deps.workspace, {
         root_bead_id
@@ -1403,7 +2107,7 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'needs_human') {
-      terminalize(
+      settleFailure(
         root_bead_id,
         action.reason || 'completion_needs_human',
         'coordinator',
@@ -1455,7 +2159,7 @@ export function createCompletionActionDriver(deps) {
       clear: true
     });
     if (!advanced.ok) {
-      terminalize(
+      settleFailure(
         input.root_bead_id,
         'repair_settlement_record_failed',
         'repair_settlement',
@@ -1484,7 +2188,7 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (CONFLICT_RESOLUTION_FAILURES.has(result?.reason)) {
-      terminalize(
+      settleFailure(
         root_bead_id,
         result.reason,
         'conflict_resolution',
@@ -1515,7 +2219,7 @@ export function createCompletionActionDriver(deps) {
         clear: true
       });
       if (!consumed.ok) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'merge_settlement_record_failed',
           'merge_subject',
@@ -1535,7 +2239,7 @@ export function createCompletionActionDriver(deps) {
         root_gate = null;
       }
       if (root_gate?.ok !== true) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           root_gate?.reason || 'root_cleanup_pin_failed',
           'post_merge_cleanup'
@@ -1548,7 +2252,7 @@ export function createCompletionActionDriver(deps) {
         subject: root_gate.subject
       });
       if (!cleaning.ok) {
-        terminalize(
+        settleFailure(
           root_bead_id,
           'root_cleanup_transition_failed',
           'post_merge_cleanup'
@@ -1562,7 +2266,11 @@ export function createCompletionActionDriver(deps) {
       const prior_subject =
         intent.subject_stack?.[intent.subject_stack.length - 1];
       if (!prior_subject) {
-        terminalize(root_bead_id, 'repair_lineage_missing', 'subject_restore');
+        settleFailure(
+          root_bead_id,
+          'repair_lineage_missing',
+          'subject_restore'
+        );
         return;
       }
       let prior_gate;
@@ -1587,7 +2295,7 @@ export function createCompletionActionDriver(deps) {
           }
         );
         if (!transitioned.ok) {
-          terminalize(
+          settleFailure(
             root_bead_id,
             'subject_restore_record_failed',
             'subject_restore'
@@ -1605,7 +2313,7 @@ export function createCompletionActionDriver(deps) {
         }
         return;
       }
-      terminalize(
+      settleFailure(
         root_bead_id,
         prior_gate?.reason || 'subject_restore_failed',
         'subject_restore'
@@ -1613,7 +2321,7 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (merged && subject_bead_id !== root_bead_id) {
-      terminalize(
+      settleFailure(
         root_bead_id,
         result?.reason || 'repair_cleanup_failed',
         result?.cleanup_step || 'repair_cleanup',
@@ -1623,7 +2331,7 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (result?.reason === 'resolution_round_cap') {
-      terminalize(root_bead_id, result.reason, 'conflict_resolution');
+      settleFailure(root_bead_id, result.reason, 'conflict_resolution');
       return;
     }
     let gated;
@@ -1644,7 +2352,7 @@ export function createCompletionActionDriver(deps) {
       notify();
       return;
     }
-    terminalize(
+    settleFailure(
       root_bead_id,
       result?.reason || gated?.reason || 'completion_merge_failed',
       'merge_subject'

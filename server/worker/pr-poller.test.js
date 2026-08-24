@@ -1276,6 +1276,51 @@ describe('worker/pr-poller — external PR rows (UI-7agi §1)', () => {
     expect(notifyChanged).not.toHaveBeenCalled();
   });
 
+  test.each([['needs_human'], ['waiting_metadata'], ['retrying']])(
+    'skips verify for a root intent parked in %s',
+    async (phase) => {
+      const operations = repoOperations();
+      const { poller } = makePoller({
+        queue: { ...queueOf(), completion_intents: { 'UI-1': { phase } } },
+        repoOperations: operations
+      });
+
+      await poller.tick();
+
+      expect(operations.ensureVerify).not.toHaveBeenCalled();
+    }
+  );
+
+  test('starts verify again once the intent returns to gating', async () => {
+    const operations = repoOperations();
+    const { poller } = makePoller({
+      queue: {
+        ...queueOf(),
+        completion_intents: { 'UI-1': { phase: 'gating' } }
+      },
+      repoOperations: operations
+    });
+
+    await poller.tick();
+
+    expect(operations.ensureVerify).toHaveBeenCalledTimes(1);
+  });
+
+  test('starts verify for a reviewing intent', async () => {
+    const operations = repoOperations();
+    const { poller } = makePoller({
+      queue: {
+        ...queueOf(),
+        completion_intents: { 'UI-1': { phase: 'reviewing' } }
+      },
+      repoOperations: operations
+    });
+
+    await poller.tick();
+
+    expect(operations.ensureVerify).toHaveBeenCalledTimes(1);
+  });
+
   test('records pr_ref_unknown for an external row whose url is unparseable', async () => {
     const { poller, observations, prDetail } = makePoller({
       queue: queueOf({ pr_wait: [] }),
