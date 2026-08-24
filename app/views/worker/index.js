@@ -85,6 +85,7 @@ import {
   createParallelAnalysisDialog
 } from './parallel-analysis-dialog.js';
 import { isPrWaitCleanupActive, prWaitProgress } from './pr-wait-progress.js';
+import { deriveWorkerOverlaps, workerPlacementPlan } from './queue-overlaps.js';
 import { createRepoOpsScriptViewer } from './repo-ops-script-viewer.js';
 import { createRepoOpsSettings } from './repo-ops-settings.js';
 import { createRepoOpsDrawer } from './repo-ops-timeline.js';
@@ -94,6 +95,12 @@ import { createTranscriptDrawer } from './transcript-drawer.js';
 export { mergeStepView } from './merge-steps.js';
 
 const log = debug('views:worker');
+
+/**
+ * 실행 중 타일에 얹는 tile-overlay 재료 (UI-jbao) — 지금은 겹침 칩뿐이다.
+ *
+ * @typedef {{ dependency_chips: import('./lanes.js').DependencyChips }} RunningOverlay
+ */
 
 const READY_KEY = 'tab:worker:ready';
 const BLOCKED_KEY = 'tab:worker:blocked';
@@ -1524,6 +1531,25 @@ export function createWorkerView(mount_element, options = {}) {
   /** @type {string|null} Candidate whose queue-lane picker is open. */
   let place_menu_bead_id = null;
   /**
+   * 열려 있는 겹침 팝오버 (UI-qm12 §5.3, 워커 탭 UI-jbao). `counterpart_id`가
+   * null이면 `+n` 칩이 연 전체 목록이다.
+   *
+   * @type {{ bead_id: string, counterpart_id: string|null }|null}
+   */
+  let open_overlap = null;
+  /**
+   * 마지막 렌더의 비교 집합·레인 사실 (UI-jbao). 팝오버의 배치 판정은 클릭
+   * 시점의 최신 모델로 한다 — 스냅샷 갱신마다 buildModel이 다시 채운다.
+   *
+   * @type {{ members_by_id: Map<string, import('./queue-overlaps.js').OverlapMember>, serial_raw_lengths: Record<string, number>, serial_lane_count: number, occupied_lanes: Set<string> }}
+   */
+  let overlap_queue_facts = {
+    members_by_id: new Map(),
+    serial_raw_lengths: {},
+    serial_lane_count: 0,
+    occupied_lanes: new Set()
+  };
+  /**
    * Candidate pane sort mode (UI-raqh §2), restored at view creation.
    *
    * @type {CandidateSort}
@@ -2602,10 +2628,147 @@ export function createWorkerView(mount_element, options = {}) {
     }
   }
 
+  // --- 겹침 칩·팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4의 워커 탭 투영,
+  // UI-jbao). 파생 규칙은 `queue-overlaps.js`가, 칩·팝오버 마크업은 lanes의
+  // `dependencyChipsTemplate`이 소유한다 — 모니터와 같은 한 벌이다. ---
+
+  /** 겹침 팝오버의 배치 버튼 문구 (UI-qm12 §5.4). */
+  const OVERLAP_PLACE_LABEL = '같은 직렬 레인으로';
+
+  /**
+   * @param {string} me_id
+   * @param {import('./lanes.js').OverlapChip} chip
+   * @returns {import('./lanes.js').OverlapPopoverRow}
+   */
+  function overlapPopoverRow(me_id, chip) {
+    const plan = workerPlacementPlan(me_id, chip.id, overlap_queue_facts);
+    return {
+      id: chip.id,
+      title: chip.title,
+      location_label: chip.location_label,
+      prefixes: chip.prefixes,
+      action:
+        plan.kind === 'note'
+          ? { kind: 'note', text: plan.text }
+          : plan.kind === 'disabled'
+            ? {
+                kind: 'disabled',
+                label: OVERLAP_PLACE_LABEL,
+                title: plan.title
+              }
+            : { kind: 'place', label: OVERLAP_PLACE_LABEL, title: plan.title }
+    };
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {import('./lanes.js').OverlapChip[]} overlaps
+   * @returns {import('./lanes.js').OverlapPopover|null}
+   */
+  function overlapPopoverFor(bead_id, overlaps) {
+    if (!open_overlap || open_overlap.bead_id !== bead_id) {
+      return null;
+    }
+    const counterpart_id = open_overlap.counterpart_id;
+    const chips =
+      counterpart_id === null
+        ? overlaps
+        : overlaps.filter((chip) => chip.id === counterpart_id);
+    if (chips.length === 0) {
+      return null;
+    }
+    return { rows: chips.map((chip) => overlapPopoverRow(bead_id, chip)) };
+  }
+
+  /**
+   * Run the 1클릭 배치 (UI-qm12 §5.4). 판정은 지금의 모델로 다시 하고, 두 번째
+   * op는 첫 응답이 실어 온 revision으로 간다. 첫 op가 실패하면 두 번째는
+   * 보내지 않는다 — 트랜잭션이 없으므로 다음 스냅샷이 실제 상태를 그린다.
+   *
+   * @param {string} me_id
+   * @param {string} counterpart_id
+   */
+  async function placeIntoSameSerialLane(me_id, counterpart_id) {
+    const plan = workerPlacementPlan(
+      me_id,
+      counterpart_id,
+      overlap_queue_facts
+    );
+    open_overlap = null;
+    if (plan.kind !== 'ops') {
+      doRender();
+      return;
+    }
+    let revision = currentRevision();
+    for (const op of plan.ops) {
+      const next = await sendOverlapPlaceOp(op, revision);
+      if (next === null) {
+        break;
+      }
+      revision = next;
+    }
+    doRender();
+  }
+
+  /**
+   * @param {{ bead_id: string, lane: 's1'|'s2'|'s3'|'s4'|'s5', index: number }} op
+   * @param {number} revision
+   * @returns {Promise<number|null>} 이어 쓸 revision, 실패면 null.
+   */
+  async function sendOverlapPlaceOp(op, revision) {
+    if (!transport) {
+      return null;
+    }
+    try {
+      // 충돌 자동 재시도 없음 (§5.4): 판정은 클릭 시점의 모델로 했으므로,
+      // 충돌은 그 판정의 근거가 사라졌다는 뜻이다 — 낡은 계획을 새 큐에
+      // 밀어 넣지 않는다. `placeBead`의 1회 재시도와 다른 계약이다.
+      const res = /** @type {any} */ (
+        await transport('worker-queue-place', {
+          bead_id: op.bead_id,
+          lane: op.lane,
+          index: op.index,
+          expected_revision: revision
+        })
+      );
+      adopt(res);
+      if (res && res.conflict) {
+        showToast('큐가 바뀌었습니다 — 다시 시도해 주세요', 'error');
+        return null;
+      }
+      // 성공은 `applied: true` + 숫자 revision뿐이다. 그 외(전송 불가·적용
+      // 거부·revision 없는 응답)는 전부 중단 — 두 번째 op는 첫 응답의
+      // revision으로만 간다.
+      if (!res || res.applied !== true) {
+        showToast(
+          res && typeof res.admission_reason === 'string'
+            ? `큐 적재 거부: ${res.admission_reason}`
+            : '큐 요청이 적용되지 않았습니다',
+          'error'
+        );
+        return null;
+      }
+      const next_revision = res.queue ? res.queue.revision : undefined;
+      if (typeof next_revision !== 'number') {
+        showToast('큐 응답에 revision이 없습니다', 'error');
+        return null;
+      }
+      return next_revision;
+    } catch (error) {
+      showToast(
+        error instanceof Error && error.message
+          ? error.message
+          : '큐 요청 실패',
+        'error'
+      );
+      return null;
+    }
+  }
+
   /**
    * Build the render view-model from live issue stores + the queue snapshot.
    *
-   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], serial_lanes: Array<{ id: string, index: number, rows: any[], occupied: boolean, badge: string, cycle: boolean }>, serial_lane_count: number, pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[] }}
+   * @returns {{ queue: any, idToTitle: Map<string, string>, candidates: any[], candidate_hidden: { blocked: number, spec: number }, running: any[], live_count: number, slots: number, over_cap: boolean, failure: any, waiting: any[], serial_lanes: Array<{ id: string, index: number, rows: any[], occupied: boolean, badge: string, cycle: boolean }>, serial_lane_count: number, pr_wait: any[], merge_queue_length: number, merge_queue_running: boolean, auto_excluded: string[], declared_base: string|null, done: any[], token_total: string|Array<{ provider: 'claude'|'codex', label: string, tooltip: string }>|null, cleanup_failures: Array<{ bead_id: string, step: string, reason: string, detail: string|null, output_tail?: string, log_path?: string }>, repo_operations: any[], running_overlays: Map<string, RunningOverlay> }}
    */
   function buildModel() {
     const q = currentQueue();
@@ -3832,6 +3995,148 @@ export function createWorkerView(mount_element, options = {}) {
         ? q.serial_lane_count
         : serial_lanes.length;
 
+    const waiting_rows = toRows(
+      queue_entries.filter(
+        (/** @type {any} */ e) => !active_bead_ids.has(e.bead_id)
+      ),
+      'queue'
+    );
+
+    // 겹침 파생 (UI-jbao): 비교 집합은 서버가 `bead_scope`를 적재한 범위와
+    // 같은 (실행 중 ∪ 병렬 큐 ∪ 직렬 레인)이다. PR 대기 bead는 서버가 싣지
+    // 않으므로 조회가 조용히 비고(§5.2), `bead_scope` 없는 구서버 스냅샷은
+    // 전체가 fail-quiet다.
+    /** @type {Map<string, 's1'|'s2'|'s3'|'s4'|'s5'>} */
+    const occupant_lane = new Map();
+    /** @type {Set<string>} */
+    const occupied_lanes = new Set();
+    for (const [lane_id, state] of Object.entries(lane_states_raw)) {
+      if (!/^s[1-5]$/.test(lane_id)) {
+        continue;
+      }
+      const occupied_by =
+        state && Array.isArray(state.occupied_by) ? state.occupied_by : [];
+      for (const bead_id of occupied_by) {
+        if (typeof bead_id === 'string') {
+          occupant_lane.set(
+            bead_id,
+            /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane_id)
+          );
+        }
+      }
+      if (occupied_by.length > 0) {
+        occupied_lanes.add(lane_id);
+      }
+    }
+    /** @type {import('./queue-overlaps.js').OverlapMember[]} */
+    const overlap_members = [];
+    for (const tile of running) {
+      if (typeof tile.bead_id !== 'string') {
+        continue;
+      }
+      overlap_members.push({
+        id: tile.bead_id,
+        title: idToTitle.get(tile.bead_id) || tile.bead_id,
+        location_label: '실행중',
+        kind: 'running',
+        lane_id: occupant_lane.get(tile.bead_id) ?? null
+      });
+    }
+    for (const lane of serial_lanes) {
+      for (const row of lane.rows) {
+        if (row.ghost === true) {
+          continue;
+        }
+        overlap_members.push({
+          id: row.id,
+          title: row.title,
+          location_label: `${lane.id} #${row.seq ?? ''}`.trim(),
+          kind: 'serial',
+          lane_id: /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (lane.id)
+        });
+      }
+    }
+    waiting_rows.forEach((row, row_index) => {
+      overlap_members.push({
+        id: row.id,
+        title: row.title,
+        location_label: `#${row_index + 1}`,
+        kind: 'parallel',
+        lane_id: null
+      });
+    });
+    /** @type {Record<string, number>} */
+    const serial_raw_lengths = {};
+    for (const lane of serial_lanes_raw) {
+      if (lane && typeof lane.id === 'string' && Array.isArray(lane.entries)) {
+        serial_raw_lengths[lane.id] = lane.entries.length;
+      }
+    }
+    // 첫 등장이 이긴다 — 실행 중이 목록의 앞이므로, 실행 중 bead가 큐 항목으로
+    // 남아 있어도 위치 판정은 실행 중이다 (파생의 dedupe 규칙과 같다).
+    /** @type {Map<string, import('./queue-overlaps.js').OverlapMember>} */
+    const members_by_id = new Map();
+    for (const member of overlap_members) {
+      if (!members_by_id.has(member.id)) {
+        members_by_id.set(member.id, member);
+      }
+    }
+    overlap_queue_facts = {
+      members_by_id,
+      serial_raw_lengths,
+      serial_lane_count,
+      occupied_lanes
+    };
+    const overlap_facts = deriveWorkerOverlaps(q.bead_scope, overlap_members);
+    /**
+     * @param {any} row
+     * @param {string} lane
+     */
+    const attachOverlaps = (row, lane) => {
+      const fact = overlap_facts.get(row.id);
+      if (!fact || (fact.overlaps.length === 0 && !fact.scope_missing)) {
+        return row;
+      }
+      const popover = overlapPopoverFor(row.id, fact.overlaps);
+      row.dependency_chips = {
+        ...(row.dependency_chips || {}),
+        ...(fact.overlaps.length > 0 ? { overlaps: fact.overlaps } : {}),
+        ...(fact.scope_missing && lane !== 'running'
+          ? { scope_missing: true }
+          : {}),
+        ...(popover ? { popover } : {})
+      };
+      return row;
+    };
+    for (const row of waiting_rows) {
+      attachOverlaps(row, 'queue');
+    }
+    for (const lane of serial_lanes) {
+      for (const row of lane.rows) {
+        if (row.ghost !== true) {
+          attachOverlaps(row, lane.id);
+        }
+      }
+    }
+    /** @type {Map<string, RunningOverlay>} */
+    const running_overlays = new Map();
+    for (const tile of running) {
+      const fact =
+        typeof tile.bead_id === 'string'
+          ? overlap_facts.get(tile.bead_id)
+          : undefined;
+      if (!fact || fact.overlaps.length === 0) {
+        continue;
+      }
+      const popover = overlapPopoverFor(tile.bead_id, fact.overlaps);
+      running_overlays.set(tile.bead_id, {
+        dependency_chips: {
+          overlaps: fact.overlaps,
+          ...(popover ? { popover } : {})
+        }
+      });
+    }
+
     return {
       queue: q,
       idToTitle,
@@ -3848,14 +4153,10 @@ export function createWorkerView(mount_element, options = {}) {
       // 실행 중(leaf paused 포함) attempt가 있는 bead는 attempt가 끝날 때까지
       // 큐 항목이 남지만, 대기 컬럼에 같이 그리면 두 컬럼 동시 표시가 되므로
       // 실행 중 컬럼에만 보여준다.
-      waiting: toRows(
-        queue_entries.filter(
-          (/** @type {any} */ e) => !active_bead_ids.has(e.bead_id)
-        ),
-        'queue'
-      ),
+      waiting: waiting_rows,
       serial_lanes,
       serial_lane_count,
+      running_overlays,
       // PR 대기 is its own column (worker-phase2 §7): a bead there is NOT done —
       // the PR is open and waiting for the human merge click. 완료 carries only
       // what actually merged and finished cleanup.
@@ -4131,7 +4432,12 @@ export function createWorkerView(mount_element, options = {}) {
         >
       </header>
       ${m.running.length > 0
-        ? runningGridTemplate(m.running, Date.now(), selected_attempt)
+        ? runningGridTemplate(
+            m.running,
+            Date.now(),
+            selected_attempt,
+            m.running_overlays
+          )
         : ''}
       ${m.pr_wait.map((it) => miniRow(it))}
     </section>`;
@@ -4387,7 +4693,12 @@ export function createWorkerView(mount_element, options = {}) {
         live: m.running.some(
           (r) => r.kind !== 'session' && !r.paused && r.failed !== true
         ),
-        body: runningGridTemplate(m.running, Date.now(), selected_attempt)
+        body: runningGridTemplate(
+          m.running,
+          Date.now(),
+          selected_attempt,
+          m.running_overlays
+        )
       })}
       ${paneTemplate({
         id: 'worker-pane-pr-wait',
@@ -4910,6 +5221,54 @@ export function createWorkerView(mount_element, options = {}) {
     if (target?.closest?.('#worker-parallel-analysis-dialog')) {
       return;
     }
+    // 겹침 칩·팝오버 (UI-jbao): 카드 클릭(상세 열기)보다 먼저 잡는다.
+    const overlapChip = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.mon-overlap__chip')
+    );
+    if (overlapChip) {
+      const chip_card = /** @type {HTMLElement|null} */ (
+        overlapChip.closest('[data-bead-id]')
+      );
+      const chip_bead_id = chip_card
+        ? chip_card.getAttribute('data-bead-id') || ''
+        : '';
+      if (chip_bead_id) {
+        // `+n` 칩은 상대 전부를 한 팝오버에 보인다 (§5.3).
+        const counterpart_id =
+          overlapChip.getAttribute('data-overlap-all') === 'true'
+            ? null
+            : overlapChip.getAttribute('data-overlap-id') || '';
+        const same =
+          !!open_overlap &&
+          open_overlap.bead_id === chip_bead_id &&
+          open_overlap.counterpart_id === counterpart_id;
+        open_overlap = same ? null : { bead_id: chip_bead_id, counterpart_id };
+        doRender();
+      }
+      return;
+    }
+    const overlapPlace = /** @type {HTMLElement|null} */ (
+      target?.closest?.('.mon-overlap__place')
+    );
+    if (overlapPlace) {
+      const place_card = /** @type {HTMLElement|null} */ (
+        overlapPlace.closest('[data-bead-id]')
+      );
+      const place_bead_id = place_card
+        ? place_card.getAttribute('data-bead-id') || ''
+        : '';
+      if (place_bead_id) {
+        void placeIntoSameSerialLane(
+          place_bead_id,
+          overlapPlace.getAttribute('data-counterpart-id') || ''
+        );
+      }
+      return;
+    }
+    // 팝오버 내부의 나머지 클릭은 카드 클릭(상세 열기)으로 흐르지 않는다.
+    if (target?.closest?.('.mon-overlap__popover')) {
+      return;
+    }
     if (target?.closest?.('.worker-analysis-btn')) {
       parallel_analysis_dialog?.open();
       return;
@@ -5335,6 +5694,49 @@ export function createWorkerView(mount_element, options = {}) {
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('click', /** @type {any} */ (onClick));
   mount_element.addEventListener('change', /** @type {any} */ (onChange));
+
+  /**
+   * An outside click closes the 겹침 팝오버 (UI-qm12 §5.3). 칩과 팝오버 자신은
+   * 예외다 — 여는 클릭이 그대로 닫는 클릭이 되면 아무것도 열리지 않는다.
+   *
+   * @param {Event} ev
+   */
+  function onDocumentClick(ev) {
+    if (!open_overlap) {
+      return;
+    }
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      target &&
+      typeof target.closest === 'function' &&
+      target.closest('.mon-overlap__popover, .mon-overlap__chip')
+    ) {
+      return;
+    }
+    open_overlap = null;
+    doRender();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onDocumentKeyDown(ev) {
+    if (ev.key !== 'Escape' || !open_overlap) {
+      return;
+    }
+    open_overlap = null;
+    doRender();
+  }
+
+  document.addEventListener('click', onDocumentClick);
+  document.addEventListener('keydown', /** @type {any} */ (onDocumentKeyDown));
+  unsubscribers.push(() => {
+    document.removeEventListener('click', onDocumentClick);
+    document.removeEventListener(
+      'keydown',
+      /** @type {any} */ (onDocumentKeyDown)
+    );
+  });
 
   watchViewport();
 

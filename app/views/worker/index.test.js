@@ -11421,3 +11421,323 @@ describe('headReviewFailureCategory (UI-nlgz)', () => {
     expect(result.action.length).toBeGreaterThan(0);
   });
 });
+
+describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * Two parallel waiting rows plus one s1 row, all three declaring scope.
+   *
+   * @param {any} [over]
+   * @returns {any}
+   */
+  function overlapQueue(over = {}) {
+    return queueOf({
+      revision: 3,
+      queue: [
+        { bead_id: 'W-1', added_at: 1 },
+        { bead_id: 'W-2', added_at: 2 }
+      ],
+      serial_lane_count: 2,
+      serial_lanes: [{ id: 's1', entries: [{ bead_id: 'S-1', added_at: 1 }] }],
+      lane_states: {
+        s1: { occupied_by: [], order: ['S-1'], corrections: [], cycle: false }
+      },
+      bead_scope: {
+        'W-1': { scope: ['app/views/worker'], artifacts: ['w1.md'] },
+        'W-2': {
+          scope: ['app/views/worker/lanes.js'],
+          artifacts: ['w2.md']
+        },
+        'S-1': { scope: ['server/ws'], artifacts: ['s1.md'] }
+      },
+      ...over
+    });
+  }
+
+  /**
+   * @param {any} transport
+   * @param {any} [queue]
+   * @returns {HTMLElement}
+   */
+  function mountWithOverlaps(transport, queue = overlapQueue()) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport
+    });
+    queueStore.set(queue);
+    return mount;
+  }
+
+  test('draws a 겹침 chip on both waiting rows that declare colliding scope', () => {
+    const mount = mountWithOverlaps(vi.fn());
+
+    const w1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    const w2 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-2"]')
+    );
+
+    expect(w1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'W-2'
+    );
+    expect(w2.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'W-1'
+    );
+  });
+
+  test('draws no 겹침 chip on a row whose scope does not collide', () => {
+    const mount = mountWithOverlaps(vi.fn());
+
+    const s1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="S-1"]')
+    );
+
+    expect(s1.querySelector('.mon-overlap__chip')).toBe(null);
+  });
+
+  test('draws nothing on an old snapshot without bead_scope', () => {
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({ bead_scope: undefined })
+    );
+
+    expect(mount.querySelector('.mon-overlap__chip')).toBe(null);
+  });
+
+  test('marks a declared-empty scope as 판정 불가 rather than 겹침 없음', () => {
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({
+        bead_scope: {
+          'W-1': { scope: [], artifacts: ['w1.md'] }
+        }
+      })
+    );
+
+    const w1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+    expect(w1.querySelector('.worker-dep--muted')?.textContent).toContain(
+      'scope 없음'
+    );
+  });
+
+  test('a chip click opens the popover with the counterpart and its paths', () => {
+    const mount = mountWithOverlaps(vi.fn());
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const popover = /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .mon-overlap__popover'
+      )
+    );
+    expect(popover.querySelector('.mon-overlap__rid')?.textContent).toBe('W-2');
+    expect(popover.querySelector('.mon-overlap__paths')?.textContent).toContain(
+      'app/views/worker/lanes.js'
+    );
+  });
+
+  test('Escape closes an open popover', () => {
+    const mount = mountWithOverlaps(vi.fn());
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.mon-overlap__popover')).toBe(null);
+  });
+
+  test('1클릭 배치 sends two ops into the first empty serial lane, the second at the returned revision', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValueOnce(reply(queueOf({ revision: 4 })))
+      .mockResolvedValueOnce(reply(queueOf({ revision: 5 })));
+    const mount = mountWithOverlaps(transport);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(transport.mock.calls[0][1]).toEqual({
+      bead_id: 'W-2',
+      lane: 's2',
+      index: 0,
+      expected_revision: 3
+    });
+    expect(transport.mock.calls[1][1]).toEqual({
+      bead_id: 'W-1',
+      lane: 's2',
+      index: 1,
+      expected_revision: 4
+    });
+  });
+
+  test('a CAS conflict stops after the first op without retrying', async () => {
+    const transport = vi.fn().mockResolvedValue({
+      applied: false,
+      conflict: true,
+      queue: queueOf({ revision: 9 })
+    });
+    const mount = mountWithOverlaps(transport);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('an unapplied reply stops the chain', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ applied: false, admission_reason: 'not_ready' });
+    const mount = mountWithOverlaps(transport);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('a reply without a numeric revision stops the chain', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue({ applied: true, queue: queueOf({ revision: null }) });
+    const mount = mountWithOverlaps(transport);
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="W-1"] .mon-overlap__place'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('draws the 겹침 chip on a running tile and no scope 없음 there', () => {
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'W-1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now(),
+            session_id: 'sid-1'
+          }
+        },
+        bead_scope: {
+          'W-1': { scope: [], artifacts: ['w1.md'] },
+          'W-2': { scope: ['app/views/worker/lanes.js'], artifacts: ['w2.md'] },
+          'S-1': { scope: ['app/views/worker'], artifacts: ['s1.md'] }
+        }
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W-1"]')
+    );
+    const s1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="S-1"]')
+    );
+
+    expect(tile).not.toBe(null);
+    // 실행 중 행은 `scope 없음`을 얻지 않는다 (§5.3) — 이미 출발한 이슈에게
+    // 선언을 요구하는 문장이기 때문이다.
+    expect(tile.querySelector('.worker-dep--muted')).toBe(null);
+    expect(s1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'W-2'
+    );
+  });
+
+  test('a running tile with declared colliding scope gets the 겹침 chip', () => {
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'W-1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now(),
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W-1"]')
+    );
+
+    expect(tile.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'W-2'
+    );
+  });
+
+  test('a chip on a running tile offers moving the counterpart, not the runner', () => {
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({
+        attempts: {
+          'att-1': {
+            attempt_id: 'att-1',
+            bead_id: 'W-1',
+            status: 'running',
+            runner: 'claude',
+            started_at: Date.now(),
+            session_id: 'sid-1'
+          }
+        }
+      })
+    );
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W-1"] .mon-overlap__chip')
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const note = mount.querySelector(
+      '.rtile[data-bead-id="W-1"] .mon-overlap__note'
+    );
+    expect(note?.textContent).toContain('실행 중');
+  });
+});

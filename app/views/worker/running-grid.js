@@ -639,20 +639,29 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
 /**
  * Running grid. Renders one tile per running attempt; empty message otherwise.
  *
+ * `overlays`는 Worker 탭이 자기 타일에 얹는 tile-overlay 재료다 (UI-jbao) —
+ * 지금은 겹침 칩(`dependency_chips`)만 싣는다. 생략하면 종전과 동일하다.
+ *
  * @param {RunningTile[]} tiles
  * @param {number} [now]
  * @param {string|null} [selected_attempt]
+ * @param {Map<string, MonitorTileOverlay>|null} [overlays]
  * @returns {import('lit-html').TemplateResult}
  */
 export function runningGridTemplate(
   tiles,
   now = Date.now(),
-  selected_attempt = null
+  selected_attempt = null,
+  overlays = null
 ) {
   const list = Array.isArray(tiles) ? tiles : [];
   return html`<div class="worker-rungrid" id="worker-rungrid">
     ${list.length === 0
       ? html`<div class="worker-rungrid__empty">실행 세션 없음</div>`
-      : list.map((t) => runningTile(t, now, selected_attempt))}
+      : list.map((t) =>
+          runningTile(t, now, selected_attempt, {
+            monitor: overlays ? overlays.get(t.bead_id) || null : null
+          })
+        )}
   </div>`;
 }
