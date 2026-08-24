@@ -6916,9 +6916,14 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
+/* 점유자 id는 원래 자형을 지킨다 — 헤더의 uppercase가 `UI-yrzu`를 `UI-YRZU`로
+   바꾸면 다른 id처럼 읽힌다. */
 .mon2-lane__badge--held {
   color: var(--text);
   font-family: var(--font-mono);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
 }
 
 /* --- 대기 레인 두 영역 (UI-e6hw §4) ---------------------------------------
