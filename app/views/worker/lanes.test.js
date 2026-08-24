@@ -12,6 +12,7 @@ import {
   formatElapsed,
   miniRow,
   repoOpsStripModel,
+  routeChipTemplate,
   staleWorkProjection,
   sumAttemptWorkMs
 } from './lanes.js';
@@ -1321,5 +1322,131 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     );
 
     expect(row).not.toContain('worker-deps');
+  });
+});
+
+describe('routeChipTemplate (UI-yrzu §7.1)', () => {
+  /**
+   * @param {any} workflow
+   * @returns {HTMLElement|null}
+   */
+  function renderChip(workflow) {
+    render(routeChipTemplate(workflow), mount);
+    return /** @type {HTMLElement|null} */ (
+      mount.querySelector('.ctl-chip--route')
+    );
+  }
+
+  test('draws nothing without a workflow', () => {
+    expect(renderChip(null)).toBeNull();
+  });
+
+  test('draws nothing when the workflow carries no route', () => {
+    expect(renderChip({ chips: {} })).toBeNull();
+  });
+
+  test('names a pinned route with the plain route tooltip', () => {
+    const chip = renderChip({
+      chips: { route: 'spec_backed', route_source: 'explicit' }
+    });
+
+    expect(chip?.textContent).toBe('spec_backed');
+    expect(chip?.getAttribute('title')).toBe('route');
+    expect(chip?.classList.contains('is-derived')).toBe(false);
+  });
+
+  test('says unset on a derived route', () => {
+    const chip = renderChip({
+      chips: { route: 'quick_fix', route_source: 'derived' }
+    });
+
+    expect(chip?.textContent).toBe('unset');
+    expect(chip?.getAttribute('title')).toBe('route 미핀 (metadata unset)');
+    expect(chip?.classList.contains('is-derived')).toBe(true);
+  });
+
+  test('reads the route off the workflow when no chips are projected', () => {
+    const chip = renderChip({ route: 'full_plan', route_source: 'derived' });
+
+    expect(chip?.textContent).toBe('unset');
+    expect(chip?.classList.contains('is-derived')).toBe(true);
+  });
+});
+
+describe('waiting row route chip (UI-yrzu §7.2)', () => {
+  const WORKFLOW = {
+    route: 'spec_backed',
+    chips: { route: 'spec_backed', route_source: 'explicit' }
+  };
+
+  test('draws the chip between the id and the title of a waiting row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      workflow: /** @type {any} */ (WORKFLOW)
+    });
+    const line = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__line')
+    );
+    const order = Array.from(line.children).map((child) => child.className);
+
+    expect(row.querySelector('.ctl-chip--route')?.textContent).toBe(
+      'spec_backed'
+    );
+    expect(order.indexOf('ctl-chip ctl-chip--route')).toBe(
+      order.indexOf('worker-mini__id') + 1
+    );
+    expect(order.indexOf('ctl-chip ctl-chip--route')).toBeLessThan(
+      order.indexOf('worker-mini__title')
+    );
+  });
+
+  test('draws the chip on a PR 대기 card variant', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: true,
+      draggable: false,
+      workflow: /** @type {any} */ (WORKFLOW)
+    });
+
+    expect(
+      row.querySelector('.worker-mini__head .ctl-chip--route')?.textContent
+    ).toBe('spec_backed');
+  });
+
+  test('draws the chip on a REVISE 파킹 card variant', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      revise_action: true,
+      workflow: /** @type {any} */ (WORKFLOW)
+    });
+
+    expect(
+      row.querySelector('.worker-mini__head .ctl-chip--route')?.textContent
+    ).toBe('spec_backed');
+  });
+
+  test('draws no chip on a waiting row without a workflow', () => {
+    const row = renderRow({ lane: 'queue', done: false, draggable: true });
+
+    expect(row.querySelector('.ctl-chip--route')).toBeNull();
+  });
+
+  test('draws no chip on a two-line done row', () => {
+    const row = renderRow({ workflow: /** @type {any} */ (WORKFLOW) });
+
+    expect(row.querySelector('.ctl-chip--route')).toBeNull();
+  });
+
+  test('draws no chip on a three-line done row', () => {
+    const row = renderRow({
+      done_layout: 'three_line',
+      workflow: /** @type {any} */ (WORKFLOW)
+    });
+
+    expect(row.querySelector('.ctl-chip--route')).toBeNull();
   });
 });

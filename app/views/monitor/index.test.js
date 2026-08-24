@@ -1754,3 +1754,119 @@ describe('views/monitor focus filter (UI-eey2 §4.2)', () => {
     expect(el(mount, '.mon').classList.contains('has-focus')).toBe(false);
   });
 });
+
+describe('views/monitor 연결 레인 route 칩 (UI-yrzu §7.2)', () => {
+  const WORKFLOW = {
+    route: 'spec_backed',
+    chips: { route: 'spec_backed', route_source: 'explicit' }
+  };
+
+  test('draws the route chip after the id of a chain row', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          bead_workflow: { 'A-1': WORKFLOW }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.mon2-crow[data-bead-id="A-1"]')
+    );
+    const order = Array.from(row.children).map((child) => child.className);
+    expect(row.querySelector('.ctl-chip--route')?.textContent).toBe(
+      'spec_backed'
+    );
+    expect(order.indexOf('ctl-chip ctl-chip--route')).toBe(
+      order.indexOf('worker-mini__id') + 1
+    );
+  });
+
+  test('draws no chip on a chain row whose bead has no workflow', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-crow .ctl-chip--route')).toBeNull();
+  });
+});
+
+describe('views/monitor 세션 타일 (UI-yrzu §6·§9)', () => {
+  const session_workspaces = [
+    workspace({
+      session_active: [
+        {
+          bead_id: 'A-7',
+          title: '세션이 잡은 이슈',
+          status: 'in_progress',
+          route: 'spec_backed',
+          spec_id: '',
+          labels: [],
+          created_at: null,
+          updated_at: NOW - 120_000,
+          started_at: NOW - 4000,
+          workflow: {
+            route: 'spec_backed',
+            chips: { route: 'spec_backed', route_source: 'explicit' },
+            stages: { spec: { fill: 'full' }, impl: {}, pr: {}, merge: {} }
+          },
+          blocked: false,
+          blocked_by: []
+        }
+      ]
+    })
+  ];
+
+  test('renders the session tile in the 실행중 lane', () => {
+    const { mount, view } = setup({
+      workspaces: session_workspaces,
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('#monitor-running .rtile')
+    );
+    expect(tile.classList.contains('rtile--session')).toBe(true);
+    expect(tile.getAttribute('data-bead-id')).toBe('A-7');
+    expect(tile.querySelector('.rtile__session-badge')?.textContent).toBe(
+      '세션'
+    );
+    expect(tile.querySelector('.ctl-chip--route')?.textContent).toBe(
+      'spec_backed'
+    );
+    expect(tile.querySelector('.rtile__activity-text')?.textContent).toBe(
+      '갱신 2분 전'
+    );
+  });
+
+  test('gives the session tile no drag source and no drop zone', () => {
+    const { mount, view } = setup({
+      workspaces: session_workspaces,
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('#monitor-running .rtile')
+    );
+    expect(tile.closest('[data-drag-kind]')).toBeNull();
+    expect(tile.getAttribute('draggable')).toBeNull();
+    expect(el(mount, '#monitor-running [data-drop]')).toBeNull();
+  });
+});

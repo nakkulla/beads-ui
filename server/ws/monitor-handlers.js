@@ -457,11 +457,16 @@ function pruneClosedForeignBlockers(
  * queue/PR/done lanes and no running attempt, so leaving it out here would drop
  * it from the aggregation entirely and the 실행가능 lane could never show it.
  *
- * @param {Record<string, any>} snapshot - Decorated snapshot plus `runnable`.
+ * `session_active` counts for the same reason (UI-yrzu §4.2): a repo whose only
+ * activity is an interactive session's `in_progress` bead has no worker state at
+ * all.
+ *
+ * @param {Record<string, any>} snapshot - Decorated snapshot plus `runnable` and
+ * `session_active`.
  * @returns {boolean}
  */
 function hasPipeline(snapshot) {
-  const lanes = ['queue', 'pr_wait', 'done', 'runnable'];
+  const lanes = ['queue', 'pr_wait', 'done', 'runnable', 'session_active'];
   for (const lane of lanes) {
     if (Array.isArray(snapshot[lane]) && snapshot[lane].length > 0) {
       return true;
@@ -489,9 +494,45 @@ function hasPipeline(snapshot) {
  * @returns {Set<string>}
  */
 function lanedBeadIds(snapshot) {
+  const ids = activeLaneBeadIds(snapshot);
+  for (const bead_id of laneBeadIds(snapshot, ['done'])) {
+    ids.add(bead_id);
+  }
+  return ids;
+}
+
+/**
+ * The bead ids a workspace has in a lane the WORKER still owns —
+ * `queue` ∪ serial ∪ `pr_wait`, without `done`.
+ *
+ * This is the `session_active` exclusion set (UI-yrzu §3). `done` is
+ * deliberately absent: a bead a session reopened as `in_progress` is being
+ * worked on right now, and its completion history is not a reason to hide that
+ * fact. The runnable lane keeps using the `done`-inclusive `lanedBeadIds`,
+ * where a completed bead genuinely is past the "실행할 수 있다" question.
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Set<string>}
+ */
+function activeLaneBeadIds(snapshot) {
+  const ids = laneBeadIds(snapshot, ['queue', 'pr_wait']);
+  for (const bead_id of serialLaneBeadIds(snapshot)) {
+    ids.add(bead_id);
+  }
+  return ids;
+}
+
+/**
+ * Valid bead ids across the named flat lanes of one snapshot.
+ *
+ * @param {Record<string, any>} snapshot
+ * @param {string[]} lanes
+ * @returns {Set<string>}
+ */
+function laneBeadIds(snapshot, lanes) {
   /** @type {Set<string>} */
   const ids = new Set();
-  for (const lane of ['queue', 'pr_wait', 'done']) {
+  for (const lane of lanes) {
     const entries = snapshot[lane];
     if (!Array.isArray(entries)) {
       continue;
@@ -503,7 +544,42 @@ function lanedBeadIds(snapshot) {
       }
     }
   }
-  for (const bead_id of serialLaneBeadIds(snapshot)) {
+  return ids;
+}
+
+/**
+ * The `done` lane's `added_at` per bead — the second input
+ * `app/utils/active-attempts.js` needs to tell a failure the done lane already
+ * resolved from one still waiting for a decision.
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Map<string, number>}
+ */
+function doneAtByBead(snapshot) {
+  /** @type {Map<string, number>} */
+  const done_at_by_bead = new Map();
+  for (const entry of Array.isArray(snapshot.done) ? snapshot.done : []) {
+    const bead_id = entry && entry.bead_id;
+    if (typeof bead_id === 'string' && typeof entry.added_at === 'number') {
+      done_at_by_bead.set(bead_id, entry.added_at);
+    }
+  }
+  return done_at_by_bead;
+}
+
+/**
+ * The ids no session tile may repeat: every worker-owned lane member plus every
+ * bead an active worker attempt already draws (UI-yrzu §3).
+ *
+ * @param {Record<string, any>} snapshot
+ * @returns {Set<string>}
+ */
+function sessionExcludedBeadIds(snapshot) {
+  const ids = activeLaneBeadIds(snapshot);
+  for (const bead_id of activeBeadIds(
+    snapshot.attempts || {},
+    doneAtByBead(snapshot)
+  )) {
     ids.add(bead_id);
   }
   return ids;
@@ -561,6 +637,7 @@ function serialLaneBeadIds(snapshot) {
  *   listHidden?: () => string[],
  *   snapshotFor?: (workspace_key: string) => Record<string, unknown>,
  *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
  *   issuePrefixFor?: (root_dir: string) => string|null,
  *   foreignBlockerStatusFor?: (bead_id: string, owner_root: string) => string|null
  * }} [options] - Test seams; each defaults to the live server source.
@@ -575,6 +652,10 @@ export function buildMonitorPipeline(options = {}) {
     options.runnableFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
+  const sessionActiveFor =
+    options.sessionActiveFor ||
+    ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
+      getWorkerRuntime().runnableCache.sessionActiveFor(key, exclude_ids));
   const issuePrefixFor = options.issuePrefixFor || cachedIssuePrefixFor;
   const foreignStatusFor =
     options.foreignBlockerStatusFor || foreignBlockerStatusFor;
@@ -618,6 +699,16 @@ export function buildMonitorPipeline(options = {}) {
       runnable = [];
     }
     projected.runnable = runnable;
+    /** @type {Array<Record<string, unknown>>} */
+    let session_active = [];
+    try {
+      session_active =
+        sessionActiveFor(root_dir, sessionExcludedBeadIds(projected)) || [];
+    } catch (err) {
+      log('monitor: session_active lookup failed for %s: %o', root_dir, err);
+      session_active = [];
+    }
+    projected.session_active = session_active;
     if (!hasPipeline(projected)) {
       continue;
     }
@@ -642,24 +733,38 @@ export function buildMonitorPipeline(options = {}) {
  * @param {string} root_dir
  * @param {Record<string, any>} queue - RAW queue snapshot.
  * @param {(workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>} runnableFor
- * @returns {{ running: number, pr_wait: number, queue: number, runnable: number }}
+ * @param {(workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>} sessionActiveFor
+ * @returns {{ running: number, pr_wait: number, queue: number, runnable: number, session_active: number }}
  */
-function laneCountsFor(root_dir, queue, runnableFor) {
+function laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor) {
   // The 실행중 레인 is per BEAD and admits leaf paused / unhandled failures, not
   // just `status === 'running'` — so the count uses the CLIENT'S OWN classifier
   // (`app/utils/active-attempts.js`) rather than a second predicate that would
   // drift from the lane it summarizes.
-  /** @type {Map<string, number>} */
-  const done_at_by_bead = new Map();
-  for (const entry of Array.isArray(queue.done) ? queue.done : []) {
-    const bead_id = entry && entry.bead_id;
-    if (typeof bead_id === 'string' && typeof entry.added_at === 'number') {
-      done_at_by_bead.set(bead_id, entry.added_at);
-    }
-  }
   /** @type {Set<string>} */
-  const claimed = activeBeadIds(queue.attempts || {}, done_at_by_bead);
+  const claimed = activeBeadIds(queue.attempts || {}, doneAtByBead(queue));
   const running = claimed.size;
+  // Sessions rank immediately after `running` (UI-yrzu §4.2). The exclusion set
+  // is what keeps that priority honest, so the count reads exactly the rows the
+  // pipeline's session lane will draw.
+  let session_active = 0;
+  try {
+    const rows =
+      sessionActiveFor(root_dir, sessionExcludedBeadIds(queue)) || [];
+    for (const row of rows) {
+      const bead_id = /** @type {any} */ (row)?.bead_id;
+      if (typeof bead_id !== 'string' || bead_id.length === 0) {
+        continue;
+      }
+      if (claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      session_active += 1;
+    }
+  } catch (err) {
+    log('monitor: session_active count failed for %s: %o', root_dir, err);
+  }
   let pr_wait = 0;
   for (const entry of Array.isArray(queue.pr_wait) ? queue.pr_wait : []) {
     const bead_id = entry && entry.bead_id;
@@ -713,7 +818,7 @@ function laneCountsFor(root_dir, queue, runnableFor) {
   } catch (err) {
     log('monitor: runnable count failed for %s: %o', root_dir, err);
   }
-  return { running, pr_wait, queue: waiting, runnable };
+  return { running, pr_wait, queue: waiting, runnable, session_active };
 }
 
 /**
@@ -736,7 +841,8 @@ function laneCountsFor(root_dir, queue, runnableFor) {
  *   runnerCatalog?: () => Record<string, unknown>,
  *   issuePrefixFor?: (workspace_key: string) => string|null,
  *   sessionDefaultsFor?: (workspace_key: string) => { values: Record<string, string>, warnings: string[] },
- *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
+ *   runnableFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>,
+ *   sessionActiveFor?: (workspace_key: string, exclude_ids: Set<string>) => Array<Record<string, unknown>>
  * }} [options] - Test seams; each defaults to the live server source.
  * @returns {Array<Record<string, unknown>>}
  */
@@ -752,6 +858,10 @@ export function buildMonitorWorkspacesState(options = {}) {
     options.runnableFor ||
     ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
       getWorkerRuntime().runnableCache.runnableFor(key, exclude_ids));
+  const sessionActiveFor =
+    options.sessionActiveFor ||
+    ((/** @type {string} */ key, /** @type {Set<string>} */ exclude_ids) =>
+      getWorkerRuntime().runnableCache.sessionActiveFor(key, exclude_ids));
   /** @type {Record<string, unknown>|null} */
   let runner_catalog = null;
   try {
@@ -844,7 +954,7 @@ export function buildMonitorWorkspacesState(options = {}) {
       // `prewarmSessionDefaults`.
       session_defaults: session_defaults.values,
       session_defaults_warnings: session_defaults.warnings,
-      counts: laneCountsFor(root_dir, queue, runnableFor)
+      counts: laneCountsFor(root_dir, queue, runnableFor, sessionActiveFor)
     });
   }
   return out;

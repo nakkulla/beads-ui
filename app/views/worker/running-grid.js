@@ -19,13 +19,18 @@ import {
   providerUsageBadges,
   usageTooltip
 } from '../../utils/token-usage.js';
-import { childExecChips } from '../board/card.js';
+import {
+  childExecChips,
+  execReceiptActor,
+  formatExecReceipt
+} from '../board/card.js';
 import { childRollupTemplate } from '../child-rollup.js';
 import { failureText } from './failure-labels.js';
 import {
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
+  routeChipTemplate,
   timesMeta
 } from './lanes.js';
 
@@ -33,6 +38,11 @@ import {
  * @typedef {Object} RunningTile
  * @property {string} bead_id
  * @property {string} attempt_id
+ * @property {'session'} [kind] - 세션이 `in_progress`로 잡은 이슈의 타일
+ * (UI-yrzu §6). attempt가 없으므로 운영 버튼·세션 드로어·위임 칩이 없고,
+ * 경과는 bead의 `started_at`에서 온다. 생략(=Worker attempt 타일)이 기본이다.
+ * @property {import('./lanes.js').MiniItem['workflow']} [workflow] - route 칩과
+ * (세션 타일의) exec_receipt 칩 재료 (UI-yrzu §7.2). 없으면 칩이 생략된다.
  * @property {string} title
  * @property {string|null} runner
  * @property {string|null} model
@@ -315,12 +325,17 @@ const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
  * 칩으로 접고 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2).
  * 재료가 없는 줄은 통째로 생략한다.
  *
+ * 세션 타일은 전사도 위임 로그도 없다 (UI-yrzu §6): 활동 줄이 답할 수 있는
+ * 유일한 사실이 bead의 마지막 갱신 시각이고, 위임 칩은 그릴 근거가 없다.
+ * `session`이 그 두 규칙을 함께 켠다.
+ *
  * @param {MonitorTileOverlay|null} monitor
  * @param {number} now
  * @param {boolean} paused
+ * @param {{ updated_at: number|string|null }|null} [session]
  * @returns {import('lit-html').TemplateResult|''}
  */
-function monitorTileBody(monitor, now, paused) {
+function monitorTileBody(monitor, now, paused, session = null) {
   if (!monitor) {
     return '';
   }
@@ -329,7 +344,11 @@ function monitorTileBody(monitor, now, paused) {
     activity && typeof activity.text === 'string' ? activity.text : '';
   const activity_at =
     activity && typeof activity.at === 'number' ? activity.at : null;
-  const legs = (Array.isArray(monitor.legs) ? monitor.legs : []).filter(
+  // 세션 타일에는 위임 leg가 없다 (UI-yrzu §6) — attempt가 없으므로 그릴
+  // 근거가 없다. Worker 타일은 전달자 leg만 걸러 낸다.
+  const legs = (
+    session || !Array.isArray(monitor.legs) ? [] : monitor.legs
+  ).filter(
     (leg) =>
       leg &&
       !(
@@ -340,6 +359,9 @@ function monitorTileBody(monitor, now, paused) {
   const live_legs = legs.filter((leg) => leg && leg.state === 'live');
   const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
   const deps = dependencyChipsTemplate(monitor.dependency_chips);
+  const session_age = session
+    ? formatRelativeTime(session.updated_at, now)
+    : '';
   return html`${activity_text
     ? html`<div class="rtile__activity${paused ? ' is-paused' : ''}">
         <span class="rtile__activity-dot" aria-hidden="true"></span>
@@ -350,7 +372,14 @@ function monitorTileBody(monitor, now, paused) {
             >`
           : ''}
       </div>`
-    : ''}${live_legs.length > 0 || ended_legs.length > 0
+    : session_age
+      ? // 전사 한 줄이 아니라 bead 갱신 시각이므로 점은 살아있음을 주장하지
+        // 않는다 (§6) — 초록 점은 라이브 전사만 얻는다.
+        html`<div class="rtile__activity rtile__activity--session">
+          <span class="rtile__activity-dot" aria-hidden="true"></span>
+          <span class="rtile__activity-text">갱신 ${session_age}</span>
+        </div>`
+      : ''}${live_legs.length > 0 || ended_legs.length > 0
     ? html`<div class="rtile__legs">
         ${live_legs.map(
           (leg) =>
@@ -390,6 +419,9 @@ function monitorTileBody(monitor, now, paused) {
  * @returns {import('lit-html').TemplateResult}
  */
 export function runningTile(tile, now, selected_attempt = null, options = {}) {
+  // 세션이 잡은 이슈 (UI-yrzu §6): attempt가 없으므로 운영할 것도 열 로그도
+  // 없다. 껍데기와 클릭 계약은 Worker 타일과 같다 — 같은 사실은 같은 모양.
+  const session = tile.kind === 'session';
   const failed = tile.failed === true;
   const paused = !!tile.paused;
   const elapsed = failed
@@ -422,7 +454,30 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   const sel = tile.attempt_id && tile.attempt_id === selected_attempt;
   const monitor = options.monitor || null;
   const monitor_head = monitorTileHead(monitor);
-  const monitor_body = monitorTileBody(monitor, now, paused);
+  const monitor_body = monitorTileBody(
+    monitor,
+    now,
+    paused,
+    session ? { updated_at: tile.updated_at ?? null } : null
+  );
+  // 세션 타일의 meta 줄은 exec_receipt 칩 하나다 (§6): 계정·토큰은 attempt가
+  // 있어야 아는 사실이고, 이 타일에는 attempt가 없다. 라벨은 SHA를 뺀
+  // `<kind>:<actor[:effort]>`이고 전체 값은 툴팁이 싣는다.
+  const session_receipt = session
+    ? tile.workflow?.chips?.exec_receipt || null
+    : null;
+  const session_meta = session_receipt
+    ? html`<div class="rtile__meta">
+        <span
+          class="ctl-chip ctl-chip--exec-receipt"
+          title=${`exec_receipt ${formatExecReceipt(session_receipt)}`}
+          >${`${session_receipt.kind}:${execReceiptActor(session_receipt)}`}</span
+        >
+      </div>`
+    : '';
+  // 세션 타일의 수정 시각은 활동 줄이 "갱신 n 전"으로 이미 말한다 (§6) —
+  // 같은 사실을 두 줄로 쓰지 않는다.
+  const times_el = session ? '' : timesMeta(tile);
   const discard_button = tile.discard?.action
     ? html`<button
         type="button"
@@ -438,67 +493,80 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   return html`<div
     class="rtile${sel ? ' rtile--sel' : ''}${paused
       ? ' rtile--paused'
-      : ''}${failed ? ' rtile--failed' : ''}"
+      : ''}${failed ? ' rtile--failed' : ''}${session ? ' rtile--session' : ''}"
     data-bead-id=${tile.bead_id}
     data-attempt-id=${tile.attempt_id || ''}
   >
     <div class="rtile__hd">
-      <span class="rtile__dot" aria-hidden="true"></span>
+      <span
+        class="rtile__dot${session ? ' rtile__dot--session' : ''}"
+        aria-hidden="true"
+      ></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${monitor_head}${lineage
+      ${routeChipTemplate(tile.workflow)}${monitor_head}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
         : ''}
-      <span class="rtile__elapsed">${elapsed}</span>
-      ${failed
-        ? html`<button
-              type="button"
-              class="rtile__resume"
-              ?disabled=${tile.resume_eligible === false}
-              title=${tile.resume_eligible === false
-                ? tile.resume_reason || '이어하기 불가'
-                : '같은 세션으로 이어서 진행'}
-              aria-label="이어하기"
-            >
-              ↻ 이어하기
-            </button>
-            ${discard_button}
-            <button
-              type="button"
-              class="rtile__dismiss"
-              title="실패 알림 닫기 — 레인에는 남습니다"
-              aria-label="실패 기록 닫기"
-            >
-              ✕
-            </button>`
-        : html`<button
-              type="button"
-              class="rtile__session"
-              title="라이브 세션 열기"
-              aria-label="라이브 세션 열기"
-            >
-              ▤ 세션
-            </button>
-            ${paused
-              ? html`<button
-                  type="button"
-                  class="rtile__resume"
-                  title="같은 세션으로 이어서 재개"
-                  aria-label="재개"
-                >
-                  ▶
-                </button>`
-              : html`<button
-                  type="button"
-                  class="rtile__pause"
-                  ?disabled=${tile.can_pause === false}
-                  title=${tile.can_pause === false
-                    ? '세션 ID 기록 전 — 일시정지 불가'
-                    : '일시정지 (같은 세션으로 재개 가능)'}
-                  aria-label="일시정지"
-                >
-                  ⏸
-                </button>`}
-            ${discard_button}`}
+      ${session
+        ? html`${typeof tile.started_at === 'number'
+              ? html`<span class="rtile__elapsed">${elapsed}</span>`
+              : ''}<span
+              class="rtile__session-badge"
+              title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
+              >세션</span
+            >`
+        : html`<span class="rtile__elapsed">${elapsed}</span>`}
+      ${session
+        ? ''
+        : failed
+          ? html`<button
+                type="button"
+                class="rtile__resume"
+                ?disabled=${tile.resume_eligible === false}
+                title=${tile.resume_eligible === false
+                  ? tile.resume_reason || '이어하기 불가'
+                  : '같은 세션으로 이어서 진행'}
+                aria-label="이어하기"
+              >
+                ↻ 이어하기
+              </button>
+              ${discard_button}
+              <button
+                type="button"
+                class="rtile__dismiss"
+                title="실패 알림 닫기 — 레인에는 남습니다"
+                aria-label="실패 기록 닫기"
+              >
+                ✕
+              </button>`
+          : html`<button
+                type="button"
+                class="rtile__session"
+                title="라이브 세션 열기"
+                aria-label="라이브 세션 열기"
+              >
+                ▤ 세션
+              </button>
+              ${paused
+                ? html`<button
+                    type="button"
+                    class="rtile__resume"
+                    title="같은 세션으로 이어서 재개"
+                    aria-label="재개"
+                  >
+                    ▶
+                  </button>`
+                : html`<button
+                    type="button"
+                    class="rtile__pause"
+                    ?disabled=${tile.can_pause === false}
+                    title=${tile.can_pause === false
+                      ? '세션 ID 기록 전 — 일시정지 불가'
+                      : '일시정지 (같은 세션으로 재개 가능)'}
+                    aria-label="일시정지"
+                  >
+                    ⏸
+                  </button>`}
+              ${discard_button}`}
     </div>
     <div class="rtile__title">${tile.title}</div>
     ${monitor_body}${tile.rollup
@@ -521,40 +589,42 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
           >
         </div>`
       : ''}
-    ${exec_chips ||
-    provider_badges.length > 0 ||
-    usage_label ||
-    conflict_badge ||
-    base_badge
-      ? html`<div class="rtile__meta">
-          ${conflict_badge
-            ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
-            : ''}
-          ${base_badge
-            ? html`<span
-                class="worker-mini__badge"
-                title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
-                >${base_badge}</span
-              >`
-            : ''}
-          ${execChipsTemplate(tile.exec_chips)}
-          ${provider_badges.length > 0
-            ? provider_badges.map(
-                (badge) =>
-                  html`<span class="worker-usage" title=${badge.tooltip}
-                    >${badge.label}</span
-                  >`
-              )
-            : usage_label
+    ${session
+      ? session_meta
+      : exec_chips ||
+          provider_badges.length > 0 ||
+          usage_label ||
+          conflict_badge ||
+          base_badge
+        ? html`<div class="rtile__meta">
+            ${conflict_badge
+              ? html`<span class="worker-mini__badge">${conflict_badge}</span>`
+              : ''}
+            ${base_badge
               ? html`<span
-                  class="worker-usage"
-                  title=${usageTooltip(tile.usage)}
-                  >${usage_label}</span
+                  class="worker-mini__badge"
+                  title="이 세션의 target base가 워크스페이스 선언 base와 다릅니다"
+                  >${base_badge}</span
                 >`
               : ''}
-        </div>`
-      : ''}
-    ${timesMeta(tile)} ${discardReceiptTemplate(tile)}
+            ${execChipsTemplate(tile.exec_chips)}
+            ${provider_badges.length > 0
+              ? provider_badges.map(
+                  (badge) =>
+                    html`<span class="worker-usage" title=${badge.tooltip}
+                      >${badge.label}</span
+                    >`
+                )
+              : usage_label
+                ? html`<span
+                    class="worker-usage"
+                    title=${usageTooltip(tile.usage)}
+                    >${usage_label}</span
+                  >`
+                : ''}
+          </div>`
+        : ''}
+    ${times_el} ${discardReceiptTemplate(tile)}
     <!-- 살아있음만 말하는 비의미적 액센트 (UI-58y2 데스크톱 §실행 타일).
          quick_fix landing의 실제 진행은 위의 별도 진행 줄이 소유한다.
          일시정지된 타일은 살아있지 않으므로 액센트도 없다. -->

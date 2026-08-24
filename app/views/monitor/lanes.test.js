@@ -5,7 +5,8 @@ import {
   activeByBead,
   buildChains,
   buildLanes,
-  latestTerminalAttempt
+  latestTerminalAttempt,
+  validTime
 } from './lanes.js';
 
 const WS_A = '/tmp/example/repo-a';
@@ -716,7 +717,10 @@ describe('monitor lane fail-quiet', () => {
     expect(lanes.runnable[0].workflow).toBe(workflow);
   });
 
-  test('carries no bead_workflow projection on the running tile', () => {
+  // 실행중 타일에서 stepper가 빠진 뒤에도 이 투영은 실린다 (UI-yrzu §7.2):
+  // 이제는 route 칩 재료다. "stepper를 그리지 않는다"는 사실은 렌더 층
+  // (`running-grid.test.js`, `monitor/index.test.js`)이 고정한다.
+  test('carries the bead_workflow projection onto the running tile', () => {
     const workflow = {
       route: 'spec_backed',
       stages: { spec: { fill: 'full' } }
@@ -738,7 +742,7 @@ describe('monitor lane fail-quiet', () => {
       [state()]
     );
 
-    expect(lanes.running[0].workflow).toBeUndefined();
+    expect(lanes.running[0].workflow).toBe(workflow);
   });
 
   test('carries the running attempt activity and legs overlay through', () => {
@@ -1195,5 +1199,338 @@ describe('monitor 연결 레인 (UI-e6hw §4.2)', () => {
     expect(forward.chain_lanes.map((lane) => lane.lane_id)).toEqual(
       reversed.chain_lanes.map((lane) => lane.lane_id)
     );
+  });
+});
+
+describe('monitor 세션 진행 이슈 (UI-yrzu §5)', () => {
+  /**
+   * @param {string} id
+   * @param {Partial<Record<string, any>>} [patch]
+   */
+  function sessionActive(id, patch = {}) {
+    return {
+      bead_id: id,
+      title: `title ${id}`,
+      status: 'in_progress',
+      route: 'spec_backed',
+      spec_id: '',
+      labels: [],
+      created_at: null,
+      updated_at: 2000,
+      started_at: 1000,
+      workflow: null,
+      blocked: false,
+      blocked_by: [],
+      ...patch
+    };
+  }
+
+  test('projects a session row into the running lane as a session tile', () => {
+    const lanes = buildLanes(
+      [workspace({ session_active: [sessionActive('A-1')] })],
+      [state()]
+    );
+
+    const tile = lanes.running[0];
+    expect(tile.kind).toBe('session');
+    expect(tile.lane).toBe('running');
+    expect(tile.status).toBe('in_progress');
+    expect(tile.draggable).toBe(false);
+    expect(tile.can_pause).toBe(false);
+    expect(tile.can_resume).toBe(false);
+    expect(tile.exec_chips).toBe(null);
+    expect(tile.usage).toBe(null);
+    expect(tile.legs).toEqual([]);
+    expect(tile.last_activity).toBe(null);
+    expect(tile.badges).toEqual([]);
+    expect(tile.alert).toBe(false);
+  });
+
+  test('orders every session tile after the worker tiles by newest update', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-9',
+              status: 'running',
+              started_at: 50
+            }
+          },
+          session_active: [
+            sessionActive('A-1', { updated_at: 1000 }),
+            sessionActive('A-2', { updated_at: 3000 })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running.map((r) => r.id)).toEqual(['A-9', 'A-2', 'A-1']);
+  });
+
+  test('keeps worker tiles ahead of session tiles under the repo sort', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'B-1',
+              status: 'running',
+              started_at: 50
+            }
+          }
+        }),
+        workspace({ session_active: [sessionActive('A-1')] })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b' })],
+      { running_sort: 'repo' }
+    );
+
+    expect(lanes.running.map((r) => r.id)).toEqual(['B-1', 'A-1']);
+  });
+
+  test('draws only the worker tile when the same bead is also session active', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 50
+            }
+          },
+          session_active: [sessionActive('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running.map((r) => [r.id, r.kind])).toEqual([
+      ['A-1', undefined]
+    ]);
+  });
+
+  test('keeps a session bead that also has a done entry out of the 완료 lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [sessionActive('A-1')],
+          done: [{ bead_id: 'A-1', added_at: 10 }]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running.map((r) => r.id)).toEqual(['A-1']);
+    expect(lanes.done).toHaveLength(0);
+  });
+
+  test('falls back to the update time when a session row has no start time', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', { started_at: null, updated_at: 2000 })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].started_at).toBe(2000);
+  });
+
+  test('omits both times when neither one parses', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', { started_at: 'nope', updated_at: null })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].started_at).toBe(undefined);
+    expect(lanes.running[0].updated_at).toBe(undefined);
+  });
+
+  test('parses an ISO session time into epoch milliseconds', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', {
+              started_at: '2026-08-24T00:00:00.000Z',
+              updated_at: '2026-08-24T00:00:00.000Z'
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].started_at).toBe(
+      Date.parse('2026-08-24T00:00:00.000Z')
+    );
+  });
+
+  test('registers a session tile as 실행중 for a blocked waiting row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          session_active: [sessionActive('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.queue.find((r) => r.id === 'A-2');
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
+      '🔒 선행 A-1 (실행중)'
+    );
+    expect(lanes.running[0].dependency_chips?.successors?.[0].id).toBe('A-2');
+  });
+
+  test('carries the session workflow snapshot onto the tile', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          session_active: [
+            sessionActive('A-1', {
+              workflow: {
+                route: 'spec_backed',
+                chips: { route: 'spec_backed' }
+              }
+            })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].workflow?.chips?.route).toBe('spec_backed');
+  });
+
+  test('leaves the tile without a workflow when enrichment failed', () => {
+    const lanes = buildLanes(
+      [workspace({ session_active: [sessionActive('A-1')] })],
+      [state()]
+    );
+
+    expect(lanes.running[0].workflow).toBe(null);
+  });
+
+  test('ignores session rows an older server never sends', () => {
+    const lanes = buildLanes([workspace({})], [state()]);
+
+    expect(lanes.running).toEqual([]);
+  });
+});
+
+describe('monitor 대기 행 route 재료 (UI-yrzu §5)', () => {
+  const WORKFLOW = {
+    route: 'quick_fix',
+    chips: { route: 'quick_fix', route_source: 'explicit' }
+  };
+
+  test('fills a parallel waiting row from bead_workflow', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_workflow: { 'A-1': WORKFLOW }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].workflow?.chips?.route).toBe('quick_fix');
+  });
+
+  test('fills a serial waiting row from bead_workflow', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          bead_workflow: { 'A-1': WORKFLOW }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].workflow?.chips?.route).toBe('quick_fix');
+  });
+
+  test('fills a PR 대기 row from bead_workflow', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          pr_wait: [{ bead_id: 'A-1' }],
+          bead_workflow: { 'A-1': WORKFLOW }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.pr_wait[0].workflow?.chips?.route).toBe('quick_fix');
+  });
+
+  test('leaves the row without a workflow when the server sends none', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].workflow).toBe(null);
+  });
+
+  test('carries the workflow onto the 연결 레인 row of the same bead', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          bead_workflow: { 'A-1': WORKFLOW }
+        })
+      ],
+      [state()]
+    );
+
+    const rows = lanes.chain_lanes[0].rows;
+    expect(rows.find((row) => row.id === 'A-1')?.workflow?.chips?.route).toBe(
+      'quick_fix'
+    );
+    expect(rows.find((row) => row.id === 'A-2')?.workflow).toBe(null);
+  });
+});
+
+describe('validTime (UI-yrzu §5)', () => {
+  test('returns a finite number unchanged', () => {
+    expect(validTime(1700000000000)).toBe(1700000000000);
+  });
+
+  test('parses a date string into epoch milliseconds', () => {
+    expect(validTime('2026-08-24T00:00:00.000Z')).toBe(
+      Date.parse('2026-08-24T00:00:00.000Z')
+    );
+  });
+
+  test('returns null for anything that is not a time', () => {
+    expect(validTime('nope')).toBe(null);
+    expect(validTime(Number.NaN)).toBe(null);
+    expect(validTime(null)).toBe(null);
+    expect(validTime(undefined)).toBe(null);
   });
 });

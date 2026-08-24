@@ -591,3 +591,75 @@ describe('createRepoDeck settings panel (§4.4)', () => {
     expect(mount.children).toHaveLength(0);
   });
 });
+
+describe('createRepoDeck 세션 counts (UI-yrzu §8)', () => {
+  test('says nothing about sessions when a repo has none', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          counts: {
+            running: 1,
+            pr_wait: 0,
+            queue: 2,
+            runnable: 0,
+            session_active: 0
+          }
+        })
+      ]
+    });
+
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__counts').textContent).not.toContain('세션');
+    expect(el(mount, '.mon2-deck__total-counts').textContent).not.toContain(
+      '세션'
+    );
+  });
+
+  test('adds the session count to a repo tile and to the totals', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          counts: {
+            running: 1,
+            pr_wait: 0,
+            queue: 2,
+            runnable: 0,
+            session_active: 2
+          }
+        }),
+        state({
+          root_dir: WS_B,
+          name: 'repo-b',
+          counts: {
+            running: 0,
+            pr_wait: 0,
+            queue: 0,
+            runnable: 0,
+            session_active: 1
+          }
+        })
+      ]
+    });
+
+    deck.render();
+
+    const tiles = Array.from(mount.querySelectorAll('.mon2-deck__counts'));
+    expect(tiles[0].textContent?.replace(/\s+/g, ' ')).toContain(
+      '대기 2 · PR 0 · 세션 2'
+    );
+    expect(
+      el(mount, '.mon2-deck__total-counts').textContent?.replace(/\s+/g, ' ')
+    ).toContain('실행 1 · 대기 2 · PR 0 · 세션 3 · 오늘 완료 0');
+  });
+
+  test('omits the session count for an older server that sends no key', () => {
+    const { mount, deck } = setup({
+      rows: [state({ counts: { running: 1, pr_wait: 0, queue: 0 } })]
+    });
+
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__counts').textContent).not.toContain('세션');
+  });
+});

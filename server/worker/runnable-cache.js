@@ -101,6 +101,38 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  */
 
 /**
+ * One bead an interactive SESSION is working on (UI-yrzu §4.1) — a row the
+ * runnable projection above rejects because its status is `in_progress`, not
+ * `open`.
+ *
+ * The 자격 conditions of `RunnableItem` deliberately do NOT apply: a session
+ * claims whatever issue it likes, so `worker-ineligible`, the route enum, the
+ * `spec_review` receipt and phase-child parentage are all irrelevant here. The
+ * only question this projection answers is "지금 누가 무엇을 하고 있나".
+ *
+ * The lane exclusion (활성 Worker attempt · queue · serial · pr_wait) belongs to
+ * the CALLER's current state, exactly like `runnableFor`'s, so it is applied at
+ * read time.
+ *
+ * @typedef {Object} SessionActiveItem
+ * @property {string} bead_id
+ * @property {string} title
+ * @property {'in_progress'} status
+ * @property {string} route - `metadata.route`, or `''` when unpinned.
+ * @property {string} spec_id - Resolved spec path; `''` when absent or in
+ * conflict.
+ * @property {string[]} labels - Non-policy labels, same normalization as
+ * `RunnableItem`.
+ * @property {number|string|null} created_at
+ * @property {number|string|null} updated_at
+ * @property {number|string|null} started_at
+ * @property {Record<string, unknown>|null} workflow - Stepper projection for
+ * this row, or null when the enrich could not be computed.
+ * @property {boolean} blocked - Membership in `ready_explain.blocked`.
+ * @property {string[]} blocked_by - Direct `blocks` blocker ids.
+ */
+
+/**
  * The metadata keys an execution chip may be resolved from: the per-bead preset
  * axes plus the two account pins. Anything else in `metadata` stays off the
  * wire.
@@ -295,6 +327,67 @@ function qualify(row, blocked_by = null, enrich = undefined) {
 }
 
 /**
+ * A session row's timestamp, with the shared snapshot's "unparseable" sentinel
+ * removed (UI-yrzu §5·§10).
+ *
+ * `list-adapters.js normalizeIssueList()` turns a missing or unparseable
+ * `created_at`/`updated_at` into `0` before this cache ever sees the row. The
+ * session tile's 경과 줄 falls back from `started_at` to `updated_at` through
+ * `validTime`, which reads that `0` as a real 1970 timestamp and renders "56년
+ * 전" where the spec asks for no line at all (§5·§10). The other readers of
+ * these fields go through `formatRelativeTime`, which already answers `''` for
+ * `0`, so only this lane needed the sentinel removed.
+ *
+ * @param {unknown} value
+ * @returns {number|string|null}
+ */
+function sessionStamp(value) {
+  const stamp = stampOf(value);
+  return stamp === 0 ? null : stamp;
+}
+
+/**
+ * The 판정 for a SESSION-held bead (UI-yrzu §3), minus the lane exclusion, which
+ * the caller applies at read time exactly like the runnable one.
+ *
+ * Only two things disqualify a row here: no id, and a status that is not
+ * `in_progress`. Everything `qualify()` additionally demands — the route enum,
+ * the `spec_review` receipt, `worker-ineligible`, phase-child parentage — is a
+ * WORKER admission condition, and a session is not the worker.
+ *
+ * @param {Record<string, unknown>} row
+ * @param {string[]|null} blocked_by - Null means no `ready_explain` source.
+ * @param {(issue: unknown) => Record<string, unknown>|null} [enrich] - Workflow
+ * projection for the SAME row; defaults to no projection.
+ * @returns {SessionActiveItem|null}
+ */
+function qualifySession(row, blocked_by = null, enrich = undefined) {
+  const bead_id = typeof row.id === 'string' ? row.id : '';
+  if (bead_id.length === 0) {
+    return null;
+  }
+  if (row.status !== 'in_progress') {
+    return null;
+  }
+  const meta = metadataOf(row);
+  const spec = resolveSpecId(row);
+  return {
+    bead_id,
+    title: typeof row.title === 'string' ? row.title : '',
+    status: 'in_progress',
+    route: typeof meta.route === 'string' ? meta.route : '',
+    spec_id: spec.conflict ? '' : spec.path,
+    labels: workerLabels(row.labels),
+    created_at: sessionStamp(row.created_at),
+    updated_at: sessionStamp(row.updated_at),
+    started_at: sessionStamp(row.started_at),
+    workflow: enrich ? enrich(row) : null,
+    blocked: blocked_by !== null,
+    blocked_by: blocked_by || []
+  };
+}
+
+/**
  * Read direct blocker ids from one `bd ready --explain` blocked row using the
  * same string-or-`{ id }` convention as `list-adapters.js` (UI-2gi1 §6.1).
  *
@@ -413,7 +506,14 @@ export function createRunnableCache(options = {}) {
       ? options.subscriberCount
       : () => 1;
 
-  /** @type {Map<string, { items: RunnableItem[], at: number }>} */
+  /**
+   * One record per workspace holding BOTH buckets of the same scan (UI-yrzu
+   * §4.1). They share a record — and therefore one `at` stamp — so
+   * `invalidate`/`refresh`/`clear` and the negative cache apply to both without
+   * a second code path that could let the two lanes disagree about freshness.
+   *
+   * @type {Map<string, { items: RunnableItem[], session_active: SessionActiveItem[], at: number }>}
+   */
   const records = new Map();
   /** @type {Map<string, number>} */
   const failed = new Map();
@@ -467,8 +567,11 @@ export function createRunnableCache(options = {}) {
    * to null, because the caller treats them identically: negative-cache and move
    * on.
    *
+   * Both buckets come out of THIS ONE scan: the `--all` snapshot already holds
+   * every row, so the session bucket costs no extra `bd` process (UI-yrzu §4.1).
+   *
    * @param {string} workspace
-   * @returns {Promise<{ items: RunnableItem[]|null, protocol_failure: boolean }>}
+   * @returns {Promise<{ items: RunnableItem[]|null, session_active: SessionActiveItem[], protocol_failure: boolean }>}
    */
   async function fetchRunnable(workspace) {
     let rows;
@@ -477,7 +580,7 @@ export function createRunnableCache(options = {}) {
     if (requestSnapshot) {
       const result = await requestSnapshot(workspace, 'monitor-runnable');
       if (!result.ok || result.stale || !Array.isArray(result.snapshot?.all)) {
-        return { items: null, protocol_failure: false };
+        return { items: null, session_active: [], protocol_failure: false };
       }
       rows = result.snapshot.all;
       const blocked = result.snapshot.ready_explain?.blocked;
@@ -504,15 +607,22 @@ export function createRunnableCache(options = {}) {
       // caller skips the negative cache entirely, because suppressing the retry
       // would hide a compatibility break behind an empty queue.
       if (!result || result.ok !== true) {
-        return { items: null, protocol_failure: isBdProtocolFailure(result) };
+        return {
+          items: null,
+          session_active: [],
+          protocol_failure: isBdProtocolFailure(result)
+        };
       }
       rows = result.data;
     }
     if (!Array.isArray(rows)) {
-      return { items: null, protocol_failure: false };
+      return { items: null, session_active: [], protocol_failure: false };
     }
     /** @type {RunnableItem[]} */
     const items = [];
+    /** @type {SessionActiveItem[]} */
+    const session_active = [];
+    const enrich = enrichFor(workspace);
     for (const raw of rows) {
       if (!raw || typeof raw !== 'object') {
         continue;
@@ -529,12 +639,19 @@ export function createRunnableCache(options = {}) {
           : explained.length > 0
             ? explained
             : embeddedBlockerIds(row);
-      const item = qualify(row, blocked_by, enrichFor(workspace));
+      const item = qualify(row, blocked_by, enrich);
       if (item) {
         items.push(item);
+        continue;
+      }
+      // The second bucket of the SAME pass: a row the runnable 판정 rejected is
+      // still a fact about the repo when a session holds it (UI-yrzu §4.1).
+      const session_item = qualifySession(row, blocked_by, enrich);
+      if (session_item) {
+        session_active.push(session_item);
       }
     }
-    return { items, protocol_failure: false };
+    return { items, session_active, protocol_failure: false };
   }
 
   /**
@@ -567,7 +684,11 @@ export function createRunnableCache(options = {}) {
       try {
         const fetched = await fetchRunnable(workspace);
         if (fetched.items) {
-          records.set(key, { items: fetched.items, at: now() });
+          records.set(key, {
+            items: fetched.items,
+            session_active: fetched.session_active,
+            at: now()
+          });
           failed.delete(key);
           return true;
         }
@@ -620,6 +741,35 @@ export function createRunnableCache(options = {}) {
     startFill(workspace);
   }
 
+  /**
+   * The shared read path of both buckets: one TTL check, one refill trigger,
+   * one exclusion filter. Written once so `runnableFor` and `sessionActiveFor`
+   * cannot drift apart in freshness or in what "already in a lane" means.
+   *
+   * @template {'items'|'session_active'} B
+   * @param {string} workspace
+   * @param {B} bucket
+   * @param {Iterable<string>} [exclude_ids]
+   * @returns {B extends 'items' ? RunnableItem[] : SessionActiveItem[]}
+   */
+  function readBucket(workspace, bucket, exclude_ids) {
+    const key = keyOf(workspace);
+    const hit = records.get(key);
+    if (!hit || now() - hit.at >= positive_ttl_ms) {
+      queueFill(workspace);
+    }
+    if (!hit) {
+      return /** @type {any} */ ([]);
+    }
+    const rows = /** @type {Array<{ bead_id: string }>} */ (hit[bucket]);
+    const excluded = exclude_ids ? new Set(exclude_ids) : null;
+    return /** @type {any} */ (
+      excluded
+        ? rows.filter((item) => !excluded.has(item.bead_id))
+        : rows.slice()
+    );
+  }
+
   return {
     /**
      * Register the "new candidates landed" callback. The ws layer wires this to
@@ -662,18 +812,24 @@ export function createRunnableCache(options = {}) {
      * @returns {RunnableItem[]}
      */
     runnableFor(workspace, exclude_ids) {
-      const key = keyOf(workspace);
-      const hit = records.get(key);
-      if (!hit || now() - hit.at >= positive_ttl_ms) {
-        queueFill(workspace);
-      }
-      if (!hit) {
-        return [];
-      }
-      const excluded = exclude_ids ? new Set(exclude_ids) : null;
-      return excluded
-        ? hit.items.filter((item) => !excluded.has(item.bead_id))
-        : hit.items.slice();
+      return readBucket(workspace, 'items', exclude_ids);
+    },
+
+    /**
+     * This workspace's SESSION-held beads, minus the ids the caller already has
+     * in a lane or in an active worker attempt (UI-yrzu §3).
+     *
+     * Same TTL/fill/exclude contract as `runnableFor` — including the
+     * stale-while-revalidate read — because both buckets are the same scan, and
+     * the two lanes disagreeing about how old the repo's picture is would be a
+     * bug the user reads as a flickering tile.
+     *
+     * @param {string} workspace
+     * @param {Iterable<string>} [exclude_ids]
+     * @returns {SessionActiveItem[]}
+     */
+    sessionActiveFor(workspace, exclude_ids) {
+      return readBucket(workspace, 'session_active', exclude_ids);
     },
 
     /**
@@ -707,7 +863,7 @@ export function createRunnableCache(options = {}) {
       const key = keyOf(workspace);
       const hit = records.get(key);
       if (hit) {
-        records.set(key, { items: hit.items, at: -Infinity });
+        records.set(key, { ...hit, at: -Infinity });
       }
       failed.delete(key);
     },

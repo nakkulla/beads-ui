@@ -35,7 +35,8 @@ import {
   discardCompletionMessage,
   discardConfirmationMessage,
   miniRow,
-  paneTemplate
+  paneTemplate,
+  routeChipTemplate
 } from '../worker/lanes.js';
 import { runningTile } from '../worker/running-grid.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
@@ -888,6 +889,7 @@ export function createMonitorView(mount_element, options) {
           >`
         : ''}
       <span class="worker-mini__id" title="클릭하면 ID 복사">${row.id}</span>
+      ${routeChipTemplate(row.workflow)}
       <span class="mon2-crow__title">${row.title}</span>
       ${row.predecessors.map(
         (blocker_id) =>
@@ -1157,6 +1159,14 @@ export function createMonitorView(mount_element, options) {
                 effort: item.effort ?? null,
                 speed: item.speed ?? null,
                 started_at: item.started_at ?? null,
+                // 세션 타일 판별자와 route 칩 재료 (UI-yrzu §6·§7.2). Worker
+                // 타일은 `kind`를 싣지 않는다. `updated_at`도 세션 타일만
+                // 받는다 — Worker 타일에 실으면 없던 시각 메타 줄이 생긴다.
+                kind: item.kind,
+                ...(item.kind === 'session'
+                  ? { updated_at: item.updated_at }
+                  : {}),
+                workflow: /** @type {any} */ (item.workflow || null),
                 resumed_from: item.resumed_from ?? null,
                 continuation_mode: item.continuation_mode ?? null,
                 paused: item.run_state === 'paused',
@@ -1656,9 +1666,15 @@ export function createMonitorView(mount_element, options) {
           graph.set(bead_id, idsOf(blockers));
         }
       }
-      for (const entry of Array.isArray(workspace.runnable)
-        ? workspace.runnable
-        : []) {
+      // 실행가능 행과 세션 진행 행은 자기 blocker를 스스로 들고 온다
+      // (UI-yrzu §5) — 연결 레인이 그 버드를 그리면 드롭 계획도 같은 그래프를
+      // 봐야 한다.
+      for (const entry of [
+        ...(Array.isArray(workspace.runnable) ? workspace.runnable : []),
+        ...(Array.isArray(workspace.session_active)
+          ? workspace.session_active
+          : [])
+      ]) {
         if (
           entry &&
           typeof entry.bead_id === 'string' &&

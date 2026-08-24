@@ -662,6 +662,33 @@ export function dependencyChipsTemplate(chips) {
 }
 
 /**
+ * The route 칩 하나 (UI-yrzu §7.1). 실행가능·대기·PR 대기·실행중 카드가 모두
+ * 이 함수를 부르므로 route는 어디서나 같은 모양·같은 파생 규칙으로 읽힌다 —
+ * 규칙이 카드마다 복제되면 한쪽은 반드시 낡는다. 재료가 없으면 빈 문자열이다
+ * (fail-quiet).
+ *
+ * @param {MiniItem['workflow']} workflow
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function routeChipTemplate(workflow) {
+  if (!workflow) {
+    return '';
+  }
+  const chips = workflow.chips || {};
+  const route = chips.route || workflow.route;
+  const derived =
+    chips.route_source === 'derived' || workflow.route_source === 'derived';
+  if (!route) {
+    return '';
+  }
+  return html`<span
+    class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
+    title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
+    >${derived ? 'unset' : route}</span
+  >`;
+}
+
+/**
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
@@ -729,7 +756,9 @@ export function dependencyChipsTemplate(chips) {
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
  * why it is refused.
- * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string } }) | null} [workflow] - Server-enriched workflow (candidate cards only).
+ * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../board/card.js').ExecReceipt|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
+ * 칩을, 대기·PR 대기 행은 route 칩을 여기서 얻는다 (UI-yrzu §7.2). 완료 행은
+ * 싣지 않는다.
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
@@ -893,6 +922,9 @@ export function miniRow(item) {
   const id_el = html`<span class="worker-mini__id" title="클릭하면 ID 복사"
     >${item.id}</span
   >`;
+  // route 칩은 ID 다음, 제목 앞이다 (UI-yrzu §7.2) — 완료 행만 제외한다: 끝난
+  // 일의 route는 더 이상 어떤 결정도 바꾸지 않는다.
+  const route_el = item.lane === 'done' ? '' : routeChipTemplate(item.workflow);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
   const pr_el =
     item.pr_url && item.pr_number
@@ -1164,7 +1196,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${repo_el}${id_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
+              ${grip}${seq_el}${repo_el}${id_el}${route_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${exec_el}${has_foot
@@ -1181,7 +1213,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${repo_el}${id_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
+              ${grip}${seq_el}${repo_el}${id_el}${route_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
             ${deps_el}${exec_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
@@ -1214,11 +1246,6 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const draggable = item.draggable && !item.done && !worker_ineligible;
   const menu_open = draggable && place_menu && place_menu.bead_id === item.id;
   const workflow = item.workflow;
-  const chips = (workflow && workflow.chips) || {};
-  const route = chips.route || (workflow && workflow.route);
-  const derived =
-    chips.route_source === 'derived' ||
-    !!(workflow && workflow.route_source === 'derived');
   const missing_description =
     typeof item.reason === 'string' &&
     item.reason.split(' · ').includes('missing_description');
@@ -1252,13 +1279,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             >⛔ worker-ineligible</span
           >`
         : ''}
-      ${workflow && route
-        ? html`<span
-            class="ctl-chip ctl-chip--route${derived ? ' is-derived' : ''}"
-            title=${derived ? 'route 미핀 (metadata unset)' : 'route'}
-            >${derived ? 'unset' : route}</span
-          >`
-        : ''}
+      ${routeChipTemplate(workflow)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow ? stepperTemplate(workflow, item.status) : ''}${deps_el}

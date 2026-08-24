@@ -966,3 +966,19 @@ describe('planDrop — 제자리 드롭과 분기 레인 (UI-e6hw 리뷰 1·2)',
     });
   });
 });
+
+describe('planDrop — 실행중 타일은 원천도 대상도 아니다 (UI-yrzu §9)', () => {
+  // 드래그 원천 열거는 `candidate|parallel|chain|repo-serial`뿐이고 실행중
+  // 타일(Worker·세션)은 거기 없다. DOM 쪽 절반 — 세션 타일이 `data-drag-kind`
+  // 홀더 밖에 있고 실행중 레인에 `data-drop` 구역이 없다 — 은
+  // `index.test.js`의 「세션 타일」 describe가 고정한다.
+  test('plans no queue op for a drag source outside the four lane kinds', () => {
+    const plan = planDrop(
+      /** @type {any} */ ({ kind: 'running', bead_id: 'A-9', root_dir: WS_A }),
+      { kind: 'parallel', marker_index: 0 },
+      parallelModel()
+    );
+
+    expect(plan).toEqual({ ops: [] });
+  });
+});

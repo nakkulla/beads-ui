@@ -124,11 +124,13 @@ or temporarily unreadable config is `null`.
   schedules the next push — exactly the `issue_prefix` contract. A successful
   `set-session-defaults` or `apply-impl-preset-global` invalidates the repo it
   wrote and re-pushes.
-- `counts: { running, pr_wait, queue, runnable }` counts each bead in EXACTLY
-  ONE lane, on the client's exclusive lane priority (`running` > `pr_wait` >
-  `queue` ∪ serial lanes > `runnable`). Completion is not counted here: the 완료
-  period is a client selection, so the client counts it from
-  `workspaces[].done[]`.
+- `counts: { running, pr_wait, queue, runnable, session_active }` counts each
+  bead in EXACTLY ONE lane, on the client's exclusive lane priority (`running` >
+  `session_active` > `pr_wait` > `queue` ∪ serial lanes > `runnable`).
+  Completion is not counted here: the 완료 period is a client selection, so the
+  client counts it from `workspaces[].done[]`. `session_active` (UI-yrzu §4.2)
+  is the count of `workspaces[].session_active[]`; `running` stays the worker
+  attempt count it always was.
 
 Consumers fail-quiet on every one of these keys being absent (older server) and
 render the corresponding control or chip row not at all rather than inventing a
@@ -145,6 +147,20 @@ row — no extra bd call — and is `null` when it could not be computed.
 `exec_pins: Record<string, string>` is the row's execution metadata pins only
 (the per-bead preset axes plus `claude_account`/`codex_account`); the rest of
 `metadata` never travels, so the whole backlog's metadata stays off the wire.
+
+`workspaces[].session_active[]` (UI-yrzu §4.1) is that repo's beads an
+interactive SESSION holds: rows the shared `bd list --all` snapshot reports as
+`status: 'in_progress'` with no active worker attempt and no membership in
+`queue` ∪ serial lanes ∪ `pr_wait`. `done` membership does NOT remove a row — a
+bead a session reopened is being worked on now. Each row carries
+`{ bead_id, title, status: 'in_progress', route, spec_id, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by }`.
+`route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
+or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
+as the runnable rows below. Worker admission conditions (`worker-ineligible`,
+the route enum, the `spec_review` receipt, phase-child parentage) are NOT
+applied: a session claims whatever issue it likes. The bucket rides the same
+scan, TTL and invalidation as `runnable`, so a session's `bd update` surfaces
+within one refresh tick rather than immediately.
 
 `workspaces[].bead_blocked_by` is the worker snapshot's map with one more
 filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
