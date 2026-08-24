@@ -1,11 +1,20 @@
 ---
 scope:
   - server/worker/artifact-scope.js
+  - server/worker/artifact-scope.test.js
   - server/worker/title-cache.js
+  - server/worker/title-cache.test.js
   - server/worker/runnable-cache.js
+  - server/worker/runnable-cache.test.js
   - server/ws/worker-handlers.js
+  - server/ws/worker-handlers.bead-scope.test.js
   - server/ws/monitor-handlers.js
+  - server/ws/monitor-handlers.test.js
   - app/views/worker/lanes.js
+  - app/views/monitor/lanes.js
+  - app/views/monitor/lanes.test.js
+  - app/main.bundle.js
+  - app/main.bundle.js.map
 ---
 
 # quick_fix scope 선언 통합 — description `## scope`
@@ -115,27 +124,44 @@ description 원천은 `null`(읽기 실패) 상태를 만들지 않는다 — �
 
 ### 4.4 monitor-handlers — runnable(후보 레인) fallback
 
-`runnable-cache`의 행 projection에 `description_scope`를 추가한다(행 원천
-JSON의 `description`에서 §4.1 파서로; `spec_id`가 있으면 싣지 않는다).
-`withRunnableScope`는 현행대로 `spec_id` 있는 행만 scope-cache를 peek하고,
-`spec_id` 없는 행은 `description_scope`가 배열이면 그 값을 `scope`로 복사한다.
-push payload에는 `scope` 하나만 실리고 `description_scope` 원필드는 행 복사에서
-제거한다. 미선언 행은 현행처럼 `scope` 필드 없음(판정 불가)이다.
+**scope 원천 선택은 모든 route에서 `resolveSpecId`로 판정한다.** 현행
+`qualify`(`runnable-cache.js`)는 quick_fix 행의 `spec_id` 필드를 항상 빈
+문자열로 두는데(admission 의미 — 유지), 이대로면 resolved spec이 있는
+quick_fix bead가 §3의 아티팩트-우선을 어기고 description으로 떨어진다. 따라서
+행 projection은 admission용 `spec_id` 필드와 별개로 scope 원천을 판정한다:
+`resolveSpecId(row)`가 경로를 주면(충돌 없이) 그 행의 scope 원천은 아티팩트이고
+`description_scope`를 싣지 않으며, 경로가 없을 때만 행 원천 JSON의
+`description`에서 §4.1 파서로 `description_scope`를 싣는다.
+
+아티팩트 원천 행은 scope 판정용 resolved 아티팩트 경로를 행에 함께 싣고
+(admission용 `spec_id` 필드와 그 소비자는 불변), `withRunnableScope`는 그
+경로로 현행대로 scope-cache를 peek한다. description 원천 행은
+`description_scope`가 배열이면 그 값을 `scope`로 복사한다. push payload에는 `scope` 하나만 실리고
+`description_scope` 원필드는 행 복사에서 제거한다. 미선언 행은 현행처럼
+`scope` 필드 없음(판정 불가)이다.
 
 ### 4.5 겹침 계산
 
-변경 없음. `bead_scope`/runnable `scope`에 항목이 생기는 순간 클라이언트의
-기존 파생(`app/utils/scope-overlap.js`, `declaredScopeOf`)이 그대로 겹침을
-계산한다. artifact 선언과 description 선언 사이의 겹침도 같은 항목 비교로
-자동 성립한다.
+겹침 의미론(`app/utils/scope-overlap.js`)은 변경 없음. `bead_scope`/runnable
+`scope`에 항목이 생기는 순간 기존 항목 비교가 그대로 겹침을 계산하고, artifact
+선언과 description 선언 사이의 겹침도 같은 비교로 자동 성립한다. 파생 함수
+`declaredScopeOf`의 runnable 분기 상태 판정만 §5의 수정을 받는다.
 
 ## 5. 클라이언트
 
-- 겹침 칩·팝오버·+N 접기·직렬 우선 배치 로직 변경 없음.
+- 겹침 칩·팝오버·+N 접기·직렬 우선 배치 로직은 변경 없음.
+- **`declaredScopeOf`(`app/views/monitor/lanes.js`)의 runnable 분기 수정**:
+  현행은 빈 `scope`에 `item.spec_id ? 'missing' : undefined`를 주는데, 이대로면
+  description에 빈 `## scope`를 선언한 quick_fix 후보(`scope: []`, `spec_id`
+  없음)가 §3의 3-상태 의미와 달리 `scope 없음`으로 드러나지 않는다. 수정:
+  행에 `scope` 필드가 존재하면(=서버가 원천을 읽는 데 성공) 빈 배열은 route와
+  `spec_id`에 무관하게 `missing`이다. 필드 부재는 현행대로 판정 불가
+  (`undefined`)다. 큐 레인 분기(`bead_scope` 소비)는 이미 이 의미이므로 불변.
 - `dependencyChipsTemplate`(`app/views/worker/lanes.js`)의 `scope 없음` 툴팁
-  문구만 라우트 중립으로 수정:
+  문구를 원천 선택 조건이 드러나게 수정:
   "겹침 판정 불가 — 스펙에 scope 선언 필요" →
-  "겹침 판정 불가 — 스펙 front-matter 또는 description `## scope` 선언 필요".
+  "겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면
+  description `## scope`에 선언 필요".
 
 ## 6. 에러 처리
 
@@ -158,7 +184,11 @@ push payload에는 `scope` 하나만 실리고 `description_scope` 원필드는 
   `{scope, artifacts: []}`, 미선언 bead는 NO ENTRY 유지.
 - `runnable-cache.test.js` / `monitor-handlers.test.js`: spec 없는 runnable 행의
   `scope` 투영, 미선언 행 판정 불가 유지, payload에 `description_scope` 원필드
-  부재.
+  부재, **resolved spec이 있는 quick_fix 행이 description을 무시하고 아티팩트
+  scope를 받는 것**(§4.4 우선순위).
+- `app/views/monitor/lanes.test.js`: `declaredScopeOf` runnable 분기 —
+  `spec_id` 없는 행의 `scope: []`가 `missing`으로 판정되는 것, `scope` 필드
+  부재는 `undefined` 유지.
 - 클라이언트: 기존 겹침 칩 테스트에 quick_fix(빈 `artifacts`) 케이스 추가,
   툴팁 문구 갱신 반영.
 
@@ -176,6 +206,7 @@ push payload에는 `scope` 하나만 실리고 `description_scope` 원필드는 
 - server: `server/worker/artifact-scope.js` + `server/worker/title-cache.js` +
   `server/worker/runnable-cache.js` + `server/ws/worker-handlers.js` +
   `server/ws/monitor-handlers.js`
-- client: `app/views/worker/lanes.js` (문구 1건 + 번들 재생성)
+- client: `app/views/monitor/lanes.js`(`declaredScopeOf` runnable 분기) +
+  `app/views/worker/lanes.js`(툴팁 문구) + 번들 재생성
 
 변경량이 작아 단일 unit으로 봉인해도 무방하다.
