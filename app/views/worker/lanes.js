@@ -883,6 +883,26 @@ export function fromChipTemplate(from_id) {
 }
 
 /**
+ * The 우선순위 배지 하나 — Board 카드의 `P<n>`과 같은 문장, 같은 모양이다. 워커
+ * 콘솔은 레인이 곧 순서라서 "먼저 볼 것"이 행 안에 적혀 있지 않으면 매번 Board로
+ * 건너가 확인해야 했다. {@link routeChipTemplate}·{@link fromChipTemplate}과 같은
+ * 이유로 카드마다 복제하지 않고 여기 하나를 부른다. 숫자가 아니면 빈 문자열이다
+ * (fail-quiet).
+ *
+ * @param {MiniItem['priority']} priority
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function priorityBadgeTemplate(priority) {
+  if (typeof priority !== 'number' || !Number.isFinite(priority)) {
+    return '';
+  }
+  const level = Math.max(0, Math.min(4, Math.trunc(priority)));
+  return html`<span class="worker-pri" title=${`우선순위 P${level}`}
+    >P${level}</span
+  >`;
+}
+
+/**
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
@@ -983,6 +1003,8 @@ export function fromChipTemplate(from_id) {
  * wears the ⛔ chip, and refuses drag and queue placement. The candidate
  * projection computes it once; the template never re-reads label strings.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
+ * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
+ * 그리지 않는다.
  */
 
 /**
@@ -1121,6 +1143,8 @@ export function miniRow(item) {
   // 일의 route는 더 이상 어떤 결정도 바꾸지 않는다.
   const route_el = item.lane === 'done' ? '' : routeChipTemplate(item.workflow);
   const from_el = fromChipTemplate(item.from_id);
+  // 우선순위는 ID 바로 다음이다 — Board 카드와 같은 자리, 같은 문장.
+  const pri_el = priorityBadgeTemplate(item.priority);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
   const pr_el =
     item.pr_url && item.pr_number
@@ -1373,7 +1397,7 @@ export function miniRow(item) {
   >
     ${two_line
       ? html`<div class="worker-mini__row1">
-            ${repo_el}${id_el}${from_el}${title_el}
+            ${repo_el}${id_el}${pri_el}${from_el}${title_el}
           </div>
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
@@ -1396,7 +1420,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${repo_el}${id_el}${route_el}${from_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
+              ${grip}${seq_el}${repo_el}${id_el}${pri_el}${route_el}${from_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${exec_el}${has_foot
@@ -1413,7 +1437,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${repo_el}${id_el}${route_el}${from_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
+              ${grip}${seq_el}${repo_el}${id_el}${pri_el}${route_el}${from_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
             ${deps_el}${exec_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
@@ -1473,15 +1497,15 @@ export function candidateCard(item, place_menu = null, options = {}) {
             >${item.workspace_name}</span
           >`
         : ''}
-      <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span>
-      ${worker_ineligible
+      <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
+      >${priorityBadgeTemplate(item.priority)}
+      ${routeChipTemplate(workflow)}${worker_ineligible
         ? html`<span
-            class="ctl-chip worker-card__ineligible"
+            class="ctl-chip ctl-chip--label worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
-            >⛔ worker-ineligible</span
+            >worker-ineligible</span
           >`
-        : ''}
-      ${routeChipTemplate(workflow)}${fromChipTemplate(item.from_id)}
+        : ''}${fromChipTemplate(item.from_id)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow

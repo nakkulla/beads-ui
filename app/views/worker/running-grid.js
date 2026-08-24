@@ -30,6 +30,7 @@ import {
   dependencyChipsTemplate,
   discardReceiptTemplate,
   execChipsTemplate,
+  priorityBadgeTemplate,
   routeChipTemplate,
   timesMeta
 } from './lanes.js';
@@ -41,6 +42,7 @@ import {
  * @property {'session'} [kind] - 세션이 `in_progress`로 잡은 이슈의 타일
  * (UI-yrzu §6). attempt가 없으므로 운영 버튼·세션 드로어·위임 칩이 없고,
  * 경과는 bead의 `started_at`에서 온다. 생략(=Worker attempt 타일)이 기본이다.
+ * @property {number} [priority] - Bead 우선순위 0..4 (배지 `P<n>`).
  * @property {import('./lanes.js').MiniItem['workflow']} [workflow] - route 칩과
  * (세션 타일의) exec_receipt 칩 재료 (UI-yrzu §7.2). 없으면 칩이 생략된다.
  * @property {string} title
@@ -505,7 +507,9 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         aria-hidden="true"
       ></span>
       <span class="rtile__id" title="클릭하면 ID 복사">${tile.bead_id}</span>
-      ${routeChipTemplate(tile.workflow)}${monitor_head}${lineage
+      ${priorityBadgeTemplate(tile.priority)}${routeChipTemplate(
+        tile.workflow
+      )}${monitor_head}${lineage
         ? html`<span class="rtile__resumed" title=${lineage}>↻</span>`
         : ''}
       ${session

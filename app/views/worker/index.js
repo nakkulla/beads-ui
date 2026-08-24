@@ -3160,6 +3160,24 @@ export function createWorkerView(mount_element, options = {}) {
       }
     }
 
+    // 우선순위는 Board 카드가 이미 읽던 필드다 — 워커 콘솔은 표시만 없었다.
+    // 대기·PR 대기·완료 레인의 bead는 어느 구독 컬럼에도 없을 수 있으므로,
+    // 구독된 다섯 컬럼을 한 번 훑어 id→priority를 만들어 둔다. 없으면 배지를
+    // 그리지 않는다 (fail-quiet).
+    /** @type {Map<string, number>} */
+    const idToPriority = new Map();
+    for (const it of [
+      ...ready,
+      ...blocked,
+      ...in_progress,
+      ...resolved,
+      ...closed
+    ]) {
+      if (it && it.id && typeof it.priority === 'number') {
+        idToPriority.set(it.id, it.priority);
+      }
+    }
+
     /** @type {Record<string, any>} */
     const bead_times =
       q.bead_times &&
@@ -3456,7 +3474,8 @@ export function createWorkerView(mount_element, options = {}) {
         // "이 설정으로 돌아간다"를 적재 전에 미리 본다
         // (worker-card-exec-chips §2.2).
         exec_chips: beadExecChips(it.id),
-        from_id: it.from_id || undefined
+        from_id: it.from_id || undefined,
+        priority: idToPriority.get(it.id)
       };
     });
     // DISPLAY-only projection: `candidate_issues` above stays the unfiltered
@@ -3577,6 +3596,7 @@ export function createWorkerView(mount_element, options = {}) {
           // route 칩 재료 (UI-yrzu §7.2). 완료 행은 칩을 그리지 않는다.
           workflow: waiting_lane ? bead_workflow[e.bead_id] || null : null,
           from_id: idToFromId.get(e.bead_id) || undefined,
+          priority: idToPriority.get(e.bead_id),
           ...timesOf(e.bead_id)
         };
       });
@@ -3736,6 +3756,7 @@ export function createWorkerView(mount_element, options = {}) {
           }),
           // route 칩 재료 (UI-yrzu §7.2) — 모니터 탭 실행 타일과 같은 칩이다.
           workflow: bead_workflow[a.bead_id] || null,
+          priority: idToPriority.get(a.bead_id),
           // 실행 중 타일도 bead의 전체 attempt 합계를 쓴다 (UI-d7pw §1.4).
           // 이 attempt의 라이브 값만 쓰면 재실행된 bead의 실행 타일만 혼자
           // 다른 수를 보이게 되어 "모든 배지가 같은 질문에 답한다"가 깨진다.
@@ -3779,6 +3800,7 @@ export function createWorkerView(mount_element, options = {}) {
             conflict_resolution: resolvesConflict(a),
             base_exception: baseException(declared_base, a.target_base),
             workflow: bead_workflow[a.bead_id] || null,
+            priority: idToPriority.get(a.bead_id),
             usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
             rollup: runningRollup(a.bead_id),
             rollup_expanded: rollup_expanded_ids.has(a.bead_id),
@@ -3821,6 +3843,7 @@ export function createWorkerView(mount_element, options = {}) {
           coerceTimestampMs(entry.updated_at),
         updated_at: coerceTimestampMs(entry.updated_at),
         workflow: entry.workflow || null,
+        priority: idToPriority.get(bead_id),
         runner: null,
         model: null,
         effort: null,
@@ -4474,6 +4497,7 @@ export function createWorkerView(mount_element, options = {}) {
         .map((/** @type {any} */ row) => ({
           ...row,
           workflow: bead_workflow[row.id] || null,
+          priority: idToPriority.get(row.id),
           ...timesOf(row.id)
         })),
       merge_queue_length: merge_queue.length,
