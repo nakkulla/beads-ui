@@ -11740,4 +11740,94 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     );
     expect(note?.textContent).toContain('실행 중');
   });
+
+  test('draws the 겹침 chip on a 후보 card colliding with a waiting row', () => {
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({
+        bead_scope: {
+          'W-1': { scope: ['app/views/worker'], artifacts: ['w1.md'] },
+          'RD-1': {
+            scope: ['app/views/worker/lanes.js'],
+            artifacts: ['rd1.md']
+          }
+        }
+      })
+    );
+
+    const rd1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="RD-1"]')
+    );
+    const w1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+
+    expect(rd1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      'W-1'
+    );
+    expect(w1.querySelector('.mon-overlap__chip')?.textContent).toContain(
+      '후보'
+    );
+  });
+
+  test('a 후보 chip offers placing the candidate into the counterpart serial lane', async () => {
+    const transport = vi
+      .fn()
+      .mockResolvedValue(reply(queueOf({ revision: 4 })));
+    const mount = mountWithOverlaps(
+      transport,
+      overlapQueue({
+        bead_scope: {
+          'S-1': { scope: ['app/views/worker'], artifacts: ['s1.md'] },
+          'RD-1': {
+            scope: ['app/views/worker/lanes.js'],
+            artifacts: ['rd1.md']
+          }
+        }
+      })
+    );
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .mon-overlap__chip'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector(
+        '.worker-card[data-bead-id="RD-1"] .mon-overlap__place'
+      )
+    ).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await flush();
+
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(transport.mock.calls[0][1]).toEqual({
+      bead_id: 'RD-1',
+      lane: 's1',
+      index: 1,
+      expected_revision: 3
+    });
+  });
+
+  test('draws no 겹침 chip on a 후보 card the filter hides', () => {
+    presetCandidateFilter({ show_blocked: false });
+    const mount = mountWithOverlaps(
+      vi.fn(),
+      overlapQueue({
+        bead_scope: {
+          'W-1': { scope: ['app/views/worker'], artifacts: ['w1.md'] },
+          'BL-1': {
+            scope: ['app/views/worker/lanes.js'],
+            artifacts: ['bl1.md']
+          }
+        }
+      })
+    );
+
+    const w1 = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="W-1"]')
+    );
+
+    expect(mount.querySelector('.worker-card[data-bead-id="BL-1"]')).toBe(null);
+    expect(w1.querySelector('.mon-overlap__chip')).toBe(null);
+  });
 });

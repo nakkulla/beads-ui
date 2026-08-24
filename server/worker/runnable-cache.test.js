@@ -1157,3 +1157,53 @@ describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
     expect(out.map((item) => item.plan_path)).toEqual([null]);
   });
 });
+
+describe('runnablePeek (UI-f3ma)', () => {
+  test('answers the warmed runnable bucket', async () => {
+    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    await warm(cache, WS_A);
+
+    const out = cache.runnablePeek(WS_A);
+
+    expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
+  });
+
+  test('triggers no fill on a cold miss', async () => {
+    const runJson = fakeBd({ [WS_A]: [row()] });
+    const cache = createRunnableCache({ runJson });
+
+    const out = cache.runnablePeek(WS_A);
+    await settle();
+
+    expect(out).toEqual([]);
+    expect(runJson).not.toHaveBeenCalled();
+  });
+
+  test('triggers no refill once the record has expired', async () => {
+    let clock = 1000;
+    const runJson = fakeBd({ [WS_A]: [row()] });
+    const cache = createRunnableCache({
+      runJson,
+      now: () => clock,
+      positive_ttl_ms: 10
+    });
+    await warm(cache, WS_A);
+    const calls_after_warm = runJson.mock.calls.length;
+    clock += 1000;
+
+    const out = cache.runnablePeek(WS_A);
+    await settle();
+
+    expect(out.map((item) => item.bead_id)).toEqual(['UI-1']);
+    expect(runJson.mock.calls.length).toBe(calls_after_warm);
+  });
+
+  test('drops the ids the caller already holds in a lane', async () => {
+    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+    await warm(cache, WS_A);
+
+    const out = cache.runnablePeek(WS_A, ['UI-1']);
+
+    expect(out).toEqual([]);
+  });
+});

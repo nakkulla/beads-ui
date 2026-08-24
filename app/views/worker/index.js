@@ -4065,6 +4065,18 @@ export function createWorkerView(mount_element, options = {}) {
         lane_id: null
       });
     });
+    // 후보 lane (UI-f3ma): 큐에 넣기 직전이 "무엇과 부딪히나"를 가장 알고 싶은
+    // 순간이므로 후보도 비교 집합이다. 필터로 숨긴 후보는 넣지 않는다 — 팝오버가
+    // 가리키는 상대는 화면에 있어야 한다.
+    for (const row of candidates) {
+      overlap_members.push({
+        id: row.id,
+        title: row.title,
+        location_label: '후보',
+        kind: 'candidate',
+        lane_id: null
+      });
+    }
     /** @type {Record<string, number>} */
     const serial_raw_lengths = {};
     for (const lane of serial_lanes_raw) {
@@ -4117,6 +4129,9 @@ export function createWorkerView(mount_element, options = {}) {
           attachOverlaps(row, lane.id);
         }
       }
+    }
+    for (const row of candidates) {
+      attachOverlaps(row, 'candidate');
     }
     /** @type {Map<string, RunningOverlay>} */
     const running_overlays = new Map();

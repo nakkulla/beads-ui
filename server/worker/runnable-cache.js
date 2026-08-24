@@ -875,6 +875,21 @@ export function createRunnableCache(options = {}) {
     },
 
     /**
+     * The runnable bucket WITHOUT the refill trigger (UI-f3ma) — the worker
+     * channel's `bead_scope` decoration reads this on every reply/fanout to
+     * cover the 후보 lane, so the read itself must stay side-effect-free, the
+     * same reason {@link sessionActivePeek} exists. The 실행가능 lane's own
+     * freshness still comes from `runnableFor` and the periodic driver.
+     *
+     * @param {string} workspace
+     * @param {Iterable<string>} [exclude_ids]
+     * @returns {RunnableItem[]}
+     */
+    runnablePeek(workspace, exclude_ids) {
+      return peekBucket(workspace, 'items', exclude_ids);
+    },
+
+    /**
      * Ask for a re-scan regardless of how fresh the record is — the periodic
      * driver's entry point (spec §4 갱신 driver). Still gated on subscribers, an
      * in-flight scan and the failure TTL, so a tick can never outrun those.

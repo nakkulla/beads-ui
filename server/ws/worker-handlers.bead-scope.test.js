@@ -103,6 +103,7 @@ beforeEach(() => {
 
 afterEach(() => {
   __resetScopeCacheForTest();
+  vi.restoreAllMocks();
 });
 
 describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
@@ -169,6 +170,94 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
 
     expect(out.bead_scope).toEqual({});
+  });
+
+  test('carries the declared scope of a 후보 bead that is in no lane', async () => {
+    const cache = scopeCacheOver({ [SPEC_C]: artifact(['app/utils/']) });
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-9', spec_id: SPEC_C, plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-9']).toEqual({
+      scope: ['app/utils/'],
+      artifacts: [SPEC_C]
+    });
+  });
+
+  test('reads a 후보 bead from the same artifact set a queued bead would use', async () => {
+    const cache = scopeCacheOver({
+      [SPEC_C]: artifact(['app/']),
+      [SPEC_D]: artifact(['docs/'])
+    });
+    await cache.fill(WS, [SPEC_C, SPEC_D]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        spec_id: SPEC_C,
+        plan_path: SPEC_D
+      })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-9'].artifacts).toEqual([SPEC_C, SPEC_D]);
+  });
+
+  test('never lets a 후보 row overwrite the lane reading of the same bead', async () => {
+    seedBead('UI-1', SPEC_A);
+    const cache = scopeCacheOver({
+      [SPEC_A]: artifact(['server/']),
+      [SPEC_C]: artifact(['app/'])
+    });
+    await cache.fill(WS, [SPEC_A]);
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-1', spec_id: SPEC_C, plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({
+      scope: ['server/'],
+      artifacts: [SPEC_A]
+    });
+  });
+
+  test('omits a 후보 bead with no spec', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({ bead_id: 'UI-9', spec_id: '', plan_path: null })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope).toEqual({});
+  });
+
+  test('keeps the lane readings when the runnable lookup throws', async () => {
+    seedBead('UI-1', SPEC_A);
+    const cache = scopeCacheOver({ [SPEC_A]: artifact(['server/']) });
+    await cache.fill(WS, [SPEC_A]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(
+      getWorkerRuntime().runnableCache,
+      'runnablePeek'
+    ).mockImplementation(() => {
+      throw new Error('runnable unavailable');
+    });
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({
+      scope: ['server/'],
+      artifacts: [SPEC_A]
+    });
   });
 
   test('carries an empty scope as a read fact, not as a failure', async () => {

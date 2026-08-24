@@ -1085,9 +1085,10 @@ function scopeCacheHandle() {
 }
 
 /**
- * The declared scope of every bead the WAITING and RUNNING lanes render
- * (UI-qm12 §4.3). `pr_wait` is excluded: a bead whose PR is open has stopped
- * competing for the tree, so an overlap chip on it would be noise.
+ * The declared scope of every bead the WAITING, RUNNING and 후보 lanes render
+ * (UI-qm12 §4.3, widened to 후보 by UI-f3ma). `pr_wait` is excluded: a bead
+ * whose PR is open has stopped competing for the tree, so an overlap chip on it
+ * would be noise.
  *
  * Three deliberately distinct values, none of which blocks the push:
  *   - NO ENTRY: not read yet (`miss`), or the bead has no spec at all.
@@ -1099,32 +1100,82 @@ function scopeCacheHandle() {
  * @returns {Record<string, { scope: string[], artifacts: string[] }|null>}
  */
 function beadScopeFor(workspace_key, queue) {
-  const titles = titleCacheHandle();
   const scopes = scopeCacheHandle();
-  if (!titles || !scopes) {
-    return {};
-  }
-  const ids = laneMemberIds(queue, false);
-  if (ids.length === 0) {
+  if (!scopes) {
     return {};
   }
   /** @type {Record<string, { scope: string[], artifacts: string[] }|null>} */
   const out = {};
+  /**
+   * @param {string} bead_id
+   * @param {string[]} artifacts
+   */
+  const readInto = (bead_id, artifacts) => {
+    const peeked = scopes.peek(workspace_key, artifacts);
+    if (peeked.state === 'hit') {
+      out[bead_id] = { scope: peeked.scope, artifacts };
+    } else if (peeked.state === 'failed') {
+      out[bead_id] = null;
+    }
+  };
+  const ids = laneMemberIds(queue, false);
   try {
-    const artifacts_by_bead = titles.scopeArtifactsFor(workspace_key, ids);
-    for (const [bead_id, artifacts] of Object.entries(artifacts_by_bead)) {
-      const peeked = scopes.peek(workspace_key, artifacts);
-      if (peeked.state === 'hit') {
-        out[bead_id] = { scope: peeked.scope, artifacts };
-      } else if (peeked.state === 'failed') {
-        out[bead_id] = null;
+    const titles = titleCacheHandle();
+    if (titles && ids.length > 0) {
+      const artifacts_by_bead = titles.scopeArtifactsFor(workspace_key, ids);
+      for (const [bead_id, artifacts] of Object.entries(artifacts_by_bead)) {
+        readInto(bead_id, artifacts);
       }
     }
   } catch (err) {
     log('bead scope lookup failed for %s: %o', workspace_key, err);
-    return {};
+  }
+  // 후보 lane (UI-f3ma): the artifact set comes from the runnable projection
+  // rather than the title cache, because a bead that has never entered a lane
+  // has no title-cache record to read `spec_id`/`plan_path` from. It is the
+  // SAME artifact set either way (`RunnableItem.plan_path` exists for exactly
+  // this reason), so loading a candidate into a lane cannot change its verdict.
+  try {
+    for (const item of runnableRows(workspace_key, queue)) {
+      const bead_id = typeof item.bead_id === 'string' ? item.bead_id : '';
+      const spec_id = typeof item.spec_id === 'string' ? item.spec_id : '';
+      if (bead_id.length === 0 || spec_id.length === 0 || bead_id in out) {
+        continue;
+      }
+      const plan_path =
+        typeof item.plan_path === 'string' && item.plan_path.length > 0
+          ? item.plan_path
+          : '';
+      readInto(bead_id, plan_path ? [spec_id, plan_path] : [spec_id]);
+    }
+  } catch (err) {
+    log('runnable scope lookup failed for %s: %o', workspace_key, err);
   }
   return out;
+}
+
+/**
+ * This workspace's 후보 rows for the scope decoration (UI-f3ma), minus the
+ * beads already standing in a lane. Side-effect-free like
+ * {@link sessionActiveRows}: the snapshot decoration must never trigger a
+ * `bd list` refill of its own.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Array<Record<string, any>>}
+ */
+function runnableRows(workspace_key, queue) {
+  try {
+    return (
+      getWorkerRuntime().runnableCache.runnablePeek(
+        workspace_key,
+        laneMemberIds(queue, true)
+      ) || []
+    );
+  } catch (err) {
+    log('runnable lookup failed for %s: %o', workspace_key, err);
+    return [];
+  }
 }
 
 /**

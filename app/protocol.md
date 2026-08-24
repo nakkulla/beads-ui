@@ -222,8 +222,13 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `bd update|close|dep` COMPLETING inside a running session's log.
 - `bead_scope: Record<bead_id, { scope: string[], artifacts: string[] }|null>`
   (UI-qm12 §4.3) is the DECLARED scope — the spec front-matter `scope:` read at
-  the workspace's pinned base — of the beads the waiting and running lanes
-  render: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING attempts. `pr_wait` and
+  the workspace's pinned base — of the beads the waiting, running and 후보 lanes
+  render: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING attempts ∪ the runnable
+  projection (UI-f3ma), the last so a candidate can be judged against the queue
+  BEFORE it is loaded into a lane. A runnable bead's artifact set comes from its
+  own `spec_id`/`plan_path` rather than the title cache, which has no record for
+  a bead that never entered a lane; it is the same artifact set either way, so
+  loading a candidate into a lane never changes its verdict. `pr_wait` and
   `done` are outside the set. Non-persisted and PARTIAL on the same contract as
   `bead_titles`, and fail-quiet at every level: nothing here can block or delay
   a snapshot push. Three values, deliberately distinct:

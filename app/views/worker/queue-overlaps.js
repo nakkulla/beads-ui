@@ -11,14 +11,16 @@
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 
 /**
- * One 비교 집합 항목: 병렬 대기·직렬 레인·실행 중 어딘가에 서 있는 bead.
+ * One 비교 집합 항목: 후보·병렬 대기·직렬 레인·실행 중 어딘가에 서 있는 bead.
  * PR 대기·완료는 서버 적재 범위 밖이라 애초에 들어오지 않는다 (§5.2).
  *
  * @typedef {Object} OverlapMember
  * @property {string} id
  * @property {string} title
- * @property {string} location_label - `실행중` · `#n` · `s1 #n`.
- * @property {'parallel'|'serial'|'running'} kind
+ * @property {string} location_label - `실행중` · `#n` · `s1 #n` · `후보`.
+ * @property {'parallel'|'serial'|'running'|'candidate'} kind - `candidate`는
+ * 아직 큐에 없는 후보 행 (UI-f3ma): 배치 대상이라는 점에서 병렬 대기와 같고,
+ * 위치만 다르다.
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'|null} lane_id - 직렬 행의 레인, 또는
  * 직렬 레인에서 출발한 실행 중 bead의 출발 레인. 그 외 null.
  */
