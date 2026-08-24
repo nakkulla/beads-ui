@@ -32,6 +32,25 @@ function shortPath(p) {
 }
 
 /**
+ * Split a leading YAML frontmatter block off the document. marked would
+ * otherwise render `---\nkey: v\n---` as a setext heading above the real title.
+ *
+ * @param {string} source
+ * @returns {{ front: string | null, body: string }}
+ */
+export function splitFrontmatter(source) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(source);
+  if (!m) {
+    return { front: null, body: source };
+  }
+  const front = m[1].trim();
+  return {
+    front: front.length > 0 ? front : null,
+    body: source.slice(m[0].length)
+  };
+}
+
+/**
  * @param {HTMLElement} mount_element
  * @param {MdViewerOptions} options
  * @returns {{ open: (doc_path: string, open_options?: MdViewerOpenOptions) => Promise<void>, close: () => void, destroy: () => void }}
@@ -45,6 +64,8 @@ export function createMdViewer(mount_element, options) {
   /** @type {'loading'|'ready'|'pending'|'error'} */
   let state = 'loading';
   let body_html = '';
+  /** @type {string | null} */
+  let front_text = null;
   let error_message = '';
 
   /**
@@ -88,7 +109,11 @@ export function createMdViewer(mount_element, options) {
                   ? html`<div class="mv__status mv__status--error">
                       ${error_message || '문서를 불러오지 못했습니다'}
                     </div>`
-                  : renderMarkdown(body_html)}
+                  : html`${front_text === null
+                      ? null
+                      : html`<pre class="mv__front">
+${front_text}</pre
+                        >`}${renderMarkdown(body_html)}`}
           </div>
         </div>
       </div>
@@ -107,6 +132,7 @@ export function createMdViewer(mount_element, options) {
     current_path = doc_path;
     state = 'loading';
     body_html = '';
+    front_text = null;
     error_message = '';
     doRender();
 
@@ -149,7 +175,9 @@ export function createMdViewer(mount_element, options) {
         doRender();
         return;
       }
-      body_html = String(data.content || '');
+      const split = splitFrontmatter(String(data.content || ''));
+      front_text = split.front;
+      body_html = split.body;
       state = 'ready';
       doRender();
     } catch {
