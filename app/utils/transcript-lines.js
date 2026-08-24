@@ -18,7 +18,9 @@
  *   - claude: `{type:'assistant', message:{content:[{type:'text'|'thinking'|
  *     'tool_use'…}]}}`,
  *     `{type:'user', message:{content:[{type:'tool_result', tool_use_id, content}]}}`,
- *     `{type:'result', subtype, is_error, result}`. `system` dropped.
+ *     `{type:'result', subtype, is_error, result}`,
+ *     `{type:'system', subtype:'init'|'thinking_tokens'}` (every other `system`
+ *     subtype is dropped).
  *   - codex: `{type:'item.completed', item:{type:'agent_message'|'reasoning'|
  *     'error', …}}`,
  *     `{type:'turn.completed'}`, `{type:'turn.failed', error}`, `{type:'error'}`.
@@ -290,6 +292,52 @@ function classifyText(text) {
     return { kind: 'phase', text: first.trim() };
   }
   return { kind: 'assistant', text };
+}
+
+/**
+ * Parse one claude `system` event into a progress line (UI-bau6).
+ *
+ * A tool-less session — the parallelism analyzer is the standing example —
+ * emits `system/init`, then only `system/thinking_tokens` until the closing
+ * `assistant`/`result` pair, so dropping every `system` event left the drawer
+ * empty for the whole run. Both survivors project onto `thinking`, which is the
+ * one kind `server/worker/session-log.js` skips when it derives an attempt's
+ * `last_activity`: a progress line reaches the drawer without ever becoming a
+ * running card's activity text.
+ *
+ * `thinking_tokens` arrives once per token tick (dozens per turn), so the open
+ * progress line is UPDATED IN PLACE rather than appended — the same mutation
+ * the `tool_use` → `tool_result` back-fill already does. `state.progress` is
+ * cleared by the caller as soon as any other event produces a line, so each
+ * thinking burst gets exactly one line of its own.
+ *
+ * @param {Record<string, unknown>} raw
+ * @param {{ progress: DisplayLine | null }} state - The open progress line.
+ * @returns {DisplayLine[]}
+ */
+function parseClaudeSystem(raw, state) {
+  if (raw.subtype === 'init') {
+    const model = typeof raw.model === 'string' ? raw.model : '';
+    state.progress = null;
+    return [
+      { kind: 'thinking', text: model ? `세션 시작 · ${model}` : '세션 시작' }
+    ];
+  }
+  if (raw.subtype === 'thinking_tokens') {
+    const tokens =
+      typeof raw.estimated_tokens === 'number' &&
+      Number.isFinite(raw.estimated_tokens)
+        ? Math.max(0, Math.round(raw.estimated_tokens))
+        : 0;
+    const text = `생각 중… ${tokens} 토큰`;
+    if (state.progress) {
+      state.progress.text = text;
+      return [];
+    }
+    state.progress = { kind: 'thinking', text };
+    return [state.progress];
+  }
+  return [];
 }
 
 /**
@@ -613,6 +661,8 @@ export function createTranscriptReducer(options = {}) {
   const skip_delegated = options.skip_delegated === true;
   /** @type {Map<string, DisplayLine>} */
   const toolsById = new Map();
+  /** @type {{ progress: DisplayLine | null }} */
+  const state = { progress: null };
   return {
     /**
      * @param {unknown} event - One raw parsed object or one jsonl string.
@@ -630,11 +680,24 @@ export function createTranscriptReducer(options = {}) {
       ) {
         return [];
       }
-      return raw.schema === 'codex-delegation-monitor-v1'
-        ? parseDelegationMonitor(raw)
-        : isCodexShape(raw)
-          ? parseCodex(raw)
-          : parseClaude(raw, toolsById);
+      if (
+        raw.type === 'system' &&
+        raw.schema !== 'codex-delegation-monitor-v1'
+      ) {
+        return parseClaudeSystem(raw, state);
+      }
+      const produced =
+        raw.schema === 'codex-delegation-monitor-v1'
+          ? parseDelegationMonitor(raw)
+          : isCodexShape(raw)
+            ? parseCodex(raw)
+            : parseClaude(raw, toolsById);
+      if (produced.length > 0) {
+        // Anything the session actually did ends the current thinking burst;
+        // the next `thinking_tokens` tick then opens a fresh progress line.
+        state.progress = null;
+      }
+      return produced;
     }
   };
 }

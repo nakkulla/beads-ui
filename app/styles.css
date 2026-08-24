@@ -5173,6 +5173,20 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
+/* 실행 중 분석 상태 스트립 (UI-bau6): 헤더 바로 아래, 본문 위에 붙고 실행
+   중일 때만 렌더된다 — 진행 중 실행이 설정·메타·대상·결과 뒤로 밀리지 않게
+   하는 것이 이 스트립의 존재 이유다. */
+.pa__strip {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-6);
+  flex-wrap: wrap;
+  padding: var(--sp-5) var(--sp-8);
+  border-bottom: 1px solid var(--border-card);
+  background: var(--bg-tile-run);
+  font-size: var(--fs-chip);
+}
+
 .pa__body {
   display: flex;
   flex-direction: column;

@@ -294,6 +294,23 @@ describe('worker/session-log lastActivity (UI-eey2 §9.3)', () => {
     });
   });
 
+  test('leaves the activity untouched for claude system progress events', () => {
+    const log = createSessionLog({ now: () => 1_000, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'system',
+      subtype: 'init',
+      model: 'claude-opus-4-5'
+    });
+    log.publish(WS, 'a1', {
+      type: 'system',
+      subtype: 'thinking_tokens',
+      estimated_tokens: 380
+    });
+
+    expect(log.lastActivity(WS, 'a1')).toBe(null);
+  });
+
   test('carries the paired tool_result summary onto the tool activity', () => {
     const log = createSessionLog({ now: () => 5, emitChanged: () => {} });
 

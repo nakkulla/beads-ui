@@ -259,3 +259,82 @@ describe('claude subagent lines (UI-2mpn §6.4)', () => {
     expect(produced.map((line) => line.tool || line.kind)).toEqual(['Agent']);
   });
 });
+
+describe('claude system progress lines (UI-bau6)', () => {
+  /**
+   * @param {number} estimated_tokens
+   */
+  function thinkingTokens(estimated_tokens) {
+    return { type: 'system', subtype: 'thinking_tokens', estimated_tokens };
+  }
+
+  test('projects system/init as a session-start line carrying the model', () => {
+    const lines = parseTranscript([
+      { type: 'system', subtype: 'init', model: 'claude-opus-4-5' }
+    ]);
+
+    expect(lines).toEqual([
+      { kind: 'thinking', text: '세션 시작 · claude-opus-4-5' }
+    ]);
+  });
+
+  test('omits the model when init does not name one', () => {
+    const lines = parseTranscript([{ type: 'system', subtype: 'init' }]);
+
+    expect(lines).toEqual([{ kind: 'thinking', text: '세션 시작' }]);
+  });
+
+  test('collapses a thinking_tokens burst onto one updated line', () => {
+    const lines = parseTranscript([
+      thinkingTokens(9),
+      thinkingTokens(37),
+      thinkingTokens(380)
+    ]);
+
+    expect(lines).toEqual([{ kind: 'thinking', text: '생각 중… 380 토큰' }]);
+  });
+
+  test('opens a new progress line after another event produced a line', () => {
+    const lines = parseTranscript([
+      thinkingTokens(9),
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '끝' }] }
+      },
+      thinkingTokens(12)
+    ]);
+
+    expect(lines.map((line) => line.text)).toEqual([
+      '생각 중… 9 토큰',
+      '끝',
+      '생각 중… 12 토큰'
+    ]);
+  });
+
+  test('drops system subtypes that carry no progress', () => {
+    const lines = parseTranscript([
+      { type: 'system', subtype: 'hook_started', hook_name: 'SessionStart' }
+    ]);
+
+    expect(lines).toEqual([]);
+  });
+
+  test('keeps every progress line out of the non-thinking activity feed', () => {
+    const lines = parseTranscript([
+      { type: 'system', subtype: 'init', model: 'claude-opus-4-5' },
+      thinkingTokens(9)
+    ]);
+
+    expect(lines.filter((line) => line.kind !== 'thinking')).toEqual([]);
+  });
+
+  test('updates the progress line in place for a live reducer', () => {
+    const reducer = createTranscriptReducer();
+
+    const first = reducer.push(thinkingTokens(9));
+    const again = reducer.push(thinkingTokens(37));
+
+    expect(again).toEqual([]);
+    expect(first[0].text).toBe('생각 중… 37 토큰');
+  });
+});

@@ -873,6 +873,11 @@ export function createParallelAnalysisDialog(mount_element, options) {
    * preparation flag is this browser's alone, while a job is server-global, so
    * once one exists every tab must read the same thing.
    *
+   * Rendered by {@link progressStripTemplate} directly under the dialog header
+   * rather than as one wrapped chip inside the `pa-meta` control row (UI-bau6).
+   * A run in flight is the whole reason the dialog is open, and sharing a row
+   * with 분석/재분석/취소 was the one place a reader did not look for it.
+   *
    * @param {any} analysis
    * @returns {import('lit-html').TemplateResult|string}
    */
@@ -925,6 +930,21 @@ export function createParallelAnalysisDialog(mount_element, options) {
   }
 
   /**
+   * The running-analysis status strip (UI-bau6): its own row between the header
+   * and the body, present only while something is in flight — an idle dialog
+   * keeps its previous layout byte for byte.
+   *
+   * @param {any} analysis
+   * @returns {import('lit-html').TemplateResult|string}
+   */
+  function progressStripTemplate(analysis) {
+    const progress = progressTemplate(analysis);
+    return progress === ''
+      ? ''
+      : html`<div class="pa__strip">${progress}</div>`;
+  }
+
+  /**
    * @returns {boolean} Whether this browser has a start request in flight.
    */
   function isPending() {
@@ -946,7 +966,6 @@ export function createParallelAnalysisDialog(mount_element, options) {
             >분석 ${new Date(analysis.last_good.at || 0).toLocaleString()}</span
           >`
         : html`<span class="pa-meta__at">분석 결과 없음</span>`}
-      ${progressTemplate(analysis)}
       <button
         type="button"
         class="pa-run"
@@ -1404,6 +1423,7 @@ ${prompt_popup.prompt}</pre
               ×
             </button>
           </header>
+          ${progressStripTemplate(analysis)}
           <div class="pa__body">
             ${settingsTemplate()} ${metaTemplate(analysis)} ${targetsTemplate()}
             ${result

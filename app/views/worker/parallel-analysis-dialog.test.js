@@ -865,6 +865,41 @@ describe('parallel analysis dialog (UI-04vo seam J)', () => {
     );
   });
 
+  test('renders the running run in a strip above the dialog body', async () => {
+    const { mount } = mountDialog({
+      analysis: analysisOf({
+        job: {
+          job_id: 'analysis-1',
+          identity: 'i1',
+          runner: 'claude',
+          model: 'opus',
+          effort: 'high',
+          started_at: 1_000
+        }
+      })
+    });
+    await flush();
+
+    const strip = /** @type {Element} */ (mount.querySelector('.pa__strip'));
+
+    expect(strip.querySelector('.pa-meta__progress')?.textContent).toContain(
+      '분석 중'
+    );
+    expect(
+      strip.compareDocumentPosition(
+        /** @type {Element} */ (mount.querySelector('.pa__body'))
+      ) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  test('omits the strip when no analysis is in flight', async () => {
+    const { mount } = mountDialog({ analysis: analysisOf({}) });
+    await flush();
+
+    expect(mount.querySelector('.pa__strip')).toBe(null);
+    expect(mount.querySelector('.pa-meta__progress')).toBe(null);
+  });
+
   test('gates the history prompt button on prompt_saved alone', async () => {
     const onOpenTranscript = vi.fn();
     const { mount } = mountDialog({
