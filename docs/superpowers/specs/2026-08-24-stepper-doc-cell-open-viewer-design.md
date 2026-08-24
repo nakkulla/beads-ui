@@ -33,9 +33,10 @@ spec/plan 문서를 보려면 지금은 이슈 상세 패널 → Artifacts 행 �
 
 - stepper는 `app/views/board/stepper.js` 하나이며 `role="img"` 표시 전용이다.
   소비자는 세 곳 — 보드 카드(`board/card.js` `cardTemplate`), Worker 후보
-  카드(`worker/lanes.js` `candidateCard`, `paneTemplate`가 호출), 실행
-  타일(`worker/running-grid.js` `runningTile`, Worker 탭 `runningGridTemplate`과
-  모니터 탭 `monitor/index.js` `runningBody`가 모두 호출).
+  카드(`worker/lanes.js` `candidateCard`, `paneTemplate`가 호출), 모니터 실행
+  타일(`worker/running-grid.js` `runningTile`의 `monitorTileBody` — `options.monitor`가
+  있을 때만 stepper를 그린다). Worker 탭의 `runningGridTemplate`은 `monitor` 옵션
+  없이 `runningTile`을 부르므로 Worker 실행 타일에는 오늘 stepper가 없다.
 - 서버 `server/workflow-enrich.js`의 `specStage`/`planStage`는 spec 경로(발행
   또는 draft)와 `plan_path`, plan 작성 이력을 알고 있지만, 클라이언트로는
   `fill/glyph/stale/receipt`만 보낸다. 보드 카드 payload에는 `metadata`가 있으나
@@ -134,14 +135,18 @@ stepperTemplate(workflow, status, options = {})
 | ------------------------- | -------------------------------------------------------------------------------------------- | ----------------- |
 | 보드 카드                 | `BoardCardContext.onOpenDoc` 추가 → `cardTemplate`이 `stepperTemplate(…, { onOpenDoc })` 호출 | 현재 workspace    |
 | Worker 후보 카드          | `candidateCard(item, place_menu, options.onOpenDoc)` → `paneTemplate(pane)`의 `pane.onOpenDoc` | 현재 workspace    |
-| Worker 실행 타일          | `runningTile(tile, now, sel, options.onOpenDoc)` → `runningGridTemplate` 인자로 전달           | 현재 workspace    |
-| 모니터 타일(`candidateCard`·`runningTile` 경유) | 위 두 함수에 같은 옵션 전달, 단 `onOpenDoc`이 `item.root_dir`를 함께 넘김 | `item.root_dir`   |
+| 모니터 타일(`candidateCard`·`runningTile` 경유) | `runningTile(tile, now, sel, { monitor, onOpenDoc })`·`candidateCard(item, menu, { onOpenDoc })`, `onOpenDoc`이 `item.root_dir`를 함께 넘김 | `item.root_dir`   |
+
+Worker 탭의 실행 타일은 stepper 자체를 그리지 않으므로(§1) 이번 범위에서 배선
+대상이 아니다. Worker 실행 타일에 stepper를 새로 넣는 것은 별도 결정이다(§7).
 
 - `createBoardView`/`createWorkerView`/`createMonitorView` 옵션에
   `openDoc?: (doc, root_dir?) => void`를 더한다. 옵션이 없으면 stepper에
   핸들러를 넘기지 않아 정적 렌더가 된다(fail-quiet).
-- 보드 지연 팝업 카드(`deferred_card_ctx`)도 같은 `onOpenDoc`을 쓴다. 팝업을
-  닫을 필요는 없다 — 뷰어 오버레이가 위에 뜨고, 닫으면 팝업으로 돌아온다.
+- 보드 지연 팝업 카드(`deferred_card_ctx`)의 `onOpenDoc`은 **팝업을 먼저
+  닫고** 뷰어를 연다(`onDeferredNavigate`와 같은 순서). 팝업은 `showModal()`로
+  연 네이티브 `<dialog>`라 브라우저 top layer에 있어, body 오버레이인 뷰어는
+  `z-index`와 무관하게 그 위에 뜰 수도 조작될 수도 없기 때문이다.
 
 ## 6. 제외 범위
 
@@ -155,6 +160,8 @@ stepperTemplate(workflow, status, options = {})
 
 - 상세 패널 `collectArtifacts`의 plan pending 판정을 서버 `doc.missing_state`로
   통일 — 두 판정이 값 non-empty vs `hasOwn`으로 갈리는 미세 차이 해소.
+- Worker 탭 실행 타일에도 stepper(`bead_workflow[bead_id]`)를 그릴지 — 그리면
+  §3·§5 규칙이 그대로 적용된다.
 
 ## 8. 테스트
 
@@ -173,6 +180,13 @@ stepperTemplate(workflow, status, options = {})
   카드 클릭 핸들러를 부르지 않음.
 - `app/views/monitor/index.test.js`: 타 레포 타일 클릭 시 `openDoc(doc,
   item.root_dir)` 호출.
+- `app/views/board/index.test.js`: 지연 팝업 카드의 셀 클릭이 팝업을 닫은 뒤
+  `openDoc`을 호출.
+- `app/views/detail-panel/index.test.js`: `mdViewer` 주입 시 자체 `md-viewer-root`
+  마운트를 만들지 않고, `clear()`는 주입 뷰어의 `close()`를 부르며 `destroy()`는
+  `destroy()`를 부르지 않음.
+- `app/main.test.js`: 부팅 시 `md-viewer-root`가 정확히 하나 생성되고 상세 패널에
+  주입됨.
 - 마감: `npm run tsc`, `npm test`, `npm run lint`, `npm run prettier:write`,
   `npm run build`(번들 포함), live 서버에서 보드·Worker·모니터 각 한 번씩
   클릭해 뷰어가 열리는 스크린샷.
