@@ -873,4 +873,71 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
       'Claude τ 1.3k'
     );
   });
+
+  test('hides tool-typed subagent rows while keeping implementation ones', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [
+            subagent('done'),
+            subagent('done', {
+              launch_id: 'toolu_01ExploreBBBBBBBBBBBBBB',
+              session_id: 'toolu_01ExploreBBBBBBBBBBBBBB',
+              turn_id: 'toolu_01ExploreBBBBBBBBBBBBBB',
+              agent_type: 'Explore'
+            }),
+            subagent('running', {
+              launch_id: 'toolu_01RunnerCCCCCCCCCCCCCCC',
+              session_id: 'toolu_01RunnerCCCCCCCCCCCCCCC',
+              turn_id: 'toolu_01RunnerCCCCCCCCCCCCCCC',
+              agent_type: 'codex-runner'
+            })
+          ]
+        }
+      ])
+    );
+
+    const metas = Array.from(
+      host.querySelectorAll('.detail-session__leg-meta')
+    ).map((node) => node.textContent?.trim());
+    expect(metas).toEqual(['Claude · general-purpose · claude-sonnet-4-5']);
+  });
+
+  test('keeps an unknown-typed subagent row visible', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('running', { agent_type: null })]
+        }
+      ])
+    );
+
+    expect(host.querySelectorAll('.detail-session__leg').length).toBe(1);
+  });
+
+  test('hides the usage-only receipt of a tool-typed subagent', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          usage_legs: [
+            receipt({ agent_type: 'Explore' }),
+            receipt({
+              receipt_id: 'toolu_01KeepDDDDDDDDDDDDDDDDD',
+              session_id: 'toolu_01KeepDDDDDDDDDDDDDDDDD',
+              turn_id: 'toolu_01KeepDDDDDDDDDDDDDDDDD'
+            })
+          ]
+        }
+      ])
+    );
+
+    const metas = Array.from(
+      host.querySelectorAll('.detail-session__leg-meta')
+    ).map((node) => node.textContent?.trim());
+    expect(metas.length).toBe(1);
+    expect(metas[0]).not.toContain('Explore');
+  });
 });
