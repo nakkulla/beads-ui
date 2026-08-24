@@ -435,6 +435,55 @@ describe('discovered-from chip', () => {
   });
 });
 
+describe('priority badge', () => {
+  test('renders the priority badge on a waiting row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      priority: 1
+    });
+    const badge = row.querySelector('.worker-pri');
+
+    expect(badge?.textContent?.trim()).toBe('P1');
+    expect(badge?.getAttribute('title')).toBe('우선순위 P1');
+  });
+
+  test('renders the priority badge on a done row', () => {
+    const row = renderRow({ lane: 'done', done: true, priority: 3 });
+
+    expect(row.querySelector('.worker-pri')?.textContent?.trim()).toBe('P3');
+  });
+
+  test('renders the priority badge on a candidate card', () => {
+    const card = renderCandidate({ priority: 0 });
+
+    expect(card.querySelector('.worker-pri')?.textContent?.trim()).toBe('P0');
+  });
+
+  test('clamps an out-of-range priority into P0..P4', () => {
+    const row = renderRow({ lane: 'queue', done: false, priority: 9 });
+
+    expect(row.querySelector('.worker-pri')?.textContent?.trim()).toBe('P4');
+  });
+
+  test('omits the badge when priority is absent', () => {
+    const row = renderRow({ lane: 'queue', done: false });
+
+    expect(row.querySelector('.worker-pri')).toBeNull();
+  });
+
+  test('omits the badge when priority is not a number', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      priority: /** @type {any} */ ('2')
+    });
+
+    expect(row.querySelector('.worker-pri')).toBeNull();
+  });
+});
+
 describe('candidate card', () => {
   test('keeps a described quick_fix candidate draggable with an active queue button', () => {
     const card = renderCandidate({});

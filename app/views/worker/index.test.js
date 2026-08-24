@@ -452,6 +452,31 @@ describe('views/worker', () => {
     expect(rd1.getAttribute('draggable')).toBe('true');
   });
 
+  test('candidate cards carry the bead priority badge', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    presetCandidateFilter({ show_blocked: true });
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+
+    expect(
+      cand
+        .querySelector('.worker-card[data-bead-id="RD-1"] .worker-pri')
+        ?.textContent?.trim()
+    ).toBe('P1');
+    expect(
+      cand
+        .querySelector('.worker-card[data-bead-id="RD-2"] .worker-pri')
+        ?.textContent?.trim()
+    ).toBe('P2');
+  });
+
   test('blocked reason prefers server blocked_info blockers over dependency edges', () => {
     const stores = createTestIssueStores();
     seed(stores, 'tab:worker:blocked', [
