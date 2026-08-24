@@ -2005,6 +2005,17 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
       queue: store.snapshot(key)
     };
   }
+  // The CAS judges the snapshot the person clicked on, so it is taken HERE,
+  // at click arrival. The probe below can take a verify's whole runtime, and
+  // that verify's own record (plus background observation) advances the
+  // revision meanwhile — checking the click-time revision after the probe
+  // conflicted every click during base movement. Lane membership is judged
+  // again inside the write, so applying at the post-probe revision loses no
+  // safety.
+  const at_click = store.snapshot(key);
+  if (input.expected_revision !== at_click.revision) {
+    return { ok: false, conflict: true, queue: at_click };
+  }
   /** @type {any} */
   let probe = null;
   try {
@@ -2029,7 +2040,7 @@ export async function enqueueWorkerManualMerge(workspace_root, input) {
     };
   }
   return store.enqueueMergeManual(key, {
-    expected_revision: input.expected_revision,
+    expected_revision: store.snapshot(key).revision,
     entries: [
       {
         bead_id: input.bead_id,

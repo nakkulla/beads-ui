@@ -85,6 +85,73 @@ describe('worker/attach — enqueueWorkerManualMerge (UI-58w8 §1)', () => {
     });
   });
 
+  test('applies when the revision advances during the probe', async () => {
+    const store = seedLane();
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        prActions: {
+          probeMergeability: async () => {
+            const bumped = store.setSlots(WS, {
+              expected_revision: store.snapshot(WS).revision,
+              slots: 3
+            });
+            expect(bumped.ok).toBe(true);
+            return {
+              ok: false,
+              kind: 'blocked',
+              reason: 'verify_pending',
+              head_sha: HEAD,
+              base_ref: 'main',
+              external: false
+            };
+          }
+        }
+      })
+    );
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision
+    });
+
+    expect(result.ok).toBe(true);
+    expect(store.snapshot(WS).merge_queue[0].bead_id).toBe('UI-1');
+  });
+
+  test('conflicts on a click-time revision that is already stale', async () => {
+    const store = seedLane();
+    let probed = false;
+    registerAttachment({
+      ok: false,
+      kind: 'blocked',
+      reason: 'verify_pending',
+      head_sha: HEAD,
+      base_ref: 'main',
+      external: false
+    });
+    __registerWorkerAttachmentForTest(
+      WS,
+      /** @type {any} */ ({
+        prActions: {
+          probeMergeability: async () => {
+            probed = true;
+            return null;
+          }
+        }
+      })
+    );
+
+    const result = await enqueueWorkerManualMerge(WS, {
+      bead_id: 'UI-1',
+      expected_revision: store.snapshot(WS).revision - 1
+    });
+
+    expect(result).toMatchObject({ ok: false, conflict: true });
+    expect(probed).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
   test('makes no queue effect when the PR identity is unreadable', async () => {
     const store = seedLane();
     registerAttachment({
