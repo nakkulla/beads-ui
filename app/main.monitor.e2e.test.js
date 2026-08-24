@@ -306,6 +306,93 @@ describe('monitor tab direct entry (UI-nprg)', () => {
   });
 });
 
+describe('monitor 실행가능 → 연결 레인 드롭 (UI-e6hw §5.4)', () => {
+  // 드롭 하나가 여러 op가 되면 순서가 계약이다: 의존을 먼저 걸고, 그 다음 자기
+  // 레포 병렬 큐에 적재한다. 순서가 뒤집히면 적재된 행이 잠깐 선행 없이 출발할
+  // 수 있다.
+  test('sends dep-add before worker-queue-place', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 3,
+          queue: [{ bead_id: 'UI-wait', added_at: NOW }],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [
+            { bead_id: 'UI-cand', title: '후보', spec_id: 'docs/a.md' }
+          ],
+          attempts: {},
+          bead_titles: { 'UI-wait': '대기' },
+          bead_blocked_by: {},
+          pr_observations: {}
+        },
+        {
+          root_dir: '/tmp/ws-b',
+          name: 'ws-b',
+          revision: 1,
+          queue: [{ bead_id: 'B-tail', added_at: NOW }],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [],
+          attempts: {},
+          bead_titles: { 'B-tail': '후속' },
+          bead_blocked_by: { 'B-tail': ['UI-wait'] },
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 },
+        { root_dir: '/tmp/ws-b', name: 'ws-b', revision: 1, slots: 1 }
+      ]
+    });
+    await flush();
+
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+    const card = /** @type {HTMLElement} */ (
+      monitor_root.querySelector(
+        '#monitor-runnable .worker-card[data-bead-id="UI-cand"]'
+      )
+    );
+    const lane = /** @type {HTMLElement} */ (
+      monitor_root.querySelector('[data-drop="chain"]')
+    );
+    client._clearSent();
+    card.dispatchEvent(
+      new Event('dragstart', { bubbles: true, cancelable: true })
+    );
+    lane.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }));
+    await flush();
+
+    expect(
+      client
+        ._sent()
+        .map((/** @type {any} */ m) => m.type)
+        .filter((/** @type {string} */ t) => t !== 'subscribe-monitor-pipeline')
+    ).toEqual(['dep-add', 'worker-queue-place']);
+    expect(client._sent()[0].payload).toEqual({
+      a: 'UI-cand',
+      b: 'B-tail',
+      root_dir: '/tmp/ws-a'
+    });
+  });
+});
+
 describe('monitor 완료 기간 select (UI-qrfo §7)', () => {
   test("persists a period change to the monitor's own localStorage key", async () => {
     window.location.hash = '#/monitor';

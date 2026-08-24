@@ -6447,114 +6447,6 @@ html[data-theme='dark'] {
   color: var(--text-primary);
 }
 
-.mon-link {
-  position: relative;
-}
-
-.mon-link__trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  padding: var(--sp-1) var(--sp-4);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
-  cursor: pointer;
-}
-
-/* 레인 본문은 overflow-y:auto라 x축도 잘린다 — 카드 안에 절대배치하면 팝오버가
-   레인 경계에서 통째로 잘린다. 뷰포트 고정 배치로 빼고 좌표는 JS가 트리거
-   rect에서 계산한다 (UI-thwe). */
-.mon-link__popover {
-  position: fixed;
-  z-index: 21;
-  display: grid;
-  gap: var(--sp-4);
-  width: min(340px, 78vw);
-  padding: var(--sp-6);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-6);
-  background: var(--bg-panel);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
-}
-
-.mon-link__search {
-  width: 100%;
-  padding: var(--sp-5) var(--sp-6);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: var(--bg-card);
-  color: var(--text-primary);
-  font: inherit;
-}
-
-.mon-link__list {
-  display: grid;
-  gap: var(--sp-2);
-  max-height: 280px;
-  overflow-y: auto;
-}
-
-.mon-link__candidate,
-.mon-link__direct {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: var(--sp-2) var(--sp-6);
-  padding: var(--sp-5) var(--sp-6);
-  border: 0;
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.mon-link__candidate:hover,
-.mon-link__candidate:focus-visible,
-.mon-link__direct:hover,
-.mon-link__direct:focus-visible {
-  background: var(--bg-card);
-  color: var(--text-primary);
-}
-
-.mon-link__candidate strong {
-  color: var(--text-id-mono);
-  font-family: var(--font-mono);
-}
-
-.mon-link__candidate span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mon-link__candidate small {
-  grid-column: 1 / -1;
-  color: var(--text-dim);
-}
-
-.mon-link__direct {
-  display: block;
-  color: var(--text-id-mono);
-  font-family: var(--font-mono);
-}
-
-.mon-link__empty {
-  color: var(--text-dim);
-  font-size: var(--fs-chip);
-  text-align: center;
-}
-
-.mon-link__error {
-  color: var(--accent-danger);
-  font-size: var(--fs-chip);
-  white-space: pre-wrap;
-}
-
 .mon-lane-op {
   padding: 0 var(--sp-6);
   border: 1px solid var(--border-chip);
@@ -6857,6 +6749,7 @@ html[data-theme='dark'] {
    흐려도 보여야 한다. 타일은 제어 표면이라 덜 흐리게 둔다. */
 .mon.has-focus .mon2-sec:not(.is-focus),
 .mon.has-focus .mon2-item:not(.is-focus),
+.mon.has-focus .mon2-crow:not(.is-focus),
 .mon.has-focus .rtile:not(.is-focus),
 .mon.has-focus .worker-mini:not(.is-focus) {
   opacity: 0.38;
@@ -6895,7 +6788,8 @@ html[data-theme='dark'] {
 
 .mon2-sec__toggle,
 .mon2-sec__worker,
-.mon2-chains__toggle {
+.mon2-area__toggle,
+.mon2-newlane {
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -6905,7 +6799,8 @@ html[data-theme='dark'] {
 
 .mon2-sec__toggle:hover,
 .mon2-sec__worker:hover,
-.mon2-chains__toggle:hover {
+.mon2-area__toggle:hover,
+.mon2-newlane:hover:not(:disabled) {
   color: var(--text-primary);
 }
 
@@ -6921,15 +6816,6 @@ html[data-theme='dark'] {
   font-variant-numeric: tabular-nums;
 }
 
-/* 읽기 전용 자동화 상태 점 (§6) — 토글은 데크가 소유한다. */
-.mon2-sec__auto {
-  color: var(--text-dim);
-}
-
-.mon2-sec__auto.is-on {
-  color: var(--accent-success);
-}
-
 .mon2-sec__worker {
   margin-left: auto;
 }
@@ -6940,10 +6826,6 @@ html[data-theme='dark'] {
   gap: var(--sp-4);
 }
 
-.mon2-sec__body.worker-wait {
-  gap: var(--sp-6);
-}
-
 .mon2-flat {
   display: flex;
   flex-direction: column;
@@ -6952,22 +6834,6 @@ html[data-theme='dark'] {
 
 .mon2-item {
   position: relative;
-}
-
-/* 🔗 연결 어포던스는 카드 위에 얹는다 — Worker 카드 템플릿을 건드리지 않기
-   위해서다. 헤더 줄이 그만큼 오른쪽을 비워 두어야 route 칩과 겹치지 않는다. */
-.mon2-item__ops {
-  position: absolute;
-  top: var(--sp-2);
-  right: var(--sp-2);
-}
-
-.mon2-item > .worker-card > .worker-card__head {
-  padding-right: 28px;
-}
-
-.mon2-item > .worker-mini {
-  padding-right: 28px;
 }
 
 /* 빈 직렬 레인 (§6): 평소엔 한 줄 힌트로 접히고, 드래그가 시작되면 드롭 타깃
@@ -7002,34 +6868,119 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
-/* 🔗 연결 체인 블록 (§6.4) — 투영이지 제어가 아니다: 드래그도 조작도 없다. */
-.mon2-chains {
+/* --- 대기 레인 두 영역 (UI-e6hw §4) ---------------------------------------
+   레포 섹션은 사라졌다: 카드가 자기 레포를 이미 알고 있으므로 레포는 좌표가
+   아니라 배지다. 남은 좌표는 병렬 영역 하나와 직렬 영역 하나뿐이다. */
+.mon2-wait {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-6);
+}
+
+.mon2-area {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.mon2-area__hd {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-5);
+  padding: var(--sp-3) 0;
+  background: var(--bg-app);
+  font-size: var(--fs-chip);
+}
+
+.mon2-area__name {
+  color: var(--text-secondary);
+}
+
+.mon2-area__count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+/* `+ 연결 레인`은 빈 레인이 이미 있으면 잠긴다 — 빈 레인은 하나면 족하다. */
+.mon2-newlane {
+  margin-left: auto;
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+}
+
+.mon2-newlane:disabled {
+  color: var(--text-dim);
+  cursor: default;
+}
+
+.mon2-area__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.mon2-serial > .mon2-area__body {
+  gap: var(--sp-6);
+}
+
+/* 순번 `#n`은 자기 레포 큐 안의 순서다 (§4.1). Worker `miniRow`가 그리는 숫자에
+   `#`만 여기서 붙인다 — 두 탭이 공유하는 템플릿을 모니터 사실로 가르지 않는다. */
+.mon2-parallel .worker-mini__seq::before {
+  content: '#';
+}
+
+/* 연결 레인 (§4.2): blocks 의존이 만든 레포 간 순서. 레포 직렬 레인과 같은
+   pane 톤을 쓰되 이름으로 구분한다. */
+.mon2-clane {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  padding-bottom: var(--sp-6);
-  border-bottom: 1px solid var(--border-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-6);
+  padding: var(--sp-5) var(--sp-6);
 }
 
-.mon2-chains__hd {
+.mon2-clane__hd {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-5);
+  font-size: var(--fs-chip);
 }
 
-.mon2-chains__hint {
-  margin-left: auto;
+.mon2-clane__name {
+  color: var(--text-secondary);
+}
+
+.mon2-clane__count {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.mon2-clane__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.mon2-lane__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.mon2-clane__hint {
+  padding: var(--sp-2) var(--sp-4);
   color: var(--text-dim);
   font-size: var(--fs-caption);
 }
 
-.mon2-chain + .mon2-chain {
-  margin-top: var(--sp-4);
-}
-
-.mon2-chain__node {
+.mon2-crow {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--sp-4);
   padding: var(--sp-2) var(--sp-4);
@@ -7039,25 +6990,70 @@ html[data-theme='dark'] {
   cursor: pointer;
 }
 
-.mon2-chain__node:hover {
+.mon2-crow:hover {
   color: var(--text-primary);
 }
 
-.mon2-chain__repo {
-  padding: 1px var(--sp-4);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
-}
-
-.mon2-chain__where {
+.mon2-crow__seq {
+  flex: 0 0 auto;
   color: var(--text-dim);
 }
 
-.mon2-chain__cycle {
-  color: var(--accent-warn);
-  font-size: var(--fs-chip);
+.mon2-crow__title {
+  flex: 1 1 12ch;
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon2-crow__where {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+
+/* 드롭 대상 표시 (§5.4): 대상은 영역/레인이지 카드가 아니므로 테두리가 아니라
+   윤곽선으로 말한다 — 카드 테두리는 이미 다른 사실을 싣고 있다. */
+[data-drop].is-drop-over {
+  outline: 1px solid var(--accent-success);
+  outline-offset: 2px;
+  border-radius: var(--r-6);
+}
+
+/* 행 조작 버튼은 coarse pointer·좁은 화면 전용 보완재다 (§6): 데스크톱의
+   드래그와 같은 규칙을 버튼 하나로 실행한다. */
+.mon2-rowops {
+  display: none;
+}
+
+.mon2-crow__detach {
+  display: none;
+}
+
+@media (any-pointer: coarse), (max-width: 640px) {
+  .mon2-rowops,
+  .mon2-crow__detach {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-3);
+  }
+
+  .mon2-rowops {
+    justify-content: flex-end;
+    padding: 0 var(--sp-4) var(--sp-3);
+  }
+
+  .mon2-rowops button,
+  .mon2-crow__detach {
+    min-width: 28px;
+    padding: var(--sp-2) var(--sp-4);
+    border: 1px solid var(--border-chip);
+    border-radius: var(--r-5);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    cursor: pointer;
+  }
 }
 
 /* 의존 칩 (§5.1): 두 방향을 색이 아니라 **이름**으로 가르되, 색도 서로 다르게

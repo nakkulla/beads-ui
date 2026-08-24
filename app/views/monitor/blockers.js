@@ -32,15 +32,6 @@
  */
 
 /**
- * @typedef {Object} SerialLinkCandidate
- * @property {string} id
- * @property {string} title
- * @property {string} root_dir
- * @property {string} workspace_name
- * @property {string} location
- */
-
-/**
  * @param {string} root_dir
  * @param {string} lane
  */
@@ -340,43 +331,6 @@ export function detectSerialLaneHeadCycles(queue_groups) {
     }
   }
   return cycles;
-}
-
-/**
- * @param {any} lanes
- * @returns {SerialLinkCandidate[]}
- */
-export function buildSerialLinkCandidates(lanes) {
-  const locations = buildBlockerLocationMap(lanes);
-  /** @type {Map<string, any>} */
-  const items = new Map();
-  for (const item of [
-    ...(Array.isArray(lanes?.runnable) ? lanes.runnable : []),
-    ...(Array.isArray(lanes?.queue) ? lanes.queue : []),
-    ...(Array.isArray(lanes?.running) ? lanes.running : []),
-    ...(Array.isArray(lanes?.pr_wait) ? lanes.pr_wait : [])
-  ]) {
-    if (!items.has(item.id)) {
-      items.set(item.id, item);
-    }
-  }
-  return Array.from(items.values()).map((item) => ({
-    id: item.id,
-    title: item.title,
-    root_dir: item.root_dir,
-    workspace_name: item.workspace_name,
-    location: locations.has(item.id)
-      ? (() => {
-          const location = /** @type {BlockerLocation} */ (
-            locations.get(item.id)
-          );
-          const label = blockerLocationLabel(location);
-          return location.state
-            ? `${location.workspace_name} · ${label}`
-            : label;
-        })()
-      : ''
-  }));
 }
 
 /**
