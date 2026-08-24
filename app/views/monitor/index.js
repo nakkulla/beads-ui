@@ -1176,7 +1176,6 @@ export function createMonitorView(mount_element, options) {
                   repo: item.workspace_name,
                   root_dir: item.root_dir,
                   serial_lane_id: item.serial_lane_id,
-                  workflow: /** @type {any} */ (item.workflow || null),
                   last_activity: item.last_activity || null,
                   legs: /** @type {any} */ (item.legs || []),
                   dependency_chips: item.dependency_chips || null

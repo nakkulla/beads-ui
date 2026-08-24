@@ -587,7 +587,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     expect(tile).toContain('rtile__lane');
   });
 
-  test('adds the stepper, the last activity and its age', () => {
+  test('adds the last activity and its age without a stepper', () => {
     const tile = shape(
       runningTile(tileInput(), 5000, null, {
         monitor: /** @type {any} */ (monitor)
@@ -596,7 +596,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
 
     expect(tile).toContain('⚡ npm test — 통과 41');
     expect(tile).toContain('rtile__activity-age');
-    expect(tile).toContain('class="stp"');
+    expect(tile).not.toContain('class="stp"');
   });
 
   test('spells out live delegations and folds finished ones into one chip', () => {
@@ -606,9 +606,37 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
       })
     );
 
-    expect(tile).toContain('⟳ 구현 unit 3 · codex');
-    expect(tile).toContain('✓ 1');
+    expect(tile).toContain('위임 중 · 구현 unit 3 · codex');
+    expect(tile).toContain('위임 완료 1');
     expect(tile).toContain('완료된 위임: review-consult · codex');
+  });
+
+  test('hides the codex-runner forwarder leg behind its codex session', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ ({
+          ...monitor,
+          legs: [
+            {
+              label: 'codex-runner · claude',
+              agent_type: 'codex-runner',
+              state: 'live'
+            },
+            { label: 'review-consult · codex', state: 'live' },
+            {
+              label: 'codex-runner · claude',
+              agent_type: 'codex-runner',
+              state: 'done'
+            },
+            { label: 'review-consult · codex', state: 'done' }
+          ]
+        })
+      })
+    );
+
+    expect(tile).not.toContain('codex-runner');
+    expect(tile).toContain('위임 중 · review-consult · codex');
+    expect(tile).toContain('위임 완료 1');
   });
 
   test('adds the reverse successor chip', () => {

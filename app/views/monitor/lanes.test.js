@@ -716,7 +716,7 @@ describe('monitor lane fail-quiet', () => {
     expect(lanes.runnable[0].workflow).toBe(workflow);
   });
 
-  test('feeds the bead_workflow projection into the running tile stepper', () => {
+  test('carries no bead_workflow projection on the running tile', () => {
     const workflow = {
       route: 'spec_backed',
       stages: { spec: { fill: 'full' } }
@@ -738,27 +738,7 @@ describe('monitor lane fail-quiet', () => {
       [state()]
     );
 
-    expect(lanes.running[0].workflow).toBe(workflow);
-  });
-
-  test('omits the stepper for a running bead the cache has not filled yet', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'A-1',
-              status: 'running',
-              started_at: 5
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.running[0].workflow).toBeNull();
+    expect(lanes.running[0].workflow).toBeUndefined();
   });
 
   test('carries the running attempt activity and legs overlay through', () => {

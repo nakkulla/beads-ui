@@ -938,7 +938,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
     const bead_blocked_by = objectOf(workspace.bead_blocked_by);
-    const bead_workflow = objectOf(workspace.bead_workflow);
     const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
@@ -1051,9 +1050,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
         attempt_id: live.attempt_id,
         run_state: live.run_state,
         status: live.status || undefined,
-        // 실행중 타일의 stepper (§7) — Phase 1의 `bead_workflow` 투영이다.
-        // 그 버드의 항목이 아직 채워지지 않았으면 stepper만 생략된다.
-        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         can_pause: live.can_pause,
         can_resume: live.can_resume,
         started_at: live.started_at,

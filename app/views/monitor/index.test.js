@@ -1363,7 +1363,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
 });
 
 describe('views/monitor running tile detail (UI-eey2 §7)', () => {
-  test('draws the stepper, the last activity and the live delegation', () => {
+  test('draws the last activity and the live delegation without a stepper', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -1399,15 +1399,15 @@ describe('views/monitor running tile detail (UI-eey2 §7)', () => {
     view.load();
 
     const tile = el(mount, '#monitor-running .rtile');
-    expect(tile.querySelector('.stp')).toBeTruthy();
+    expect(tile.querySelector('.stp')).toBeNull();
     expect(tile.querySelector('.rtile__activity-text')?.textContent).toContain(
       'npm test'
     );
     expect(tile.querySelector('.rtile__leg--live')?.textContent).toContain(
-      '구현 unit 3'
+      '위임 중 · 구현 unit 3'
     );
     expect(tile.querySelector('.rtile__leg--done')?.textContent).toContain(
-      '✓ 1'
+      '위임 완료 1'
     );
   });
 
