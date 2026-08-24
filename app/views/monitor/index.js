@@ -32,6 +32,7 @@ import { requestResumeInstructions } from '../../utils/resume-instructions-dialo
 import { showToast } from '../../utils/toast.js';
 import {
   candidateCard,
+  dependencyChipsTemplate,
   discardCompletionMessage,
   discardConfirmationMessage,
   miniRow,
@@ -51,8 +52,43 @@ import {
 
 /**
  * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorOccupant, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
+ * @import { DependencyChips, OverlapPopover, OverlapPopoverRow } from '../worker/lanes.js'
  * @import { DropDrag, DropModel, DropTarget, Op } from './drop-plan.js'
  */
+
+/** 겹침 팝오버의 배치 버튼 문구 (UI-qm12 §5.4). */
+const OVERLAP_PLACE_LABEL = '같은 직렬 레인으로';
+
+/**
+ * A bead's 직렬 레인 (UI-qm12 §5.4): 대기 중이면 그 레인, 실행 중이면 출발한
+ * 레인. 병렬 큐·실행가능·병렬에서 출발한 실행 중은 레인이 없다.
+ *
+ * @param {MonitorItem} item
+ * @returns {string|null}
+ */
+function serialLaneOf(item) {
+  if (typeof item.lane === 'string' && /^s[1-5]$/.test(item.lane)) {
+    return item.lane;
+  }
+  if (item.lane === 'running' && item.serial_lane_id) {
+    return item.serial_lane_id;
+  }
+  return null;
+}
+
+/**
+ * Movable = 대기(병렬/직렬) 또는 실행가능 (UI-qm12 §5.4). 실행 중인 항목은
+ * 옮기지 않는다 — 이미 워크트리를 잡고 있다.
+ *
+ * @param {MonitorItem} item
+ */
+function isPlaceable(item) {
+  return (
+    item.lane === 'runnable' ||
+    item.lane === 'queue' ||
+    (typeof item.lane === 'string' && /^s[1-5]$/.test(item.lane))
+  );
+}
 
 /**
  * Persisted period range for the 완료 lane (UI-qrfo §7). Its OWN key, separate
@@ -318,6 +354,16 @@ export function createMonitorView(mount_element, options) {
    * @type {string|null}
    */
   let place_menu_bead = null;
+
+  /**
+   * 지금 열려 있는 겹침 팝오버 (UI-qm12 §5.3). 상대 id만 기억한다 — 버튼 판정은
+   * 클릭 시점의 최신 모델로 다시 하므로, 팝오버가 열린 사이 스냅샷이 바뀌어도
+   * 낡은 결론을 실행하지 않는다. `counterpart_id: null`은 `+n` 칩이 연 전체
+   * 목록이다.
+   *
+   * @type {{ bead_id: string, counterpart_id: string|null }|null}
+   */
+  let open_overlap = null;
 
   /**
    * `+ 연결 레인`이 만든 빈 연결 레인 (§4.2). 세션 메모리다 — 빈 레인은 드롭
@@ -624,6 +670,298 @@ export function createMonitorView(mount_element, options) {
     doRender();
   }
 
+  // --- 겹침 칩·팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4) ---
+
+  /**
+   * The repo's first EMPTY 직렬 레인 (§5.4): 서버 배열에 entry가 없고 점유자도
+   * 없는 레인. 설정만 있고 비어 있어 투영에서 접힌 레인도 후보다 — 접힘은
+   * 표시 사정이지 사실이 아니다.
+   *
+   * @param {string} root_dir
+   * @returns {'s1'|'s2'|'s3'|'s4'|'s5'|null}
+   */
+  function firstEmptySerialLane(root_dir) {
+    const group = lanes.queue_groups.find(
+      (entry) => entry.root_dir === root_dir
+    );
+    if (!group) {
+      return null;
+    }
+    for (let index = 0; index < group.serial_lane_count; index += 1) {
+      const id = /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (`s${index + 1}`);
+      const lane = group.sublanes.serial.find((entry) => entry.id === id);
+      if (!lane) {
+        return id;
+      }
+      if (lane.raw_length === 0 && lane.occupied_by.length === 0) {
+        return id;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Where a 끝 삽입 lands: 그 레인 서버 배열의 마지막 다음 자리다.
+   *
+   * @param {string} root_dir
+   * @param {'s1'|'s2'|'s3'|'s4'|'s5'} lane_id
+   */
+  function serialLaneEnd(root_dir, lane_id) {
+    const group = lanes.queue_groups.find(
+      (entry) => entry.root_dir === root_dir
+    );
+    const lane = group
+      ? group.sublanes.serial.find((entry) => entry.id === lane_id)
+      : undefined;
+    return lane ? lane.raw_length : 0;
+  }
+
+  /**
+   * @typedef {{ kind: 'note', text: string }
+   *   | { kind: 'disabled', title: string }
+   *   | { kind: 'ops', title: string, root_dir: string, ops: Array<{ bead_id: string, lane: 's1'|'s2'|'s3'|'s4'|'s5', index: number }> }} PlacementPlan
+   */
+
+  /**
+   * The §5.4 decision table, verbatim. 어느 한쪽에 직렬 레인이 있으면 그 레인을
+   * 쓰고(1 op), 둘 다 없을 때만 빈 레인에 둘을 차례로 넣는다(2 op). 실행 중인
+   * 항목은 옮기지 않으므로 그 자리에는 버튼 대신 문장이 선다.
+   *
+   * @param {string} me_id - 칩을 눌러 팝오버를 연 카드의 bead.
+   * @param {string} counterpart_id - 겹치는 상대로 팝오버 행에 선 bead.
+   * @returns {PlacementPlan}
+   */
+  function placementPlan(me_id, counterpart_id) {
+    const me = item_by_bead.get(me_id);
+    const other = item_by_bead.get(counterpart_id);
+    if (!me || !other) {
+      return { kind: 'note', text: '상대의 현재 위치를 알 수 없습니다' };
+    }
+    const my_lane = serialLaneOf(me);
+    const other_lane = serialLaneOf(other);
+    if (
+      my_lane !== null &&
+      my_lane === other_lane &&
+      me.root_dir === other.root_dir
+    ) {
+      return { kind: 'note', text: '이미 같은 직렬 레인 — 순서가 있습니다' };
+    }
+    const my_move = isPlaceable(me);
+    const other_move = isPlaceable(other);
+    if (my_move && other_lane !== null) {
+      const lane = /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (other_lane);
+      return {
+        kind: 'ops',
+        title: `${lane} 끝에 ${me_id}를 넣습니다`,
+        root_dir: other.root_dir,
+        ops: [
+          {
+            bead_id: me_id,
+            lane,
+            index: serialLaneEnd(other.root_dir, lane)
+          }
+        ]
+      };
+    }
+    if (my_lane !== null && other_move && other_lane === null) {
+      const lane = /** @type {'s1'|'s2'|'s3'|'s4'|'s5'} */ (my_lane);
+      return {
+        kind: 'ops',
+        title: `${lane} 끝에 ${counterpart_id}를 넣습니다`,
+        root_dir: me.root_dir,
+        ops: [
+          {
+            bead_id: counterpart_id,
+            lane,
+            index: serialLaneEnd(me.root_dir, lane)
+          }
+        ]
+      };
+    }
+    if (my_move && my_lane === null && other_move && other_lane === null) {
+      const empty = firstEmptySerialLane(me.root_dir);
+      if (empty === null) {
+        return {
+          kind: 'disabled',
+          title: '빈 직렬 레인 없음 — Worker 탭에서 레인 수 조절'
+        };
+      }
+      // 상대가 먼저다 — 겹침 칩은 순서를 주장하지 않지만, 이미 자리를 잡은
+      // 쪽을 앞에 두는 것이 사용자가 방금 본 화면과 어긋나지 않는다.
+      return {
+        kind: 'ops',
+        title: `${empty} 레인에 ${counterpart_id} → ${me_id} 순서로 넣습니다`,
+        root_dir: me.root_dir,
+        ops: [
+          { bead_id: counterpart_id, lane: empty, index: 0 },
+          { bead_id: me_id, lane: empty, index: 1 }
+        ]
+      };
+    }
+    if (!my_move && !other_move) {
+      return { kind: 'note', text: '둘 다 실행 중 — 순서를 만들 수 없습니다' };
+    }
+    if (!my_move) {
+      return {
+        kind: 'note',
+        text: '실행 중 — 순서를 만들려면 상대를 직렬 레인에 두세요'
+      };
+    }
+    return {
+      kind: 'note',
+      text: '실행 중 — 종료 후 출발하려면 직렬 레인에 두세요'
+    };
+  }
+
+  /**
+   * @param {string} me_id
+   * @param {import('./lanes.js').OverlapChip} chip
+   * @returns {OverlapPopoverRow}
+   */
+  function overlapPopoverRow(me_id, chip) {
+    const plan = placementPlan(me_id, chip.id);
+    return {
+      id: chip.id,
+      title: chip.title,
+      location_label: chip.location_label,
+      prefixes: chip.prefixes,
+      action:
+        plan.kind === 'note'
+          ? { kind: 'note', text: plan.text }
+          : plan.kind === 'disabled'
+            ? {
+                kind: 'disabled',
+                label: OVERLAP_PLACE_LABEL,
+                title: plan.title
+              }
+            : { kind: 'place', label: OVERLAP_PLACE_LABEL, title: plan.title }
+    };
+  }
+
+  /**
+   * @param {string} bead_id
+   * @param {import('./lanes.js').OverlapChip[]} overlaps
+   * @returns {OverlapPopover|null}
+   */
+  function overlapPopoverFor(bead_id, overlaps) {
+    if (!open_overlap || open_overlap.bead_id !== bead_id) {
+      return null;
+    }
+    const counterpart_id = open_overlap.counterpart_id;
+    const chips =
+      counterpart_id === null
+        ? overlaps
+        : overlaps.filter((chip) => chip.id === counterpart_id);
+    if (chips.length === 0) {
+      return null;
+    }
+    return { rows: chips.map((chip) => overlapPopoverRow(bead_id, chip)) };
+  }
+
+  /**
+   * Merge the 겹침 파생값 into the dependency chips a card already carries
+   * (§5.3) — 칩·팝오버 마크업은 한 벌이므로 전달 경로도 하나다.
+   *
+   * @param {{ id: string, overlap_chips?: import('./lanes.js').OverlapChip[], scope_state?: 'declared'|'missing', dependency_chips?: DependencyChips|null }} row
+   * @returns {DependencyChips|null}
+   */
+  function chipsWithOverlaps(row) {
+    const base = row.dependency_chips || null;
+    const overlaps = row.overlap_chips || [];
+    const scope_missing = row.scope_state === 'missing';
+    if (!base && overlaps.length === 0 && !scope_missing) {
+      return null;
+    }
+    const popover = overlapPopoverFor(row.id, overlaps);
+    return {
+      ...(base || {}),
+      ...(overlaps.length > 0 ? { overlaps } : {}),
+      ...(scope_missing ? { scope_missing: true } : {}),
+      ...(popover ? { popover } : {})
+    };
+  }
+
+  /**
+   * @param {MonitorItem} item
+   * @returns {MonitorItem}
+   */
+  function withOverlaps(item) {
+    const chips = chipsWithOverlaps(item);
+    return chips ? { ...item, dependency_chips: chips } : item;
+  }
+
+  /**
+   * Run the 1클릭 배치 (§5.4). 판정은 지금의 모델로 다시 하고, 두 번째 op는 첫
+   * 응답이 실어 온 revision으로 간다. 첫 op가 실패하면 두 번째는 보내지 않는다 —
+   * 트랜잭션이 없으므로 다음 스냅샷이 실제 상태를 그린다.
+   *
+   * @param {string} me_id
+   * @param {string} counterpart_id
+   */
+  async function placeIntoSameSerialLane(me_id, counterpart_id) {
+    const plan = placementPlan(me_id, counterpart_id);
+    open_overlap = null;
+    if (plan.kind !== 'ops') {
+      doRender();
+      return;
+    }
+    let revision = revisionOfRoot(plan.root_dir, plan.ops[0].bead_id);
+    for (const op of plan.ops) {
+      const next = await sendPlaceOp(op, plan.root_dir, revision);
+      if (next === null) {
+        break;
+      }
+      revision = next;
+    }
+    doRender();
+  }
+
+  /**
+   * @param {{ bead_id: string, lane: 's1'|'s2'|'s3'|'s4'|'s5', index: number }} op
+   * @param {string} root_dir
+   * @param {number} revision
+   * @returns {Promise<number|null>} 이어 쓸 revision, 실패면 null.
+   */
+  async function sendPlaceOp(op, root_dir, revision) {
+    try {
+      // 충돌 자동 재시도 없음 (§5.4): 판정은 클릭 시점의 모델로 했으므로,
+      // 충돌은 그 판정의 근거가 사라졌다는 뜻이다 — 낡은 계획을 새 큐에
+      // 밀어 넣지 않는다.
+      const res = await sendCas(
+        'worker-queue-place',
+        op,
+        root_dir,
+        revision,
+        false
+      );
+      if (res && res.conflict) {
+        showToast('큐가 바뀌었습니다 — 다시 시도해 주세요', 'error');
+        return null;
+      }
+      // 성공은 `applied: true` + 숫자 revision뿐이다. 그 외(전송 불가·적용
+      // 거부·revision 없는 응답)는 전부 중단 — 두 번째 op는 첫 응답의
+      // revision으로만 간다.
+      if (!res || res.applied !== true) {
+        showToast(
+          res && typeof res.admission_reason === 'string'
+            ? `큐 적재 거부: ${res.admission_reason}`
+            : '큐 요청이 적용되지 않았습니다',
+          'error'
+        );
+        return null;
+      }
+      const next_revision = res.queue ? res.queue.revision : undefined;
+      if (typeof next_revision !== 'number') {
+        showToast('큐 응답에 revision이 없습니다', 'error');
+        return null;
+      }
+      return next_revision;
+    } catch (error) {
+      showToast(mutationErrorMessage(error), 'error');
+      return null;
+    }
+  }
+
   // --- 템플릿 ---
 
   /**
@@ -722,7 +1060,7 @@ export function createMonitorView(mount_element, options) {
   function candidateRow(item) {
     return itemShell(
       item,
-      candidateCard(item, placeMenuFor(item), {
+      candidateCard(withOverlaps(item), placeMenuFor(item), {
         exec_chips_mode: 'pinned_only'
       })
     );
@@ -782,7 +1120,7 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(item)}
+      ${miniRow(withOverlaps(item))}
       <span class="mon2-rowops">
         <button
           type="button"
@@ -913,6 +1251,9 @@ export function createMonitorView(mount_element, options) {
             ✕
           </button>`
         : ''}
+      ${dependencyChipsTemplate(chipsWithOverlaps(row), {
+        lane: item_by_bead.get(row.id)?.lane
+      })}
     </div>`;
   }
 
@@ -966,7 +1307,7 @@ export function createMonitorView(mount_element, options) {
       data-row-index=${row_index}
       data-queue-index=${String(item.queue_index ?? 0)}
     >
-      ${miniRow(item)}
+      ${miniRow(withOverlaps(item))}
     </div>`;
   }
 
@@ -1188,7 +1529,7 @@ export function createMonitorView(mount_element, options) {
                   serial_lane_id: item.serial_lane_id,
                   last_activity: item.last_activity || null,
                   legs: /** @type {any} */ (item.legs || []),
-                  dependency_chips: item.dependency_chips || null
+                  dependency_chips: chipsWithOverlaps(item)
                 }
               }
             )
@@ -2224,6 +2565,27 @@ export function createMonitorView(mount_element, options) {
       void detachChainRow(bead_id);
       return;
     }
+    if (cls.contains('mon-overlap__chip')) {
+      // `+n` 칩은 상대 전부를 한 팝오버에 보인다 (§5.3).
+      const counterpart_id =
+        button.getAttribute('data-overlap-all') === 'true'
+          ? null
+          : button.getAttribute('data-overlap-id') || '';
+      const same =
+        !!open_overlap &&
+        open_overlap.bead_id === bead_id &&
+        open_overlap.counterpart_id === counterpart_id;
+      open_overlap = same ? null : { bead_id, counterpart_id };
+      doRender();
+      return;
+    }
+    if (cls.contains('mon-overlap__place')) {
+      void placeIntoSameSerialLane(
+        bead_id,
+        button.getAttribute('data-counterpart-id') || ''
+      );
+      return;
+    }
     if (cls.contains('worker-card__place')) {
       // 좁은 화면/coarse pointer 전용 보완재 (§5): 어느 레인에 넣을지부터 묻는다.
       place_menu_bead = place_menu_bead === bead_id ? null : bead_id;
@@ -2541,8 +2903,43 @@ export function createMonitorView(mount_element, options) {
     }
   }
 
+  /**
+   * An outside click closes the 겹침 팝오버 (§5.3). 칩과 팝오버 자신은
+   * 예외다 — 여는 클릭이 그대로 닫는 클릭이 되면 아무것도 열리지 않는다.
+   *
+   * @param {Event} ev
+   */
+  function onDocumentClick(ev) {
+    if (!open_overlap) {
+      return;
+    }
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      target &&
+      typeof target.closest === 'function' &&
+      target.closest('.mon-overlap__popover, .mon-overlap__chip')
+    ) {
+      return;
+    }
+    open_overlap = null;
+    doRender();
+  }
+
+  /**
+   * @param {KeyboardEvent} ev
+   */
+  function onDocumentKeyDown(ev) {
+    if (ev.key !== 'Escape' || !open_overlap) {
+      return;
+    }
+    open_overlap = null;
+    doRender();
+  }
+
   mount_element.addEventListener('click', onClick);
   mount_element.addEventListener('change', onChange);
+  document.addEventListener('click', onDocumentClick);
+  document.addEventListener('keydown', /** @type {any} */ (onDocumentKeyDown));
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
   mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
@@ -2604,6 +3001,11 @@ export function createMonitorView(mount_element, options) {
       deck = null;
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
+      document.removeEventListener('click', onDocumentClick);
+      document.removeEventListener(
+        'keydown',
+        /** @type {any} */ (onDocumentKeyDown)
+      );
       mount_element.removeEventListener(
         'dragstart',
         /** @type {any} */ (onDragStart)

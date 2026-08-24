@@ -7117,6 +7117,7 @@ html[data-theme='dark'] {
 /* 의존 칩 (§5.1): 두 방향을 색이 아니라 **이름**으로 가르되, 색도 서로 다르게
    둔다 — 선행은 나를 막는 것(amber), 후속은 내가 푸는 것(blue). */
 .worker-deps {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-4);
@@ -7145,6 +7146,134 @@ html[data-theme='dark'] {
 .worker-dep--warn {
   border-color: var(--border-warn);
   color: var(--accent-warn);
+}
+
+/* scope 겹침 칩 (UI-qm12 §5.3): 🔒/🔗는 blocks 의존 전용이므로 재사용하지 않고
+   겹침은 호박색 `⧉`로 따로 말한다. 치수는 기존 `worker-dep` 그대로다 — 같은
+   줄에 서는 칩이 서로 다른 높이를 가지면 줄이 흔들린다. */
+.worker-dep--overlap {
+  border-color: var(--border-warn);
+  background: color-mix(in srgb, var(--accent-warn) 14%, transparent);
+  color: var(--accent-warn);
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.worker-dep--overlap:hover {
+  background: color-mix(in srgb, var(--accent-warn) 24%, transparent);
+}
+
+/* 판정 불가 — 색으로 경고하지 않는다. 겹치지 않는다는 뜻이 아니라 모른다는 뜻이다. */
+.worker-dep--muted {
+  border-color: var(--border-chip);
+  color: var(--text-dim);
+}
+
+.mon-overlap__popover {
+  position: absolute;
+  top: calc(100% + var(--sp-4));
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-8);
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--sp-8);
+  border: 1px solid var(--border-card);
+  border-radius: var(--r-8);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: var(--fs-small);
+  text-align: left;
+  cursor: default;
+}
+
+.mon-overlap__row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.mon-overlap__row + .mon-overlap__row {
+  padding-top: var(--sp-8);
+  border-top: 1px solid var(--border-kv-row);
+}
+
+.mon-overlap__hd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-6);
+}
+
+.mon-overlap__rid {
+  color: var(--text-id-mono);
+  font-family: var(--font-mono);
+}
+
+.mon-overlap__rtitle {
+  flex: 1 1 12ch;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-title);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mon-overlap__rwhere {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.mon-overlap__paths {
+  margin: 0;
+  padding-left: var(--sp-16);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  overflow-wrap: anywhere;
+}
+
+.mon-overlap__note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.mon-overlap__place {
+  align-self: flex-start;
+  padding: var(--sp-3) var(--sp-8);
+  border: 1px solid var(--border-warn);
+  border-radius: var(--r-5);
+  background: color-mix(in srgb, var(--accent-warn) 14%, transparent);
+  color: var(--accent-warn);
+  font: inherit;
+  font-size: var(--fs-caption);
+  cursor: pointer;
+}
+
+.mon-overlap__place[disabled] {
+  border-color: var(--border-chip);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
+/* 모바일 (UI-qm12 §5.5): 팝오버는 카드 폭 전체를 쓰는 블록으로 카드 아래에
+   펼친다 — 별도 시트 컴포넌트를 두지 않는다. 칩 자체는 기존 의존 칩의 줄바꿈
+   규칙을 그대로 따른다. */
+@media (max-width: 640px) {
+  .mon-overlap__popover {
+    position: static;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    margin-top: var(--sp-6);
+  }
 }
 
 .worker-dep__remove {

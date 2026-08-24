@@ -603,22 +603,105 @@ export function execChipsTemplate(chips, options = {}) {
  */
 
 /**
+ * One 겹침 상대 (UI-qm12 §5.2·§5.3). 선언 scope가 부딪히는 상대일 뿐, 순서를
+ * 주장하지 않는다 — 배치는 사용자가 팝오버에서 한 번의 클릭으로 만든다.
+ *
+ * @typedef {Object} OverlapChip
+ * @property {string} id - 상대 bead.
+ * @property {string} title
+ * @property {string} location_label - `실행중` · `#n` · `s1 #n` · `실행가능`.
+ * @property {string[]} prefixes - 두 선언이 부딪힌 자리 — 각 쌍에서 더 긴
+ * prefix를 채택한 사전순 목록.
+ */
+
+/**
+ * One 겹침 팝오버 행 (UI-qm12 §5.3·§5.4). `action`은 클릭 시점의 최신 모델로
+ * 판정한 결과이고, 판정 규칙은 모니터가 소유한다 — 템플릿은 그 결론만 그린다.
+ *
+ * @typedef {Object} OverlapPopoverRow
+ * @property {string} id
+ * @property {string} title
+ * @property {string} location_label
+ * @property {string[]} prefixes
+ * @property {{ kind: 'place'|'disabled', label: string, title: string }|{ kind: 'note', text: string }} action
+ */
+
+/**
+ * @typedef {Object} OverlapPopover
+ * @property {OverlapPopoverRow[]} rows
+ */
+
+/**
  * @typedef {Object} DependencyChips
  * @property {DependencyChip[]} [predecessors] - `🔒 선행 …` — releasable (✕).
  * @property {DependencyChip[]} [successors] - `→ 후속 …` — reverse edges, so
  * they carry no ✕: releasing one belongs to the successor's own 선행 chip.
  * @property {string[]} [warnings] - Lines about a predecessor that is nowhere.
+ * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
+ * @property {boolean} [scope_missing] - 스펙은 있는데 scope 선언이 비었다 —
+ * 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
+ * @property {OverlapPopover} [popover] - 이 행에서 열려 있으면 칩 아래에 그리는
+ * `mon-overlap__popover`.
  */
 
+/** 겹침 칩을 접지 않고 그리는 최대 개수 (UI-qm12 §5.3). */
+const OVERLAP_CHIP_LIMIT = 3;
+
 /**
- * The 선행/후속 의존 칩 (UI-eey2 §5.1). Two named chips rather than one coloured
- * one, because "내가 막혔나 / 내가 막고 있나"는 색이 아니라 이름으로 읽힌다.
- * Drawn only when a projection supplies them, so Worker rows are unchanged.
+ * The 겹침 팝오버 (UI-qm12 §5.3): 상대 id·제목·위치, 겹치는 경로, 그리고 순서를
+ * 만드는 버튼 하나 또는 왜 만들 수 없는지 말하는 문장 하나. `+n` 칩이 열면
+ * 상대 전부가 각자 자기 버튼을 갖고 목록으로 선다.
+ *
+ * @param {OverlapPopover} popover
+ * @returns {import('lit-html').TemplateResult}
+ */
+function overlapPopoverTemplate(popover) {
+  return html`<div
+    class="mon-overlap__popover"
+    role="dialog"
+    aria-label="scope 겹침"
+  >
+    ${popover.rows.map(
+      (row) =>
+        html`<div class="mon-overlap__row">
+          <div class="mon-overlap__hd">
+            <span class="mon-overlap__rid">${row.id}</span>
+            <span class="mon-overlap__rtitle">${row.title}</span>
+            <span class="mon-overlap__rwhere">${row.location_label}</span>
+          </div>
+          <ul class="mon-overlap__paths">
+            ${row.prefixes.map((prefix) => html`<li>${prefix}</li>`)}
+          </ul>
+          ${row.action.kind === 'note'
+            ? html`<p class="mon-overlap__note">${row.action.text}</p>`
+            : html`<button
+                type="button"
+                class="mon-overlap__place"
+                data-counterpart-id=${row.id}
+                ?disabled=${row.action.kind === 'disabled'}
+                title=${row.action.title}
+              >
+                ${row.action.label}
+              </button>`}
+        </div>`
+    )}
+  </div>`;
+}
+
+/**
+ * The 선행/후속 의존 칩 (UI-eey2 §5.1)과 겹침 칩 (UI-qm12 §5.3). Two named chips
+ * rather than one coloured one, because "내가 막혔나 / 내가 막고 있나"는 색이
+ * 아니라 이름으로 읽힌다. Drawn only when a projection supplies them, so Worker
+ * rows are unchanged.
+ *
+ * `lane`은 `scope 없음` 칩 하나를 위해서만 쓴다: 실행 중 행에는 붙이지 않는다
+ * (§5.3) — 이미 출발한 이슈에게 선언을 요구하는 문장이기 때문이다.
  *
  * @param {DependencyChips|null|undefined} chips
+ * @param {{ lane?: string }} [options]
  * @returns {import('lit-html').TemplateResult|''}
  */
-export function dependencyChipsTemplate(chips) {
+export function dependencyChipsTemplate(chips, options = {}) {
   if (!chips) {
     return '';
   }
@@ -627,13 +710,21 @@ export function dependencyChipsTemplate(chips) {
     : [];
   const successors = Array.isArray(chips.successors) ? chips.successors : [];
   const warnings = Array.isArray(chips.warnings) ? chips.warnings : [];
+  const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
+  const scope_missing =
+    chips.scope_missing === true && options.lane !== 'running';
+  const popover = chips.popover || null;
   if (
     predecessors.length === 0 &&
     successors.length === 0 &&
-    warnings.length === 0
+    warnings.length === 0 &&
+    overlaps.length === 0 &&
+    !scope_missing
   ) {
     return '';
   }
+  const folded = overlaps.length > OVERLAP_CHIP_LIMIT;
+  const shown = folded ? overlaps.slice(0, OVERLAP_CHIP_LIMIT) : overlaps;
   return html`<div class="worker-deps">
     ${predecessors.map(
       (chip) =>
@@ -649,7 +740,35 @@ export function dependencyChipsTemplate(chips) {
             ✕
           </button></span
         >`
-    )}${successors.map(
+    )}${shown.map(
+      (chip) =>
+        html`<button
+          type="button"
+          class="worker-dep worker-dep--overlap mon-overlap__chip"
+          data-overlap-id=${chip.id}
+          title=${chip.prefixes.join('\n')}
+        >
+          ⧉ 겹침 ${chip.id} (${chip.location_label})
+        </button>`
+    )}${folded
+      ? html`<button
+          type="button"
+          class="worker-dep worker-dep--overlap mon-overlap__chip mon-overlap__chip--more"
+          data-overlap-all="true"
+          title=${overlaps
+            .slice(OVERLAP_CHIP_LIMIT)
+            .map((chip) => `${chip.id} (${chip.location_label})`)
+            .join('\n')}
+        >
+          +${overlaps.length - OVERLAP_CHIP_LIMIT}
+        </button>`
+      : ''}${scope_missing
+      ? html`<span
+          class="worker-dep worker-dep--muted"
+          title="겹침 판정 불가 — 스펙에 scope 선언 필요"
+          >scope 없음</span
+        >`
+      : ''}${successors.map(
       (chip) =>
         html`<span class="worker-dep worker-dep--succ" title=${chip.title || ''}
           >${chip.label}</span
@@ -657,7 +776,7 @@ export function dependencyChipsTemplate(chips) {
     )}${warnings.map(
       (warning) =>
         html`<span class="worker-dep worker-dep--warn">${warning}</span>`
-    )}
+    )}${popover ? overlapPopoverTemplate(popover) : ''}
   </div>`;
 }
 
@@ -1145,7 +1264,9 @@ export function miniRow(item) {
           })}
         </div>`
       : '';
-  const deps_el = dependencyChipsTemplate(item.dependency_chips);
+  const deps_el = dependencyChipsTemplate(item.dependency_chips, {
+    lane: item.lane
+  });
   const receipt_el = discardReceiptTemplate(item);
   const has_foot = !!(
     usage_label ||
@@ -1251,7 +1372,9 @@ export function candidateCard(item, place_menu = null, options = {}) {
     item.reason.split(' · ').includes('missing_description');
   const danger =
     typeof item.reason === 'string' && item.reason.startsWith('⛔');
-  const deps_el = dependencyChipsTemplate(item.dependency_chips);
+  const deps_el = dependencyChipsTemplate(item.dependency_chips, {
+    lane: item.lane
+  });
   return html`<div
     class="worker-card${draggable
       ? ''

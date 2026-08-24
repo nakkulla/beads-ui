@@ -25,6 +25,7 @@ import {
   formatWorkerChip
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
+import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { discardProjection, sumAttemptWorkMs } from '../worker/lanes.js';
 import {
@@ -138,8 +139,18 @@ const DONE_KIND_LABELS = {
  *   blocker_warnings?: string[],
  *   done_kind?: string|null,
  *   spec_id?: string,
- *   labels?: string[]
+ *   labels?: string[],
+ *   overlap_chips?: OverlapChip[],
+ *   scope_state?: 'declared'|'missing'
  * }} MonitorItem
+ */
+
+/**
+ * One 겹침 상대 (UI-qm12 §5.2). 표시 전용 파생값이다 — 스케줄러도 admission도
+ * 선언 scope를 읽지 않는다. 칩 모양은 Worker 템플릿이 소유하므로 형태도
+ * 거기서 온다.
+ *
+ * @typedef {import('../worker/lanes.js').OverlapChip} OverlapChip
  */
 
 /**
@@ -221,6 +232,10 @@ const DONE_KIND_LABELS = {
  * @property {string} location_label
  * @property {boolean} draggable - 병렬 큐 멤버만 끌 수 있다 (§5.2).
  * @property {number} [queue_index]
+ * @property {OverlapChip[]} [overlap_chips] - 같은 id의 `MonitorItem`에서
+ * 복사한다 (UI-qm12 §5.2): 체인에 숨은 병렬 멤버는 이 행이 자기 겹침을 말할
+ * 유일한 자리다.
+ * @property {'declared'|'missing'} [scope_state]
  */
 
 /**
@@ -843,6 +858,126 @@ function buildChainLanes(
 }
 
 /**
+ * The declared scope of ONE comparison-set item, and what that declaration says
+ * about itself (UI-qm12 §5.2). 큐·실행 중 버드는 스냅샷 장식 `bead_scope`에서,
+ * 실행가능 항목은 자기 행이 실어 온 `scope`에서 읽는다 — 같은 버드가 큐에
+ * 적재되는 순간 판정이 달라지면 안 되므로 서버가 같은 artifact 집합을 읽는다.
+ *
+ * @param {MonitorItem} item
+ * @param {Map<string, Record<string, any>>} bead_scope_by_root
+ * @param {Map<string, string[]>} runnable_scope_by_bead
+ * @returns {{ scope: string[], state: 'declared'|'missing'|undefined }}
+ */
+function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
+  if (item.lane === 'runnable') {
+    const scope = runnable_scope_by_bead.get(item.id);
+    if (!scope) {
+      return { scope: [], state: undefined };
+    }
+    if (scope.length === 0) {
+      // 스펙이 있는데 선언이 비었을 때만 판정 불가를 드러낸다 (§3): 스펙 없는
+      // 후보는 애초에 읽을 것이 없다.
+      return { scope: [], state: item.spec_id ? 'missing' : undefined };
+    }
+    return { scope, state: 'declared' };
+  }
+  const record = bead_scope_by_root.get(item.root_dir);
+  const entry = record ? record[item.id] : undefined;
+  // 항목 없음 = 아직 안 읽음·스펙 없음, `null` = 읽기 실패 (§4.3) — 둘 다
+  // 아무 말도 하지 않는다.
+  if (!entry || !Array.isArray(entry.scope)) {
+    return { scope: [], state: undefined };
+  }
+  const scope = entry.scope.filter(
+    (/** @type {unknown} */ path) => typeof path === 'string' && path.length > 0
+  );
+  return {
+    scope,
+    state: scope.length === 0 ? 'missing' : 'declared'
+  };
+}
+
+/**
+ * Derive the 겹침 칩 (UI-qm12 §5.2): 레포별 (실행 중 ∪ 병렬 큐 ∪ 직렬 레인 ∪
+ * 실행가능) 안에서 양쪽 모두 scope를 선언한 쌍만 비교한다. PR 대기·완료는
+ * 비교 집합이 아니고 레포 간 비교는 정의되지 않는다 (scope는 레포 상대 경로다).
+ *
+ * @param {MonitorLanes} model
+ * @param {Map<string, Record<string, any>>} bead_scope_by_root
+ * @param {Map<string, string[]>} runnable_scope_by_bead
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Array<Record<string, any>>} states
+ */
+function applyScopeOverlaps(
+  model,
+  bead_scope_by_root,
+  runnable_scope_by_bead,
+  locations,
+  states
+) {
+  /** @type {Map<string, Array<{ item: MonitorItem, scope: string[] }>>} */
+  const declared_by_root = new Map();
+  for (const item of [...model.running, ...model.queue, ...model.runnable]) {
+    if (!bead_scope_by_root.has(item.root_dir)) {
+      continue;
+    }
+    const { scope, state } = declaredScopeOf(
+      item,
+      bead_scope_by_root,
+      runnable_scope_by_bead
+    );
+    if (state !== undefined) {
+      item.scope_state = state;
+    }
+    if (scope.length === 0) {
+      continue;
+    }
+    const bucket = declared_by_root.get(item.root_dir);
+    if (bucket) {
+      bucket.push({ item, scope });
+    } else {
+      declared_by_root.set(item.root_dir, [{ item, scope }]);
+    }
+  }
+
+  /**
+   * @param {MonitorItem} item
+   * @param {MonitorItem} counterpart
+   * @param {string[]} prefixes
+   */
+  const pushChip = (item, counterpart, prefixes) => {
+    /** @type {OverlapChip} */
+    const chip = {
+      id: counterpart.id,
+      title: counterpart.title,
+      location_label: chainRowLocationLabel(counterpart.id, locations, states),
+      prefixes
+    };
+    if (item.overlap_chips) {
+      item.overlap_chips.push(chip);
+    } else {
+      item.overlap_chips = [chip];
+    }
+  };
+
+  for (const entries of declared_by_root.values()) {
+    for (let left = 0; left < entries.length; left += 1) {
+      for (let right = left + 1; right < entries.length; right += 1) {
+        const prefixes = overlapPrefixes(
+          entries[left].scope,
+          entries[right].scope
+        );
+        if (prefixes.length === 0) {
+          continue;
+        }
+        pushChip(entries[left].item, entries[right].item, prefixes);
+        pushChip(entries[right].item, entries[left].item, prefixes);
+      }
+    }
+  }
+}
+
+/**
  * A timestamp that is either real or absent (UI-yrzu §5). {@link timeOf}
  * answers `0` on a parse failure, which a fallback chain would read as a valid
  * 1970 timestamp — 세션 항목의 `started_at`/`updated_at`만 이 함수를 쓴다.
@@ -934,6 +1069,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const raw_queue_length_by_root = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
+  // 선언 scope 사실 (UI-qm12 §5.2). 겹침은 레포 안에서만 정의되므로 레포별로
+  // 모으고, 실행가능 항목의 scope는 큐 장식이 아니라 자기 행이 싣고 온다.
+  /** @type {Map<string, Record<string, any>>} */
+  const bead_scope_by_root = new Map();
+  /** @type {Map<string, string[]>} */
+  const runnable_scope_by_bead = new Map();
   /** @type {Map<string, string>} */
   const title_by_bead = new Map();
   // 연결 레인 행의 route 칩 재료 (UI-yrzu §7.2). `buildChainLanes`는 워크스페이스
@@ -969,6 +1110,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
     const bead_blocked_by = objectOf(workspace.bead_blocked_by);
+    // 키 자체가 없는 구서버 스냅샷은 겹침 계산을 통째로 건너뛴다 (§5.2) —
+    // 빈 객체와 "서버가 사실을 보내지 않는다"는 다른 말이다.
+    if (Object.hasOwn(workspace, 'bead_scope')) {
+      bead_scope_by_root.set(root_dir, objectOf(workspace.bead_scope));
+    }
     // 실행중 타일의 stepper가 사라진 뒤에도 이 투영은 남는다 (UI-yrzu §7.2):
     // 이제는 대기·PR 대기·연결·실행중 행의 route 칩 재료다.
     const bead_workflow = objectOf(workspace.bead_workflow);
@@ -1525,6 +1671,15 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (workflow) {
         workflow_by_bead.set(bead_id, workflow);
       }
+      if (Array.isArray(entry.scope)) {
+        runnable_scope_by_bead.set(
+          bead_id,
+          entry.scope.filter(
+            (/** @type {unknown} */ path) =>
+              typeof path === 'string' && path.length > 0
+          )
+        );
+      }
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
@@ -1793,6 +1948,14 @@ export function buildLanes(workspaces, workspaces_state, options) {
     item.dependency_chips = chips;
   }
 
+  applyScopeOverlaps(
+    model,
+    bead_scope_by_root,
+    runnable_scope_by_bead,
+    locations,
+    states
+  );
+
   model.chains = buildChains(blocked_by_map, locations, states);
 
   const cross_wait_cycles = detectSerialLaneHeadCycles(model.queue_groups);
@@ -1821,11 +1984,30 @@ export function buildLanes(workspaces, workspaces_state, options) {
   model.chain_lanes = chain_lane_projection.chain_lanes;
   model.pending_lanes_kept = chain_lane_projection.pending_lanes_kept;
 
+  // 체인에 숨은 병렬 멤버도 화면 어딘가에서 칩을 갖는다 (UI-qm12 §5.2).
+  /** @type {Map<string, MonitorItem>} */
+  const item_by_bead = new Map();
+  for (const item of [...model.running, ...model.queue, ...model.runnable]) {
+    if (!item_by_bead.has(item.id)) {
+      item_by_bead.set(item.id, item);
+    }
+  }
+
   /** @type {Set<string>} */
   const chain_lane_members = new Set();
   for (const lane of model.chain_lanes) {
     for (const row of lane.rows) {
       chain_lane_members.add(row.id);
+      const item = item_by_bead.get(row.id);
+      if (!item) {
+        continue;
+      }
+      if (item.overlap_chips) {
+        row.overlap_chips = item.overlap_chips;
+      }
+      if (item.scope_state) {
+        row.scope_state = item.scope_state;
+      }
     }
   }
   /** @type {MonitorItem[]} */

@@ -175,6 +175,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         title: '실행 대기 이슈',
         route: 'spec_backed',
         spec_id: 'docs/specs/thing.md',
+        plan_path: null,
         spec_reviewer: 'codex',
         plan_state: 'none',
         blocked: false,
@@ -1122,5 +1123,37 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
     expect(
       out.map((item) => [item.created_at, item.updated_at, item.started_at])
     ).toEqual([[null, null, null]]);
+  });
+});
+
+describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
+  test('carries the pinned plan path so the artifact set matches a queued bead', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [row({ metadata: { plan_path: 'docs/plans/thing.md' } })]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => item.plan_path)).toEqual(['docs/plans/thing.md']);
+  });
+
+  test('projects no plan path when the metadata pins none', async () => {
+    const cache = createRunnableCache({ runJson: fakeBd({ [WS_A]: [row()] }) });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => item.plan_path)).toEqual([null]);
+  });
+
+  test('ignores a non-string plan path pin', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({ [WS_A]: [row({ metadata: { plan_path: 7 } })] })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => item.plan_path)).toEqual([null]);
   });
 });

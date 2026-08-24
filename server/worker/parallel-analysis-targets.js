@@ -10,8 +10,19 @@
  * must not invalidate an analysis of unchanged artifacts.
  */
 import crypto from 'node:crypto';
+import {
+  overlapPrefixes,
+  scopeItemsOverlap
+} from '../../app/utils/scope-overlap.js';
 import { resolveSpecId } from '../spec-id.js';
 import { parseArtifactScope } from './artifact-scope.js';
+
+/**
+ * The overlap primitives moved to `app/utils/scope-overlap.js` (UI-qm12 §5.1)
+ * so the monitor derives its 겹침 칩 from the same definition. Re-exported here
+ * because the analysis snapshot's importers already read them from this module.
+ */
+export { overlapPrefixes, scopeItemsOverlap };
 
 /**
  * Version of the analyzer prompt/result contract this snapshot feeds
@@ -54,25 +65,6 @@ function isRecord(value) {
 }
 
 /**
- * @param {string} prefix
- */
-function normalizedScopePrefix(prefix) {
-  return prefix.replace(/\/+$/, '');
-}
-
-/**
- * Test whether two declared scope items overlap on a path-segment boundary.
- *
- * @param {string} left
- * @param {string} right
- */
-export function scopeItemsOverlap(left, right) {
-  const x = normalizedScopePrefix(left);
-  const y = normalizedScopePrefix(right);
-  return x === y || y.startsWith(`${x}/`) || x.startsWith(`${y}/`);
-}
-
-/**
  * Calculate deterministic pairwise overlaps from target scope declarations.
  * Targets without a declaration are unknown and contribute no pair.
  *
@@ -103,27 +95,9 @@ export function calculateScopeOverlaps(targets) {
       if (right_scope.length === 0) {
         continue;
       }
-      /** @type {Set<string>} */
-      const prefixes = new Set();
-      for (const left_item of left_scope) {
-        for (const right_item of right_scope) {
-          if (!scopeItemsOverlap(left_item, right_item)) {
-            continue;
-          }
-          const left_prefix = normalizedScopePrefix(left_item);
-          const right_prefix = normalizedScopePrefix(right_item);
-          prefixes.add(
-            left_prefix.length >= right_prefix.length
-              ? left_prefix
-              : right_prefix
-          );
-        }
-      }
-      if (prefixes.size > 0) {
-        overlaps.push({
-          pair: [left_id, right_id],
-          prefixes: [...prefixes].sort()
-        });
+      const prefixes = overlapPrefixes(left_scope, right_scope);
+      if (prefixes.length > 0) {
+        overlaps.push({ pair: [left_id, right_id], prefixes });
       }
     }
   }
@@ -131,13 +105,21 @@ export function calculateScopeOverlaps(targets) {
 }
 
 /**
+ * The union of the declared `scope:` prefixes of `artifact_paths`, read from the
+ * pinned base. Exported since UI-qm12 §4.1: the lane-chip scope cache reads the
+ * SAME artifacts at the same base, and a second reader would be a second
+ * definition of what "declared scope" means.
+ *
+ * `fail_on_read_error` makes ONE unreadable artifact collapse the whole result
+ * to null — a partial union would silently under-declare.
+ *
  * @param {(args: string[]) => Promise<{ code: number, stdout: string }>} gitRun
  * @param {string} base_sha
  * @param {string[]} artifact_paths
  * @param {boolean} [fail_on_read_error]
  * @returns {Promise<string[]|null>}
  */
-async function scopeAtBase(
+export async function scopeAtBase(
   gitRun,
   base_sha,
   artifact_paths,

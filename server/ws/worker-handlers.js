@@ -89,6 +89,7 @@ import { runtimeCatalog } from '../worker/runner/index.js';
 import { applyPreamble, defaultTaskPrompt } from '../worker/runner/preamble.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { activeLaneLineages } from '../worker/scheduler.js';
+import { scopeCache } from '../worker/scope-cache.js';
 import { readDeclaredBase } from '../worker/target-base.js';
 import {
   normalizeUsageLegs,
@@ -988,11 +989,33 @@ function beadWorkflowFor(workspace_key, queue) {
   if (!cache) {
     return {};
   }
+  const ids = laneMemberIds(queue, true);
+  if (ids.length === 0) {
+    return {};
+  }
+  try {
+    return cache.workflowFor(workspace_key, ids);
+  } catch (err) {
+    log('bead workflow lookup failed for %s: %o', workspace_key, err);
+    return {};
+  }
+}
+
+/**
+ * The beads a LANE renders: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING
+ * attempts, with `pr_wait` included only for the stepper. `done` is never a
+ * member — a finished bead draws neither a stepper nor an overlap chip.
+ *
+ * @param {Record<string, unknown>} queue
+ * @param {boolean} include_pr_wait
+ * @returns {string[]}
+ */
+function laneMemberIds(queue, include_pr_wait) {
   /** @type {string[]} */
   const ids = [];
   const lanes = [
     queue.queue,
-    queue.pr_wait,
+    ...(include_pr_wait ? [queue.pr_wait] : []),
     ...(Array.isArray(queue.serial_lanes)
       ? /** @type {any[]} */ (queue.serial_lanes).map((lane) => lane?.entries)
       : [])
@@ -1019,15 +1042,89 @@ function beadWorkflowFor(workspace_key, queue) {
       ids.push(attempt.bead_id);
     }
   }
+  return ids;
+}
+
+/**
+ * Worker runtimes whose scope cache already has its fill callback wired. Same
+ * lazily-built-singleton problem the title cache has.
+ *
+ * @type {WeakSet<object>}
+ */
+const SCOPE_FILL_WIRED = new WeakSet();
+
+/**
+ * The process-wide declared-scope cache, with its refill fanout wired exactly
+ * once. Null when it cannot be reached, which the decoration reads as "ship
+ * nothing" rather than as an error.
+ *
+ * @returns {ReturnType<typeof import('../worker/scope-cache.js').createScopeCache>|null}
+ */
+function scopeCacheHandle() {
+  /** @type {ReturnType<typeof import('../worker/scope-cache.js').createScopeCache>|null} */
+  let cache = null;
+  try {
+    cache = scopeCache();
+  } catch {
+    return null;
+  }
+  if (!cache) {
+    return null;
+  }
+  if (!SCOPE_FILL_WIRED.has(cache)) {
+    SCOPE_FILL_WIRED.add(cache);
+    cache.onFilled((workspace) => {
+      try {
+        fanout(workspace, queueStore().snapshot(workspace));
+      } catch (err) {
+        log('scope fill fanout failed for %s: %o', workspace, err);
+      }
+    });
+  }
+  return cache;
+}
+
+/**
+ * The declared scope of every bead the WAITING and RUNNING lanes render
+ * (UI-qm12 §4.3). `pr_wait` is excluded: a bead whose PR is open has stopped
+ * competing for the tree, so an overlap chip on it would be noise.
+ *
+ * Three deliberately distinct values, none of which blocks the push:
+ *   - NO ENTRY: not read yet (`miss`), or the bead has no spec at all.
+ *   - `{ scope: [], artifacts }`: every artifact read, nothing declared.
+ *   - `null`: unreadable (missing artifact, git failure, unresolved base).
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue
+ * @returns {Record<string, { scope: string[], artifacts: string[] }|null>}
+ */
+function beadScopeFor(workspace_key, queue) {
+  const titles = titleCacheHandle();
+  const scopes = scopeCacheHandle();
+  if (!titles || !scopes) {
+    return {};
+  }
+  const ids = laneMemberIds(queue, false);
   if (ids.length === 0) {
     return {};
   }
+  /** @type {Record<string, { scope: string[], artifacts: string[] }|null>} */
+  const out = {};
   try {
-    return cache.workflowFor(workspace_key, ids);
+    const artifacts_by_bead = titles.scopeArtifactsFor(workspace_key, ids);
+    for (const [bead_id, artifacts] of Object.entries(artifacts_by_bead)) {
+      const peeked = scopes.peek(workspace_key, artifacts);
+      if (peeked.state === 'hit') {
+        out[bead_id] = { scope: peeked.scope, artifacts };
+      } else if (peeked.state === 'failed') {
+        out[bead_id] = null;
+      }
+    }
   } catch (err) {
-    log('bead workflow lookup failed for %s: %o', workspace_key, err);
+    log('bead scope lookup failed for %s: %o', workspace_key, err);
     return {};
   }
+  return out;
 }
 
 /**
@@ -1957,6 +2054,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     // serial lanes ∪ running attempts ∪ `pr_wait`, `done` excluded. Same
     // partial-cache contract as the three decorations above.
     bead_workflow: beadWorkflowFor(workspace_key, queue),
+    // Declared scope of the WAITING and RUNNING beads (UI-qm12 §4.3), from
+    // which the client derives the pairwise overlap chips. Same partial,
+    // fail-quiet, non-persisted contract as the decorations above; `pr_wait` is
+    // deliberately outside the set.
+    bead_scope: beadScopeFor(workspace_key, queue),
     // Direct blocks blocker ids for the same beads (UI-04vo §3) — the
     // wait-reason chip and lane topological corrections read from this.
     bead_blocked_by,
