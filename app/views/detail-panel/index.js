@@ -64,6 +64,9 @@ const PRIORITY_OPTIONS = [0, 1, 2, 3, 4];
  * @property {{ get: () => any, set: (state: any) => void, subscribe?: (fn: () => void) => () => void }} [execPresetStore]
  * @property {{ get: (id: string) => { lines: unknown[] } | null, subscribe: (fn: () => void) => () => void }} [sessionLogStore]
  * @property {() => string | null | undefined} [getWorkspacePath]
+ * @property {{ open: (doc_path: string, open_options?: any) => Promise<void>|void, close: () => void, destroy: () => void }} [mdViewer] - Shared
+ * md viewer owned by the app shell. When given, the panel neither mounts nor
+ * destroys one of its own (spec §4).
  * @property {(id: string) => void} [onNavigate] - Navigate to a dependency id.
  * @property {() => void} [onOpenExecPresets] - Close detail and open the
  * global execution-settings dialog.
@@ -341,13 +344,22 @@ export function createDetailPanel(mount_element, options) {
     onSubmit: submitComment
   };
 
-  // md viewer lives in its own body-appended overlay mount.
-  const mv_mount = document.createElement('div');
-  mv_mount.className = 'md-viewer-root';
-  document.body.appendChild(mv_mount);
-  const md_viewer = createMdViewer(mv_mount, {
-    getWorkspacePath: options.getWorkspacePath || (() => '')
-  });
+  // md viewer lives in its own body-appended overlay mount, unless the shell
+  // already owns a shared one — the stepper cells outside this panel open the
+  // same instance (spec §4).
+  const injected_md_viewer = options.mdViewer || null;
+  /** @type {HTMLElement | null} */
+  let mv_mount = null;
+  if (!injected_md_viewer) {
+    mv_mount = document.createElement('div');
+    mv_mount.className = 'md-viewer-root';
+    document.body.appendChild(mv_mount);
+  }
+  const md_viewer =
+    injected_md_viewer ||
+    createMdViewer(/** @type {HTMLElement} */ (mv_mount), {
+      getWorkspacePath: options.getWorkspacePath || (() => '')
+    });
 
   // Transcript drawer for a session-history row (Done/Failed → persisted log,
   // live attempt → live-follow). Opens as its own body-appended overlay so it
@@ -1972,9 +1984,11 @@ export function createDetailPanel(mount_element, options) {
         unsubscribe_presets = null;
       }
       document.removeEventListener('keydown', onKeydown);
-      md_viewer.destroy();
-      if (mv_mount.parentNode) {
-        mv_mount.parentNode.removeChild(mv_mount);
+      if (!injected_md_viewer) {
+        md_viewer.destroy();
+        if (mv_mount && mv_mount.parentNode) {
+          mv_mount.parentNode.removeChild(mv_mount);
+        }
       }
       transcript_drawer.destroy();
       if (sl_mount.parentNode) {

@@ -23,6 +23,7 @@ import { debug } from './utils/logging.js';
 import { showToast } from './utils/toast.js';
 import { createBoardView } from './views/board/index.js';
 import { createDetailPanel } from './views/detail-panel/index.js';
+import { createMdViewer } from './views/detail-panel/md-viewer.js';
 import { createFatalErrorDialog } from './views/fatal-error-dialog.js';
 import {
   MONITOR_PIPELINE_KEY,
@@ -1497,6 +1498,28 @@ export function bootstrap(root_element) {
       // ignore missing header
     }
 
+    // One md viewer for the whole shell: the detail panel's Artifacts rows and
+    // every stepper spec/plan cell open the SAME overlay, so two documents can
+    // never stack on top of each other (spec §4).
+    const md_viewer_mount = document.createElement('div');
+    md_viewer_mount.className = 'md-viewer-root';
+    document.body.appendChild(md_viewer_mount);
+    const md_viewer = createMdViewer(md_viewer_mount, {
+      getWorkspacePath: () => store.getState().workspace.current?.path
+    });
+
+    /**
+     * @param {import('./views/board/stepper.js').StepperDoc} doc
+     * @param {string} [root_dir] - Workspace the document belongs to; the
+     * monitor's cross-repo cards pass their own repo here.
+     */
+    function openDoc(doc, root_dir) {
+      void md_viewer.open(doc.path, {
+        missing_state: doc.missing_state,
+        ...(root_dir ? { workspace: root_dir } : {})
+      });
+    }
+
     // Board view (default tab).
     const board_view = createBoardView(board_root, {
       gotoIssue: (id) => router.gotoIssue(id),
@@ -1509,7 +1532,8 @@ export function bootstrap(root_element) {
       onClosedRangeChange: (range) => {
         void setClosedRange(range);
       },
-      onNewIssue: () => new_issue_dialog.open()
+      onNewIssue: () => new_issue_dialog.open(),
+      openDoc
     });
 
     // Worker console (second tab): candidate lanes + Serial/Parallel queue.
@@ -1525,6 +1549,7 @@ export function bootstrap(root_element) {
       uiOrderStore: ui_order_store,
       gotoIssue: (id) => store.setState({ selected_id: id }),
       getWorkspacePath: () => store.getState().workspace.current?.path,
+      openDoc,
       doneRange: worker_done_range,
       onDoneRangeChange: (range) => {
         void setWorkerDoneRange(range);
@@ -1547,7 +1572,8 @@ export function bootstrap(root_element) {
       router,
       gotoIssue: (id) => router.gotoIssue(id),
       getWorkspacePath: () => store.getState().workspace.current?.path,
-      switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir)
+      switchWorkspace: (root_dir) => handleWorkspaceChange(root_dir),
+      openDoc
     });
 
     // Shared detail overlay.
@@ -1558,6 +1584,7 @@ export function bootstrap(root_element) {
       execPresetStore: exec_preset_store,
       sessionLogStore: session_log_store,
       getWorkspacePath: () => store.getState().workspace.current?.path,
+      mdViewer: md_viewer,
       onNavigate: (id) => {
         // On the Worker view the router zeroes `selected_id`; keep the overlay
         // navigation working there by setting the selection directly.

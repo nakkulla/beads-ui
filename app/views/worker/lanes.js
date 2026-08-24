@@ -1385,7 +1385,7 @@ export function miniRow(item) {
  *
  * @param {MiniItem} item
  * @param {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null} [place_menu]
- * @param {{ exec_chips_mode?: 'always'|'pinned_only' }} [options]
+ * @param {{ exec_chips_mode?: 'always'|'pinned_only', onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -1434,7 +1434,11 @@ export function candidateCard(item, place_menu = null, options = {}) {
       ${routeChipTemplate(workflow)}${fromChipTemplate(item.from_id)}
     </div>
     <div class="worker-card__title">${item.title}</div>
-    ${workflow ? stepperTemplate(workflow, item.status) : ''}${deps_el}
+    ${workflow
+      ? stepperTemplate(workflow, item.status, {
+          onOpenDoc: options.onOpenDoc
+        })
+      : ''}${deps_el}
     ${item.exec_chips &&
     (item.exec_chips.orchestration || item.exec_chips.worker)
       ? html`<div class="worker-mini__exec">
@@ -1518,7 +1522,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
  * actually running, which is the only lane whose header dot breathes.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: { bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: { bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
@@ -1568,7 +1572,9 @@ export function paneTemplate(pane) {
                   </div>`
                 : pane.items.map((it) =>
                     pane.lane === 'candidate'
-                      ? candidateCard(it, pane.place_menu)
+                      ? candidateCard(it, pane.place_menu, {
+                          onOpenDoc: pane.onOpenDoc
+                        })
                       : miniRow(it)
                   )}
           </div>`}

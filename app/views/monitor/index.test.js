@@ -60,7 +60,7 @@ function state(patch = {}) {
 }
 
 /**
- * @param {{ workspaces?: any[], workspaces_state?: any[], now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean }} [input]
+ * @param {{ workspaces?: any[], workspaces_state?: any[], now?: () => number, current?: string, switchWorkspace?: (root: string) => Promise<unknown>, transport?: (type: string, payload?: any) => Promise<any>, confirm?: (message: string) => boolean, openDoc?: (doc: any, root_dir?: string) => void }} [input]
  */
 function setup(input = {}) {
   document.body.innerHTML = '<div id="m"></div>';
@@ -97,6 +97,7 @@ function setup(input = {}) {
     getWorkspacePath: () => input.current || WS_A,
     switchWorkspace,
     confirm: confirmFn,
+    openDoc: input.openDoc,
     now: input.now || (() => NOW)
   });
   active_views.push(view);
@@ -2295,5 +2296,54 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
       'A-2',
       'A-1'
     ]);
+  });
+});
+
+describe('views/monitor candidate stepper doc cells (UI-ajkn §5)', () => {
+  const SPEC_DOC = { path: 'docs/spec.md', missing_state: null };
+
+  /** @type {any} */
+  const CANDIDATE = {
+    bead_id: 'B-1',
+    title: '타 레포 후보',
+    workflow: {
+      route: 'spec_backed',
+      stages: {
+        spec: { fill: 'full', glyph: null, stale: false, doc: SPEC_DOC },
+        impl: { fill: 'none', glyph: null, stale: false },
+        pr: { fill: 'none', glyph: null, stale: false },
+        merge: { fill: 'none', glyph: null, stale: false }
+      }
+    }
+  };
+
+  test("opens a candidate's document with that card's own root_dir", () => {
+    const openDoc = vi.fn();
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({ root_dir: WS_B, name: 'repo-b', runnable: [CANDIDATE] })
+      ],
+      workspaces_state: [state({ root_dir: WS_B, name: 'repo-b' })],
+      current: WS_A,
+      openDoc
+    });
+
+    view.load();
+    click(mount, '#monitor-runnable .seg--doc');
+
+    expect(openDoc).toHaveBeenCalledTimes(1);
+    expect(openDoc).toHaveBeenCalledWith(SPEC_DOC, WS_B);
+  });
+
+  test('renders a static stepper when no openDoc handler is given', () => {
+    const { mount, view } = setup({
+      workspaces: [workspace({ runnable: [CANDIDATE] })],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(mount.querySelector('#monitor-runnable .stp')).not.toBeNull();
+    expect(mount.querySelector('#monitor-runnable .seg--doc')).toBeNull();
   });
 });

@@ -12,12 +12,27 @@ import { html } from 'lit-html';
  * @property {string | null} [receipt]
  * @property {string | null} [approval_receipt]
  * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state]
+ * @property {StepperDoc} [doc]
+ */
+
+/**
+ * The document a spec/plan cell stands for. The server sends it whenever a
+ * path exists, independent of `fill` — the viewer owns the "not authored yet"
+ * and "unreadable" distinction (spec §2).
+ *
+ * @typedef {Object} StepperDoc
+ * @property {string} path
+ * @property {'spec_draft'|'plan_pending'|null} missing_state
  */
 
 /**
  * @typedef {Object} WorkflowSummary
  * @property {'quick_fix'|'spec_backed'|'full_plan'} route
  * @property {Record<string, WorkflowStage>} stages
+ */
+
+/**
+ * @typedef {(ev: Event, doc: StepperDoc, key: string) => void} OpenDocHandler
  */
 
 /** Stage key → CSS color-class suffix (mockup uses `mrg` for merge). */
@@ -151,12 +166,17 @@ function planStageStateText(stage) {
  * pairs the current cell with an inline stage-on color so `currentColor`
  * resolves to the bright hue for the reduced-motion glow fallback.
  *
+ * A cell whose stage carries a `doc` becomes a button when — and only when —
+ * the caller supplied a handler, so a static consumer keeps the exact markup
+ * it had before (spec §3).
+ *
  * @param {string} key
  * @param {WorkflowStage} stage
  * @param {boolean} current
+ * @param {OpenDocHandler | undefined} onOpenDoc
  * @returns {TemplateResult}
  */
-function segTemplate(key, stage, current) {
+function segTemplate(key, stage, current, onOpenDoc) {
   const c = /** @type {Record<string, string>} */ (STAGE_CLASS)[key] || key;
   const fill = (stage && stage.fill) || 'none';
   const stale = !!stage && stage.stale === true;
@@ -178,14 +198,50 @@ function segTemplate(key, stage, current) {
   }
   const lbl_class = fill === 'none' ? 'lbl' : `lbl l-${c} on`;
   const style = current ? `color: var(--stage-${c}-on)` : '';
-  return html`
-    <div class="seg">
-      <div class=${bar_class} style=${style}>${glyph}</div>
-      <div class=${lbl_class}>
-        ${/** @type {Record<string, string>} */ (STAGE_LABEL)[key] || key}
+  const label = /** @type {Record<string, string>} */ (STAGE_LABEL)[key] || key;
+  const doc = onOpenDoc ? stageDoc(stage) : null;
+  if (!doc) {
+    return html`
+      <div class="seg">
+        <div class=${bar_class} style=${style}>${glyph}</div>
+        <div class=${lbl_class}>${label}</div>
       </div>
-    </div>
+    `;
+  }
+  const open_label = `${label} 문서 열기 · ${doc.path}`;
+  return html`
+    <button
+      type="button"
+      class="seg seg--doc"
+      aria-label=${open_label}
+      title=${open_label}
+      @click=${(/** @type {Event} */ ev) => {
+        // The cell sits inside the card's own click target and inside the
+        // Worker/monitor delegated click handlers; neither may fire behind the
+        // viewer this button opens (spec §3).
+        ev.preventDefault();
+        ev.stopPropagation();
+        /** @type {OpenDocHandler} */ (onOpenDoc)(ev, doc, key);
+      }}
+    >
+      <div class=${bar_class} style=${style}>${glyph}</div>
+      <div class=${lbl_class}>${label}</div>
+    </button>
   `;
+}
+
+/**
+ * The openable document of one stage, or `null` when the server sent none.
+ *
+ * @param {WorkflowStage} stage
+ * @returns {StepperDoc | null}
+ */
+function stageDoc(stage) {
+  const doc = stage ? stage.doc : null;
+  if (!doc || typeof doc.path !== 'string' || doc.path.length === 0) {
+    return null;
+  }
+  return doc;
 }
 
 /**
@@ -194,30 +250,42 @@ function segTemplate(key, stage, current) {
  *
  * @param {WorkflowSummary | null | undefined} workflow
  * @param {string | undefined} status
+ * @param {{ onOpenDoc?: OpenDocHandler }} [options] - `onOpenDoc` turns every
+ * cell whose stage carries a `doc` into a button (spec §3).
  * @returns {TemplateResult | string}
  */
-export function stepperTemplate(workflow, status) {
+export function stepperTemplate(workflow, status, options = {}) {
   if (!workflow || !workflow.stages) {
     return '';
   }
+  const onOpenDoc = options.onOpenDoc;
   const order =
     /** @type {Record<string, string[]>} */ (ROUTE_ORDER)[workflow.route] ||
     ROUTE_ORDER.spec_backed;
   const stages = workflow.stages;
   const current_key = currentStageKey(order, stages, String(status || 'open'));
-  // `role="img"` replaces child content in the a11y tree, so per-segment labels
-  // would never surface — the whole progress state goes in one container label
-  // (spec §8).
+  // With `role="img"` the container label is the whole accessible name (child
+  // content is replaced), so per-segment state goes here; the `group` variant
+  // below keeps the same phrase as its group label (spec §8).
   const aria_label = `워크플로우 진행: ${order
     .map(
       (key) =>
         `${/** @type {Record<string, string>} */ (STAGE_LABEL)[key] || key} ${key === 'plan' ? planStageStateText(stages[key] || {}) : stageStateText(stages[key] || {})}`
     )
     .join(' · ')}`;
+  // `role="img"` erases children from the a11y tree, so a stepper that owns
+  // buttons must become a group instead — otherwise the buttons it just grew
+  // are unreachable (spec §3).
+  const has_doc_cells =
+    !!onOpenDoc && order.some((key) => stageDoc(stages[key] || {}) !== null);
   return html`
-    <div class="stp" role="img" aria-label=${aria_label}>
+    <div
+      class="stp"
+      role=${has_doc_cells ? 'group' : 'img'}
+      aria-label=${aria_label}
+    >
       ${order.map((key) =>
-        segTemplate(key, stages[key] || {}, key === current_key)
+        segTemplate(key, stages[key] || {}, key === current_key, onOpenDoc)
       )}
     </div>
   `;

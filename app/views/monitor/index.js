@@ -276,6 +276,9 @@ const TICK_MS = 1_000;
  * 레포 배지·섹션 `Worker ↗` 클릭이 Worker 탭으로 넘어가는 경로.
  * @property {(type: string, payload?: unknown) => Promise<any>} [transport]
  * @property {() => string|undefined} [getWorkspacePath]
+ * @property {(doc: import('../board/stepper.js').StepperDoc, root_dir?: string) => void} [openDoc] -
+ * 후보 카드 stepper 셀이 여는 md 뷰어. 카드의 `root_dir`를 함께 넘겨 그 레포의
+ * 문서를 읽는다 (spec §5).
  * @property {(root_dir: string) => Promise<unknown>} [switchWorkspace]
  * @property {(message: string) => boolean} [confirm]
  * @property {() => number} [now] - Test seam for the live clock.
@@ -326,6 +329,7 @@ export function createMonitorView(mount_element, options) {
   const pipelineStore = options.pipelineStore;
   const transport = options.transport;
   const getWorkspacePath = options.getWorkspacePath;
+  const openDoc = options.openDoc;
   const switchWorkspace = options.switchWorkspace;
   const router = options.router;
   const nowFn = options.now || (() => Date.now());
@@ -1061,7 +1065,11 @@ export function createMonitorView(mount_element, options) {
     return itemShell(
       item,
       candidateCard(withOverlaps(item), placeMenuFor(item), {
-        exec_chips_mode: 'pinned_only'
+        exec_chips_mode: 'pinned_only',
+        onOpenDoc: openDoc
+          ? (/** @type {Event} */ _ev, /** @type {any} */ doc) =>
+              openDoc(doc, item.root_dir)
+          : undefined
       })
     );
   }

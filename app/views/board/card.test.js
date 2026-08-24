@@ -868,3 +868,62 @@ describe('views/board/card display policy', () => {
     expect(m.querySelector('.stepper')).toBeNull();
   });
 });
+
+describe('views/board/card stepper doc cells (UI-ajkn §5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  const ISSUE = {
+    id: 'UI-7',
+    title: 'doc cell',
+    status: 'in_progress',
+    workflow: {
+      route: 'spec_backed',
+      stages: {
+        spec: {
+          fill: 'full',
+          glyph: null,
+          stale: false,
+          doc: { path: 'docs/spec.md', missing_state: null }
+        },
+        impl: { fill: 'none', glyph: null, stale: false },
+        pr: { fill: 'none', glyph: null, stale: false },
+        merge: { fill: 'none', glyph: null, stale: false }
+      },
+      chips: {}
+    }
+  };
+
+  test('renders a static stepper when the context has no onOpenDoc', () => {
+    const m = mountCard(ISSUE, makeCtx());
+
+    expect(m.querySelector('.seg--doc')).toBeNull();
+  });
+
+  test('passes onOpenDoc through to the stepper cell', () => {
+    const onOpenDoc = vi.fn();
+
+    const m = mountCard(ISSUE, makeCtx({ onOpenDoc }));
+    /** @type {HTMLElement} */ (m.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(onOpenDoc).toHaveBeenCalledTimes(1);
+    expect(onOpenDoc.mock.calls[0][1]).toEqual({
+      path: 'docs/spec.md',
+      missing_state: null
+    });
+  });
+
+  test('does not open the card when a doc cell is clicked', () => {
+    const ctx = makeCtx({ onOpenDoc: vi.fn() });
+
+    const m = mountCard(ISSUE, ctx);
+    /** @type {HTMLElement} */ (m.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(ctx.onCardClick).not.toHaveBeenCalled();
+  });
+});

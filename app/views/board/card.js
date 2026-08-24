@@ -66,6 +66,8 @@ import { stepperTemplate } from './stepper.js';
  * @property {(ev: Event, id: string) => void} [onRollupToggle]
  * @property {(ev: Event, id: string) => void} [onChildClick]
  * @property {(ev: Event, id: string) => void} [onFromChipClick]
+ * @property {import('./stepper.js').OpenDocHandler} [onOpenDoc] - Opens the
+ * spec/plan document behind a stepper cell; absent leaves the stepper static.
  * @property {(id: string) => Record<string, unknown>|null} [cleanupFailureFor]
  * @property {import('../../utils/label-policy.js').DisplayPolicy | null} [policy]
  */
@@ -517,7 +519,9 @@ export function cardTemplate(issue, ctx) {
       <div class="board-card__title">${issue.title || '(제목 없음)'}</div>
       ${chipsTemplate(issue, ctx)}
       ${issue.workflow && isChipEnabled(ctx.policy || null, 'stepper')
-        ? stepperTemplate(issue.workflow, issue.status)
+        ? stepperTemplate(issue.workflow, issue.status, {
+            onOpenDoc: ctx.onOpenDoc
+          })
         : ''}
       ${rollTemplate(issue, ctx)}
     </article>
