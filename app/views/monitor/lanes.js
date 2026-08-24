@@ -625,7 +625,9 @@ export function buildChains(blocked_by_map, locations, states) {
     );
     const listed = cycle ? component.slice().sort() : order;
     chains.push({
-      key: listed.join('\u0000'),
+      // 연결 레인 번호는 `key` 오름차순이다 (UI-e6hw §4.2) — 정렬된 노드 id로
+      // 만들어야 의존 방향이 바뀌어도 같은 멤버 집합이 같은 자리에 남는다.
+      key: component.slice().sort().join('\u0000'),
       cycle,
       nodes: listed.map((id) => {
         const location = locations.get(id);
@@ -727,9 +729,10 @@ function buildChainLanes(
    * @param {number} seq
    * @param {number} indent
    * @param {string[]} predecessors
+   * @param {boolean} [orderless] - 사이클 레인의 순서 없는 노드 목록 (§4.2).
    * @returns {MonitorChainLaneRow}
    */
-  const rowOf = (bead_id, seq, indent, predecessors) => {
+  const rowOf = (bead_id, seq, indent, predecessors, orderless = false) => {
     const location = locations.get(bead_id);
     const parallel_index =
       location &&
@@ -746,7 +749,9 @@ function buildChainLanes(
       indent,
       predecessors,
       location_label: chainRowLocationLabel(bead_id, locations, states),
-      draggable: parallel_index !== null,
+      // 사이클 레인은 순서를 주장하지 않는다 (§4.2) — 순서 없는 목록의 행은
+      // 끌 수 없다.
+      draggable: !orderless && parallel_index !== null,
       ...(parallel_index !== null ? { queue_index: parallel_index } : {})
     };
   };
@@ -767,7 +772,8 @@ function buildChainLanes(
           chain.cycle ? 0 : node.indent,
           chain.cycle
             ? []
-            : laneLocalPredecessors(node.id, members, blocked_by_map)
+            : laneLocalPredecessors(node.id, members, blocked_by_map),
+          chain.cycle
         )
       )
     });
@@ -1347,6 +1353,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
               typeof id === 'string' && id.length > 0
           )
         );
+      }
+      // 연결 레인은 실행가능 노드도 그린다 (§4.2) — 큐 제목 캐시에 없는 그
+      // 제목이 여기서만 들어온다.
+      if (typeof entry.title === 'string' && entry.title.length > 0) {
+        title_by_bead.set(bead_id, entry.title);
       }
       runnable.push({
         ...base(bead_id),

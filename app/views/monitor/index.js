@@ -692,7 +692,9 @@ export function createMonitorView(mount_element, options) {
     const group = lanes.queue_groups.find(
       (entry) => entry.root_dir === item.root_dir
     );
-    const serial = group ? group.sublanes.serial : [];
+    // 직렬 항목은 **설정된** 레인 수에서 온다 (§6): 비어 있어 pane이 접힌
+    // 레인도 모바일에서는 유일한 적재 경로다.
+    const serial = item.place_lanes || [];
     return {
       bead_id: item.id,
       lanes: [
@@ -705,8 +707,8 @@ export function createMonitorView(mount_element, options) {
         { id: 'new-lane', label: '새 연결 레인', count: 0 },
         ...serial.map((lane) => ({
           id: `serial:${lane.id}`,
-          label: `${group ? group.name : ''} 직렬 ${lane.index + 1}`,
-          count: lane.raw_length
+          label: `${group ? group.name : ''} 직렬 ${Number(lane.id.slice(1))}`,
+          count: lane.length
         }))
       ]
     };
@@ -853,7 +855,8 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * One 연결 레인 row (§4.2). 병렬 큐 멤버만 끌 수 있고, 그 밖의 노드는 자기
-   * 위치를 말하는 투영이다.
+   * 위치를 말하는 투영이다. 사이클 레인은 순서를 주장하지 않으므로 순번을
+   * 그리지 않고, 투영이 그 행을 끌 수 없게 만든다.
    *
    * @param {MonitorChainLane} lane
    * @param {MonitorChainLaneRow} row
@@ -874,9 +877,11 @@ export function createMonitorView(mount_element, options) {
         ? String(row.queue_index)
         : ''}
     >
-      <span class="mon2-crow__seq" aria-hidden="true"
-        >${circledSeq(row.seq)}</span
-      >
+      ${lane.cycle
+        ? ''
+        : html`<span class="mon2-crow__seq" aria-hidden="true"
+            >${circledSeq(row.seq)}</span
+          >`}
       ${row.workspace_name
         ? html`<span class="worker-mini__repo" title=${row.root_dir}
             >${row.workspace_name}</span
@@ -1707,6 +1712,17 @@ export function createMonitorView(mount_element, options) {
           showToast('큐가 바뀌었습니다 — 다시 시도해 주세요', 'error');
           return false;
         }
+        // 입장 거부는 CAS 충돌이 아니라 `applied:false`로 온다 (§7) — 조용히
+        // 성공으로 넘기면 앞선 의존 op만 남은 상태가 설명 없이 보인다.
+        if (res && res.applied === false) {
+          showToast(
+            res.admission_reason
+              ? `큐 적재 거부: ${res.admission_reason}`
+              : '큐 요청이 적용되지 않았습니다',
+            'error'
+          );
+          return false;
+        }
         return true;
       }
       if (op.type === 'dep-add' || op.type === 'dep-remove') {
@@ -1807,17 +1823,14 @@ export function createMonitorView(mount_element, options) {
     }
     if (choice.startsWith('serial:')) {
       const lane_id = choice.slice('serial:'.length);
-      const group = lanes.queue_groups.find(
-        (entry) => entry.root_dir === item.root_dir
+      const lane = (item.place_lanes || []).find(
+        (entry) => entry.id === lane_id
       );
-      const lane = group
-        ? group.sublanes.serial.find((entry) => entry.id === lane_id)
-        : undefined;
       await applyDrop(drag, {
         kind: 'repo-serial',
         root_dir: item.root_dir,
         lane_id: /** @type {any} */ (lane_id),
-        index: lane ? lane.raw_length : 0
+        index: lane ? lane.index : 0
       });
       return;
     }

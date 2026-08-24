@@ -622,6 +622,30 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     expect(el(mount, '.mon2-chains')).toBeNull();
     expect(el(mount, '.mon2-item__ops')).toBeNull();
   });
+
+  test('draws a cycle lane as an unordered node list', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': ['A-2'], 'A-2': ['A-1'] }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    expect(el(mount, '.mon2-lane__cycle')?.textContent?.trim()).toBe(
+      '⛔ 의존 사이클 — 자동 교정 불가'
+    );
+    expect(mount.querySelectorAll('.mon2-crow__seq')).toHaveLength(0);
+    expect(
+      Array.from(mount.querySelectorAll('.mon2-crow')).map((row) =>
+        row.getAttribute('draggable')
+      )
+    ).toEqual(['false', 'false']);
+  });
 });
 
 describe('views/monitor id copy (UI-eey2 §11)', () => {
@@ -1032,6 +1056,29 @@ describe('views/monitor [대기로 ↴] lane menu (UI-e6hw §6)', () => {
 
     expect(mount.querySelectorAll('.worker-card__place-lane')).toHaveLength(0);
     expect(sent).toEqual([]);
+  });
+
+  test('offers the only configured serial lane even when it is empty', () => {
+    // 빈 단일 직렬 레인은 pane이 접히므로, 모바일 메뉴가 유일한 적재 경로다.
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: 'cand' }],
+          serial_lane_count: 1,
+          serial_lanes: [{ id: 's1', entries: [] }]
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '#monitor-runnable .worker-card__place');
+
+    expect(
+      Array.from(mount.querySelectorAll('.worker-card__place-lane')).map((b) =>
+        b.getAttribute('data-lane')
+      )
+    ).toContain('serial:s1');
   });
 });
 
@@ -1507,6 +1554,45 @@ describe('views/monitor dependency editing (UI-2gi1 §6.5, UI-e6hw §5)', () => 
     await flushMicrotasks();
 
     expect(sent).toEqual([]);
+  });
+
+  test('stops the plan when the queue op is refused by admission', async () => {
+    // 입장 거부는 CAS 충돌이 아니라 `applied:false`로 온다 — 조용히 지나가면
+    // 앞선 의존 op만 남은 상태가 설명 없이 보인다 (§7).
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          runnable: [{ bead_id: 'A-9', title: 'cand' }],
+          queue: [{ bead_id: 'A-1' }]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }],
+          bead_blocked_by: { 'B-1': ['A-1'] }
+        })
+      ],
+      workspaces_state: [
+        state(),
+        state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })
+      ],
+      transport: async (type) =>
+        type === 'worker-queue-place'
+          ? { applied: false, conflict: false, admission_reason: 'no_spec' }
+          : null
+    });
+
+    view.load();
+    fireDrag(el(mount, '#monitor-runnable .worker-card'), 'dragstart');
+    fireDrag(el(mount, '[data-drop="chain"]'), 'drop');
+    await flushMicrotasks();
+
+    expect(sent.map((m) => m.type)).toEqual(['dep-add', 'worker-queue-place']);
+    expect(
+      Array.from(document.querySelectorAll('.toast')).map(
+        (node) => node.textContent
+      )
+    ).toContain('큐 적재 거부: no_spec');
   });
 });
 

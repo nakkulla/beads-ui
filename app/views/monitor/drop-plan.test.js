@@ -902,3 +902,67 @@ describe('planDrop — 삽입 규칙과 거부 (UI-e6hw §5.2·§5.3)', () => {
     });
   });
 });
+
+describe('planDrop — 제자리 드롭과 분기 레인 (UI-e6hw 리뷰 1·2)', () => {
+  test('returns no op when a parallel row is dropped on itself', () => {
+    const model = parallelModel();
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'A-2', root_dir: WS_A, queue_index: 1 },
+      { kind: 'parallel', marker_index: 1 },
+      model
+    );
+
+    expect(plan).toEqual({ ops: [] });
+  });
+
+  test('returns no op when a repo serial row is dropped on itself', () => {
+    const model = dropModel({
+      owner_of: new Map([['A-2', WS_A]]),
+      queue_index_of: new Map([['A-2', 1]])
+    });
+
+    const plan = planDrop(
+      {
+        kind: 'repo-serial',
+        bead_id: 'A-2',
+        root_dir: WS_A,
+        lane_id: 's1',
+        queue_index: 1
+      },
+      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 1 },
+      model
+    );
+
+    expect(plan).toEqual({ ops: [] });
+  });
+
+  test('takes up and down from the temp graph order, not the rendered order', () => {
+    // 표시 순서가 그래프와 어긋나 있어도 (스냅샷과 렌더 사이의 낡은 행 배열)
+    // 삽입 규칙은 임시 그래프의 위상 순서에서만 `up`/`down`을 잡는다 (§5.2).
+    const model = dropModel({
+      blocked_by_map: new Map([
+        ['B', ['A']],
+        ['C', ['B']]
+      ]),
+      owner_of: new Map([
+        ['A', WS_A],
+        ['B', WS_A],
+        ['C', WS_A],
+        ['A-9', WS_A]
+      ]),
+      lane_order: new Map([['chain:c', ['C', 'B', 'A']]]),
+      parallel_raw_length: new Map([[WS_A, 0]])
+    });
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'A-9', root_dir: WS_A, queue_index: 0 },
+      { kind: 'chain', lane_id: 'chain:c', marker_index: 3 },
+      model
+    );
+
+    expect(plan).toEqual({
+      ops: [{ type: 'dep-add', a: 'A-9', b: 'C', root_dir: WS_A }]
+    });
+  });
+});

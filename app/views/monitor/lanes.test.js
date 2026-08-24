@@ -1087,4 +1087,74 @@ describe('monitor 연결 레인 (UI-e6hw §4.2)', () => {
       'A-2'
     ]);
   });
+
+  test('titles a chain row from the 실행가능 entry when the cache lacks it', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          runnable: [runnable('A-1')],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes[0].rows.map((row) => row.title)).toEqual([
+      'title A-1',
+      'A-2'
+    ]);
+  });
+
+  test('refuses to drag a cycle lane row', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': ['A-2'], 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes[0].rows.map((row) => row.draggable)).toEqual([
+      false,
+      false
+    ]);
+  });
+
+  test('numbers lanes by their sorted member ids, not by dependency direction', () => {
+    const forward = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }, { bead_id: 'B-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'], 'B-2': ['B-1'] }
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    );
+    const reversed = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }]
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }, { bead_id: 'B-2' }],
+          bead_blocked_by: { 'A-1': ['A-2'], 'B-2': ['B-1'] }
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b' })]
+    );
+
+    expect(forward.chain_lanes.map((lane) => lane.lane_id)).toEqual(
+      reversed.chain_lanes.map((lane) => lane.lane_id)
+    );
+  });
 });
