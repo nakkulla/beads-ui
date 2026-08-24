@@ -596,10 +596,18 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
     expect(card.classList.contains('worker-card--ineligible')).toBe(true);
     expect(
       card.querySelector('.worker-card__ineligible')?.textContent?.trim()
-    ).toBe('⛔ worker-ineligible');
+    ).toBe('worker-ineligible');
   });
 
-  test('places the chip after the id and before the route chip', () => {
+  test('draws the chip with the Board label chip class', () => {
+    const card = renderCandidate({ draggable: false, worker_ineligible: true });
+
+    const chip = card.querySelector('.worker-card__ineligible');
+
+    expect(chip?.classList.contains('ctl-chip--label')).toBe(true);
+  });
+
+  test('places the chip after the route chip', () => {
     const card = renderCandidate({ draggable: false, worker_ineligible: true });
     const head = /** @type {HTMLElement} */ (
       card.querySelector('.worker-card__head')
@@ -617,8 +625,8 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
     );
 
     expect(id_index).toBeGreaterThanOrEqual(0);
-    expect(chip_index).toBeGreaterThan(id_index);
-    expect(route_index).toBeGreaterThan(chip_index);
+    expect(route_index).toBeGreaterThan(id_index);
+    expect(chip_index).toBeGreaterThan(route_index);
   });
 
   test('suppresses the grip and refuses the drag affordance', () => {
@@ -1310,7 +1318,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('exec-chip--pin');
     expect(card).not.toContain('worker-deps');
     expect(card).toMatchInlineSnapshot(
-      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span>  <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>   </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span>  <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
     );
   });
 

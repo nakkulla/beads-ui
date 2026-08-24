@@ -1616,12 +1616,11 @@ ${i}</pre
           >`:""}
       <span class="worker-card__id" title="클릭하면 ID 복사">${e.id}</span
       >${zo(e.priority)}
-      ${r?c`<span
-            class="ctl-chip worker-card__ineligible"
+      ${Br(a)}${r?c`<span
+            class="ctl-chip ctl-chip--label worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
-            >⛔ worker-ineligible</span
-          >`:""}
-      ${Br(a)}${Xu(e.from_id)}
+            >worker-ineligible</span
+          >`:""}${Xu(e.from_id)}
     </div>
     <div class="worker-card__title">${e.title}</div>
     ${a?oo(a,e.status,{onOpenDoc:n.onOpenDoc}):""}${d}

@@ -1449,14 +1449,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
         : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
       >${priorityBadgeTemplate(item.priority)}
-      ${worker_ineligible
+      ${routeChipTemplate(workflow)}${worker_ineligible
         ? html`<span
-            class="ctl-chip worker-card__ineligible"
+            class="ctl-chip ctl-chip--label worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
-            >⛔ worker-ineligible</span
+            >worker-ineligible</span
           >`
-        : ''}
-      ${routeChipTemplate(workflow)}${fromChipTemplate(item.from_id)}
+        : ''}${fromChipTemplate(item.from_id)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow
