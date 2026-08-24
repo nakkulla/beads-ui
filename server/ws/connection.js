@@ -34,6 +34,7 @@ import {
 } from './exec-preset-handlers.js';
 import {
   detachMonitorPipeline,
+  ensureRunnableScanWired,
   handleMonitorAutoToggle,
   handleSubscribeMonitorPipeline,
   handleUnsubscribeMonitorPipeline
@@ -488,6 +489,10 @@ export async function handleMessage(ws, data) {
       await handleGitPullWorkspace(ws, req);
       return;
     case 'subscribe-worker-queue':
+      // 워커 탭도 session_active 레인을 그리므로 스캔 배선을 여기서도 arm한다
+      // (UI-0a2m). 핸들러보다 먼저: 첫 스냅샷의 콜드 미스가 등록한 fill이
+      // 완료됐을 때 재전송 배선이 이미 있어야 한다.
+      ensureRunnableScanWired();
       handleSubscribeWorkerQueue(ws, req);
       return;
     case 'unsubscribe-worker-queue':

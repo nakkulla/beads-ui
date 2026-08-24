@@ -44,9 +44,18 @@ import {
   log
 } from './context.js';
 import {
+  doneAtByBead,
+  lanedBeadIds,
+  serialLaneBeadIds,
+  sessionExcludedBeadIds
+} from './lane-membership.js';
+import {
   decorateQueue,
+  fanout,
   onWorkerSnapshotRefresh,
-  workerQueueSubscriberCount
+  workerQueueSubscribedWorkspaces,
+  workerQueueSubscriberCount,
+  workerQueueSubscriberTotal
 } from './worker-handlers.js';
 
 /**
@@ -485,144 +494,6 @@ function hasPipeline(snapshot) {
 }
 
 /**
- * The bead ids a workspace already has in a lane — the `runnable` exclusion set
- * (UI-qrfo §4). A bead sitting in `queue`/`pr_wait`/`done` is past the "실행할 수
- * 있다" question, and drawing it in two lanes at once is precisely what the
- * exclusive lane priority exists to prevent.
- *
- * @param {Record<string, any>} snapshot
- * @returns {Set<string>}
- */
-function lanedBeadIds(snapshot) {
-  const ids = activeLaneBeadIds(snapshot);
-  for (const bead_id of laneBeadIds(snapshot, ['done'])) {
-    ids.add(bead_id);
-  }
-  return ids;
-}
-
-/**
- * The bead ids a workspace has in a lane the WORKER still owns —
- * `queue` ∪ serial ∪ `pr_wait`, without `done`.
- *
- * This is the `session_active` exclusion set (UI-yrzu §3). `done` is
- * deliberately absent: a bead a session reopened as `in_progress` is being
- * worked on right now, and its completion history is not a reason to hide that
- * fact. The runnable lane keeps using the `done`-inclusive `lanedBeadIds`,
- * where a completed bead genuinely is past the "실행할 수 있다" question.
- *
- * @param {Record<string, any>} snapshot
- * @returns {Set<string>}
- */
-function activeLaneBeadIds(snapshot) {
-  const ids = laneBeadIds(snapshot, ['queue', 'pr_wait']);
-  for (const bead_id of serialLaneBeadIds(snapshot)) {
-    ids.add(bead_id);
-  }
-  return ids;
-}
-
-/**
- * Valid bead ids across the named flat lanes of one snapshot.
- *
- * @param {Record<string, any>} snapshot
- * @param {string[]} lanes
- * @returns {Set<string>}
- */
-function laneBeadIds(snapshot, lanes) {
-  /** @type {Set<string>} */
-  const ids = new Set();
-  for (const lane of lanes) {
-    const entries = snapshot[lane];
-    if (!Array.isArray(entries)) {
-      continue;
-    }
-    for (const entry of entries) {
-      const bead_id = entry && entry.bead_id;
-      if (typeof bead_id === 'string' && bead_id.length > 0) {
-        ids.add(bead_id);
-      }
-    }
-  }
-  return ids;
-}
-
-/**
- * The `done` lane's `added_at` per bead — the second input
- * `app/utils/active-attempts.js` needs to tell a failure the done lane already
- * resolved from one still waiting for a decision.
- *
- * @param {Record<string, any>} snapshot
- * @returns {Map<string, number>}
- */
-function doneAtByBead(snapshot) {
-  /** @type {Map<string, number>} */
-  const done_at_by_bead = new Map();
-  for (const entry of Array.isArray(snapshot.done) ? snapshot.done : []) {
-    const bead_id = entry && entry.bead_id;
-    if (typeof bead_id === 'string' && typeof entry.added_at === 'number') {
-      done_at_by_bead.set(bead_id, entry.added_at);
-    }
-  }
-  return done_at_by_bead;
-}
-
-/**
- * The ids no session tile may repeat: every worker-owned lane member plus every
- * bead an active worker attempt already draws (UI-yrzu §3).
- *
- * @param {Record<string, any>} snapshot
- * @returns {Set<string>}
- */
-function sessionExcludedBeadIds(snapshot) {
-  const ids = activeLaneBeadIds(snapshot);
-  for (const bead_id of activeBeadIds(
-    snapshot.attempts || {},
-    doneAtByBead(snapshot)
-  )) {
-    ids.add(bead_id);
-  }
-  return ids;
-}
-
-/**
- * Valid bead ids in configured serial lanes (UI-2gi1 §4).
- *
- * Older and malformed snapshots fail quiet so monitor aggregation keeps its
- * pre-serial-lane behavior.
- *
- * @param {Record<string, any>} snapshot
- * @returns {Set<string>}
- */
-function serialLaneBeadIds(snapshot) {
-  /** @type {Set<string>} */
-  const ids = new Set();
-  const serial_lanes = snapshot.serial_lanes;
-  if (!Array.isArray(serial_lanes)) {
-    return ids;
-  }
-  for (const lane of serial_lanes) {
-    if (!lane || typeof lane !== 'object' || Array.isArray(lane)) {
-      continue;
-    }
-    const entries = lane.entries;
-    if (!Array.isArray(entries)) {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-        continue;
-      }
-      const bead_id = entry.bead_id;
-      if (typeof bead_id === 'string' && bead_id.length > 0) {
-        ids.add(bead_id);
-      }
-    }
-  }
-  return ids;
-}
-
-/**
  * Build the cross-workspace pipeline payload.
  *
  * Fail-quiet per workspace (UI-nprg §에러 처리): one repo whose snapshot,
@@ -1031,6 +902,33 @@ function runnableCache() {
 }
 
 /**
+ * Everybody the runnable cache's scan serves (UI-0a2m): the aggregated monitor
+ * viewers PLUS every per-workspace worker-queue viewer, whose 실행중 그리드
+ * renders the same `session_active` bucket. Gating the `bd` spawn on the
+ * monitor count alone would leave a worker-tab-only viewer with a lane that
+ * never fills.
+ */
+function runnableScanSubscriberCount() {
+  return SUBSCRIBERS.size + workerQueueSubscriberTotal();
+}
+
+/**
+ * Re-push one workspace's worker-queue snapshot after a scan lands (UI-0a2m) —
+ * the worker channel's delivery path for a `session_active` list that missed
+ * the snapshot that asked for it, mirroring what {@link schedulePush} does for
+ * the monitor. `fanout` no-ops when the workspace has no subscriber.
+ *
+ * @param {string} workspace
+ */
+function refanoutWorkerSnapshot(workspace) {
+  try {
+    fanout(workspace, getWorkerRuntime().queueStore.snapshot(workspace));
+  } catch (err) {
+    log('monitor: worker refanout failed for %s: %o', workspace, err);
+  }
+}
+
+/**
  * Drop one workspace's cached candidates, fail-quiet.
  *
  * @param {string} workspace
@@ -1113,10 +1011,13 @@ function ensureRefreshWired() {
       schedulePush();
     });
     try {
-      runnableCache().setOnFilled(() => {
+      // 채운 스캔은 두 채널 모두에 전달된다 (UI-0a2m): 모니터는 집계 재푸시,
+      // 워커는 그 워크스페이스의 스냅샷 재전송으로.
+      runnableCache().setOnFilled((workspace) => {
         schedulePush();
+        refanoutWorkerSnapshot(workspace);
       });
-      runnableCache().setSubscriberCount(monitorPipelineSubscriberCount);
+      runnableCache().setSubscriberCount(runnableScanSubscriberCount);
     } catch (err) {
       log('monitor: runnable cache wiring failed: %o', err);
     }
@@ -1218,7 +1119,21 @@ function refreshExternalPrsForVisible() {
 function refillRunnableForVisible(refresh, listRoots) {
   const refreshOne =
     refresh || ((root_dir) => runnableCache().refresh(root_dir));
-  const roots = listRoots || (() => visibleWorkspaceRoots());
+  // 워커 구독 워크스페이스도 함께 돈다 (UI-0a2m): 모니터에서 숨긴 레포라도 그
+  // 워커 탭이 세션 레인을 그리는 동안은 구독-시점 스캔에서 얼어붙으면 안 된다.
+  const roots =
+    listRoots ||
+    (() => {
+      const out = new Set(visibleWorkspaceRoots());
+      try {
+        for (const key of workerQueueSubscribedWorkspaces()) {
+          out.add(path.resolve(String(key || '')));
+        }
+      } catch (err) {
+        log('monitor: worker-subscribed roots unreadable: %o', err);
+      }
+      return [...out];
+    });
   for (const root_dir of roots()) {
     try {
       refreshOne(root_dir);
@@ -1285,7 +1200,7 @@ export function createRunnableRefreshDriver(options = {}) {
       typeof options.intervalSeconds === 'number'
         ? options.intervalSeconds
         : pollIntervalSeconds(),
-    getClientCount: options.subscriberCount || monitorPipelineSubscriberCount,
+    getClientCount: options.subscriberCount || runnableScanSubscriberCount,
     onTick() {
       refillRunnableForVisible(options.refresh, options.listRoots);
       onRefreshed();
@@ -1306,10 +1221,14 @@ function ensureDriverStarted() {
 
 /**
  * Disarm the refresh driver once the last subscriber leaves — nobody is looking,
- * so there is no reason to keep spawning `bd` across every repo.
+ * so there is no reason to keep spawning `bd` across every repo. "Subscriber"
+ * spans both channels (UI-0a2m): a monitor unsubscribe must not kill the driver
+ * while a worker-tab viewer still renders the session lane. The poller itself
+ * also gates every tick on the same count, so a driver left armed with zero
+ * subscribers spawns nothing.
  */
 function stopDriverIfIdle() {
-  if (SUBSCRIBERS.size > 0 || !refresh_driver) {
+  if (runnableScanSubscriberCount() > 0 || !refresh_driver) {
     return;
   }
   refresh_driver.stop();
@@ -1357,6 +1276,20 @@ export function pollDemandFor(workspace_key) {
  */
 export function monitorPipelineSubscriberCount() {
   return SUBSCRIBERS.size;
+}
+
+/**
+ * Arm the runnable/session scan machinery for a WORKER-queue viewer (UI-0a2m).
+ * The worker channel's snapshot peeks the session bucket without triggering
+ * fills, so its data depends entirely on the wiring this module owns — the
+ * subscriber-count gate, the fill-completion delivery, and the periodic driver.
+ * A worker-tab-only server lifetime must arm them too, or the session lane
+ * never fills. Idempotent, called by the connection dispatcher on every
+ * `subscribe-worker-queue`.
+ */
+export function ensureRunnableScanWired() {
+  ensureRefreshWired();
+  ensureDriverStarted();
 }
 
 /**

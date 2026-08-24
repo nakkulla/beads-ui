@@ -36,6 +36,15 @@ vi.mock('./bd.js', async (importOriginal) => {
   return { ...actual, runBdJsonProjected: vi.fn() };
 });
 
+// `subscribe-worker-queue`는 세션 레인 스캔을 트리거한다 (UI-0a2m) — 실제 bd
+// 프로세스가 뜨지 않도록 읽을 수 없는 응답으로 고정해 negative-cache로 끝낸다.
+vi.mock('./workspace-snapshot-runtime.js', () => ({
+  requestWorkspaceSnapshot: async () => ({ ok: false }),
+  signalWorkspaceSnapshotMutation: () => {},
+  __resetWorkspaceSnapshotRuntimeForTest: () => {},
+  __setWorkspaceSnapshotCoordinatorFactoryForTest: () => {}
+}));
+
 /** @type {string} */
 let tmp_state;
 

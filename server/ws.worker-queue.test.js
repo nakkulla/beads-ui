@@ -27,6 +27,20 @@ import {
   workerQueueSubscriberCount
 } from './ws/worker-handlers.js';
 
+// `subscribe-worker-queue`는 세션 레인 스캔을 트리거한다 (UI-0a2m) — 실제 bd
+// 프로세스가 뜨지 않도록 스냅샷 요청을 주입 가능한 응답으로 바꾼다. 기본은
+// "읽을 수 없음"이라 스캔이 조용히 negative-cache로 끝난다.
+const snapshot_seam = vi.hoisted(() => ({
+  /** @type {{ ok: boolean, stale?: boolean, snapshot?: any }} */
+  response: { ok: false }
+}));
+vi.mock('./workspace-snapshot-runtime.js', () => ({
+  requestWorkspaceSnapshot: async () => snapshot_seam.response,
+  signalWorkspaceSnapshotMutation: () => {},
+  __resetWorkspaceSnapshotRuntimeForTest: () => {},
+  __setWorkspaceSnapshotCoordinatorFactoryForTest: () => {}
+}));
+
 /** @type {string} */
 let tmp_state;
 
@@ -3881,5 +3895,141 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
     expect(snapshot.attempts['att-anon'].legs[0]).not.toHaveProperty(
       'agent_type'
     );
+  });
+});
+
+describe('worker-queue session_active projection (UI-0a2m)', () => {
+  afterEach(() => {
+    snapshot_seam.response = { ok: false };
+    getWorkerRuntime().runnableCache.clear();
+  });
+
+  /**
+   * @param {string} name
+   * @returns {{ root_dir: string, db_path: string }}
+   */
+  function wsFor(name) {
+    return {
+      root_dir: `/tmp/wq-sess-${name}`,
+      db_path: `/tmp/wq-sess-${name}/.beads/db`
+    };
+  }
+
+  /**
+   * @param {Array<Record<string, unknown>>} rows
+   */
+  function seedScan(rows) {
+    snapshot_seam.response = {
+      ok: true,
+      stale: false,
+      snapshot: { all: rows }
+    };
+  }
+
+  const SESSION_ROW = {
+    id: 'UI-sess',
+    title: '세션 작업',
+    status: 'in_progress',
+    labels: [],
+    metadata: { route: 'quick_fix' },
+    updated_at: '2026-08-24T00:00:00Z'
+  };
+
+  test('subscribe triggers the session scan and re-pushes the filled snapshot', async () => {
+    const ws = wsFor('push');
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...ws });
+    seedScan([SESSION_ROW]);
+
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+
+    expect(queueSnapshots(sock)[0].session_active).toEqual([]);
+    await vi.waitFor(() => {
+      expect(queueSnapshots(sock).length).toBeGreaterThan(1);
+    });
+    const last = queueSnapshots(sock).at(-1);
+    expect(last.session_active).toHaveLength(1);
+    expect(last.session_active[0]).toMatchObject({
+      bead_id: 'UI-sess',
+      status: 'in_progress',
+      title: '세션 작업',
+      route: 'quick_fix'
+    });
+  });
+
+  test('decorateQueue excludes lane members and active attempts from session_active', async () => {
+    const ws = wsFor('excl');
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...ws });
+    seedScan([
+      SESSION_ROW,
+      { ...SESSION_ROW, id: 'UI-sess2', title: '세션 작업 2' }
+    ]);
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await vi.waitFor(() => {
+      expect(
+        getWorkerRuntime().runnableCache.sessionActivePeek(ws.root_dir)
+      ).toHaveLength(2);
+    });
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue(ws.root_dir, {
+        revision: 1,
+        slots: 2,
+        queue: [{ bead_id: 'UI-sess', added_at: 0 }],
+        pr_wait: [],
+        done: [],
+        attempts: {
+          a1: { attempt_id: 'a1', bead_id: 'UI-sess2', status: 'running' }
+        },
+        cleanup_failed: {}
+      })
+    );
+
+    expect(snapshot.session_active).toEqual([]);
+  });
+
+  test('done-lane membership keeps a session row visible', async () => {
+    const ws = wsFor('done');
+    const sock = fakeSocket();
+    setConnWorkspace(/** @type {any} */ (sock), { ...ws });
+    seedScan([SESSION_ROW]);
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    await vi.waitFor(() => {
+      expect(
+        getWorkerRuntime().runnableCache.sessionActivePeek(ws.root_dir)
+      ).toHaveLength(1);
+    });
+
+    const snapshot = /** @type {any} */ (
+      decorateQueue(ws.root_dir, {
+        revision: 1,
+        slots: 2,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-sess', added_at: 3 }],
+        attempts: {},
+        cleanup_failed: {}
+      })
+    );
+
+    expect(snapshot.session_active).toHaveLength(1);
+    expect(snapshot.session_active[0].bead_id).toBe('UI-sess');
+  });
+
+  test('cold cache decorates an empty session_active without a scan', () => {
+    const snapshot = /** @type {any} */ (
+      decorateQueue('/tmp/wq-sess-cold', {
+        revision: 1,
+        slots: 2,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        attempts: {},
+        cleanup_failed: {}
+      })
+    );
+
+    expect(snapshot.session_active).toEqual([]);
   });
 });

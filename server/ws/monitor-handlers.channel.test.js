@@ -39,7 +39,12 @@ vi.mock('./worker-handlers.js', () => ({
       refresh_listener = null;
     };
   },
-  workerQueueSubscriberCount: () => worker_sub_count
+  workerQueueSubscriberCount: () => worker_sub_count,
+  // 스캔 게이트의 워커 채널 몫 (UI-0a2m) — 이 파일은 모니터 채널 단독 동작을
+  // 검증하므로 워커 구독자는 없다.
+  workerQueueSubscriberTotal: () => 0,
+  workerQueueSubscribedWorkspaces: () => [],
+  fanout: () => {}
 }));
 
 vi.mock('../registry-watcher.js', () => ({

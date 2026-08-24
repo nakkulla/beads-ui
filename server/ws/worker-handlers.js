@@ -101,6 +101,7 @@ import {
   getConnWorkspace,
   log
 } from './context.js';
+import { sessionExcludedBeadIds } from './lane-membership.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
 // Re-exported so the opt-out rule keeps one import site per consumer lane
@@ -223,6 +224,38 @@ function subscribersFor(key) {
 export function workerQueueSubscriberCount(workspace_key) {
   const set = SUBSCRIBERS.get(workspace_key);
   return set ? set.size : 0;
+}
+
+/**
+ * How many clients are subscribed to ANY workspace's worker queue. The runnable
+ * cache's scan gate reads this alongside the monitor subscriber count
+ * (UI-0a2m): a worker-tab-only viewer renders the `session_active` lane too, so
+ * "somebody is watching" must include them or the scan never runs for that
+ * viewer.
+ */
+export function workerQueueSubscriberTotal() {
+  let total = 0;
+  for (const set of SUBSCRIBERS.values()) {
+    total += set.size;
+  }
+  return total;
+}
+
+/**
+ * The workspace keys with at least one worker-queue subscriber (UI-0a2m). The
+ * periodic runnable refresh walks these IN ADDITION to the monitor-visible
+ * roots: a repo hidden from the monitor still renders its own worker tab, and
+ * its session lane must not freeze at the subscribe-time scan.
+ */
+export function workerQueueSubscribedWorkspaces() {
+  /** @type {string[]} */
+  const out = [];
+  for (const [key, set] of SUBSCRIBERS) {
+    if (set.size > 0) {
+      out.push(key);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1696,6 +1729,34 @@ function projectRepoOperations(operations, attempts) {
 }
 
 /**
+ * This workspace's session-held beads for one snapshot (UI-0a2m). A synchronous
+ * SIDE-EFFECT-FREE cache read — decoration runs on every reply and fanout, so
+ * it must never itself spawn a scan. Freshness is owned elsewhere: the
+ * subscribe-time `refresh` in {@link handleSubscribeWorkerQueue} and the
+ * monitor module's periodic driver, whose fill completion re-pushes this
+ * workspace's snapshot. Fail-quiet — a broken cache must not block the
+ * snapshot.
+ *
+ * @param {string} workspace_key
+ * @param {Record<string, unknown>} queue - The snapshot whose lanes/attempts
+ * define the exclusion set.
+ * @returns {Array<Record<string, unknown>>}
+ */
+function sessionActiveRows(workspace_key, queue) {
+  try {
+    return (
+      getWorkerRuntime().runnableCache.sessionActivePeek(
+        workspace_key,
+        sessionExcludedBeadIds(queue)
+      ) || []
+    );
+  } catch (err) {
+    log('session_active lookup failed for %s: %o', workspace_key, err);
+    return [];
+  }
+}
+
+/**
  * Decorate a queue snapshot with computed, non-persisted workspace info:
  *   - the pinned repository-operation declaration used by the merge gate,
  *   - `slots` (the live concurrency cap from the attachment), so the tab can
@@ -1902,6 +1963,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     // Per-serial-lane occupancy + topological correction, derived fresh from
     // this snapshot (UI-04vo §5). Never persisted.
     lane_states: laneStatesFor(overlaid, bead_blocked_by),
+    // 세션이 `in_progress`로 잡은 이슈 (UI-yrzu §3 → UI-0a2m): 모니터가 얹던
+    // 버킷을 워커 채널 스냅샷도 싣는다 — 워커 탭 실행중 그리드가 같은 세션
+    // 타일을 그린다. 제외 집합은 이 스냅샷의 레인·attempt에서 그 자리에서
+    // 계산하므로 캐시가 낡아도 한 bead가 두 레인에 그려지지 않는다.
+    session_active: sessionActiveRows(workspace_key, queue),
     // Which waiting beads are parked awaiting a REVISE disposition (UI-hs11
     // §3.1). Non-persisted, partial and advisory — see the projection.
     revise_parked: reviseParkedFor(workspace_key, queue),
@@ -2449,6 +2515,15 @@ export function handleSubscribeWorkerQueue(ws, req) {
     key,
     decorateQueue(key, queueStore().snapshot(key))
   );
+  // 세션 레인의 "on subscribe" 스캔 (UI-0a2m): 스냅샷의 `session_active`는
+  // fill 없는 peek이므로, 콜드 캐시를 채우는 트리거는 구독이 소유한다. 완료는
+  // 모니터 모듈이 배선한 `setOnFilled`가 이 워크스페이스의 스냅샷 재전송으로
+  // 전달한다. Fail-quiet: 스캔이 못 떠도 구독은 성립한다.
+  try {
+    getWorkerRuntime().runnableCache.refresh(key);
+  } catch (err) {
+    log('runnable refresh on subscribe failed for %s: %o', key, err);
+  }
   // The snapshot above is sent SYNCHRONOUSLY with whatever the registry already
   // holds; the scan is the "on subscribe" refresh trigger (UI-7agi §1) and its
   // result reaches the client through the ordinary fanout. Deliberately not

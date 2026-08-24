@@ -3373,6 +3373,55 @@ export function createWorkerView(mount_element, options = {}) {
         }
       }
     }
+    // 세션이 `in_progress`로 잡은 이슈 (UI-yrzu §5 → UI-0a2m): 모니터 실행중
+    // 레인과 같은 `kind:'session'` 타일을 워커 그리드 맨 뒤에 싣는다. 서버가
+    // 이 스냅샷의 레인·attempt 멤버를 이미 뺐지만, 스냅샷 사이 경합은 여기서
+    // 한 번 더 막는다. attempt가 없으므로 운영 버튼도 슬롯 점유도 없다.
+    const session_claimed = new Set(
+      [...failed_running, ...active_running].map((tile) => tile.bead_id)
+    );
+    for (const entry of /** @type {any[]} */ (
+      Array.isArray(q.session_active) ? q.session_active : []
+    )) {
+      const bead_id = entry && entry.bead_id;
+      if (
+        typeof bead_id !== 'string' ||
+        bead_id.length === 0 ||
+        session_claimed.has(bead_id)
+      ) {
+        continue;
+      }
+      session_claimed.add(bead_id);
+      active_running.push({
+        bead_id,
+        attempt_id: null,
+        kind: 'session',
+        title: entry.title || idToTitle.get(bead_id) || bead_id,
+        status: 'in_progress',
+        // 경과는 시작 시각이 없으면 마지막 갱신 시각으로 물러나고, 둘 다
+        // 없으면 경과 표기가 통째로 생략된다 (UI-yrzu §5·§10).
+        started_at:
+          coerceTimestampMs(entry.started_at) ??
+          coerceTimestampMs(entry.updated_at),
+        updated_at: coerceTimestampMs(entry.updated_at),
+        workflow: entry.workflow || null,
+        runner: null,
+        model: null,
+        effort: null,
+        speed: null,
+        continuation_mode: null,
+        resumed_from: null,
+        paused: false,
+        can_pause: false,
+        conflict_resolution: false,
+        base_exception: null,
+        discard: null,
+        exec_chips: null,
+        usage: null,
+        rollup: null,
+        rollup_expanded: false
+      });
+    }
     // Failed records are the actionable front of the running lane; they do not
     // consume a live slot, but still claim their bead so queue rows do not
     // duplicate the same work item.
@@ -3506,7 +3555,10 @@ export function createWorkerView(mount_element, options = {}) {
     // A manual ▶ may push live sessions past the dispatch cap on purpose (§2.3)
     // — surface it rather than blocking the resume. There is ONE cap now
     // (worker-phase2 §3), so the live total is compared against it directly.
-    const live = running.filter((r) => !r.paused && r.failed !== true);
+    // 세션 타일은 attempt가 아니므로 슬롯을 점유하지 않는다 (UI-0a2m).
+    const live = running.filter(
+      (r) => r.kind !== 'session' && !r.paused && r.failed !== true
+    );
     const live_count = live.length;
     const info_slots = (q.workspace_info || {}).slots;
     const configured_slots =
@@ -4042,7 +4094,11 @@ export function createWorkerView(mount_element, options = {}) {
     if (m.running.length === 0 && m.pr_wait.length === 0) {
       return '';
     }
-    const live = m.running.some((r) => !r.paused && r.failed !== true);
+    // 세션 타일은 라이브 attempt가 아니다 (UI-0a2m) — 초록 라이브 액센트는
+    // 실행 중인 Worker attempt에만 켠다.
+    const live = m.running.some(
+      (r) => r.kind !== 'session' && !r.paused && r.failed !== true
+    );
     return html`<section
       class="worker-now${live ? ' worker-pane--live' : ''}"
       id="worker-now"
@@ -4311,7 +4367,9 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'running',
         title: `실행 중 · 슬롯 ${m.slots}`,
         items: m.running,
-        live: m.running.some((r) => !r.paused && r.failed !== true),
+        live: m.running.some(
+          (r) => r.kind !== 'session' && !r.paused && r.failed !== true
+        ),
         body: runningGridTemplate(m.running, Date.now(), selected_attempt)
       })}
       ${paneTemplate({

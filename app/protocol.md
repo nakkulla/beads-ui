@@ -213,6 +213,15 @@ session's self-report — so a bead moves `queue`/`serial_lanes` → `pr_wait` �
   `null`. Freshness rides two hooks besides the 5-minute TTL — the server's own
   `bd show` readbacks after a metadata write, and the observation of a
   `bd update|close|dep` COMPLETING inside a running session's log.
+- `session_active[]` (UI-0a2m) is the SAME per-repo bucket the monitor
+  aggregation ships (UI-yrzu §4.1, row shape and semantics above): beads an
+  interactive session holds `in_progress`, minus this snapshot's `queue` ∪
+  serial lanes ∪ `pr_wait` members and active-attempt beads. The worker tab
+  renders them as `kind:'session'` tiles at the tail of the running grid; they
+  occupy no slot and count into neither `실행` nor `over_cap`. Non-persisted,
+  riding the runnable cache's scan/TTL/invalidation: a cold subscribe answers
+  `[]` and the filled list arrives on the fanout the scan's completion triggers.
+  Consumers fail-quiet on the key's absence (older server).
 - `execution_defaults` is the read-only display projection paired with
   `runner_catalog`. Shape:
   `{ supported, schema_version, source_commit, digest, session, orchestration }`.
