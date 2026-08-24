@@ -327,6 +327,26 @@ function qualify(row, blocked_by = null, enrich = undefined) {
 }
 
 /**
+ * A session row's timestamp, with the shared snapshot's "unparseable" sentinel
+ * removed (UI-yrzu §5·§10).
+ *
+ * `list-adapters.js normalizeIssueList()` turns a missing or unparseable
+ * `created_at`/`updated_at` into `0` before this cache ever sees the row. The
+ * session tile's 경과 줄 falls back from `started_at` to `updated_at` through
+ * `validTime`, which reads that `0` as a real 1970 timestamp and renders "56년
+ * 전" where the spec asks for no line at all (§5·§10). The other readers of
+ * these fields go through `formatRelativeTime`, which already answers `''` for
+ * `0`, so only this lane needed the sentinel removed.
+ *
+ * @param {unknown} value
+ * @returns {number|string|null}
+ */
+function sessionStamp(value) {
+  const stamp = stampOf(value);
+  return stamp === 0 ? null : stamp;
+}
+
+/**
  * The 판정 for a SESSION-held bead (UI-yrzu §3), minus the lane exclusion, which
  * the caller applies at read time exactly like the runnable one.
  *
@@ -358,9 +378,9 @@ function qualifySession(row, blocked_by = null, enrich = undefined) {
     route: typeof meta.route === 'string' ? meta.route : '',
     spec_id: spec.conflict ? '' : spec.path,
     labels: workerLabels(row.labels),
-    created_at: stampOf(row.created_at),
-    updated_at: stampOf(row.updated_at),
-    started_at: stampOf(row.started_at),
+    created_at: sessionStamp(row.created_at),
+    updated_at: sessionStamp(row.updated_at),
+    started_at: sessionStamp(row.started_at),
     workflow: enrich ? enrich(row) : null,
     blocked: blocked_by !== null,
     blocked_by: blocked_by || []

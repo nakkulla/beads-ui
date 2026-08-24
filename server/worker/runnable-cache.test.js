@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { normalizeIssueList } from '../list-adapters.js';
 import {
   __resetQueueEventsForTest,
   emitQueueChanged,
@@ -1101,5 +1102,25 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
       ['UI-2', null],
       ['UI-3', { route: 'quick_fix' }]
     ]);
+  });
+
+  // 공유 스냅샷은 읽을 수 없는 시각을 `0`으로 눌러 보낸다
+  // (`list-adapters.js normalizeIssueList`). 세션 타일의 경과·활동 줄이 바로
+  // 이 필드를 읽으므로, 센티널이 그대로 나가면 "56년 전"이 그려진다 (§5·§10).
+  test('reads the shared snapshot sentinel for an unreadable time as no time', async () => {
+    const [normalized] = normalizeIssueList([
+      sessionRow({ created_at: 'not-a-date', started_at: null })
+    ]);
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [normalized] })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(normalized.created_at).toBe(0);
+    expect(normalized.updated_at).toBe(0);
+    expect(
+      out.map((item) => [item.created_at, item.updated_at, item.started_at])
+    ).toEqual([[null, null, null]]);
   });
 });
