@@ -66,6 +66,42 @@ function fakeBd(rows_by_workspace) {
 }
 
 /**
+ * A `bd list --all --json` row a SESSION has claimed. Carries none of the
+ * worker admission surfaces (`spec_review`, an admissible route) on purpose —
+ * §3 says those never decide a session tile.
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {Record<string, any>}
+ */
+function sessionRow(patch = {}) {
+  const { metadata, ...rest } = patch;
+  return {
+    id: 'UI-2',
+    title: '세션 진행 이슈',
+    status: 'in_progress',
+    ...rest,
+    metadata: { route: 'spec_backed', ...metadata }
+  };
+}
+
+/**
+ * A `requestSnapshot` stub answering the shared `--all` generation per
+ * workspace — the source BOTH buckets are projected from. A workspace absent
+ * from the map answers not-ok, the "cannot read this repo" failure.
+ *
+ * @param {Record<string, Array<Record<string, any>>>} rows_by_workspace
+ */
+function fakeSnapshot(rows_by_workspace) {
+  return vi.fn(async (/** @type {string} */ workspace) => {
+    const rows = rows_by_workspace[workspace];
+    if (!rows) {
+      return { ok: false };
+    }
+    return { ok: true, stale: false, snapshot: { all: rows } };
+  });
+}
+
+/**
  * Let the fire-and-forget fill and its continuations run. The stub resolves
  * immediately, so a handful of microtask hops is the whole wait (same idiom as
  * `title-cache.test.js`).
@@ -87,6 +123,19 @@ async function warm(cache, workspace, exclude_ids) {
   cache.runnableFor(workspace, exclude_ids);
   await settle();
   return cache.runnableFor(workspace, exclude_ids);
+}
+
+/**
+ * Trigger the async fill and return the settled session bucket.
+ *
+ * @param {ReturnType<typeof createRunnableCache>} cache
+ * @param {string} workspace
+ * @param {string[]} [exclude_ids]
+ */
+async function warmSession(cache, workspace, exclude_ids) {
+  cache.sessionActiveFor(workspace, exclude_ids);
+  await settle();
+  return cache.sessionActiveFor(workspace, exclude_ids);
 }
 
 beforeEach(() => {
@@ -870,5 +919,187 @@ describe('runnable cache workflow + exec_pins (UI-eey2 §9.1)', () => {
       impl_speed: 'fast',
       codex_account: 'work'
     });
+  });
+});
+describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
+  test('projects an in_progress row into session_active instead of runnable', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          row(),
+          sessionRow({
+            spec_id: 'docs/specs/session.md',
+            labels: ['frontend'],
+            created_at: 1000,
+            updated_at: 3000,
+            started_at: 2000
+          })
+        ]
+      }),
+      enrichWorkflow: () => ({ route: 'spec_backed' })
+    });
+
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-1'
+    ]);
+    expect(cache.sessionActiveFor(WS_A)).toEqual([
+      {
+        bead_id: 'UI-2',
+        title: '세션 진행 이슈',
+        status: 'in_progress',
+        route: 'spec_backed',
+        spec_id: 'docs/specs/session.md',
+        labels: ['frontend'],
+        created_at: 1000,
+        updated_at: 3000,
+        started_at: 2000,
+        workflow: { route: 'spec_backed' },
+        blocked: false,
+        blocked_by: []
+      }
+    ]);
+  });
+
+  // §3: 세션은 Worker 자격과 무관하게 아무 이슈나 잡는다.
+  test('keeps a session bead no worker admission condition would admit', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [
+          sessionRow({
+            id: 'UI-7.1',
+            labels: ['worker-ineligible'],
+            metadata: { route: 'unknown_route' }
+          })
+        ]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out.map((item) => [item.bead_id, item.route, item.spec_id])).toEqual(
+      [['UI-7.1', 'unknown_route', '']]
+    );
+  });
+
+  test('reads a session bead with no pinned route as an empty route', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [sessionRow({ metadata: { route: 7 } })]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out.map((item) => item.route)).toEqual(['']);
+  });
+
+  test('projects blocked membership onto a session bead', async () => {
+    const requestSnapshot = vi.fn(async () => ({
+      ok: true,
+      stale: false,
+      snapshot: {
+        all: [sessionRow()],
+        ready_explain: { blocked: [{ id: 'UI-2', blocked_by: ['UI-5'] }] }
+      }
+    }));
+    const cache = createRunnableCache({ requestSnapshot });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out.map((item) => [item.blocked, item.blocked_by])).toEqual([
+      [true, ['UI-5']]
+    ]);
+  });
+
+  test('excludes a session bead the caller already has in a lane', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [sessionRow(), sessionRow({ id: 'UI-3' })]
+      })
+    });
+
+    const out = await warmSession(cache, WS_A, ['UI-2']);
+
+    expect(out.map((item) => item.bead_id)).toEqual(['UI-3']);
+  });
+
+  test('answers an empty session list before the first fill lands', () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [sessionRow()] })
+    });
+
+    const out = cache.sessionActiveFor(WS_A);
+
+    expect(out).toEqual([]);
+  });
+
+  // 한 레코드에 두 버킷이 있으므로 만료도 함께다.
+  test('expires both buckets on invalidate so one re-scan replaces each', async () => {
+    /** @type {Record<string, Array<Record<string, any>>>} */
+    const rows_by_workspace = { [WS_A]: [row(), sessionRow()] };
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot(rows_by_workspace)
+    });
+    onQueueChanged((workspace) => cache.invalidate(workspace));
+    await warm(cache, WS_A);
+
+    rows_by_workspace[WS_A] = [row({ id: 'UI-9' }), sessionRow({ id: 'UI-8' })];
+    emitQueueChanged(WS_A);
+    await warm(cache, WS_A);
+
+    expect(cache.runnableFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-9'
+    ]);
+    expect(cache.sessionActiveFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-8'
+    ]);
+  });
+
+  test('serves the stale session list while the invalidated workspace re-scans', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [sessionRow()] })
+    });
+    onQueueChanged((workspace) => cache.invalidate(workspace));
+    await warmSession(cache, WS_A);
+
+    emitQueueChanged(WS_A);
+
+    expect(cache.sessionActiveFor(WS_A).map((item) => item.bead_id)).toEqual([
+      'UI-2'
+    ]);
+  });
+
+  test('forgets the session bucket on clear', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({ [WS_A]: [sessionRow()] })
+    });
+    await warmSession(cache, WS_A);
+
+    cache.clear();
+
+    expect(cache.sessionActiveFor(WS_A)).toEqual([]);
+  });
+
+  test('leaves only the failing session row without a workflow', async () => {
+    const cache = createRunnableCache({
+      requestSnapshot: fakeSnapshot({
+        [WS_A]: [sessionRow(), sessionRow({ id: 'UI-3' })]
+      }),
+      enrichWorkflow: (/** @type {any} */ issue) => {
+        if (issue.id === 'UI-2') {
+          throw new Error('git probe failed');
+        }
+        return { route: 'quick_fix' };
+      }
+    });
+
+    const out = await warmSession(cache, WS_A);
+
+    expect(out.map((item) => [item.bead_id, item.workflow])).toEqual([
+      ['UI-2', null],
+      ['UI-3', { route: 'quick_fix' }]
+    ]);
   });
 });

@@ -7194,6 +7194,43 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
+/* route 칩 일관 표시 (UI-yrzu §7.3). 전역 `.ctl-chip--route`(styles/base.css)를
+   재정의하지 않고 행 높이에만 맞춘다. 좁은 폭에서도 숨기지 않는다 — 어느
+   레인에서나 같은 자리에 있다는 것이 이 칩의 존재 이유다. */
+.worker-mini .ctl-chip--route,
+.mon2-crow .ctl-chip--route,
+.rtile .ctl-chip--route {
+  flex: 0 0 auto;
+  margin: 0;
+  line-height: 1.35;
+}
+
+/* 세션이 잡은 이슈의 타일 (UI-yrzu §6): 좌측 액센트만 route 칩과 같은 중립
+   계열로 구분한다 — 주의를 요구하는 상태가 아니므로 경고색을 쓰지 않는다. */
+.rtile--session {
+  border-left: 2px solid var(--border-route);
+}
+
+.rtile__dot--session {
+  background: var(--chip-route);
+  box-shadow: none;
+}
+
+.rtile__session-badge {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+/* 세션 타일의 활동 줄은 전사가 아니라 bead 갱신 시각이다 — 초록 점이 주장하는
+   "라이브"를 여기서는 주장하지 않는다. */
+.rtile__activity--session .rtile__activity-dot {
+  background: var(--text-dim);
+}
+
 .rtile__activity {
   display: flex;
   align-items: center;

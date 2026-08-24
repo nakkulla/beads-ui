@@ -110,6 +110,7 @@ const DONE_KIND_LABELS = {
  *   root_dir: string,
  *   workspace_name: string,
  *   expected_revision: number,
+ *   kind?: 'session',
  *   attempt_id?: string|null,
  *   run_state?: 'running'|'paused'|'failed',
  *   can_pause?: boolean,
@@ -198,6 +199,10 @@ const DONE_KIND_LABELS = {
  * @typedef {Object} MonitorChainLaneRow
  * @property {string} id
  * @property {string} title
+ * @property {import('../worker/lanes.js').MiniItem['workflow']} workflow -
+ * route 칩 재료 (UI-yrzu §7.2). 체인에 들어간 대기 버드는 `parallel_rows`에서
+ * 빠지므로, 이 행이 그 버드의 route를 말하는 유일한 자리다. 재료가 없으면
+ * `null`이고 칩만 생략된다.
  * @property {string} root_dir
  * @property {string} workspace_name
  * @property {number} seq - 1부터. ①②③ 표시는 뷰가 소유한다.
@@ -714,6 +719,7 @@ function laneLocalPredecessors(bead_id, members, blocked_by_map) {
  * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
  * @param {Array<Record<string, any>>} states
  * @param {Map<string, string>} title_by_bead
+ * @param {Map<string, import('../worker/lanes.js').MiniItem['workflow']>} workflow_by_bead
  * @returns {{ chain_lanes: MonitorChainLane[], pending_lanes_kept: number[] }}
  */
 function buildChainLanes(
@@ -722,7 +728,8 @@ function buildChainLanes(
   blocked_by_map,
   locations,
   states,
-  title_by_bead
+  title_by_bead,
+  workflow_by_bead
 ) {
   /**
    * @param {string} bead_id
@@ -743,6 +750,7 @@ function buildChainLanes(
     return {
       id: bead_id,
       title: title_by_bead.get(bead_id) || bead_id,
+      workflow: workflow_by_bead.get(bead_id) || null,
       root_dir: location ? location.root_dir : '',
       workspace_name: location ? location.workspace_name : '',
       seq,
@@ -812,6 +820,25 @@ function buildChainLanes(
     lane.label = `연결 ${index + 1} · 레포 간`;
   });
   return { chain_lanes: lanes, pending_lanes_kept };
+}
+
+/**
+ * A timestamp that is either real or absent (UI-yrzu §5). {@link timeOf}
+ * answers `0` on a parse failure, which a fallback chain would read as a valid
+ * 1970 timestamp — 세션 항목의 `started_at`/`updated_at`만 이 함수를 쓴다.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function validTime(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 /**
@@ -889,6 +916,10 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const blocked_by_map = new Map();
   /** @type {Map<string, string>} */
   const title_by_bead = new Map();
+  // 연결 레인 행의 route 칩 재료 (UI-yrzu §7.2). `buildChainLanes`는 워크스페이스
+  // 루프 밖에서 돌므로, 제목과 같은 방식으로 루프에서 모아 넘긴다.
+  /** @type {Map<string, import('../worker/lanes.js').MiniItem['workflow']>} */
+  const workflow_by_bead = new Map();
 
   for (const workspace of list) {
     if (!workspace || typeof workspace.root_dir !== 'string') {
@@ -919,6 +950,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const discard_operations = objectOf(workspace.discard_operations);
     const bead_blocked_by = objectOf(workspace.bead_blocked_by);
     const bead_workflow = objectOf(workspace.bead_workflow);
+    for (const [bead_id, workflow] of Object.entries(bead_workflow)) {
+      if (workflow && typeof workflow === 'object') {
+        workflow_by_bead.set(bead_id, /** @type {any} */ (workflow));
+      }
+    }
     const pr_activity = objectOf(workspace.pr_activity);
     const repo_operations = Array.isArray(workspace.repo_operations)
       ? workspace.repo_operations
@@ -1064,6 +1100,71 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
     }
 
+    // 세션이 `in_progress`로 잡은 이슈 (UI-yrzu §5). Worker 타일 직후, 같은
+    // `claimed` 집합이다 — 서버가 이미 활성 attempt와 레인 멤버를 뺐지만
+    // (§4.2), 스냅샷 사이의 경합은 클라이언트가 한 번 더 막는다.
+    for (const entry of Array.isArray(workspace.session_active)
+      ? workspace.session_active
+      : []) {
+      const bead_id = entry && entry.bead_id;
+      if (typeof bead_id !== 'string' || claimed.has(bead_id)) {
+        continue;
+      }
+      claimed.add(bead_id);
+      if (Array.isArray(entry.blocked_by) && entry.blocked_by.length > 0) {
+        blocked_by_map.set(
+          bead_id,
+          entry.blocked_by.filter(
+            (/** @type {unknown} */ id) =>
+              typeof id === 'string' && id.length > 0
+          )
+        );
+      }
+      if (typeof entry.title === 'string' && entry.title.length > 0) {
+        title_by_bead.set(bead_id, entry.title);
+      }
+      if (entry.workflow && typeof entry.workflow === 'object') {
+        workflow_by_bead.set(bead_id, entry.workflow);
+      }
+      running.push({
+        ...base(bead_id),
+        title: entry.title || titles[bead_id] || bead_id,
+        lane: 'running',
+        kind: 'session',
+        status: 'in_progress',
+        // 세션 타일의 경과는 시작 시각이 없으면 마지막 갱신 시각으로 물러나고,
+        // 둘 다 없으면 경과·활동 줄이 통째로 생략된다 (§5·§10).
+        started_at:
+          validTime(entry.started_at) ??
+          validTime(entry.updated_at) ??
+          undefined,
+        updated_at: validTime(entry.updated_at) ?? undefined,
+        workflow: /** @type {any} */ (entry.workflow || null),
+        labels: Array.isArray(entry.labels) ? entry.labels : [],
+        spec_id: typeof entry.spec_id === 'string' ? entry.spec_id : '',
+        blocked: entry.blocked === true,
+        ...(Array.isArray(entry.blocked_by)
+          ? {
+              blocked_by: entry.blocked_by.filter(
+                (/** @type {unknown} */ blocker_id) =>
+                  typeof blocker_id === 'string' && blocker_id.length > 0
+              )
+            }
+          : {}),
+        // attempt가 없으므로 운영할 것이 없다 (§6): 드래그도 일시정지도 폐기도
+        // 이 타일의 사실이 아니다.
+        draggable: false,
+        can_pause: false,
+        can_resume: false,
+        exec_chips: null,
+        usage: null,
+        legs: [],
+        last_activity: null,
+        badges: [],
+        alert: false
+      });
+    }
+
     for (const entry of Array.isArray(workspace.pr_wait)
       ? workspace.pr_wait
       : []) {
@@ -1117,6 +1218,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
       pr_wait.push({
         ...base(bead_id),
         lane: 'pr_wait',
+        // 대기 행과 같은 route 칩 재료 (UI-yrzu §5·§7.2).
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         pr_number: typeof pr.number === 'number' ? pr.number : null,
         pr_url: typeof pr.url === 'string' ? pr.url : undefined,
         external,
@@ -1208,6 +1311,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       const item = {
         ...base(bead_id),
         lane,
+        // 대기 행의 route 칩 재료 (UI-yrzu §5·§7.2). 서버는 이미 대기 레인
+        // 멤버에게 `bead_workflow`를 실어 준다 — 없으면 칩만 생략된다.
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         // 데스크톱의 유일한 적재 수단이 드래그다 (§6) — 대기 행은 끌 수 있다.
         draggable: !discard,
         discard: discard || undefined,
@@ -1359,6 +1465,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
       if (typeof entry.title === 'string' && entry.title.length > 0) {
         title_by_bead.set(bead_id, entry.title);
       }
+      if (workflow) {
+        workflow_by_bead.set(bead_id, workflow);
+      }
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
@@ -1434,6 +1543,18 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const running_sort =
     options && options.running_sort === 'repo' ? 'repo' : 'started';
   running.sort((a, b) => {
+    // Worker 타일 전체가 세션 타일 전체보다 앞이다 (UI-yrzu §5): 두 종류는
+    // 다른 사실(attempt vs. bead 상태)을 말하므로 섞어 정렬하면 어느 쪽도
+    // 훑을 수 없다. `repo` 정렬을 택해도 이 분할이 먼저다.
+    const a_session = a.kind === 'session';
+    const b_session = b.kind === 'session';
+    if (a_session !== b_session) {
+      return a_session ? 1 : -1;
+    }
+    if (a_session && b_session) {
+      const diff = timeOf(b.updated_at) - timeOf(a.updated_at);
+      return diff !== 0 ? diff : a.id.localeCompare(b.id);
+    }
     if (running_sort === 'repo') {
       const a_repo = repo_order.get(a.root_dir) ?? Number.MAX_SAFE_INTEGER;
       const b_repo = repo_order.get(b.root_dir) ?? Number.MAX_SAFE_INTEGER;
@@ -1637,7 +1758,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     blocked_by_map,
     locations,
     states,
-    title_by_bead
+    title_by_bead,
+    workflow_by_bead
   );
   model.chain_lanes = chain_lane_projection.chain_lanes;
   model.pending_lanes_kept = chain_lane_projection.pending_lanes_kept;

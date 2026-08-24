@@ -459,7 +459,9 @@ export function createRepoDeck(mount_element, options) {
         ${iconSlots()} ${slotRail(running, slots)}
         <span class="mon2-deck__counts"
           >${running}/${slots} 실행 · 대기 ${countOf(row, 'queue')} · PR
-          ${countOf(row, 'pr_wait')}</span
+          ${countOf(row, 'pr_wait')}${countOf(row, 'session_active') > 0
+            ? ` · 세션 ${countOf(row, 'session_active')}`
+            : ''}</span
         >
       </div>
       <div class="mon2-deck__ops">${switchesTemplate(row)}</div>
@@ -486,8 +488,12 @@ export function createRepoDeck(mount_element, options) {
       title=${`visible 레포 ${list.length}곳의 합계입니다 — 실행·대기·PR은 지금, 완료는 ${range_label}`}
     >
       <div class="mon2-deck__total-counts">
-        실행 ${sum('running')} · 대기 ${sum('queue')} · PR ${sum('pr_wait')} ·
-        ${range_label} 완료 ${Array.isArray(done_items) ? done_items.length : 0}
+        실행 ${sum('running')} · 대기 ${sum('queue')} · PR
+        ${sum('pr_wait')}${sum('session_active') > 0
+          ? ` · 세션 ${sum('session_active')}`
+          : ''}
+        · ${range_label} 완료
+        ${Array.isArray(done_items) ? done_items.length : 0}
       </div>
       ${total === null
         ? ''

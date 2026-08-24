@@ -642,3 +642,209 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     expect(tile).toContain('rtile__activity is-paused');
   });
 });
+
+describe('session tile (UI-yrzu §6)', () => {
+  const WORKFLOW = {
+    route: /** @type {const} */ ('spec_backed'),
+    chips: { route: 'spec_backed', route_source: 'explicit' },
+    stages: {
+      spec: { fill: /** @type {const} */ ('full') },
+      impl: {},
+      pr: {},
+      merge: {}
+    }
+  };
+
+  /**
+   * @param {Partial<import('./running-grid.js').RunningTile>} [patch]
+   * @param {any} [monitor]
+   * @returns {HTMLElement}
+   */
+  function renderSession(patch = {}, monitor = { repo: 'repo-a' }) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        tileInput({
+          kind: 'session',
+          attempt_id: '',
+          started_at: 1000,
+          updated_at: 3000,
+          ...patch
+        }),
+        5000,
+        null,
+        { monitor }
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('marks the tile and its dot as session-owned', () => {
+    const tile = renderSession();
+
+    expect(tile.classList.contains('rtile--session')).toBe(true);
+    expect(
+      tile
+        .querySelector('.rtile__dot')
+        ?.classList.contains('rtile__dot--session')
+    ).toBe(true);
+  });
+
+  test('names the tile a session with the ownership tooltip', () => {
+    const badge = renderSession().querySelector('.rtile__session-badge');
+
+    expect(badge?.textContent).toBe('세션');
+    expect(badge?.getAttribute('title')).toBe(
+      'Worker가 아닌 세션이 in_progress로 잡은 이슈'
+    );
+  });
+
+  test('renders no worker operation control and no session drawer', () => {
+    const tile = renderSession();
+
+    expect(tile.querySelector('.rtile__session')).toBeNull();
+    expect(tile.querySelector('.rtile__pause')).toBeNull();
+    expect(tile.querySelector('.rtile__resume')).toBeNull();
+    expect(tile.querySelector('.rtile__discard')).toBeNull();
+    expect(tile.querySelector('.rtile__dismiss')).toBeNull();
+  });
+
+  test('draws the route chip after the id', () => {
+    const head = /** @type {HTMLElement} */ (
+      renderSession({ workflow: /** @type {any} */ (WORKFLOW) }).querySelector(
+        '.rtile__hd'
+      )
+    );
+    const order = Array.from(head.children).map((child) => child.className);
+
+    expect(order.indexOf('ctl-chip ctl-chip--route')).toBe(
+      order.indexOf('rtile__id') + 1
+    );
+  });
+
+  test('keeps the elapsed clock while a start time is known', () => {
+    const tile = renderSession();
+
+    expect(tile.querySelector('.rtile__elapsed')?.textContent).toBe('4s');
+  });
+
+  test('omits the elapsed clock when no start time survived parsing', () => {
+    const tile = renderSession({ started_at: null });
+
+    expect(tile.querySelector('.rtile__elapsed')).toBeNull();
+  });
+
+  test('reports the last bead update as the activity line', () => {
+    const tile = renderSession({ updated_at: 5000 - 120_000 });
+
+    expect(tile.querySelector('.rtile__activity-text')?.textContent).toBe(
+      '갱신 2분 전'
+    );
+    expect(
+      tile
+        .querySelector('.rtile__activity')
+        ?.classList.contains('rtile__activity--session')
+    ).toBe(true);
+  });
+
+  test('omits the activity line when no update time survived parsing', () => {
+    const tile = renderSession({ updated_at: undefined });
+
+    expect(tile.querySelector('.rtile__activity')).toBeNull();
+  });
+
+  test('draws the stepper from the monitor workflow overlay', () => {
+    const tile = renderSession(
+      {},
+      { repo: 'repo-a', workflow: /** @type {any} */ (WORKFLOW) }
+    );
+
+    expect(tile.querySelector('.stp')).not.toBeNull();
+  });
+
+  test('draws the exec_receipt chip without its sha and keeps the full value in the tooltip', () => {
+    const tile = renderSession({
+      workflow: /** @type {any} */ ({
+        ...WORKFLOW,
+        chips: {
+          ...WORKFLOW.chips,
+          exec_receipt: {
+            kind: 'delegated',
+            actor: 'opus',
+            effort: 'high',
+            sha: 'a'.repeat(40)
+          }
+        }
+      })
+    });
+    const chip = tile.querySelector('.rtile__meta .ctl-chip--exec-receipt');
+
+    expect(chip?.textContent).toBe('delegated:opus:high');
+    expect(chip?.getAttribute('title')).toBe(
+      `exec_receipt delegated:opus:high@${'a'.repeat(40)}`
+    );
+  });
+
+  test('omits the meta row when the workflow carries no exec_receipt', () => {
+    const tile = renderSession({ workflow: /** @type {any} */ (WORKFLOW) });
+
+    expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  test('renders neither delegation chips nor a token line', () => {
+    const tile = renderSession(
+      {
+        usage: /** @type {any} */ ({
+          input_tokens: 10,
+          output_tokens: 5,
+          total_tokens: 15
+        })
+      },
+      {
+        repo: 'repo-a',
+        legs: [
+          { label: '구현 unit · codex', state: /** @type {const} */ ('live') }
+        ]
+      }
+    );
+
+    expect(tile.querySelector('.rtile__legs')).toBeNull();
+    expect(tile.querySelector('.worker-usage')).toBeNull();
+  });
+
+  test('keeps the bead id and the detail click contract of every other tile', () => {
+    const tile = renderSession();
+
+    expect(tile.getAttribute('data-bead-id')).toBe('UI-t1');
+    expect(tile.querySelector('.rtile__id')?.getAttribute('title')).toBe(
+      '클릭하면 ID 복사'
+    );
+  });
+});
+
+describe('worker running tile route chip (UI-yrzu §7.2)', () => {
+  test('draws the route chip when the tile carries a workflow', () => {
+    const tile = shape(
+      runningTile(
+        tileInput({
+          workflow: /** @type {any} */ ({
+            chips: { route: 'quick_fix', route_source: 'explicit' }
+          })
+        }),
+        5000,
+        null
+      )
+    );
+
+    expect(tile).toContain('ctl-chip--route');
+    expect(tile).toContain('quick_fix');
+  });
+
+  test('draws no route chip on a tile without a workflow', () => {
+    expect(shape(runningTile(tileInput(), 5000, null))).not.toContain(
+      'ctl-chip--route'
+    );
+  });
+});

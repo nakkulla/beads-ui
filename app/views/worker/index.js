@@ -2718,6 +2718,16 @@ export function createWorkerView(mount_element, options = {}) {
       !Array.isArray(q.bead_labels)
         ? q.bead_labels
         : {};
+    // 레인 멤버의 stepper/route 투영 (UI-eey2 §9.2). 대기·PR 대기 행과 실행
+    // 타일의 route 칩이 여기서 재료를 얻는다 (UI-yrzu §7.2); 구 서버는 키가
+    // 없어 칩만 생략된다 (fail-quiet).
+    /** @type {Record<string, any>} */
+    const bead_workflow =
+      q.bead_workflow &&
+      typeof q.bead_workflow === 'object' &&
+      !Array.isArray(q.bead_workflow)
+        ? q.bead_workflow
+        : {};
     // 표시 전용 legacy worker-serial 잔재 (UI-04vo §4): 스케줄링 소비는 은퇴
     // 했고, 라벨이 남아 있는 행만 취소선 chip을 위해 표시한다. 라벨 진실은
     // 서버 데코레이션 우선, 없으면 live 이슈로 보충 (fail-quiet).
@@ -2975,8 +2985,9 @@ export function createWorkerView(mount_element, options = {}) {
         lane: 'candidate',
         created_at: it.created_at,
         updated_at: it.updated_at,
-        // Candidate cards consume the server-enriched workflow/status (spec §2);
-        // queue lanes carry no workflow snapshot, so they stay on miniRow.
+        // Candidate cards consume the server-enriched workflow/status (spec §2).
+        // 대기 레인 행도 이제 같은 route 칩을 그리지만, stepper까지 그리는
+        // 카드 변형은 여전히 후보 레인만이다 (UI-yrzu §7.2).
         workflow: it.workflow,
         is_quick_fix,
         status: it.status,
@@ -3099,6 +3110,8 @@ export function createWorkerView(mount_element, options = {}) {
           // 대기 행만 실행 설정 칩을 얻는다 (worker-card-exec-chips §2.2):
           // 완료 행은 이미 끝났으므로 "돌아갈 설정"이 없다.
           exec_chips: waiting_lane ? beadExecChips(e.bead_id) : null,
+          // route 칩 재료 (UI-yrzu §7.2). 완료 행은 칩을 그리지 않는다.
+          workflow: waiting_lane ? bead_workflow[e.bead_id] || null : null,
           ...timesOf(e.bead_id)
         };
       });
@@ -3249,6 +3262,8 @@ export function createWorkerView(mount_element, options = {}) {
           discard: discardProjection(discard_operations, a.bead_id, {
             attempt_id: a.attempt_id
           }),
+          // route 칩 재료 (UI-yrzu §7.2) — 모니터 탭 실행 타일과 같은 칩이다.
+          workflow: bead_workflow[a.bead_id] || null,
           // 실행 중 타일도 bead의 전체 attempt 합계를 쓴다 (UI-d7pw §1.4).
           // 이 attempt의 라이브 값만 쓰면 재실행된 bead의 실행 타일만 혼자
           // 다른 수를 보이게 되어 "모든 배지가 같은 질문에 답한다"가 깨진다.
@@ -3291,6 +3306,7 @@ export function createWorkerView(mount_element, options = {}) {
             resume_reason: resume.reason,
             conflict_resolution: resolvesConflict(a),
             base_exception: baseException(declared_base, a.target_base),
+            workflow: bead_workflow[a.bead_id] || null,
             usage: sumAttemptUsage(q.attempts || {}, a.bead_id),
             rollup: runningRollup(a.bead_id),
             rollup_expanded: rollup_expanded_ids.has(a.bead_id),
@@ -3778,7 +3794,11 @@ export function createWorkerView(mount_element, options = {}) {
             }
           )
         )
-        .map((/** @type {any} */ row) => ({ ...row, ...timesOf(row.id) })),
+        .map((/** @type {any} */ row) => ({
+          ...row,
+          workflow: bead_workflow[row.id] || null,
+          ...timesOf(row.id)
+        })),
       merge_queue_length: merge_queue.length,
       merge_queue_running: merge_queue.length > 0,
       // 자동 편입이 지금 건너뛸 행 (UI-yk55 §3.2). 버튼의 N은 "켜면 들어갈 수"를

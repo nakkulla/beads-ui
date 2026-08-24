@@ -52,13 +52,39 @@ function candidate(bead_id) {
 }
 
 /**
+ * A session-held bead as the cache projects it (UI-yrzu §4.1).
+ *
+ * @param {string} bead_id
+ * @returns {Record<string, any>}
+ */
+function sessionItem(bead_id) {
+  return {
+    bead_id,
+    title: `${bead_id} 제목`,
+    status: 'in_progress',
+    route: 'spec_backed',
+    spec_id: 'docs/specs/thing.md',
+    labels: [],
+    created_at: null,
+    updated_at: null,
+    started_at: null,
+    workflow: null,
+    blocked: false,
+    blocked_by: []
+  };
+}
+
+/**
  * @param {{
  *   workspaces?: string[],
  *   hidden?: string[],
  *   snapshots?: Record<string, any>,
  *   runnable?: Record<string, Array<Record<string, any>>>,
+ *   sessionActive?: Record<string, Array<Record<string, any>>>,
+ *   sessionExcludes?: Record<string, Set<string>>,
  *   fail?: string[],
  *   runnableFails?: string[],
+ *   sessionActiveFails?: string[],
  *   issuePrefixes?: Record<string, string|null>,
  *   foreignStatus?: Record<string, string|null>,
  *   foreignStatusCalls?: Array<[string, string]>
@@ -87,12 +113,22 @@ function build(input) {
       }
       const items = (input.runnable || {})[key] || [];
       return items.filter((item) => !exclude_ids.has(item.bead_id));
+    },
+    sessionActiveFor: (key, exclude_ids) => {
+      if ((input.sessionActiveFails || []).includes(key)) {
+        throw new Error('session boom');
+      }
+      if (input.sessionExcludes) {
+        input.sessionExcludes[key] = exclude_ids;
+      }
+      const items = (input.sessionActive || {})[key] || [];
+      return items.filter((item) => !exclude_ids.has(item.bead_id));
     }
   });
 }
 
 /**
- * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any>, issuePrefixes?: Record<string, string|null>, sessionDefaults?: Record<string, { values: Record<string, string>, warnings: string[] }>, runnable?: Record<string, Array<Record<string, any>>> }} input
+ * @param {{ workspaces?: string[], hidden?: string[], queues?: Record<string, any>, issuePrefixes?: Record<string, string|null>, sessionDefaults?: Record<string, { values: Record<string, string>, warnings: string[] }>, runnable?: Record<string, Array<Record<string, any>>>, sessionActive?: Record<string, Array<Record<string, any>>> }} input
  */
 function buildState(input) {
   return buildMonitorWorkspacesState({
@@ -104,6 +140,10 @@ function buildState(input) {
       (input.sessionDefaults || {})[key] || { values: {}, warnings: [] },
     runnableFor: (key, exclude_ids) =>
       ((input.runnable || {})[key] || []).filter(
+        (item) => !exclude_ids.has(item.bead_id)
+      ),
+    sessionActiveFor: (key, exclude_ids) =>
+      ((input.sessionActive || {})[key] || []).filter(
         (item) => !exclude_ids.has(item.bead_id)
       )
   });
@@ -261,6 +301,236 @@ describe('buildMonitorPipeline runnable lane (UI-qrfo §4)', () => {
     });
 
     expect(out[0].runnable).toEqual([]);
+  });
+});
+
+describe('buildMonitorPipeline session_active lane (UI-yrzu §3)', () => {
+  test('carries the session-held beads of each workspace', () => {
+    const out = build({
+      workspaces: [WS_A, WS_B],
+      sessionActive: {
+        [WS_A]: [sessionItem('A-s')],
+        [WS_B]: [sessionItem('B-s')]
+      }
+    });
+
+    expect(out.map((w) => w.session_active)).toEqual([
+      [sessionItem('A-s')],
+      [sessionItem('B-s')]
+    ]);
+  });
+
+  // 세션 작업만 있는 레포도 데크에 나타나야 한다 (§4.2).
+  test('keeps a workspace whose only content is a session-held bead', () => {
+    const out = build({
+      workspaces: [WS_A],
+      sessionActive: { [WS_A]: [sessionItem('A-s')] }
+    });
+
+    expect(out.map((w) => w.root_dir)).toEqual([WS_A]);
+  });
+
+  test('excludes a bead an active worker attempt already draws', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          attempts: {
+            'att-1': {
+              attempt_id: 'att-1',
+              bead_id: 'A-run',
+              status: 'running'
+            }
+          }
+        })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-run'), sessionItem('A-s')] }
+    });
+
+    expect(out[0].session_active).toEqual([sessionItem('A-s')]);
+  });
+
+  test('excludes a queue, serial and pr_wait member', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-q', added_at: NOW }],
+          serial_lanes: [{ id: 'lane-1', entries: [{ bead_id: 'A-serial' }] }],
+          pr_wait: [{ bead_id: 'A-pr', added_at: NOW }]
+        })
+      },
+      sessionActive: {
+        [WS_A]: [
+          sessionItem('A-q'),
+          sessionItem('A-serial'),
+          sessionItem('A-pr'),
+          sessionItem('A-s')
+        ]
+      }
+    });
+
+    expect(out[0].session_active).toEqual([sessionItem('A-s')]);
+  });
+
+  // §3: 완료 이력이 있는 이슈를 세션이 다시 열면 지금 진행 중인 일이 사실이다.
+  test('keeps a done-lane member the session reopened', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: YESTERDAY }] })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-done')] }
+    });
+
+    expect(out[0].session_active).toEqual([sessionItem('A-done')]);
+  });
+
+  test('leaves the done lane in the runnable exclusion set', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: YESTERDAY }] })
+      },
+      runnable: { [WS_A]: [candidate('A-done')] },
+      sessionActive: { [WS_A]: [sessionItem('A-done')] }
+    });
+
+    expect(out[0].runnable).toEqual([]);
+  });
+
+  test('keeps a failure the done lane already resolved out of the exclusion set', () => {
+    /** @type {Record<string, Set<string>>} */
+    const sessionExcludes = {};
+    build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          done: [{ bead_id: 'A-failed', added_at: NOW }],
+          attempts: {
+            'att-f': {
+              attempt_id: 'att-f',
+              bead_id: 'A-failed',
+              status: 'failed',
+              finished_at: NOW - 1000
+            }
+          }
+        })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-failed')] },
+      sessionExcludes
+    });
+
+    expect([...sessionExcludes[WS_A]]).toEqual([]);
+  });
+
+  test('keeps the rest of a workspace when its session lookup throws', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({ queue: [{ bead_id: 'A-1', added_at: NOW }] })
+      },
+      sessionActiveFails: [WS_A]
+    });
+
+    expect(out[0].session_active).toEqual([]);
+  });
+});
+
+describe('workspaces_state session_active count (UI-yrzu §4.2)', () => {
+  test('counts the session-held beads beside the four lane counts', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          queue: [{ bead_id: 'A-wait', added_at: NOW }],
+          attempts: {
+            'att-1': {
+              attempt_id: 'att-1',
+              bead_id: 'A-run',
+              status: 'running'
+            }
+          }
+        })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-s1'), sessionItem('A-s2')] }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 1,
+      pr_wait: 0,
+      queue: 1,
+      runnable: 0,
+      session_active: 2
+    });
+  });
+
+  // `running`은 Worker attempt 수 그대로다 — 세션은 그 다음 순위다.
+  test('leaves running unchanged when a session holds the same bead', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({
+          attempts: {
+            'att-1': {
+              attempt_id: 'att-1',
+              bead_id: 'A-run',
+              status: 'running'
+            }
+          }
+        })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-run')] }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 1,
+      pr_wait: 0,
+      queue: 0,
+      runnable: 0,
+      session_active: 0
+    });
+  });
+
+  test('counts a session-held bead the done lane also carries', () => {
+    const out = buildState({
+      workspaces: [WS_A],
+      queues: {
+        [WS_A]: snapshot({ done: [{ bead_id: 'A-done', added_at: YESTERDAY }] })
+      },
+      sessionActive: { [WS_A]: [sessionItem('A-done')] }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 0,
+      pr_wait: 0,
+      queue: 0,
+      runnable: 0,
+      session_active: 1
+    });
+  });
+
+  test('keeps counting the other lanes when the session lookup throws', () => {
+    const out = buildMonitorWorkspacesState({
+      listWorkspaces: () => [{ path: WS_A }],
+      listHidden: () => [],
+      snapshotFor: () =>
+        snapshot({ queue: [{ bead_id: 'A-1', added_at: NOW }] }),
+      issuePrefixFor: () => null,
+      sessionDefaultsFor: () => ({ values: {}, warnings: [] }),
+      runnableFor: () => [],
+      sessionActiveFor: () => {
+        throw new Error('session boom');
+      }
+    });
+
+    expect(out[0].counts).toEqual({
+      running: 0,
+      pr_wait: 0,
+      queue: 1,
+      runnable: 0,
+      session_active: 0
+    });
   });
 });
 
@@ -744,7 +1014,8 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       running: 1,
       pr_wait: 1,
       queue: 2,
-      runnable: 1
+      runnable: 1,
+      session_active: 0
     });
   });
 
@@ -755,7 +1026,8 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       running: 0,
       pr_wait: 0,
       queue: 0,
-      runnable: 0
+      runnable: 0,
+      session_active: 0
     });
   });
 
@@ -788,7 +1060,8 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       running: 2,
       pr_wait: 0,
       queue: 0,
-      runnable: 0
+      runnable: 0,
+      session_active: 0
     });
   });
 
@@ -819,7 +1092,8 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       running: 1,
       pr_wait: 0,
       queue: 0,
-      runnable: 0
+      runnable: 0,
+      session_active: 0
     });
   });
 
@@ -845,7 +1119,8 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       running: 0,
       pr_wait: 0,
       queue: 0,
-      runnable: 0
+      runnable: 0,
+      session_active: 0
     });
   });
 
@@ -866,7 +1141,8 @@ describe('workspaces_state counts (UI-eey2 §9.4)', () => {
       running: 0,
       pr_wait: 0,
       queue: 1,
-      runnable: 0
+      runnable: 0,
+      session_active: 0
     });
   });
 });
