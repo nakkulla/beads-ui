@@ -348,12 +348,18 @@ function monitoredLegTemplate(session, leg, attempt_id, handlers) {
       : terminal_leg
         ? completedTime(terminal_leg.completed_at)
         : '';
-  // `Claude · <agent_type> · <model>` for a subagent; the Codex row keeps its
-  // lowercase provider + effort tuple. A missing piece drops out rather than
-  // rendering a gap (UI-2mpn §6.1).
+  // `Claude · <agent_type> · <model> · <effort>` for a subagent; the Codex row
+  // keeps its lowercase provider + effort tuple. A missing piece drops out
+  // rather than rendering a gap (UI-2mpn §6.1). A subagent's effort is read off
+  // its own JSONL once its receipt names the agent, so it lands last.
   const meta = (
     session.provider === 'claude'
-      ? ['Claude', session.agent_type, shortModel(session.model)]
+      ? [
+          'Claude',
+          session.agent_type,
+          shortModel(session.model),
+          session.effort
+        ]
       : ['codex', session.model, session.effort]
   )
     .filter(Boolean)

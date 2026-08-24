@@ -24,7 +24,6 @@ import {
   execReceiptActor,
   formatExecReceipt
 } from '../board/card.js';
-import { stepperTemplate } from '../board/stepper.js';
 import { childRollupTemplate } from '../child-rollup.js';
 import { failureText } from './failure-labels.js';
 import {
@@ -281,11 +280,9 @@ export function bannersTemplate(state) {
  * on the monitor and clicking it goes to that repo's Worker tab (UI-eey2 §7).
  * @property {string} [root_dir] - The badge's tooltip.
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'} [serial_lane_id] - Serial lane chip.
- * @property {import('../board/stepper.js').WorkflowSummary|null} [workflow] -
- * `bead_workflow[bead_id]`; absent/null omits the stepper (fail-quiet).
  * @property {{ at?: number|null, kind?: string, text?: string, tool?: string }|null} [last_activity] -
  * The attempt's last non-thinking transcript line (§9.3).
- * @property {Array<{ label: string, state: 'live'|'done'|'failed' }>} [legs] -
+ * @property {Array<{ label: string, state: 'live'|'done'|'failed', agent_type?: string|null }>} [legs] -
  * Delegation legs; only the unfinished ones are spelled out.
  * @property {import('./lanes.js').DependencyChips|null} [dependency_chips] -
  * `→ 후속` chips (§5.1); the running tile shows no 선행 (it already started).
@@ -314,10 +311,19 @@ function monitorTileHead(monitor) {
 }
 
 /**
- * Monitor-only body of a running tile (UI-eey2 §7): stepper · 최근 활동 ·
- * 위임 칩 · 후속 칩. 끝난 위임은 `✓ n` 한 칩으로 접고 목록은 툴팁으로
- * 물러난다 ("기본은 접고 중요한 것만", 스펙 §2). 재료가 없는 줄은 통째로
- * 생략한다.
+ * Claude 서브에이전트 중 Codex 세션을 띄우기만 하는 전달자의 `agent_type`
+ * (dotfiles `codex-runner`). 그 세션의 실제 작업은 따로 `codex` runtime leg로
+ * 잡히므로, 타일에서는 전달자 leg를 숨겨 같은 위임이 두 칩·두 건으로 보이지
+ * 않게 한다. 이름이 바뀌어 안 잡히면 그냥 두 칩이 보인다 (fail-quiet).
+ */
+const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
+
+/**
+ * Monitor-only body of a running tile (UI-eey2 §7): 최근 활동 · 위임 칩 ·
+ * 후속 칩. 실행중 타일은 stepper를 그리지 않는다 — 활동 줄과 위임 칩이 이미
+ * 진행을 말하고, stepper는 높이만 차지했다. 끝난 위임은 `위임 완료 n` 한
+ * 칩으로 접고 목록은 툴팁으로 물러난다 ("기본은 접고 중요한 것만", 스펙 §2).
+ * 재료가 없는 줄은 통째로 생략한다.
  *
  * 세션 타일은 전사도 위임 로그도 없다 (UI-yrzu §6): 활동 줄이 답할 수 있는
  * 유일한 사실이 bead의 마지막 갱신 시각이고, 위임 칩은 그릴 근거가 없다.
@@ -333,21 +339,30 @@ function monitorTileBody(monitor, now, paused, session = null) {
   if (!monitor) {
     return '';
   }
-  const workflow = monitor.workflow || null;
   const activity = monitor.last_activity || null;
   const activity_text =
     activity && typeof activity.text === 'string' ? activity.text : '';
   const activity_at =
     activity && typeof activity.at === 'number' ? activity.at : null;
-  const legs = session || !Array.isArray(monitor.legs) ? [] : monitor.legs;
+  // 세션 타일에는 위임 leg가 없다 (UI-yrzu §6) — attempt가 없으므로 그릴
+  // 근거가 없다. Worker 타일은 전달자 leg만 걸러 낸다.
+  const legs = (
+    session || !Array.isArray(monitor.legs) ? [] : monitor.legs
+  ).filter(
+    (leg) =>
+      leg &&
+      !(
+        typeof leg.agent_type === 'string' &&
+        FORWARDER_AGENT_TYPES.has(leg.agent_type)
+      )
+  );
   const live_legs = legs.filter((leg) => leg && leg.state === 'live');
   const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
   const deps = dependencyChipsTemplate(monitor.dependency_chips);
   const session_age = session
     ? formatRelativeTime(session.updated_at, now)
     : '';
-  return html`${workflow ? stepperTemplate(workflow, 'in_progress') : ''}
-  ${activity_text
+  return html`${activity_text
     ? html`<div class="rtile__activity${paused ? ' is-paused' : ''}">
         <span class="rtile__activity-dot" aria-hidden="true"></span>
         <span class="rtile__activity-text">${activity_text}</span>
@@ -368,8 +383,10 @@ function monitorTileBody(monitor, now, paused, session = null) {
     ? html`<div class="rtile__legs">
         ${live_legs.map(
           (leg) =>
-            html`<span class="rtile__leg rtile__leg--live"
-              >⟳ ${leg.label}</span
+            html`<span
+              class="rtile__leg rtile__leg--live"
+              title="이 세션이 띄운 서브에이전트/Codex 세션이 실행 중입니다"
+              >위임 중 · ${leg.label}</span
             >`
         )}${ended_legs.length > 0
           ? html`<span
@@ -377,7 +394,7 @@ function monitorTileBody(monitor, now, paused, session = null) {
               title=${`완료된 위임: ${ended_legs
                 .map((leg) => leg.label)
                 .join(', ')}`}
-              >✓ ${ended_legs.length}</span
+              >위임 완료 ${ended_legs.length}</span
             >`
           : ''}
       </div>`
@@ -390,8 +407,8 @@ function monitorTileBody(monitor, now, paused, session = null) {
  * so the tile is not the one place on this board where the default click means
  * something else. The drawer's tile keeps its `.rtile--sel` ring.
  *
- * `options.monitor` adds the monitor tab's four extra lines (UI-eey2 §7) —
- * 레포 배지 · stepper · 활동 · 위임/후속 칩. Omitted — every Worker call —
+ * `options.monitor` adds the monitor tab's extra lines (UI-eey2 §7) —
+ * 레포 배지 · 활동 · 위임/후속 칩. Omitted — every Worker call —
  * renders exactly as before. Exported since UI-eey2 so the monitor renders the
  * SAME tile rather than a second one that drifts.
  *

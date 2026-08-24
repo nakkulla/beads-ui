@@ -318,6 +318,35 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
     expect(serial[1].empty).toBe(true);
   });
 
+  test('projects lane occupants with the running item title and state badge', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'A-1': '점유 중인 작업' },
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'paused',
+              started_at: 10
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial;
+    expect(serial[0].occupants).toEqual([
+      { id: 'A-1', title: '점유 중인 작업', badge: '일시정지 · 점유' }
+    ]);
+    expect(serial[0].items.map((item) => item.id)).toEqual(['A-2']);
+  });
+
   test('omits the hint entirely when the only configured serial lane is empty', () => {
     const lanes = buildLanes(
       [workspace({ serial_lane_count: 1, queue: [{ bead_id: 'A-1' }] })],
@@ -510,6 +539,36 @@ describe('monitor 🔗 연결 체인 (UI-eey2 §6.4)', () => {
     expect(chains[0].nodes.map((n) => n.id)).toEqual(['A', 'B']);
   });
 
+  test('drops a done blockee whose only edge is a dangling foreign blocker', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 1 }],
+          bead_blocked_by: { 'A-1': ['Z-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chains).toEqual([]);
+    expect(lanes.chain_lanes).toEqual([]);
+  });
+
+  test('drops a done blocker from an otherwise live chain', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          done: [{ bead_id: 'A-1', added_at: 1 }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chains).toEqual([]);
+  });
+
   test('labels an unplaced node from its prefix scope', () => {
     const chains = buildChains(
       new Map([['A-2', ['Z-9']]]),
@@ -658,7 +717,10 @@ describe('monitor lane fail-quiet', () => {
     expect(lanes.runnable[0].workflow).toBe(workflow);
   });
 
-  test('feeds the bead_workflow projection into the running tile stepper', () => {
+  // 실행중 타일에서 stepper가 빠진 뒤에도 이 투영은 실린다 (UI-yrzu §7.2):
+  // 이제는 route 칩 재료다. "stepper를 그리지 않는다"는 사실은 렌더 층
+  // (`running-grid.test.js`, `monitor/index.test.js`)이 고정한다.
+  test('carries the bead_workflow projection onto the running tile', () => {
     const workflow = {
       route: 'spec_backed',
       stages: { spec: { fill: 'full' } }
@@ -681,26 +743,6 @@ describe('monitor lane fail-quiet', () => {
     );
 
     expect(lanes.running[0].workflow).toBe(workflow);
-  });
-
-  test('omits the stepper for a running bead the cache has not filled yet', () => {
-    const lanes = buildLanes(
-      [
-        workspace({
-          attempts: {
-            t1: {
-              attempt_id: 't1',
-              bead_id: 'A-1',
-              status: 'running',
-              started_at: 5
-            }
-          }
-        })
-      ],
-      [state()]
-    );
-
-    expect(lanes.running[0].workflow).toBeNull();
   });
 
   test('carries the running attempt activity and legs overlay through', () => {

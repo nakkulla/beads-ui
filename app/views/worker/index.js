@@ -597,6 +597,56 @@ export function mergeFailureText(reason) {
 }
 
 /**
+ * Fold a head-review `failure_reason` into the one of four decisions it asks
+ * of the person (UI-nlgz). The raw code stays in the tooltip for the log
+ * trail; the label says only what to do next. Unknown codes fall to the last
+ * bucket rather than hiding, so a new server code still reads as a failure.
+ *
+ * @param {unknown} reason
+ * @returns {{ label: string, action: string }}
+ */
+export function headReviewFailureCategory(reason) {
+  const code = typeof reason === 'string' ? reason : '';
+  if (code === 'review_failed' || code === 'review_verdict_malformed') {
+    return {
+      label: '리뷰어 거부',
+      action:
+        '리뷰어가 승인하지 않았거나 판정을 읽을 수 없습니다 — 코드를 고친 뒤 다시 [머지]'
+    };
+  }
+  if (code === 'reviewer_selection_invalid') {
+    return {
+      label: '리뷰어 설정 오류',
+      action:
+        '리뷰어 선택(Bead·워크스페이스·harness)이 유효하지 않습니다 — 설정을 고친 뒤 다시 [머지]'
+    };
+  }
+  if (code.startsWith('repair_')) {
+    return {
+      label: '수리 실패',
+      action:
+        'REVISE 뒤 1회 자동 수리가 실패했거나 예산을 다 썼습니다 — 세션에서 직접 고친 뒤 다시 [머지]'
+    };
+  }
+  if (
+    code.endsWith('_drift') ||
+    code.endsWith('_mismatch') ||
+    code === 'head_drift_during_receipt' ||
+    code === 'resolver_self_review_not_approved'
+  ) {
+    return {
+      label: 'head 불일치',
+      action:
+        '리뷰한 head와 현재 head가 다릅니다 — 누가 브랜치를 바꿨는지 확인한 뒤 다시 [머지]'
+    };
+  }
+  return {
+    label: '진행 불가',
+    action: '리뷰 진행을 이어갈 수 없습니다 — 사유를 확인한 뒤 다시 [머지]'
+  };
+}
+
+/**
  * Human text for a rejected manual merge-queue placement.
  *
  * @param {unknown} reason
@@ -984,8 +1034,13 @@ export function prStatusBadge(input) {
     });
   }
   if (input.head_review?.state === 'failed') {
-    return badge('리뷰 실패', {
-      title: input.head_review.failure_reason || '',
+    const category = headReviewFailureCategory(
+      input.head_review.failure_reason
+    );
+    return badge(`리뷰 실패: ${category.label}`, {
+      title: input.head_review.failure_reason
+        ? `${category.action} (${input.head_review.failure_reason})`
+        : category.action,
       alert: true
     });
   }
@@ -1398,18 +1453,19 @@ function prWaitRow(
                       ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
                       : gate?.reason === 'base_behind'
                         ? 'base를 자동 갱신한 뒤 머지합니다'
-                        : gate?.reason === 'review_receipt_missing' ||
-                            gate?.reason === 'review_receipt_stale'
-                          ? '자동 리뷰 세션 후 승인되면 머지합니다'
-                          : gate?.reason === 'spec_id_missing'
-                            ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                            : enabled
-                              ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                              : gate && gate.tier === 'merged'
-                                ? // Already merged with no cleanup failure recorded: the cleanup
-                                  // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                  '머지됨 — 머지 후 정리 진행 중'
-                                : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+                        : gate?.reason === 'review_receipt_missing'
+                          ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
+                          : gate?.reason === 'review_receipt_stale'
+                            ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
+                            : gate?.reason === 'spec_id_missing'
+                              ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                              : enabled
+                                ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                : gate && gate.tier === 'merged'
+                                  ? // Already merged with no cleanup failure recorded: the cleanup
+                                    // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                    '머지됨 — 머지 후 정리 진행 중'
+                                  : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 

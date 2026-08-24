@@ -587,7 +587,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     expect(tile).toContain('rtile__lane');
   });
 
-  test('adds the stepper, the last activity and its age', () => {
+  test('adds the last activity and its age without a stepper', () => {
     const tile = shape(
       runningTile(tileInput(), 5000, null, {
         monitor: /** @type {any} */ (monitor)
@@ -596,7 +596,7 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
 
     expect(tile).toContain('⚡ npm test — 통과 41');
     expect(tile).toContain('rtile__activity-age');
-    expect(tile).toContain('class="stp"');
+    expect(tile).not.toContain('class="stp"');
   });
 
   test('spells out live delegations and folds finished ones into one chip', () => {
@@ -606,9 +606,37 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
       })
     );
 
-    expect(tile).toContain('⟳ 구현 unit 3 · codex');
-    expect(tile).toContain('✓ 1');
+    expect(tile).toContain('위임 중 · 구현 unit 3 · codex');
+    expect(tile).toContain('위임 완료 1');
     expect(tile).toContain('완료된 위임: review-consult · codex');
+  });
+
+  test('hides the codex-runner forwarder leg behind its codex session', () => {
+    const tile = shape(
+      runningTile(tileInput(), 5000, null, {
+        monitor: /** @type {any} */ ({
+          ...monitor,
+          legs: [
+            {
+              label: 'codex-runner · claude',
+              agent_type: 'codex-runner',
+              state: 'live'
+            },
+            { label: 'review-consult · codex', state: 'live' },
+            {
+              label: 'codex-runner · claude',
+              agent_type: 'codex-runner',
+              state: 'done'
+            },
+            { label: 'review-consult · codex', state: 'done' }
+          ]
+        })
+      })
+    );
+
+    expect(tile).not.toContain('codex-runner');
+    expect(tile).toContain('위임 중 · review-consult · codex');
+    expect(tile).toContain('위임 완료 1');
   });
 
   test('adds the reverse successor chip', () => {
@@ -755,13 +783,13 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__activity')).toBeNull();
   });
 
-  test('draws the stepper from the monitor workflow overlay', () => {
-    const tile = renderSession(
-      {},
-      { repo: 'repo-a', workflow: /** @type {any} */ (WORKFLOW) }
-    );
+  // 스펙 §6은 세션 타일의 stepper 줄을 "Worker 타일과 동일"로 정의한다. 그
+  // 뒤 실행중 타일에서 stepper가 통째로 빠졌으므로(모니터 실행중 타일 stepper
+  // 제거), 세션 타일도 그리지 않는 것이 그 "동일"이다.
+  test('draws no stepper, matching the worker tile it mirrors', () => {
+    const tile = renderSession({ workflow: /** @type {any} */ (WORKFLOW) });
 
-    expect(tile.querySelector('.stp')).not.toBeNull();
+    expect(tile.querySelector('.stp')).toBeNull();
   });
 
   test('draws the exec_receipt chip without its sha and keeps the full value in the tooltip', () => {

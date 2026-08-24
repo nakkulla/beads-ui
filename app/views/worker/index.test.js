@@ -9,6 +9,7 @@ import {
   applyCandidateFilter,
   applyCandidateSort,
   createWorkerView,
+  headReviewFailureCategory,
   mergeFailureText,
   mergeQueueRefusalText,
   mergeStepView,
@@ -3650,12 +3651,12 @@ describe('worker view — pr_wait actions (worker-phase2 §6)', () => {
     [
       'review_receipt_missing',
       '리뷰 후 머지',
-      '자동 리뷰 세션 후 승인되면 머지합니다'
+      '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
     ],
     [
       'review_receipt_stale',
       '리뷰 후 머지',
-      '자동 리뷰 세션 후 승인되면 머지합니다'
+      'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
     ],
     ['base_behind', 'base 갱신 후 머지', 'base를 자동 갱신한 뒤 머지합니다']
   ])('enables the manual continuation for %s', (reason, label, title) => {
@@ -8851,7 +8852,7 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
       expect(button).not.toBe(null);
       expect(button.disabled).toBe(true);
       expect(row.querySelector('.worker-mini__badge')?.textContent).toBe(
-        '리뷰 실패'
+        '리뷰 실패: 진행 불가'
       );
     }
   );
@@ -11292,5 +11293,25 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     ).click();
 
     expect(gotoIssue).toHaveBeenCalledWith('S1.1');
+  });
+});
+
+describe('headReviewFailureCategory (UI-nlgz)', () => {
+  test.each([
+    ['review_failed', '리뷰어 거부'],
+    ['review_verdict_malformed', '리뷰어 거부'],
+    ['reviewer_selection_invalid', '리뷰어 설정 오류'],
+    ['external_head_drift', 'head 불일치'],
+    ['receipt_readback_mismatch', 'head 불일치'],
+    ['resolver_self_review_not_approved', 'head 불일치'],
+    ['repair_budget_exhausted', '수리 실패'],
+    ['repair_self_review_missing', '수리 실패'],
+    ['transport_unavailable', '진행 불가'],
+    [null, '진행 불가']
+  ])('folds %s into %s', (code, label) => {
+    const result = headReviewFailureCategory(code);
+
+    expect(result.label).toBe(label);
+    expect(result.action.length).toBeGreaterThan(0);
   });
 });

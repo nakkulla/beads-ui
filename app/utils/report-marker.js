@@ -2,7 +2,7 @@
  * Work-report marker parser (UI-ucq6 §변경 1).
  *
  * The marker and section grammar are defined in dotfiles
- * `docs/contracts/workflow.yaml` `completion_report`; beads-ui only consumes
+ * `docs/contracts/workflow-state.yaml` `completion_report`; beads-ui only consumes
  * them. Keeping that consumption in one file means a contract change lands
  * here and nowhere else.
  */

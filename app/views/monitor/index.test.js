@@ -541,6 +541,45 @@ describe('views/monitor 대기 레인 두 영역 (UI-e6hw §4)', () => {
     expect(gotoIssue).toHaveBeenCalledWith('A-1');
   });
 
+  test('shows the occupying bead in the serial lane header and as a ghost row', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          bead_titles: { 'A-1': '점유 중인 작업' },
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            }
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+
+    const badge = el(mount, '.mon2-lane .mon2-lane__badge');
+    expect(badge.textContent?.trim()).toBe('A-1 점유');
+    const ghost = el(mount, '.mon2-lane .mon2-item--ghost');
+    expect(ghost.getAttribute('data-bead-id')).toBe('A-1');
+    expect(ghost.textContent).toContain('점유 중인 작업');
+    expect(ghost.textContent).toContain('실행 중 · 점유');
+    expect(ghost.hasAttribute('data-row-index')).toBe(false);
+    expect(ghost.hasAttribute('data-queue-index')).toBe(false);
+    expect(
+      Array.from(mount.querySelectorAll('.mon2-lane [data-queue-index]')).map(
+        (row) => row.getAttribute('data-bead-id')
+      )
+    ).toEqual(['A-2']);
+  });
+
   test('names each repo serial lane with its repo', () => {
     const { mount, view } = setup({
       workspaces: [
@@ -1324,7 +1363,7 @@ describe('views/monitor drag and drop (UI-e6hw §5)', () => {
 });
 
 describe('views/monitor running tile detail (UI-eey2 §7)', () => {
-  test('draws the stepper, the last activity and the live delegation', () => {
+  test('draws the last activity and the live delegation without a stepper', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -1360,15 +1399,15 @@ describe('views/monitor running tile detail (UI-eey2 §7)', () => {
     view.load();
 
     const tile = el(mount, '#monitor-running .rtile');
-    expect(tile.querySelector('.stp')).toBeTruthy();
+    expect(tile.querySelector('.stp')).toBeNull();
     expect(tile.querySelector('.rtile__activity-text')?.textContent).toContain(
       'npm test'
     );
     expect(tile.querySelector('.rtile__leg--live')?.textContent).toContain(
-      '구현 unit 3'
+      '위임 중 · 구현 unit 3'
     );
     expect(tile.querySelector('.rtile__leg--done')?.textContent).toContain(
-      '✓ 1'
+      '위임 완료 1'
     );
   });
 

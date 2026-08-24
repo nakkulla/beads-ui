@@ -143,11 +143,20 @@ const DONE_KIND_LABELS = {
  */
 
 /**
+ * @typedef {Object} MonitorOccupant
+ * @property {string} id
+ * @property {string} title
+ * @property {string} badge
+ */
+
+/**
  * @typedef {Object} MonitorSerialSublane
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'} id
  * @property {number} index
  * @property {MonitorItem[]} items
  * @property {string[]} occupied_by
+ * @property {MonitorOccupant[]} occupants - `occupied_by`의 표시 투영 (Worker
+ * 탭 ghost 행과 같은 형태). 제목은 실행중/PR 대기 항목에서 찾고, 없으면 id다.
  * @property {number} corrections
  * @property {boolean} cycle
  * @property {number} raw_length - 서버 배열의 entry 수. DOM에는 실행중으로 빠진
@@ -568,9 +577,20 @@ export function buildChains(blocked_by_map, locations, states) {
       map.set(key, new Set([value]));
     }
   };
+  /**
+   * The 완료 레인 노드는 더 이상 순서를 정할 대상이 아니다 — 완료 이슈에
+   * 남은 blocks 간선(끊어진 foreign 의존 포함)이 연결 레인으로 승격되지
+   * 않도록 그래프에서 뺀다.
+   *
+   * @param {string} bead_id
+   */
+  const isDone = (bead_id) => locations.get(bead_id)?.lane === 'done';
   for (const [blockee, blockers] of blocked_by_map) {
+    if (isDone(blockee)) {
+      continue;
+    }
     for (const blocker of blockers) {
-      if (blocker === blockee) {
+      if (blocker === blockee || isDone(blocker)) {
         continue;
       }
       nodes.add(blocker);
@@ -949,6 +969,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const cleanup_failed = objectOf(workspace.cleanup_failed);
     const discard_operations = objectOf(workspace.discard_operations);
     const bead_blocked_by = objectOf(workspace.bead_blocked_by);
+    // 실행중 타일의 stepper가 사라진 뒤에도 이 투영은 남는다 (UI-yrzu §7.2):
+    // 이제는 대기·PR 대기·연결·실행중 행의 route 칩 재료다.
     const bead_workflow = objectOf(workspace.bead_workflow);
     for (const [bead_id, workflow] of Object.entries(bead_workflow)) {
       if (workflow && typeof workflow === 'object') {
@@ -1067,8 +1089,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
         attempt_id: live.attempt_id,
         run_state: live.run_state,
         status: live.status || undefined,
-        // 실행중 타일의 stepper (§7) — Phase 1의 `bead_workflow` 투영이다.
-        // 그 버드의 항목이 아직 채워지지 않았으면 stepper만 생략된다.
+        // 실행중 타일의 route 칩 재료 (UI-yrzu §7.2). 그 버드의 항목이 아직
+        // 채워지지 않았으면 칩만 생략된다.
         workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
         can_pause: live.can_pause,
         can_resume: live.can_resume,
@@ -1357,6 +1379,40 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
     }
 
+    /**
+     * Display projection of an occupying bead. 점유자는 이 레인 DOM에 행으로 없고(실행중/PR 대기
+     * 레인 소속) 여기서는 ghost 행으로만 보이므로 드롭 인덱스에 관여하지 않는다.
+     *
+     * @param {string} bead_id
+     * @returns {MonitorOccupant}
+     */
+    const occupantOf = (bead_id) => {
+      const in_pr_wait = pr_wait.find(
+        (item) => item.id === bead_id && item.root_dir === root_dir
+      );
+      if (in_pr_wait) {
+        return {
+          id: bead_id,
+          title: in_pr_wait.title,
+          badge: 'PR 대기 · 점유'
+        };
+      }
+      const live = running.find(
+        (item) => item.id === bead_id && item.root_dir === root_dir
+      );
+      const badge =
+        live && live.run_state === 'failed'
+          ? '실패 · 점유 유지'
+          : live && live.run_state === 'paused'
+            ? '일시정지 · 점유'
+            : '실행 중 · 점유';
+      return {
+        id: bead_id,
+        title: live ? live.title : base(bead_id).title,
+        badge
+      };
+    };
+
     /** @type {MonitorSerialSublane[]} */
     const projected_serial = [];
     for (
@@ -1398,6 +1454,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items,
         raw_length: entries.length,
         occupied_by,
+        occupants: occupied_by.map((bead_id) => occupantOf(bead_id)),
         corrections: Array.isArray(lane_state.corrections)
           ? lane_state.corrections.length
           : 0,

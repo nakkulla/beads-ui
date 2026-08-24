@@ -116,6 +116,44 @@ describe('runner/claude 2-rule success (judged over the last result)', () => {
     expect(call.options.detached).toBe(true);
   });
 
+  test('resolves a versioned catalog model to its full CLI id', () => {
+    const spec = claudeSpec({
+      catalog_entry: {
+        command: 'claude',
+        models: {
+          opus: { id: 'opus' },
+          'opus-4.8': { id: 'claude-opus-4-8' },
+          'opus-4.6': { id: 'claude-opus-4-6' }
+        },
+        efforts: ['low', 'medium', 'high', 'xhigh']
+      }
+    });
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'opus-4.6' });
+
+    const model_idx = built.args.indexOf('--model');
+    expect(model_idx).toBeGreaterThan(-1);
+    expect(built.args[model_idx + 1]).toBe('claude-opus-4-6');
+  });
+
+  test('passes an unrecognized model name through verbatim', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'claude-future-99' });
+
+    const model_idx = built.args.indexOf('--model');
+    expect(built.args[model_idx + 1]).toBe('claude-future-99');
+  });
+
+  test('resolves builtin opus to the alias id', () => {
+    const spec = claudeSpec();
+
+    const built = spec.buildArgv(BEAD, WS, { model: 'opus' });
+
+    const model_idx = built.args.indexOf('--model');
+    expect(built.args[model_idx + 1]).toBe('opus');
+  });
+
   test('accepts only Standard speed and emits no speed argv', () => {
     const spec = claudeSpec();
 

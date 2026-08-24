@@ -235,6 +235,35 @@ export function createDelegationStore() {
     },
 
     /**
+     * Record the effort a closed subagent ran at, on its session and receipt
+     * alike. Observed by the caller from the subagent's own JSONL once the
+     * `end` named its `agentId`; the store only keeps the two rows agreeing.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     * @param {string} launch_id
+     * @param {string} effort
+     * @returns {boolean} Whether anything changed.
+     */
+    setEffort(workspace, attempt_id, launch_id, effort) {
+      if (typeof effort !== 'string' || effort.trim().length === 0) {
+        return false;
+      }
+      const entry = laneFor(workspace).get(attempt_id);
+      const session = entry ? entry.sessions.get(launch_id) : undefined;
+      if (!entry || !session || session.effort === effort) {
+        return false;
+      }
+      session.effort = effort;
+      for (const leg of entry.legs) {
+        if (leg.receipt_id === launch_id) {
+          leg.effort = effort;
+        }
+      }
+      return true;
+    },
+
+    /**
      * One attempt's subagent sessions and receipts. Copies, so a caller merging
      * them into a durable patch cannot mutate the live state.
      *
