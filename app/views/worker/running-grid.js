@@ -358,7 +358,9 @@ function monitorTileBody(monitor, now, paused, session = null) {
   );
   const live_legs = legs.filter((leg) => leg && leg.state === 'live');
   const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
-  const deps = dependencyChipsTemplate(monitor.dependency_chips);
+  const deps = dependencyChipsTemplate(monitor.dependency_chips, {
+    lane: 'running'
+  });
   const session_age = session
     ? formatRelativeTime(session.updated_at, now)
     : '';

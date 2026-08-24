@@ -1870,3 +1870,390 @@ describe('views/monitor 세션 타일 (UI-yrzu §6·§9)', () => {
     expect(el(mount, '#monitor-running [data-drop]')).toBeNull();
   });
 });
+
+describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)', () => {
+  /**
+   * @param {string[]} [scope]
+   * @returns {{ scope: string[], artifacts: string[] }}
+   */
+  function declared(scope = ['server/worker']) {
+    return { scope, artifacts: ['docs/spec.md'] };
+  }
+
+  /**
+   * @param {string} id
+   * @returns {Record<string, any>}
+   */
+  function running(id) {
+    return {
+      [`t-${id}`]: {
+        attempt_id: `t-${id}`,
+        bead_id: id,
+        status: 'running',
+        started_at: NOW - 1000
+      }
+    };
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} bead_id
+   * @returns {HTMLElement}
+   */
+  function openPopover(mount, bead_id) {
+    click(mount, `[data-bead-id="${bead_id}"] .mon-overlap__chip`);
+    return el(mount, `[data-bead-id="${bead_id}"] .mon-overlap__popover`);
+  }
+
+  test('opens a dialog popover naming the counterpart and the shared path', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_titles: { 'A-2': '상대 제목' },
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+
+    expect(popover.getAttribute('role')).toBe('dialog');
+    expect(popover.querySelector('.mon-overlap__rid')?.textContent).toBe('A-2');
+    expect(popover.querySelector('.mon-overlap__rtitle')?.textContent).toBe(
+      '상대 제목'
+    );
+    expect(popover.querySelector('.mon-overlap__paths')?.textContent).toContain(
+      'server/worker'
+    );
+  });
+
+  test('closes the popover on an outside click', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.mon-overlap__popover')).toBeNull();
+  });
+
+  test('closes the popover on Escape', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+    expect(mount.querySelector('.mon-overlap__popover')).toBeNull();
+  });
+
+  test('lists every counterpart in one popover from the +n chip', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [
+            { bead_id: 'A-1' },
+            { bead_id: 'A-2' },
+            { bead_id: 'A-3' },
+            { bead_id: 'A-4' },
+            { bead_id: 'A-5' }
+          ],
+          serial_lane_count: 2,
+          bead_scope: {
+            'A-1': declared(),
+            'A-2': declared(),
+            'A-3': declared(),
+            'A-4': declared(),
+            'A-5': declared()
+          }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '[data-bead-id="A-1"] .mon-overlap__chip--more');
+
+    expect(
+      mount.querySelectorAll(
+        '[data-bead-id="A-1"] .mon-overlap__popover .mon-overlap__row'
+      )
+    ).toHaveLength(4);
+  });
+
+  test('offers no button when both already share one serial lane', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          serial_lane_count: 1,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+
+    expect(popover.querySelector('.mon-overlap__place')).toBeNull();
+    expect(
+      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
+    ).toBe('이미 같은 직렬 레인 — 순서가 있습니다');
+  });
+
+  test('moves me to the counterpart serial lane in one op', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
+          serial_lane_count: 1,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: {
+          bead_id: 'A-1',
+          lane: 's1',
+          index: 1,
+          root_dir: WS_A,
+          expected_revision: 1
+        }
+      }
+    ]);
+  });
+
+  test('moves the counterpart into my serial lane in one op', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-2' }] }],
+          serial_lane_count: 1,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    openPopover(mount, 'A-2');
+    click(mount, '[data-bead-id="A-2"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent.map((message) => message.payload)).toEqual([
+      {
+        bead_id: 'A-1',
+        lane: 's1',
+        index: 1,
+        root_dir: WS_A,
+        expected_revision: 1
+      }
+    ]);
+  });
+
+  test('fills the first empty serial lane with two ops in counterpart-first order', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ queue: { revision: 7 } })
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent.map((message) => message.payload)).toEqual([
+      {
+        bead_id: 'A-2',
+        lane: 's1',
+        index: 0,
+        root_dir: WS_A,
+        expected_revision: 1
+      },
+      {
+        bead_id: 'A-1',
+        lane: 's1',
+        index: 1,
+        root_dir: WS_A,
+        expected_revision: 7
+      }
+    ]);
+  });
+
+  test('sends no second op when the first one conflicts', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ conflict: true })
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent.map((message) => message.payload.bead_id)).toEqual([
+      'A-2',
+      'A-2'
+    ]);
+  });
+
+  test('disables the button when no serial lane is empty', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-3' }] }],
+          serial_lane_count: 1,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+    const button = /** @type {HTMLButtonElement} */ (
+      popover.querySelector('.mon-overlap__place')
+    );
+
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('title')).toBe(
+      '빈 직렬 레인 없음 — Worker 탭에서 레인 수 조절'
+    );
+  });
+
+  test('says no order can be made while both are running', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          attempts: { ...running('A-1'), ...running('A-2') },
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+
+    expect(
+      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
+    ).toBe('둘 다 실행 중 — 순서를 만들 수 없습니다');
+  });
+
+  test('asks the counterpart to take a serial lane while I am running', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          attempts: running('A-1'),
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-1');
+
+    expect(
+      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
+    ).toBe('실행 중 — 순서를 만들려면 상대를 직렬 레인에 두세요');
+  });
+
+  test('tells a waiting row to take a serial lane while the counterpart runs', () => {
+    const { mount, view } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          attempts: running('A-1'),
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    const popover = openPopover(mount, 'A-2');
+
+    expect(
+      popover.querySelector('.mon-overlap__note')?.textContent?.trim()
+    ).toBe('실행 중 — 종료 후 출발하려면 직렬 레인에 두세요');
+  });
+
+  test('runs the same popover from a chain lane row', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()]
+    });
+
+    view.load();
+    click(mount, '.mon2-crow[data-bead-id="A-1"] .mon-overlap__chip');
+    click(mount, '.mon2-crow[data-bead-id="A-1"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent.map((message) => message.payload.bead_id)).toEqual([
+      'A-2',
+      'A-1'
+    ]);
+  });
+});

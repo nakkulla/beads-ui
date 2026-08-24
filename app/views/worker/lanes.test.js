@@ -1450,3 +1450,154 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     expect(row.querySelector('.ctl-chip--route')).toBeNull();
   });
 });
+
+describe('겹침 칩 (UI-qm12 §5.3)', () => {
+  /**
+   * @param {number} count
+   * @returns {import('./lanes.js').OverlapChip[]}
+   */
+  function overlaps(count) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `UI-o${index + 1}`,
+      title: `상대 ${index + 1}`,
+      location_label: '#1',
+      prefixes: ['server/worker']
+    }));
+  }
+
+  /**
+   * @param {Partial<import('./lanes.js').DependencyChips>} chips
+   * @param {string} [lane]
+   * @returns {HTMLElement}
+   */
+  function renderDeps(chips, lane = 'queue') {
+    render(
+      miniRow(
+        /** @type {any} */ ({
+          id: 'UI-me',
+          title: '겹침',
+          lane,
+          draggable: false,
+          dependency_chips: chips
+        })
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.worker-deps'));
+  }
+
+  test('orders the chips 선행 → 겹침 → 후속', () => {
+    const deps = renderDeps({
+      predecessors: [{ id: 'UI-p', label: '🔒 선행 UI-p (실행중)' }],
+      overlaps: overlaps(1),
+      successors: [{ id: 'UI-s', label: '→ 후속 UI-s (#2)' }]
+    });
+
+    expect(
+      Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
+    ).toEqual(['worker-dep--pred', 'worker-dep--overlap', 'worker-dep--succ']);
+  });
+
+  test('names the counterpart and its location on the overlap chip', () => {
+    const deps = renderDeps({ overlaps: overlaps(1) });
+
+    expect(
+      deps.querySelector('.worker-dep--overlap')?.textContent?.trim()
+    ).toBe('⧉ 겹침 UI-o1 (#1)');
+  });
+
+  test('lists the overlapping paths in the chip tooltip', () => {
+    const deps = renderDeps({
+      overlaps: [
+        {
+          id: 'UI-o1',
+          title: '상대',
+          location_label: '#1',
+          prefixes: ['app/views', 'server/worker']
+        }
+      ]
+    });
+
+    expect(
+      deps.querySelector('.worker-dep--overlap')?.getAttribute('title')
+    ).toBe('app/views\nserver/worker');
+  });
+
+  test('folds a fourth counterpart into a +n chip', () => {
+    const deps = renderDeps({ overlaps: overlaps(5) });
+
+    expect(deps.querySelectorAll('.mon-overlap__chip')).toHaveLength(4);
+    expect(
+      deps.querySelector('.mon-overlap__chip--more')?.textContent?.trim()
+    ).toBe('+2');
+  });
+
+  test('draws a muted chip when the spec declares no scope', () => {
+    const deps = renderDeps({ scope_missing: true });
+
+    expect(
+      deps.querySelector('.worker-dep--muted')?.getAttribute('title')
+    ).toBe('겹침 판정 불가 — 스펙에 scope 선언 필요');
+  });
+
+  test('never draws the muted chip on a running row', () => {
+    const deps = renderDeps(
+      { overlaps: overlaps(1), scope_missing: true },
+      'running'
+    );
+
+    expect(deps.querySelector('.worker-dep--muted')).toBeNull();
+  });
+
+  test('draws the popover rows the projection hands it', () => {
+    const deps = renderDeps({
+      overlaps: overlaps(1),
+      popover: {
+        rows: [
+          {
+            id: 'UI-o1',
+            title: '상대 1',
+            location_label: '#1',
+            prefixes: ['server/worker'],
+            action: {
+              kind: 'place',
+              label: '같은 직렬 레인으로',
+              title: 's1 끝에 넣습니다'
+            }
+          }
+        ]
+      }
+    });
+
+    const popover = deps.querySelector('.mon-overlap__popover');
+    expect(popover?.getAttribute('role')).toBe('dialog');
+    expect(
+      popover?.querySelector('.mon-overlap__place')?.textContent?.trim()
+    ).toBe('같은 직렬 레인으로');
+  });
+
+  test('draws a sentence instead of a button when no order can be made', () => {
+    const deps = renderDeps({
+      overlaps: overlaps(1),
+      popover: {
+        rows: [
+          {
+            id: 'UI-o1',
+            title: '상대 1',
+            location_label: '실행중',
+            prefixes: ['server/worker'],
+            action: {
+              kind: 'note',
+              text: '둘 다 실행 중 — 순서를 만들 수 없습니다'
+            }
+          }
+        ]
+      }
+    });
+
+    expect(deps.querySelector('.mon-overlap__place')).toBeNull();
+    expect(deps.querySelector('.mon-overlap__note')?.textContent?.trim()).toBe(
+      '둘 다 실행 중 — 순서를 만들 수 없습니다'
+    );
+  });
+});

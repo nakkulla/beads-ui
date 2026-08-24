@@ -1534,3 +1534,210 @@ describe('validTime (UI-yrzu §5)', () => {
     expect(validTime(undefined)).toBe(null);
   });
 });
+
+describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
+  /**
+   * @param {string[]} scope
+   * @returns {{ scope: string[], artifacts: string[] }}
+   */
+  function declared(scope) {
+    return { scope, artifacts: ['docs/spec.md'] };
+  }
+
+  test('gives a running and a waiting bead each other as an overlap chip', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            }
+          },
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared(['server/worker/queue-store.js'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.running[0].overlap_chips).toEqual([
+      {
+        id: 'A-2',
+        title: 'A-2',
+        location_label: '#1',
+        prefixes: ['server/worker/queue-store.js']
+      }
+    ]);
+    expect(lanes.queue[0].overlap_chips?.[0].location_label).toBe('실행중');
+  });
+
+  test('compares a waiting bead with a runnable candidate', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [
+            runnable('A-9', { spec_id: 'docs/x.md', scope: ['app/views'] })
+          ],
+          bead_scope: { 'A-1': declared(['app/views/monitor/index.js']) }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].overlap_chips?.[0]).toEqual({
+      id: 'A-1',
+      title: 'A-1',
+      location_label: '#1',
+      prefixes: ['app/views/monitor/index.js']
+    });
+    expect(lanes.queue[0].overlap_chips?.[0].location_label).toBe('실행가능');
+  });
+
+  test('labels a serial member by its lane and position', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          serial_lanes: [{ id: 's1', entries: [{ bead_id: 'A-1' }] }],
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared(['server/worker'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const parallel = lanes.queue.find((item) => item.id === 'A-2');
+    expect(parallel?.overlap_chips?.[0].location_label).toBe('s1 #1');
+  });
+
+  test('skips a pair when either declaration is empty', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared([])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+    expect(lanes.queue[1].overlap_chips).toBeUndefined();
+  });
+
+  test('marks a read declaration with no items as missing', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared([])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue.map((item) => item.scope_state)).toEqual([
+      'declared',
+      'missing'
+    ]);
+  });
+
+  test('marks a runnable candidate with a spec but no scope as missing', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-9', { spec_id: 'docs/x.md', scope: [] })],
+          bead_scope: {}
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].scope_state).toBe('missing');
+  });
+
+  test('says nothing about a bead whose read failed', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }], bead_scope: { 'A-1': null } })],
+      [state()]
+    );
+
+    expect(lanes.queue[0].scope_state).toBeUndefined();
+  });
+
+  test('never compares beads of different repos', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          bead_scope: { 'A-1': declared(['server/worker']) }
+        }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }],
+          bead_scope: { 'B-1': declared(['server/worker']) }
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.queue.map((item) => item.overlap_chips)).toEqual([
+      undefined,
+      undefined
+    ]);
+  });
+
+  test('derives nothing from a snapshot without the bead_scope key', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }],
+          runnable: [
+            runnable('A-9', { spec_id: 'docs/x.md', scope: ['server/worker'] })
+          ]
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips).toBeUndefined();
+    expect(lanes.runnable[0].scope_state).toBeUndefined();
+  });
+
+  test('copies the chips onto the chain lane row of a hidden parallel member', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          bead_scope: {
+            'A-1': declared(['server/worker']),
+            'A-2': declared(['server/worker/queue-store.js'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.chain_lanes[0].rows.find((entry) => entry.id === 'A-1');
+    expect(lanes.parallel_rows).toHaveLength(0);
+    expect(row?.overlap_chips?.[0].id).toBe('A-2');
+    expect(row?.scope_state).toBe('declared');
+  });
+});
