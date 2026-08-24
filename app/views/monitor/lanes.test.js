@@ -763,3 +763,328 @@ describe('monitor attempt folding', () => {
     expect(attempt.attempt_id).toBe('t2');
   });
 });
+
+describe('monitor 병렬 통합 큐 (UI-e6hw §4.1)', () => {
+  test('flattens every visible repo queue into one list ordered by repo name', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }]
+        }),
+        workspace({ queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] })
+      ],
+      [state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' }), state()]
+    );
+
+    expect(lanes.parallel_rows.map((row) => row.id)).toEqual([
+      'A-1',
+      'A-2',
+      'B-1'
+    ]);
+  });
+
+  test('keeps each row numbered inside its own repo queue', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(
+      lanes.parallel_rows.map((row) => [row.id, row.queue_position])
+    ).toEqual([
+      ['A-1', 1],
+      ['A-2', 2],
+      ['B-1', 1]
+    ]);
+  });
+
+  test('carries the repo badge on every parallel row', () => {
+    const lanes = buildLanes(
+      [workspace({ queue: [{ bead_id: 'A-1' }] })],
+      [state()]
+    );
+
+    expect(lanes.parallel_rows[0].workspace_name).toBe('repo-a');
+  });
+
+  test('hides a parallel row a chain lane already shows', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-1' }],
+          bead_blocked_by: { 'B-1': ['A-1'] }
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.parallel_rows.map((row) => row.id)).toEqual(['A-2']);
+  });
+
+  test('exposes the raw server queue length per repo', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.parallel_raw_length).toEqual({ [WS_A]: 2 });
+    expect(lanes.parallel_rows.map((row) => row.id)).toEqual(['A-2']);
+  });
+
+  test('maps every placed bead to the repo that owns it', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          runnable: [runnable('B-1')]
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    expect(lanes.owner_of).toEqual({ 'A-1': WS_A, 'B-1': WS_B });
+  });
+});
+
+describe('monitor 연결 레인 (UI-e6hw §4.2)', () => {
+  test('numbers each chain lane by its position in the final list', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes).toHaveLength(1);
+    expect(lanes.chain_lanes[0].label).toBe('연결 1 · 레포 간');
+    expect(lanes.chain_lanes[0].pending).toBe(false);
+  });
+
+  test('numbers the rows in topological order', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }, { bead_id: 'A-3' }],
+          bead_blocked_by: { 'A-2': ['A-1'], 'A-3': ['A-2'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes[0].rows.map((row) => [row.id, row.seq])).toEqual([
+      ['A-1', 1],
+      ['A-2', 2],
+      ['A-3', 3]
+    ]);
+  });
+
+  test('lists every direct predecessor a row has inside the lane', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }, { bead_id: 'A-3' }],
+          bead_blocked_by: { 'A-3': ['A-1', 'A-2'] }
+        })
+      ],
+      [state()]
+    );
+
+    const rows = lanes.chain_lanes[0].rows;
+    expect(rows.find((row) => row.id === 'A-3')?.predecessors).toEqual([
+      'A-1',
+      'A-2'
+    ]);
+    expect(rows.find((row) => row.id === 'A-1')?.predecessors).toEqual([]);
+  });
+
+  test('shows the queue position of a row that sits in a parallel queue', () => {
+    const lanes = buildLanes(
+      [
+        workspace({ queue: [{ bead_id: 'A-1' }] }),
+        workspace({
+          root_dir: WS_B,
+          name: 'repo-b',
+          queue: [{ bead_id: 'B-0' }, { bead_id: 'B-1' }],
+          bead_blocked_by: { 'B-1': ['A-1'] }
+        })
+      ],
+      [state(), state({ root_dir: WS_B, name: 'repo-b', issue_prefix: 'B' })]
+    );
+
+    const rows = lanes.chain_lanes[0].rows;
+    expect(rows.map((row) => [row.id, row.location_label])).toEqual([
+      ['A-1', '#1'],
+      ['B-1', '#2']
+    ]);
+  });
+
+  test('names the serial lane of a row a repo serial lane holds', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          serial_lane_count: 2,
+          serial_lanes: [{ id: 's2', entries: [{ bead_id: 'A-1' }] }],
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes[0].rows.map((row) => row.location_label)).toEqual([
+      's2 #1',
+      '#1'
+    ]);
+  });
+
+  test('reuses the running location label for a row outside every queue', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'running',
+              started_at: 10
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const rows = lanes.chain_lanes[0].rows;
+    expect(rows[0].location_label).toBe('실행중');
+    expect(rows[0].draggable).toBe(false);
+    expect(rows[1].draggable).toBe(true);
+    // 실행중으로 빠진 A-1이 서버 배열에는 남아 있으므로 raw 좌표는 1이다 (§5.1).
+    expect(rows[1].queue_index).toBe(1);
+    expect(rows[1].location_label).toBe('#2');
+  });
+
+  test('keeps a pending lane whose seed no derived chain holds', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()],
+      { pending_lanes: [{ seed: 'A-9' }] }
+    );
+
+    expect(lanes.chain_lanes.map((lane) => lane.lane_id)).toEqual([
+      `chain:${['A-1', 'A-2'].join('\u0000')}`,
+      'pending:0'
+    ]);
+    expect(lanes.chain_lanes[1].label).toBe('연결 2 · 레포 간');
+    expect(lanes.pending_lanes_kept).toEqual([0]);
+  });
+
+  test('drops a pending lane a derived chain has absorbed', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()],
+      { pending_lanes: [{ seed: 'A-1' }] }
+    );
+
+    expect(lanes.chain_lanes).toHaveLength(1);
+    expect(lanes.chain_lanes[0].pending).toBe(false);
+    expect(lanes.pending_lanes_kept).toEqual([]);
+  });
+
+  test('leaves a seed that vanished from the snapshot unplaced', () => {
+    const lanes = buildLanes([workspace()], [state()], {
+      pending_lanes: [{ seed: 'A-9' }]
+    });
+
+    expect(lanes.chain_lanes[0].rows.map((row) => row.location_label)).toEqual([
+      '미적재'
+    ]);
+    expect(lanes.chain_lanes[0].rows[0].draggable).toBe(false);
+  });
+
+  test('renders a seedless pending lane with no row', () => {
+    const lanes = buildLanes([workspace()], [state()], {
+      pending_lanes: [{ seed: null }]
+    });
+
+    expect(lanes.chain_lanes[0].rows).toEqual([]);
+    expect(lanes.chain_lanes[0].pending).toBe(true);
+    expect(lanes.pending_lanes_kept).toEqual([0]);
+  });
+
+  test('keeps a cycle lane unordered and free of predecessor chips', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-1': ['A-2'], 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes[0].cycle).toBe(true);
+    expect(lanes.chain_lanes[0].rows.map((row) => row.predecessors)).toEqual([
+      [],
+      []
+    ]);
+  });
+
+  test('titles a chain row from the repo bead title cache', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_titles: { 'A-1': '앞 이슈' },
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chain_lanes[0].rows.map((row) => row.title)).toEqual([
+      '앞 이슈',
+      'A-2'
+    ]);
+  });
+});
