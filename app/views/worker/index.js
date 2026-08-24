@@ -2076,7 +2076,17 @@ export function createWorkerView(mount_element, options = {}) {
       merge_pending.delete(bead_id);
       doRender();
     }
-    if (!res || res.conflict || res.applied) {
+    if (!res || res.applied) {
+      return;
+    }
+    if (res.conflict) {
+      // The click's snapshot went stale even after the transport's retry: say
+      // so instead of swallowing it, or the button reads as dead.
+      showToast(
+        '큐가 바뀌어 머지 클릭이 적용되지 않았습니다 — 다시 눌러주세요',
+        'error',
+        2400
+      );
       return;
     }
     // Not applied and not a CAS conflict: the row is already queued (a no-op) or
