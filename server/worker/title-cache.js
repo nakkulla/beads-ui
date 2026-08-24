@@ -68,9 +68,13 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * @property {Record<string, unknown>|null} workflow - The stepper projection
  * `enrichIssueWorkflow` derives from the SAME `bd show` payload (UI-eey2 §9.2),
  * or null when it could not be computed.
- * @property {string} spec_id - Native-first resolved spec path (UI-qm12 §4.2),
- * `''` when the bead has none. Read off the SAME `bd show` payload, so the
- * declared-scope artifacts cost no extra process.
+ * @property {string} scope_spec_id - The resolved artifact path this bead's
+ * SCOPE is declared in (UI-qm12 §4.2, conflict rule from UI-f1qy §4.4), `''`
+ * when none resolves or the native and metadata spec surfaces disagree. Read
+ * off the SAME `bd show` payload the title arrives on, so the declared-scope
+ * artifacts cost no extra process. Named exactly like `RunnableItem`'s field
+ * because it answers the same question: a bead's scope source must not flip
+ * when it moves between the 후보 lane and a queue lane.
  * @property {string|null} plan_path - `metadata.plan_path`, when it is a
  * non-empty string.
  * @property {string[]|null} description_scope - The `## scope` section of the
@@ -245,6 +249,7 @@ export function createTitleCache(options = {}) {
         : {};
     const plan_path =
       typeof metadata.plan_path === 'string' ? metadata.plan_path.trim() : '';
+    const spec = resolveSpecId(raw_issue);
     return {
       title,
       created_at: stampOf(raw_issue && raw_issue.created_at),
@@ -252,7 +257,7 @@ export function createTitleCache(options = {}) {
       labels: workerLabels(raw_issue && raw_issue.labels),
       blocked_by,
       workflow: workflowFromIssue(issue, workspace),
-      spec_id: resolveSpecId(raw_issue).path,
+      scope_spec_id: spec.conflict ? '' : spec.path,
       plan_path: plan_path.length > 0 ? plan_path : null,
       description_scope: parseDescriptionScope(
         raw_issue && raw_issue.description
@@ -567,7 +572,7 @@ export function createTitleCache(options = {}) {
 
     /**
      * The artifacts whose front-matter declares each bead's scope (UI-qm12
-     * §4.2): `[spec_id]`, plus `plan_path` when the bead pins one. Same
+     * §4.2): `[scope_spec_id]`, plus `plan_path` when the bead pins one. Same
      * partiality contract as the projections above — a bead whose record has
      * not landed is ABSENT — with one extra exclusion: a bead with no spec has
      * nothing to read, so it is omitted rather than carrying an empty list.
@@ -579,10 +584,12 @@ export function createTitleCache(options = {}) {
      */
     scopeArtifactsFor(workspace, ids) {
       const projected = collect(workspace, ids, (rec) => {
-        if (rec.spec_id.length === 0) {
+        if (rec.scope_spec_id.length === 0) {
           return [];
         }
-        return rec.plan_path ? [rec.spec_id, rec.plan_path] : [rec.spec_id];
+        return rec.plan_path
+          ? [rec.scope_spec_id, rec.plan_path]
+          : [rec.scope_spec_id];
       });
       /** @type {Record<string, string[]>} */
       const out = {};

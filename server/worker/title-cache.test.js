@@ -803,6 +803,20 @@ describe('scope artifacts projection (UI-qm12 §4.2)', () => {
     expect(out).toEqual({});
   });
 
+  test('omits a bead whose native and metadata spec paths disagree', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-1',
+      title: '스펙 포인터가 어긋난 이슈',
+      spec_id: 'docs/specs/native.md',
+      metadata: { spec_id: 'docs/specs/legacy.md' }
+    });
+
+    const out = cache.scopeArtifactsFor('/ws', ['UI-1']);
+
+    expect(out).toEqual({});
+  });
+
   test('ignores a non-string plan path', () => {
     const cache = createTitleCache({ enrichWorkflow: () => null });
     cache.refreshFromIssue('/ws', {

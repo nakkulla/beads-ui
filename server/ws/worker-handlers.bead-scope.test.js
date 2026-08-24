@@ -393,6 +393,38 @@ describe('decorateQueue bead_scope description fallback (UI-f1qy §4.3)', () => 
     });
   });
 
+  test('reads the description of a conflicted bead in either lane', async () => {
+    // 원천은 bead마다 하나여야 하므로, native와 metadata의 spec 포인터가
+    // 어긋난 bead는 후보에서든 큐 레인에서든 똑같이 아티팩트를 포기하고
+    // description으로 읽힌다 (UI-f1qy §4.4의 충돌 규칙).
+    getWorkerRuntime().titleCache.refreshFromIssue(WS, {
+      id: 'UI-1',
+      title: 'UI-1 제목',
+      spec_id: SPEC_A,
+      description: describedScope(['app/utils/']),
+      metadata: { route: 'quick_fix', spec_id: SPEC_B }
+    });
+    const cache = scopeCacheOver({ [SPEC_A]: artifact(['server/']) });
+    await cache.fill(WS, [SPEC_A]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        scope_spec_id: '',
+        plan_path: null,
+        description_scope: ['app/utils/']
+      })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({
+      scope: ['app/utils/'],
+      artifacts: []
+    });
+    expect(out.bead_scope['UI-9']).toEqual(out.bead_scope['UI-1']);
+  });
+
   test('keeps no entry for a 후보 row that declares no section', () => {
     __setScopeCacheForTest(scopeCacheOver({}));
     vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
