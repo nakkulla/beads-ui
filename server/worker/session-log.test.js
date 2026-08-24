@@ -721,3 +721,104 @@ describe('worker/session-log subagent last_event_at (UI-2mpn §6.4)', () => {
     expect(log.lastEventAt(WS, 'att-1')).toBe(9_000);
   });
 });
+
+describe('worker/session-log — recorded attempt log path (UI-hk74 §7)', () => {
+  /**
+   * A transcript written where the head-review transport puts it: beside the
+   * attempt's own marker, not under `sessions/`.
+   *
+   * @param {string} file
+   * @param {unknown[]} events
+   */
+  function writeRecordedLog(file, events) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      events.map((event) => `${JSON.stringify(event)}\n`).join('')
+    );
+  }
+
+  test('reads an attempt from the log path its record names', () => {
+    const recorded = path.join(
+      tmp_state,
+      'head-review-attempts',
+      'review_a.log.jsonl'
+    );
+    writeRecordedLog(recorded, [{ type: 'assistant', seq: 1 }]);
+    const log = createSessionLog({
+      attemptLogPath: () => recorded
+    });
+
+    const lines = log.read(WS, 'review:authority-1:aaa');
+
+    expect(lines).toEqual([{ type: 'assistant', seq: 1 }]);
+  });
+
+  test('reports the recorded log mtime as the attempt last event time', () => {
+    const recorded = path.join(
+      tmp_state,
+      'head-review-attempts',
+      'review_b.log.jsonl'
+    );
+    writeRecordedLog(recorded, [{ type: 'assistant' }]);
+    const log = createSessionLog({ attemptLogPath: () => recorded });
+
+    const at = log.lastEventAtOf(WS, 'review:authority-1:bbb');
+
+    expect(at).toBe(fs.statSync(recorded).mtimeMs);
+  });
+
+  test('falls back to the session path for a legacy attempt', () => {
+    writeRunnerLine('att-legacy', { type: 'assistant', seq: 9 });
+    const log = createSessionLog({ attemptLogPath: () => null });
+
+    const lines = log.read(WS, 'att-legacy');
+
+    expect(lines).toEqual([{ type: 'assistant', seq: 9 }]);
+  });
+
+  test('returns an empty snapshot when the recorded log is absent', () => {
+    const log = createSessionLog({
+      attemptLogPath: () => path.join(tmp_state, 'nope', 'gone.log.jsonl')
+    });
+
+    const lines = log.read(WS, 'review:authority-1:ccc');
+
+    expect(lines).toEqual([]);
+  });
+
+  test('returns an empty snapshot when neither path exists', () => {
+    const log = createSessionLog({ attemptLogPath: () => null });
+
+    const lines = log.read(WS, 'att-missing');
+
+    expect(lines).toEqual([]);
+  });
+
+  test('keeps the default path when the resolver throws', () => {
+    writeRunnerLine('att-legacy', { type: 'assistant', seq: 3 });
+    const log = createSessionLog({
+      attemptLogPath: () => {
+        throw new Error('store unreadable');
+      }
+    });
+
+    const lines = log.read(WS, 'att-legacy');
+
+    expect(lines).toEqual([{ type: 'assistant', seq: 3 }]);
+  });
+
+  test('leaves the spawn-side path resolution attempt-agnostic', () => {
+    const recorded = path.join(
+      tmp_state,
+      'head-review-attempts',
+      'x.log.jsonl'
+    );
+    const log = createSessionLog({ attemptLogPath: () => recorded });
+
+    expect(log.pathFor(WS, 'att-1')).toBe(sessionLogPath(WS, 'att-1'));
+    expect(log.stderrPathFor(WS, 'att-1')).toBe(
+      `${sessionLogPath(WS, 'att-1').replace(/\.jsonl$/, '')}.stderr.log`
+    );
+  });
+});

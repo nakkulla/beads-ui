@@ -195,10 +195,15 @@ function activityOf(line, at) {
  * One shared instance lives on the Worker runtime, so the line readers'
  * `publish` and the ws subscription's `subscribe` flow through the same broker.
  *
- * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string, now?: () => number, emitChanged?: (workspace: string) => void, fanoutMs?: number, onBeadWrite?: (workspace: string, bead_id: string) => void }} [options]
+ * @param {{ fs?: typeof import('node:fs'), pathFor?: (workspace: string, attempt_id: string) => string, attemptLogPath?: (workspace: string, attempt_id: string) => string|null, now?: () => number, emitChanged?: (workspace: string) => void, fanoutMs?: number, onBeadWrite?: (workspace: string, bead_id: string) => void }} [options] - Broker
+ * wiring, plus `attemptLogPath`: the READ-side override (UI-hk74 §7), by which
+ * an attempt whose durable record names its own transcript is read from THAT
+ * file. It is deliberately not consulted by `pathFor`/`stderrPathFor`, which
+ * are the write-side contract the scheduler hands to a spawn.
  * @returns {{
  *   pathFor: (workspace: string, attempt_id: string) => string,
  *   stderrPathFor: (workspace: string, attempt_id: string) => string,
+ *   readPathFor: (workspace: string, attempt_id: string) => string,
  *   publish: (workspace: string, attempt_id: string, event: unknown, launch_id?: string, offset?: number) => void,
  *   attach: (workspace: string, attempt_id: string, events: import('node:events').EventEmitter) => void,
  *   read: (workspace: string, attempt_id: string, options?: { end_offset?: number }) => unknown[],
@@ -213,6 +218,10 @@ function activityOf(line, at) {
 export function createSessionLog(options = {}) {
   const fs = options.fs || nodeFs;
   const pathFor = options.pathFor || sessionLogPath;
+  const attemptLogPath =
+    typeof options.attemptLogPath === 'function'
+      ? options.attemptLogPath
+      : null;
   const now = options.now || Date.now;
   const emitChanged = options.emitChanged || emitQueueChanged;
   const fanout_ms =
@@ -422,6 +431,42 @@ export function createSessionLog(options = {}) {
   }
 
   /**
+   * Which file a READER should open for one attempt (UI-hk74 §7).
+   *
+   * Head review and repair sessions write their transcript beside their own
+   * durable marker (`head-review-attempts/<id>.log.jsonl`), not under
+   * `sessions/`, because the transport — not the scheduler — spawns them and
+   * hands the runner that fd. The attempt record POINTS at that file; nothing
+   * is ever copied, so this resolution is the whole of what makes the drawer
+   * open a review's log.
+   *
+   * `pathFor` stays the fallback and keeps its exact meaning: an attempt whose
+   * record names no log — every implementation attempt, and every legacy record
+   * written before `kind` existed — resolves exactly as it did before.
+   *
+   * Fail-quiet: a resolver that throws or answers with anything but a non-empty
+   * string leaves the default in place, so a broken lookup degrades to the old
+   * behaviour rather than to an exception on a read path.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @returns {string}
+   */
+  function readPathFor(workspace, attempt_id) {
+    if (attemptLogPath) {
+      try {
+        const recorded = attemptLogPath(workspace, attempt_id);
+        if (typeof recorded === 'string' && recorded.length > 0) {
+          return recorded;
+        }
+      } catch {
+        // Fall through to the default below.
+      }
+    }
+    return pathFor(workspace, attempt_id);
+  }
+
+  /**
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {string} [launch_id]
@@ -468,7 +513,7 @@ export function createSessionLog(options = {}) {
    * @returns {{ lines: unknown[], last_event_at: number|null, offset: number }}
    */
   function readDelegatedFromParent(workspace, attempt_id, launch_id) {
-    const file = pathFor(workspace, attempt_id);
+    const file = readPathFor(workspace, attempt_id);
     /** @type {Buffer} */
     let bytes;
     try {
@@ -511,6 +556,10 @@ export function createSessionLog(options = {}) {
   }
 
   return {
+    // The WRITE-side contract: what the scheduler hands a spawn as
+    // `log_path`/`stderr_path`. Deliberately NOT attempt-aware — resolving it
+    // through a record that does not exist yet at spawn time would decide where
+    // a session writes from state the session itself is about to create.
     pathFor,
 
     /**
@@ -520,6 +569,16 @@ export function createSessionLog(options = {}) {
     stderrPathFor(workspace, attempt_id) {
       return stderrPathOf(pathFor(workspace, attempt_id));
     },
+
+    /**
+     * Which file a reader opens for this attempt (UI-hk74 §7). Exposed so a
+     * consumer outside this module can name the same transcript the drawer
+     * shows instead of re-deriving it.
+     *
+     * @param {string} workspace
+     * @param {string} attempt_id
+     */
+    readPathFor,
 
     /**
      * Broadcast one raw event to the live subscribers. The event is ALREADY on
@@ -611,7 +670,7 @@ export function createSessionLog(options = {}) {
      */
     lastEventAtOf(workspace, attempt_id) {
       try {
-        return fs.statSync(pathFor(workspace, attempt_id)).mtimeMs;
+        return fs.statSync(readPathFor(workspace, attempt_id)).mtimeMs;
       } catch {
         return null;
       }
@@ -636,7 +695,7 @@ export function createSessionLog(options = {}) {
      */
     lineBoundaryOf(workspace, attempt_id) {
       try {
-        const raw = fs.readFileSync(pathFor(workspace, attempt_id));
+        const raw = fs.readFileSync(readPathFor(workspace, attempt_id));
         return raw.lastIndexOf(0x0a) + 1;
       } catch {
         return null;
@@ -689,7 +748,7 @@ export function createSessionLog(options = {}) {
      * @returns {unknown[]}
      */
     read(workspace, attempt_id, options = {}) {
-      const file = pathFor(workspace, attempt_id);
+      const file = readPathFor(workspace, attempt_id);
       let raw = '';
       try {
         const bytes = fs.readFileSync(file);

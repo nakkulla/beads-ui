@@ -13,6 +13,7 @@
  * bead has, discard spec §1). Without a registered attachment those kicks are
  * inert and `running_count` stays 0.
  */
+import path from 'node:path';
 import { isAnalyzerEffortValid } from '../../app/data/analyzer-efforts.js';
 import { kvGetJson, kvSetJson } from '../bd.js';
 import { createExecPresetStore } from '../exec-preset-store.js';
@@ -31,7 +32,7 @@ import { createReviseParkedStore } from './revise-parked.js';
 import { createRunnableCache } from './runnable-cache.js';
 import { runtimeCatalog } from './runner/index.js';
 import { createSessionLog } from './session-log.js';
-import { workspaceSlug } from './state-paths.js';
+import { workspaceSlug, workspaceStateDir } from './state-paths.js';
 import { createTitleCache } from './title-cache.js';
 import { createUsageStore } from './usage-store.js';
 
@@ -161,7 +162,35 @@ export function createWorkerRuntime() {
   // command's COMPLETION — never on its start — is what keeps a refill from
   // reading the pre-write value back.
   const sessionLog = createSessionLog({
-    onBeadWrite: (workspace, bead_id) => titleCache.expire(workspace, bead_id)
+    onBeadWrite: (workspace, bead_id) => titleCache.expire(workspace, bead_id),
+    // Head review / repair transcripts live beside their own marker, because
+    // the head-review transport spawns those sessions and hands the runner that
+    // fd (UI-hk74 §7). The attempt record POINTS at the file; the drawer reads
+    // it in place and nothing is ever copied.
+    //
+    // Containment is checked here rather than in the log module because this is
+    // the trust boundary: the path comes out of durable state, and a reader
+    // that followed it anywhere would turn `queue.json` into a file-read
+    // primitive. Outside the workspace's own state dir the record is ignored
+    // and the default path answers, which reads as an empty transcript.
+    attemptLogPath: (workspace, attempt_id) => {
+      /** @type {any} */
+      let attempt;
+      try {
+        attempt = queueStore.snapshot(workspace).attempts?.[attempt_id];
+      } catch {
+        return null;
+      }
+      const recorded = attempt?.log_path;
+      if (typeof recorded !== 'string' || recorded.length === 0) {
+        return null;
+      }
+      const root = path.resolve(workspaceStateDir(workspace));
+      const resolved = path.resolve(recorded);
+      return resolved === root || resolved.startsWith(`${root}${path.sep}`)
+        ? resolved
+        : null;
+    }
   });
   // Process-wide parallelism-analysis store (UI-04vo §9): server-global
   // settings, the per-workspace last-good cache, and the single-flight job

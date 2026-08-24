@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { createWorkerRuntime } from './runtime.js';
+import { sessionLogPath, workspaceStateDir } from './state-paths.js';
 
 const WS = '/tmp/example-workspace/project-a';
 /** @type {string} */
@@ -109,5 +110,69 @@ describe('worker/runtime session-log → title-cache wiring (UI-eey2 §9.2)', ()
     });
 
     expect(expire).not.toHaveBeenCalled();
+  });
+});
+
+describe('worker/runtime session-log attempt paths (UI-hk74 §7)', () => {
+  /**
+   * @param {any} rt
+   * @param {Record<string, any>} patch
+   */
+  function recordHeadReview(rt, patch) {
+    rt.queueStore.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:aaa',
+      patch: { bead_id: 'UI-1', kind: 'head_review', ...patch }
+    });
+  }
+
+  test('reads a head review attempt from the log its record names', () => {
+    const rt = createWorkerRuntime();
+    const recorded = path.join(
+      workspaceStateDir(WS),
+      'head-review-attempts',
+      'review_authority-1_aaa.log.jsonl'
+    );
+    fs.mkdirSync(path.dirname(recorded), { recursive: true });
+    fs.writeFileSync(recorded, `${JSON.stringify({ type: 'assistant' })}\n`);
+    recordHeadReview(rt, { log_path: recorded, status: 'done' });
+
+    const lines = rt.sessionLog.read(WS, 'review:authority-1:aaa');
+
+    expect(lines).toEqual([{ type: 'assistant' }]);
+  });
+
+  test('ignores a recorded log path outside the workspace state dir', () => {
+    const rt = createWorkerRuntime();
+    const outside = path.join(tmp_state, 'elsewhere.log.jsonl');
+    fs.writeFileSync(outside, `${JSON.stringify({ type: 'assistant' })}\n`);
+    recordHeadReview(rt, { log_path: outside, status: 'done' });
+
+    const lines = rt.sessionLog.read(WS, 'review:authority-1:aaa');
+
+    expect(lines).toEqual([]);
+  });
+
+  test('keeps an implementation attempt on the session log path', () => {
+    const rt = createWorkerRuntime();
+    rt.queueStore.appendAttempt(WS, {
+      expected_revision: rt.queueStore.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    const legacy = sessionLogPath(WS, 'att-1');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, `${JSON.stringify({ type: 'result' })}\n`);
+
+    const lines = rt.sessionLog.read(WS, 'att-1');
+
+    expect(lines).toEqual([{ type: 'result' }]);
+  });
+
+  test('returns an empty snapshot for an attempt with no log at all', () => {
+    const rt = createWorkerRuntime();
+    recordHeadReview(rt, { log_path: null, status: 'running' });
+
+    const lines = rt.sessionLog.read(WS, 'review:authority-1:aaa');
+
+    expect(lines).toEqual([]);
   });
 });
