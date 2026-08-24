@@ -563,9 +563,20 @@ export function buildChains(blocked_by_map, locations, states) {
       map.set(key, new Set([value]));
     }
   };
+  /**
+   * The 완료 레인 노드는 더 이상 순서를 정할 대상이 아니다 — 완료 이슈에
+   * 남은 blocks 간선(끊어진 foreign 의존 포함)이 연결 레인으로 승격되지
+   * 않도록 그래프에서 뺀다.
+   *
+   * @param {string} bead_id
+   */
+  const isDone = (bead_id) => locations.get(bead_id)?.lane === 'done';
   for (const [blockee, blockers] of blocked_by_map) {
+    if (isDone(blockee)) {
+      continue;
+    }
     for (const blocker of blockers) {
-      if (blocker === blockee) {
+      if (blocker === blockee || isDone(blocker)) {
         continue;
       }
       nodes.add(blocker);

@@ -509,6 +509,36 @@ describe('monitor 🔗 연결 체인 (UI-eey2 §6.4)', () => {
     expect(chains[0].nodes.map((n) => n.id)).toEqual(['A', 'B']);
   });
 
+  test('drops a done blockee whose only edge is a dangling foreign blocker', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 1 }],
+          bead_blocked_by: { 'A-1': ['Z-9'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chains).toEqual([]);
+    expect(lanes.chain_lanes).toEqual([]);
+  });
+
+  test('drops a done blocker from an otherwise live chain', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          done: [{ bead_id: 'A-1', added_at: 1 }],
+          bead_blocked_by: { 'A-2': ['A-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.chains).toEqual([]);
+  });
+
   test('labels an unplaced node from its prefix scope', () => {
     const chains = buildChains(
       new Map([['A-2', ['Z-9']]]),
