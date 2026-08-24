@@ -395,6 +395,45 @@ describe('waiting row (UI-04vo 직렬 레인)', () => {
   });
 });
 
+describe('discovered-from chip', () => {
+  test('renders a from chip on a waiting row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      from_id: 'UI-parent'
+    });
+    const chip = row.querySelector('.ctl-chip--from');
+
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent?.trim()).toContain('↩ from UI-parent');
+    expect(chip?.getAttribute('data-from-id')).toBe('UI-parent');
+  });
+
+  test('renders a from chip on a done row', () => {
+    const row = renderRow({
+      lane: 'done',
+      done: true,
+      draggable: false,
+      from_id: 'UI-origin'
+    });
+    const chip = row.querySelector('.ctl-chip--from');
+
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent?.trim()).toContain('↩ from UI-origin');
+  });
+
+  test('omits the from chip when from_id is absent', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true
+    });
+
+    expect(row.querySelector('.ctl-chip--from')).toBeNull();
+  });
+});
+
 describe('candidate card', () => {
   test('keeps a described quick_fix candidate draggable with an active queue button', () => {
     const card = renderCandidate({});
@@ -479,6 +518,21 @@ describe('candidate card', () => {
 
     expect(place.disabled).toBe(true);
     expect(card.querySelector('.worker-card__place-menu')).toBeNull();
+  });
+
+  test('renders a discovered-from chip on a candidate card', () => {
+    const card = renderCandidate({ from_id: 'UI-0' });
+    const chip = card.querySelector('.ctl-chip--from');
+
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent?.trim()).toContain('↩ from UI-0');
+    expect(chip?.getAttribute('data-from-id')).toBe('UI-0');
+  });
+
+  test('omits the from chip when from_id is absent', () => {
+    const card = renderCandidate({});
+
+    expect(card.querySelector('.ctl-chip--from')).toBeNull();
   });
 });
 

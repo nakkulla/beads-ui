@@ -808,6 +808,31 @@ export function routeChipTemplate(workflow) {
 }
 
 /**
+ * The 출처 칩 하나 — `discovered-from` 간선의 원본 bead. Board 카드가 이미 같은
+ * 문장(`↩ from <id>`)을 쓰므로 두 탭에서 같은 사실이 같은 모양으로 읽힌다.
+ * {@link routeChipTemplate}과 같은 이유로 카드마다 복제하지 않고 여기 하나를
+ * 부른다. 클릭은 위임 처리다: 워커 콘솔의 다른 칩들과 같이 `data-from-id`만
+ * 싣고, 이동은 뷰의 click 핸들러가 소유한다. 재료가 없으면 빈 문자열이다
+ * (fail-quiet).
+ *
+ * @param {MiniItem['from_id']} from_id
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function fromChipTemplate(from_id) {
+  if (!from_id) {
+    return '';
+  }
+  return html`<button
+    type="button"
+    class="ctl-chip ctl-chip--from"
+    data-from-id=${from_id}
+    title=${`출처 ${from_id} 열기`}
+  >
+    ↩ from ${from_id}
+  </button>`;
+}
+
+/**
  * @typedef {Object} MiniItem
  * @property {string} id - Bead id.
  * @property {string} title - Bead title (falls back to id).
@@ -907,6 +932,7 @@ export function routeChipTemplate(workflow) {
  * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
  * wears the ⛔ chip, and refuses drag and queue placement. The candidate
  * projection computes it once; the template never re-reads label strings.
+ * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  */
 
 /**
@@ -1044,6 +1070,7 @@ export function miniRow(item) {
   // route 칩은 ID 다음, 제목 앞이다 (UI-yrzu §7.2) — 완료 행만 제외한다: 끝난
   // 일의 route는 더 이상 어떤 결정도 바꾸지 않는다.
   const route_el = item.lane === 'done' ? '' : routeChipTemplate(item.workflow);
+  const from_el = fromChipTemplate(item.from_id);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;
   const pr_el =
     item.pr_url && item.pr_number
@@ -1295,7 +1322,9 @@ export function miniRow(item) {
     data-lane=${item.lane}
   >
     ${two_line
-      ? html`<div class="worker-mini__row1">${repo_el}${id_el}${title_el}</div>
+      ? html`<div class="worker-mini__row1">
+            ${repo_el}${id_el}${from_el}${title_el}
+          </div>
           <div class="worker-mini__row2">
             ${usage_el}${done_at_label
               ? html`<span
@@ -1317,7 +1346,7 @@ export function miniRow(item) {
           </div>`
       : card
         ? html`<div class="worker-mini__head">
-              ${grip}${seq_el}${repo_el}${id_el}${route_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
+              ${grip}${seq_el}${repo_el}${id_el}${route_el}${from_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}
             </div>
             <div class="worker-mini__body">${title_el}${stale_details}</div>
             ${deps_el}${exec_el}${has_foot
@@ -1334,7 +1363,7 @@ export function miniRow(item) {
           // (UI-d7pw §4.1). 드래그 계약은 바깥 `.worker-mini`의
           // `data-bead-id`/`data-lane`에 걸려 있어 내부 재구성에 영향받지 않는다.
           html`<div class="worker-mini__line">
-              ${grip}${seq_el}${repo_el}${id_el}${route_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
+              ${grip}${seq_el}${repo_el}${id_el}${route_el}${from_el}${title_el}${pr_el}${repair_pr_el}${badge_els}${serial_el}${reason_el}${usage_el}${merge_step_el}${merge_el}${cancel_el}${timeline_el}${discard_el}
             </div>
             ${deps_el}${exec_el}${receipt_el} ${timesMeta(item)}`}
   </div>`;
@@ -1402,7 +1431,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
             >⛔ worker-ineligible</span
           >`
         : ''}
-      ${routeChipTemplate(workflow)}
+      ${routeChipTemplate(workflow)}${fromChipTemplate(item.from_id)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow ? stepperTemplate(workflow, item.status) : ''}${deps_el}

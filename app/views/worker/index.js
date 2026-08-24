@@ -2941,6 +2941,20 @@ export function createWorkerView(mount_element, options = {}) {
       idToTitle.set(it.id, it.title || it.id);
     }
 
+    /** @type {Map<string, string>} */
+    const idToFromId = new Map();
+    for (const it of [
+      ...ready,
+      ...blocked,
+      ...in_progress,
+      ...resolved,
+      ...closed
+    ]) {
+      if (it && it.id && typeof it.from_id === 'string') {
+        idToFromId.set(it.id, it.from_id);
+      }
+    }
+
     /** @type {Record<string, any>} */
     const bead_times =
       q.bead_times &&
@@ -3236,7 +3250,8 @@ export function createWorkerView(mount_element, options = {}) {
         has_spec,
         // "이 설정으로 돌아간다"를 적재 전에 미리 본다
         // (worker-card-exec-chips §2.2).
-        exec_chips: beadExecChips(it.id)
+        exec_chips: beadExecChips(it.id),
+        from_id: it.from_id || undefined
       };
     });
     // DISPLAY-only projection: `candidate_issues` above stays the unfiltered
@@ -3348,6 +3363,7 @@ export function createWorkerView(mount_element, options = {}) {
           exec_chips: waiting_lane ? beadExecChips(e.bead_id) : null,
           // route 칩 재료 (UI-yrzu §7.2). 완료 행은 칩을 그리지 않는다.
           workflow: waiting_lane ? bead_workflow[e.bead_id] || null : null,
+          from_id: idToFromId.get(e.bead_id) || undefined,
           ...timesOf(e.bead_id)
         };
       });
@@ -5690,6 +5706,16 @@ export function createWorkerView(mount_element, options = {}) {
               showToast('복사 실패', 'error', 1600);
             }
           });
+        }
+        return;
+      }
+      const from_chip = /** @type {HTMLElement|null} */ (
+        target?.closest?.('.ctl-chip--from')
+      );
+      if (from_chip) {
+        const from_id = from_chip.dataset.fromId;
+        if (from_id && gotoIssue) {
+          gotoIssue(from_id);
         }
         return;
       }
