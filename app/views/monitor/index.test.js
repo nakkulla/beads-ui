@@ -2097,7 +2097,7 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
         })
       ],
       workspaces_state: [state()],
-      transport: async () => ({ queue: { revision: 7 } })
+      transport: async () => ({ applied: true, queue: { revision: 7 } })
     });
 
     view.load();
@@ -2123,7 +2123,7 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     ]);
   });
 
-  test('sends no second op when the first one conflicts', async () => {
+  test('sends no second op and no retry when the first one conflicts', async () => {
     const { mount, view, sent } = setup({
       workspaces: [
         workspace({
@@ -2141,10 +2141,49 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
     await flushMicrotasks();
 
-    expect(sent.map((message) => message.payload.bead_id)).toEqual([
-      'A-2',
-      'A-2'
-    ]);
+    expect(sent.map((message) => message.payload.bead_id)).toEqual(['A-2']);
+  });
+
+  test('sends no second op when the first response is not applied', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => null
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent.map((message) => message.payload.bead_id)).toEqual(['A-2']);
+  });
+
+  test('sends no second op when the first response carries no revision', async () => {
+    const { mount, view, sent } = setup({
+      workspaces: [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          serial_lane_count: 2,
+          bead_scope: { 'A-1': declared(), 'A-2': declared() }
+        })
+      ],
+      workspaces_state: [state()],
+      transport: async () => ({ applied: true, queue: {} })
+    });
+
+    view.load();
+    openPopover(mount, 'A-1');
+    click(mount, '[data-bead-id="A-1"] .mon-overlap__place');
+    await flushMicrotasks();
+
+    expect(sent.map((message) => message.payload.bead_id)).toEqual(['A-2']);
   });
 
   test('disables the button when no serial lane is empty', () => {
@@ -2243,7 +2282,8 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
           bead_scope: { 'A-1': declared(), 'A-2': declared() }
         })
       ],
-      workspaces_state: [state()]
+      workspaces_state: [state()],
+      transport: async () => ({ applied: true, queue: { revision: 5 } })
     });
 
     view.load();

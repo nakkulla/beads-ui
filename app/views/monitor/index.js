@@ -924,23 +924,38 @@ export function createMonitorView(mount_element, options) {
    */
   async function sendPlaceOp(op, root_dir, revision) {
     try {
-      const res = await sendCas('worker-queue-place', op, root_dir, revision);
+      // 충돌 자동 재시도 없음 (§5.4): 판정은 클릭 시점의 모델로 했으므로,
+      // 충돌은 그 판정의 근거가 사라졌다는 뜻이다 — 낡은 계획을 새 큐에
+      // 밀어 넣지 않는다.
+      const res = await sendCas(
+        'worker-queue-place',
+        op,
+        root_dir,
+        revision,
+        false
+      );
       if (res && res.conflict) {
         showToast('큐가 바뀌었습니다 — 다시 시도해 주세요', 'error');
         return null;
       }
-      if (res && res.applied === false) {
+      // 성공은 `applied: true` + 숫자 revision뿐이다. 그 외(전송 불가·적용
+      // 거부·revision 없는 응답)는 전부 중단 — 두 번째 op는 첫 응답의
+      // revision으로만 간다.
+      if (!res || res.applied !== true) {
         showToast(
-          res.admission_reason
+          res && typeof res.admission_reason === 'string'
             ? `큐 적재 거부: ${res.admission_reason}`
             : '큐 요청이 적용되지 않았습니다',
           'error'
         );
         return null;
       }
-      return typeof res?.queue?.revision === 'number'
-        ? res.queue.revision
-        : revision;
+      const next_revision = res.queue ? res.queue.revision : undefined;
+      if (typeof next_revision !== 'number') {
+        showToast('큐 응답에 revision이 없습니다', 'error');
+        return null;
+      }
+      return next_revision;
     } catch (error) {
       showToast(mutationErrorMessage(error), 'error');
       return null;
