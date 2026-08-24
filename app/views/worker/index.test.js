@@ -8572,6 +8572,22 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   });
 
+  test('surfaces a transport failure of the merge click as a toast', async () => {
+    const transport = vi.fn(async () => {
+      throw new Error('ws disconnected');
+    });
+    const { mount } = mountLane(laneOf(['RD-1']), transport);
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+    ).click();
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '머지 클릭이 서버에 전달되지 않았습니다'
+    );
+  });
+
   test('a queued row under a live manual authority still swaps 머지 for 취소', () => {
     const { mount } = mountLane(
       laneOf(['RD-1', 'RD-2'], {
@@ -9295,6 +9311,20 @@ describe('mergeFailureText (UI-5v7d §4)', () => {
 
   test('passes an unknown reason through instead of blanking the badge', () => {
     expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
+  });
+
+  test('points a receipt hold at the manual [머지] click that lifts it', () => {
+    const text = mergeFailureText('receipt_unbacked:probe_error');
+
+    expect(text).toContain('probe_error');
+    expect(text).toContain('[머지] 클릭으로 수동 진행 가능');
+  });
+
+  test('keeps the manual-click hint for every receipt_unbacked code', () => {
+    const text = mergeFailureText('receipt_unbacked:main_receipt_unbacked');
+
+    expect(text).toContain('main_receipt_unbacked');
+    expect(text).toContain('[머지] 클릭으로 수동 진행 가능');
   });
 });
 

@@ -569,6 +569,13 @@ export function activityBadge(gate_badge, activity) {
  * @returns {string}
  */
 export function mergeFailureText(reason) {
+  // Every receipt hold is lifted by the person's own [머지] click (UI-bu6d §4:
+  // the click IS the waiving authority), so the label must say that next step
+  // — the raw code alone reads as a dead end. The code stays in the tooltip.
+  if (reason.startsWith('receipt_unbacked:')) {
+    const code = reason.slice('receipt_unbacked:'.length);
+    return `실행 영수증 자동 검증 불가(${code}) — [머지] 클릭으로 수동 진행 가능`;
+  }
   switch (reason) {
     case 'not_in_pr_wait':
       return 'PR 대기 상태 동기화 실패';
@@ -2128,6 +2135,16 @@ export function createWorkerView(mount_element, options = {}) {
     let res;
     try {
       res = await sendMergeQueue('worker-merge-queue-add', { bead_id });
+    } catch {
+      // A transport rejection (ws dropped mid-restart) previously escaped as an
+      // unhandled rejection: the click died with NO feedback and no server-side
+      // trace, which reads exactly like a dead button.
+      showToast(
+        '머지 클릭이 서버에 전달되지 않았습니다(연결 문제) — 연결 복구 후 다시 눌러주세요',
+        'error',
+        3200
+      );
+      return;
     } finally {
       merge_pending.delete(bead_id);
       doRender();
