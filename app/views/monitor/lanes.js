@@ -142,11 +142,20 @@ const DONE_KIND_LABELS = {
  */
 
 /**
+ * @typedef {Object} MonitorOccupant
+ * @property {string} id
+ * @property {string} title
+ * @property {string} badge
+ */
+
+/**
  * @typedef {Object} MonitorSerialSublane
  * @property {'s1'|'s2'|'s3'|'s4'|'s5'} id
  * @property {number} index
  * @property {MonitorItem[]} items
  * @property {string[]} occupied_by
+ * @property {MonitorOccupant[]} occupants - `occupied_by`의 표시 투영 (Worker
+ * 탭 ghost 행과 같은 형태). 제목은 실행중/PR 대기 항목에서 찾고, 없으면 id다.
  * @property {number} corrections
  * @property {boolean} cycle
  * @property {number} raw_length - 서버 배열의 entry 수. DOM에는 실행중으로 빠진
@@ -1262,6 +1271,40 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
     }
 
+    /**
+     * Display projection of an occupying bead. 점유자는 이 레인 DOM에 행으로 없고(실행중/PR 대기
+     * 레인 소속) 여기서는 ghost 행으로만 보이므로 드롭 인덱스에 관여하지 않는다.
+     *
+     * @param {string} bead_id
+     * @returns {MonitorOccupant}
+     */
+    const occupantOf = (bead_id) => {
+      const in_pr_wait = pr_wait.find(
+        (item) => item.id === bead_id && item.root_dir === root_dir
+      );
+      if (in_pr_wait) {
+        return {
+          id: bead_id,
+          title: in_pr_wait.title,
+          badge: 'PR 대기 · 점유'
+        };
+      }
+      const live = running.find(
+        (item) => item.id === bead_id && item.root_dir === root_dir
+      );
+      const badge =
+        live && live.run_state === 'failed'
+          ? '실패 · 점유 유지'
+          : live && live.run_state === 'paused'
+            ? '일시정지 · 점유'
+            : '실행 중 · 점유';
+      return {
+        id: bead_id,
+        title: live ? live.title : base(bead_id).title,
+        badge
+      };
+    };
+
     /** @type {MonitorSerialSublane[]} */
     const projected_serial = [];
     for (
@@ -1303,6 +1346,7 @@ export function buildLanes(workspaces, workspaces_state, options) {
         items,
         raw_length: entries.length,
         occupied_by,
+        occupants: occupied_by.map((bead_id) => occupantOf(bead_id)),
         corrections: Array.isArray(lane_state.corrections)
           ? lane_state.corrections.length
           : 0,

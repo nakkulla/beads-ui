@@ -49,7 +49,7 @@ import {
 } from './lanes.js';
 
 /**
- * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
+ * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorOccupant, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
  * @import { DropDrag, DropModel, DropTarget, Op } from './drop-plan.js'
  */
 
@@ -969,6 +969,44 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Header occupancy badge text: 첫 점유자 id, 둘 이상이면 `+N`. 누가 잡고 있는지가
+   * 보이지 않으면 `점유` 한 단어는 Worker 탭을 열어야만 풀리는 물음표였다.
+   *
+   * @param {MonitorOccupant[]} occupants
+   */
+  function occupancyLabel(occupants) {
+    if (occupants.length === 0) {
+      return '';
+    }
+    const rest = occupants.length - 1;
+    return `${occupants[0].id} 점유${rest > 0 ? ` +${rest}` : ''}`;
+  }
+
+  /**
+   * Occupant ghost row (Worker 탭 `worker-mini--ghost`와 같은 형태). `data-row-index`
+   * 와 `data-queue-index`를 싣지 않으므로 드롭 마커·서버 인덱스 계산 모두에서
+   * 투명하다 — 점유자는 서버 레인 entries의 구성원이 아니다.
+   *
+   * @param {MonitorOccupant} occupant
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function occupantRow(occupant) {
+    return html`<div
+      class="mon2-item mon2-item--ghost"
+      data-bead-id=${occupant.id}
+    >
+      ${miniRow({
+        id: occupant.id,
+        title: occupant.title,
+        lane: 'running',
+        draggable: false,
+        ghost: true,
+        badges: [occupant.badge]
+      })}
+    </div>`;
+  }
+
+  /**
    * One 레포 직렬 레인 pane (§4.2). 비어 있는 레인은 한 줄 힌트로 접히고
    * 드래그 중에만 드롭 타깃으로 펼쳐진다 (표시는 CSS 소유).
    *
@@ -995,14 +1033,25 @@ export function createMonitorView(mount_element, options) {
           data-lane-id=${lane.id}
           data-lane-length=${String(lane.raw_length)}
         >
+          ${lane.occupants.map((occupant) => occupantRow(occupant))}
           ${lane.items.length > 0
             ? lane.items.map((item, index) => serialRow(lane, item, index))
-            : html`<div class="worker-pane__empty">
-                비어 있음 — 드래그로 배치
-              </div>`}
+            : lane.occupants.length > 0
+              ? ''
+              : html`<div class="worker-pane__empty">
+                  비어 있음 — 드래그로 배치
+                </div>`}
         </div>`,
-        header_control: html`<span class="mon2-lane__badge"
-            >${lane.occupied_by.length > 0 ? '점유' : ''}</span
+        header_control: html`<span
+            class="mon2-lane__badge${lane.occupants.length > 0
+              ? ' mon2-lane__badge--held'
+              : ''}"
+            title=${lane.occupants.length > 0
+              ? lane.occupants
+                  .map((occupant) => `${occupant.id} — ${occupant.badge}`)
+                  .join('\n')
+              : ''}
+            >${occupancyLabel(lane.occupants)}</span
           ><button
             type="button"
             class="mon2-sec__worker"

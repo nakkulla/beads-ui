@@ -317,6 +317,35 @@ describe('monitor 대기 repo sections (UI-eey2 §6)', () => {
     expect(serial[1].empty).toBe(true);
   });
 
+  test('projects lane occupants with the running item title and state badge', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          bead_titles: { 'A-1': '점유 중인 작업' },
+          serial_lanes: [
+            { id: 's1', entries: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }] }
+          ],
+          lane_states: { s1: { occupied_by: ['A-1'] } },
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'paused',
+              started_at: 10
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    const serial = lanes.queue_groups[0].sublanes.serial;
+    expect(serial[0].occupants).toEqual([
+      { id: 'A-1', title: '점유 중인 작업', badge: '일시정지 · 점유' }
+    ]);
+    expect(serial[0].items.map((item) => item.id)).toEqual(['A-2']);
+  });
+
   test('omits the hint entirely when the only configured serial lane is empty', () => {
     const lanes = buildLanes(
       [workspace({ serial_lane_count: 1, queue: [{ bead_id: 'A-1' }] })],
