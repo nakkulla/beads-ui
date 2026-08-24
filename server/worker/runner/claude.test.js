@@ -969,6 +969,7 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
       kind: 'progress',
       launch_id: LAUNCH_A,
       model: 'claude-sonnet-4-5-20250929',
+      proves_session: true,
       at: null
     });
   });
@@ -984,6 +985,7 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
       kind: 'progress',
       launch_id: LAUNCH_A,
       model: null,
+      proves_session: true,
       at: Date.parse('2026-08-24T01:00:05.000Z')
     });
   });
@@ -999,6 +1001,7 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
       kind: 'progress',
       launch_id: LAUNCH_A,
       model: null,
+      proves_session: false,
       at: null
     });
   });

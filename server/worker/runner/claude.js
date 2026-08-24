@@ -169,7 +169,7 @@ const SUBAGENT_USAGE_FIELDS = [
  * One subagent signal read off ONE line (UI-2mpn §5.1).
  *
  * @typedef {{ kind: 'start', launch_id: string, agent_type: string|null, model_alias: string|null, at: number|null }
- *   | { kind: 'progress', launch_id: string, model: string|null, at: number|null }
+ *   | { kind: 'progress', launch_id: string, model: string|null, proves_session: boolean, at: number|null }
  *   | { kind: 'end', launch_id: string, is_error: boolean, result_status: string|null, agent_id: string|null, agent_type: string|null, model: string|null, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number }|null, total_tokens: number|null, at: number|null }} DelegationSignal
  */
 
@@ -254,6 +254,11 @@ export function liftDelegation(raw) {
     ) {
       return null;
     }
+    // A `tool_progress` line is not proof of a subagent: backgrounded tool
+    // calls (a timed-out Bash task, `TaskOutput` polling) also stamp their
+    // originating `tool_use.id` as `parent_tool_use_id` on progress lines. A
+    // subagent's own turns ride as `assistant`/`user` — only those may
+    // synthesize a session the store never saw start (§5.2).
     return {
       kind: 'progress',
       launch_id: parent_tool_use_id,
@@ -261,6 +266,7 @@ export function liftDelegation(raw) {
         raw.type === 'assistant' && raw.message
           ? nonEmpty(raw.message.model)
           : null,
+      proves_session: raw.type !== 'tool_progress',
       at
     };
   }

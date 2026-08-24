@@ -206,8 +206,14 @@ export function createDelegationStore() {
       if (lifted.kind === 'progress') {
         // A replay that starts after the `Agent` call — or a monitor that
         // reattached mid-flight — sees children whose header is behind the
-        // boundary. The child lines alone prove the session exists, so it is
-        // created here with the two facts they cannot carry left null.
+        // boundary. A child's own `assistant`/`user` lines alone prove the
+        // session exists, so it is created here with the two facts they cannot
+        // carry left null. A `tool_progress` line proves nothing (§5.1 — a
+        // backgrounded tool call stamps the same `parent_tool_use_id`), so it
+        // only updates a session other evidence already established.
+        if (!existing && !lifted.proves_session) {
+          return false;
+        }
         const session =
           existing || startedSession(lifted.launch_id, null, null, lifted.at);
         if (!existing) {

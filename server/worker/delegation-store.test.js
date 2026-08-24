@@ -20,7 +20,7 @@ function start(over = {}) {
 }
 
 /**
- * @param {Partial<{ model: string|null, at: number|null }>} [over]
+ * @param {Partial<{ model: string|null, proves_session: boolean, at: number|null }>} [over]
  * @returns {any}
  */
 function progress(over = {}) {
@@ -28,6 +28,7 @@ function progress(over = {}) {
     kind: 'progress',
     launch_id: LAUNCH,
     model: over.model === undefined ? 'claude-sonnet-4-5-20250929' : over.model,
+    proves_session: over.proves_session ?? true,
     at: over.at === undefined ? 2000 : over.at
   };
 }
@@ -144,6 +145,32 @@ describe('worker/delegation-store (UI-2mpn §5.2)', () => {
         last_event_at: 2000
       }
     ]);
+  });
+
+  test('ignores a tool_progress-only launch that never started', () => {
+    const store = createDelegationStore();
+
+    const changed = store.apply(
+      WS,
+      ATTEMPT,
+      progress({ model: null, proves_session: false })
+    );
+
+    expect(changed).toBe(false);
+    expect(store.get(WS, ATTEMPT).sessions).toEqual([]);
+  });
+
+  test('advances last_event_at on a tool_progress for a started session', () => {
+    const store = createDelegationStore();
+    store.apply(WS, ATTEMPT, start());
+
+    store.apply(
+      WS,
+      ATTEMPT,
+      progress({ model: null, proves_session: false, at: 2500 })
+    );
+
+    expect(store.get(WS, ATTEMPT).sessions[0].last_event_at).toBe(2500);
   });
 
   test('closes a session as done and writes its receipt', () => {
