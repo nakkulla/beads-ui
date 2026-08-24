@@ -11,8 +11,10 @@
  * blocker, and unrecovered work loss by independent PR verification.
  *
  * @import { AdapterSpec, RunnerEvent, RunnerHandle, EngineDeps } from './session.js'
+ * @import { RunnerCatalogEntry } from '../runner-catalog.js'
  */
 import { resolveCswapPath } from '../../routes/claude-usage.js';
+import { builtinCatalog } from '../runner-catalog.js';
 import { applyPreamble, defaultTaskPrompt } from './preamble.js';
 import { runSession } from './session.js';
 
@@ -24,6 +26,24 @@ import { runSession } from './session.js';
  * @type {RegExp}
  */
 const QUESTION_TOOL_RE = /ask.?user.?question|^ask_?user|elicit/i;
+
+/**
+ * Expand a catalog short name (`opus-4.6`) into the CLI model id
+ * (`claude-opus-4-6`). A name the catalog does not know passes through
+ * verbatim — the catalog is the curated list, not an allowlist.
+ *
+ * @param {RunnerCatalogEntry} entry
+ * @param {unknown} model
+ * @returns {string|null}
+ */
+function resolveModelId(entry, model) {
+  if (typeof model !== 'string' || model.length === 0) {
+    return null;
+  }
+  return Object.prototype.hasOwnProperty.call(entry.models, model)
+    ? entry.models[model].id
+    : model;
+}
 
 /**
  * @param {any} bead
@@ -473,10 +493,11 @@ function verdict(ctx) {
 /**
  * Build the claude adapter spec.
  *
- * @param {{ env?: Record<string, string|undefined>, cswap_path?: string|null }} [options]
+ * @param {{ catalog_entry?: RunnerCatalogEntry, env?: Record<string, string|undefined>, cswap_path?: string|null }} [options]
  * @returns {AdapterSpec}
  */
 export function claudeSpec(options = {}) {
+  const entry = options.catalog_entry ?? builtinCatalog().claude;
   const routing_env = options.env || {};
   return {
     name: 'claude',
@@ -492,8 +513,9 @@ export function claudeSpec(options = {}) {
       if (s.resume_session_id) {
         args.push('--resume', String(s.resume_session_id));
       }
-      if (s.model) {
-        args.push('--model', String(s.model));
+      const model_id = resolveModelId(entry, s.model);
+      if (model_id) {
+        args.push('--model', model_id);
       }
       if (s.effort) {
         args.push('--effort', String(s.effort));
@@ -585,10 +607,13 @@ export function claudeSpec(options = {}) {
  * @param {any} bead
  * @param {string} workspace
  * @param {any} settings
- * @param {EngineDeps & { name?: 'claude', routing_env?: Record<string, string|undefined> }} deps
+ * @param {EngineDeps & { name?: 'claude', catalog_entry?: RunnerCatalogEntry, routing_env?: Record<string, string|undefined> }} deps
  * @returns {RunnerHandle}
  */
 export function spawnClaude(bead, workspace, settings, deps) {
-  const spec = claudeSpec({ env: deps.routing_env });
+  const spec = claudeSpec({
+    catalog_entry: deps.catalog_entry,
+    env: deps.routing_env
+  });
   return runSession(spec, bead, workspace, settings, deps);
 }

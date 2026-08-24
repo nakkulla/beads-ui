@@ -37,11 +37,15 @@ describe('worker/runner-catalog builtin defaults', () => {
 
     expect(Object.keys(runners.claude.models)).toEqual([
       'opus',
+      'opus-4.8',
+      'opus-4.6',
       'sonnet',
       'haiku',
       'fable'
     ]);
     expect(runners.claude.models.sonnet.id).toBe('sonnet');
+    expect(runners.claude.models['opus-4.8'].id).toBe('claude-opus-4-8');
+    expect(runners.claude.models['opus-4.6'].id).toBe('claude-opus-4-6');
   });
 
   test('carries the claude command, efforts and default model', () => {
@@ -120,6 +124,8 @@ describe('worker/runner-catalog builtin defaults', () => {
 
     expect(model_index).toEqual({
       opus: 'claude',
+      'opus-4.8': 'claude',
+      'opus-4.6': 'claude',
       sonnet: 'claude',
       haiku: 'claude',
       fable: 'claude',

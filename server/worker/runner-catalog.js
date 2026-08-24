@@ -64,6 +64,8 @@ const BUILTIN = {
     command: 'claude',
     models: {
       opus: { id: 'opus' },
+      'opus-4.8': { id: 'claude-opus-4-8' },
+      'opus-4.6': { id: 'claude-opus-4-6' },
       sonnet: { id: 'sonnet' },
       haiku: { id: 'haiku' },
       fable: { id: 'fable' }

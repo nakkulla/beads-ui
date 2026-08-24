@@ -93,7 +93,17 @@ function codexEntry(runner_name, deps) {
  */
 export function adapterSpec(runner_name, deps = {}) {
   const entry = codexEntry(runner_name, deps);
-  return entry ? codexSpec(entry) : claudeSpec();
+  if (entry) {
+    return codexSpec(entry);
+  }
+  const catalog = deps.catalog || runtimeCatalog();
+  const claude_entry = Object.prototype.hasOwnProperty.call(
+    catalog.runners,
+    'claude'
+  )
+    ? catalog.runners.claude
+    : undefined;
+  return claudeSpec({ catalog_entry: claude_entry });
 }
 
 /**
@@ -124,6 +134,13 @@ export function createRunner(runner_name, deps = {}) {
       }
     };
   }
+  const catalog = deps.catalog || runtimeCatalog();
+  const claude_entry = Object.prototype.hasOwnProperty.call(
+    catalog.runners,
+    'claude'
+  )
+    ? catalog.runners.claude
+    : undefined;
   return {
     name: 'claude',
     /**
@@ -136,6 +153,7 @@ export function createRunner(runner_name, deps = {}) {
       return spawnClaude(bead, workspace, settings, {
         ...deps,
         name: 'claude',
+        catalog_entry: claude_entry,
         routing_env: {}
       });
     }
