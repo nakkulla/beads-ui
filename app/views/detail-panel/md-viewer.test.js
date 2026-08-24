@@ -127,3 +127,21 @@ describe('views/detail-panel/md-viewer', () => {
     expect(mount.querySelector('.mv')).toBeNull();
   });
 });
+
+describe('splitFrontmatter', () => {
+  test('separates leading yaml block from body', async () => {
+    const { splitFrontmatter } = await import('./md-viewer.js');
+
+    const result = splitFrontmatter('---\nscope: x\n---\n# 제목\n본문');
+
+    expect(result).toEqual({ front: 'scope: x', body: '# 제목\n본문' });
+  });
+
+  test('returns body unchanged without frontmatter', async () => {
+    const { splitFrontmatter } = await import('./md-viewer.js');
+
+    const result = splitFrontmatter('# 제목\n---\n본문');
+
+    expect(result).toEqual({ front: null, body: '# 제목\n---\n본문' });
+  });
+});
