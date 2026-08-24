@@ -1327,6 +1327,7 @@ export function createMonitorView(mount_element, options) {
     trigger.setAttribute('aria-expanded', 'true');
     error.textContent = message;
     error.hidden = false;
+    placePopover(trigger, popover);
   }
 
   /**
@@ -1418,6 +1419,39 @@ export function createMonitorView(mount_element, options) {
     list.replaceChildren(fragment);
   }
 
+  /**
+   * Pin the popover to the viewport below its trigger (UI-thwe). 레인 본문의
+   * overflow 안에 절대배치하면 레인 경계에서 잘린다. 트리거 아래·오른쪽 정렬을
+   * 기본으로 두고 뷰포트 안에 들어오도록 가장자리에서만 당긴다.
+   *
+   * @param {HTMLElement} trigger
+   * @param {HTMLElement} popover
+   */
+  function placePopover(trigger, popover) {
+    if (typeof trigger.getBoundingClientRect !== 'function') {
+      return;
+    }
+    const margin = 8;
+    const rect = trigger.getBoundingClientRect();
+    const width = popover.offsetWidth || 0;
+    const height = popover.offsetHeight || 0;
+    const vw = window.innerWidth || 0;
+    const vh = window.innerHeight || 0;
+    let left = rect.right - width;
+    if (left < margin) {
+      left = margin;
+    }
+    if (vw > 0 && left + width > vw - margin) {
+      left = Math.max(margin, vw - margin - width);
+    }
+    let top = rect.bottom + 4;
+    if (vh > 0 && height > 0 && top + height > vh - margin) {
+      top = Math.max(margin, rect.top - 4 - height);
+    }
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(top)}px`;
+  }
+
   function closePopovers() {
     for (const popover of Array.from(
       console_el.querySelectorAll('.mon-card-popover')
@@ -1463,6 +1497,7 @@ export function createMonitorView(mount_element, options) {
         updateLinkSearch(input);
         input.focus();
       }
+      placePopover(button, popover);
     }
   }
 
@@ -2121,6 +2156,26 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
+   * Close an open popover once a lane scrolls under it. 고정 배치 팝오버는
+   * 스크롤되면 트리거에서 떨어진다. 팝오버 자신의 목록 스크롤은 예외다.
+   *
+   * @param {Event} ev
+   */
+  function onScroll(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (
+      target &&
+      typeof target.closest === 'function' &&
+      target.closest('.mon-card-popover')
+    ) {
+      return;
+    }
+    if (console_el.querySelector('.mon-card-popover:not([hidden])')) {
+      closePopovers();
+    }
+  }
+
+  /**
    * @param {KeyboardEvent} ev
    */
   function onDocumentKeydown(ev) {
@@ -2208,6 +2263,7 @@ export function createMonitorView(mount_element, options) {
   mount_element.addEventListener('dragend', onDragEnd);
   document.addEventListener('click', onDocumentClick);
   document.addEventListener('keydown', onDocumentKeydown);
+  mount_element.addEventListener('scroll', onScroll, true);
 
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
@@ -2286,6 +2342,7 @@ export function createMonitorView(mount_element, options) {
       mount_element.removeEventListener('dragend', onDragEnd);
       document.removeEventListener('click', onDocumentClick);
       document.removeEventListener('keydown', onDocumentKeydown);
+      mount_element.removeEventListener('scroll', onScroll, true);
       mount_element.replaceChildren();
     }
   };

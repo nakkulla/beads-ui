@@ -1,10 +1,12 @@
 /**
  * 레포 데크 — 모니터 탭의 signature 줄 (UI-eey2 §4).
  *
- * 모든 visible 레포를 한 줄에 세우고, 각 레포의 "지금 상태"(슬롯 레일·건수)와
- * "제어"(자동화·머지·실행 설정)를 같은 타일 안에 둔다. 소스는 집계 스냅샷의
- * `workspaces_state[]` 하나다 — 파이프라인이 빈 레포까지 싣기 때문에 이 데크가
- * 유일하게 모든 레포를 말할 수 있는 자리다.
+ * 프로젝트 관리에서 고른 visible 레포를 **전부** 같은 타일로 한 줄에 세우고,
+ * 각 레포의 "지금 상태"(슬롯 레일·건수)와 "제어"(자동화·머지·실행 설정)를 같은
+ * 타일 안에 둔다. 소스는 집계 스냅샷의 `workspaces_state[]` 하나다 — 파이프라인이
+ * 빈 레포까지 싣기 때문에 이 데크가 유일하게 모든 레포를 말할 수 있는 자리다.
+ * 파이프라인 유무로 레포를 두 갈래(타일/접힌 줄)로 나누던 분류는 폐기했다
+ * (UI-thwe): 지금 조용한 레포도 자동화·머지 스위치는 같은 자리에 있어야 한다.
  *
  * 마스터 `전체 자동화` 토글은 없다(스펙 §4.1) — 자동화는 레포별 스위치가 유일한
  * 제어다.
@@ -36,39 +38,6 @@ import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
  * @import { MonitorItem } from './lanes.js'
  */
 
-/** 조용한 레포 줄의 펼침 상태만 기억한다 (스펙 §4.3). */
-export const MONITOR_DECK_KEY = 'beads-ui.monitor.deck';
-
-/**
- * @returns {{ quiet_open: boolean }}
- */
-function loadDeckState() {
-  try {
-    const raw = window.localStorage.getItem(MONITOR_DECK_KEY);
-    if (!raw) {
-      return { quiet_open: false };
-    }
-    const parsed = JSON.parse(raw);
-    return {
-      quiet_open:
-        !!parsed && typeof parsed === 'object' && parsed.quiet_open === true
-    };
-  } catch {
-    return { quiet_open: false };
-  }
-}
-
-/**
- * @param {{ quiet_open: boolean }} state
- */
-function saveDeckState(state) {
-  try {
-    window.localStorage.setItem(MONITOR_DECK_KEY, JSON.stringify(state));
-  } catch {
-    // 저장 실패는 표시에 영향을 주지 않는다.
-  }
-}
-
 /**
  * @param {unknown} value
  * @returns {value is Record<string, any>}
@@ -86,22 +55,6 @@ function countOf(row, key) {
   const counts = isRecord(row?.counts) ? row.counts : null;
   const value = counts ? counts[key] : null;
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-}
-
-/**
- * Whether a repo has any pipeline at all (§4.2). 실행가능 후보만 있어도 활성이다
- * — 후보를 끌어다 놓을 대기 섹션이 그 레포에 있어야 하기 때문이다.
- *
- * @param {any} row
- * @returns {boolean}
- */
-function isActive(row) {
-  return (
-    countOf(row, 'running') > 0 ||
-    countOf(row, 'queue') > 0 ||
-    countOf(row, 'pr_wait') > 0 ||
-    countOf(row, 'runnable') > 0
-  );
 }
 
 /**
@@ -217,7 +170,6 @@ export function createRepoDeck(mount_element, options) {
   panel_el.append(panel_head, panel_body);
   mount_element.appendChild(panel_el);
 
-  let deck_state = loadDeckState();
   /** @type {string|null} */
   let focus_root = null;
   /** @type {string|null} */
@@ -516,34 +468,6 @@ export function createRepoDeck(mount_element, options) {
   }
 
   /**
-   * One quiet repo as a pill (§4.3): 같은 op, 같은 포커스 동작, 빈 레일.
-   *
-   * @param {any} row
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function pillTemplate(row) {
-    const slots = typeof row.slots === 'number' ? row.slots : 1;
-    return html`<div
-      class=${`mon2-deck__pill${focus_root === row.root_dir ? ' is-focus' : ''}`}
-      role="button"
-      tabindex="0"
-      data-root-dir=${row.root_dir}
-      aria-pressed=${focus_root === row.root_dir ? 'true' : 'false'}
-    >
-      <span class="mon2-deck__name" title=${row.root_dir}>${row.name}</span>
-      ${slotRail(0, slots)} ${switchesTemplate(row)}
-      <button
-        type="button"
-        class="mon2-deck__worker"
-        data-act="worker"
-        title="이 레포의 Worker 탭으로 이동"
-      >
-        ↗
-      </button>
-    </div>`;
-  }
-
-  /**
    * The totals cell (§4.1): 전 레포 합계와 provider별 토큰. 마스터 토글은 없다.
    *
    * @param {Array<Record<string, any>>} list
@@ -595,33 +519,12 @@ export function createRepoDeck(mount_element, options) {
     if (list.length === 0) {
       return '';
     }
-    const active = list.filter((row) => isActive(row));
-    const quiet = list.filter((row) => !isActive(row));
     return html`<div class="mon2-deck__row">
-        ${totalTemplate(list)}
-        <div class="mon2-deck__strip">
-          ${active.map((row) => tileTemplate(row))}
-        </div>
+      ${totalTemplate(list)}
+      <div class="mon2-deck__strip">
+        ${list.map((row) => tileTemplate(row))}
       </div>
-      ${quiet.length === 0
-        ? ''
-        : html`<div
-            class=${`mon2-deck__quiet${deck_state.quiet_open ? ' is-open' : ''}`}
-          >
-            <button
-              type="button"
-              class="mon2-deck__quiet-toggle"
-              aria-expanded=${deck_state.quiet_open ? 'true' : 'false'}
-            >
-              ${deck_state.quiet_open ? '▾' : '▸'} 파이프라인 없음
-              ${quiet.length}
-            </button>
-            ${deck_state.quiet_open
-              ? html`<div class="mon2-deck__pills">
-                  ${quiet.map((row) => pillTemplate(row))}
-                </div>`
-              : ''}
-          </div>`}`;
+    </div>`;
   }
 
   /**
@@ -650,13 +553,6 @@ export function createRepoDeck(mount_element, options) {
   function onClick(ev) {
     const target = /** @type {HTMLElement|null} */ (ev.target);
     if (!target || typeof target.closest !== 'function') {
-      return;
-    }
-    const quiet_toggle = target.closest('.mon2-deck__quiet-toggle');
-    if (quiet_toggle) {
-      deck_state = { quiet_open: !deck_state.quiet_open };
-      saveDeckState(deck_state);
-      doRender();
       return;
     }
     const host = /** @type {HTMLElement|null} */ (

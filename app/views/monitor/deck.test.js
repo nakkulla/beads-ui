@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { MONITOR_DECK_KEY, createRepoDeck } from './deck.js';
+import { createRepoDeck } from './deck.js';
 
 const WS_A = '/tmp/example/repo-a';
 const WS_B = '/tmp/example/repo-b';
@@ -151,7 +151,7 @@ afterEach(() => {
   }
 });
 
-describe('createRepoDeck classification (§4.2·§4.3)', () => {
+describe('createRepoDeck classification (UI-thwe)', () => {
   test('draws a tile for a repo whose only pipeline is runnable candidates', () => {
     const { mount, deck } = setup({
       rows: [
@@ -164,48 +164,39 @@ describe('createRepoDeck classification (§4.2·§4.3)', () => {
     expect(el(mount, '.mon2-deck__tile')?.getAttribute('data-root-dir')).toBe(
       WS_A
     );
-    expect(el(mount, '.mon2-deck__quiet')).toBe(null);
   });
 
-  test('folds a repo with no pipeline into the collapsed quiet line', () => {
+  test('draws a repo with no pipeline as the same tile', () => {
     const { mount, deck } = setup();
 
     deck.render();
 
-    expect(el(mount, '.mon2-deck__tile')).toBe(null);
-    expect(
-      el(mount, '.mon2-deck__quiet-toggle').textContent?.replace(/\s+/g, ' ')
-    ).toContain('파이프라인 없음 1');
+    expect(el(mount, '.mon2-deck__tile')?.getAttribute('data-root-dir')).toBe(
+      WS_A
+    );
+    expect(el(mount, '.mon2-deck__quiet')).toBe(null);
     expect(el(mount, '.mon2-deck__pill')).toBe(null);
   });
 
-  test('remembers the quiet line expansion across mounts', () => {
-    const first = setup();
-    first.deck.render();
-
-    click(first.mount, '.mon2-deck__quiet-toggle');
-
-    expect(el(first.mount, '.mon2-deck__pill')).toBeTruthy();
-    expect(
-      JSON.parse(window.localStorage.getItem(MONITOR_DECK_KEY) || '{}')
-        .quiet_open
-    ).toBe(true);
-
-    const second = setup();
-    second.deck.render();
-    expect(el(second.mount, '.mon2-deck__pill')).toBeTruthy();
-  });
-
-  test('draws no quiet line when every repo has a pipeline', () => {
+  test('draws every visible repo as a tile in snapshot order', () => {
     const { mount, deck } = setup({
       rows: [
-        state({ counts: { running: 1, pr_wait: 0, queue: 0, runnable: 0 } })
+        state({ counts: { running: 1, pr_wait: 0, queue: 0, runnable: 0 } }),
+        state({
+          root_dir: WS_B,
+          name: 'repo-b',
+          counts: { running: 0, pr_wait: 0, queue: 0, runnable: 0 }
+        })
       ]
     });
 
     deck.render();
 
-    expect(el(mount, '.mon2-deck__quiet')).toBe(null);
+    expect(
+      Array.from(mount.querySelectorAll('.mon2-deck__tile')).map((tile) =>
+        tile.getAttribute('data-root-dir')
+      )
+    ).toEqual([WS_A, WS_B]);
   });
 });
 
@@ -521,16 +512,6 @@ describe('createRepoDeck focus filter (§4.2)', () => {
 
     expect(deck.focusRoot()).toBe(null);
     expect(onFocusChange).toHaveBeenLastCalledWith(null);
-  });
-
-  test('focuses a quiet repo from its pill', () => {
-    const { mount, deck } = setup();
-
-    deck.render();
-    click(mount, '.mon2-deck__quiet-toggle');
-    click(mount, `.mon2-deck__pill[data-root-dir="${WS_A}"]`);
-
-    expect(deck.focusRoot()).toBe(WS_A);
   });
 });
 

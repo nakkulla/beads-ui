@@ -41,6 +41,25 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(CSS).not.toContain('.mon-place__popover');
   });
 
+  test('sizes the inline SVG icons and gives the five lanes equal width (UI-thwe)', () => {
+    const block = monitorBlock();
+
+    expect(block).toMatch(/\.mon-i\s*{[^}]*width:\s*13px/);
+    expect(block).not.toContain('flex: 1.35 1 0');
+    expect(block).not.toContain('flex: 1.05 1 0');
+    expect(block).not.toContain('.mon2-deck__pill');
+  });
+
+  test('releases the monitor route shell into document scroll on mobile (UI-thwe)', () => {
+    const block = monitorBlock();
+    const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
+
+    expect(mq).toMatch(/#monitor-root\.route\.monitor\s*{[^}]*height:\s*auto/);
+    expect(mq).toMatch(
+      /\.mon2-lanes \.worker-pane__body\s*{[^}]*overflow:\s*visible/
+    );
+  });
+
   test('stacks the mobile lanes in control-first order', () => {
     const block = monitorBlock();
     const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
