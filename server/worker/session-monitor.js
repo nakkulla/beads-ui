@@ -28,6 +28,7 @@ import {
 import { adapterSpec } from './runner/index.js';
 import { createTailReader } from './runner/tail-reader.js';
 import { PID_START_TOLERANCE_MS } from './scheduler.js';
+import { delegatedLaunchIdOf } from './session-log.js';
 
 const log = debug('worker:session-monitor');
 
@@ -43,8 +44,12 @@ export const MONITOR_USAGE_FANOUT_MS = 3000;
 /**
  * @typedef {Object} SessionMonitorDeps
  * @property {any} store - Queue store (queue-store.js).
- * @property {{ pathFor: (workspace: string, attempt_id: string) => string, publish: (workspace: string, attempt_id: string, event: unknown) => void }} sessionLog
+ * @property {{ pathFor: (workspace: string, attempt_id: string) => string, publish: (workspace: string, attempt_id: string, event: unknown, launch_id?: string) => void }} sessionLog
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
+ * @property {ReturnType<typeof import('./delegation-store.js').createDelegationStore>} [delegation] -
+ * Live Claude subagent tally (UI-2mpn §5.4), fed from the SAME lift the live
+ * engine uses so a reattached monitor continues the state the dead process was
+ * building rather than starting a second one.
  * @property {(pid: number|null) => { alive: boolean, started_at: number|null }} probePid
  * @property {(pid: number, signal?: NodeJS.Signals|number) => void} [kill_impl]
  * @property {{ probe: (identity: { pid: number, pgid: number, started_at: number }) => { state: 'owned'|'gone'|'recycled'|'unknown', reason?: string }, signal: (identity: { pid: number, pgid: number, started_at: number }, signal: NodeJS.Signals|number) => { ok: boolean, state: 'owned'|'gone'|'recycled'|'unknown', reason?: string } }} [processController]
@@ -354,8 +359,31 @@ export function createSessionMonitors(deps) {
 
     try {
       deps.sessionLog.publish(workspace, attempt_id, obj);
+      // The same line, a second time, under the launch it belongs to
+      // (UI-2mpn §6.3): a Claude subagent has no stream file of its own, so
+      // this republish is the only live feed a subagent drawer can follow.
+      const launch_id = delegatedLaunchIdOf(obj);
+      if (launch_id) {
+        deps.sessionLog.publish(workspace, attempt_id, obj, launch_id);
+      }
     } catch (err) {
       log('drawer re-broadcast failed for %s: %o', attempt_id, err);
+    }
+
+    if (deps.delegation && typeof entry.spec.liftDelegation === 'function') {
+      try {
+        if (
+          deps.delegation.apply(
+            workspace,
+            attempt_id,
+            entry.spec.liftDelegation(obj)
+          )
+        ) {
+          scheduleUsageFanout(workspace);
+        }
+      } catch (err) {
+        log('delegation lift failed for %s: %o', attempt_id, err);
+      }
     }
 
     if (deps.usage) {

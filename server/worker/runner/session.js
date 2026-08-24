@@ -123,6 +123,10 @@ const DIRECT_CHILD_KILL_GRACE_MS = 1_000;
  * restart-recovered total cannot drift from the one the live path produced. An
  * adapter that lifted usage inline in `normalize` and left replay to a second
  * implementation is exactly the drift this member forecloses.
+ * @property {(raw: any) => (import('./claude.js').DelegationSignal|null)} [liftDelegation] -
+ * Lift the subagent delegation signal off ONE raw line (UI-2mpn §5.1). OPTIONAL,
+ * unlike `liftUsage`: only a runner whose stream carries child sessions defines
+ * it, and its absence is what makes the delegation pass a no-op for the others.
  * @property {(raw: any) => (string|null)} detectQuestion - Return a reason string when a raw line is an interactive request, else null.
  * @property {(raw: any) => (string|null)} [extractShellCommand] - Return the shell command of a Bash/exec tool_use, else null (feeds the merge guards).
  * @property {(raw: any) => (string|null)} [extractSessionId] - Return the runner's session identifier from a raw line, else null. The engine emits the FIRST non-null result once on the `session_id` event so the attempt record can persist it for `--resume`/transcript tracking (spec §2).

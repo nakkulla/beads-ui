@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test, vi } from 'vitest';
-import { claudeSpec, liftUsage, spawnClaude } from './claude.js';
+import {
+  claudeSpec,
+  liftDelegation,
+  liftUsage,
+  spawnClaude
+} from './claude.js';
 import { makeFixtureSpawn } from './fixture-spawn.js';
 import { defaultTaskPrompt } from './preamble.js';
 
@@ -10,6 +16,56 @@ const SUCCESS_FIXTURE = fileURLToPath(
 const TOOLS_FIXTURE = fileURLToPath(
   new URL('../__fixtures__/claude-tools.jsonl', import.meta.url)
 );
+const SUBAGENT_FIXTURE = fileURLToPath(
+  new URL('../__fixtures__/claude-subagent.jsonl', import.meta.url)
+);
+
+const LAUNCH_A = 'toolu_01AgentAAAAAAAAAAAAAAAA';
+const LAUNCH_B = 'toolu_01AgentBBBBBBBBBBBBBBBB';
+const SHELL_TOOL_ID = 'toolu_01ShellCCCCCCCCCCCCCCCC';
+
+/**
+ * @param {string} file
+ * @returns {any[]}
+ */
+function jsonlLines(file) {
+  return readFileSync(file, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+/**
+ * @returns {any[]}
+ */
+function subagentFixtureLines() {
+  return jsonlLines(SUBAGENT_FIXTURE);
+}
+
+/**
+ * @returns {any[]}
+ */
+function toolsFixtureLines() {
+  return jsonlLines(TOOLS_FIXTURE);
+}
+
+/**
+ * The parent `user` line whose `tool_result` closes one tool id.
+ *
+ * @param {string} tool_use_id
+ * @returns {any}
+ */
+function endLineFor(tool_use_id) {
+  return subagentFixtureLines().find(
+    (line) =>
+      line.type === 'user' &&
+      line.parent_tool_use_id === null &&
+      (line.message.content || []).some(
+        (/** @type {any} */ block) => block.tool_use_id === tool_use_id
+      )
+  );
+}
 
 /**
  * @param {Partial<{ subtype: string, is_error: boolean, permission_denials: any[] }>} [over]
@@ -839,5 +895,208 @@ describe('runner/claude 능력 축소 플래그 부재 가드 (UI-ucq6 §변경 
     for (const flag of NARROWING_FLAGS) {
       expect(args).not.toContain(flag);
     }
+  });
+});
+
+describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
+  test('lifts a start off an Agent tool_use', () => {
+    const raw = subagentFixtureLines().find(
+      (line) =>
+        line.type === 'assistant' &&
+        (line.message.content || []).some(
+          (/** @type {any} */ block) => block.name === 'Agent'
+        )
+    );
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'start',
+      launch_id: LAUNCH_A,
+      agent_type: 'general-purpose',
+      model_alias: 'sonnet',
+      at: null
+    });
+  });
+
+  test('lifts a progress with the model off a child assistant line', () => {
+    const raw = subagentFixtureLines().find(
+      (line) =>
+        line.type === 'assistant' && line.parent_tool_use_id === LAUNCH_A
+    );
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'progress',
+      launch_id: LAUNCH_A,
+      model: 'claude-sonnet-4-5-20250929',
+      at: null
+    });
+  });
+
+  test('lifts a progress with a null model off a child user line', () => {
+    const raw = subagentFixtureLines().find(
+      (line) => line.type === 'user' && line.parent_tool_use_id === LAUNCH_A
+    );
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'progress',
+      launch_id: LAUNCH_A,
+      model: null,
+      at: Date.parse('2026-08-24T01:00:05.000Z')
+    });
+  });
+
+  test('lifts a progress off a tool_progress line with no timestamp', () => {
+    const raw = subagentFixtureLines().find(
+      (line) => line.type === 'tool_progress'
+    );
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'progress',
+      launch_id: LAUNCH_A,
+      model: null,
+      at: null
+    });
+  });
+
+  test('lifts an end with the four usage fields off a tool_use_result', () => {
+    const raw = endLineFor(LAUNCH_A);
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'end',
+      launch_id: LAUNCH_A,
+      is_error: false,
+      result_status: 'completed',
+      agent_id: 'agt_9f3c21d4c0',
+      agent_type: 'general-purpose',
+      model: 'claude-sonnet-4-5-20250929',
+      usage: {
+        input_tokens: 30,
+        output_tokens: 200,
+        cache_read_input_tokens: 1000,
+        cache_creation_input_tokens: 100
+      },
+      total_tokens: 1330,
+      at: Date.parse('2026-08-24T01:00:09.000Z')
+    });
+  });
+
+  test('lifts an errored end with a null usage', () => {
+    const raw = endLineFor(LAUNCH_B);
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toMatchObject({
+      kind: 'end',
+      launch_id: LAUNCH_B,
+      is_error: true,
+      result_status: 'failed',
+      usage: null,
+      total_tokens: null
+    });
+  });
+
+  test('returns an end candidate for a tool_result of another tool', () => {
+    const raw = endLineFor(SHELL_TOOL_ID);
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toMatchObject({
+      kind: 'end',
+      launch_id: SHELL_TOOL_ID,
+      agent_id: null,
+      usage: null
+    });
+  });
+
+  test('dates a start from the line own timestamp when it carries one', () => {
+    const raw = {
+      type: 'assistant',
+      timestamp: '2026-08-24T02:03:04.000Z',
+      parent_tool_use_id: null,
+      message: {
+        content: [{ type: 'tool_use', id: 'toolu_x', name: 'Agent', input: {} }]
+      }
+    };
+
+    const lifted = liftDelegation(raw);
+
+    expect(lifted).toEqual({
+      kind: 'start',
+      launch_id: 'toolu_x',
+      agent_type: null,
+      model_alias: null,
+      at: Date.parse('2026-08-24T02:03:04.000Z')
+    });
+  });
+
+  test('lifts no start or progress from a stream with no subagent', () => {
+    const kinds = toolsFixtureLines()
+      .map((line) => liftDelegation(line))
+      .filter((lifted) => lifted !== null)
+      .map((lifted) => /** @type {any} */ (lifted).kind);
+
+    expect(kinds).toEqual(['end', 'end']);
+  });
+
+  test('returns null for a non-object line', () => {
+    expect(liftDelegation('nope')).toBe(null);
+  });
+});
+
+describe('runner/claude liftUsage subagent exclusion (UI-2mpn §2.3)', () => {
+  test('lifts no usage from a subagent assistant message', () => {
+    const raw = {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+      message: {
+        id: 'msg_child',
+        model: 'claude-sonnet-4-5',
+        usage: { input_tokens: 900, output_tokens: 40 }
+      }
+    };
+
+    expect(liftUsage(raw)).toBe(null);
+  });
+
+  test('lifts usage from the parent assistant message on the same stream', () => {
+    const raw = {
+      type: 'assistant',
+      message: {
+        id: 'msg_parent',
+        model: 'claude-opus-4-5',
+        usage: { input_tokens: 12, output_tokens: 3 }
+      }
+    };
+
+    const lifted = liftUsage(raw);
+
+    expect(lifted).toEqual({
+      kind: 'message',
+      usage: { message_id: 'msg_parent', input_tokens: 12, output_tokens: 3 }
+    });
+  });
+
+  test('keeps every subagent message of the fixture out of the tally', () => {
+    const message_ids = subagentFixtureLines()
+      .map((line) => liftUsage(line))
+      .filter((lifted) => lifted !== null)
+      .map((lifted) => /** @type {any} */ (lifted).usage.message_id)
+      .filter((id) => typeof id === 'string');
+
+    expect(message_ids).toEqual([
+      'msg_parent_1',
+      'msg_parent_2',
+      'msg_parent_3',
+      'msg_parent_4'
+    ]);
   });
 });

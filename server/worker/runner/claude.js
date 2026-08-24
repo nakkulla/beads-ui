@@ -107,6 +107,17 @@ export function liftUsage(raw) {
   if (!raw || typeof raw !== 'object') {
     return null;
   }
+  // A subagent's `assistant` messages ride the PARENT stream (UI-2mpn §2.1),
+  // but the parent's own authoritative `result.usage` EXCLUDES their tokens
+  // (§2.3). Lifting them here would count the same tokens twice — once in the
+  // attempt's live tally and again in the subagent's receipt — and an attempt
+  // that ends without a `result` would keep the inflated total for good.
+  if (
+    typeof raw.parent_tool_use_id === 'string' &&
+    raw.parent_tool_use_id.length > 0
+  ) {
+    return null;
+  }
   if (raw.type === 'assistant') {
     const usage = raw.message
       ? pickUsage(raw.message.usage, { message_id: raw.message.id })
@@ -116,6 +127,188 @@ export function liftUsage(raw) {
   if (raw.type === 'result') {
     const usage = pickUsage(raw.usage, { total_cost_usd: raw.total_cost_usd });
     return usage ? { kind: 'result', usage } : null;
+  }
+  return null;
+}
+
+/**
+ * The four token counters a subagent's terminal `tool_use_result` reports
+ * (UI-2mpn §2.2). All four or none: a partial payload is not a receipt, and a
+ * receipt with an invented zero would understate the Claude headline silently.
+ *
+ * @type {Array<'input_tokens'|'output_tokens'|'cache_read_input_tokens'|'cache_creation_input_tokens'>}
+ */
+const SUBAGENT_USAGE_FIELDS = [
+  'input_tokens',
+  'output_tokens',
+  'cache_read_input_tokens',
+  'cache_creation_input_tokens'
+];
+
+/**
+ * One subagent signal read off ONE line (UI-2mpn §5.1).
+ *
+ * @typedef {{ kind: 'start', launch_id: string, agent_type: string|null, model_alias: string|null, at: number|null }
+ *   | { kind: 'progress', launch_id: string, model: string|null, at: number|null }
+ *   | { kind: 'end', launch_id: string, is_error: boolean, result_status: string|null, agent_id: string|null, agent_type: string|null, model: string|null, usage: { input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number }|null, total_tokens: number|null, at: number|null }} DelegationSignal
+ */
+
+/**
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+function nonEmpty(value) {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * The event's OWN timestamp in epoch ms, or null when the line carries none.
+ *
+ * Receipt time never comes from the clock: the live tail and the session-log
+ * replay must read the same number out of the same line, and a wall clock read
+ * at consumption time would differ between them by the length of the outage.
+ *
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+function epochOf(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return null;
+  }
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? at : null;
+}
+
+/**
+ * The subagent usage block of a terminal `tool_use_result`, or null when it is
+ * absent or not four integers.
+ *
+ * @param {any} usage
+ * @returns {{ input_tokens: number, output_tokens: number, cache_read_input_tokens: number, cache_creation_input_tokens: number }|null}
+ */
+function pickSubagentUsage(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return null;
+  }
+  for (const field of SUBAGENT_USAGE_FIELDS) {
+    const value = usage[field];
+    if (!Number.isInteger(value) || value < 0) {
+      return null;
+    }
+  }
+  return {
+    input_tokens: usage.input_tokens,
+    output_tokens: usage.output_tokens,
+    cache_read_input_tokens: usage.cache_read_input_tokens,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens
+  };
+}
+
+/**
+ * Lift the `Agent` (subagent) delegation signal off ONE raw stream line
+ * (UI-2mpn §5.1) — the sibling of {@link liftUsage}, and stateless for the same
+ * reason: the live scheduler subscription, the detached-session monitor, and
+ * the session-log replay all call it on the same line and must derive the same
+ * fact from it. Everything that needs history — which launch ids exist, what a
+ * session's status is, whether a receipt may be written — belongs to
+ * `delegation-store.js`, not here.
+ *
+ * A `tool_result` this parser reports as `end` is only a CANDIDATE: one line
+ * cannot tell an `Agent` result apart from any other tool's, so the store
+ * drops the ones whose launch id it never saw start (§5.2).
+ *
+ * @param {any} raw
+ * @returns {DelegationSignal|null}
+ */
+export function liftDelegation(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  const at = epochOf(raw.timestamp);
+  const parent_tool_use_id = nonEmpty(raw.parent_tool_use_id);
+  if (parent_tool_use_id) {
+    if (
+      raw.type !== 'assistant' &&
+      raw.type !== 'user' &&
+      raw.type !== 'tool_progress'
+    ) {
+      return null;
+    }
+    return {
+      kind: 'progress',
+      launch_id: parent_tool_use_id,
+      model:
+        raw.type === 'assistant' && raw.message
+          ? nonEmpty(raw.message.model)
+          : null,
+      at
+    };
+  }
+  if (raw.type === 'assistant') {
+    const content =
+      raw.message && Array.isArray(raw.message.content)
+        ? raw.message.content
+        : [];
+    for (const block of content) {
+      if (
+        !block ||
+        typeof block !== 'object' ||
+        block.type !== 'tool_use' ||
+        block.name !== 'Agent'
+      ) {
+        continue;
+      }
+      const launch_id = nonEmpty(block.id);
+      if (!launch_id) {
+        continue;
+      }
+      const input =
+        block.input && typeof block.input === 'object' ? block.input : {};
+      return {
+        kind: 'start',
+        launch_id,
+        agent_type: nonEmpty(input.subagent_type),
+        model_alias: nonEmpty(input.model),
+        at
+      };
+    }
+    return null;
+  }
+  if (raw.type === 'user') {
+    const content =
+      raw.message && Array.isArray(raw.message.content)
+        ? raw.message.content
+        : [];
+    for (const block of content) {
+      if (!block || typeof block !== 'object' || block.type !== 'tool_result') {
+        continue;
+      }
+      const launch_id = nonEmpty(block.tool_use_id);
+      if (!launch_id) {
+        continue;
+      }
+      const result =
+        raw.tool_use_result && typeof raw.tool_use_result === 'object'
+          ? raw.tool_use_result
+          : {};
+      return {
+        kind: 'end',
+        launch_id,
+        is_error: block.is_error === true,
+        result_status: nonEmpty(result.status),
+        agent_id: nonEmpty(result.agentId),
+        agent_type: nonEmpty(result.agentType),
+        model: nonEmpty(result.resolvedModel),
+        usage: pickSubagentUsage(result.usage),
+        total_tokens:
+          typeof result.totalTokens === 'number' &&
+          Number.isFinite(result.totalTokens)
+            ? result.totalTokens
+            : null,
+        at
+      };
+    }
+    return null;
   }
   return null;
 }
@@ -375,6 +568,10 @@ export function claudeSpec(options = {}) {
     // both names resolve to the one function, so the replay path cannot drift
     // from the live one while that import is rewired.
     liftUsage,
+    // Claude-only (UI-2mpn §5.4): the codex adapter defines no such member, so
+    // a codex log read through `adapterSpec()` simply skips the delegation
+    // pass instead of parsing a shape it never wrote.
+    liftDelegation,
     detectQuestion,
     extractShellCommand,
     extractSessionId,

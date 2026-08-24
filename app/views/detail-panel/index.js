@@ -588,8 +588,13 @@ export function createDetailPanel(mount_element, options) {
       attempt_id,
       launch_id,
       meta: {
-        runner: 'codex',
+        // Two providers share this drawer (UI-2mpn §6.1); the row's own record
+        // says which, and `agent_type` is the subagent's only name.
+        runner: session.provider === 'claude' ? 'claude' : 'codex',
         role: session.role,
+        ...(typeof session.agent_type === 'string'
+          ? { agent_type: session.agent_type }
+          : {}),
         model: session.model,
         effort: session.effort,
         session_id: session.session_id,

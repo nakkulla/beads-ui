@@ -68,6 +68,7 @@ import {
   receiptProbeError
 } from './receipt-check.js';
 import { repairSessionPrompt } from './repair-session-adapter.js';
+import { liftDelegation } from './runner/claude.js';
 import { RUNNERS } from './runner/index.js';
 import { defaultTaskPrompt } from './runner/preamble.js';
 import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths.js';
@@ -412,6 +413,10 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {ReturnType<typeof import('./usage-store.js').createUsageStore>} [usage]
  * Live token-usage tally for running attempts (UI-raqh §1). Absent wiring
  * (older tests) simply means no usage is tallied or persisted.
+ * @property {ReturnType<typeof import('./delegation-store.js').createDelegationStore>} [delegation] -
+ * Live Claude subagent tally (UI-2mpn §5.2). Absent, the delegation pass is a
+ * no-op and a subagent stays invisible — exactly what an unwired `usage` does
+ * to the token badge.
  * @property {typeof import('./usage-receipts.js')} [usageReceipts]
  * Attempt-scoped receipt filesystem adapter. The default is the production
  * reader; tests may inject a deterministic in-memory seam.
@@ -5392,6 +5397,21 @@ export function createScheduler(deps) {
     let init_cwd = wt_path;
     let session_effort_attempted = false;
     handle.events.on('raw', (raw) => {
+      // Claude subagent sessions and their terminal receipts (UI-2mpn §5.4).
+      // The RAW line is the subject, not the normalized event: a subagent's
+      // `end` rides a `user` turn, which `normalize()` produces no event for,
+      // and the replay path lifts the same line with the same function.
+      if (runner_name === 'claude' && deps.delegation) {
+        try {
+          if (
+            deps.delegation.apply(workspace, attempt_id, liftDelegation(raw))
+          ) {
+            scheduleUsageFanout(workspace);
+          }
+        } catch (err) {
+          log('delegation lift failed for %s: %o', attempt_id, err);
+        }
+      }
       if (
         raw &&
         typeof raw === 'object' &&

@@ -3790,4 +3790,96 @@ describe('ws worker-queue bead_workflow + running overlay (UI-eey2 §9.2/§9.3)'
       }
     ]);
   });
+
+  test('labels a claude subagent leg with its agent type (UI-2mpn §6.2)', () => {
+    const launch = 'toolu_01AgentAAAAAAAAAAAAAAAA';
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_STEP, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        attempts: {
+          'att-sub': {
+            attempt_id: 'att-sub',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: 1,
+            delegation_sessions: [
+              {
+                launch_id: launch,
+                provider: 'claude',
+                role: 'subagent',
+                agent_type: 'general-purpose',
+                model: 'claude-sonnet-4-5-20250929',
+                effort: null,
+                session_id: launch,
+                turn_id: launch,
+                status: 'running',
+                started_at: 1000,
+                completed_at: null,
+                last_event_at: 2000
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-sub'].legs).toEqual([
+      {
+        role: 'subagent',
+        runtime: 'claude',
+        model: 'claude-sonnet-4-5-20250929',
+        agent_type: 'general-purpose',
+        state: 'live',
+        ordinal: 1,
+        label: 'general-purpose · claude'
+      }
+    ]);
+  });
+
+  test('falls back to a subagent label when the call named no type', () => {
+    const launch = 'toolu_01AgentBBBBBBBBBBBBBBBB';
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_STEP, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [],
+        attempts: {
+          'att-anon': {
+            attempt_id: 'att-anon',
+            bead_id: 'UI-1',
+            status: 'running',
+            started_at: 1,
+            delegation_sessions: [
+              {
+                launch_id: launch,
+                provider: 'claude',
+                role: 'subagent',
+                agent_type: null,
+                model: null,
+                effort: null,
+                session_id: launch,
+                turn_id: launch,
+                status: 'running',
+                started_at: null,
+                completed_at: null,
+                last_event_at: null
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-anon'].legs[0]).toMatchObject({
+      label: 'subagent · claude',
+      state: 'live'
+    });
+    expect(snapshot.attempts['att-anon'].legs[0]).not.toHaveProperty(
+      'agent_type'
+    );
+  });
 });

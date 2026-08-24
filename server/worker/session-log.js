@@ -49,6 +49,28 @@ export function stderrPathOf(log_path) {
 }
 
 /**
+ * The launch a raw event belongs to when it is a Claude subagent line, else
+ * null (UI-2mpn §6.3).
+ *
+ * A subagent has no stream of its own: its events ride the PARENT log tagged
+ * with `parent_tool_use_id`. Re-publishing those lines under that id is what
+ * gives a `launch_id` subscriber — the drawer opened on a subagent row — the
+ * same live append feed a Codex delegation gets from its own monitor file.
+ *
+ * @param {unknown} event
+ * @returns {string|null}
+ */
+export function delegatedLaunchIdOf(event) {
+  if (!isObject(event)) {
+    return null;
+  }
+  const launch_id = /** @type {any} */ (event).parent_tool_use_id;
+  return typeof launch_id === 'string' && launch_id.length > 0
+    ? launch_id
+    : null;
+}
+
+/**
  * How much of a display line's text the activity overlay carries (UI-eey2
  * §9.3). The running card shows ONE line, so anything past this is layout the
  * client would have to throw away anyway.
@@ -351,7 +373,11 @@ export function createSessionLog(options = {}) {
     const stream_key = keyOf(workspace, attempt_id, launch_id);
     let reducer = reducers.get(stream_key);
     if (!reducer) {
-      reducer = createTranscriptReducer();
+      // `skip_delegated` keeps a subagent line out of the ATTEMPT's activity
+      // overlay (UI-2mpn §6.4): the running card says what the session is
+      // doing, and a child's `Read` is not the parent's work. The drawer's own
+      // parse keeps those lines — it folds them under the `Agent` call instead.
+      reducer = createTranscriptReducer({ skip_delegated: true });
       reducers.set(stream_key, reducer);
     }
     const produced = reducer.push(event);
@@ -405,6 +431,85 @@ export function createSessionLog(options = {}) {
     return `${workspace}\u0000${attempt_id}\u0000${launch_id || ''}`;
   }
 
+  /**
+   * Does this raw parent-log line close the named launch? The terminating
+   * `tool_result` rides the PARENT turn (no `parent_tool_use_id`), so it is the
+   * one subagent line the tag alone cannot find.
+   *
+   * @param {any} raw
+   * @param {string} launch_id
+   * @returns {boolean}
+   */
+  function closesLaunch(raw, launch_id) {
+    if (raw.type !== 'user' || !isObject(raw.message)) {
+      return false;
+    }
+    const content = Array.isArray(/** @type {any} */ (raw.message).content)
+      ? /** @type {any} */ (raw.message).content
+      : [];
+    return content.some(
+      (/** @type {any} */ block) =>
+        isObject(block) &&
+        /** @type {any} */ (block).type === 'tool_result' &&
+        /** @type {any} */ (block).tool_use_id === launch_id
+    );
+  }
+
+  /**
+   * One subagent's transcript, filtered out of the parent's session log
+   * (UI-2mpn §6.3): the lines tagged with its launch id plus the `tool_result`
+   * that ends it. `offset` is the parent log's own line boundary — the
+   * republished live appends carry none, so they always pass the subscriber's
+   * boundary filter and nothing is dropped.
+   *
+   * @param {string} workspace
+   * @param {string} attempt_id
+   * @param {string} launch_id
+   * @returns {{ lines: unknown[], last_event_at: number|null, offset: number }}
+   */
+  function readDelegatedFromParent(workspace, attempt_id, launch_id) {
+    const file = pathFor(workspace, attempt_id);
+    /** @type {Buffer} */
+    let bytes;
+    try {
+      bytes = fs.readFileSync(file);
+    } catch {
+      return { lines: [], last_event_at: null, offset: 0 };
+    }
+    /** @type {unknown[]} */
+    const lines = [];
+    for (const line of bytes.toString('utf8').split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        continue;
+      }
+      /** @type {any} */
+      let raw;
+      try {
+        raw = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      if (!isObject(raw)) {
+        continue;
+      }
+      if (
+        delegatedLaunchIdOf(raw) === launch_id ||
+        closesLaunch(raw, launch_id)
+      ) {
+        lines.push(raw);
+      }
+    }
+    /** @type {number|null} */
+    let last_event_at = null;
+    try {
+      last_event_at = fs.statSync(file).mtimeMs;
+    } catch {
+      last_event_at = null;
+    }
+    return { lines, last_event_at, offset: bytes.lastIndexOf(0x0a) + 1 };
+  }
+
   return {
     pathFor,
 
@@ -438,7 +543,15 @@ export function createSessionLog(options = {}) {
         typeof launch_id === 'string' && launch_id.length > 0
           ? launch_id
           : undefined;
-      last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
+      // A subagent line stamps ITS OWN launch, never the parent attempt
+      // (UI-2mpn §6.4). The parent's "최근 활동" answers what the session is
+      // doing, and a child's `Read` is not the parent doing anything — the same
+      // separation the activity reducer makes one line below. The republish of
+      // the very same event under its `launch_id` carries `delegation_id`, so
+      // the subagent row still gets its own recency.
+      if (delegation_id || !delegatedLaunchIdOf(event)) {
+        last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
+      }
       try {
         observeActivity(workspace, attempt_id, delegation_id, event);
       } catch {
@@ -468,6 +581,13 @@ export function createSessionLog(options = {}) {
       events.on('raw', (obj) => {
         try {
           this.publish(workspace, attempt_id, obj);
+          // A subagent line belongs to two streams at once (UI-2mpn §6.3): the
+          // parent transcript, which folds it under the `Agent` call, and the
+          // subagent drawer, which has no file of its own to tail.
+          const launch_id = delegatedLaunchIdOf(obj);
+          if (launch_id) {
+            this.publish(workspace, attempt_id, obj, launch_id);
+          }
         } catch {
           // A broken subscriber must never crash the session.
         }
@@ -607,6 +727,10 @@ export function createSessionLog(options = {}) {
      * `offset` is the boundary this snapshot was taken at; the caller uses it
      * to drop live appends the snapshot already contains.
      *
+     * A launch with no monitor stream falls back to the PARENT log filtered by
+     * `parent_tool_use_id` (UI-2mpn §6.3) — that is where a Claude subagent's
+     * transcript lives, since it has no file of its own.
+     *
      * @param {string} workspace
      * @param {string} attempt_id
      * @param {string} launch_id
@@ -624,7 +748,11 @@ export function createSessionLog(options = {}) {
         (candidate) => candidate.launch_id === launch_id
       );
       if (!stream || !session) {
-        return { lines: [], last_event_at: null, offset: 0 };
+        // A Claude subagent has no monitor file — its transcript is the subset
+        // of the PARENT log tagged with this launch id (UI-2mpn §6.3). The same
+        // fallback answers an unknown Codex launch with an empty snapshot,
+        // because no parent line carries its id either.
+        return readDelegatedFromParent(workspace, attempt_id, launch_id);
       }
       return {
         lines: stream.events.map((entry) => entry.event),

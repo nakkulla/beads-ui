@@ -173,3 +173,89 @@ describe('parseCodex — main-session command_execution (UI-eey2 §9.3)', () => 
     expect(lines).toEqual([]);
   });
 });
+
+describe('claude subagent lines (UI-2mpn §6.4)', () => {
+  const AGENT_EVENT = {
+    type: 'assistant',
+    parent_tool_use_id: null,
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_agent_1',
+          name: 'Agent',
+          input: {
+            description: '스펙 문서 조사',
+            prompt: '읽어 줘',
+            subagent_type: 'general-purpose'
+          }
+        }
+      ]
+    }
+  };
+  const CHILD_EVENT = {
+    type: 'assistant',
+    parent_tool_use_id: 'toolu_agent_1',
+    message: {
+      content: [{ type: 'text', text: '스펙을 읽었습니다.' }]
+    }
+  };
+
+  test('carries the launch id and description on the Agent line', () => {
+    const lines = parseTranscript([AGENT_EVENT]);
+
+    expect(lines[0]).toMatchObject({
+      kind: 'tool',
+      tool: 'Agent',
+      launch_id: 'toolu_agent_1',
+      command: '스펙 문서 조사'
+    });
+  });
+
+  test('tags a child line with the launch it belongs to', () => {
+    const lines = parseTranscript([AGENT_EVENT, CHILD_EVENT]);
+
+    expect(lines[1]).toMatchObject({
+      kind: 'assistant',
+      parent_tool_use_id: 'toolu_agent_1'
+    });
+  });
+
+  test('leaves a parent line untagged', () => {
+    const lines = parseTranscript([AGENT_EVENT]);
+
+    expect(lines[0].parent_tool_use_id).toBeUndefined();
+  });
+
+  test('marks an Agent line whose result reported an error', () => {
+    const lines = parseTranscript([
+      AGENT_EVENT,
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_agent_1',
+              content: '중단됨',
+              is_error: true
+            }
+          ]
+        }
+      }
+    ]);
+
+    expect(lines[0].is_error).toBe(true);
+  });
+
+  test('drops child events when the reducer skips delegated lines', () => {
+    const reducer = createTranscriptReducer({ skip_delegated: true });
+
+    const produced = [
+      ...reducer.push(AGENT_EVENT),
+      ...reducer.push(CHILD_EVENT)
+    ];
+
+    expect(produced.map((line) => line.tool || line.kind)).toEqual(['Agent']);
+  });
+});

@@ -1086,15 +1086,21 @@ function stripPrompts(attempt) {
  * @param {string|null} role
  * @param {string|null} runtime
  * @param {number} ordinal
+ * @param {string|null} [agent_type] - The Claude subagent's own type, which is
+ * the only name a subagent row has: there is no unit number to count and the
+ * ordinal would say nothing (UI-2mpn §6.2).
  * @returns {string}
  */
-function legLabelOf(role, runtime, ordinal) {
+function legLabelOf(role, runtime, ordinal, agent_type = null) {
   const suffix = runtime ? ` · ${runtime}` : '';
   if (role === 'implementation') {
     return `구현 unit ${ordinal}${suffix}`;
   }
   if (role === 'review-consult') {
     return `review-consult${suffix}`;
+  }
+  if (role === 'subagent') {
+    return `${agent_type || 'subagent'}${suffix}`;
   }
   return `위임 ${ordinal}${suffix}`;
 }
@@ -1112,10 +1118,10 @@ function legLabelOf(role, runtime, ordinal) {
  *
  * @param {any} attempt
  * @param {import('../worker/queue-store.js').DelegationSession[]} delegation_sessions
- * @returns {Array<{ role: string|null, runtime: string|null, model: string|null, state: 'live'|'done'|'failed', ordinal: number, label: string }>}
+ * @returns {Array<{ role: string|null, runtime: string|null, model: string|null, agent_type?: string, state: 'live'|'done'|'failed', ordinal: number, label: string }>}
  */
 function attemptLegs(attempt, delegation_sessions) {
-  /** @type {Array<{ role: string|null, runtime: string|null, model: string|null, state: 'live'|'done'|'failed' }>} */
+  /** @type {Array<{ role: string|null, runtime: string|null, model: string|null, agent_type: string|null, state: 'live'|'done'|'failed' }>} */
   const rows = [];
   /** @type {Set<string>} */
   const seen = new Set();
@@ -1131,6 +1137,8 @@ function attemptLegs(attempt, delegation_sessions) {
       role: typeof session.role === 'string' ? session.role : null,
       runtime: typeof session.provider === 'string' ? session.provider : null,
       model: typeof session.model === 'string' ? session.model : null,
+      agent_type:
+        typeof session.agent_type === 'string' ? session.agent_type : null,
       state:
         session.status === 'running'
           ? 'live'
@@ -1155,6 +1163,7 @@ function attemptLegs(attempt, delegation_sessions) {
       role: typeof leg.role === 'string' ? leg.role : null,
       runtime: typeof leg.provider === 'string' ? leg.provider : null,
       model: typeof leg.model === 'string' ? leg.model : null,
+      agent_type: typeof leg.agent_type === 'string' ? leg.agent_type : null,
       state: 'done'
     });
   }
@@ -1164,10 +1173,14 @@ function attemptLegs(attempt, delegation_sessions) {
     const role_key = row.role || '';
     const ordinal = (ordinals.get(role_key) || 0) + 1;
     ordinals.set(role_key, ordinal);
+    const { agent_type, ...rest } = row;
+    // Only a Claude subagent has one, and a Codex row's projection must stay
+    // byte-identical to what it was before subagents existed.
     return {
-      ...row,
+      ...rest,
+      ...(agent_type === null ? {} : { agent_type }),
       ordinal,
-      label: legLabelOf(row.role, row.runtime, ordinal)
+      label: legLabelOf(row.role, row.runtime, ordinal, agent_type)
     };
   });
 }
@@ -1198,6 +1211,7 @@ export function attemptsWithUsage(queue, workspace_key) {
     store = null;
     session_log = null;
   }
+  const delegation_store = delegationStoreOrNull();
   /** @type {Record<string, unknown>} */
   const out = {};
   for (const [attempt_id, attempt] of Object.entries(attempts)) {
@@ -1213,16 +1227,25 @@ export function attemptsWithUsage(queue, workspace_key) {
       projected = { ...projected, usage: live };
     }
     if (running) {
+      // Claude subagent receipts come off the in-memory delegation store, not
+      // an inbox directory (UI-2mpn §5.4): the parent stream is their only
+      // producer. Order is immaterial to the first-record dedupe here — the
+      // receipt reader already drops what durable holds, and a running attempt
+      // has no settled subagent copy to disagree with.
+      const live_legs = delegation_store
+        ? delegation_store.get(workspace_key, attempt_id).legs
+        : [];
       try {
         const scanned = readAttemptUsageReceipts(workspace_key, attempt_id, {
           known_legs: attempt.usage_legs
         });
-        if (scanned.legs.length > 0) {
+        if (scanned.legs.length > 0 || live_legs.length > 0) {
           projected = {
             ...projected,
             usage_legs: normalizeUsageLegs([
-              ...(Array.isArray(attempt.usage_legs) ? attempt.usage_legs : []),
-              ...scanned.legs
+              ...live_legs,
+              ...scanned.legs,
+              ...(Array.isArray(attempt.usage_legs) ? attempt.usage_legs : [])
             ])
           };
         }
@@ -1276,15 +1299,40 @@ function delegationSessionsForAttempt(workspace, attempt) {
   if (!attempt || attempt.status !== 'running') {
     return durable;
   }
+  const attempt_id = String(attempt.attempt_id || '');
+  // Claude subagents have no monitor directory: the parent stream is their only
+  // evidence, and `delegation-store` is where reading it accumulates
+  // (UI-2mpn §5.4). Merged here rather than at the call sites so the snapshot
+  // overlay and the transcript authorization can never see different rows.
+  const delegation_store = delegationStoreOrNull();
+  const live = delegation_store
+    ? delegation_store.get(workspace, attempt_id).sessions
+    : [];
   try {
-    const scanned = readAttemptDelegationStreams(
-      workspace,
-      String(attempt.attempt_id || ''),
-      { known_sessions: durable }
-    );
-    return normalizeDelegationSessions([...scanned.sessions, ...durable]);
+    const scanned = readAttemptDelegationStreams(workspace, attempt_id, {
+      known_sessions: durable
+    });
+    return normalizeDelegationSessions([
+      ...live,
+      ...scanned.sessions,
+      ...durable
+    ]);
   } catch {
-    return durable;
+    return normalizeDelegationSessions([...live, ...durable]);
+  }
+}
+
+/**
+ * The process-wide delegation store, or null when no worker runtime exists
+ * (the ws handlers are unit-tested without one).
+ *
+ * @returns {ReturnType<typeof import('../worker/delegation-store.js').createDelegationStore>|null}
+ */
+function delegationStoreOrNull() {
+  try {
+    return getWorkerRuntime().delegationStore || null;
+  } catch {
+    return null;
   }
 }
 

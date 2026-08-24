@@ -577,3 +577,130 @@ describe('worker/session-log onBeadWrite (UI-eey2 §9.2)', () => {
     expect(appended).toHaveLength(1);
   });
 });
+
+describe('worker/session-log claude subagent streams (UI-2mpn §6.3/§6.4)', () => {
+  const LAUNCH = 'toolu_01AgentAAAAAAAAAAAAAAAA';
+
+  /**
+   * @param {string} text
+   * @param {string|null} parent_tool_use_id
+   */
+  function assistantLine(text, parent_tool_use_id) {
+    return {
+      type: 'assistant',
+      parent_tool_use_id,
+      message: { id: 'm1', content: [{ type: 'text', text }] }
+    };
+  }
+
+  test('falls back to the parent log when no monitor stream exists', () => {
+    const log = createSessionLog();
+    writeRunnerLine('att-sub', assistantLine('부모 줄', null));
+    writeRunnerLine('att-sub', assistantLine('자식 줄', LAUNCH));
+    writeRunnerLine('att-sub', {
+      type: 'user',
+      parent_tool_use_id: null,
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: LAUNCH, content: '요약' }]
+      }
+    });
+
+    const snapshot = log.readDelegation(WS, 'att-sub', LAUNCH);
+
+    expect(snapshot.lines).toHaveLength(2);
+    expect(snapshot.offset).toBeGreaterThan(0);
+  });
+
+  test('excludes another launch lines from the fallback snapshot', () => {
+    const log = createSessionLog();
+    writeRunnerLine('att-sub2', assistantLine('다른 자식', 'toolu_other'));
+    writeRunnerLine('att-sub2', assistantLine('내 자식', LAUNCH));
+
+    const snapshot = log.readDelegation(WS, 'att-sub2', LAUNCH);
+
+    expect(snapshot.lines).toEqual([assistantLine('내 자식', LAUNCH)]);
+  });
+
+  test('returns an empty fallback snapshot when the log is absent', () => {
+    const log = createSessionLog();
+
+    const snapshot = log.readDelegation(WS, 'att-missing', LAUNCH);
+
+    expect(snapshot).toEqual({ lines: [], last_event_at: null, offset: 0 });
+  });
+
+  test('keeps a subagent line out of the attempt last_activity', () => {
+    const log = createSessionLog({ fanoutMs: 1, emitChanged: () => {} });
+    log.publish(WS, 'att-sub3', assistantLine('부모가 한 일', null));
+
+    log.publish(WS, 'att-sub3', assistantLine('자식이 한 일', LAUNCH));
+
+    expect(log.lastActivity(WS, 'att-sub3')).toMatchObject({
+      text: '부모가 한 일'
+    });
+  });
+
+  test('republishes an attached subagent line under its launch id', () => {
+    const log = createSessionLog({ fanoutMs: 1, emitChanged: () => {} });
+    const events = new EventEmitter();
+    /** @type {any[]} */
+    const seen = [];
+    log.subscribe((append) => seen.push(append.event), LAUNCH);
+    log.attach(WS, 'att-sub4', events);
+
+    events.emit('raw', assistantLine('자식이 한 일', LAUNCH));
+
+    expect(seen).toEqual([assistantLine('자식이 한 일', LAUNCH)]);
+  });
+});
+
+describe('worker/session-log subagent last_event_at (UI-2mpn §6.4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('leaves the attempt time untouched for a subagent line', () => {
+    let now = 1_000;
+    const log = createSessionLog({ now: () => now });
+    log.publish(WS, 'att-1', { type: 'assistant' });
+
+    now = 5_000;
+    log.publish(WS, 'att-1', {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_a'
+    });
+
+    expect(log.lastEventAt(WS, 'att-1')).toBe(1_000);
+  });
+
+  test('records the subagent line time under its own launch', () => {
+    let now = 1_000;
+    const log = createSessionLog({ now: () => now });
+    log.publish(WS, 'att-1', { type: 'assistant' });
+
+    now = 5_000;
+    const event = { type: 'assistant', parent_tool_use_id: 'toolu_a' };
+    log.publish(WS, 'att-1', event);
+    log.publish(WS, 'att-1', event, 'toolu_a');
+
+    expect(log.lastEventAt(WS, 'att-1', 'toolu_a')).toBe(5_000);
+  });
+
+  test('still records a parent line time after a subagent line', () => {
+    let now = 1_000;
+    const log = createSessionLog({ now: () => now });
+
+    log.publish(WS, 'att-1', {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_a'
+    });
+    now = 9_000;
+    log.publish(WS, 'att-1', { type: 'assistant' });
+
+    expect(log.lastEventAt(WS, 'att-1')).toBe(9_000);
+  });
+});

@@ -2,6 +2,7 @@ import { render } from 'lit-html';
 import { readFileSync } from 'node:fs';
 import process from 'node:process';
 import { describe, expect, test } from 'vitest';
+import { sumAttemptUsage } from '../../utils/token-usage.js';
 import { sessionHistoryTemplate } from './session-history.js';
 
 /**
@@ -615,5 +616,245 @@ describe('session-history delegation monitors', () => {
       /@media \(max-width: 640px\)[\s\S]*?\.detail-session__leg\s*\{[\s\S]*?flex-wrap:\s*wrap/;
 
     expect(css).toMatch(responsive);
+  });
+});
+
+describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
+  const LAUNCH = 'toolu_01AgentAAAAAAAAAAAAAAAA';
+
+  /**
+   * @param {'running'|'done'|'failed'|'interrupted'} status
+   * @param {Partial<Record<string, any>>} [over]
+   */
+  function subagent(status, over = {}) {
+    return {
+      launch_id: LAUNCH,
+      provider: 'claude',
+      role: 'subagent',
+      agent_type: 'general-purpose',
+      model: status === 'running' ? null : 'claude-sonnet-4-5-20250929',
+      effort: null,
+      session_id: LAUNCH,
+      turn_id: LAUNCH,
+      status,
+      started_at: 100,
+      completed_at: status === 'running' ? null : 3000,
+      last_event_at: 200,
+      ...over
+    };
+  }
+
+  /**
+   * @param {Partial<Record<string, any>>} [over]
+   */
+  function receipt(over = {}) {
+    return {
+      receipt_id: LAUNCH,
+      provider: 'claude',
+      role: 'subagent',
+      agent_type: 'general-purpose',
+      agent_id: 'agt_9f3c21d4c0',
+      model: 'claude-sonnet-4-5-20250929',
+      session_id: LAUNCH,
+      turn_id: LAUNCH,
+      effort: null,
+      usage: {
+        input_tokens: 30,
+        output_tokens: 200,
+        cache_read_input_tokens: 1000,
+        cache_creation_input_tokens: 100,
+        reasoning_output_tokens: 0
+      },
+      completed_at: 3000,
+      ...over
+    };
+  }
+
+  test('labels a finished subagent row with provider, type and model', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt()]
+        }
+      ])
+    );
+
+    expect(
+      host.querySelector('.detail-session__leg-meta')?.textContent?.trim()
+    ).toBe('Claude · general-purpose · claude-sonnet-4-5');
+  });
+
+  test('omits the agent type from the label when the call named none', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('running', { agent_type: null })]
+        }
+      ])
+    );
+
+    expect(
+      host.querySelector('.detail-session__leg-meta')?.textContent?.trim()
+    ).toBe('Claude');
+  });
+
+  test('shows the agent id once a receipt reported one', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt()]
+        }
+      ])
+    );
+
+    const sid = host.querySelector('.detail-session__leg-sid');
+    expect(sid?.textContent).toBe('agt_9f3c');
+    expect(sid?.getAttribute('title')).toBe('agt_9f3c21d4c0');
+  });
+
+  test('falls back to the launch id tail while the subagent runs', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('running')]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__leg-sid')?.textContent).toBe(
+      'AAAAAAAA'
+    );
+  });
+
+  test('shows the Claude token subtotal on a row with a receipt', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt()]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__usage')?.textContent).toContain(
+      'Claude τ 1.3k'
+    );
+  });
+
+  test('leaves the token cell empty on a row with no receipt', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [subagent('running')]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__usage')).toBe(null);
+  });
+
+  test('leaves the time cell empty when no stream line carried a timestamp', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          delegation_sessions: [
+            subagent('done', { completed_at: null, last_event_at: null })
+          ],
+          usage_legs: [receipt({ completed_at: null })]
+        }
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__leg-time')).toBe(null);
+  });
+
+  test('passes the launch id on a subagent row click', () => {
+    /** @type {Array<[string, string]>} */
+    const opened = [];
+    const host = mount(
+      sessionHistoryTemplate(
+        [
+          {
+            attempt_id: 'outer',
+            delegation_sessions: [subagent('running')]
+          }
+        ],
+        {
+          onOpenDelegation: (attempt_id, launch_id) =>
+            opened.push([attempt_id, launch_id])
+        }
+      )
+    );
+
+    /** @type {HTMLButtonElement|null} */ (
+      host.querySelector('.detail-session__leg')
+    )?.click();
+
+    expect(opened).toEqual([['outer', LAUNCH]]);
+  });
+
+  test('keeps the orchestrator badge separate from the subagent one', () => {
+    const host = mount(
+      sessionHistoryTemplate([
+        {
+          attempt_id: 'outer',
+          runner: 'claude',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_input_tokens: 3,
+            cache_creation_input_tokens: 4
+          },
+          delegation_sessions: [subagent('done')],
+          usage_legs: [receipt()]
+        }
+      ])
+    );
+
+    const badges = Array.from(
+      host.querySelectorAll('.detail-session__usage')
+    ).map((node) => node.textContent);
+    expect(badges).toEqual(['Claude τ 10', 'Claude τ 1.3k']);
+  });
+
+  test('adds the subagent receipt to the issue Claude heading total', () => {
+    const host = mount(
+      sessionHistoryTemplate(
+        [{ attempt_id: 'outer' }],
+        {},
+        {
+          total: sumAttemptUsage(
+            {
+              outer: {
+                attempt_id: 'outer',
+                bead_id: 'UI-1',
+                runner: 'claude',
+                usage: {
+                  input_tokens: 1,
+                  output_tokens: 2,
+                  cache_read_input_tokens: 3,
+                  cache_creation_input_tokens: 4
+                },
+                usage_legs: [receipt()]
+              }
+            },
+            'UI-1'
+          )
+        }
+      )
+    );
+
+    expect(host.querySelector('.detail-usage-total')?.textContent).toBe(
+      'Claude τ 1.3k'
+    );
   });
 });
