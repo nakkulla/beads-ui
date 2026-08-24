@@ -638,8 +638,8 @@ export function execChipsTemplate(chips, options = {}) {
  * they carry no ✕: releasing one belongs to the successor's own 선행 chip.
  * @property {string[]} [warnings] - Lines about a predecessor that is nowhere.
  * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
- * @property {boolean} [scope_missing] - 스펙은 있는데 scope 선언이 비었다 —
- * 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
+ * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
+ * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
  * @property {OverlapPopover} [popover] - 이 행에서 열려 있으면 칩 아래에 그리는
  * `mon-overlap__popover`.
  */
@@ -765,7 +765,7 @@ export function dependencyChipsTemplate(chips, options = {}) {
       : ''}${scope_missing
       ? html`<span
           class="worker-dep worker-dep--muted"
-          title="겹침 판정 불가 — 스펙에 scope 선언 필요"
+          title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
           >scope 없음</span
         >`
       : ''}${successors.map(

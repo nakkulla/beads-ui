@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { parseArtifactScope, parseNameOnlyLog } from './artifact-scope.js';
+import {
+  parseArtifactScope,
+  parseDescriptionScope,
+  parseNameOnlyLog
+} from './artifact-scope.js';
 
 describe('artifact scope front matter', () => {
   test('returns declared path prefixes from first-line front matter', () => {
@@ -72,6 +76,103 @@ describe('artifact scope front matter', () => {
     ];
 
     expect(scopes).toEqual([[], [], []]);
+  });
+});
+
+describe('description scope section (UI-f1qy §3)', () => {
+  test('returns null when the description declares no section', () => {
+    const description = ['빠른 수정 설명', '', '## 계획', '- 하나'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toBeNull();
+  });
+
+  test('returns an empty declaration for a section with no valid entries', () => {
+    const description = ['## scope', '', '산문 한 줄', ''].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual([]);
+  });
+
+  test('returns declared paths in order without duplicates', () => {
+    const description = [
+      '설명 머리말',
+      '',
+      '## scope',
+      '- server/worker/artifact-scope.js',
+      '  - app/views/',
+      '- server/worker/artifact-scope.js',
+      '이 줄은 무시',
+      ''
+    ].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/worker/artifact-scope.js', 'app/views/']);
+  });
+
+  test('ignores invalid entries independently', () => {
+    const description = [
+      '## scope',
+      '- ',
+      '- /absolute',
+      '- docs/../secret',
+      '- server/*.js',
+      '- server/file?.js',
+      '- server/[ab].js',
+      '- :(exclude)server/',
+      '- valid/file.js'
+    ].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['valid/file.js']);
+  });
+
+  test('stops collecting at the next heading of any level', () => {
+    const description = [
+      '## scope',
+      '- server/worker/',
+      '### 세부',
+      '- app/views/'
+    ].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/worker/']);
+  });
+
+  test('reads only the first section when a second one follows', () => {
+    const description = [
+      '## scope',
+      '- server/worker/',
+      '## scope',
+      '- app/views/'
+    ].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/worker/']);
+  });
+
+  test('does not recognize a capitalized heading', () => {
+    const description = ['## Scope', '- server/worker/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toBeNull();
+  });
+
+  test('returns null for non-string input', () => {
+    const scopes = [
+      parseDescriptionScope(null),
+      parseDescriptionScope(undefined),
+      parseDescriptionScope(['## scope'])
+    ];
+
+    expect(scopes).toEqual([null, null, null]);
   });
 });
 

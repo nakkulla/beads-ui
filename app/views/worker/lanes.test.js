@@ -1586,12 +1586,14 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     ).toBe('+2');
   });
 
-  test('draws a muted chip when the spec declares no scope', () => {
+  test('draws a muted chip when the read declaration is empty', () => {
     const deps = renderDeps({ scope_missing: true });
 
     expect(
       deps.querySelector('.worker-dep--muted')?.getAttribute('title')
-    ).toBe('겹침 판정 불가 — 스펙에 scope 선언 필요');
+    ).toBe(
+      '겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description `## scope`에 선언 필요'
+    );
   });
 
   test('never draws the muted chip on a running row', () => {

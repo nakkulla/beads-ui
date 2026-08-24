@@ -175,6 +175,7 @@ describe('runnable cache 판정 조건 (UI-qrfo §4)', () => {
         title: '실행 대기 이슈',
         route: 'spec_backed',
         spec_id: 'docs/specs/thing.md',
+        scope_spec_id: 'docs/specs/thing.md',
         plan_path: null,
         spec_reviewer: 'codex',
         plan_state: 'none',
@@ -1155,6 +1156,133 @@ describe('runnable plan_path projection (UI-qm12 §4.4)', () => {
     const out = await warm(cache, WS_A);
 
     expect(out.map((item) => item.plan_path)).toEqual([null]);
+  });
+});
+
+describe('runnable scope source (UI-f1qy §4.4)', () => {
+  test('names the resolved artifact and carries no description scope', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            description: '## scope\n- app/views/',
+            metadata: { plan_path: 'docs/plans/thing.md' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].scope_spec_id).toBe('docs/specs/thing.md');
+    expect(Object.hasOwn(out[0], 'description_scope')).toBe(false);
+  });
+
+  test('carries the description declaration when no artifact resolves', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            id: 'UI-quick',
+            description: '빠른 수정\n\n## scope\n- server/worker/',
+            metadata: { route: 'quick_fix', spec_id: '', spec_review: '' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].scope_spec_id).toBe('');
+    expect(out[0].description_scope).toEqual(['server/worker/']);
+  });
+
+  test('carries a null description scope when the section is absent', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            id: 'UI-quick',
+            description: '선언 없는 빠른 수정',
+            metadata: { route: 'quick_fix', spec_id: '', spec_review: '' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].description_scope).toBeNull();
+  });
+
+  test('names the artifact of a quick fix whose spec still resolves', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            id: 'UI-quick',
+            description: '## scope\n- app/views/',
+            spec_id: 'docs/specs/native.md',
+            metadata: { route: 'quick_fix', spec_id: '', spec_review: '' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect([out[0].spec_id, out[0].scope_spec_id]).toEqual([
+      '',
+      'docs/specs/native.md'
+    ]);
+    expect(Object.hasOwn(out[0], 'description_scope')).toBe(false);
+  });
+
+  test('falls back to the description when the two spec surfaces conflict', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row({
+            id: 'UI-quick',
+            description: '## scope\n- app/views/',
+            spec_id: 'docs/specs/native.md',
+            metadata: {
+              route: 'quick_fix',
+              spec_id: 'docs/specs/legacy.md',
+              spec_review: ''
+            }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out[0].scope_spec_id).toBe('');
+    expect(out[0].description_scope).toEqual(['app/views/']);
+  });
+
+  test('leaves the admission spec_id untouched for both routes', async () => {
+    const cache = createRunnableCache({
+      runJson: fakeBd({
+        [WS_A]: [
+          row(),
+          row({
+            id: 'UI-quick',
+            description: '빠른 수정',
+            spec_id: 'docs/specs/native.md',
+            metadata: { route: 'quick_fix', spec_id: '', spec_review: '' }
+          })
+        ]
+      })
+    });
+
+    const out = await warm(cache, WS_A);
+
+    expect(out.map((item) => [item.bead_id, item.spec_id])).toEqual([
+      ['UI-1', 'docs/specs/thing.md'],
+      ['UI-quick', '']
+    ]);
   });
 });
 

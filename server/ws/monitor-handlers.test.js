@@ -1195,6 +1195,39 @@ function scopeArtifact(prefixes) {
   );
 }
 
+/**
+ * A 후보 row whose scope source is the resolved artifact. The source is named by
+ * `scope_spec_id`, never by the admission `spec_id` (UI-f1qy §4.4).
+ *
+ * @param {string} bead_id
+ * @param {Record<string, any>} [patch]
+ * @returns {Record<string, any>}
+ */
+function artifactCandidate(bead_id, patch = {}) {
+  return {
+    ...candidate(bead_id),
+    scope_spec_id: 'docs/specs/thing.md',
+    ...patch
+  };
+}
+
+/**
+ * A 후보 row with no artifact, declaring `scope` in its description instead.
+ *
+ * @param {string} bead_id
+ * @param {string[]|null} description_scope
+ * @returns {Record<string, any>}
+ */
+function describedCandidate(bead_id, description_scope) {
+  return {
+    ...candidate(bead_id),
+    route: 'quick_fix',
+    spec_id: '',
+    scope_spec_id: '',
+    description_scope
+  };
+}
+
 describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
   afterEach(() => {
     __resetScopeCacheForTest();
@@ -1209,7 +1242,7 @@ describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
 
     const out = build({
       workspaces: [WS_A],
-      runnable: { [WS_A]: [candidate('A-1')] }
+      runnable: { [WS_A]: [artifactCandidate('A-1')] }
     });
 
     expect(out[0].runnable).toEqual([
@@ -1228,7 +1261,7 @@ describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
     const out = build({
       workspaces: [WS_A],
       runnable: {
-        [WS_A]: [{ ...candidate('A-1'), plan_path: 'docs/plans/thing.md' }]
+        [WS_A]: [artifactCandidate('A-1', { plan_path: 'docs/plans/thing.md' })]
       }
     });
 
@@ -1244,7 +1277,7 @@ describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
 
     const out = build({
       workspaces: [WS_A],
-      runnable: { [WS_A]: [candidate('A-1')] }
+      runnable: { [WS_A]: [artifactCandidate('A-1')] }
     });
 
     expect(
@@ -1259,7 +1292,7 @@ describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
 
     const out = build({
       workspaces: [WS_A],
-      runnable: { [WS_A]: [candidate('A-1')] }
+      runnable: { [WS_A]: [artifactCandidate('A-1')] }
     });
 
     expect(
@@ -1273,10 +1306,115 @@ describe('buildMonitorPipeline runnable scope (UI-qm12 §4.4)', () => {
     });
     await cache.fill(WS_A, ['docs/specs/thing.md']);
     __setScopeCacheForTest(cache);
-    const cached_row = candidate('A-1');
+    const cached_row = artifactCandidate('A-1');
 
     build({ workspaces: [WS_A], runnable: { [WS_A]: [cached_row] } });
 
     expect(Object.hasOwn(cached_row, 'scope')).toBe(false);
+  });
+});
+
+describe('buildMonitorPipeline runnable description scope (UI-f1qy §4.4)', () => {
+  afterEach(() => {
+    __resetScopeCacheForTest();
+  });
+
+  test('projects the description declaration of a spec-less row', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [describedCandidate('A-1', ['server/worker/'])] }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].scope).toEqual([
+      'server/worker/'
+    ]);
+  });
+
+  test('keeps an empty description declaration as an empty scope', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [describedCandidate('A-1', [])] }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].scope).toEqual([]);
+  });
+
+  test('omits the scope field when the row declares nothing anywhere', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [describedCandidate('A-1', null)] }
+    });
+
+    expect(
+      Object.hasOwn(/** @type {any[]} */ (out[0].runnable)[0], 'scope')
+    ).toBe(false);
+  });
+
+  test('ships neither internal source field on the wire', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: {
+        [WS_A]: [
+          describedCandidate('A-1', ['server/worker/']),
+          artifactCandidate('A-2')
+        ]
+      }
+    });
+
+    for (const row of /** @type {any[]} */ (out[0].runnable)) {
+      expect(Object.hasOwn(row, 'description_scope')).toBe(false);
+      expect(Object.hasOwn(row, 'scope_spec_id')).toBe(false);
+    }
+  });
+
+  test('ships neither internal source field when the scope attach throws', () => {
+    __setScopeCacheForTest(
+      /** @type {any} */ ({
+        peek: () => {
+          throw new Error('scope cache unavailable');
+        }
+      })
+    );
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: { [WS_A]: [artifactCandidate('A-2')] }
+    });
+
+    const row = /** @type {any[]} */ (out[0].runnable)[0];
+    expect(Object.hasOwn(row, 'description_scope')).toBe(false);
+    expect(Object.hasOwn(row, 'scope_spec_id')).toBe(false);
+  });
+
+  test('prefers the resolved artifact of a quick_fix row over its description', async () => {
+    const cache = scopeCacheOver({
+      'docs/specs/thing.md': scopeArtifact(['server/worker/'])
+    });
+    await cache.fill(WS_A, ['docs/specs/thing.md']);
+    __setScopeCacheForTest(cache);
+
+    const out = build({
+      workspaces: [WS_A],
+      runnable: {
+        [WS_A]: [
+          {
+            ...describedCandidate('A-1', ['app/views/']),
+            scope_spec_id: 'docs/specs/thing.md'
+          }
+        ]
+      }
+    });
+
+    expect(/** @type {any[]} */ (out[0].runnable)[0].scope).toEqual([
+      'server/worker/'
+    ]);
   });
 });
