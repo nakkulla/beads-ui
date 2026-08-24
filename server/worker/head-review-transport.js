@@ -27,13 +27,11 @@ import nodeFs from 'node:fs';
 import path from 'node:path';
 import { resolveSpecId } from '../spec-id.js';
 import { REVIEW_EFFORTS, REVIEW_STEP_MODELS } from './exec-enums.js';
-import {
-  DEFAULT_REVIEWER,
-  DEFAULT_REVIEW_EFFORT,
-  parseReviewReceipt
-} from './head-review.js';
+import { loadExecutionDefaults } from './execution-defaults.js';
+import { parseReviewReceipt } from './head-review.js';
 import { adapterSpec } from './runner/index.js';
 import { workspaceStateDir } from './state-paths.js';
+import { createUsageStore } from './usage-store.js';
 
 /**
  * The one structured-verdict channel between a review session and the Worker.
@@ -44,13 +42,14 @@ import { workspaceStateDir } from './state-paths.js';
 export const HEAD_REVIEW_VERDICT_MARKER = 'HEAD_REVIEW_VERDICT';
 
 /**
- * Runtime and effort the bounded repair round dispatches with. The pair is
- * fixed here because the repair prompt must also tell the session which
- * `exec_receipt` effort segment to write, and a receipt is a copy of the
- * dispatch packet — not an independent claim.
+ * The bounded repair round continues the PRIOR implementation session by
+ * default (UI-hk74 §6). Continuing is what keeps the provider from changing
+ * under the delta being repaired; only a bead with no resumable prior session
+ * falls through to the harness default, where there is no prior provider for a
+ * change to be measured against.
+ *
+ * @typedef {{ runner: string, model: string|undefined, effort: string, resume_session_id: string|null }} RepairDispatch
  */
-const REPAIR_REVIEWER = 'codex';
-const REPAIR_EFFORT = 'xhigh';
 
 /**
  * The repair session's structured result line:
@@ -144,10 +143,54 @@ function runnerFor(reviewer) {
 }
 
 /**
+ * The harness implementation-gate reviewer default, read from the PINNED
+ * dotfiles contract projection rather than a constant in this file (UI-hk74
+ * §6). `docs/contracts/harness.yaml` owns `review.default` and the effort its
+ * reviewer entry carries; a copy here would drift the first time dotfiles moved
+ * either of them.
+ *
+ * An unreadable, unpinned, or unusable catalog is FAIL-CLOSED: the ladder's
+ * bottom rung simply does not exist, so selection fails rather than inventing
+ * one — a default chosen over a contract we could not read might be overriding
+ * an explicit `self`/`skip`.
+ *
+ * @param {{ fs?: import('./execution-defaults.js').ExecutionDefaultsFs }} [deps]
+ * @returns {{ ok: true, reviewer: string, effort: string }|{ ok: false }}
+ */
+export function harnessReviewDefault(deps = {}) {
+  const loaded = loadExecutionDefaults(deps);
+  const review =
+    loaded.supported && loaded.session ? loaded.session.review : null;
+  if (!review || typeof review !== 'object') {
+    return { ok: false };
+  }
+  const reviewer = typeof review.default === 'string' ? review.default : null;
+  const entry =
+    reviewer !== null &&
+    review.reviewers &&
+    typeof review.reviewers === 'object'
+      ? review.reviewers[reviewer]
+      : null;
+  const effort =
+    entry && typeof entry === 'object' && typeof entry.effort === 'string'
+      ? entry.effort
+      : null;
+  if (
+    reviewer === null ||
+    effort === null ||
+    !REVIEW_STEP_MODELS.includes(reviewer) ||
+    !REVIEW_EFFORTS.includes(effort)
+  ) {
+    return { ok: false };
+  }
+  return { ok: true, reviewer, effort };
+}
+
+/**
  * @typedef {Object} HeadReviewTransportDeps
  * @property {string} workspace
  * @property {string} repo
- * @property {{ readIssue: (bead_id: string) => Promise<Record<string, any>>, setMetadata: (bead_id: string, key: string, value: string) => Promise<void> }} bd
+ * @property {{ readIssue: (bead_id: string) => Promise<Record<string, any>>, setMetadata: (bead_id: string, key: string, value: string) => Promise<void>, comment?: (bead_id: string, text: string) => Promise<void> }} bd
  * @property {(name: string) => { name: string, spawn: (bead: any, cwd: string, settings: any) => { pid?: number|null, done: Promise<any> } }} makeRunner
  * @property {{ exists: (repo: string, bead_id: string) => boolean, pathFor: (repo: string, bead_id: string) => string }} worktree
  * @property {(args: string[], options: { cwd?: string }) => Promise<{ code: number, stdout: string, stderr: string }>} gitRun
@@ -156,6 +199,12 @@ function runnerFor(reviewer) {
  * @property {(bead_id: string) => boolean} [beadSessionActive] - Whether an
  * ordinary Worker session already owns this bead (unique-writer fence for the
  * repair round).
+ * @property {ReturnType<typeof import('./queue-store.js').createQueueStore>} [store] -
+ * The queue store this workspace's attempt history lives in (UI-hk74 §7).
+ * Absent, review/repair attempts run exactly as before and simply stay out of
+ * the history — a history write is never a safety input.
+ * @property {() => { ok: true, reviewer: string, effort: string }|{ ok: false }} [reviewDefaults] -
+ * The harness ladder's bottom rung; {@link harnessReviewDefault} by default.
  * @property {typeof nodeFs} [fs]
  * @property {(pid: number) => boolean} [pidAlive]
  * @property {(ms: number) => Promise<void>} [sleep]
@@ -168,6 +217,7 @@ function runnerFor(reviewer) {
  */
 export function createHeadReviewTransport(deps) {
   const log = deps.log || (() => {});
+  const reviewDefaults = deps.reviewDefaults || harnessReviewDefault;
   const fs = deps.fs || nodeFs;
   const now = deps.now || (() => Date.now());
   const sleep =
@@ -254,62 +304,86 @@ export function createHeadReviewTransport(deps) {
   }
 
   /**
-   * Background reviewer selection: exactly Bead `impl_review_model` /
-   * `impl_review_effort`, then the harness implementation-gate default —
-   * current-user and workspace layers do not participate, and `self`/`skip`,
-   * an unknown model, an unsupported effort, OR an unreadable Bead record is
-   * a terminal failure with no fallback (workflow contract, manual merge
-   * continuation): a default chosen over a record we could not read might be
-   * overriding an explicit `self`/`skip`.
+   * Background reviewer selection (UI-hk74 §6): exactly Bead
+   * `impl_review_model` / `impl_review_effort`, then the harness
+   * implementation-gate default — current-user and workspace-kv layers do not
+   * participate, because the workflow contract's manual-continuation exception
+   * excludes them. `self`/`skip`, an unknown model, an unsupported effort, an
+   * unreadable Bead record, OR an unreadable harness catalog is a terminal
+   * failure with no fallback: a default chosen over a record we could not read
+   * might be overriding an explicit `self`/`skip`.
+   *
+   * `source` names the layer that produced the REVIEWER, because that identity
+   * is what ends up in the `impl_review` receipt; an effort borrowed from the
+   * harness under a Bead-chosen reviewer does not make the selection a harness
+   * one.
    *
    * @param {string} bead_id
+   * @returns {Promise<{ ok: boolean, reviewer: string|null, effort: string|null, source: 'bead'|'harness'|null, reason?: string }>}
    */
   async function selectReviewer(bead_id) {
     const read = await metadataOf(bead_id);
     if (!read.ok) {
       return {
         ok: false,
-        reviewer: DEFAULT_REVIEWER,
-        effort: DEFAULT_REVIEW_EFFORT,
+        reviewer: null,
+        effort: null,
+        source: null,
         reason: 'reviewer_selection_unreadable'
       };
     }
     const md = read.metadata;
-    const raw_model =
+    const bead_model =
       typeof md.impl_review_model === 'string' &&
       md.impl_review_model.length > 0
         ? md.impl_review_model
-        : DEFAULT_REVIEWER;
-    const raw_effort =
+        : null;
+    const bead_effort =
       typeof md.impl_review_effort === 'string' &&
       md.impl_review_effort.length > 0
         ? md.impl_review_effort
-        : DEFAULT_REVIEW_EFFORT;
-    if (raw_model === 'self' || raw_model === 'skip') {
+        : null;
+    const harness = reviewDefaults();
+    const source = bead_model !== null ? 'bead' : 'harness';
+    const reviewer = bead_model ?? (harness.ok ? harness.reviewer : null);
+    const effort = bead_effort ?? (harness.ok ? harness.effort : null);
+    if (reviewer === 'self' || reviewer === 'skip') {
       return {
         ok: false,
-        reviewer: raw_model,
-        effort: raw_effort,
-        reason: `reviewer_selection_${raw_model}`
+        reviewer,
+        effort,
+        source,
+        reason: `reviewer_selection_${reviewer}`
       };
     }
-    if (!REVIEW_STEP_MODELS.includes(raw_model)) {
+    if (reviewer === null || !REVIEW_STEP_MODELS.includes(reviewer)) {
       return {
         ok: false,
-        reviewer: raw_model,
-        effort: raw_effort,
+        reviewer,
+        effort,
+        source,
         reason: 'reviewer_selection_invalid'
       };
     }
-    if (!REVIEW_EFFORTS.includes(raw_effort)) {
+    if (effort === null) {
       return {
         ok: false,
-        reviewer: raw_model,
-        effort: raw_effort,
+        reviewer,
+        effort,
+        source,
+        reason: 'reviewer_selection_invalid'
+      };
+    }
+    if (!REVIEW_EFFORTS.includes(effort)) {
+      return {
+        ok: false,
+        reviewer,
+        effort,
+        source,
         reason: 'reviewer_effort_invalid'
       };
     }
-    return { ok: true, reviewer: raw_model, effort: raw_effort };
+    return { ok: true, reviewer, effort, source };
   }
 
   /**
@@ -437,14 +511,15 @@ export function createHeadReviewTransport(deps) {
   }
 
   /**
-   * Recover a finished attempt's text from its own session log by replaying
-   * the lines through the SAME adapter that wrote them.
+   * Read one attempt's own session log back into raw parsed lines. Both the
+   * text recovery and the usage tally read the SAME lines, so an adopted
+   * attempt's verdict and its token count can never come from different views
+   * of the session.
    *
-   * @param {string} runner_name
    * @param {string} log_path
-   * @returns {string|null}
+   * @returns {unknown[]|null}
    */
-  function textFromLog(runner_name, log_path) {
+  function readLogLines(log_path) {
     /** @type {string} */
     let raw;
     try {
@@ -452,21 +527,35 @@ export function createHeadReviewTransport(deps) {
     } catch {
       return null;
     }
-    const spec = adapterSpec(runner_name);
-    /** @type {string[]} */
-    const texts = [];
+    /** @type {unknown[]} */
+    const parsed_lines = [];
     for (const line of raw.split('\n')) {
       if (!line.trim()) {
         continue;
       }
-      /** @type {any} */
-      let parsed;
       try {
-        parsed = JSON.parse(line);
+        parsed_lines.push(JSON.parse(line));
       } catch {
         continue;
       }
-      const events = spec.normalize(parsed);
+    }
+    return parsed_lines;
+  }
+
+  /**
+   * Replay raw lines through the SAME adapter that wrote them and join their
+   * text events.
+   *
+   * @param {string} runner_name
+   * @param {unknown[]} raw_lines
+   * @returns {string}
+   */
+  function textFromLines(runner_name, raw_lines) {
+    const spec = adapterSpec(runner_name);
+    /** @type {string[]} */
+    const texts = [];
+    for (const raw of raw_lines) {
+      const events = spec.normalize(raw);
       for (const event of Array.isArray(events)
         ? events
         : events
@@ -481,15 +570,127 @@ export function createHeadReviewTransport(deps) {
   }
 
   /**
+   * Tally one attempt's token usage off its raw lines (UI-hk74 §7). The lift
+   * and the per-message replacement rule come from the shared usage store, so a
+   * review session's number is produced exactly the way an ordinary Worker
+   * session's is rather than by a second counter that could disagree.
+   *
+   * @param {string} runner_name
+   * @param {string} attempt_id
+   * @param {unknown[]} raw_lines
+   * @returns {Record<string, unknown>|null}
+   */
+  function usageFromLines(runner_name, attempt_id, raw_lines) {
+    const spec = adapterSpec(runner_name);
+    if (typeof spec.liftUsage !== 'function') {
+      return null;
+    }
+    const tally = createUsageStore();
+    for (const raw of raw_lines) {
+      const lifted = spec.liftUsage(raw);
+      if (!lifted) {
+        continue;
+      }
+      if (lifted.kind === 'result') {
+        tally.recordResult(deps.workspace, attempt_id, lifted.usage);
+      } else {
+        tally.record(deps.workspace, attempt_id, lifted.usage);
+      }
+    }
+    return tally.get(deps.workspace, attempt_id);
+  }
+
+  /**
+   * The identity every history record for one attempt repeats (UI-hk74 §7).
+   *
+   * @typedef {Object} AttemptIdentity
+   * @property {string} attempt_id
+   * @property {string} bead_id
+   * @property {'head_review'|'head_repair'} kind
+   * @property {'click'|'auto'|null} origin
+   * @property {'bead'|'harness'|null} reviewer_source
+   * @property {string|null} authority_id
+   * @property {string|null} head_sha
+   */
+
+  /**
+   * Mirror one head review / repair attempt into the Worker attempt history.
+   * Fail-quiet by design: the journal and the marker are this lane's safety
+   * record, so a history write that cannot land must never stop a review.
+   *
+   * @param {AttemptIdentity} identity
+   * @param {Record<string, unknown>} patch
+   */
+  function recordAttempt(identity, patch) {
+    if (!deps.store) {
+      return;
+    }
+    try {
+      deps.store.upsertHeadReviewAttempt(deps.workspace, {
+        attempt_id: identity.attempt_id,
+        patch: {
+          bead_id: identity.bead_id,
+          kind: identity.kind,
+          origin: identity.origin,
+          reviewer_source: identity.reviewer_source,
+          authority_id: identity.authority_id,
+          head_sha: identity.head_sha,
+          repo: deps.repo,
+          ...patch
+        }
+      });
+    } catch (err) {
+      log(
+        'head-review attempt history write failed for %s: %o',
+        identity.attempt_id,
+        err
+      );
+    }
+  }
+
+  /**
+   * Settle the history record from a marker that already holds the terminal
+   * result. This is the restart adoption §7 asks for: the marker is written
+   * first, so a crash between it and the history write leaves the marker as the
+   * only account of the attempt and the next pass copies it forward.
+   *
+   * @param {AttemptIdentity} identity
+   * @param {Record<string, any>} marker
+   */
+  function settleAttemptFromMarker(identity, marker) {
+    const terminal = marker.terminal || {};
+    recordAttempt(identity, {
+      runner: typeof marker.runner === 'string' ? marker.runner : null,
+      log_path: typeof marker.log_path === 'string' ? marker.log_path : null,
+      started_at:
+        typeof marker.started_at === 'number' ? marker.started_at : null,
+      pid: typeof marker.pid === 'number' ? marker.pid : null,
+      status: terminal.ok === true ? 'done' : 'failed',
+      cause: terminal.ok === true ? null : (terminal.reason ?? null),
+      usage: isUsageRecord(marker.usage) ? marker.usage : null,
+      finished_at: now()
+    });
+  }
+
+  /**
+   * @param {unknown} value
+   * @returns {value is Record<string, unknown>}
+   */
+  function isUsageRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  /**
    * Run — or durably adopt — exactly one attempt to its terminal text.
    *
-   * @param {{ attempt_id: string, reviewer: string, effort: string, bead_id: string, prompt: string, mode: 'review'|null }} input
+   * @param {AttemptIdentity & { reviewer: string, effort: string, prompt: string, mode: 'review'|null, dispatch?: RepairDispatch|null }} input
    * @returns {Promise<{ ok: true, text: string }|{ ok: false, reason: string }>}
    */
   async function runAttempt(input) {
     const marker = readMarker(input.attempt_id);
     if (marker && marker.terminal && typeof marker.terminal === 'object') {
       const terminal = marker.terminal;
+      settleAttemptFromMarker(input, marker);
       return terminal.ok === true
         ? { ok: true, text: String(terminal.text ?? '') }
         : {
@@ -501,13 +702,17 @@ export function createHeadReviewTransport(deps) {
           };
     }
     if (marker) {
-      return adoptAttempt(input.attempt_id, marker);
+      return adoptAttempt(input, marker);
     }
 
-    const mapped = runnerFor(input.reviewer);
+    const dispatch = input.dispatch ?? null;
+    const mapped = dispatch
+      ? { runner: dispatch.runner, model: dispatch.model }
+      : runnerFor(input.reviewer);
     if (!mapped) {
       return { ok: false, reason: 'reviewer_selection_invalid' };
     }
+    const effort = dispatch ? dispatch.effort : input.effort;
     if (!deps.worktree.exists(deps.repo, input.bead_id)) {
       return { ok: false, reason: 'worktree_missing' };
     }
@@ -517,6 +722,7 @@ export function createHeadReviewTransport(deps) {
       'head-review-attempts',
       `${String(input.attempt_id).replace(/[^A-Za-z0-9._-]/g, '_')}.log.jsonl`
     );
+    const started_at = now();
     // Prerecord BEFORE the spawn (UI-58w8 §6): a crash between spawn and the
     // post-spawn write would otherwise leave no record at all, and the next
     // pass would start a SECOND process for the same attempt. With this
@@ -527,8 +733,21 @@ export function createHeadReviewTransport(deps) {
       pid: null,
       runner: mapped.runner,
       log_path,
-      started_at: now(),
+      started_at,
+      usage: null,
       terminal: null
+    });
+    // The history record is deliberately opened here too, so the Worker's
+    // attempt lane shows a review that is running rather than only one that
+    // finished (UI-hk74 §7). `log_path` POINTS at the session log; the log
+    // itself is never copied.
+    recordAttempt(input, {
+      runner: mapped.runner,
+      model: mapped.model ?? null,
+      effort,
+      log_path,
+      started_at,
+      status: 'running'
     });
     /** @type {any} */
     let handle;
@@ -536,7 +755,7 @@ export function createHeadReviewTransport(deps) {
       const runner = deps.makeRunner(mapped.runner);
       handle = runner.spawn({ id: input.bead_id, prompt: input.prompt }, cwd, {
         model: mapped.model,
-        effort: input.effort,
+        effort,
         speed: 'default',
         // Review attempts carry the read-only review contract instead of the
         // writable Worker defaults (mode='review' switches both the argv
@@ -547,20 +766,31 @@ export function createHeadReviewTransport(deps) {
         target_base: null,
         base_oid: null,
         disposition: null,
-        log_path
+        log_path,
+        ...(dispatch && dispatch.resume_session_id
+          ? { resume_session_id: dispatch.resume_session_id }
+          : {})
       });
     } catch (err) {
       log('head-review session spawn failed for %s: %o', input.bead_id, err);
+      recordAttempt(input, {
+        status: 'failed',
+        cause: 'transport_unavailable',
+        finished_at: now()
+      });
       return { ok: false, reason: 'transport_unavailable' };
     }
+    const pid = typeof handle.pid === 'number' ? handle.pid : null;
     writeMarker(input.attempt_id, {
       attempt_id: input.attempt_id,
-      pid: typeof handle.pid === 'number' ? handle.pid : null,
+      pid,
       runner: mapped.runner,
       log_path,
-      started_at: now(),
+      started_at,
+      usage: null,
       terminal: null
     });
+    recordAttempt(input, { pid });
     /** @type {any} */
     let verdict;
     try {
@@ -572,8 +802,14 @@ export function createHeadReviewTransport(deps) {
         attempt_id: input.attempt_id,
         runner: mapped.runner,
         log_path,
-        started_at: now(),
+        started_at,
+        usage: null,
         terminal: failure
+      });
+      recordAttempt(input, {
+        status: 'failed',
+        cause: 'transport_unavailable',
+        finished_at: now()
       });
       return /** @type {{ ok: false, reason: string }} */ (failure);
     }
@@ -588,12 +824,26 @@ export function createHeadReviewTransport(deps) {
                 ? verdict.reason
                 : 'session_failed'
           };
+    const usage = usageFromLines(
+      mapped.runner,
+      input.attempt_id,
+      Array.isArray(verdict?.raw) ? verdict.raw : []
+    );
     writeMarker(input.attempt_id, {
       attempt_id: input.attempt_id,
+      pid,
       runner: mapped.runner,
       log_path,
-      started_at: now(),
+      started_at,
+      usage,
       terminal
+    });
+    recordAttempt(input, {
+      status: terminal.ok === true ? 'done' : 'failed',
+      cause: terminal.ok === true ? null : (terminal.reason ?? null),
+      exit: verdict && typeof verdict.exit === 'number' ? verdict.exit : null,
+      usage,
+      finished_at: now()
     });
     return terminal.ok === true
       ? { ok: true, text: String(terminal.text ?? '') }
@@ -605,31 +855,59 @@ export function createHeadReviewTransport(deps) {
    * then read the attempt's own session log. No second process is ever
    * spawned for a recorded attempt — an unrecoverable record fails closed.
    *
-   * @param {string} attempt_id
+   * @param {AttemptIdentity} identity
    * @param {Record<string, any>} marker
    * @returns {Promise<{ ok: true, text: string }|{ ok: false, reason: string }>}
    */
-  async function adoptAttempt(attempt_id, marker) {
+  async function adoptAttempt(identity, marker) {
+    const attempt_id = identity.attempt_id;
     const pid = typeof marker.pid === 'number' ? marker.pid : null;
+    const runner_name =
+      typeof marker.runner === 'string' ? marker.runner : 'codex';
+    // Adoption is also where a crash between the marker and the history write
+    // is repaired: the record is (re)opened from the marker before the wait.
+    recordAttempt(identity, {
+      runner: runner_name,
+      log_path: typeof marker.log_path === 'string' ? marker.log_path : null,
+      started_at:
+        typeof marker.started_at === 'number' ? marker.started_at : null,
+      pid,
+      status: 'running'
+    });
     const deadline = now() + ATTEMPT_ADOPTION_WAIT_MS;
     while (pid !== null && pidAlive(pid)) {
       if (now() >= deadline) {
+        recordAttempt(identity, {
+          status: 'failed',
+          cause: 'attempt_adoption_timeout',
+          finished_at: now()
+        });
         return { ok: false, reason: 'attempt_adoption_timeout' };
       }
       await sleep(2000);
     }
     const log_path =
       typeof marker.log_path === 'string' ? marker.log_path : null;
-    const runner_name =
-      typeof marker.runner === 'string' ? marker.runner : 'codex';
-    const text = log_path ? textFromLog(runner_name, log_path) : null;
-    if (text === null) {
+    const raw_lines = log_path ? readLogLines(log_path) : null;
+    if (raw_lines === null) {
       const failure = { ok: false, reason: 'attempt_result_unrecoverable' };
       writeMarker(attempt_id, { ...marker, terminal: failure });
+      recordAttempt(identity, {
+        status: 'failed',
+        cause: 'attempt_result_unrecoverable',
+        finished_at: now()
+      });
       return /** @type {{ ok: false, reason: string }} */ (failure);
     }
+    const text = textFromLines(runner_name, raw_lines);
+    const usage = usageFromLines(runner_name, attempt_id, raw_lines);
     const terminal = { ok: true, text: text.slice(-MARKER_TEXT_TAIL) };
-    writeMarker(attempt_id, { ...marker, terminal });
+    writeMarker(attempt_id, { ...marker, usage, terminal });
+    recordAttempt(identity, {
+      status: 'done',
+      usage,
+      finished_at: now()
+    });
     return { ok: true, text: terminal.text };
   }
 
@@ -655,6 +933,280 @@ export function createHeadReviewTransport(deps) {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Restart reconciliation for the attempt history (UI-hk74 §7). Two
+   * crash windows exist between the marker and the history record, and this
+   * closes both from the marker, which is written first and is therefore the
+   * authority on what actually happened:
+   *
+   * - marker terminal, attempt still `running` — the result is copied forward
+   *   (the history write was the half that was lost);
+   * - no marker at all under a `running` attempt — nothing was ever dispatched
+   *   for it, so it settles `failed` rather than sitting as a session that will
+   *   never end. The journal rule stops the row for a human separately.
+   *
+   * A marker with no terminal is a LIVE or adoptable attempt and is left alone:
+   * the journal drive adopts it, and settling it here would race that.
+   */
+  function reconcileAttempts() {
+    if (!deps.store) {
+      return;
+    }
+    /** @type {Record<string, any>} */
+    let attempts;
+    try {
+      attempts =
+        /** @type {any} */ (deps.store.snapshot(deps.workspace)).attempts || {};
+    } catch (err) {
+      log(
+        'head-review attempt reconcile failed for %s: %o',
+        deps.workspace,
+        err
+      );
+      return;
+    }
+    for (const [attempt_id, attempt] of Object.entries(attempts)) {
+      const row = /** @type {any} */ (attempt);
+      if (
+        !row ||
+        row.status !== 'running' ||
+        (row.kind !== 'head_review' && row.kind !== 'head_repair')
+      ) {
+        continue;
+      }
+      /** @type {AttemptIdentity} */
+      const identity = {
+        attempt_id,
+        bead_id: String(row.bead_id),
+        kind: row.kind,
+        origin: row.origin ?? null,
+        reviewer_source: row.reviewer_source ?? null,
+        authority_id: row.authority_id ?? null,
+        head_sha: row.head_sha ?? null
+      };
+      const marker = readMarker(attempt_id);
+      if (marker && marker.terminal && typeof marker.terminal === 'object') {
+        settleAttemptFromMarker(identity, marker);
+        continue;
+      }
+      if (!marker) {
+        recordAttempt(identity, {
+          status: 'failed',
+          cause: 'attempt_marker_missing',
+          finished_at: now()
+        });
+      }
+    }
+  }
+
+  /**
+   * The history identity carried by one review/repair packet (UI-hk74 §7).
+   * `origin` and `reviewer_source` ride the packet because only the state
+   * machine knows which authority asked and which ladder rung answered.
+   *
+   * @param {Record<string, any>} packet
+   * @param {'head_review'|'head_repair'} kind
+   * @returns {AttemptIdentity}
+   */
+  function identityOf(packet, kind) {
+    return {
+      attempt_id: String(packet.attempt_id),
+      bead_id: String(packet.bead_id),
+      kind,
+      origin:
+        packet.origin === 'click' || packet.origin === 'auto'
+          ? packet.origin
+          : null,
+      reviewer_source:
+        packet.reviewer_source === 'bead' ||
+        packet.reviewer_source === 'harness'
+          ? packet.reviewer_source
+          : null,
+      authority_id:
+        typeof packet.authority_id === 'string' &&
+        packet.authority_id.length > 0
+          ? packet.authority_id
+          : null,
+      head_sha:
+        typeof packet.head_sha === 'string' && SHA40_RE.test(packet.head_sha)
+          ? packet.head_sha.toLowerCase()
+          : typeof packet.reviewed_head_sha === 'string' &&
+              SHA40_RE.test(packet.reviewed_head_sha)
+            ? packet.reviewed_head_sha.toLowerCase()
+            : null
+    };
+  }
+
+  /**
+   * How the bounded repair round dispatches (UI-hk74 §6): continue the bead's
+   * PRIOR implementation session by default, so the provider that produced the
+   * head is also the one that repairs it. Only a bead with no resumable prior
+   * session falls through to the harness default — and there is no prior
+   * provider there for a change to be measured against, so the continuation
+   * question has nothing to ask.
+   *
+   * @param {string} bead_id
+   * @returns {RepairDispatch}
+   */
+  function resolveRepairDispatch(bead_id) {
+    const harness = reviewDefaults();
+    const fallback_reviewer = harness.ok ? harness.reviewer : 'codex';
+    const fallback = {
+      ...(runnerFor(fallback_reviewer) || { runner: 'codex', model: 'sol' }),
+      effort: harness.ok ? harness.effort : 'xhigh',
+      resume_session_id: null
+    };
+    const prior = priorImplementationAttempt(bead_id);
+    if (
+      !prior ||
+      typeof prior.runner !== 'string' ||
+      prior.runner.length === 0 ||
+      typeof prior.session_id !== 'string' ||
+      prior.session_id.length === 0
+    ) {
+      return fallback;
+    }
+    return {
+      runner: prior.runner,
+      model: typeof prior.model === 'string' ? prior.model : undefined,
+      effort:
+        typeof prior.effort === 'string' && prior.effort.length > 0
+          ? prior.effort
+          : fallback.effort,
+      resume_session_id: prior.session_id
+    };
+  }
+
+  /**
+   * The bead's most recent ordinary implementation attempt. Review and repair
+   * records are excluded by kind: a repair round continues the session that
+   * WROTE the head, never one that judged it.
+   *
+   * @param {string} bead_id
+   * @returns {Record<string, any>|null}
+   */
+  function priorImplementationAttempt(bead_id) {
+    if (!deps.store) {
+      return null;
+    }
+    try {
+      const attempts = /** @type {any} */ (deps.store.snapshot(deps.workspace))
+        .attempts;
+      /** @type {Record<string, any>|null} */
+      let latest = null;
+      for (const attempt of Object.values(attempts || {})) {
+        const row = /** @type {any} */ (attempt);
+        if (
+          !row ||
+          row.bead_id !== bead_id ||
+          (row.kind ?? 'implementation') !== 'implementation'
+        ) {
+          continue;
+        }
+        if (
+          latest === null ||
+          (row.started_at ?? 0) >= (latest.started_at ?? 0)
+        ) {
+          latest = row;
+        }
+      }
+      return latest;
+    } catch (err) {
+      log(
+        'prior implementation attempt lookup failed for %s: %o',
+        bead_id,
+        err
+      );
+      return null;
+    }
+  }
+
+  /**
+   * @param {string} root_bead_id
+   * @param {string} head_sha
+   */
+  function violationMarkerPath(root_bead_id, head_sha) {
+    const slug = `${root_bead_id}@${head_sha}`.replace(
+      /[^A-Za-z0-9._@-]/g,
+      '_'
+    );
+    return path.join(
+      workspaceStateDir(deps.workspace),
+      'head-review-violations',
+      `${slug}.json`
+    );
+  }
+
+  /**
+   * Leave a trace on the root Bead when the automatic lane had to review a head
+   * that entered PR wait without a current `impl_review` receipt (UI-hk74 §6).
+   *
+   * A COMMENT, never a label and never a note: the label vocabulary belongs to
+   * dotfiles, and `notes` is a single field of human prose that an automation
+   * trace would interleave itself into. Comments are bd's append-only log,
+   * which is the surface an observation like this belongs on.
+   *
+   * Written at most once per (root, head) — the marker file is the ledger — and
+   * a write that fails is logged and forgotten: the review still has to run.
+   *
+   * @param {{ root_bead_id: string, head_sha: string, reason: string, prior_receipt?: string|null, gate_reason?: string|null }} input
+   * @returns {Promise<boolean>} Whether a note was appended by THIS call.
+   */
+  async function recordUpstreamViolation(input) {
+    const head_sha = String(input.head_sha).toLowerCase();
+    const marker_path = violationMarkerPath(input.root_bead_id, head_sha);
+    try {
+      if (fs.existsSync(marker_path)) {
+        return false;
+      }
+    } catch (err) {
+      log('upstream violation marker unreadable for %s: %o', marker_path, err);
+      return false;
+    }
+    const kind = String(input.reason).startsWith('review_receipt_stale')
+      ? 'stale'
+      : 'missing';
+    const comment = [
+      `## ⚠️ 상류 위반 관측 — impl_review ${kind}@${head_sha}`,
+      '',
+      `- 관측 시각: ${new Date(now()).toISOString()}`,
+      `- 이전 영수증: ${input.prior_receipt ? input.prior_receipt : '(없음)'}`,
+      `- 게이트 사유: ${input.gate_reason || input.reason}`
+    ].join('\n');
+    try {
+      if (typeof deps.bd.comment !== 'function') {
+        return false;
+      }
+      await deps.bd.comment(input.root_bead_id, comment);
+    } catch (err) {
+      log(
+        'upstream violation comment failed for %s: %o',
+        input.root_bead_id,
+        err
+      );
+      return false;
+    }
+    try {
+      fs.mkdirSync(path.dirname(marker_path), { recursive: true });
+      fs.writeFileSync(
+        marker_path,
+        JSON.stringify({
+          root_bead_id: input.root_bead_id,
+          head_sha,
+          reason: input.reason,
+          at: now()
+        })
+      );
+    } catch (err) {
+      log(
+        'upstream violation marker write failed for %s: %o',
+        marker_path,
+        err
+      );
+    }
+    return true;
   }
 
   /**
@@ -689,10 +1241,9 @@ export function createHeadReviewTransport(deps) {
       `${HEAD_REVIEW_VERDICT_MARKER} {"verdict":"APPROVE"|"REVISE","findings":[{"title":"...","detail":"...","file":"..."}]}`
     ].join('\n');
     const run = await runAttempt({
-      attempt_id: String(packet.attempt_id),
+      ...identityOf(packet, 'head_review'),
       reviewer: String(packet.reviewer),
       effort: String(packet.effort),
-      bead_id: String(packet.bead_id),
       prompt,
       mode: 'review'
     });
@@ -725,6 +1276,7 @@ export function createHeadReviewTransport(deps) {
       // guessed findings is worse than a needs-human stop.
       return { ok: false, reason: 'repair_findings_unavailable' };
     }
+    const dispatch = resolveRepairDispatch(String(packet.bead_id));
     const findings_json = JSON.stringify(packet.findings ?? [], null, 2);
     const prompt = [
       `Bead ${packet.bead_id} 수동 머지 continuation bounded repair (1회).`,
@@ -746,19 +1298,19 @@ export function createHeadReviewTransport(deps) {
       '5. repair delta 전체를 self-review하라. 통과 시에만',
       '   `bd update ' +
         String(packet.bead_id) +
-        ` --set-metadata impl_review=self@<새 head SHA> exec_receipt=delegated:${REPAIR_REVIEWER}:${REPAIR_EFFORT}@<새 head SHA>\`를 기록하라.`,
+        ` --set-metadata impl_review=self@<새 head SHA> exec_receipt=delegated:${dispatch.runner}:${dispatch.effort}@<새 head SHA>\`를 기록하라.`,
       '6. base로의 push, merge 실행, 두 번째 수정 라운드는 금지된다.',
       '',
       '마지막 출력 줄은 정확히 다음 한 줄이어야 한다(JSON 한 줄):',
       `${HEAD_REPAIR_RESULT_MARKER} {"self_review":"APPROVE"|"REVISE"}`
     ].join('\n');
     const run = await runAttempt({
-      attempt_id: String(packet.attempt_id),
-      reviewer: REPAIR_REVIEWER,
-      effort: REPAIR_EFFORT,
-      bead_id: String(packet.bead_id),
+      ...identityOf(packet, 'head_repair'),
+      reviewer: dispatch.runner,
+      effort: dispatch.effort,
       prompt,
-      mode: null
+      mode: null,
+      dispatch
     });
     if (!run.ok) {
       return run;
@@ -795,6 +1347,8 @@ export function createHeadReviewTransport(deps) {
     writeReceipt,
     lineage,
     observeHead: probeHead,
+    reconcileAttempts,
+    recordUpstreamViolation,
     runReview,
     runRepair,
     stopAttempt

@@ -3693,6 +3693,21 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Whether the SCHEDULER is the lifecycle owner of a persisted attempt
+   * (UI-hk74 §7). Head review and repair attempts live in the same history but
+   * are dispatched, adopted, and settled by the head-review transport against
+   * its own durable markers. They never enter this engine's `running` set, so
+   * the reconcile fences below cannot vouch for them — and `isDeadAttempt`
+   * would read every one of them as dead and orphan a live reviewer.
+   *
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function isSchedulerOwned(attempt) {
+    return (attempt?.kind ?? 'implementation') === 'implementation';
+  }
+
+  /**
    * Is a persisted `running` attempt's process gone? The judgment is
    * attempt_id + PID + START TIME, never mere PID existence: a recycled PID
    * (same number, unrelated process) must read as dead, or a dead session would
@@ -4223,7 +4238,7 @@ export function createScheduler(deps) {
           retired.push(attempt_id);
           continue;
         }
-        if (a.status !== 'running') {
+        if (a.status !== 'running' || !isSchedulerOwned(a)) {
           continue;
         }
         if (
@@ -6989,7 +7004,7 @@ export function createScheduler(deps) {
     const occupied = new Set(claimed);
     for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
       const a = /** @type {any} */ (attempt);
-      if (!a || a.status !== 'running') {
+      if (!a || a.status !== 'running' || !isSchedulerOwned(a)) {
         continue;
       }
       if (

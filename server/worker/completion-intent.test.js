@@ -2693,6 +2693,147 @@ describe('worker/completion-intent auto-resolution driver (UI-hk74 §4/§5)', ()
     });
   });
 
+  test('checks metadata once per process from coordinator passes', async () => {
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () => ({
+      ok: false,
+      reason: 'receipt_unbacked:unit_plan_mismatch'
+    }));
+    const driver = settleDriver(store, { prActions: { completionGate } });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'receipt_unbacked:unit_plan_mismatch' },
+      current
+    );
+    completionGate.mockClear();
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'resume_metadata_check' },
+      current
+    );
+    await driver.onAction(
+      'UI-root',
+      { kind: 'resume_metadata_check' },
+      current
+    );
+    await driver.onAction(
+      'UI-root',
+      { kind: 'resume_metadata_check' },
+      current
+    );
+
+    expect(completionGate).toHaveBeenCalledTimes(1);
+  });
+
+  test('re-checks metadata on every bd issue-change event', async () => {
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () => ({
+      ok: false,
+      reason: 'receipt_unbacked:unit_plan_mismatch'
+    }));
+    const driver = settleDriver(store, { prActions: { completionGate } });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'receipt_unbacked:unit_plan_mismatch' },
+      current
+    );
+    completionGate.mockClear();
+
+    await driver.onIssuesChanged();
+    await driver.onIssuesChanged();
+
+    expect(completionGate).toHaveBeenCalledTimes(2);
+  });
+
+  test('ignores roots outside the metadata watch on a bd issue-change event', async () => {
+    const store = seededCompletionStore();
+    const completionGate = vi.fn(async () => redGate());
+    const driver = settleDriver(store, { prActions: { completionGate } });
+
+    await driver.onIssuesChanged();
+
+    expect(completionGate).not.toHaveBeenCalled();
+  });
+
+  test('stops for a human when the auto-review enrolment cannot land', async () => {
+    const store = seededCompletionStore();
+    const driver = settleDriver(store);
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    vi.spyOn(store, 'enrolAutoReview').mockReturnValue({
+      ok: false,
+      conflict: false,
+      queue: store.snapshot(DRIVER_WS)
+    });
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'review_receipt_missing' },
+      current
+    );
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'auto_review_enrol_failed' }
+    });
+  });
+
+  test('enrols an auto-review root with its journal in one revision', async () => {
+    const store = seededCompletionStore();
+    const driver = settleDriver(store);
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'review_receipt_missing' },
+      current
+    );
+
+    const queue = store.snapshot(DRIVER_WS);
+    expect(queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'reviewing',
+      auto_resolution: { class: 'auto_review', attempts: 1 }
+    });
+    expect(
+      queue.merge_queue.find((entry) => entry.bead_id === 'UI-root')
+    ).toMatchObject({
+      authority: { source: 'automatic' },
+      head_review: { state: 'pending' }
+    });
+  });
+
+  test('stops for a human when the auto-review dispatch cannot start', async () => {
+    const store = seededCompletionStore();
+    const dispatchAutoReview = vi.fn(async () => ({
+      state: 'halted',
+      reason: 'head_unobservable'
+    }));
+    const driver = settleDriver(store, { dispatchAutoReview });
+    const current = store.snapshot(DRIVER_WS).completion_intents['UI-root'];
+    await driver.onAction(
+      'UI-root',
+      { kind: 'needs_human', reason: 'review_receipt_missing' },
+      current
+    );
+
+    await driver.onAction(
+      'UI-root',
+      { kind: 'dispatch_auto_review' },
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    );
+
+    expect(
+      store.snapshot(DRIVER_WS).completion_intents['UI-root']
+    ).toMatchObject({
+      phase: 'needs_human',
+      terminal_reason: { reason: 'auto_review_dispatch_failed' }
+    });
+  });
+
   test('arms the first retry one minute out', async () => {
     const store = seededCompletionStore();
     const driver = settleDriver(store, { now: () => 10_000 });

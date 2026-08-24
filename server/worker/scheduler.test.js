@@ -8950,6 +8950,52 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
     ]);
   });
 
+  test('leaves a running head review attempt out of the orphan sweep', async () => {
+    const env = reconcileEnv({ alive: true, started_at: 1000 });
+    env.store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:aaa',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'head_review',
+        status: 'running',
+        pid: null,
+        started_at: 1000,
+        repo: '/repo'
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(
+      env.store.snapshot(WS).attempts['review:authority-1:aaa'].status
+    ).toBe('running');
+  });
+
+  test('leaves a live head review attempt out of the occupied slot count', () => {
+    const env = reconcileEnv(
+      { alive: true, started_at: 1000 },
+      { 'UI-1': {} },
+      {
+        slots: 1
+      }
+    );
+    env.store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:aaa',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'head_review',
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo'
+      }
+    });
+
+    const blocked = env.scheduler.queueConflictBlocked(WS, 'UI-2', 'UI-2');
+
+    expect(blocked).toBe(false);
+  });
+
   test('ignores attempts that are not running', async () => {
     const env = reconcileEnv({ alive: false, started_at: null });
     seedDetachedAttempt(env.store, { status: 'done' });

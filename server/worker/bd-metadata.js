@@ -33,6 +33,7 @@ import { runBd, runBdJsonProjected } from '../bd.js';
  * }} [deps]
  * @returns {{
  *   setMetadata: (bead_id: string, key: string, value: string) => Promise<void>,
+ *   comment: (bead_id: string, text: string) => Promise<void>,
  *   unsetMetadata: (bead_id: string, key: string) => Promise<void>,
  *   readMetadata: (bead_id: string, key: string) => Promise<string|null>,
  *   setStatus: (bead_id: string, status: string) => Promise<void>,
@@ -118,6 +119,25 @@ export function createBdMetadata(deps = {}) {
       if (r.code !== 0) {
         throw new Error(
           `bd set-metadata ${key} failed (${r.code}): ${(r.stderr || '').trim()}`
+        );
+      }
+    },
+
+    /**
+     * Append one COMMENT to a bead (UI-hk74 §6). Comments are bd's append-only
+     * log; `notes` is a single field of user prose, so an automation trace
+     * belongs here and not there. `bd comment <id> <text>` takes the text as an
+     * argument, the same idiom `--append-notes` already uses — no stdin plumbing
+     * and no new dependency.
+     *
+     * @param {string} bead_id
+     * @param {string} text
+     */
+    async comment(bead_id, text) {
+      const r = await run(['comment', bead_id, text], opts);
+      if (r.code !== 0) {
+        throw new Error(
+          `bd comment ${bead_id} failed (${r.code}): ${(r.stderr || '').trim()}`
         );
       }
     },

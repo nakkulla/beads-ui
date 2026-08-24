@@ -570,6 +570,10 @@
  * @property {'pending'|'reviewing'|'revising'|'approved'|'failed'} state
  * @property {string} reviewer
  * @property {string} effort
+ * @property {'bead'|'harness'|null} reviewer_source - Which layer of the
+ * contract's manual-continuation ladder produced {@link HeadReview.reviewer}
+ * (UI-hk74 §6). Null while the journal is prerecorded and the ladder has not
+ * been read yet.
  * @property {string|null} review_attempt_id
  * @property {string|null} findings_digest
  * @property {string|null} repair_attempt_id
@@ -1782,6 +1786,14 @@ function normalizeHeadReview(value, authority) {
   ) {
     return null;
   }
+  const reviewer_source = value.reviewer_source ?? null;
+  if (
+    reviewer_source !== null &&
+    reviewer_source !== 'bead' &&
+    reviewer_source !== 'harness'
+  ) {
+    return null;
+  }
   const nullable = [
     'review_attempt_id',
     'findings_digest',
@@ -1802,6 +1814,9 @@ function normalizeHeadReview(value, authority) {
     state: /** @type {HeadReview['state']} */ (state),
     reviewer: value.reviewer,
     effort: value.effort,
+    reviewer_source: /** @type {HeadReview['reviewer_source']} */ (
+      reviewer_source
+    ),
     review_attempt_id: /** @type {string|null} */ (value.review_attempt_id),
     findings_digest: /** @type {string|null} */ (value.findings_digest),
     repair_attempt_id: /** @type {string|null} */ (value.repair_attempt_id),
@@ -3162,6 +3177,11 @@ function rebindLineageLane(q, bead_id, lane_id) {
   for (const attempt of Object.values(q.attempts)) {
     if (
       attempt.bead_id === bead_id &&
+      // Lane membership belongs to the implementation lineage only (UI-hk74
+      // §7): a head review that happens to be running is not what occupies a
+      // serial lane, and stamping it would make the lane look busy after the
+      // implementation attempt released it.
+      (attempt.kind ?? 'implementation') === 'implementation' &&
       !LANE_RELEASING_ATTEMPT_STATUSES.has(String(attempt.status))
     ) {
       attempt.serial_lane_id = lane_id;
@@ -6543,6 +6563,25 @@ export function createQueueStore(options = {}) {
             ) {
               continue;
             }
+            if (
+              existing.authority &&
+              existing.authority.source === 'automatic' &&
+              review !== null &&
+              review.authority_id === existing.authority.id &&
+              review.state !== 'failed'
+            ) {
+              // The automatic review lane (UI-hk74 §6): a click on a row whose
+              // journal is already running PROMOTES that authority in place
+              // instead of minting a new one. Replacing the id would orphan the
+              // running reviewer — its every CAS would fail as late — and buy a
+              // duplicate dispatch for the same head, which is the lineage risk
+              // the journal exists to prevent. Only the source changes, so the
+              // attempt's recorded origin becomes `click`.
+              existing.authority.source = 'manual';
+              existing.authority.granted_at = now();
+              changed += 1;
+              continue;
+            }
             existing.authority = {
               id: randomUUID(),
               source: 'manual',
@@ -6583,7 +6622,7 @@ export function createQueueStore(options = {}) {
      * `repair_rounds` never resets within one authority.
      *
      * @param {string} workspace
-     * @param {{ bead_id: string, authority_id: string, head_sha: string, reviewer: string, effort: string }} input
+     * @param {{ bead_id: string, authority_id: string, head_sha: string, reviewer: string, effort: string, reviewer_source?: 'bead'|'harness'|null }} input
      * @returns {QueueOpResult}
      */
     beginHeadReview(workspace, input) {
@@ -6615,6 +6654,11 @@ export function createQueueStore(options = {}) {
           state: 'pending',
           reviewer: input.reviewer,
           effort: input.effort,
+          reviewer_source:
+            input.reviewer_source === 'bead' ||
+            input.reviewer_source === 'harness'
+              ? input.reviewer_source
+              : null,
           review_attempt_id: null,
           findings_digest: null,
           repair_attempt_id: null,
@@ -6662,6 +6706,9 @@ export function createQueueStore(options = {}) {
         const allowed = [
           'state',
           'head_sha',
+          'reviewer',
+          'effort',
+          'reviewer_source',
           'review_attempt_id',
           'findings_digest',
           'repair_attempt_id',
@@ -7187,6 +7234,98 @@ export function createQueueStore(options = {}) {
           intent,
           COMPLETION_AUTO_RESOLUTION_PHASE[normalized.class]
         );
+      });
+    },
+
+    /**
+     * Enrol one root into the AUTOMATIC head-review lane (UI-hk74 §6): the
+     * `reviewing` phase, the merge-queue authority, and the prerecorded
+     * `pending` journal in ONE revision.
+     *
+     * The three writes are inseparable because reconcile reads a `reviewing`
+     * intent without a journal as `auto_review_journal_missing` and stops for a
+     * human. Splitting them would make that fail-closed rule fire on a crash
+     * window rather than on real evidence, so a partial enrolment must leave
+     * NOTHING behind and the caller must stop instead of dispatching.
+     *
+     * An entry that already carries an authority keeps it — a manual authority
+     * outranks automation and is never demoted here.
+     *
+     * @param {string} workspace
+     * @param {{ root_bead_id: string, resolution: CompletionAutoResolution, head_sha: string, target_base: string, reviewer: string, effort: string }} input
+     * @returns {QueueOpResult}
+     */
+    enrolAutoReview(workspace, input) {
+      const { root_bead_id, resolution, reviewer, effort } = input;
+      return applyUnconditional(workspace, (next) => {
+        const intent = next.completion_intents[root_bead_id];
+        const normalized = normalizeCompletionAutoResolution(resolution);
+        const head_sha =
+          typeof input.head_sha === 'string' && SHA40_RE.test(input.head_sha)
+            ? input.head_sha.toLowerCase()
+            : null;
+        const target_base =
+          typeof input.target_base === 'string' && input.target_base.length > 0
+            ? input.target_base
+            : null;
+        if (
+          !intent ||
+          !normalized ||
+          normalized.class !== 'auto_review' ||
+          head_sha === null ||
+          target_base === null ||
+          typeof reviewer !== 'string' ||
+          reviewer.length === 0 ||
+          typeof effort !== 'string' ||
+          effort.length === 0 ||
+          intent.phase === 'needs_human' ||
+          intent.phase === 'completed' ||
+          intent.phase === 'paused'
+        ) {
+          return false;
+        }
+        if (!next.merge_queue.some((item) => item.bead_id === root_bead_id)) {
+          if (!enqueueMember(next, root_bead_id, false)) {
+            return false;
+          }
+          insertRunnableMergeEntry(next, {
+            bead_id: root_bead_id,
+            resolution_rounds: 0,
+            resolution: null,
+            ...automaticAuthorityFields(head_sha, target_base)
+          });
+        }
+        const entry = next.merge_queue.find(
+          (item) => item.bead_id === root_bead_id
+        );
+        if (!entry) {
+          return false;
+        }
+        if (!entry.authority) {
+          Object.assign(entry, automaticAuthorityFields(head_sha, target_base));
+        }
+        if (!entry.authority || (entry.head_review ?? null) !== null) {
+          return false;
+        }
+        entry.head_review = {
+          authority_id: entry.authority.id,
+          head_sha,
+          state: 'pending',
+          reviewer,
+          effort,
+          reviewer_source: null,
+          review_attempt_id: null,
+          findings_digest: null,
+          repair_attempt_id: null,
+          repair_rounds: 0,
+          approval_source: null,
+          receipt: null,
+          failure_reason: null,
+          updated_at: now()
+        };
+        intent.auto_resolution = normalized;
+        intent.paused_resolution = null;
+        return applyCompletionPhase(intent, 'reviewing');
       });
     },
 

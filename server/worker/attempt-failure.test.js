@@ -23,6 +23,31 @@ describe('worker attempt failure projection', () => {
     expect([first, latest].filter(predicate)).toEqual([latest]);
   });
 
+  test('ignores a head review attempt when picking the bead last attempt', () => {
+    const implementation = {
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      kind: 'implementation',
+      finished_at: 100,
+      dismissed_at: null
+    };
+    const head_review = {
+      attempt_id: 'review:authority-1:aaa',
+      bead_id: 'UI-1',
+      kind: 'head_review',
+      finished_at: 200,
+      dismissed_at: null
+    };
+    const predicate = createUnhandledFailurePredicate({
+      attempts: { implementation, head_review },
+      done: []
+    });
+
+    expect([implementation, head_review].filter(predicate)).toEqual([
+      implementation
+    ]);
+  });
+
   test('excludes failures resolved by done or dismissed explicitly', () => {
     const resolved = {
       attempt_id: 'att-1',

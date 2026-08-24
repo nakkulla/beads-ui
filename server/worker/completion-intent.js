@@ -7,6 +7,10 @@
  * before executing.
  */
 import { createHash } from 'node:crypto';
+import {
+  UNRESOLVED_REVIEWER,
+  UNRESOLVED_REVIEW_EFFORT
+} from './head-review.js';
 import { RESOLUTION_ROUND_CAP, RESOLUTION_WAIT_MS } from './merge-queue.js';
 import {
   COMPLETION_AUTO_RESOLUTION_PHASE,
@@ -673,6 +677,20 @@ export function createCompletionActionDriver(deps) {
    * @type {Set<string>}
    */
   const metadata_checks = new Set();
+  /**
+   * Roots a COORDINATOR PASS has already re-checked since this process started
+   * (UI-hk74 §5). The re-observation trigger is the bd issue-change event; a
+   * pass covers only the restart case, where an event may have been missed
+   * while nothing was listening. Without this set every pass — and the retry
+   * lane's 1-minute wake is enough to produce one a minute — would spend a
+   * `gh`-backed completion gate on a row that is waiting for a human edit.
+   *
+   * A root leaves the set when it leaves `waiting_metadata`, so a later
+   * re-entry gets its own single reconcile check.
+   *
+   * @type {Set<string>}
+   */
+  const metadata_pass_checked = new Set();
 
   function notify() {
     if (typeof deps.notifyChanged === 'function') {
@@ -1164,7 +1182,10 @@ export function createCompletionActionDriver(deps) {
    * @param {string} stage
    * @param {any} [failure_key]
    * @param {any} [evidence]
-   * @param {{ continuation?: any, continuation_mismatch?: unknown, operation_id?: unknown }} [extras]
+   * @param {{ continuation?: any, continuation_mismatch?: unknown, operation_id?: unknown, observed_head_sha?: unknown }} [extras] - Re-run
+   * inputs, plus `observed_head_sha`: the head THIS observation just read. The
+   * automatic review lane binds its authority to that head (UI-hk74 §6.1), not
+   * to the intent's pinned subject, which an undecidable gate never updates.
    */
   function settleFailure(
     root_bead_id,
@@ -1243,6 +1264,49 @@ export function createCompletionActionDriver(deps) {
         );
         return;
       }
+      // Enrolment is ONE revision (UI-hk74 §6.2): the `reviewing` phase, the
+      // merge-queue authority, and the prerecorded journal. Anything less is
+      // not a dispatchable state — reconcile reads a `reviewing` intent with no
+      // journal as a torn write and stops for a human — so a refused write
+      // stops here instead of leaving a half-enrolled row behind.
+      const enrolled = deps.store.enrolAutoReview(deps.workspace, {
+        root_bead_id,
+        resolution: {
+          class: 'auto_review',
+          origin_reason: reason,
+          origin_stage: stage,
+          return_phase: policy.return_phase,
+          attempts: 1,
+          next_at: null,
+          last_error: null,
+          op: autoResolutionOp(intent, queue, { ...extras, failure_key })
+        },
+        // §6.1: the authority names the head this observation READ. Falling
+        // back to the pinned subject keeps a caller that has no fresh reading
+        // enrolable, and the dispatch-time equality check below is what makes
+        // that fallback safe — a pin that no longer matches the live head stops
+        // for a human instead of reviewing the wrong commit.
+        head_sha:
+          typeof extras.observed_head_sha === 'string' &&
+          extras.observed_head_sha.length > 0
+            ? extras.observed_head_sha
+            : intent.subject?.head_sha,
+        target_base: intent.target_base,
+        reviewer: UNRESOLVED_REVIEWER,
+        effort: UNRESOLVED_REVIEW_EFFORT
+      });
+      if (!enrolled.ok) {
+        terminalize(
+          root_bead_id,
+          'auto_review_enrol_failed',
+          stage,
+          failure_key,
+          evidence
+        );
+        return;
+      }
+      notify();
+      return;
     }
     const started = deps.store.startCompletionAutoResolution(deps.workspace, {
       root_bead_id,
@@ -1251,7 +1315,7 @@ export function createCompletionActionDriver(deps) {
         origin_reason: reason,
         origin_stage: stage,
         return_phase: policy.return_phase,
-        attempts: policy.class === 'auto_review' ? 1 : 0,
+        attempts: 0,
         next_at: null,
         last_error: null,
         op: autoResolutionOp(intent, queue, { ...extras, failure_key })
@@ -1587,10 +1651,19 @@ export function createCompletionActionDriver(deps) {
    * being consumed while it holds.
    *
    * @param {string} root_bead_id
+   * @param {'pass'|'event'} source - `event` is the bd issue-change trigger
+   * §5 names; `pass` is the coordinator's own reconciliation, capped at one
+   * check per root per process.
    */
-  async function runMetadataCheck(root_bead_id) {
+  async function runMetadataCheck(root_bead_id, source) {
     if (metadata_checks.has(root_bead_id)) {
       return;
+    }
+    if (source === 'pass') {
+      if (metadata_pass_checked.has(root_bead_id)) {
+        return;
+      }
+      metadata_pass_checked.add(root_bead_id);
     }
     metadata_checks.add(root_bead_id);
     try {
@@ -1623,6 +1696,7 @@ export function createCompletionActionDriver(deps) {
           recordResolutionError(root_bead_id, fact.reason || 'unknown');
           return;
         }
+        metadata_pass_checked.delete(root_bead_id);
         settleFailure(
           root_bead_id,
           fact.reason || 'ownership_undecidable',
@@ -1641,6 +1715,7 @@ export function createCompletionActionDriver(deps) {
         phase: 'gating'
       });
       if (cleared.ok) {
+        metadata_pass_checked.delete(root_bead_id);
         notify();
       }
     } finally {
@@ -2080,7 +2155,7 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'resume_metadata_check') {
-      await runMetadataCheck(root_bead_id);
+      await runMetadataCheck(root_bead_id, 'pass');
       return;
     }
     if (action.kind === 'retry_failed_op') {
@@ -2088,13 +2163,34 @@ export function createCompletionActionDriver(deps) {
       return;
     }
     if (action.kind === 'dispatch_auto_review') {
-      // The reviewer transport owns this effect. Until it is wired the row waits
-      // in `reviewing` on its prerecorded journal, which is the one state a
-      // second dispatch could not corrupt.
-      if (typeof deps.dispatchAutoReview === 'function') {
-        await deps.dispatchAutoReview(root_bead_id);
-        notify();
+      // The reviewer transport owns this effect. Without one the row waits in
+      // `reviewing` on its prerecorded journal, which is the one state a second
+      // dispatch could not corrupt.
+      if (typeof deps.dispatchAutoReview !== 'function') {
+        return;
       }
+      /** @type {{ state?: string, reason?: string|null }} */
+      let dispatched;
+      try {
+        dispatched = (await deps.dispatchAutoReview(root_bead_id)) || {};
+      } catch (err) {
+        log('auto review dispatch threw for %s: %o', root_bead_id, err);
+        dispatched = { state: 'halted', reason: 'dispatch_threw' };
+      }
+      if (dispatched.state === 'halted') {
+        // §10: a dispatch that could not even start is NOT a retry candidate.
+        // Retrying it means risking a second reviewer against the same head,
+        // and duplicate review lineage is worse than a human question.
+        settleFailure(
+          root_bead_id,
+          'auto_review_dispatch_failed',
+          'auto_review',
+          fact.failure_key,
+          dispatched.reason ?? null
+        );
+        return;
+      }
+      notify();
       return;
     }
     if (action.kind === 'pause') {
@@ -2112,7 +2208,8 @@ export function createCompletionActionDriver(deps) {
         action.reason || 'completion_needs_human',
         'coordinator',
         fact.failure_key,
-        fact.evidence
+        fact.evidence,
+        { observed_head_sha: fact.gated?.subject?.head_sha }
       );
     }
   }
@@ -2355,8 +2452,40 @@ export function createCompletionActionDriver(deps) {
     settleFailure(
       root_bead_id,
       result?.reason || gated?.reason || 'completion_merge_failed',
-      'merge_subject'
+      'merge_subject',
+      null,
+      null,
+      { observed_head_sha: result?.head_sha }
     );
+  }
+
+  /**
+   * The bd issue-change trigger (UI-hk74 §5). Every `waiting_metadata` root is
+   * re-checked when — and only when — the beads database actually changed;
+   * there is no timer behind this, which is what keeps a row that is waiting
+   * for a human edit from spending a completion gate on a cadence.
+   *
+   * Fail-quiet per root: an unreadable gate leaves the phase alone and waits
+   * for the next event (§10).
+   */
+  async function onIssuesChanged() {
+    /** @type {Record<string, any>} */
+    let intents;
+    try {
+      intents = deps.store.snapshot(deps.workspace).completion_intents || {};
+    } catch (err) {
+      log('issue-change metadata scan failed for %s: %o', deps.workspace, err);
+      return;
+    }
+    for (const [root_bead_id, intent] of Object.entries(intents)) {
+      if (
+        intent?.phase !== 'waiting_metadata' ||
+        intent.auto_resolution?.class !== 'metadata_watch'
+      ) {
+        continue;
+      }
+      await runMetadataCheck(root_bead_id, 'event');
+    }
   }
 
   return {
@@ -2364,6 +2493,7 @@ export function createCompletionActionDriver(deps) {
     onAction,
     adoptLegacyTimeout,
     onAttemptSettled,
+    onIssuesChanged,
     onMergeResult
   };
 }

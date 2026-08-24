@@ -7991,3 +7991,223 @@ describe('worker/queue-store head review attempts (UI-hk74)', () => {
     expect(result.reason).toBe('head_review_attempt_invalid');
   });
 });
+
+describe('worker/queue-store — 자동 리뷰 enrolment (UI-hk74 §6)', () => {
+  const HEAD = 'a'.repeat(40);
+  const MOVED_HEAD = 'f'.repeat(40);
+
+  /**
+   * A root that has reached PR wait and owns a completion intent — the only
+   * shape the automatic review lane can enrol.
+   */
+  function enrolableStore() {
+    const ids = ['authority-1', 'authority-2'];
+    const store = createQueueStore({
+      now: () => 100,
+      randomUUID: () => /** @type {string} */ (ids.shift())
+    });
+    store.appendAttempt(WS, {
+      expected_revision: 0,
+      attempt: {
+        attempt_id: 'att-UI-root',
+        bead_id: 'UI-root',
+        target_base: 'main',
+        base_oid: 'b'.repeat(40)
+      }
+    });
+    store.moveToPrWait(WS, {
+      bead_id: 'UI-root',
+      attempt_id: 'att-UI-root',
+      patch: { status: 'done', finished_at: 1 }
+    });
+    store.enqueueCompletionIntent(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      root_bead_id: 'UI-root',
+      source_attempt_id: 'att-UI-root',
+      target_base: 'main',
+      subject: {
+        role: 'root',
+        bead_id: 'UI-root',
+        pr_url: 'https://github.com/o/r/pull/1',
+        head_sha: HEAD,
+        base_sha: 'b'.repeat(40),
+        merged_sha: null
+      }
+    });
+    return store;
+  }
+
+  /**
+   * @param {Record<string, any>} [patch]
+   */
+  function autoReviewResolution(patch = {}) {
+    return /** @type {any} */ ({
+      class: 'auto_review',
+      origin_reason: 'review_receipt_missing',
+      origin_stage: 'merge_gate',
+      return_phase: 'gating',
+      attempts: 1,
+      next_at: null,
+      last_error: null,
+      ...patch
+    });
+  }
+
+  test('writes phase, authority, and journal in one revision', () => {
+    const store = enrolableStore();
+    const before = store.snapshot(WS).revision;
+
+    const result = store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    const queue = store.snapshot(WS);
+    expect(result.ok).toBe(true);
+    expect(queue.revision).toBe(before + 1);
+    expect(queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'reviewing',
+      auto_resolution: { class: 'auto_review', attempts: 1 }
+    });
+    expect(
+      queue.merge_queue.find((entry) => entry.bead_id === 'UI-root')
+    ).toMatchObject({
+      authority: { source: 'automatic', requested_head_sha: HEAD },
+      head_review: { state: 'pending', head_sha: HEAD, reviewer: 'unresolved' }
+    });
+  });
+
+  test('leaves the intent untouched when the head is unusable', () => {
+    const store = enrolableStore();
+
+    const result = store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: 'not-a-sha',
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    const queue = store.snapshot(WS);
+    expect(result.ok).toBe(false);
+    expect(queue.completion_intents['UI-root']).toMatchObject({
+      phase: 'gating',
+      auto_resolution: null
+    });
+    expect(
+      queue.merge_queue.find((entry) => entry.bead_id === 'UI-root')
+        ?.head_review ?? null
+    ).toBe(null);
+  });
+
+  test('refuses a second enrolment over an existing journal', () => {
+    const store = enrolableStore();
+    store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    const result = store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: MOVED_HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      store
+        .snapshot(WS)
+        .merge_queue.find((entry) => entry.bead_id === 'UI-root')?.head_review
+    ).toMatchObject({ head_sha: HEAD });
+  });
+
+  test('refuses to enrol a root that has no completion intent', () => {
+    const store = createQueueStore({ now: () => 100 });
+
+    const result = store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-orphan',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    expect(result.ok).toBe(false);
+    expect(store.snapshot(WS).merge_queue).toEqual([]);
+  });
+
+  test('promotes a live automatic authority in place on a click', () => {
+    const store = enrolableStore();
+    store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
+    });
+
+    const entry = store
+      .snapshot(WS)
+      .merge_queue.find((item) => item.bead_id === 'UI-root');
+    expect(entry?.authority).toMatchObject({
+      id: 'authority-1',
+      source: 'manual'
+    });
+    expect(entry?.head_review).toMatchObject({
+      authority_id: 'authority-1',
+      state: 'pending'
+    });
+  });
+
+  test('still mints a fresh authority when the journal already failed', () => {
+    const store = enrolableStore();
+    store.enrolAutoReview(WS, {
+      root_bead_id: 'UI-root',
+      resolution: autoReviewResolution(),
+      head_sha: HEAD,
+      target_base: 'main',
+      reviewer: 'unresolved',
+      effort: 'unresolved'
+    });
+    store.setHeadReviewState(WS, {
+      bead_id: 'UI-root',
+      authority_id: 'authority-1',
+      head_sha: HEAD,
+      expected_state: 'pending',
+      patch: { state: 'failed', failure_reason: 'reviewer_selection_self' }
+    });
+
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-root', head_sha: HEAD, target_base: 'main' }]
+    });
+
+    const entry = store
+      .snapshot(WS)
+      .merge_queue.find((item) => item.bead_id === 'UI-root');
+    expect(entry?.authority).toMatchObject({
+      id: 'authority-2',
+      source: 'manual'
+    });
+    expect(entry?.head_review ?? null).toBe(null);
+  });
+});

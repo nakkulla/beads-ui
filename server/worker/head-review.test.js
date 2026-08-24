@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { createHeadReview, reviewAttemptId } from './head-review.js';
+import {
+  autoReviewHeadDrifted,
+  createHeadReview,
+  reviewAttemptId
+} from './head-review.js';
 import { createQueueStore } from './queue-store.js';
 
 /** @type {string} */
@@ -1027,5 +1031,239 @@ describe('worker/head-review — bounded repair (UI-58w8 seam 3)', () => {
       state: 'failed',
       failure_reason: 'repair_failed'
     });
+  });
+});
+
+/**
+ * The AUTOMATIC review lane: a completion root enrolled by the coordinator's
+ * one-revision write, driven by the same machine a click drives.
+ *
+ * @param {Record<string, any>} [overrides]
+ */
+function autoHarness(overrides = {}) {
+  const ids = ['authority-1', 'authority-2'];
+  const store = createQueueStore({
+    now: () => 123,
+    randomUUID: () => /** @type {string} */ (ids.shift())
+  });
+  store.appendAttempt(WS, {
+    expected_revision: 0,
+    attempt: {
+      attempt_id: 'att-UI-1',
+      bead_id: 'UI-1',
+      repo: '/repo',
+      target_base: 'main',
+      base_oid: 'e'.repeat(40),
+      runner: 'claude'
+    }
+  });
+  store.moveToPrWait(WS, {
+    bead_id: 'UI-1',
+    attempt_id: 'att-UI-1',
+    patch: { status: 'done', finished_at: 1 }
+  });
+  store.toggleAutoMerge(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    on: true
+  });
+  store.enqueueCompletionIntent(WS, {
+    expected_revision: store.snapshot(WS).revision,
+    root_bead_id: 'UI-1',
+    source_attempt_id: 'att-UI-1',
+    target_base: 'main',
+    subject: {
+      role: 'root',
+      bead_id: 'UI-1',
+      pr_url: 'https://github.com/o/r/pull/1',
+      head_sha: NEW_HEAD,
+      base_sha: 'e'.repeat(40),
+      merged_sha: null
+    }
+  });
+  const enrolled = store.enrolAutoReview(WS, {
+    root_bead_id: 'UI-1',
+    resolution: /** @type {any} */ ({
+      class: 'auto_review',
+      origin_reason: 'review_receipt_missing',
+      origin_stage: 'gate',
+      return_phase: 'gating',
+      attempts: 1,
+      next_at: null,
+      last_error: null
+    }),
+    head_sha: NEW_HEAD,
+    target_base: 'main',
+    reviewer: 'unresolved',
+    effort: 'unresolved'
+  });
+
+  /** @type {Record<string, any[]>} */
+  const calls = { review: [], repair: [] };
+  const driver = createHeadReview({
+    workspace: WS,
+    store,
+    selectReviewer: async () => ({
+      ok: true,
+      reviewer: 'codex',
+      effort: 'xhigh',
+      source: 'harness'
+    }),
+    readReceipt: async () => null,
+    lineage: async () => ({ queue_owned: true }),
+    runReview: async (/** @type {any} */ packet) => {
+      calls.review.push(packet);
+      return { ok: true, verdict: 'APPROVE' };
+    },
+    writeReceipt: async (
+      /** @type {string} */ _bead_id,
+      /** @type {string} */ receipt
+    ) => ({ ok: true, readback: receipt }),
+    observeHead: async () => NEW_HEAD,
+    runRepair: async (/** @type {any} */ packet) => {
+      calls.repair.push(packet);
+      return { ok: true, head_sha: REPAIR_HEAD, self_review: 'APPROVE' };
+    },
+    ...overrides
+  });
+  return { store, driver, calls, enrolled };
+}
+
+describe('worker/head-review — automatic review lane', () => {
+  test('enrols the root with an automatic authority and a pending journal', () => {
+    const { store, enrolled } = autoHarness();
+
+    const entry = /** @type {any} */ (store.snapshot(WS).merge_queue[0]);
+
+    expect(enrolled.ok).toBe(true);
+    expect(entry.authority.source).toBe('automatic');
+    expect(entry.head_review).toMatchObject({
+      state: 'pending',
+      reviewer: 'unresolved'
+    });
+    expect(store.snapshot(WS).completion_intents['UI-1'].phase).toBe(
+      'reviewing'
+    );
+  });
+
+  test('progresses the journal for an automatic authority in the review phase', async () => {
+    const { driver, calls, store } = autoHarness();
+
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(result.state).toBe('approved');
+    expect(calls.review[0]).toMatchObject({
+      origin: 'auto',
+      reviewer: 'codex',
+      effort: 'xhigh',
+      reviewer_source: 'harness'
+    });
+    expect(
+      /** @type {any} */ (store.snapshot(WS).merge_queue[0]).head_review
+        .reviewer
+    ).toBe('codex');
+  });
+
+  test('halts an automatic authority whose intent is not in the review phase', async () => {
+    const { driver, calls, store } = autoHarness();
+    store.clearCompletionAutoResolution(WS, {
+      root_bead_id: 'UI-1',
+      phase: 'gating'
+    });
+
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(result).toEqual({ state: 'halted', reason: 'no_manual_authority' });
+    expect(calls.review).toHaveLength(0);
+  });
+
+  test('fails the prerecorded journal closed when the ladder answers self', async () => {
+    const { driver, calls, store } = autoHarness({
+      selectReviewer: async () => ({
+        ok: false,
+        reviewer: 'self',
+        effort: 'xhigh',
+        source: 'bead',
+        reason: 'reviewer_selection_self'
+      })
+    });
+
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(result).toEqual({
+      state: 'failed',
+      reason: 'reviewer_selection_self'
+    });
+    expect(calls.review).toHaveLength(0);
+    expect(
+      /** @type {any} */ (store.snapshot(WS).merge_queue[0]).head_review.state
+    ).toBe('failed');
+  });
+
+  test('keeps the running journal when a click promotes the authority', () => {
+    const { store } = autoHarness();
+    const before = /** @type {any} */ (store.snapshot(WS).merge_queue[0])
+      .authority.id;
+
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: NEW_HEAD, target_base: 'main' }]
+    });
+
+    const entry = /** @type {any} */ (store.snapshot(WS).merge_queue[0]);
+    expect(entry.authority).toMatchObject({ id: before, source: 'manual' });
+    expect(entry.head_review).toMatchObject({
+      authority_id: before,
+      state: 'pending'
+    });
+  });
+
+  test('records the click origin once the authority is promoted', async () => {
+    const { store, driver, calls } = autoHarness();
+    store.enqueueMergeManual(WS, {
+      expected_revision: store.snapshot(WS).revision,
+      entries: [{ bead_id: 'UI-1', head_sha: NEW_HEAD, target_base: 'main' }]
+    });
+
+    await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: NEW_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(calls.review[0]).toMatchObject({ origin: 'click' });
+  });
+});
+
+describe('worker/head-review — automatic dispatch head binding (UI-hk74 §6.1)', () => {
+  test('accepts the head the enrolled authority named', () => {
+    const drifted = autoReviewHeadDrifted(
+      { requested_head_sha: NEW_HEAD },
+      NEW_HEAD.toUpperCase()
+    );
+
+    expect(drifted).toBe(false);
+  });
+
+  test('refuses a head that moved after enrolment', () => {
+    const drifted = autoReviewHeadDrifted(
+      { requested_head_sha: OLD_HEAD },
+      NEW_HEAD
+    );
+
+    expect(drifted).toBe(true);
+  });
+
+  test('reports no drift for a row that carries no authority', () => {
+    const drifted = autoReviewHeadDrifted(null, NEW_HEAD);
+
+    expect(drifted).toBe(false);
   });
 });
