@@ -40,6 +40,7 @@ import { listAccounts as listClaudeAccounts } from '../routes/claude-usage.js';
 import { listAccounts as listCodexAccounts } from '../routes/codex-usage.js';
 import { createRuntimeIdentity } from '../runtime-identity.js';
 import { resolveSpecId } from '../spec-id.js';
+import { watchDb } from '../watcher.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { createAccountCatalog } from './account-catalog.js';
@@ -54,7 +55,7 @@ import {
 import { createCompletionRepairService } from './completion-repair.js';
 import { createDiscardCoordinator } from './discard-coordinator.js';
 import { createHeadReviewTransport } from './head-review-transport.js';
-import { createHeadReview } from './head-review.js';
+import { autoReviewHeadDrifted, createHeadReview } from './head-review.js';
 import { observedHeadSha } from './merge-candidates.js';
 import { createAncestryProbe } from './merge-gate.js';
 import { createMergeQueue } from './merge-queue.js';
@@ -440,7 +441,8 @@ export function defaultProbePid(pid) {
  *   repoOperationMigration?: { run: () => Promise<any> },
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number,
- *   runJson?: typeof runBdJsonProjected
+ *   runJson?: typeof runBdJsonProjected,
+ *   watchBeads?: (root_dir: string, onChange: () => void) => { close: () => void }
  * }} [options]
  */
 export function createWorkerAttachment(workspace_root, options = {}) {
@@ -1165,7 +1167,9 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       return probe.head_sha || null;
     },
     // Unique-writer fence for the repair round: an ordinary session that owns
-    // this bead's worktree must finish first.
+    // this bead's worktree must finish first. Review and repair records are
+    // excluded by kind (UI-hk74 §7) — since they now live in the same attempt
+    // history, counting them would let this lane fence itself out.
     beadSessionActive: (/** @type {string} */ bead_id) => {
       try {
         const attempts =
@@ -1174,12 +1178,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
           (/** @type {any} */ attempt) =>
             attempt &&
             attempt.bead_id === bead_id &&
-            attempt.status === 'running'
+            attempt.status === 'running' &&
+            (attempt.kind ?? 'implementation') === 'implementation'
         );
       } catch {
         return true;
       }
     },
+    // Where head review / repair attempts join the ordinary attempt history.
+    store: runtime.queueStore,
     log
   });
   const headReview =
@@ -1320,6 +1327,114 @@ export function createWorkerAttachment(workspace_root, options = {}) {
         runVerifyAtSha({ ...input, worktree, git: gitRun })
     });
 
+  /**
+   * The automatic head-review dispatch (UI-hk74 §6). It goes through the SAME
+   * `ensureApproved` a [머지] click does — the only differences are the
+   * authority's `source` and the `origin` recorded on the attempt — so a
+   * reviewer can never be dispatched by a path the click's safety properties
+   * do not cover.
+   *
+   * `halted` is the only DISPATCH failure. Everything else (`approved`,
+   * `failed`, `gone`) is written into the journal, which is the coordinator's
+   * next input; re-deciding it here would race the journal.
+   *
+   * @param {string} root_bead_id
+   * @returns {Promise<{ state: string, reason: string|null }>}
+   */
+  async function dispatchAutoHeadReview(root_bead_id) {
+    const ws_key = keyFor(workspace_root);
+    const intent = /** @type {any} */ (runtime.queueStore.snapshot(ws_key))
+      .completion_intents?.[root_bead_id];
+    const subject_bead_id = intent?.subject?.bead_id;
+    if (!intent || typeof subject_bead_id !== 'string') {
+      return { state: 'halted', reason: 'auto_review_subject_unknown' };
+    }
+    if (!prActions) {
+      return { state: 'halted', reason: 'pr_actions_unavailable' };
+    }
+    /** @type {any} */
+    let probe;
+    try {
+      probe = await prActions.probeMergeability(subject_bead_id);
+    } catch (err) {
+      log('auto head-review head probe failed for %s: %o', root_bead_id, err);
+      return { state: 'halted', reason: 'head_unobservable' };
+    }
+    const head_sha =
+      typeof probe?.head_sha === 'string' && probe.head_sha.length > 0
+        ? probe.head_sha.toLowerCase()
+        : null;
+    if (head_sha === null) {
+      return { state: 'halted', reason: 'head_unobservable' };
+    }
+    // §6.1 binds the authority to the OBSERVED head, so the head this dispatch
+    // reads must still be the one enrolment named. A head that moved in between
+    // has no vouched queue-owned mutation the automatic lane could offer, and
+    // handing it to `ensureApproved` would fail the journal with a lineage
+    // reason that describes the wrong thing. Stopping here keeps the journal
+    // `pending`, so the [머지] click promotes this exact authority in place and
+    // the manual lane re-drives it with real mutation evidence.
+    //
+    // This does not re-review anything §1 already settled: a queue-owned base
+    // update whose receipt still covers the head by ancestry never reaches the
+    // `review_receipt_*` verdict that enrols a root here in the first place.
+    const authority = /** @type {any} */ (
+      runtime.queueStore.snapshot(ws_key)
+    ).merge_queue?.find(
+      (/** @type {any} */ entry) => entry.bead_id === root_bead_id
+    )?.authority;
+    if (autoReviewHeadDrifted(authority, head_sha)) {
+      return { state: 'halted', reason: 'auto_review_head_drift' };
+    }
+    await recordUpstreamViolation(
+      root_bead_id,
+      subject_bead_id,
+      head_sha,
+      intent
+    );
+    return headReview.ensureApproved(root_bead_id, subject_bead_id, {
+      head_sha,
+      base_ref: probe.base_ref || null,
+      head_ref: probe.head_ref || null
+    });
+  }
+
+  /**
+   * Leave the §6 trace on the root Bead: this head reached PR wait without a
+   * current `impl_review` receipt, which is an upstream contract violation the
+   * automatic lane is only papering over. Never a gate — a note that cannot be
+   * written must not stop the review it describes.
+   *
+   * @param {string} root_bead_id
+   * @param {string} subject_bead_id
+   * @param {string} head_sha
+   * @param {any} intent
+   */
+  async function recordUpstreamViolation(
+    root_bead_id,
+    subject_bead_id,
+    head_sha,
+    intent
+  ) {
+    if (typeof headReviewTransport.recordUpstreamViolation !== 'function') {
+      return;
+    }
+    const reason =
+      intent.auto_resolution?.origin_reason || 'review_receipt_missing';
+    try {
+      const prior = await headReviewTransport.readReceipt(subject_bead_id);
+      await headReviewTransport.recordUpstreamViolation({
+        root_bead_id,
+        head_sha,
+        reason,
+        prior_receipt: prior ? prior.raw : null,
+        gate_reason: reason
+      });
+    } catch (err) {
+      log('upstream violation note failed for %s: %o', root_bead_id, err);
+    }
+  }
+
   const resolvedCompletionActionDriver =
     options.completionActionDriver ||
     createCompletionActionDriver({
@@ -1330,6 +1445,8 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       scheduler,
       notifyChanged: (/** @type {string} */ ws_key) => emitQueueChanged(ws_key),
       kickMerge: () => mergeQueue.kick(),
+      dispatchAutoReview: (/** @type {string} */ root_bead_id) =>
+        dispatchAutoHeadReview(root_bead_id),
       log
     });
   completionActionDriver = resolvedCompletionActionDriver;
@@ -1349,6 +1466,58 @@ export function createWorkerAttachment(workspace_root, options = {}) {
       log
     });
   completionIntent = resolvedCompletionIntent;
+
+  // The bd issue-change subscription §5's re-observation trigger rides
+  // (UI-hk74). It is the SAME primitive the server already watches the beads
+  // database with — a debounced filesystem signal, NOT a poller — bound here
+  // per workspace so a `waiting_metadata` root is re-checked exactly when a
+  // human's `bd update` lands and never on a cadence. The coordinator pass
+  // covers only the restart case, where an event could have been missed while
+  // nothing was listening.
+  const beadsChanges = (() => {
+    /** @type {{ close: () => void }|null} */
+    let handle = null;
+    const watch = options.watchBeads || watchDb;
+    const fire = () => {
+      Promise.resolve(resolvedCompletionActionDriver.onIssuesChanged?.()).catch(
+        (err) => {
+          log(
+            'bd issue-change metadata check failed for %s: %o',
+            keyFor(workspace_root),
+            err
+          );
+        }
+      );
+    };
+    return {
+      start() {
+        if (handle) {
+          return;
+        }
+        try {
+          handle = watch(workspace_root, fire);
+        } catch (err) {
+          log(
+            'bd issue-change watch failed for %s: %o',
+            keyFor(workspace_root),
+            err
+          );
+          handle = null;
+        }
+      },
+      stop() {
+        if (!handle) {
+          return;
+        }
+        try {
+          handle.close();
+        } catch {
+          // A watcher that cannot be closed must not break teardown.
+        }
+        handle = null;
+      }
+    };
+  })();
 
   // PR poller (worker-phase2 §4): watches this workspace's `pr_wait` PRs. It is
   // BUILT here but started by `initWorkerRuntime`. Its default subscriber count
@@ -1398,6 +1567,7 @@ export function createWorkerAttachment(workspace_root, options = {}) {
     autoMerge,
     completionIntent: resolvedCompletionIntent,
     completionActionDriver: resolvedCompletionActionDriver,
+    beadsChanges,
     completionRepair,
     refreshExternalPrs,
     reviseDisposition,
@@ -1477,6 +1647,12 @@ function recoverRunningAttempts(att, key) {
     for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
       const a = /** @type {any} */ (attempt);
       if (!a || a.status !== 'running') {
+        continue;
+      }
+      // Head review / repair records are the transport's, not this engine's
+      // (UI-hk74 §7): they have no scheduler session log to replay and no
+      // process for a monitor to reattach to.
+      if ((a.kind ?? 'implementation') !== 'implementation') {
         continue;
       }
       if (att.scheduler.isRunning(a.bead_id)) {
@@ -1606,10 +1782,25 @@ async function startWorkerAttachment(att, key, start_pr_poller) {
   } catch (err) {
     log('auto-merge start failed for %s: %o', key, err);
   }
+  // BEFORE the completion coordinator (UI-hk74 review F2): the reconcile is
+  // what settles an attempt whose marker was lost and fails its journal, and
+  // the coordinator now re-drives every non-terminal journal. Starting the
+  // coordinator first would let one pass reach a journal whose marker-less
+  // attempt has not been repudiated yet and spawn a second reviewer for it.
+  try {
+    att.headReviewTransport?.reconcileAttempts?.();
+  } catch (err) {
+    log('head-review attempt reconcile failed for %s: %o', key, err);
+  }
   try {
     att.completionIntent.start();
   } catch (err) {
     log('completion-intent start failed for %s: %o', key, err);
+  }
+  try {
+    att.beadsChanges?.start();
+  } catch (err) {
+    log('bd issue-change subscription start failed for %s: %o', key, err);
   }
 }
 
@@ -2333,6 +2524,11 @@ export function __resetWorkerAttachmentsForTest() {
     }
     try {
       att.completionIntent?.stop();
+    } catch {
+      // ignore
+    }
+    try {
+      att.beadsChanges?.stop();
     } catch {
       /* ignore */
     }

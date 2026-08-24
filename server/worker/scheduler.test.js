@@ -4127,6 +4127,44 @@ describe('scheduler resume (spec §1)', () => {
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
+  test('resumes a repo repair from the implementation lineage leaf', async () => {
+    const repairSession = {
+      judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
+    };
+    const env = setup({
+      config: { B1: { status: 'open' } },
+      slots: 1,
+      repairSession,
+      gitRun: ownedWorktreeGit()
+    });
+    env.worktree.exists.mockReturnValueOnce(true).mockReturnValueOnce(false);
+    seedAttempt(
+      env.store,
+      'r1',
+      resumablePrior({ base_drift: { skipped: 'test' } })
+    );
+    // A newer head review attempt with no repo of its own (UI-hk74 §7): taking
+    // the lineage leaf would answer `repair_attempt_source_missing`.
+    env.store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:x',
+      patch: {
+        bead_id: 'B1',
+        kind: 'head_review',
+        status: 'done',
+        started_at: 9_999_999
+      }
+    });
+
+    const result = await env.scheduler.dispatchRepoOperationRepair(WS, {
+      bead_id: 'B1',
+      operation_id: 'cleanup:B1',
+      packet: {}
+    });
+
+    expect(result.ok).toBe(true);
+    expect(env.runner.cwdFor('B1')).toBe('/repo');
+  });
+
   test('switches an unresolved repo repair to fresh in the shared checkout', async () => {
     const repairSession = {
       judge: vi.fn(async () => ({ verdict: 'unresolved', evidence: null }))
@@ -8948,6 +8986,52 @@ describe('scheduler reconcile (worker-detached-session-reconcile §1)', () => {
         detail: 'main:bead without impl_dispatch=main'
       }
     ]);
+  });
+
+  test('leaves a running head review attempt out of the orphan sweep', async () => {
+    const env = reconcileEnv({ alive: true, started_at: 1000 });
+    env.store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:aaa',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'head_review',
+        status: 'running',
+        pid: null,
+        started_at: 1000,
+        repo: '/repo'
+      }
+    });
+
+    await env.scheduler.reconcile(WS);
+
+    expect(
+      env.store.snapshot(WS).attempts['review:authority-1:aaa'].status
+    ).toBe('running');
+  });
+
+  test('leaves a live head review attempt out of the occupied slot count', () => {
+    const env = reconcileEnv(
+      { alive: true, started_at: 1000 },
+      { 'UI-1': {} },
+      {
+        slots: 1
+      }
+    );
+    env.store.upsertHeadReviewAttempt(WS, {
+      attempt_id: 'review:authority-1:aaa',
+      patch: {
+        bead_id: 'UI-1',
+        kind: 'head_review',
+        status: 'running',
+        pid: 4242,
+        started_at: 1000,
+        repo: '/repo'
+      }
+    });
+
+    const blocked = env.scheduler.queueConflictBlocked(WS, 'UI-2', 'UI-2');
+
+    expect(blocked).toBe(false);
   });
 
   test('ignores attempts that are not running', async () => {

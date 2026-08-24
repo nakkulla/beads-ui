@@ -699,6 +699,27 @@ describe('buildMonitorPipeline empty-workspace omission (UI-nprg)', () => {
     expect(out).toEqual([]);
   });
 
+  test('omits a workspace whose only activity is a running head review', () => {
+    const out = build({
+      workspaces: [WS_A],
+      snapshots: {
+        [WS_A]: snapshot({
+          attempts: {
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'running',
+              kind: 'head_review',
+              origin: 'auto'
+            }
+          }
+        })
+      }
+    });
+
+    expect(out).toEqual([]);
+  });
+
   test('keeps a workspace whose only activity is a running attempt', () => {
     const out = build({
       workspaces: [WS_A],

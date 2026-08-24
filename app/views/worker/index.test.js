@@ -4,10 +4,12 @@ import { RANK_STEP } from '../../data/sort.js';
 import { createSubscriptionIssueStore } from '../../data/subscription-issue-store.js';
 import { createUiOrderStore } from '../../data/ui-order-store.js';
 import { createWorkerQueueStore } from '../../data/worker-queue-store.js';
+import { formatTimestampLocal } from '../../utils/relative-time.js';
 import {
   activityBadge,
   applyCandidateFilter,
   applyCandidateSort,
+  autoResolutionBadge,
   createWorkerView,
   headReviewFailureCategory,
   mergeFailureText,
@@ -11922,5 +11924,559 @@ describe('views/worker candidate stepper doc cells (UI-ajkn §5)', () => {
     );
     expect(cand.querySelector('.stp')).not.toBeNull();
     expect(cand.querySelector('.seg--doc')).toBeNull();
+  });
+});
+
+describe('worker view — 자동 해소 phase 배지 (UI-hk74 §9)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const GREEN_GATE = {
+    enabled: true,
+    tier: 'eligible',
+    gate_badge: '머지 가능',
+    base_badge: '최신',
+    reason: null
+  };
+
+  /**
+   * The gate an automatic resolution actually sits behind: closed, and closed
+   * for a reason no re-click allow-list names.
+   */
+  const HELD_GATE = {
+    enabled: false,
+    tier: 'blocked',
+    gate_badge: '영수증',
+    base_badge: '최신',
+    reason: 'receipt_unbacked:unit_plan_mismatch'
+  };
+
+  /**
+   * The row an automatic resolution really produces (UI-hk74 §4/§6): enrolled
+   * in the merge queue under an AUTOMATIC authority, with a gate that is not
+   * open. Both are what made the earlier green-gate, unqueued fixture unable to
+   * prove §9's requirement.
+   *
+   * @param {Record<string, any>} completion_status
+   * @returns {any}
+   */
+  function autoResolutionRow(completion_status) {
+    return prWaitQueue({
+      pr_observations: {
+        'RD-1': {
+          pr: {
+            number: 1,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate: HELD_GATE
+        }
+      },
+      merge_queue: [
+        {
+          bead_id: 'RD-1',
+          resolution_rounds: 0,
+          authority: {
+            source: 'automatic',
+            requested_head_sha: 'a'.repeat(40)
+          }
+        }
+      ],
+      merge_queue_state: { active: null, failures: {} },
+      auto_merge: true,
+      completion_status
+    });
+  }
+
+  /**
+   * A PR-wait row for `RD-1` with a green gate, over which each test lays the
+   * one completion projection it is about.
+   *
+   * @param {Record<string, any>} over
+   * @returns {any}
+   */
+  function prWaitQueue(over = {}) {
+    return queueOf({
+      pr_wait: [{ bead_id: 'RD-1', added_at: 1 }],
+      pr_observations: {
+        'RD-1': {
+          pr: {
+            number: 1,
+            url: 'https://github.com/o/r/pull/1',
+            state: 'OPEN',
+            head_sha: 'a'.repeat(40)
+          },
+          verify: null,
+          error: null,
+          observed_at: 1,
+          gate: GREEN_GATE
+        }
+      },
+      ...over
+    });
+  }
+
+  /**
+   * @param {string} phase
+   * @param {Record<string, any>|null} resolution
+   * @param {Record<string, any>} [over]
+   */
+  function completionOf(phase, resolution, over = {}) {
+    return {
+      'RD-1': {
+        root_bead_id: 'RD-1',
+        phase,
+        subject_role: 'root',
+        subject_bead_id: 'RD-1',
+        repair_sessions_used: 0,
+        repair_session_cap: 2,
+        current_repair: null,
+        active_attempt_id: null,
+        terminal_reason: null,
+        auto_resolution: resolution,
+        ...over
+      }
+    };
+  }
+
+  /**
+   * @param {any} queue
+   * @returns {HTMLElement}
+   */
+  function render(queue) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(queue);
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  /**
+   * @param {HTMLElement} mount
+   * @param {string} text
+   * @returns {HTMLElement}
+   */
+  function badgeWith(mount, text) {
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+    return /** @type {HTMLElement} */ (
+      Array.from(row.querySelectorAll('.worker-mini__badge')).find((element) =>
+        element.textContent?.includes(text)
+      )
+    );
+  }
+
+  test('badges a waiting_metadata row 정정 대기 with its original reason', () => {
+    const mount = render(
+      prWaitQueue({
+        completion_status: completionOf('waiting_metadata', {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+          attempts: 0,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      })
+    );
+
+    const badge = badgeWith(mount, '정정 대기');
+
+    expect(badge).not.toBeUndefined();
+    expect(badge.title).toContain(
+      '원 사유: receipt_unbacked:unit_plan_mismatch'
+    );
+    expect(badge.title).toContain('메타데이터 정정이 관측되면 자동 재개');
+  });
+
+  test('badges an automatic review row with its reviewer, effort and source', () => {
+    const mount = render(
+      prWaitQueue({
+        merge_queue: [
+          {
+            bead_id: 'RD-1',
+            resolution_rounds: 0,
+            authority: { source: 'automatic' },
+            head_review: {
+              state: 'reviewing',
+              reviewer: 'codex',
+              effort: 'xhigh',
+              reviewer_source: 'harness'
+            }
+          }
+        ],
+        merge_queue_state: { active: null, failures: {} },
+        completion_status: completionOf('reviewing', {
+          class: 'auto_review',
+          origin_reason: 'review_receipt_missing',
+          attempts: 1,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      })
+    );
+
+    const badge = badgeWith(mount, '자동 리뷰 중');
+
+    expect(badge).not.toBeUndefined();
+    const title = badge.querySelector('[title]')?.getAttribute('title') || '';
+    expect(title).toContain('리뷰어 codex · effort xhigh');
+    expect(title).toContain('리뷰어 출처 harness');
+  });
+
+  test('badges a retrying row 재시도 n/3 with its next wake and last error', () => {
+    const next_at = Date.parse('2026-08-24T10:30:00Z');
+    const mount = render(
+      prWaitQueue({
+        completion_status: completionOf('retrying', {
+          class: 'retry',
+          origin_reason: 'verify_cmd_failed',
+          attempts: 2,
+          attempt_cap: 3,
+          next_at,
+          last_error: 'npm ci exited 1'
+        })
+      })
+    );
+
+    const badge = badgeWith(mount, '재시도 2/3');
+
+    expect(badge).not.toBeUndefined();
+    const title = badge.querySelector('[title]')?.getAttribute('title') || '';
+    expect(title).toContain('원 사유: verify_cmd_failed');
+    expect(title).toContain(`다음 시각 ${formatTimestampLocal(next_at)}`);
+    expect(title).toContain('마지막 오류: npm ci exited 1');
+  });
+
+  /**
+   * @param {HTMLElement} mount
+   * @returns {HTMLButtonElement}
+   */
+  function mergeButton(mount) {
+    return /** @type {HTMLButtonElement} */ (
+      mount.querySelector(
+        '.worker-mini[data-bead-id="RD-1"] .worker-mini__merge'
+      )
+    );
+  }
+
+  test('keeps [머지] active on a queued retrying row behind a closed gate', () => {
+    const mount = render(
+      autoResolutionRow(
+        completionOf('retrying', {
+          class: 'retry',
+          origin_reason: 'verify_cmd_failed',
+          attempts: 1,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      )
+    );
+
+    const merge = mergeButton(mount);
+
+    expect(merge).not.toBeNull();
+    expect(merge.disabled).toBe(false);
+  });
+
+  test('keeps [머지] active on a queued waiting_metadata row', () => {
+    const mount = render(
+      autoResolutionRow(
+        completionOf('waiting_metadata', {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+          attempts: 0,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      )
+    );
+
+    const merge = mergeButton(mount);
+
+    expect(merge).not.toBeNull();
+    expect(merge.disabled).toBe(false);
+  });
+
+  test('keeps [머지] active on a queued automatic review row', () => {
+    const mount = render(
+      autoResolutionRow(
+        completionOf('reviewing', {
+          class: 'auto_review',
+          origin_reason: 'review_receipt_missing',
+          attempts: 1,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      )
+    );
+
+    const merge = mergeButton(mount);
+
+    expect(merge).not.toBeNull();
+    expect(merge.disabled).toBe(false);
+  });
+
+  test('leaves a queued row with no automatic resolution untouched', () => {
+    const mount = render(autoResolutionRow(completionOf('gating', null)));
+
+    const merge = mergeButton(mount);
+
+    expect(merge).toBeNull();
+  });
+
+  test('prefers 정정 대기 over the receipt merge-failure text on the same row', () => {
+    const mount = render(
+      prWaitQueue({
+        merge_queue: [{ bead_id: 'RD-1', resolution_rounds: 0 }],
+        merge_queue_state: {
+          active: null,
+          failures: { 'RD-1': 'receipt_unbacked:unit_plan_mismatch' }
+        },
+        completion_status: completionOf('waiting_metadata', {
+          class: 'metadata_watch',
+          origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+          attempts: 0,
+          attempt_cap: 3,
+          next_at: null,
+          last_error: null
+        })
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+
+    expect(badgeWith(mount, '정정 대기')).not.toBeUndefined();
+    expect(row.textContent).not.toContain('머지 실패');
+    expect(row.textContent).not.toContain('영수증 확인 필요');
+  });
+
+  test('prefers 정정 대기 over the recorded receipt warning', () => {
+    const queue = prWaitQueue({
+      completion_status: completionOf('waiting_metadata', {
+        class: 'metadata_watch',
+        origin_reason: 'receipt_unbacked:unit_plan_mismatch',
+        attempts: 0,
+        attempt_cap: 3,
+        next_at: null,
+        last_error: null
+      })
+    });
+    queue.pr_observations['RD-1'].receipt_check = {
+      blocking_codes: ['unit_plan_mismatch']
+    };
+
+    const mount = render(queue);
+
+    expect(badgeWith(mount, '정정 대기')).not.toBeUndefined();
+    expect(
+      /** @type {HTMLElement} */ (
+        mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+      ).textContent
+    ).not.toContain('영수증 확인 필요');
+  });
+
+  test('carries the original reason in an exhausted retry tooltip', () => {
+    const mount = render(
+      prWaitQueue({
+        completion_status: completionOf('needs_human', null, {
+          terminal_reason: 'retry_exhausted:verify_cmd_failed'
+        })
+      })
+    );
+
+    const badge = badgeWith(mount, '확인 필요');
+
+    expect(badge.title).toContain('원 사유: verify_cmd_failed');
+  });
+
+  test('carries the original reason in an exhausted auto-review tooltip', () => {
+    const mount = render(
+      prWaitQueue({
+        completion_status: completionOf('needs_human', null, {
+          terminal_reason: 'auto_review_exhausted:review_receipt_missing'
+        })
+      })
+    );
+
+    const badge = badgeWith(mount, '확인 필요');
+
+    expect(badge.title).toContain('원 사유: review_receipt_missing');
+  });
+
+  test('draws no automatic badge when the resolution record did not travel', () => {
+    const mount = render(
+      prWaitQueue({
+        completion_status: completionOf('retrying', null)
+      })
+    );
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+
+    expect(row.textContent).not.toContain('재시도');
+  });
+
+  test('drops the retry denominator when the server sent no budget', () => {
+    const result = autoResolutionBadge(
+      /** @type {any} */ ({
+        phase: 'retrying',
+        auto_resolution: {
+          class: 'retry',
+          origin_reason: 'verify_cmd_failed',
+          attempts: 2,
+          next_at: null,
+          last_error: null
+        }
+      }),
+      null
+    );
+
+    expect(result?.label).toBe('재시도 2');
+  });
+});
+
+describe('worker view — head review 시도 이력 표시 (UI-hk74 §7)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  /**
+   * @param {Record<string, any>} attempts
+   * @returns {HTMLElement}
+   */
+  function renderDone(attempts) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({ done: [{ bead_id: 'RD-1', added_at: 1 }], attempts })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+    return mount;
+  }
+
+  test('marks an automatic head review on the done row', () => {
+    const mount = renderDone({
+      a1: { attempt_id: 'a1', bead_id: 'RD-1', status: 'done' },
+      r1: {
+        attempt_id: 'r1',
+        bead_id: 'RD-1',
+        status: 'done',
+        kind: 'head_review',
+        origin: 'auto'
+      }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+
+    expect(row.textContent).toContain('리뷰 · 자동');
+  });
+
+  test('marks a clicked head repair without the 자동 marker', () => {
+    const mount = renderDone({
+      a1: { attempt_id: 'a1', bead_id: 'RD-1', status: 'done' },
+      p1: {
+        attempt_id: 'p1',
+        bead_id: 'RD-1',
+        status: 'done',
+        kind: 'head_repair',
+        origin: 'click'
+      }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+
+    expect(row.textContent).toContain('수리');
+    expect(row.textContent).not.toContain('수리 · 자동');
+  });
+
+  test('leaves a done row of plain implementation attempts unbadged', () => {
+    const mount = renderDone({
+      a1: { attempt_id: 'a1', bead_id: 'RD-1', status: 'done' }
+    });
+
+    const row = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
+    );
+
+    expect(row.textContent).not.toContain('리뷰');
+    expect(row.textContent).not.toContain('수리');
+  });
+
+  test('sums a head review attempt into the done row token total', () => {
+    const mount = renderDone({
+      a1: {
+        attempt_id: 'a1',
+        bead_id: 'RD-1',
+        status: 'done',
+        usage: { input_tokens: 1000, output_tokens: 0 }
+      },
+      r1: {
+        attempt_id: 'r1',
+        bead_id: 'RD-1',
+        status: 'done',
+        kind: 'head_review',
+        origin: 'auto',
+        usage: { input_tokens: 1000, output_tokens: 0 }
+      }
+    });
+
+    const el = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .worker-usage')
+    );
+
+    expect(el.textContent).toContain('2.0k');
+  });
+
+  test('keeps a running head review out of the 실행중 tiles', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const queueStore = createWorkerQueueStore();
+    queueStore.set(
+      queueOf({
+        attempts: {
+          r1: {
+            attempt_id: 'r1',
+            bead_id: 'RD-1',
+            status: 'running',
+            kind: 'head_review',
+            origin: 'auto'
+          }
+        }
+      })
+    );
+    createWorkerView(mount, {
+      issueStores: seedCandidates(),
+      queueStore,
+      transport: vi.fn()
+    });
+
+    expect(mount.querySelector('.rtile[data-attempt-id="r1"]')).toBeNull();
   });
 });

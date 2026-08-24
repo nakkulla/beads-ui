@@ -44,6 +44,7 @@ import {
   cmpCreatedDescThenPriority,
   cmpEffectiveRank
 } from '../../data/sort.js';
+import { isImplementationAttempt } from '../../utils/active-attempts.js';
 import { buildChildrenIndex, rollupFor } from '../../utils/child-rollup.js';
 import { copyToClipboard } from '../../utils/clipboard.js';
 import { resolveContinuationMismatch } from '../../utils/continuation-dialog.js';
@@ -54,7 +55,10 @@ import {
 } from '../../utils/exec-settings-chip.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { debug } from '../../utils/logging.js';
-import { coerceTimestampMs } from '../../utils/relative-time.js';
+import {
+  coerceTimestampMs,
+  formatTimestampLocal
+} from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
 import { showToast } from '../../utils/toast.js';
@@ -73,6 +77,7 @@ import {
   discardCompletionMessage,
   discardConfirmationMessage,
   discardProjection,
+  headReviewAttemptBadges,
   miniRow,
   paneTemplate,
   repoOpsStripTemplate,
@@ -813,14 +818,159 @@ function baseException(declared_base, target_base) {
 }
 
 /**
+ * Completion phases that leave the row's own buttons clickable: the two that
+ * are already settled for a person, plus the three UI-hk74 §4 phases the
+ * coordinator resolves on its own without owning the merge effect.
+ *
+ * @type {Set<string>}
+ */
+const UNLOCKED_COMPLETION_PHASES = new Set([
+  'paused',
+  'needs_human',
+  'waiting_metadata',
+  'reviewing',
+  'retrying'
+]);
+
+/**
+ * The three phases the completion coordinator is resolving on its own
+ * (UI-hk74 §4). Named apart from {@link UNLOCKED_COMPLETION_PHASES} because
+ * §9 gives them an action a `paused` or `needs_human` row does not have: the
+ * click ends the automatic wait and hands the saga back to the gate.
+ *
+ * @type {Set<string>}
+ */
+const AUTO_RESOLUTION_PHASES = new Set([
+  'waiting_metadata',
+  'reviewing',
+  'retrying'
+]);
+
+/**
+ * The badge for an intent the completion coordinator is resolving WITHOUT a
+ * person (UI-hk74 §9). Null for every other phase, and null for one of the
+ * three whose `auto_resolution` record did not travel — fail-quiet, because a
+ * badge whose state cannot be read tells nobody anything.
+ *
+ * @param {import('../../data/worker-queue-store.js').CompletionStatus|null|undefined} completion
+ * @param {{ reviewer?: string, effort?: string, reviewer_source?: string|null }|null|undefined} head_review
+ * @returns {{ label: string, details: string[], live: boolean }|null}
+ */
+export function autoResolutionBadge(completion, head_review) {
+  const raw =
+    completion && typeof completion === 'object'
+      ? completion.auto_resolution
+      : null;
+  const resolution =
+    raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null;
+  if (!resolution || !completion) {
+    return null;
+  }
+  const origin =
+    typeof resolution.origin_reason === 'string' &&
+    resolution.origin_reason.length > 0
+      ? `원 사유: ${resolution.origin_reason}`
+      : '';
+  switch (completion.phase) {
+    case 'waiting_metadata':
+      return {
+        label: '정정 대기',
+        details: [origin, '메타데이터 정정이 관측되면 자동 재개'].filter(
+          Boolean
+        ),
+        live: false
+      };
+    case 'reviewing': {
+      const reviewer =
+        typeof head_review?.reviewer === 'string' ? head_review.reviewer : '';
+      const effort =
+        typeof head_review?.effort === 'string' ? head_review.effort : '';
+      // 출처는 계약이 정의한 두 층뿐이다; 그 밖의 값은 표시하지 않는다.
+      const source =
+        head_review?.reviewer_source === 'bead' ||
+        head_review?.reviewer_source === 'harness'
+          ? head_review.reviewer_source
+          : '';
+      return {
+        label: '자동 리뷰 중',
+        details: [
+          reviewer
+            ? `리뷰어 ${reviewer}${effort ? ` · effort ${effort}` : ''}`
+            : '',
+          source ? `리뷰어 출처 ${source}` : '',
+          origin
+        ].filter(Boolean),
+        live: true
+      };
+    }
+    case 'retrying': {
+      const attempts = Number.isInteger(resolution.attempts)
+        ? Math.max(0, Number(resolution.attempts))
+        : 0;
+      const cap =
+        Number.isInteger(resolution.attempt_cap) &&
+        Number(resolution.attempt_cap) > 0
+          ? Number(resolution.attempt_cap)
+          : 0;
+      const next_at =
+        typeof resolution.next_at === 'number'
+          ? formatTimestampLocal(resolution.next_at)
+          : '';
+      const last_error =
+        typeof resolution.last_error === 'string' &&
+        resolution.last_error.length > 0
+          ? resolution.last_error
+          : '';
+      return {
+        // 예산은 서버가 싣는다 — 클라이언트가 3을 다시 적으면 계약이 두 곳에
+        // 생긴다. 값이 없으면 분모 없이 횟수만 보인다.
+        label:
+          cap > 0
+            ? `재시도 ${Math.min(attempts, cap)}/${cap}`
+            : `재시도 ${attempts}`,
+        details: [
+          origin,
+          next_at ? `다음 시각 ${next_at}` : '',
+          last_error ? `마지막 오류: ${last_error}` : ''
+        ].filter(Boolean),
+        live: true
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * The original terminal reason carried inside an exhausted automatic
+ * resolution's `terminal_reason` (UI-hk74 §9), or `''` when there is none.
+ *
+ * @param {unknown} terminal_reason
+ * @returns {string}
+ */
+function exhaustedOriginReason(terminal_reason) {
+  if (typeof terminal_reason !== 'string') {
+    return '';
+  }
+  for (const prefix of ['retry_exhausted:', 'auto_review_exhausted:']) {
+    if (terminal_reason.startsWith(prefix)) {
+      return terminal_reason.slice(prefix.length);
+    }
+  }
+  return '';
+}
+
+/**
  * Turn the server's bounded completion projection into one root-card status.
  * Missing or unfamiliar optional projection stays invisible; malformed durable
  * intents are normalized server-side to the explicit `needs_human` phase.
  *
  * @param {import('../../data/worker-queue-store.js').CompletionStatus|null|undefined} completion
+ * @param {{ label: string, details: string[], live: boolean }|null} [auto_resolution] - The
+ * precomputed {@link autoResolutionBadge} for the same row.
  * @returns {{ badge: string, title: string, alert: boolean, lock_actions: boolean, repair_pr_url: string, repair_pr_number: number|null }|null}
  */
-function completionView(completion) {
+function completionView(completion, auto_resolution = null) {
   if (!completion || typeof completion !== 'object') {
     return null;
   }
@@ -860,6 +1010,16 @@ function completionView(completion) {
     case 'cleaning':
       badge = '마무리 중';
       break;
+    // 자동 해소 phase (UI-hk74 §4)는 종결이 아니다: 라벨은 해소 배지가 정하고,
+    // 읽을 수 없는 기록이면 이 행은 아무 것도 주장하지 않는다.
+    case 'waiting_metadata':
+    case 'reviewing':
+    case 'retrying':
+      if (!auto_resolution) {
+        return null;
+      }
+      badge = auto_resolution.label;
+      break;
     case 'paused':
       badge = '자동 진행 일시정지';
       break;
@@ -885,6 +1045,15 @@ function completionView(completion) {
       `${completion.failure_stage || 'failure'} · ${completion.failure_reason || '원인 미상'}`
     );
   }
+  // 소진되어 종결된 자동 해소는 원 사유를 함께 보인다 (§9): `retry_exhausted:`
+  // 라는 껍데기만으로는 무엇이 세 번 실패했는지 읽을 수 없다.
+  const exhausted_origin = exhaustedOriginReason(completion.terminal_reason);
+  if (exhausted_origin) {
+    details.push(`원 사유: ${exhausted_origin}`);
+  }
+  for (const line of auto_resolution ? auto_resolution.details : []) {
+    details.push(line);
+  }
   if (completion.active_attempt_id) {
     details.push(`attempt ${completion.active_attempt_id}`);
   }
@@ -902,8 +1071,10 @@ function completionView(completion) {
     badge,
     title: details.join('\n'),
     alert: completion.phase === 'needs_human',
-    lock_actions:
-      completion.phase !== 'paused' && completion.phase !== 'needs_human',
+    // [머지] 클릭은 세 자동 해소 phase에서도 살아 있어야 한다 (§9): 수동
+    // authority가 자동 해소보다 우선하고, 그 클릭이 `auto_resolution`을 비우는
+    // 유일한 경로다. 잠기는 것은 되돌릴 수 없는 진행 중 단계뿐이다.
+    lock_actions: !UNLOCKED_COMPLETION_PHASES.has(completion.phase),
     repair_pr_url:
       repair && typeof repair.pr_url === 'string' ? repair.pr_url : '',
     repair_pr_number: repair_number
@@ -972,6 +1143,18 @@ export function prStatusBadge(input) {
   if (input.conflict_badge) {
     return badge(input.conflict_badge, {
       live: input.conflict_live === true
+    });
+  }
+  // 자동 해소 중인 행 (UI-hk74 §9)은 아래의 `영수증 확인 필요`·`머지 실패 —
+  // ... [머지] 클릭으로 수동 진행 가능`보다 먼저 이긴다: 그 문구들이 말하는
+  // 사유가 바로 이 phase에 들어온 원인이고, "클릭으로만 풀린다"는 안내는 이미
+  // 자동으로 재개를 기다리는 행에서 자기 모순이다. `리뷰 진행 중`보다도 먼저인
+  // 것은 자동 리뷰가 그 저널의 소유자이기 때문이다 — 같은 사실을 두 번 말하지
+  // 않고 어느 쪽 authority인지까지 말하는 배지가 이긴다.
+  if (input.auto_resolution) {
+    return badge(input.auto_resolution.label, {
+      title: input.auto_resolution.details.join('\n'),
+      live: input.auto_resolution.live === true
     });
   }
   if (input.head_review && input.head_review.state !== 'failed') {
@@ -1210,7 +1393,6 @@ function prWaitRow(
   const obs = observations[bead_id] || null;
   const gate = obs && obs.gate ? obs.gate : null;
   const pr = obs && obs.pr ? obs.pr : null;
-  const recovery = completionView(completion);
   const resolution = resolutionView(
     merge_queue ? merge_queue.resolution : null
   );
@@ -1218,6 +1400,9 @@ function prWaitRow(
     merge_queue ? merge_queue.head_review : null
   );
   const journal = (merge_queue && merge_queue.head_review) || null;
+  // 리뷰어·effort·출처는 저널이 유일한 원천이므로 배지도 거기서 읽는다 (§9).
+  const auto_resolution = autoResolutionBadge(completion, journal);
+  const recovery = completionView(completion, auto_resolution);
   const authority = (merge_queue && merge_queue.authority) || null;
   // The continuation phases have a live or pending attempt behind them, and
   // cancelling one is exactly what discards the authority (UI-58w8 §1) — the
@@ -1229,11 +1414,21 @@ function prWaitRow(
   // enrolment sitting under a global toggle that is off. For all three the
   // way forward is a fresh [머지] click, which the server re-validates from a
   // new authoritative observation before issuing a new manual authority.
+  // A row the coordinator is resolving without a person (§4). It IS queued —
+  // the automatic review lane enrols it — so without this it falls into the
+  // "queued rows have nothing to click but [취소]" branch and loses the button
+  // §9 requires. Same shape as the three cases beside it: the click is the way
+  // forward and the server re-validates before acting on it.
+  const auto_resolution_phase =
+    !!completion &&
+    typeof completion === 'object' &&
+    AUTO_RESOLUTION_PHASES.has(completion.phase);
   const needs_reclick =
     queued &&
     !queue_active &&
     (journal?.state === 'failed' ||
       !authority ||
+      auto_resolution_phase ||
       (authority.source === 'automatic' && !auto_merge_on));
   const conflict_badge =
     conflict_session === 'paused'
@@ -1311,6 +1506,7 @@ function prWaitRow(
             failure_reason: journal.failure_reason
           }
         : null,
+    auto_resolution,
     recovery,
     cleanup_failed,
     cleanup_label: cleanup_failed
@@ -1417,6 +1613,13 @@ function prWaitRow(
       // (UI-58w8 §1): stale receipt and BEHIND are exactly the gates the new
       // authority's continuation exists to carry, and the server re-observes
       // the PR before it issues one.
+      // §9: the click is ACTIVE in the three automatic-resolution phases,
+      // whatever the gate currently says. It is not a re-click on a terminal
+      // gate (the UI-vkk8 §2 rule `reclick_continuable` guards): the server
+      // has a defined effect for it — end the wait, clear `auto_resolution`,
+      // return to `gating`, and promote the automatic authority to manual,
+      // which is exactly the authority that waives the receipt hold those
+      // phases are usually waiting on.
       (enabled ||
         conflicting ||
         gate?.reason === 'base_behind' ||
@@ -1424,7 +1627,8 @@ function prWaitRow(
         gate?.reason === 'review_receipt_stale' ||
         cleanup_retry ||
         external_cleanup ||
-        reclick_continuable),
+        reclick_continuable ||
+        (auto_resolution_phase && !queue_active)),
     // The label says what the click DOES: on a conflicting gate it dispatches a
     // resolution session, and a button reading 머지 there is the misread that
     // put this bead here (UI-dxgz §2).
@@ -3351,7 +3555,15 @@ export function createWorkerView(mount_element, options = {}) {
           stale_work,
           // 파킹 행은 처분 대기 카드다 (§3.5): 뱃지 + 버튼 2개. 뱃지는 사람의
           // 결정을 기다리는 상태이므로 alert 색을 쓴다.
-          badges: [...wait_badges, ...(parked ? ['⏸ REVISE 파킹'] : [])],
+          // 완료 행은 이 bead에 섞인 head review·repair 시도를 구분해 보인다
+          // (UI-hk74 §7) — 토큰 합계와 작업 시간은 이미 그것들을 포함한다.
+          badges: [
+            ...wait_badges,
+            ...(parked ? ['⏸ REVISE 파킹'] : []),
+            ...(lane === 'done'
+              ? headReviewAttemptBadges(q.attempts || {}, e.bead_id)
+              : [])
+          ],
           alert: !!parked,
           revise_action: !!parked,
           revise_enabled:
@@ -3389,7 +3601,14 @@ export function createWorkerView(mount_element, options = {}) {
         };
       });
 
-    const attempts = q.attempts ? Object.values(q.attempts) : [];
+    // 실행중 그리드는 구현 시도만 그린다 (UI-hk74 §7). head review·repair는
+    // PR이 이미 열린 bead에서 돌기 때문에, 타일을 그리면 그 bead가 PR 대기 행과
+    // 실행중 타일에 동시에 나오고 타일의 일시정지·이어하기 버튼이 구현 시도용
+    // 경로로 리뷰 시도를 건드리게 된다. 진행 사실은 PR 행의 `자동 리뷰 중`
+    // 배지가, 결과는 완료 행의 `리뷰`/`수리` 배지가 소유한다.
+    const attempts = q.attempts
+      ? Object.values(q.attempts).filter(isImplementationAttempt)
+      : [];
     // A resumed_from carried by any attempt marks its ancestor as spent, so an
     // ancestor is never offered as a resume target (spec §1).
     /** @type {Set<string>} */

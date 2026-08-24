@@ -9,6 +9,7 @@ import {
   parseRepairResultLine,
   parseVerdictLine
 } from './head-review-transport.js';
+import { workspaceStateDir } from './state-paths.js';
 
 /** @type {string} */
 let tmp_state;
@@ -132,13 +133,64 @@ function repairPacket(extra = {}) {
   };
 }
 
+/**
+ * A store stub carrying only what the attempt history needs: the same
+ * terminal-wins rule the real `upsertHeadReviewAttempt` enforces.
+ *
+ * @param {Record<string, any>} [attempts]
+ * @param {any[]} [merge_queue]
+ */
+function attemptStore(attempts = {}, merge_queue = []) {
+  const terminal = new Set(['done', 'failed', 'orphaned', 'stopped']);
+  return {
+    attempts,
+    merge_queue,
+    snapshot: () => ({ attempts, merge_queue }),
+    setHeadReviewState: (
+      /** @type {string} */ _ws,
+      /** @type {any} */ input
+    ) => {
+      const entry = merge_queue.find(
+        (/** @type {any} */ item) => item.bead_id === input.bead_id
+      );
+      const review = entry ? entry.head_review : null;
+      if (
+        !review ||
+        review.authority_id !== input.authority_id ||
+        review.head_sha !== input.head_sha ||
+        review.state !== input.expected_state
+      ) {
+        return { ok: false };
+      }
+      entry.head_review = { ...review, ...input.patch };
+      return { ok: true };
+    },
+    upsertHeadReviewAttempt: (
+      /** @type {string} */ _ws,
+      /** @type {{ attempt_id: string, patch: Record<string, any> }} */ input
+    ) => {
+      const current = attempts[input.attempt_id];
+      if (current && terminal.has(String(current.status))) {
+        return { ok: false, reason: 'head_review_attempt_terminal' };
+      }
+      attempts[input.attempt_id] = { ...(current || {}), ...input.patch };
+      return { ok: true };
+    }
+  };
+}
+
 describe('worker/head-review-transport — reviewer selection', () => {
   test('defaults to the harness implementation gate reviewer', async () => {
     const { t } = transport();
 
     const s = await t.selectReviewer('UI-1');
 
-    expect(s).toEqual({ ok: true, reviewer: 'codex', effort: 'xhigh' });
+    expect(s).toEqual({
+      ok: true,
+      reviewer: 'codex',
+      effort: 'xhigh',
+      source: 'harness'
+    });
   });
 
   test('honours Bead impl_review_model and effort', async () => {
@@ -148,7 +200,12 @@ describe('worker/head-review-transport — reviewer selection', () => {
 
     const s = await t.selectReviewer('UI-1');
 
-    expect(s).toEqual({ ok: true, reviewer: 'opus', effort: 'high' });
+    expect(s).toEqual({
+      ok: true,
+      reviewer: 'opus',
+      effort: 'high',
+      source: 'bead'
+    });
   });
 
   test('fails closed on self and skip selections', async () => {
@@ -187,6 +244,58 @@ describe('worker/head-review-transport — reviewer selection', () => {
     expect(bad_effort).toMatchObject({
       ok: false,
       reason: 'reviewer_effort_invalid'
+    });
+  });
+
+  test('records the harness rung when only the effort comes from the Bead', async () => {
+    const { t, issue } = transport();
+    issue.metadata.impl_review_effort = 'high';
+
+    const s = await t.selectReviewer('UI-1');
+
+    expect(s).toEqual({
+      ok: true,
+      reviewer: 'codex',
+      effort: 'high',
+      source: 'harness'
+    });
+  });
+
+  test('ignores workspace kv reviewer values', async () => {
+    const { t, issue } = transport();
+    issue.metadata.review_model = 'opus';
+    issue.metadata.review_effort = 'low';
+
+    const s = await t.selectReviewer('UI-1');
+
+    expect(s).toMatchObject({ reviewer: 'codex', effort: 'xhigh' });
+  });
+
+  test('fails closed when the harness catalog cannot be read', async () => {
+    const { t } = transport({ reviewDefaults: () => ({ ok: false }) });
+
+    const s = await t.selectReviewer('UI-1');
+
+    expect(s).toMatchObject({
+      ok: false,
+      reviewer: null,
+      effort: null,
+      reason: 'reviewer_selection_invalid'
+    });
+  });
+
+  test('rejects a self default coming from the harness catalog', async () => {
+    const { t } = transport({
+      reviewDefaults: () => ({ ok: true, reviewer: 'self', effort: 'xhigh' })
+    });
+
+    const s = await t.selectReviewer('UI-1');
+
+    expect(s).toMatchObject({
+      ok: false,
+      reviewer: 'self',
+      source: 'harness',
+      reason: 'reviewer_selection_self'
     });
   });
 
@@ -618,5 +727,378 @@ describe('worker/head-review-transport — repair runs', () => {
 
     expect(result).toMatchObject({ ok: false, reason: 'turn_failed' });
     expect(probes).toEqual([]);
+  });
+});
+
+describe('worker/head-review-transport — attempt history', () => {
+  test('opens a running record before the spawn and settles it done', async () => {
+    const store = attemptStore();
+    const { t } = transport({ store });
+
+    await t.runReview(
+      reviewPacket({ origin: 'auto', reviewer_source: 'harness' })
+    );
+
+    expect(store.attempts['review:authority-1:x']).toMatchObject({
+      bead_id: 'UI-1',
+      kind: 'head_review',
+      origin: 'auto',
+      reviewer_source: 'harness',
+      authority_id: 'authority-1',
+      head_sha: HEAD,
+      status: 'done'
+    });
+  });
+
+  test('points log_path at the attempt session log instead of copying it', async () => {
+    const store = attemptStore();
+    const { t } = transport({ store });
+
+    await t.runReview(reviewPacket());
+
+    expect(store.attempts['review:authority-1:x'].log_path).toMatch(
+      /head-review-attempts\/review_authority-1_x\.log\.jsonl$/
+    );
+  });
+
+  test('copies the runner result usage onto the settled attempt', async () => {
+    const store = attemptStore();
+    const { t } = transport({
+      store,
+      makeRunner: (/** @type {string} */ name) => ({
+        name,
+        spawn: () => ({
+          pid: 7,
+          done: Promise.resolve({
+            success: true,
+            reason: 'ok',
+            exit: 0,
+            blocked: false,
+            events: [
+              {
+                kind: 'text',
+                text: `${HEAD_REVIEW_VERDICT_MARKER} {"verdict":"APPROVE","findings":[]}`
+              }
+            ],
+            raw: [
+              {
+                type: 'turn.completed',
+                usage: { input_tokens: 11, output_tokens: 5 }
+              }
+            ]
+          })
+        })
+      })
+    });
+
+    await t.runReview(reviewPacket());
+
+    expect(store.attempts['review:authority-1:x'].usage).toMatchObject({
+      input_tokens: 11,
+      output_tokens: 5
+    });
+  });
+
+  test('records a failed session as a failed attempt', async () => {
+    const store = attemptStore();
+    const { t } = transport({
+      store,
+      makeRunner: (/** @type {string} */ name) => ({
+        name,
+        spawn: () => ({
+          pid: 7,
+          done: Promise.resolve({
+            success: false,
+            reason: 'blocker',
+            exit: 1,
+            blocked: true,
+            events: []
+          })
+        })
+      })
+    });
+
+    await t.runReview(reviewPacket());
+
+    expect(store.attempts['review:authority-1:x']).toMatchObject({
+      status: 'failed',
+      cause: 'blocker'
+    });
+  });
+
+  test('adopts a terminal marker into a history record that was never written', async () => {
+    const store = attemptStore();
+    const { t, calls } = transport({ store });
+    await t.runReview(reviewPacket());
+    delete store.attempts['review:authority-1:x'];
+    calls.spawn.length = 0;
+
+    await t.runReview(reviewPacket());
+
+    expect(calls.spawn).toHaveLength(0);
+    expect(store.attempts['review:authority-1:x']).toMatchObject({
+      status: 'done'
+    });
+  });
+
+  test('settles a running record whose marker never landed', () => {
+    const store = attemptStore({
+      'review:authority-9:x': {
+        attempt_id: 'review:authority-9:x',
+        bead_id: 'UI-1',
+        kind: 'head_review',
+        status: 'running'
+      }
+    });
+    const { t } = transport({ store });
+
+    t.reconcileAttempts();
+
+    expect(store.attempts['review:authority-9:x']).toMatchObject({
+      status: 'failed',
+      cause: 'attempt_marker_missing'
+    });
+  });
+
+  test('fails the journal of an attempt whose marker never landed', () => {
+    const store = attemptStore(
+      {
+        'review:authority-9:x': {
+          attempt_id: 'review:authority-9:x',
+          bead_id: 'UI-1',
+          kind: 'head_review',
+          status: 'running'
+        }
+      },
+      [
+        {
+          bead_id: 'UI-root',
+          authority: { id: 'authority-9' },
+          head_review: {
+            authority_id: 'authority-9',
+            head_sha: HEAD,
+            state: 'reviewing',
+            review_attempt_id: 'review:authority-9:x'
+          }
+        }
+      ]
+    );
+    const { t } = transport({ store });
+
+    t.reconcileAttempts();
+
+    expect(store.merge_queue[0].head_review).toMatchObject({
+      state: 'failed',
+      failure_reason: 'auto_review_journal_missing'
+    });
+  });
+
+  test('leaves a journal alone when its attempt has a marker', async () => {
+    const store = attemptStore({}, [
+      {
+        bead_id: 'UI-root',
+        authority: { id: 'authority-1' },
+        head_review: {
+          authority_id: 'authority-1',
+          head_sha: HEAD,
+          state: 'reviewing',
+          review_attempt_id: 'review:authority-1:x'
+        }
+      }
+    ]);
+    const { t } = transport({
+      store,
+      makeRunner: (/** @type {string} */ name) => ({
+        name,
+        spawn: () => ({ pid: 99, done: new Promise(() => {}) })
+      })
+    });
+    void t.runReview(reviewPacket());
+    while (!store.attempts['review:authority-1:x']) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    t.reconcileAttempts();
+
+    expect(store.merge_queue[0].head_review.state).toBe('reviewing');
+  });
+
+  test('spawns nothing when the attempt marker cannot be prerecorded', async () => {
+    const store = attemptStore();
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceStateDir(WS), 'head-review-attempts'),
+      'not a directory'
+    );
+    const { t, calls } = transport({ store });
+
+    const result = await t.runReview(reviewPacket());
+
+    expect(calls.spawn).toHaveLength(0);
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'attempt_marker_unwritable'
+    });
+  });
+
+  test('leaves an adoptable marker alone during reconcile', async () => {
+    const store = attemptStore();
+    const { t } = transport({
+      store,
+      makeRunner: (/** @type {string} */ name) => ({
+        name,
+        spawn: () => ({ pid: 99, done: new Promise(() => {}) })
+      })
+    });
+    void t.runReview(reviewPacket());
+    while (!store.attempts['review:authority-1:x']) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    t.reconcileAttempts();
+
+    expect(store.attempts['review:authority-1:x'].status).toBe('running');
+  });
+});
+
+describe('worker/head-review-transport — upstream violation note', () => {
+  test('appends one comment for a root and head', async () => {
+    /** @type {any[]} */
+    const comments = [];
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async (
+          /** @type {string} */ bead_id,
+          /** @type {string} */ text
+        ) => {
+          comments.push({ bead_id, text });
+        }
+      }
+    });
+
+    const first = await t.recordUpstreamViolation({
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_missing',
+      prior_receipt: null,
+      gate_reason: 'review_receipt_missing'
+    });
+
+    expect(first).toBe(true);
+    expect(comments).toEqual([
+      {
+        bead_id: 'UI-1',
+        text: expect.stringContaining(
+          `## ⚠️ 상류 위반 관측 — impl_review missing@${HEAD}`
+        )
+      }
+    ]);
+  });
+
+  test('writes nothing the second time for the same root and head', async () => {
+    /** @type {any[]} */
+    const comments = [];
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async () => {
+          comments.push(1);
+        }
+      }
+    });
+    const input = {
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_stale',
+      prior_receipt: `codex@${NEW_HEAD}`,
+      gate_reason: 'review_receipt_stale'
+    };
+
+    await t.recordUpstreamViolation(input);
+    const second = await t.recordUpstreamViolation(input);
+
+    expect(second).toBe(false);
+    expect(comments).toHaveLength(1);
+  });
+
+  test('never repeats a comment whose first attempt failed', async () => {
+    let fail = true;
+    /** @type {any[]} */
+    const comments = [];
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async () => {
+          if (fail) {
+            throw new Error('bd down');
+          }
+          comments.push(1);
+        }
+      }
+    });
+    const input = {
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_missing'
+    };
+
+    await t.recordUpstreamViolation(input);
+    fail = false;
+    const second = await t.recordUpstreamViolation(input);
+
+    expect(second).toBe(false);
+    expect(comments).toHaveLength(0);
+  });
+
+  test('writes no comment when the marker cannot be claimed', async () => {
+    /** @type {any[]} */
+    const comments = [];
+    fs.mkdirSync(workspaceStateDir(WS), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceStateDir(WS), 'head-review-violations'),
+      'not a directory'
+    );
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async () => {
+          comments.push(1);
+        }
+      }
+    });
+
+    const recorded = await t.recordUpstreamViolation({
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_missing'
+    });
+
+    expect(recorded).toBe(false);
+    expect(comments).toHaveLength(0);
+  });
+
+  test('reports a failed comment without throwing so dispatch continues', async () => {
+    const { t } = transport({
+      bd: {
+        readIssue: async () => ({ metadata: {} }),
+        setMetadata: async () => {},
+        comment: async () => {
+          throw new Error('bd down');
+        }
+      }
+    });
+
+    const recorded = await t.recordUpstreamViolation({
+      root_bead_id: 'UI-1',
+      head_sha: HEAD,
+      reason: 'review_receipt_missing'
+    });
+
+    expect(recorded).toBe(false);
   });
 });

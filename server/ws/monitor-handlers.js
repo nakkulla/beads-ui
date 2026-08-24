@@ -17,7 +17,10 @@
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
-import { activeBeadIds } from '../../app/utils/active-attempts.js';
+import {
+  activeBeadIds,
+  isImplementationAttempt
+} from '../../app/utils/active-attempts.js';
 import { runBdJsonProjected } from '../bd.js';
 import { getConfig } from '../config.js';
 import { createPoller } from '../poller.js';
@@ -487,7 +490,14 @@ function hasPipeline(snapshot) {
   }
   const attempts = snapshot.attempts || {};
   for (const attempt of Object.values(attempts)) {
-    if (attempt && /** @type {any} */ (attempt).status === 'running') {
+    // Only an implementation run means "this repo has a pipeline" (UI-hk74 §7):
+    // a head review runs against a PR that is already open, so a repo whose
+    // lanes are all empty except for one review attempt has nothing to show.
+    if (
+      attempt &&
+      /** @type {any} */ (attempt).status === 'running' &&
+      isImplementationAttempt(attempt)
+    ) {
       return true;
     }
   }

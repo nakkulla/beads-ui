@@ -76,14 +76,45 @@ export function parseReviewReceipt(raw) {
 }
 
 /**
- * Harness implementation-gate defaults, projected here as a consumer. The
- * canonical owner is dotfiles `docs/contracts/harness.yaml`; background
- * continuation selection is exactly Bead `impl_review_model`/`impl_review_effort`
- * then this default — no other layer participates (workflow contract, manual
- * merge continuation).
+ * The journal placeholder for a reviewer that has not been resolved yet
+ * (UI-hk74 §6). Two journals carry it: the one an AUTOMATIC enrolment
+ * prerecords in the same revision as the `reviewing` phase — the ladder is a
+ * bd read and that revision must not depend on one — and the one a failed
+ * selection opens only to record its own failure.
+ *
+ * It is deliberately not a runnable reviewer name: nothing may dispatch on it,
+ * and {@link createHeadReview} resolves the ladder into the journal before any
+ * attempt is minted.
  */
-export const DEFAULT_REVIEWER = 'codex';
-export const DEFAULT_REVIEW_EFFORT = 'xhigh';
+export const UNRESOLVED_REVIEWER = 'unresolved';
+export const UNRESOLVED_REVIEW_EFFORT = 'unresolved';
+
+/**
+ * Whether the head an AUTOMATIC dispatch just observed still is the head the
+ * enrolment bound its authority to (UI-hk74 §6.1).
+ *
+ * The automatic lane has no vouched queue-owned mutation to offer, so a head
+ * that moved between enrolment and dispatch cannot be reviewed under this
+ * journal: `ensureApproved` would supersede it and fail with a lineage reason
+ * that describes the wrong thing. The caller stops instead, leaving the journal
+ * `pending` so a [머지] click promotes this exact authority and the manual lane
+ * re-drives it with real mutation evidence.
+ *
+ * A row with no authority at all cannot have drifted — there is nothing to
+ * compare against, and the caller's own authority check owns that case.
+ *
+ * @param {{ requested_head_sha?: unknown }|null|undefined} authority
+ * @param {string} head_sha
+ */
+export function autoReviewHeadDrifted(authority, head_sha) {
+  if (!authority || typeof authority.requested_head_sha !== 'string') {
+    return false;
+  }
+  return (
+    authority.requested_head_sha.toLowerCase() !==
+    String(head_sha).toLowerCase()
+  );
+}
 
 /**
  * Deterministic review attempt identity for one (authority, head). Being a
@@ -133,9 +164,11 @@ export function findingsDigest(findings) {
  * @typedef {Object} HeadReviewDeps
  * @property {string} workspace
  * @property {ReturnType<typeof import('./queue-store.js').createQueueStore>} store
- * @property {(bead_id: string) => Promise<{ ok: boolean, reviewer?: string, effort?: string, reason?: string }>} selectReviewer -
- * Resolve the background reviewer. On `ok:false` the raw selected labels are
- * still returned so the failure journal names what was selected.
+ * @property {(bead_id: string) => Promise<{ ok: boolean, reviewer?: string|null, effort?: string|null, source?: 'bead'|'harness'|null, reason?: string }>} selectReviewer -
+ * Resolve the background reviewer through the contract's manual-continuation
+ * ladder. On `ok:false` the raw selected labels are still returned so the
+ * failure journal names what was selected; `source` records WHICH rung
+ * answered (UI-hk74 §6).
  * @property {(bead_id: string) => Promise<{ actor: string, head_sha: string, raw: string }|null>} readReceipt -
  * Authoritative current `impl_review` receipt (Beads read), parsed.
  * @property {(bead_id: string, input: { prior_head_sha: string, head_sha: string, target_base: string, head_ref?: string|null, mutation?: string|null }) => Promise<{ queue_owned: boolean, reason?: string }>} lineage -
@@ -175,6 +208,34 @@ export function createHeadReview(deps) {
     return (
       lane.find((/** @type {any} */ e) => e.bead_id === queue_bead_id) || null
     );
+  }
+
+  /**
+   * Whether an AUTOMATIC authority is allowed to open/progress a journal
+   * (UI-hk74 §6.2). Exactly one automatic case qualifies: the root the
+   * completion coordinator enrolled into the automatic review lane, which is
+   * durably visible as a `reviewing` intent whose resolution class is
+   * `auto_review`. A row enrolled by the ordinary auto-merge enroller answers
+   * false and keeps its pre-UI-hk74 behaviour of never opening a journal.
+   *
+   * @param {string} queue_bead_id
+   */
+  function autoReviewAuthorized(queue_bead_id) {
+    try {
+      const intent = /** @type {any} */ (deps.store.snapshot(workspace))
+        .completion_intents?.[queue_bead_id];
+      return (
+        intent?.phase === 'reviewing' &&
+        intent.auto_resolution?.class === 'auto_review'
+      );
+    } catch (err) {
+      log(
+        'auto-review authorization read failed for %s: %o',
+        queue_bead_id,
+        err
+      );
+      return false;
+    }
   }
 
   /**
@@ -330,7 +391,7 @@ export function createHeadReview(deps) {
       authority_id: authority.id,
       head_sha,
       reviewer,
-      effort: DEFAULT_REVIEW_EFFORT
+      effort: UNRESOLVED_REVIEW_EFFORT
     });
     const opened = queuedEntry(queue_bead_id)?.head_review ?? null;
     return opened && opened.head_sha === head_sha
@@ -508,9 +569,16 @@ export function createHeadReview(deps) {
       return { state: 'gone', reason: null };
     }
     const authority = entry.authority;
-    if (!authority || authority.source !== 'manual') {
+    if (!authority) {
       return { state: 'halted', reason: 'no_manual_authority' };
     }
+    if (authority.source !== 'manual' && !autoReviewAuthorized(queue_bead_id)) {
+      // Every OTHER automatic authority keeps its pre-UI-hk74 behaviour: the
+      // enroller queues rows it does not review, and opening a journal for one
+      // of those would dispatch a reviewer nobody asked for (§6.2).
+      return { state: 'halted', reason: 'no_manual_authority' };
+    }
+    const origin = authority.source === 'manual' ? 'click' : 'auto';
     if (
       typeof observed?.head_sha !== 'string' ||
       !SHA40_RE.test(observed.head_sha)
@@ -570,11 +638,15 @@ export function createHeadReview(deps) {
     const reviewer =
       typeof selection.reviewer === 'string' && selection.reviewer.length > 0
         ? selection.reviewer
-        : DEFAULT_REVIEWER;
+        : UNRESOLVED_REVIEWER;
     const effort =
       typeof selection.effort === 'string' && selection.effort.length > 0
         ? selection.effort
-        : DEFAULT_REVIEW_EFFORT;
+        : UNRESOLVED_REVIEW_EFFORT;
+    const reviewer_source =
+      selection.source === 'bead' || selection.source === 'harness'
+        ? selection.source
+        : null;
 
     if (journal && journal.head_sha !== head_sha) {
       // Supersession: prove the move from the journal's head is queue-owned
@@ -615,7 +687,8 @@ export function createHeadReview(deps) {
           authority_id: authority.id,
           head_sha,
           reviewer,
-          effort
+          effort,
+          reviewer_source
         }).ok
       ) {
         // Either the entry moved under us or a same-head journal appeared —
@@ -707,9 +780,26 @@ export function createHeadReview(deps) {
     const attempt_id = reviewAttemptId(authority.id, head_sha);
 
     if (journal.state === 'pending') {
+      // A journal this call did not open — the one an automatic enrolment
+      // prerecorded (§6.2) — reaches the dispatch step carrying the
+      // placeholder reviewer. The ladder is read HERE, in the same function
+      // the click goes through, so a `self`/`skip` or an unreadable record
+      // fails closed for both origins and the journal names who was chosen.
+      if (!selection.ok) {
+        return failJournal(
+          queue_bead_id,
+          authority.id,
+          head_sha,
+          'pending',
+          selection.reason || 'reviewer_selection_invalid'
+        );
+      }
       if (
         !transition(queue_bead_id, authority.id, head_sha, 'pending', {
           state: 'reviewing',
+          reviewer,
+          effort,
+          reviewer_source,
           review_attempt_id: attempt_id
         })
       ) {
@@ -741,7 +831,9 @@ export function createHeadReview(deps) {
         head_sha,
         target_base: authority.target_base,
         reviewer: journal.reviewer,
-        effort: journal.effort
+        effort: journal.effort,
+        reviewer_source: journal.reviewer_source ?? null,
+        origin
       });
       // Anything the review reported is late unless the exact journal slot is
       // still ours.
@@ -813,7 +905,8 @@ export function createHeadReview(deps) {
         authority,
         journal,
         head_sha,
-        result.findings ?? []
+        result.findings ?? [],
+        origin
       );
     }
 
@@ -827,7 +920,8 @@ export function createHeadReview(deps) {
         authority,
         journal,
         head_sha,
-        null
+        null,
+        origin
       );
     }
 
@@ -908,6 +1002,8 @@ export function createHeadReview(deps) {
    * @param {string} head_sha - The reviewed head the findings bind to.
    * @param {unknown[]|null} findings - Fresh findings, or null on restart
    * adoption (the transport resumes from its own durable record).
+   * @param {'click'|'auto'} origin - Which authority asked for this round,
+   * recorded on the attempt (UI-hk74 §7).
    * @returns {Promise<EnsureApprovedResult>}
    */
   async function runBoundedRepair(
@@ -916,7 +1012,8 @@ export function createHeadReview(deps) {
     authority,
     journal,
     head_sha,
-    findings
+    findings,
+    origin
   ) {
     /** @type {{ ok: boolean, head_sha?: string, self_review?: string, reason?: string }} */
     let repaired = { ok: false, reason: 'repair_failed' };
@@ -929,7 +1026,9 @@ export function createHeadReview(deps) {
         reviewed_head_sha: head_sha,
         target_base: authority.target_base,
         findings,
-        findings_digest: journal.findings_digest
+        findings_digest: journal.findings_digest,
+        reviewer_source: journal.reviewer_source ?? null,
+        origin
       });
     } catch (err) {
       log('head-review repair threw for %s: %o', subject_bead_id, err);

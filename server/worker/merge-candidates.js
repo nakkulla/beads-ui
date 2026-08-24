@@ -15,6 +15,7 @@
  *
  * @import { Queue } from './queue-store.js'
  */
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { evaluateMergeGate, observedReviewReceiptState } from './merge-gate.js';
 import { repoOpsVerifyReceiptState } from './repo-ops-display.js';
 import { isCleanupResolutionFailure } from './resolution-ladder.js';
@@ -282,6 +283,9 @@ export function completionIntentSeed(workspace_key, queue, bead_id) {
     if (
       attempt &&
       attempt.bead_id === bead_id &&
+      // The completion subject is seeded from the bead's own implementation
+      // dispatch (UI-hk74 §7) — a review attempt observes a PR it did not open.
+      isImplementationAttempt(attempt) &&
       typeof attempt.target_base === 'string' &&
       attempt.target_base.length > 0 &&
       typeof attempt.base_oid === 'string' &&

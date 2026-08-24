@@ -47,6 +47,7 @@ import { createHash } from 'node:crypto';
 import nodeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { isWorkerIneligible } from '../../app/utils/worker-eligibility.js';
 import { debug } from '../logging.js';
 import { resolveCswapPath as defaultResolveCswapPath } from '../routes/claude-usage.js';
@@ -1299,6 +1300,7 @@ export function createScheduler(deps) {
       return (
         attempt.bead_id === bead_id &&
         attempt.repo === repo &&
+        isImplementationAttempt(attempt) &&
         (attempt.status === 'failed' ||
           attempt.status === 'orphaned' ||
           attempt.status === 'paused') &&
@@ -3693,6 +3695,21 @@ export function createScheduler(deps) {
   }
 
   /**
+   * Whether the SCHEDULER is the lifecycle owner of a persisted attempt
+   * (UI-hk74 §7). Head review and repair attempts live in the same history but
+   * are dispatched, adopted, and settled by the head-review transport against
+   * its own durable markers. They never enter this engine's `running` set, so
+   * the reconcile fences below cannot vouch for them — and `isDeadAttempt`
+   * would read every one of them as dead and orphan a live reviewer.
+   *
+   * @param {any} attempt
+   * @returns {boolean}
+   */
+  function isSchedulerOwned(attempt) {
+    return (attempt?.kind ?? 'implementation') === 'implementation';
+  }
+
+  /**
    * Is a persisted `running` attempt's process gone? The judgment is
    * attempt_id + PID + START TIME, never mere PID existence: a recycled PID
    * (same number, unrelated process) must read as dead, or a dead session would
@@ -4223,7 +4240,7 @@ export function createScheduler(deps) {
           retired.push(attempt_id);
           continue;
         }
-        if (a.status !== 'running') {
+        if (a.status !== 'running' || !isSchedulerOwned(a)) {
           continue;
         }
         if (
@@ -5044,6 +5061,10 @@ export function createScheduler(deps) {
       .filter(
         (attempt) =>
           attempt?.bead_id === input.bead_id &&
+          // The relaunch source is the owner Bead's own implementation lineage
+          // (UI-hk74 §7): a head-review attempt has no worktree of its own to
+          // prove ownership of, and resuming from one would repair nothing.
+          isImplementationAttempt(attempt) &&
           !resumed_from.has(attempt.attempt_id)
       )
       .sort(
@@ -5920,7 +5941,7 @@ export function createScheduler(deps) {
     let source = null;
     let source_at = -1;
     for (const a of Object.values(q.attempts || {})) {
-      if (!a || a.bead_id !== bead_id) {
+      if (!a || a.bead_id !== bead_id || !isImplementationAttempt(a)) {
         continue;
       }
       if (typeof a.session_id !== 'string' || a.session_id.length === 0) {
@@ -6010,6 +6031,7 @@ export function createScheduler(deps) {
       if (
         a &&
         a.bead_id === bead_id &&
+        isImplementationAttempt(a) &&
         typeof a.session_id === 'string' &&
         a.session_id.length > 0
       ) {
@@ -6989,7 +7011,7 @@ export function createScheduler(deps) {
     const occupied = new Set(claimed);
     for (const [attempt_id, attempt] of Object.entries(q.attempts || {})) {
       const a = /** @type {any} */ (attempt);
-      if (!a || a.status !== 'running') {
+      if (!a || a.status !== 'running' || !isSchedulerOwned(a)) {
         continue;
       }
       if (

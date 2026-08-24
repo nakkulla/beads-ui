@@ -224,7 +224,8 @@ describe('ws worker-queue channel', () => {
       failure_reason: null,
       evidence: null,
       log_path: null,
-      terminal_reason: null
+      terminal_reason: null,
+      auto_resolution: null
     });
   });
 

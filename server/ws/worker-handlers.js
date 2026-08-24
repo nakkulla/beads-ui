@@ -29,6 +29,7 @@
  */
 import nodeFs from 'node:fs';
 import { makeError, makeOk } from '../../app/protocol.js';
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import {
   backupFreshWorkerStaleWork,
   checkWorkerQueueAdmission,
@@ -66,6 +67,8 @@ import {
 } from '../worker/merge-gate.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import {
+  COMPLETION_AUTO_RESOLUTION_PHASE,
+  COMPLETION_RETRY_MAX,
   MANUAL_MERGE_CONTINUATION,
   orderLaneByBlocks
 } from '../worker/queue-store.js';
@@ -519,6 +522,8 @@ function receiptWarningFor(queue, bead_id) {
     if (
       !attempt ||
       attempt.bead_id !== bead_id ||
+      // The warning describes the IMPLEMENTATION receipt (UI-hk74 §7).
+      !isImplementationAttempt(attempt) ||
       !attempt.receipt_check ||
       typeof attempt.receipt_check !== 'object'
     ) {
@@ -1003,8 +1008,13 @@ function beadWorkflowFor(workspace_key, queue) {
 
 /**
  * The beads a LANE renders: `queue` ∪ `serial_lanes[].entries` ∪ RUNNING
- * attempts, with `pr_wait` included only for the stepper. `done` is never a
- * member — a finished bead draws neither a stepper nor an overlap chip.
+ * implementation attempts, with `pr_wait` included only for the stepper.
+ * `done` is never a member — a finished bead draws neither a stepper nor an
+ * overlap chip.
+ *
+ * Only `implementation` attempts confer lane membership (UI-hk74 §7). A head
+ * review or repair attempt runs against a bead whose PR is already open, so
+ * counting it here would drag that bead back into the running lane it left.
  *
  * @param {Record<string, unknown>} queue
  * @param {boolean} include_pr_wait
@@ -1036,6 +1046,7 @@ function laneMemberIds(queue, include_pr_wait) {
     if (
       attempt &&
       attempt.status === 'running' &&
+      isImplementationAttempt(attempt) &&
       typeof attempt.bead_id === 'string' &&
       attempt.bead_id.length > 0
     ) {
@@ -1541,12 +1552,22 @@ function delegationStoreOrNull() {
   }
 }
 
+/**
+ * The durable `CompletionPhase` vocabulary, mirrored here because the queue
+ * schema does not export its list. The auto-resolution phases are DERIVED from
+ * the exported class→phase binding rather than retyped: a mirror that misses a
+ * phase projects a live intent as `intent_state_invalid`, which is how UI-hk74
+ * §4's three new phases would have been hidden from the card entirely.
+ *
+ * @type {Set<string>}
+ */
 const COMPLETION_PHASES = new Set([
   'gating',
   'repairing',
   'waiting_repair_pr',
   'merging',
   'cleaning',
+  ...Object.values(COMPLETION_AUTO_RESOLUTION_PHASE),
   'paused',
   'needs_human',
   'completed'
@@ -1563,6 +1584,45 @@ function boundedCompletionText(value, limit = 4000) {
     return null;
   }
   return value.slice(-limit);
+}
+
+/**
+ * Project the non-terminal automatic resolution state (UI-hk74 §4) the row
+ * badge reads. Only the fields §9 shows travel: the class that names the badge,
+ * the original terminal reason, the retry budget, its next wake, and the last
+ * error. `op` stays server-side — it is coordinator input, not display.
+ *
+ * A record whose `class` is unrecognized projects as absent rather than as a
+ * badge nobody can read (fail-quiet, the workflow-contract consumer rule).
+ *
+ * @param {unknown} raw
+ * @returns {{ class: string, origin_reason: string|null, attempts: number, attempt_cap: number, next_at: number|null, last_error: string|null }|null}
+ */
+function projectAutoResolution(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return null;
+  }
+  const value = /** @type {Record<string, unknown>} */ (raw);
+  const resolution_class = value.class;
+  if (
+    typeof resolution_class !== 'string' ||
+    !(resolution_class in COMPLETION_AUTO_RESOLUTION_PHASE)
+  ) {
+    return null;
+  }
+  return {
+    class: resolution_class,
+    origin_reason: boundedCompletionText(value.origin_reason, 500),
+    attempts: Number.isInteger(value.attempts)
+      ? Math.max(0, Number(value.attempts))
+      : 0,
+    attempt_cap: COMPLETION_RETRY_MAX,
+    next_at:
+      typeof value.next_at === 'number' && Number.isFinite(value.next_at)
+        ? value.next_at
+        : null,
+    last_error: boundedCompletionText(value.last_error, 500)
+  };
 }
 
 /**
@@ -1637,7 +1697,8 @@ function completionStatusFor(workspace_key, queue) {
         failure_reason: 'intent_state_invalid',
         evidence: 'completion_intent_malformed',
         log_path: null,
-        terminal_reason: 'intent_state_invalid'
+        terminal_reason: 'intent_state_invalid',
+        auto_resolution: null
       };
       continue;
     }
@@ -1737,7 +1798,8 @@ function completionStatusFor(workspace_key, queue) {
         boundedCompletionText(cleanup?.reason, 500),
       evidence,
       log_path,
-      terminal_reason: boundedCompletionText(terminal?.reason, 500)
+      terminal_reason: boundedCompletionText(terminal?.reason, 500),
+      auto_resolution: projectAutoResolution(value.auto_resolution)
     };
   }
   return { statuses, repair_ids };
@@ -2565,7 +2627,10 @@ export function handleGetBeadPrompt(ws, req) {
   }
   const key = workspaceKeyOf(ws);
   const attempts = Object.values(queueStore().snapshot(key).attempts).filter(
-    (/** @type {any} */ a) => a && a.bead_id === bead_id
+    // The panel asks what the bead's own dispatch was told to do; a head-review
+    // prompt is a different question the same bead id would answer (UI-hk74 §7).
+    (/** @type {any} */ a) =>
+      a && a.bead_id === bead_id && isImplementationAttempt(a)
   );
   // Newest first by start time; an attempt that never started (a refusal
   // recorded before the spawn) sorts last and carries no prompt anyway.

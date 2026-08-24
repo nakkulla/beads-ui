@@ -286,6 +286,55 @@ describe('worker/attach construction + live loop (F1)', () => {
     expect(runtime.status(WS).running_count).toBe(0);
   });
 
+  test('routes a bd issue-change event to the metadata re-check', async () => {
+    /** @type {Array<() => void>} */
+    const listeners = [];
+    const onIssuesChanged = vi.fn(async () => {});
+    const att = createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      watchBeads: (
+        /** @type {string} */ _root,
+        /** @type {() => void} */ onChange
+      ) => {
+        listeners.push(onChange);
+        return { close: () => {} };
+      },
+      completionActionDriver: /** @type {any} */ ({
+        observe: vi.fn(),
+        onAction: vi.fn(),
+        adoptLegacyTimeout: vi.fn(),
+        onAttemptSettled: vi.fn(),
+        onMergeResult: vi.fn(),
+        onIssuesChanged
+      })
+    });
+
+    att.beadsChanges.start();
+    listeners[0]();
+    await Promise.resolve();
+
+    expect(listeners).toHaveLength(1);
+    expect(onIssuesChanged).toHaveBeenCalledTimes(1);
+  });
+
+  test('binds no bd issue-change watcher before the attachment starts', () => {
+    const watchBeads = vi.fn(() => ({ close: () => {} }));
+    createWorkerAttachment(WS, {
+      runtime: createWorkerRuntime(),
+      bd: fakeBd(),
+      worktree: fakeWorktree,
+      verify: okVerify,
+      spawn_impl: makeFixtureSpawn({ lines: [] }),
+      watchBeads
+    });
+
+    expect(watchBeads).not.toHaveBeenCalled();
+  });
+
   test('wires repo-operation passes to the process restore controller', async () => {
     const autoAdvanceRestore = {
       register: vi.fn(),

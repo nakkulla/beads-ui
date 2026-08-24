@@ -29,10 +29,12 @@
  *
  * @import { Queue } from './queue-store.js'
  */
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
 import { createAncestryProbe, reviewReceiptState } from './merge-gate.js';
 import { onQueueChanged } from './queue-events.js';
+import { COMPLETION_VERIFY_SUPPRESSED_PHASES } from './queue-store.js';
 
 const log = debug('worker:pr-poller');
 
@@ -107,7 +109,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
   /** @type {{ number: number, url: string, at: number }|null} */
   let best = null;
   for (const a of attempts) {
-    if (!a || a.bead_id !== bead_id) {
+    if (!a || a.bead_id !== bead_id || !isImplementationAttempt(a)) {
       continue;
     }
     const vr = /** @type {any} */ (a.verify_result);
@@ -452,6 +454,9 @@ export function createPrPoller(deps) {
     if (!policy.ok || typeof policy.verify_script_path !== 'string') {
       return { verify: null };
     }
+    if (verifySuppressed(queue, bead_id)) {
+      return { verify: null };
+    }
     return {
       verify: startVerify(bead_id, ref.number, pr.head_sha, {
         target_base: pinned.base,
@@ -459,6 +464,26 @@ export function createPrPoller(deps) {
         script_path: policy.verify_script_path
       })
     };
+  }
+
+  /**
+   * Whether this row's completion intent forbids a pre-merge verify run
+   * (UI-hk74 §8). A row that cannot merge under any observation still draws a
+   * fresh verify every time the base moves, which is where the five wasted runs
+   * of the originating incident came from. `reviewing` is deliberately NOT
+   * suppressed: the gate demands a verify receipt the moment a review is
+   * approved.
+   *
+   * @param {Queue} queue
+   * @param {string} bead_id
+   */
+  function verifySuppressed(queue, bead_id) {
+    const phase = /** @type {any} */ (queue).completion_intents?.[bead_id]
+      ?.phase;
+    return (
+      typeof phase === 'string' &&
+      COMPLETION_VERIFY_SUPPRESSED_PHASES.has(phase)
+    );
   }
 
   /**

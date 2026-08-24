@@ -45,6 +45,7 @@
  * @import { Queue } from './queue-store.js'
  * @import { PrDetail } from './gh.js'
  */
+import { isImplementationAttempt } from '../../app/utils/active-attempts.js';
 import { debug } from '../logging.js';
 import { parsePrNumber } from '../workflow-enrich.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
@@ -461,7 +462,7 @@ export function createPrActions(deps) {
       if (!a || a.bead_id !== bead_id || typeof a.target_base !== 'string') {
         continue;
       }
-      if (a.external_conflict === true) {
+      if (a.external_conflict === true || !isImplementationAttempt(a)) {
         continue;
       }
       const at = typeof a.finished_at === 'number' ? a.finished_at : 0;
@@ -587,7 +588,11 @@ export function createPrActions(deps) {
       if (
         !attempt ||
         attempt.bead_id !== bead_id ||
-        attempt.external_conflict === true
+        attempt.external_conflict === true ||
+        // A head-review attempt carries no `receipt_baseline` (UI-hk74 §7), so
+        // letting one win "latest" would answer `null` here and skip every
+        // baseline-dependent forgery check the receipt gate exists to run.
+        !isImplementationAttempt(attempt)
       ) {
         continue;
       }
@@ -651,15 +656,23 @@ export function createPrActions(deps) {
    * (UI-bu6d §4) is judged from the SAME read, so the two verdicts can never
    * describe different moments of the bead.
    *
+   * A bd read that could not happen at all is reported APART from the verdict
+   * it produces (UI-hk74 §10 / review F6). The verdict stays exactly what it
+   * was — `invalid` holds the gate, which is the fail-closed side every other
+   * caller already depends on — but `authority_unreadable` lets the automatic
+   * metadata watch tell "the record says no" from "the record could not be
+   * read", and wait for the next event instead of stopping for a human.
+   *
    * @param {string} bead_id
    * @param {string} head_sha
-   * @returns {Promise<{ review_receipt_state: import('./merge-gate.js').CurrentState, receipt_state: import('./merge-gate.js').ReceiptGateState }>}
+   * @returns {Promise<{ review_receipt_state: import('./merge-gate.js').CurrentState, receipt_state: import('./merge-gate.js').ReceiptGateState, authority_unreadable: boolean }>}
    */
   async function readGateAuthority(bead_id, head_sha) {
     if (typeof deps.bd.readIssue !== 'function') {
       return {
         review_receipt_state: 'invalid',
-        receipt_state: { state: 'probe_error', codes: [] }
+        receipt_state: { state: 'probe_error', codes: [] },
+        authority_unreadable: true
       };
     }
     /** @type {Record<string, any>} */
@@ -670,7 +683,8 @@ export function createPrActions(deps) {
       log('review receipt read failed for %s: %o', bead_id, err);
       return {
         review_receipt_state: 'invalid',
-        receipt_state: { state: 'probe_error', codes: [] }
+        receipt_state: { state: 'probe_error', codes: [] },
+        authority_unreadable: true
       };
     }
     const metadata =
@@ -681,6 +695,7 @@ export function createPrActions(deps) {
         : null;
     const receipt_state = await receiptGateStateOf(metadata, bead_id, head_sha);
     return {
+      authority_unreadable: false,
       review_receipt_state: await reviewReceiptState(
         issue,
         head_sha,
@@ -782,7 +797,7 @@ export function createPrActions(deps) {
    * @param {string} bead_id
    * @param {number} number
    * @param {import('./target-base.js').TargetBaseResult} [base_pin]
-   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean }|{ error: string }>}
+   * @returns {Promise<{ pr: PrDetail, verdict: import('./merge-gate.js').MergeGateVerdict, target_base?: string, base_sha?: string, repo_operations?: boolean, verify_operation_id?: string|null, verify_attempted?: boolean, authority_unreadable?: boolean }|{ error: string }>}
    */
   async function gateNow(bead_id, number, base_pin) {
     const observed = await observeNow(bead_id, number);
@@ -813,10 +828,8 @@ export function createPrActions(deps) {
       if (!config.ok) {
         return { error: config.code || 'repo_ops_config_invalid' };
       }
-      const { review_receipt_state, receipt_state } = await readGateAuthority(
-        bead_id,
-        pr.head_sha
-      );
+      const { review_receipt_state, receipt_state, authority_unreadable } =
+        await readGateAuthority(bead_id, pr.head_sha);
       deps.observations.record(workspace, bead_id, {
         error: null,
         pr,
@@ -844,7 +857,8 @@ export function createPrActions(deps) {
           base_sha: pinned.base_oid,
           repo_operations: true,
           verify_operation_id: null,
-          verify_attempted: false
+          verify_attempted: false,
+          authority_unreadable
         };
       }
       const ensured = await repo_operations.ensureVerify({
@@ -865,7 +879,8 @@ export function createPrActions(deps) {
           base_sha: pinned.base_oid,
           repo_operations: true,
           verify_operation_id: null,
-          verify_attempted: false
+          verify_attempted: false,
+          authority_unreadable
         };
       }
       if (!ensured.ok || typeof ensured.operation_id !== 'string') {
@@ -889,7 +904,8 @@ export function createPrActions(deps) {
             typeof ensured.operation_id === 'string'
               ? ensured.operation_id
               : null,
-          verify_attempted: true
+          verify_attempted: true,
+          authority_unreadable
         };
       }
       const receipt =
@@ -928,7 +944,8 @@ export function createPrActions(deps) {
         base_sha: pinned.base_oid,
         repo_operations: true,
         verify_operation_id: ensured.operation_id,
-        verify_attempted: true
+        verify_attempted: true,
+        authority_unreadable
       };
     }
     return {
@@ -1020,6 +1037,9 @@ export function createPrActions(deps) {
     }
     return {
       ok: true,
+      // §10: the automatic metadata watch must be able to tell a refusal from
+      // an unread record. Every other caller ignores this field.
+      authority_unreadable: gated.authority_unreadable === true,
       target_base: authority.target_base,
       base_sha: authority.base_sha,
       subject: {

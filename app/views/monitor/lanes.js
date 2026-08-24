@@ -18,7 +18,11 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
-import { activeAttemptStates } from '../../utils/active-attempts.js';
+import {
+  activeAttemptStates,
+  headReviewAttemptStates,
+  isImplementationAttempt
+} from '../../utils/active-attempts.js';
 import {
   formatAttemptOrchestrationChip,
   formatOrchestrationChip,
@@ -27,7 +31,11 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
-import { discardProjection, sumAttemptWorkMs } from '../worker/lanes.js';
+import {
+  discardProjection,
+  headReviewAttemptBadges,
+  sumAttemptWorkMs
+} from '../worker/lanes.js';
 import {
   cleanupStalledReason,
   cleanupStepLabel
@@ -112,6 +120,7 @@ const DONE_KIND_LABELS = {
  *   workspace_name: string,
  *   expected_revision: number,
  *   kind?: 'session',
+ *   non_occupying?: boolean,
  *   attempt_id?: string|null,
  *   run_state?: 'running'|'paused'|'failed',
  *   can_pause?: boolean,
@@ -292,7 +301,10 @@ export function latestTerminalAttempt(attempts, bead_id) {
     if (
       !attempt ||
       attempt.bead_id !== bead_id ||
-      attempt.status === 'running'
+      attempt.status === 'running' ||
+      // 완료 종류를 정하는 것은 이 bead의 구현 시도다 (UI-hk74 §7): 나중에 끝난
+      // head review가 이기면 실제 완료 종류 배지가 사라진다.
+      !isImplementationAttempt(attempt)
     ) {
       continue;
     }
@@ -1273,6 +1285,57 @@ export function buildLanes(workspaces, workspaces_state, options) {
       });
     }
 
+    // 돌고 있는 head review·repair 세션 (UI-hk74 §7). **비점유** 타일이다:
+    // `claimed`에 넣지 않으므로 그 bead는 PR 대기 레인의 점유자로 그대로 남고,
+    // 여기에는 지금 실제로 돌고 있는 리뷰/수리 세션이 함께 보일 뿐이다. 점유
+    // 계산(`activeByBead`)은 구현 attempt만 본다 — 그대로 둔다.
+    for (const [bead_id, review] of headReviewAttemptStates(attempts)) {
+      if (running.some((item) => item.id === bead_id)) {
+        continue;
+      }
+      const a = review.attempt;
+      const label = review.kind === 'head_review' ? '리뷰' : '수리';
+      running.push({
+        ...base(bead_id),
+        lane: 'running',
+        kind: 'session',
+        attempt_id: typeof a.attempt_id === 'string' ? a.attempt_id : '',
+        run_state: /** @type {const} */ ('running'),
+        status: 'running',
+        non_occupying: true,
+        workflow: /** @type {any} */ (bead_workflow[bead_id] || null),
+        // 리뷰 세션은 사람이 재개·일시정지할 대상이 아니다: 저널이 그 lifecycle의
+        // 주인이고, 여기서 손대면 CAS가 늦은 결과로 만들 수 있다.
+        can_pause: false,
+        can_resume: false,
+        started_at: review.started_at,
+        last_event_at:
+          typeof a.last_event_at === 'number' ? a.last_event_at : null,
+        last_activity:
+          a.last_activity && typeof a.last_activity === 'object'
+            ? a.last_activity
+            : null,
+        legs: Array.isArray(a.legs) ? a.legs : [],
+        runner: typeof a.runner === 'string' ? a.runner : null,
+        model: typeof a.model === 'string' ? a.model : null,
+        effort: typeof a.effort === 'string' ? a.effort : null,
+        speed: typeof a.speed === 'string' ? a.speed : null,
+        resumed_from: null,
+        continuation_mode: null,
+        usage: a.usage && typeof a.usage === 'object' ? a.usage : null,
+        exec_chips: {
+          orchestration: formatAttemptOrchestrationChip(a),
+          worker: null
+        },
+        // 이 bead는 머지 큐 안에 있다 — 폐기는 [취소] 뒤에야 열린다.
+        discard: discardProjection(discard_operations, bead_id, {
+          merge_queued: true
+        }),
+        badges: [review.origin === 'auto' ? `${label} · 자동` : label],
+        alert: false
+      });
+    }
+
     // 세션이 `in_progress`로 잡은 이슈 (UI-yrzu §5). Worker 타일 직후, 같은
     // `claimed` 집합이다 — 서버가 이미 활성 attempt와 레인 멤버를 뺐지만
     // (§4.2), 스냅샷 사이의 경합은 클라이언트가 한 번 더 막는다.
@@ -1745,7 +1808,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
         done_at:
           typeof entry.added_at === 'number' ? entry.added_at : undefined,
         done_kind: kind,
-        badges: kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []
+        // 완료 종류 배지 + 이 bead에 섞인 head review·repair 시도 (UI-hk74 §7).
+        badges: [
+          ...(kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []),
+          ...headReviewAttemptBadges(attempts, bead_id)
+        ]
       });
     }
   }
