@@ -1577,6 +1577,24 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
     expect(lanes.queue[0].overlap_chips?.[0].location_label).toBe('실행중');
   });
 
+  test('compares a quick_fix bead declaring scope without any artifact', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-1' }, { bead_id: 'A-2' }],
+          bead_scope: {
+            'A-1': { scope: ['server/worker/'], artifacts: [] },
+            'A-2': declared(['server/worker/queue-store.js'])
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.queue[0].overlap_chips?.[0].id).toBe('A-2');
+    expect(lanes.queue[0].scope_state).toBe('declared');
+  });
+
   test('compares a waiting bead with a runnable candidate', () => {
     const lanes = buildLanes(
       [
@@ -1669,6 +1687,36 @@ describe('monitor scope 겹침 파생 (UI-qm12 §5.2)', () => {
     );
 
     expect(lanes.runnable[0].scope_state).toBe('missing');
+  });
+
+  test('marks a spec-less runnable candidate with an empty scope as missing', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [
+            runnable('A-9', { route: 'quick_fix', spec_id: '', scope: [] })
+          ],
+          bead_scope: {}
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].scope_state).toBe('missing');
+  });
+
+  test('says nothing about a runnable candidate carrying no scope field', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          runnable: [runnable('A-9', { route: 'quick_fix', spec_id: '' })],
+          bead_scope: {}
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.runnable[0].scope_state).toBeUndefined();
   });
 
   test('says nothing about a bead whose read failed', () => {

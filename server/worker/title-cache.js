@@ -30,6 +30,7 @@ import { runBdJsonProjected } from '../bd.js';
 import { debug } from '../logging.js';
 import { resolveSpecId } from '../spec-id.js';
 import { enrichIssueWorkflow } from '../workflow-enrich.js';
+import { parseDescriptionScope } from './artifact-scope.js';
 
 const log = debug('worker:title-cache');
 
@@ -72,6 +73,10 @@ const POSITIVE_TTL_MS = 5 * 60_000;
  * declared-scope artifacts cost no extra process.
  * @property {string|null} plan_path - `metadata.plan_path`, when it is a
  * non-empty string.
+ * @property {string[]|null} description_scope - The `## scope` section of the
+ * issue description (UI-f1qy §4.2), read off the SAME `bd show` payload so the
+ * fallback declaration costs no extra process. `null` means the description
+ * declares no section at all (미선언), which an empty array does NOT.
  * @property {number} at - Epoch ms this record was read, for {@link POSITIVE_TTL_MS}.
  */
 
@@ -249,6 +254,9 @@ export function createTitleCache(options = {}) {
       workflow: workflowFromIssue(issue, workspace),
       spec_id: resolveSpecId(raw_issue).path,
       plan_path: plan_path.length > 0 ? plan_path : null,
+      description_scope: parseDescriptionScope(
+        raw_issue && raw_issue.description
+      ),
       at: now()
     };
   }
@@ -581,6 +589,31 @@ export function createTitleCache(options = {}) {
       for (const [bead_id, artifacts] of Object.entries(projected)) {
         if (artifacts.length > 0) {
           out[bead_id] = artifacts;
+        }
+      }
+      return out;
+    },
+
+    /**
+     * The scope each bead's DESCRIPTION declares (UI-f1qy §4.2), for the beads
+     * that have no document artifact to read one from. Same partiality
+     * contract as the projections above — a bead whose record has not landed
+     * is ABSENT — with the same extra exclusion shape as
+     * {@link scopeArtifactsFor}: a record whose description declares no
+     * `## scope` section is omitted rather than carrying an empty list, so
+     * 미선언 and 빈 선언 stay distinguishable at the consumer.
+     *
+     * @param {string} workspace
+     * @param {string[]} ids
+     * @returns {Record<string, string[]>}
+     */
+    descriptionScopeFor(workspace, ids) {
+      const projected = collect(workspace, ids, (rec) => rec.description_scope);
+      /** @type {Record<string, string[]>} */
+      const out = {};
+      for (const [bead_id, scope] of Object.entries(projected)) {
+        if (scope) {
+          out[bead_id] = scope;
         }
       }
       return out;

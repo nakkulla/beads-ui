@@ -87,14 +87,28 @@ function laneQueue() {
  *
  * @param {string} bead_id
  * @param {string} spec_id
+ * @param {string} [description]
  */
-function seedBead(bead_id, spec_id) {
+function seedBead(bead_id, spec_id, description = '') {
   getWorkerRuntime().titleCache.refreshFromIssue(WS, {
     id: bead_id,
     title: `${bead_id} 제목`,
     ...(spec_id.length > 0 ? { spec_id } : {}),
+    ...(description.length > 0 ? { description } : {}),
     metadata: { route: spec_id.length > 0 ? 'spec_backed' : 'quick_fix' }
   });
+}
+
+/**
+ * A description declaring `prefixes` under a `## scope` section.
+ *
+ * @param {string[]} prefixes
+ * @returns {string}
+ */
+function describedScope(prefixes) {
+  return ['빠른 수정', '', '## scope', ...prefixes.map((p) => `- ${p}`)].join(
+    '\n'
+  );
 }
 
 beforeEach(() => {
@@ -177,7 +191,11 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
     await cache.fill(WS, [SPEC_C]);
     __setScopeCacheForTest(cache);
     vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
-      /** @type {any} */ ({ bead_id: 'UI-9', spec_id: SPEC_C, plan_path: null })
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        scope_spec_id: SPEC_C,
+        plan_path: null
+      })
     ]);
 
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
@@ -198,7 +216,7 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
     vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
       /** @type {any} */ ({
         bead_id: 'UI-9',
-        spec_id: SPEC_C,
+        scope_spec_id: SPEC_C,
         plan_path: SPEC_D
       })
     ]);
@@ -218,7 +236,11 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
     await cache.fill(WS, [SPEC_C]);
     __setScopeCacheForTest(cache);
     vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
-      /** @type {any} */ ({ bead_id: 'UI-1', spec_id: SPEC_C, plan_path: null })
+      /** @type {any} */ ({
+        bead_id: 'UI-1',
+        scope_spec_id: SPEC_C,
+        plan_path: null
+      })
     ]);
 
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
@@ -232,7 +254,11 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
   test('omits a 후보 bead with no spec', () => {
     __setScopeCacheForTest(scopeCacheOver({}));
     vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
-      /** @type {any} */ ({ bead_id: 'UI-9', spec_id: '', plan_path: null })
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        scope_spec_id: '',
+        plan_path: null
+      })
     ]);
 
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
@@ -269,5 +295,117 @@ describe('decorateQueue bead_scope (UI-qm12 §4.3)', () => {
     const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
 
     expect(out.bead_scope['UI-1']).toEqual({ scope: [], artifacts: [SPEC_A] });
+  });
+});
+
+describe('decorateQueue bead_scope description fallback (UI-f1qy §4.3)', () => {
+  test('reads the description of a lane member with no artifact', () => {
+    seedBead('UI-1', '', describedScope(['server/worker/']));
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({
+      scope: ['server/worker/'],
+      artifacts: []
+    });
+  });
+
+  test('carries an empty description declaration as a read fact', () => {
+    seedBead('UI-1', '', '## scope\n');
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({ scope: [], artifacts: [] });
+  });
+
+  test('ignores the description of a bead that has an artifact', async () => {
+    seedBead('UI-1', SPEC_A, describedScope(['app/views/']));
+    const cache = scopeCacheOver({ [SPEC_A]: artifact(['server/']) });
+    await cache.fill(WS, [SPEC_A]);
+    __setScopeCacheForTest(cache);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-1']).toEqual({
+      scope: ['server/'],
+      artifacts: [SPEC_A]
+    });
+  });
+
+  test('leaves an artifact-bearing bead unread rather than reading its description', () => {
+    seedBead('UI-1', SPEC_A, describedScope(['app/views/']));
+    __setScopeCacheForTest(scopeCacheOver({ [SPEC_A]: artifact(['server/']) }));
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope).toEqual({});
+  });
+
+  test('keeps no entry for a bead that declares nothing anywhere', () => {
+    seedBead('UI-1', '', '선언이 없는 설명');
+    __setScopeCacheForTest(scopeCacheOver({}));
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope).toEqual({});
+  });
+
+  test('reads the description of a 후보 row with no artifact', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        scope_spec_id: '',
+        plan_path: null,
+        description_scope: ['app/utils/']
+      })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-9']).toEqual({
+      scope: ['app/utils/'],
+      artifacts: []
+    });
+  });
+
+  test('prefers the resolved artifact of a 후보 row over its description', async () => {
+    const cache = scopeCacheOver({ [SPEC_C]: artifact(['docs/']) });
+    await cache.fill(WS, [SPEC_C]);
+    __setScopeCacheForTest(cache);
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        spec_id: '',
+        scope_spec_id: SPEC_C,
+        plan_path: null,
+        description_scope: ['app/utils/']
+      })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope['UI-9']).toEqual({
+      scope: ['docs/'],
+      artifacts: [SPEC_C]
+    });
+  });
+
+  test('keeps no entry for a 후보 row that declares no section', () => {
+    __setScopeCacheForTest(scopeCacheOver({}));
+    vi.spyOn(getWorkerRuntime().runnableCache, 'runnablePeek').mockReturnValue([
+      /** @type {any} */ ({
+        bead_id: 'UI-9',
+        scope_spec_id: '',
+        plan_path: null,
+        description_scope: null
+      })
+    ]);
+
+    const out = /** @type {any} */ (decorateQueue(WS, laneQueue()));
+
+    expect(out.bead_scope).toEqual({});
   });
 });

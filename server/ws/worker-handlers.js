@@ -1091,9 +1091,14 @@ function scopeCacheHandle() {
  * would be noise.
  *
  * Three deliberately distinct values, none of which blocks the push:
- *   - NO ENTRY: not read yet (`miss`), or the bead has no spec at all.
- *   - `{ scope: [], artifacts }`: every artifact read, nothing declared.
+ *   - NO ENTRY: not read yet (`miss`), or the bead declares no scope anywhere.
+ *   - `{ scope: [], artifacts }`: the source was read, nothing declared.
  *   - `null`: unreadable (missing artifact, git failure, unresolved base).
+ *
+ * ONE source per bead (UI-f1qy §4.3): the document artifact when the bead has
+ * one, otherwise the issue description's `## scope` section, which ships with
+ * `artifacts: []`. The description source never yields `null` — the parse is
+ * local and has no failure concept, so 무효 항목은 무시, 부재는 미선언이다.
  *
  * @param {string} workspace_key
  * @param {Record<string, unknown>} queue
@@ -1126,27 +1131,46 @@ function beadScopeFor(workspace_key, queue) {
       for (const [bead_id, artifacts] of Object.entries(artifacts_by_bead)) {
         readInto(bead_id, artifacts);
       }
+      // 아티팩트가 있는 bead는 그쪽이 유일한 원천이므로 아직 읽히지 않았어도
+      // (`miss` → NO ENTRY) description으로 내려오지 않는다 (§3 우선순위).
+      const described = titles.descriptionScopeFor(workspace_key, ids);
+      for (const [bead_id, scope] of Object.entries(described)) {
+        if (bead_id in out || bead_id in artifacts_by_bead) {
+          continue;
+        }
+        out[bead_id] = { scope, artifacts: [] };
+      }
     }
   } catch (err) {
     log('bead scope lookup failed for %s: %o', workspace_key, err);
   }
-  // 후보 lane (UI-f3ma): the artifact set comes from the runnable projection
+  // 후보 lane (UI-f3ma): the scope source comes from the runnable projection
   // rather than the title cache, because a bead that has never entered a lane
-  // has no title-cache record to read `spec_id`/`plan_path` from. It is the
-  // SAME artifact set either way (`RunnableItem.plan_path` exists for exactly
-  // this reason), so loading a candidate into a lane cannot change its verdict.
+  // has no title-cache record to read it from. It is the SAME source either way
+  // — the same artifact set (`RunnableItem.plan_path` exists for exactly this
+  // reason), or the same description section — so loading a candidate into a
+  // lane cannot change its verdict.
   try {
     for (const item of runnableRows(workspace_key, queue)) {
       const bead_id = typeof item.bead_id === 'string' ? item.bead_id : '';
-      const spec_id = typeof item.spec_id === 'string' ? item.spec_id : '';
-      if (bead_id.length === 0 || spec_id.length === 0 || bead_id in out) {
+      if (bead_id.length === 0 || bead_id in out) {
         continue;
       }
-      const plan_path =
-        typeof item.plan_path === 'string' && item.plan_path.length > 0
-          ? item.plan_path
-          : '';
-      readInto(bead_id, plan_path ? [spec_id, plan_path] : [spec_id]);
+      // 행의 scope 원천은 `scope_spec_id`가 정한다 — admission `spec_id`는
+      // quick_fix에서 언제나 비어 있어 원천 판정에 쓸 수 없다 (UI-f1qy §4.4).
+      const spec_id =
+        typeof item.scope_spec_id === 'string' ? item.scope_spec_id : '';
+      if (spec_id.length > 0) {
+        const plan_path =
+          typeof item.plan_path === 'string' && item.plan_path.length > 0
+            ? item.plan_path
+            : '';
+        readInto(bead_id, plan_path ? [spec_id, plan_path] : [spec_id]);
+        continue;
+      }
+      if (Array.isArray(item.description_scope)) {
+        out[bead_id] = { scope: item.description_scope, artifacts: [] };
+      }
     }
   } catch (err) {
     log('runnable scope lookup failed for %s: %o', workspace_key, err);

@@ -495,15 +495,38 @@ function hasPipeline(snapshot) {
 }
 
 /**
- * Attach each runnable candidate's declared scope (UI-qm12 §4.4) from the same
- * process-wide cache the queue decoration reads, over the same artifact set
- * (`[spec_id, plan_path?]`) — loading a bead into a lane must not change its
- * overlap verdict.
+ * One runnable row minus the two fields that exist only so the server can pick
+ * its scope source (UI-f1qy §4.4). The wire carries the resolved `scope` alone,
+ * so every copy that leaves this module drops them — including the degraded
+ * copy the pipeline ships when the scope attach itself throws.
  *
- * ADDITIVE and SYNCHRONOUS: a hit gets a `scope` field on a COPY of the row —
- * the cache owns the original — and a miss or a read failure gets no field at
- * all, which §5.2 reads as 판정 불가. The fill a miss schedules delivers its
- * value through the next push, never by blocking this one.
+ * @param {Record<string, unknown>} item
+ * @returns {Record<string, unknown>}
+ */
+function withoutScopeSourceFields(item) {
+  const row = { ...item };
+  delete row.description_scope;
+  delete row.scope_spec_id;
+  return row;
+}
+
+/**
+ * Attach each runnable candidate's declared scope (UI-qm12 §4.4, widened to the
+ * description source by UI-f1qy §4.4). One bead has exactly ONE source, chosen
+ * by the row itself: `scope_spec_id` — never the admission `spec_id` — names
+ * the artifact, and only a row without one carries `description_scope`.
+ *
+ * The artifact branch peeks the same process-wide cache the queue decoration
+ * reads, over the same artifact set (`[scope_spec_id, plan_path?]`) — loading a
+ * bead into a lane must not change its overlap verdict. The description branch
+ * needs no cache: the declaration is already on the row.
+ *
+ * ADDITIVE and SYNCHRONOUS: a read source gets a `scope` field on a COPY of the
+ * row — the cache owns the original — and a miss, a read failure or no
+ * declaration at all gets no field, which §5.2 reads as 판정 불가. Every copy
+ * drops the two INTERNAL source fields, so the wire carries `scope` alone. The
+ * fill a miss schedules delivers its value through the next push, never by
+ * blocking this one.
  *
  * @param {Array<Record<string, unknown>>} runnable
  * @param {string} root_dir
@@ -511,18 +534,24 @@ function hasPipeline(snapshot) {
  */
 function withRunnableScope(root_dir, runnable) {
   const cache = scopeCache();
-  if (!cache) {
-    return runnable;
-  }
   return runnable.map((item) => {
-    const spec_id = typeof item.spec_id === 'string' ? item.spec_id : '';
-    if (spec_id.length === 0) {
-      return item;
+    const row = withoutScopeSourceFields(item);
+    const spec_id =
+      typeof item.scope_spec_id === 'string' ? item.scope_spec_id : '';
+    if (spec_id.length > 0) {
+      if (!cache) {
+        return row;
+      }
+      const plan_path =
+        typeof item.plan_path === 'string' ? item.plan_path : '';
+      const artifacts = plan_path.length > 0 ? [spec_id, plan_path] : [spec_id];
+      const peeked = cache.peek(root_dir, artifacts);
+      return peeked.state === 'hit' ? { ...row, scope: peeked.scope } : row;
     }
-    const plan_path = typeof item.plan_path === 'string' ? item.plan_path : '';
-    const artifacts = plan_path.length > 0 ? [spec_id, plan_path] : [spec_id];
-    const peeked = cache.peek(root_dir, artifacts);
-    return peeked.state === 'hit' ? { ...item, scope: peeked.scope } : item;
+    if (Array.isArray(item.description_scope)) {
+      return { ...row, scope: item.description_scope };
+    }
+    return row;
   });
 }
 
@@ -606,7 +635,7 @@ export function buildMonitorPipeline(options = {}) {
       projected.runnable = withRunnableScope(root_dir, runnable);
     } catch (err) {
       log('monitor: runnable scope attach failed for %s: %o', root_dir, err);
-      projected.runnable = runnable;
+      projected.runnable = runnable.map(withoutScopeSourceFields);
     }
     /** @type {Array<Record<string, unknown>>} */
     let session_active = [];

@@ -40,6 +40,7 @@ import {
 } from '../workflow-enrich.js';
 import { requestWorkspaceSnapshot } from '../workspace-snapshot-runtime.js';
 import { ADMISSION_RECEIPT_RE } from './admission.js';
+import { parseDescriptionScope } from './artifact-scope.js';
 import { ACCOUNT_KEYS, BEAD_APPLY_KEYS } from './exec-enums.js';
 
 const log = debug('worker:runnable-cache');
@@ -84,14 +85,27 @@ const RUNNABLE_ROUTES = new Set(['spec_backed', 'full_plan', 'quick_fix']);
  * @property {string} bead_id
  * @property {string} title
  * @property {string} route - The `metadata.route` that qualified it.
- * @property {string} spec_id - The native-first resolved spec path.
+ * @property {string} spec_id - The native-first resolved spec path. ADMISSION
+ * semantics: a quick_fix row carries `''` even when a spec resolves, because a
+ * quick_fix is admitted without one. NEVER read this to choose a scope source —
+ * that is what `scope_spec_id` is for (UI-f1qy §4.4).
+ * @property {string} scope_spec_id - The resolved artifact path this row's
+ * SCOPE is declared in, `''` when none resolves or the two spec surfaces
+ * conflict. Decided for every route alike, so a quick_fix bead that does have a
+ * spec still obeys the artifact-first rule instead of falling back to its
+ * description.
+ * @property {string[]|null} [description_scope] - The `## scope` section of the
+ * row's description, carried ONLY when `scope_spec_id` is empty (one bead, one
+ * scope source). `null` means the description declares no section. Internal to
+ * the server: the monitor push strips it and ships `scope` alone.
  * @property {string|null} plan_path - `metadata.plan_path` when it is a
  * non-empty string (UI-qm12 §4.4). Carried so a runnable bead's declared scope
  * is read from the SAME artifact set as the queued beads' — loading it into a
- * lane must not change the overlap verdict.
- * @property {string[]} [scope] - The declared scope at the pinned base,
- * attached ADDITIVELY by the monitor pipeline on a scope-cache hit. Absent
- * means 판정 불가 (not yet read, unreadable, or no spec), never "no scope".
+ * lane must not change the overlap verdict. Pairs with the artifact source.
+ * @property {string[]} [scope] - The declared scope, attached ADDITIVELY by the
+ * monitor pipeline: at the pinned base on a scope-cache hit, or copied straight
+ * off `description_scope`. Absent means 판정 불가 (not yet read, unreadable, or
+ * no declaration at all), never "no scope".
  * @property {string} spec_reviewer - Reviewer token from `spec_review`.
  * @property {'approved'|'authored'|'none'} plan_state
  * @property {boolean} blocked - Membership in `ready_explain.blocked`.
@@ -284,6 +298,7 @@ function qualify(row, blocked_by = null, enrich = undefined) {
     return null;
   }
   const is_quick_fix = route === 'quick_fix';
+  const spec = resolveSpecId(row);
   let spec_id = '';
   let spec_reviewer = '';
   if (is_quick_fix) {
@@ -294,7 +309,6 @@ function qualify(row, blocked_by = null, enrich = undefined) {
       return null;
     }
   } else {
-    const spec = resolveSpecId(row);
     if (spec.path.length === 0 || spec.conflict) {
       return null;
     }
@@ -318,11 +332,18 @@ function qualify(row, blocked_by = null, enrich = undefined) {
   }
   const plan_path =
     typeof meta.plan_path === 'string' ? meta.plan_path.trim() : '';
-  return {
+  // scope 원천은 admission `spec_id`와 무관하게 `resolveSpecId`로 판정한다
+  // (UI-f1qy §4.4): quick_fix 행의 `spec_id`는 admission 의미상 언제나 빈
+  // 문자열이라, 그것을 재사용하면 스펙이 실제로 해석되는 quick_fix bead가
+  // 아티팩트-우선 규칙을 어기고 description으로 떨어진다.
+  const scope_spec_id = spec.conflict ? '' : spec.path;
+  /** @type {RunnableItem} */
+  const item = {
     bead_id,
     title: typeof row.title === 'string' ? row.title : '',
     route,
     spec_id,
+    scope_spec_id,
     plan_path: plan_path.length > 0 ? plan_path : null,
     spec_reviewer,
     plan_state: is_quick_fix ? 'none' : planState(meta, route),
@@ -334,6 +355,10 @@ function qualify(row, blocked_by = null, enrich = undefined) {
     workflow: enrich ? enrich(row) : null,
     exec_pins: execPinsOf(meta)
   };
+  if (scope_spec_id.length === 0) {
+    item.description_scope = parseDescriptionScope(row.description);
+  }
+  return item;
 }
 
 /**

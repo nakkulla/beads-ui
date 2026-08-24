@@ -6,7 +6,7 @@ import { createTitleCache } from './title-cache.js';
  * id absent from the map exits non-zero, which is the "cannot read this bead"
  * failure the cache negative-caches.
  *
- * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown, spec_id?: unknown, metadata?: unknown }>} titles
+ * @param {Record<string, string | { title: string, labels?: unknown, dependencies?: unknown, spec_id?: unknown, description?: unknown, metadata?: unknown }>} titles
  * @param {{ deferred?: boolean }} [options]
  */
 function fakeBd(titles, options = {}) {
@@ -831,6 +831,101 @@ describe('scope artifacts projection (UI-qm12 §4.2)', () => {
 
     expect(cache.scopeArtifactsFor('/ws', ['UI-1'])).toEqual({
       'UI-1': ['docs/specs/thing.md']
+    });
+  });
+});
+
+describe('title cache description scope (UI-f1qy §4.2)', () => {
+  test('returns the paths the description section declares', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: '빠른 수정',
+      description: ['설명', '', '## scope', '- server/worker/'].join('\n'),
+      metadata: { route: 'quick_fix' }
+    });
+
+    const out = cache.descriptionScopeFor('/ws', ['UI-2']);
+
+    expect(out).toEqual({ 'UI-2': ['server/worker/'] });
+  });
+
+  test('keeps an empty section as an empty declaration', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: '빈 선언',
+      description: '## scope\n',
+      metadata: { route: 'quick_fix' }
+    });
+
+    const out = cache.descriptionScopeFor('/ws', ['UI-2']);
+
+    expect(out).toEqual({ 'UI-2': [] });
+  });
+
+  test('omits a bead whose description declares no section', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: '선언 없음',
+      description: '그냥 설명',
+      metadata: { route: 'quick_fix' }
+    });
+
+    const out = cache.descriptionScopeFor('/ws', ['UI-2']);
+
+    expect(out).toEqual({});
+  });
+
+  test('omits a bead whose record has not landed', () => {
+    const bd = fakeBd({}, { deferred: true });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => null
+    });
+
+    const out = cache.descriptionScopeFor('/ws', ['UI-9']);
+
+    expect(out).toEqual({});
+  });
+
+  test('reads the section off the same bd fill as the title', async () => {
+    const bd = fakeBd({
+      'UI-2': {
+        title: '적재된 빠른 수정',
+        description: '## scope\n- app/views/'
+      }
+    });
+    const cache = createTitleCache({
+      runJson: /** @type {any} */ (bd.runJson),
+      enrichWorkflow: () => null
+    });
+
+    cache.descriptionScopeFor('/ws', ['UI-2']);
+    await bd.settled();
+
+    expect(cache.descriptionScopeFor('/ws', ['UI-2'])).toEqual({
+      'UI-2': ['app/views/']
+    });
+  });
+
+  test('replaces the declaration on a mutation readback', () => {
+    const cache = createTitleCache({ enrichWorkflow: () => null });
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: '빠른 수정',
+      description: '## scope\n- server/worker/'
+    });
+
+    cache.refreshFromIssue('/ws', {
+      id: 'UI-2',
+      title: '빠른 수정',
+      description: '## scope\n- app/views/'
+    });
+
+    expect(cache.descriptionScopeFor('/ws', ['UI-2'])).toEqual({
+      'UI-2': ['app/views/']
     });
   });
 });

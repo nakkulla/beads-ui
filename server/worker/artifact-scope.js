@@ -58,6 +58,55 @@ export function parseArtifactScope(content) {
 }
 
 /**
+ * Parse the repo-relative path prefixes a bead's DESCRIPTION declares under a
+ * `## scope` section (UI-f1qy §3). The declaration place for a bead with no
+ * document artifact — in practice quick_fix.
+ *
+ * Three states, unlike {@link parseArtifactScope}: `null` (no section — 미선언,
+ * 판정 불가) must stay distinguishable from `[]` (a section that declared
+ * nothing), because only the latter is a read fact the UI reveals.
+ *
+ * @param {unknown} description
+ * @returns {string[]|null}
+ */
+export function parseDescriptionScope(description) {
+  if (typeof description !== 'string') {
+    return null;
+  }
+  const lines = description.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === '## scope');
+  if (start < 0) {
+    return null;
+  }
+
+  /** @type {string[]} */
+  const scope = [];
+  const seen = new Set();
+  for (const line of lines.slice(start + 1)) {
+    // 다음 heading(레벨 무관)이 구역의 끝이다 — 두 번째 `## scope`도 여기서
+    // 끊기므로 첫 매치 하나만 읽힌다.
+    if (line.trim().startsWith('#')) {
+      break;
+    }
+    const match = /^\s*-\s(.*)$/.exec(line);
+    if (!match) {
+      continue;
+    }
+    const item = match[1].trim();
+    if (!isValidScopeItem(item)) {
+      log('ignoring invalid description scope entry %o', item);
+      continue;
+    }
+    if (seen.has(item)) {
+      continue;
+    }
+    seen.add(item);
+    scope.push(item);
+  }
+  return scope;
+}
+
+/**
  * @param {string} item
  */
 function isValidScopeItem(item) {

@@ -861,7 +861,10 @@ function buildChainLanes(
  * The declared scope of ONE comparison-set item, and what that declaration says
  * about itself (UI-qm12 §5.2). 큐·실행 중 버드는 스냅샷 장식 `bead_scope`에서,
  * 실행가능 항목은 자기 행이 실어 온 `scope`에서 읽는다 — 같은 버드가 큐에
- * 적재되는 순간 판정이 달라지면 안 되므로 서버가 같은 artifact 집합을 읽는다.
+ * 적재되는 순간 판정이 달라지면 안 되므로 서버가 같은 원천을 읽는다.
+ *
+ * 두 분기 모두 세 상태를 같은 뜻으로 읽는다: 값 없음 = 판정 불가, 빈 배열 =
+ * 선언은 읽었는데 비었다(`missing`), 항목 n개 = `declared`.
  *
  * @param {MonitorItem} item
  * @param {Map<string, Record<string, any>>} bead_scope_by_root
@@ -875,9 +878,11 @@ function declaredScopeOf(item, bead_scope_by_root, runnable_scope_by_bead) {
       return { scope: [], state: undefined };
     }
     if (scope.length === 0) {
-      // 스펙이 있는데 선언이 비었을 때만 판정 불가를 드러낸다 (§3): 스펙 없는
-      // 후보는 애초에 읽을 것이 없다.
-      return { scope: [], state: item.spec_id ? 'missing' : undefined };
+      // 행이 `scope` 필드를 실었다 = 서버가 원천(아티팩트 front-matter 또는
+      // description `## scope`)을 읽는 데 성공했다는 뜻이므로, 빈 선언은 route와
+      // `spec_id`에 무관하게 판정 불가를 드러낸다 (UI-f1qy §5). 필드 부재는 위
+      // `!scope`에서 이미 아무 말도 하지 않고 빠진다.
+      return { scope: [], state: 'missing' };
     }
     return { scope, state: 'declared' };
   }
