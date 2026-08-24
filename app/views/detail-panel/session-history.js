@@ -50,6 +50,31 @@ const DELEGATION_ROLES = [
   { role: 'subagent', provider: 'claude' }
 ];
 
+/**
+ * Claude 서브에이전트 중 구현 위임이 아닌 도구성 leg의 `agent_type`: 읽기 전용
+ * 탐색/리뷰 leg와, Codex 세션을 띄우기만 하는 전달자(dotfiles `codex-runner` —
+ * 실제 작업은 별도 `codex` leg로 잡힘). 세션 이력은 Codex 위임처럼 구현 위임만
+ * 보여주므로 이 타입들은 행을 그리지 않는다. 타입 미상(null)이나 새 이름은
+ * 구현 위임을 놓치지 않도록 그대로 표시한다 (fail-quiet).
+ */
+const TOOL_AGENT_TYPES = new Set([
+  'codex-runner',
+  'Explore',
+  'Plan',
+  'advisor',
+  'advisor-xhigh',
+  'claude-code-guide',
+  'statusline-setup'
+]);
+
+/**
+ * @param {string|null|undefined} agent_type
+ * @returns {boolean}
+ */
+function isToolAgentType(agent_type) {
+  return typeof agent_type === 'string' && TOOL_AGENT_TYPES.has(agent_type);
+}
+
 /** @type {ReadonlyArray<'running'|'done'|'failed'|'interrupted'>} */
 const DELEGATION_STATUSES = ['running', 'done', 'failed', 'interrupted'];
 
@@ -436,7 +461,11 @@ function delegationLegs(attempt, projection, handlers) {
     : [];
   for (const candidate of candidates) {
     const session = validDelegation(candidate);
-    if (!session || launch_ids.has(session.launch_id)) {
+    if (
+      !session ||
+      launch_ids.has(session.launch_id) ||
+      isToolAgentType(session.agent_type)
+    ) {
       continue;
     }
     launch_ids.add(session.launch_id);
@@ -478,7 +507,10 @@ function delegationLegs(attempt, projection, handlers) {
       );
     }
     for (const leg of usage_by_role[role]) {
-      if (!joined_receipts.has(leg.receipt_id)) {
+      if (
+        !joined_receipts.has(leg.receipt_id) &&
+        !isToolAgentType(leg.agent_type)
+      ) {
         rows.push(staticLegTemplate(role, provider, leg));
       }
     }

@@ -1366,6 +1366,82 @@ describe('views/worker', () => {
     return mount;
   }
 
+  test('renders session_active rows as session tiles after attempt tiles', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'W1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          started_at: Date.now() - 5000
+        }
+      },
+      session_active: [
+        {
+          bead_id: 'UI-sess',
+          title: '세션 작업',
+          status: 'in_progress',
+          updated_at: Date.now() - 60_000
+        }
+      ]
+    });
+
+    const tiles = mount.querySelectorAll(
+      '#worker-pane-running .worker-rungrid .rtile'
+    );
+
+    expect(tiles.length).toBe(2);
+    const last = /** @type {HTMLElement} */ (tiles[1]);
+    expect(last.dataset.beadId).toBe('UI-sess');
+    expect(last.classList.contains('rtile--session')).toBe(true);
+    expect(last.querySelector('.rtile__session-badge')).not.toBeNull();
+  });
+
+  test('skips a session row whose bead an attempt tile already draws', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'UI-sess',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus'
+        }
+      },
+      session_active: [
+        { bead_id: 'UI-sess', title: '세션 작업', status: 'in_progress' }
+      ]
+    });
+
+    const tiles = mount.querySelectorAll(
+      '#worker-pane-running .worker-rungrid .rtile'
+    );
+
+    expect(tiles.length).toBe(1);
+    expect(/** @type {HTMLElement} */ (tiles[0]).dataset.attemptId).toBe('a1');
+  });
+
+  test('a session tile neither counts into 실행 nor lights the live accent', () => {
+    const mount = mountAttemptTiles({
+      session_active: [
+        { bead_id: 'UI-sess', title: '세션 작업', status: 'in_progress' }
+      ]
+    });
+
+    const running_chip = /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-kpi__chip--running b')
+    );
+    const pane = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-running')
+    );
+
+    expect(running_chip.textContent).toBe('0');
+    expect(pane.className).not.toContain('worker-pane--live');
+    expect(pane.querySelectorAll('.rtile').length).toBe(1);
+  });
+
   test('projects unhandled failures before active attempts', () => {
     const mount = mountAttemptTiles({
       attempts: {
@@ -8496,6 +8572,22 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
     );
   });
 
+  test('surfaces a transport failure of the merge click as a toast', async () => {
+    const transport = vi.fn(async () => {
+      throw new Error('ws disconnected');
+    });
+    const { mount } = mountLane(laneOf(['RD-1']), transport);
+
+    /** @type {HTMLButtonElement} */ (
+      rowOf(mount, 'RD-1').querySelector('.worker-mini__merge')
+    ).click();
+    await flush();
+
+    expect(document.querySelector('.toast')?.textContent).toContain(
+      '머지 클릭이 서버에 전달되지 않았습니다'
+    );
+  });
+
   test('a queued row under a live manual authority still swaps 머지 for 취소', () => {
     const { mount } = mountLane(
       laneOf(['RD-1', 'RD-2'], {
@@ -9219,6 +9311,20 @@ describe('mergeFailureText (UI-5v7d §4)', () => {
 
   test('passes an unknown reason through instead of blanking the badge', () => {
     expect(mergeFailureText('brand_new_reason')).toBe('brand_new_reason');
+  });
+
+  test('points a receipt hold at the manual [머지] click that lifts it', () => {
+    const text = mergeFailureText('receipt_unbacked:probe_error');
+
+    expect(text).toContain('probe_error');
+    expect(text).toContain('[머지] 클릭으로 수동 진행 가능');
+  });
+
+  test('keeps the manual-click hint for every receipt_unbacked code', () => {
+    const text = mergeFailureText('receipt_unbacked:main_receipt_unbacked');
+
+    expect(text).toContain('main_receipt_unbacked');
+    expect(text).toContain('[머지] 클릭으로 수동 진행 가능');
   });
 });
 

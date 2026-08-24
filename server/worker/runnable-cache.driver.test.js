@@ -32,7 +32,12 @@ vi.mock('../ws/worker-handlers.js', () => ({
    */
   decorateQueue: (key, queue) => ({ ...queue }),
   onWorkerSnapshotRefresh: () => () => {},
-  workerQueueSubscriberCount: () => 0
+  workerQueueSubscriberCount: () => 0,
+  // 스캔 게이트의 워커 채널 몫 (UI-0a2m) — 이 driver 테스트들은 모니터 구독만
+  // 오가므로 워커 구독자는 없다.
+  workerQueueSubscriberTotal: () => 0,
+  workerQueueSubscribedWorkspaces: () => [],
+  fanout: () => {}
 }));
 
 vi.mock('../registry-watcher.js', () => ({

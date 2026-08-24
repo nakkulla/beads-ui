@@ -752,6 +752,35 @@ export function createRunnableCache(options = {}) {
   }
 
   /**
+   * The fill-free half of the read path: what the cache holds RIGHT NOW, minus
+   * the excluded ids. Written apart from {@link readBucket} so a snapshot
+   * decoration can consume the bucket without side effects (UI-0a2m) — the
+   * worker channel's `decorateQueue` runs on every reply and fanout, and a read
+   * that spawned `bd` from there would fire on paths that never asked for a
+   * scan (unit tests included). Freshness for that consumer is owned by the
+   * subscribe-time `refresh` and the periodic driver.
+   *
+   * @template {'items'|'session_active'} B
+   * @param {string} workspace
+   * @param {B} bucket
+   * @param {Iterable<string>} [exclude_ids]
+   * @returns {B extends 'items' ? RunnableItem[] : SessionActiveItem[]}
+   */
+  function peekBucket(workspace, bucket, exclude_ids) {
+    const hit = records.get(keyOf(workspace));
+    if (!hit) {
+      return /** @type {any} */ ([]);
+    }
+    const rows = /** @type {Array<{ bead_id: string }>} */ (hit[bucket]);
+    const excluded = exclude_ids ? new Set(exclude_ids) : null;
+    return /** @type {any} */ (
+      excluded
+        ? rows.filter((item) => !excluded.has(item.bead_id))
+        : rows.slice()
+    );
+  }
+
+  /**
    * The shared read path of both buckets: one TTL check, one refill trigger,
    * one exclusion filter. Written once so `runnableFor` and `sessionActiveFor`
    * cannot drift apart in freshness or in what "already in a lane" means.
@@ -763,21 +792,11 @@ export function createRunnableCache(options = {}) {
    * @returns {B extends 'items' ? RunnableItem[] : SessionActiveItem[]}
    */
   function readBucket(workspace, bucket, exclude_ids) {
-    const key = keyOf(workspace);
-    const hit = records.get(key);
+    const hit = records.get(keyOf(workspace));
     if (!hit || now() - hit.at >= positive_ttl_ms) {
       queueFill(workspace);
     }
-    if (!hit) {
-      return /** @type {any} */ ([]);
-    }
-    const rows = /** @type {Array<{ bead_id: string }>} */ (hit[bucket]);
-    const excluded = exclude_ids ? new Set(exclude_ids) : null;
-    return /** @type {any} */ (
-      excluded
-        ? rows.filter((item) => !excluded.has(item.bead_id))
-        : rows.slice()
-    );
+    return peekBucket(workspace, bucket, exclude_ids);
   }
 
   return {
@@ -840,6 +859,19 @@ export function createRunnableCache(options = {}) {
      */
     sessionActiveFor(workspace, exclude_ids) {
       return readBucket(workspace, 'session_active', exclude_ids);
+    },
+
+    /**
+     * The session bucket WITHOUT the refill trigger (UI-0a2m) — the worker
+     * channel's snapshot decoration reads this on every reply/fanout, so the
+     * read itself must stay side-effect-free. See {@link peekBucket}.
+     *
+     * @param {string} workspace
+     * @param {Iterable<string>} [exclude_ids]
+     * @returns {SessionActiveItem[]}
+     */
+    sessionActivePeek(workspace, exclude_ids) {
+      return peekBucket(workspace, 'session_active', exclude_ids);
     },
 
     /**
