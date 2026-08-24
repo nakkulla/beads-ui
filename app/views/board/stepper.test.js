@@ -1,5 +1,5 @@
 import { render } from 'lit-html';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { stepperTemplate } from './stepper.js';
 
 /**
@@ -373,5 +373,132 @@ describe('views/board/stepper', () => {
     render(stepperTemplate(null, 'open'), mount);
 
     expect(mount.querySelector('.stp')).toBeNull();
+  });
+});
+
+describe('views/board/stepper doc cells (UI-ajkn §3)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  const SPEC_DOC = { path: 'docs/spec.md', missing_state: null };
+
+  /**
+   * @param {any} [doc]
+   * @returns {any}
+   */
+  function withSpecDoc(doc = SPEC_DOC) {
+    return wf({
+      spec: { ...stage('full'), doc },
+      impl: NONE,
+      pr: NONE,
+      merge: NONE
+    });
+  }
+
+  /**
+   * @param {any} workflow
+   * @param {any} [options]
+   * @returns {HTMLElement}
+   */
+  function mountWithOptions(workflow, options) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(stepperTemplate(workflow, 'in_progress', options), mount);
+    return mount;
+  }
+
+  test('renders no buttons and keeps role=img without a handler', () => {
+    const m = mountWithOptions(withSpecDoc());
+
+    expect(m.querySelectorAll('button').length).toBe(0);
+    expect(m.querySelector('.stp')?.getAttribute('role')).toBe('img');
+  });
+
+  test('turns only the cell that has a doc into a button', () => {
+    const m = mountWithOptions(withSpecDoc(), { onOpenDoc: vi.fn() });
+
+    const buttons = m.querySelectorAll('button.seg.seg--doc');
+    expect(buttons.length).toBe(1);
+    expect(buttons[0].querySelector('.lbl')?.textContent?.trim()).toBe('spec');
+    expect(m.querySelectorAll('div.seg').length).toBe(3);
+  });
+
+  test('switches the container to role=group when a button exists', () => {
+    const m = mountWithOptions(withSpecDoc(), { onOpenDoc: vi.fn() });
+
+    const stp = /** @type {HTMLElement} */ (m.querySelector('.stp'));
+    expect(stp.getAttribute('role')).toBe('group');
+    expect(stp.getAttribute('aria-label')).toContain('워크플로우 진행:');
+  });
+
+  test('leaves a doc-less cell as a div even with a handler', () => {
+    const m = mountWithOptions(
+      wf({ spec: stage('full'), impl: NONE, pr: NONE, merge: NONE }),
+      { onOpenDoc: vi.fn() }
+    );
+
+    expect(m.querySelectorAll('button').length).toBe(0);
+    expect(m.querySelector('.stp')?.getAttribute('role')).toBe('img');
+  });
+
+  test('labels the button with the stage name and the document path', () => {
+    const m = mountWithOptions(withSpecDoc(), { onOpenDoc: vi.fn() });
+
+    const button = /** @type {HTMLElement} */ (m.querySelector('.seg--doc'));
+    expect(button.getAttribute('aria-label')).toBe(
+      'spec 문서 열기 · docs/spec.md'
+    );
+    expect(button.getAttribute('title')).toBe('spec 문서 열기 · docs/spec.md');
+  });
+
+  test('calls onOpenDoc with the event, doc and stage key on click', () => {
+    const onOpenDoc = vi.fn();
+    const m = mountWithOptions(withSpecDoc(), { onOpenDoc });
+
+    /** @type {HTMLElement} */ (m.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(onOpenDoc).toHaveBeenCalledTimes(1);
+    const [ev, doc, key] = onOpenDoc.mock.calls[0];
+    expect(ev.type).toBe('click');
+    expect(doc).toEqual(SPEC_DOC);
+    expect(key).toBe('spec');
+  });
+
+  test('stops the click from reaching an ancestor click handler', () => {
+    const outer = vi.fn();
+    const m = mountWithOptions(withSpecDoc(), { onOpenDoc: vi.fn() });
+    m.addEventListener('click', outer);
+
+    /** @type {HTMLElement} */ (m.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(outer).not.toHaveBeenCalled();
+  });
+
+  test('renders a plan cell button from its own doc', () => {
+    const m = mountWithOptions(
+      wf(
+        {
+          spec: stage('full'),
+          plan: {
+            ...stage('dim'),
+            doc: { path: 'docs/plan.md', missing_state: 'plan_pending' }
+          },
+          impl: NONE,
+          pr: NONE,
+          merge: NONE
+        },
+        'full_plan'
+      ),
+      { onOpenDoc: vi.fn() }
+    );
+
+    const button = /** @type {HTMLElement} */ (m.querySelector('.seg--doc'));
+    expect(button.getAttribute('aria-label')).toBe(
+      'plan 문서 열기 · docs/plan.md'
+    );
   });
 });

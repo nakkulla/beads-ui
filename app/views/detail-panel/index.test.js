@@ -1747,3 +1747,60 @@ describe('views/detail-panel comment compose (UI-ucq6 §변경 2/3)', () => {
     expect(mount.querySelector('.detail-comment-compose')).not.toBe(null);
   });
 });
+
+describe('views/detail-panel shared md viewer (UI-ajkn §4)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  /**
+   * @returns {any}
+   */
+  function fakeViewer() {
+    return { open: vi.fn(), close: vi.fn(), destroy: vi.fn() };
+  }
+
+  test('mounts its own md-viewer-root when no viewer is injected', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const panel = createDetailPanel(mount, { onClose: vi.fn() });
+
+    expect(document.querySelectorAll('.md-viewer-root').length).toBe(1);
+    panel.destroy();
+    expect(document.querySelectorAll('.md-viewer-root').length).toBe(0);
+  });
+
+  test('mounts no md-viewer-root of its own when one is injected', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    createDetailPanel(mount, { onClose: vi.fn(), mdViewer: fakeViewer() });
+
+    expect(document.querySelectorAll('.md-viewer-root').length).toBe(0);
+  });
+
+  test('closes the injected viewer on clear', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const md_viewer = fakeViewer();
+    const panel = createDetailPanel(mount, {
+      onClose: vi.fn(),
+      mdViewer: md_viewer
+    });
+
+    panel.clear();
+
+    expect(md_viewer.close).toHaveBeenCalledTimes(1);
+  });
+
+  test('never destroys the injected viewer', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const md_viewer = fakeViewer();
+    const panel = createDetailPanel(mount, {
+      onClose: vi.fn(),
+      mdViewer: md_viewer
+    });
+
+    panel.destroy();
+
+    expect(md_viewer.destroy).not.toHaveBeenCalled();
+  });
+});

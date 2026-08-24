@@ -11831,3 +11831,71 @@ describe('worker 탭 scope 겹침 칩 (UI-jbao)', () => {
     expect(w1.querySelector('.mon-overlap__chip')).toBe(null);
   });
 });
+
+describe('views/worker candidate stepper doc cells (UI-ajkn §5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const SPEC_DOC = { path: 'docs/spec.md', missing_state: null };
+
+  /**
+   * @returns {any}
+   */
+  function seedDocCandidate() {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'RD-1',
+        title: 'ready with spec',
+        status: 'open',
+        priority: 1,
+        updated_at: Date.now(),
+        metadata: { spec_id: 'SPEC-1' },
+        workflow: {
+          route: 'spec_backed',
+          stages: {
+            spec: { fill: 'full', glyph: null, stale: false, doc: SPEC_DOC },
+            impl: { fill: 'none', glyph: null, stale: false },
+            pr: { fill: 'none', glyph: null, stale: false },
+            merge: { fill: 'none', glyph: null, stale: false }
+          }
+        }
+      }
+    ]);
+    return stores;
+  }
+
+  test('opens a candidate document in the current workspace', () => {
+    const openDoc = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedDocCandidate(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn(),
+      openDoc
+    });
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate .seg--doc')
+    ).click();
+
+    expect(openDoc).toHaveBeenCalledWith(SPEC_DOC);
+  });
+
+  test('renders static stepper cells when no openDoc is given', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedDocCandidate(),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+
+    const cand = /** @type {HTMLElement} */ (
+      mount.querySelector('#worker-pane-candidate')
+    );
+    expect(cand.querySelector('.stp')).not.toBeNull();
+    expect(cand.querySelector('.seg--doc')).toBeNull();
+  });
+});

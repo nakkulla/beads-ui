@@ -143,10 +143,13 @@ uses `false` / `[]` and does not remove the candidate.
 
 Runnable rows also carry `workflow` and `exec_pins` (UI-eey2 §9.1). `workflow`
 is the `enrichIssueWorkflow` stepper projection derived from the SAME `bd list`
-row — no extra bd call — and is `null` when it could not be computed.
-`exec_pins: Record<string, string>` is the row's execution metadata pins only
-(the per-bead preset axes plus `claude_account`/`codex_account`); the rest of
-`metadata` never travels, so the whole backlog's metadata stays off the wire.
+row — no extra bd call — and is `null` when it could not be computed. In every
+`WorkflowSummary`, `stages.spec`/`stages.plan` carry
+`doc { path, missing_state }` whenever a document path exists (independent of
+`fill`); the other stages never do. `exec_pins: Record<string, string>` is the
+row's execution metadata pins only (the per-bead preset axes plus
+`claude_account`/`codex_account`); the rest of `metadata` never travels, so the
+whole backlog's metadata stays off the wire.
 
 Runnable rows carry `plan_path: string|null` and, on a scope-cache hit only,
 `scope: string[]` (UI-qm12 §4.4). `scope` is read from the SAME artifact set as

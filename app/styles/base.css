@@ -816,6 +816,23 @@ body {
   color: var(--text-dim);
 }
 
+/* A cell that stands for an openable spec/plan document is a button; the reset
+   keeps the segment's layout identical to the static `div` variant. */
+.stp .seg--doc {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.stp .seg--doc:hover .lbl,
+.stp .seg--doc:focus-visible .lbl {
+  text-decoration: underline;
+}
+
 /* stage colors: spec=teal, plan=blue, impl=violet, pr=pink, merge=green */
 .stp .b-spec.dim {
   background: var(--stage-spec-dim);

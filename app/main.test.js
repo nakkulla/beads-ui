@@ -21,4 +21,15 @@ describe('app/main (jsdom)', () => {
     expect(/** @type {HTMLElement} */ (worker_root).hidden).toBe(true);
     expect(/** @type {HTMLElement} */ (detail_panel).hidden).toBe(true);
   });
+
+  test('creates exactly one md viewer mount for the whole shell', () => {
+    document.body.innerHTML = '<main id="app"></main>';
+    const root_element = /** @type {HTMLElement} */ (
+      document.getElementById('app')
+    );
+
+    bootstrap(root_element);
+
+    expect(document.querySelectorAll('.md-viewer-root').length).toBe(1);
+  });
 });

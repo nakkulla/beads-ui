@@ -126,6 +126,27 @@ describe('views/detail-panel/md-viewer', () => {
     viewer.close();
     expect(mount.querySelector('.mv')).toBeNull();
   });
+
+  test('reads from the workspace given to open, not the current one', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('mv'));
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, path: 'docs/spec.md', content: '# x' })
+    });
+    const viewer = createMdViewer(mount, {
+      getWorkspacePath: () => '/ws/current',
+      fetchImpl: /** @type {any} */ (fetchImpl)
+    });
+
+    await viewer.open('docs/spec.md', { workspace: '/ws/other' });
+    await tick();
+
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toContain(
+      '/api/doc?workspace=' + encodeURIComponent('/ws/other')
+    );
+    expect(url).not.toContain(encodeURIComponent('/ws/current'));
+  });
 });
 
 describe('splitFrontmatter', () => {

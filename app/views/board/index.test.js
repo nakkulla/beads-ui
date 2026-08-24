@@ -1499,3 +1499,106 @@ describe('views/board blocked column composition', () => {
     expect(chips).toEqual(['⛓ blocked: X-1']);
   });
 });
+
+describe('views/board: stepper doc cells (UI-ajkn §5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  const SPEC_DOC = { path: 'docs/spec.md', missing_state: null };
+
+  /** @type {any} */
+  const WORKFLOW = {
+    route: 'spec_backed',
+    stages: {
+      spec: { fill: 'full', glyph: null, stale: false, doc: SPEC_DOC },
+      impl: { fill: 'none', glyph: null, stale: false },
+      pr: { fill: 'none', glyph: null, stale: false },
+      merge: { fill: 'none', glyph: null, stale: false }
+    },
+    chips: {}
+  };
+
+  /**
+   * @returns {any}
+   */
+  function seedWithDocCard() {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:board:ready', [
+      {
+        id: 'DC-1',
+        title: 'doc card',
+        status: 'open',
+        priority: 1,
+        created_at: 1_000,
+        updated_at: 1_000,
+        workflow: WORKFLOW
+      }
+    ]);
+    seed(stores, 'tab:board:deferred', [
+      {
+        id: 'DF-9',
+        title: 'deferred doc card',
+        status: 'deferred',
+        created_at: 2_000,
+        updated_at: 2_000,
+        workflow: WORKFLOW
+      }
+    ]);
+    return stores;
+  }
+
+  test('a column card cell opens the document through openDoc', async () => {
+    const openDoc = vi.fn();
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDocCard(),
+      openDoc
+    });
+    await view.load();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#ready-col .seg--doc')
+    ).click();
+
+    expect(openDoc).toHaveBeenCalledWith(SPEC_DOC);
+  });
+
+  test('the deferred popup closes before its card opens the document', async () => {
+    /** @type {string[]} */
+    const order = [];
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDocCard(),
+      openDoc: () => {
+        order.push(mount.querySelector('#deferred-popup') ? 'open' : 'closed');
+      }
+    });
+    await view.load();
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.board-filter__deferred')
+    ).click();
+
+    /** @type {HTMLElement} */ (
+      mount.querySelector('#deferred-popup .seg--doc')
+    ).click();
+
+    expect(order).toEqual(['closed']);
+    expect(mount.querySelector('#deferred-popup')).toBeNull();
+  });
+
+  test('renders static stepper cells when no openDoc is given', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const view = createBoardView(mount, {
+      gotoIssue: vi.fn(),
+      issueStores: seedWithDocCard()
+    });
+    await view.load();
+
+    expect(mount.querySelector('#ready-col .stp')).not.toBeNull();
+    expect(mount.querySelector('#ready-col .seg--doc')).toBeNull();
+  });
+});

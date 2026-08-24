@@ -1,5 +1,5 @@
 import { render } from 'lit-html';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   candidateCard,
   discardCompletionMessage,
@@ -11,6 +11,7 @@ import {
   formatClock,
   formatElapsed,
   miniRow,
+  paneTemplate,
   repoOpsStripModel,
   routeChipTemplate,
   staleWorkProjection,
@@ -1655,5 +1656,81 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     expect(deps.querySelector('.mon-overlap__note')?.textContent?.trim()).toBe(
       '둘 다 실행 중 — 순서를 만들 수 없습니다'
     );
+  });
+});
+
+describe('candidate card stepper doc cells (UI-ajkn §5)', () => {
+  const CANDIDATE = /** @type {any} */ ({
+    id: 'UI-d1',
+    title: '문서 셀',
+    lane: 'candidate',
+    draggable: true,
+    workflow: {
+      route: 'spec_backed',
+      stages: {
+        spec: {
+          fill: 'full',
+          glyph: null,
+          stale: false,
+          doc: { path: 'docs/spec.md', missing_state: null }
+        },
+        impl: { fill: 'none', glyph: null, stale: false },
+        pr: { fill: 'none', glyph: null, stale: false },
+        merge: { fill: 'none', glyph: null, stale: false }
+      }
+    }
+  });
+
+  test('renders a static stepper without an onOpenDoc option', () => {
+    render(candidateCard(CANDIDATE), mount);
+
+    expect(mount.querySelector('.seg--doc')).toBeNull();
+  });
+
+  test('passes onOpenDoc through to the stepper cell', () => {
+    const onOpenDoc = vi.fn();
+
+    render(candidateCard(CANDIDATE, null, { onOpenDoc }), mount);
+    /** @type {HTMLElement} */ (mount.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(onOpenDoc).toHaveBeenCalledTimes(1);
+    expect(onOpenDoc.mock.calls[0][1]).toEqual({
+      path: 'docs/spec.md',
+      missing_state: null
+    });
+  });
+
+  test('keeps the click from reaching the delegated card handler', () => {
+    const delegated = vi.fn();
+    render(candidateCard(CANDIDATE, null, { onOpenDoc: vi.fn() }), mount);
+    mount.addEventListener('click', delegated);
+
+    /** @type {HTMLElement} */ (mount.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(delegated).not.toHaveBeenCalled();
+  });
+
+  test('paneTemplate forwards its onOpenDoc to candidate cards', () => {
+    const onOpenDoc = vi.fn();
+
+    render(
+      paneTemplate({
+        id: 'p',
+        lane: 'candidate',
+        title: '후보',
+        items: [CANDIDATE],
+        onOpenDoc
+      }),
+      mount
+    );
+    /** @type {HTMLElement} */ (mount.querySelector('.seg--doc')).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+
+    expect(onOpenDoc).toHaveBeenCalledTimes(1);
   });
 });

@@ -653,7 +653,8 @@ describe('enrichIssueWorkflow', () => {
       fill: 'dim',
       glyph: null,
       stale: false,
-      receipt: null
+      receipt: null,
+      doc: { path: 'docs/specs/draft.md', missing_state: 'spec_draft' }
     });
     expect(draft.stages.impl).toEqual(bare.stages.impl);
     expect(draft.stages.pr).toEqual(bare.stages.pr);
@@ -677,7 +678,8 @@ describe('enrichIssueWorkflow', () => {
       fill: 'dim',
       glyph: null,
       stale: false,
-      receipt: null
+      receipt: null,
+      doc: { path: 'docs/specs/draft.md', missing_state: 'spec_draft' }
     });
   });
 
@@ -714,7 +716,8 @@ describe('enrichIssueWorkflow', () => {
       fill: 'full',
       glyph: null,
       stale: false,
-      receipt: null
+      receipt: null,
+      doc: { path: 'docs/spec.md', missing_state: null }
     });
   });
 
@@ -763,7 +766,8 @@ describe('enrichIssueWorkflow', () => {
       fill: 'dim',
       glyph: null,
       stale: false,
-      receipt: raw
+      receipt: raw,
+      doc: { path: 'docs/specs/draft.md', missing_state: 'spec_draft' }
     });
   });
 
@@ -1591,5 +1595,125 @@ describe('closed beads skip the staleness probes', () => {
     );
 
     expect(spec_stale).toBe(true);
+  });
+});
+
+describe('stage doc projection (UI-ajkn §2)', () => {
+  test('carries the published spec path with no missing_state', () => {
+    const wf = enrichIssueWorkflow({
+      spec_id: 'docs/spec.md',
+      metadata: { route: 'spec_backed' }
+    });
+
+    expect(wf.stages.spec.doc).toEqual({
+      path: 'docs/spec.md',
+      missing_state: null
+    });
+  });
+
+  test('marks a draft-only spec path as spec_draft', () => {
+    const wf = enrichIssueWorkflow({
+      metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
+    });
+
+    expect(wf.stages.spec.doc).toEqual({
+      path: 'docs/specs/draft.md',
+      missing_state: 'spec_draft'
+    });
+  });
+
+  test('carries a draft path even when the document is proven absent', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/other.md', '# other\n');
+    commitAll(dir, 'add other');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'open',
+        metadata: { route: 'spec_backed', spec_path: 'docs/specs/draft.md' }
+      },
+      dir
+    );
+
+    expect(wf.stages.spec.fill).toBe('none');
+    expect(wf.stages.spec.doc).toEqual({
+      path: 'docs/specs/draft.md',
+      missing_state: 'spec_draft'
+    });
+  });
+
+  test('omits doc when there is no spec evidence at all', () => {
+    const wf = enrichIssueWorkflow({ metadata: { route: 'spec_backed' } });
+
+    expect(wf.stages.spec.doc).toBeUndefined();
+  });
+
+  test('carries the plan path with no missing_state once authoring started', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'docs/plan.md', '# plan\n');
+    commitAll(dir, 'add plan');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: {
+          route: 'full_plan',
+          plan_path: 'docs/plan.md',
+          plan_review: 'codex@' + 'b'.repeat(12)
+        }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan?.doc).toEqual({
+      path: 'docs/plan.md',
+      missing_state: null
+    });
+  });
+
+  test('marks a reserved plan path without authoring history as plan_pending', () => {
+    const dir = makeRepo();
+    writeFile(dir, 'x.txt', '1\n');
+    commitAll(dir, 'init');
+
+    const wf = enrichIssueWorkflow(
+      {
+        status: 'in_progress',
+        metadata: { route: 'full_plan', plan_path: 'docs/plan.md' }
+      },
+      dir
+    );
+
+    expect(wf.stages.plan?.fill).toBe('none');
+    expect(wf.stages.plan?.doc).toEqual({
+      path: 'docs/plan.md',
+      missing_state: 'plan_pending'
+    });
+  });
+
+  test('omits doc when no plan_path is reserved', () => {
+    const wf = enrichIssueWorkflow({
+      status: 'in_progress',
+      metadata: { route: 'full_plan' }
+    });
+
+    expect(wf.stages.plan?.doc).toBeUndefined();
+  });
+
+  test('never carries doc on the impl, pr, merge or close stages', () => {
+    const backed = enrichIssueWorkflow({
+      spec_id: 'docs/spec.md',
+      status: 'resolved',
+      metadata: { route: 'spec_backed', pr_url: 'https://x/pull/42' }
+    });
+    const quick = enrichIssueWorkflow({
+      status: 'closed',
+      metadata: { route: 'quick_fix' }
+    });
+
+    expect(backed.stages.impl.doc).toBeUndefined();
+    expect(backed.stages.pr.doc).toBeUndefined();
+    expect(backed.stages.merge.doc).toBeUndefined();
+    expect(quick.stages.close?.doc).toBeUndefined();
   });
 });

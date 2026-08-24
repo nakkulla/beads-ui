@@ -19,6 +19,9 @@ import { renderMarkdown } from '../../utils/markdown.js';
  *
  * @typedef {Object} MdViewerOpenOptions
  * @property {'plan_pending'|'spec_draft'|null} [missing_state]
+ * @property {string} [workspace] - Abs workspace root to read the document
+ * from, overriding the current one. A cross-repo card must open ITS repo's
+ * document, not the selected workspace's same-named path (spec §4).
  */
 
 /**
@@ -136,7 +139,8 @@ ${front_text}</pre
     error_message = '';
     doRender();
 
-    const workspace = getWorkspacePath ? getWorkspacePath() : '';
+    const workspace =
+      open_options.workspace || (getWorkspacePath ? getWorkspacePath() : '');
     if (!workspace) {
       state = 'error';
       error_message = '워크스페이스가 선택되지 않았습니다';

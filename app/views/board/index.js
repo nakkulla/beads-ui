@@ -40,6 +40,9 @@ import { filterBarTemplate } from './filter-bar.js';
  * @property {string} [closedRange] - Current Closed period ('today'|'7d'|'30d'|'all').
  * @property {(range: string) => void} [onClosedRangeChange]
  * @property {() => void} [onNewIssue]
+ * @property {(doc: import('./stepper.js').StepperDoc) => void} [openDoc] -
+ * Opens a stepper cell's spec/plan document in the shared md viewer. Absent
+ * keeps the stepper static (spec §5).
  */
 
 /**
@@ -128,6 +131,7 @@ export function createBoardView(mount_element, options) {
   const workerQueueStore = options.workerQueueStore;
   const onClosedRangeChangeCb = options.onClosedRangeChange;
   const onNewIssue = options.onNewIssue;
+  const openDoc = options.openDoc;
   let closed_range = options.closedRange || DEFAULT_CLOSED_RANGE;
   const selectors = issueStores
     ? createListSelectors(issueStores, uiOrderStore)
@@ -589,6 +593,9 @@ export function createBoardView(mount_element, options) {
     onRollupToggle,
     onChildClick,
     onFromChipClick,
+    onOpenDoc: openDoc
+      ? (/** @type {Event} */ _ev, /** @type {any} */ doc) => openDoc(doc)
+      : undefined,
     cleanupFailureFor,
     get policy() {
       return currentPolicy();
@@ -629,6 +636,14 @@ export function createBoardView(mount_element, options) {
     onCardClick: onDeferredCardClick,
     onChildClick: onDeferredNavigate,
     onFromChipClick: onDeferredNavigate,
+    // The popup is a native modal `<dialog>` in the browser's top layer, so a
+    // body overlay cannot appear above it — the popup closes first.
+    onOpenDoc: openDoc
+      ? (/** @type {Event} */ _ev, /** @type {any} */ doc) => {
+          closeDeferredPopup();
+          openDoc(doc);
+        }
+      : undefined,
     get policy() {
       return currentPolicy();
     }

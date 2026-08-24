@@ -688,6 +688,17 @@ export function parsePrNumber(pr_url) {
  * @property {string | null} receipt - Raw receipt string (spec/plan/impl only).
  * @property {string | null} [approval_receipt] - Plan approval receipt only.
  * @property {'missing'|'fresh'|'stale'|'unknown'|'legacy'} [approval_state] - Plan approval state only.
+ * @property {StageDoc} [doc] - Openable document behind the cell (spec/plan only).
+ */
+
+/**
+ * The document a spec/plan cell stands for, independent of `fill`: a reserved
+ * path travels even when nothing was written yet, because the viewer is what
+ * distinguishes "not authored" from "unreadable" (spec §2).
+ *
+ * @typedef {Object} StageDoc
+ * @property {string} path - Workspace-relative document path.
+ * @property {'spec_draft'|'plan_pending'|null} missing_state
  */
 
 /**
@@ -727,14 +738,22 @@ function specStage(spec_evidence, md, receipt, stale, workspace_root) {
   if (spec_evidence.evidence === 'none') {
     return makeStage('none', null, false, raw);
   }
+  /** @type {StageDoc} */
+  const doc = {
+    path: spec_evidence.path,
+    missing_state: spec_evidence.evidence === 'draft' ? 'spec_draft' : null
+  };
   if (spec_evidence.evidence === 'draft') {
     const exists = docArtifactExists(workspace_root, spec_evidence.path);
-    return makeStage(exists === false ? 'none' : 'dim', null, false, raw);
+    return {
+      ...makeStage(exists === false ? 'none' : 'dim', null, false, raw),
+      doc
+    };
   }
   if (!receipt) {
-    return makeStage('full', null, false, raw);
+    return { ...makeStage('full', null, false, raw), doc };
   }
-  return makeStage('full', classifyGlyph(receipt), stale, raw);
+  return { ...makeStage('full', classifyGlyph(receipt), stale, raw), doc };
 }
 
 /**
@@ -789,6 +808,19 @@ function planStage(md, status, workspace_root, head) {
     Object.hasOwn(md, 'plan_check') ||
     Object.hasOwn(md, 'plan_review') ||
     Object.hasOwn(md, 'plan_approval');
+  // A reserved path is openable before the document exists — the viewer says
+  // "계획 작성 전" instead of the cell staying silently inert (spec §2).
+  const plan_path = typeof md.plan_path === 'string' ? md.plan_path.trim() : '';
+  /** @type {{ doc?: StageDoc }} */
+  const doc_part =
+    plan_path === ''
+      ? {}
+      : {
+          doc: {
+            path: plan_path,
+            missing_state: has_authoring_history ? null : 'plan_pending'
+          }
+        };
   if (
     !has_authoring_history &&
     docArtifactExists(workspace_root, md.plan_path) === false
@@ -796,7 +828,8 @@ function planStage(md, status, workspace_root, head) {
     return {
       ...makeStage('none', null, false, null),
       approval_receipt: null,
-      approval_state: 'missing'
+      approval_state: 'missing',
+      ...doc_part
     };
   }
 
@@ -865,7 +898,8 @@ function planStage(md, status, workspace_root, head) {
   return {
     ...makeStage(fill, classifyGlyph(review_receipt), stale, review_raw),
     approval_receipt: approval_raw,
-    approval_state
+    approval_state,
+    ...doc_part
   };
 }
 

@@ -1487,7 +1487,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
  * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1500,6 +1500,7 @@ export function createWorkerView(mount_element, options = {}) {
     uiOrderStore,
     gotoIssue,
     getWorkspacePath,
+    openDoc,
     doneRange,
     onDoneRangeChange
   } = options;
@@ -4669,7 +4670,12 @@ export function createWorkerView(mount_element, options = {}) {
       empty: '후보 없음',
       header_control: candidateSortTemplate(),
       controls: candidateControlsTemplate(m),
-      place_menu: currentPlaceMenu(m.candidates)
+      place_menu: currentPlaceMenu(m.candidates),
+      // Worker candidates always belong to the selected workspace, so the
+      // viewer keeps its default workspace.
+      onOpenDoc: openDoc
+        ? (/** @type {Event} */ _ev, /** @type {any} */ doc) => openDoc(doc)
+        : undefined
     });
     if (is_mobile) {
       // 관제 우선 배치 (UI-58y2 §모바일): 지금 → 대기 → 후보 → 완료. 실행 중과
