@@ -18,7 +18,10 @@
  * 레포 섹션은 **`workspaces_state`를 돌며** 만든다: 큐가 빈 레포에도 후보가
  * 있으면 드롭 타깃이 필요하고 (§6), 순서는 데크 순서와 같아야 한다.
  */
-import { activeAttemptStates } from '../../utils/active-attempts.js';
+import {
+  activeAttemptStates,
+  isImplementationAttempt
+} from '../../utils/active-attempts.js';
 import {
   formatAttemptOrchestrationChip,
   formatOrchestrationChip,
@@ -27,7 +30,11 @@ import {
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { overlapPrefixes } from '../../utils/scope-overlap.js';
 import { sumAttemptUsage } from '../../utils/token-usage.js';
-import { discardProjection, sumAttemptWorkMs } from '../worker/lanes.js';
+import {
+  discardProjection,
+  headReviewAttemptBadges,
+  sumAttemptWorkMs
+} from '../worker/lanes.js';
 import {
   cleanupStalledReason,
   cleanupStepLabel
@@ -292,7 +299,10 @@ export function latestTerminalAttempt(attempts, bead_id) {
     if (
       !attempt ||
       attempt.bead_id !== bead_id ||
-      attempt.status === 'running'
+      attempt.status === 'running' ||
+      // 완료 종류를 정하는 것은 이 bead의 구현 시도다 (UI-hk74 §7): 나중에 끝난
+      // head review가 이기면 실제 완료 종류 배지가 사라진다.
+      !isImplementationAttempt(attempt)
     ) {
       continue;
     }
@@ -1745,7 +1755,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
         done_at:
           typeof entry.added_at === 'number' ? entry.added_at : undefined,
         done_kind: kind,
-        badges: kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []
+        // 완료 종류 배지 + 이 bead에 섞인 head review·repair 시도 (UI-hk74 §7).
+        badges: [
+          ...(kind && DONE_KIND_LABELS[kind] ? [DONE_KIND_LABELS[kind]] : []),
+          ...headReviewAttemptBadges(attempts, bead_id)
+        ]
       });
     }
   }

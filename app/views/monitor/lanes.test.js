@@ -618,6 +618,71 @@ describe('monitor 완료 lane (UI-eey2 §8)', () => {
     expect(lanes.done[0].workspace_name).toBe('repo-a');
   });
 
+  test('marks an automatic head review beside the done-kind badge (UI-hk74 §7)', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 10,
+              finished_at: 40,
+              done_kind: 'auto_merge'
+            },
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 50,
+              finished_at: 60,
+              kind: 'head_review',
+              origin: 'auto'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].badges).toEqual(['자동 머지', '리뷰 · 자동']);
+  });
+
+  test('keeps the done-kind badge when a later head review outlives it', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          done: [{ bead_id: 'A-1', added_at: 100 }],
+          attempts: {
+            t1: {
+              attempt_id: 't1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 10,
+              finished_at: 40,
+              done_kind: 'auto_merge'
+            },
+            r1: {
+              attempt_id: 'r1',
+              bead_id: 'A-1',
+              status: 'done',
+              started_at: 50,
+              finished_at: 900,
+              kind: 'head_repair',
+              origin: 'click'
+            }
+          }
+        })
+      ],
+      [state()]
+    );
+
+    expect(lanes.done[0].done_kind).toBe('auto_merge');
+    expect(lanes.done[0].badges).toEqual(['자동 머지', '수리']);
+  });
+
   test('drops entries older than the period bound but keeps undated ones', () => {
     const lanes = buildLanes(
       [

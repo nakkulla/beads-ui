@@ -138,3 +138,62 @@ describe('activeBeadIds', () => {
     expect(ids.size).toEqual(0);
   });
 });
+
+describe('head review attempts (UI-hk74 §7)', () => {
+  test('leaves a running head review out of the running slot', () => {
+    const attempts = attemptsOf([
+      {
+        attempt_id: 'r1',
+        bead_id: 'UI-1',
+        status: 'running',
+        kind: 'head_review'
+      }
+    ]);
+
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect(winners.has('UI-1')).toBe(false);
+  });
+
+  test('leaves a running head review out of the counted bead ids', () => {
+    const attempts = attemptsOf([
+      {
+        attempt_id: 'p1',
+        bead_id: 'UI-1',
+        status: 'running',
+        kind: 'head_repair'
+      },
+      { attempt_id: 'a1', bead_id: 'UI-2', status: 'running' }
+    ]);
+
+    const ids = activeBeadIds(attempts, new Map());
+
+    expect([...ids]).toEqual(['UI-2']);
+  });
+
+  test('keeps an unhandled implementation failure that a later review follows', () => {
+    const attempts = attemptsOf([
+      { attempt_id: 'a1', bead_id: 'UI-1', status: 'failed' },
+      {
+        attempt_id: 'r1',
+        bead_id: 'UI-1',
+        status: 'done',
+        kind: 'head_review'
+      }
+    ]);
+
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect(winners.get('UI-1')?.run_state).toEqual('failed');
+  });
+
+  test('admits an attempt whose record predates the kind field', () => {
+    const attempts = attemptsOf([
+      { attempt_id: 'a1', bead_id: 'UI-1', status: 'running' }
+    ]);
+
+    const { winners } = activeAttemptStates(attempts, new Map());
+
+    expect(winners.has('UI-1')).toBe(true);
+  });
+});

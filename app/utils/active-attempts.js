@@ -21,6 +21,26 @@
 const RUN_STATE_RANK = { running: 3, paused: 2, failed: 1 };
 
 /**
+ * Whether an attempt is the bead's own implementation run rather than one of
+ * the head-review lane's attempts (UI-hk74 §7).
+ *
+ * This is an OCCUPANCY test, not a visibility one. `head_review` / `head_repair`
+ * attempts belong on every history surface — 완료 레인, 토큰 합계, 세션 타일 —
+ * but they run against a bead whose PR is already open, so letting one hold the
+ * bead's 실행중 slot would redraw a card the person already sent to PR 대기.
+ * Legacy records carry no `kind` and are implementation runs by definition.
+ *
+ * @param {unknown} attempt
+ */
+export function isImplementationAttempt(attempt) {
+  if (!attempt || typeof attempt !== 'object') {
+    return false;
+  }
+  const kind = /** @type {Record<string, unknown>} */ (attempt).kind;
+  return kind === undefined || kind === null || kind === 'implementation';
+}
+
+/**
  * @typedef {Object} ActiveAttemptState
  * @property {any} attempt - The raw attempt record that won its bead.
  * @property {'running'|'paused'|'failed'} run_state
@@ -48,13 +68,20 @@ export function activeAttemptStates(attempts, done_at_by_bead) {
     if (typeof a.resumed_from === 'string' && a.resumed_from.length > 0) {
       resumed_from_ids.add(a.resumed_from);
     }
-    last_attempt_by_bead.set(a.bead_id, a.attempt_id);
+    // "이 bead의 마지막 시도"는 구현 시도들 사이에서만 뜻이 있다: head review가
+    // 뒤에 끼면 처리되지 않은 구현 실패가 조용히 마지막 자리를 잃는다.
+    if (isImplementationAttempt(a)) {
+      last_attempt_by_bead.set(a.bead_id, a.attempt_id);
+    }
   }
 
   /** @type {Map<string, ActiveAttemptState>} */
   const winners = new Map();
   for (const a of values) {
     if (!a || typeof a.bead_id !== 'string' || a.bead_id.length === 0) {
+      continue;
+    }
+    if (!isImplementationAttempt(a)) {
       continue;
     }
     /** @type {'running'|'paused'|'failed'|null} */

@@ -10,7 +10,7 @@
  * @typedef {import('../../server/worker/queue-store.js').Queue} Queue
  * @typedef {Object} CompletionStatus
  * @property {string} root_bead_id
- * @property {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'paused'|'needs_human'|'completed'} phase
+ * @property {'gating'|'repairing'|'waiting_repair_pr'|'merging'|'cleaning'|'waiting_metadata'|'reviewing'|'retrying'|'paused'|'needs_human'|'completed'} phase
  * @property {'root'|'repair'|null} subject_role
  * @property {string|null} subject_bead_id
  * @property {string|null} [head_sha]
@@ -25,6 +25,9 @@
  * @property {string|null} [evidence]
  * @property {string|null} [log_path]
  * @property {string|null} terminal_reason
+ * @property {{ class: string, origin_reason: string|null, attempts: number, attempt_cap?: number, next_at: number|null, last_error: string|null }|null} [auto_resolution] - The
+ * non-terminal automatic resolution the coordinator is running (UI-hk74 §4).
+ * Absent on a snapshot from a server that predates it.
  * @typedef {Object} ResolutionProjection
  * @property {string} attempt_id
  * @property {string} subject_bead_id
