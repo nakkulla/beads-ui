@@ -39,8 +39,8 @@ import {
 } from '../worker/lanes.js';
 import { runningTile } from '../worker/running-grid.js';
 import { createTranscriptDrawer } from '../worker/transcript-drawer.js';
-import { buildSerialLinkCandidates } from './blockers.js';
 import { createRepoDeck } from './deck.js';
+import { planDrop } from './drop-plan.js';
 import {
   CANDIDATE_FILTER_DEFAULT,
   CANDIDATE_SORT_OPTIONS,
@@ -49,7 +49,8 @@ import {
 } from './lanes.js';
 
 /**
- * @import { CandidateFilter, MonitorItem, MonitorLanes, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
+ * @import { CandidateFilter, MonitorChainLane, MonitorChainLaneRow, MonitorItem, MonitorLanes, MonitorQueueGroup, MonitorSerialSublane } from './lanes.js'
+ * @import { DropDrag, DropModel, DropTarget, Op } from './drop-plan.js'
  */
 
 /**
@@ -69,7 +70,10 @@ export const CANDIDATE_SORT_KEY = 'bdui.monitor.candidate_sort';
 /** 모니터가 소유하는 Worker 형태의 표시 필터 (UI-2gi1 §6.2, UI-eey2 §5). */
 export const MONITOR_CANDIDATE_FILTER_KEY = 'beads-ui.monitor.candidate-filter';
 
-/** Per-repo section collapse + the chains block's own key (UI-eey2 §5·§6.4). */
+/**
+ * 실행가능 레포 섹션과 대기 레인 두 영역의 접힘 상태 (UI-eey2 §5, UI-e6hw §4.3).
+ * 폐기된 대기 레포 섹션 키와 `chains` 키는 남아 있어도 읽지 않는다 (fail-quiet).
+ */
 export const MONITOR_SECTIONS_KEY = 'beads-ui.monitor.sections';
 
 /**
@@ -260,37 +264,17 @@ const MONITOR_LANES = [
   { lane: 'done', pane: 'done', title: '완료', empty: '완료 기록 없음' }
 ];
 
+/** 연결 레인 순번 ①…⑳ (UI-e6hw §4.2). */
+const CIRCLED_NUMERALS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+
 /**
- * UI-2gi1 §6.5: 실행가능·대기 행이 공유하는 검색형 의존 엣지 선택기. 검색 필터와
- * mutation 소유권은 이 뷰에 남는다.
- *
- * @returns {import('lit-html').TemplateResult}
+ * @param {number} seq
+ * @returns {string}
  */
-function serialLinkControl() {
-  return html`<span class="mon-link mon-popover-owner">
-    <button
-      type="button"
-      class="mon-link__trigger"
-      aria-haspopup="dialog"
-      aria-expanded="false"
-      title="직렬로 연결"
-    >
-      🔗
-    </button>
-    <span class="mon-link__popover mon-card-popover" role="dialog" hidden>
-      <input
-        type="search"
-        class="mon-link__search"
-        placeholder="id·제목·위치 검색"
-        aria-label="직렬로 연결할 버드 검색"
-        autocomplete="off"
-      />
-      <span class="mon-link__list"></span>
-      <button type="button" class="mon-link__direct" hidden></button>
-      <span class="mon-link__empty" hidden>검색 결과 없음</span>
-      <span class="mon-link__error" role="alert" hidden></span>
-    </span>
-  </span>`;
+function circledSeq(seq) {
+  return seq >= 1 && seq <= CIRCLED_NUMERALS.length
+    ? CIRCLED_NUMERALS[seq - 1]
+    : `(${seq})`;
 }
 
 /**
@@ -333,6 +317,14 @@ export function createMonitorView(mount_element, options) {
    * @type {string|null}
    */
   let place_menu_bead = null;
+
+  /**
+   * `+ 연결 레인`이 만든 빈 연결 레인 (§4.2). 세션 메모리다 — 빈 레인은 드롭
+   * 타깃일 뿐 사실이 아니므로 localStorage에 쓰지 않는다.
+   *
+   * @type {Array<{ seed: string|null }>}
+   */
+  let pending_lanes = [];
 
   /**
    * 데크가 소유하는 포커스 필터의 현재 대상 (§4.2). 여기서는 클래스만 반영한다.
@@ -590,22 +582,43 @@ export function createMonitorView(mount_element, options) {
 
   /**
    * @param {string} root_dir
-   * @param {'runnable'|'queue'} section
    * @returns {boolean}
    */
-  function sectionCollapsed(root_dir, section) {
+  function sectionCollapsed(root_dir) {
     const entry = sections_state[root_dir];
-    return !!(entry && entry[section] === true);
+    return !!(entry && entry.runnable === true);
   }
 
   /**
    * @param {string} root_dir
-   * @param {'runnable'|'queue'} section
    */
-  function toggleSection(root_dir, section) {
+  function toggleSection(root_dir) {
     const entry = { ...(sections_state[root_dir] || {}) };
-    entry[section] = !entry[section];
+    entry.runnable = !entry.runnable;
     sections_state = { ...sections_state, [root_dir]: entry };
+    saveSections(sections_state);
+    doRender();
+  }
+
+  /**
+   * Collapse state of the 대기 lane's two areas (§4). 레포별 섹션 키와 달리
+   * 영역은 전 레포 공통이므로 저장 키도 최상위에 둔다.
+   *
+   * @param {'parallel'|'serial'} area
+   * @returns {boolean}
+   */
+  function areaCollapsed(area) {
+    return sections_state[area] === true;
+  }
+
+  /**
+   * @param {'parallel'|'serial'} area
+   */
+  function toggleArea(area) {
+    sections_state = {
+      ...sections_state,
+      [area]: sections_state[area] !== true
+    };
     saveSections(sections_state);
     doRender();
   }
@@ -613,20 +626,20 @@ export function createMonitorView(mount_element, options) {
   // --- 템플릿 ---
 
   /**
-   * One repo section header (§5): 접기 캐럿 · 레포명 · 건수 · `Worker ↗`, 그리고
-   * 대기 섹션에는 읽기 전용 자동화 상태 점. 토글은 데크(Phase 3)가 소유한다.
+   * One 실행가능 repo section header (§5): 접기 캐럿 · 레포명 · 건수 ·
+   * `Worker ↗`. 자동화 토글은 데크가 소유한다.
    *
-   * @param {{ root_dir: string, name: string, count: number, section: 'runnable'|'queue', auto?: boolean }} input
+   * @param {{ root_dir: string, name: string, count: number }} input
    * @returns {import('lit-html').TemplateResult}
    */
   function sectionHeader(input) {
-    const collapsed = sectionCollapsed(input.root_dir, input.section);
+    const collapsed = sectionCollapsed(input.root_dir);
     return html`<header class="mon2-sec__hd">
       <button
         type="button"
         class="mon2-sec__toggle"
         data-root-dir=${input.root_dir}
-        data-section=${input.section}
+        data-section="runnable"
         aria-expanded=${collapsed ? 'false' : 'true'}
         aria-label=${`${input.name} 섹션 ${collapsed ? '펼치기' : '접기'}`}
       >
@@ -634,15 +647,6 @@ export function createMonitorView(mount_element, options) {
       </button>
       <span class="mon2-sec__name" title=${input.root_dir}>${input.name}</span>
       <span class="mon2-sec__count">${input.count}</span>
-      ${typeof input.auto === 'boolean'
-        ? html`<span
-            class="mon2-sec__auto${input.auto ? ' is-on' : ''}"
-            title=${input.auto
-              ? '자동화 켜짐 — 슬롯이 비면 다음 행이 출발'
-              : '자동화 꺼짐 — 다음 행은 수동으로만 출발'}
-            >${input.auto ? '● 자동' : '○ 수동'}</span
-          >`
-        : ''}
       <button
         type="button"
         class="mon2-sec__worker"
@@ -655,23 +659,28 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One 실행가능/대기 row — the Worker card plus this tab's own dependency
-   * affordance (🔗).
+   * One 실행가능 카드 shell. 드래그 원천 종류·레포·좌표를 DOM에 실어 드래그
+   * 컨트롤러가 카드 템플릿을 몰라도 되게 한다 (§5).
    *
    * @param {MonitorItem} item
    * @param {import('lit-html').TemplateResult} card
    * @returns {import('lit-html').TemplateResult}
    */
   function itemShell(item, card) {
-    return html`<div class="mon2-item" data-bead-id=${item.id}>
+    return html`<div
+      class="mon2-item"
+      data-bead-id=${item.id}
+      data-drag-kind="candidate"
+      data-root-dir=${item.root_dir}
+    >
       ${card}
-      <span class="mon2-item__ops">${serialLinkControl()}</span>
     </div>`;
   }
 
   /**
-   * The lane choices `[대기로 ↴]` offers (§5): the repo's parallel queue plus
-   * every configured serial lane, each appended at its own tail.
+   * `[대기로 ↴]`가 제시하는 대상 (§6): 병렬 영역 · 연결 레인마다 끝 · 새 연결
+   * 레인 · **자기 레포의** 직렬 레인. 각 항목은 §5.2의 candidate → 대상 규칙을
+   * 끝 삽입으로 실행한다.
    *
    * @param {MonitorItem} item
    * @returns {{ bead_id: string, lanes: Array<{ id: any, label: string, count: number }> }|null}
@@ -680,13 +689,25 @@ export function createMonitorView(mount_element, options) {
     if (place_menu_bead !== item.id) {
       return null;
     }
+    const group = lanes.queue_groups.find(
+      (entry) => entry.root_dir === item.root_dir
+    );
+    // 직렬 항목은 **설정된** 레인 수에서 온다 (§6): 비어 있어 pane이 접힌
+    // 레인도 모바일에서는 유일한 적재 경로다.
+    const serial = item.place_lanes || [];
     return {
       bead_id: item.id,
       lanes: [
         { id: 'parallel', label: '병렬', count: item.place_index ?? 0 },
-        ...(item.place_lanes || []).map((lane) => ({
-          id: lane.id,
-          label: lane.id,
+        ...lanes.chain_lanes.map((lane, index) => ({
+          id: `lane:${index}`,
+          label: `연결 ${index + 1} 끝에`,
+          count: lane.rows.length
+        })),
+        { id: 'new-lane', label: '새 연결 레인', count: 0 },
+        ...serial.map((lane) => ({
+          id: `serial:${lane.id}`,
+          label: `${group ? group.name : ''} 직렬 ${Number(lane.id.slice(1))}`,
           count: lane.length
         }))
       ]
@@ -707,26 +728,18 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * @param {MonitorItem} item
-   * @returns {import('lit-html').TemplateResult}
-   */
-  function waitingRow(item) {
-    return itemShell(item, miniRow(item));
-  }
-
-  /**
    * The 실행가능 lane body (§5). `updated_flat`만 섹션 없이 평평하다.
    *
    * @returns {import('lit-html').TemplateResult}
    */
   function runnableBody() {
     if (lanes.runnable_flat) {
-      return html`<div class="mon2-flat">
+      return html`<div class="mon2-flat" data-drop="candidate">
         ${lanes.runnable.map((item) => candidateRow(item))}
       </div>`;
     }
     return html`${lanes.runnable_sections.map((section) => {
-      const collapsed = sectionCollapsed(section.root_dir, 'runnable');
+      const collapsed = sectionCollapsed(section.root_dir);
       return html`<section
         class="mon2-sec${collapsed ? ' is-collapsed' : ''}"
         data-root-dir=${section.root_dir}
@@ -735,12 +748,15 @@ export function createMonitorView(mount_element, options) {
         ${sectionHeader({
           root_dir: section.root_dir,
           name: section.name,
-          count: section.items.length,
-          section: 'runnable'
+          count: section.items.length
         })}
         ${collapsed
           ? ''
-          : html`<div class="mon2-sec__body" data-lane="candidate">
+          : html`<div
+              class="mon2-sec__body"
+              data-lane="candidate"
+              data-drop="candidate"
+            >
               ${section.items.map((item) => candidateRow(item))}
             </div>`}
       </section>`;
@@ -748,34 +764,257 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * One serial sublane pane inside a repo's 대기 section (§6). 빈 레인도 pane을
-   * 그리고 CSS가 한 줄 힌트로 접는다 — 드래그 중에만 드롭 타깃으로 펼쳐진다.
+   * One 병렬 영역 row (§4.1). Worker `miniRow` 그대로이고, 드래그 좌표와 모바일
+   * 행 조작만 바깥 shell이 싣는다. 순번 `#n`의 `#`는 CSS가 붙인다 — Worker
+   * 템플릿은 두 탭이 공유한다.
    *
+   * @param {MonitorItem} item
+   * @param {number} row_index
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function parallelRow(item, row_index) {
+    return html`<div
+      class="mon2-item"
+      data-bead-id=${item.id}
+      data-drag-kind="parallel"
+      data-root-dir=${item.root_dir}
+      data-row-index=${row_index}
+      data-queue-index=${String(item.queue_index ?? 0)}
+    >
+      ${miniRow(item)}
+      <span class="mon2-rowops">
+        <button
+          type="button"
+          class="mon2-rowops__up"
+          data-bead-id=${item.id}
+          title="같은 레포 안에서 한 칸 위로"
+          aria-label="한 칸 위로"
+        >
+          ↑
+        </button>
+        <button
+          type="button"
+          class="mon2-rowops__down"
+          data-bead-id=${item.id}
+          title="같은 레포 안에서 한 칸 아래로"
+          aria-label="한 칸 아래로"
+        >
+          ↓
+        </button>
+        <button
+          type="button"
+          class="mon2-rowops__remove"
+          data-bead-id=${item.id}
+          title="대기에서 빼기"
+          aria-label="대기에서 빼기"
+        >
+          ✕
+        </button>
+      </span>
+    </div>`;
+  }
+
+  /**
+   * The 병렬 영역 (§4.1): 모든 visible 레포의 병렬 큐를 한 목록으로. 섹션
+   * 헤더가 없으므로 레포 자동/수동 상태는 레포 배지 툴팁이 말한다.
+   *
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function parallelArea() {
+    const collapsed = areaCollapsed('parallel');
+    return html`<section
+      class="mon2-area mon2-parallel${collapsed ? ' is-collapsed' : ''}"
+      data-area="parallel"
+    >
+      <header class="mon2-area__hd">
+        <button
+          type="button"
+          class="mon2-area__toggle"
+          data-area="parallel"
+          aria-expanded=${collapsed ? 'false' : 'true'}
+          aria-label=${`병렬 영역 ${collapsed ? '펼치기' : '접기'}`}
+        >
+          ${collapsed ? '▸' : '▾'}
+        </button>
+        <span class="mon2-area__name">병렬 영역</span>
+        <span class="mon2-area__count">${lanes.parallel_rows.length}</span>
+      </header>
+      ${collapsed
+        ? ''
+        : html`<div class="mon2-area__body" data-drop="parallel">
+            ${lanes.parallel_rows.length === 0
+              ? html`<div class="worker-pane__empty">
+                  비어 있음 — 드래그로 배치
+                </div>`
+              : lanes.parallel_rows.map((item, index) =>
+                  parallelRow(item, index)
+                )}
+          </div>`}
+    </section>`;
+  }
+
+  /**
+   * One 연결 레인 row (§4.2). 병렬 큐 멤버만 끌 수 있고, 그 밖의 노드는 자기
+   * 위치를 말하는 투영이다. 사이클 레인은 순서를 주장하지 않으므로 순번을
+   * 그리지 않고, 투영이 그 행을 끌 수 없게 만든다.
+   *
+   * @param {MonitorChainLane} lane
+   * @param {MonitorChainLaneRow} row
+   * @param {number} row_index
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function chainRow(lane, row, row_index) {
+    return html`<div
+      class="mon2-crow"
+      style=${`--indent: ${row.indent}`}
+      draggable=${row.draggable ? 'true' : 'false'}
+      data-bead-id=${row.id}
+      data-drag-kind="chain"
+      data-root-dir=${row.root_dir}
+      data-lane-id=${lane.lane_id}
+      data-row-index=${row_index}
+      data-queue-index=${typeof row.queue_index === 'number'
+        ? String(row.queue_index)
+        : ''}
+    >
+      ${lane.cycle
+        ? ''
+        : html`<span class="mon2-crow__seq" aria-hidden="true"
+            >${circledSeq(row.seq)}</span
+          >`}
+      ${row.workspace_name
+        ? html`<span class="worker-mini__repo" title=${row.root_dir}
+            >${row.workspace_name}</span
+          >`
+        : ''}
+      <span class="worker-mini__id" title="클릭하면 ID 복사">${row.id}</span>
+      <span class="mon2-crow__title">${row.title}</span>
+      ${row.predecessors.map(
+        (blocker_id) =>
+          html`<span class="worker-dep worker-dep--pred"
+            ><span class="worker-dep__label">← ${blocker_id}</span></span
+          >`
+      )}
+      <span class="mon2-crow__where"
+        >${row.location_label === '실행중'
+          ? `● ${row.location_label}`
+          : row.location_label}</span
+      >
+      ${row.draggable
+        ? html`<button
+            type="button"
+            class="mon2-crow__detach"
+            data-bead-id=${row.id}
+            title="연결에서 빼고 앞뒤를 이어 붙입니다"
+            aria-label="연결에서 빼기"
+          >
+            ✕
+          </button>`
+        : ''}
+    </div>`;
+  }
+
+  /**
+   * One 연결 레인 pane (§4.2). 사이클 레인은 순서를 주장하지 않는다 — 경고 한
+   * 줄과 정렬 없는 노드 목록만 그린다.
+   *
+   * @param {MonitorChainLane} lane
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function chainLanePane(lane) {
+    return html`<div class="mon2-clane" data-lane-id=${lane.lane_id}>
+      <header class="mon2-clane__hd">
+        <span class="mon2-clane__name">${lane.label}</span>
+        <span class="mon2-clane__count">${lane.rows.length}</span>
+      </header>
+      <div
+        class="mon2-clane__body"
+        data-drop="chain"
+        data-lane-id=${lane.lane_id}
+      >
+        ${lane.cycle
+          ? html`<div class="mon2-lane__cycle">
+              ⛔ 의존 사이클 — 자동 교정 불가
+            </div>`
+          : ''}
+        ${lane.rows.length === 0
+          ? html`<div class="mon2-clane__hint">
+              여기로 끌어다 놓으면 연결이 시작됩니다
+            </div>`
+          : lane.rows.map((row, index) => chainRow(lane, row, index))}
+      </div>
+    </div>`;
+  }
+
+  /**
+   * One 레포 직렬 레인 row (§4.2) — Worker 탭이 소유하는 s1..s5의 투영.
+   *
+   * @param {MonitorSerialSublane} lane
+   * @param {MonitorItem} item
+   * @param {number} row_index
+   * @returns {import('lit-html').TemplateResult}
+   */
+  function serialRow(lane, item, row_index) {
+    return html`<div
+      class="mon2-item"
+      data-bead-id=${item.id}
+      data-drag-kind="repo-serial"
+      data-root-dir=${item.root_dir}
+      data-lane-id=${lane.id}
+      data-row-index=${row_index}
+      data-queue-index=${String(item.queue_index ?? 0)}
+    >
+      ${miniRow(item)}
+    </div>`;
+  }
+
+  /**
+   * One 레포 직렬 레인 pane (§4.2). 비어 있는 레인은 한 줄 힌트로 접히고
+   * 드래그 중에만 드롭 타깃으로 펼쳐진다 (표시는 CSS 소유).
+   *
+   * @param {MonitorQueueGroup} group
    * @param {MonitorSerialSublane} lane
    * @returns {import('lit-html').TemplateResult}
    */
-  function serialLanePane(lane) {
+  function serialLanePane(group, lane) {
     return html`<div
       class="mon2-lane${lane.empty ? ' mon2-lane--empty' : ''}"
+      data-root-dir=${group.root_dir}
       data-lane-length=${String(lane.raw_length)}
     >
       ${paneTemplate({
         id: '',
         lane: /** @type {any} */ (lane.id),
-        title: `직렬 ${lane.index + 1}`,
+        title: `${group.name} · 직렬 ${lane.index + 1}`,
         items: lane.items,
         empty: '비어 있음 — 드래그로 배치',
-        body:
-          lane.items.length > 0
-            ? html`${lane.items.map((item) => waitingRow(item))}`
-            : undefined,
+        body: html`<div
+          class="mon2-lane__rows"
+          data-drop="repo-serial"
+          data-root-dir=${group.root_dir}
+          data-lane-id=${lane.id}
+          data-lane-length=${String(lane.raw_length)}
+        >
+          ${lane.items.length > 0
+            ? lane.items.map((item, index) => serialRow(lane, item, index))
+            : html`<div class="worker-pane__empty">
+                비어 있음 — 드래그로 배치
+              </div>`}
+        </div>`,
         header_control: html`<span class="mon2-lane__badge"
-          >${lane.occupied_by.length > 0 ? '점유' : ''}</span
-        >`
+            >${lane.occupied_by.length > 0 ? '점유' : ''}</span
+          ><button
+            type="button"
+            class="mon2-sec__worker"
+            data-root-dir=${group.root_dir}
+            title="이 레포의 Worker 탭으로 이동"
+          >
+            Worker ↗
+          </button>`
       })}
       ${lane.empty
         ? html`<div class="mon2-lane__hint">
-            직렬 ${lane.index + 1} 비어 있음
+            ${group.name} 직렬 ${lane.index + 1} 비어 있음
           </div>`
         : ''}
       ${lane.cycle
@@ -793,109 +1032,61 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * @param {MonitorQueueGroup} group
+   * The 직렬 영역 (§4.2): 연결 레인(레포 무관)과 레포 직렬 레인을 **이름**
+   * 으로 구분해 함께 둔다. 레인 수 조절은 Worker 탭이 소유한다.
+   *
    * @returns {import('lit-html').TemplateResult}
    */
-  function queueSection(group) {
-    const collapsed = sectionCollapsed(group.root_dir, 'queue');
-    const count =
-      group.sublanes.parallel.length +
-      group.sublanes.serial.reduce((sum, lane) => sum + lane.items.length, 0);
+  function serialArea() {
+    const collapsed = areaCollapsed('serial');
+    const has_blank_lane = lanes.chain_lanes.some(
+      (lane) => lane.pending && lane.rows.length === 0
+    );
     return html`<section
-      class="mon2-sec${collapsed ? ' is-collapsed' : ''}"
-      data-root-dir=${group.root_dir}
-      data-section="queue"
+      class="mon2-area mon2-serial${collapsed ? ' is-collapsed' : ''}"
+      data-area="serial"
     >
-      ${sectionHeader({
-        root_dir: group.root_dir,
-        name: group.name,
-        count,
-        section: 'queue',
-        auto: group.auto_advance
-      })}
+      <header class="mon2-area__hd">
+        <button
+          type="button"
+          class="mon2-area__toggle"
+          data-area="serial"
+          aria-expanded=${collapsed ? 'false' : 'true'}
+          aria-label=${`직렬 영역 ${collapsed ? '펼치기' : '접기'}`}
+        >
+          ${collapsed ? '▸' : '▾'}
+        </button>
+        <span class="mon2-area__name">직렬 영역</span>
+        <button
+          type="button"
+          class="mon2-newlane"
+          ?disabled=${has_blank_lane}
+          title=${has_blank_lane
+            ? '빈 연결 레인이 이미 있습니다'
+            : '빈 연결 레인을 하나 만듭니다 — 새로고침하면 사라집니다'}
+        >
+          + 연결 레인
+        </button>
+      </header>
       ${collapsed
         ? ''
-        : html`<div class="mon2-sec__body worker-wait">
-            <div
-              class="mon2-lane"
-              data-lane-length=${String(group.raw_queue_length)}
-            >
-              ${paneTemplate({
-                id: '',
-                lane: 'queue',
-                title: '병렬',
-                items: group.sublanes.parallel,
-                empty: '비어 있음 — 드래그로 배치',
-                body:
-                  group.sublanes.parallel.length > 0
-                    ? html`${group.sublanes.parallel.map((item) =>
-                        waitingRow(item)
-                      )}`
-                    : undefined
-              })}
-            </div>
-            ${group.sublanes.serial.map((lane) => serialLanePane(lane))}
+        : html`<div class="mon2-area__body">
+            ${lanes.chain_lanes.map((lane) => chainLanePane(lane))}
+            ${lanes.queue_groups.map((group) =>
+              group.sublanes.serial.map((lane) => serialLanePane(group, lane))
+            )}
           </div>`}
     </section>`;
   }
 
   /**
-   * The 🔗 연결 체인 block (§6.4) — 표시 전용 투영이지 제어가 아니다.
+   * The 대기 lane body (§4): 병렬 영역 하나 + 직렬 영역 하나. 레포 섹션은 없다 —
+   * 카드가 자기 레포를 이미 알고 있으므로 레포는 좌표가 아니라 배지다.
    *
-   * @returns {import('lit-html').TemplateResult|''}
+   * @returns {import('lit-html').TemplateResult}
    */
-  function chainsBlock() {
-    if (lanes.chains.length === 0) {
-      return '';
-    }
-    const collapsed = sections_state.chains === true;
-    return html`<section class="mon2-chains${collapsed ? ' is-collapsed' : ''}">
-      <header class="mon2-chains__hd">
-        <button
-          type="button"
-          class="mon2-chains__toggle"
-          aria-expanded=${collapsed ? 'false' : 'true'}
-          title="blocks 의존이 만든 레포 간 순서입니다 — 선행이 close되면 후속이 자기 레포 큐에서 출발합니다"
-        >
-          ${collapsed ? '▸' : '▾'} 🔗 연결 체인 ${lanes.chains.length} · 레포 간
-          순서
-        </button>
-        <span class="mon2-chains__hint">blocks 의존 · 카드의 🔗로 연결</span>
-      </header>
-      ${collapsed
-        ? ''
-        : html`<div class="mon2-chains__body">
-            ${lanes.chains.map(
-              (chain) =>
-                html`<div class="mon2-chain">
-                  ${chain.cycle
-                    ? html`<div class="mon2-chain__cycle">⛔ 의존 사이클</div>`
-                    : ''}
-                  ${chain.nodes.map(
-                    (node) =>
-                      html`<div
-                        class="mon2-chain__node"
-                        style=${`--indent: ${node.indent}`}
-                        data-bead-id=${node.id}
-                        data-root-dir=${node.root_dir}
-                      >
-                        ${node.workspace_name
-                          ? html`<span class="mon2-chain__repo"
-                              >${node.workspace_name}</span
-                            >`
-                          : ''}
-                        <span class="mon2-chain__id worker-mini__id"
-                          >${node.id}</span
-                        >
-                        <span class="mon2-chain__where"
-                          >${node.location_label}</span
-                        >
-                      </div>`
-                  )}
-                </div>`
-            )}
-          </div>`}
-    </section>`;
+  function waitBody() {
+    return html`<div class="mon2-wait">${parallelArea()}${serialArea()}</div>`;
   }
 
   /**
@@ -974,10 +1165,10 @@ export function createMonitorView(mount_element, options) {
                   ? runnableBody()
                   : undefined
               : meta.lane === 'queue'
-                ? lanes.queue_groups.length > 0 || lanes.chains.length > 0
-                  ? html`${chainsBlock()}${lanes.queue_groups.map((group) =>
-                      queueSection(group)
-                    )}`
+                ? lanes.queue_groups.length > 0 ||
+                  lanes.chain_lanes.length > 0 ||
+                  lanes.parallel_rows.length > 0
+                  ? waitBody()
                   : undefined
                 : meta.lane === 'running'
                   ? runningBody(now)
@@ -1117,12 +1308,26 @@ export function createMonitorView(mount_element, options) {
         ? pipelineStore.getWorkspacesState()
         : [];
     const now = nowFn();
-    lanes = buildLanes(workspaces, workspaces_state, {
-      done_since: closedRangeSince(done_range, now),
-      running_sort,
-      candidate_filter,
-      candidate_sort
-    });
+    /**
+     * @returns {MonitorLanes}
+     */
+    const project = () =>
+      buildLanes(workspaces, workspaces_state, {
+        done_since: closedRangeSince(done_range, now),
+        running_sort,
+        candidate_filter,
+        candidate_sort,
+        pending_lanes
+      });
+    lanes = project();
+    // 파생 체인이 흡수한 pending 레인은 버린다 (§4.2). 가지치기가 `pending:<i>`
+    // 좌표를 바꾸므로 그 자리에서 한 번 더 투영해 DOM과 배열을 맞춘다.
+    if (lanes.pending_lanes_kept.length !== pending_lanes.length) {
+      pending_lanes = lanes.pending_lanes_kept.map(
+        (index) => pending_lanes[index]
+      );
+      lanes = project();
+    }
     item_by_bead = new Map();
     for (const item of [
       ...lanes.runnable,
@@ -1137,7 +1342,36 @@ export function createMonitorView(mount_element, options) {
     }
     render(monitorTemplate(now), console_el);
     ensureDeck()?.render();
+    applyRepoAutomationTooltips();
     applyFocusClasses();
+  }
+
+  /**
+   * Move each repo's 자동/수동 state onto its badge tooltip (§4.1) — 병렬
+   * 영역에는 섹션 헤더가 없다. 배지는 두 탭이 공유하는 Worker 템플릿이
+   * 그리므로, 그 템플릿을 모니터 전용 사실로 갈라놓는 대신 렌더 뒤에 툴팁만
+   * 덧쓴다.
+   */
+  function applyRepoAutomationTooltips() {
+    /** @type {Map<string, boolean>} */
+    const auto_by_root = new Map();
+    for (const group of lanes.queue_groups) {
+      auto_by_root.set(group.root_dir, group.auto_advance);
+    }
+    for (const badge of Array.from(
+      console_el.querySelectorAll('.mon2-parallel .worker-mini__repo')
+    )) {
+      const root_dir =
+        badge.closest('.mon2-item')?.getAttribute('data-root-dir') || '';
+      const auto = auto_by_root.get(root_dir);
+      if (typeof auto !== 'boolean') {
+        continue;
+      }
+      badge.setAttribute(
+        'title',
+        `${badge.textContent || ''} · ${auto ? '자동화 켜짐' : '자동화 꺼짐'}`
+      );
+    }
   }
 
   /**
@@ -1200,6 +1434,15 @@ export function createMonitorView(mount_element, options) {
       card.classList.toggle(
         'is-focus',
         focus_root !== null && !!item && item.root_dir === focus_root
+      );
+    }
+    // 연결 레인 행은 집계에 없는 노드까지 그리므로 자기 레포를 스스로 싣는다.
+    for (const row of Array.from(
+      console_el.querySelectorAll('.mon2-crow[data-root-dir]')
+    )) {
+      row.classList.toggle(
+        'is-focus',
+        focus_root !== null && row.getAttribute('data-root-dir') === focus_root
       );
     }
   }
@@ -1282,7 +1525,7 @@ export function createMonitorView(mount_element, options) {
    * @param {unknown} error
    * @returns {string}
    */
-  function dependencyErrorMessage(error) {
+  function mutationErrorMessage(error) {
     if (typeof error === 'string' && error.length > 0) {
       return error;
     }
@@ -1302,271 +1545,376 @@ export function createMonitorView(mount_element, options) {
         return value.error.message;
       }
     }
-    return '연결에 실패했습니다';
+    return '요청에 실패했습니다';
   }
 
   /**
-   * @param {HTMLElement} shell
-   * @param {string} message
-   */
-  function showDependencyError(shell, message) {
-    const trigger = /** @type {HTMLElement|null} */ (
-      shell.querySelector('.mon-link__trigger')
-    );
-    const popover = /** @type {HTMLElement|null} */ (
-      shell.querySelector('.mon-link__popover')
-    );
-    const error = /** @type {HTMLElement|null} */ (
-      shell.querySelector('.mon-link__error')
-    );
-    if (!trigger || !popover || !error) {
-      return;
-    }
-    closePopovers();
-    popover.hidden = false;
-    trigger.setAttribute('aria-expanded', 'true');
-    error.textContent = message;
-    error.hidden = false;
-    placePopover(trigger, popover);
-  }
-
-  /**
-   * UI-2gi1 §6.5·§7: 의존 mutation은 낙관적 투영을 소유하지 않는다.
+   * UI-2gi1 §6.5·§7: 의존 mutation은 낙관적 투영을 소유하지 않는다. 거부 사유는
+   * 서버 문장 그대로 토스트로 보이고, 다음 스냅샷이 실제 그래프를 그린다.
    *
    * @param {'dep-add'|'dep-remove'} type
-   * @param {HTMLElement} shell
    * @param {string} bead_id
    * @param {string} blocker_id
    */
-  async function mutateDependency(type, shell, bead_id, blocker_id) {
+  async function mutateDependency(type, bead_id, blocker_id) {
     const { root_dir } = casOf(bead_id);
     if (!bead_id || !blocker_id || blocker_id === bead_id) {
       return;
     }
     try {
       await send(type, { a: bead_id, b: blocker_id }, root_dir);
-      closePopovers();
     } catch (error) {
-      showDependencyError(shell, dependencyErrorMessage(error));
+      showToast(mutationErrorMessage(error), 'error');
     }
   }
 
-  // --- 팝오버 (🔗 의존 선택기) ---
+  // --- 드롭 계획 실행 (§5) ---
 
   /**
-   * @param {HTMLElement} popover
-   */
-  function clearLinkPopover(popover) {
-    popover.querySelector('.mon-link__list')?.replaceChildren();
-    const input = /** @type {HTMLInputElement|null} */ (
-      popover.querySelector('.mon-link__search')
-    );
-    if (input) {
-      input.value = '';
-    }
-    const direct = /** @type {HTMLElement|null} */ (
-      popover.querySelector('.mon-link__direct')
-    );
-    if (direct) {
-      direct.hidden = true;
-      direct.dataset.targetId = '';
-      direct.textContent = '';
-    }
-    const empty = /** @type {HTMLElement|null} */ (
-      popover.querySelector('.mon-link__empty')
-    );
-    if (empty) {
-      empty.hidden = true;
-    }
-    const error = /** @type {HTMLElement|null} */ (
-      popover.querySelector('.mon-link__error')
-    );
-    if (error) {
-      error.hidden = true;
-      error.textContent = '';
-    }
-  }
-
-  /**
-   * @param {HTMLElement} popover
-   * @param {string} self_id
-   */
-  function populateLinkCandidates(popover, self_id) {
-    const list = popover.querySelector('.mon-link__list');
-    if (!list) {
-      return;
-    }
-    const fragment = document.createDocumentFragment();
-    const candidates = buildSerialLinkCandidates(lanes).filter(
-      (candidate) => candidate.id !== self_id
-    );
-    for (const candidate of candidates) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'mon-link__candidate';
-      button.dataset.targetId = candidate.id;
-      button.dataset.search =
-        `${candidate.id} ${candidate.title} ${candidate.location}`.toLocaleLowerCase();
-      const id = document.createElement('strong');
-      id.textContent = candidate.id;
-      const title = document.createElement('span');
-      title.textContent = candidate.title;
-      const location = document.createElement('small');
-      location.textContent = candidate.location;
-      button.append(id, title, location);
-      fragment.append(button);
-    }
-    list.replaceChildren(fragment);
-  }
-
-  /**
-   * Pin the popover to the viewport below its trigger (UI-thwe). 레인 본문의
-   * overflow 안에 절대배치하면 레인 경계에서 잘린다. 트리거 아래·오른쪽 정렬을
-   * 기본으로 두고 뷰포트 안에 들어오도록 가장자리에서만 당긴다.
+   * Rebuild the live blocks graph from the snapshot itself (§5.1). 연결
+   * 레인의 `predecessors`는 레인 안 엣지뿐이라 사이클 검사에 모자라므로,
+   * `lanes.js`가 쓰는 것과 같은 두 원천(레포별 `bead_blocked_by`, 실행가능
+   * 행의 `blocked_by`)에서 같은 순서로 다시 만든다.
    *
-   * @param {HTMLElement} trigger
-   * @param {HTMLElement} popover
+   * @returns {Map<string, string[]>}
    */
-  function placePopover(trigger, popover) {
-    if (typeof trigger.getBoundingClientRect !== 'function') {
-      return;
-    }
-    const margin = 8;
-    const rect = trigger.getBoundingClientRect();
-    const width = popover.offsetWidth || 0;
-    const height = popover.offsetHeight || 0;
-    const vw = window.innerWidth || 0;
-    const vh = window.innerHeight || 0;
-    let left = rect.right - width;
-    if (left < margin) {
-      left = margin;
-    }
-    if (vw > 0 && left + width > vw - margin) {
-      left = Math.max(margin, vw - margin - width);
-    }
-    let top = rect.bottom + 4;
-    if (vh > 0 && height > 0 && top + height > vh - margin) {
-      top = Math.max(margin, rect.top - 4 - height);
-    }
-    popover.style.left = `${Math.round(left)}px`;
-    popover.style.top = `${Math.round(top)}px`;
-  }
-
-  function closePopovers() {
-    for (const popover of Array.from(
-      console_el.querySelectorAll('.mon-card-popover')
-    )) {
-      const element = /** @type {HTMLElement} */ (popover);
-      element.hidden = true;
-      if (element.classList.contains('mon-link__popover')) {
-        clearLinkPopover(element);
+  function blockedByMap() {
+    /** @type {Map<string, string[]>} */
+    const graph = new Map();
+    const workspaces =
+      pipelineStore && pipelineStore.get ? pipelineStore.get() : null;
+    /**
+     * @param {unknown} value
+     * @returns {string[]}
+     */
+    const idsOf = (value) =>
+      Array.isArray(value)
+        ? value.filter(
+            (/** @type {unknown} */ id) =>
+              typeof id === 'string' && id.length > 0
+          )
+        : [];
+    for (const workspace of Array.isArray(workspaces) ? workspaces : []) {
+      if (!workspace || typeof workspace !== 'object') {
+        continue;
+      }
+      const declared =
+        workspace.bead_blocked_by &&
+        typeof workspace.bead_blocked_by === 'object'
+          ? workspace.bead_blocked_by
+          : {};
+      for (const [bead_id, blockers] of Object.entries(declared)) {
+        if (Array.isArray(blockers)) {
+          graph.set(bead_id, idsOf(blockers));
+        }
+      }
+      for (const entry of Array.isArray(workspace.runnable)
+        ? workspace.runnable
+        : []) {
+        if (
+          entry &&
+          typeof entry.bead_id === 'string' &&
+          Array.isArray(entry.blocked_by) &&
+          entry.blocked_by.length > 0
+        ) {
+          graph.set(entry.bead_id, idsOf(entry.blocked_by));
+        }
       }
     }
-    for (const trigger of Array.from(
-      console_el.querySelectorAll('[aria-haspopup][aria-expanded="true"]')
-    )) {
-      trigger.setAttribute('aria-expanded', 'false');
-    }
+    return graph;
   }
 
   /**
-   * @param {HTMLElement} button
+   * `planDrop`이 받는 모델 (§5.1). 투영이 내보내는 평면 객체를 Map으로 바꾸고,
+   * 레인 순서와 큐 좌표는 지금 화면에 그려진 행에서 만든다.
+   *
+   * @returns {DropModel}
    */
-  function toggleLinkPopover(button) {
-    const wrapper = button.closest('.mon-link');
-    const popover = /** @type {HTMLElement|null} */ (
-      wrapper?.querySelector('.mon-link__popover') || null
-    );
-    if (!popover) {
-      return;
-    }
-    const opens = popover.hidden;
-    closePopovers();
-    if (opens) {
-      const shell = button.closest('.mon2-item');
-      populateLinkCandidates(
-        popover,
-        shell?.getAttribute('data-bead-id') || ''
+  function dropModel() {
+    /** @type {Map<string, string[]>} */
+    const lane_order = new Map();
+    for (const lane of lanes.chain_lanes) {
+      lane_order.set(
+        lane.lane_id,
+        lane.rows.map((row) => row.id)
       );
-      popover.hidden = false;
-      button.setAttribute('aria-expanded', 'true');
-      const input = /** @type {HTMLInputElement|null} */ (
-        popover.querySelector('.mon-link__search')
-      );
-      if (input) {
-        updateLinkSearch(input);
-        input.focus();
+    }
+    /** @type {Map<string, number>} */
+    const queue_index_of = new Map();
+    for (const row of lanes.parallel_rows) {
+      if (typeof row.queue_index === 'number') {
+        queue_index_of.set(row.id, row.queue_index);
       }
-      placePopover(button, popover);
+    }
+    for (const group of lanes.queue_groups) {
+      for (const lane of group.sublanes.serial) {
+        for (const item of lane.items) {
+          if (typeof item.queue_index === 'number') {
+            queue_index_of.set(item.id, item.queue_index);
+          }
+        }
+      }
+    }
+    return {
+      blocked_by_map: blockedByMap(),
+      owner_of: new Map(Object.entries(lanes.owner_of)),
+      lane_order,
+      parallel_rows: lanes.parallel_rows.map((row) => ({
+        bead_id: row.id,
+        root_dir: row.root_dir,
+        queue_index: row.queue_index ?? 0
+      })),
+      parallel_raw_length: new Map(Object.entries(lanes.parallel_raw_length)),
+      queue_index_of
+    };
+  }
+
+  /**
+   * The CAS revision a queue op travels with (§5.1): 그 항목을 소유한 레포
+   * 큐의 것.
+   *
+   * @param {string} root_dir
+   * @param {string} bead_id
+   * @returns {number}
+   */
+  function revisionOfRoot(root_dir, bead_id) {
+    const item = item_by_bead.get(bead_id);
+    if (item && item.root_dir === root_dir) {
+      return item.expected_revision;
+    }
+    const group = lanes.queue_groups.find(
+      (entry) => entry.root_dir === root_dir
+    );
+    return group ? group.revision : 0;
+  }
+
+  /**
+   * Send one planned op. 큐 op만 CAS를 쓴다 (§5.4).
+   *
+   * @param {Op} op
+   * @param {string} bead_id
+   * @returns {Promise<boolean>} 계획의 남은 단계를 이어도 되면 true.
+   */
+  async function sendOp(op, bead_id) {
+    try {
+      if (
+        op.type === 'worker-queue-place' ||
+        op.type === 'worker-queue-reorder' ||
+        op.type === 'worker-queue-remove'
+      ) {
+        const res = await sendCas(
+          op.type,
+          op.payload,
+          op.root_dir,
+          revisionOfRoot(op.root_dir, bead_id)
+        );
+        if (res && res.conflict) {
+          showToast('큐가 바뀌었습니다 — 다시 시도해 주세요', 'error');
+          return false;
+        }
+        // 입장 거부는 CAS 충돌이 아니라 `applied:false`로 온다 (§7) — 조용히
+        // 성공으로 넘기면 앞선 의존 op만 남은 상태가 설명 없이 보인다.
+        if (res && res.applied === false) {
+          showToast(
+            res.admission_reason
+              ? `큐 적재 거부: ${res.admission_reason}`
+              : '큐 요청이 적용되지 않았습니다',
+            'error'
+          );
+          return false;
+        }
+        return true;
+      }
+      if (op.type === 'dep-add' || op.type === 'dep-remove') {
+        await send(op.type, { a: op.a, b: op.b }, op.root_dir);
+      }
+      return true;
+    } catch (error) {
+      showToast(mutationErrorMessage(error), 'error');
+      return false;
     }
   }
 
   /**
-   * @param {HTMLInputElement} input
+   * Plan ONE drop and send the resulting ops in order (§5.4·§7). 트랜잭션이
+   * 없으므로 하나라도 실패하면 즉시 멈추고 남은 op는 보내지 않는다 — 다음
+   * 스냅샷이 실제 상태를 그린다.
+   *
+   * @param {DropDrag} drag
+   * @param {DropTarget} target
    */
-  function updateLinkSearch(input) {
-    const popover = input.closest('.mon-link__popover');
-    const shell = input.closest('.mon2-item');
-    if (!popover || !shell) {
+  async function applyDrop(drag, target) {
+    const plan = planDrop(drag, target, dropModel());
+    if ('refused' in plan) {
+      showToast(plan.refused, 'error');
       return;
     }
-    const query = input.value.trim();
-    const normalized = query.toLocaleLowerCase();
-    let visible = 0;
-    let exact = false;
-    for (const candidate of Array.from(
-      popover.querySelectorAll('.mon-link__candidate')
-    )) {
-      const button = /** @type {HTMLElement} */ (candidate);
-      const target_id = button.dataset.targetId || '';
-      const matches =
-        normalized.length === 0 ||
-        (button.dataset.search || '').includes(normalized);
-      button.hidden = !matches;
-      if (matches) {
-        visible += 1;
-      }
-      if (target_id.toLocaleLowerCase() === normalized) {
-        exact = true;
+    // 빈 pending 레인의 첫 드롭은 의존 op를 내지 않는다 (§4.2) — 그 항목을
+    // seed로 잡는 것은 뷰의 몫이다.
+    if (target.kind === 'chain') {
+      const lane = lanes.chain_lanes.find(
+        (entry) => entry.lane_id === target.lane_id
+      );
+      const index =
+        lane && lane.pending && lane.rows.length === 0
+          ? Number(lane.lane_id.slice('pending:'.length))
+          : -1;
+      if (index >= 0 && pending_lanes[index]) {
+        pending_lanes = pending_lanes.map((entry, i) =>
+          i === index ? { seed: drag.bead_id } : entry
+        );
       }
     }
-    const direct = /** @type {HTMLElement|null} */ (
-      popover.querySelector('.mon-link__direct')
-    );
-    const self_id = shell.getAttribute('data-bead-id') || '';
-    if (direct) {
-      const shows_direct =
-        query.length > 0 &&
-        !exact &&
-        normalized !== self_id.toLocaleLowerCase();
-      direct.hidden = !shows_direct;
-      direct.dataset.targetId = shows_direct ? query : '';
-      direct.textContent = shows_direct ? `직접 입력 · ${query}` : '';
-      if (shows_direct) {
-        visible += 1;
+    for (const op of plan.ops) {
+      const ok = await sendOp(op, drag.bead_id);
+      if (!ok) {
+        break;
       }
     }
-    const empty = /** @type {HTMLElement|null} */ (
-      popover.querySelector('.mon-link__empty')
-    );
-    if (empty) {
-      empty.hidden = visible > 0;
+    doRender();
+  }
+
+  /**
+   * `[대기로 ↴]` 메뉴 한 항목 (§6): candidate → 대상 규칙을 끝 삽입으로 실행.
+   *
+   * @param {string} bead_id
+   * @param {string} choice
+   */
+  async function placeCandidateAt(bead_id, choice) {
+    const item = item_by_bead.get(bead_id);
+    if (!item) {
+      doRender();
+      return;
     }
-    const error = /** @type {HTMLElement|null} */ (
-      popover.querySelector('.mon-link__error')
+    /** @type {DropDrag} */
+    const drag = { kind: 'candidate', bead_id, root_dir: item.root_dir };
+    if (choice === 'new-lane') {
+      if (!pending_lanes.some((entry) => entry.seed === null)) {
+        pending_lanes = [...pending_lanes, { seed: null }];
+      }
+      // 렌더가 흡수된 pending 레인을 가지치면 `pending:<i>` 좌표가 움직인다 —
+      // 빈 레인의 lane_id는 렌더 뒤의 투영에서만 읽는다.
+      doRender();
+      const blank = lanes.chain_lanes.find(
+        (lane) => lane.pending && lane.rows.length === 0
+      );
+      if (!blank) {
+        return;
+      }
+      await applyDrop(drag, {
+        kind: 'chain',
+        lane_id: blank.lane_id,
+        marker_index: 0
+      });
+      return;
+    }
+    if (choice.startsWith('lane:')) {
+      const lane = lanes.chain_lanes[Number(choice.slice('lane:'.length))];
+      if (!lane) {
+        doRender();
+        return;
+      }
+      await applyDrop(drag, {
+        kind: 'chain',
+        lane_id: lane.lane_id,
+        marker_index: lane.rows.length
+      });
+      return;
+    }
+    if (choice.startsWith('serial:')) {
+      const lane_id = choice.slice('serial:'.length);
+      const lane = (item.place_lanes || []).find(
+        (entry) => entry.id === lane_id
+      );
+      await applyDrop(drag, {
+        kind: 'repo-serial',
+        root_dir: item.root_dir,
+        lane_id: /** @type {any} */ (lane_id),
+        index: lane ? lane.index : 0
+      });
+      return;
+    }
+    await applyDrop(drag, {
+      kind: 'parallel',
+      marker_index: lanes.parallel_rows.length
+    });
+  }
+
+  /**
+   * The 병렬 영역's mobile `↑ ↓` (§6): 같은 레포 행 사이에서만 자리를
+   * 바꾼다.
+   *
+   * @param {string} bead_id
+   * @param {-1|1} direction
+   */
+  async function nudgeParallelRow(bead_id, direction) {
+    const rows = lanes.parallel_rows;
+    const position = rows.findIndex((row) => row.id === bead_id);
+    if (position < 0) {
+      return;
+    }
+    const root_dir = rows[position].root_dir;
+    /** @type {number[]} */
+    const siblings = [];
+    rows.forEach((row, index) => {
+      if (row.root_dir === root_dir) {
+        siblings.push(index);
+      }
+    });
+    const at = siblings.indexOf(position);
+    const neighbour = siblings[at + direction];
+    if (typeof neighbour !== 'number') {
+      return;
+    }
+    // 위로는 앞 형제 자리에, 아래로는 뒤 형제의 **다음** 자리에 마커를 둔다.
+    const marker_index =
+      direction === -1
+        ? neighbour
+        : (siblings[at + 2] ?? Math.min(rows.length, neighbour + 1));
+    await applyDrop(
+      {
+        kind: 'parallel',
+        bead_id,
+        root_dir,
+        queue_index: rows[position].queue_index ?? 0
+      },
+      { kind: 'parallel', marker_index }
     );
-    if (error) {
-      error.hidden = true;
-      error.textContent = '';
+  }
+
+  /**
+   * A 연결 레인 row's mobile `✕` (§6) = 이어 붙이기(chain → parallel
+   * 규칙).
+   *
+   * @param {string} bead_id
+   */
+  async function detachChainRow(bead_id) {
+    for (const lane of lanes.chain_lanes) {
+      const row = lane.rows.find((entry) => entry.id === bead_id);
+      if (!row || !row.draggable) {
+        continue;
+      }
+      await applyDrop(
+        {
+          kind: 'chain',
+          bead_id,
+          root_dir: row.root_dir,
+          lane_id: lane.lane_id,
+          ...(typeof row.queue_index === 'number'
+            ? { queue_index: row.queue_index }
+            : {})
+        },
+        { kind: 'parallel', marker_index: lanes.parallel_rows.length }
+      );
+      return;
     }
   }
 
-  // --- 네이티브 HTML5 드래그 (§6). Worker 탭과 같은 규약이되 인덱스는 서버 큐의
-  // raw 좌표로만 센다 — 실행중으로 빠진 버드는 DOM에 없다. ---
+  // --- 네이티브 HTML5 드래그 (§5). 원천도 대상도 네 종류이고, 좌표는 DOM 속성이
+  // 아니라 투영 모델에서 나온다 — 실행중으로 빠졌거나 연결 레인에 숨은 버드는
+  // DOM에 없다. 계획은 `planDrop`이 소유하고 여기서는 원천/대상만 읽는다. ---
 
-  /**
-   * @type {{ bead_id: string, lane: string, root_dir: string, revision: number, queue_index: number, place_index: number }|null}
-   */
+  /** @type {DropDrag|null} */
   let dragging = null;
   /** 드롭의 마우스업이 그대로 click으로 이어져 카드를 열어 버리는 것을 막는다. */
   let suppress_open_click = false;
@@ -1584,53 +1932,91 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * @param {Event} ev
-   * @returns {HTMLElement|null}
+   * Where the drop marker sits: 지금 **보이는** 그 영역/레인 행 기준
+   * 0..rows.length.
+   *
+   * @param {HTMLElement} zone
+   * @param {HTMLElement|null} node
+   * @returns {number}
    */
-  function paneOfEvent(ev) {
-    const target = /** @type {HTMLElement|null} */ (ev.target);
-    return typeof target?.closest === 'function'
-      ? /** @type {HTMLElement|null} */ (
-          target.closest('.worker-pane, .mon2-sec__body')
-        )
-      : null;
+  function markerIndexIn(zone, node) {
+    const row =
+      node && typeof node.closest === 'function'
+        ? /** @type {HTMLElement|null} */ (node.closest('[data-row-index]'))
+        : null;
+    if (row && zone.contains(row)) {
+      const index = Number(row.getAttribute('data-row-index'));
+      return Number.isFinite(index) ? index : 0;
+    }
+    return zone.querySelectorAll('[data-row-index]').length;
   }
 
   /**
-   * The pane a drop may actually land on: **같은 레포**의 대기 서브레인, 또는
-   * 같은 레포의 실행가능 섹션(제거). 다른 레포는 서버에 없는 개념이다.
+   * The zone a drop may actually land on. 레포 직렬 레인만 `root_dir` 일치를
+   * 요구한다 (§4.2) — 다른 레포 카드에는 드롭 표시조차 뜨지 않는다.
    *
    * @param {Event} ev
-   * @returns {{ pane: HTMLElement, lane: string, root_dir: string, lane_length: number }|null}
+   * @returns {{ zone: HTMLElement, target: DropTarget }|null}
    */
   function dropTarget(ev) {
-    const pane = paneOfEvent(ev);
-    if (!pane || !dragging) {
+    const node = /** @type {HTMLElement|null} */ (ev.target);
+    const zone =
+      typeof node?.closest === 'function'
+        ? /** @type {HTMLElement|null} */ (node.closest('[data-drop]'))
+        : null;
+    if (!zone || !dragging) {
       return null;
     }
-    const section = pane.closest('.mon2-sec');
-    const root_dir = section?.getAttribute('data-root-dir') || '';
-    if (root_dir !== dragging.root_dir) {
-      return null;
+    const kind = zone.getAttribute('data-drop');
+    if (kind === 'candidate') {
+      return { zone, target: { kind: 'candidate' } };
     }
-    const lane = pane.getAttribute('data-lane') || '';
-    if (lane !== 'candidate' && lane !== 'queue' && !/^s[1-5]$/.test(lane)) {
-      return null;
+    if (kind === 'parallel') {
+      return {
+        zone,
+        target: { kind: 'parallel', marker_index: markerIndexIn(zone, node) }
+      };
     }
-    const holder = pane.closest('.mon2-lane');
-    return {
-      pane,
-      lane,
-      root_dir,
-      lane_length: Number(holder?.getAttribute('data-lane-length') || 0) || 0
-    };
+    if (kind === 'chain') {
+      return {
+        zone,
+        target: {
+          kind: 'chain',
+          lane_id: zone.getAttribute('data-lane-id') || '',
+          marker_index: markerIndexIn(zone, node)
+        }
+      };
+    }
+    if (kind === 'repo-serial') {
+      const root_dir = zone.getAttribute('data-root-dir') || '';
+      if (root_dir !== dragging.root_dir) {
+        return null;
+      }
+      const row =
+        typeof node?.closest === 'function'
+          ? /** @type {HTMLElement|null} */ (node.closest('[data-queue-index]'))
+          : null;
+      const raw =
+        row && zone.contains(row)
+          ? row.getAttribute('data-queue-index')
+          : zone.getAttribute('data-lane-length');
+      const index = Number(raw);
+      return {
+        zone,
+        target: {
+          kind: 'repo-serial',
+          root_dir,
+          lane_id: /** @type {any} */ (zone.getAttribute('data-lane-id') || ''),
+          index: Number.isFinite(index) ? index : 0
+        }
+      };
+    }
+    return null;
   }
 
   function clearDragOver() {
-    for (const el of Array.from(
-      console_el.querySelectorAll('.worker-pane--drag-over')
-    )) {
-      el.classList.remove('worker-pane--drag-over');
+    for (const el of Array.from(console_el.querySelectorAll('.is-drop-over'))) {
+      el.classList.remove('is-drop-over');
     }
   }
 
@@ -1639,29 +2025,35 @@ export function createMonitorView(mount_element, options) {
    */
   function onDragStart(ev) {
     const target = /** @type {HTMLElement|null} */ (ev.target);
-    const el =
+    const handle =
       typeof target?.closest === 'function'
         ? /** @type {HTMLElement|null} */ (
-            target.closest(
-              '.worker-mini[draggable="true"], .worker-card[draggable="true"]'
-            )
+            target.closest('[draggable="true"][data-bead-id]')
           )
         : null;
-    if (!el) {
+    const holder = handle
+      ? /** @type {HTMLElement|null} */ (handle.closest('[data-drag-kind]'))
+      : null;
+    if (!holder) {
       return;
     }
-    const bead_id = el.getAttribute('data-bead-id') || '';
-    const { item } = casOf(bead_id);
-    if (!item) {
+    const bead_id = holder.getAttribute('data-bead-id') || '';
+    const kind = holder.getAttribute('data-drag-kind') || '';
+    const root_dir = holder.getAttribute('data-root-dir') || '';
+    if (!bead_id || !kind || !root_dir) {
       return;
     }
+    const raw_index = holder.getAttribute('data-queue-index') || '';
+    const queue_index = Number(raw_index);
+    const lane_id = holder.getAttribute('data-lane-id') || '';
     dragging = {
+      kind: /** @type {any} */ (kind),
       bead_id,
-      lane: item.lane,
-      root_dir: item.root_dir,
-      revision: item.expected_revision,
-      queue_index: typeof item.queue_index === 'number' ? item.queue_index : -1,
-      place_index: typeof item.place_index === 'number' ? item.place_index : 0
+      root_dir,
+      ...(raw_index !== '' && Number.isFinite(queue_index)
+        ? { queue_index }
+        : {}),
+      ...(lane_id ? { lane_id } : {})
     };
     suppress_open_click = true;
     place_menu_bead = null;
@@ -1688,14 +2080,17 @@ export function createMonitorView(mount_element, options) {
     if (ev.dataTransfer) {
       ev.dataTransfer.dropEffect = 'move';
     }
-    target.pane.classList.add('worker-pane--drag-over');
+    target.zone.classList.add('is-drop-over');
   }
 
   /**
    * @param {DragEvent} ev
    */
   function onDragLeave(ev) {
-    paneOfEvent(ev)?.classList.remove('worker-pane--drag-over');
+    const node = /** @type {HTMLElement|null} */ (ev.target);
+    if (typeof node?.closest === 'function') {
+      node.closest('[data-drop]')?.classList.remove('is-drop-over');
+    }
   }
 
   function onDragEnd() {
@@ -1706,10 +2101,6 @@ export function createMonitorView(mount_element, options) {
   }
 
   /**
-   * Drop index math (§6) — 렌더된 행이 가리키는 **서버 큐의 raw 좌표**에서만
-   * 유도한다: 행 앞이면 그 행의 `queue_index`, 레인 맨 끝이면 그 레인의 raw
-   * 길이. 같은 레인 재정렬은 제거 후 삽입 보정까지 포함해 `s > k ? k : k - 1`.
-   *
    * @param {DragEvent} ev
    */
   function onDrop(ev) {
@@ -1718,90 +2109,11 @@ export function createMonitorView(mount_element, options) {
     dragging = null;
     clearDragOver();
     console_el.classList.remove('is-dragging');
-    if (!target || !drag || !drag.bead_id) {
+    if (!target || !drag) {
       return;
     }
     ev.preventDefault();
-    const node = /** @type {HTMLElement|null} */ (ev.target);
-    const over =
-      typeof node?.closest === 'function'
-        ? /** @type {HTMLElement|null} */ (node.closest('.mon2-item'))
-        : null;
-    const over_id =
-      over && target.pane.contains(over)
-        ? over.getAttribute('data-bead-id') || ''
-        : '';
-    const over_item = over_id ? item_by_bead.get(over_id) : undefined;
-    const k =
-      over_item && typeof over_item.queue_index === 'number'
-        ? over_item.queue_index
-        : NaN;
-
-    if (target.lane === 'candidate') {
-      // 실행가능 섹션으로 끌어 제거 (§6).
-      if (drag.lane === 'queue' || /^s[1-5]$/.test(drag.lane)) {
-        void sendCas(
-          'worker-queue-remove',
-          { bead_id: drag.bead_id },
-          drag.root_dir,
-          drag.revision
-        );
-      }
-      return;
-    }
-    const target_lane = target.lane === 'queue' ? 'parallel' : target.lane;
-    if (drag.lane === 'runnable') {
-      const index = Number.isFinite(k) ? k : target.lane_length;
-      void sendCas(
-        'worker-queue-place',
-        {
-          bead_id: drag.bead_id,
-          ...(target_lane === 'parallel' ? {} : { lane: target_lane }),
-          index
-        },
-        drag.root_dir,
-        drag.revision
-      );
-      return;
-    }
-    const from_lane = drag.lane === 'queue' ? 'parallel' : drag.lane;
-    if (from_lane !== target_lane) {
-      // 레인이 다르면 place가 원 레인 제거 + 삽입을 한 번에 한다.
-      const index = Number.isFinite(k) ? k : target.lane_length;
-      void sendCas(
-        'worker-queue-place',
-        {
-          bead_id: drag.bead_id,
-          ...(target_lane === 'parallel' ? {} : { lane: target_lane }),
-          index
-        },
-        drag.root_dir,
-        drag.revision
-      );
-      return;
-    }
-    if (over_id === drag.bead_id) {
-      return;
-    }
-    const s = drag.queue_index;
-    const to_index = Number.isFinite(k)
-      ? s > k
-        ? k
-        : k - 1
-      : target.lane_length - 1;
-    if (!Number.isFinite(to_index) || to_index < 0 || to_index === s) {
-      return;
-    }
-    void sendCas(
-      'worker-queue-reorder',
-      {
-        bead_id: drag.bead_id,
-        ...(target_lane === 'parallel' ? {} : { lane: target_lane }),
-        to_index
-      },
-      drag.root_dir,
-      drag.revision
-    );
+    void applyDrop(drag, target.target);
   }
 
   // --- 클릭 위임 ---
@@ -1828,39 +2140,24 @@ export function createMonitorView(mount_element, options) {
     const { item, root_dir, revision } = casOf(bead_id);
     const attempt_id = item?.attempt_id || '';
     const cls = button.classList;
-    if (cls.contains('mon-link__trigger')) {
-      toggleLinkPopover(button);
-      return;
-    }
-    if (
-      cls.contains('mon-link__candidate') ||
-      cls.contains('mon-link__direct')
-    ) {
-      const shell = /** @type {HTMLElement|null} */ (
-        button.closest('.mon2-item')
-      );
-      if (shell) {
-        void mutateDependency(
-          'dep-add',
-          shell,
-          bead_id,
-          button.dataset.targetId || ''
-        );
-      }
-      return;
-    }
     if (cls.contains('worker-dep__remove')) {
-      const shell = /** @type {HTMLElement|null} */ (
-        button.closest('.mon2-item')
+      void mutateDependency(
+        'dep-remove',
+        bead_id,
+        button.dataset.blockerId || ''
       );
-      if (shell) {
-        void mutateDependency(
-          'dep-remove',
-          shell,
-          bead_id,
-          button.dataset.blockerId || ''
-        );
-      }
+      return;
+    }
+    if (cls.contains('mon2-rowops__up') || cls.contains('mon2-rowops__down')) {
+      void nudgeParallelRow(bead_id, cls.contains('mon2-rowops__up') ? -1 : 1);
+      return;
+    }
+    if (cls.contains('mon2-rowops__remove')) {
+      void sendCas('worker-queue-remove', { bead_id }, root_dir, revision);
+      return;
+    }
+    if (cls.contains('mon2-crow__detach')) {
+      void detachChainRow(bead_id);
       return;
     }
     if (cls.contains('worker-card__place')) {
@@ -1875,20 +2172,9 @@ export function createMonitorView(mount_element, options) {
       return;
     }
     if (cls.contains('worker-card__place-lane')) {
-      const lane = button.getAttribute('data-lane') || 'parallel';
-      const index =
-        lane === 'parallel'
-          ? (item?.place_index ?? 0)
-          : ((item?.place_lanes || []).find((entry) => entry.id === lane)
-              ?.index ?? 0);
+      const choice = button.getAttribute('data-lane') || 'parallel';
       place_menu_bead = null;
-      void sendCas(
-        'worker-queue-place',
-        { bead_id, ...(lane === 'parallel' ? {} : { lane }), index },
-        root_dir,
-        revision
-      );
-      doRender();
+      void placeCandidateAt(bead_id, choice);
       return;
     }
     if (cls.contains('rtile__session')) {
@@ -2032,7 +2318,7 @@ export function createMonitorView(mount_element, options) {
     if (id_el) {
       ev.preventDefault();
       const owner = /** @type {HTMLElement|null} */ (
-        target.closest('.mon2-item, .rtile, .mon2-chain__node, .worker-mini')
+        target.closest('.mon2-item, .rtile, .mon2-crow, .worker-mini')
       );
       const id =
         owner?.getAttribute('data-bead-id') || id_el.textContent?.trim() || '';
@@ -2068,35 +2354,27 @@ export function createMonitorView(mount_element, options) {
     );
     if (section_toggle) {
       ev.preventDefault();
-      toggleSection(
-        section_toggle.getAttribute('data-root-dir') || '',
-        /** @type {'runnable'|'queue'} */ (
-          section_toggle.getAttribute('data-section') || 'runnable'
+      toggleSection(section_toggle.getAttribute('data-root-dir') || '');
+      return;
+    }
+
+    const area_toggle = /** @type {HTMLElement|null} */ (
+      target.closest('.mon2-area__toggle')
+    );
+    if (area_toggle) {
+      ev.preventDefault();
+      toggleArea(
+        /** @type {'parallel'|'serial'} */ (
+          area_toggle.getAttribute('data-area') || 'parallel'
         )
       );
       return;
     }
 
-    if (target.closest('.mon2-chains__toggle')) {
+    if (target.closest('.mon2-newlane')) {
       ev.preventDefault();
-      sections_state = {
-        ...sections_state,
-        chains: sections_state.chains !== true
-      };
-      saveSections(sections_state);
+      pending_lanes = [...pending_lanes, { seed: null }];
       doRender();
-      return;
-    }
-
-    const chain_node = /** @type {HTMLElement|null} */ (
-      target.closest('.mon2-chain__node')
-    );
-    if (chain_node) {
-      ev.preventDefault();
-      openRow(
-        chain_node.getAttribute('data-bead-id') || '',
-        chain_node.getAttribute('data-root-dir') || ''
-      );
       return;
     }
 
@@ -2121,7 +2399,9 @@ export function createMonitorView(mount_element, options) {
     }
 
     const row = /** @type {HTMLElement|null} */ (
-      target.closest('.mon2-item, .rtile, .worker-mini, .worker-card')
+      target.closest(
+        '.mon2-item, .rtile, .mon2-crow, .worker-mini, .worker-card'
+      )
     );
     if (!row) {
       return;
@@ -2135,58 +2415,12 @@ export function createMonitorView(mount_element, options) {
     }
     if (bead_id && !after_drag) {
       ev.preventDefault();
-      openRow(bead_id, casOf(bead_id).root_dir);
+      // 연결 레인 행은 집계에 없는 노드까지 그리므로 자기 레포를 스스로 싣는다.
+      openRow(
+        bead_id,
+        row.getAttribute('data-root-dir') || casOf(bead_id).root_dir
+      );
     }
-  }
-
-  /**
-   * @param {Event} ev
-   */
-  function onDocumentClick(ev) {
-    const target = /** @type {HTMLElement|null} */ (ev.target);
-    if (
-      target &&
-      console_el.contains(target) &&
-      typeof target.closest === 'function' &&
-      target.closest('.mon-popover-owner')
-    ) {
-      return;
-    }
-    closePopovers();
-  }
-
-  /**
-   * Close an open popover once a lane scrolls under it. 고정 배치 팝오버는
-   * 스크롤되면 트리거에서 떨어진다. 팝오버 자신의 목록 스크롤은 예외다.
-   *
-   * @param {Event} ev
-   */
-  function onScroll(ev) {
-    const target = /** @type {HTMLElement|null} */ (ev.target);
-    if (
-      target &&
-      typeof target.closest === 'function' &&
-      target.closest('.mon-card-popover')
-    ) {
-      return;
-    }
-    if (console_el.querySelector('.mon-card-popover:not([hidden])')) {
-      closePopovers();
-    }
-  }
-
-  /**
-   * @param {KeyboardEvent} ev
-   */
-  function onDocumentKeydown(ev) {
-    if (ev.key !== 'Escape') {
-      return;
-    }
-    const trigger = /** @type {HTMLElement|null} */ (
-      console_el.querySelector('[aria-haspopup][aria-expanded="true"]')
-    );
-    closePopovers();
-    trigger?.focus();
   }
 
   /**
@@ -2243,27 +2477,13 @@ export function createMonitorView(mount_element, options) {
     }
   }
 
-  /**
-   * @param {Event} ev
-   */
-  function onInput(ev) {
-    const input = /** @type {HTMLInputElement|null} */ (ev.target);
-    if (input?.classList.contains('mon-link__search')) {
-      updateLinkSearch(input);
-    }
-  }
-
   mount_element.addEventListener('click', onClick);
   mount_element.addEventListener('change', onChange);
-  mount_element.addEventListener('input', onInput);
   mount_element.addEventListener('dragstart', /** @type {any} */ (onDragStart));
   mount_element.addEventListener('dragover', /** @type {any} */ (onDragOver));
   mount_element.addEventListener('dragleave', /** @type {any} */ (onDragLeave));
   mount_element.addEventListener('drop', /** @type {any} */ (onDrop));
   mount_element.addEventListener('dragend', onDragEnd);
-  document.addEventListener('click', onDocumentClick);
-  document.addEventListener('keydown', onDocumentKeydown);
-  mount_element.addEventListener('scroll', onScroll, true);
 
   if (pipelineStore && typeof pipelineStore.subscribe === 'function') {
     unsubscribe_pipeline = pipelineStore.subscribe(() => {
@@ -2298,11 +2518,6 @@ export function createMonitorView(mount_element, options) {
       if (tick_timer === null) {
         tick_timer = setInterval(() => {
           try {
-            // 팝오버 입력은 사용자가 소유한 임시 상태다 — 열린 동안 시계 렌더를
-            // 미룬다.
-            if (console_el.querySelector('.mon-card-popover:not([hidden])')) {
-              return;
-            }
             doRender();
           } catch {
             // ignore
@@ -2325,7 +2540,6 @@ export function createMonitorView(mount_element, options) {
       deck = null;
       mount_element.removeEventListener('click', onClick);
       mount_element.removeEventListener('change', onChange);
-      mount_element.removeEventListener('input', onInput);
       mount_element.removeEventListener(
         'dragstart',
         /** @type {any} */ (onDragStart)
@@ -2340,9 +2554,6 @@ export function createMonitorView(mount_element, options) {
       );
       mount_element.removeEventListener('drop', /** @type {any} */ (onDrop));
       mount_element.removeEventListener('dragend', onDragEnd);
-      document.removeEventListener('click', onDocumentClick);
-      document.removeEventListener('keydown', onDocumentKeydown);
-      mount_element.removeEventListener('scroll', onScroll, true);
       mount_element.replaceChildren();
     }
   };

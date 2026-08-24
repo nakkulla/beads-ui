@@ -195,6 +195,31 @@ const DONE_KIND_LABELS = {
  */
 
 /**
+ * @typedef {Object} MonitorChainLaneRow
+ * @property {string} id
+ * @property {string} title
+ * @property {string} root_dir
+ * @property {string} workspace_name
+ * @property {number} seq - 1부터. ①②③ 표시는 뷰가 소유한다.
+ * @property {number} indent
+ * @property {string[]} predecessors - 같은 레인 안에 있는 직접 blocker id 전부.
+ * 뷰는 이 목록을 `← 앞 이슈` 칩으로 그린다.
+ * @property {string} location_label
+ * @property {boolean} draggable - 병렬 큐 멤버만 끌 수 있다 (§5.2).
+ * @property {number} [queue_index]
+ */
+
+/**
+ * @typedef {Object} MonitorChainLane
+ * @property {string} lane_id - 파생 체인은 `chain:<key>`, pending은
+ * `pending:<원본 인덱스>`.
+ * @property {string} label
+ * @property {boolean} pending
+ * @property {boolean} cycle
+ * @property {MonitorChainLaneRow[]} rows
+ */
+
+/**
  * @typedef {Object} MonitorLanes
  * @property {MonitorItem[]} runnable - Filter/sort 적용 후의 평면 목록.
  * @property {{ blocked: number, spec: number }} runnable_hidden
@@ -209,6 +234,18 @@ const DONE_KIND_LABELS = {
  * @property {MonitorItem[]} pr_wait
  * @property {MonitorItem[]} done
  * @property {MonitorChain[]} chains
+ * @property {MonitorItem[]} parallel_rows - 병렬 통합 큐 (UI-e6hw §4.1): 모든
+ * visible 레포의 병렬 큐 행을 레포명 → 자기 레포 큐 순서로 이은 평면 목록.
+ * 연결 레인에 들어 있는 버드는 빠진다.
+ * @property {MonitorChainLane[]} chain_lanes - 연결 레인 (§4.2). 파생 체인 뒤에
+ * 살아남은 pending 레인이 붙고, 표시 번호는 이 배열 순서다.
+ * @property {Record<string, number>} parallel_raw_length - root_dir → 병렬 큐
+ * 서버 배열의 entry 수 (§5.1). 통합 pane은 단일 `data-lane-length`를 가질 수
+ * 없으므로 드롭 좌표는 이 값에서만 나온다.
+ * @property {Record<string, string>} owner_of - bead_id → root_dir. 위치가
+ * 해석되지 않는 버드는 키 자체가 없다 (fail-quiet).
+ * @property {number[]} pending_lanes_kept - `options.pending_lanes` 중 파생
+ * 체인에 흡수되지 않은 것의 원본 인덱스.
  */
 
 /**
@@ -588,7 +625,9 @@ export function buildChains(blocked_by_map, locations, states) {
     );
     const listed = cycle ? component.slice().sort() : order;
     chains.push({
-      key: listed.join('\u0000'),
+      // 연결 레인 번호는 `key` 오름차순이다 (UI-e6hw §4.2) — 정렬된 노드 id로
+      // 만들어야 의존 방향이 바뀌어도 같은 멤버 집합이 같은 자리에 남는다.
+      key: component.slice().sort().join('\u0000'),
       cycle,
       nodes: listed.map((id) => {
         const location = locations.get(id);
@@ -622,6 +661,160 @@ function chainScopeLabel(bead_id, states) {
 }
 
 /**
+ * The 연결 레인 행의 위치 칩 (§4.2). 큐 안의 노드는 자기 레포 큐 순번을 보이고,
+ * 그 밖에는 현행 `blockerLocationLabel`/`chainScopeLabel` 값을 그대로 쓴다 —
+ * 같은 사실에 새 문자열을 발명하지 않는다.
+ *
+ * @param {string} bead_id
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Array<Record<string, any>>} states
+ * @returns {string}
+ */
+function chainRowLocationLabel(bead_id, locations, states) {
+  const location = locations.get(bead_id);
+  if (!location) {
+    return chainScopeLabel(bead_id, states);
+  }
+  if (typeof location.position === 'number') {
+    if (location.lane === 'parallel') {
+      return `#${location.position}`;
+    }
+    if (/^s[1-5]$/.test(location.lane)) {
+      return `${location.lane} #${location.position}`;
+    }
+  }
+  return blockerLocationLabel(location);
+}
+
+/**
+ * @param {string} bead_id
+ * @param {Set<string>} members
+ * @param {Map<string, string[]>} blocked_by_map
+ * @returns {string[]}
+ */
+function laneLocalPredecessors(bead_id, members, blocked_by_map) {
+  /** @type {string[]} */
+  const out = [];
+  for (const blocker of blocked_by_map.get(bead_id) || []) {
+    if (blocker !== bead_id && members.has(blocker) && !out.includes(blocker)) {
+      out.push(blocker);
+    }
+  }
+  return out;
+}
+
+/**
+ * The 연결 레인 (§4.2): 파생 체인을 `key` 오름차순으로 늘어놓고, 파생 체인이
+ * 흡수하지 않은 pending 레인을 원본 순서로 뒤에 붙인다. 표시 번호는 이 최종
+ * 배열 순서이며 어디에도 저장되지 않는다.
+ *
+ * @param {MonitorChain[]} chains
+ * @param {Array<{ seed: string|null }>} pending_lanes
+ * @param {Map<string, string[]>} blocked_by_map
+ * @param {Map<string, import('./blockers.js').BlockerLocation>} locations
+ * @param {Array<Record<string, any>>} states
+ * @param {Map<string, string>} title_by_bead
+ * @returns {{ chain_lanes: MonitorChainLane[], pending_lanes_kept: number[] }}
+ */
+function buildChainLanes(
+  chains,
+  pending_lanes,
+  blocked_by_map,
+  locations,
+  states,
+  title_by_bead
+) {
+  /**
+   * @param {string} bead_id
+   * @param {number} seq
+   * @param {number} indent
+   * @param {string[]} predecessors
+   * @param {boolean} [orderless] - 사이클 레인의 순서 없는 노드 목록 (§4.2).
+   * @returns {MonitorChainLaneRow}
+   */
+  const rowOf = (bead_id, seq, indent, predecessors, orderless = false) => {
+    const location = locations.get(bead_id);
+    const parallel_index =
+      location &&
+      location.lane === 'parallel' &&
+      typeof location.position === 'number'
+        ? location.position - 1
+        : null;
+    return {
+      id: bead_id,
+      title: title_by_bead.get(bead_id) || bead_id,
+      root_dir: location ? location.root_dir : '',
+      workspace_name: location ? location.workspace_name : '',
+      seq,
+      indent,
+      predecessors,
+      location_label: chainRowLocationLabel(bead_id, locations, states),
+      // 사이클 레인은 순서를 주장하지 않는다 (§4.2) — 순서 없는 목록의 행은
+      // 끌 수 없다.
+      draggable: !orderless && parallel_index !== null,
+      ...(parallel_index !== null ? { queue_index: parallel_index } : {})
+    };
+  };
+
+  /** @type {MonitorChainLane[]} */
+  const lanes = [];
+  for (const chain of chains.slice().sort((a, b) => (a.key < b.key ? -1 : 1))) {
+    const members = new Set(chain.nodes.map((node) => node.id));
+    lanes.push({
+      lane_id: `chain:${chain.key}`,
+      label: '',
+      pending: false,
+      cycle: chain.cycle,
+      rows: chain.nodes.map((node, index) =>
+        rowOf(
+          node.id,
+          index + 1,
+          chain.cycle ? 0 : node.indent,
+          chain.cycle
+            ? []
+            : laneLocalPredecessors(node.id, members, blocked_by_map),
+          chain.cycle
+        )
+      )
+    });
+  }
+
+  /** @type {Set<string>} */
+  const derived_members = new Set();
+  for (const lane of lanes) {
+    for (const row of lane.rows) {
+      derived_members.add(row.id);
+    }
+  }
+
+  /** @type {number[]} */
+  const pending_lanes_kept = [];
+  pending_lanes.forEach((entry, index) => {
+    const seed =
+      entry && typeof entry.seed === 'string' && entry.seed.length > 0
+        ? entry.seed
+        : null;
+    // seed를 품은 파생 체인이 나타나면 그 pending 레인은 중복이다 (§4.2).
+    if (seed !== null && derived_members.has(seed)) {
+      return;
+    }
+    pending_lanes_kept.push(index);
+    lanes.push({
+      lane_id: `pending:${index}`,
+      label: '',
+      pending: true,
+      cycle: false,
+      rows: seed === null ? [] : [rowOf(seed, 1, 0, [])]
+    });
+  });
+
+  lanes.forEach((lane, index) => {
+    lane.label = `연결 ${index + 1} · 레포 간`;
+  });
+  return { chain_lanes: lanes, pending_lanes_kept };
+}
+
+/**
  * @param {unknown} value
  * @returns {number}
  */
@@ -642,7 +835,7 @@ function timeOf(value) {
  *
  * @param {Array<Record<string, any>>|null|undefined} workspaces
  * @param {Array<Record<string, any>>|null|undefined} [workspaces_state]
- * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat' }} [options]
+ * @param {{ done_since?: number, running_sort?: 'started'|'repo', candidate_filter?: CandidateFilter, candidate_sort?: 'repo_spec'|'repo_updated'|'updated_flat', pending_lanes?: Array<{ seed: string|null }> }} [options]
  * @returns {MonitorLanes}
  */
 export function buildLanes(workspaces, workspaces_state, options) {
@@ -694,6 +887,8 @@ export function buildLanes(workspaces, workspaces_state, options) {
   const raw_queue_length_by_root = new Map();
   /** @type {Map<string, string[]>} */
   const blocked_by_map = new Map();
+  /** @type {Map<string, string>} */
+  const title_by_bead = new Map();
 
   for (const workspace of list) {
     if (!workspace || typeof workspace.root_dir !== 'string') {
@@ -710,6 +905,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
           : 0;
     const attempts = objectOf(workspace.attempts);
     const titles = objectOf(workspace.bead_titles);
+    for (const [bead_id, title] of Object.entries(titles)) {
+      if (typeof title === 'string' && title.length > 0) {
+        title_by_bead.set(bead_id, title);
+      }
+    }
     const times = objectOf(workspace.bead_times);
     const observations = objectOf(workspace.pr_observations);
     const admission = objectOf(workspace.admission);
@@ -1154,6 +1354,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
           )
         );
       }
+      // 연결 레인은 실행가능 노드도 그린다 (§4.2) — 큐 제목 캐시에 없는 그
+      // 제목이 여기서만 들어온다.
+      if (typeof entry.title === 'string' && entry.title.length > 0) {
+        title_by_bead.set(bead_id, entry.title);
+      }
       runnable.push({
         ...base(bead_id),
         title: entry.title || titles[bead_id] || bead_id,
@@ -1320,7 +1525,12 @@ export function buildLanes(workspaces, workspaces_state, options) {
     running,
     pr_wait,
     done,
-    chains: []
+    chains: [],
+    parallel_rows: [],
+    chain_lanes: [],
+    parallel_raw_length: Object.fromEntries(raw_queue_length_by_root),
+    owner_of: {},
+    pending_lanes_kept: []
   };
 
   // 이하는 스냅샷 한 번에만 유효한 표시 파생값이다.
@@ -1418,6 +1628,53 @@ export function buildLanes(workspaces, workspaces_state, options) {
       }
     }
   }
+
+  // 대기 레인 통합 투영 (UI-e6hw §4). 연결 레인이 먼저다 — 병렬 통합 큐의
+  // 숨김 규칙이 연결 레인 멤버 집합에서 나온다 (§4.1).
+  const chain_lane_projection = buildChainLanes(
+    model.chains,
+    Array.isArray(options?.pending_lanes) ? options.pending_lanes : [],
+    blocked_by_map,
+    locations,
+    states,
+    title_by_bead
+  );
+  model.chain_lanes = chain_lane_projection.chain_lanes;
+  model.pending_lanes_kept = chain_lane_projection.pending_lanes_kept;
+
+  /** @type {Set<string>} */
+  const chain_lane_members = new Set();
+  for (const lane of model.chain_lanes) {
+    for (const row of lane.rows) {
+      chain_lane_members.add(row.id);
+    }
+  }
+  /** @type {MonitorItem[]} */
+  const parallel_rows = [];
+  for (const items of queue_by_root.values()) {
+    for (const item of items) {
+      if (!chain_lane_members.has(item.id)) {
+        parallel_rows.push(item);
+      }
+    }
+  }
+  // 레포명 오름차순으로 같은 레포 행을 붙이고, 레포 안에서는 서버 큐 순서 (§4.1).
+  parallel_rows.sort((a, b) => {
+    const by_name = a.workspace_name.localeCompare(b.workspace_name);
+    return by_name !== 0
+      ? by_name
+      : (a.queue_index ?? 0) - (b.queue_index ?? 0);
+  });
+  model.parallel_rows = parallel_rows;
+
+  /** @type {Record<string, string>} */
+  const owner_of = {};
+  for (const [bead_id, location] of locations) {
+    if (typeof location.root_dir === 'string' && location.root_dir.length > 0) {
+      owner_of[bead_id] = location.root_dir;
+    }
+  }
+  model.owner_of = owner_of;
 
   // 실행가능 필터·정렬은 마지막이다: 파생값(의존 칩·체인)은 필터와 무관하게
   // 전 레포 사실에서 나와야 한다.

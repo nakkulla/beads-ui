@@ -99,6 +99,26 @@ describe('monitor tab styles (UI-eey2)', () => {
     expect(mq).toMatch(/\.mon2-deck__strip\s*{[^}]*overflow-x:\s*auto/);
   });
 
+  test('leaves no rule behind for the retired wait-lane surfaces (UI-e6hw §4.3)', () => {
+    expect(CSS).not.toContain('.mon2-sec[data-section="queue"]');
+    expect(CSS).not.toContain('.mon2-chains');
+    expect(CSS).not.toContain('.mon-link');
+    expect(CSS).not.toContain('.mon2-item__ops');
+    expect(CSS).not.toContain('.mon2-sec__auto');
+  });
+
+  test('styles the two wait-lane areas and both lane kinds (UI-e6hw §4)', () => {
+    const block = monitorBlock();
+
+    expect(block).toContain('.mon2-wait');
+    expect(block).toContain('.mon2-area__hd');
+    expect(block).toContain('.mon2-parallel .worker-mini__seq::before');
+    expect(block).toContain('.mon2-clane__body');
+    expect(block).toContain('.mon2-crow');
+    expect(block).toContain('.mon2-newlane');
+    expect(block).toMatch(/\[data-drop\]\.is-drop-over\s*{/);
+  });
+
   test('consumes design tokens only (no raw hex in the monitor block)', () => {
     const hex = monitorBlock().match(/#[0-9a-fA-F]{3,8}\b/g) || [];
 
