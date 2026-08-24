@@ -3306,7 +3306,7 @@ export function createQueueStore(options = {}) {
    * @param {string} workspace
    * @param {string} attempt_id
    * @param {Partial<Attempt>} patch
-   * @returns {{ patch: Partial<Attempt>, files: string[] }}
+   * @returns {{ patch: Partial<Attempt>, files: string[], drain?: { workspace: string, attempt_id: string } }}
    */
   function terminalReceiptPatch(workspace, attempt_id, patch) {
     const current = ensureLoaded(workspace).attempts[attempt_id];
@@ -3333,16 +3333,16 @@ export function createQueueStore(options = {}) {
     } catch {
       // Terminal settlement still persists without optional monitor evidence.
     }
-    // The live Claude subagent state joins the same two lists, then the entry
-    // is dropped: the store holds only LIVE attempts, and this write is the
-    // moment the attempt stops being one (UI-2mpn §5.4).
+    // The live Claude subagent state joins the same two lists (UI-2mpn §5.4).
+    // Dropping the entry is DEFERRED to `consumeTerminalReceipts`, on the same
+    // contract as the receipt files above: a subagent has no inbox file to
+    // rescan, so clearing before the persist succeeds would be the one way its
+    // evidence is lost for good.
     const live_delegations = delegation_store
       ? delegation_store.get(workspace, attempt_id)
       : { sessions: [], legs: [] };
-    if (delegation_store) {
-      delegation_store.clearAttempt(workspace, attempt_id);
-    }
     return {
+      ...(delegation_store ? { drain: { workspace, attempt_id } } : {}),
       patch: {
         ...patch,
         ...(receipts_read || live_delegations.legs.length > 0
@@ -3378,12 +3378,24 @@ export function createQueueStore(options = {}) {
   }
 
   /**
+   * Release the terminal evidence a settled attempt no longer needs — but only
+   * once the queue mutation that recorded it actually persisted. A failed write
+   * keeps both halves: the inbox files for the next scan, and the live
+   * delegation entry, which is the ONLY copy a Claude subagent has.
+   *
    * @param {QueueOpResult} result
    * @param {string[]} files
+   * @param {{ workspace: string, attempt_id: string }} [drain]
    */
-  function consumeTerminalReceipts(result, files) {
-    if (result.ok && files.length > 0) {
+  function consumeTerminalReceipts(result, files, drain) {
+    if (!result.ok) {
+      return;
+    }
+    if (files.length > 0) {
       consumeUsageReceiptFiles(files);
+    }
+    if (drain && delegation_store) {
+      delegation_store.clearAttempt(drain.workspace, drain.attempt_id);
     }
   }
 
@@ -4879,7 +4891,7 @@ export function createQueueStore(options = {}) {
         current_status === 'orphaned';
       const prepared = terminal
         ? terminalReceiptPatch(workspace, attempt_id, patch)
-        : { patch, files: [] };
+        : { patch, files: [], drain: undefined };
       const result = applyUnconditional(workspace, (next) => {
         const cur = next.attempts[attempt_id];
         if (!cur) {
@@ -4895,7 +4907,7 @@ export function createQueueStore(options = {}) {
         );
         return true;
       });
-      consumeTerminalReceipts(result, prepared.files);
+      consumeTerminalReceipts(result, prepared.files, prepared.drain);
       return result;
     },
 
@@ -5279,7 +5291,7 @@ export function createQueueStore(options = {}) {
         delete next.admission[bead_id];
         return true;
       });
-      consumeTerminalReceipts(result, prepared.files);
+      consumeTerminalReceipts(result, prepared.files, prepared.drain);
       return result;
     },
 
@@ -5338,7 +5350,7 @@ export function createQueueStore(options = {}) {
         next.pr_wait.push(entry);
         return true;
       });
-      consumeTerminalReceipts(result, prepared.files);
+      consumeTerminalReceipts(result, prepared.files, prepared.drain);
       return result;
     },
 
@@ -5425,7 +5437,7 @@ export function createQueueStore(options = {}) {
       const prepared =
         typeof attempt_id === 'string' && attempt_id.length > 0
           ? terminalReceiptPatch(workspace, attempt_id, patch || {})
-          : { patch: patch || {}, files: [] };
+          : { patch: patch || {}, files: [], drain: undefined };
       const result = applyUnconditional(workspace, (next) => {
         if (typeof bead_id !== 'string' || bead_id.length === 0) {
           return false;
@@ -5464,7 +5476,7 @@ export function createQueueStore(options = {}) {
         completeIntentForDone(next, bead_id);
         return true;
       });
-      consumeTerminalReceipts(result, prepared.files);
+      consumeTerminalReceipts(result, prepared.files, prepared.drain);
       return result;
     },
 

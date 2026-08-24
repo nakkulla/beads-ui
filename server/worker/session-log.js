@@ -543,7 +543,15 @@ export function createSessionLog(options = {}) {
         typeof launch_id === 'string' && launch_id.length > 0
           ? launch_id
           : undefined;
-      last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
+      // A subagent line stamps ITS OWN launch, never the parent attempt
+      // (UI-2mpn §6.4). The parent's "최근 활동" answers what the session is
+      // doing, and a child's `Read` is not the parent doing anything — the same
+      // separation the activity reducer makes one line below. The republish of
+      // the very same event under its `launch_id` carries `delegation_id`, so
+      // the subagent row still gets its own recency.
+      if (delegation_id || !delegatedLaunchIdOf(event)) {
+        last_event_at.set(keyOf(workspace, attempt_id, delegation_id), now());
+      }
       try {
         observeActivity(workspace, attempt_id, delegation_id, event);
       } catch {

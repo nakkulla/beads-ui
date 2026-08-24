@@ -276,6 +276,45 @@ describe('worker delegation replay + monitor (UI-2mpn §5.4)', () => {
     });
   });
 
+  test('keeps the live subagent state when the settling write fails', () => {
+    const delegation_store = createDelegationStore();
+    let fail_writes = false;
+    const guarded_fs = /** @type {any} */ ({
+      ...fs,
+      writeFileSync: (/** @type {any} */ file, /** @type {any} */ data) => {
+        if (fail_writes) {
+          throw new Error('disk full');
+        }
+        return fs.writeFileSync(file, data);
+      }
+    });
+    const queue_store = createQueueStore({
+      delegationStore: delegation_store,
+      fs: guarded_fs
+    });
+    queue_store.appendAttempt(WS, {
+      expected_revision: queue_store.snapshot(WS).revision,
+      attempt: { attempt_id: 'att-1', bead_id: 'UI-1' }
+    });
+    queue_store.updateAttempt(WS, {
+      attempt_id: 'att-1',
+      patch: { status: 'running' }
+    });
+    feedLive(delegation_store, fixtureLines());
+    fail_writes = true;
+
+    expect(() =>
+      queue_store.updateAttempt(WS, {
+        attempt_id: 'att-1',
+        patch: { status: 'done' }
+      })
+    ).toThrow();
+
+    const kept = delegation_store.get(WS, 'att-1');
+    expect(kept.sessions.map((s) => s.launch_id)).toEqual([LAUNCH_A, LAUNCH_B]);
+    expect(kept.legs.map((leg) => leg.receipt_id)).toEqual([LAUNCH_A]);
+  });
+
   test('interrupts a still-running subagent when the parent settles', () => {
     const store = createDelegationStore();
     store.apply(WS, 'att-1', liftDelegation(fixtureLines()[2]));

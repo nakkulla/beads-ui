@@ -1051,3 +1051,52 @@ describe('runner/claude liftDelegation (UI-2mpn §5.1)', () => {
     expect(liftDelegation('nope')).toBe(null);
   });
 });
+
+describe('runner/claude liftUsage subagent exclusion (UI-2mpn §2.3)', () => {
+  test('lifts no usage from a subagent assistant message', () => {
+    const raw = {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_01AgentAAAAAAAAAAAAAAAA',
+      message: {
+        id: 'msg_child',
+        model: 'claude-sonnet-4-5',
+        usage: { input_tokens: 900, output_tokens: 40 }
+      }
+    };
+
+    expect(liftUsage(raw)).toBe(null);
+  });
+
+  test('lifts usage from the parent assistant message on the same stream', () => {
+    const raw = {
+      type: 'assistant',
+      message: {
+        id: 'msg_parent',
+        model: 'claude-opus-4-5',
+        usage: { input_tokens: 12, output_tokens: 3 }
+      }
+    };
+
+    const lifted = liftUsage(raw);
+
+    expect(lifted).toEqual({
+      kind: 'message',
+      usage: { message_id: 'msg_parent', input_tokens: 12, output_tokens: 3 }
+    });
+  });
+
+  test('keeps every subagent message of the fixture out of the tally', () => {
+    const message_ids = subagentFixtureLines()
+      .map((line) => liftUsage(line))
+      .filter((lifted) => lifted !== null)
+      .map((lifted) => /** @type {any} */ (lifted).usage.message_id)
+      .filter((id) => typeof id === 'string');
+
+    expect(message_ids).toEqual([
+      'msg_parent_1',
+      'msg_parent_2',
+      'msg_parent_3',
+      'msg_parent_4'
+    ]);
+  });
+});

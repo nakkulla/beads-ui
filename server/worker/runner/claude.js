@@ -107,6 +107,17 @@ export function liftUsage(raw) {
   if (!raw || typeof raw !== 'object') {
     return null;
   }
+  // A subagent's `assistant` messages ride the PARENT stream (UI-2mpn §2.1),
+  // but the parent's own authoritative `result.usage` EXCLUDES their tokens
+  // (§2.3). Lifting them here would count the same tokens twice — once in the
+  // attempt's live tally and again in the subagent's receipt — and an attempt
+  // that ends without a `result` would keep the inflated total for good.
+  if (
+    typeof raw.parent_tool_use_id === 'string' &&
+    raw.parent_tool_use_id.length > 0
+  ) {
+    return null;
+  }
   if (raw.type === 'assistant') {
     const usage = raw.message
       ? pickUsage(raw.message.usage, { message_id: raw.message.id })

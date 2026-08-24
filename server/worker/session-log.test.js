@@ -653,3 +653,54 @@ describe('worker/session-log claude subagent streams (UI-2mpn §6.3/§6.4)', () 
     expect(seen).toEqual([assistantLine('자식이 한 일', LAUNCH)]);
   });
 });
+
+describe('worker/session-log subagent last_event_at (UI-2mpn §6.4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('leaves the attempt time untouched for a subagent line', () => {
+    let now = 1_000;
+    const log = createSessionLog({ now: () => now });
+    log.publish(WS, 'att-1', { type: 'assistant' });
+
+    now = 5_000;
+    log.publish(WS, 'att-1', {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_a'
+    });
+
+    expect(log.lastEventAt(WS, 'att-1')).toBe(1_000);
+  });
+
+  test('records the subagent line time under its own launch', () => {
+    let now = 1_000;
+    const log = createSessionLog({ now: () => now });
+    log.publish(WS, 'att-1', { type: 'assistant' });
+
+    now = 5_000;
+    const event = { type: 'assistant', parent_tool_use_id: 'toolu_a' };
+    log.publish(WS, 'att-1', event);
+    log.publish(WS, 'att-1', event, 'toolu_a');
+
+    expect(log.lastEventAt(WS, 'att-1', 'toolu_a')).toBe(5_000);
+  });
+
+  test('still records a parent line time after a subagent line', () => {
+    let now = 1_000;
+    const log = createSessionLog({ now: () => now });
+
+    log.publish(WS, 'att-1', {
+      type: 'assistant',
+      parent_tool_use_id: 'toolu_a'
+    });
+    now = 9_000;
+    log.publish(WS, 'att-1', { type: 'assistant' });
+
+    expect(log.lastEventAt(WS, 'att-1')).toBe(9_000);
+  });
+});
