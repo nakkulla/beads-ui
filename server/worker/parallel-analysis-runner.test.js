@@ -12,6 +12,7 @@ import {
   buildAnalysisPayload,
   claudeAnalysisArgv,
   codexAnalysisArgv,
+  extractAnalysisJson,
   parseClaudeAnalysisStream,
   parseCodexAnalysisStream,
   runAnalysis
@@ -199,6 +200,36 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
     expect(payload).toContain('UNTRUSTED DATA');
     expect(payload).toContain('IGNORE ALL RULES');
     expect(payload).toContain('docs/spec.md');
+  });
+
+  test('states the exact output schema and digest in the prompt header', () => {
+    const input = runInput();
+
+    const payload = buildAnalysisPayload(input);
+
+    const header = payload.split('===== BEGIN UNTRUSTED DATA')[0];
+    expect(header).toContain('"required":["bead_id","verdict","reason"]');
+    expect(header).toContain('"snapshot_digest"');
+    expect(header).toContain('"shared_mutable_state"');
+    expect(header).toContain(`copy "${input.snapshot.digest}" verbatim`);
+    expect(header).toContain('no markdown fence');
+  });
+
+  test('offers declared_scope_overlap in the schema only with a scope signal', () => {
+    const input = runInput();
+    input.snapshot = {
+      digest: 'd'.repeat(64),
+      target_ids: ['UI-a', 'UI-b'],
+      targets: { 'UI-a': { scope: ['server/worker'] }, 'UI-b': { scope: [] } },
+      scope_overlaps: []
+    };
+
+    const header = buildAnalysisPayload(input).split(
+      '===== BEGIN UNTRUSTED DATA'
+    )[0];
+
+    expect(header).toContain(JSON.stringify(analysisOutputSchema()));
+    expect(header).toContain('"declared_scope_overlap"');
   });
 
   test('renders deterministic scope instructions and fenced signal data', () => {
@@ -407,7 +438,40 @@ describe('parallel-analysis read-only runner (UI-04vo seam H)', () => {
   });
 });
 
+describe('analyzer JSON extraction (fence tolerance)', () => {
+  test('returns bare JSON unchanged', () => {
+    const text = extractAnalysisJson(`  ${RESULT}\n`);
+
+    expect(text).toBe(RESULT);
+  });
+
+  test('strips a markdown json fence around the object', () => {
+    const text = extractAnalysisJson(`\`\`\`json\n${RESULT}\n\`\`\``);
+
+    expect(JSON.parse(text).schema_version).toBe(3);
+  });
+
+  test('strips prose outside the object span', () => {
+    const text = extractAnalysisJson(`Here is the result:\n${RESULT}\nDone.`);
+
+    expect(JSON.parse(text).schema_version).toBe(3);
+  });
+
+  test('leaves a braceless message for the parser to reject', () => {
+    expect(() => JSON.parse(extractAnalysisJson('no json here'))).toThrow();
+  });
+});
+
 describe('claude analyzer result channel', () => {
+  test('parses a fenced result event', () => {
+    const outcome = /** @type {any} */ (
+      parseClaudeAnalysisStream(claudeResult(`\`\`\`json\n${RESULT}\n\`\`\``))
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.schema_version).toBe(3);
+  });
+
   test('parses a successful result event', () => {
     const outcome = /** @type {any} */ (
       parseClaudeAnalysisStream(
@@ -518,7 +582,7 @@ describe('codex analyzer argv (UI-yqw9 §1.2)', () => {
       schema.properties.groups.items.properties.categories.items.enum
     ).toContain('declared_scope_overlap');
     expect(schema.properties.schema_version.enum).toEqual([3]);
-    expect(ANALYSIS_PROMPT_VERSION).toBe(3);
+    expect(ANALYSIS_PROMPT_VERSION).toBe(4);
   });
 });
 
@@ -557,6 +621,18 @@ describe('codex analyzer result channel (UI-yqw9 §1.3)', () => {
 
     expect(outcome.ok).toBe(false);
     expect(outcome.reason).toBe('runner_error');
+  });
+
+  test('parses a fenced agent_message', () => {
+    const outcome = /** @type {any} */ (
+      parseCodexAnalysisStream(
+        agentMessage(`\`\`\`json\n${RESULT}\n\`\`\``) +
+          jsonl({ type: 'turn.completed' })
+      )
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.result.schema_version).toBe(3);
   });
 
   test('reports a stream without any agent_message as invalid output', () => {
