@@ -59,8 +59,8 @@ Never update `CHANGES.md`.
 `reviewed:*`, `skipped:*` 등), durable metadata 키(`route`, `spec_id`,
 `plan_path`, `spec_review`/`impl_review`, `pr_url`, `blocked_reason` 등),
 Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles의
-`docs/contracts/workflow.{md,yaml}`에 있다. beads-ui는 그 계약의 **소비자**이며
-정의자가 아니다.
+`docs/contracts/workflow-contract.md`와 `docs/contracts/workflow-state.yaml`에
+있다. beads-ui는 그 계약의 **소비자**이며 정의자가 아니다.
 
 따라서 계약 표면을 바꾸는 변경(키 추가·의미 변경·라벨 폐기 등)은 beads-ui 코드만
 고쳐서는 안 되고, dotfiles 계약 문서와 이를 쓰는 스킬을 함께 정합해야 한다.
@@ -156,12 +156,14 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
   수렴한다 — 단, 관측 단위는 Worker가 추적하는 bead의 PR 머지다. Worker가
   추적하지 않는 quick_fix ref push는 관측 대상이 아니므로 배포 실행과 그 증거
   확인까지 push한 세션이 소유한다. Worker-dispatched quick_fix의 배포·close는
-  dotfiles `docs/contracts/workflow.{md,yaml}`에 따라 Worker가 소유한다.
-  `[정리]`는 `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
+  dotfiles `docs/contracts/workflow-contract.md`와
+  `docs/contracts/workflow-state.yaml`에 따라 Worker가 소유한다. `[정리]`는
+  `cleanup_failed`가 기록된 행의 실패 재개 전용이다.
 - 실패 해결은 v2 사다리
   `script_retry → auto_repair_session → user_triggered_session` 순서다. 구체적인
-  자동화·예산·중단 의미는 dotfiles의 `docs/contracts/workflow.{md,yaml}`과
-  Worker/Monitor의 계약 projection을 따른다.
+  자동화·예산·중단 의미는 dotfiles의 `docs/contracts/workflow-contract.md`와
+  `docs/contracts/workflow-state.yaml`과 Worker/Monitor의 계약 projection을
+  따른다.
 - 실제 소비자 표면은 canonical `repo-ops/config.toml`, `repo-ops/script/deploy`,
   Worker/Monitor의 저장소 작업·자동 해결 화면이다. 계약 문구와 automation enum은
   dotfiles가 소유하며 이 문서에 복제하지 않는다.
