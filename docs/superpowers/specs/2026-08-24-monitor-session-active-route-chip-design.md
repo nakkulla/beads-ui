@@ -27,8 +27,10 @@ scope:
    (`workspace.attempts`)만으로 채워진다(`lanes.js activeByBead`). 실행가능 레인은
    `status === 'open'`만 통과시킨다(`runnable-cache.js qualify`). 따라서 인터랙티브
    세션(Claude/Codex 세션이 `bd update --status in_progress`로 claim)이 작업 중인
-   이슈는 어느 레인·데크 합계에도 실리지 않는다 — 예: 이 저장소의 `UI-e6hw`는 현재
-   `in_progress`이지만 모니터에서 존재를 알 수 없다.
+   이슈는 어느 레인·데크 합계에도 실리지 않는다 — 예: 터미널에서 `workflow` 스킬로
+   `bd update <id> --status in_progress`를 쓴 뒤 구현 중인 이슈는 Worker attempt가
+   없으므로 모니터에서 존재를 알 수 없다. (Worker가 실행 중인 이슈는 Worker 자신이
+   `in_progress`를 잡지만 attempt 타일이 이미 그린다 — §3.)
 2. **route 표시가 레인마다 다르다.** `route` 텍스트 칩(`.ctl-chip--route`)은
    실행가능 카드(`candidateCard`)에만 있다. 대기·PR 대기 행(`miniRow`)은
    `workflow`를 아예 싣지 않고, 실행중 타일(`runningTile`)은 stepper 모양으로만
@@ -130,8 +132,8 @@ running.push({
   lane: 'running',
   kind: 'session',                 // 신규 판별자; Worker 타일은 kind 생략(=undefined)
   title, status: 'in_progress',
-  started_at: timeOf(entry.started_at) ?? timeOf(entry.updated_at),
-  updated_at,
+  started_at: validTime(entry.started_at) ?? validTime(entry.updated_at) ?? undefined,
+  updated_at: validTime(entry.updated_at) ?? undefined,
   workflow: entry.workflow || null,
   labels, spec_id,
   blocked, blocked_by,             // 후속/선행 칩 재료 (기존 blocked_by_map 경유)
@@ -142,8 +144,15 @@ running.push({
 })
 ```
 
-- 순서: Worker 타일(현행 정렬) 뒤에 세션 타일을 `updated_at` 내림차순으로 잇는다.
-  같은 레포 안에서도 Worker 타일이 앞이다.
+- 시각 파싱: 현행 `timeOf`는 실패 시 `0`을 돌려주므로 fallback에 쓸 수 없다.
+  `validTime(value): number|null`(유한한 수 또는 `Date.parse` 성공만 값, 그 외
+  `null`)을 두고 세션 항목에만 쓴다. `started_at`이 없으면 `updated_at`, 둘 다
+  없으면 `undefined` → 타일의 경과·활동 줄 생략(§10). 세 분기를 테스트한다.
+- 순서: `buildLanes` 말미의 전체 `running.sort` comparator가 최종 순서를 정하므로
+  push 순서는 보장이 아니다. comparator를 "먼저 `kind`로 분할(Worker 타일 전체가
+  세션 타일 전체보다 앞), Worker 구간은 현행 `running_sort`(`started`/`repo`)
+  규칙, 세션 구간은 `updated_at` 내림차순(동률이면 id)"으로 명시한다. `repo` 정렬을
+  택해도 Worker/세션 분할이 우선이다.
 - `MonitorItem`에 `kind?: 'session'`을 추가한다. 다른 소비자(드롭 계획, 체인 계산,
   `🔗` 팝오버)는 `lane === 'running'`만 보므로 세션 타일도 자연히 "실행중" 위치로
   계산된다 — `buildChains`의 `locations`에 세션 타일이 `running`으로 등록되어 후속
@@ -165,7 +174,7 @@ running.push({
 | 활동 줄 | `last_activity` | `갱신 <n> 전` (`updated_at` 상대시간) — 회색 점. `updated_at` 없으면 줄 생략 |
 | 위임 칩 | `legs` | 생략 |
 | 후속 칩 | `dependency_chips` | 동일 |
-| meta | exec 칩 · 계정 칩 · 토큰/비용 | `exec_receipt` 칩 1개 — `workflow.chips.exec_receipt`가 있으면 `formatExecReceipt`(board/card.js 재사용)로 `main:bead` / `delegated:opus:high` 형태; 없으면 줄 생략 |
+| meta | exec 칩 · 계정 칩 · 토큰/비용 | `exec_receipt` 칩 1개 — `workflow.chips.exec_receipt`가 있으면 보이는 라벨은 `execReceiptActor(exec_receipt)`(board/card.js, `main:bead` / `delegated:opus:high` — SHA 없음), 툴팁은 `formatExecReceipt(exec_receipt)`(SHA 포함 전체 값); 없으면 줄 생략 |
 
 - 운영 버튼(`⏸/▶`, 폐기, 실패 닫기, 이어하기)과 `▤ 세션` 드로어는 **그리지 않는다**
   — attempt가 없으므로 열 로그가 없다. 클릭 동작은 다른 타일과 같다: ID 클릭 =
@@ -280,16 +289,23 @@ running.push({
 - `monitor/deck.test.js`: `session_active` 0이면 텍스트 없음, >0이면 `· 세션 m`.
 - 드롭 핸들러 테스트에 세션 타일이 드롭 대상이 아님을 고정.
 
-수동 확인(스크린샷, 사용자 결정 기록에 따라): 이 저장소에서 `UI-e6hw`(현재
-`in_progress`)가 세션 타일로 보이는지, 대기 행에 route 칩이 붙는지.
+**advisory 수동 관측(acceptance 아님)**: 위 자동 테스트가 acceptance의 전부다.
+배포 검증(`[deploy]`가 운반하는 빌드·재시작·HTTP 검증) 뒤에 구현 세션이 스크린샷으로
+세션 타일·대기 행 route 칩을 한 번 확인해 보고서에 첨부하되, 이는 사용자 결정
+기록(UI 변경 후 스크린샷)에 따른 참고 관측이며 실패해도 머지·close 판정을 바꾸지
+않고 `worker-ineligible` 사유도 아니다. 확인 대상은 그 시점에 인터랙티브 세션이
+직접 claim한 `in_progress` 이슈(Worker attempt 없음)여야 한다 — Worker 실행 중인
+이슈는 §3에 따라 세션 타일이 아니다.
 
 ## 13. 동시 작업 주의
 
 `UI-e6hw`(대기 레인 통합)가 Worker에 의해 `app/views/monitor/lanes.js`·
-`index.js`·`styles.css`를 수정 중이다. 이 스펙의 구현은 UI-e6hw PR이 머지된 base
-위에서 시작하거나, 머지 전이라면 `waitingItem`·`running.push` 구간만 건드리는 작은
-델타로 유지해 충돌 면적을 최소화한다. 순서 강제는 두지 않는다(`blocks` 없음,
-`related`만).
+`index.js`·`app/views/worker/lanes.js` 공용 템플릿·`styles.css`를 수정 중이며 이
+스펙과 경로·의미가 겹친다(대기 행 재구성이 §5의 `workflow` 공급을 유실할 수 있다).
+따라서 **`UI-e6hw`가 `UI-yrzu`를 `blocks`한다**(의존 기록 완료): 구현은 UI-e6hw
+PR이 머지된 base에서만 시작하고, 구현 진입 시 이 스펙의 §5·§7이 가리키는
+`waitingItem`/직렬 항목/`miniRow` 호출 지점을 머지된 최종 레인 구조와 다시 대조해
+어긋난 함수명·위치를 구현 보고서에 기록한다(설계 의미는 바뀌지 않는다).
 
 ## 14. 구현 unit 후보 (구속력 없음)
 
