@@ -83,8 +83,10 @@ UI-eey2 대기 레인은 레포 섹션(`▾ beads-ui`, `▾ dotfiles`) 안에 �
   섹션 헤더는 없다 — 레포 배지가 경계를 말한다.
 - **연결 레인에 들어 있는 항목은 숨긴다**(§4.2). 숨긴 수는 영역 카운트에 넣지
   않는다(카운트 = 보이는 행 수).
-- 실행 중으로 빠진 항목은 UI-eey2와 같이 DOM에 없되 `data-lane-length`는 서버
-  raw 길이를 유지한다(드롭 인덱스 산식 유지).
+- 실행 중으로 빠진 항목·연결 레인에 숨은 항목은 DOM에 없다. 드롭 좌표는 DOM
+  속성이 아니라 모델의 레포별 `parallel_raw_length`와 행의 `queue_index`에서
+  구한다(§5.1) — 통합 pane 하나에 레포별 raw 길이를 하나의 `data-lane-length`로
+  실을 수 없기 때문이다.
 - 레포 자동/수동 상태는 섹션 헤더가 사라지므로 레포 배지 툴팁으로 옮긴다:
   `beads-ui · 자동화 켜짐` / `· 꺼짐`. 토글은 데크 타일(UI-eey2 §4.2)이 소유한다.
 
@@ -118,10 +120,12 @@ UI-eey2 대기 레인은 레포 섹션(`▾ beads-ui`, `▾ dotfiles`) 안에 �
   (`pending_lanes: Array<{ seed: string|null }>`) — 새로고침 시 사라진다.
   localStorage에 쓰지 않는다: 빈 레인은 드롭 타깃일 뿐 사실이 아니다.
 - 첫 드롭(§5.2)은 그 항목을 `seed`로 잡아 레인에 한 행으로 보이고(의존은 아직
-  없음), 둘째 드롭에서 `seed ← X` 의존이 생기면 다음 스냅샷의 `buildChains`가
-  체인을 만든다. 파생 체인 중 `seed`를 포함하는 것이 나타나는 순간 그 pending
-  레인을 버린다(중복 방지). seed가 실행 중으로 빠지거나 집계에서 사라져도 레인은
-  남되 seed 행은 `실행가능`/`미적재` 위치 칩으로 표시한다.
+  없음), 둘째 드롭에서 `X ← seed`(X가 seed에 blocked — seed가 먼저, X가 끝에
+  추가) 의존이 생기면 다음 스냅샷의 `buildChains`가 체인을 만든다. 파생 체인 중
+  `seed`를 포함하는 것이 나타나는 순간 그 pending 레인을 버린다(중복 방지).
+  seed 행의 위치 칩은 연결 레인 행과 같은 규칙(실제 위치: `● 실행중`/`PR 대기`/
+  `실행가능`/`미적재`/`외부`/`#n`/`s1 #n`)을 따르며, seed가 집계에서 사라져도
+  레인은 남고 seed 행은 `미적재`가 된다.
 - `seed`가 없는 빈 레인은 하나만 허용한다(버튼은 빈 레인이 이미 있으면 비활성).
 
 #### 레포 직렬 레인 `<레포> · 직렬 n · Worker ↗`
@@ -157,42 +161,77 @@ UI-eey2 대기 레인은 레포 섹션(`▾ beads-ui`, `▾ dotfiles`) 안에 �
 
 ### 5.1 순수 변환 함수
 
-`app/views/monitor/drop-plan.js`(신규): `planDrop(drag, target, graph) →
+`app/views/monitor/drop-plan.js`(신규): `planDrop(drag, target, model) →
 { ops: Op[] } | { refused: string }`. `Op`는 `{ type: 'dep-add'|'dep-remove', a, b,
 root_dir }` 또는 `{ type: 'worker-queue-place'|'worker-queue-reorder'|
-'worker-queue-remove', payload, root_dir }`. `graph`는 `blocked_by_map`
-(살아 있는 직접 엣지)와 레인별 위상 순서다. 이 함수만 단위 테스트한다; 뷰는
-결과를 순서대로 `send`한다.
+'worker-queue-remove', payload, root_dir }`. `model`은
+`{ blocked_by_map, owner_of: Map<bead_id, root_dir>, lane_order: Map<lane_id,
+bead_id[]>, parallel_raw_length: Map<root_dir, number>, queue_index_of:
+Map<bead_id, number> }`다. 이 함수만 단위 테스트한다; 뷰는 결과를 순서대로
+`send`한다.
 
-### 5.2 표
+- **의존 op의 `root_dir`** = `a`(blockee, "← 앞 이슈"를 갖는 쪽)를 소유한 레포
+  (`owner_of`). 서버는 전달된 root에서 `bd dep add/remove a b`를 실행하므로
+  `② ← X`는 ②의 레포, `S ← P`는 S의 레포로 보낸다 — 드래그한 X의 레포가
+  아니다. `a`의 소유 레포를 해석할 수 없으면(외부·미적재 노드) 계획 전체를
+  거부한다.
+- **큐 op의 `root_dir`** = 그 항목을 소유한 레포, revision은 그 레포 큐의 것.
+- **레포별 병렬 raw 길이**는 `parallel_raw_length`에서 읽는다. 통합 병렬 pane은
+  단일 `data-lane-length`를 갖지 않는다(레포마다 길이가 다르다); 뷰는 모델에서
+  직접 읽고 DOM 속성에 기대지 않는다. 같은 레포의 보이는 행이 하나도 없을 때
+  (전부 연결 레인에 숨었거나 실행 중) 끝 삽입 좌표는 반드시 이 값이다.
 
-| 원천 → 대상 | ops (순서대로) |
-|---|---|
-| candidate → parallel | `worker-queue-place { bead_id, index }` (자기 레포). `index` = 삽입 좌표 `k`(아래 정의) |
-| parallel → parallel | `worker-queue-reorder` — 현행 `s > k ? k : k - 1` 산식, `k`는 아래 정의. 같은 레포 행이 하나도 없으면 no-op |
-| candidate/parallel → chain (①과 ② 사이) | `dep-add X←①`; ②가 ①에 **직접** 의존하고 있었으면 `dep-remove ②←①` 후 `dep-add ②←X`; 원천이 candidate면 마지막에 `worker-queue-place { bead_id, index: raw_length }`(자기 레포 병렬 끝). 맨 위에 놓으면 ①만 후속(`dep-add ①←X`), 맨 아래면 마지막 행만 선행 |
-| candidate/parallel → chain (pending, seed 없음) | seed = X (op 없음; 원천이 candidate면 `worker-queue-place` 끝 적재만) |
-| candidate/parallel → chain (pending, seed 있음) | `dep-add X←seed` (+ candidate면 적재) |
-| chain → parallel | **이어 붙이기**: 그 레인 안에서 X의 직접 선행 P들과 직접 후속 S들에 대해 `dep-remove X←P` 전부, `dep-remove S←X` 전부, 그리고 모든 (P, S) 쌍에 `dep-add S←P`(이미 있으면 생략). 큐 op 없음(이미 병렬 큐에 있음). X가 큐에 없는 노드(실행중·PR 대기·실행가능)면 이어 붙이기만 하고 큐 op는 없다 |
-| chain → candidate | 이어 붙이기 + X가 자기 레포 큐에 있으면 `worker-queue-remove` |
-| chain → chain (같은 레인 안 재배치) | 이어 붙이기 후 새 위치의 삽입 규칙(위 행) |
-| chain → chain (다른 레인) | 이어 붙이기 후 대상 레인 삽입 규칙 |
-| chain ↔ repo-serial, parallel ↔ repo-serial, repo-serial 내부 | 현행 같은 레포 규칙(`worker-queue-place`/`reorder`), 레포가 다르면 거부 |
-| repo-serial → chain | 거부 — 한 항목이 레포 직렬과 연결 레인 두 곳의 순서를 가질 수 없다. 토스트 `Worker 탭 직렬 레인에서 먼저 빼 주세요` |
-| 실행중·PR 대기·레포 직렬 레인·외부·미적재 노드를 chain 안에서 드래그 | 거부(병렬 큐에 없는 행은 `draggable=false`). 끌어내기(이어 붙이기)는 그 행의 `✕`(§6)로만 |
+### 5.2 표 — 원천 4 × 대상 4
+
+원천은 드래그 가능한 행뿐이다: `candidate`(실행가능 카드), `parallel`(병렬 영역
+행), `chain`(연결 레인의 병렬 큐 멤버 행 — 실행중·PR 대기·레포 직렬·외부·미적재
+노드는 `draggable=false`), `repo-serial`(레포 직렬 레인 행). 대상이 `chain`일 때
+"삽입 규칙", 원천이 `chain`일 때 "이어 붙이기"는 아래 정의를 따른다.
+
+| 원천 \ 대상 | candidate | parallel | chain | repo-serial |
+|---|---|---|---|---|
+| **candidate** | no-op | `place { bead_id, index: k }` (자기 레포) | 삽입 규칙 → 마지막에 `place { index: raw_length }` (자기 레포 병렬 끝) | 같은 레포: `place { lane, index }`; 다른 레포: 거부 |
+| **parallel** | `worker-queue-remove` | `worker-queue-reorder` (`s > k ? k : k - 1`); 같은 레포 행이 없으면 no-op | 삽입 규칙 (큐 op 없음) | 같은 레포: `place { lane, index }`; 다른 레포: 거부 |
+| **chain** | 이어 붙이기 → `worker-queue-remove` | 이어 붙이기 (큐 op 없음 — 이미 병렬 큐) | 이어 붙이기 → 삽입 규칙 (같은 레인·다른 레인 동일; 같은 자리면 no-op) | 같은 레포: 이어 붙이기 → `place { lane, index }`; 다른 레포: 거부 |
+| **repo-serial** | `worker-queue-remove` | 같은 레포: `place { index: k }` (`lane` 없음 = 병렬) | 거부 — 토스트 `Worker 탭 직렬 레인에서 먼저 빼 주세요` | 같은 레포: 같은 레인이면 `reorder`, 다른 레인이면 `place { lane, index }`; 다른 레포: 거부 |
+
+- pending 레인(seed 없음)에 놓기: seed = X (의존 op 없음; candidate 원천이면
+  `place` 끝 적재만). pending 레인(seed 있음)에 놓기: `dep-add X ← seed`
+  (+ candidate면 적재). chain 원천이면 먼저 이어 붙이기.
+- 거부는 계획 전체 거부다 — 일부 op만 보내지 않는다.
+
+**삽입 규칙**(대상 `chain`, 레인의 위상 순서 행 ①…ⓝ 사이에 X): 드롭 마커
+바로 위 행을 `up`, 바로 아래 행을 `down`이라 하면 `dep-add X ← up`(up이 있을 때),
+그리고 `down`이 `up`에 **직접** blocked되어 있었으면 `dep-remove down ← up` 후
+`dep-add down ← X`; `down`이 `up`에 직접 의존하지 않으면(분기·맨 위 삽입) `down`
+쪽은 건드리지 않는다. 맨 위(up 없음)면 `dep-add ① ← X`, 맨 아래(down 없음)면
+`dep-add X ← ⓝ`만.
+
+**이어 붙이기**(원천 `chain`, X를 레인에서 떼기): 레인 안에서 X의 직접 선행 집합
+P와 직접 후속 집합 S에 대해 `dep-remove X ← p`(∀p∈P), `dep-remove s ← X`
+(∀s∈S), 그 다음 `dep-add s ← p`(∀(p,s)∈P×S, `p !== s`이고 그 엣지가 아직 없을
+때만).
+
+**연산 기준 그래프**: 계획은 **임시 그래프**에서 계산한다 — 원래
+`blocked_by_map`을 복사해 이어 붙이기 op를 차례로 반영한 뒤, X를 뺀 레인 위상
+순서를 다시 구하고 그 위에서 삽입 규칙의 `up`/`down`을 잡는다. 같은 레인 안
+재배치도 이 순서로 하므로 "같은 자리에 다시 놓기"는 원래 엣지를 복원한다(결과
+op 열이 비면 no-op). 2노드 사이클처럼 `p === s`가 되는 쌍은 제외한다.
 
 **삽입 좌표 `k`(병렬 영역, 레포가 섞인 목록)**: 드롭 마커 바로 아래 행(`over`)이
 같은 레포면 `k = over.queue_index`(그 앞에 삽입). 아니면 마커 위쪽에서 가장
 가까운 같은 레포 행 `above`가 있으면 `k = above.queue_index + 1`(그 뒤에 삽입);
 위쪽에 없고 아래쪽에 있으면 그 첫 행의 `queue_index`; 같은 레포 행이 하나도
-없으면 그 레포의 raw 길이(끝). 서버 좌표는 언제나 자기 레포 큐의 raw 인덱스다.
+없으면 `parallel_raw_length[root_dir]`(끝). 서버 좌표는 언제나 자기 레포 큐의
+raw 인덱스다. 레포 직렬 레인 대상의 `index`는 현행 그대로 그 레인의
+`data-lane-length`/행 `queue_index`에서 구한다.
 
 거부 사유는 `refused`로 돌려주고 뷰가 토스트로 보인다.
 
 ### 5.3 사이클 검사
 
-`dep-add X←Y`를 만들기 전에 `graph`에서 Y가 X에 (전이적으로) blocked되어 있는지
-확인하고, 그러면 드롭 전체를 거부한다(`의존 사이클이 생깁니다 — X가 이미 Y를
+`dep-add X←Y`를 만들기 전에 임시 그래프(§5.2)에서 Y가 X에 (전이적으로) blocked되어
+있는지 확인하고, 그러면 드롭 전체를 거부한다(`의존 사이클이 생깁니다 — X가 이미 Y를
 막고 있습니다`). 서버(bd)가 거부하면 그 메시지를 토스트로 보이고 남은 op는
 보내지 않는다.
 
@@ -224,8 +263,10 @@ root_dir }` 또는 `{ type: 'worker-queue-place'|'worker-queue-reorder'|
 
 - `lanes.test.js`: `parallel_rows`(전 레포 평면·레포 정렬·순번·연결 레인 멤버
   숨김), `chain_lanes`(번호·순번·직접 선행 목록·위치 칩·pending 레인 병합).
-- `drop-plan.test.js`(신규): §5.2 표의 각 행, 사이클 거부, 다른 레포 거부,
-  repo-serial → chain 거부, 이어 붙이기의 (P, S) 곱, 이미 있는 엣지 생략.
+- `drop-plan.test.js`(신규): §5.2 표의 16칸 전부, 사이클 거부, 다른 레포 거부,
+  repo-serial → chain 거부, 이어 붙이기의 (P, S) 곱·`p === s` 제외·이미 있는 엣지
+  생략, 같은 자리 재배치 no-op, 의존 op `root_dir` = blockee 소유 레포, 소유
+  레포 미해석 시 전체 거부, 같은 레포 보이는 행 0일 때 `parallel_raw_length`.
 - `index.test.js`: 두 영역 렌더·레인 이름·`+ 연결 레인` 상태·드롭 → send 순서·
   첫 실패 중단·🔗 팝오버 부재·모바일 메뉴 항목.
 - `styles.monitor-theme.test.js`: `.mon2-sec[data-section="queue"]`·
