@@ -2572,6 +2572,45 @@ describe('post-merge cleanup — verify absent builds no verify stage (§7.2/§8
     expect(result).toMatchObject({ ok: true, reason: null });
   });
 
+  test('continues the external cleanup when a concurrent promote already made the row durable', async () => {
+    const options = externalMergedOptions(coordinatorFor(null));
+    const promote = options.store.promoteMergedExternal.bind(options.store);
+    let poller_won = false;
+    options.store.promoteMergedExternal = (
+      /** @type {string} */ workspace,
+      /** @type {any} */ input
+    ) => {
+      if (!poller_won) {
+        poller_won = true;
+        promote(workspace, input);
+      }
+      return promote(workspace, input);
+    };
+    const env = makeActions(options);
+
+    const result = await env.actions.merge(NO_VERIFY_BEAD);
+
+    expect(result).toMatchObject({ ok: true, reason: null });
+  });
+
+  test('fails the external cleanup when a refused promote left the row outside the lane', async () => {
+    const options = externalMergedOptions(coordinatorFor(null));
+    options.store.promoteMergedExternal = () => ({
+      ok: false,
+      conflict: false,
+      queue: options.store.snapshot(WS)
+    });
+    const env = makeActions(options);
+
+    const result = await env.actions.merge(NO_VERIFY_BEAD);
+
+    expect(result).toMatchObject({
+      ok: false,
+      cleanup_step: 'repo_operations',
+      reason: 'external_deployment_promote_failed'
+    });
+  });
+
   test('runs no verify operation on the external merged [정리] click without a head SHA', async () => {
     const operations = coordinatorFor(null);
     const env = makeActions(externalMergedOptions(operations));

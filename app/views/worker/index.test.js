@@ -1469,6 +1469,98 @@ describe('views/worker', () => {
     expect(pane.querySelectorAll('.rtile').length).toBe(1);
   });
 
+  test('draws the attempt 최근 활동 line on a running tile', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'W1',
+          status: 'running',
+          runner: 'claude',
+          model: 'opus',
+          started_at: Date.now() - 5000,
+          last_activity: {
+            at: Date.now() - 12_000,
+            kind: 'tool',
+            text: 'Unit server: cross-lanes store + ops'
+          }
+        }
+      }
+    });
+
+    const activity = mount.querySelector(
+      '.rtile[data-bead-id="W1"] .rtile__activity-text'
+    );
+
+    expect(activity?.textContent).toContain(
+      'Unit server: cross-lanes store + ops'
+    );
+  });
+
+  test('draws 위임 중 and 위임 완료 chips from the attempt legs', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'W1',
+          status: 'running',
+          runner: 'claude',
+          started_at: Date.now() - 5000,
+          legs: [
+            { label: 'claude', state: 'live' },
+            { label: 'codex', state: 'done' }
+          ]
+        }
+      }
+    });
+
+    const legs = Array.from(
+      mount.querySelectorAll('.rtile[data-bead-id="W1"] .rtile__leg')
+    ).map((el) => (el.textContent || '').trim());
+
+    expect(legs).toEqual(['위임 중 · claude', '위임 완료 1']);
+  });
+
+  test('omits the 활동 line and 위임 chips when the attempt carries neither', () => {
+    const mount = mountAttemptTiles({
+      attempts: {
+        a1: {
+          attempt_id: 'a1',
+          bead_id: 'W1',
+          status: 'running',
+          runner: 'claude',
+          started_at: Date.now() - 5000
+        }
+      }
+    });
+
+    const tile = /** @type {HTMLElement} */ (
+      mount.querySelector('.rtile[data-bead-id="W1"]')
+    );
+
+    expect(tile.querySelector('.rtile__activity')).toBeNull();
+    expect(tile.querySelector('.rtile__legs')).toBeNull();
+  });
+
+  test('falls back to the bead 갱신 time for a session tile 활동 line', () => {
+    const mount = mountAttemptTiles({
+      session_active: [
+        {
+          bead_id: 'UI-sess',
+          title: '세션 작업',
+          status: 'in_progress',
+          updated_at: Date.now() - 720_000
+        }
+      ]
+    });
+
+    const activity = mount.querySelector(
+      '.rtile[data-bead-id="UI-sess"] .rtile__activity-text'
+    );
+
+    expect(activity?.textContent).toContain('갱신');
+  });
+
   test('projects unhandled failures before active attempts', () => {
     const mount = mountAttemptTiles({
       attempts: {

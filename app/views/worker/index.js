@@ -102,9 +102,11 @@ export { mergeStepView } from './merge-steps.js';
 const log = debug('views:worker');
 
 /**
- * 실행 중 타일에 얹는 tile-overlay 재료 (UI-jbao) — 지금은 겹침 칩뿐이다.
+ * 실행 중 타일에 얹는 tile-overlay 재료 (UI-jbao) — 겹침 칩에 더해 모니터 탭이
+ * 쓰던 최근 활동 줄·위임 칩을 같은 타일에 싣는다. 타일 템플릿의 오버레이
+ * 타입을 그대로 빌려 두 탭이 같은 계약 하나를 본다.
  *
- * @typedef {{ dependency_chips: import('./lanes.js').DependencyChips }} RunningOverlay
+ * @typedef {import('./running-grid.js').MonitorTileOverlay} RunningOverlay
  */
 
 const READY_KEY = 'tab:worker:ready';
@@ -4389,22 +4391,53 @@ export function createWorkerView(mount_element, options = {}) {
     for (const row of candidates) {
       attachOverlaps(row, 'candidate');
     }
+    // 실행 타일이 "지금 무엇을 하고 있나"에 답하는 재료 (UI-eey2 §7·§9.3):
+    // 최근 활동 한 줄 · 위임 칩 · 겹침 칩. 모니터 탭이 같은 타일 템플릿에
+    // 이미 얹던 것을 워커 탭도 그대로 얹어, 같은 실행이 두 탭에서 다른 만큼만
+    // 보이는 일을 없앤다. 레포 배지·직렬 레인 칩은 뺀다 — 워커 탭은 이미 한
+    // 레포의 화면이라 그 좌표가 새 사실을 더하지 않는다.
+    //
+    // `last_activity`·`legs`는 스냅샷이 RUNNING attempt에만 싣는 비영속
+    // 데코레이션이다 (`attemptsWithUsage`): 실패·일시정지 타일과 attempt가
+    // 없는 세션 타일은 재료가 없어 그 줄이 통째로 빠진다 (fail-quiet). 세션
+    // 타일만은 빈 오버레이라도 얹어야 템플릿이 bead 갱신 시각으로 물러선
+    // 활동 줄을 그린다 (UI-yrzu §6).
     /** @type {Map<string, RunningOverlay>} */
     const running_overlays = new Map();
     for (const tile of running) {
-      const fact =
-        typeof tile.bead_id === 'string'
-          ? overlap_facts.get(tile.bead_id)
-          : undefined;
-      if (!fact || fact.overlaps.length === 0) {
+      const bead_id = typeof tile.bead_id === 'string' ? tile.bead_id : '';
+      if (bead_id.length === 0) {
         continue;
       }
-      const popover = overlapPopoverFor(tile.bead_id, fact.overlaps);
-      running_overlays.set(tile.bead_id, {
-        dependency_chips: {
-          overlaps: fact.overlaps,
-          ...(popover ? { popover } : {})
-        }
+      const session_tile = tile.kind === 'session';
+      const fact = overlap_facts.get(bead_id);
+      const overlaps = fact && fact.overlaps.length > 0 ? fact.overlaps : null;
+      const attempt =
+        typeof tile.attempt_id === 'string' && tile.attempt_id.length > 0
+          ? attempt_by_id.get(tile.attempt_id)
+          : undefined;
+      const last_activity =
+        attempt &&
+        attempt.last_activity &&
+        typeof attempt.last_activity === 'object'
+          ? attempt.last_activity
+          : null;
+      const legs = attempt && Array.isArray(attempt.legs) ? attempt.legs : [];
+      if (!overlaps && !last_activity && legs.length === 0 && !session_tile) {
+        continue;
+      }
+      const popover = overlaps ? overlapPopoverFor(bead_id, overlaps) : null;
+      running_overlays.set(bead_id, {
+        ...(last_activity ? { last_activity } : {}),
+        ...(legs.length > 0 ? { legs } : {}),
+        ...(overlaps
+          ? {
+              dependency_chips: {
+                overlaps,
+                ...(popover ? { popover } : {})
+              }
+            }
+          : {})
       });
     }
 

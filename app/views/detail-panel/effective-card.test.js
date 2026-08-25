@@ -366,6 +366,238 @@ describe('detail summary header', () => {
     ).toBe(true);
     panel.destroy();
   });
+
+  test('omits the spec and PR gates on a quick_fix route', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, { workflow: { route: 'quick_fix' } });
+    await settle();
+
+    expect(
+      Array.from(mount.querySelectorAll('[data-gate]')).map((gate) =>
+        gate.getAttribute('data-gate')
+      )
+    ).toEqual(['impl', 'impl_review']);
+    panel.destroy();
+  });
+
+  test('walks the plan gate only on a full_plan route', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, { workflow: { route: 'full_plan' } });
+    await settle();
+
+    expect(
+      Array.from(mount.querySelectorAll('[data-gate]')).map((gate) =>
+        gate.getAttribute('data-gate')
+      )
+    ).toEqual(['spec', 'plan', 'impl', 'impl_review', 'pr']);
+    panel.destroy();
+  });
+
+  test('omits the plan gate on a spec_backed route', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, { workflow: { route: 'spec_backed' } });
+    await settle();
+
+    expect(mount.querySelector('[data-gate="plan"]')).toBeNull();
+    panel.destroy();
+  });
+
+  test('hangs the plan receipt the server resolved off the plan gate', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        route: 'full_plan',
+        stages: {
+          plan: {
+            fill: 'full',
+            receipt: `codex@${'d'.repeat(40)}`,
+            approval_state: 'fresh'
+          }
+        }
+      }
+    });
+    await settle();
+
+    const gate = mount.querySelector('[data-gate="plan"]');
+
+    expect(gate?.querySelector('.detail-summary__gate-sha')?.textContent).toBe(
+      'ddddddd'
+    );
+    expect(gate?.classList.contains('detail-summary__gate--on')).toBe(true);
+    panel.destroy();
+  });
+
+  test('names an unfinished plan approval in the gate title', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        route: 'full_plan',
+        stages: { plan: { fill: 'dim', approval_state: 'missing' } }
+      }
+    });
+    await settle();
+
+    expect(
+      mount.querySelector('[data-gate="plan"]')?.getAttribute('title')
+    ).toBe('계획 리뷰 · 진행 중 · 승인 필요');
+    panel.destroy();
+  });
+
+  test('holds the plan gate unlit while its approval is still missing', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        route: 'full_plan',
+        stages: {
+          plan: {
+            fill: 'dim',
+            receipt: `codex@${'d'.repeat(40)}`,
+            approval_state: 'missing'
+          }
+        }
+      }
+    });
+    await settle();
+
+    const gate = mount.querySelector('[data-gate="plan"]');
+
+    expect(gate?.classList.contains('detail-summary__gate--on')).toBe(false);
+    expect(gate?.classList.contains('detail-summary__gate--current')).toBe(
+      true
+    );
+    expect(gate?.getAttribute('title')).toBe(
+      `계획 리뷰 · 진행 중 · 승인 필요 · codex@${'d'.repeat(40)}`
+    );
+    panel.destroy();
+  });
+
+  test('leaves a settled plan approval out of the gate title', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      workflow: {
+        route: 'full_plan',
+        stages: { plan: { fill: 'full', approval_state: 'fresh' } }
+      }
+    });
+    await settle();
+
+    expect(
+      mount.querySelector('[data-gate="plan"]')?.getAttribute('title')
+    ).toBe('계획 리뷰 · 통과');
+    panel.destroy();
+  });
+
+  test('reserves the receipt row on a gate that carries no receipt', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+
+    const gates = Array.from(mount.querySelectorAll('[data-gate]'));
+
+    expect(gates).toHaveLength(4);
+    for (const gate of gates) {
+      expect(gate.querySelector('.detail-summary__gate-sha')).not.toBeNull();
+    }
+    panel.destroy();
+  });
+
+  test('marks only the receipt-bearing gate with the nail modifier', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { spec_review: `codex@${'b'.repeat(40)}` }
+    });
+    await settle();
+
+    expect(
+      mount
+        .querySelector('[data-gate="spec"]')
+        ?.classList.contains('detail-summary__gate--receipt')
+    ).toBe(true);
+    expect(
+      mount
+        .querySelector('[data-gate="impl"]')
+        ?.classList.contains('detail-summary__gate--receipt')
+    ).toBe(false);
+    panel.destroy();
+  });
+
+  test('flags a stale impl receipt on the review gate, not on 구현', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { impl_review: `codex@${'c'.repeat(40)}` },
+      workflow: { stages: { impl: { fill: 'dim', stale: true } } }
+    });
+    await settle();
+
+    expect(
+      mount
+        .querySelector('[data-gate="impl_review"]')
+        ?.classList.contains('detail-summary__gate--stale')
+    ).toBe(true);
+    expect(
+      mount
+        .querySelector('[data-gate="impl"]')
+        ?.classList.contains('detail-summary__gate--stale')
+    ).toBe(false);
+    panel.destroy();
+  });
+
+  test('gives each gate the board stepper stage hue', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount);
+    await settle();
+
+    expect(
+      Array.from(mount.querySelectorAll('[data-gate]')).map((gate) =>
+        gate.getAttribute('data-hue')
+      )
+    ).toEqual(['spec', 'impl', 'impl', 'pr']);
+    panel.destroy();
+  });
+
+  test('names the PR by number in the gate and the chip', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { pr_url: 'https://github.com/o/r/pull/200' },
+      workflow: { chips: { pr: { number: 200 } } }
+    });
+    await settle();
+
+    expect(
+      mount.querySelector('[data-gate="pr"] .detail-summary__gate-label')
+        ?.textContent
+    ).toBe('PR #200');
+    expect(mount.querySelector('.detail-summary__chip--pr')?.textContent).toBe(
+      'PR #200'
+    );
+    panel.destroy();
+  });
+
+  test('opens the PR from its gate when a url is present', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seed(mount, {
+      metadata: { pr_url: 'https://github.com/o/r/pull/200' }
+    });
+    await settle();
+
+    const gate = mount.querySelector('[data-gate="pr"]');
+
+    expect(gate?.tagName).toBe('A');
+    expect(gate?.getAttribute('href')).toBe('https://github.com/o/r/pull/200');
+    panel.destroy();
+  });
+
+  test('keeps the whole receipt reachable in the gate title', async () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const receipt = `codex@${'b'.repeat(40)}`;
+    const { panel } = seed(mount, { metadata: { spec_review: receipt } });
+    await settle();
+
+    expect(
+      mount.querySelector('[data-gate="spec"]')?.getAttribute('title')
+    ).toBe(`spec 리뷰 · 통과 · ${receipt}`);
+    panel.destroy();
+  });
 });
 
 describe('effective-settings card', () => {

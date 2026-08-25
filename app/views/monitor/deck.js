@@ -11,6 +11,16 @@
  * 마스터 `전체 자동화` 토글은 없다(스펙 §4.1) — 자동화는 레포별 스위치가 유일한
  * 제어다.
  *
+ * 타일은 두 줄이다: 첫 줄이 정체(이름 · 부하 `n/m`+슬롯 레일 · Worker 이동),
+ * 둘째 줄이 제어(자동화·머지·⚙ 스위치 · 0이 아닌 건수 · 실행 칩)다. 스위치의
+ * 라벨은 버렸다 — 아이콘 셋이 고정이라 위치가 곧 뜻이고, 말은 `title`과
+ * `aria-label`이 계속 싣는다. 둘째 줄은 타일 폭 안에서 줄바꿈한다 — 타일이
+ * 옆으로 넓어지는 대신 아래로 한 줄 더 쓰는 쪽이, 모든 타일이 같은 독해 폭을
+ * 지키는 유일한 방법이다. 전 레포 합계는 타일 옆이 아니라 데크 위 오른쪽
+ * 끝 한 줄이다: 합계는 조작이 아니라 배경 사실이므로 타일 strip의 가로 폭을
+ * 가져가면 안 된다. Strip 자체는 가로로 흐르지 않고 줄바꿈한다 — 화면 밖으로
+ * 나간 타일은 데크가 말하지 못하는 레포다.
+ *
  * 새 투영 필드가 없는 구버전 서버에서는 그 줄만 생략한다(스펙 §12): 모델 칩은
  * `execution_defaults`·`runner_catalog`·`session_defaults`가 **모두** 있을 때만
  * 그린다. `기본값 확인 불가` 같은 대체 문구를 만들지 않는다 — 없는 사실을
@@ -25,13 +35,7 @@ import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { createExecutionPane } from '../settings-dialog/execution-pane.js';
-import {
-  iconGear,
-  iconMerge,
-  iconPause,
-  iconPlay,
-  iconSlots
-} from './icons.js';
+import { iconGear, iconMerge, iconPause, iconPlay } from './icons.js';
 import { crossRepoTokenTotal, tokenTotalTooltip } from './usage.js';
 
 /**
@@ -125,7 +129,7 @@ export function deckExecChips(row) {
  * @typedef {Object} RepoDeckOptions
  * @property {() => Array<Record<string, any>>} workspacesState
  * @property {() => Array<Pick<MonitorItem, 'usage'>>} [doneItems] - 기간이 이미
- * 걸린 완료 아이템 (합계 칸의 `<기간> 완료 n`과 토큰).
+ * 걸린 완료 아이템 (합계 줄의 `<기간> 완료 n`과 토큰).
  * @property {() => string} [rangeLabel]
  * @property {(type: any, payload?: unknown) => Promise<any>} [transport]
  * @property {{ get: () => any, subscribe?: (fn: () => void) => () => void }} [implPresetStore]
@@ -379,7 +383,6 @@ export function createRepoDeck(mount_element, options) {
           : '자동화 꺼짐 — 다음 행은 수동으로만 출발합니다'}
       >
         ${auto ? iconPause() : iconPlay()}
-        <span class="mon2-deck__op-label">자동화</span>
       </button>
       <button
         type="button"
@@ -392,7 +395,6 @@ export function createRepoDeck(mount_element, options) {
           : '자동 머지 꺼짐'}
       >
         ${iconMerge()}
-        <span class="mon2-deck__op-label">머지</span>
       </button>
       <button
         type="button"
@@ -430,6 +432,30 @@ export function createRepoDeck(mount_element, options) {
   }
 
   /**
+   * The tile's count line. 0인 항목은 쓰지 않는다 — `대기 0 · PR 0`은 자리만
+   * 차지하고 아무 사실도 더하지 않는다. 전부 0이면 줄 자체가 비고, 부하는
+   * 첫 줄의 슬롯 레일이 이미 말한다.
+   *
+   * @param {any} row
+   * @returns {string}
+   */
+  function tileCounts(row) {
+    /** @type {string[]} */
+    const parts = [];
+    for (const [key, label] of /** @type {Array<[string, string]>} */ ([
+      ['queue', '대기'],
+      ['pr_wait', 'PR'],
+      ['session_active', '세션']
+    ])) {
+      const value = countOf(row, key);
+      if (value > 0) {
+        parts.push(`${label} ${value}`);
+      }
+    }
+    return parts.join(' · ');
+  }
+
+  /**
    * @param {any} row
    * @returns {import('lit-html').TemplateResult}
    */
@@ -446,31 +472,36 @@ export function createRepoDeck(mount_element, options) {
     >
       <div class="mon2-deck__tile-hd">
         <span class="mon2-deck__name" title=${row.root_dir}>${row.name}</span>
+        <span
+          class="mon2-deck__load"
+          title=${`슬롯 ${slots}개 중 ${running}개 실행 중`}
+        >
+          <span class="mon2-deck__load-n">${running}/${slots}</span>
+          ${slotRail(running, slots)}
+        </span>
         <button
           type="button"
           class="mon2-deck__worker"
           data-act="worker"
+          aria-label=${`${row.name} Worker 탭으로 이동`}
           title="이 레포의 Worker 탭으로 이동"
         >
-          Worker ↗
+          ↗
         </button>
       </div>
-      <div class="mon2-deck__slots">
-        ${iconSlots()} ${slotRail(running, slots)}
-        <span class="mon2-deck__counts"
-          >${running}/${slots} 실행 · 대기 ${countOf(row, 'queue')} · PR
-          ${countOf(row, 'pr_wait')}${countOf(row, 'session_active') > 0
-            ? ` · 세션 ${countOf(row, 'session_active')}`
-            : ''}</span
-        >
+      <div class="mon2-deck__tile-ft">
+        <div class="mon2-deck__ops">${switchesTemplate(row)}</div>
+        <span class="mon2-deck__counts">${tileCounts(row)}</span>
+        ${chipsTemplate(row)}
       </div>
-      <div class="mon2-deck__ops">${switchesTemplate(row)}</div>
-      ${chipsTemplate(row)}
     </div>`;
   }
 
   /**
-   * The totals cell (§4.1): 전 레포 합계와 provider별 토큰. 마스터 토글은 없다.
+   * The totals bar (§4.1): 전 레포 합계와 provider별 토큰. 마스터 토글은 없다.
+   *
+   * 데크 위 오른쪽 끝에 한 줄로 선다 — 합계는 조작이 아니라 배경 사실이라
+   * 타일 strip의 가로 폭을 가져가면 안 된다.
    *
    * @param {Array<Record<string, any>>} list
    * @returns {import('lit-html').TemplateResult}
@@ -483,26 +514,25 @@ export function createRepoDeck(mount_element, options) {
     );
     const sum = (/** @type {string} */ key) =>
       list.reduce((acc, row) => acc + countOf(row, key), 0);
-    return html`<div
-      class="mon2-deck__total"
-      title=${`visible 레포 ${list.length}곳의 합계입니다 — 실행·대기·PR은 지금, 완료는 ${range_label}`}
-    >
-      <div class="mon2-deck__total-counts">
-        실행 ${sum('running')} · 대기 ${sum('queue')} · PR
+    return html`<div class="mon2-deck__bar">
+      <span
+        class="mon2-deck__total-counts"
+        title=${`visible 레포 ${list.length}곳의 합계입니다 — 실행·대기·PR은 지금, 완료는 ${range_label}`}
+        >실행 ${sum('running')} · 대기 ${sum('queue')} · PR
         ${sum('pr_wait')}${sum('session_active') > 0
           ? ` · 세션 ${sum('session_active')}`
           : ''}
         · ${range_label} 완료
-        ${Array.isArray(done_items) ? done_items.length : 0}
-      </div>
+        ${Array.isArray(done_items) ? done_items.length : 0}</span
+      >
       ${total === null
         ? ''
-        : html`<div class="mon2-deck__total-tokens">
+        : html`<span class="mon2-deck__total-tokens">
             ${typeof total === 'string'
               ? html`<span
                   class="mon2-deck__tok"
                   title=${tokenTotalTooltip(range_label)}
-                  >τ ${total}</span
+                  >${total}</span
                 >`
               : total.map(
                   (badge) =>
@@ -510,10 +540,10 @@ export function createRepoDeck(mount_element, options) {
                       class="mon2-deck__tok"
                       data-provider=${badge.provider}
                       title=${badge.tooltip}
-                      >τ ${badge.label}</span
+                      >${badge.label}</span
                     >`
                 )}
-          </div>`}
+          </span>`}
     </div>`;
   }
 
@@ -525,12 +555,10 @@ export function createRepoDeck(mount_element, options) {
     if (list.length === 0) {
       return '';
     }
-    return html`<div class="mon2-deck__row">
-      ${totalTemplate(list)}
+    return html`${totalTemplate(list)}
       <div class="mon2-deck__strip">
         ${list.map((row) => tileTemplate(row))}
-      </div>
-    </div>`;
+      </div>`;
   }
 
   /**

@@ -37,13 +37,95 @@ import {
   layerSummary
 } from './effective-settings.js';
 
-/** The five gate stages the stepper walks, in workflow order. */
+/**
+ * The gate stages the stepper walks, in workflow order.
+ *
+ * `fill_stage` names the server stage whose `fill` lights the gate;
+ * `stale_stage` names the one whose freshness flags it. They diverge across the
+ * two impl gates because the server folds implementation and its review into a
+ * single `impl` stage: the fill says work happened, but the stale axis is a
+ * property of the review receipt, so it belongs on `impl 리뷰`.
+ *
+ * `hue` is the board stepper's stage color, so both surfaces speak one palette.
+ * Implementation and its review share violet on purpose — they are two gates
+ * over one delta.
+ */
 const GATE_STAGES = [
-  { id: 'spec', label: 'spec 리뷰', receipt: 'spec_review' },
-  { id: 'impl', label: '구현', receipt: null },
-  { id: 'impl_review', label: 'impl 리뷰', receipt: 'impl_review' },
-  { id: 'pr', label: 'PR', receipt: null }
+  {
+    id: 'spec',
+    label: 'spec 리뷰',
+    receipt: 'spec_review',
+    receipt_stage: null,
+    fill_stage: 'spec',
+    stale_stage: 'spec',
+    hue: 'spec'
+  },
+  {
+    id: 'plan',
+    label: '계획 리뷰',
+    // The plan receipt's own metadata key forks across the contract's legacy
+    // shapes (`plan_review` vs `plan_check`). The server already resolved which
+    // one applies, so read its answer instead of re-deriving the fork here.
+    receipt: null,
+    receipt_stage: 'plan',
+    fill_stage: 'plan',
+    stale_stage: 'plan',
+    hue: 'plan'
+  },
+  {
+    id: 'impl',
+    label: '구현',
+    receipt: null,
+    receipt_stage: null,
+    fill_stage: 'impl',
+    stale_stage: null,
+    hue: 'impl'
+  },
+  {
+    id: 'impl_review',
+    label: 'impl 리뷰',
+    receipt: 'impl_review',
+    receipt_stage: null,
+    fill_stage: null,
+    stale_stage: 'impl',
+    hue: 'impl'
+  },
+  {
+    id: 'pr',
+    label: 'PR',
+    receipt: null,
+    receipt_stage: null,
+    fill_stage: 'pr',
+    stale_stage: null,
+    hue: 'pr'
+  }
 ];
+
+/**
+ * Route → the gates that route actually walks, mirroring which stages the
+ * server builds for it. A `quick_fix` carries no spec document and lands by
+ * pushing the base ref with no PR at all (workflow contract, Finish), so those
+ * gates are not "not yet" for it — they never come, and drawing them as pending
+ * misreports the route. Only `full_plan` has a plan to review, which is exactly
+ * when the server sends a `plan` stage. Anything else falls back to the
+ * spec-backed set, matching the server's own `deriveRoute` default.
+ */
+const ROUTE_GATES = {
+  quick_fix: ['impl', 'impl_review'],
+  spec_backed: ['spec', 'impl', 'impl_review', 'pr'],
+  full_plan: ['spec', 'plan', 'impl', 'impl_review', 'pr']
+};
+
+/**
+ * `approval_state` → the words the plan gate's title adds. Native approval is a
+ * second axis over the same cell: the server already folded it into `fill` and
+ * `stale`, but only the title can say which of the two axes is unfinished.
+ */
+const PLAN_APPROVAL_TEXT = {
+  missing: '승인 필요',
+  stale: '재승인 필요',
+  unknown: '승인 확인 불가'
+};
 
 /** Layer → rail modifier class. */
 const RAIL_CLASS = { pin: 'pin', global: 'global', base: 'base' };
@@ -440,6 +522,10 @@ export function summaryHeaderTemplate(data) {
     workflow.planned_execution,
     workflow.exec_receipt
   );
+  // The board already names the PR by number from this same server-parsed
+  // field; naming it the same way here keeps one PR from reading as two.
+  const pr_number = workflow.chips?.pr?.number;
+  const pr_label = typeof pr_number === 'number' ? `PR #${pr_number}` : 'PR';
   return html`<section class="detail-summary" data-seam="detail-summary">
     <div class="detail-summary__chips">
       <span class="detail-summary__chip detail-summary__chip--status"
@@ -461,7 +547,7 @@ export function summaryHeaderTemplate(data) {
             href=${pr_url}
             target="_blank"
             rel="noreferrer"
-            >PR</a
+            >${pr_label}</a
           >`
         : ''}
       ${planned_execution
@@ -486,30 +572,147 @@ export function summaryHeaderTemplate(data) {
           >`
         : ''}
     </div>
-    <div class="detail-summary__gates">
-      ${GATE_STAGES.map((stage) => {
-        const receipt_value =
-          stage.receipt && typeof metadata[stage.receipt] === 'string'
-            ? String(metadata[stage.receipt])
-            : '';
-        const stage_state = stages[stage.id];
-        // The server's stage decoration speaks `fill`: 'full' is a completed
-        // stage, 'dim' an in-progress one (workflow-enrich chips vocabulary).
-        const on = receipt_value.length > 0 || stage_state?.fill === 'full';
-        const current = !on && stage_state?.fill === 'dim';
-        const stale = stage_state?.stale === true;
-        return html`<span
-          class=${`detail-summary__gate${on ? ' detail-summary__gate--on' : ''}${current ? ' detail-summary__gate--current' : ''}${stale ? ' detail-summary__gate--stale' : ''}`}
-          data-gate=${stage.id}
-        >
-          <span class="detail-summary__gate-pill">${stage.label}</span>
-          ${receipt_value
-            ? html`<span class="detail-summary__gate-sha"
-                >${receipt_value.split('@')[1]?.slice(0, 7) || ''}</span
-              >`
-            : ''}
-        </span>`;
-      })}
+    <div
+      class="detail-summary__gates"
+      role="group"
+      aria-label="워크플로 게이트"
+    >
+      ${routeGates(route).map((stage) =>
+        gateTemplate(stage, metadata, stages, {
+          label: stage.id === 'pr' ? pr_label : stage.label,
+          href: stage.id === 'pr' ? pr_url : ''
+        })
+      )}
     </div>
   </section>`;
+}
+
+/**
+ * The gates one route actually walks. An unknown or absent route falls back to
+ * the full set, so a display surface never hides a gate on a guess.
+ *
+ * @param {unknown} route
+ */
+function routeGates(route) {
+  const ids =
+    typeof route === 'string' &&
+    Object.hasOwn(ROUTE_GATES, route) &&
+    /** @type {Record<string, string[]>} */ (ROUTE_GATES)[route];
+  const allowed = ids || ROUTE_GATES.spec_backed;
+  return GATE_STAGES.filter((stage) => allowed.includes(stage.id));
+}
+
+/** Gate condition → the word the hover title uses for it. */
+const GATE_STATE_TEXT = {
+  on: '통과',
+  stale: '재검토 필요',
+  current: '진행 중',
+  none: '미도달'
+};
+
+/**
+ * One gate: label, rail, and — only where a review receipt exists — the short
+ * commit it was stamped at. All three rows are reserved on every gate, so a
+ * receipt-less gate cannot pull its own label out of line with its neighbours.
+ *
+ * @param {(typeof GATE_STAGES)[number]} stage
+ * @param {Record<string, unknown>} metadata
+ * @param {Record<string, any>} stages
+ * @param {{ label: string, href: string }} view
+ * @returns {TemplateResult}
+ */
+function gateTemplate(stage, metadata, stages, view) {
+  const receipt_value = gateReceipt(stage, metadata, stages);
+  // The server's stage decoration speaks `fill`: 'full' is a completed stage,
+  // 'dim' an in-progress one (workflow-enrich chips vocabulary). Where it sent
+  // one, it decides — a receipt alone must never light a gate the server held
+  // back, because a plan whose review is stamped but whose approval is still
+  // missing arrives here as exactly that: a receipt with a `dim` fill. Only a
+  // gate the server said nothing about falls back to reading the receipt.
+  const fill_state = stage.fill_stage ? stages[stage.fill_stage] : null;
+  const server_fill =
+    typeof fill_state?.fill === 'string' ? fill_state.fill : null;
+  const on = server_fill ? server_fill === 'full' : receipt_value.length > 0;
+  const current = !on && server_fill === 'dim';
+  const stale = stage.stale_stage
+    ? stages[stage.stale_stage]?.stale === true
+    : false;
+  const sha = receipt_value
+    ? receipt_value.split('@')[1]?.slice(0, 7) || ''
+    : '';
+  const state_text = stale
+    ? GATE_STATE_TEXT.stale
+    : on
+      ? GATE_STATE_TEXT.on
+      : current
+        ? GATE_STATE_TEXT.current
+        : GATE_STATE_TEXT.none;
+  const approval_text = planApprovalText(stage, stages);
+  // The rail shows seven characters; the title is where the whole receipt stays
+  // reachable, since the gates carry no editing or drill-down surface.
+  const title = `${view.label} · ${state_text}${approval_text ? ` · ${approval_text}` : ''}${receipt_value ? ` · ${receipt_value}` : ''}`;
+  const gate_class = `detail-summary__gate${on ? ' detail-summary__gate--on' : ''}${current ? ' detail-summary__gate--current' : ''}${stale ? ' detail-summary__gate--stale' : ''}${sha ? ' detail-summary__gate--receipt' : ''}`;
+  const body = html`<span class="detail-summary__gate-label"
+      >${view.label}</span
+    >
+    <span class="detail-summary__gate-rail"></span>
+    <span class="detail-summary__gate-sha">${sha}</span>`;
+  if (view.href) {
+    return html`<a
+      class=${gate_class}
+      data-gate=${stage.id}
+      data-hue=${stage.hue}
+      href=${view.href}
+      target="_blank"
+      rel="noreferrer"
+      title=${title}
+      >${body}</a
+    >`;
+  }
+  return html`<span
+    class=${gate_class}
+    data-gate=${stage.id}
+    data-hue=${stage.hue}
+    title=${title}
+    >${body}</span
+  >`;
+}
+
+/**
+ * The raw receipt one gate stands for: its own metadata key where it owns one,
+ * otherwise whatever the server resolved onto the matching stage.
+ *
+ * @param {(typeof GATE_STAGES)[number]} stage
+ * @param {Record<string, unknown>} metadata
+ * @param {Record<string, any>} stages
+ * @returns {string}
+ */
+function gateReceipt(stage, metadata, stages) {
+  if (stage.receipt && typeof metadata[stage.receipt] === 'string') {
+    return String(metadata[stage.receipt]);
+  }
+  if (stage.receipt_stage) {
+    const raw = stages[stage.receipt_stage]?.receipt;
+    return typeof raw === 'string' ? raw : '';
+  }
+  return '';
+}
+
+/**
+ * The plan gate's approval phrase, or `''` for every other gate and for an
+ * approval that is settled. Absent state stays silent — a contract key this
+ * surface cannot observe is never reported as a problem.
+ *
+ * @param {(typeof GATE_STAGES)[number]} stage
+ * @param {Record<string, any>} stages
+ * @returns {string}
+ */
+function planApprovalText(stage, stages) {
+  if (stage.id !== 'plan') {
+    return '';
+  }
+  const state = stages.plan?.approval_state;
+  return typeof state === 'string' && Object.hasOwn(PLAN_APPROVAL_TEXT, state)
+    ? /** @type {Record<string, string>} */ (PLAN_APPROVAL_TEXT)[state]
+    : '';
 }

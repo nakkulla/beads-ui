@@ -58,6 +58,15 @@ const ZERO_OID_RE = /^0{40,64}$/;
 const OID_RE = /^[0-9a-f]{40,64}$/i;
 
 /**
+ * The one `exempt` value the prevention layer writes (UI-7ufi §2.3). Compared
+ * with strict equality, so a non-string or any other value is simply not an
+ * exemption.
+ *
+ * @type {string}
+ */
+const DOCS_ONLY_EXEMPT = 'docs_only';
+
+/**
  * What one attempt's post-hoc base observation recorded. Only the fields the
  * observation actually produced are present, so an absent key means "this
  * observation never got that far" rather than a default value.
@@ -78,6 +87,12 @@ const OID_RE = /^[0-9a-f]{40,64}$/i;
  * got that far.
  * @property {string[]} [shas] - The evidence set: the recorded oids that ARE
  * reachable from the observed tip, i.e. the landing itself.
+ * @property {string[]} [artifact_pushed] - The base-destined oids the hook let
+ * through under its docs-only exemption (UI-7ufi §2.4). They are NOT landing
+ * candidates — the prevention layer decided they belong on the base — but the
+ * publication stays visible here, which is what makes the exemption auditable.
+ * Written only when the base moved and the record was readable, and omitted
+ * entirely when the record held none.
  * @property {'disposition'|'quickfix_lane'|'no_base_oid'} [skipped] - Why the attempt was
  * outside the invariant's scope. Recorded so the exclusion is visible.
  * @property {string} [error] - Which observation step could not be completed
@@ -96,20 +111,31 @@ const OID_RE = /^[0-9a-f]{40,64}$/i;
  */
 
 /**
- * The base-destined oids one push record holds, in the order they were pushed.
+ * The base-destined oids one push record holds, in the order they were pushed,
+ * split by whether the prevention layer exempted them.
  *
  * A deletion (all-zero local oid) is dropped rather than counted: the base
  * still resolves, so the deletion did not take, and there is no commit whose
  * reachability could be asked about. The refusal itself is what the record
  * exists to preserve, and it stays in the log.
  *
+ * The `exempt` split keeps the two layers from contradicting each other: a
+ * docs-only publication the hook deliberately passed (UI-7ufi §2.1) lands on
+ * the base BY DESIGN, so counting it as a landing candidate would kill the
+ * attempt for doing exactly what it was let through to do. Only the exact
+ * string the hook writes counts — an unknown `exempt` value stays a candidate,
+ * because a record-format extension is only meaningful when both layers know
+ * the same value.
+ *
  * @param {Record<string, unknown>[]} entries
  * @param {string} base_ref
- * @returns {string[]}
+ * @returns {{ pushed: string[], exempt: string[] }}
  */
 function basePushedOids(entries, base_ref) {
   /** @type {string[]} */
-  const oids = [];
+  const pushed = [];
+  /** @type {string[]} */
+  const exempt = [];
   for (const entry of entries) {
     if (entry.remote_ref !== base_ref) {
       continue;
@@ -118,11 +144,12 @@ function basePushedOids(entries, base_ref) {
     if (!OID_RE.test(oid) || ZERO_OID_RE.test(oid)) {
       continue;
     }
+    const oids = entry.exempt === DOCS_ONLY_EXEMPT ? exempt : pushed;
     if (!oids.includes(oid)) {
       oids.push(oid);
     }
   }
-  return oids;
+  return { pushed, exempt };
 }
 
 /**
@@ -231,14 +258,20 @@ export async function observeBaseDrift(input) {
   }
 
   const base_ref = `refs/heads/${resolved.base}`;
-  const pushed = basePushedOids(push_log.entries, base_ref);
+  const { pushed, exempt } = basePushedOids(push_log.entries, base_ref);
+  // Spread into every record built from here on, and omitted when the record
+  // held no exemption — the module's idiom, where an absent key means the
+  // observation never got that far or the case does not apply.
+  /** @type {{ artifact_pushed?: string[] }} */
+  const artifact = exempt.length > 0 ? { artifact_pushed: exempt } : {};
   if (pushed.length === 0) {
     // The ordinary case, and the one four measured false positives belong to:
     // a human merge click, another worker's merge, a user push — or this
-    // attempt absorbing the base into its branch, which touches no remote.
+    // attempt absorbing the base into its branch, which touches no remote. An
+    // exemption-only record lands here too: nothing left to ask git about.
     return {
       violation: false,
-      record: { pinned, observed, landed: false, pushed: [] }
+      record: { pinned, observed, landed: false, pushed: [], ...artifact }
     };
   }
 
@@ -256,7 +289,13 @@ export async function observeBaseDrift(input) {
       log('is-ancestor %s..%s threw in %s: %o', oid, observed, repo, err);
       return {
         violation: false,
-        record: { pinned, observed, pushed, error: 'reachability:merge_base' }
+        record: {
+          pinned,
+          observed,
+          pushed,
+          error: 'reachability:merge_base',
+          ...artifact
+        }
       };
     }
     if (r.code === 0) {
@@ -268,7 +307,13 @@ export async function observeBaseDrift(input) {
     if (r.code !== 1) {
       return {
         violation: false,
-        record: { pinned, observed, pushed, error: 'reachability:merge_base' }
+        record: {
+          pinned,
+          observed,
+          pushed,
+          error: 'reachability:merge_base',
+          ...artifact
+        }
       };
     }
   }
@@ -277,7 +322,7 @@ export async function observeBaseDrift(input) {
     // tried, and the prevention layer held.
     return {
       violation: false,
-      record: { pinned, observed, landed: false, pushed }
+      record: { pinned, observed, landed: false, pushed, ...artifact }
     };
   }
 
@@ -289,7 +334,8 @@ export async function observeBaseDrift(input) {
       landed: true,
       via: 'direct_push',
       pushed,
-      shas: landed
+      shas: landed,
+      ...artifact
     }
   };
 }
