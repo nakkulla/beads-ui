@@ -89,6 +89,17 @@ describe('trimQueueProjection done retention', () => {
 
     expect(trimmed.done).toEqual([]);
   });
+
+  test('drops an added_at-less done row even when its bead is retained', () => {
+    const raw = {
+      queue: [{ bead_id: 'UI-in', added_at: NOW }],
+      done: [{ bead_id: 'UI-in', added_at: null }]
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW);
+
+    expect(trimmed.done).toEqual([]);
+  });
 });
 
 describe('trimQueueProjection attempt retention', () => {
@@ -186,6 +197,28 @@ describe('trimQueueProjection attempt retention', () => {
       attempts: {
         p1: attempt('p1', 'UI-chain', { status: 'paused' }),
         d1: attempt('d1', 'UI-chain', { resumed_from: 'p1' })
+      }
+    };
+
+    const trimmed = trimQueueProjection(raw, raw, NOW);
+
+    expect(trimmed.attempts).toEqual({});
+  });
+
+  test('lets a resumed paused record follow its successor out of the wire', () => {
+    const raw = {
+      attempts: {
+        p1: attempt('p1', 'UI-chain', {
+          status: 'paused',
+          finished_at: NOW - 5 * DAY_MS
+        }),
+        // The successor is what decides the bead's fate: discarded, with no
+        // timestamp of its own, so nothing keeps the chain.
+        x1: attempt('x1', 'UI-chain', {
+          status: 'discarded',
+          finished_at: null,
+          resumed_from: 'p1'
+        })
       }
     };
 

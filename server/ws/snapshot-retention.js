@@ -146,6 +146,12 @@ function seedRetainedBeadIds(raw, now) {
     ) {
       continue;
     }
+    // §4.2 rule 4 excludes `paused` deliberately: a LEAF paused is rule 3's to
+    // keep, and one a successor already resumed follows that successor's fate
+    // rather than holding the bead open on its own timestamp.
+    if (attempt.status === 'paused') {
+      continue;
+    }
     // A discarded/stopped attempt leaves its lane immediately, so this window
     // is the only thing keeping it in the session history for a while.
     if (
@@ -330,13 +336,16 @@ export function trimQueueProjection(public_queue, raw, now = Date.now()) {
   // failure and the client redraws that failure as unhandled. The 완료 레인
   // period filter keeps the row off screen either way.
   const done = asArray(projection.done).filter((entry) => {
-    if (!isRecord(entry)) {
+    // §6 drops a row with no usable `added_at` unconditionally — a retained
+    // bead is no reason to keep it either, because `doneAtByBead` cannot read
+    // such a row and it therefore protects no classifier input.
+    if (!isRecord(entry) || typeof entry.added_at !== 'number') {
       return false;
     }
     if (typeof entry.bead_id === 'string' && beads.has(entry.bead_id)) {
       return true;
     }
-    return typeof entry.added_at === 'number' && entry.added_at >= cutoff;
+    return entry.added_at >= cutoff;
   });
   /** @type {Record<string, any>} */
   const attempts = {};
