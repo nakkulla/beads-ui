@@ -97,9 +97,22 @@ fail-quiet를 그대로 유지한다 — 판정은 **그 줄의 재료 전부**�
 ### 3.2 `candidateCard` (`app/views/worker/lanes.js`)
 
 - `.worker-card__head`에서 레포 칩 · `fromChipTemplate` · `routeChipTemplate`을
-  뺀다. 남는 것은 grip · ID · `P n` · `worker-ineligible` 칩이다
-  (`worker-ineligible`은 분류가 아니라 "이 카드는 워커가 실행하지 않는다"는 상태
-  이므로 정체성 줄에 남는다).
+  뺀다. 남는 것은 grip · ID · `P n` · `worker-ineligible` 칩 · `quick_fix`
+  self-review 칩이다 (`worker-ineligible`은 분류가 아니라 "이 카드는 워커가
+  실행하지 않는다"는 상태이므로 정체성 줄에 남는다).
+- `quick_fix` self-review 칩(`quickFixReviewChipTemplate` · `리뷰 ✓` /
+  `리뷰 stale`)은 §5.1 슬롯 1이므로 헤더에 남고, `worker-ineligible` 다음
+  **왼쪽 그룹 끝**에 선다. 근거는 §5.1의 세 번째 갈림 항목에 있다.
+- `.worker-card__wfchips` 묶음과 그 CSS 두 규칙
+  (`.worker-card__head .worker-card__wfchips`,
+  `.worker-card__head .worker-card__wfchips .ctl-chip--route`)은 제거하고,
+  `.worker-card__head .ctl-chip--route`의 `margin-left: auto`도 함께 없앤다.
+  묶음은 route 칩의 auto 여백이 wrap된 flex 줄마다 따로 풀려 두 칩이 갈라지는
+  것을 막으려고 생겼다(UI-r7or §5.3). route 칩이 헤더를 떠나면 auto 여백을 가진
+  칩 자체가 없어져 묶을 이유가 사라지고, 남는 것은 self-review 칩 유무에 따라
+  비었다 찼다 하는 빈 `<span>` 하나다 — 재료 없는 자리를 그리지 않는 §2
+  fail-quiet와 어긋난다. UI-r7or §5.3의 묶음 결정은 route 칩이 헤더에 있다는
+  전제 위에 있었고, 그 전제를 이 스펙이 걷어내므로 여기서 대체한다.
 - 좌표 칩은 stepper와 `.worker-deps` **다음**, 기존 exec 칩 줄과 **같은 줄**에
   선다.
 
@@ -167,7 +180,7 @@ blocked · 겹침 칩이 어느 레인에 서는지는 **이미 투영이 소유
 
 | 슬롯 | 답하는 질문 | 지금 실려 있는 것 |
 |---|---|---|
-| 1 정체성 (왼쪽) | 이것이 무엇인가 · 어떤 상태인가 | 상태점 · grip · 직렬 순번 · ID · `P n` · `↻` 재개 계보 · `worker-ineligible` · legacy `worker-serial` · PR/repair PR 링크 · 상태 뱃지(완료·live activity·`충돌 해소` · base 예외) · reason |
+| 1 정체성 (왼쪽) | 이것이 무엇인가 · 어떤 상태인가 | 상태점 · grip · 직렬 순번 · ID · `P n` · `↻` 재개 계보 · `worker-ineligible` · `quick_fix` self-review 칩 · legacy `worker-serial` · PR/repair PR 링크 · 상태 뱃지(완료·live activity·`충돌 해소` · base 예외) · reason |
 | 1 조작 (오른쪽 끝) | 내가 여기서 무엇을 하나 | 경과/상태 라벨 · merge-step 게이지 · `▤ 세션` · `⏸`/`▶` · `↻ 이어하기` · `머지`/`취소` · `폐기` · `✕` |
 | 2 제목 | 무슨 일인가 | 제목 (카드형 변형만; 한 줄 변형은 1번 줄에 포함) |
 | 3 진행 | 어디까지 왔나 | stepper · 활동 줄 · 위임 칩 · 자식 롤업 · landing 진행 |
@@ -184,7 +197,7 @@ merge-step 게이지가 1번과 6번에 함께 적힌 것은 슬롯이 둘이라
 쪽**이 이긴다 — 예를 들어 "머지가 잠겼다"는 사실은 분류가 아니라 행동이므로 5번이
 아니라 1번/6번이다.
 
-두 요소는 이 판정에서 갈라졌으므로 근거를 남긴다.
+세 요소는 이 판정에서 갈라졌으므로 근거를 남긴다.
 
 - **usage/비용은 5번이다.** 얼마를 썼는지는 사용자의 다음 행동을 바꾸지 않는
   사실이다. `runningTile`은 이미 그 자리에 두고 있고, `miniRow`는 조작 옆에 두고
@@ -193,6 +206,13 @@ merge-step 게이지가 1번과 6번에 함께 적힌 것은 슬롯이 둘이라
 - **merge-step 게이지는 조작 옆에 남는다.** 진행률처럼 보이지만 실제로는 "지금
   머지 중이라 이 버튼을 누를 수 없다"는 조작의 상태이므로, 버튼에서 떨어지면
   의미를 잃는다.
+- **`quick_fix` self-review 칩은 1번이다.** `리뷰 stale`은 "이 카드의 핸드오프
+  영수증이 지금 본문과 어긋났다"는 **이 카드의 상태**다. 4번("지금 갈 수 있나")이
+  아닌 이유는 계약이 이 판정을 명시적으로 **권고**로 못박아 워커 admission을
+  막지 않기 때문이고(dotfiles `docs/contracts/workflow-contract.md`의
+  `quick_fix_review` advisory), 5번이 아닌 이유는 레포·레인·route처럼 이 카드를
+  분류하는 좌표가 아니기 때문이다. 같은 판정으로 정체성 줄에 남긴
+  `worker-ineligible`과 짝이다.
 
 ### 5.2 `AGENTS.md`에 남길 규칙
 
@@ -232,6 +252,10 @@ merge-step 게이지가 1번과 6번에 함께 적힌 것은 슬롯이 둘이라
   - 슬롯 5 재료가 하나도 없으면 그 줄이 렌더되지 않는다.
   - `충돌 해소` 뱃지와 base 예외 뱃지가 `.rtile__hd`에 있고 `.rtile__meta`에 없다.
   - `miniRow` 한 줄·카드 변형의 usage가 슬롯 5 줄에 있고 정체성 줄/foot에 없다.
+  - 후보 카드 헤더에 `리뷰 ✓`/`리뷰 stale` 칩이 **남아** 있고 route 칩은 없다.
+  - `.worker-card__wfchips`가 마크업·CSS 어디에도 없다. UI-r7or가 남긴 묶음
+    테스트와 후보 카드 스냅샷(`app/views/worker/lanes.test.js`)을 이 문법에 맞게
+    함께 고친다.
   - `.worker-deps`가 좌표 줄보다 앞선다.
   - 완료 2줄·3줄 행 마크업이 변하지 않는다.
 - `AGENTS.md`에 §5.2의 규칙이 추가돼 있고, 본문이 이 스펙 경로를 가리킨다.
