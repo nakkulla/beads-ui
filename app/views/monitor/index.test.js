@@ -234,7 +234,7 @@ describe('views/monitor five vertical lanes (UI-eey2 §3)', () => {
 
     view.load();
 
-    expect(el(mount, '.mon2-deck__row')).toBe(null);
+    expect(el(mount, '.mon2-deck__bar')).toBe(null);
   });
 
   test('keeps an empty lane visible with its empty line', () => {

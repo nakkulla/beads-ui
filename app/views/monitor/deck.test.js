@@ -218,9 +218,31 @@ describe('createRepoDeck tile content (§4.2)', () => {
     expect(
       Array.from(cells).map((cell) => cell.classList.contains('is-run'))
     ).toEqual([true, true, false]);
+    expect(el(mount, '.mon2-deck__load-n').textContent?.trim()).toBe('2/3');
     expect(
       el(mount, '.mon2-deck__counts').textContent?.replace(/\s+/g, ' ').trim()
-    ).toBe('2/3 실행 · 대기 4 · PR 1');
+    ).toBe('대기 4 · PR 1');
+  });
+
+  test('leaves the count line empty when nothing waits', () => {
+    const { mount, deck } = setup({
+      rows: [
+        state({
+          slots: 2,
+          counts: {
+            running: 1,
+            pr_wait: 0,
+            queue: 0,
+            runnable: 0,
+            session_active: 0
+          }
+        })
+      ]
+    });
+
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__counts').textContent?.trim()).toBe('');
   });
 
   test('widens the rail past the cap when more sessions run than slots', () => {
@@ -274,7 +296,7 @@ describe('createRepoDeck tile content (§4.2)', () => {
 
     expect(el(mount, '.mon2-deck__chips')).toBe(null);
     expect(el(mount, '.mon2-deck__tile')).toBeTruthy();
-    expect(el(mount, '.mon2-deck__counts').textContent).toContain('1/2 실행');
+    expect(el(mount, '.mon2-deck__load-n').textContent?.trim()).toBe('1/2');
   });
 
   test('sends the Worker ↗ click to the repo it belongs to', () => {
@@ -334,7 +356,19 @@ describe('createRepoDeck totals (§4.1)', () => {
       'claude',
       'codex'
     ]);
-    expect(badges[0].textContent).toContain('τ');
+    expect(badges[0].textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      'Claude τ 1.0k'
+    );
+  });
+
+  test('prints one τ on the flat token total', () => {
+    const { mount, deck } = setup({
+      done: [{ usage: { input_tokens: 1000 } }]
+    });
+
+    deck.render();
+
+    expect(el(mount, '.mon2-deck__tok').textContent?.trim()).toBe('τ 1.0k');
   });
 
   test('draws no master automation toggle', () => {
@@ -645,8 +679,8 @@ describe('createRepoDeck 세션 counts (UI-yrzu §8)', () => {
     deck.render();
 
     const tiles = Array.from(mount.querySelectorAll('.mon2-deck__counts'));
-    expect(tiles[0].textContent?.replace(/\s+/g, ' ')).toContain(
-      '대기 2 · PR 0 · 세션 2'
+    expect(tiles[0].textContent?.replace(/\s+/g, ' ').trim()).toBe(
+      '대기 2 · 세션 2'
     );
     expect(
       el(mount, '.mon2-deck__total-counts').textContent?.replace(/\s+/g, ' ')

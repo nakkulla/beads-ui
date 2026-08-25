@@ -5,7 +5,7 @@
  * 시각적으로 앞선다. 여기 아이콘은 전부 `currentColor` 스트로크라 켜짐/꺼짐
  * 상태색을 버튼에서 그대로 상속받고, 라벨과 같은 광학 무게로 읽힌다.
  *
- * 라이브러리를 들이지 않는다 — 여덟 개 도형이라 인라인 `<svg>`가 가장 작다.
+ * 라이브러리를 들이지 않는다 — 일곱 개 도형이라 인라인 `<svg>`가 가장 작다.
  */
 import { html, svg } from 'lit-html';
 
@@ -62,12 +62,6 @@ export function iconMerge() {
     <circle cx="4.6" cy="4" r="1.5" />
     <circle cx="4.6" cy="12" r="1.5" />
     <circle cx="11.4" cy="4" r="1.5" />`);
-}
-
-/** Stacked plates: 한 레포가 동시에 돌릴 세션 수. */
-export function iconSlots() {
-  return shell(svg`<rect x="2.6" y="2.6" width="7.4" height="7.4" rx="1.2" />
-    <path d="M6 13.4h6a1.4 1.4 0 0 0 1.4-1.4V6" />`);
 }
 
 /** Cog with spokes: 그 레포의 실행 기본값 다이얼로그를 여는 축. */

@@ -90,11 +90,19 @@ describe('monitor tab styles (UI-eey2)', () => {
     );
   });
 
-  test('stacks the deck and keeps the tile strip swipeable on mobile', () => {
+  test('wraps the tile control line inside the fixed-width card', () => {
+    const block = monitorBlock();
+
+    expect(block).toMatch(/\.mon2-deck__tile-ft\s*{[^}]*flex-wrap:\s*wrap/);
+    expect(block).toMatch(/\.mon2-deck__tile\s*{[^}]*flex:\s*0 0 236px/);
+    expect(block).not.toMatch(/\.mon2-deck__strip\s*{[^}]*flex-wrap/);
+  });
+
+  test('stacks the totals bar and keeps the tile strip swipeable on mobile', () => {
     const block = monitorBlock();
     const mq = block.slice(block.indexOf('@media (max-width: 640px)'));
 
-    expect(mq).toContain('.mon2-deck__row');
+    expect(mq).toContain('.mon2-deck__bar');
     expect(mq).toContain('flex-direction: column');
     expect(mq).toMatch(/\.mon2-deck__strip\s*{[^}]*overflow-x:\s*auto/);
   });

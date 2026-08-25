@@ -6594,9 +6594,11 @@ html[data-theme='dark'] {
 
 /* --- 레포 데크 (§4) ------------------------------------------------------
    프로젝트 관리에서 고른 visible 레포를 **전부** 같은 타일로 세우는 signature
-   줄 — 파이프라인 유무로 레포를 두 갈래로 나누지 않는다 (UI-thwe). 합계 칸은
-   고정폭으로 왼쪽에 서고, 타일은 236px 고정폭 strip으로 가로 스크롤한다 — 레포
-   수가 늘어도 타일 하나의 독해 폭은 변하지 않아야 한다. */
+   줄 — 파이프라인 유무로 레포를 두 갈래로 나누지 않는다 (UI-thwe). 합계는
+   조작이 아니라 배경 사실이므로 데크 위 오른쪽 끝에 한 줄로만 서고, 타일은
+   236px 고정폭 strip으로 가로 스크롤한다 — 레포 수가 늘어도 타일 하나의 독해
+   폭은 변하지 않아야 한다. 타일은 정체 줄(이름·부하·이동)과 제어 줄(스위치·
+   건수·실행 칩)이며, 제어 줄은 넘치면 타일 폭 안에서 줄바꿈한다. */
 .mon2-deck:empty {
   display: none;
 }
@@ -6604,37 +6606,30 @@ html[data-theme='dark'] {
 .mon2-deck {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-6);
-  margin-bottom: var(--sp-10);
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-8);
 }
 
-.mon2-deck__row {
+/* 합계 줄: 테두리도 배경도 없다 — 여기서 상자를 그리면 타일과 같은 무게로
+   읽히고, 합계는 타일보다 뒤에 있어야 한다. */
+.mon2-deck__bar {
   display: flex;
-  align-items: stretch;
-  gap: var(--sp-8);
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--sp-4) var(--sp-8);
   min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
 }
 
-.mon2-deck__total {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: var(--sp-3);
-  padding: var(--sp-6) var(--sp-10);
-  border: 1px solid var(--border-card);
-  border-radius: var(--r-8);
-  background: var(--bg-panel);
-  color: var(--text-secondary);
-  font-size: var(--fs-chip);
+.mon2-deck__total-counts {
   white-space: nowrap;
 }
 
 .mon2-deck__total-tokens {
   display: flex;
   gap: var(--sp-6);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
 }
 
 .mon2-deck__tok {
@@ -6642,9 +6637,9 @@ html[data-theme='dark'] {
 }
 
 .mon2-deck__strip {
-  flex: 1 1 auto;
   display: flex;
-  gap: var(--sp-8);
+  flex: 1 1 auto;
+  gap: var(--sp-6);
   min-width: 0;
   overflow-x: auto;
   padding-bottom: var(--sp-2);
@@ -6654,8 +6649,8 @@ html[data-theme='dark'] {
   flex: 0 0 236px;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-5);
-  padding: var(--sp-6) var(--sp-8);
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-7);
   border: 1px solid var(--border-card);
   border-radius: var(--r-8);
   background: var(--bg-card);
@@ -6675,7 +6670,31 @@ html[data-theme='dark'] {
 .mon2-deck__tile-hd {
   display: flex;
   align-items: center;
-  gap: var(--sp-6);
+  gap: var(--sp-5);
+  min-width: 0;
+}
+
+/* 두 번째 줄: 스위치 · 건수 · 실행 칩. 타일 폭 안에서 줄바꿈한다 — 내용이
+   길다고 타일이 옆으로 넓어지면 타일마다 독해 폭이 달라진다. */
+.mon2-deck__tile-ft {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3) var(--sp-6);
+  min-width: 0;
+}
+
+.mon2-deck__load {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--sp-4);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
+.mon2-deck__load-n {
+  font-family: var(--font-mono);
 }
 
 .mon2-deck__name {
@@ -6691,23 +6710,17 @@ html[data-theme='dark'] {
 
 .mon2-deck__worker {
   flex: 0 0 auto;
+  padding: 0 var(--sp-2);
   border: none;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: var(--fs-caption);
+  font-size: var(--fs-chip);
+  line-height: 1;
 }
 
 .mon2-deck__worker:hover {
   color: var(--text-primary);
-}
-
-.mon2-deck__slots {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-5);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
 }
 
 /* 슬롯 레일: 한 칸 = 슬롯 1개. 실행 중인 칸만 채워지고, 빈 칸은 점선이라
@@ -6719,8 +6732,8 @@ html[data-theme='dark'] {
 }
 
 .mon2-deck__slot {
-  width: var(--sp-6);
-  height: var(--sp-10);
+  width: var(--sp-5);
+  height: var(--sp-8);
   border: 1px dashed var(--border-empty-fill);
   border-radius: var(--r-2);
 }
@@ -6731,16 +6744,38 @@ html[data-theme='dark'] {
 }
 
 .mon2-deck__counts {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
   white-space: nowrap;
+}
+
+.mon2-deck__counts:empty {
+  display: none;
+}
+
+/* 칩도 같은 줄에서 시작하되, 자리가 모자라면 통째로 다음 줄로 내려간다 —
+   말줄임으로 잘린 모델 이름은 읽히지 않는다. */
+.mon2-deck__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.mon2-deck__chip {
+  padding: 0 var(--sp-4);
+  border: 1px solid var(--border-chip);
+  border-radius: var(--r-5);
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
 }
 
 .mon2-deck__ops {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
-  gap: var(--sp-4);
+  gap: var(--sp-3);
 }
 
 /* 인라인 SVG 아이콘 (icons.js): 크기는 여기서만 정한다. 이 규칙이 없으면 SVG의
@@ -6751,37 +6786,25 @@ html[data-theme='dark'] {
   height: 13px;
 }
 
+/* 라벨을 버린 아이콘 전용 스위치: 뜻은 `title`·`aria-label`이 싣는다. 정사각
+   히트박스라 세 개가 나란히 서도 광학 중심이 흔들리지 않는다. */
 .mon2-deck__op {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-1) var(--sp-5);
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
   border: 1px solid var(--border-chip);
   border-radius: var(--r-5);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: var(--fs-caption);
-  white-space: nowrap;
 }
 
 .mon2-deck__op.is-on {
   border-color: var(--border-tile-run);
   color: var(--accent-success);
-}
-
-.mon2-deck__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-4);
-}
-
-.mon2-deck__chip {
-  padding: 0 var(--sp-4);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  color: var(--text-muted);
-  font-size: var(--fs-caption);
 }
 
 /* `⚙` 실행 설정 패널 (§4.4): 데크 바로 아래 인라인. 한 번에 한 레포만 연다. */
@@ -7489,14 +7512,13 @@ html[data-theme='dark'] {
     overflow: visible;
   }
 
-  /* 데크는 세로로 쌓고(합계 → 타일), 타일 strip만 가로로 스와이프한다. 설정
-     패널은 한 열로 내려온다. */
-  .mon2-deck__row {
+  /* 데크는 이미 세로로 쌓여 있다(합계 줄 → 타일). 좁은 화면에서는 합계 줄을
+     접어 넘기고, 타일 strip만 가로로 스와이프한다. 설정 패널은 한 열로
+     내려온다. */
+  .mon2-deck__bar {
     flex-direction: column;
-  }
-
-  .mon2-deck__total {
-    white-space: normal;
+    align-items: flex-end;
+    gap: var(--sp-2);
   }
 
   .mon2-deck__strip {
