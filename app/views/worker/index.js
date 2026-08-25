@@ -761,8 +761,14 @@ function resolutionView(resolution) {
  * Only `reviewing`/`revising` are live: those are the states with an actual
  * running attempt behind them.
  *
+ * `pending` is NOT one of them, and its label must not claim a review either.
+ * No reviewer has been dispatched in that state and, on the ordinary path,
+ * none ever will be: the server is checking whether the receipt already
+ * covers this head. Calling it a pending review made every ordinary merge look
+ * like it had queued one.
+ *
  * @param {{ state?: string, failure_reason?: string|null }|null|undefined} head_review
- * @returns {{ badge: string, live: boolean, alert: boolean }|null}
+ * @returns {{ badge: string, title: string, live: boolean, alert: boolean }|null}
  */
 export function headReviewView(head_review) {
   if (!head_review || typeof head_review !== 'object') {
@@ -770,11 +776,27 @@ export function headReviewView(head_review) {
   }
   switch (head_review.state) {
     case 'pending':
-      return { badge: 'implementation review 대기', live: false, alert: false };
+      return {
+        badge: '머지 전 확인 중',
+        title:
+          '리뷰 영수증이 현재 head를 덮는지 확인하는 중 — 리뷰어는 아직 부르지 않았습니다',
+        live: false,
+        alert: false
+      };
     case 'reviewing':
-      return { badge: 'implementation review 중', live: true, alert: false };
+      return {
+        badge: '리뷰 진행 중',
+        title: 'implementation review 실행 중',
+        live: true,
+        alert: false
+      };
     case 'revising':
-      return { badge: 'review 수정 중 · 1회', live: true, alert: false };
+      return {
+        badge: '리뷰 수정 중 · 1회',
+        title: 'review findings 수정 중 — 1회로 제한됩니다',
+        live: true,
+        alert: false
+      };
     case 'failed': {
       const raw =
         typeof head_review.failure_reason === 'string'
@@ -787,6 +809,7 @@ export function headReviewView(head_review) {
           reason.trim().length > 0
             ? `review 자동 진행 실패: ${reason.trim()}`
             : 'review 자동 진행 실패',
+        title: reason.trim(),
         live: false,
         alert: true
       };
@@ -1134,6 +1157,20 @@ export function prStatusBadge(input) {
   if (input.continuation_required) {
     return badge('이어하기 선택 필요', { alert: true });
   }
+  // Ahead of every server-owned state because it is the only one that describes
+  // the client's own unanswered request. It ends the moment a snapshot lands,
+  // and it never claims a merge step: the queue place is not taken yet.
+  if (input.queueing) {
+    return input.queueing === 'cleanup'
+      ? badge('정리 재개 요청 중', {
+          title: '서버 응답을 기다리는 중입니다',
+          live: true
+        })
+      : badge('큐 등록 중', {
+          title: '머지 큐에 넣는 중 — 서버 응답을 기다립니다',
+          live: true
+        });
+  }
   if (input.merge_step) {
     return input.gate?.tier === 'merged'
       ? badge('머지됨', {
@@ -1160,8 +1197,11 @@ export function prStatusBadge(input) {
     });
   }
   if (input.head_review && input.head_review.state !== 'failed') {
-    return badge('리뷰 진행 중', {
-      title: input.head_review.badge,
+    // The journal's own label, not a fixed one: `pending` is a receipt check
+    // with no reviewer behind it, and calling every pre-merge state 리뷰 진행 중
+    // told the reader a review was running on the ordinary path where none is.
+    return badge(input.head_review.badge, {
+      title: input.head_review.title,
       live: input.head_review.live === true
     });
   }
@@ -1330,8 +1370,11 @@ export function prStatusBadge(input) {
  * post-merge cleanup failure for this bead, if any (§6).
  * @param {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage of the
  * bead's last attempt (UI-raqh §1).
- * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null }|null} [active]
- * What the server is doing to this bead right now (UI-raqh §3/§4).
+ * @param {{ activity: 'checking'|'verifying'|null, merge_progress: { step: string }|null, queueing?: 'merge'|'cleanup'|null }|null} [active]
+ * What the server is doing to this bead right now (UI-raqh §3/§4). `queueing`
+ * is the client's own click-to-reply window instead: the request is in flight
+ * and the server has not answered, so nothing is merging yet and the row must
+ * not claim a step of a sequence it has not entered.
  * @param {'running'|'paused'|null} [conflict_session] - State of this bead's own
  * conflict-resolution attempt, when one exists (UI-dxgz §1).
  * @param {boolean} [external] - Whether this row is an EXTERNAL PR — one a
@@ -1454,6 +1497,13 @@ function prWaitRow(
     repo_operations: progress_input.repo_operations
   });
   const cleanup_active = isPrWaitCleanupActive(merge_step);
+  // The click's own in-flight window. It locks the buttons exactly as a merge
+  // step does — a second click has nothing to land on — but it is NOT a merge
+  // step: the server is still taking the request, and drawing 머지 중 1/7 here
+  // made the bar run forward and then fall back to a queue position the moment
+  // the real snapshot arrived.
+  const queueing =
+    active && !merge_step && (active.queueing ?? null) ? active.queueing : null;
   // An already-merged PR whose cleanup stopped: the click re-runs the cleanup
   // from the top. Nothing retries automatically (§6), so this button is the
   // human's way back in once they have fixed whatever stopped it.
@@ -1497,6 +1547,7 @@ function prWaitRow(
     cleanup_failed.step === 'repo_operations';
   const status_badge = prStatusBadge({
     continuation_required,
+    queueing,
     merge_step,
     conflict_badge,
     conflict_live: resolution?.live === true || conflict_session === 'running',
@@ -1605,6 +1656,9 @@ function prWaitRow(
     // a conflicting external PR whatever its cached eligibility says (UI-7agi §5).
     merge_enabled:
       !merge_step &&
+      // The click is still in flight. It used to be the fake merge step that
+      // held the button; the lock has to survive that step going away.
+      !queueing &&
       !conflict_session &&
       !discard_blocks_merge &&
       !base_exception &&
@@ -1657,35 +1711,37 @@ function prWaitRow(
         : `폐기 진행 중 — ${discard.progress || '완료를 기다리세요'}`
       : continuation_required
         ? '실행 provider가 변경되었습니다 — 이어갈 방식을 선택하세요'
-        : merge_step
-          ? `머지 진행 중 — ${merge_step.label}`
-          : external_cleanup
-            ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
-            : external_conflict_unresolvable
-              ? '워크트리 없음 — 세션에서 직접 해소하세요'
-              : conflict_session === 'running'
-                ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
-                : conflict_session === 'paused'
-                  ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
-                  : cleanup_retry
-                    ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
-                    : conflicting
-                      ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
-                      : gate?.reason === 'base_behind'
-                        ? 'base를 자동 갱신한 뒤 머지합니다'
-                        : gate?.reason === 'review_receipt_missing'
-                          ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
-                          : gate?.reason === 'review_receipt_stale'
-                            ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
-                            : gate?.reason === 'spec_id_missing'
-                              ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
-                              : enabled
-                                ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
-                                : gate && gate.tier === 'merged'
-                                  ? // Already merged with no cleanup failure recorded: the cleanup
-                                    // is running, so "머지 불가: 관측 대기" would be a lie about why.
-                                    '머지됨 — 머지 후 정리 진행 중'
-                                  : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
+        : queueing
+          ? '요청을 보내는 중 — 서버 응답을 기다립니다'
+          : merge_step
+            ? `머지 진행 중 — ${merge_step.label}`
+            : external_cleanup
+              ? '머지 완료 — 클릭하면 실패한 정리를 재개합니다'
+              : external_conflict_unresolvable
+                ? '워크트리 없음 — 세션에서 직접 해소하세요'
+                : conflict_session === 'running'
+                  ? '충돌 해소 세션 실행 중 — 완료 후 다시 머지하세요'
+                  : conflict_session === 'paused'
+                    ? '충돌 해소 세션 일시정지 — 재개 후 완료되면 머지하세요'
+                    : cleanup_retry
+                      ? '머지 완료 — 클릭하면 남은 정리를 실패 단계부터 재개합니다'
+                      : conflicting
+                        ? '충돌 — 큐에 넣으면 해소 세션을 띄우고 완료 후 자동으로 재머지합니다'
+                        : gate?.reason === 'base_behind'
+                          ? 'base를 자동 갱신한 뒤 머지합니다'
+                          : gate?.reason === 'review_receipt_missing'
+                            ? '리뷰 영수증 없음 — 자동 리뷰 세션 후 승인되면 머지합니다'
+                            : gate?.reason === 'review_receipt_stale'
+                              ? 'head 재작성됨(영수증이 현재 head의 조상이 아님) — 자동 재리뷰 세션 후 승인되면 머지합니다'
+                              : gate?.reason === 'spec_id_missing'
+                                ? 'native spec_id 미기록 — bd update --spec-id로 기록한 뒤 다시 머지하세요'
+                                : enabled
+                                  ? `머지 (${gate.gate_badge}) — 큐에 넣어 순서대로 머지합니다 (차례가 되면 다시 확인)`
+                                  : gate && gate.tier === 'merged'
+                                    ? // Already merged with no cleanup failure recorded: the cleanup
+                                      // is running, so "머지 불가: 관측 대기" would be a lie about why.
+                                      '머지됨 — 머지 후 정리 진행 중'
+                                    : `머지 불가: ${(gate && gate.reason) || '관측 대기'}`
   };
 }
 
@@ -4475,9 +4531,19 @@ export function createWorkerView(mount_element, options = {}) {
             // The server's own progress wins; the local pending only covers the
             // window before the first snapshot carrying it arrives.
             pr_activity[e.bead_id] ||
-              (merge_pending.has(e.bead_id) || cleanup_pending.has(e.bead_id)
-                ? { activity: null, merge_progress: { step: 'merging' } }
-                : null),
+              (merge_pending.has(e.bead_id)
+                ? {
+                    activity: null,
+                    merge_progress: null,
+                    queueing: /** @type {const} */ ('merge')
+                  }
+                : cleanup_pending.has(e.bead_id)
+                  ? {
+                      activity: null,
+                      merge_progress: null,
+                      queueing: /** @type {const} */ ('cleanup')
+                    }
+                  : null),
             conflict_sessions.get(e.bead_id) || null,
             // Overlaid by the server (UI-7agi §2) — absent on every durable row.
             e.external === true,

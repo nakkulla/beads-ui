@@ -544,6 +544,72 @@ describe('worker/head-review — reviewer continuation (UI-58w8 seam 2)', () => 
     });
   });
 
+  test('records the enqueue-time binding as the receipt actor, not a selection', async () => {
+    const { store, driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      })
+    });
+
+    await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: OLD_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(calls.select).toHaveLength(0);
+    expect(journalOf(store)).toMatchObject({ reviewer: 'codex' });
+  });
+
+  test('settles the enqueue-time binding in one persist, never through pending', async () => {
+    const { store, driver } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      })
+    });
+    const before = store.snapshot(WS).revision;
+
+    await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: OLD_HEAD,
+      base_ref: 'main'
+    });
+
+    expect(store.snapshot(WS).revision).toBe(before + 1);
+  });
+
+  test('approves the enqueue-time binding even when reviewer selection is self', async () => {
+    const { store, driver, calls } = harness({
+      readReceipt: async () => ({
+        actor: 'codex',
+        head_sha: OLD_HEAD,
+        raw: `codex@${OLD_HEAD}`
+      }),
+      selectReviewer: async () => ({
+        ok: false,
+        reviewer: 'self',
+        effort: 'xhigh',
+        reason: 'reviewer_selection_self'
+      })
+    });
+
+    const result = await driver.ensureApproved('UI-1', 'UI-1', {
+      head_sha: OLD_HEAD,
+      base_ref: 'main'
+    });
+
+    // No reviewer is ever asked to honour the selection on this path, so a
+    // `self`/`skip` record must not refuse a merge that needs no review.
+    expect(result.state).toBe('approved');
+    expect(calls.review).toHaveLength(0);
+    expect(journalOf(store)).toMatchObject({
+      state: 'approved',
+      approval_source: 'existing_current'
+    });
+  });
+
   test('binds an ordinary self receipt current for the clicked head', async () => {
     const { store, driver, calls } = harness({
       readReceipt: async () => ({

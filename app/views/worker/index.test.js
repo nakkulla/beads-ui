@@ -6477,7 +6477,7 @@ describe('merge progress — view (UI-raqh §4)', () => {
     expect(row.querySelector('.merge-step')).toBe(null);
   });
 
-  test('covers the click with a local pending step before the snapshot lands', async () => {
+  test('covers the click with a queueing badge, not a merge step, before the snapshot lands', async () => {
     /** @type {(v: any) => void} */
     let release = () => {};
     const transport = vi.fn(
@@ -6499,13 +6499,43 @@ describe('merge progress — view (UI-raqh §4)', () => {
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="RD-1"]')
     );
-    expect(row.querySelector('.merge-step')?.textContent).toContain('머지 중');
+    expect(row.querySelector('.merge-step')).toBe(null);
+    expect(row.textContent).toContain('큐 등록 중');
 
     release({ applied: true, conflict: false, queued: 1 });
     await flush();
     expect(
-      mount.querySelector('.worker-mini[data-bead-id="RD-1"] .merge-step')
-    ).toBe(null);
+      mount.querySelector('.worker-mini[data-bead-id="RD-1"]')?.textContent
+    ).not.toContain('큐 등록 중');
+  });
+
+  test('keeps the merge button locked while the click is still in flight', async () => {
+    /** @type {(v: any) => void} */
+    let release = () => {};
+    const transport = vi.fn(
+      (/** @type {string} */ type) =>
+        new Promise((resolve) => {
+          if (type === 'worker-merge-queue-add') {
+            release = resolve;
+          } else {
+            resolve({ applied: true, conflict: false });
+          }
+        })
+    );
+    const mount = mountRow(null, transport);
+    /** @type {HTMLButtonElement} */ (
+      mount.querySelector('.worker-mini__merge')
+    ).click();
+    await flush();
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        mount.querySelector('.worker-mini__merge')
+      ).disabled
+    ).toBe(true);
+
+    release({ applied: true, conflict: false, queued: 1 });
+    await flush();
   });
 
   test('lets the server step supersede the local pending one', async () => {
@@ -8924,9 +8954,11 @@ describe('순차 머지 큐 — PR 대기 레인 (UI-5v7d §4)', () => {
   }
 
   test.each([
-    ['pending', '리뷰 진행 중', false],
+    // `pending` names the receipt check it actually is: no reviewer has been
+    // dispatched in that state, and on the ordinary path none ever is.
+    ['pending', '머지 전 확인 중', false],
     ['reviewing', '리뷰 진행 중', true],
-    ['revising', '리뷰 진행 중', true]
+    ['revising', '리뷰 수정 중 · 1회', true]
   ])('renders the %s head-review badge (UI-58w8 §7)', (state, label, live) => {
     const { mount } = mountLane(
       laneOf(['RD-1'], {

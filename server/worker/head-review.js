@@ -634,19 +634,47 @@ export function createHeadReview(deps) {
       return relaxed;
     }
 
-    const selection = await deps.selectReviewer(subject_bead_id);
-    const reviewer =
-      typeof selection.reviewer === 'string' && selection.reviewer.length > 0
-        ? selection.reviewer
-        : UNRESOLVED_REVIEWER;
-    const effort =
-      typeof selection.effort === 'string' && selection.effort.length > 0
-        ? selection.effort
-        : UNRESOLVED_REVIEW_EFFORT;
-    const reviewer_source =
-      selection.source === 'bead' || selection.source === 'harness'
-        ? selection.source
-        : null;
+    /**
+     * @type {Promise<{ ok: boolean, reason: string|null, reviewer: string, effort: string, reviewer_source: 'bead'|'harness'|null }>|null}
+     */
+    let selection_promise = null;
+    /**
+     * Background reviewer selection (§3), read at most once per call and ONLY
+     * where a reviewer could actually be dispatched.
+     *
+     * The no-dispatch approvals ask a reviewer for nothing: they record the
+     * actor of a receipt that is already current (§2, UI-vkk8 §4). Resolving
+     * the ladder for them spent a Bead read on every ordinary merge — and an
+     * `impl_review_model=self|skip` record failed the journal on a path where
+     * no reviewer would ever have been asked to honour it, refusing a merge
+     * that needed no review at all.
+     */
+    function resolveSelection() {
+      if (selection_promise === null) {
+        selection_promise = deps
+          .selectReviewer(subject_bead_id)
+          .then((selected) => ({
+            ok: selected.ok,
+            reason:
+              typeof selected.reason === 'string' ? selected.reason : null,
+            reviewer:
+              typeof selected.reviewer === 'string' &&
+              selected.reviewer.length > 0
+                ? selected.reviewer
+                : UNRESOLVED_REVIEWER,
+            effort:
+              typeof selected.effort === 'string' && selected.effort.length > 0
+                ? selected.effort
+                : UNRESOLVED_REVIEW_EFFORT,
+            reviewer_source: /** @type {'bead'|'harness'|null} */ (
+              selected.source === 'bead' || selected.source === 'harness'
+                ? selected.source
+                : null
+            )
+          }));
+      }
+      return selection_promise;
+    }
 
     if (journal && journal.head_sha !== head_sha) {
       // Supersession: prove the move from the journal's head is queue-owned
@@ -681,14 +709,57 @@ export function createHeadReview(deps) {
           ? parsed_receipt.head_sha
           : null;
 
+      // Enqueue-time binding (§2): the ordinary workflow receipt that is
+      // ALREADY current for the head this click pinned binds as
+      // `existing_current` — the same receipt the ordinary merge gate trusts,
+      // now recorded in the journal rather than consumed bare. Only `skipped`
+      // is refused: it is authority to proceed, never review evidence.
+      //
+      // This binding is available ONLY before any queue-owned head mutation
+      // (`head_sha === authority.requested_head_sha`). After a mutation the
+      // receipt must come from a review attempt this journal recorded, which
+      // is what stops an independently written `self@<current-head>` from
+      // reaching the merge gate (§5).
+      //
+      // It is decided BEFORE any journal exists, and settles in one persist:
+      // nothing here dispatches, so the `pending` slot this used to pass
+      // through carried no attempt, cost a second persist and fanout, and told
+      // every watching row that a review was pending when none would run. The
+      // reviewer recorded is the receipt's own actor, exactly as the other
+      // no-dispatch approvals do (UI-vkk8 §4) — there is no selection ladder
+      // to consult for a review nobody performs.
+      const enqueue_binding =
+        head_sha === authority.requested_head_sha &&
+        receipt !== null &&
+        validApproval(receipt, head_sha);
+      if (enqueue_binding) {
+        const bound = /** @type {{ actor: string, raw: string }} */ (receipt);
+        if (
+          deps.store.openApprovedHeadReview(workspace, {
+            bead_id: queue_bead_id,
+            authority_id: authority.id,
+            head_sha,
+            reviewer: bound.actor,
+            effort: UNRESOLVED_REVIEW_EFFORT,
+            approval_source: 'existing_current',
+            receipt: bound.raw
+          }).ok
+        ) {
+          return { state: 'approved', reason: null };
+        }
+        // A same-head journal appeared under us; adopt it below rather than
+        // overwriting a slot another pass owns.
+      }
+
+      const selection = await resolveSelection();
       if (
         !deps.store.beginHeadReview(workspace, {
           bead_id: queue_bead_id,
           authority_id: authority.id,
           head_sha,
-          reviewer,
-          effort,
-          reviewer_source
+          reviewer: selection.reviewer,
+          effort: selection.effort,
+          reviewer_source: selection.reviewer_source
         }).ok
       ) {
         // Either the entry moved under us or a same-head journal appeared —
@@ -707,33 +778,11 @@ export function createHeadReview(deps) {
         }
       }
 
-      if (!selection.ok) {
-        return failJournal(
-          queue_bead_id,
-          authority.id,
-          head_sha,
-          journal.state,
-          selection.reason || 'reviewer_selection_invalid'
-        );
-      }
-
-      // Enqueue-time binding (§2): the ordinary workflow receipt that is
-      // ALREADY current for the head this click pinned binds as
-      // `existing_current` — the same receipt the ordinary merge gate trusts,
-      // now recorded in the journal rather than consumed bare. Only `skipped`
-      // is refused: it is authority to proceed, never review evidence.
-      //
-      // This binding is available ONLY before any queue-owned head mutation
-      // (`head_sha === authority.requested_head_sha`). After a mutation the
-      // receipt must come from a review attempt this journal recorded, which
-      // is what stops an independently written `self@<current-head>` from
-      // reaching the merge gate (§5).
-      if (
-        journal.state === 'pending' &&
-        head_sha === authority.requested_head_sha &&
-        receipt !== null &&
-        validApproval(receipt, head_sha)
-      ) {
+      // The adopted-journal case of the binding above: the slot is not ours to
+      // open, but the receipt is just as current, so it still approves without
+      // a reviewer — and therefore before the selection ladder can refuse it.
+      if (enqueue_binding && journal.state === 'pending') {
+        const bound = /** @type {{ raw: string }} */ (receipt);
         const ok = transition(
           queue_bead_id,
           authority.id,
@@ -742,12 +791,22 @@ export function createHeadReview(deps) {
           {
             state: 'approved',
             approval_source: 'existing_current',
-            receipt: receipt.raw
+            receipt: bound.raw
           }
         );
         return ok
           ? { state: 'approved', reason: null }
           : { state: 'gone', reason: null };
+      }
+
+      if (!selection.ok) {
+        return failJournal(
+          queue_bead_id,
+          authority.id,
+          head_sha,
+          journal.state,
+          selection.reason || 'reviewer_selection_invalid'
+        );
       }
 
       // Queue-owned proof for the move from the last reviewed head (the
@@ -785,6 +844,7 @@ export function createHeadReview(deps) {
       // placeholder reviewer. The ladder is read HERE, in the same function
       // the click goes through, so a `self`/`skip` or an unreadable record
       // fails closed for both origins and the journal names who was chosen.
+      const selection = await resolveSelection();
       if (!selection.ok) {
         return failJournal(
           queue_bead_id,
@@ -797,9 +857,9 @@ export function createHeadReview(deps) {
       if (
         !transition(queue_bead_id, authority.id, head_sha, 'pending', {
           state: 'reviewing',
-          reviewer,
-          effort,
-          reviewer_source,
+          reviewer: selection.reviewer,
+          effort: selection.effort,
+          reviewer_source: selection.reviewer_source,
           review_attempt_id: attempt_id
         })
       ) {

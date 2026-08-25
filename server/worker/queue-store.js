@@ -6725,6 +6725,79 @@ export function createQueueStore(options = {}) {
     },
 
     /**
+     * Open one head-review journal ALREADY settled, in a single persist.
+     *
+     * The no-dispatch approvals decide everything they need BEFORE any journal
+     * exists: the enqueue-time `existing_current` binding (UI-58w8 §2) reuses a
+     * receipt that is already current for the head the click pinned, and no
+     * reviewer is ever asked for anything. Routing that through
+     * {@link beginHeadReview} spent two persists and two fanouts to pass
+     * through a `pending` slot no attempt ever occupies — and a row that says a
+     * review is pending while none will run is simply wrong. §6's prerecord
+     * obligation binds review/repair DISPATCH, which this path never reaches,
+     * and §2 asks for the `approved` journal itself, not for a `pending` one
+     * first.
+     *
+     * Refuses exactly what {@link beginHeadReview} refuses — a journal for a
+     * head that already has one (the caller adopts that journal instead) and a
+     * terminal `failed` journal — so a concurrent pass can never lose its slot
+     * to this write.
+     *
+     * @param {string} workspace
+     * @param {{ bead_id: string, authority_id: string, head_sha: string, reviewer: string, effort: string, approval_source: 'existing_current'|'external_review'|'bounded_repair', receipt: string }} input
+     * @returns {QueueOpResult}
+     */
+    openApprovedHeadReview(workspace, input) {
+      return applyUnconditional(workspace, (next) => {
+        const entry = next.merge_queue.find((e) => e.bead_id === input.bead_id);
+        if (
+          !entry ||
+          !entry.authority ||
+          entry.authority.id !== input.authority_id ||
+          typeof input.head_sha !== 'string' ||
+          !SHA40_RE.test(input.head_sha) ||
+          typeof input.reviewer !== 'string' ||
+          input.reviewer.length === 0 ||
+          typeof input.effort !== 'string' ||
+          input.effort.length === 0 ||
+          typeof input.receipt !== 'string' ||
+          input.receipt.length === 0
+        ) {
+          return false;
+        }
+        const head_sha = input.head_sha.toLowerCase();
+        const review = entry.head_review ?? null;
+        if (review !== null) {
+          if (review.head_sha === head_sha || review.state === 'failed') {
+            return false;
+          }
+        }
+        const candidate = {
+          authority_id: entry.authority.id,
+          head_sha,
+          state: 'approved',
+          reviewer: input.reviewer,
+          effort: input.effort,
+          reviewer_source: null,
+          review_attempt_id: null,
+          findings_digest: null,
+          repair_attempt_id: null,
+          repair_rounds: review === null ? 0 : review.repair_rounds,
+          approval_source: input.approval_source,
+          receipt: input.receipt,
+          failure_reason: null,
+          updated_at: now()
+        };
+        const normalized = normalizeHeadReview(candidate, entry.authority);
+        if (normalized === null) {
+          return false;
+        }
+        entry.head_review = normalized;
+        return true;
+      });
+    },
+
+    /**
      * Transition one head-review journal under a triple CAS: exact authority
      * id, exact journal head, exact current state. Everything a cancelled or
      * superseded attempt reports late fails this CAS and is a no-op — that is
