@@ -484,16 +484,24 @@ export function emitWorkerQueueSnapshot(ws, client_id, root_dir, queue) {
  * Splitting them would let a group header render against a revision from a
  * different push.
  *
+ * `cross_lanes` rides the SAME envelope for the same reason (UI-j92s §4.4): the
+ * stored 연결 레인 are drawn against the pipeline of this very push, and a
+ * separate event would let a lane render against members from another one.
+ * `null` means the store could not be read — distinct from an empty lane list,
+ * which is a store that read fine and holds nothing.
+ *
  * @param {WebSocket} ws
  * @param {string} client_id
  * @param {Array<Record<string, unknown>>} workspaces
  * @param {Array<Record<string, unknown>>} [workspaces_state]
+ * @param {import('../worker/cross-lanes-store.js').CrossLanesState|null} [cross_lanes]
  */
 export function emitMonitorPipelineSnapshot(
   ws,
   client_id,
   workspaces,
-  workspaces_state = []
+  workspaces_state = [],
+  cross_lanes = null
 ) {
   const msg = JSON.stringify({
     id: `evt-${Date.now()}`,
@@ -503,7 +511,8 @@ export function emitMonitorPipelineSnapshot(
       type: 'monitor-pipeline-snapshot',
       id: client_id,
       workspaces,
-      workspaces_state
+      workspaces_state,
+      cross_lanes
     }
   });
   try {

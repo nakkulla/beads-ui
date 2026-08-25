@@ -179,6 +179,63 @@ Unknown status keeps the id. The map therefore lists open blockers only, on
 either side of a rig boundary; a closed predecessor never renders as `(완료)` or
 `(미적재)`.
 
+### Stored cross lanes (UI-j92s §4.3/§4.4)
+
+`monitor-pipeline-snapshot` carries one more top-level key:
+
+```
+cross_lanes: { revision: number, lanes: Lane[] } | null
+Lane: { id: 'cl_<ulid>', status: 'draft'|'confirmed', created_at: ISO, entries: Entry[] }
+Entry: { bead_id: string, root_dir: string }
+```
+
+A 연결 레인 is stored MEMBERSHIP, not a derived `blocks` component: `entries`
+order is the lane order and `bead_blocked_by` stays the execution truth,
+unchanged by this channel. The display number `연결 n` is the 1-based position
+in `lanes` and is never stored; `id` is server-issued and immutable. One
+`bead_id` belongs to at most one lane across the whole state.
+
+`cross_lanes: null` means the lane store could not be READ — distinct from
+`{ revision, lanes: [] }` (read fine, holds nothing) and from the key being
+absent altogether (older server). A `null` disables the lane ops client-side;
+the server refuses them with `state_unreadable` anyway.
+
+Four ops mutate it, all server-global (no `root_dir` — a lane spans repos) and
+all CAS-guarded by an integer `expected_revision` taken from the snapshot.
+Success replies carry the new `{ revision }` and schedule the usual coalesced
+push.
+
+- `monitor-lane-create` → `{ entries?: Entry[], expected_revision }`; replies
+  `{ lane_id, revision }`. Appends a `draft` lane, empty or seeded. A `draft`
+  creates no dependency and loads no queue.
+- `monitor-lane-update` → `{ lane_id, entries: Entry[], expected_revision }`;
+  replies `{ lane_id, revision }`. Replaces membership AND order in one write —
+  insert, reorder and row-removal are the same op.
+- `monitor-lane-confirm` → `{ lane_id, expected_revision }`; replies
+  `{ lane_id, revision }`. Flips `status` only; the adjacent `dep-add`s and the
+  queue placements ride the client's existing `dep-add` / `worker-queue-place`
+  paths right after.
+- `monitor-lane-remove` → `{ lane_id, expected_revision }`; replies
+  `{ lane_id, revision }`. The `dep-remove`s for a confirmed lane are the
+  client's and go BEFORE this op: once the lane is gone nobody can tell which
+  adjacent pairs it owned.
+
+The server validates FORMAT and workspace registration only. `Entry.root_dir`
+must be a registered workspace — HIDDEN ones included, since a hidden repo's
+member is still a member and renders as an `외부` row. A closed or unknown
+`bead_id` never blocks a write: right after a redeploy the caches are cold, and
+a server that guessed "that bead does not exist" would corrupt a lane the user
+can still see. The fixed-row rules are a client concern.
+
+Error codes: `bad_request` (payload shape, an unregistered `root_dir`, a
+`confirm` with fewer than two members), `not_found` (`lane_id`), `conflict`
+(stale `expected_revision`), `conflict_membership` (the bead is already in
+another lane — message `이미 연결 N에 있습니다`, N being that lane's current
+position), `conflict_empty_lane` (an empty `create` while an empty draft already
+exists), `state_unreadable`. A `conflict` carries the whole current state in
+`error.details.cross_lanes` so the client re-plans on the latest lanes instead
+of resending a plan built on entries that moved.
+
 ## Worker queue channel (worker-phase2 §3/§4/§6)
 
 Per-workspace subscription + CAS-guarded mutations + a whole-queue push.

@@ -14,6 +14,7 @@
  *
  * @import { WebSocket } from 'ws'
  * @import { RequestEnvelope } from '../../app/protocol.js'
+ * @import { CrossLane, CrossLaneEntry, CrossLanesState } from '../worker/cross-lanes-store.js'
  */
 import path from 'node:path';
 import { makeError, makeOk } from '../../app/protocol.js';
@@ -37,6 +38,7 @@ import {
   tickWorkerQueue,
   workerMergeQueueState
 } from '../worker/attach.js';
+import { sharedCrossLanesStore } from '../worker/cross-lanes-store.js';
 import { projectExecutionDefaults } from '../worker/execution-defaults.js';
 import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
@@ -924,12 +926,14 @@ function pushNow() {
     return;
   }
   const workspaces_state = safeWorkspacesState();
+  const cross_lanes = safeCrossLanes();
   for (const sub of SUBSCRIBERS) {
     emitMonitorPipelineSnapshot(
       sub.ws,
       sub.client_id,
       workspaces,
-      workspaces_state
+      workspaces_state,
+      cross_lanes
     );
   }
 }
@@ -947,6 +951,24 @@ function safeWorkspacesState() {
   } catch (err) {
     log('monitor: workspace state build failed: %o', err);
     return [];
+  }
+}
+
+/**
+ * The stored cross-lane state, or `null` when the store could not be read
+ * (UI-j92s §4.4). Fail-quiet like the control-state build: a lane file nobody
+ * can parse must degrade the 연결 레인 pane, not suppress the whole push. The
+ * `null` is meaningful downstream — it disables the lane ops rather than
+ * drawing an empty lane list over lanes that exist (§7).
+ *
+ * @returns {CrossLanesState|null}
+ */
+function safeCrossLanes() {
+  try {
+    return sharedCrossLanesStore().read();
+  } catch (err) {
+    log('monitor: cross-lane state unreadable: %o', err);
+    return null;
   }
 }
 
@@ -1435,7 +1457,13 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
-  emitMonitorPipelineSnapshot(ws, client_id, workspaces, safeWorkspacesState());
+  emitMonitorPipelineSnapshot(
+    ws,
+    client_id,
+    workspaces,
+    safeWorkspacesState(),
+    safeCrossLanes()
+  );
   refreshExternalPrsForVisible();
   // One immediate fill per visible workspace (spec §4): the first tick is a
   // whole poll interval away, and a dashboard that opens empty for 30 seconds
@@ -1603,6 +1631,352 @@ function reasonOf(result) {
     return 'conflict';
   }
   return result.reason || 'rejected';
+}
+
+/**
+ * Every registered workspace root, resolved — hidden ones INCLUDED (§4.3). A
+ * lane member in a repo the user hid is still a lane member and renders as an
+ * `외부` row; refusing the write would let a visibility toggle silently break
+ * lane editing.
+ *
+ * @param {{ listWorkspaces?: () => Array<{ path: string }> }} [options]
+ * @returns {string[]}
+ */
+function registeredWorkspaceRoots(options = {}) {
+  const listWorkspaces = options.listWorkspaces || getAvailableWorkspaces;
+  /** @type {string[]} */
+  const out = [];
+  try {
+    for (const workspace of listWorkspaces()) {
+      const raw = String(workspace?.path || '');
+      if (raw.length === 0) {
+        continue;
+      }
+      out.push(path.resolve(raw));
+    }
+  } catch (err) {
+    log('monitor: workspace list unreadable for lane op: %o', err);
+    return [];
+  }
+  return out;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {number|null} The CAS revision, or null when it is not an integer.
+ */
+function laneExpectedRevision(value) {
+  return Number.isInteger(value) ? Number(value) : null;
+}
+
+/**
+ * Validate and normalize a request's `entries[]` into durable shape.
+ *
+ * The server checks FORMAT and workspace registration only. The fixed-row rules
+ * (§5.3) are a client concern, and a closed or unknown bead never blocks a
+ * write: right after a redeploy the caches are cold, and a server that guessed
+ * "that bead does not exist" would corrupt a lane the user can still see.
+ *
+ * @param {unknown} raw
+ * @param {() => string[]} listRegistered
+ * @returns {{ ok: true, entries: CrossLaneEntry[] }|{ ok: false, message: string }}
+ */
+function normalizeRequestEntries(raw, listRegistered) {
+  if (!Array.isArray(raw)) {
+    return { ok: false, message: 'entries must be an array' };
+  }
+  const registered = new Set(listRegistered());
+  /** @type {Set<string>} */
+  const seen = new Set();
+  /** @type {CrossLaneEntry[]} */
+  const entries = [];
+  for (const item of raw) {
+    const entry = /** @type {any} */ (item);
+    const bead_id =
+      entry && typeof entry.bead_id === 'string' ? entry.bead_id.trim() : '';
+    const raw_root =
+      entry && typeof entry.root_dir === 'string' ? entry.root_dir.trim() : '';
+    if (bead_id.length === 0 || raw_root.length === 0) {
+      return { ok: false, message: 'entry requires { bead_id, root_dir }' };
+    }
+    if (seen.has(bead_id)) {
+      return { ok: false, message: `duplicate bead_id: ${bead_id}` };
+    }
+    const root_dir = path.resolve(raw_root);
+    if (!registered.has(root_dir)) {
+      return { ok: false, message: `unregistered workspace: ${raw_root}` };
+    }
+    seen.add(bead_id);
+    entries.push({ bead_id, root_dir });
+  }
+  return { ok: true, entries };
+}
+
+/**
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {string} message
+ */
+function sendLaneBadRequest(ws, req, message) {
+  ws.send(JSON.stringify(makeError(req, 'bad_request', message)));
+}
+
+/**
+ * Reply to a rejected lane mutation.
+ *
+ * A `conflict` carries the whole current `cross_lanes` (§4.3): the client
+ * re-plans the drag on the LATEST lanes — fixed rows, other lanes' membership,
+ * the cycle check — instead of resending a plan built on entries that moved.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {{ code: string, message: string, state: CrossLanesState|null }} result
+ */
+function sendLaneFailure(ws, req, result) {
+  const details =
+    result.code === 'conflict' && result.state
+      ? { cross_lanes: result.state }
+      : undefined;
+  ws.send(JSON.stringify(makeError(req, result.code, result.message, details)));
+}
+
+/**
+ * The store all four lane ops mutate, and the push they schedule on success.
+ *
+ * @param {LaneOpOptions} options
+ */
+function laneOpDeps(options) {
+  return {
+    store: (options.crossLanesStore || sharedCrossLanesStore)(),
+    listRegistered:
+      options.listRegistered || (() => registeredWorkspaceRoots(options)),
+    onApplied: options.onApplied || schedulePush
+  };
+}
+
+/**
+ * Test seams for the four lane ops; each defaults to the live server source.
+ *
+ * @typedef {Object} LaneOpOptions
+ * @property {() => ReturnType<typeof sharedCrossLanesStore>} [crossLanesStore]
+ * @property {() => Array<{ path: string }>} [listWorkspaces]
+ * @property {() => string[]} [listRegistered]
+ * @property {() => void} [onApplied]
+ */
+
+/**
+ * Handle `monitor-lane-create`. Payload:
+ * `{ entries?: Entry[], expected_revision }` (UI-j92s §4.3).
+ *
+ * Appends a `draft` lane — empty (the `+ 연결 레인` button) or seeded with one
+ * drop. A draft creates no dependency and loads no queue; `확정` does that.
+ * A second EMPTY draft is refused (`conflict_empty_lane`) because the pane
+ * offers exactly one place to drop into and two would be indistinguishable.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {LaneOpOptions} [options]
+ */
+export function handleMonitorLaneCreate(ws, req, options = {}) {
+  const p = /** @type {any} */ (req.payload || {});
+  const expected_revision = laneExpectedRevision(p.expected_revision);
+  if (expected_revision === null) {
+    sendLaneBadRequest(
+      ws,
+      req,
+      'payload requires an integer expected_revision'
+    );
+    return;
+  }
+  const { store, listRegistered, onApplied } = laneOpDeps(options);
+  const normalized = normalizeRequestEntries(
+    p.entries === undefined ? [] : p.entries,
+    listRegistered
+  );
+  if (!normalized.ok) {
+    sendLaneBadRequest(ws, req, normalized.message);
+    return;
+  }
+  const seed = normalized.entries;
+  const result = store.mutate(expected_revision, (next, ctx) => {
+    if (
+      seed.length === 0 &&
+      next.lanes.some(
+        (lane) => lane.status === 'draft' && lane.entries.length === 0
+      )
+    ) {
+      return {
+        ok: false,
+        code: 'conflict_empty_lane',
+        message: '빈 연결 레인이 이미 있습니다'
+      };
+    }
+    /** @type {CrossLane} */
+    const lane = {
+      id: ctx.newLaneId(),
+      status: 'draft',
+      created_at: ctx.nowIso(),
+      entries: seed
+    };
+    next.lanes.push(lane);
+    return { ok: true, value: lane.id };
+  });
+  if (!result.ok) {
+    sendLaneFailure(ws, req, result);
+    return;
+  }
+  ws.send(
+    JSON.stringify(
+      makeOk(req, {
+        lane_id: result.value,
+        revision: result.state.revision
+      })
+    )
+  );
+  onApplied();
+}
+
+/**
+ * Handle `monitor-lane-update`. Payload:
+ * `{ lane_id, entries: Entry[], expected_revision }` (UI-j92s §4.3).
+ *
+ * Replaces membership AND order in one write — insert, reorder and row-remove
+ * are all the same op, so a drag never has to be expressed as two writes the
+ * CAS could interleave.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {LaneOpOptions} [options]
+ */
+export function handleMonitorLaneUpdate(ws, req, options = {}) {
+  const p = /** @type {any} */ (req.payload || {});
+  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
+  const expected_revision = laneExpectedRevision(p.expected_revision);
+  if (lane_id.length === 0 || expected_revision === null) {
+    sendLaneBadRequest(
+      ws,
+      req,
+      'payload requires { lane_id, entries, expected_revision }'
+    );
+    return;
+  }
+  const { store, listRegistered, onApplied } = laneOpDeps(options);
+  const normalized = normalizeRequestEntries(p.entries, listRegistered);
+  if (!normalized.ok) {
+    sendLaneBadRequest(ws, req, normalized.message);
+    return;
+  }
+  const entries = normalized.entries;
+  const result = store.mutate(expected_revision, (next) => {
+    const lane = next.lanes.find((candidate) => candidate.id === lane_id);
+    if (!lane) {
+      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
+    }
+    lane.entries = entries;
+    return { ok: true };
+  });
+  if (!result.ok) {
+    sendLaneFailure(ws, req, result);
+    return;
+  }
+  ws.send(
+    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
+  );
+  onApplied();
+}
+
+/**
+ * Handle `monitor-lane-confirm`. Payload:
+ * `{ lane_id, expected_revision }` (UI-j92s §4.3).
+ *
+ * Flips `status` only. The adjacent `dep-add`s and the queue placements ride
+ * the client's existing op paths right after, so this handler never runs `bd`.
+ * Fewer than two members is a `bad_request`: a one-member lane has no adjacent
+ * pair to depend on, so there would be nothing to confirm.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {LaneOpOptions} [options]
+ */
+export function handleMonitorLaneConfirm(ws, req, options = {}) {
+  const p = /** @type {any} */ (req.payload || {});
+  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
+  const expected_revision = laneExpectedRevision(p.expected_revision);
+  if (lane_id.length === 0 || expected_revision === null) {
+    sendLaneBadRequest(
+      ws,
+      req,
+      'payload requires { lane_id, expected_revision }'
+    );
+    return;
+  }
+  const { store, onApplied } = laneOpDeps(options);
+  const result = store.mutate(expected_revision, (next) => {
+    const lane = next.lanes.find((candidate) => candidate.id === lane_id);
+    if (!lane) {
+      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
+    }
+    if (lane.entries.length < 2) {
+      return {
+        ok: false,
+        code: 'bad_request',
+        message: '확정하려면 멤버가 2개 이상이어야 합니다'
+      };
+    }
+    lane.status = 'confirmed';
+    return { ok: true };
+  });
+  if (!result.ok) {
+    sendLaneFailure(ws, req, result);
+    return;
+  }
+  ws.send(
+    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
+  );
+  onApplied();
+}
+
+/**
+ * Handle `monitor-lane-remove`. Payload:
+ * `{ lane_id, expected_revision }` (UI-j92s §4.3).
+ *
+ * Drops the lane. The `dep-remove`s for a confirmed lane are the client's, and
+ * it sends them BEFORE this op (§5.5) — once the lane is gone nobody can tell
+ * which adjacent pairs it used to own.
+ *
+ * @param {WebSocket} ws
+ * @param {RequestEnvelope} req
+ * @param {LaneOpOptions} [options]
+ */
+export function handleMonitorLaneRemove(ws, req, options = {}) {
+  const p = /** @type {any} */ (req.payload || {});
+  const lane_id = typeof p.lane_id === 'string' ? p.lane_id : '';
+  const expected_revision = laneExpectedRevision(p.expected_revision);
+  if (lane_id.length === 0 || expected_revision === null) {
+    sendLaneBadRequest(
+      ws,
+      req,
+      'payload requires { lane_id, expected_revision }'
+    );
+    return;
+  }
+  const { store, onApplied } = laneOpDeps(options);
+  const result = store.mutate(expected_revision, (next) => {
+    const index = next.lanes.findIndex((candidate) => candidate.id === lane_id);
+    if (index < 0) {
+      return { ok: false, code: 'not_found', message: '레인이 없습니다' };
+    }
+    next.lanes.splice(index, 1);
+    return { ok: true };
+  });
+  if (!result.ok) {
+    sendLaneFailure(ws, req, result);
+    return;
+  }
+  ws.send(
+    JSON.stringify(makeOk(req, { lane_id, revision: result.state.revision }))
+  );
+  onApplied();
 }
 
 /**
