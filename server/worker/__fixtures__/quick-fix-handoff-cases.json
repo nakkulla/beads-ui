@@ -1,0 +1,487 @@
+[
+  {
+    "name": "heading 형식 네 섹션과 declared_scope는 누락이 없다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "라벨 형식 섹션은 heading 형식과 같게 인정된다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "출처/배경 — 관측 한 줄\n기대 효과 — 효과 한 줄\n영향 surface와 경계 — 경계 한 줄\n검증 bundle — npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "섹션도 scope도 없는 본문은 다섯 가지를 누락한다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "한 줄짜리 설명만 있고 절이 없다"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": [
+        "section:출처/배경",
+        "section:기대 효과",
+        "section:영향 surface와 경계",
+        "section:검증 bundle",
+        "scope:undeclared"
+      ]
+    }
+  },
+  {
+    "name": "다음 h2가 섹션을 닫아 baseline_red 줄이 밖으로 나간다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 참고\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "다음 label이 섹션을 닫는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 검증 bundle\n출처/배경 — 관측 한 줄\n- baseline_red: command=npm test\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "본문 끝에서 닫히는 섹션도 baseline_red를 담는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## scope\n- server/worker/quick-fix-handoff.js\n\n## 검증 bundle\n- baseline_red: command=npm test"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "같은 이름이 두 번 나오면 첫 번째 줄만 섹션을 연다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## 검증 bundle\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "h3 줄은 섹션을 닫지 않는다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n### 명령\n- baseline_red: command=npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "CRLF 줄 끝에서도 섹션이 인정된다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\r\n- 관측 한 줄\r\n\r\n## 기대 효과\r\n- 효과 한 줄\r\n\r\n## 영향 surface와 경계\r\n- 경계 한 줄\r\n\r\n## 검증 bundle\r\n- npm test\r\n\r\n## scope\r\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "U+2028은 줄바꿈이 아니다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\u2028## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["section:출처/배경", "section:기대 효과"]
+    }
+  },
+  {
+    "name": "U+0085은 줄바꿈이 아니다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\u0085## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["section:출처/배경", "section:기대 효과"]
+    }
+  },
+  {
+    "name": "U+000B은 줄바꿈이 아니다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\u000b## 기대 효과\n- 관측 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["section:출처/배경", "section:기대 효과"]
+    }
+  },
+  {
+    "name": "NBSP는 trim에서 남아 heading을 깨뜨린다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\u00a0\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["section:출처/배경"]
+    }
+  },
+  {
+    "name": "ASCII 스페이스와 탭은 heading 앞뒤에서 다듬어진다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "  ## 출처/배경  \n- 관측 한 줄\n\n\t## 기대 효과\t\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "bug 이슈는 검증 bundle 안에 baseline_red 줄을 요구한다",
+    "issue": {
+      "issue_type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "issue_type이 없으면 type 키를 읽는다",
+    "issue": {
+      "type": "bug",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["baseline_red"]
+    }
+  },
+  {
+    "name": "scope 절이 없으면 undeclared다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["scope:undeclared"]
+    }
+  },
+  {
+    "name": "항목 없는 scope 절은 empty_declaration이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n산문 한 줄"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["scope:empty_declaration"]
+    }
+  },
+  {
+    "name": "거부되는 항목만 있는 scope 절은 empty_declaration이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- \n- /absolute\n- docs/../secret\n- server/*.js\n- server/f?.js\n- server/[ab].js\n- :(exclude)server/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["scope:empty_declaration"]
+    }
+  },
+  {
+    "name": "닫는 대괄호를 담은 항목은 유효하다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- src/a]b/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "중복 항목이 접혀도 declared_scope다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/\n- server/worker/"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "scope 절은 다음 # 줄에서 닫힌다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n### 세부\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": ["scope:empty_declaration"]
+    }
+  },
+  {
+    "name": "빈 문자열 영수증은 unreviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": ""
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "문자열이 아닌 영수증은 unreviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": 12
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "형식을 어긴 영수증은 unreviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@zz9a21c4b0e7"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "digest가 다른 영수증은 stale이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@000000000000"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "stale",
+      "missing": []
+    }
+  },
+  {
+    "name": "digest가 같은 영수증은 reviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@a4bb869abff1"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "reviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "본문이 게이트를 통과하지 못해도 영수증이 맞으면 reviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@416ce2c5ef17"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test"
+    },
+    "expect": {
+      "state": "reviewed",
+      "missing": ["scope:undeclared"]
+    }
+  },
+  {
+    "name": "digest는 뒤따르는 개행까지 덮는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@a4bb869abff1"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js\n"
+    },
+    "expect": {
+      "state": "stale",
+      "missing": []
+    }
+  },
+  {
+    "name": "digest는 앞쪽 공백을 다듬지 않는다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@a4bb869abff1"
+      },
+      "description": " ## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "stale",
+      "missing": []
+    }
+  },
+  {
+    "name": "NFC 본문과 그 digest는 reviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@8cc635815093"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n- café 확인\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "reviewed",
+      "missing": []
+    }
+  },
+  {
+    "name": "NFD 본문은 NFC digest와 다른 본문이다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@8cc635815093"
+      },
+      "description": "## 출처/배경\n- 관측 한 줄\n\n## 기대 효과\n- 효과 한 줄\n\n## 영향 surface와 경계\n- 경계 한 줄\n\n## 검증 bundle\n- npm test\n- café 확인\n\n## scope\n- server/worker/quick-fix-handoff.js"
+    },
+    "expect": {
+      "state": "stale",
+      "missing": []
+    }
+  },
+  {
+    "name": "문자열이 아닌 description은 digest가 없어 unreviewed다",
+    "issue": {
+      "issue_type": "task",
+      "metadata": {
+        "route": "quick_fix",
+        "quick_fix_review": "self@3f9a21c4b0e7"
+      },
+      "description": null
+    },
+    "expect": {
+      "state": "unreviewed",
+      "missing": [
+        "section:출처/배경",
+        "section:기대 효과",
+        "section:영향 surface와 경계",
+        "section:검증 bundle",
+        "scope:undeclared"
+      ]
+    }
+  }
+]

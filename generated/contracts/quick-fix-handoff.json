@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "quick_fix_handoff": {
+    "applies_to": {
+      "route": "quick_fix",
+      "status": "open"
+    },
+    "enforcement": "advisory",
+    "text_model": {
+      "lines": "split_on_lf_after_stripping_cr",
+      "trim": "ascii_space_tab_only",
+      "section_start": "trimmed_line_matches_heading_or_label",
+      "section_end": "next_h2_or_label_or_end_of_text",
+      "duplicates": "first_occurrence_only"
+    },
+    "checks": {
+      "sections": {
+        "required": [
+          "출처/배경",
+          "기대 효과",
+          "영향 surface와 경계",
+          "검증 bundle"
+        ],
+        "heading_regex": "^##[ \\t]+<name>[ \\t]*$",
+        "label_regex": "^<name>[ \\t]+—"
+      },
+      "scope": {
+        "source": "description_scope",
+        "required_state": "declared_scope"
+      },
+      "baseline_red": {
+        "required_when": "issue_type_bug",
+        "section": "검증 bundle",
+        "line_regex": "^[ \\t]*(?:-[ \\t]*|[0-9]+\\.[ \\t]*)?`?baseline_red:[ \\t]*command=[^ \\t].*$"
+      }
+    },
+    "receipt": {
+      "key": "quick_fix_review",
+      "format": "<reviewer>@<sha256-12-hex>",
+      "format_regex": "^[A-Za-z0-9_-]{1,32}@[0-9a-f]{12}$",
+      "digest_of": "description_string_utf8_bytes_as_read_back",
+      "states": {
+        "absent_or_malformed": "unreviewed",
+        "digest_mismatch": "stale",
+        "digest_match": "reviewed"
+      },
+      "writers": [
+        "creating_session_after_checker_pass",
+        "worker_session_after_delta_self_review"
+      ]
+    },
+    "order": [
+      "description_complete",
+      "checker_pass",
+      "receipt_write",
+      "readback_recompute_reviewed",
+      "route_pin_last"
+    ],
+    "session_owned_pin": "route_and_in_progress_in_one_bd_update"
+  },
+  "description_scope": {
+    "applies_to": [
+      "issue_description"
+    ],
+    "section": {
+      "recognized_when": "trimmed_line_exactly_hash_hash_space_scope_lowercase",
+      "level": "double_hash_only",
+      "read": "first_match_only",
+      "closed_by": "next_trimmed_line_starting_with_hash_or_end_of_text",
+      "collect": {
+        "item_line_regex": "^\\s*-\\s(.*)$",
+        "captured_value": "trimmed"
+      },
+      "other_lines": "ignored"
+    },
+    "item": {
+      "rules": "artifact_scope_item",
+      "invalid_item": "ignore_individually",
+      "duplicates": "dropped",
+      "order": "declaration_order"
+    },
+    "states": {
+      "no_section": "undeclared",
+      "section_with_zero_valid_items": "empty_declaration",
+      "one_or_more_valid_items": "declared_scope"
+    },
+    "precedence": {
+      "resolved_spec_id_present": "artifact_front_matter_only",
+      "resolved_spec_id_absent": "read_description_route_independent"
+    },
+    "freshness": {
+      "read_from": "current_bead_state",
+      "base_sha_pinned": false,
+      "gate_use": "forbidden"
+    },
+    "absent_or_unparsable": "fail_quiet",
+    "writer": "workflow_quick_fix_route_pin_then_update_on_surface_growth"
+  }
+}

@@ -107,6 +107,9 @@ export function parseDescriptionScope(description) {
 }
 
 /**
+ * The contract's `glob_chars_star_question_bracket` rejects `*?[` only — 닫는
+ * `]` 하나는 glob를 열지 못하므로 `src/a]b/`는 유효한 항목이다.
+ *
  * @param {string} item
  */
 function isValidScopeItem(item) {
@@ -116,8 +119,7 @@ function isValidScopeItem(item) {
     item.startsWith(':') ||
     item.includes('*') ||
     item.includes('?') ||
-    item.includes('[') ||
-    item.includes(']')
+    item.includes('[')
   ) {
     return false;
   }
