@@ -1636,7 +1636,16 @@ export function createPrActions(deps) {
           null,
         pr_url
       });
-      if (!promoted.ok) {
+      // `promoteMergedExternal` refuses a bead the lane ALREADY holds, and the
+      // poller promotes external rows on its own (`pr-poller.js`) — so between
+      // the `inPrWait` read above and the `await` on the merge sha, the row can
+      // become durable underneath this call. That refusal is not a failure: the
+      // post-condition this step owes is "the row is in `pr_wait`", so the lane
+      // itself decides, exactly as the poller's own promote does. Only a bead
+      // still outside the lane failed.
+      q = deps.store.snapshot(workspace);
+      durable = inPrWait(q, bead_id);
+      if (!promoted.ok && !durable) {
         return {
           ok: false,
           step: 'repo_operations',
@@ -1644,8 +1653,6 @@ export function createPrActions(deps) {
           base_sync: null
         };
       }
-      q = deps.store.snapshot(workspace);
-      durable = true;
     }
 
     /** @type {BaseSyncOutcome|null} */
