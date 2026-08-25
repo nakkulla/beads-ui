@@ -9763,13 +9763,13 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
   });
 
   test('names the selected range in the lane header', () => {
-    window.localStorage.setItem('bdui.worker.done-range', '30d');
+    window.localStorage.setItem('bdui.worker.done-range', '7d');
 
     const mount = renderDone(queueOf({ done: [] }));
 
     expect(
       mount.querySelector('#worker-pane-done .worker-pane__title')?.textContent
-    ).toContain('최근 30일');
+    ).toContain('최근 7일');
   });
 
   test('renders the range select inside the pane controls strip', () => {
@@ -9786,10 +9786,10 @@ describe('완료 레인 최신순 + 기간 필터 (UI-d7pw §3)', () => {
       mount.querySelector('.worker-done-range')
     );
 
-    select.value = 'all';
+    select.value = '7d';
     select.dispatchEvent(new Event('change', { bubbles: true }));
 
-    expect(window.localStorage.getItem('bdui.worker.done-range')).toBe('all');
+    expect(window.localStorage.getItem('bdui.worker.done-range')).toBe('7d');
   });
 
   test('does not treat the range select as the candidate sort', () => {

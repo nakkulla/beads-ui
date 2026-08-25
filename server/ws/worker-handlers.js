@@ -106,6 +106,7 @@ import {
   pushSnapshotIfChanged
 } from './context.js';
 import { sessionExcludedBeadIds } from './lane-membership.js';
+import { trimQueueProjection } from './snapshot-retention.js';
 import { targetWorkspaceOf } from './workspace-target.js';
 
 // Re-exported so the opt-out rule keeps one import site per consumer lane
@@ -2028,6 +2029,19 @@ export function decorateQueue(workspace_key, raw_queue) {
   const completion = completionStatusFor(workspace_key, overlaid);
   /** @type {Record<string, any>} */
   const public_queue = { ...overlaid };
+  // Push-projection retention (UI-qbbg §4.1), applied BEFORE every lane-based
+  // decoration below so the operation cards, the title/time/label maps and the
+  // client's own classifier all read the same trimmed projection. The judgment
+  // input stays the full overlaid raw. A throwing rule ships the untrimmed
+  // snapshot (§6): the payload size regresses, the display does not break.
+  try {
+    const trimmed = trimQueueProjection(public_queue, overlaid);
+    public_queue.done = trimmed.done;
+    public_queue.attempts = trimmed.attempts;
+    public_queue.repo_operations = trimmed.repo_operations;
+  } catch (err) {
+    log('snapshot retention failed for %s: %o', workspace_key, err);
+  }
   public_queue.admission = publicAdmissions(overlaid.admission);
   delete public_queue.completion_intents;
   delete public_queue.last_deploy;
@@ -2045,8 +2059,11 @@ export function decorateQueue(workspace_key, raw_queue) {
     verify: /** @type {any} */ (overlaid).repo_ops_opt_out?.verify === true,
     deploy: /** @type {any} */ (overlaid).repo_ops_opt_out?.deploy === true
   };
+  // Only the OPERATIONS are trimmed (UI-qbbg §4.3). The attempt map stays the
+  // untrimmed one: it is a server-side cross-reference for `repair.attempt_id`
+  // and nothing of it reaches the card beyond that attempt's status.
   public_queue.repo_operations = projectRepoOperations(
-    overlaid.repo_operations,
+    public_queue.repo_operations,
     overlaid.attempts
   );
   public_queue.repo_operation_policy = projectRepoOperationPolicy();
@@ -2096,8 +2113,8 @@ export function decorateQueue(workspace_key, raw_queue) {
             !completion.repair_ids.has(entry?.bead_id)
         )
       : [],
-    done: Array.isArray(overlaid.done)
-      ? overlaid.done.filter(
+    done: Array.isArray(public_queue.done)
+      ? public_queue.done.filter(
           (/** @type {any} */ entry) =>
             !completion.repair_ids.has(entry?.bead_id)
         )
@@ -2173,7 +2190,14 @@ export function decorateQueue(workspace_key, raw_queue) {
     },
     // Observed PR state + merge-gate verdict per `pr_wait` bead. Non-persisted
     // (worker-phase2 §4) — it exists only on the wire and in server memory.
-    pr_observations: prObservationsFor(workspace_key, queue, verify_policy),
+    // The SERVER-side consumer of the terminal attempts' `receipt_check`, which
+    // UI-qbbg §4.3 strips from the wire: it reads the untrimmed attempts so the
+    // PR-wait row keeps the receipt warning the client reads from HERE.
+    pr_observations: prObservationsFor(
+      workspace_key,
+      { ...queue, attempts: overlaid.attempts },
+      verify_policy
+    ),
     // What is RUNNING against each `pr_wait` bead right now (UI-raqh §3/§4) —
     // observation/verification activity and merge progress. Also non-persisted.
     pr_activity: prActivityFor(workspace_key, queue),

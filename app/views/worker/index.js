@@ -34,10 +34,9 @@ import { html, render } from 'lit-html';
 import { resolveSpecId } from '../../../server/spec-id.js';
 import { createUnhandledFailurePredicate } from '../../../server/worker/attempt-failure.js';
 import {
-  CLOSED_RANGE_OPTIONS,
-  DEFAULT_CLOSED_RANGE,
+  DONE_RANGE_OPTIONS,
   closedRangeSince,
-  isClosedRange
+  normalizeDoneRange
 } from '../../data/closed-range.js';
 import { createListSelectors } from '../../data/list-selectors.js';
 import {
@@ -343,19 +342,21 @@ function saveCandidateSort(mode) {
 const DONE_RANGE_KEY = 'bdui.worker.done-range';
 
 /**
- * @returns {import('../../data/closed-range.js').ClosedRange}
+ * @returns {import('../../data/closed-range.js').DoneRange}
  */
 function loadDoneRange() {
   try {
+    // An ABSENT key keeps the 오늘 default; only a value someone actually chose
+    // is normalized, which is how a stored `30d`/`all` reads as `7d`.
     const raw = window.localStorage.getItem(DONE_RANGE_KEY);
-    return isClosedRange(raw) ? raw : DEFAULT_CLOSED_RANGE;
+    return raw === null ? 'today' : normalizeDoneRange(raw);
   } catch {
-    return DEFAULT_CLOSED_RANGE;
+    return 'today';
   }
 }
 
 /**
- * @param {import('../../data/closed-range.js').ClosedRange} range
+ * @param {import('../../data/closed-range.js').DoneRange} range
  */
 function saveDoneRange(range) {
   try {
@@ -1749,7 +1750,7 @@ function prWaitRow(
  * Create the Worker console view.
  *
  * @param {HTMLElement} mount_element - Element to render into.
- * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').ClosedRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').ClosedRange) => void }} [options]
+ * @param {{ transport?: (type: string, payload?: unknown) => Promise<any>, issueStores?: any, queueStore?: any, analysisStore?: any, sessionLogStore?: any, uiOrderStore?: import('../reorder.js').UiOrderStore, gotoIssue?: (id: string) => void, getWorkspacePath?: () => (string|undefined), openDoc?: (doc: import('../board/stepper.js').StepperDoc) => void, doneRange?: import('../../data/closed-range.js').DoneRange, onDoneRangeChange?: (range: import('../../data/closed-range.js').DoneRange) => void }} [options]
  * @returns {{ load: () => void, refreshSessionDefaults: () => void, destroy: () => void }}
  */
 export function createWorkerView(mount_element, options = {}) {
@@ -1821,9 +1822,9 @@ export function createWorkerView(mount_element, options = {}) {
   /**
    * 완료 lane period range (UI-d7pw §3.2), restored at view creation.
    *
-   * @type {import('../../data/closed-range.js').ClosedRange}
+   * @type {import('../../data/closed-range.js').DoneRange}
    */
-  let done_range = isClosedRange(doneRange) ? doneRange : loadDoneRange();
+  let done_range = doneRange ? normalizeDoneRange(doneRange) : loadDoneRange();
   /**
    * Session-report presence keyed by workspace + immutable closed-issue
    * snapshot identity. A failed request stays failed until the issue store emits
@@ -1840,7 +1841,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @returns {string}
    */
   function doneRangeLabel() {
-    const opt = CLOSED_RANGE_OPTIONS.find((o) => o.value === done_range);
+    const opt = DONE_RANGE_OPTIONS.find((o) => o.value === done_range);
     return opt ? opt.label : '오늘';
   }
   /**
@@ -4896,7 +4897,7 @@ export function createWorkerView(mount_element, options = {}) {
         title="완료 기간"
         .value=${done_range}
       >
-        ${CLOSED_RANGE_OPTIONS.map(
+        ${DONE_RANGE_OPTIONS.map(
           (o) =>
             html`<option value=${o.value} ?selected=${done_range === o.value}>
               ${o.label}
@@ -5383,7 +5384,7 @@ export function createWorkerView(mount_element, options = {}) {
    * @param {string} next
    */
   function setDoneRange(next) {
-    done_range = isClosedRange(next) ? next : DEFAULT_CLOSED_RANGE;
+    done_range = normalizeDoneRange(next);
     saveDoneRange(done_range);
     onDoneRangeChange?.(done_range);
     doRender();

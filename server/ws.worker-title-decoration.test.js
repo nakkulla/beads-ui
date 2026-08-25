@@ -154,7 +154,7 @@ describe('worker queue snapshot — bead_titles decoration (UI-12k6)', () => {
     const raw_queue = {
       queue: [{ bead_id: 'UI-1' }],
       pr_wait: [{ bead_id: 'UI-2' }],
-      done: [{ bead_id: 'UI-3' }],
+      done: [{ bead_id: 'UI-3', added_at: Date.now() }],
       attempts: {}
     };
 

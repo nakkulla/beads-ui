@@ -11,7 +11,12 @@ import {
   attachWsServer,
   handleMessage
 } from './ws.js';
-import { __resetMonitorPipelineForTest } from './ws/monitor-handlers.js';
+import {
+  __resetMonitorPipelineForTest,
+  buildMonitorPipeline,
+  buildMonitorWorkspacesState
+} from './ws/monitor-handlers.js';
+import { decorateQueue } from './ws/worker-handlers.js';
 
 /** @type {string} */
 let tmp_state;
@@ -134,5 +139,67 @@ describe('ws monitor-pipeline channel (UI-nprg)', () => {
     const snaps = pipelineSnapshots(sock);
     expect(snaps).toHaveLength(1);
     expect(snaps[0].id).toBe('monitor:pipeline');
+  });
+});
+
+describe('monitor pipeline done retention (UI-qbbg §4.6)', () => {
+  const DAY_MS = 86_400_000;
+  const WS_RETENTION = '/tmp/mon-retention';
+
+  /**
+   * @param {number} added_at
+   * @returns {Record<string, any>}
+   */
+  function repoWithOneDoneRow(added_at) {
+    return {
+      revision: 3,
+      queue: [],
+      pr_wait: [],
+      done: [{ bead_id: 'UI-old', added_at }],
+      attempts: {}
+    };
+  }
+
+  /**
+   * @param {Record<string, any>} raw
+   * @returns {{ workspaces: Array<Record<string, any>>, state: Array<Record<string, any>> }}
+   */
+  function buildBoth(raw) {
+    const seams = {
+      listWorkspaces: () => [{ path: WS_RETENTION }],
+      listHidden: () => [],
+      issuePrefixFor: () => null,
+      runnableFor: () => [],
+      sessionActiveFor: () => []
+    };
+    return {
+      workspaces: buildMonitorPipeline({
+        ...seams,
+        snapshotFor: (key) => decorateQueue(key, raw),
+        foreignBlockerStatusFor: () => null
+      }),
+      state: buildMonitorWorkspacesState({
+        ...seams,
+        snapshotFor: () => raw,
+        sessionDefaultsFor: () => ({ values: {}, warnings: [] })
+      })
+    };
+  }
+
+  test('drops a repo whose only done row aged out but keeps its control state', () => {
+    const raw = repoWithOneDoneRow(Date.now() - 8 * DAY_MS);
+
+    const { workspaces, state } = buildBoth(raw);
+
+    expect(workspaces).toEqual([]);
+    expect(state.map((entry) => entry.root_dir)).toEqual([WS_RETENTION]);
+  });
+
+  test('keeps a repo whose done row is still inside the window', () => {
+    const raw = repoWithOneDoneRow(Date.now() - 1 * DAY_MS);
+
+    const { workspaces } = buildBoth(raw);
+
+    expect(workspaces.map((entry) => entry.root_dir)).toEqual([WS_RETENTION]);
   });
 });

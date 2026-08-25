@@ -3100,6 +3100,10 @@ describe('ws worker-attempt-dismiss (UI-dcw7)', () => {
         bead_id: 'UI-1',
         status,
         repo: '/repo',
+        // The scheduler stamps this on every termination; without it the
+        // snapshot's retention window (UI-qbbg §4.2-4) has no age to read once
+        // the dismiss clears the attempt from the 실행중 classifier.
+        finished_at: status === 'running' ? null : Date.now(),
         cause: 'verify_failed:x'
       }
     });
@@ -3287,6 +3291,103 @@ describe('ws worker-queue snapshot decoration', () => {
       reason: 'worktree_stale_work',
       at: 1
     });
+  });
+});
+
+describe('ws worker-queue snapshot retention (UI-qbbg §4)', () => {
+  const DAY_MS = 86_400_000;
+  const WS_RETENTION = '/tmp/wq-retention';
+
+  test('drops an aged-out done bead and its attempts from the snapshot', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [
+          { bead_id: 'UI-old', added_at: now - 8 * DAY_MS },
+          { bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }
+        ],
+        attempts: {
+          'att-old': {
+            attempt_id: 'att-old',
+            bead_id: 'UI-old',
+            status: 'done',
+            finished_at: now - 9 * DAY_MS
+          },
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS
+          }
+        }
+      })
+    );
+
+    expect(
+      snapshot.done.map((/** @type {any} */ entry) => entry.bead_id)
+    ).toEqual(['UI-fresh']);
+    expect(Object.keys(snapshot.attempts)).toEqual(['att-fresh']);
+  });
+
+  test('strips the internal-only fields from a retained terminal attempt', () => {
+    const now = Date.now();
+    const snapshot = /** @type {any} */ (
+      decorateQueue(WS_RETENTION, {
+        revision: 1,
+        queue: [],
+        pr_wait: [],
+        done: [{ bead_id: 'UI-fresh', added_at: now - 1 * DAY_MS }],
+        attempts: {
+          'att-fresh': {
+            attempt_id: 'att-fresh',
+            bead_id: 'UI-fresh',
+            status: 'done',
+            finished_at: now - 1 * DAY_MS,
+            base_drift: { pinned: 'a'.repeat(40) },
+            verify_result: { ok: true },
+            usage_legs: [{ receipt_id: 'r1' }]
+          }
+        }
+      })
+    );
+
+    expect(snapshot.attempts['att-fresh']).not.toHaveProperty('base_drift');
+    expect(snapshot.attempts['att-fresh']).not.toHaveProperty('verify_result');
+    expect(snapshot.attempts['att-fresh'].usage_legs).toEqual([
+      { receipt_id: 'r1' }
+    ]);
+  });
+
+  test('keeps an aged-out attempt out of the mutation reply queue', async () => {
+    const store = getWorkerRuntime().queueStore;
+    store.appendAttempt('', {
+      expected_revision: store.snapshot('').revision,
+      attempt: {
+        attempt_id: 'att-old',
+        bead_id: 'UI-old',
+        status: 'done',
+        finished_at: Date.now()
+      }
+    });
+    store.moveToDone('', { bead_id: 'UI-old' });
+    const sock = fakeSocket();
+    await send(sock, 's1', 'subscribe-worker-queue', { id: 'wq' });
+    const future = Date.now() + 8 * DAY_MS;
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(future);
+
+    await send(sock, 'm1', 'worker-queue-set-slots', {
+      slots: 4,
+      expected_revision: store.snapshot('').revision
+    });
+
+    const reply = replyFor(sock, 'm1');
+    clock.mockRestore();
+    expect(reply.payload.applied).toBe(true);
+    expect(reply.payload.queue.attempts).toEqual({});
+    expect(reply.payload.queue.done).toEqual([]);
   });
 });
 
