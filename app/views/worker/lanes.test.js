@@ -661,6 +661,29 @@ describe('candidate card', () => {
 
     expect(card.querySelector('.ctl-chip--from')).toBeNull();
   });
+
+  // 출처 칩은 오른쪽 끝으로 밀리는 route 칩 뒤에 서면 남는 폭에 따라 줄이 갈려
+  // 카드마다 다른 자리에 보였다. ID 그룹 안이 고정 자리다.
+  test('places the from chip between the id and the route chip', () => {
+    const card = renderCandidate({ from_id: 'UI-0' });
+    const head = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__head')
+    );
+
+    const kids = Array.from(head.children);
+    const id_index = kids.findIndex((el) =>
+      el.classList.contains('worker-card__id')
+    );
+    const from_index = kids.findIndex((el) =>
+      el.classList.contains('ctl-chip--from')
+    );
+    const route_index = kids.findIndex((el) =>
+      el.classList.contains('ctl-chip--route')
+    );
+
+    expect(from_index).toBeGreaterThan(id_index);
+    expect(route_index).toBeGreaterThan(from_index);
+  });
 });
 
 describe('worker-ineligible candidate card (UI-8881)', () => {

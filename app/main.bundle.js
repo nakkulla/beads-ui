@@ -1637,12 +1637,12 @@ ${i}</pre
             >${e.workspace_name}</span
           >`:""}
       <span class="worker-card__id" title="클릭하면 ID 복사">${e.id}</span
-      >${Yo(e.priority)}
+      >${Yo(e.priority)}${dd(e.from_id)}
       ${Ko(a)}${r?l`<span
             class="ctl-chip ctl-chip--label worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
             >worker-ineligible</span
-          >`:""}${dd(e.from_id)}
+          >`:""}
     </div>
     <div class="worker-card__title">${e.title}</div>
     ${a?oo(a,e.status,{onOpenDoc:n.onOpenDoc}):""}${d}
