@@ -1126,3 +1126,210 @@ describe('worker running tile route chip (UI-yrzu §7.2)', () => {
     );
   });
 });
+
+describe('세션 타일의 session_ref (UI-4xzk §6.4)', () => {
+  /**
+   * @param {Partial<import('../../../server/worker/session-ref.js').SessionRefView>} [patch]
+   * @returns {import('../../../server/worker/session-ref.js').SessionRefView}
+   */
+  function view(patch = {}) {
+    return {
+      index: 0,
+      provider: 'claude',
+      session_id: 'a1b2c3d4-5e6f',
+      host: 'mac-studio',
+      current: true,
+      locality: 'local',
+      last_event_at: null,
+      resume_command: "claude --resume 'a1b2c3d4-5e6f'",
+      ...patch
+    };
+  }
+
+  /**
+   * @param {Partial<import('./running-grid.js').RunningTile>} [patch]
+   * @param {any} [monitor]
+   * @returns {HTMLElement}
+   */
+  function renderSession(patch = {}, monitor = { repo: 'repo-a' }) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(
+      runningTile(
+        tileInput({
+          kind: 'session',
+          attempt_id: '',
+          started_at: 1000,
+          updated_at: 5000 - 120_000,
+          ...patch
+        }),
+        5000,
+        null,
+        { monitor }
+      ),
+      mount
+    );
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('opens the drawer from the header once a current session is known', () => {
+    const tile = renderSession({ session_refs: [view()] });
+    const button = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__session')
+    );
+
+    expect(button.textContent?.trim()).toBe('▤ 세션');
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('title')).toBe('라이브 세션 열기');
+  });
+
+  test('places the session button after the clock and before the 세션 badge', () => {
+    const tile = renderSession({ session_refs: [view()] });
+    const actions = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__hd-actions')
+    );
+    const order = Array.from(actions.children).map((el) => el.className);
+
+    expect(order).toEqual([
+      'rtile__elapsed',
+      'rtile__session',
+      'rtile__session-badge'
+    ]);
+  });
+
+  test('disables the button for a session of another machine', () => {
+    const tile = renderSession({
+      session_refs: [view({ locality: 'remote' })]
+    });
+    const button = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__session')
+    );
+
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('title')).toBe(
+      '다른 머신 세션 — 이 서버에 transcript 없음'
+    );
+  });
+
+  test('disables the button when the transcript file is gone', () => {
+    const tile = renderSession({
+      session_refs: [view({ locality: 'missing' })]
+    });
+    const button = /** @type {HTMLButtonElement} */ (
+      tile.querySelector('.rtile__session')
+    );
+
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute('title')).toBe('transcript 파일 없음');
+  });
+
+  test('draws the session chip before the exec_receipt chip', () => {
+    const tile = renderSession({
+      session_refs: [view()],
+      workflow: /** @type {any} */ ({
+        route: 'spec_backed',
+        chips: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          exec_receipt: { kind: 'main', actor: 'bead', sha: 'a'.repeat(40) }
+        },
+        stages: { spec: {}, impl: {}, pr: {}, merge: {} }
+      })
+    });
+    const chips = Array.from(
+      tile.querySelectorAll('.rtile__meta .ctl-chip')
+    ).map((el) => el.className);
+
+    expect(tile.querySelector('.ctl-chip--sref')?.textContent).toBe(
+      'claude · a1b2c3d4'
+    );
+    expect(chips.indexOf('ctl-chip ctl-chip--sref')).toBeLessThan(
+      chips.indexOf('ctl-chip ctl-chip--exec-receipt')
+    );
+  });
+
+  test('titles the chip with the full contract coordinate', () => {
+    const tile = renderSession({ session_refs: [view()] });
+
+    expect(tile.querySelector('.ctl-chip--sref')?.getAttribute('title')).toBe(
+      'claude:a1b2c3d4-5e6f@mac-studio'
+    );
+  });
+
+  test('appends the history count to the chip title from two items on', () => {
+    const tile = renderSession({
+      session_refs: [
+        view({ index: 0, current: false, session_id: 'older-000' }),
+        view({ index: 1 })
+      ]
+    });
+
+    expect(tile.querySelector('.ctl-chip--sref')?.getAttribute('title')).toBe(
+      'claude:a1b2c3d4-5e6f@mac-studio · 이력 2'
+    );
+  });
+
+  test('reports the transcript mtime as the activity line', () => {
+    const tile = renderSession({
+      session_refs: [view({ last_event_at: 5000 - 60_000 })]
+    });
+
+    expect(tile.querySelector('.rtile__activity-text')?.textContent).toBe(
+      '최근 활동 1분 전'
+    );
+  });
+
+  test('falls back to the bead update time without a transcript mtime', () => {
+    const tile = renderSession({ session_refs: [view()] });
+
+    expect(tile.querySelector('.rtile__activity-text')?.textContent).toBe(
+      '갱신 2분 전'
+    );
+  });
+
+  test('falls back to the bead update time for a remote session', () => {
+    const tile = renderSession({
+      session_refs: [view({ locality: 'remote', last_event_at: 5000 - 60_000 })]
+    });
+
+    expect(tile.querySelector('.rtile__activity-text')?.textContent).toBe(
+      '갱신 2분 전'
+    );
+  });
+
+  test('omits the activity line when neither time exists', () => {
+    const tile = renderSession({
+      session_refs: [view()],
+      updated_at: undefined
+    });
+
+    expect(tile.querySelector('.rtile__activity')).toBeNull();
+  });
+
+  test('renders the UI-yrzu tile untouched when no current item survived', () => {
+    const with_refs = renderSession({ session_refs: [] }).outerHTML;
+    const without_refs = renderSession().outerHTML;
+
+    expect(with_refs).toBe(without_refs);
+    expect(
+      renderSession({ session_refs: [] }).querySelector('.rtile__session')
+    ).toBeNull();
+  });
+
+  test('leaves the worker tile without a session chip', () => {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
+      runningTile(tileInput({ session_refs: [view()] }), 5000, null, {
+        monitor: { repo: 'repo-a' }
+      }),
+      mount
+    );
+
+    expect(mount.querySelector('.ctl-chip--sref')).toBeNull();
+    expect(mount.querySelector('.rtile__session')?.getAttribute('title')).toBe(
+      '라이브 세션 열기'
+    );
+  });
+});

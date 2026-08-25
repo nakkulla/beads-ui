@@ -14,6 +14,7 @@
 import { html } from 'lit-html';
 import { formatContinuationLineage } from '../../utils/attempt-display.js';
 import { formatRelativeTime } from '../../utils/relative-time.js';
+import { sessionRefLabel } from '../../utils/session-ref.js';
 import {
   formatUsageTotalWithCost,
   providerUsageBadges,
@@ -36,6 +37,10 @@ import {
 } from './lanes.js';
 
 /**
+ * @import { SessionRefView } from '../../../server/worker/session-ref.js'
+ */
+
+/**
  * @typedef {Object} RunningTile
  * @property {string} bead_id
  * @property {string} attempt_id
@@ -45,6 +50,9 @@ import {
  * @property {number} [priority] - Bead 우선순위 0..4 (배지 `P<n>`).
  * @property {import('./lanes.js').MiniItem['workflow']} [workflow] - route 칩과
  * (세션 타일의) exec_receipt 칩 재료 (UI-yrzu §7.2). 없으면 칩이 생략된다.
+ * @property {SessionRefView[]} [session_refs] - 이 이슈를 잡은 세션들 (UI-4xzk
+ * §6.4), 과거 → 현재 순. 마지막 유효 항목(`current`)이 `▤ 세션`·칩·활동 줄의
+ * 재료다. 비어 있으면 세션 타일은 UI-yrzu §6 그대로다.
  * @property {string} title
  * @property {string|null} runner
  * @property {string|null} model
@@ -338,10 +346,14 @@ const FORWARDER_AGENT_TYPES = new Set(['codex-runner']);
  * 유일한 사실이 bead의 마지막 갱신 시각이고, 위임 칩은 그릴 근거가 없다.
  * `session`이 그 두 규칙을 함께 켠다.
  *
+ * 세션 타일이 `session_ref`로 자기 transcript 파일을 알면 (UI-4xzk §6.4) 그
+ * 파일의 마지막 이벤트 시각이 활동 줄을 대신한다 — bead 갱신 시각보다 "언제
+ * 마지막으로 움직였나"에 가까운 사실이다. 그것이 없을 때만 `갱신 n 전`이다.
+ *
  * @param {MonitorTileOverlay|null} monitor
  * @param {number} now
  * @param {boolean} paused
- * @param {{ updated_at: number|string|null }|null} [session]
+ * @param {{ updated_at: number|string|null, last_event_at?: number|null }|null} [session]
  * @returns {import('lit-html').TemplateResult|''}
  */
 function monitorTileBody(monitor, now, paused, session = null) {
@@ -367,9 +379,18 @@ function monitorTileBody(monitor, now, paused, session = null) {
   );
   const live_legs = legs.filter((leg) => leg && leg.state === 'live');
   const ended_legs = legs.filter((leg) => leg && leg.state !== 'live');
-  const session_age = session
+  const session_event_age =
+    session && typeof session.last_event_at === 'number'
+      ? formatRelativeTime(session.last_event_at, now)
+      : '';
+  const session_update_age = session
     ? formatRelativeTime(session.updated_at, now)
     : '';
+  const session_activity = session_event_age
+    ? `최근 활동 ${session_event_age}`
+    : session_update_age
+      ? `갱신 ${session_update_age}`
+      : '';
   return html`${activity_text
     ? html`<div class="rtile__activity${paused ? ' is-paused' : ''}">
         <span class="rtile__activity-dot" aria-hidden="true"></span>
@@ -380,12 +401,12 @@ function monitorTileBody(monitor, now, paused, session = null) {
             >`
           : ''}
       </div>`
-    : session_age
-      ? // 전사 한 줄이 아니라 bead 갱신 시각이므로 점은 살아있음을 주장하지
-        // 않는다 (§6) — 초록 점은 라이브 전사만 얻는다.
+    : session_activity
+      ? // 전사 한 줄이 아니라 파일 mtime·bead 갱신 시각이므로 점은 살아있음을
+        // 주장하지 않는다 (§6) — 초록 점은 라이브 전사만 얻는다.
         html`<div class="rtile__activity rtile__activity--session">
           <span class="rtile__activity-dot" aria-hidden="true"></span>
-          <span class="rtile__activity-text">갱신 ${session_age}</span>
+          <span class="rtile__activity-text">${session_activity}</span>
         </div>`
       : ''}${live_legs.length > 0 || ended_legs.length > 0
     ? html`<div class="rtile__legs">
@@ -410,6 +431,43 @@ function monitorTileBody(monitor, now, paused, session = null) {
 }
 
 /**
+ * Why a session's transcript cannot be opened from this server, by locality.
+ *
+ * @type {Record<string, string>}
+ */
+const SESSION_OPEN_BLOCKED = {
+  remote: '다른 머신 세션 — 이 서버에 transcript 없음',
+  missing: 'transcript 파일 없음'
+};
+
+/**
+ * `▤ 세션` — 세션 타일의 transcript 열기 버튼 (UI-4xzk §6.4). Worker 타일과 같은
+ * 클래스·같은 자리(경과 뒤, `세션` 배지 앞)다 — 같은 조작이 타일 종류마다 다른
+ * 곳에 있으면 사용자가 버튼을 찾는 자리가 폭이 아니라 종류에 따라 달라진다.
+ *
+ * 다른 머신이거나 파일이 없으면 열 것이 없으므로 `disabled`다. 버튼을 지우지
+ * 않는 것은, 세션이 있다는 사실 자체는 참이고 그 이유를 title이 말하기 때문이다.
+ *
+ * @param {SessionRefView|null} current
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+function sessionOpenButton(current) {
+  if (!current) {
+    return '';
+  }
+  const blocked = SESSION_OPEN_BLOCKED[current.locality] || '';
+  return html`<button
+    type="button"
+    class="rtile__session"
+    ?disabled=${blocked.length > 0}
+    title=${blocked || '라이브 세션 열기'}
+    aria-label="라이브 세션 열기"
+  >
+    ▤ 세션
+  </button>`;
+}
+
+/**
  * One running-session tile. A click opens the bead detail like every other lane
  * surface (UI-k59y §3) — the live transcript is the tile's own [▤ 세션] button,
  * so the tile is not the one place on this board where the default click means
@@ -430,6 +488,12 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
   // 세션이 잡은 이슈 (UI-yrzu §6): attempt가 없으므로 운영할 것도 열 로그도
   // 없다. 껍데기와 클릭 계약은 Worker 타일과 같다 — 같은 사실은 같은 모양.
   const session = tile.kind === 'session';
+  // 계약 값의 마지막 유효 항목이 현재 세션이다 (UI-4xzk §3.1). 없으면 이 타일은
+  // 자기 정체를 모르므로 UI-yrzu §6 그대로 그린다 (fail-quiet).
+  const session_current =
+    session && Array.isArray(tile.session_refs)
+      ? tile.session_refs.find((view) => view && view.current === true) || null
+      : null;
   const failed = tile.failed === true;
   const paused = !!tile.paused;
   const elapsed = failed
@@ -471,7 +535,15 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
     monitor,
     now,
     paused,
-    session ? { updated_at: tile.updated_at ?? null } : null
+    session
+      ? {
+          updated_at: tile.updated_at ?? null,
+          last_event_at:
+            session_current && session_current.locality === 'local'
+              ? session_current.last_event_at
+              : null
+        }
+      : null
   );
   // 세션 타일의 meta 줄은 exec_receipt 칩 하나다 (§6): 계정·토큰은 attempt가
   // 있어야 아는 사실이고, 이 타일에는 attempt가 없다. 라벨은 SHA를 뺀
@@ -489,10 +561,24 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         >${`${session_receipt.kind}:${execReceiptActor(session_receipt)}`}</span
       >`
     : '';
+  // 세션 정체 칩은 exec_receipt 앞이다 (UI-4xzk §6.4): 슬롯 5 안에서도 "누가"가
+  // "무엇으로 실행했나"보다 앞선다. 이력이 둘 이상일 때만 개수를 덧붙인다 —
+  // 하나뿐인 이력은 셀 것이 없다.
+  const session_ref_chip = session_current
+    ? html`<span
+        class="ctl-chip ctl-chip--sref"
+        title=${`${session_current.provider}:${session_current.session_id}@${session_current.host}${
+          (tile.session_refs || []).length >= 2
+            ? ` · 이력 ${(tile.session_refs || []).length}`
+            : ''
+        }`}
+        >${sessionRefLabel(session_current)}</span
+      >`
+    : '';
   const session_meta =
-    monitor_chips || route_chip || session_receipt_chip
+    monitor_chips || route_chip || session_ref_chip || session_receipt_chip
       ? html`<div class="rtile__meta">
-          ${monitor_chips}${route_chip}${session_receipt_chip}
+          ${monitor_chips}${route_chip}${session_ref_chip}${session_receipt_chip}
         </div>`
       : '';
   // 상태 뱃지는 슬롯 1이다 (UI-251y §3.1): 다른 카드가 이미 정체성 줄에서
@@ -542,7 +628,7 @@ export function runningTile(tile, now, selected_attempt = null, options = {}) {
         ${session
           ? html`${typeof tile.started_at === 'number'
                 ? html`<span class="rtile__elapsed">${elapsed}</span>`
-                : ''}<span
+                : ''}${sessionOpenButton(session_current)}<span
                 class="rtile__session-badge"
                 title="Worker가 아닌 세션이 in_progress로 잡은 이슈"
                 >세션</span

@@ -3,11 +3,16 @@ import {
   formatAttemptTuple,
   formatContinuationLineage
 } from '../../utils/attempt-display.js';
+import { sessionRefKey, sessionRefLabel } from '../../utils/session-ref.js';
 import {
   formatUsageTotal,
   projectAttemptUsage,
   providerUsageBadges
 } from '../../utils/token-usage.js';
+
+/**
+ * @import { SessionRefView } from '../../../server/worker/session-ref.js'
+ */
 
 /**
  * @typedef {import('lit-html').TemplateResult} TemplateResult
@@ -671,6 +676,77 @@ function presetAudit(attempt) {
 }
 
 /**
+ * Why a session's transcript cannot be opened from this server, by locality.
+ * Same wording as the monitor tile's disabled `▤ 세션` (UI-4xzk §6.4) — one
+ * fact, one sentence, wherever it is read.
+ *
+ * @type {Record<string, string>}
+ */
+const SESSION_OPEN_BLOCKED = {
+  remote: '다른 머신 세션 — 이 서버에 transcript 없음',
+  missing: 'transcript 파일 없음'
+};
+
+/**
+ * One `session_ref` row (UI-4xzk §6.5). It wears the attempt row's shell
+ * because it answers the same question — which run produced this issue's work —
+ * and a second shell would say they are different kinds of fact.
+ *
+ * The `⧉ 재개` sibling is NOT `↻ 이어하기`: that one asks the server to resume a
+ * Worker attempt, this one copies a command for a human terminal.
+ *
+ * @param {SessionRefView} view
+ * @param {{ onOpenSessionRef?: (view: SessionRefView) => void, onCopyResumeCommand?: (command: string) => void }} handlers
+ * @returns {TemplateResult}
+ */
+function sessionRefRow(view, handlers) {
+  const blocked = SESSION_OPEN_BLOCKED[view.locality] || '';
+  const meta =
+    view.locality === 'remote'
+      ? `${view.host} · 다른 머신`
+      : view.locality === 'missing'
+        ? `${view.host} · 파일 없음`
+        : view.host;
+  return html`<div class="detail-session-row">
+    <button
+      type="button"
+      class="detail-session detail-session--session"
+      data-session-key=${sessionRefKey(view)}
+      ?disabled=${blocked.length > 0}
+      title=${blocked}
+      @click=${() => {
+        if (blocked.length === 0 && handlers.onOpenSessionRef) {
+          handlers.onOpenSessionRef(view);
+        }
+      }}
+    >
+      <span class="detail-session__glyph">${view.current ? '◐' : '·'}</span>
+      <span class="detail-session__id">${sessionRefLabel(view)}</span>
+      <span class="detail-session__meta">${meta}</span>
+      <span class="detail-session__sid" title=${view.session_id}
+        >${view.session_id.slice(0, 8)}</span
+      >
+      <span class="detail-session__time">${shortTime(view.last_event_at)}</span>
+    </button>
+    ${view.resume_command
+      ? html`<button
+          type="button"
+          class="detail-session__resume-cmd"
+          title=${view.resume_command}
+          @click=${(/** @type {Event} */ ev) => {
+            ev.stopPropagation();
+            if (handlers.onCopyResumeCommand && view.resume_command) {
+              handlers.onCopyResumeCommand(view.resume_command);
+            }
+          }}
+        >
+          ⧉ 재개
+        </button>`
+      : ''}
+  </div>`;
+}
+
+/**
  * Session-history section (spec §5.6): lists a bead's past/live Worker attempts;
  * clicking a row opens the transcript drawer against the persisted (or live)
  * log. A failed/orphaned attempt with a captured session id carries a separate
@@ -685,19 +761,37 @@ function presetAudit(attempt) {
  * sibling button that expands the breakdown under the row, and the issue's
  * total beside the section heading.
  *
+ * `session_refs` (UI-4xzk §6.5) are the interactive sessions that claimed the
+ * issue. They lead the list — current first, then the past ones newest-first —
+ * and attempts follow in their own order. The two are NOT interleaved: an
+ * attempt is ordered by `started_at`, a session only by its transcript's mtime,
+ * and sorting two different axes together would invent a sequence.
+ *
  * @param {SessionAttempt[]} [attempts]
- * @param {{ onOpen?: (attempt_id: string) => void, onOpenDelegation?: (attempt_id: string, launch_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void }} [handlers]
+ * @param {{ onOpen?: (attempt_id: string) => void, onOpenDelegation?: (attempt_id: string, launch_id: string) => void, onResume?: (attempt_id: string) => void, onToggleUsage?: (attempt_id: string) => void, onOpenSessionRef?: (view: SessionRefView) => void, onCopyResumeCommand?: (command: string) => void }} [handlers]
  * @param {{ total?: UsageRecord|import('../../utils/token-usage.js').UsageProjection|null, expanded?: Set<string> }} [usage_view]
+ * @param {SessionRefView[]} [session_refs]
  * @returns {TemplateResult}
  */
 export function sessionHistoryTemplate(
   attempts,
   handlers = {},
-  usage_view = {}
+  usage_view = {},
+  session_refs = []
 ) {
   const list = Array.isArray(attempts) ? attempts : [];
+  const views = Array.isArray(session_refs) ? session_refs : [];
+  const ordered_views = [
+    ...views.filter((view) => view && view.current === true),
+    ...views
+      .filter((view) => view && view.current !== true)
+      .sort((a, b) => b.index - a.index)
+  ];
+  const session_rows = ordered_views.map((view) =>
+    sessionRefRow(view, handlers)
+  );
   const expanded = usage_view.expanded || new Set();
-  if (list.length === 0) {
+  if (list.length === 0 && ordered_views.length === 0) {
     return html`
       <div class="detail-section-label">세션 이력</div>
       <div class="detail-empty" data-seam="session-history">세션 이력 없음</div>
@@ -814,7 +908,7 @@ export function sessionHistoryTemplate(
       세션 이력${totalTemplate(usage_view.total)}
     </div>
     <div class="detail-sessions" data-seam="session-history">
-      ${list.map((a) => {
+      ${session_rows}${list.map((a) => {
         const projection = projectAttemptUsage(a);
         const outer = outerProjection(projection);
         const outer_badges = providerUsageBadges(outer);

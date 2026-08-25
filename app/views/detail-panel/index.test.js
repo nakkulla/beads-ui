@@ -1991,3 +1991,207 @@ describe('views/detail-panel shared md viewer (UI-ajkn §4)', () => {
     expect(md_viewer.destroy).not.toHaveBeenCalled();
   });
 });
+
+describe('views/detail-panel session_ref rows (UI-4xzk §6.5)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+  });
+
+  const VIEW = {
+    index: 0,
+    provider: 'claude',
+    session_id: 'a1b2c3d4-5e6f',
+    host: 'mac-studio',
+    current: true,
+    locality: 'local',
+    last_event_at: 1_700_000_000_000,
+    resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+  };
+
+  /**
+   * Panel over a detail store whose transport answers `get-session-refs` from a
+   * queue the test controls, so a late reply can be released on demand.
+   *
+   * @param {any} issue
+   * @param {(payload: any) => Promise<any>} onSessionRefs
+   * @param {string} [workspace]
+   */
+  function seedSessionPanel(issue, onSessionRefs, workspace = '/tmp/repo-a') {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    let workspace_path = workspace;
+    const transport = vi.fn((/** @type {string} */ type, payload) =>
+      type === 'get-session-refs'
+        ? onSessionRefs(payload)
+        : Promise.resolve(type === 'get-comments' ? [] : issue)
+    );
+    const issueStores = createSubscriptionIssueStores();
+    const panel = createDetailPanel(mount, {
+      issueStores,
+      transport: /** @type {any} */ (transport),
+      getWorkspacePath: () => workspace_path,
+      onClose: vi.fn()
+    });
+    let revision = 0;
+    /** @param {any} next */
+    const push = (next) => {
+      const key = 'detail:' + next.id;
+      if (!issueStores.getStore(key)) {
+        issueStores.register(key, {
+          type: 'issue-detail',
+          params: { id: next.id }
+        });
+      }
+      revision += 1;
+      issueStores.getStore(key)?.applyPush({
+        type: 'snapshot',
+        id: key,
+        revision,
+        issues: /** @type {any} */ ([next])
+      });
+    };
+    push(issue);
+    panel.load(issue.id);
+    return {
+      mount,
+      panel,
+      transport,
+      push,
+      setWorkspace: (/** @type {string} */ next) => {
+        workspace_path = next;
+      }
+    };
+  }
+
+  /** @param {any} transport */
+  const sessionCalls = (transport) =>
+    transport.mock.calls.filter(
+      (/** @type {any[]} */ c) => c[0] === 'get-session-refs'
+    );
+
+  const withKey = {
+    id: 'UI-1',
+    title: '세션이 잡은 이슈',
+    status: 'in_progress',
+    priority: 2,
+    description: '설명',
+    metadata: { session_ref: 'claude:a1b2c3d4-5e6f@mac-studio' }
+  };
+
+  test('requests the sessions only for an issue carrying the metadata key', async () => {
+    const { transport } = seedSessionPanel({ ...withKey, metadata: {} }, () =>
+      Promise.resolve({ bead_id: 'UI-1', sessions: [VIEW] })
+    );
+    await Promise.resolve();
+
+    expect(sessionCalls(transport)).toHaveLength(0);
+  });
+
+  test('draws a session row from the reply', async () => {
+    const { mount, transport } = seedSessionPanel(withKey, () =>
+      Promise.resolve({ bead_id: 'UI-1', sessions: [VIEW] })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sessionCalls(transport)[0][1]).toEqual({ bead_id: 'UI-1' });
+    expect(mount.querySelector('.detail-session__id')?.textContent).toBe(
+      'claude · a1b2c3d4'
+    );
+  });
+
+  test('re-requests when the contract value itself changes', async () => {
+    const { transport, push } = seedSessionPanel(withKey, () =>
+      Promise.resolve({ bead_id: 'UI-1', sessions: [VIEW] })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    push({
+      ...withKey,
+      metadata: {
+        session_ref: 'claude:a1b2c3d4-5e6f@mac-studio; codex:zz-9@mac-studio'
+      }
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sessionCalls(transport)).toHaveLength(2);
+  });
+
+  test('does not re-request while the value is unchanged', async () => {
+    const { transport, push } = seedSessionPanel(withKey, () =>
+      Promise.resolve({ bead_id: 'UI-1', sessions: [VIEW] })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    push({ ...withKey, title: '제목만 바뀜' });
+    await Promise.resolve();
+
+    expect(sessionCalls(transport)).toHaveLength(1);
+  });
+
+  test('drops the previous workspace rows when the same bead id is reopened elsewhere', async () => {
+    /** @type {Array<(value: any) => void>} */
+    const pending = [];
+    const { mount, push, setWorkspace } = seedSessionPanel(
+      withKey,
+      () => new Promise((resolve) => pending.push(resolve))
+    );
+    await Promise.resolve();
+    pending[0]({ bead_id: 'UI-1', sessions: [VIEW] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mount.querySelector('.detail-session__id')).not.toBeNull();
+
+    setWorkspace('/tmp/repo-b');
+    push({ ...withKey, title: '다른 저장소의 같은 id' });
+    await Promise.resolve();
+
+    expect(mount.querySelector('.detail-session__id')).toBeNull();
+  });
+
+  test('discards a reply that arrives after the request generation moved on', async () => {
+    /** @type {Array<(value: any) => void>} */
+    const pending = [];
+    const { mount, push } = seedSessionPanel(
+      withKey,
+      () => new Promise((resolve) => pending.push(resolve))
+    );
+    await Promise.resolve();
+
+    push({
+      ...withKey,
+      metadata: { session_ref: 'codex:zz-9@mac-studio' }
+    });
+    await Promise.resolve();
+    pending[0]({ bead_id: 'UI-1', sessions: [VIEW] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mount.querySelector('.detail-session__id')).toBeNull();
+  });
+
+  test('draws no rows when the read fails', async () => {
+    const { mount } = seedSessionPanel(withKey, () =>
+      Promise.reject(new Error('bd show failed'))
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mount.querySelector('.detail-session__id')).toBeNull();
+    expect(
+      mount.querySelector('[data-seam="session-history"]')?.textContent
+    ).toBe('세션 이력 없음');
+  });
+
+  test('draws no rows for an empty sessions reply', async () => {
+    const { mount } = seedSessionPanel(withKey, () =>
+      Promise.resolve({ bead_id: 'UI-1', sessions: [] })
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mount.querySelector('.detail-session__id')).toBeNull();
+  });
+});

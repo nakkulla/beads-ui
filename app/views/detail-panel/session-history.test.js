@@ -987,3 +987,239 @@ describe('session-history claude subagent rows (UI-2mpn §6.1)', () => {
     expect(metas[0]).not.toContain('Explore');
   });
 });
+
+describe('session-history 세션 행 (UI-4xzk §6.5)', () => {
+  /**
+   * Lit's per-process marker comments carry a random id, so only the rendered
+   * markup is comparable across runs.
+   *
+   * @param {HTMLElement} host
+   * @returns {string}
+   */
+  function markup(host) {
+    return host.innerHTML.replace(/<!--[\s\S]*?-->/g, '');
+  }
+
+  /** @type {import('./session-history.js').SessionAttempt[]} */
+  const ATTEMPTS = [
+    {
+      attempt_id: 'att-1',
+      bead_id: 'UI-1',
+      status: 'done',
+      runner: 'claude',
+      model: 'opus',
+      session_id: 'abcdefgh1234',
+      started_at: 1_700_000_000_000
+    }
+  ];
+
+  /**
+   * @param {Partial<import('../../../server/worker/session-ref.js').SessionRefView>} [patch]
+   * @returns {import('../../../server/worker/session-ref.js').SessionRefView}
+   */
+  function view(patch = {}) {
+    return {
+      index: 0,
+      provider: 'claude',
+      session_id: 'a1b2c3d4-5e6f',
+      host: 'mac-studio',
+      current: true,
+      locality: 'local',
+      last_event_at: 1_700_000_000_000,
+      resume_command: "claude --resume 'a1b2c3d4-5e6f'",
+      ...patch
+    };
+  }
+
+  test('leads with the current session, then the past ones newest first', () => {
+    const host = mount(
+      sessionHistoryTemplate(ATTEMPTS, {}, {}, [
+        view({ index: 0, current: false, session_id: 'oldest-0' }),
+        view({ index: 1, current: false, session_id: 'middle-0' }),
+        view({ index: 2, session_id: 'current-0' })
+      ])
+    );
+
+    expect(
+      Array.from(
+        host.querySelectorAll('.detail-session-row button:first-child')
+      ).map(
+        (el) =>
+          el.getAttribute('data-session-key') ||
+          el.getAttribute('data-attempt-id')
+      )
+    ).toEqual([
+      'session:claude:current-0',
+      'session:claude:middle-0',
+      'session:claude:oldest-0',
+      'att-1'
+    ]);
+  });
+
+  test('marks the current session with a half-filled glyph and past ones with a dot', () => {
+    const host = mount(
+      sessionHistoryTemplate([], {}, {}, [
+        view({ index: 0, current: false, session_id: 'oldest-0' }),
+        view({ index: 1 })
+      ])
+    );
+
+    expect(
+      Array.from(host.querySelectorAll('.detail-session__glyph')).map(
+        (el) => el.textContent
+      )
+    ).toEqual(['◐', '·']);
+  });
+
+  test('shows the label, the host and the transcript time of a local session', () => {
+    const host = mount(sessionHistoryTemplate([], {}, {}, [view()]));
+
+    expect(host.querySelector('.detail-session__id')?.textContent).toBe(
+      'claude · a1b2c3d4'
+    );
+    expect(host.querySelector('.detail-session__meta')?.textContent).toBe(
+      'mac-studio'
+    );
+    expect(
+      host.querySelector('.detail-session__sid')?.getAttribute('title')
+    ).toBe('a1b2c3d4-5e6f');
+    expect(host.querySelector('.detail-session__time')?.textContent).not.toBe(
+      ''
+    );
+  });
+
+  test('leaves the time cell empty when no transcript mtime is known', () => {
+    const host = mount(
+      sessionHistoryTemplate([], {}, {}, [
+        view({ locality: 'missing', last_event_at: null })
+      ])
+    );
+
+    expect(host.querySelector('.detail-session__time')?.textContent).toBe('');
+  });
+
+  test('says so and disables the row for a session of another machine', () => {
+    const host = mount(
+      sessionHistoryTemplate([], {}, {}, [view({ locality: 'remote' })])
+    );
+    const row = /** @type {HTMLButtonElement} */ (
+      host.querySelector('.detail-session')
+    );
+
+    expect(host.querySelector('.detail-session__meta')?.textContent).toBe(
+      'mac-studio · 다른 머신'
+    );
+    expect(row.disabled).toBe(true);
+    expect(row.getAttribute('title')).toBe(
+      '다른 머신 세션 — 이 서버에 transcript 없음'
+    );
+  });
+
+  test('says so and disables the row when the transcript file is gone', () => {
+    const host = mount(
+      sessionHistoryTemplate([], {}, {}, [view({ locality: 'missing' })])
+    );
+    const row = /** @type {HTMLButtonElement} */ (
+      host.querySelector('.detail-session')
+    );
+
+    expect(host.querySelector('.detail-session__meta')?.textContent).toBe(
+      'mac-studio · 파일 없음'
+    );
+    expect(row.disabled).toBe(true);
+    expect(row.getAttribute('title')).toBe('transcript 파일 없음');
+  });
+
+  test('opens the transcript of a local session on a row click', () => {
+    /** @type {any[]} */
+    const opened = [];
+    const host = mount(
+      sessionHistoryTemplate(
+        [],
+        { onOpenSessionRef: (v) => opened.push(v) },
+        {},
+        [view()]
+      )
+    );
+
+    /** @type {HTMLElement} */ (host.querySelector('.detail-session')).click();
+
+    expect(opened).toHaveLength(1);
+    expect(opened[0].session_id).toBe('a1b2c3d4-5e6f');
+  });
+
+  test('copies the provider resume command from the ⧉ 재개 sibling', () => {
+    /** @type {string[]} */
+    const copied = [];
+    const host = mount(
+      sessionHistoryTemplate(
+        [],
+        { onCopyResumeCommand: (command) => copied.push(command) },
+        {},
+        [view({ provider: 'codex', resume_command: "codex resume 'sid-7'" })]
+      )
+    );
+    const button = /** @type {HTMLElement} */ (
+      host.querySelector('.detail-session__resume-cmd')
+    );
+
+    button.click();
+
+    expect(button.getAttribute('title')).toBe("codex resume 'sid-7'");
+    expect(copied).toEqual(["codex resume 'sid-7'"]);
+  });
+
+  test('omits the ⧉ 재개 button for an id no safe command could be built from', () => {
+    const host = mount(
+      sessionHistoryTemplate([], {}, {}, [view({ resume_command: null })])
+    );
+
+    expect(host.querySelector('.detail-session__resume-cmd')).toBeNull();
+  });
+
+  test('renders the section for sessions alone when no attempt exists', () => {
+    const host = mount(sessionHistoryTemplate([], {}, {}, [view()]));
+
+    expect(
+      host.querySelector('[data-seam="session-history"]')?.textContent
+    ).not.toContain('세션 이력 없음');
+    expect(host.querySelectorAll('.detail-session-row')).toHaveLength(1);
+  });
+
+  test('keeps the empty state when neither attempts nor sessions exist', () => {
+    const host = mount(sessionHistoryTemplate([], {}, {}, []));
+
+    expect(host.querySelector('.detail-empty')?.textContent).toBe(
+      '세션 이력 없음'
+    );
+  });
+
+  test('renders an attempt-only history exactly as it did without session rows', () => {
+    const host = mount(sessionHistoryTemplate(ATTEMPTS, {}, {}, []));
+
+    expect(markup(host)).toMatchInlineSnapshot(`
+      "
+          <div class="detail-section-label">
+            세션 이력
+          </div>
+          <div class="detail-sessions" data-seam="session-history">
+            <div class="detail-session-row">
+                <button type="button" class="detail-session detail-session--done" data-attempt-id="att-1">
+                  <span class="detail-session__glyph">✓</span>
+                  <span class="detail-session__id">att-1</span>
+                  
+                  <span class="detail-session__meta">claude · opus</span>
+                  
+                  <span class="detail-session__sid" title="abcdefgh1234">abcdefgh</span>
+                  
+                  <span class="detail-session__time">07:13</span>
+                </button>
+                   
+                
+                
+              </div>
+          </div>
+        "
+    `);
+  });
+});

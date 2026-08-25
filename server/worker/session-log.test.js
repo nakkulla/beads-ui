@@ -346,6 +346,37 @@ describe('worker/session-log lastActivity (UI-eey2 §9.3)', () => {
     });
   });
 
+  // UI-4xzk §5.3: the parser learned a `user` line kind for interactive session
+  // transcripts. A Worker attempt's user records carry `tool_result` blocks
+  // ONLY, so no `user` line is produced here and the overlay needs no new rule.
+  test('leaves the activity on the tool line for a tool_result-only user record', () => {
+    const log = createSessionLog({ now: () => 5, emitChanged: () => {} });
+
+    log.publish(WS, 'a1', {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 't1',
+            name: 'Bash',
+            input: { command: 'npm test' }
+          }
+        ]
+      }
+    });
+    const before = log.lastActivity(WS, 'a1');
+    log.publish(WS, 'a1', {
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }]
+      }
+    });
+
+    expect(before?.kind).toBe('tool');
+    expect(log.lastActivity(WS, 'a1')?.kind).toBe('tool');
+  });
+
   test('projects a codex agent_message and command_execution', () => {
     const log = createSessionLog({ now: () => 7, emitChanged: () => {} });
 

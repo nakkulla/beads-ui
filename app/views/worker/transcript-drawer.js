@@ -262,6 +262,32 @@ function formatAgo(at, now_ms) {
  * @property {string} [status] - running/done/failed (for the bar label).
  * @property {string} [session_id] - Runner session id (claude session_id /
  * codex thread_id) for `--resume`; shown short (first 8) + click-to-copy (§2).
+ * @property {string} [label] - Bar text replacing the attempt id (UI-4xzk
+ * §6.2). An interactive session's key is a synthetic `session:…` string, which
+ * says less to a reader than `claude · a1b2c3d4`.
+ * @property {string} [resume_command] - Terminal command that reattaches to
+ * this session; adds a copy button beside the session id.
+ */
+
+/**
+ * One interactive session's transcript, addressed by the bead that recorded it
+ * (UI-4xzk §4.3). Carried verbatim into the subscribe payload — the server
+ * authorizes the read against that bead's own `session_ref` value.
+ *
+ * @typedef {Object} DrawerSessionRef
+ * @property {string} bead_id
+ * @property {string} provider
+ * @property {string} session_id
+ */
+
+/**
+ * @typedef {Object} DrawerOpenInput
+ * @property {string} attempt_id
+ * @property {string} [launch_id]
+ * @property {DrawerSessionRef} [session_ref]
+ * @property {string} [root_dir]
+ * @property {DrawerMeta} [meta]
+ * @property {boolean} [hide_prompt]
  */
 
 /**
@@ -271,7 +297,7 @@ function formatAgo(at, now_ms) {
  *   sessionLogStore?: { get: (id: string) => { lines: unknown[], last_event_at?: number|null } | null, subscribe: (fn: () => void) => () => void },
  *   onClose?: () => void
  * }} [options]
- * @returns {{ open: (input: { attempt_id: string, launch_id?: string, root_dir?: string, meta?: DrawerMeta, hide_prompt?: boolean }) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
+ * @returns {{ open: (input: DrawerOpenInput) => void, updateMeta: (meta: DrawerMeta) => void, close: () => void, isOpen: () => boolean, destroy: () => void }}
  */
 export function createTranscriptDrawer(mount_element, options = {}) {
   const { transport, sessionLogStore, onClose } = options;
@@ -280,6 +306,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   let attempt_id = null;
   /** @type {string | null} */
   let launch_id = null;
+  /**
+   * The interactive session this drawer opened, when it opened one instead of
+   * an attempt (UI-4xzk §6.2).
+   *
+   * @type {DrawerSessionRef | null}
+   */
+  let session_ref = null;
   /** @type {string | null} */
   let subscription_id = null;
   /**
@@ -707,6 +740,27 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           : ''}
       </div>`;
     }
+    if (line.kind === 'user') {
+      // What a person typed (UI-4xzk §5.4). Never through `renderMarkdown` —
+      // an instruction is prose, and a stray `#` or `_` is a character, not
+      // formatting. Long prompts collapse the way thinking blocks do so one
+      // paste cannot fill the drawer.
+      const is_expanded = expanded.has(idx);
+      return html`<div
+        class="sv__line sv__line--user${is_expanded
+          ? ' sv__line--expanded'
+          : ''}"
+        role="button"
+        tabindex="0"
+        title="펼치기"
+        @click=${() => toggleExpand(idx)}
+      >
+        <span class="sv__user-line">▷ ${firstLineOf(line.text)}</span>
+        ${is_expanded
+          ? html`<pre class="sv__user-expand">${line.text}</pre>`
+          : ''}
+      </div>`;
+    }
     if (line.kind === 'error') {
       return html`<div class="sv__error">⛔ ${line.text}</div>`;
     }
@@ -810,7 +864,9 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     const stage = stageOf(lines);
     return html`<div class="sv" data-attempt-id=${attempt_id}>
       <div class="sv__bar">
-        <span class="sv__id">${launch_id ? meta.role || '' : attempt_id}</span>
+        <span class="sv__id"
+          >${meta.label || (launch_id ? meta.role || '' : attempt_id)}</span
+        >
         ${stage
           ? html`<span
               class="sv__stage${stage.guess ? ' sv__stage--guess' : ''}"
@@ -834,9 +890,20 @@ export function createTranscriptDrawer(mount_element, options = {}) {
               class="sv__session"
               title=${session_id}
               aria-label=${`세션 ID 복사: ${session_id}`}
-              @click=${() => copySession(session_id)}
+              @click=${() => copyValue(session_id)}
             >
               ⧉ ${session_id.slice(0, 8)}
+            </button>`
+          : ''}
+        ${meta.resume_command
+          ? html`<button
+              type="button"
+              class="sv__resume-cmd"
+              title=${meta.resume_command}
+              aria-label=${`재개 명령 복사: ${meta.resume_command}`}
+              @click=${() => copyValue(meta.resume_command || '')}
+            >
+              ⧉ 재개 명령
             </button>`
           : ''}
         ${metaBits ? html`<span class="sv__meta">${metaBits}</span>` : ''}
@@ -1020,12 +1087,12 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   }
 
   /**
-   * Copy the full session id to the clipboard (Board `복사됨`/`복사 실패` toast
-   * convention).
+   * Copy one bar value — the full session id, or the resume command — to the
+   * clipboard (Board `복사됨`/`복사 실패` toast convention).
    *
    * @param {string} value
    */
-  function copySession(value) {
+  function copyValue(value) {
     void copyToClipboard(value).then((ok) => {
       if (ok) {
         showToast('복사됨', 'success', 1200);
@@ -1116,19 +1183,31 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   }
 
   /**
-   * @param {{ attempt_id: string, launch_id?: string, root_dir?: string, meta?: DrawerMeta, hide_prompt?: boolean }} input
+   * @param {DrawerOpenInput} input
    */
   function open(input) {
     const next_id = input && input.attempt_id;
     if (!next_id) {
       return;
     }
-    const previous_subscription_id = subscription_id;
-    attempt_id = next_id;
-    launch_id =
+    const next_launch_id =
       typeof input.launch_id === 'string' && input.launch_id.length > 0
         ? input.launch_id
         : null;
+    const next_session_ref =
+      input.session_ref && typeof input.session_ref === 'object'
+        ? input.session_ref
+        : null;
+    // The two variants are exclusive on the wire (`bad_request` server-side), so
+    // a caller passing both has a bug. Dropping one silently would open SOME
+    // transcript and hide which — refuse instead.
+    if (next_launch_id && next_session_ref) {
+      return;
+    }
+    const previous_subscription_id = subscription_id;
+    attempt_id = next_id;
+    launch_id = next_launch_id;
+    session_ref = next_session_ref;
     subscription_id = launch_id
       ? `session-log:${attempt_id}:${launch_id}`
       : `session-log:${attempt_id}`;
@@ -1163,6 +1242,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
           id: subscription_id,
           attempt_id,
           ...(launch_id ? { launch_id } : {}),
+          ...(session_ref ? { session_ref } : {}),
           ...(root_dir ? { root_dir } : {})
         })
       ).catch(() => {});
@@ -1176,6 +1256,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     unbindOutsideClose();
     attempt_id = null;
     launch_id = null;
+    session_ref = null;
     subscription_id = null;
     root_dir = null;
     hide_prompt = false;
@@ -1211,6 +1292,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
       mount_element.removeEventListener('scroll', onScroll, true);
       attempt_id = null;
       launch_id = null;
+      session_ref = null;
       subscription_id = null;
       root_dir = null;
       hide_prompt = false;

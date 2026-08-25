@@ -1451,3 +1451,188 @@ describe('transcript drawer 바깥 클릭 닫기', () => {
     drawer.destroy();
   });
 });
+
+describe('transcript drawer session_ref 변형 (UI-4xzk §6.2)', () => {
+  const SESSION_REF = {
+    bead_id: 'UI-4xzk',
+    provider: 'claude',
+    session_id: 'a1b2c3d4-5e6f'
+  };
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="d"></div>';
+    mount = /** @type {HTMLElement} */ (document.getElementById('d'));
+    store = createSessionLogStore();
+    sends = [];
+  });
+
+  test('carries the session_ref verbatim into the subscribe payload', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: SESSION_REF,
+      root_dir: '/tmp/repo-a'
+    });
+
+    expect(
+      sends.find((s) => s.type === 'subscribe-session-log')?.payload
+    ).toMatchObject({
+      id: 'session-log:session:claude:a1b2c3d4-5e6f',
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: SESSION_REF,
+      root_dir: '/tmp/repo-a'
+    });
+    drawer.destroy();
+  });
+
+  test('refuses to open when a launch_id arrives with a session_ref', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      launch_id: 'toolu_01',
+      session_ref: SESSION_REF
+    });
+
+    expect(drawer.isOpen()).toBe(false);
+    expect(
+      sends.find((s) => s.type === 'subscribe-session-log')
+    ).toBeUndefined();
+    drawer.destroy();
+  });
+
+  test('omits the session_ref key from an ordinary attempt subscription', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'a1' });
+
+    expect(
+      sends.find((s) => s.type === 'subscribe-session-log')?.payload
+    ).not.toHaveProperty('session_ref');
+    drawer.destroy();
+  });
+
+  test('shows the meta label instead of the synthetic attempt id', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: SESSION_REF,
+      meta: { label: 'claude · a1b2c3d4' }
+    });
+
+    expect(mount.querySelector('.sv__id')?.textContent?.trim()).toBe(
+      'claude · a1b2c3d4'
+    );
+    drawer.destroy();
+  });
+
+  test('copies the full resume command from the bar button', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true
+    });
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: SESSION_REF,
+      meta: {
+        session_id: 'a1b2c3d4-5e6f',
+        resume_command: "claude --resume 'a1b2c3d4-5e6f'"
+      }
+    });
+    const button = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__resume-cmd')
+    );
+    button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await Promise.resolve();
+
+    expect(button.getAttribute('title')).toBe(
+      "claude --resume 'a1b2c3d4-5e6f'"
+    );
+    expect(mount.querySelector('.sv__session')).not.toBeNull();
+    expect(writeText).toHaveBeenCalledWith("claude --resume 'a1b2c3d4-5e6f'");
+    drawer.destroy();
+  });
+
+  test('renders no resume button without a resume command', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({ attempt_id: 'a1', meta: { session_id: 'sid-1' } });
+
+    expect(mount.querySelector('.sv__resume-cmd')).toBeNull();
+    drawer.destroy();
+  });
+
+  test('hides the prompt toggle for a session that has no dispatched prompt', () => {
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: SESSION_REF,
+      hide_prompt: true
+    });
+
+    expect(
+      mount.querySelector('[data-seam="attempt-prompt-toggle"]')
+    ).toBeNull();
+    drawer.destroy();
+  });
+
+  test('renders a human input turn as a collapsed user line that expands', () => {
+    store.set('session-log:session:claude:a1b2c3d4-5e6f', [
+      {
+        type: 'user',
+        message: { content: '첫 줄 지시\n둘째 줄 세부' }
+      }
+    ]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+
+    drawer.open({
+      attempt_id: 'session:claude:a1b2c3d4-5e6f',
+      session_ref: SESSION_REF
+    });
+    const line = /** @type {HTMLElement} */ (
+      mount.querySelector('.sv__line--user')
+    );
+
+    expect(line.querySelector('.sv__user-line')?.textContent).toContain(
+      '▷ 첫 줄 지시'
+    );
+    expect(line.querySelector('.sv__user-expand')).toBeNull();
+
+    line.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(mount.querySelector('.sv__user-expand')?.textContent).toBe(
+      '첫 줄 지시\n둘째 줄 세부'
+    );
+    drawer.destroy();
+  });
+});
