@@ -81,6 +81,7 @@ import {
   detachWorkerQueue,
   handleGetAttemptPrompt,
   handleGetBeadPrompt,
+  handleGetSessionRefs,
   handleGetWorkerSystemPrompt,
   handleSubscribeSessionLog,
   handleSubscribeWorkerQueue,
@@ -682,7 +683,10 @@ export async function handleMessage(ws, data) {
       handleDisplayPolicySet(ws, req);
       return;
     case 'subscribe-session-log':
-      handleSubscribeSessionLog(ws, req);
+      await handleSubscribeSessionLog(ws, req);
+      return;
+    case 'get-session-refs':
+      await handleGetSessionRefs(ws, req);
       return;
     case 'get-attempt-prompt':
       handleGetAttemptPrompt(ws, req);

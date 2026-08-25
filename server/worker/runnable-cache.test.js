@@ -960,7 +960,8 @@ describe('runnable cache 세션 진행 버킷 (UI-yrzu §4.1)', () => {
         started_at: 2000,
         workflow: { route: 'spec_backed' },
         blocked: false,
-        blocked_by: []
+        blocked_by: [],
+        session_refs: []
       }
     ]);
   });

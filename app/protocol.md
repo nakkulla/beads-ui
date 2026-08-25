@@ -173,11 +173,24 @@ bead a session reopened is being worked on now. Each row carries
 `{ bead_id, title, status: 'in_progress', route, spec_id, labels, created_at, updated_at, started_at, workflow, blocked, blocked_by }`.
 `route` is `metadata.route` or `''` when unpinned, `spec_id` is `''` when absent
 or in conflict, and `workflow` / `blocked` / `blocked_by` follow the same rules
-as the runnable rows below. Worker admission conditions (`worker-ineligible`,
-the route enum, the `spec_review` receipt, phase-child parentage) are NOT
-applied: a session claims whatever issue it likes. The bucket rides the same
-scan, TTL and invalidation as `runnable`, so a session's `bd update` surfaces
-within one refresh tick rather than immediately.
+as the runnable rows below. Each row also carries
+`session_refs: SessionRefView[]` (UI-4xzk §4.1) — `metadata.session_ref`
+projected from the SAME scan, so the bucket still costs no extra `bd` process.
+One view is
+`{ index, provider: 'claude'|'codex', session_id, host, current, locality: 'local'|'remote'|'missing', last_event_at, resume_command }`:
+`index` is the position in the contract value (malformed items are dropped
+INDIVIDUALLY and the surviving indexes are unchanged), `current` marks the last
+valid item, `locality` is `remote` when the host's first label differs from this
+server's, `missing` when no transcript file was found, `last_event_at` is that
+file's mtime in epoch ms (`null` unless `local`), and `resume_command` is
+`claude --resume '<sid>'` / `codex resume '<sid>'` — `null` when the session id
+is not a safe single shell argument. The transcript PATH is never on the wire.
+An absent key, an all-malformed value, or a projection failure is `[]`. Worker
+admission conditions (`worker-ineligible`, the route enum, the `spec_review`
+receipt, phase-child parentage) are NOT applied: a session claims whatever issue
+it likes. The bucket rides the same scan, TTL and invalidation as `runnable`, so
+a session's `bd update` surfaces within one refresh tick rather than
+immediately.
 
 `workspaces[].bead_blocked_by` is the worker snapshot's map with one more
 filter: a blocker id whose prefix belongs to ANOTHER visible workspace is looked
@@ -606,15 +619,15 @@ model.
 Streams a per-attempt raw runner event stream to the transcript viewer.
 
 - `subscribe-session-log` payload:
-  `{ id: client_id, attempt_id, launch_id?, root_dir? }` — `launch_id`가 없으면
-  기존 main attempt log를 구독한다. `launch_id`가 있으면 대상 workspace의 exact
-  attempt와 그 attempt의 normalized delegation summary를 먼저 확인한 뒤 해당
-  stream만 구독한다. `root_dir`은 선택이며 (UI-eey2 §9.5) 있으면 registry allow
-  list로 검증한 그 workspace를, 없으면 현행대로 connection workspace를 대상으로
-  한다 — 등록되지 않은 경로는 `bad_request`다. 구독 레지스트리는 client id로
-  키를 잡으므로 충돌이 없다. replies `ok`, then pushes a `session-log-snapshot`;
-  a live attempt then pushes `session-log-append` per new event. A Done/Failed
-  attempt is snapshot-only.
+  `{ id: client_id, attempt_id, launch_id?, session_ref?, root_dir? }` —
+  `launch_id`가 없으면 기존 main attempt log를 구독한다. `launch_id`가 있으면
+  대상 workspace의 exact attempt와 그 attempt의 normalized delegation summary를
+  먼저 확인한 뒤 해당 stream만 구독한다. `root_dir`은 선택이며 (UI-eey2 §9.5)
+  있으면 registry allow list로 검증한 그 workspace를, 없으면 현행대로 connection
+  workspace를 대상으로 한다 — 등록되지 않은 경로는 `bad_request`다. 구독
+  레지스트리는 client id로 키를 잡으므로 충돌이 없다. replies `ok`, then pushes
+  a `session-log-snapshot`; a live attempt then pushes `session-log-append` per
+  new event. A Done/Failed attempt is snapshot-only.
 - `unsubscribe-session-log` payload: `{ id: client_id }`.
 - `session-log-snapshot` (push) payload:
   `{ id, attempt_id, launch_id?, lines:[…], last_event_at }` — the persisted raw
@@ -627,6 +640,47 @@ Streams a per-attempt raw runner event stream to the transcript viewer.
   echo한다. 다른 workspace의 attempt, unknown launch, unauthorized launch는
   filesystem을 조회하거나 구분 가능한 오류를 내지 않고
   `{ lines: [], last_event_at: null }` empty snapshot으로 fail-quiet 처리한다.
+
+### `session_ref` 변형 (UI-4xzk §4.3)
+
+`session_ref: { bead_id, provider, session_id }`가 있으면 attempt가 아니라
+**인터랙티브 세션 자신의 transcript 파일**을 연다. attempt도 runtime broker도
+없으므로 `last_activity` overlay 대상이 아니다.
+
+- `launch_id`와 함께 오면 `bad_request`다(두 변형은 배타적이다).
+- `attempt_id`는 반드시 `session:<provider>:<session_id>`여야 한다 — 이 값이
+  클라이언트 store·drawer의 키이며, 병렬 분석기가 `job_id`를 같은 슬롯에 넣는
+  것과 같은 규약이다. 불일치는 `bad_request`.
+- `provider`는 `claude|codex` enum, `session_id`는 `^[A-Za-z0-9._-]+$`(경로
+  구분자·`..`·셸 해석 문자 차단). 위반은 `bad_request`.
+- **인가**: 서버는 대상 workspace에서 `bd show <bead_id> --json`을 읽어
+  `metadata.session_ref` 항목 중 `(provider, session_id)`가 일치하는 것이 있을
+  때에만 파일을 연다. 없으면 **filesystem을 전혀 조회하지 않고**
+  `{ lines: [], last_event_at: null }` empty snapshot이다. 즉 이 경로로 읽히는
+  파일은 "어떤 Bead가 자기 세션이라고 기록한 파일"뿐이다.
+- host 불일치(`remote`)·파일 없음(`missing`)·읽기 실패·`bd show` 실패도 모두
+  같은 empty snapshot이다.
+- snapshot은 **마지막 개행까지만** 파싱한다: 끝에 개행 없이 남은 바이트는 쓰는
+  중인 레코드일 수 있으므로 snapshot에 넣지 않고, 그 오프셋이 tail follow의
+  시작점이 된다 — 그 레코드는 완성된 뒤 append로 정확히 한 번 도착한다.
+  `last_event_at`은 파일 mtime(epoch ms)이다.
+- 이후 새 완전한 줄마다 `session-log-append`가 온다. 서버 어댑터가 Claude
+  프로젝트 JSONL과 Codex rollout을 모두 runner 이벤트 형식으로 투영하므로
+  클라이언트 파서는 attempt 로그와 같다. 파일이 삭제·교체돼도 reader는 새 파일을
+  다시 열지 않는다 (다시 열면 새 snapshot).
+- 두 push payload 모두 `launch_id`를 싣지 않는다.
+
+### session-log 라인의 `user` 종류 (UI-4xzk §5.3)
+
+세션 transcript에는 attempt 로그에 없는 **사람 입력 턴**이 있다. 파서
+(`app/utils/transcript-lines.js`)는 이를 `DisplayLine.kind === 'user'`로 낸다:
+Claude `type: 'user'` 레코드의 `message.content` 텍스트(문자열이거나 `text` 블록
+연결)에서 `<system-reminder>…</system-reminder>`를 제거하고 trim한 결과가 비어
+있지 않을 때, 그리고 Codex `item.completed` + `item.type === 'user_message'`일
+때다. `user_message`는 beads-ui가 정의한 확장 항목이며, 서버 어댑터가 rollout의
+`event_msg`/`user_message`를 그 형식으로 투영한다. Worker attempt 로그의 `user`
+레코드는 `tool_result`뿐이라 이 라인이 생기지 않고, `last_activity` overlay에도
+규칙이 더해지지 않는다.
 
 ## Prompt inspection (UI-rxp3 §4/§5)
 
@@ -645,6 +699,14 @@ own unless the payload names a validated `root_dir`.
   NEWEST attempt that recorded one. A bead that was never dispatched replies
   `{ missing: true, default_task_prompt }` — what the next dispatch would send,
   so the panel can preview it without holding a copy of the text.
+- `get-session-refs` payload: `{ bead_id, root_dir? }` — replies
+  `{ bead_id, sessions: SessionRefView[] }` with the same view shape and the
+  same projection rules as `session_active[].session_refs` above. `root_dir`
+  follows the `get-attempt-prompt` convention (registry allow list; absent keeps
+  the connection workspace). A `bd show` failure, an unknown bead, and an absent
+  key all reply `{ bead_id, sessions: [] }` rather than an error — the detail
+  panel simply draws no session rows. Bead `status` is deliberately NOT carried:
+  the panel already holds it, and two sources of one fact can disagree.
 - `get-worker-system-prompt` payload: `{}` — replies
   `{ target_base_placeholder, system_prompt, variants:[{ key, label, condition, system_prompt }] }`.
   Assembled server-side through `runner/preamble.js`, the single owner of the

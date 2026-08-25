@@ -10,6 +10,17 @@ import { debug } from '../logging.js';
 const log = debug('worker:claude-effort-observer');
 
 /**
+ * Filename one session's project JSONL always has, whichever project directory
+ * it landed in. The two lookups below share it: one knows the cwd, the other
+ * only the id.
+ *
+ * @param {string} session_id
+ */
+function sessionFileName(session_id) {
+  return `${session_id}.jsonl`;
+}
+
+/**
  * @param {string} cwd
  * @param {string} session_id
  * @param {{ home_dir?: string }} [options]
@@ -22,8 +33,55 @@ export function claudeSessionFilePath(cwd, session_id, options = {}) {
     '.claude',
     'projects',
     munged_cwd,
-    `${session_id}.jsonl`
+    sessionFileName(session_id)
   );
+}
+
+/**
+ * Locate a session's project JSONL by ID ALONE (UI-4xzk §3.2).
+ *
+ * A `session_ref` item records the session id and nothing about the directory
+ * it ran in, so the cwd-munged path above cannot be built. Session ids are
+ * UUIDs, so the first project directory holding `<id>.jsonl` is THE session,
+ * and scanning is exact rather than a guess.
+ *
+ * @param {string} session_id
+ * @param {{ home_dir?: string, fs?: Pick<typeof fs, 'readdirSync' | 'statSync'> }} [options]
+ * @returns {string|null}
+ */
+export function findClaudeSessionFile(session_id, options = {}) {
+  if (typeof session_id !== 'string' || session_id.length === 0) {
+    return null;
+  }
+  const file_system = options.fs || fs;
+  const projects_dir = path.join(
+    options.home_dir || os.homedir(),
+    '.claude',
+    'projects'
+  );
+  /** @type {string[]} */
+  let names;
+  try {
+    names = file_system.readdirSync(projects_dir).map((name) => String(name));
+  } catch (err) {
+    log('claude projects dir unreadable: %o', err);
+    return null;
+  }
+  for (const name of names) {
+    const candidate = path.join(
+      projects_dir,
+      name,
+      sessionFileName(session_id)
+    );
+    try {
+      file_system.statSync(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  log('claude session file absent for %s', session_id);
+  return null;
 }
 
 /**
