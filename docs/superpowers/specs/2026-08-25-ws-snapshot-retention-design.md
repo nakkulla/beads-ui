@@ -139,18 +139,25 @@ raw 전체로 계산한다.
    즉시 사라지지 않게 하는 창. paused는 여기 넣지 않는다 — leaf paused는 규칙 3이
    잡고, 이미 재개된 paused 기록은 후속 attempt의 운명을 따른다. 실측에서는 규칙
    1–2와 같은 집합이다.)
-5. §4.4 잔여 repo op의 `repair.attempt_id`가 가리키는 attempt의 bead와
-   `completion_status[*].active_attempt_id`가 가리키는 attempt의 bead.
+5. `completion_status[*].active_attempt_id`가 가리키는 attempt의 bead(초기
+   seed에 포함).
+6. §4.4 잔여 repo op의 `repair.attempt_id`가 가리키는 attempt의 bead.
 
-규칙 5와 §4.4는 서로를 참조하므로 계산 순서를 고정한다: 규칙 1–4로 R₀를 만들고
-→ §4.4를 R₀로 평가해 잔여 op 집합 O₀를 얻고 → O₀의 `repair.attempt_id`와
-`completion_status[*].active_attempt_id`로 규칙 5를 더해 R을 확정하고 → §4.4를
-R로 한 번 더 평가한 O를 최종 잔여 op으로 쓴다. 그 이상은 반복하지 않는다.
-attempt 보존은 R, op 보존은 O 기준이다.
+규칙 6과 §4.4는 서로를 참조하므로 **고정점까지 반복**한다: 규칙 1–5로 R을 만들고,
+§4.4를 R로 평가해 O를 얻고, O의 `repair.attempt_id`로 규칙 6을 더해 R을 넓히고,
+R이 넓어졌으면 §4.4를 다시 평가한다 — R과 O가 더 이상 늘지 않을 때 멈춘다. 두
+집합은 단조 증가하고 raw의 bead·op 수로 유계이므로 반복은 유한하다(다중
+subject op가 새 bead를 끌어오고 그 op의 `repair.attempt_id`가 또 다른 owner
+bead를 가리키는 사슬도 끊기지 않는다). attempt 보존은 최종 R, op 보존은 최종 O
+기준이다.
 
 ### 4.3 자르기
 
-- `done`: 규칙 2 항목만, 기존 순서 유지.
+- `done`: 규칙 2 항목 ∪ **`bead_id ∈ R`인 항목**(나이 무관), 기존 순서 유지. 뒤쪽
+  합집합은 클라이언트 분류기의 `doneAtByBead` 입력을 지키기 위한 것이다 — 다른
+  이유로 보존된 bead의 옛 failed attempt를 해소한 done 증거가 빠지면 클라이언트가
+  그 실패를 "미처리"로 되살리고, raw로 계산하는 `workspaces_state.counts`와 레인이
+  어긋난다. 화면에서는 완료 레인 기간 필터(`오늘/7일`)가 그 옛 행을 계속 숨긴다.
 - `attempts`: `bead_id ∈ R`인 attempt 전부. bead 단위 all-or-nothing이므로
   `resumed_from` 체인·토큰 합계·`done_kind`/head review 배지가 bead 안에서
   완결된다.
@@ -234,6 +241,13 @@ envelope·`pushSnapshotIfChanged` dedup은 변경하지 않는다. persisted `qu
      포함) 남는다.
   3. 옛 done이 해소한 failed attempt(bead가 레인 밖)는 빠지고, done보다 늦게
      실패한 미처리 attempt는 남는다.
+  3a. 옛 done이 해소한 failed attempt를 가진 bead가 다른 이유(예: `queue`
+     재등록)로 R에 들면, 7일 지난 그 done 항목도 projection에 남고
+     `activeAttemptStates(trimmed.attempts, doneAtByBead(trimmed))`가 그 bead를
+     실패로 되살리지 않는다; `laneCountsFor`(raw)의 `running`과 일치한다.
+  3b. 참조 사슬 고정점: 다중 subject op가 R 밖 bead를 끌어오고 그 op의
+     `repair.attempt_id`가 제3의 bead를 가리키는 입력에서 세 bead의 attempt와 두
+     op이 모두 남는다; `repair_operation_id` 역방향 참조도 op을 남긴다.
   4. paused 뒤에 resumed 체인이 있는 bead는 체인 전체가 남거나 전체가 빠진다.
   5. 종료 attempt에서 §4.3 필드가 빠지고 running attempt는 키가 그대로다;
      `usage_legs`·`delegation_sessions`·`exec_values`·`cause_detail`은 남는다.
