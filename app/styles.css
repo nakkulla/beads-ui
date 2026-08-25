@@ -6456,6 +6456,14 @@ html[data-theme='dark'] {
   white-space: nowrap;
 }
 
+/* 세션 권장 advisory 칩 (UI-49mc §4.5): 색은 `ctl-chip--label`이 소유하므로 —
+   Board가 같은 라벨을 그리는 방식이고 바로 위 칩이 이미 쓴다 — 여기서는
+   레이아웃만 고정한다. 카드 음영은 붙이지 않는다: 이 라벨은 실행을 막지 않는다. */
+.worker-card__session-preferred {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* 버튼식 큐 적재 (UI-fmwh §4.2): 드래그 가능 여부와 무관하게 항상 보이는
    보완재. 자격 조건은 템플릿이 드래그와 동일하게 결정한다. */
 .worker-card__place {

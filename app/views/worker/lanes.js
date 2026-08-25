@@ -1029,6 +1029,12 @@ export function priorityBadgeTemplate(priority) {
  * `worker-ineligible` label (UI-8881). Observation-only: the card is shaded,
  * wears the ⛔ chip, and refuses drag and queue placement. The candidate
  * projection computes it once; the template never re-reads label strings.
+ * @property {boolean} [session_preferred] - Candidate carries a VALID
+ * `session-preferred` attachment (UI-49mc §4.4): 워커로 돌릴 수는 있지만 세션이
+ * 낫다는 advisory. 투영이 `worker_ineligible` 우선순위를 이미 접었으므로 템플릿은
+ * 다시 판정하지 않고, 실행 자격·drag·적재는 건드리지 않는다.
+ * @property {string} [session_preferred_reason] - 계약 enum 안의 사유. 칩 툴팁
+ * 문구의 키이며, enum 밖 값은 투영에 도달하기 전에 걸러진다.
  * @property {string} [from_id] - Origin bead of a `discovered-from` edge.
  * @property {number} [priority] - Bead 우선순위 0..4. 숫자가 아니면 배지를
  * 그리지 않는다.
@@ -1544,6 +1550,16 @@ function placeMenuList(entries, bead_id) {
 }
 
 /**
+ * `session_preferred_reason` → 칩 툴팁 문구 (UI-49mc §4.2). enum 밖 사유는 투영
+ * 술어가 이미 걸러내므로 여기 닿지 않고, 매핑이 비면 툴팁 없이 칩만 그린다.
+ *
+ * @type {Record<string, string>}
+ */
+const SESSION_PREFERRED_TOOLTIP = {
+  exclusive_machine: '실행 중 머신 독점 필요 — 부하 하네스·timing 비교'
+};
+
+/**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
  * miniRow's drag contract (`draggable` / `data-bead-id` / `data-lane`) so the
@@ -1575,6 +1591,12 @@ export function candidateCard(item, place_menu = null, options = {}) {
   const worker_ineligible = item.worker_ineligible === true;
   const draggable = item.draggable && !item.done && !worker_ineligible;
   const menu_open = draggable && place_menu && place_menu.bead_id === item.id;
+  // 계약상 `worker-ineligible`과 상호배타이므로 머리줄의 같은 자리 하나를 나눠
+  // 쓴다 (UI-49mc §4.1). 우선순위는 투영이 이미 접었고, 이 라벨은 drag·적재·음영
+  // 어디에도 입력되지 않는다.
+  const session_preferred = item.session_preferred === true;
+  const session_preferred_tooltip =
+    SESSION_PREFERRED_TOOLTIP[item.session_preferred_reason || ''] || '';
   const workflow = item.workflow;
   const missing_description =
     typeof item.reason === 'string' &&
@@ -1620,7 +1642,13 @@ export function candidateCard(item, place_menu = null, options = {}) {
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
             >worker-ineligible</span
           >`
-        : ''}${quickFixReviewChipTemplate(workflow)}
+        : session_preferred
+          ? html`<span
+              class="ctl-chip ctl-chip--label worker-card__session-preferred"
+              title=${session_preferred_tooltip}
+              >세션 권장</span
+            >`
+          : ''}${quickFixReviewChipTemplate(workflow)}
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow

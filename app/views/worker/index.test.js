@@ -6063,6 +6063,112 @@ describe('worker-ineligible candidates (UI-8881)', () => {
   });
 });
 
+describe('session-preferred candidates (UI-49mc)', () => {
+  /**
+   * Ready feed carrying one advisory candidate (`PREF`) whose label/metadata
+   * pair the case under test overrides, plus a plain spec candidate.
+   *
+   * @param {Partial<any>} [over] - Overrides merged into the advisory issue.
+   */
+  function seedPreferred(over = {}) {
+    const stores = createTestIssueStores();
+    seed(stores, 'tab:worker:ready', [
+      {
+        id: 'PREF',
+        title: 'session preferred with spec',
+        status: 'open',
+        created_at: 100,
+        metadata: {
+          spec_id: 'S',
+          session_preferred_reason: 'exclusive_machine'
+        },
+        labels: ['session-preferred'],
+        ...over
+      },
+      {
+        id: 'OK',
+        title: 'plain with spec',
+        status: 'open',
+        created_at: 300,
+        metadata: { spec_id: 'S' }
+      }
+    ]);
+    return stores;
+  }
+
+  /**
+   * @param {Partial<any>} [over]
+   * @returns {HTMLElement}
+   */
+  function renderPreferred(over = {}) {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    createWorkerView(mount, {
+      issueStores: seedPreferred(over),
+      queueStore: createWorkerQueueStore(),
+      transport: vi.fn()
+    });
+    return /** @type {HTMLElement} */ (
+      mount.querySelector('.worker-card[data-bead-id="PREF"]')
+    );
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '<div id="m"></div>';
+    window.localStorage.clear();
+  });
+
+  test('draws the chip for a label paired with an enum reason', () => {
+    const card = renderPreferred();
+
+    expect(
+      card.querySelector('.worker-card__session-preferred')?.textContent?.trim()
+    ).toBe('세션 권장');
+  });
+
+  test('omits the chip when the label carries no reason', () => {
+    const card = renderPreferred({ metadata: { spec_id: 'S' } });
+
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+
+  test('omits the chip for a reason outside the contract enum', () => {
+    const card = renderPreferred({
+      metadata: { spec_id: 'S', session_preferred_reason: 'other' }
+    });
+
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+
+  test('ignores a reason carried without the label', () => {
+    const card = renderPreferred({ labels: [] });
+
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+    expect(card.getAttribute('draggable')).toBe('true');
+  });
+
+  test('draws only the worker-ineligible treatment when both are attached', () => {
+    const card = renderPreferred({
+      labels: ['worker-ineligible', 'session-preferred']
+    });
+
+    expect(card.classList.contains('worker-card--ineligible')).toBe(true);
+    expect(card.querySelector('.worker-card__ineligible')).not.toBeNull();
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+
+  test('renders a non-array labels payload without the chip', () => {
+    const card = renderPreferred({ labels: 'session-preferred' });
+
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+
+  test('renders a row without metadata without the chip', () => {
+    const card = renderPreferred({ metadata: undefined, spec_id: 'S' });
+
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+});
+
 describe('poller activity badge — projection (UI-raqh §3)', () => {
   test('renames 관측 대기 to 확인중 while an observation runs', () => {
     expect(activityBadge('관측 대기', 'checking')).toEqual({
