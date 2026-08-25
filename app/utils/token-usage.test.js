@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vitest';
 import {
   formatUsageTotal,
   formatUsageTotalWithCost,
+  mergeUsageProjections,
   providerUsageTooltip,
   sumAttemptUsage,
   usageTooltip
@@ -760,6 +761,173 @@ describe('total-only subagent legs (UI-1663 §6.1)', () => {
 
     expect(tooltip).toBe(
       'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 10\n입력 1 · 출력 2 · 캐시읽기 3 · 캐시생성 4'
+    );
+  });
+});
+
+describe('total-only legs inside an aggregate tooltip (UI-1vpv)', () => {
+  const FOUR_FIELD_BREAKDOWN = {
+    input_tokens: 10,
+    output_tokens: 20,
+    cache_read_input_tokens: 30,
+    cache_creation_input_tokens: 40
+  };
+
+  /**
+   * @param {Record<string, any>|null} outer_usage
+   * @returns {Record<string, any>}
+   */
+  function attemptWith(outer_usage) {
+    return {
+      outer: {
+        attempt_id: 'outer',
+        bead_id: 'UI-1',
+        runner: 'claude',
+        usage: outer_usage,
+        usage_legs: [
+          {
+            receipt_id: 'toolu_01AgentBGBGBGBGBGBGBG',
+            provider: 'claude',
+            role: 'subagent',
+            usage: { total_tokens: 900 }
+          }
+        ]
+      }
+    };
+  }
+
+  /**
+   * The tokens the tooltip actually lists, in the order it prints them.
+   *
+   * @param {string} tooltip
+   * @returns {number[]}
+   */
+  function listedValues(tooltip) {
+    const detail = tooltip.split('\n').find((line) => line.includes(' · '));
+    if (!detail) {
+      return [];
+    }
+    return [...detail.matchAll(/([0-9,]+)/g)].map((match) =>
+      Number(match[1].replace(/,/g, ''))
+    );
+  }
+
+  test('carries the total-only contribution on the aggregate summary', () => {
+    const projected = sumAttemptUsage(
+      attemptWith({ ...FOUR_FIELD_BREAKDOWN }),
+      'UI-1'
+    );
+
+    expect(projected?.providers.claude?.total_only_subtotal).toBe(900);
+  });
+
+  test('omits the contribution when no total-only leg was tallied', () => {
+    const projected = sumAttemptUsage(
+      {
+        outer: {
+          attempt_id: 'outer',
+          bead_id: 'UI-1',
+          runner: 'claude',
+          usage: { ...FOUR_FIELD_BREAKDOWN },
+          usage_legs: []
+        }
+      },
+      'UI-1'
+    );
+
+    expect(projected?.providers.claude).not.toHaveProperty(
+      'total_only_subtotal'
+    );
+  });
+
+  test('names the total-only part as its own term in the mixed formula', () => {
+    const projected = sumAttemptUsage(
+      attemptWith({ ...FOUR_FIELD_BREAKDOWN }),
+      'UI-1'
+    );
+
+    const tooltip = providerUsageTooltip(
+      'claude',
+      /** @type {any} */ (projected?.providers.claude)
+    );
+
+    expect(tooltip).toBe(
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성 + 분해 없는 leg\n총 1,000\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40 · 분해 없는 leg 900'
+    );
+  });
+
+  test('makes the listed values add up to the mixed aggregate total', () => {
+    const projected = sumAttemptUsage(
+      attemptWith({ ...FOUR_FIELD_BREAKDOWN }),
+      'UI-1'
+    );
+
+    const tooltip = providerUsageTooltip(
+      'claude',
+      /** @type {any} */ (projected?.providers.claude)
+    );
+
+    expect(listedValues(tooltip).reduce((sum, value) => sum + value, 0)).toBe(
+      projected?.providers.claude?.subtotal
+    );
+  });
+
+  test('reports no breakdown when the aggregate holds total-only legs alone', () => {
+    const projected = sumAttemptUsage(attemptWith(null), 'UI-1');
+
+    const tooltip = providerUsageTooltip(
+      'claude',
+      /** @type {any} */ (projected?.providers.claude)
+    );
+
+    expect(tooltip).toBe('총 900\n분해 없음 — 총량만 보고됨');
+  });
+
+  test('keeps the four-field aggregate tooltip unchanged', () => {
+    const tooltip = providerUsageTooltip('claude', {
+      subtotal: 100,
+      breakdown: { ...FOUR_FIELD_BREAKDOWN }
+    });
+
+    expect(tooltip).toBe(
+      'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성\n총 100\n입력 10 · 출력 20 · 캐시읽기 30 · 캐시생성 40'
+    );
+  });
+
+  test('adds the total-only term to the Codex formula too', () => {
+    const tooltip = providerUsageTooltip('codex', {
+      subtotal: 930,
+      breakdown: { input_tokens: 10, output_tokens: 20 },
+      total_only_subtotal: 900
+    });
+
+    expect(tooltip.split('\n')[0]).toBe(
+      'Codex subtotal = 입력 + 출력 + 분해 없는 leg; 캐시읽기·캐시쓰기·추론출력은 subtotal에 포함되지 않는 subset'
+    );
+  });
+
+  test('sums the total-only contribution across merged projections', () => {
+    const merged = mergeUsageProjections([
+      sumAttemptUsage(attemptWith({ ...FOUR_FIELD_BREAKDOWN }), 'UI-1'),
+      sumAttemptUsage(attemptWith(null), 'UI-1')
+    ]);
+
+    expect(merged?.providers.claude?.total_only_subtotal).toBe(1800);
+  });
+
+  test('keeps a merged tooltip formula true after the merge', () => {
+    const merged = mergeUsageProjections([
+      sumAttemptUsage(attemptWith({ ...FOUR_FIELD_BREAKDOWN }), 'UI-1'),
+      sumAttemptUsage(attemptWith(null), 'UI-1')
+    ]);
+
+    const tooltip = providerUsageTooltip(
+      'claude',
+      /** @type {any} */ (merged?.providers.claude)
+    );
+
+    expect(listedValues(tooltip).reduce((sum, value) => sum + value, 0)).toBe(
+      merged?.providers.claude?.subtotal
     );
   });
 });
