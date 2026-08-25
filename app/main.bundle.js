@@ -1476,7 +1476,7 @@ ${i}</pre
         >${e.workspace_name}</span
       >`:"",k=l`<span class="worker-mini__id" title="클릭하면 ID 복사"
     >${e.id}</span
-  >`,T=e.lane==="done"?"":Yo(e.workflow),j=dd(e.from_id),W=Zo(e.priority),Z=l`<span class="worker-mini__title">${e.title}</span>`,ce=e.pr_url&&e.pr_number?l`<a
+  >`,T=e.lane==="done"?"":Yo(e.workflow),j=e.lane==="done"?"":dd(e.from_id),W=Zo(e.priority),Z=l`<span class="worker-mini__title">${e.title}</span>`,ce=e.pr_url&&e.pr_number?l`<a
           class="worker-mini__pr"
           href=${e.pr_url}
           target="_blank"
