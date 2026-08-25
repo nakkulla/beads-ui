@@ -67,6 +67,7 @@ import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import * as default_guard_hook from './guard-hook.js';
 import { DEFAULT_SLOTS, MIN_SLOTS } from './queue-store.js';
+import { judgeQuickFixHandoff } from './quick-fix-handoff.js';
 import {
   RECEIPT_BASELINE_KEYS,
   RECEIPT_METADATA_KEYS,
@@ -300,6 +301,57 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
 }
 
 /**
+ * The quick_fix self-review observation block (UI-r7or §6), or null when there
+ * is nothing to observe.
+ *
+ * Only `stale` and `unreviewed` earn a block: `reviewed` needs no lane, and
+ * `unknown` means the pinned projection could not be read at all, so ordering a
+ * session to review would be an instruction without evidence (§6.2).
+ *
+ * Like {@link staleDispatchPrompt}, this carries the OBSERVATION and a pointer
+ * only — the delta self-review procedure belongs to the workflow contract.
+ *
+ * @param {import('./quick-fix-handoff.js').QuickFixHandoffState|null} judgement
+ * @param {unknown} receipt - Raw `quick_fix_review` metadata; an `unreviewed`
+ * bead may legitimately carry none.
+ * @returns {string|null}
+ */
+export function quickFixSelfReviewBlock(judgement, receipt) {
+  if (
+    !judgement ||
+    (judgement.state !== 'stale' && judgement.state !== 'unreviewed')
+  ) {
+    return null;
+  }
+  const receipt_text =
+    typeof receipt === 'string' && receipt.trim().length > 0
+      ? `\`${receipt.trim()}\``
+      : '(없음)';
+  const digest_text = judgement.digest ? `\`${judgement.digest}\`` : '(없음)';
+  return [
+    [
+      '[quick_fix self-review]',
+      `${judgement.state} quick_fix_review 관측 — 영수증 ${receipt_text}, 현재 본문 digest ${digest_text}.`,
+      `누락: ${judgement.missing.join(', ') || '(없음)'}`
+    ].join('\n'),
+    '구현에 들어가기 전에 workflow 계약의 quick_fix delta self-review 레인을 먼저 수행하라.'
+  ].join('\n\n');
+}
+
+/**
+ * Append the observation block to whichever base prompt the dispatch selected
+ * (§6.1). The block never REPLACES that choice, and always follows it: a session
+ * has to know what it is taking over before it can judge what to do first
+ * (§6.4).
+ *
+ * @param {string} base_prompt
+ * @param {string|null} block
+ */
+export function withQuickFixSelfReview(base_prompt, block) {
+  return block ? `${base_prompt}\n\n${block}` : base_prompt;
+}
+
+/**
  * @typedef {Object} BeadSnapshot
  * @property {boolean} ready - Runnable now.
  * @property {boolean} blocked - Blocked by unmet dependencies.
@@ -345,6 +397,11 @@ function staleWorkContinuePrompt(bead_id, stale_work) {
  * @property {unknown} [plan_path] - Raw plan_path admission input.
  * @property {unknown} [plan_approval] - Raw plan_approval admission input.
  * @property {unknown} [last_checked_sha] - Raw freshness cursor admission input.
+ * @property {unknown} [issue_type] - Raw top-level issue type. A quick_fix
+ * self-review input only (`baseline_red` is required for `bug`); key absence ⇒
+ * `undefined`, any present value reaches the judge unflattened.
+ * @property {unknown} [quick_fix_review] - Raw quick_fix self-review receipt
+ * metadata, under the same presence rule.
  * @property {string[]} [deps] - Direct `blocks` blocker ids (UI-04vo §3) —
  * the lane-ordering edge source. Consumers intersect these with the current
  * queue membership.
@@ -4887,6 +4944,19 @@ export function createScheduler(deps) {
         return;
       }
 
+      // The judgement's own route pin decides applicability, so no route test
+      // is restated here: a non-quick_fix snapshot yields `null` and no block.
+      const quick_fix_block = quickFixSelfReviewBlock(
+        judgeQuickFixHandoff({
+          issue_type: snap.issue_type,
+          description: snap.description,
+          metadata: {
+            route: snap.route,
+            quick_fix_review: snap.quick_fix_review
+          }
+        }),
+        snap.quick_fix_review
+      );
       await launchSession({
         workspace,
         attempt_id,
@@ -4915,43 +4985,61 @@ export function createScheduler(deps) {
         spawnBead: stale_context
           ? {
               id: bead_id,
-              prompt: staleWorkContinuePrompt(bead_id, {
-                identity: stale_context.identity,
-                summary: stale_context.summary,
-                target_base: wt.base_oid
-              })
+              prompt: withQuickFixSelfReview(
+                staleWorkContinuePrompt(bead_id, {
+                  identity: stale_context.identity,
+                  summary: stale_context.summary,
+                  target_base: wt.base_oid
+                }),
+                quick_fix_block
+              )
             }
           : adm.stale
             ? {
                 id: bead_id,
-                prompt: staleDispatchPrompt(bead_id, {
-                  base: wt.base_oid,
-                  spec:
-                    adm.stale.receipt_sha && adm.stale.delta_shas
+                prompt: withQuickFixSelfReview(
+                  staleDispatchPrompt(bead_id, {
+                    base: wt.base_oid,
+                    spec:
+                      adm.stale.receipt_sha && adm.stale.delta_shas
+                        ? {
+                            receipt:
+                              typeof snap.spec_review === 'string' &&
+                              snap.spec_review.trim().length > 0
+                                ? snap.spec_review.trim()
+                                : adm.stale.receipt_sha,
+                            receipt_sha: adm.stale.receipt_sha,
+                            delta_shas: adm.stale.delta_shas,
+                            changed_paths: adm.stale.changed_paths
+                          }
+                        : undefined,
+                    plan: adm.stale.plan
                       ? {
                           receipt:
-                            typeof snap.spec_review === 'string' &&
-                            snap.spec_review.trim().length > 0
-                              ? snap.spec_review.trim()
-                              : adm.stale.receipt_sha,
-                          receipt_sha: adm.stale.receipt_sha,
-                          delta_shas: adm.stale.delta_shas,
-                          changed_paths: adm.stale.changed_paths
+                            typeof snap.plan_approval === 'string' &&
+                            snap.plan_approval.trim().length > 0
+                              ? snap.plan_approval.trim()
+                              : adm.stale.plan.receipt_sha,
+                          ...adm.stale.plan
                         }
-                      : undefined,
-                  plan: adm.stale.plan
-                    ? {
-                        receipt:
-                          typeof snap.plan_approval === 'string' &&
-                          snap.plan_approval.trim().length > 0
-                            ? snap.plan_approval.trim()
-                            : adm.stale.plan.receipt_sha,
-                        ...adm.stale.plan
-                      }
-                    : undefined
-                })
+                      : undefined
+                  }),
+                  quick_fix_block
+                )
               }
-            : { id: bead_id }
+            : quick_fix_block
+              ? {
+                  id: bead_id,
+                  // This branch has no base prompt of its own — the adapter
+                  // builds one. Carrying a prompt takes that path away, so the
+                  // default has to be built here or the session would receive
+                  // the observation alone (§6.1).
+                  prompt: withQuickFixSelfReview(
+                    defaultTaskPrompt(bead_id),
+                    quick_fix_block
+                  )
+                }
+              : { id: bead_id }
       });
     } finally {
       reservation?.release();

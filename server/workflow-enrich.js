@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import { debug } from './logging.js';
 import { resolveRealpathWithinDocs } from './path-safety.js';
 import { resolveSpecEvidence, resolveSpecId } from './spec-id.js';
+import { judgeQuickFixHandoff } from './worker/quick-fix-handoff.js';
 
 const log = debug('workflow-enrich');
 
@@ -996,12 +997,16 @@ function mergeStage(md, status) {
  * @property {PlannedExecution|null} planned_execution
  * @property {ExecReceipt|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
+ * @property {{ state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null }} [quick_fix_review]
+ * The pinned quick_fix self-review projection's verdict for this issue. Absent
+ * (key and all) whenever the judgement does not apply — `metadata.route` is not
+ * the `quick_fix` pin — so a missing key never reads as a negative verdict.
  */
 
 /**
  * Build the compact `workflow` summary for one issue.
  *
- * @param {{ id?: string, status?: string, spec_id?: unknown, metadata?: Record<string, any> }} issue
+ * @param {{ id?: string, status?: string, spec_id?: unknown, description?: unknown, issue_type?: unknown, metadata?: Record<string, any> }} issue
  * @param {string | undefined | null} [workspace_root]
  * @param {string | null} [head] - Optional precomputed HEAD.
  * @returns {WorkflowSummary}
@@ -1063,7 +1068,8 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
     );
   }
 
-  return {
+  /** @type {WorkflowSummary} */
+  const summary = {
     route,
     route_source,
     stages,
@@ -1081,6 +1087,32 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       resolver
     }
   };
+  const quick_fix_review = quickFixReview(issue);
+  if (quick_fix_review) {
+    summary.quick_fix_review = quick_fix_review;
+  }
+  return summary;
+}
+
+/**
+ * Judge the pinned quick_fix self-review projection for one issue. The judgement
+ * module owns the whole boundary, including which issues it applies to: the
+ * route it reads is `metadata.route` itself, never {@link deriveRoute}'s
+ * fallback, so a spec_backed default can never be asked this question.
+ *
+ * Fail-quiet like every other probe here — a projection this repo only consumes
+ * must never be the reason a card fails to render.
+ *
+ * @param {unknown} issue
+ * @returns {import('./worker/quick-fix-handoff.js').QuickFixHandoffState|null}
+ */
+function quickFixReview(issue) {
+  try {
+    return judgeQuickFixHandoff(issue);
+  } catch (err) {
+    log('judgeQuickFixHandoff failed: %o', err);
+    return null;
+  }
 }
 
 /**

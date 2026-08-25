@@ -1549,6 +1549,92 @@ describe('worker/attach createLiveBd bd show parsing', () => {
     expect(snap.impl_effort).toBeUndefined();
   });
 
+  test('snapshotBead carries the quick_fix self-review judgement inputs', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-7',
+              status: 'open',
+              issue_type: 'bug',
+              metadata: {
+                route: 'quick_fix',
+                quick_fix_review: `self@${'a'.repeat(12)}`
+              }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-7' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-7');
+
+    expect(snap.issue_type).toBe('bug');
+    expect(snap.quick_fix_review).toBe(`self@${'a'.repeat(12)}`);
+  });
+
+  test('snapshotBead leaves both quick_fix judgement inputs undefined when absent', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [{ id: 'UI-7', status: 'open', metadata: {} }]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-7' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-7');
+
+    expect(snap.issue_type).toBeUndefined();
+    expect(snap.quick_fix_review).toBeUndefined();
+  });
+
+  test('snapshotBead delivers a malformed quick_fix_review as present-and-invalid', async () => {
+    const runJson = vi.fn(async (/** @type {string[]} */ args) => {
+      if (args[0] === 'show') {
+        return {
+          code: 0,
+          stdoutJson: [
+            {
+              id: 'UI-7',
+              status: 'open',
+              issue_type: 42,
+              metadata: { route: 'quick_fix', quick_fix_review: 42 }
+            }
+          ]
+        };
+      }
+      return { code: 0, stdoutJson: [{ id: 'UI-7' }] };
+    });
+    const bd = createLiveBd({
+      cwd: '/ws',
+      repo: '/repo',
+      resolveBase: okBase('main'),
+      runJson: asProjected(runJson)
+    });
+
+    const snap = await bd.snapshotBead('UI-7');
+
+    expect(snap.quick_fix_review).toBe(42);
+    expect(snap.issue_type).toBe(42);
+  });
+
   test('snapshotBead keeps reading the bare-object show shape', async () => {
     const runJson = vi.fn(async (/** @type {string[]} */ args) => {
       if (args[0] === 'show') {
