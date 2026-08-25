@@ -411,17 +411,16 @@ describe('discovered-from chip', () => {
     expect(chip?.getAttribute('data-from-id')).toBe('UI-parent');
   });
 
-  test('renders a from chip on a done row', () => {
+  test('omits the from chip on a done row', () => {
     const row = renderRow({
       lane: 'done',
       done: true,
       draggable: false,
       from_id: 'UI-origin'
     });
-    const chip = row.querySelector('.ctl-chip--from');
 
-    expect(chip).not.toBeNull();
-    expect(chip?.textContent?.trim()).toContain('↩ from UI-origin');
+    expect(row.querySelector('.ctl-chip--from')).toBeNull();
+    expect(row.querySelector('.worker-mini__title')).not.toBeNull();
   });
 
   test('omits the from chip when from_id is absent', () => {

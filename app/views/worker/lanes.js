@@ -1163,7 +1163,10 @@ export function miniRow(item) {
   // route 칩은 ID 다음, 제목 앞이다 (UI-yrzu §7.2) — 완료 행만 제외한다: 끝난
   // 일의 route는 더 이상 어떤 결정도 바꾸지 않는다.
   const route_el = item.lane === 'done' ? '' : routeChipTemplate(item.workflow);
-  const from_el = fromChipTemplate(item.from_id);
+  // 출처 칩도 완료 행에서는 빠진다 — route 칩과 같은 이유다. 끝난 일에서 남는
+  // 질문은 "무엇이 끝났나"뿐이라 ID와 제목이면 충분하고, 좁은 화면에서 칩이
+  // 가져가는 가로는 그대로 제목이 잃는 가로다.
+  const from_el = item.lane === 'done' ? '' : fromChipTemplate(item.from_id);
   // 우선순위는 ID 바로 다음이다 — Board 카드와 같은 자리, 같은 문장.
   const pri_el = priorityBadgeTemplate(item.priority);
   const title_el = html`<span class="worker-mini__title">${item.title}</span>`;

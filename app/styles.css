@@ -5774,13 +5774,18 @@ html[data-theme='dark'] {
 
 .worker-mini__row1 {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: var(--sp-6);
+  row-gap: var(--sp-3);
   min-width: 0;
 }
 
+/* 제목은 폭을 다투지 않고 언제나 자기 줄을 갖는다: basis 100%가 곧 줄바꿈이라
+   좁은 화면에서 ID·우선순위 옆으로 눌려 잘릴 일이 없다. `min-width: 0`은 내려간
+   줄에서 다시 shrink를 허용하므로 320px 폭에서도 넘치지 않는다. */
 .worker-mini__row1 .worker-mini__title {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
   min-width: 0;
 }
 
