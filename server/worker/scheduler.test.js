@@ -540,6 +540,12 @@ function makeFakeBd(config) {
       if (cfg && cfg.throwOnReadKey === key) {
         throw new Error(`bd read-metadata failed for ${bead_id} ${key}`);
       }
+      // A bead may be configured to make one key's readback echo something
+      // other than what was just written — the stamp-succeeds/readback-lies
+      // case that no throw models.
+      if (cfg && cfg.readOverride && key in cfg.readOverride) {
+        return cfg.readOverride[key];
+      }
       // Readback of the fast_track we just set.
       const last = [...calls]
         .reverse()
@@ -943,6 +949,43 @@ describe('scheduler completion repair dispatch', () => {
     expect(
       env.store.snapshot(WS).completion_intents.B1.repair_sessions_used
     ).toBe(1);
+  });
+
+  test('records why the repair stamp failed on the prepared attempt', async () => {
+    const env = setup({
+      config: { B1: { throwOnSet: true } },
+      gitRun: ownedGit(),
+      slots: 1
+    });
+    seedCompletionIntent(env.store);
+    const op = {
+      op_id: 'stamp-fail-op',
+      kind: 'resume_root',
+      failure_key: COMPLETION_FAILURE,
+      attempt_id: 'stamp-fail-attempt',
+      repair_bead_id: null,
+      status: 'prepared'
+    };
+
+    const result = await env.scheduler.dispatchCompletionRepair(WS, {
+      root_bead_id: 'B1',
+      op
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'workflow_mode_record_failed'
+    });
+    expect(env.store.snapshot(WS).attempts['stamp-fail-attempt']).toMatchObject(
+      {
+        status: 'failed',
+        cause: 'workflow_mode_record_failed',
+        cause_detail: {
+          reason: 'bd set-metadata failed for B1',
+          command: 'bd update --set-metadata workflow_mode=fast_track'
+        }
+      }
+    );
   });
 
   test('applies current snapshot pins on a completion repair relaunch', async () => {
@@ -2878,6 +2921,45 @@ describe('scheduler failure (auto_advance OFF + workflow_mode revert, no breaker
       value: 'fast_track'
     });
   });
+
+  test('records the readback mismatch as the dispatch failure cause_detail', async () => {
+    const env = setup({
+      config: { S1: { readOverride: { workflow_mode: 'standard' } } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('workflow_mode_record_failed');
+    expect(a.cause_detail).toEqual({
+      reason:
+        'readback mismatch: workflow_mode=standard workflow_mode_source=worker',
+      command: 'bd update --set-metadata workflow_mode=fast_track'
+    });
+  });
+
+  test('names the source key when its own stamp is what threw', async () => {
+    const env = setup({
+      config: { S1: { throwOnSetKey: 'workflow_mode_source' } },
+      slots: 1
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const a = /** @type {any} */ (
+      Object.values(env.store.snapshot(WS).attempts)[0]
+    );
+    expect(a.cause).toBe('workflow_mode_record_failed');
+    expect(a.cause_detail).toEqual({
+      reason: 'bd set-metadata failed for S1 workflow_mode_source',
+      command: 'bd update --set-metadata workflow_mode_source=worker'
+    });
+  });
 });
 
 describe('scheduler admission gate (worker-autorun-policy §1)', () => {
@@ -4138,6 +4220,32 @@ describe('scheduler resume (spec §1)', () => {
       status: 'failed',
       cause: 'repair_target_resolved',
       dismissed_at: 1000
+    });
+    expect(env.runner.spawnOrder).toEqual([]);
+  });
+
+  test('records the readback mismatch as the resume failure cause_detail', async () => {
+    const env = setup({
+      config: { B1: { readOverride: { workflow_mode_source: 'user' } } },
+      slots: 1
+    });
+    seedAttempt(env.store, 'r1', resumablePrior());
+
+    const result = await env.scheduler.resume(WS, 'r1');
+
+    const child = Object.values(env.store.snapshot(WS).attempts).at(-1);
+    expect(result).toEqual({
+      ok: false,
+      reason: 'workflow_mode_record_failed'
+    });
+    expect(child).toMatchObject({
+      status: 'failed',
+      cause: 'workflow_mode_record_failed',
+      cause_detail: {
+        reason:
+          'readback mismatch: workflow_mode=fast_track workflow_mode_source=user',
+        command: 'bd update --set-metadata workflow_mode=fast_track'
+      }
     });
     expect(env.runner.spawnOrder).toEqual([]);
   });
@@ -5651,6 +5759,10 @@ describe('scheduler external-PR conflict dispatch (UI-w0hi §1)', () => {
     const a = Object.values(env.store.snapshot(WS).attempts)[0];
     expect(a.status).toBe('failed');
     expect(a.cause).toBe('workflow_mode_record_failed');
+    expect(a.cause_detail).toEqual({
+      reason: 'bd set-metadata failed for X1',
+      command: 'bd update --set-metadata workflow_mode=fast_track'
+    });
     expect(env.runner.spawnOrder).toEqual([]);
   });
 
@@ -10099,7 +10211,10 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
       bead_id: 'S1',
       cause: 'workflow_mode_record_failed',
       repo: '/repo',
-      cause_detail: null
+      cause_detail: {
+        reason: 'bd set-metadata failed for S1',
+        command: 'bd update --set-metadata workflow_mode=fast_track'
+      }
     });
     expect(notify.attemptStarted).not.toHaveBeenCalled();
   });
@@ -10122,7 +10237,10 @@ describe('scheduler attempt-lifecycle notifications (UI-2yoq)', () => {
       bead_id: 'B1',
       cause: 'workflow_mode_record_failed',
       repo: '/repo',
-      cause_detail: null
+      cause_detail: {
+        reason: 'bd set-metadata failed for B1',
+        command: 'bd update --set-metadata workflow_mode=fast_track'
+      }
     });
     expect(notify.attemptStarted).not.toHaveBeenCalled();
   });

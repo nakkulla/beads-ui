@@ -102,6 +102,25 @@ Worker가 소비하는 키, `status` 어휘 — 의 canonical 정의는 dotfiles
 - Use optional chaining (`?.`, `??`, etc.) only when a value is **intentionally
   nullable**. Prefer explicit type narrowing to guarantee value safety.
 
+## 워커·모니터 카드 배치 문법
+
+`candidateCard` · `miniRow` · `runningTile`은 Worker 탭과 Monitor 탭이 공유하는
+같은 렌더러다. 근거·예외·슬롯 표는
+`docs/superpowers/specs/2026-08-25-card-header-grammar-unify-design.md`가
+소유하며, 여기에는 결정만 싣는다.
+
+- 줄 순서는 그 스펙 §2 표를 따른다: 정체성+조작 → 제목 → 진행 → 의존·겹침 칩 →
+  좌표·실행 사실 칩 → 액션 foot → 시각.
+- 새 라벨·칩·뱃지·버튼의 자리는 고르지 않는다. 그 요소가 답하는 질문으로 스펙
+  §5.1 슬롯 표가 정한다.
+- 조작은 1번 줄 오른쪽 끝이거나 액션 foot이다. 그 사이에 칩을 끼우지 않는다 —
+  칩이 끼면 조작이 다음 줄로 밀리고, 사용자가 버튼을 찾는 자리가 폭에 따라
+  달라진다.
+- 재료가 없는 줄은 그리지 않는다(fail-quiet). 판정은 그 줄의 재료 전부로 한다.
+- 슬롯 표로 배정되지 않는 요소를 달아야 한다면, 칩을 추가하기 전에 그 스펙을
+  갱신해 슬롯을 먼저 정한다. 카드마다 자기 자리를 고르는 것이 통일 전 상태를
+  만든 원인이다.
+
 ## Unit Testing Standards
 
 - Write short, focused test functions asserting **one specific behavior** each.

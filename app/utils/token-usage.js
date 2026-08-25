@@ -34,11 +34,11 @@
  */
 
 /**
- * @typedef {{ subtotal: number, breakdown: UsageRecord, replayed?: boolean, total_cost_usd?: number }} ProviderUsageSummary
+ * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, replayed?: boolean, total_cost_usd?: number }} ProviderUsageSummary
  */
 
 /**
- * @typedef {{ subtotal: number, breakdown: UsageRecord, legs: UsageLeg[], replayed?: boolean }} RoleUsageSummary
+ * @typedef {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs: UsageLeg[], replayed?: boolean }} RoleUsageSummary
  */
 
 /**
@@ -61,6 +61,16 @@ const REPLAYED_NOTE = '서버 재시작 복구 — 부분 집계';
  * @type {string}
  */
 const TOTAL_ONLY_NOTE = '분해 없음 — 총량만 보고됨';
+
+/**
+ * The name the total-only contribution carries inside an AGGREGATE tooltip. A
+ * summed record cannot use the branch above — its breakdown holds the other
+ * legs' four fields and no `total_tokens` — so the part that has no breakdown
+ * is named as its own term and the formula stays true (UI-1vpv).
+ *
+ * @type {string}
+ */
+const TOTAL_ONLY_TERM = '분해 없는 leg';
 
 /**
  * @param {unknown} value
@@ -123,6 +133,22 @@ function isTotalOnly(usage) {
     Number.isFinite(usage.total_tokens) &&
     !SUM_FIELDS.some((field) => Number.isFinite(usage[field]))
   );
+}
+
+/**
+ * Whether a breakdown reports any field at all. An accumulated breakdown never
+ * carries `total_tokens`, so `isTotalOnly` cannot recognise an aggregate built
+ * from total-only legs alone; this predicate is what tells that aggregate from
+ * one that also summed a real four-field record (UI-1vpv).
+ *
+ * @param {UsageRecord|null|undefined} usage
+ * @returns {boolean}
+ */
+function hasBreakdownFields(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return false;
+  }
+  return USAGE_FIELDS.some((field) => Number.isFinite(usage[field]));
 }
 
 /**
@@ -256,7 +282,8 @@ function formatSubtotal(subtotal) {
  */
 export function providerUsageTooltip(provider, summary) {
   const usage = summary.breakdown || {};
-  if (isTotalOnly(usage)) {
+  const total_only = numeric(summary.total_only_subtotal);
+  if (isTotalOnly(usage) || (total_only > 0 && !hasBreakdownFields(usage))) {
     // §6.1: printing `입력 0 · 출력 0 …` beside a non-zero total would state
     // two contradictory things at once. The reader is told the breakdown does
     // not exist instead of being shown an invented one.
@@ -289,10 +316,19 @@ export function providerUsageTooltip(provider, summary) {
       );
     }
   }
+  // The summed part of the subtotal that no field above can explain. Naming it
+  // is what keeps the formula line true once a total-only leg is in the tally.
+  if (total_only > 0) {
+    details.push(`${TOTAL_ONLY_TERM} ${total_only.toLocaleString('en-US')}`);
+  }
+  const summed_terms =
+    provider === 'claude' ? '입력 + 출력 + 캐시읽기 + 캐시생성' : '입력 + 출력';
+  const formula_terms =
+    total_only > 0 ? `${summed_terms} + ${TOTAL_ONLY_TERM}` : summed_terms;
   const formula =
     provider === 'claude'
-      ? 'Claude subtotal = 입력 + 출력 + 캐시읽기 + 캐시생성'
-      : 'Codex subtotal = 입력 + 출력; 캐시읽기·캐시쓰기·추론출력은 subtotal에 포함되지 않는 subset';
+      ? `Claude subtotal = ${formula_terms}`
+      : `Codex subtotal = ${formula_terms}; 캐시읽기·캐시쓰기·추론출력은 subtotal에 포함되지 않는 subset`;
   const lines = [
     formula,
     `총 ${summary.subtotal.toLocaleString('en-US')}`,
@@ -378,6 +414,11 @@ export function mergeUsageProjections(projections) {
         providers[provider] = merged;
       }
       merged.subtotal += summary.subtotal;
+      if (Number.isFinite(summary.total_only_subtotal)) {
+        merged.total_only_subtotal =
+          numeric(merged.total_only_subtotal) +
+          numeric(summary.total_only_subtotal);
+      }
       for (const field of USAGE_FIELDS) {
         if (Number.isFinite(summary.breakdown[field])) {
           merged.breakdown[field] =
@@ -434,12 +475,13 @@ function providerForRunner(runner) {
 }
 
 /**
- * @returns {{ subtotal: number, breakdown: UsageRecord, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }}
+ * @returns {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }}
  */
 function createAccumulator() {
   return {
     subtotal: 0,
     breakdown: usageBreakdown(null),
+    total_only: 0,
     legs: [],
     replayed: false,
     outer_count: 0,
@@ -449,12 +491,17 @@ function createAccumulator() {
 }
 
 /**
- * @param {{ subtotal: number, breakdown: UsageRecord, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }} accumulator
+ * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }} accumulator
  * @param {UsageLeg} leg
  * @param {boolean} is_outer
  */
 function addLeg(accumulator, leg, is_outer) {
   accumulator.subtotal += leg.subtotal;
+  if (isTotalOnly(leg.usage)) {
+    // The leg raised the subtotal but contributes no field below, so remember
+    // how much of the subtotal the breakdown cannot account for (UI-1vpv).
+    accumulator.total_only += leg.subtotal;
+  }
   for (const field of USAGE_FIELDS) {
     if (Number.isFinite(leg.usage[field])) {
       accumulator.breakdown[field] =
@@ -478,15 +525,18 @@ function addLeg(accumulator, leg, is_outer) {
 }
 
 /**
- * @param {{ subtotal: number, breakdown: UsageRecord, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }} accumulator
+ * @param {{ subtotal: number, breakdown: UsageRecord, total_only: number, legs: UsageLeg[], replayed: boolean, outer_count: number, outer_cost: number, outer_cost_count: number }} accumulator
  * @param {boolean} include_legs
  */
 function accumulatorSummary(accumulator, include_legs) {
-  /** @type {{ subtotal: number, breakdown: UsageRecord, legs?: UsageLeg[], replayed?: boolean, total_cost_usd?: number }} */
+  /** @type {{ subtotal: number, breakdown: UsageRecord, total_only_subtotal?: number, legs?: UsageLeg[], replayed?: boolean, total_cost_usd?: number }} */
   const summary = {
     subtotal: accumulator.subtotal,
     breakdown: accumulator.breakdown
   };
+  if (accumulator.total_only > 0) {
+    summary.total_only_subtotal = accumulator.total_only;
+  }
   if (include_legs) {
     summary.legs = accumulator.legs;
   }

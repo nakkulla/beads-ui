@@ -63,6 +63,7 @@ import {
 import { prepareCodexAccountHome as defaultPrepareCodexAccountHome } from './codex-account-home.js';
 import { observeCodexEffort as defaultObserveCodexEffort } from './codex-effort-observer.js';
 import * as default_delegation_monitor from './delegation-monitor.js';
+import { errorDetail } from './error-detail.js';
 import { EXEC_SETTING_KEYS } from './exec-enums.js';
 import { loadExecutionDefaults } from './execution-defaults.js';
 import * as default_guard_hook from './guard-hook.js';
@@ -84,6 +85,24 @@ import { codexAccountHomeDir as defaultCodexAccountHomeDir } from './state-paths
 import * as default_usage_receipts from './usage-receipts.js';
 
 const log = debug('worker:scheduler');
+
+/**
+ * The bd write a `workflow_mode_record_failed` attempt names in its
+ * `cause_detail.command` (UI-ogf9). The readback that confirms the pair is a
+ * readback OF this write, so a mismatch names it too.
+ *
+ * @type {string}
+ */
+const WORKFLOW_MODE_STAMP_COMMAND =
+  'bd update --set-metadata workflow_mode=fast_track';
+
+/**
+ * Named instead when the source key's own write is what broke.
+ *
+ * @type {string}
+ */
+const WORKFLOW_MODE_SOURCE_STAMP_COMMAND =
+  'bd update --set-metadata workflow_mode_source=worker';
 
 /**
  * @typedef {Object} StaleWorkIdentity
@@ -1983,22 +2002,54 @@ export function createScheduler(deps) {
    * `fast_track` without naming the Worker as its source leaves a mode whose
    * author cannot be told from a user's.
    *
+   * Failures are RETURNED, never thrown (UI-ogf9). Every caller records the same
+   * `workflow_mode_record_failed` attempt and needs the same `{ reason, command }`
+   * evidence on it, and only this function knows which bd command was in flight
+   * when it broke — a thrown error reaches the caller without that.
+   *
    * @param {string} bead_id
-   * @returns {Promise<{ ok: boolean, workflow_mode: string|null, workflow_mode_source: string|null }>}
+   * @returns {Promise<{ ok: boolean, workflow_mode: string|null, workflow_mode_source: string|null, cause_detail: { reason: string, command: string|null }|null, thrown: { error: unknown }|null }>}
    */
   async function stampWorkerWorkflowMode(bead_id) {
-    await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
-    await deps.bd.setMetadata(bead_id, 'workflow_mode_source', 'worker');
-    const workflow_mode = await deps.bd.readMetadata(bead_id, 'workflow_mode');
-    const workflow_mode_source = await deps.bd.readMetadata(
-      bead_id,
-      'workflow_mode_source'
-    );
-    return {
-      ok: workflow_mode === 'fast_track' && workflow_mode_source === 'worker',
-      workflow_mode,
-      workflow_mode_source
-    };
+    let command = WORKFLOW_MODE_STAMP_COMMAND;
+    try {
+      await deps.bd.setMetadata(bead_id, 'workflow_mode', 'fast_track');
+      command = WORKFLOW_MODE_SOURCE_STAMP_COMMAND;
+      await deps.bd.setMetadata(bead_id, 'workflow_mode_source', 'worker');
+      command = WORKFLOW_MODE_STAMP_COMMAND;
+      const workflow_mode = await deps.bd.readMetadata(
+        bead_id,
+        'workflow_mode'
+      );
+      const workflow_mode_source = await deps.bd.readMetadata(
+        bead_id,
+        'workflow_mode_source'
+      );
+      const ok =
+        workflow_mode === 'fast_track' && workflow_mode_source === 'worker';
+      return {
+        ok,
+        workflow_mode,
+        workflow_mode_source,
+        cause_detail: ok
+          ? null
+          : {
+              reason: errorDetail(
+                `readback mismatch: workflow_mode=${workflow_mode ?? 'null'} workflow_mode_source=${workflow_mode_source ?? 'null'}`
+              ),
+              command
+            },
+        thrown: null
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        workflow_mode: null,
+        workflow_mode_source: null,
+        cause_detail: { reason: errorDetail(err), command },
+        thrown: { error: err }
+      };
+    }
   }
 
   /**
@@ -4896,28 +4947,28 @@ export function createScheduler(deps) {
       // a failed attempt, reverts the mode, releases the claim) — it never rejects
       // out of tick's Promise.all, and never halts the queue or pauses siblings
       // (spec §5.2).
-      let fast_track_ok = false;
-      try {
-        const stamped = await stampWorkerWorkflowMode(bead_id);
-        fast_track_ok = stamped.ok;
-        if (!fast_track_ok) {
+      const stamped = await stampWorkerWorkflowMode(bead_id);
+      if (!stamped.ok) {
+        if (stamped.thrown === null) {
           log(
             'workflow_mode readback mismatch for %s: expected fast_track/worker, got %o/%o',
             bead_id,
             stamped.workflow_mode,
             stamped.workflow_mode_source
           );
+        } else {
+          log(
+            'workflow_mode set/readback failed for %s: %o',
+            bead_id,
+            stamped.thrown.error
+          );
         }
-      } catch (err) {
-        log('workflow_mode set/readback failed for %s: %o', bead_id, err);
-        fast_track_ok = false;
-      }
-      if (!fast_track_ok) {
         deps.store.updateAttempt(workspace, {
           attempt_id,
           patch: {
             status: 'failed',
             cause: 'workflow_mode_record_failed',
+            cause_detail: stamped.cause_detail,
             finished_at: now()
           }
         });
@@ -4927,7 +4978,7 @@ export function createScheduler(deps) {
           bead_id,
           cause: 'workflow_mode_record_failed',
           repo: snap.repo,
-          cause_detail: null
+          cause_detail: stamped.cause_detail
         });
         try {
           await revertWorkflowMode(
@@ -6533,23 +6584,21 @@ export function createScheduler(deps) {
       serial_lease.release();
     }
 
-    let mode_ok = false;
-    try {
-      mode_ok = (await stampWorkerWorkflowMode(bead_id)).ok;
-    } catch (err) {
-      log(
-        'external conflict workflow_mode set/readback failed for %s: %o',
-        bead_id,
-        err
-      );
-      mode_ok = false;
-    }
-    if (!mode_ok) {
+    const stamped = await stampWorkerWorkflowMode(bead_id);
+    if (!stamped.ok) {
+      if (stamped.thrown !== null) {
+        log(
+          'external conflict workflow_mode set/readback failed for %s: %o',
+          bead_id,
+          stamped.thrown.error
+        );
+      }
       deps.store.updateAttempt(workspace, {
         attempt_id,
         patch: {
           status: 'failed',
           cause: 'workflow_mode_record_failed',
+          cause_detail: stamped.cause_detail,
           finished_at: now()
         }
       });
@@ -6557,7 +6606,7 @@ export function createScheduler(deps) {
         bead_id,
         cause: 'workflow_mode_record_failed',
         repo,
-        cause_detail: null
+        cause_detail: stamped.cause_detail
       });
       try {
         await revertWorkflowMode(
@@ -7092,18 +7141,21 @@ export function createScheduler(deps) {
     removeGuardHook(workspace, attempt_id);
     claimed.add(bead_id);
 
-    let mode_ok = false;
-    try {
-      mode_ok = (await stampWorkerWorkflowMode(bead_id)).ok;
-    } catch (err) {
-      log('resume workflow_mode set/readback failed for %s: %o', bead_id, err);
-    }
-    if (!mode_ok) {
+    const stamped = await stampWorkerWorkflowMode(bead_id);
+    if (!stamped.ok) {
+      if (stamped.thrown !== null) {
+        log(
+          'resume workflow_mode set/readback failed for %s: %o',
+          bead_id,
+          stamped.thrown.error
+        );
+      }
       deps.store.updateAttempt(workspace, {
         attempt_id: new_attempt_id,
         patch: {
           status: 'failed',
           cause: 'workflow_mode_record_failed',
+          cause_detail: stamped.cause_detail,
           finished_at: now()
         }
       });
@@ -7111,7 +7163,7 @@ export function createScheduler(deps) {
         bead_id,
         cause: 'workflow_mode_record_failed',
         repo,
-        cause_detail: null
+        cause_detail: stamped.cause_detail
       });
       try {
         await revertWorkflowMode(
@@ -7340,7 +7392,7 @@ export function createScheduler(deps) {
   /**
    * Fail one prerecorded completion attempt before its process starts.
    *
-   * @param {{ workspace: string, attempt_id: string, bead_id: string, repo: string, reason: string, prior_wf: string|null, stamped_keys?: string[], remove_worktree?: boolean, dismissed?: boolean }} input
+   * @param {{ workspace: string, attempt_id: string, bead_id: string, repo: string, reason: string, prior_wf: string|null, stamped_keys?: string[], remove_worktree?: boolean, dismissed?: boolean, cause_detail?: { reason: string, command: string|null }|null }} input
    */
   async function failPreparedCompletion(input) {
     const {
@@ -7354,6 +7406,7 @@ export function createScheduler(deps) {
       remove_worktree,
       dismissed
     } = input;
+    const cause_detail = input.cause_detail ?? null;
     if (Array.isArray(stamped_keys) && stamped_keys.length > 0) {
       await revertExecStamps(
         bead_id,
@@ -7375,6 +7428,7 @@ export function createScheduler(deps) {
       patch: {
         status: 'failed',
         cause: reason,
+        ...(cause_detail ? { cause_detail } : {}),
         finished_at: now(),
         ...(dismissed === true ? { dismissed_at: now() } : {})
       }
@@ -7394,7 +7448,7 @@ export function createScheduler(deps) {
       bead_id,
       cause: reason,
       repo,
-      cause_detail: null
+      cause_detail
     });
     notifyChanged(workspace);
     await reportCompletionSettlement(workspace, attempt_id, null);
@@ -7783,19 +7837,15 @@ export function createScheduler(deps) {
       }
     }
 
-    let mode_ok = false;
-    try {
-      mode_ok = (await stampWorkerWorkflowMode(bead_id)).ok;
-    } catch {
-      mode_ok = false;
-    }
-    if (!mode_ok) {
+    const stamped = await stampWorkerWorkflowMode(bead_id);
+    if (!stamped.ok) {
       return failPreparedCompletion({
         workspace,
         attempt_id,
         bead_id,
         repo,
         reason: 'workflow_mode_record_failed',
+        cause_detail: stamped.cause_detail,
         prior_wf,
         remove_worktree: mode === 'dispatch_repair'
       });

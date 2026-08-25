@@ -228,9 +228,11 @@ describe('monitor tab direct entry (UI-nprg)', () => {
     const running = monitor_root.querySelector(
       '#monitor-running .rtile[data-bead-id="UI-run"]'
     );
-    expect(running?.querySelector('.rtile__repo')?.textContent).toContain(
-      'ws-a'
-    );
+    // 레포 배지는 좌표라서 헤더가 아니라 `.rtile__meta`가 싣는다 (UI-251y §3.1).
+    expect(
+      running?.querySelector('.rtile__meta .rtile__repo')?.textContent
+    ).toContain('ws-a');
+    expect(running?.querySelector('.rtile__hd .rtile__repo')).toBe(null);
     expect(running?.querySelector('.rtile__elapsed')).not.toBe(null);
     expect(
       monitor_root.querySelector(

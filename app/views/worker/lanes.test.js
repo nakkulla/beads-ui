@@ -663,27 +663,20 @@ describe('candidate card', () => {
     expect(card.querySelector('.ctl-chip--from')).toBeNull();
   });
 
-  // 출처 칩은 오른쪽 끝으로 밀리는 칩 묶음 뒤에 서면 남는 폭에 따라 줄이 갈려
-  // 카드마다 다른 자리에 보였다. ID 그룹 안이 고정 자리다.
-  test('places the from chip between the id and the chip cluster', () => {
+  // 출처 칩은 좌표다 (UI-251y §5.1 슬롯 5): 정체성 줄이 아니라 좌표 칩 줄에
+  // 서고, 그 줄 안에서는 route 칩 바로 다음이다.
+  test('places the from chip after the route chip in the coordinate row', () => {
     const card = renderCandidate({ from_id: 'UI-0' });
-    const head = /** @type {HTMLElement} */ (
-      card.querySelector('.worker-card__head')
+    const chips = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-chips')
     );
 
-    const kids = Array.from(head.children);
-    const id_index = kids.findIndex((el) =>
-      el.classList.contains('worker-card__id')
-    );
-    const from_index = kids.findIndex((el) =>
-      el.classList.contains('ctl-chip--from')
-    );
-    const cluster_index = kids.findIndex((el) =>
-      el.classList.contains('worker-card__wfchips')
-    );
+    const kids = Array.from(chips.children).map((el) => el.className);
 
-    expect(from_index).toBeGreaterThan(id_index);
-    expect(cluster_index).toBeGreaterThan(from_index);
+    expect(card.querySelector('.worker-card__head .ctl-chip--from')).toBeNull();
+    expect(kids.findIndex((c) => c.includes('ctl-chip--from'))).toBe(
+      kids.findIndex((c) => c.includes('ctl-chip--route')) + 1
+    );
   });
 });
 
@@ -708,7 +701,7 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
     expect(chip?.classList.contains('ctl-chip--label')).toBe(true);
   });
 
-  test('places the chip at the end of the left group, outside the chip cluster', () => {
+  test('places the chip at the end of the left group, after the id', () => {
     const card = renderCandidate({ draggable: false, worker_ineligible: true });
     const head = /** @type {HTMLElement} */ (
       card.querySelector('.worker-card__head')
@@ -721,16 +714,10 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
     const chip_index = kids.findIndex((el) =>
       el.classList.contains('worker-card__ineligible')
     );
-    const cluster_index = kids.findIndex((el) =>
-      el.classList.contains('worker-card__wfchips')
-    );
 
     expect(id_index).toBeGreaterThanOrEqual(0);
     expect(chip_index).toBeGreaterThan(id_index);
-    expect(cluster_index).toBeGreaterThan(chip_index);
-    expect(
-      head.querySelector('.worker-card__wfchips .ctl-chip--route')
-    ).not.toBeNull();
+    expect(head.querySelector('.ctl-chip--route')).toBeNull();
   });
 
   test('suppresses the grip and refuses the drag affordance', () => {
@@ -1255,18 +1242,16 @@ describe('exec chip placement', () => {
     });
 
     const markers = childMarkers(row);
-    expect(markers.indexOf('worker-mini__exec')).toBe(
+    expect(markers.indexOf('worker-chips')).toBe(
       markers.indexOf('worker-mini__line') + 1
     );
-    expect(row.querySelectorAll('.worker-mini__exec .exec-chip')).toHaveLength(
-      2
-    );
+    expect(row.querySelectorAll('.worker-chips .exec-chip')).toHaveLength(2);
   });
 
-  test('omits the exec line on a waiting row without chips', () => {
+  test('omits the chip line on a waiting row with no slot 5 material', () => {
     const row = renderRow({ lane: 'queue', done: false });
 
-    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+    expect(row.querySelector('.worker-chips')).toBeNull();
   });
 
   test('puts the card-variant exec chips between the body and the foot', () => {
@@ -1279,10 +1264,10 @@ describe('exec chip placement', () => {
     });
 
     const markers = childMarkers(row);
-    expect(markers.indexOf('worker-mini__exec')).toBe(
+    expect(markers.indexOf('worker-chips')).toBe(
       markers.indexOf('worker-mini__body') + 1
     );
-    expect(markers.indexOf('worker-mini__exec')).toBeLessThan(
+    expect(markers.indexOf('worker-chips')).toBeLessThan(
       markers.indexOf('worker-mini__foot')
     );
   });
@@ -1291,10 +1276,10 @@ describe('exec chip placement', () => {
     const card = renderCandidate({ exec_chips: /** @type {any} */ (CHIPS) });
 
     const markers = childMarkers(card);
-    expect(markers.indexOf('worker-mini__exec')).toBeGreaterThan(
+    expect(markers.indexOf('worker-chips')).toBeGreaterThan(
       markers.indexOf('worker-card__title')
     );
-    expect(markers.indexOf('worker-mini__exec')).toBeLessThan(
+    expect(markers.indexOf('worker-chips')).toBeLessThan(
       markers.findIndex((marker) => marker.startsWith('worker-card__foot'))
     );
   });
@@ -1302,7 +1287,7 @@ describe('exec chip placement', () => {
   test('renders no exec chips on a done row', () => {
     const row = renderRow({ exec_chips: /** @type {any} */ (CHIPS) });
 
-    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+    expect(row.querySelector('.exec-chip')).toBeNull();
   });
 
   test('renders no exec chips on a PR-wait row', () => {
@@ -1312,7 +1297,226 @@ describe('exec chip placement', () => {
       exec_chips: /** @type {any} */ (CHIPS)
     });
 
-    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+    expect(row.querySelector('.exec-chip')).toBeNull();
+  });
+});
+
+/**
+ * 카드 배치 문법 (UI-251y §2): 세 렌더러가 공유하는 줄 순서다. 정체성 줄은
+ * 조작 버튼만 상대하고, 좌표·실행 사실 칩과 usage는 `.worker-deps` 다음의
+ * 슬롯 5 줄 하나에 모인다.
+ */
+describe('카드 배치 문법 (UI-251y §2)', () => {
+  const COORD = {
+    workspace_name: 'repo-a',
+    root_dir: '/tmp/repo-a',
+    from_id: 'UI-0',
+    workflow: /** @type {any} */ ({
+      route: 'spec_backed',
+      chips: { route: 'spec_backed', route_source: 'explicit' }
+    }),
+    exec_chips: {
+      orchestration: { text: 'o', title: 'ot' },
+      worker: { text: 'w', title: 'wt' }
+    },
+    usage: USAGE
+  };
+
+  /**
+   * @param {Element} el
+   * @returns {string[]} Direct-child class markers, in document order.
+   */
+  function markersOf(el) {
+    return Array.from(el.children, (child) => child.className);
+  }
+
+  test('keeps every coordinate chip out of the one-line identity row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      ...COORD
+    });
+    const line = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__line')
+    );
+
+    expect(line.querySelector('.worker-mini__repo')).toBeNull();
+    expect(line.querySelector('.ctl-chip--route')).toBeNull();
+    expect(line.querySelector('.ctl-chip--from')).toBeNull();
+    expect(line.querySelector('.worker-usage')).toBeNull();
+  });
+
+  test('keeps every coordinate chip out of the card-variant identity row', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      draggable: false,
+      ...COORD
+    });
+    const head = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-mini__head')
+    );
+
+    expect(head.querySelector('.worker-mini__repo')).toBeNull();
+    expect(head.querySelector('.ctl-chip--route')).toBeNull();
+    expect(head.querySelector('.ctl-chip--from')).toBeNull();
+    expect(head.querySelector('.worker-usage')).toBeNull();
+  });
+
+  test('orders the one-line coordinate row repo, route, from, exec then usage', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      ...COORD
+    });
+    const chips = /** @type {HTMLElement} */ (
+      row.querySelector('.worker-chips')
+    );
+
+    expect(markersOf(chips)).toEqual([
+      'worker-mini__repo',
+      'ctl-chip ctl-chip--route',
+      'ctl-chip ctl-chip--from',
+      'exec-chip exec-chip--orch',
+      'exec-chip exec-chip--worker',
+      'worker-usage'
+    ]);
+  });
+
+  test('moves the card-variant usage out of the foot into the coordinate row', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      draggable: false,
+      merge_action: true,
+      ...COORD
+    });
+
+    expect(row.querySelector('.worker-chips .worker-usage')).not.toBeNull();
+    expect(row.querySelector('.worker-mini__foot .worker-usage')).toBeNull();
+    expect(
+      row.querySelector('.worker-mini__foot .worker-mini__merge')
+    ).not.toBeNull();
+  });
+
+  test('draws no foot on a card row whose only foot material was usage', () => {
+    const row = renderRow({
+      lane: 'pr_wait',
+      done: false,
+      draggable: false,
+      usage: USAGE
+    });
+
+    expect(row.querySelector('.worker-mini__foot')).toBeNull();
+    expect(row.querySelector('.worker-chips .worker-usage')).not.toBeNull();
+  });
+
+  test('draws the dependency chips before the coordinate row', () => {
+    const row = renderRow({
+      lane: 'queue',
+      done: false,
+      draggable: true,
+      dependency_chips: {
+        predecessors: [{ id: 'UI-b', label: '⛓ blocked: UI-b' }]
+      },
+      ...COORD
+    });
+
+    const markers = markersOf(row);
+
+    expect(markers.indexOf('worker-deps')).toBeGreaterThanOrEqual(0);
+    expect(markers.indexOf('worker-deps')).toBeLessThan(
+      markers.indexOf('worker-chips')
+    );
+  });
+
+  test('keeps every coordinate chip out of the candidate card head', () => {
+    const card = renderCandidate({
+      workspace_name: 'repo-a',
+      root_dir: '/tmp/repo-a',
+      from_id: 'UI-0'
+    });
+    const head = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__head')
+    );
+
+    expect(head.querySelector('.worker-card__repo')).toBeNull();
+    expect(head.querySelector('.ctl-chip--route')).toBeNull();
+    expect(head.querySelector('.ctl-chip--from')).toBeNull();
+  });
+
+  test('orders the candidate coordinate row repo, route, from then exec', () => {
+    const card = renderCandidate({
+      workspace_name: 'repo-a',
+      root_dir: '/tmp/repo-a',
+      from_id: 'UI-0',
+      exec_chips: /** @type {any} */ ({
+        orchestration: { text: 'o', title: 'ot' },
+        worker: { text: 'w', title: 'wt' }
+      })
+    });
+    const chips = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-chips')
+    );
+
+    expect(markersOf(chips)).toEqual([
+      'worker-card__repo',
+      'ctl-chip ctl-chip--route',
+      'ctl-chip ctl-chip--from',
+      'exec-chip exec-chip--orch',
+      'exec-chip exec-chip--worker'
+    ]);
+  });
+
+  test('draws no coordinate row on a candidate card without slot 5 material', () => {
+    const card = renderCandidate({ workflow: /** @type {any} */ (null) });
+
+    expect(card.querySelector('.worker-chips')).toBeNull();
+  });
+
+  test('draws the dependency chips before the candidate coordinate row', () => {
+    const card = renderCandidate({
+      dependency_chips: /** @type {any} */ ({
+        predecessors: [{ id: 'UI-b', label: '⛓ blocked: UI-b' }]
+      })
+    });
+
+    const markers = markersOf(card);
+
+    expect(markers.indexOf('worker-deps')).toBeLessThan(
+      markers.indexOf('worker-chips')
+    );
+  });
+
+  test('leaves the two-line done row carrying its repo and usage as before', () => {
+    const row = renderRow({ ...COORD, lane: 'done', done: true });
+
+    expect(
+      row.querySelector('.worker-mini__row1 .worker-mini__repo')
+    ).not.toBeNull();
+    expect(
+      row.querySelector('.worker-mini__row2 .worker-usage')
+    ).not.toBeNull();
+    expect(row.querySelector('.worker-chips')).toBeNull();
+  });
+
+  test('leaves the three-line done row carrying its repo and usage as before', () => {
+    const row = renderRow({
+      ...COORD,
+      lane: 'done',
+      done: true,
+      done_layout: 'three_line'
+    });
+
+    expect(
+      row.querySelector('.worker-mini__row1 .worker-mini__repo')
+    ).not.toBeNull();
+    expect(
+      row.querySelector('.worker-mini__row3 .worker-usage')
+    ).not.toBeNull();
+    expect(row.querySelector('.worker-chips')).toBeNull();
   });
 });
 
@@ -1378,7 +1582,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(row).not.toContain('worker-deps');
     expect(row).not.toContain('exec-chip--pin');
     expect(row).toMatchInlineSnapshot(
-      `"<div class="worker-mini" data-bead-id="UI-a1" data-lane="queue" draggable="true" style=""> <div class="worker-mini__line"> <span aria-hidden="true" class="worker-mini__grip">⠿</span><span aria-hidden="true" class="worker-mini__seq">2</span><span class="worker-mini__id" title="클릭하면 ID 복사">UI-a1</span><span class="worker-mini__title">대기 행</span><span class="worker-mini__badge" title="">b</span> </div> <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div>  </div>"`
+      `"<div class="worker-mini" data-bead-id="UI-a1" data-lane="queue" draggable="true" style=""> <div class="worker-mini__line"> <span aria-hidden="true" class="worker-mini__grip">⠿</span><span aria-hidden="true" class="worker-mini__seq">2</span><span class="worker-mini__id" title="클릭하면 ID 복사">UI-a1</span><span class="worker-mini__title">대기 행</span><span class="worker-mini__badge" title="">b</span> </div> <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div>  </div>"`
     );
   });
 
@@ -1422,7 +1626,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('exec-chip--pin');
     expect(card).not.toContain('worker-deps');
     expect(card).toMatchInlineSnapshot(
-      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span>  <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  <span class="worker-card__wfchips"></span> </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴</button> </div>  </div>"`
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span> <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-chips"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴</button> </div>  </div>"`
     );
   });
 
@@ -1770,74 +1974,60 @@ describe('quick_fix self-review 칩 (UI-r7or §5.1)', () => {
   });
 });
 
-describe('quick_fix self-review 칩 묶음 (UI-r7or §5.3)', () => {
+describe('quick_fix self-review 칩 자리 (UI-251y §3.2)', () => {
   /**
-   * @param {HTMLElement} card
-   * @returns {HTMLElement}
+   * @param {'reviewed'|'stale'} state
+   * @returns {any}
    */
-  function clusterOf(card) {
-    return /** @type {HTMLElement} */ (
-      card.querySelector('.worker-card__head > .worker-card__wfchips')
-    );
+  function reviewWorkflow(state) {
+    return {
+      route: 'quick_fix',
+      route_source: 'explicit',
+      stages: {
+        impl: { fill: 'none', glyph: null, stale: false },
+        close: { fill: 'none', glyph: null, stale: false }
+      },
+      quick_fix_review: { state, missing: [], digest: 'a1b2c3d4e5f6' }
+    };
   }
 
-  test('draws the cluster even when no review chip is present', () => {
+  test('draws no chip cluster wrapper in the head', () => {
     const card = renderCandidate({});
 
-    expect(clusterOf(card)).not.toBeNull();
+    expect(card.querySelector('.worker-card__wfchips')).toBeNull();
   });
 
-  test('draws the cluster even when the card carries no workflow', () => {
-    const card = renderCandidate({ workflow: /** @type {any} */ (null) });
-
-    expect(clusterOf(card)).not.toBeNull();
-  });
-
-  test('holds the route chip and the review chip in one cluster', () => {
+  test('keeps the review chip in the head and the route chip out of it', () => {
     const card = renderCandidate({
-      workflow: /** @type {any} */ ({
-        route: 'quick_fix',
-        route_source: 'explicit',
-        stages: {
-          impl: { fill: 'none', glyph: null, stale: false },
-          close: { fill: 'none', glyph: null, stale: false }
-        },
-        quick_fix_review: {
-          state: 'reviewed',
-          missing: [],
-          digest: 'a1b2c3d4e5f6'
-        }
-      })
+      workflow: /** @type {any} */ (reviewWorkflow('reviewed'))
     });
-    const cluster = clusterOf(card);
+    const head = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__head')
+    );
 
-    expect(cluster.querySelector('.ctl-chip--route')).not.toBeNull();
-    expect(cluster.querySelector('.worker-card__qfr')).not.toBeNull();
+    expect(head.querySelector('.worker-card__qfr')?.textContent?.trim()).toBe(
+      '리뷰 ✓'
+    );
+    expect(head.querySelector('.ctl-chip--route')).toBeNull();
+    expect(card.querySelector('.worker-chips .ctl-chip--route')).not.toBeNull();
   });
 
-  test('keeps the worker-ineligible chip outside the cluster beside a review chip', () => {
+  test('places the review chip at the end of the left group', () => {
     const card = renderCandidate({
       draggable: false,
       worker_ineligible: true,
-      workflow: /** @type {any} */ ({
-        route: 'quick_fix',
-        route_source: 'explicit',
-        stages: {
-          impl: { fill: 'none', glyph: null, stale: false },
-          close: { fill: 'none', glyph: null, stale: false }
-        },
-        quick_fix_review: {
-          state: 'stale',
-          missing: [],
-          digest: 'a1b2c3d4e5f6'
-        }
-      })
+      workflow: /** @type {any} */ (reviewWorkflow('stale'))
     });
-    const cluster = clusterOf(card);
+    const head = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__head')
+    );
 
-    expect(card.querySelector('.worker-card__ineligible')).not.toBeNull();
-    expect(card.querySelector('.worker-card__qfr')).not.toBeNull();
-    expect(cluster.querySelector('.worker-card__ineligible')).toBeNull();
+    const kids = Array.from(head.children).map((el) => el.className);
+
+    expect(kids.findIndex((c) => c.includes('worker-card__qfr'))).toBe(
+      kids.findIndex((c) => c.includes('worker-card__ineligible')) + 1
+    );
+    expect(kids.at(-1)).toContain('worker-card__qfr');
   });
 
   test('keeps every judgement out of the drag and queue eligibility', () => {
@@ -1926,27 +2116,19 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     chips: { route: 'spec_backed', route_source: 'explicit' }
   };
 
-  test('draws the chip between the id and the title of a waiting row', () => {
+  // 좌표 칩은 정체성 줄을 떠나 슬롯 5 줄로 갔다 (UI-251y §3.3).
+  test('draws the chip in the coordinate row of a waiting row, not the line', () => {
     const row = renderRow({
       lane: 'queue',
       done: false,
       draggable: true,
       workflow: /** @type {any} */ (WORKFLOW)
     });
-    const line = /** @type {HTMLElement} */ (
-      row.querySelector('.worker-mini__line')
-    );
-    const order = Array.from(line.children).map((child) => child.className);
 
-    expect(row.querySelector('.ctl-chip--route')?.textContent).toBe(
-      'spec_backed'
-    );
-    expect(order.indexOf('ctl-chip ctl-chip--route')).toBe(
-      order.indexOf('worker-mini__id') + 1
-    );
-    expect(order.indexOf('ctl-chip ctl-chip--route')).toBeLessThan(
-      order.indexOf('worker-mini__title')
-    );
+    expect(
+      row.querySelector('.worker-chips .ctl-chip--route')?.textContent
+    ).toBe('spec_backed');
+    expect(row.querySelector('.worker-mini__line .ctl-chip--route')).toBeNull();
   });
 
   test('draws the chip on a PR 대기 card variant', () => {
@@ -1958,8 +2140,9 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     });
 
     expect(
-      row.querySelector('.worker-mini__head .ctl-chip--route')?.textContent
+      row.querySelector('.worker-chips .ctl-chip--route')?.textContent
     ).toBe('spec_backed');
+    expect(row.querySelector('.worker-mini__head .ctl-chip--route')).toBeNull();
   });
 
   test('draws the chip on a REVISE 파킹 card variant', () => {
@@ -1972,8 +2155,9 @@ describe('waiting row route chip (UI-yrzu §7.2)', () => {
     });
 
     expect(
-      row.querySelector('.worker-mini__head .ctl-chip--route')?.textContent
+      row.querySelector('.worker-chips .ctl-chip--route')?.textContent
     ).toBe('spec_backed');
+    expect(row.querySelector('.worker-mini__head .ctl-chip--route')).toBeNull();
   });
 
   test('draws no chip on a waiting row without a workflow', () => {

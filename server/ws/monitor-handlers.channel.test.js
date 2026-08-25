@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const WS_A = '/tmp/example/repo-a';
@@ -112,6 +115,20 @@ const {
   pollDemandFor
 } = await import('./monitor-handlers.js');
 const { emitQueueChanged } = await import('../worker/queue-events.js');
+const {
+  __resetCrossLanesStoreForTest,
+  __setCrossLanesStoreForTest,
+  createCrossLanesStore
+} = await import('../worker/cross-lanes-store.js');
+
+// 구독 스냅샷은 `safeCrossLanes()`를 통해 프로세스 전역 저장소 싱글턴을 읽는다
+// (UI-j92s §4.4). 주입하지 않으면 이 파일의 모든 구독이 개발 기계의 실제
+// `$XDG_STATE_HOME/bdui/cross-lanes.json`을 읽어, 채널 동작 판정이 기계 상태에
+// 좌우된다 (UI-nkt0).
+/** @type {string} */
+let lanes_dir;
+/** @type {string} */
+let lanes_file;
 
 /**
  * A fake socket recording every frame it was sent.
@@ -151,11 +168,16 @@ beforeEach(() => {
   invalidations = [];
   kv_reads = [];
   kv_answer = async () => ({ ok: true, value: {} });
+  lanes_dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bdui-channel-lanes-'));
+  lanes_file = path.join(lanes_dir, 'cross-lanes.json');
+  __setCrossLanesStoreForTest(createCrossLanesStore({ filePath: lanes_file }));
   __resetMonitorPipelineForTest();
 });
 
 afterEach(() => {
   __resetMonitorPipelineForTest();
+  __resetCrossLanesStoreForTest();
+  fs.rmSync(lanes_dir, { recursive: true, force: true });
   vi.useRealTimers();
 });
 
@@ -340,6 +362,52 @@ describe('monitor-pipeline subscription (UI-nprg)', () => {
     });
 
     expect(monitorPipelineSubscriberCount()).toBe(0);
+  });
+});
+
+describe('monitor snapshot cross-lane state (UI-nkt0)', () => {
+  test('carries the stored lane state into the subscribe snapshot', () => {
+    fs.writeFileSync(
+      lanes_file,
+      JSON.stringify({
+        revision: 7,
+        lanes: [
+          {
+            id: 'cl_A',
+            status: 'draft',
+            created_at: '2026-08-25T00:00:00.000Z',
+            entries: [{ bead_id: 'A-1', root_dir: WS_A }]
+          }
+        ]
+      })
+    );
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    expect(ws.snapshots()[0].payload.cross_lanes).toEqual({
+      revision: 7,
+      lanes: [
+        {
+          id: 'cl_A',
+          status: 'draft',
+          created_at: '2026-08-25T00:00:00.000Z',
+          entries: [{ bead_id: 'A-1', root_dir: WS_A }]
+        }
+      ]
+    });
+  });
+
+  // 손상된 저장소는 push 전체를 죽이는 대신 연결 레인 pane만 무력화한다
+  // (UI-j92s §4.4/§7) — `null`은 "레인 없음"이 아니라 "읽지 못했다"이다.
+  test('ships a null lane state when the store cannot be read', () => {
+    fs.writeFileSync(lanes_file, 'not json');
+    const ws = fakeWs();
+
+    handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
+
+    expect(ws.snapshots()[0].payload.cross_lanes).toBeNull();
+    expect(ws.snapshots()[0].payload.workspaces).toHaveLength(1);
   });
 });
 
