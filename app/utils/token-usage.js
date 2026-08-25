@@ -14,7 +14,11 @@
  */
 
 /**
- * @typedef {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, reasoning_output_tokens?: number, total_cost_usd?: number, replayed?: boolean }} UsageRecord
+ * `total_tokens` is the total-only alternative a Claude background subagent
+ * receipt carries (UI-1663 §5.3): that leg has a total and no breakdown at all,
+ * and the two shapes never occur together in one record.
+ *
+ * @typedef {{ input_tokens?: number, output_tokens?: number, cache_read_input_tokens?: number, cache_creation_input_tokens?: number, reasoning_output_tokens?: number, total_tokens?: number, total_cost_usd?: number, replayed?: boolean }} UsageRecord
  */
 
 /**
@@ -49,6 +53,14 @@
  * @type {string}
  */
 const REPLAYED_NOTE = '서버 재시작 복구 — 부분 집계';
+
+/**
+ * The tooltip line a total-only receipt carries (UI-1663 §6.1): the runner
+ * reported one number for that leg and no breakdown exists to show.
+ *
+ * @type {string}
+ */
+const TOTAL_ONLY_NOTE = '분해 없음 — 총량만 보고됨';
 
 /**
  * @param {unknown} value
@@ -96,6 +108,24 @@ const NESTED_ROLES = {
 };
 
 /**
+ * Whether a record reports ONLY a total (UI-1663 §6.1). Such a record cannot be
+ * added up field by field and must not be shown as four zeros either, so both
+ * the subtotal and the tooltip branch on it.
+ *
+ * @param {UsageRecord|null|undefined} usage
+ * @returns {boolean}
+ */
+function isTotalOnly(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return false;
+  }
+  return (
+    Number.isFinite(usage.total_tokens) &&
+    !SUM_FIELDS.some((field) => Number.isFinite(usage[field]))
+  );
+}
+
+/**
  * @param {UsageRecord|null|undefined} usage
  * @returns {number}
  */
@@ -131,7 +161,10 @@ function hasReportedUsage(usage) {
   if (!usage || typeof usage !== 'object') {
     return false;
   }
-  return USAGE_FIELDS.some((field) => Number.isFinite(usage[field]));
+  return (
+    USAGE_FIELDS.some((field) => Number.isFinite(usage[field])) ||
+    Number.isFinite(usage.total_tokens)
+  );
 }
 
 /**
@@ -164,6 +197,9 @@ function reportedUsage(usage) {
       reported[field] = usage[field];
     }
   }
+  if (Number.isFinite(usage.total_tokens)) {
+    reported.total_tokens = usage.total_tokens;
+  }
   if (usage.replayed === true) {
     reported.replayed = true;
   }
@@ -182,6 +218,11 @@ function reportedUsage(usage) {
  * @returns {number}
  */
 function providerSubtotal(provider, usage) {
+  // §6.1: summing the four fields of a total-only record yields 0, which would
+  // silently drop a whole subagent out of the Claude headline.
+  if (isTotalOnly(usage)) {
+    return numeric(usage.total_tokens);
+  }
   if (provider === 'codex') {
     return numeric(usage.input_tokens) + numeric(usage.output_tokens);
   }
@@ -215,6 +256,19 @@ function formatSubtotal(subtotal) {
  */
 export function providerUsageTooltip(provider, summary) {
   const usage = summary.breakdown || {};
+  if (isTotalOnly(usage)) {
+    // §6.1: printing `입력 0 · 출력 0 …` beside a non-zero total would state
+    // two contradictory things at once. The reader is told the breakdown does
+    // not exist instead of being shown an invented one.
+    const total_only_lines = [
+      `총 ${summary.subtotal.toLocaleString('en-US')}`,
+      TOTAL_ONLY_NOTE
+    ];
+    if (summary.replayed) {
+      total_only_lines.push(REPLAYED_NOTE);
+    }
+    return total_only_lines.join('\n');
+  }
   const details = [
     `입력 ${numeric(usage.input_tokens).toLocaleString('en-US')}`,
     `출력 ${numeric(usage.output_tokens).toLocaleString('en-US')}`

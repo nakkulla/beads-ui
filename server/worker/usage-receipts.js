@@ -43,6 +43,27 @@ const USAGE_KEYS = new Set([
   'cache_creation_input_tokens',
   'reasoning_output_tokens'
 ]);
+/**
+ * The other usage shape a receipt may carry (UI-1663 §5.3), and ONLY for a
+ * Claude subagent: a backgrounded leg is reported by a `task_notification` that
+ * knows a total and nothing else (§2.1), and no path back to the four fields
+ * exists (§2.4). Filling the missing four with zeros would turn "not measured"
+ * into "measured as none".
+ *
+ * @type {Set<string>}
+ */
+const TOTAL_ONLY_USAGE_KEYS = new Set(['total_tokens']);
+
+/**
+ * @param {Record<string, unknown>|import('./queue-store.js').UsageLeg['usage']} usage
+ * @returns {usage is { total_tokens: number }}
+ */
+function isTotalOnlyUsage(usage) {
+  return hasExactKeys(
+    /** @type {Record<string, unknown>} */ (usage),
+    TOTAL_ONLY_USAGE_KEYS
+  );
+}
 
 /**
  * @param {unknown} value
@@ -148,7 +169,7 @@ export function isUsageLeg(value) {
       nonEmptyString(value.effort)
     ) ||
     !isRecord(value.usage) ||
-    !hasExactKeys(value.usage, USAGE_KEYS) ||
+    !(hasExactKeys(value.usage, USAGE_KEYS) || isTotalOnlyUsage(value.usage)) ||
     !Object.values(value.usage).every(isTokenCount)
   ) {
     return false;
@@ -163,6 +184,9 @@ export function isUsageLeg(value) {
     );
   }
   return (
+    // A Codex receipt is producer-written and always four fields plus
+    // reasoning; the total-only shape is the Claude subagent's alone.
+    !isTotalOnlyUsage(value.usage) &&
     value.provider === 'codex' &&
     (value.role === 'implementation' || value.role === 'review-consult') &&
     !('agent_type' in value) &&
@@ -209,13 +233,18 @@ export function normalizeUsageLegs(raw) {
         'effort' in value && typeof value.effort === 'string'
           ? value.effort
           : null,
-      usage: {
-        input_tokens: value.usage.input_tokens,
-        output_tokens: value.usage.output_tokens,
-        cache_read_input_tokens: value.usage.cache_read_input_tokens,
-        cache_creation_input_tokens: value.usage.cache_creation_input_tokens,
-        reasoning_output_tokens: value.usage.reasoning_output_tokens
-      },
+      // The reported shape is PRESERVED (§5.3): a total-only leg is never
+      // widened to five keys, and a five-key leg never gains a total.
+      usage: isTotalOnlyUsage(value.usage)
+        ? { total_tokens: value.usage.total_tokens }
+        : {
+            input_tokens: value.usage.input_tokens,
+            output_tokens: value.usage.output_tokens,
+            cache_read_input_tokens: value.usage.cache_read_input_tokens,
+            cache_creation_input_tokens:
+              value.usage.cache_creation_input_tokens,
+            reasoning_output_tokens: value.usage.reasoning_output_tokens
+          },
       completed_at: value.completed_at
     });
   }

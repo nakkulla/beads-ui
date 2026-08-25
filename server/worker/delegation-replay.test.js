@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import fs, { readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,8 +15,13 @@ import { createUsageStore } from './usage-store.js';
 const SUBAGENT_FIXTURE = fileURLToPath(
   new URL('./__fixtures__/claude-subagent.jsonl', import.meta.url)
 );
+const BACKGROUND_FIXTURE = fileURLToPath(
+  new URL('./__fixtures__/claude-subagent-background.jsonl', import.meta.url)
+);
 const LAUNCH_A = 'toolu_01AgentAAAAAAAAAAAAAAAA';
 const LAUNCH_B = 'toolu_01AgentBBBBBBBBBBBBBBBB';
+const LAUNCH_BACKGROUND = 'toolu_01AgentBGBGBGBGBGBGBG';
+const BACKGROUND_LAST_PROGRESS_AT = Date.parse('2026-08-25T02:51:51.767Z');
 
 /** @type {string} */
 let tmp_state;
@@ -54,6 +59,36 @@ function fixtureLines() {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line));
+}
+
+/**
+ * @returns {any[]}
+ */
+function backgroundFixtureLines() {
+  return readFileSync(BACKGROUND_FIXTURE, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+/**
+ * Replay one set of lines into a fresh delegation store.
+ *
+ * @param {any[]} lines
+ * @returns {ReturnType<typeof createDelegationStore>}
+ */
+function replayInto(lines) {
+  const store = createDelegationStore();
+  replayUsage({
+    session_log: fakeSessionLog(lines),
+    usage_store: createUsageStore(),
+    delegation_store: store,
+    workspace: WS,
+    attempt_id: 'att-1',
+    runner: 'claude'
+  });
+  return store;
 }
 
 /**
@@ -313,6 +348,49 @@ describe('worker delegation replay + monitor (UI-2mpn §5.4)', () => {
     const kept = delegation_store.get(WS, 'att-1');
     expect(kept.sessions.map((s) => s.launch_id)).toEqual([LAUNCH_A, LAUNCH_B]);
     expect(kept.legs.map((leg) => leg.receipt_id)).toEqual([LAUNCH_A]);
+  });
+
+  test('replays a background launch into the state the live path builds', () => {
+    const replayed = replayInto(backgroundFixtureLines());
+    const live = createDelegationStore();
+
+    feedLive(live, backgroundFixtureLines());
+
+    expect(JSON.stringify(replayed.get(WS, 'att-1'))).toEqual(
+      JSON.stringify(live.get(WS, 'att-1'))
+    );
+  });
+
+  test('closes the replayed background launch as done', () => {
+    const store = replayInto(backgroundFixtureLines());
+
+    expect(
+      store
+        .get(WS, 'att-1')
+        .sessions.map((session) => [session.launch_id, session.status])
+    ).toEqual([[LAUNCH_BACKGROUND, 'done']]);
+  });
+
+  test('writes one total-only receipt for the replayed background launch', () => {
+    const store = replayInto(backgroundFixtureLines());
+
+    expect(store.get(WS, 'att-1').legs.map((leg) => leg.usage)).toEqual([
+      { total_tokens: 219570 }
+    ]);
+  });
+
+  test('names the notification task_id as the background receipt agent id', () => {
+    const store = replayInto(backgroundFixtureLines());
+
+    expect(store.get(WS, 'att-1').legs[0].agent_id).toBe('agt_7d21ba90ff');
+  });
+
+  test('dates the background close from the last progress line', () => {
+    const store = replayInto(backgroundFixtureLines());
+
+    expect(store.get(WS, 'att-1').sessions[0].completed_at).toBe(
+      BACKGROUND_LAST_PROGRESS_AT
+    );
   });
 
   test('interrupts a still-running subagent when the parent settles', () => {

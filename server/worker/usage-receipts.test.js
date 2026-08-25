@@ -492,6 +492,41 @@ describe('nested usage legs across providers (UI-2mpn §5.3)', () => {
     expect(result).toEqual([]);
   });
 
+  test('accepts a total-only claude subagent receipt in its reported shape', () => {
+    const total_only = { ...claude_leg, usage: { total_tokens: 219570 } };
+
+    const result = normalizeUsageLegs([total_only]);
+
+    expect(result).toEqual([total_only]);
+  });
+
+  test('rejects a total-only codex receipt', () => {
+    const result = normalizeUsageLegs([
+      { ...codex_leg, usage: { total_tokens: 219570 } }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  test('rejects a claude receipt mixing a total with the four fields', () => {
+    const result = normalizeUsageLegs([
+      {
+        ...claude_leg,
+        usage: { ...claude_leg.usage, total_tokens: 1330 }
+      }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
+  test('rejects a total-only receipt whose total is not a token count', () => {
+    const result = normalizeUsageLegs([
+      { ...claude_leg, usage: { total_tokens: -1 } }
+    ]);
+
+    expect(result).toEqual([]);
+  });
+
   test('keeps the first record when a receipt id repeats', () => {
     const result = normalizeUsageLegs([
       claude_leg,
