@@ -24,7 +24,6 @@
  * @property {string} label
  * @property {BlockerScope|null} scope
  * @property {boolean} same_lane_ahead
- * @property {boolean} missing_internal
  * @property {string} location_label - The 위치 phrase alone (`같은 레인 앞` ·
  * `<repo> · <lane> #n` · `실행중` · `미적재` …), without the `🔒` prefix. The
  * dependency chips (UI-eey2 §5.1) name the DIRECTION themselves
@@ -141,14 +140,6 @@ export function classifyBlockerPrefix(blocker_id, workspaces_state) {
 }
 
 /**
- * @param {BlockerScope} scope
- * @param {BlockerLocation|undefined} location
- */
-export function isMissingInternalBlocker(scope, location) {
-  return scope === 'internal' && location === undefined;
-}
-
-/**
  * @param {BlockerLocation} location
  */
 export function blockerLocationLabel(location) {
@@ -197,8 +188,7 @@ export function describeBlocker(
       label: `🔒 ${blocker_id} (같은 레인 앞)`,
       location_label: '같은 레인 앞',
       scope: null,
-      same_lane_ahead: true,
-      missing_internal: false
+      same_lane_ahead: true
     };
   }
   if (location) {
@@ -207,8 +197,7 @@ export function describeBlocker(
       label: `🔒 ${blocker_id} (${blockerLocationLabel(location)})`,
       location_label: blockerLocationLabel(location),
       scope: null,
-      same_lane_ahead: false,
-      missing_internal: false
+      same_lane_ahead: false
     };
   }
   const scope = classifyBlockerPrefix(blocker_id, workspaces_state);
@@ -223,8 +212,7 @@ export function describeBlocker(
     label: `🔒 ${blocker_id} (${suffix})`,
     location_label: suffix,
     scope,
-    same_lane_ahead: false,
-    missing_internal: isMissingInternalBlocker(scope, location)
+    same_lane_ahead: false
   };
 }
 

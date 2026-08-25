@@ -4,7 +4,6 @@ import {
   classifyBlockerPrefix,
   describeBlocker,
   detectSerialLaneHeadCycles,
-  isMissingInternalBlocker,
   serialCycleKey
 } from './blockers.js';
 
@@ -90,22 +89,6 @@ describe('monitor blocker locations (UI-2gi1 §6.3)', () => {
     expect(scope).toBe('unknown');
   });
 
-  test('warns only for an unloaded internal blocker', () => {
-    const warns = [
-      isMissingInternalBlocker('internal', undefined),
-      isMissingInternalBlocker('external', undefined),
-      isMissingInternalBlocker('unknown', undefined),
-      isMissingInternalBlocker('internal', {
-        root_dir: WS_A,
-        workspace_name: 'repo-a',
-        lane: 'done',
-        state: 'done'
-      })
-    ];
-
-    expect(warns).toEqual([true, false, false, false]);
-  });
-
   test('describes a same-lane predecessor as normal waiting', () => {
     const locations = new Map([
       [
@@ -133,8 +116,7 @@ describe('monitor blocker locations (UI-2gi1 §6.3)', () => {
 
     expect(display).toMatchObject({
       label: '🔒 A-first (같은 레인 앞)',
-      same_lane_ahead: true,
-      missing_internal: false
+      same_lane_ahead: true
     });
   });
 
@@ -145,8 +127,7 @@ describe('monitor blocker locations (UI-2gi1 §6.3)', () => {
 
     expect(display).toMatchObject({
       label: '🔒 A-manual (미적재)',
-      scope: 'internal',
-      missing_internal: true
+      scope: 'internal'
     });
   });
 });

@@ -7473,11 +7473,6 @@ html[data-theme='dark'] {
   color: var(--chip-blocked-dep);
 }
 
-.worker-dep--warn {
-  border-color: var(--border-warn);
-  color: var(--accent-warn);
-}
-
 /* 칩 클릭 = 그 행의 의존성 패널 (UI-j92s §6.2). 칩 자체가 버튼이므로 브라우저
    기본 버튼 모양을 지우고 칩의 치수를 그대로 쓴다. */
 .worker-dep__label {

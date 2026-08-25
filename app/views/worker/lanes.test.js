@@ -1492,7 +1492,7 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     expect(card).toContain('이슈 핀 — 레포 기본값과 다름');
   });
 
-  test('draws the blocked chip and the warning line', () => {
+  test('draws the blocked chip', () => {
     const row = shape(
       miniRow(
         /** @type {any} */ ({
@@ -1503,15 +1503,13 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           dependency_chips: {
             predecessors: [
               { id: 'UI-p', label: '⛓ blocked: UI-p', title: 'pred' }
-            ],
-            warnings: ['⚠ 선행 UI-z가 어느 레인에도 없음']
+            ]
           }
         })
       )
     );
 
     expect(row).toContain('⛓ blocked: UI-p');
-    expect(row).toContain('⚠ 선행 UI-z가 어느 레인에도 없음');
     // 칩에는 해제 ✕가 없다 — 끊는 일은 의존성 패널이 확인을 받고 처리한다.
     expect(row).not.toContain('worker-dep__remove');
   });
@@ -1549,8 +1547,7 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           lane: 'queue',
           draggable: true,
           dependency_chips: {
-            predecessors: [],
-            warnings: []
+            predecessors: []
           }
         })
       )

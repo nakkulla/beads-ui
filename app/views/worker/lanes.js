@@ -685,7 +685,6 @@ export function execChipsTemplate(chips, options = {}) {
  * @typedef {Object} DependencyChips
  * @property {DependencyChip[]} [predecessors] - `⛓ blocked: …`. 칩에 해제
  * 버튼은 없다: 끊는 일은 의존성 패널이 확인을 받고 처리한다.
- * @property {string[]} [warnings] - Lines about a predecessor that is nowhere.
  * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
@@ -756,7 +755,6 @@ export function dependencyChipsTemplate(chips, options = {}) {
   const predecessors = Array.isArray(chips.predecessors)
     ? chips.predecessors
     : [];
-  const warnings = Array.isArray(chips.warnings) ? chips.warnings : [];
   const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
   const scope_missing =
     chips.scope_missing === true && options.lane !== 'running';
@@ -764,7 +762,6 @@ export function dependencyChipsTemplate(chips, options = {}) {
   const cross_lane = chips.cross_lane || null;
   if (
     predecessors.length === 0 &&
-    warnings.length === 0 &&
     overlaps.length === 0 &&
     !scope_missing &&
     !cross_lane
@@ -813,10 +810,7 @@ export function dependencyChipsTemplate(chips, options = {}) {
           title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
           >scope 없음</span
         >`
-      : ''}${warnings.map(
-      (warning) =>
-        html`<span class="worker-dep worker-dep--warn">${warning}</span>`
-    )}${popover ? overlapPopoverTemplate(popover) : ''}
+      : ''}${popover ? overlapPopoverTemplate(popover) : ''}
   </div>`;
 }
 

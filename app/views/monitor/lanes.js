@@ -148,7 +148,6 @@ const DONE_KIND_LABELS = {
  *   blocked?: boolean,
  *   blocked_by?: string[],
  *   blockers?: import('./blockers.js').BlockerDisplay[],
- *   blocker_warnings?: string[],
  *   done_kind?: string|null,
  *   spec_id?: string,
  *   labels?: string[],
@@ -1767,15 +1766,6 @@ export function buildLanes(workspaces, workspaces_state, options) {
     item.blockers = (item.blocked_by || []).map((blocker_id) =>
       describeBlocker(blocker_id, current_location, locations, states)
     );
-    item.blocker_warnings = item.blockers
-      .filter((blocker) => blocker.missing_internal)
-      .map(
-        (blocker) =>
-          `⚠ 선행 ${blocker.id}가 어느 레인에도 없고 실행 중도 아님 — 수동 개입 전까지 이 자리에서 정지`
-      );
-    if (item.blocker_warnings.length > 0) {
-      item.alert = true;
-    }
   }
 
   // 카드는 blocked만 말한다: 역방향(후속) 칩은 걷어냈다 — 이미 출발한 이슈에게
@@ -1792,15 +1782,11 @@ export function buildLanes(workspaces, workspaces_state, options) {
       item.lane === 'running' || item.lane === 'pr_wait'
         ? []
         : (item.blockers || []).map(predecessorChip);
-    const warnings =
-      item.lane === 'running' || item.lane === 'pr_wait'
-        ? []
-        : item.blocker_warnings || [];
-    if (predecessors.length === 0 && warnings.length === 0) {
+    if (predecessors.length === 0) {
       continue;
     }
     /** @type {DependencyChips} */
-    const chips = { predecessors, warnings };
+    const chips = { predecessors };
     item.dependency_chips = chips;
   }
 
