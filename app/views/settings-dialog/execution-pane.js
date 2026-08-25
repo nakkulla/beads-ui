@@ -28,6 +28,7 @@ import { html, render } from 'lit-html';
 import { live } from 'lit-html/directives/live.js';
 import { resolveExecutionSettings } from '../../utils/execution-defaults.js';
 import { showToast } from '../../utils/toast.js';
+import { claudeLabel, codexLabel } from '../detail-panel/exec-accounts.js';
 import { modelRunnerOf } from '../detail-panel/exec-settings.js';
 import { promptBlockTemplate, promptStatusTemplate } from '../prompt-block.js';
 import {
@@ -56,6 +57,9 @@ const UNSET = '';
 
 /** The three coupled implementation keys one runtime change re-narrows. */
 const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
+
+/** The two repo-scoped account keys the `실행 계정` section edits. */
+const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
 
 /**
  * Upper bound on a repo's serial lane count, mirroring the Worker console's own
@@ -113,6 +117,40 @@ export function createExecutionPane(mount_element, binding) {
   /** @type {string[]} */
   let session_warnings = [];
   let session_loading = false;
+
+  /**
+   * The repo's `bd kv` exec account layer as the server last reported it
+   * (UI-d3cb §6.1). `unusable` is a normal response, not a failure: it means
+   * this repo's dispatch is refused right now, which is exactly what the banner
+   * must say.
+   *
+   * @type {{ state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }}
+   */
+  let account_layer = { state: 'absent', values: {}, warnings: [] };
+  /** The user's account edits — kept as-is when a save fails. */
+  /** @type {Record<string, string>} */
+  let account_draft = {};
+  /** What the server last confirmed; the draft is diffed against this. */
+  /** @type {Record<string, string>} */
+  let account_baseline = {};
+  /**
+   * Account writes run one at a time. `bd kv` has no CAS, so the handler's
+   * read-merge-write narrows the clobber window but does not close it: two
+   * concurrent single-key writes can each merge onto the pre-write object and
+   * drop the other's key. Serializing also keeps a late response from adopting
+   * over an edit the user made after that request left.
+   *
+   * @type {Promise<void>}
+   */
+  let account_save_chain = Promise.resolve();
+  /**
+   * Accounts are MACHINE-local, so this list is independent of `root_dir` and
+   * is read once per mounted pane rather than once per bound repo.
+   *
+   * @type {{ claude: { accounts: any[], active: any }|null, codex: { accounts: any[], active: any }|null }}
+   */
+  let account_catalog = { claude: null, codex: null };
+  let account_catalog_loaded = false;
 
   /** UI-only Worker runtime filter; never stored. */
   /** @type {string|null} */
@@ -272,6 +310,174 @@ export function createExecutionPane(mount_element, binding) {
       );
     }
     doRender();
+  }
+
+  /**
+   * Adopt one `get`/`set` account response as the new baseline. A null response
+   * means the pane is detached or has no transport, which must not be read as
+   * "the repo has no defaults".
+   *
+   * Only a READ resets the draft. A write response must not, because the user
+   * may have moved a select while it was in flight, and §6.1 keeps their edit
+   * state; the next save simply diffs that edit against the new baseline.
+   *
+   * @param {any} res
+   * @param {boolean} reset_draft
+   */
+  function adoptAccountResponse(res, reset_draft) {
+    if (!isRecord(res)) {
+      return;
+    }
+    const state = res.state;
+    account_layer = {
+      state:
+        state === 'usable' || state === 'unusable' || state === 'absent'
+          ? state
+          : 'absent',
+      values: isRecord(res.values) ? { ...res.values } : {},
+      warnings: Array.isArray(res.warnings) ? res.warnings : []
+    };
+    account_baseline = { ...account_layer.values };
+    if (reset_draft) {
+      account_draft = { ...account_baseline };
+    }
+  }
+
+  /** Read the repo's exec account defaults. */
+  async function loadWorkspaceAccounts() {
+    try {
+      adoptAccountResponse(
+        await send('get-workspace-accounts', {
+          ...rootPayload()
+        }),
+        true
+      );
+    } catch (err) {
+      account_layer = {
+        state: 'unusable',
+        values: {},
+        warnings: ['kv_read_failed']
+      };
+      account_baseline = {};
+      account_draft = {};
+      notify(
+        `실행 계정 기본값을 읽지 못했습니다: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    doRender();
+  }
+
+  /**
+   * One provider's selectable rows. Same acceptance as the issue detail panel:
+   * the server owns the full row contract, this boundary needs only the stable
+   * key and the visible email.
+   *
+   * @param {string} endpoint
+   * @returns {Promise<{ accounts: any[], active: any }|null>}
+   */
+  async function fetchAccountProvider(endpoint) {
+    try {
+      const response = await fetch(endpoint);
+      if (!response.ok) {
+        return null;
+      }
+      const payload = await response.json();
+      if (!isRecord(payload) || !Array.isArray(payload.accounts)) {
+        return null;
+      }
+      const accounts = payload.accounts.filter(
+        (/** @type {unknown} */ row) =>
+          isRecord(row) &&
+          typeof row.key === 'string' &&
+          row.key.length > 0 &&
+          typeof row.email === 'string' &&
+          row.email.length > 0
+      );
+      return {
+        accounts,
+        active:
+          accounts.find((/** @type {any} */ row) => row.active === true) || null
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Read both account lists once, in parallel. */
+  async function loadAccountCatalog() {
+    account_catalog_loaded = true;
+    const [claude, codex] = await Promise.all([
+      fetchAccountProvider('/api/claude-usage'),
+      fetchAccountProvider('/api/codex-usage')
+    ]);
+    if (destroyed) {
+      return;
+    }
+    account_catalog = { claude, codex };
+    doRender();
+  }
+
+  /**
+   * The account edits the server has not confirmed yet. Built at save time,
+   * not at change time, so a key whose own write was still queued when a later
+   * change arrived travels in the same request instead of racing it.
+   *
+   * @returns {Record<string, string|null>}
+   */
+  function accountPatch() {
+    /** @type {Record<string, string|null>} */
+    const patch = {};
+    for (const key of ACCOUNT_ROW_KEYS) {
+      const next = Object.hasOwn(account_draft, key)
+        ? account_draft[key]
+        : null;
+      const previous = Object.hasOwn(account_baseline, key)
+        ? account_baseline[key]
+        : null;
+      if (next !== previous) {
+        patch[key] = next;
+      }
+    }
+    return patch;
+  }
+
+  /**
+   * Save the account-section diff, the way the session tab saves its own. On
+   * failure the draft is KEPT so a retry costs no re-entry (§6.1).
+   */
+  async function saveWorkspaceAccounts() {
+    const patch = accountPatch();
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
+    try {
+      adoptAccountResponse(
+        await send('set-workspace-accounts', {
+          values: patch,
+          ...rootPayload()
+        }),
+        false
+      );
+    } catch (err) {
+      notify(
+        `실행 계정 기본값 저장 실패: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    doRender();
+  }
+
+  /**
+   * @param {string} key
+   * @param {string} value
+   */
+  function onAccountChange(key, value) {
+    if (value === UNSET) {
+      delete account_draft[key];
+    } else {
+      account_draft[key] = value;
+    }
+    doRender();
+    account_save_chain = account_save_chain.then(() => saveWorkspaceAccounts());
   }
 
   /**
@@ -853,6 +1059,97 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
+   * The empty option's label: what "no repo default" actually falls through to,
+   * which is the machine's current login (§6.1).
+   *
+   * @param {'claude'|'codex'} provider_key
+   * @param {{ accounts: any[], active: any }|null} provider
+   */
+  function accountDefaultLabel(provider_key, provider) {
+    const active = provider ? provider.active : null;
+    if (!isRecord(active)) {
+      return '기본값 사용 — 현재 로그인(확인 불가)';
+    }
+    const active_label =
+      provider_key === 'claude'
+        ? active.email
+        : codexLabel(/** @type {any} */ ({ ...active, alias: null }));
+    return `기본값 사용 — 현재 로그인(${active_label})`;
+  }
+
+  /**
+   * One repo-scoped account row. A stored value the list does not carry stays
+   * as its own option, so an unreadable list never silently drops a selection.
+   *
+   * @param {string} key
+   * @param {string} label
+   * @param {'claude'|'codex'} provider_key
+   * @returns {TemplateResult}
+   */
+  function accountRow(key, label, provider_key) {
+    const provider = account_catalog[provider_key];
+    const selected = Object.hasOwn(account_draft, key)
+      ? account_draft[key]
+      : UNSET;
+    const formatter = provider_key === 'claude' ? claudeLabel : codexLabel;
+    const known = Boolean(
+      provider?.accounts.some((/** @type {any} */ row) => row.key === selected)
+    );
+    return html`<div class="settings-dialog__row">
+      <span class="settings-dialog__row-label">${label}</span>
+      <span class="settings-dialog__controls">
+        <select
+          aria-label=${label}
+          data-account-key=${key}
+          @change=${(/** @type {Event} */ ev) =>
+            onAccountChange(
+              key,
+              String(/** @type {HTMLSelectElement} */ (ev.target).value)
+            )}
+        >
+          <option value=${UNSET} ?selected=${selected.length === 0}>
+            ${accountDefaultLabel(provider_key, provider)}
+          </option>
+          ${selected.length > 0 && !known
+            ? html`<option value=${selected} selected>
+                ${selected} (목록에 없음)
+              </option>`
+            : ''}
+          ${provider?.accounts.map(
+            (/** @type {any} */ row) =>
+              html`<option value=${row.key} ?selected=${row.key === selected}>
+                ${formatter(row)}
+              </option>`
+          ) || ''}
+        </select>
+        ${provider
+          ? ''
+          : html`<span class="settings-dialog__hint"
+              >계정 목록을 불러올 수 없습니다</span
+            >`}
+      </span>
+    </div>`;
+  }
+
+  /**
+   * The account layer's own banner. `unusable` states the CONSEQUENCE rather
+   * than the code, because that is what the user is looking at this pane to
+   * undo — re-picking a value rewrites a legal object and clears it (§6.1).
+   *
+   * @returns {string|null}
+   */
+  function accountBannerText() {
+    const detail = account_layer.warnings.join(', ');
+    if (account_layer.state === 'unusable') {
+      return `실행 계정 기본값을 해석할 수 없어 이 레포의 디스패치가 거부됩니다 — ${detail} · 계정을 다시 고르면 해소됩니다`;
+    }
+    if (account_layer.warnings.length > 0) {
+      return `실행 계정 기본값에 알 수 없는 키가 있습니다 — ${detail}`;
+    }
+    return null;
+  }
+
+  /**
    * One review gate row: the gate's stage dot, its model select, and its
    * effort select side by side (spec §D — 게이트당 모델+effort 쌍).
    *
@@ -1057,6 +1354,7 @@ export function createExecutionPane(mount_element, binding) {
         ? queue.serial_lane_count
         : MIN_COUNT;
     const projection_available = executionProjection()?.supported === true;
+    const account_banner = accountBannerText();
     const workflow_view = buildExecutionOptionView(
       'workflow_mode',
       WORKFLOW_MODES,
@@ -1069,6 +1367,15 @@ export function createExecutionPane(mount_element, binding) {
         ? html`<div class="settings-dialog__banner" role="alert">
             워크스페이스 기본값을 일부 읽지 못했습니다 —
             ${session_warnings.join(', ')}
+          </div>`
+        : ''}
+      ${account_banner
+        ? html`<div
+            class="settings-dialog__banner"
+            data-account-warning
+            role="alert"
+          >
+            ${account_banner}
           </div>`
         : ''}
       ${!projection_available
@@ -1211,6 +1518,12 @@ export function createExecutionPane(mount_element, binding) {
                 onWorkerChange,
                 orchestration
               )}
+            </div>
+
+            <div class="settings-dialog__group" data-exec-accounts-group>
+              <div class="settings-dialog__group-title">실행 계정</div>
+              ${accountRow('claude_account', 'Claude', 'claude')}
+              ${accountRow('codex_account', 'Codex', 'codex')}
             </div>
 
             <div class="settings-dialog__group">
@@ -1372,10 +1685,15 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   return {
-    /** Reset the per-open drafts and read the bound repo's kv layer. */
+    /** Reset the per-open drafts and read the bound repo's kv layers. */
     load() {
       worker_draft = {};
-      return loadSessionDefaults();
+      /** @type {Promise<void>[]} */
+      const pending = [loadSessionDefaults(), loadWorkspaceAccounts()];
+      if (!account_catalog_loaded) {
+        pending.push(loadAccountCatalog());
+      }
+      return Promise.all(pending).then(() => undefined);
     },
     render: doRender,
     /** Test/inspection seam: the draft this pane would save. */

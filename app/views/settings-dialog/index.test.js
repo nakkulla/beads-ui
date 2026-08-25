@@ -209,6 +209,7 @@ describe('createSettingsDialog tabs', () => {
     expect(groups).toEqual([
       '프리셋',
       '오케스트레이션',
+      '실행 계정',
       '워크플로우',
       '리뷰 게이트',
       '구현',

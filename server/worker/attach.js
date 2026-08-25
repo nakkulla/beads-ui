@@ -32,7 +32,7 @@ import {
   isWorkerIneligible,
   workerLabels
 } from '../../app/utils/worker-eligibility.js';
-import { runBdJsonProjected, runShell } from '../bd.js';
+import { kvGetJson, runBdJsonProjected, runShell } from '../bd.js';
 import { getConfig } from '../config.js';
 import { debug } from '../logging.js';
 import { createPoller } from '../poller.js';
@@ -442,6 +442,7 @@ export function defaultProbePid(pid) {
  *   autoAdvanceRestore?: ReturnType<typeof createAutoAdvanceRestoreController>,
  *   getSubscriberCount?: () => number,
  *   runJson?: typeof runBdJsonProjected,
+ *   kvGet?: (workspace: string, key: string) => ReturnType<typeof kvGetJson>,
  *   watchBeads?: (root_dir: string, onChange: () => void) => { close: () => void }
  * }} [options]
  */
@@ -753,6 +754,15 @@ export function createWorkerAttachment(workspace_root, options = {}) {
   const scheduler = createScheduler({
     store: runtime.queueStore,
     execPresetCoordinator: runtime.execPresetCoordinator,
+    // The account default layer lives in `bd kv`, which the preset
+    // coordinator's synchronous workspace resolution cannot reach (UI-d3cb
+    // §5.1). Bound the same way `runtime.js` binds the coordinator's own pair,
+    // and overridable on the SAME seam as `options.bd`: a stubbed bd would
+    // otherwise leave this one channel talking to the real CLI.
+    kvGet:
+      options.kvGet ||
+      ((/** @type {string} */ workspace, /** @type {string} */ key) =>
+        kvGetJson(key, { cwd: workspace })),
     makeRunner,
     accountCatalog,
     bd,

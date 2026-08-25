@@ -47,8 +47,12 @@ vi.mock('./monitor-handlers.js', () => ({
     invalidateSessionDefaults(root)
 }));
 
-const { handleGetSessionDefaults, handleSetSessionDefaults } =
-  await import('./session-defaults-handlers.js');
+const {
+  handleGetSessionDefaults,
+  handleGetWorkspaceAccounts,
+  handleSetSessionDefaults,
+  handleSetWorkspaceAccounts
+} = await import('./session-defaults-handlers.js');
 
 /** @returns {{ ws: any, sent: any[] }} */
 function fakeWs() {
@@ -199,5 +203,295 @@ describe('set-session-defaults root_dir (UI-eey2 §9.5)', () => {
 
     expect(sent[0].error.code).toBe('kv_write_failed');
     expect(invalidateSessionDefaults).not.toHaveBeenCalled();
+  });
+});
+
+describe('get-workspace-accounts (UI-d3cb §4)', () => {
+  test('returns the three-state layer with its values', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: { schema: 1, claude_account: 'a@example.com' }
+    });
+    const { ws, sent } = fakeWs();
+
+    await handleGetWorkspaceAccounts(ws, {
+      id: 'get',
+      type: 'get-workspace-accounts',
+      payload: {}
+    });
+
+    expect(kvGetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workspace_exec_accounts'
+    );
+    expect(sent[0].payload).toEqual({
+      state: 'usable',
+      values: { claude_account: 'a@example.com' },
+      warnings: []
+    });
+  });
+
+  test('returns an absent layer as a success', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: undefined });
+    const { ws, sent } = fakeWs();
+
+    await handleGetWorkspaceAccounts(ws, {
+      id: 'get',
+      type: 'get-workspace-accounts',
+      payload: {}
+    });
+
+    expect(sent[0].payload.state).toBe('absent');
+  });
+
+  test('returns an unusable layer with its warnings rather than an error', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({
+      ok: true,
+      value: undefined,
+      warning: 'kv_value_unparsable'
+    });
+    const { ws, sent } = fakeWs();
+
+    await handleGetWorkspaceAccounts(ws, {
+      id: 'get',
+      type: 'get-workspace-accounts',
+      payload: {}
+    });
+
+    expect(sent[0].error).toBeUndefined();
+    expect(sent[0].payload).toEqual({
+      state: 'unusable',
+      values: {},
+      warnings: ['kv_value_unparsable']
+    });
+  });
+
+  test('fails a bd read failure as kv_read_failed', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: false, error: 'db locked' });
+    const { ws, sent } = fakeWs();
+
+    await handleGetWorkspaceAccounts(ws, {
+      id: 'get',
+      type: 'get-workspace-accounts',
+      payload: {}
+    });
+
+    expect(sent[0].error.code).toBe('kv_read_failed');
+  });
+
+  test('reads the named repo kv', async () => {
+    kvGetJsonAtRoot.mockResolvedValue({ ok: true, value: undefined });
+    const { ws } = fakeWs();
+
+    await handleGetWorkspaceAccounts(ws, {
+      id: 'get',
+      type: 'get-workspace-accounts',
+      payload: { root_dir: WS_OTHER }
+    });
+
+    expect(kvGetJsonAtRoot).toHaveBeenCalledWith(
+      WS_OTHER,
+      'workspace_exec_accounts'
+    );
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('refuses an unregistered root_dir', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleGetWorkspaceAccounts(ws, {
+      id: 'get',
+      type: 'get-workspace-accounts',
+      payload: { root_dir: '/nope' }
+    });
+
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(kvGetJsonAtRoot).not.toHaveBeenCalled();
+  });
+});
+
+describe('set-workspace-accounts (UI-d3cb §4)', () => {
+  test('writes the merged object and replies with the readback', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, claude_account: 'a@example.com' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: 'a@example.com' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workspace_exec_accounts',
+      { schema: 1, claude_account: 'a@example.com' }
+    );
+    expect(sent[0].payload).toEqual({
+      state: 'usable',
+      values: { claude_account: 'a@example.com' },
+      warnings: []
+    });
+  });
+
+  test('never touches the session defaults key', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, codex_account: 'k' }
+      });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { codex_account: 'k' } }
+    });
+
+    const keys_touched = [
+      ...kvGetJsonInWorkspace.mock.calls,
+      ...kvSetJsonInWorkspace.mock.calls
+    ].map((call) => call[1]);
+    expect(keys_touched).not.toContain('workflow_session_defaults');
+    expect(invalidateSessionDefaults).not.toHaveBeenCalled();
+  });
+
+  test('refuses an out-of-vocabulary key before touching bd', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { impl_runtime: 'codex' } }
+    });
+
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(kvGetJsonInWorkspace).not.toHaveBeenCalled();
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('refuses a value containing whitespace', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: 'a b@example.com' } }
+    });
+
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('fails a pre-write read failure as kv_read_failed', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: false, error: 'db locked' });
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: 'a@example.com' } }
+    });
+
+    expect(sent[0].error.code).toBe('kv_read_failed');
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('fails a write failure as kv_write_failed', async () => {
+    kvGetJsonInWorkspace.mockResolvedValue({ ok: true, value: undefined });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: false, error: 'db locked' });
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: 'a@example.com' } }
+    });
+
+    expect(sent[0].error.code).toBe('kv_write_failed');
+  });
+
+  test('fails a readback that lost the requested value', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: 'a@example.com' } }
+    });
+
+    expect(sent[0].error.code).toBe('bd_readback_failed');
+  });
+
+  test('deletes a key an empty value names', async () => {
+    kvGetJsonInWorkspace
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, claude_account: 'a@example.com' }
+      })
+      .mockResolvedValueOnce({ ok: true, value: { schema: 1 } });
+    kvSetJsonInWorkspace.mockResolvedValue({ ok: true });
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { values: { claude_account: '' } }
+    });
+
+    expect(kvSetJsonInWorkspace).toHaveBeenCalledWith(
+      ws,
+      'workspace_exec_accounts',
+      { schema: 1 }
+    );
+    expect(sent[0].payload.values).toEqual({});
+  });
+
+  test('writes the named repo kv', async () => {
+    kvGetJsonAtRoot
+      .mockResolvedValueOnce({ ok: true, value: undefined })
+      .mockResolvedValueOnce({
+        ok: true,
+        value: { schema: 1, codex_account: 'k' }
+      });
+    kvSetJsonAtRoot.mockResolvedValue({ ok: true });
+    const { ws } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { root_dir: WS_OTHER, values: { codex_account: 'k' } }
+    });
+
+    expect(kvSetJsonAtRoot).toHaveBeenCalledWith(
+      WS_OTHER,
+      'workspace_exec_accounts',
+      { schema: 1, codex_account: 'k' }
+    );
+    expect(kvSetJsonInWorkspace).not.toHaveBeenCalled();
+  });
+
+  test('refuses an unregistered root_dir before validating values', async () => {
+    const { ws, sent } = fakeWs();
+
+    await handleSetWorkspaceAccounts(ws, {
+      id: 'set',
+      type: 'set-workspace-accounts',
+      payload: { root_dir: '/nope', values: { codex_account: 'k' } }
+    });
+
+    expect(sent[0].error.code).toBe('bad_request');
+    expect(kvSetJsonAtRoot).not.toHaveBeenCalled();
   });
 });

@@ -189,6 +189,13 @@ const okVerify = {
 };
 
 /**
+ * A repo with no exec account defaults. Every test that reaches dispatch needs
+ * it for the same reason it needs `okBase`: the temp workspace has no bd rig,
+ * so the real `bd kv get` fails and the launch refuses fail-closed.
+ */
+const noAccountDefaults = async () => ({ ok: true, value: undefined });
+
+/**
  * Persist a `running` attempt the way a PRIOR process left it: the durable
  * record survives, the in-memory session handle does not.
  *
@@ -412,6 +419,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       verify: okVerify,
       admission: { validate: async () => ({ ok: true }) },
       resolveBase: okBase('main'),
+      kvGet: noAccountDefaults,
       gitRun: async (args) =>
         args[0] === 'rev-list'
           ? { code: 0, stdout: `${root_sha}\n`, stderr: '' }
@@ -467,6 +475,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       verify: okVerify,
       admission: { validate: async () => ({ ok: true }) },
       resolveBase: okBase('main'),
+      kvGet: noAccountDefaults,
       gitRun: async () => ({ code: 1, stdout: '', stderr: '' }),
       makeRunner: () => ({ name: 'claude', spawn }),
       repairSession: {
@@ -832,6 +841,7 @@ describe('worker/attach construction + live loop (F1)', () => {
       // …nor the base declaration: the temp workspace is not a git repo, so the
       // real resolver would refuse the dispatch before it reaches spawn.
       resolveBase: okBase('main'),
+      kvGet: noAccountDefaults,
       spawn_impl
     });
     __registerWorkerAttachmentForTest(WS, att);

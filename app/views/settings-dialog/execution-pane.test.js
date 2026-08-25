@@ -475,3 +475,326 @@ describe('createExecutionPane lifecycle', () => {
     expect(payloadsOf(calls, 'worker-automation-toggle')).toEqual([]);
   });
 });
+
+describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
+  const CLAUDE_ROWS = {
+    accounts: [
+      {
+        key: 'repo@example.com',
+        email: 'repo@example.com',
+        alias: 'team',
+        active: false,
+        status: 'ok'
+      },
+      {
+        key: 'active@example.com',
+        email: 'active@example.com',
+        active: true,
+        status: 'ok'
+      }
+    ]
+  };
+  const CODEX_ROWS = {
+    accounts: [
+      {
+        key: 'codex-key',
+        email: 'codex@example.com',
+        plan: 'pro',
+        active: true,
+        status: 'ok'
+      }
+    ]
+  };
+
+  /**
+   * Serve both usage endpoints. `null` for an endpoint makes that request fail
+   * the way an unreachable list does.
+   *
+   * @param {{ claude?: any, codex?: any }} providers
+   */
+  function stubAccountFetch(providers) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (/** @type {string} */ url) => {
+        const body = url.includes('claude')
+          ? providers.claude
+          : providers.codex;
+        if (!body) {
+          return { ok: false, json: async () => ({}) };
+        }
+        return { ok: true, json: async () => body };
+      })
+    );
+  }
+
+  /**
+   * @param {HTMLElement} root
+   * @param {string} key
+   */
+  function accountSelect(root, key) {
+    return /** @type {HTMLSelectElement} */ (
+      root.querySelector(`select[data-account-key="${key}"]`)
+    );
+  }
+
+  /**
+   * @param {HTMLSelectElement} select
+   */
+  function labels(select) {
+    return Array.from(select.options).map(
+      (option) => option.textContent?.trim() || ''
+    );
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    vi.unstubAllGlobals();
+  });
+
+  test('renders both provider selects in their own group', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(root.querySelector('[data-exec-accounts-group]')).not.toBe(null);
+    expect(labels(accountSelect(root, 'claude_account'))).toEqual([
+      '기본값 사용 — 현재 로그인(active@example.com)',
+      'repo@example.com (team)',
+      'active@example.com'
+    ]);
+    expect(labels(accountSelect(root, 'codex_account'))).toEqual([
+      '기본값 사용 — 현재 로그인(codex@example.com · pro)',
+      'codex@example.com · pro'
+    ]);
+  });
+
+  test('reads the layer without a root_dir key when unbound', async () => {
+    const { pane, calls } = mount();
+
+    await pane.load();
+
+    expect(payloadsOf(calls, 'get-workspace-accounts')).toEqual([{}]);
+  });
+
+  test('sends set-workspace-accounts on a change', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount();
+    await pane.load();
+
+    const select = accountSelect(root, 'claude_account');
+    select.value = 'repo@example.com';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { claude_account: 'repo@example.com' } }
+    ]);
+  });
+
+  test('sends a deletion when the inherit option is chosen', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({
+      transport: async (/** @type {string} */ type) =>
+        type === 'get-workspace-accounts'
+          ? {
+              state: 'usable',
+              values: { claude_account: 'repo@example.com' },
+              warnings: []
+            }
+          : { state: 'absent', values: {}, warnings: [] }
+    });
+    await pane.load();
+
+    const select = accountSelect(root, 'claude_account');
+    select.value = '';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { claude_account: null } }
+    ]);
+  });
+
+  test('carries root_dir on a bound pane', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, calls } = mount({ root_dir: REPO_B });
+    await pane.load();
+
+    const select = accountSelect(root, 'codex_account');
+    select.value = 'codex-key';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'get-workspace-accounts')).toEqual([
+      { root_dir: REPO_B }
+    ]);
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { codex_account: 'codex-key' }, root_dir: REPO_B }
+    ]);
+  });
+
+  test('hints an unreadable list and keeps the stored value selectable', async () => {
+    stubAccountFetch({ claude: null, codex: null });
+    const { root, pane } = mount({
+      transport: async () => ({
+        state: 'usable',
+        values: { claude_account: 'repo@example.com' },
+        warnings: []
+      })
+    });
+
+    await pane.load();
+
+    expect(root.textContent).toContain('계정 목록을 불러올 수 없습니다');
+    const select = accountSelect(root, 'claude_account');
+    expect(select.value).toBe('repo@example.com');
+    expect(labels(select)).toEqual([
+      '기본값 사용 — 현재 로그인(확인 불가)',
+      'repo@example.com (목록에 없음)'
+    ]);
+  });
+
+  test('banners an unusable layer as a blocked dispatch', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane } = mount({
+      transport: async () => ({
+        state: 'unusable',
+        values: {},
+        warnings: ['invalid_value:codex_account']
+      })
+    });
+
+    await pane.load();
+
+    const banner = el(root, '[data-account-warning]');
+    expect(banner.textContent).toContain('디스패치가 거부됩니다');
+    expect(banner.textContent).toContain('invalid_value:codex_account');
+  });
+
+  test('banners an unknown key without claiming a blocked dispatch', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane } = mount({
+      transport: async () => ({
+        state: 'usable',
+        values: {},
+        warnings: ['unknown_key:stray']
+      })
+    });
+
+    await pane.load();
+
+    const banner = el(root, '[data-account-warning]');
+    expect(banner.textContent).toContain('unknown_key:stray');
+    expect(banner.textContent).not.toContain('디스패치가 거부됩니다');
+  });
+
+  test('shows no banner for a clean layer', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane } = mount();
+
+    await pane.load();
+
+    expect(root.querySelector('[data-account-warning]')).toBe(null);
+  });
+
+  test('keeps the user edit and notifies when a save fails', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    const { root, pane, notify } = mount({
+      transport: async (/** @type {string} */ type) => {
+        if (type === 'set-workspace-accounts') {
+          throw new Error('kv_write_failed');
+        }
+        return { state: 'absent', values: {}, warnings: [] };
+      }
+    });
+    await pane.load();
+
+    const select = accountSelect(root, 'claude_account');
+    select.value = 'repo@example.com';
+    select.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(notify).toHaveBeenCalledWith(
+      '실행 계정 기본값 저장 실패: kv_write_failed'
+    );
+    expect(accountSelect(root, 'claude_account').value).toBe(
+      'repo@example.com'
+    );
+  });
+
+  test('sends the second change only after the first write answers', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    /** @type {Array<() => void>} */
+    const pending = [];
+    const { root, pane, calls } = mount({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'set-workspace-accounts') {
+          return { state: 'absent', values: {}, warnings: [] };
+        }
+        await new Promise((resolve) => pending.push(() => resolve(undefined)));
+        return {
+          state: 'usable',
+          values: { claude_account: 'repo@example.com' },
+          warnings: []
+        };
+      }
+    });
+    await pane.load();
+
+    const claude = accountSelect(root, 'claude_account');
+    claude.value = 'repo@example.com';
+    claude.dispatchEvent(new Event('change'));
+    await settle();
+    const codex = accountSelect(root, 'codex_account');
+    codex.value = 'codex-key';
+    codex.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { claude_account: 'repo@example.com' } }
+    ]);
+
+    pending.shift()?.();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { claude_account: 'repo@example.com' } },
+      { values: { codex_account: 'codex-key' } }
+    ]);
+  });
+
+  test('keeps an edit made while an earlier write was in flight', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    /** @type {Array<() => void>} */
+    const pending = [];
+    const { root, pane } = mount({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'set-workspace-accounts') {
+          return { state: 'absent', values: {}, warnings: [] };
+        }
+        await new Promise((resolve) => pending.push(() => resolve(undefined)));
+        return {
+          state: 'usable',
+          values: { claude_account: 'repo@example.com' },
+          warnings: []
+        };
+      }
+    });
+    await pane.load();
+
+    const claude = accountSelect(root, 'claude_account');
+    claude.value = 'repo@example.com';
+    claude.dispatchEvent(new Event('change'));
+    await settle();
+    const codex = accountSelect(root, 'codex_account');
+    codex.value = 'codex-key';
+    codex.dispatchEvent(new Event('change'));
+    pending.shift()?.();
+    await settle();
+    await settle();
+
+    expect(accountSelect(root, 'codex_account').value).toBe('codex-key');
+  });
+});

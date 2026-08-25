@@ -6,6 +6,7 @@ import { html } from 'lit-html';
  * @typedef {{ accounts: ExecAccount[], active: ExecAccount|null }} ExecAccountProviderCatalog
  * @typedef {{ claude: ExecAccountProviderCatalog|null, codex: ExecAccountProviderCatalog|null }} ExecAccountCatalog
  * @typedef {{ onExecChange: (key: string, value: string) => void }} ExecAccountHandlers
+ * @typedef {{ state: 'absent'|'usable'|'unusable', values: Record<string, string>, warnings: string[] }} WorkspaceAccountsLayer
  */
 
 /**
@@ -64,9 +65,12 @@ function aliasSuffix(account) {
 }
 
 /**
+ * Exported so the settings pane's `실행 계정` selects name an account exactly
+ * the way this panel does (UI-d3cb §6.1).
+ *
  * @param {ExecAccount} account
  */
-function claudeLabel(account) {
+export function claudeLabel(account) {
   const status_suffix =
     typeof account.status === 'string' && account.status !== 'ok'
       ? ` · ${account.status}`
@@ -77,7 +81,7 @@ function claudeLabel(account) {
 /**
  * @param {ExecAccount} account
  */
-function codexLabel(account) {
+export function codexLabel(account) {
   const plan =
     typeof account.plan === 'string' && account.plan.length > 0
       ? account.plan
@@ -86,10 +90,26 @@ function codexLabel(account) {
 }
 
 /**
+ * The empty option's label — what selecting `(기본)` actually INHERITS.
+ *
+ * A repo default outranks the machine's active login at launch (§5.1), so when
+ * one exists the label names it. Anything short of a `usable` layer (absent,
+ * unusable, or a failed request) keeps the pre-existing active-login wording:
+ * this screen displays, the launch judges, and the warning banner belongs to
+ * the settings pane that can fix it (§6.2).
+ *
  * @param {'claude'|'codex'} provider_key
  * @param {ExecAccountProviderCatalog|null} provider
+ * @param {string|null} workspace_default
  */
-function defaultLabel(provider_key, provider) {
+function defaultLabel(provider_key, provider, workspace_default) {
+  if (workspace_default !== null) {
+    const formatter = provider_key === 'claude' ? claudeLabel : codexLabel;
+    const known = provider
+      ? provider.accounts.find((account) => account.key === workspace_default)
+      : undefined;
+    return `레포 기본값 사용(${known ? formatter(known) : workspace_default})`;
+  }
   if (!provider) {
     return '(기본)';
   }
@@ -104,7 +124,22 @@ function defaultLabel(provider_key, provider) {
 }
 
 /**
- * @param {{ key: string, title: string, provider_key: 'claude'|'codex', provider: ExecAccountProviderCatalog|null, selected: string, handlers: ExecAccountHandlers, hint?: string }} model
+ * The repo default for one provider, or null when the layer cannot supply one.
+ *
+ * @param {WorkspaceAccountsLayer|null|undefined} layer
+ * @param {string} key
+ * @returns {string|null}
+ */
+function workspaceDefaultOf(layer, key) {
+  if (!isRecord(layer) || layer.state !== 'usable' || !isRecord(layer.values)) {
+    return null;
+  }
+  const value = layer.values[key];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * @param {{ key: string, title: string, provider_key: 'claude'|'codex', provider: ExecAccountProviderCatalog|null, selected: string, workspace_default: string|null, handlers: ExecAccountHandlers, hint?: string }} model
  * @returns {TemplateResult}
  */
 function accountRow(model) {
@@ -128,7 +163,11 @@ function accountRow(model) {
           )}
       >
         <option value="" ?selected=${model.selected.length === 0}>
-          ${defaultLabel(model.provider_key, model.provider)}
+          ${defaultLabel(
+            model.provider_key,
+            model.provider,
+            model.workspace_default
+          )}
         </option>
         ${model.selected && !known
           ? html`<option value=${model.selected} selected>
@@ -161,10 +200,15 @@ function accountRow(model) {
  * The two per-issue account pins. These remain separate from the shared
  * execution-setting key model because accounts are machine-local identities.
  *
- * @param {{ md: Record<string, any>, catalog: ExecAccountCatalog, handlers: ExecAccountHandlers }} input
+ * @param {{ md: Record<string, any>, catalog: ExecAccountCatalog, workspace_defaults?: WorkspaceAccountsLayer|null, handlers: ExecAccountHandlers }} input
  * @returns {TemplateResult}
  */
-export function execAccountsTemplate({ md, catalog, handlers }) {
+export function execAccountsTemplate({
+  md,
+  catalog,
+  workspace_defaults = null,
+  handlers
+}) {
   const claude_selected =
     typeof md.claude_account === 'string' ? md.claude_account : '';
   const codex_selected =
@@ -178,6 +222,10 @@ export function execAccountsTemplate({ md, catalog, handlers }) {
         provider_key: 'claude',
         provider: providerCatalog(catalog, 'claude'),
         selected: claude_selected,
+        workspace_default: workspaceDefaultOf(
+          workspace_defaults,
+          'claude_account'
+        ),
         handlers,
         hint: '오케스트레이션 런타임이 claude일 때 적용됩니다'
       })}
@@ -187,6 +235,10 @@ export function execAccountsTemplate({ md, catalog, handlers }) {
         provider_key: 'codex',
         provider: providerCatalog(catalog, 'codex'),
         selected: codex_selected,
+        workspace_default: workspaceDefaultOf(
+          workspace_defaults,
+          'codex_account'
+        ),
         handlers
       })}
     </div>
