@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,28 +45,27 @@ function git(args, cwd) {
  * Run a command and report its exit code instead of throwing — every case here
  * asserts on the verdict of a push, not on the absence of an exception.
  *
+ * `spawnSync`, not `execFileSync`: the exemption's PASSING push writes a line to
+ * stderr (UI-7ufi §2.2), and the throw-based form only ever hands stderr back on
+ * failure. A spawn that never started reads as exit 1, the same verdict a
+ * refusal carries.
+ *
  * @param {string} command
  * @param {string[]} args
  * @param {string} cwd
  * @returns {{ code: number, stdout: string, stderr: string }}
  */
 function run(command, args, cwd) {
-  try {
-    const stdout = execFileSync(command, args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: 'pipe',
-      env: { ...process.env, ...hook_env }
-    });
-    return { code: 0, stdout, stderr: '' };
-  } catch (err) {
-    const e = /** @type {any} */ (err);
-    return {
-      code: typeof e.status === 'number' ? e.status : 1,
-      stdout: String(e.stdout || ''),
-      stderr: String(e.stderr || '')
-    };
-  }
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...hook_env }
+  });
+  return {
+    code: typeof result.status === 'number' ? result.status : 1,
+    stdout: String(result.stdout || ''),
+    stderr: String(result.stderr || '')
+  };
 }
 
 /**
@@ -361,5 +360,372 @@ describe('guard hook — prevention layer (UI-8mvc §2)', () => {
 
     expect(result.code).toBe(0);
     expect(remoteTip(origin, BASE)).toBe(local);
+  });
+});
+
+describe('guard hook — docs-only base push exemption (UI-7ufi §2)', () => {
+  /** Distinguishes the throwaway candidate worktrees within one test. */
+  let candidate_seq = 0;
+
+  /**
+   * @param {string} cwd
+   * @param {string} rel
+   * @param {string} body
+   */
+  function writeAt(cwd, rel, body) {
+    const full = path.join(cwd, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, body);
+  }
+
+  /**
+   * Stage everything (deletions included) and commit.
+   *
+   * @param {string} cwd
+   * @param {string} message
+   */
+  function commitAll(cwd, message) {
+    git(['add', '-A'], cwd);
+    git(['commit', '-q', '-m', message], cwd);
+  }
+
+  /**
+   * Build a candidate the way `land-reviewed-artifact.py` does: a DETACHED
+   * worktree off the base tip, committed there and never merged into a branch.
+   *
+   * @param {(cwd: string) => void} build
+   * @param {string} [start] - What the candidate is built on; the remote base
+   * tip unless a case needs a stale one.
+   */
+  function candidateSha(build, start = `origin/${BASE}`) {
+    candidate_seq += 1;
+    const cand = path.join(tmp, `candidate-${candidate_seq}`);
+    git(['worktree', 'add', '-q', '--detach', cand, start], repo);
+    identify(cand);
+    build(cand);
+    return git(['rev-parse', 'HEAD'], cand).trim();
+  }
+
+  /**
+   * The land script's push, from the repo ROOT and under the guard env:
+   * `git push origin <sha>:refs/heads/<base>`.
+   *
+   * @param {string} sha
+   * @param {{ force?: boolean }} [options]
+   */
+  function pushCandidate(sha, options = {}) {
+    const args = ['push'];
+    if (options.force === true) {
+      args.push('--force');
+    }
+    args.push('origin', `${sha}:refs/heads/${BASE}`);
+    return run('git', args, repo);
+  }
+
+  /**
+   * Move the remote base as the FIXTURE, not as the subject: pushed without the
+   * guard env, so it neither runs the hook nor writes to the push log.
+   *
+   * @param {(cwd: string) => void} build
+   * @returns {string} The sha now on the remote base.
+   */
+  function seedBase(build) {
+    const sha = candidateSha(build);
+    git(['push', 'origin', `${sha}:refs/heads/${BASE}`], repo);
+    return sha;
+  }
+
+  /**
+   * @returns {Record<string, unknown>[]}
+   */
+  function entries() {
+    const read = readPushLog({ workspace: repo, attempt_id: ATTEMPT });
+    return read.ok ? read.entries : [];
+  }
+
+  test('passes a single-commit spec publication and records the exemption', () => {
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# spec\n');
+      commitAll(cwd, 'docs: publish spec');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).toBe(0);
+    expect(remoteTip(origin, BASE)).toBe(sha);
+    expect(result.stderr).toContain(
+      `bdui guard: passing docs-only push to refs/heads/${BASE}`
+    );
+    expect(result.stderr).toContain(`(attempt ${ATTEMPT}, 1 path(s))`);
+    expect(entries()).toEqual([
+      {
+        local_ref: sha,
+        local_oid: sha,
+        remote_ref: `refs/heads/${BASE}`,
+        remote_oid: expect.any(String),
+        exempt: 'docs_only'
+      }
+    ]);
+  });
+
+  test('passes a modification of a doc already on the base', () => {
+    seedBase((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# rev1\n');
+      commitAll(cwd, 'docs: rev1');
+    });
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# rev2\n');
+      commitAll(cwd, 'docs: rev2');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).toBe(0);
+    expect(remoteTip(origin, BASE)).toBe(sha);
+  });
+
+  test('passes a multi-commit fast-forward carrying a non-md asset', () => {
+    // Neither the commit count nor the file type is part of the predicate: the
+    // exemption is cut on the RESULT TREE.
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/a.md', '# a\n');
+      commitAll(cwd, 'docs: a');
+      writeAt(cwd, 'docs/superpowers/specs/assets/b.png', 'PNG\n');
+      commitAll(cwd, 'docs: asset');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).toBe(0);
+    expect(remoteTip(origin, BASE)).toBe(sha);
+    expect(result.stderr).toContain(`(attempt ${ATTEMPT}, 2 path(s))`);
+  });
+
+  test('passes a deletion of a doc', () => {
+    seedBase((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# spec\n');
+      commitAll(cwd, 'docs: publish');
+    });
+    const sha = candidateSha((cwd) => {
+      fs.rmSync(path.join(cwd, 'docs/superpowers/specs/x.md'));
+      commitAll(cwd, 'docs: retire');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).toBe(0);
+    expect(remoteTip(origin, BASE)).toBe(sha);
+  });
+
+  test('refuses a commit mixing a doc with a source file', () => {
+    const before = remoteTip(origin, BASE);
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# spec\n');
+      writeAt(cwd, 'server/x.js', '// code\n');
+      commitAll(cwd, 'docs and code');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: paths (server/x.js)'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('refuses a source-only delta', () => {
+    const before = remoteTip(origin, BASE);
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'server/x.js', '// code\n');
+      commitAll(cwd, 'code only');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: paths (server/x.js)'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('refuses a root README.md — the boundary is a directory, not an extension', () => {
+    const before = remoteTip(origin, BASE);
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'README.md', '# readme\n');
+      commitAll(cwd, 'policy doc');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: paths (README.md)'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('refuses a rename OUT of a source directory into docs/', () => {
+    // The `--no-renames` counterexample: with rename detection on, git prints
+    // only `docs/x.js` and the deletion of a source file reads as docs-only.
+    seedBase((cwd) => {
+      writeAt(cwd, 'server/x.js', '// code\n');
+      commitAll(cwd, 'seed code');
+    });
+    const before = remoteTip(origin, BASE);
+    const sha = candidateSha((cwd) => {
+      // `git mv` will not create the destination directory itself.
+      fs.mkdirSync(path.join(cwd, 'docs'), { recursive: true });
+      git(['mv', 'server/x.js', 'docs/x.js'], cwd);
+      commitAll(cwd, 'move code under docs');
+    });
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: paths (server/x.js)'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('refuses a code commit disguised by a local replace ref', () => {
+    // The `--no-replace-objects` counterexample: `refs/replace/*` rewrites what
+    // a local diff READS while the push TRANSMITS the original object.
+    const before = String(remoteTip(origin, BASE));
+    const docs_commit = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/replaced.md', '# decoy\n');
+      commitAll(cwd, 'docs decoy');
+    });
+    const code_commit = candidateSha((cwd) => {
+      writeAt(cwd, 'server/replaced.js', '// real payload\n');
+      commitAll(cwd, 'code payload');
+    });
+    git(['replace', code_commit, docs_commit], repo);
+    // The disguise really works on a replace-aware read: that is what makes
+    // this a counterexample rather than a restatement of the source-only case.
+    expect(
+      git(
+        ['diff', '--no-renames', '--name-only', before, code_commit],
+        repo
+      ).trim()
+    ).toBe('docs/replaced.md');
+
+    const result = pushCandidate(code_commit);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: paths'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+    expect(
+      git(['ls-tree', '-r', '--name-only', `refs/heads/${BASE}`], origin)
+    ).not.toContain('server/replaced.js');
+  });
+
+  test('refuses a base deletion with the deletion reason', () => {
+    const before = remoteTip(origin, BASE);
+
+    const result = run('git', ['push', 'origin', '--delete', BASE], repo);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: deletion'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
+  test('refuses creating the base ref anew with the new_ref reason', () => {
+    // Fixture, not subject: the base is removed WITHOUT the guard env.
+    git(['push', 'origin', '--delete', BASE], repo);
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# spec\n');
+      commitAll(cwd, 'docs: publish');
+    }, BASE);
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: new_ref'
+    );
+    expect(remoteTip(origin, BASE)).toBeNull();
+  });
+
+  test('never sees a non-fast-forward push: git rejects it first', () => {
+    const stale_start = String(remoteTip(origin, BASE));
+    const stale = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/stale.md', '# stale\n');
+      commitAll(cwd, 'docs: stale');
+    }, stale_start);
+    const advanced = seedBase((cwd) => {
+      writeAt(cwd, 'docs/ahead.md', '# ahead\n');
+      commitAll(cwd, 'docs: ahead');
+    });
+
+    const result = pushCandidate(stale);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).not.toContain('bdui guard');
+    expect(remoteTip(origin, BASE)).toBe(advanced);
+    // The ref never reached the hook, so there is nothing to record.
+    expect(entries()).toEqual([]);
+  });
+
+  test('refuses a forced non-fast-forward push with the not_fast_forward reason', () => {
+    const stale_start = String(remoteTip(origin, BASE));
+    const stale = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/stale.md', '# stale\n');
+      commitAll(cwd, 'docs: stale');
+    }, stale_start);
+    const advanced = seedBase((cwd) => {
+      writeAt(cwd, 'docs/ahead.md', '# ahead\n');
+      commitAll(cwd, 'docs: ahead');
+    });
+
+    const result = pushCandidate(stale, { force: true });
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: not_fast_forward'
+    );
+    expect(remoteTip(origin, BASE)).toBe(advanced);
+  });
+
+  test('records a passing non-base push without an exemption key', () => {
+    commit(worktree, 'feature-unexempt');
+
+    const result = run(
+      'git',
+      ['push', 'origin', 'HEAD:refs/heads/UI-8mvc'],
+      worktree
+    );
+
+    expect(result.code).toBe(0);
+    expect(entries()).toEqual([
+      {
+        local_ref: 'HEAD',
+        local_oid: git(['rev-parse', 'HEAD'], worktree).trim(),
+        remote_ref: 'refs/heads/UI-8mvc',
+        remote_oid: '0'.repeat(40)
+      }
+    ]);
+  });
+
+  test('leaves a docs base push in ANOTHER repository alone and unrecorded', () => {
+    const doc = path.join(other, 'docs/other.md');
+    fs.mkdirSync(path.dirname(doc), { recursive: true });
+    fs.writeFileSync(doc, '# other\n');
+    git(['add', '-A'], other);
+    git(['commit', '-q', '-m', 'docs: other repo'], other);
+
+    const result = run('git', ['push', 'origin', `HEAD:${BASE}`], other);
+
+    expect(result.code).toBe(0);
+    expect(remoteTip(other_origin, BASE)).toBe(
+      git(['rev-parse', 'HEAD'], other).trim()
+    );
+    expect(entries()).toEqual([]);
   });
 });

@@ -419,3 +419,79 @@ describe('base-drift never turns an observation failure into a verdict', () => {
     expect(verdict.record?.error).toBe('reachability:merge_base');
   });
 });
+
+describe('base-drift honors the docs-only exemption (UI-7ufi §2.4)', () => {
+  /**
+   * One push line the prevention layer let through, or one carrying an
+   * `exempt` value this layer does not know.
+   *
+   * @param {string} local_oid
+   * @param {string} [value]
+   */
+  function exempted(local_oid, value = 'docs_only') {
+    return { ...pushed(BASE_REF, local_oid), exempt: value };
+  }
+
+  test('clears an exempted base push and preserves it as an artifact push', async () => {
+    const verdict = await observe({
+      git: makeGit({ reachable: [MINE] }),
+      readPushLog: pushLog([exempted(MINE)])
+    });
+
+    expect(verdict).toEqual({
+      violation: false,
+      record: {
+        pinned: PINNED,
+        observed: MOVED,
+        landed: false,
+        pushed: [],
+        artifact_pushed: [MINE]
+      }
+    });
+  });
+
+  test('flags only the non-exempt oid when the record mixes both', async () => {
+    const verdict = await observe({
+      git: makeGit({ reachable: [MINE, FOREIGN] }),
+      readPushLog: pushLog([exempted(MINE), pushed(BASE_REF, FOREIGN)])
+    });
+
+    expect(verdict).toEqual({
+      violation: true,
+      record: {
+        pinned: PINNED,
+        observed: MOVED,
+        landed: true,
+        via: 'direct_push',
+        pushed: [FOREIGN],
+        shas: [FOREIGN],
+        artifact_pushed: [MINE]
+      }
+    });
+  });
+
+  test('treats an unknown exempt value as an ordinary landing candidate', async () => {
+    const verdict = await observe({
+      git: makeGit({ reachable: [MINE] }),
+      readPushLog: pushLog([exempted(MINE, 'something_else')])
+    });
+
+    expect(verdict.violation).toBe(true);
+    expect(verdict.record).toEqual({
+      pinned: PINNED,
+      observed: MOVED,
+      landed: true,
+      via: 'direct_push',
+      pushed: [MINE],
+      shas: [MINE]
+    });
+  });
+
+  test('asks git nothing when every base push was exempted', async () => {
+    const git = makeGit({ reachable: [MINE] });
+
+    await observe({ git, readPushLog: pushLog([exempted(MINE)]) });
+
+    expect(git).not.toHaveBeenCalled();
+  });
+});
