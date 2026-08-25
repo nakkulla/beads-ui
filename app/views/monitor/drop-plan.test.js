@@ -1,8 +1,14 @@
 import { describe, expect, test } from 'vitest';
-import { planDrop } from './drop-plan.js';
+import {
+  planDrop,
+  planLaneConfirm,
+  planLaneCreate,
+  planLaneReapply,
+  planLaneRemove
+} from './drop-plan.js';
 
 /**
- * @import { DropModel } from './drop-plan.js'
+ * @import { DropModel, LaneState } from './drop-plan.js'
  */
 
 const WS_A = '/tmp/example/repo-a';
@@ -16,12 +22,40 @@ function dropModel(patch = {}) {
   return {
     blocked_by_map: new Map(),
     owner_of: new Map(),
-    lane_order: new Map(),
+    cross_lanes: new Map(),
+    owner_lane_of: new Map(),
+    fixed_members: new Set(),
+    placed_members: new Set(),
     parallel_rows: [],
     parallel_raw_length: new Map(),
     queue_index_of: new Map(),
     ...patch
   };
+}
+
+/**
+ * Build the 저장 레인 목록 and its 소속 역맵 together — 서버가 보장하는 "한
+ * 버드는 레인 하나" 불변식을 픽스처가 깨지 않게 한 자리에서 짓는다 (§4.1).
+ *
+ * @param {Array<{ id: string, status?: 'draft'|'confirmed', entries: Array<[string, string?]> }>} spec
+ * @returns {{ cross_lanes: Map<string, LaneState>, owner_lane_of: Map<string, string> }}
+ */
+function laneStore(spec) {
+  /** @type {Map<string, LaneState>} */
+  const cross_lanes = new Map();
+  /** @type {Map<string, string>} */
+  const owner_lane_of = new Map();
+  for (const lane of spec) {
+    const entries = lane.entries.map(([bead_id, root_dir]) => ({
+      bead_id,
+      root_dir: root_dir || WS_A
+    }));
+    cross_lanes.set(lane.id, { status: lane.status || 'draft', entries });
+    for (const entry of entries) {
+      owner_lane_of.set(entry.bead_id, lane.id);
+    }
+  }
+  return { cross_lanes, owner_lane_of };
 }
 
 /**
@@ -57,13 +91,14 @@ function parallelModel(patch = {}) {
 }
 
 /**
- * Target 연결 레인 `chain:c` = C-1 → C-2 (C-2가 C-1에 blocked). C-1은 repo-b 소유다 —
- * 의존 op의 root가 드래그한 레포가 아니라 blockee 소유 레포임을 드러낸다.
+ * Target 확정 레인 `cl_c` = C-1 → C-2 (C-2가 C-1에 blocked). C-1은 repo-b
+ * 소유다 — 의존 op의 root가 드래그한 레포가 아니라 blockee 소유 레포임을
+ * 드러낸다.
  *
  * @param {Partial<DropModel>} [patch]
  * @returns {DropModel}
  */
-function chainTargetModel(patch = {}) {
+function confirmedTargetModel(patch = {}) {
   return dropModel({
     blocked_by_map: new Map([['C-2', ['C-1']]]),
     owner_of: new Map([
@@ -71,7 +106,17 @@ function chainTargetModel(patch = {}) {
       ['C-1', WS_B],
       ['C-2', WS_A]
     ]),
-    lane_order: new Map([['chain:c', ['C-1', 'C-2']]]),
+    ...laneStore([
+      {
+        id: 'cl_c',
+        status: 'confirmed',
+        entries: [
+          ['C-1', WS_B],
+          ['C-2', WS_A]
+        ]
+      }
+    ]),
+    placed_members: new Set(['C-1', 'C-2']),
     parallel_raw_length: new Map([
       [WS_A, 2],
       [WS_B, 1]
@@ -81,12 +126,12 @@ function chainTargetModel(patch = {}) {
 }
 
 /**
- * Source 연결 레인 `chain:s` = P → X → S, 모두 repo-a 병렬 큐.
+ * Source 확정 레인 `cl_s` = P → X → S, 모두 repo-a 병렬 큐.
  *
  * @param {Partial<DropModel>} [patch]
  * @returns {DropModel}
  */
-function chainSourceModel(patch = {}) {
+function confirmedSourceModel(patch = {}) {
   return dropModel({
     blocked_by_map: new Map([
       ['X', ['P']],
@@ -97,7 +142,10 @@ function chainSourceModel(patch = {}) {
       ['X', WS_A],
       ['S', WS_A]
     ]),
-    lane_order: new Map([['chain:s', ['P', 'X', 'S']]]),
+    ...laneStore([
+      { id: 'cl_s', status: 'confirmed', entries: [['P'], ['X'], ['S']] }
+    ]),
+    placed_members: new Set(['P', 'X', 'S']),
     parallel_raw_length: new Map([[WS_A, 3]]),
     queue_index_of: new Map([
       ['P', 0],
@@ -108,7 +156,832 @@ function chainSourceModel(patch = {}) {
   });
 }
 
-describe('planDrop — 원천 candidate (UI-e6hw §5.2)', () => {
+describe('planDrop — draft 대상 (UI-j92s §5.4)', () => {
+  test('inserts into a draft lane without any dep or queue op', () => {
+    const model = parallelModel({
+      ...laneStore([{ id: 'cl_d', entries: [['D-1']] }])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_d', marker_index: 1 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_d',
+            entries: [
+              { bead_id: 'D-1', root_dir: WS_A },
+              { bead_id: 'A-9', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [],
+      lane_op_index: 0
+    });
+  });
+
+  test('rejoins the confirmed source lane when its row moves into a draft lane', () => {
+    const source = confirmedSourceModel();
+    const draft = laneStore([
+      { id: 'cl_s', status: 'confirmed', entries: [['P'], ['X'], ['S']] },
+      { id: 'cl_d', entries: [] }
+    ]);
+    const model = dropModel({ ...source, ...draft });
+
+    const plan = planDrop(
+      { kind: 'chain', bead_id: 'X', root_dir: WS_A, lane_id: 'cl_s' },
+      { kind: 'chain', lane_id: 'cl_d', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_s',
+            entries: [
+              { bead_id: 'P', root_dir: WS_A },
+              { bead_id: 'S', root_dir: WS_A }
+            ]
+          }
+        },
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_d',
+            entries: [{ bead_id: 'X', root_dir: WS_A }]
+          }
+        }
+      ],
+      ops: [
+        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
+        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A }
+      ],
+      lane_op_index: 2
+    });
+  });
+
+  test('reorders inside a draft lane with one update and no dep op', () => {
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }])
+    });
+
+    const plan = planDrop(
+      { kind: 'chain', bead_id: 'D-2', root_dir: WS_A, lane_id: 'cl_d' },
+      { kind: 'chain', lane_id: 'cl_d', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_d',
+            entries: [
+              { bead_id: 'D-2', root_dir: WS_A },
+              { bead_id: 'D-1', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [],
+      lane_op_index: 0
+    });
+  });
+
+  test('leaves a draft row dependency untouched when the row is removed', () => {
+    const model = dropModel({
+      // 밖에서 생긴 의존이 draft 멤버 사이에 있어도 draft는 그것을 소유하지
+      // 않는다 (§5.4) — 이어 붙이기를 하지 않는다.
+      blocked_by_map: new Map([['D-2', ['D-1']]]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      parallel_raw_length: new Map([[WS_A, 2]])
+    });
+
+    const plan = planDrop(
+      { kind: 'chain', bead_id: 'D-1', root_dir: WS_A, lane_id: 'cl_d' },
+      { kind: 'parallel', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_d',
+            entries: [{ bead_id: 'D-2', root_dir: WS_A }]
+          }
+        }
+      ],
+      ops: [],
+      lane_op_index: 0
+    });
+  });
+
+  test('keeps a candidate out of every queue when a draft lane takes it', () => {
+    const model = parallelModel({
+      ...laneStore([{ id: 'cl_d', entries: [] }])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_d', marker_index: 0 },
+      model
+    );
+
+    expect('ops' in plan && plan.ops).toEqual([]);
+  });
+});
+
+describe('planLaneConfirm — 확정 (UI-j92s §5.4)', () => {
+  test('links every adjacent pair and flips the lane', () => {
+    const model = dropModel({
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_B]
+      ]),
+      ...laneStore([
+        {
+          id: 'cl_d',
+          entries: [
+            ['D-1', WS_A],
+            ['D-2', WS_B]
+          ]
+        }
+      ]),
+      placed_members: new Set(['D-1', 'D-2'])
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect(plan).toEqual({
+      lane_ops: [
+        { type: 'monitor-lane-confirm', payload: { lane_id: 'cl_d' } }
+      ],
+      ops: [{ type: 'dep-add', a: 'D-2', b: 'D-1', root_dir: WS_B }],
+      lane_op_index: 0
+    });
+  });
+
+  test('skips an adjacent dependency the graph already carries', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([['D-2', ['D-1']]]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A],
+        ['D-3', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2'], ['D-3']] }]),
+      placed_members: new Set(['D-1', 'D-2', 'D-3'])
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect('ops' in plan && plan.ops).toEqual([
+      { type: 'dep-add', a: 'D-3', b: 'D-2', root_dir: WS_A }
+    ]);
+  });
+
+  test('refuses the whole plan and sends no confirm when the order closes a cycle', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([['D-1', ['D-2']]]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }]),
+      placed_members: new Set(['D-1', 'D-2'])
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect(plan).toEqual({
+      refused: '의존 사이클이 생깁니다 — D-2가 이미 D-1를 막고 있습니다'
+    });
+  });
+
+  test('places only the members no queue holds, in lane order', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([
+        ['D-2', ['D-1']],
+        ['D-3', ['D-2']]
+      ]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A],
+        ['D-3', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2'], ['D-3']] }]),
+      placed_members: new Set(['D-2']),
+      parallel_raw_length: new Map([[WS_A, 4]])
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect('ops' in plan && plan.ops).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: { bead_id: 'D-1', index: 4 },
+        root_dir: WS_A
+      },
+      {
+        type: 'worker-queue-place',
+        payload: { bead_id: 'D-3', index: 5 },
+        root_dir: WS_A
+      }
+    ]);
+  });
+
+  test('counts each repo tail separately when unplaced members span repos', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([
+        ['D-2', ['D-1']],
+        ['D-3', ['D-2']]
+      ]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_B],
+        ['D-3', WS_A]
+      ]),
+      ...laneStore([
+        {
+          id: 'cl_d',
+          entries: [
+            ['D-1', WS_A],
+            ['D-2', WS_B],
+            ['D-3', WS_A]
+          ]
+        }
+      ]),
+      parallel_raw_length: new Map([
+        [WS_A, 2],
+        [WS_B, 5]
+      ])
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect(
+      'ops' in plan &&
+        plan.ops.map((op) => [
+          /** @type {any} */ (op).payload.bead_id,
+          /** @type {any} */ (op).payload.index,
+          op.root_dir
+        ])
+    ).toEqual([
+      ['D-1', 2, WS_A],
+      ['D-2', 5, WS_B],
+      ['D-3', 3, WS_A]
+    ]);
+  });
+
+  test('refuses a confirm of a lane holding fewer than two members', () => {
+    const model = dropModel({
+      owner_of: new Map([['D-1', WS_A]]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1']] }])
+    });
+
+    const plan = planLaneConfirm('cl_d', model);
+
+    expect(plan).toEqual({
+      refused: '확정하려면 멤버가 2개 이상이어야 합니다'
+    });
+  });
+});
+
+describe('planDrop — confirmed 대상 (UI-j92s §5.4)', () => {
+  test('appends a candidate to a confirmed lane and loads its own parallel tail', () => {
+    const model = confirmedTargetModel();
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 2 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_c',
+            entries: [
+              { bead_id: 'C-1', root_dir: WS_B },
+              { bead_id: 'C-2', root_dir: WS_A },
+              { bead_id: 'A-9', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [
+        { type: 'dep-add', a: 'A-9', b: 'C-2', root_dir: WS_A },
+        {
+          type: 'worker-queue-place',
+          payload: { bead_id: 'A-9', index: 2 },
+          root_dir: WS_A
+        }
+      ],
+      lane_op_index: 0
+    });
+  });
+
+  test('splits the existing edge when the marker lands between two confirmed rows', () => {
+    const model = confirmedTargetModel({
+      parallel_rows: [{ bead_id: 'A-9', root_dir: WS_A, queue_index: 0 }],
+      queue_index_of: new Map([['A-9', 0]])
+    });
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'A-9', root_dir: WS_A, queue_index: 0 },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 1 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_c',
+            entries: [
+              { bead_id: 'C-1', root_dir: WS_B },
+              { bead_id: 'A-9', root_dir: WS_A },
+              { bead_id: 'C-2', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [
+        { type: 'dep-remove', a: 'C-2', b: 'C-1', root_dir: WS_A },
+        { type: 'dep-add', a: 'A-9', b: 'C-1', root_dir: WS_A },
+        { type: 'dep-add', a: 'C-2', b: 'A-9', root_dir: WS_A }
+      ],
+      lane_op_index: 1
+    });
+  });
+
+  test('rejoins then re-inserts when a confirmed row moves inside its lane', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'chain', lane_id: 'cl_s', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_s',
+            entries: [
+              { bead_id: 'X', root_dir: WS_A },
+              { bead_id: 'P', root_dir: WS_A },
+              { bead_id: 'S', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [
+        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
+        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A },
+        { type: 'dep-add', a: 'P', b: 'X', root_dir: WS_A }
+      ],
+      lane_op_index: 2
+    });
+  });
+
+  test('returns no op when a confirmed row lands back on its own slot', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'chain', lane_id: 'cl_s', marker_index: 1 },
+      model
+    );
+
+    expect(plan).toEqual({ lane_ops: [], ops: [], lane_op_index: 0 });
+  });
+
+  test('treats the marker just below the dragged row as the same slot', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'chain', lane_id: 'cl_s', marker_index: 2 },
+      model
+    );
+
+    expect(plan).toEqual({ lane_ops: [], ops: [], lane_op_index: 0 });
+  });
+});
+
+describe('planDrop — confirmed 행 ✕ 와 다른 대상 (UI-j92s §5.4)', () => {
+  test('drops the row from its lane and unloads it on the candidate pane', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'candidate' },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_s',
+            entries: [
+              { bead_id: 'P', root_dir: WS_A },
+              { bead_id: 'S', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [
+        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
+        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A },
+        {
+          type: 'worker-queue-remove',
+          payload: { bead_id: 'X' },
+          root_dir: WS_A
+        }
+      ],
+      lane_op_index: 2
+    });
+  });
+
+  test('plans no queue op when a confirmed row is detached to the parallel area', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'parallel', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-update',
+          payload: {
+            lane_id: 'cl_s',
+            entries: [
+              { bead_id: 'P', root_dir: WS_A },
+              { bead_id: 'S', root_dir: WS_A }
+            ]
+          }
+        }
+      ],
+      ops: [
+        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
+        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
+        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A }
+      ],
+      lane_op_index: 2
+    });
+  });
+
+  test('splices then places when a confirmed row goes to a serial lane', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 2 },
+      model
+    );
+
+    expect('ops' in plan && plan.ops[plan.ops.length - 1]).toEqual({
+      type: 'worker-queue-place',
+      payload: { bead_id: 'X', lane: 's1', index: 2 },
+      root_dir: WS_A
+    });
+  });
+});
+
+describe('planDrop — 레인 거부 (UI-j92s §5.3·§5.4)', () => {
+  test('refuses a repo-serial source dropped on a lane', () => {
+    const model = confirmedTargetModel();
+
+    const plan = planDrop(
+      {
+        kind: 'repo-serial',
+        bead_id: 'A-9',
+        root_dir: WS_A,
+        lane_id: 's1',
+        queue_index: 0
+      },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({ refused: 'Worker 탭 직렬 레인에서 먼저 빼 주세요' });
+  });
+
+  test('refuses a bead that already belongs to another lane', () => {
+    const model = dropModel({
+      owner_of: new Map([['D-1', WS_A]]),
+      ...laneStore([
+        { id: 'cl_1', entries: [['D-1']] },
+        { id: 'cl_2', entries: [] }
+      ]),
+      parallel_rows: [{ bead_id: 'D-1', root_dir: WS_A, queue_index: 0 }],
+      queue_index_of: new Map([['D-1', 0]])
+    });
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'D-1', root_dir: WS_A, queue_index: 0 },
+      { kind: 'chain', lane_id: 'cl_2', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({ refused: '이미 연결 1에 있습니다' });
+  });
+
+  test('refuses an insertion before a fixed row', () => {
+    const model = confirmedTargetModel({
+      fixed_members: new Set(['C-1'])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({
+      refused: '이미 진행 중인 이슈 앞에는 넣을 수 없습니다'
+    });
+  });
+
+  test('allows an insertion right after the last fixed row', () => {
+    const model = confirmedTargetModel({
+      fixed_members: new Set(['C-1'])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 1 },
+      model
+    );
+
+    expect('lane_ops' in plan && plan.lane_ops[0].payload).toEqual({
+      lane_id: 'cl_c',
+      entries: [
+        { bead_id: 'C-1', root_dir: WS_B },
+        { bead_id: 'A-9', root_dir: WS_A },
+        { bead_id: 'C-2', root_dir: WS_A }
+      ]
+    });
+  });
+
+  test('refuses the whole plan when the blockee has no resolvable repo', () => {
+    const model = confirmedTargetModel({
+      owner_of: new Map([['C-1', WS_B]])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 2 },
+      model
+    );
+
+    expect(plan).toEqual({
+      refused: 'A-9의 레포를 알 수 없어 의존을 바꿀 수 없습니다'
+    });
+  });
+
+  test('refuses a drop that would close a dependency cycle', () => {
+    const model = confirmedTargetModel({
+      blocked_by_map: new Map([
+        ['C-2', ['C-1']],
+        ['C-1', ['A-9']]
+      ])
+    });
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_c', marker_index: 2 },
+      model
+    );
+
+    expect(plan).toEqual({
+      refused: '의존 사이클이 생깁니다 — A-9가 이미 C-2를 막고 있습니다'
+    });
+  });
+
+  test('refuses a drop onto a lane the snapshot no longer holds', () => {
+    const model = confirmedTargetModel();
+
+    const plan = planDrop(
+      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
+      { kind: 'chain', lane_id: 'cl_gone', marker_index: 0 },
+      model
+    );
+
+    expect(plan).toEqual({ refused: '연결 레인이 없습니다' });
+  });
+});
+
+describe('planDrop — 전송 순서 (UI-j92s §5.5)', () => {
+  test('orders the result dep-remove, lane op, dep-add, queue op', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planDrop(
+      {
+        kind: 'chain',
+        bead_id: 'X',
+        root_dir: WS_A,
+        lane_id: 'cl_s',
+        queue_index: 1
+      },
+      { kind: 'candidate' },
+      model
+    );
+
+    expect('ops' in plan && plan.ops.map((op) => op.type)).toEqual([
+      'dep-remove',
+      'dep-remove',
+      'dep-add',
+      'worker-queue-remove'
+    ]);
+    expect('lane_op_index' in plan && plan.lane_op_index).toBe(2);
+  });
+});
+
+describe('planLaneRemove — 레인 삭제 (UI-j92s §5.1)', () => {
+  test('drops every adjacent dependency before removing a confirmed lane', () => {
+    const model = confirmedSourceModel();
+
+    const plan = planLaneRemove('cl_s', model);
+
+    expect(plan).toEqual({
+      lane_ops: [{ type: 'monitor-lane-remove', payload: { lane_id: 'cl_s' } }],
+      ops: [
+        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
+        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A }
+      ],
+      lane_op_index: 2
+    });
+  });
+
+  test('removes a draft lane with no dependency op', () => {
+    const model = dropModel({
+      blocked_by_map: new Map([['D-2', ['D-1']]]),
+      owner_of: new Map([
+        ['D-1', WS_A],
+        ['D-2', WS_A]
+      ]),
+      ...laneStore([{ id: 'cl_d', entries: [['D-1'], ['D-2']] }])
+    });
+
+    const plan = planLaneRemove('cl_d', model);
+
+    expect(plan).toEqual({
+      lane_ops: [{ type: 'monitor-lane-remove', payload: { lane_id: 'cl_d' } }],
+      ops: [],
+      lane_op_index: 0
+    });
+  });
+
+  test('skips an adjacent dependency the graph no longer carries', () => {
+    const model = confirmedSourceModel({
+      blocked_by_map: new Map([['S', ['X']]])
+    });
+
+    const plan = planLaneRemove('cl_s', model);
+
+    expect('ops' in plan && plan.ops).toEqual([
+      { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A }
+    ]);
+  });
+});
+
+describe('planLaneReapply — 재적용 (UI-j92s §5.2)', () => {
+  test('adds the missing adjacent dependency and re-places the unplaced member', () => {
+    const model = confirmedSourceModel({
+      blocked_by_map: new Map([['X', ['P']]]),
+      placed_members: new Set(['P', 'X'])
+    });
+
+    const plan = planLaneReapply('cl_s', model);
+
+    expect(plan).toEqual({
+      lane_ops: [],
+      ops: [
+        { type: 'dep-add', a: 'S', b: 'X', root_dir: WS_A },
+        {
+          type: 'worker-queue-place',
+          payload: { bead_id: 'S', index: 3 },
+          root_dir: WS_A
+        }
+      ],
+      lane_op_index: 0
+    });
+  });
+});
+
+describe('planLaneCreate — 새 연결 레인 (UI-j92s §5.4)', () => {
+  test('creates a draft lane seeded with one bead', () => {
+    const model = parallelModel();
+
+    const plan = planLaneCreate({ bead_id: 'A-9', root_dir: WS_A }, model);
+
+    expect(plan).toEqual({
+      lane_ops: [
+        {
+          type: 'monitor-lane-create',
+          payload: { entries: [{ bead_id: 'A-9', root_dir: WS_A }] }
+        }
+      ],
+      ops: [],
+      lane_op_index: 0
+    });
+  });
+
+  test('creates an empty draft lane when there is no seed', () => {
+    const model = parallelModel();
+
+    const plan = planLaneCreate(null, model);
+
+    expect('lane_ops' in plan && plan.lane_ops[0].payload).toEqual({
+      entries: []
+    });
+  });
+
+  test('refuses a seed that already belongs to a lane', () => {
+    const model = parallelModel({
+      ...laneStore([
+        { id: 'cl_1', entries: [] },
+        { id: 'cl_2', entries: [['A-9']] }
+      ])
+    });
+
+    const plan = planLaneCreate({ bead_id: 'A-9', root_dir: WS_A }, model);
+
+    expect(plan).toEqual({ refused: '이미 연결 2에 있습니다' });
+  });
+});
+
+describe('planDrop — 레인 밖 대상 (UI-e6hw §5.2)', () => {
   test('returns no op when a candidate lands back on the candidate pane', () => {
     const model = parallelModel();
 
@@ -118,7 +991,7 @@ describe('planDrop — 원천 candidate (UI-e6hw §5.2)', () => {
       model
     );
 
-    expect(plan).toEqual({ ops: [] });
+    expect(plan).toEqual({ lane_ops: [], ops: [], lane_op_index: 0 });
   });
 
   test('places a candidate at the raw index of the row the marker sits above', () => {
@@ -130,19 +1003,18 @@ describe('planDrop — 원천 candidate (UI-e6hw §5.2)', () => {
       model
     );
 
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', index: 1 },
-          root_dir: WS_A
-        }
-      ]
-    });
+    expect('ops' in plan && plan.ops).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: { bead_id: 'A-9', index: 1 },
+        root_dir: WS_A
+      }
+    ]);
   });
 
   test('falls back to parallel_raw_length when the repo has no visible row', () => {
     const model = parallelModel({
+      owner_of: new Map([['B-9', WS_B]]),
       parallel_rows: [{ bead_id: 'A-1', root_dir: WS_A, queue_index: 0 }],
       parallel_raw_length: new Map([
         [WS_A, 1],
@@ -152,60 +1024,65 @@ describe('planDrop — 원천 candidate (UI-e6hw §5.2)', () => {
 
     const plan = planDrop(
       { kind: 'candidate', bead_id: 'B-9', root_dir: WS_B },
+      { kind: 'parallel', marker_index: 1 },
+      model
+    );
+
+    expect('ops' in plan && plan.ops).toEqual([
+      {
+        type: 'worker-queue-place',
+        payload: { bead_id: 'B-9', index: 3 },
+        root_dir: WS_B
+      }
+    ]);
+  });
+
+  test('removes a parallel row dragged onto the candidate pane', () => {
+    const model = parallelModel();
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
+      { kind: 'candidate' },
+      model
+    );
+
+    expect('ops' in plan && plan.ops).toEqual([
+      {
+        type: 'worker-queue-remove',
+        payload: { bead_id: 'A-1' },
+        root_dir: WS_A
+      }
+    ]);
+  });
+
+  test('reorders inside its own repo with the remove-then-insert correction', () => {
+    const model = parallelModel();
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
+      { kind: 'parallel', marker_index: 2 },
+      model
+    );
+
+    expect('ops' in plan && plan.ops).toEqual([
+      {
+        type: 'worker-queue-reorder',
+        payload: { bead_id: 'A-1', to_index: 1 },
+        root_dir: WS_A
+      }
+    ]);
+  });
+
+  test('returns no op when a parallel row lands on its own position', () => {
+    const model = parallelModel();
+
+    const plan = planDrop(
+      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
       { kind: 'parallel', marker_index: 0 },
       model
     );
 
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'B-9', index: 3 },
-          root_dir: WS_B
-        }
-      ]
-    });
-  });
-
-  test('appends a candidate to a chain lane and loads its own parallel queue last', () => {
-    const model = chainTargetModel();
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 2 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-add', a: 'A-9', b: 'C-2', root_dir: WS_A },
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', index: 2 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('places a candidate into a serial lane of its own repo', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's2', index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', lane: 's2', index: 1 },
-          root_dir: WS_A
-        }
-      ]
-    });
+    expect('ops' in plan && plan.ops).toEqual([]);
   });
 
   test('refuses a candidate dropped on another repo serial lane', () => {
@@ -221,507 +1098,31 @@ describe('planDrop — 원천 candidate (UI-e6hw §5.2)', () => {
       refused: '다른 레포 이슈는 이 직렬 레인에 넣을 수 없습니다'
     });
   });
-});
-
-describe('planDrop — 원천 parallel (UI-e6hw §5.2)', () => {
-  test('removes a parallel row dragged onto the candidate pane', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
-      { kind: 'candidate' },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-remove',
-          payload: { bead_id: 'A-1' },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('reorders inside its own repo with the remove-then-insert correction', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
-      { kind: 'parallel', marker_index: 2 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-reorder',
-          payload: { bead_id: 'A-1', to_index: 1 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('returns no op when a parallel row lands on its own position', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
-      { kind: 'parallel', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({ ops: [] });
-  });
-
-  test('links a parallel row into a chain lane without touching the queue', () => {
-    const model = chainTargetModel({
-      owner_of: new Map([
-        ['A-1', WS_A],
-        ['C-1', WS_B],
-        ['C-2', WS_A]
-      ])
-    });
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 2 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [{ type: 'dep-add', a: 'A-1', b: 'C-2', root_dir: WS_A }]
-    });
-  });
-
-  test('moves a parallel row into a serial lane of the same repo', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
-      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-1', lane: 's1', index: 0 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('refuses a parallel row dropped on another repo serial lane', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-1', root_dir: WS_A, queue_index: 0 },
-      { kind: 'repo-serial', root_dir: WS_B, lane_id: 's1', index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      refused: '다른 레포 이슈는 이 직렬 레인에 넣을 수 없습니다'
-    });
-  });
-});
-
-describe('planDrop — 원천 chain (UI-e6hw §5.2)', () => {
-  test('splices the row out and removes it from the queue on the candidate pane', () => {
-    const model = chainSourceModel();
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'candidate' },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A },
-        {
-          type: 'worker-queue-remove',
-          payload: { bead_id: 'X' },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('splices only when a chain row is dropped on the parallel area', () => {
-    const model = chainSourceModel();
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'parallel', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A }
-      ]
-    });
-  });
-
-  test('rejoins every (P, S) pair when a branching row leaves the lane', () => {
-    const model = dropModel({
-      blocked_by_map: new Map([
-        ['X', ['P1', 'P2']],
-        ['S1', ['X']],
-        ['S2', ['X']]
-      ]),
-      owner_of: new Map([
-        ['P1', WS_A],
-        ['P2', WS_A],
-        ['X', WS_A],
-        ['S1', WS_A],
-        ['S2', WS_A]
-      ]),
-      lane_order: new Map([['chain:s', ['P1', 'P2', 'X', 'S1', 'S2']]]),
-      parallel_raw_length: new Map([[WS_A, 5]])
-    });
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 2
-      },
-      { kind: 'parallel', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'P1', root_dir: WS_A },
-        { type: 'dep-remove', a: 'X', b: 'P2', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S1', b: 'X', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S2', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S1', b: 'P1', root_dir: WS_A },
-        { type: 'dep-add', a: 'S2', b: 'P1', root_dir: WS_A },
-        { type: 'dep-add', a: 'S1', b: 'P2', root_dir: WS_A },
-        { type: 'dep-add', a: 'S2', b: 'P2', root_dir: WS_A }
-      ]
-    });
-  });
-
-  test('skips the p === s pair a two node cycle would produce', () => {
-    const model = dropModel({
-      blocked_by_map: new Map([
-        ['X', ['Y']],
-        ['Y', ['X']]
-      ]),
-      owner_of: new Map([
-        ['X', WS_A],
-        ['Y', WS_A]
-      ]),
-      lane_order: new Map([['chain:s', ['X', 'Y']]]),
-      parallel_raw_length: new Map([[WS_A, 2]])
-    });
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 0
-      },
-      { kind: 'parallel', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'Y', root_dir: WS_A },
-        { type: 'dep-remove', a: 'Y', b: 'X', root_dir: WS_A }
-      ]
-    });
-  });
-
-  test('omits a rejoin edge the graph already carries', () => {
-    const model = chainSourceModel({
-      blocked_by_map: new Map([
-        ['X', ['P']],
-        ['S', ['X', 'P']]
-      ])
-    });
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'parallel', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A }
-      ]
-    });
-  });
-
-  test('returns no op when a chain row is dropped back on its own slot', () => {
-    const model = chainSourceModel();
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'chain', lane_id: 'chain:s', marker_index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({ ops: [] });
-  });
-
-  test('treats the marker just below the dragged row as the same slot', () => {
-    const model = chainSourceModel();
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'chain', lane_id: 'chain:s', marker_index: 2 },
-      model
-    );
-
-    expect(plan).toEqual({ ops: [] });
-  });
-
-  test('rewires both ends when a chain row moves to another lane', () => {
-    const model = dropModel({
-      blocked_by_map: new Map([
-        ['B', ['A']],
-        ['C', ['B']],
-        ['E', ['D']]
-      ]),
-      owner_of: new Map([
-        ['A', WS_A],
-        ['B', WS_A],
-        ['C', WS_A],
-        ['D', WS_B],
-        ['E', WS_B]
-      ]),
-      lane_order: new Map([
-        ['chain:1', ['A', 'B', 'C']],
-        ['chain:2', ['D', 'E']]
-      ]),
-      parallel_raw_length: new Map([
-        [WS_A, 3],
-        [WS_B, 2]
-      ])
-    });
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'B',
-        root_dir: WS_A,
-        lane_id: 'chain:1',
-        queue_index: 1
-      },
-      { kind: 'chain', lane_id: 'chain:2', marker_index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'B', b: 'A', root_dir: WS_A },
-        { type: 'dep-remove', a: 'C', b: 'B', root_dir: WS_A },
-        { type: 'dep-add', a: 'C', b: 'A', root_dir: WS_A },
-        { type: 'dep-add', a: 'B', b: 'D', root_dir: WS_A },
-        { type: 'dep-remove', a: 'E', b: 'D', root_dir: WS_B },
-        { type: 'dep-add', a: 'E', b: 'B', root_dir: WS_B }
-      ]
-    });
-  });
-
-  test('splices then places when a chain row goes to a serial lane', () => {
-    const model = chainSourceModel();
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-remove', a: 'X', b: 'P', root_dir: WS_A },
-        { type: 'dep-remove', a: 'S', b: 'X', root_dir: WS_A },
-        { type: 'dep-add', a: 'S', b: 'P', root_dir: WS_A },
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'X', lane: 's1', index: 0 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('refuses a chain row dropped on another repo serial lane', () => {
-    const model = chainSourceModel();
-
-    const plan = planDrop(
-      {
-        kind: 'chain',
-        bead_id: 'X',
-        root_dir: WS_A,
-        lane_id: 'chain:s',
-        queue_index: 1
-      },
-      { kind: 'repo-serial', root_dir: WS_B, lane_id: 's1', index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      refused: '다른 레포 이슈는 이 직렬 레인에 넣을 수 없습니다'
-    });
-  });
-});
-
-describe('planDrop — 원천 repo-serial (UI-e6hw §5.2)', () => {
-  test('removes a serial row dragged onto the candidate pane', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      {
-        kind: 'repo-serial',
-        bead_id: 'A-5',
-        root_dir: WS_A,
-        lane_id: 's1',
-        queue_index: 0
-      },
-      { kind: 'candidate' },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-remove',
-          payload: { bead_id: 'A-5' },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('places a serial row into the parallel queue without a lane key', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      {
-        kind: 'repo-serial',
-        bead_id: 'A-5',
-        root_dir: WS_A,
-        lane_id: 's1',
-        queue_index: 0
-      },
-      { kind: 'parallel', marker_index: 3 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-5', index: 2 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('refuses a serial row dropped on a chain lane', () => {
-    const model = chainTargetModel();
-
-    const plan = planDrop(
-      {
-        kind: 'repo-serial',
-        bead_id: 'A-5',
-        root_dir: WS_A,
-        lane_id: 's1',
-        queue_index: 0
-      },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 2 },
-      model
-    );
-
-    expect(plan).toEqual({
-      refused: 'Worker 탭 직렬 레인에서 먼저 빼 주세요'
-    });
-  });
 
   test('reorders inside the same serial lane', () => {
-    const model = parallelModel();
+    const model = parallelModel({
+      queue_index_of: new Map([['A-1', 2]])
+    });
 
     const plan = planDrop(
       {
         kind: 'repo-serial',
-        bead_id: 'A-5',
+        bead_id: 'A-1',
         root_dir: WS_A,
         lane_id: 's1',
-        queue_index: 0
+        queue_index: 2
       },
-      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 2 },
+      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 0 },
       model
     );
 
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-reorder',
-          payload: { bead_id: 'A-5', lane: 's1', to_index: 1 },
-          root_dir: WS_A
-        }
-      ]
-    });
+    expect('ops' in plan && plan.ops).toEqual([
+      {
+        type: 'worker-queue-reorder',
+        payload: { bead_id: 'A-1', lane: 's1', to_index: 0 },
+        root_dir: WS_A
+      }
+    ]);
   });
 
   test('places into a different serial lane of the same repo', () => {
@@ -730,255 +1131,21 @@ describe('planDrop — 원천 repo-serial (UI-e6hw §5.2)', () => {
     const plan = planDrop(
       {
         kind: 'repo-serial',
-        bead_id: 'A-5',
+        bead_id: 'A-1',
         root_dir: WS_A,
         lane_id: 's1',
         queue_index: 0
       },
-      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's3', index: 1 },
+      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's2', index: 1 },
       model
     );
 
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-5', lane: 's3', index: 1 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('refuses a serial row dropped on another repo serial lane', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
+    expect('ops' in plan && plan.ops).toEqual([
       {
-        kind: 'repo-serial',
-        bead_id: 'A-5',
-        root_dir: WS_A,
-        lane_id: 's1',
-        queue_index: 0
-      },
-      { kind: 'repo-serial', root_dir: WS_B, lane_id: 's1', index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      refused: '다른 레포 이슈는 이 직렬 레인에 넣을 수 없습니다'
-    });
-  });
-});
-
-describe('planDrop — 삽입 규칙과 거부 (UI-e6hw §5.2·§5.3)', () => {
-  test('rewires the row below when the marker splits a direct edge', () => {
-    const model = chainTargetModel();
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-add', a: 'A-9', b: 'C-1', root_dir: WS_A },
-        { type: 'dep-remove', a: 'C-2', b: 'C-1', root_dir: WS_A },
-        { type: 'dep-add', a: 'C-2', b: 'A-9', root_dir: WS_A },
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', index: 2 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('sends a top insertion dep op to the repo that owns the blockee', () => {
-    const model = chainTargetModel();
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        { type: 'dep-add', a: 'C-1', b: 'A-9', root_dir: WS_B },
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', index: 2 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('refuses the whole plan when the blockee has no resolvable repo', () => {
-    const model = chainTargetModel({
-      owner_of: new Map([
-        ['A-9', WS_A],
-        ['C-2', WS_A]
-      ])
-    });
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      refused: 'C-1의 레포를 알 수 없어 의존을 바꿀 수 없습니다'
-    });
-  });
-
-  test('refuses a drop that would close a dependency cycle', () => {
-    const model = dropModel({
-      blocked_by_map: new Map([['G-1', ['A-9']]]),
-      owner_of: new Map([
-        ['A-9', WS_A],
-        ['G-1', WS_A]
-      ]),
-      lane_order: new Map([['chain:c', ['G-1']]]),
-      parallel_raw_length: new Map([[WS_A, 1]])
-    });
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({
-      refused: '의존 사이클이 생깁니다 — A-9가 이미 G-1를 막고 있습니다'
-    });
-  });
-
-  test('seeds an empty pending lane without any dep op', () => {
-    const model = dropModel({
-      owner_of: new Map([['A-9', WS_A]]),
-      lane_order: new Map([['pending:0', []]]),
-      parallel_raw_length: new Map([[WS_A, 4]])
-    });
-
-    const plan = planDrop(
-      { kind: 'candidate', bead_id: 'A-9', root_dir: WS_A },
-      { kind: 'chain', lane_id: 'pending:0', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [
-        {
-          type: 'worker-queue-place',
-          payload: { bead_id: 'A-9', index: 4 },
-          root_dir: WS_A
-        }
-      ]
-    });
-  });
-
-  test('appends behind the seed of a pending lane whatever the marker says', () => {
-    const model = dropModel({
-      owner_of: new Map([
-        ['A-9', WS_A],
-        ['SEED', WS_B]
-      ]),
-      lane_order: new Map([['pending:0', ['SEED']]]),
-      parallel_raw_length: new Map([[WS_A, 4]])
-    });
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-9', root_dir: WS_A, queue_index: 0 },
-      { kind: 'chain', lane_id: 'pending:0', marker_index: 0 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [{ type: 'dep-add', a: 'A-9', b: 'SEED', root_dir: WS_A }]
-    });
-  });
-});
-
-describe('planDrop — 제자리 드롭과 분기 레인 (UI-e6hw 리뷰 1·2)', () => {
-  test('returns no op when a parallel row is dropped on itself', () => {
-    const model = parallelModel();
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-2', root_dir: WS_A, queue_index: 1 },
-      { kind: 'parallel', marker_index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({ ops: [] });
-  });
-
-  test('returns no op when a repo serial row is dropped on itself', () => {
-    const model = dropModel({
-      owner_of: new Map([['A-2', WS_A]]),
-      queue_index_of: new Map([['A-2', 1]])
-    });
-
-    const plan = planDrop(
-      {
-        kind: 'repo-serial',
-        bead_id: 'A-2',
-        root_dir: WS_A,
-        lane_id: 's1',
-        queue_index: 1
-      },
-      { kind: 'repo-serial', root_dir: WS_A, lane_id: 's1', index: 1 },
-      model
-    );
-
-    expect(plan).toEqual({ ops: [] });
-  });
-
-  test('takes up and down from the temp graph order, not the rendered order', () => {
-    // 표시 순서가 그래프와 어긋나 있어도 (스냅샷과 렌더 사이의 낡은 행 배열)
-    // 삽입 규칙은 임시 그래프의 위상 순서에서만 `up`/`down`을 잡는다 (§5.2).
-    const model = dropModel({
-      blocked_by_map: new Map([
-        ['B', ['A']],
-        ['C', ['B']]
-      ]),
-      owner_of: new Map([
-        ['A', WS_A],
-        ['B', WS_A],
-        ['C', WS_A],
-        ['A-9', WS_A]
-      ]),
-      lane_order: new Map([['chain:c', ['C', 'B', 'A']]]),
-      parallel_raw_length: new Map([[WS_A, 0]])
-    });
-
-    const plan = planDrop(
-      { kind: 'parallel', bead_id: 'A-9', root_dir: WS_A, queue_index: 0 },
-      { kind: 'chain', lane_id: 'chain:c', marker_index: 3 },
-      model
-    );
-
-    expect(plan).toEqual({
-      ops: [{ type: 'dep-add', a: 'A-9', b: 'C', root_dir: WS_A }]
-    });
-  });
-});
-
-describe('planDrop — 실행중 타일은 원천도 대상도 아니다 (UI-yrzu §9)', () => {
-  // 드래그 원천 열거는 `candidate|parallel|chain|repo-serial`뿐이고 실행중
-  // 타일(Worker·세션)은 거기 없다. DOM 쪽 절반 — 세션 타일이 `data-drag-kind`
-  // 홀더 밖에 있고 실행중 레인에 `data-drop` 구역이 없다 — 은
-  // `index.test.js`의 「세션 타일」 describe가 고정한다.
-  test('plans no queue op for a drag source outside the four lane kinds', () => {
-    const plan = planDrop(
-      /** @type {any} */ ({ kind: 'running', bead_id: 'A-9', root_dir: WS_A }),
-      { kind: 'parallel', marker_index: 0 },
-      parallelModel()
-    );
-
-    expect(plan).toEqual({ ops: [] });
+        type: 'worker-queue-place',
+        payload: { bead_id: 'A-1', lane: 's2', index: 1 },
+        root_dir: WS_A
+      }
+    ]);
   });
 });
