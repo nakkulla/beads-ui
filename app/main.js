@@ -285,7 +285,15 @@ export function bootstrap(root_element) {
         // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
         // array rather than derived from it. A server that omits it leaves the
         // store's empty default in place.
-        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
+        //
+        // `cross_lanes` (UI-j92s §4.4) travels in the SAME envelope and is
+        // forwarded verbatim: the store owns the three-state distinction
+        // (키 없음 / null / 값) and the view reads it from there.
+        monitor_pipeline_store.set(
+          p.workspaces,
+          p.workspaces_state,
+          p.cross_lanes
+        );
       } catch {
         // ignore
       }
