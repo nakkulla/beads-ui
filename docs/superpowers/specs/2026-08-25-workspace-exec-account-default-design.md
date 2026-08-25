@@ -53,10 +53,11 @@ scope:
 따라서 kv에 저장한 계정 기본값을 Worker가 쓰려면 **런치 경로에 kv 읽기를
 새로 만들어야** 한다.
 
-그 자리는 이미 비동기인 계정 해소 단계다.
-`server/worker/scheduler.js`의 `resolveLaunchAccounts(accounts, runner_name)`는
-spawn 직전에 `await`로 호출되고, 계정 카탈로그 조회·`cswap` 경로 확인·
-`CODEX_HOME` 미러 준비를 모두 여기서 한다.
+비동기 자리는 두 곳 있다. 하나는 spawn 직전의 `resolveLaunchAccounts(accounts,
+runner_name)`로, 계정 카탈로그 조회·`cswap` 경로 확인·`CODEX_HOME` 미러 준비를
+여기서 한다. 다른 하나는 `resolveDispatchSettings`를 호출하는 네 개의 `async`
+함수다. **§5.1은 후자를 고른다** — 전자는 연속 실행의 결정 토큰이 만들어진
+뒤라서, 거기서 계정을 합치면 토큰이 레포 기본값의 변경을 보지 못한다(§5.1).
 
 ### 1.2 계정이 런치에 이르는 경로
 
@@ -114,11 +115,29 @@ spawn 직전에 `await`로 호출되고, 계정 카탈로그 조회·`cswap` 경
 ### 2.2 계약 소유권
 
 이 키는 dotfiles `docs/contracts/workflow-state.yaml`에 등록하지 **않는다**.
-그 계약이 소유하는 것은 Bead durable metadata 키와 세션이 소비하는
-`workflow_session_defaults`의 허용 키 목록이고, 이 키는 둘 다 아니다 —
-beads-ui의 Worker만 읽고 쓰는 런타임 상태이며 `display-policy-store`,
-`ui-order-store`와 같은 부류다. 저장 매체가 `bd kv`인 것은 레포 단위 durable
-저장소가 이미 거기 있기 때문이지, 계약 표면에 들어간다는 뜻이 아니다.
+근거는 "beads-ui가 소유한 상태라서"가 아니라 그 계약의 실제 구조다.
+
+- `workspace_kv_defaults`는 복수의 kv 키를 등록하는 레지스트리가 아니라
+  **단일 키 `workflow_session_defaults` 한 개를 서술하는 절**이다(`storage`,
+  `key`, `schema`, `allowed_keys`가 모두 그 한 키의 필드다). 그 키가 등록된
+  이유는 **스폰된 세션의 워크플로 스킬이 그것을 읽기** 때문이고, 이 spec의
+  키는 어떤 dotfiles 스킬도 읽지 않는다.
+- `consumer_surface.metadata.keys`는 **Bead metadata 키**만 열거한다. 이
+  spec은 Bead metadata 키를 추가하지 않는다.
+- **직접적인 선례**: 워크스페이스 단위 오케스트레이션 기본값
+  (`orchestration_model`/`effort`/`speed`)은 Worker가 런치에 소비하는 durable
+  상태인데도 beads-ui의 큐 저장소에 있고 계약에 등록돼 있지 않다. 계약이
+  등록한 것은 **Bead metadata 층의 같은 이름 키**뿐이다. 계정도 구조가 같다 —
+  Bead metadata 층(`claude_account`/`codex_account`)은 이미 등록돼 있고, 이
+  spec이 추가하는 것은 그 아래의 워크스페이스 층이다. 저장 매체가 JSON 파일
+  대신 `bd kv`인 것은 계약 소속을 바꾸지 않는다.
+
+즉 등록하지 않아도 깨지는 기계적 검사는 없고, 남는 것은 "계약 레지스트리만
+읽는 사람에게 이 층이 보이지 않는다"는 발견성 문제다. 그 문제는 이 unit의
+정확성 조건이 아니라 계약 소유자의 판단이므로, **dotfiles rig의 follow-up
+Bead**로 분리한다 — beads-ui가 소유한 워크스페이스 층(큐의 오케스트레이션 3키,
+이 spec의 계정 kv 키)을 계약이 등록해야 하는지, 등록한다면 어느 절에 두는지.
+이 spec은 그 답이 무엇이든 바뀌지 않는다.
 
 이슈별 pin 두 키(`claude_account`/`codex_account`)는 계약에 등록된 그대로이며
 이 spec은 그 키들의 의미·검증·소비를 바꾸지 않는다.
@@ -127,7 +146,7 @@ beads-ui의 Worker만 읽고 쓰는 런타임 상태이며 `display-policy-store
 
 사용자 결정이다. 큐 저장소를 골랐다면 Worker가 동기로 읽어 kv 읽기 경로가
 필요 없었겠지만, 편집 표면(⚙ = 레포 설정)과 저장 매체를 사용자가 kv로
-확정했다. 대가는 §5.1의 런치당 `bd kv get` 한 번이다.
+확정했다. 대가는 §5.1의 런치 결정당 `bd kv get` 한 번이다.
 
 ## 3. 서버 — `server/workspace-accounts.js`
 
@@ -137,9 +156,12 @@ beads-ui의 Worker만 읽고 쓰는 런타임 상태이며 `display-policy-store
 export const WORKSPACE_ACCOUNTS_KV_KEY = 'workspace_exec_accounts';
 export const WORKSPACE_ACCOUNTS_SCHEMA = 1;
 
-/** 읽기: fail-quiet */
-export function normalizeWorkspaceAccounts(raw)
-//   → { values: { claude_account?: string, codex_account?: string }, warnings: string[] }
+/** 읽기: kv 읽기 결과 전체를 판정한다 */
+export function normalizeWorkspaceAccounts(read)
+//   read: { ok, value?, warning?, error? }  ← kvGetJson의 반환 그대로
+//   → { state: 'absent'|'usable'|'unusable',
+//       values: { claude_account?: string, codex_account?: string },
+//       warnings: string[] }
 
 /** 쓰기: strict */
 export function validateWorkspaceAccountsPatch(patch)
@@ -147,20 +169,47 @@ export function validateWorkspaceAccountsPatch(patch)
 
 /** 병합: null은 삭제 */
 export function mergeWorkspaceAccounts(raw, patch)
-//   → Record<string, unknown>  // schema 필드를 항상 현재 값으로 다시 쓴다
+//   → Record<string, unknown>  // schema를 항상 WORKSPACE_ACCOUNTS_SCHEMA로 쓴다
 ```
 
-- `normalizeWorkspaceAccounts`는 객체가 아니면 빈 층. `schema` 필드는 건너뛴다.
-  `ACCOUNT_KEYS`(`server/worker/exec-enums.js`) 밖의 키는
-  `unknown_key:<key>` 경고와 함께 드롭. 값이 §3.1 형식을 어기면
-  `invalid_value:<key>` 경고와 함께 드롭. **층 전체를 실패시키지 않는다.**
-- 이 fail-quiet는 **표시 경로의 계약**이다: 설정 패널과 이슈 상세는 경고를
-  배너로 보여주고 나머지를 그대로 그린다. **런치 경로는 같은 경고를 거부로
-  읽는다**(§5.2) — 화면은 최선을 다해 보여주고, 어느 계정 토큰을 태울지는
-  확정된 값에만 맡긴다. 그래서 `normalizeWorkspaceAccounts`는 값과 경고를 함께
-  돌려주고, 둘 중 무엇을 볼지는 호출자가 정한다.
-- `validateWorkspaceAccountsPatch`는 반대로 strict다. 알 수 없는 키나 형식을
-  어긴 값은 bd를 건드리기 전에 거부한다. `null` 값은 그 키의 삭제 요청이다.
+**정규화 입력은 `kvGetJson`의 반환값 전체다.** 값만 받으면 판정이 불가능하다:
+`server/bd.js`의 `kvGetJson`은 **키 부재**를 `{ ok: true, value: undefined }`
+(경고 없음)로, **저장된 값이 JSON이 아니거나 객체가 아닌 손상 상태**를
+`{ ok: true, value: undefined, warning: 'kv_value_unparsable' }`로 돌려준다.
+두 경우의 `value`가 똑같이 `undefined`이므로, 값만 보는 정규화는 손상을
+"기본값 없음"으로 강등하고 §5.2가 막으려는 바로 그 사고(사용자가 지정한 것과
+다른 계정의 토큰을 조용히 태움)를 낸다.
+
+판정은 세 상태다.
+
+- **`absent`** — `ok: true`, `value: undefined`, `warning` 없음. 레포 기본값이
+  없다. 정상이며 런치는 현재 활성 로그인으로 간다.
+- **`unusable`** — 다음 중 하나라도 성립. `ok: false`(읽기 실패);
+  `warning`이 붙은 `undefined`(손상된 값); `schema`가 있는데
+  `WORKSPACE_ACCOUNTS_SCHEMA`와 다름(지원하지 않는 스키마 — 미래 버전이 쓴
+  값을 현재 어휘로 해석할 수 없다); `ACCOUNT_KEYS` 중 하나의 값이 §3.1 형식을
+  어김(`invalid_value:<key>`). 층을 확정할 수 없는 상태다. 이 중 `ok: false`만
+  WS 읽기 핸들러가 `kv_read_failed` 오류로 돌려준다(§4) — 나머지는 읽기 자체는
+  성공했으므로 `state: 'unusable'`로 화면까지 간다.
+- **`usable`** — 위 어디에도 걸리지 않음. `ACCOUNT_KEYS`
+  (`server/worker/exec-enums.js`) 밖의 키는 `unknown_key:<key>` 경고와 함께
+  드롭하되 **상태를 내리지 않는다**: 두 계정 값은 그대로 확정되므로 모르는
+  이웃 키 하나가 런치를 막을 이유가 없다.
+
+`invalid_value:`는 한 provider에만 걸려도 층 전체를 `unusable`로 만든다. 나머지
+provider만 적용하면 "사용자가 지정한 계정 중 하나는 무시하고 실행"이 되는데,
+그것은 §5.2가 거부하는 것과 같은 종류의 조용한 대체다.
+
+**상태와 경고를 누가 어떻게 쓰는지는 갈린다.** 설정 패널(§6.1)은 `unusable`
+에서도 경고 배너를 띄우고 나머지를 그린다 — 고치라고 보여주는 화면이다. 런치
+경로(§5)는 `unusable`을 거부로 읽는다. 이슈 상세(§6.2)는 **경고를 표시하지
+않는다**: 그 화면이 쓰는 것은 `usable`일 때의 값뿐이고, 그 외에는 지금과 같은
+라벨을 유지한다. 경고 표시는 그것을 고칠 수 있는 화면 하나가 소유한다.
+
+`validateWorkspaceAccountsPatch`는 반대로 strict다. 알 수 없는 키나 형식을
+어긴 값은 bd를 건드리기 전에 거부한다. `null` 값은 그 키의 삭제 요청이다.
+쓰기는 항상 `schema`를 현재 값으로 다시 쓰므로, 정상 경로가 남긴 값은
+`unusable`이 될 수 없다.
 
 ### 3.1 값 형식
 
@@ -178,9 +227,16 @@ export function mergeWorkspaceAccounts(raw, patch)
 추가한다:
 
 - `get-workspace-accounts` — 페이로드 `{ root_dir?: string }`,
-  응답 `{ values, warnings }`.
+  응답 `{ state, values, warnings }`.
 - `set-workspace-accounts` — 페이로드 `{ values: Record<string, string|null>, root_dir?: string }`,
-  응답 `{ values, warnings }`.
+  응답 `{ state, values, warnings }`.
+
+`state`는 §3의 세 값(`absent`/`usable`/`unusable`)을 그대로 싣는다. 두 소비자가
+서로 다른 것을 필요로 하기 때문이다 — 설정 패널은 `unusable`에서 배너를 띄워야
+하고, 이슈 상세는 `usable`일 때만 라벨을 바꾼다. `unusable`은 **응답 실패가
+아니다**: 읽기 자체는 성공했고 값이 쓸 수 없을 뿐이라 화면이 그 사실을 보여줄
+수 있어야 한다. 단, `ok:false`(bd 읽기 실패)는 지금처럼 `kv_read_failed` 오류로
+나간다.
 
 핸들러는 `server/ws/session-defaults-handlers.js`에 추가한다. 그 모듈의
 `kvTargetOf`/`readKv`/`writeKv`가 이미 키 인자화돼 있어 그대로 재사용하고,
@@ -197,45 +253,67 @@ readback이 요청한 값과 다르면 `bd_readback_failed`로 실패시키고 �
 
 ## 5. Worker — 런치 시 해석
 
-### 5.1 kv 읽기 지점
+### 5.1 해석 지점 — 디스패치 해석 안, 런치 직전이 아니다
 
 `createScheduler` deps에 `kvGet(workspace, key)`를 추가하고,
 `server/worker/attach.js`가 `runtime.js`와 같은 방식으로
 `(workspace, key) => kvGetJson(key, { cwd: workspace })`를 넘긴다.
 
-`resolveLaunchAccounts`의 시그니처를 `(workspace, accounts, runner_name)`으로
-넓히고, 카탈로그 조회 **이전에** 레포 기본값을 한 번 읽어 합친다:
+**합치는 자리는 `resolveDispatchSettings`이지 `resolveLaunchAccounts`가 아니다.**
+`resolveDispatchSettings(workspace, bead_snapshot)`가 지금 Bead pin만으로 만드는
+`accounts`를 **유효 계정**으로 만든다:
 
 ```
-claude = accounts.claude ?? workspace_default.claude_account ?? null
-codex  = accounts.codex  ?? workspace_default.codex_account  ?? null
+claude = bead.claude_account ?? workspace.claude_account ?? null
+codex  = bead.codex_account  ?? workspace.codex_account  ?? null
 ```
 
-읽는 쪽은 `normalizeWorkspaceAccounts`를 그대로 쓰되 **경고가 하나라도 있으면
-거부한다**(§5.2). 읽기는 런치당 한 번이고, 그 런치가 쓰는 값은 그 한 번의
-읽기에서 온다 —
-모델·effort와 같은 freshness다. 캐시는 두지 않는다: 런치는 드물고, 낡은 캐시가
-"어느 계정 토큰을 태우는가"를 틀리게 만드는 것이 한 번의 `bd kv get`보다
-비싸다.
+그 함수는 동기이므로 kv 층은 **인자로 받는다**:
+`resolveDispatchSettings(workspace, bead_snapshot, workspace_accounts)`.
+호출 지점 네 곳(`dispatch`, `dispatchExternalConflict`,
+`resolveContinuationForAttempt`, `dispatchCompletionRepair`)은 모두 `async
+function` 안이므로, 각자 그 직전에 kv를 한 번 `await`해서 넘긴다.
+
+**이 자리여야 하는 이유(연속 실행 결속).** 연속 실행의
+`decision_token.effective_exec_digest`는 이미 `accounts: resolved.accounts`를
+digest에 넣고, `revalidateContinuationForAttempt`가 상태 변경 직전에 토큰을
+다시 만들어 비교한다. 계정 합치기를 런치 직전(`resolveLaunchAccounts`)으로
+미루면 토큰에 들어가는 것은 여전히 Bead pin뿐이어서, 사용자가
+`prior_session`/`fresh_current`를 고른 뒤 레포 기본값이 바뀌어도 재검증이
+이를 잡지 못하고 **사용자가 본 것과 다른 계정으로 실행된다**. 유효 계정을
+디스패치 해석에서 확정하면 기존 토큰 기계가 그대로 이 축을 덮고, 변경은
+`continuation_settings_changed`로 정상 거부된다. 새 토큰 필드는 필요 없다.
+
+`resolveLaunchAccounts`는 남지만 하는 일이 줄어든다 — 이미 확정된 유효 계정을
+카탈로그로 해소하고 `cswap` 경로·`CODEX_HOME`을 준비할 뿐, kv를 읽지 않는다.
+
+읽기는 런치 결정당 한 번이고 그 결정이 쓰는 값은 그 한 번의 읽기에서 온다 —
+모델·effort와 같은 freshness다. 캐시는 두지 않는다: 낡은 캐시가 "어느 계정
+토큰을 태우는가"를 틀리게 만드는 것이 한 번의 `bd kv get`보다 비싸다.
 
 각 provider마다 확정된 값의 **출처**(`bead` | `workspace_default`)를 함께
-들고 다닌다. §5.2의 거부 detail이 그것을 쓴다.
+들고 다닌다. §5.2의 거부 detail이 그것을 쓴다. 출처는 digest에 넣지 않는다 —
+같은 계정이 pin에서 왔든 기본값에서 왔든 그 런치가 태우는 토큰은 같다.
 
 ### 5.2 실패 의미 — 이슈 pin과 동일한 fail-closed
 
 - 계정 카탈로그 조회 실패, 목록에 없는 계정, 같은 email 중복(claude),
   `cswap` 부재, Codex HOME 준비 실패는 **모두 지금과 같이 런치 거부**다.
   값의 출처가 이슈 pin이든 레포 기본값이든 판정은 같다.
-- **레포 계정 층을 확정할 수 없으면 거부한다.** 이 spec이 추가하는 단 하나의
-  새 거부 사유 `workspace_accounts_unavailable`이 두 경우를 덮는다: kv 읽기
-  실패, 그리고 저장된 값이 §3.1 형식을 어기는 경우. 후자는 쓰기 경로가 strict
-  이므로 kv를 손으로 고쳤을 때만 나오지만, 값이 있다는 사실은 아는데 그 뜻을
-  모르는 상태라 "기본값 없음"으로 강등하면 사용자가 지정한 것과 다른 계정의
-  토큰을 조용히 태운다. **키가 아예 없는 것은 실패가 아니다** — 레포 기본값이
-  없다는 뜻이고 런치는 현재 활성 로그인으로 간다.
+- **레포 계정 층이 `unusable`이면 거부한다.** 이 spec이 추가하는 단 하나의 새
+  거부 사유가 `workspace_accounts_unavailable`이고, §3이 정의한 `unusable`의
+  네 경우(읽기 실패, 손상된 값, 지원하지 않는 schema, 계정 값 형식 위반)를
+  전부 덮는다. 손상·형식 위반은 쓰기 경로가 strict이므로 kv를 손으로 고쳤을
+  때만 나오지만, 값이 있다는 사실은 아는데 그 뜻을 모르는 상태라 "기본값 없음"
+  으로 강등하면 사용자가 지정한 것과 다른 계정의 토큰을 조용히 태운다.
+  **`absent`는 실패가 아니다** — 레포 기본값이 없다는 뜻이고 런치는 현재 활성
+  로그인으로 간다. `unknown_key:` 경고만 있는 층도 정상이다(§3).
   기본값을 둔 적 없는 레포도 kv 읽기 실패 때 함께 멈추지만, `bd`가 응답하지
   않는 상태에서는 Worker의 나머지(스냅샷, metadata 스탬프, 완료 처리)도 이미
   성립하지 않는다.
+- 이 거부는 §5.1의 해석 지점에서 나오므로 네 호출 지점이 모두 같은 사유를
+  돌려준다. 연속 실행 재검증에서 층이 `unusable`이 되면 그 relaunch도 같은
+  사유로 거부된다.
 - 거부 사유 enum은 위 한 항목 외에는 **넓히지 않는다**. 출처는 `cause_detail`
   에 싣는다:
   `{ reason: 'workspace_default:claude_account=<값>', command: null }`.
@@ -267,8 +345,10 @@ attempt의 `claude_account`/`codex_account`에는 **적용된 값**이 기록된
   `<값> (목록에 없음)` 항목으로 남겨 선택 상태를 잃지 않는다.
 - 저장은 변경 즉시 `set-workspace-accounts`. 실패는 토스트로 알리고 **사용자
   편집 상태를 유지한다**(패널의 기존 실패 계약).
-- kv 읽기 경고(`unknown_key:` / `invalid_value:`)는 패널의 기존 경고 배너
-  경로로 표시한다.
+- `state: 'unusable'`과 경고(`unknown_key:` / `invalid_value:`)는 패널의 기존
+  경고 배너 경로로 표시한다. `unusable`은 그 레포의 디스패치가 지금 막혀 있다는
+  뜻이므로 배너 문구가 그 결과를 말해야 한다 — 값을 다시 고르면 쓰기가 정상
+  값을 덮어써서 해소된다.
 
 `root_dir` 축은 다른 op와 같다: 없으면 연결된 레포, 있으면 그 레포.
 
@@ -286,15 +366,20 @@ attempt의 `claude_account`/`codex_account`에는 **적용된 값**이 기록된
 라벨에 그대로 보인다. metadata 어휘는 바뀌지 않는다 — 키가 있으면 pin, 없으면
 상속이고, "레포 기본값 무시" 같은 센티널 값은 두지 않는다.
 
-`get-workspace-accounts` 실패는 fail-quiet다: 레포 기본값을 모르는 상태이므로
-라벨을 지금 형식 그대로 두고, 셀렉트 동작은 바뀌지 않는다. 이슈 상세는 표시
-표면이고 판정은 런치가 한다.
+응답이 `usable`이 아니면(`absent`·`unusable`·요청 자체 실패) 라벨은 지금 형식
+그대로 두고 셀렉트 동작도 바뀌지 않는다. **이슈 상세는 경고를 표시하지
+않는다** — 경고 배너는 그것을 고칠 수 있는 설정 패널(§6.1)이 소유하고, 이 화면은
+표시 표면이며 판정은 런치가 한다.
 
 ## 7. 테스트
 
-- `server/workspace-accounts.test.js` — 정규화 fail-quiet(미지의 키·잘못된
-  형식·객체 아님), 검증 strict(알 수 없는 키·256자 초과·공백 포함·`null` 삭제),
-  병합이 `schema`를 보존.
+- `server/workspace-accounts.test.js` — **세 상태 판정**: 경고 없는
+  `{ok:true, value:undefined}`는 `absent`, `warning:'kv_value_unparsable'`이
+  붙은 같은 모양은 `unusable`(이 둘을 갈라내는 것이 이 테스트의 핵심),
+  `ok:false`는 `unusable`, 지원하지 않는 `schema`는 `unusable`, 계정 값 형식
+  위반은 `unusable`, `unknown_key:`만 있으면 경고와 함께 `usable`.
+  검증 strict(알 수 없는 키·256자 초과·공백 포함·`null` 삭제), 병합이 `schema`를
+  현재 값으로 다시 씀.
 - `server/ws/session-defaults-handlers.test.js` 추가 케이스(핸들러가 그 모듈에
   얹히므로 테스트도 같은 파일) — 읽기 응답 형태와 경고 전달, 쓰기 검증 거부,
   kv 읽기/쓰기 실패, readback 불일치, `root_dir` 타깃팅(연결된 레포 vs 다른
@@ -302,11 +387,16 @@ attempt의 `claude_account`/`codex_account`에는 **적용된 값**이 기록된
   않는다는 것.
 - `server/worker/scheduler.test.js` 추가 케이스 — 이슈 pin이 레포 기본값을
   이긴다, pin 없고 기본값 있으면 기본값이 적용된다, 둘 다 없으면 계정 env가
-  주입되지 않는다, 레포 기본값이 해소되지 않으면 거부되고 `cause_detail`에
-  `workspace_default:` 출처가 실린다, kv 읽기 실패는
+  주입되지 않는다, 레포 기본값이 카탈로그에서 해소되지 않으면 거부되고
+  `cause_detail`에 `workspace_default:` 출처가 실린다, 층이 `unusable`이면
   `workspace_accounts_unavailable`로 거부된다.
+- `server/worker/scheduler.test.js` 연속 실행 케이스 — 사용자가 continuation을
+  고른 뒤 **레포 기본값만** 바뀌면 재검증이 `continuation_settings_changed`로
+  거부한다(§5.1의 결속이 실제로 성립하는지 보는 테스트), 그리고 pin이 있어
+  기본값 변경이 유효 계정을 바꾸지 않을 때는 거부되지 않는다.
 - `app/views/detail-panel/exec-accounts.test.js` 추가 케이스 — 레포 기본값이
-  있을 때/없을 때의 기본 항목 라벨.
+  있을 때/없을 때의 기본 항목 라벨, 그리고 `unusable`·요청 실패에서 라벨이
+  기존 형식을 유지하고 경고가 표시되지 않는다는 것.
 - `app/views/settings-dialog/execution-pane.test.js` 추가 케이스 — 섹션 렌더,
   변경 시 `set-workspace-accounts` 전송(+`root_dir`), 목록 조회 실패 시 힌트와
   저장값 보존.
