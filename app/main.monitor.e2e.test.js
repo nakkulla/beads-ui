@@ -17,6 +17,8 @@ vi.mock('./ws.js', () => {
   const conn_handlers = new Set();
   /** @type {Array<{ type: string, payload: any }>} */
   const sent = [];
+  /** @type {Map<string, any>} */
+  const fail_once = new Map();
   const singleton = {
     /**
      * @param {string} type
@@ -24,8 +26,18 @@ vi.mock('./ws.js', () => {
      */
     async send(type, payload) {
       sent.push({ type, payload });
+      if (fail_once.has(type)) {
+        const error = fail_once.get(type);
+        fail_once.delete(type);
+        throw error;
+      }
       if (type === 'list-workspaces') {
         return { workspaces: [], current: null, hidden: [] };
+      }
+      // 레인 op의 성공 응답은 언제나 새 revision을 싣는다 (UI-j92s §4.3) —
+      // 뷰는 그 값을 다음 레인 op의 `expected_revision`으로 이어 쓴다.
+      if (type.startsWith('monitor-lane-')) {
+        return { revision: 8 };
       }
       return null;
     },
@@ -53,6 +65,7 @@ vi.mock('./ws.js', () => {
     },
     _reset() {
       sent.length = 0;
+      fail_once.clear();
       conn_handlers.clear();
       for (const key of Object.keys(handlers)) {
         delete handlers[key];
@@ -60,6 +73,13 @@ vi.mock('./ws.js', () => {
     },
     _clearSent() {
       sent.length = 0;
+    },
+    /**
+     * @param {string} type
+     * @param {any} error
+     */
+    _failOnce(type, error) {
+      fail_once.set(type, error);
     },
     /**
      * @param {(s: 'connecting'|'open'|'closed'|'reconnecting') => void} fn
@@ -306,11 +326,11 @@ describe('monitor tab direct entry (UI-nprg)', () => {
   });
 });
 
-describe('monitor 실행가능 → 연결 레인 드롭 (UI-e6hw §5.4)', () => {
-  // 드롭 하나가 여러 op가 되면 순서가 계약이다: 의존을 먼저 걸고, 그 다음 자기
-  // 레포 병렬 큐에 적재한다. 순서가 뒤집히면 적재된 행이 잠깐 선행 없이 출발할
-  // 수 있다.
-  test('sends dep-add before worker-queue-place', async () => {
+describe('monitor 실행가능 → 연결 레인 드롭 (UI-j92s §5.5)', () => {
+  // 드롭 하나가 여러 op가 되면 순서가 계약이다: 레인 멤버십을 먼저 저장하고,
+  // 의존을 걸고, 그 다음 자기 레포 병렬 큐에 적재한다. 순서가 뒤집히면 적재된
+  // 행이 잠깐 선행 없이 출발할 수 있다.
+  test('sends the lane update, then dep-add, then worker-queue-place', async () => {
     const client = /** @type {any} */ (createWsClient());
     window.location.hash = '#/monitor';
     document.body.innerHTML = '<main id="app"></main>';
@@ -357,7 +377,18 @@ describe('monitor 실행가능 → 연결 레인 드롭 (UI-e6hw §5.4)', () => 
       workspaces_state: [
         { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 },
         { root_dir: '/tmp/ws-b', name: 'ws-b', revision: 1, slots: 1 }
-      ]
+      ],
+      cross_lanes: {
+        revision: 5,
+        lanes: [
+          {
+            id: 'cl_1',
+            status: 'confirmed',
+            created_at: '2026-08-25T00:00:00.000Z',
+            entries: [{ bead_id: 'B-tail', root_dir: '/tmp/ws-b' }]
+          }
+        ]
+      }
     });
     await flush();
 
@@ -384,12 +415,260 @@ describe('monitor 실행가능 → 연결 레인 드롭 (UI-e6hw §5.4)', () => 
         ._sent()
         .map((/** @type {any} */ m) => m.type)
         .filter((/** @type {string} */ t) => t !== 'subscribe-monitor-pipeline')
-    ).toEqual(['dep-add', 'worker-queue-place']);
+    ).toEqual(['monitor-lane-update', 'dep-add', 'worker-queue-place']);
     expect(client._sent()[0].payload).toEqual({
+      lane_id: 'cl_1',
+      entries: [
+        { bead_id: 'B-tail', root_dir: '/tmp/ws-b' },
+        { bead_id: 'UI-cand', root_dir: '/tmp/ws-a' }
+      ],
+      expected_revision: 5
+    });
+    expect(client._sent()[1].payload).toEqual({
       a: 'UI-cand',
       b: 'B-tail',
       root_dir: '/tmp/ws-a'
     });
+  });
+
+  // 레인 op의 `conflict`는 실제 전송 래퍼를 통과해야 뷰에 닿는다 (§5.5). 그
+  // 오류가 `[]`로 삼켜지면 재계획 경로가 통째로 죽고, 옛 entries가 그대로 다시
+  // 나가거나 아무 일도 일어나지 않는다. 재계획은 사용자가 고른 드롭 좌표는
+  // 그대로 두고 그 위의 최신 멤버만 다시 읽는다 — 좌표는 §5.5가 재계산하라고
+  // 열거한 것(고정 행·타 레인 소속·사이클·dep·큐)에 들어 있지 않다.
+  test('re-plans on the conflict reply cross_lanes and retries once', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 3,
+          queue: [],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [
+            { bead_id: 'UI-cand', title: '후보', spec_id: 'docs/a.md' }
+          ],
+          attempts: {},
+          bead_titles: {},
+          bead_blocked_by: {},
+          pr_observations: {}
+        },
+        {
+          root_dir: '/tmp/ws-b',
+          name: 'ws-b',
+          revision: 1,
+          queue: [{ bead_id: 'B-tail', added_at: NOW }],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [],
+          attempts: {},
+          bead_titles: { 'B-tail': '후속' },
+          bead_blocked_by: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 },
+        { root_dir: '/tmp/ws-b', name: 'ws-b', revision: 1, slots: 1 }
+      ],
+      cross_lanes: {
+        revision: 5,
+        lanes: [
+          {
+            id: 'cl_1',
+            status: 'draft',
+            created_at: '2026-08-25T00:00:00.000Z',
+            entries: [{ bead_id: 'B-tail', root_dir: '/tmp/ws-b' }]
+          }
+        ]
+      }
+    });
+    await flush();
+
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+    const card = /** @type {HTMLElement} */ (
+      monitor_root.querySelector(
+        '#monitor-runnable .worker-card[data-bead-id="UI-cand"]'
+      )
+    );
+    const lane = /** @type {HTMLElement} */ (
+      monitor_root.querySelector('[data-drop="chain"]')
+    );
+    client._clearSent();
+    client._failOnce('monitor-lane-update', {
+      code: 'conflict',
+      message: '레인이 다른 곳에서 바뀌었습니다',
+      details: {
+        cross_lanes: {
+          revision: 9,
+          lanes: [
+            {
+              id: 'cl_1',
+              status: 'draft',
+              created_at: '2026-08-25T00:00:00.000Z',
+              entries: [
+                { bead_id: 'B-tail', root_dir: '/tmp/ws-b' },
+                { bead_id: 'B-late', root_dir: '/tmp/ws-b' }
+              ]
+            }
+          ]
+        }
+      }
+    });
+    card.dispatchEvent(
+      new Event('dragstart', { bubbles: true, cancelable: true })
+    );
+    lane.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }));
+    await flush();
+
+    const lane_ops = client
+      ._sent()
+      .filter((/** @type {any} */ m) => m.type === 'monitor-lane-update');
+
+    expect(lane_ops).toHaveLength(2);
+    expect(lane_ops[0].payload.expected_revision).toEqual(5);
+    expect(lane_ops[1].payload).toEqual({
+      lane_id: 'cl_1',
+      entries: [
+        { bead_id: 'B-tail', root_dir: '/tmp/ws-b' },
+        { bead_id: 'UI-cand', root_dir: '/tmp/ws-a' },
+        { bead_id: 'B-late', root_dir: '/tmp/ws-b' }
+      ],
+      expected_revision: 9
+    });
+  });
+
+  // 키가 없는 구서버 스냅샷은 "없는 기능"이지 "고장 난 저장소"가 아니다 (§4.4).
+  test('leaves lane ops disabled when the snapshot carries no cross_lanes key', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 3,
+          queue: [{ bead_id: 'UI-wait', added_at: NOW }],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [],
+          attempts: {},
+          bead_titles: { 'UI-wait': '대기' },
+          bead_blocked_by: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 }
+      ]
+    });
+    await flush();
+
+    const store = /** @type {any} */ (
+      await import('./data/monitor-pipeline-store.js')
+    ).__currentMonitorPipelineStore();
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+
+    expect(store.crossLanes()).toBe(undefined);
+    expect(monitor_root.querySelector('.mon2-clane')).toBe(null);
+    expect(monitor_root.querySelector('.mon2-clane__unreadable')).toBe(null);
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        monitor_root.querySelector('.mon2-newlane')
+      ).disabled
+    ).toBe(true);
+  });
+
+  // envelope → store → 렌더까지 한 줄로 이어지는지 (§4.4 전달 경로).
+  test('renders a stored lane the snapshot envelope carried', async () => {
+    const client = /** @type {any} */ (createWsClient());
+    window.location.hash = '#/monitor';
+    document.body.innerHTML = '<main id="app"></main>';
+    const root = /** @type {HTMLElement} */ (document.getElementById('app'));
+
+    bootstrap(root);
+    await flush();
+
+    client._trigger('monitor-pipeline-snapshot', {
+      type: 'monitor-pipeline-snapshot',
+      id: 'tab:monitor:pipeline',
+      workspaces: [
+        {
+          root_dir: '/tmp/ws-a',
+          name: 'ws-a',
+          revision: 3,
+          queue: [{ bead_id: 'UI-wait', added_at: NOW }],
+          serial_lanes: [],
+          pr_wait: [],
+          done: [],
+          runnable: [],
+          attempts: {},
+          bead_titles: { 'UI-wait': '대기' },
+          bead_blocked_by: {},
+          pr_observations: {}
+        }
+      ],
+      workspaces_state: [
+        { root_dir: '/tmp/ws-a', name: 'ws-a', revision: 3, slots: 1 }
+      ],
+      cross_lanes: {
+        revision: 5,
+        lanes: [
+          {
+            id: 'cl_1',
+            status: 'draft',
+            created_at: '2026-08-25T00:00:00.000Z',
+            entries: [{ bead_id: 'UI-wait', root_dir: '/tmp/ws-a' }]
+          }
+        ]
+      }
+    });
+    await flush();
+
+    const store = /** @type {any} */ (
+      await import('./data/monitor-pipeline-store.js')
+    ).__currentMonitorPipelineStore();
+    const monitor_root = /** @type {HTMLElement} */ (
+      document.getElementById('monitor-root')
+    );
+
+    expect(store.crossLanes()?.revision).toBe(5);
+    expect(
+      monitor_root
+        .querySelector('.mon2-clane[data-lane-id="cl_1"] .mon2-crow')
+        ?.getAttribute('data-bead-id')
+    ).toBe('UI-wait');
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        monitor_root.querySelector('.mon2-newlane')
+      ).disabled
+    ).toBe(false);
   });
 });
 

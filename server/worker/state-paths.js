@@ -150,6 +150,18 @@ export function execPresetsFilePath() {
 }
 
 /**
+ * Absolute path to the SERVER-GLOBAL cross-lane membership file (UI-j92s §4.1).
+ * A 연결 레인 spans repositories by definition — no workspace owns it — so it
+ * lives directly under the `bdui` state root beside the other server-global
+ * files rather than in a `<slug>/` dir.
+ *
+ * @returns {string} `$XDG_STATE_HOME/bdui/cross-lanes.json`.
+ */
+export function crossLanesFilePath() {
+  return path.join(stateHome(), 'bdui', 'cross-lanes.json');
+}
+
+/**
  * Absolute account-isolated Codex HOME for one durable account key.
  *
  * @param {string} key

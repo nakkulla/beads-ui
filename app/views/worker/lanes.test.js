@@ -44,7 +44,7 @@ function renderRow(item) {
 
 /**
  * @param {Partial<import('./lanes.js').MiniItem>} item
- * @param {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null} [place_menu]
+ * @param {import('./lanes.js').PlaceMenu|null} [place_menu]
  * @returns {HTMLElement}
  */
 function renderCandidate(item, place_menu = null) {
@@ -536,6 +536,84 @@ describe('candidate card', () => {
     expect(card.querySelector('.worker-card__place')).toBeNull();
     expect(card.querySelector('.worker-card__reason')).toBeNull();
     expect(card.querySelector('.worker-card__place-cancel')).not.toBeNull();
+  });
+
+  test('groups the lane choices under their group headers', () => {
+    const card = renderCandidate(
+      { reason: '🔒 UI-blocker' },
+      {
+        bead_id: 'UI-qf',
+        lanes: [
+          { id: 'parallel', label: '병렬', count: 3 },
+          {
+            id: 'lane:cl_1',
+            label: '연결 1 (확정) 끝에',
+            count: 3,
+            group: '연결 레인'
+          },
+          { id: 'new-lane', label: '+ 새 연결 레인', group: '연결 레인' },
+          { id: 'serial:s1', label: '직렬 1', count: 2, group: 'beads-ui 직렬' }
+        ]
+      }
+    );
+
+    expect(
+      Array.from(card.querySelectorAll('.worker-card__place-group')).map(
+        (group) => group.textContent?.trim()
+      )
+    ).toEqual(['연결 레인', 'beads-ui 직렬']);
+  });
+
+  test('renders no group header for a menu without the 연결 레인 group', () => {
+    const card = renderCandidate(
+      { reason: '🔒 UI-blocker' },
+      {
+        bead_id: 'UI-qf',
+        lanes: [
+          { id: 'parallel', label: '병렬', count: 3 },
+          { id: 's1', label: '직렬 1', count: 0 }
+        ]
+      }
+    );
+
+    expect(card.querySelectorAll('.worker-card__place-group')).toHaveLength(0);
+    expect(card.querySelectorAll('.worker-card__place-lane')).toHaveLength(2);
+  });
+
+  test('omits the count of an entry that has nothing to count', () => {
+    const card = renderCandidate(
+      { reason: '🔒 UI-blocker' },
+      {
+        bead_id: 'UI-qf',
+        lanes: [{ id: 'new-lane', label: '+ 새 연결 레인', group: '연결 레인' }]
+      }
+    );
+
+    expect(card.querySelector('.worker-card__place-count')).toBeNull();
+  });
+
+  test('disables a lane entry the store cannot serve', () => {
+    const card = renderCandidate(
+      { reason: '🔒 UI-blocker' },
+      {
+        bead_id: 'UI-qf',
+        lanes: [
+          {
+            id: 'lane:cl_1',
+            label: '연결 1 (확정) 끝에',
+            count: 1,
+            group: '연결 레인',
+            disabled: true
+          }
+        ]
+      }
+    );
+
+    expect(
+      /** @type {HTMLButtonElement} */ (
+        card.querySelector('.worker-card__place-lane')
+      ).disabled
+    ).toBe(true);
   });
 
   test('keeps the closed card when the menu belongs to another candidate', () => {
@@ -1318,7 +1396,7 @@ describe('worker templates are unchanged without the monitor options', () => {
     expect(card).not.toContain('exec-chip--pin');
     expect(card).not.toContain('worker-deps');
     expect(card).toMatchInlineSnapshot(
-      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span>  <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴ </button> </div>  </div>"`
+      `"<div class="worker-card" data-bead-id="UI-a3" data-lane="candidate" draggable="true"> <div class="worker-card__head"> <span aria-hidden="true" class="worker-card__grip">⠿</span>  <span class="worker-card__id" title="클릭하면 ID 복사">UI-a3</span>  </div> <div class="worker-card__title">후보 카드</div>  <div class="worker-mini__exec"> <span class="exec-chip exec-chip--orch" title="ot"><span class="exec-chip__k">오케</span><span class="exec-chip__v">o</span></span><span class="exec-chip exec-chip--worker" title="wt"><span class="exec-chip__k">워커</span><span class="exec-chip__v">w</span></span> </div> <div class="worker-card__foot worker-card__foot--actions-only">   <button class="worker-card__place" data-bead-id="UI-a3" title="대기 큐 맨 뒤에 추가" type="button"> 대기로 ↴</button> </div>  </div>"`
     );
   });
 

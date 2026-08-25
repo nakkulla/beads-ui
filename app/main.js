@@ -285,7 +285,15 @@ export function bootstrap(root_element) {
         // the ones with an empty pipeline, so it is kept ALONGSIDE the heavy
         // array rather than derived from it. A server that omits it leaves the
         // store's empty default in place.
-        monitor_pipeline_store.set(p.workspaces, p.workspaces_state);
+        //
+        // `cross_lanes` (UI-j92s §4.4) travels in the SAME envelope and is
+        // forwarded verbatim: the store owns the three-state distinction
+        // (키 없음 / null / 값) and the view reads it from there.
+        monitor_pipeline_store.set(
+          p.workspaces,
+          p.workspaces_state,
+          p.cross_lanes
+        );
       } catch {
         // ignore
       }
@@ -1392,7 +1400,14 @@ export function bootstrap(root_element) {
       'apply-impl-preset',
       'apply-impl-preset-global',
       'get-session-defaults',
-      'set-session-defaults'
+      'set-session-defaults',
+      // 레인 op의 `conflict`는 최신 `cross_lanes`를 details에 싣고 오며, 뷰는
+      // 그것으로 계획 전체를 다시 세운다 (UI-j92s §5.5). `[]`로 삼키면 재계획
+      // 경로 자체가 사라진다.
+      'monitor-lane-create',
+      'monitor-lane-update',
+      'monitor-lane-confirm',
+      'monitor-lane-remove'
     ]);
 
     /**

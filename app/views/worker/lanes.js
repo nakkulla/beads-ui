@@ -650,6 +650,8 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {string} label - Full chip text. The projection composes it because
  * only the projection knows the 위치 vocabulary; the template never invents it.
  * @property {string} [title] - Tooltip sentence.
+ * @property {string} [badge] - 상대가 다른 레포일 때의 레포 배지 (UI-j92s §6.2).
+ * 레포 간 관계는 모니터에만 있는 축이므로 Worker 행에는 이 값이 실리지 않는다.
  */
 
 /**
@@ -692,6 +694,9 @@ export function execChipsTemplate(chips, options = {}) {
  * 비었다 — 겹침을 판정할 수 없다는 사실 자체를 드러낸다.
  * @property {OverlapPopover} [popover] - 이 행에서 열려 있으면 칩 아래에 그리는
  * `mon-overlap__popover`.
+ * @property {{ lane_id: string, label: string }} [cross_lane] - `연결 n` /
+ * `연결 n (draft)` 소속 칩 (UI-j92s §5.2a). 숨기지 않는 저장 레인 멤버가 자기
+ * 소속을 말하는 자리이고, 클릭은 그 레인으로 스크롤한다.
  */
 
 /**
@@ -761,20 +766,40 @@ export function dependencyChipsTemplate(chips, options = {}) {
   const scope_missing =
     chips.scope_missing === true && options.lane !== 'running';
   const popover = chips.popover || null;
+  const cross_lane = chips.cross_lane || null;
   if (
     predecessors.length === 0 &&
     successors.length === 0 &&
     warnings.length === 0 &&
     overlaps.length === 0 &&
-    !scope_missing
+    !scope_missing &&
+    !cross_lane
   ) {
     return '';
   }
   return html`<div class="worker-deps">
+    ${cross_lane
+      ? html`<button
+          type="button"
+          class="worker-dep worker-dep--lane mon-lane__chip"
+          data-lane-id=${cross_lane.lane_id}
+          title="이 연결 레인으로 이동"
+        >
+          ${cross_lane.label}
+        </button>`
+      : ''}
     ${predecessors.map(
       (chip) =>
         html`<span class="worker-dep worker-dep--pred" title=${chip.title || ''}
-          ><span class="worker-dep__label">${chip.label}</span
+          >${chip.badge
+            ? html`<span class="worker-dep__badge">${chip.badge}</span>`
+            : ''}<button
+            type="button"
+            class="worker-dep__label worker-dep__open"
+            data-dep-id=${chip.id}
+            data-dep-direction="predecessor"
+          >
+            ${chip.label}</button
           ><button
             type="button"
             class="worker-dep__remove"
@@ -808,7 +833,16 @@ export function dependencyChipsTemplate(chips, options = {}) {
       : ''}${successors.map(
       (chip) =>
         html`<span class="worker-dep worker-dep--succ" title=${chip.title || ''}
-          >${chip.label}</span
+          >${chip.badge
+            ? html`<span class="worker-dep__badge">${chip.badge}</span>`
+            : ''}<button
+            type="button"
+            class="worker-dep__label worker-dep__open"
+            data-dep-id=${chip.id}
+            data-dep-direction="successor"
+          >
+            ${chip.label}
+          </button></span
         >`
     )}${warnings.map(
       (warning) =>
@@ -1431,6 +1465,69 @@ export function miniRow(item) {
 }
 
 /**
+ * One `[대기로 ↴]` menu entry (UI-j92s §6.4). `id`는 뷰가 해석하는 좌표 문자열
+ * 이므로 여기서 어휘를 좁히지 않는다 — 모니터는 `lane:<lane_id>`처럼 서버 id를
+ * 싣고, Worker 콘솔은 `parallel`·`s1`..`s5`를 싣는다.
+ *
+ * @typedef {Object} PlaceMenuEntry
+ * @property {string} id - The coordinate a click hands back to the view.
+ * @property {string} label - Text on the left of the row.
+ * @property {number|null} [count] - Tally on the right. 없으면 자리 자체가 비어
+ * 있다 (`+ 새 연결 레인`처럼 셀 것이 없는 항목).
+ * @property {string} [group] - Group this entry belongs to. 앞 항목과 다르면 그
+ * 자리에 그룹 헤더가 선다. 값이 없으면 헤더 없이 그린다 — Worker 콘솔은 그룹을
+ * 쓰지 않는다 (§6.4).
+ * @property {boolean} [disabled] - Refused entry: 레인 저장소를 읽을 수 없을 때의
+ * 연결 항목 (§7).
+ * @property {string} [title] - Tooltip sentence.
+ */
+
+/**
+ * @typedef {{ bead_id: string, lanes: PlaceMenuEntry[] }} PlaceMenu
+ */
+
+/**
+ * The `[대기로 ↴]` 메뉴 본문 (UI-j92s §6.4): 한 줄에 하나, 라벨 왼쪽·건수
+ * 오른쪽인 **세로** 목록. 가로 스크롤 알약이던 예전 모양은 항목이 늘어날수록
+ * 화면 밖으로 밀려나 모바일에서 유일한 적재 경로를 감췄다.
+ *
+ * @param {PlaceMenuEntry[]} entries
+ * @param {string} bead_id
+ * @returns {import('lit-html').TemplateResult}
+ */
+function placeMenuList(entries, bead_id) {
+  /** @type {string|undefined} */
+  let current_group = undefined;
+  /** @type {Array<import('lit-html').TemplateResult>} */
+  const rows = [];
+  for (const entry of entries) {
+    const group = entry.group || '';
+    if (group.length > 0 && group !== current_group) {
+      rows.push(html`<div class="worker-card__place-group">${group}</div>`);
+    }
+    current_group = group;
+    rows.push(
+      html`<button
+        type="button"
+        class="worker-card__place-lane${group.length > 0
+          ? ' worker-card__place-lane--nested'
+          : ''}"
+        data-bead-id=${bead_id}
+        data-lane=${entry.id}
+        ?disabled=${entry.disabled === true}
+        title=${entry.title || `${entry.label} 대기 맨 뒤에 추가`}
+      >
+        <span>${entry.label}</span>
+        ${typeof entry.count === 'number'
+          ? html`<span class="worker-card__place-count">${entry.count}</span>`
+          : ''}
+      </button>`
+    );
+  }
+  return html`${rows}`;
+}
+
+/**
  * One candidate `.worker-card` (spec §2, mockup 변형 B). Richer than
  * {@link miniRow}: a route chip + the Board's route-driven stepper. It keeps
  * miniRow's drag contract (`draggable` / `data-bead-id` / `data-lane`) so the
@@ -1444,9 +1541,13 @@ export function miniRow(item) {
  * colour with the pin tooltip; the card never decides that itself, because only
  * the caller knows the repo's defaults.
  *
+ * `dep_action` (UI-j92s §6.1) adds the `⛓ 의존성` button next to `대기로 ↴`.
+ * 조작 버튼 묶음은 카드가 소유하므로 여기서만 그릴 수 있고, Worker 콘솔은 이
+ * 옵션을 넘기지 않으므로 렌더가 그대로다.
+ *
  * @param {MiniItem} item
- * @param {{ bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null} [place_menu]
- * @param {{ exec_chips_mode?: 'always'|'pinned_only', onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
+ * @param {PlaceMenu|null} [place_menu]
+ * @param {{ exec_chips_mode?: 'always'|'pinned_only', dep_action?: boolean, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} [options]
  * @returns {import('lit-html').TemplateResult}
  */
 export function candidateCard(item, place_menu = null, options = {}) {
@@ -1515,19 +1616,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
     >
       ${menu_open
         ? html`<div class="worker-card__place-menu">
-            ${place_menu.lanes.map(
-              (lane) =>
-                html`<button
-                  type="button"
-                  class="worker-card__place-lane"
-                  data-bead-id=${item.id}
-                  data-lane=${lane.id}
-                  title="${lane.label} 대기 맨 뒤에 추가"
-                >
-                  <span>${lane.label}</span>
-                  <span class="worker-card__place-count">${lane.count}</span>
-                </button>`
-            )}
+            ${placeMenuList(place_menu.lanes, item.id)}
             <button
               type="button"
               class="worker-card__place-cancel"
@@ -1563,8 +1652,18 @@ export function candidateCard(item, place_menu = null, options = {}) {
                     ? 'description이 없어 대기 큐에 넣을 수 없습니다'
                     : 'spec이 없어 대기 큐에 넣을 수 없습니다'}
             >
-              대기로 ↴
-            </button>`}
+              대기로 ↴</button
+            >${options.dep_action === true
+              ? html`<button
+                  type="button"
+                  class="worker-card__dep mon-dep__btn"
+                  data-bead-id=${item.id}
+                  title="의존성"
+                  aria-label="의존성"
+                >
+                  ⛓
+                </button>`
+              : ''}`}
     </div>
     ${timesMeta(item)}
   </div>`;
@@ -1583,7 +1682,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
  * so 후보→대기 still drops onto the strip. `live` marks the lane whose work is
  * actually running, which is the only lane whose header dot breathes.
  *
- * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: { bead_id: string, lanes: Array<{ id: 'parallel'|'s1'|'s2'|'s3'|'s4'|'s5', label: string, count: number }> }|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
+ * @param {{ id: string, lane: 'candidate'|'queue'|'running'|'pr_wait'|'done'|'s1'|'s2'|'s3'|'s4'|'s5', title: string, items: MiniItem[], src?: boolean, empty?: string, body?: import('lit-html').TemplateResult, controls?: import('lit-html').TemplateResult, header_control?: import('lit-html').TemplateResult|string, live?: boolean, collapsible?: boolean, collapsed?: boolean, preview?: string, place_menu?: PlaceMenu|null, onOpenDoc?: import('../board/stepper.js').OpenDocHandler }} pane
  * @returns {import('lit-html').TemplateResult}
  */
 export function paneTemplate(pane) {
