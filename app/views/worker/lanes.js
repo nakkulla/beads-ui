@@ -694,13 +694,10 @@ export function execChipsTemplate(chips, options = {}) {
  * `mon-overlap__popover`.
  */
 
-/** 겹침 칩을 접지 않고 그리는 최대 개수 (UI-qm12 §5.3). */
-const OVERLAP_CHIP_LIMIT = 3;
-
 /**
  * The 겹침 팝오버 (UI-qm12 §5.3): 상대 id·제목·위치, 겹치는 경로, 그리고 순서를
- * 만드는 버튼 하나 또는 왜 만들 수 없는지 말하는 문장 하나. `+n` 칩이 열면
- * 상대 전부가 각자 자기 버튼을 갖고 목록으로 선다.
+ * 만드는 버튼 하나 또는 왜 만들 수 없는지 말하는 문장 하나. 겹침 칩은 상대
+ * 수만큼 모두 그려지므로 한 팝오버에는 클릭한 상대 하나만 선다.
  *
  * @param {OverlapPopover} popover
  * @returns {import('lit-html').TemplateResult}
@@ -773,8 +770,6 @@ export function dependencyChipsTemplate(chips, options = {}) {
   ) {
     return '';
   }
-  const folded = overlaps.length > OVERLAP_CHIP_LIMIT;
-  const shown = folded ? overlaps.slice(0, OVERLAP_CHIP_LIMIT) : overlaps;
   return html`<div class="worker-deps">
     ${predecessors.map(
       (chip) =>
@@ -790,29 +785,21 @@ export function dependencyChipsTemplate(chips, options = {}) {
             ✕
           </button></span
         >`
-    )}${shown.map(
+    )}${overlaps.map(
       (chip) =>
         html`<button
           type="button"
           class="worker-dep worker-dep--overlap mon-overlap__chip"
           data-overlap-id=${chip.id}
-          title=${chip.prefixes.join('\n')}
+          aria-label=${`scope 겹침 ${chip.id} (${chip.location_label})`}
+          title=${[
+            `겹침 ${chip.id} (${chip.location_label})`,
+            ...chip.prefixes
+          ].join('\n')}
         >
-          ⧉ 겹침 ${chip.id} (${chip.location_label})
+          ⧉ ${chip.id}
         </button>`
-    )}${folded
-      ? html`<button
-          type="button"
-          class="worker-dep worker-dep--overlap mon-overlap__chip mon-overlap__chip--more"
-          data-overlap-all="true"
-          title=${overlaps
-            .slice(OVERLAP_CHIP_LIMIT)
-            .map((chip) => `${chip.id} (${chip.location_label})`)
-            .join('\n')}
-        >
-          +${overlaps.length - OVERLAP_CHIP_LIMIT}
-        </button>`
-      : ''}${scope_missing
+    )}${scope_missing
       ? html`<span
           class="worker-dep worker-dep--muted"
           title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"

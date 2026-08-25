@@ -1736,10 +1736,10 @@ export function createWorkerView(mount_element, options = {}) {
   /** @type {string|null} Candidate whose queue-lane picker is open. */
   let place_menu_bead_id = null;
   /**
-   * 열려 있는 겹침 팝오버 (UI-qm12 §5.3, 워커 탭 UI-jbao). `counterpart_id`가
-   * null이면 `+n` 칩이 연 전체 목록이다.
+   * 열려 있는 겹침 팝오버 (UI-qm12 §5.3, 워커 탭 UI-jbao). 칩을 클릭한 상대
+   * 하나만 기억한다.
    *
-   * @type {{ bead_id: string, counterpart_id: string|null }|null}
+   * @type {{ bead_id: string, counterpart_id: string }|null}
    */
   let open_overlap = null;
   /**
@@ -2875,10 +2875,7 @@ export function createWorkerView(mount_element, options = {}) {
       return null;
     }
     const counterpart_id = open_overlap.counterpart_id;
-    const chips =
-      counterpart_id === null
-        ? overlaps
-        : overlaps.filter((chip) => chip.id === counterpart_id);
+    const chips = overlaps.filter((chip) => chip.id === counterpart_id);
     if (chips.length === 0) {
       return null;
     }
@@ -5513,11 +5510,8 @@ export function createWorkerView(mount_element, options = {}) {
         ? chip_card.getAttribute('data-bead-id') || ''
         : '';
       if (chip_bead_id) {
-        // `+n` 칩은 상대 전부를 한 팝오버에 보인다 (§5.3).
         const counterpart_id =
-          overlapChip.getAttribute('data-overlap-all') === 'true'
-            ? null
-            : overlapChip.getAttribute('data-overlap-id') || '';
+          overlapChip.getAttribute('data-overlap-id') || '';
         const same =
           !!open_overlap &&
           open_overlap.bead_id === chip_bead_id &&

@@ -1610,12 +1610,20 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     ).toEqual(['worker-dep--pred', 'worker-dep--overlap', 'worker-dep--succ']);
   });
 
-  test('names the counterpart and its location on the overlap chip', () => {
+  test('names only the counterpart id on the overlap chip', () => {
     const deps = renderDeps({ overlaps: overlaps(1) });
 
     expect(
       deps.querySelector('.worker-dep--overlap')?.textContent?.trim()
-    ).toBe('⧉ 겹침 UI-o1 (#1)');
+    ).toBe('⧉ UI-o1');
+  });
+
+  test('keeps the counterpart location in the chip aria-label', () => {
+    const deps = renderDeps({ overlaps: overlaps(1) });
+
+    expect(
+      deps.querySelector('.worker-dep--overlap')?.getAttribute('aria-label')
+    ).toBe('scope 겹침 UI-o1 (#1)');
   });
 
   test('lists the overlapping paths in the chip tooltip', () => {
@@ -1632,16 +1640,17 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
 
     expect(
       deps.querySelector('.worker-dep--overlap')?.getAttribute('title')
-    ).toBe('app/views\nserver/worker');
+    ).toBe('겹침 UI-o1 (#1)\napp/views\nserver/worker');
   });
 
-  test('folds a fourth counterpart into a +n chip', () => {
+  test('draws every counterpart chip without folding', () => {
     const deps = renderDeps({ overlaps: overlaps(5) });
 
-    expect(deps.querySelectorAll('.mon-overlap__chip')).toHaveLength(4);
     expect(
-      deps.querySelector('.mon-overlap__chip--more')?.textContent?.trim()
-    ).toBe('+2');
+      Array.from(deps.querySelectorAll('.mon-overlap__chip')).map((chip) =>
+        chip.textContent?.trim()
+      )
+    ).toEqual(['⧉ UI-o1', '⧉ UI-o2', '⧉ UI-o3', '⧉ UI-o4', '⧉ UI-o5']);
   });
 
   test('draws a muted chip when the read declaration is empty', () => {

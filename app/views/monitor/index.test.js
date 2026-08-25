@@ -1970,7 +1970,7 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     expect(mount.querySelector('.mon-overlap__popover')).toBeNull();
   });
 
-  test('lists every counterpart in one popover from the +n chip', () => {
+  test('draws one chip per counterpart with no +n fold', () => {
     const { mount, view } = setup({
       workspaces: [
         workspace({
@@ -1995,13 +1995,12 @@ describe('monitor 겹침 팝오버·1클릭 직렬 배치 (UI-qm12 §5.3·§5.4)
     });
 
     view.load();
-    click(mount, '[data-bead-id="A-1"] .mon-overlap__chip--more');
 
     expect(
-      mount.querySelectorAll(
-        '[data-bead-id="A-1"] .mon-overlap__popover .mon-overlap__row'
-      )
-    ).toHaveLength(4);
+      Array.from(
+        mount.querySelectorAll('[data-bead-id="A-1"] .mon-overlap__chip')
+      ).map((chip) => chip.getAttribute('data-overlap-id'))
+    ).toEqual(['A-2', 'A-3', 'A-4', 'A-5']);
   });
 
   test('offers no button when both already share one serial lane', () => {
