@@ -559,6 +559,67 @@ describe('views/board/card display policy', () => {
     ]);
   });
 
+  test('colors a blocker from another repo with its own chip', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['dotfiles-j8e6']
+        }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked-dep')).toEqual([]);
+    expect(chipTexts(m, '.ctl-chip--blocked-foreign')).toEqual([
+      '⛓ blocked: dotfiles-j8e6'
+    ]);
+  });
+
+  test('splits mixed-repo blockers into one chip per scope', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['UI-a1b2', 'dotfiles-j8e6', 'UI-c3d4']
+        }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked-dep')).toEqual([
+      '⛓ blocked: UI-a1b2, UI-c3d4'
+    ]);
+    expect(chipTexts(m, '.ctl-chip--blocked-foreign')).toEqual([
+      '⛓ blocked: dotfiles-j8e6'
+    ]);
+  });
+
+  test('collapses each scope chip on its own +n count', () => {
+    const m = mountCard(
+      {
+        id: 'UI-1',
+        blocked_info: {
+          external: false,
+          reason: null,
+          blockers: ['dotfiles-a', 'dotfiles-b', 'dotfiles-c', 'UI-a1b2']
+        }
+      },
+      makeCtx({ policy: makePolicy() })
+    );
+
+    expect(chipTexts(m, '.ctl-chip--blocked-dep')).toEqual([
+      '⛓ blocked: UI-a1b2'
+    ]);
+    expect(chipTexts(m, '.ctl-chip--blocked-foreign')).toEqual([
+      '⛓ blocked: dotfiles-a, dotfiles-b +1'
+    ]);
+  });
+
   test('renders both blocked chips when an issue is blocked in both ways', () => {
     const m = mountCard(
       {

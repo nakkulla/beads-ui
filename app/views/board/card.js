@@ -1,4 +1,5 @@
 import { html } from 'lit-html';
+import { isForeignBlocker } from '../../utils/blocker-scope.js';
 import { isChipEnabled, visibleLabels } from '../../utils/label-policy.js';
 import {
   coerceTimestampMs,
@@ -129,16 +130,35 @@ function priorityLabel(priority) {
 const BLOCKER_PREVIEW_COUNT = 2;
 
 /**
+ * One dependency-blocked chip's text, sharing the `+n` collapse rule across
+ * both scopes so the two chips read as one vocabulary.
+ *
+ * @param {string[]} blockers
+ */
+function dependencyChipLabel(blockers) {
+  const shown = blockers.slice(0, BLOCKER_PREVIEW_COUNT).join(', ');
+  const rest = blockers.length - BLOCKER_PREVIEW_COUNT;
+  return `⛓ blocked: ${shown}${rest > 0 ? ` +${rest}` : ''}`;
+}
+
+/**
  * Render the blocked-reason chips. The two blockers are independent, so a bead
  * that is both externally blocked and dependency-blocked shows both chips:
  *
  * - `⏸` external — a stored `status=blocked`, optionally with a short reason,
  * - `⛓` dependency — the beads that must land first.
  *
+ * A dependency-blocked bead splits into at most two `⛓` chips — same-repo and
+ * 타 레포 ({@link isForeignBlocker}) — because the ids collapse into ONE chip
+ * text and one chip cannot carry two colors. The wording stays identical; only
+ * the color says the blocker sits outside this repository, where closing it is
+ * not this board's to do.
+ *
+ * @param {string} owner_id
  * @param {BoardCardBlockedInfo | undefined} blocked_info
  * @returns {TemplateResult[]}
  */
-function blockedChips(blocked_info) {
+function blockedChips(owner_id, blocked_info) {
   if (!blocked_info) {
     return [];
   }
@@ -153,12 +173,25 @@ function blockedChips(blocked_info) {
   const blockers = Array.isArray(blocked_info.blockers)
     ? blocked_info.blockers
     : [];
-  if (blockers.length > 0) {
-    const shown = blockers.slice(0, BLOCKER_PREVIEW_COUNT).join(', ');
-    const rest = blockers.length - BLOCKER_PREVIEW_COUNT;
-    const label = `⛓ blocked: ${shown}${rest > 0 ? ` +${rest}` : ''}`;
+  /** @type {string[]} */
+  const same_repo = [];
+  /** @type {string[]} */
+  const foreign = [];
+  for (const id of blockers) {
+    (isForeignBlocker(owner_id, id) ? foreign : same_repo).push(id);
+  }
+  if (same_repo.length > 0) {
     items.push(
-      html`<span class="ctl-chip ctl-chip--blocked-dep">${label}</span>`
+      html`<span class="ctl-chip ctl-chip--blocked-dep"
+        >${dependencyChipLabel(same_repo)}</span
+      >`
+    );
+  }
+  if (foreign.length > 0) {
+    items.push(
+      html`<span class="ctl-chip ctl-chip--blocked-foreign"
+        >${dependencyChipLabel(foreign)}</span
+      >`
     );
   }
   return items;
@@ -384,7 +417,7 @@ function chipsTemplate(issue, ctx) {
     );
   }
   if (isChipEnabled(policy, 'blocked')) {
-    items.push(...blockedChips(issue.blocked_info));
+    items.push(...blockedChips(issue.id, issue.blocked_info));
   }
   const cleanup_failure = ctx.cleanupFailureFor
     ? ctx.cleanupFailureFor(issue.id)

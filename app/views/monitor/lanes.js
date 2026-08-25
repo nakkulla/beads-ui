@@ -23,6 +23,7 @@ import {
   headReviewAttemptStates,
   isImplementationAttempt
 } from '../../utils/active-attempts.js';
+import { isForeignBlocker } from '../../utils/blocker-scope.js';
 import {
   formatAttemptOrchestrationChip,
   formatOrchestrationChip,
@@ -509,14 +510,20 @@ function formatOrDrop(pinned, base) {
  * 다시 적지 않고, blocker가 지금 어느 레인에 있는지는 카드가 아니라 툴팁이
  * 말한다 — 카드 위에서 `(실행가능)`은 이 이슈의 상태로 오독됐다.
  *
+ * 타 레포 blocker는 같은 문구에 색만 갈라진다 (`foreign`): 기다린다는 사실은
+ * 같고, 그것이 이 레포 밖에 있어 여기서 닫을 수 없다는 것만 다르다.
+ *
+ * @param {string} owner_id
  * @param {import('./blockers.js').BlockerDisplay} blocker
  * @returns {DependencyChip}
  */
-function predecessorChip(blocker) {
+function predecessorChip(owner_id, blocker) {
+  const foreign = isForeignBlocker(owner_id, blocker.id);
   return {
     id: blocker.id,
     label: `⛓ blocked: ${blocker.id}`,
-    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다 (${blocker.location_label})`
+    title: `이 이슈는 ${blocker.id}가 close될 때까지 출발하지 않는다 (${blocker.location_label})`,
+    ...(foreign ? { foreign: true } : {})
   };
 }
 
@@ -1781,7 +1788,9 @@ export function buildLanes(workspaces, workspaces_state, options) {
     const predecessors =
       item.lane === 'running' || item.lane === 'pr_wait'
         ? []
-        : (item.blockers || []).map(predecessorChip);
+        : (item.blockers || []).map((blocker) =>
+            predecessorChip(item.id, blocker)
+          );
     if (predecessors.length === 0) {
       continue;
     }

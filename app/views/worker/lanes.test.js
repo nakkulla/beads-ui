@@ -1729,6 +1729,32 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     ).toEqual(['worker-dep--pred', 'worker-dep--overlap']);
   });
 
+  test('adds the foreign class to a blocked chip from another repo', () => {
+    const deps = renderDeps({
+      predecessors: [
+        {
+          id: 'dotfiles-j8e6',
+          label: '⛓ blocked: dotfiles-j8e6',
+          foreign: true
+        }
+      ]
+    });
+
+    expect(deps.querySelector('.worker-dep--pred')?.className).toContain(
+      'worker-dep--foreign'
+    );
+  });
+
+  test('leaves a same-repo blocked chip without the foreign class', () => {
+    const deps = renderDeps({
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }]
+    });
+
+    expect(deps.querySelector('.worker-dep--pred')?.className).not.toContain(
+      'worker-dep--foreign'
+    );
+  });
+
   test('names only the counterpart id on the overlap chip', () => {
     const deps = renderDeps({ overlaps: overlaps(1) });
 

@@ -650,6 +650,9 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {string} label - Full chip text. The projection composes it because
  * only the projection knows the 위치 vocabulary; the template never invents it.
  * @property {string} [title] - Tooltip sentence.
+ * @property {boolean} [foreign] - blocker가 이 이슈와 다른 레포의 rig에 있다.
+ * 문구는 같고 색만 갈라진다 — 기다린다는 사실이 아니라 그것을 여기서 닫을 수
+ * 없다는 사실만 다르기 때문이다.
  */
 
 /**
@@ -781,7 +784,9 @@ export function dependencyChipsTemplate(chips, options = {}) {
       : ''}
     ${predecessors.map(
       (chip) =>
-        html`<span class="worker-dep worker-dep--pred" title=${chip.title || ''}
+        html`<span
+          class=${`worker-dep worker-dep--pred${chip.foreign ? ' worker-dep--foreign' : ''}`}
+          title=${chip.title || ''}
           ><button
             type="button"
             class="worker-dep__label worker-dep__open"

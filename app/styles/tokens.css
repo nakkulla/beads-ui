@@ -39,6 +39,7 @@
   --border-from: #1e4a44;
   --border-blocked: #4a3f2b;
   --border-blocked-dep: #4a2b2b;
+  --border-blocked-foreign: #37356b;
 
   /* --- text tiers --- */
   --text-title: #dbe2ee;
@@ -81,6 +82,7 @@
   --chip-from: #7ee2d8;
   --chip-blocked: #e8b45a;
   --chip-blocked-dep: #e8756a;
+  --chip-blocked-foreign: #8f8ff0;
 
   /* --- recurring semantic accents --- */
   --accent-success: #5ad198;

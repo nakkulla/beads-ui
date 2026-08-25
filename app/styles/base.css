@@ -105,6 +105,12 @@ body {
   color: var(--chip-blocked-dep);
   border-color: var(--border-blocked-dep);
 }
+/* 타 레포 blocker: 문구는 같은 blocked 어휘를 쓰고 색만 갈라진다 — 기다리는
+   대상이 이 레포 밖에 있어 여기서 손쓸 수 없다는 사실만 다르다. */
+.ctl-chip--blocked-foreign {
+  color: var(--chip-blocked-foreign);
+  border-color: var(--border-blocked-foreign);
+}
 
 /* panel surface */
 .ctl-panel {

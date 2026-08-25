@@ -1456,7 +1456,7 @@ describe('views/board blocked column composition', () => {
         id: 'DEP-1',
         title: 'dependency blocked',
         status: 'open',
-        blocked_info: { external: false, reason: null, blockers: ['X-1'] },
+        blocked_info: { external: false, reason: null, blockers: ['DEP-2'] },
         updated_at: now
       },
       {
@@ -1496,7 +1496,7 @@ describe('views/board blocked column composition', () => {
     const chips = Array.from(
       mount.querySelectorAll('#blocked-col .ctl-chip--blocked-dep')
     ).map((el) => String(el.textContent || '').trim());
-    expect(chips).toEqual(['⛓ blocked: X-1']);
+    expect(chips).toEqual(['⛓ blocked: DEP-2']);
   });
 });
 

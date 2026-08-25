@@ -431,6 +431,54 @@ describe('monitor dependency chips (UI-eey2 §5.1)', () => {
     );
   });
 
+  test('marks a blocker from another repo as foreign', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['B-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.queue.find((r) => r.id === 'A-2');
+    expect(row?.dependency_chips?.predecessors?.[0].foreign).toBe(true);
+  });
+
+  test('leaves a same-repo blocker chip unmarked', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['A-1'] },
+          runnable: [runnable('A-1')]
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.queue.find((r) => r.id === 'A-2');
+    expect(row?.dependency_chips?.predecessors?.[0].foreign).toBe(undefined);
+  });
+
+  test('keeps the same blocked wording on a foreign blocker', () => {
+    const lanes = buildLanes(
+      [
+        workspace({
+          queue: [{ bead_id: 'A-2' }],
+          bead_blocked_by: { 'A-2': ['B-1'] }
+        })
+      ],
+      [state()]
+    );
+
+    const row = lanes.queue.find((r) => r.id === 'A-2');
+    expect(row?.dependency_chips?.predecessors?.[0].label).toBe(
+      '⛓ blocked: B-1'
+    );
+  });
+
   test('draws no chip on the blocker card itself', () => {
     const lanes = buildLanes(
       [
