@@ -2,6 +2,7 @@
 scope:
   - server/worker/session-ref.js
   - server/worker/session-ref-transcript.js
+  - server/worker/claude-effort-observer.js
   - server/worker/runnable-cache.js
   - server/ws/worker-handlers.js
   - server/ws/connection.js
@@ -81,10 +82,13 @@ Worker attempt는 세션 ID·라이브 transcript(`subscribe-session-log`)·재�
   대소문자 무시 비교한다. `hostname -s`가 `isy-macstudioui-MacStudio-2`, `os.hostname()`이
   `isy-macstudioui-MacStudio-2.local`인 것이 실측이다. 불일치면 파일 탐색 없이
   `locality: 'remote'`.
-- Claude: `~/.claude/projects/*/<sid>.jsonl` — `projects` 디렉터리를 `readdirSync`하고
-  각 하위 디렉터리에서 `<sid>.jsonl`을 `statSync`한다. 첫 매치가 파일이다(세션 ID는
-  UUID라 유일). `claudeSessionFilePath`는 cwd를 요구하므로 재사용하지 않고, 같은
-  파일 규칙(`.claude/projects/<dir>/<sid>.jsonl`)을 이 helper가 소유한다.
+- Claude: `~/.claude/projects/*/<sid>.jsonl`. 경로 규칙의 소유자는
+  `claude-effort-observer.js`이므로 그 모듈에 ID 기반 탐색
+  `findClaudeSessionFile(session_id, { home_dir?, fs? }): string|null`을 추가한다 —
+  `projects` 디렉터리를 `readdirSync`하고 각 하위 디렉터리의 `<sid>.jsonl`을
+  `statSync`해 첫 매치를 돌려준다(세션 ID는 UUID라 유일). 기존 `claudeSessionFilePath`
+  (cwd를 아는 호출자용)는 그대로 두고 두 함수가 같은 파일명 규칙을 공유한다.
+  `session-ref.js`는 이 함수를 호출만 한다.
 - Codex: `codexRolloutFilePath({ session_id, started_at })`(`codex-effort-observer.js`)를
   재사용한다. `started_at`은 세션 ID가 UUIDv7(15번째 문자 `7`)이면 앞 48비트 ms
   타임스탬프에서 얻는다(실측: `01a035fc-…` → 2026-08-24T22:55Z, rollout 디렉터리
@@ -105,9 +109,16 @@ SessionRefView = {
   current: boolean,           // 마지막 유효 항목
   locality: 'local'|'remote'|'missing',
   last_event_at: number|null, // 파일 mtime (epoch ms), local일 때만
-  resume_command: string      // claude: `claude --resume <sid>` · codex: `codex resume <sid>`
+  resume_command: string|null // claude: `claude --resume <sid>` · codex: `codex resume <sid>`
 }
 ```
+
+`resume_command`는 세션 ID가 §3.2의 좁은 정규식 `^[A-Za-z0-9._-]+$`을 만족할 때만
+만든다. 상위 계약의 정규식은 `$()`·백틱 같은 셸 해석 문자를 허용하므로, 그 문자가 든
+ID는 명령을 만들지 않고 `null`로 둔다(복사 버튼 생략). 선행 `-`는 위 정규식이
+허용하지만 CLI가 옵션으로 읽으므로 그 ID도 `null`이다. 명령은 ID를 **작은따옴표로
+감싼** 단일 인자(`claude --resume '<sid>'`, `codex resume '<sid>'`)로 만든다 —
+정규식이 작은따옴표를 배제하므로 인용이 항상 닫힌다.
 
 `file` 경로는 뷰에 싣지 않는다(클라이언트가 알 필요가 없고, 경로는 서버 HOME의
 사실이다). 순서는 계약 값 순서(과거 → 현재).
@@ -125,12 +136,16 @@ SessionRefView = {
 
 - payload `{ bead_id, root_dir? }` — `root_dir` 규약은 `get-attempt-prompt`와 같다
   (registry allow list, 부재 시 connection workspace).
-- 서버는 대상 workspace에서 `bd show <bead_id> --json`(`runBdJson`)을 읽어
+- 서버는 대상 workspace에서 `bd show <bead_id> --json`을
+  `runBdJsonProjectedInWorkspace`(`server/ws/context.js`; 생산 코드의 `runBdJson`
+  직접 호출은 `bd-json-ownership.test.js`가 금지한다)로 읽어
   `metadata.session_ref`를 §3.3으로 투영해 `{ bead_id, sessions: SessionRefView[] }`로
   답한다. Bead `status`는 싣지 않는다 — 상세 패널은 이미 `data.status`를 갖고 있고
   (§6.3 live 판정 재료), 두 출처를 두면 어긋날 수 있다.
 - `bd show` 실패·Bead 없음·키 부재 → `{ bead_id, sessions: [] }` (오류 응답이
   아니다 — 상세 패널은 조용히 행을 그리지 않는다).
+- 핸들러는 async다. `connection.js`의 switch에서 `await`한다(`bd` 호출이 끝난 뒤
+  응답).
 - `app/protocol.js MessageType`에 `'get-session-refs'`를 등록한다.
 
 ### 4.3 `subscribe-session-log`의 `session_ref` 변형
@@ -142,21 +157,27 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
   (`bad_request`). 이 값이 클라이언트 store·drawer의 키다 — 병렬 분석기가 `job_id`를
   attempt_id 슬롯에 넣는 선례(protocol.md 병렬 분석 절)와 같다.
 - `provider`는 enum, `session_id`는 §3.2의 좁은 정규식. 위반은 `bad_request`.
-- **인가**: 대상 workspace에서 `bd show <bead_id> --json`을 읽어 파싱한 `session_ref`
+- **인가**: 대상 workspace에서 `bd show <bead_id> --json`을 §4.2와 같은
+  `runBdJsonProjectedInWorkspace`로 읽어(핸들러는 async, `connection.js`가 `await`)
+  파싱한 `session_ref`
   항목 중 `(provider, session_id)`가 일치하는 것이 있어야 한다. 없으면 파일을 조회하지
   않고 빈 snapshot(`{ lines: [], last_event_at: null }`) — 다른 workspace의 attempt와
   같은 fail-quiet 처리다. 즉 이 경로로 읽을 수 있는 파일은 "어떤 Bead가 자기 세션이라고
   기록한 파일"뿐이다.
 - 응답 `ok` 뒤 `session-log-snapshot { id, attempt_id, lines, last_event_at }`.
-  `locality !== 'local'`이거나 파일이 없으면 빈 snapshot. 있으면 파일 전체를 읽어
-  §5 어댑터로 투영한 `lines`와 mtime `last_event_at`.
-- **live follow**: snapshot 뒤 `createTailReader({ file, start_offset: <snapshot이 읽은
-  바이트>, onLine })`(`runner/tail-reader.js`, `fs.watch` + 500ms 폴링)를 붙여 새 줄마다
-  어댑터를 거쳐 `session-log-append { id, attempt_id, event }`를 push한다. 어댑터
-  인스턴스는 구독당 하나로 snapshot과 append가 같은 pairing 상태를 공유한다(§5.2).
-  `SESSION_LOG_SUBS` 항목의 `off`는 `reader.close`다 — `unsubscribe-session-log`·연결
-  종료·같은 client id 재구독이 기존 경로로 reader를 닫는다. 파일이 없어 reader가
-  `open` 실패로 포기하면 조용히 끝난다(빈 snapshot 이후 append 없음).
+  `locality !== 'local'`이거나 파일이 없으면 빈 snapshot. 있으면 파일을 읽되
+  **마지막 개행까지만** 파싱한다 — 끝에 개행 없이 남은 바이트는 쓰기 중인 레코드일 수
+  있으므로 snapshot에 넣지 않고, 그 바이트 위치(`boundary` = 마지막 `\n` 다음
+  오프셋, 개행이 없으면 0)를 tail 시작점으로 삼는다. `last_event_at`은 파일 mtime.
+- **live follow**: snapshot 뒤 `createTailReader({ file, start_offset: boundary,
+  onLine })`(`runner/tail-reader.js`, `fs.watch` + 500ms 폴링)를 만들고 `start()`를
+  호출한다. 새 완전한 줄마다 어댑터를 거쳐 `session-log-append { id, attempt_id,
+  event }`를 push한다. 어댑터 인스턴스는 구독당 하나로 snapshot과 append가 같은
+  pairing 상태를 공유한다(§5.2). `SESSION_LOG_SUBS` 항목의 `off`는 `reader.stop`이다
+  (reader에는 `close`가 없다) — `unsubscribe-session-log`·연결 종료·같은 client id
+  재구독이 기존 경로로 reader를 멈춘다. 파일이 없어 reader가 `open` 실패로 포기하면
+  조용히 끝난다(빈 snapshot 이후 append 없음). reader는 파일 교체를 다시 열지
+  않는다(§7).
 - runtime `sessionLog`(attempt 브로커)는 거치지 않는다 — attempt가 없고 `last_activity`
   overlay 대상도 아니다.
 
@@ -207,8 +228,9 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
   기존 출력은 변하지 않는다(테스트로 고정).
 - Codex `item.completed` + `item.type === 'user_message'` → `{ kind: 'user', text }`.
   파일 머리말 주석의 wire shape 목록에 이 확장 항목을 적는다.
-- `createTranscriptReducer`의 활동 overlay(`last_activity`)는 `user`를 **건너뛴다** —
-  세션이 "하고 있는 일"이 아니다(`thinking` 제외 규칙 옆에 같은 조건).
+- 활동 overlay(`last_activity`, `server/worker/session-log.js` 소유)에는 규칙을 더하지
+  않는다: Worker 로그의 `user` 레코드는 `tool_result`뿐이라 `user` 라인이 생기지
+  않으며, 그 사실을 비회귀 테스트로 고정한다(§9).
 
 ### 5.4 drawer 렌더 (`transcript-drawer.js lineTemplate`)
 
@@ -258,6 +280,10 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
     세션 — 이 서버에 transcript 없음", `missing`: "transcript 파일 없음"). 버튼은 `세션`
     텍스트 배지 **앞**, 경과 뒤에 온다 — Worker 타일에서 `▤ 세션`이 경과 뒤에 오는
     자리와 같다.
+  - **슬롯 3 진행(활동 줄)**: current 항목이 `local`이고 `last_event_at`이 있으면
+    활동 줄을 `최근 활동 <n> 전`(그 시각의 상대시간)으로 그린다 — Worker 타일의
+    `last_activity` 줄과 같은 자리·같은 질문("언제 마지막으로 움직였나"). 없으면 현행
+    `갱신 <n> 전`(bead `updated_at`)으로 물러나고, 그것도 없으면 줄 생략.
   - **슬롯 5 좌표·실행 사실**: `session_meta` 줄에 `session_ref` 칩
     (`ctl-chip ctl-chip--sref`, 텍스트 `sessionRefLabel`, title
     `<provider>:<sid>@<host>` + 이력 수 `· 이력 n`(n = 항목 수, 2 이상일 때만)).
@@ -271,9 +297,12 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
 ### 6.5 이슈 상세 `세션 이력` (`detail-panel/index.js`, `session-history.js`)
 
 - 패널은 `data.metadata.session_ref`가 **문자열로 존재할 때만** `get-session-refs`
-  `{ bead_id }`를 보낸다(키 부재 이슈는 요청 자체가 없다). 응답은 bead별로 캐시하고,
-  같은 이슈의 `metadata.session_ref` 값이 바뀌면 다시 요청한다(값 비교). 요청
-  실패·빈 응답은 행 없음.
+  `{ bead_id }`를 보낸다(키 부재 이슈는 요청 자체가 없다). 응답 캐시 키는
+  `workspace root_dir + bead_id + session_ref 원문`이다 — 같은 ID의 다른
+  워크스페이스로 전환하면 이전 저장소의 세션이 보이지 않아야 하고(작업 프롬프트
+  캐시가 같은 이유로 workspace+bead로 묶여 있다), 값이 바뀌면 다시 요청한다. 요청
+  세대 번호(`comments_request_seq`와 같은 패턴)로 늦게 도착한 이전 응답은 버린다.
+  요청 실패·빈 응답은 행 없음.
 - `sessionHistoryTemplate(attempts, handlers, usage_view, session_refs = [])`:
   `session_refs`가 비어 있지 않으면 목록 **맨 앞**에 세션 행 블록을 그린다. 순서는
   current 먼저, 이어서 과거 항목을 최신순(index 내림차순). attempt 행은 그 뒤에 현행
@@ -288,7 +317,7 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
   - 행 클릭 = `handlers.onOpenSessionRef(view)`; `locality !== 'local'`이면 버튼
     `disabled`(title은 §6.4와 같은 문구).
   - 행 아래 보조 버튼 `⧉ 재개`(`detail-session__resume-cmd`) = `resume_command`
-    복사 + toast. `↻ 이어하기`와 다른 클래스·문구 — 그 버튼은 Worker attempt를 서버가
+    복사 + toast; `resume_command`가 `null`이면 버튼 생략. `↻ 이어하기`와 다른 클래스·문구 — 그 버튼은 Worker attempt를 서버가
     재개하는 조작이고, 이것은 터미널에 붙여 넣을 명령이다.
 - `onOpenSessionRef(view)`는 `sessionRefDrawerInput(view, current_id, data.status)`로
   `transcript_drawer.open`.
@@ -308,12 +337,12 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
 | 항목 일부 malformed | 그 항목만 생략, index 보존 |
 | host 불일치 | 칩·행은 그리되 `▤ 세션`/행 클릭 disabled, 재개 명령 복사는 가능 |
 | 파일 없음(같은 머신이지만 삭제·미생성) | `missing` — 위와 같이 disabled |
-| 파일이 열린 뒤 삭제·회전 | tail reader가 read 오류를 폴링마다 재시도; drawer는 snapshot까지 유지 |
+| 파일이 열린 뒤 삭제·교체 | reader는 같은 fd를 계속 읽고 read 오류는 폴링마다 재시도할 뿐 새 파일을 다시 열지 않는다 — drawer는 snapshot과 그때까지의 append를 유지하고 더는 갱신되지 않는다(다시 열면 새 snapshot) |
 | `bd show` 실패 | `get-session-refs`는 빈 sessions, 구독은 빈 snapshot |
 | 구 서버 + 새 번들 | `session_refs`·`get-session-refs` 부재 → `unknown_type`/키 없음은 기존 규약대로 무시, 행·버튼 생략 |
 | 새 서버 + 구 번들 | 알 수 없는 키 무시 |
 | 어댑터 파싱 실패 줄 | 생략, 다음 줄 계속 |
-| 같은 세션을 두 drawer가 구독 | client id로 키를 잡으므로 reader 두 개 — 허용(attempt 구독과 같은 비용 모델) |
+| 같은 연결이 같은 세션을 다시 구독 | drawer의 구독 ID는 `session-log:<attempt_id 슬롯>`으로 결정적이므로 서버가 같은 `(ws, client_id)`의 이전 구독을 교체한다(현행 규약) — reader는 하나. 한 연결 안에서 두 drawer가 같은 세션을 동시에 여는 것은 비범위(§8) |
 
 ## 8. 비범위
 
@@ -323,6 +352,8 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
 - 다른 머신 세션 파일의 원격 조회.
 - Codex rollout의 `patch_apply_end`·`function_call`(명령 없음) 투영 — 생략으로 둔다.
 - 이슈 상세 외 보드 카드(`board/card.js`)의 `session_ref` 표시.
+- 한 WebSocket 연결 안에서 두 drawer 인스턴스가 같은 세션을 동시에 구독하는 것
+  (현행 attempt 구독과 같은 제약).
 
 ## 9. 테스트 계획
 
@@ -330,7 +361,10 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
 - `session-ref.test.js`: 파싱(정상·malformed 개별 생략·index 보존·빈 값) / host 첫
   라벨 비교(`.local` 접미·대소문자) / Claude 파일 탐색(fake fs: 여러 project 디렉터리
   중 매치) / Codex UUIDv7 → started_at → `codexRolloutFilePath` 호출 인자 / 비-v7 ID의
-  최신순 날짜 스캔 상한 / 좁은 ID 정규식 위반 → `missing` / `resume_command` 두 provider.
+  최신순 날짜 스캔 상한 / 좁은 ID 정규식 위반 → `missing` / `resume_command` 두
+  provider·작은따옴표 인용·셸 특수문자(`$()`, 백틱, 공백)와 선행 `-` ID → `null`.
+- `claude-effort-observer.test.js`: `findClaudeSessionFile` — 여러 project 디렉터리
+  중 매치, 없음 → `null`, `readdirSync` 실패 → `null`.
 - `session-ref-transcript.test.js`: Claude 필터(`isMeta`·`isSidechain`·비대상 type
   생략, user/assistant 통과) / Codex 표 각 행(pairing 있음·없음, output 배열/문자열,
   `function_call` cmd 추출, `task_complete`, 생략 목록) / snapshot→append 사이 pairing
@@ -340,26 +374,31 @@ payload `{ id, attempt_id, session_ref: { bead_id, provider, session_id }, root_
 - `worker-handlers.test.js`: `subscribe-session-log` session_ref 변형 — attempt_id 슬롯
   불일치/launch_id 동반/provider·ID 위반 `bad_request` / Bead의 session_ref에 없는 ID →
   빈 snapshot·파일 미조회(fs spy) / 일치 → snapshot lines + mtime, tail append push /
-  unsubscribe·연결 종료 시 reader close / `get-session-refs` 정상·bd 실패·root_dir
+  끝에 개행 없는 부분 레코드는 snapshot에 없고 완성 후 append로 한 번만 도착 /
+  unsubscribe·연결 종료 시 `reader.stop` / `bd` 읽기가
+  `runBdJsonProjectedInWorkspace`를 거침 / `get-session-refs` 정상·bd 실패·root_dir
   검증.
 
 클라이언트
 - `transcript-lines.test.js`: Claude user 문자열/텍스트 블록/`system-reminder` 제거/빈
-  텍스트 생략/`tool_result`만 있는 user는 기존과 동일 / Codex `user_message` → `user` /
-  reducer 활동 overlay가 `user`를 건너뜀.
+  텍스트 생략/`tool_result`만 있는 user는 기존과 동일 / Codex `user_message` → `user`.
+- `session-log.test.js`(비회귀): Worker 형식 로그(`tool_result`만 있는 `user`)로는
+  `last_activity`가 바뀌지 않는다 — 현행 fixture로 고정.
 - `transcript-drawer.test.js`: `session_ref` open → subscribe payload / `label`·
   `resume_command` bar 렌더와 복사 / `launch_id`+`session_ref` 거부 / `hide_prompt`.
 - `utils/session-ref.test.js`: key·label·drawer input·live 판정 3분기.
 - `monitor/lanes.test.js`: `session_refs` 전달, 비배열 → `[]`.
 - `worker/running-grid.test.js`: 세션 타일 — current 있음 → `▤ 세션` 버튼·칩, `remote`/
-  `missing` disabled + title, current 없음 → UI-yrzu §6 그대로 / Worker 타일 불변.
+  `missing` disabled + title, `last_event_at` 있음 → `최근 활동 n 전`·없음 → `갱신 n 전`·
+  둘 다 없음 → 줄 생략, current 없음 → UI-yrzu §6 그대로 / Worker 타일 불변.
 - `monitor/index.test.js`: 세션 타일 `▤ 세션` 클릭 → `drawer.open` 인자(attempt_id
   슬롯·session_ref·root_dir·meta.status).
 - `session-history.test.js`: 세션 행 블록 순서(current → 과거 최신순 → attempt) / glyph·
   meta·time / disabled 규칙 / `⧉ 재개` 복사 / 빈 `session_refs`는 현행 출력과 동일
   (스냅샷).
 - `detail-panel` 테스트: `metadata.session_ref` 있을 때만 `get-session-refs` 요청, 값
-  변경 시 재요청, 실패 시 행 없음.
+  변경 시 재요청, 같은 ID의 다른 워크스페이스 전환 시 이전 응답 미표시, 늦은 응답
+  폐기(세대 번호), 실패 시 행 없음.
 
 **advisory 수동 관측(acceptance 아님)**: 배포 뒤 이 세션(`session_ref`가 기록된
 UI-4xzk 자신)의 타일과 상세에서 `▤ 세션`으로 drawer가 열리고 live append가 도착하는
