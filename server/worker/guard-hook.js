@@ -173,7 +173,14 @@ guard_is_zero() {
 # be judged on the swap while the original reached the remote. --no-renames is
 # mandatory for the mirror reason: rename detection prints only the NEW path, so
 # server/x.js -> docs/x.js would read as docs-only while deleting a source
-# file.
+# file. --ignore-submodules=none closes the third: diff.ignoreSubmodules=all is
+# session-writable repo config, and under it a gitlink change outside docs/ is
+# simply absent from --name-only, so a docs file plus a moved submodule pointer
+# would read as docs-only while the tree change reached the base.
+#
+# All three defeat the same shape of attack — local state that changes what the
+# judgment READS without changing what the push TRANSMITS — so the judgment is
+# pinned to explicit flags rather than to whatever the repo config says.
 #
 # Conditions are asked in order and the FIRST failure is the reported reason.
 guard_docs_only() {
@@ -202,7 +209,7 @@ guard_docs_only() {
     guard_reason=git_error
     return 1
   fi
-  guard_delta=$(git --no-replace-objects diff --no-renames --name-only "$2" "$1" 2>/dev/null </dev/null)
+  guard_delta=$(git --no-replace-objects diff --no-renames --ignore-submodules=none --name-only "$2" "$1" 2>/dev/null </dev/null)
   guard_rc=$?
   if [ "$guard_rc" -ne 0 ]; then
     guard_reason=git_error

@@ -624,6 +624,38 @@ describe('guard hook — docs-only base push exemption (UI-7ufi §2)', () => {
     ).not.toContain('server/replaced.js');
   });
 
+  test('refuses a gitlink hidden by diff.ignoreSubmodules', () => {
+    // The `--ignore-submodules=none` counterexample, and the one that is REPO
+    // CONFIG rather than a ref: `diff.ignoreSubmodules=all` is writable by the
+    // very session being judged, and under it a gitlink outside `docs/` simply
+    // does not appear in `--name-only`. A bare 160000 index entry is enough —
+    // the elision is decided by the entry's mode, not by a real submodule.
+    git(['config', 'diff.ignoreSubmodules', 'all'], repo);
+    const before = String(remoteTip(origin, BASE));
+    const sha = candidateSha((cwd) => {
+      writeAt(cwd, 'docs/superpowers/specs/x.md', '# spec\n');
+      git(['add', '-A'], cwd);
+      git(
+        ['update-index', '--add', '--cacheinfo', `160000,${before},server/x`],
+        cwd
+      );
+      git(['commit', '-q', '-m', 'docs plus a gitlink'], cwd);
+    });
+    // The disguise really works on a config-aware read: that is what makes this
+    // a counterexample rather than a restatement of the source-only case.
+    expect(
+      git(['diff', '--no-renames', '--name-only', before, sha], repo).trim()
+    ).toBe('docs/superpowers/specs/x.md');
+
+    const result = pushCandidate(sha);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain(
+      'bdui guard: docs-only exemption not met: paths (server/x)'
+    );
+    expect(remoteTip(origin, BASE)).toBe(before);
+  });
+
   test('refuses a base deletion with the deletion reason', () => {
     const before = remoteTip(origin, BASE);
 

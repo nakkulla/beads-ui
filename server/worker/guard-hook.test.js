@@ -162,14 +162,15 @@ describe('guard-hook docs-only exemption (UI-7ufi §2.1)', () => {
     expect(script).toContain('docs/*) ;;');
   });
 
-  test('reads the delta with rename detection and replace refs off', () => {
-    // Both flags are load-bearing counterexample defenses, not style: without
-    // them a rename out of `server/` or a local `refs/replace/*` swap reads as
-    // docs-only. Their absence would be a silent widening of the exemption.
+  test('reads the delta with renames, replace refs and submodule elision off', () => {
+    // All three flags are load-bearing counterexample defenses, not style:
+    // without them a rename out of `server/`, a local `refs/replace/*` swap, or
+    // `diff.ignoreSubmodules=all` hiding a gitlink reads as docs-only. Their
+    // absence would be a silent widening of the exemption.
     const script = render();
 
     expect(script).toContain(
-      'git --no-replace-objects diff --no-renames --name-only "$2" "$1"'
+      'git --no-replace-objects diff --no-renames --ignore-submodules=none --name-only "$2" "$1"'
     );
   });
 
