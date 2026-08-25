@@ -105,6 +105,69 @@ describe('runner/codex argv (measured against codex 0.147.0)', () => {
     ).toHaveLength(1);
   });
 
+  test('takes the exec fork branch when fork_session is set', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'sol',
+      resume_session_id: 'thread-1',
+      fork_session: true
+    });
+
+    expect(built.args.slice(0, 6)).toEqual([
+      'exec',
+      'fork',
+      'thread-1',
+      '--json',
+      '-m',
+      'gpt-5.6-sol'
+    ]);
+  });
+
+  test('leaves the plain resume argv untouched when fork_session is false', () => {
+    const spec = codexSpec();
+
+    const forkless = spec.buildArgv(BEAD, WS, {
+      model: 'sol',
+      resume_session_id: 'thread-1',
+      fork_session: false
+    });
+
+    expect(forkless.args).toEqual(
+      spec.buildArgv(BEAD, WS, { model: 'sol', resume_session_id: 'thread-1' })
+        .args
+    );
+  });
+
+  test('resolves the same model id on the fork and resume branches', () => {
+    const spec = codexSpec();
+
+    const forked = spec.buildArgv(BEAD, WS, {
+      model: 'luna',
+      resume_session_id: 'thread-1',
+      fork_session: true
+    });
+    const resumed = spec.buildArgv(BEAD, WS, {
+      model: 'luna',
+      resume_session_id: 'thread-1'
+    });
+
+    expect(forked.args[forked.args.indexOf('-m') + 1]).toBe(
+      resumed.args[resumed.args.indexOf('-m') + 1]
+    );
+  });
+
+  test('ignores fork_session when no thread id is being resumed', () => {
+    const spec = codexSpec();
+
+    const built = spec.buildArgv(BEAD, WS, {
+      model: 'sol',
+      fork_session: true
+    });
+
+    expect(built.args).toEqual(spec.buildArgv(BEAD, WS, { model: 'sol' }).args);
+  });
+
   test('keeps -m on resume so the recorded model is not questioned', () => {
     const spec = codexSpec();
 

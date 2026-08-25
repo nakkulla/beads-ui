@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import {
   CODEX_SCAN_DAYS,
   parseSessionRef,
+  qualifySessionFork,
   resolveSessionFile,
   sessionRefViews
 } from './session-ref.js';
@@ -361,5 +362,102 @@ describe('sessionRefViews', () => {
     );
 
     expect(result[0].locality).toBe('missing');
+  });
+});
+
+describe('qualifySessionFork (UI-p206 §3)', () => {
+  /**
+   * A local claude transcript for one session id, under `/home/u`.
+   *
+   * @param {string} session_id
+   */
+  function localClaudeFs(session_id) {
+    return fakeFs({
+      dirs: { '/home/u/.claude/projects': ['-repo-a'] },
+      files: { [`/home/u/.claude/projects/-repo-a/${session_id}.jsonl`]: 1700 }
+    });
+  }
+
+  /**
+   * @param {ReturnType<typeof fakeFs>} file_system
+   */
+  function optionsFor(file_system) {
+    return {
+      home_dir: '/home/u',
+      hostname: 'box.local',
+      fs: /** @type {any} */ (file_system)
+    };
+  }
+
+  test('accepts the current item when the provider and a local transcript agree', () => {
+    const options = optionsFor(localClaudeFs('sid-new'));
+
+    const result = qualifySessionFork(
+      { session_ref: 'claude:sid-old@box; claude:sid-new@box' },
+      'claude',
+      options
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      provider: 'claude',
+      session_id: 'sid-new'
+    });
+  });
+
+  test('rejects no_session_ref when the bead names no session', () => {
+    const options = optionsFor(fakeFs({}));
+
+    const result = qualifySessionFork({}, 'claude', options);
+
+    expect(result).toEqual({ ok: false, reason: 'no_session_ref' });
+  });
+
+  test('rejects unsafe_session_id for an id outside the narrow grammar', () => {
+    const options = optionsFor(fakeFs({}));
+
+    const result = qualifySessionFork(
+      { session_ref: 'claude:../escape@box' },
+      'claude',
+      options
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unsafe_session_id' });
+  });
+
+  test('rejects unsafe_session_id for an id the CLI would read as an option', () => {
+    const options = optionsFor(localClaudeFs('-fork-session'));
+
+    const result = qualifySessionFork(
+      { session_ref: 'claude:-fork-session@box' },
+      'claude',
+      options
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'unsafe_session_id' });
+  });
+
+  test('rejects provider_mismatch when the dispatch resolved to the other CLI', () => {
+    const options = optionsFor(localClaudeFs('sid-new'));
+
+    const result = qualifySessionFork(
+      { session_ref: 'claude:sid-new@box' },
+      'codex',
+      options
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'provider_mismatch' });
+  });
+
+  test('rejects not_local when the session belongs to another machine', () => {
+    const file_system = localClaudeFs('sid-new');
+
+    const result = qualifySessionFork(
+      { session_ref: 'claude:sid-new@other-box' },
+      'claude',
+      optionsFor(file_system)
+    );
+
+    expect(result).toEqual({ ok: false, reason: 'not_local' });
   });
 });
