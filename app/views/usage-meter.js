@@ -3,9 +3,10 @@ import { html, render } from 'lit-html';
 /**
  * @typedef {{ key: string, pct: number, resetsAt: string }} UsageWindow
  * @typedef {{ number: number, email: string, alias: string | null, plan: string | null, active: boolean, status: string, windows: UsageWindow[], fetchedAt: string | null, ageSeconds: number | null }} UsageAccount
- * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[] }} ProviderSnapshot
+ * @typedef {{ available: boolean, windows: UsageWindow[], ageSeconds: number | null, accounts: UsageAccount[], receivedAtMs: number, held: boolean }} ProviderSnapshot
  * @typedef {{ key: string, label: string, endpoint: string, switch_endpoint: string, tool: string }} ProviderDescriptor
  * @typedef {{ kind: 'warn' | 'error', text: string }} RowMessage
+ * @typedef {{ kind: 'ok', snapshot: ProviderSnapshot } | { kind: 'empty' } | { kind: 'error' }} ProviderRead
  */
 
 const MONTH_NAMES = [
@@ -216,9 +217,10 @@ function normalizeAccountRow(input) {
  * account row is usable.
  *
  * @param {unknown} input
+ * @param {number} received_at_ms
  * @returns {ProviderSnapshot | null}
  */
-function normalizeSnapshot(input) {
+function normalizeSnapshot(input, received_at_ms) {
   if (!input || typeof input !== 'object') {
     return null;
   }
@@ -246,8 +248,69 @@ function normalizeSnapshot(input) {
       Number.isFinite(payload.ageSeconds)
         ? payload.ageSeconds
         : null,
-    accounts
+    accounts,
+    receivedAtMs: received_at_ms,
+    held: false
   };
+}
+
+/**
+ * Separate an empty-but-successful provider response from a failed lookup.
+ *
+ * The two collapse to the same `available: false` shape on the wire, but only
+ * a failure may keep the previous snapshot on screen: the server attaches
+ * `accounts[]` to every payload it could parse, so a missing array is the tool
+ * itself failing (`cswap`/`codex-auth` non-zero, killed at the route timeout,
+ * unparsable stdout), while an empty array is a provider that genuinely
+ * manages no account.
+ *
+ * @param {unknown} input
+ * @param {number} received_at_ms
+ * @returns {ProviderRead}
+ */
+function readPayload(input, received_at_ms) {
+  if (!input || typeof input !== 'object') {
+    return { kind: 'error' };
+  }
+  const snapshot = normalizeSnapshot(input, received_at_ms);
+  if (snapshot) {
+    return { kind: 'ok', snapshot };
+  }
+  return Array.isArray(/** @type {any} */ (input).accounts)
+    ? { kind: 'empty' }
+    : { kind: 'error' };
+}
+
+/**
+ * Seconds since the snapshot's measurement, counting the time it has been held
+ * on screen. The server's `ageSeconds` is fixed at fetch time, so without this
+ * a held snapshot would keep claiming the age it had when it arrived.
+ *
+ * @param {ProviderSnapshot} snapshot
+ * @param {number} now_ms
+ */
+function effectiveAgeSeconds(snapshot, now_ms) {
+  const measured = snapshot.ageSeconds === null ? 0 : snapshot.ageSeconds;
+  return measured + Math.max(0, now_ms - snapshot.receivedAtMs) / 1_000;
+}
+
+/**
+ * What a snapshot renders as right now. A held snapshot keeps its numbers only
+ * while they are fresh enough to act on; past the stale bound it degrades to
+ * the provider's empty state, so the header group keeps its place without
+ * presenting a long-dead measurement as current.
+ *
+ * @param {ProviderSnapshot} snapshot
+ * @param {number} now_ms
+ */
+function displaySnapshot(snapshot, now_ms) {
+  if (!snapshot.held) {
+    return snapshot;
+  }
+  if (effectiveAgeSeconds(snapshot, now_ms) <= STALE_AGE_SECONDS) {
+    return snapshot;
+  }
+  return { ...snapshot, available: false, windows: [], accounts: [] };
 }
 
 /**
@@ -496,14 +559,12 @@ export function createUsageMeter(mount_element) {
    * @param {number} now_ms
    */
   function renderGroup(provider, snapshot, now_ms) {
+    const age_seconds = effectiveAgeSeconds(snapshot, now_ms);
+    // A held snapshot is stale from the first failed poll, however young its
+    // measurement was: the number stopped tracking the provider.
     const stale =
-      snapshot.available &&
-      typeof snapshot.ageSeconds === 'number' &&
-      snapshot.ageSeconds > STALE_AGE_SECONDS;
-    const stale_note =
-      stale && typeof snapshot.ageSeconds === 'number'
-        ? `${Math.floor(snapshot.ageSeconds / 60)}분 전 측정`
-        : '';
+      snapshot.available && (snapshot.held || age_seconds > STALE_AGE_SECONDS);
+    const stale_note = stale ? `${Math.floor(age_seconds / 60)}분 전 측정` : '';
     const inactive_count = snapshot.accounts.filter(
       (account) => !account.active
     ).length;
@@ -709,12 +770,13 @@ export function createUsageMeter(mount_element) {
 
   /** Render every currently available provider. */
   function renderProviders() {
+    const now_ms = Date.now();
     /** @type {{ provider: ProviderDescriptor, snapshot: ProviderSnapshot }[]} */
     const entries = [];
     for (const provider of PROVIDERS) {
       const snapshot = provider_snapshots.get(provider.key);
       if (snapshot) {
-        entries.push({ provider, snapshot });
+        entries.push({ provider, snapshot: displaySnapshot(snapshot, now_ms) });
       }
     }
     if (entries.length === 0) {
@@ -734,7 +796,6 @@ export function createUsageMeter(mount_element) {
       closeCard();
     }
 
-    const now_ms = Date.now();
     render(renderMeter(entries, now_ms), mount_element);
     mount_element.hidden = false;
     if (open_entry) {
@@ -774,41 +835,55 @@ export function createUsageMeter(mount_element) {
   }
 
   /**
-   * Fetch one provider and collapse its failure to unavailable.
+   * Fetch one provider, separating a failed lookup from an empty one.
    *
    * @param {ProviderDescriptor} provider
-   * @returns {Promise<ProviderSnapshot | null>}
+   * @returns {Promise<ProviderRead>}
    */
   async function fetchProvider(provider) {
     try {
       const response = await fetch(provider.endpoint);
       if (!response.ok) {
-        return null;
+        return { kind: 'error' };
       }
-      return normalizeSnapshot(await response.json());
+      return readPayload(await response.json(), Date.now());
     } catch {
-      return null;
+      return { kind: 'error' };
     }
   }
 
-  /** Refresh every provider independently, then render one coherent tick. */
+  /**
+   * Refresh every provider independently, then render one coherent tick. A
+   * failed lookup holds the provider's last good snapshot instead of dropping
+   * it: the usage tools fail for seconds at a time (a lock wait, a token
+   * refresh, a slow window fetch), and dropping the snapshot made the whole
+   * group vanish from the header for a poll interval or more.
+   */
   async function refresh() {
     refresh_generation += 1;
     const generation = refresh_generation;
     const results = await Promise.all(
       PROVIDERS.map(async (provider) => ({
         provider,
-        snapshot: await fetchProvider(provider)
+        read: await fetchProvider(provider)
       }))
     );
     if (destroyed || generation !== refresh_generation) {
       return;
     }
     for (const result of results) {
-      if (result.snapshot) {
-        provider_snapshots.set(result.provider.key, result.snapshot);
-      } else {
-        provider_snapshots.delete(result.provider.key);
+      const provider_key = result.provider.key;
+      if (result.read.kind === 'ok') {
+        provider_snapshots.set(provider_key, result.read.snapshot);
+        continue;
+      }
+      if (result.read.kind === 'empty') {
+        provider_snapshots.delete(provider_key);
+        continue;
+      }
+      const previous = provider_snapshots.get(provider_key);
+      if (previous !== undefined && !previous.held) {
+        provider_snapshots.set(provider_key, { ...previous, held: true });
       }
     }
     renderProviders();

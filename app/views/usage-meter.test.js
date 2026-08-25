@@ -1185,3 +1185,118 @@ describe('usage meter account switch', () => {
     meter.destroy();
   });
 });
+
+describe('usage meter snapshot hold', () => {
+  test('keeps the last good group when a later poll fails', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubOnceThenFail(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }])
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mount.querySelectorAll('.usage-meter__window')).toHaveLength(1);
+    expect(mount.querySelector('.usage-meter__group')?.classList).toContain(
+      'usage-meter__group--stale'
+    );
+    meter.destroy();
+  });
+
+  test('ages the tooltip of a held group while the failures continue', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubOnceThenFail(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }], 30)
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+
+    expect(
+      mount.querySelector('.usage-meter__window')?.getAttribute('title')
+    ).toContain('5분 전 측정');
+    meter.destroy();
+  });
+
+  test('degrades a held group to the empty state past the stale bound', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    stubOnceThenFail(
+      usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }], 30)
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+
+    expect(mount.querySelector('.usage-meter__provider')?.textContent).toBe(
+      'Claude'
+    );
+    expect(mount.querySelector('.usage-meter__empty')).not.toBeNull();
+    expect(mount.querySelector('.usage-meter__window')).toBeNull();
+    meter.destroy();
+  });
+
+  test('drops the group when the provider reports no managed account', async () => {
+    vi.useFakeTimers();
+    const mount = mountMeter();
+    const reset_at = new Date(Date.now() + 60 * 60_000).toISOString();
+    let served = false;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((/** @type {string} */ url) => {
+        if (url !== '/api/claude-usage') {
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ available: false })
+          });
+        }
+        const payload = served
+          ? { available: false, accounts: [] }
+          : usageResponse([{ key: '5h', pct: 26, resetsAt: reset_at }]);
+        served = true;
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve(payload)
+        });
+      })
+    );
+
+    const meter = createUsageMeter(mount);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mount.hidden).toBe(true);
+    expect(mount.querySelector('.usage-meter')).toBeNull();
+    meter.destroy();
+  });
+});
+
+/**
+ * Serve one good Claude payload, then fail every later lookup — the shape of a
+ * usage tool that times out or exits non-zero on a later poll.
+ *
+ * @param {unknown} claude_payload
+ */
+function stubOnceThenFail(claude_payload) {
+  let served = false;
+  const fetchMock = vi.fn((/** @type {string} */ url) => {
+    if (url === '/api/claude-usage' && !served) {
+      served = true;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(claude_payload)
+      });
+    }
+    return Promise.reject(new Error('offline'));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
