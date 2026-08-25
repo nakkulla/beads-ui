@@ -60,6 +60,7 @@ import {
 } from '../../utils/relative-time.js';
 import { parseReport } from '../../utils/report-marker.js';
 import { requestResumeInstructions } from '../../utils/resume-instructions-dialog.js';
+import { sessionPreferredReason } from '../../utils/session-preferred.js';
 import { showToast } from '../../utils/toast.js';
 import {
   SUM_FIELDS,
@@ -3496,6 +3497,18 @@ export function createWorkerView(mount_element, options = {}) {
       const worker_ineligible =
         Object.hasOwn(it, 'labels') &&
         isWorkerIneligible(/** @type {any} */ (it).labels);
+      // Advisory only (UI-49mc §3): the projection folds the contract's
+      // priority here so no card, test, or later consumer re-decides that
+      // `worker-ineligible` beats `session-preferred`. Same fail-quiet labels
+      // guard as above.
+      const session_preferred_reason =
+        worker_ineligible || !Object.hasOwn(it, 'labels')
+          ? ''
+          : sessionPreferredReason(
+              /** @type {any} */ (it).labels,
+              /** @type {any} */ (it).metadata
+            );
+      const session_preferred = session_preferred_reason.length > 0;
       const eligible =
         !worker_ineligible &&
         (is_quick_fix ? has_description : has_spec && !spec.conflict);
@@ -3534,6 +3547,9 @@ export function createWorkerView(mount_element, options = {}) {
         // chip, and refused affordances from this one boolean, so no template or
         // stylesheet re-reads the label strings.
         worker_ineligible,
+        // 세션 권장 advisory (UI-49mc §3). 자격 판정에는 들어가지 않는다.
+        session_preferred,
+        session_preferred_reason,
         // Filter inputs (UI-ki09); the card template ignores them.
         blocked: is_blocked,
         has_spec,

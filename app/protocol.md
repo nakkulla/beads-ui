@@ -141,6 +141,13 @@ Runnable rows inside `workspaces[].runnable` additionally carry
 of the shared `ready_explain` snapshot. A legacy snapshot without that source
 uses `false` / `[]` and does not remove the candidate.
 
+The `session-preferred` label is ADVISORY and, unlike `worker-ineligible`, never
+removes a row from the runnable verdict — `qualify()` in
+`server/worker/runnable-cache.js` does not read it. It is valid only when the
+paired `session_preferred_reason` metadata is inside the contract enum, and it
+loses to `worker-ineligible` in display: a row carrying both draws the
+`worker-ineligible` treatment only (UI-49mc §5).
+
 Runnable rows also carry `workflow` and `exec_pins` (UI-eey2 §9.1). `workflow`
 is the `enrichIssueWorkflow` stepper projection derived from the SAME `bd list`
 row — no extra bd call — and is `null` when it could not be computed. In every

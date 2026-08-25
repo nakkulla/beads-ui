@@ -802,6 +802,82 @@ describe('worker-ineligible candidate card (UI-8881)', () => {
   });
 });
 
+describe('session-preferred candidate card (UI-49mc)', () => {
+  const EXCLUSIVE_MACHINE_TITLE =
+    '실행 중 머신 독점 필요 — 부하 하네스·timing 비교';
+
+  test('draws the 세션 권장 chip with the contract tooltip', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+
+    const chip = /** @type {HTMLElement} */ (
+      card.querySelector('.worker-card__session-preferred')
+    );
+
+    expect(chip.textContent?.trim()).toBe('세션 권장');
+    expect(chip.title).toBe(EXCLUSIVE_MACHINE_TITLE);
+  });
+
+  test('omits the chip for a candidate without a valid attachment', () => {
+    const card = renderCandidate({ session_preferred: false });
+
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+
+  test('yields the head slot to worker-ineligible when both are attached', () => {
+    const card = renderCandidate({
+      draggable: false,
+      worker_ineligible: true,
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+
+    expect(card.querySelector('.worker-card__ineligible')).not.toBeNull();
+    expect(card.querySelector('.worker-card__session-preferred')).toBeNull();
+  });
+
+  test('keeps the card draggable and unshaded', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+
+    expect(card.getAttribute('draggable')).toBe('true');
+    expect(card.classList.contains('worker-card--ineligible')).toBe(false);
+  });
+
+  test('renders the lane menu for its own place_menu', () => {
+    const card = renderCandidate(
+      {
+        session_preferred: true,
+        session_preferred_reason: 'exclusive_machine'
+      },
+      {
+        bead_id: 'UI-qf',
+        lanes: [{ id: 'parallel', label: '병렬', count: 3 }]
+      }
+    );
+
+    expect(card.querySelector('.worker-card__place-menu')).not.toBeNull();
+    expect(card.querySelector('.worker-card__place-lane')).not.toBeNull();
+  });
+
+  test('leaves the queue button enabled with the unchanged tooltip', () => {
+    const card = renderCandidate({
+      session_preferred: true,
+      session_preferred_reason: 'exclusive_machine'
+    });
+    const place = /** @type {HTMLButtonElement} */ (
+      card.querySelector('.worker-card__place')
+    );
+
+    expect(place.disabled).toBe(false);
+    expect(place.title).toBe('대기 큐 맨 뒤에 추가');
+  });
+});
+
 describe('discard receipts', () => {
   test('uses the shared state-specific confirmation wording', () => {
     expect(discardConfirmationMessage('UI-x1', 'unmerged')).toContain(
