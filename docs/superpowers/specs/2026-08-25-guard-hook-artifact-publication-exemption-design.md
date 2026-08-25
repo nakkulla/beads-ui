@@ -5,6 +5,8 @@ scope:
   - server/worker/guard-hook.integration.test.js
   - server/worker/base-drift.js
   - server/worker/base-drift.test.js
+  - server/worker/queue-store.js
+  - server/worker/queue-store.test.js
 ---
 
 # Worker guard hook의 docs 전용 base push 예외 — artifact 게시가 Worker 안에서 완결되도록
@@ -54,17 +56,26 @@ spec은 사람이 개입하기 전까지 절대 개정·반영되지 않는다.
 1. `local_oid`가 all-zero가 아니다 — 삭제 push는 예외 대상이 아니다(사유 `deletion`).
 2. `remote_oid`가 all-zero가 아니다 — base ref가 원격에 이미 존재해야 한다. 신규 ref
    생성은 예외 대상이 아니다(사유 `new_ref`).
-3. fast-forward — `git merge-base --is-ancestor "$remote_oid" "$local_oid"`가 0으로
-   종료한다(사유 `not_fast_forward`). git 클라이언트는 non-ff로 판정한 ref를
+3. fast-forward — `git --no-replace-objects merge-base --is-ancestor "$remote_oid"
+   "$local_oid"`가 0으로 종료한다(사유 `not_fast_forward`). git 클라이언트는 non-ff로 판정한 ref를
    `pre-push` hook에 넘기지 않고 먼저 거부하므로(`transport.c`, `REF_STATUS_REJECT_*`
    ref는 hook 입력에서 제외) 실제 push에서는 이 조건이 발동할 일이 없다. 그래도
    두는 이유는 아래 4의 diff 기준점이 원격 tip의 조상 관계에 있음을 hook 스스로
    보장해, git의 동작 변화나 `--force` 조합에 판정이 기대지 않게 하기 위해서다.
-4. **docs 전용 델타** — `git diff --name-only "$remote_oid" "$local_oid"`의 출력이
-   비어 있지 않고, 모든 줄이 `docs/` 접두사로 시작한다(사유 `paths`). 파일 수·커밋
-   수·merge 커밋 여부·파일 종류(`.md`, `assets/` 이미지 등)·추가/수정/삭제는 묻지
-   않는다. 출력이 비어 있으면(트리 동일) 통과 조건 4를 만족하지 못한 것으로 본다 —
-   게시할 것이 없는 push는 land 스크립트가 만들지 않는다.
+4. **docs 전용 델타** — `git --no-replace-objects diff --no-renames --name-only
+   "$remote_oid" "$local_oid"`의 출력이 비어 있지 않고, 모든 줄이 `docs/` 접두사로
+   시작한다(사유 `paths`). 파일 수·커밋 수·merge 커밋 여부·파일 종류(`.md`, `assets/`
+   이미지 등)·추가/수정/삭제는 묻지 않는다.
+   - `--no-renames`는 필수다. porcelain `git diff`는 `diff.renames` 기본값(true, git
+     2.9+)으로 이름 변경을 감지해 **새 경로만** 출력하므로, `server/x.js` →
+     `docs/x.js` 이동이 `docs/x.js` 한 줄로 보여 `server/x.js` 삭제라는 비-docs
+     변경이 통과한다. 이름 변경을 삭제+추가로 풀어야 원 경로가 검사된다.
+   - `--no-replace-objects`는 두 판정 명령 모두에 붙인다. 로컬 `refs/replace/*`는
+     `merge-base`·`diff`의 객체 읽기에는 적용되지만 push 전송에는 적용되지 않으므로,
+     코드 변경이 든 원본 커밋을 docs-only 커밋으로 치환해 두면 hook은 치환본을
+     보고 통과시키고 원격에는 원본이 도착한다. 판정은 전송되는 객체 그 자체로 한다.
+   - 출력이 비어 있으면(트리 동일) 통과 조건 4를 만족하지 못한 것으로 본다 —
+     게시할 것이 없는 push는 land 스크립트가 만들지 않는다.
    - git이 특수 문자 경로를 따옴표로 감싸 출력하면(`"docs/…"`) 첫 글자가 `"`라
      접두사 검사에 실패하므로 거부된다. 의도된 fail-closed다(`core.quotePath`를 끄지
      않는다).
@@ -111,7 +122,11 @@ UI-1xcd §4.1의 불변식 "모든 줄이 거부 여부와 무관하게 기록�
   다른 값의 `exempt`(미지의 문자열)는 예외로 인정하지 않고 종전대로 후보에 넣는다 —
   기록 형식의 확장은 hook과 검출 층이 같은 값을 알 때만 유효하다.
 - 제외한 oid는 `BaseDriftRecord.artifact_pushed: string[]`로 별도 보존한다(중복 제거,
-  기록 순서). 기록은 base가 움직였고 push log를 읽은 경우에만 채우며, 예외 항목이
+  기록 순서). 이 record는 `queue-store.js`의 `Attempt.base_drift` 타입(`@property`
+  71행 부근)으로 영속되므로 그 타입 선언에 `artifact_pushed?: string[]`를 추가하고,
+  `queue-store.test.js`의 load→save→reload 왕복 테스트로 보존을 고정한다. 런타임
+  `isRecord` 통과 객체는 그대로 저장되므로 동작 변경은 없고 durable 타입·검증의
+  완결이 목적이다. 기록은 base가 움직였고 push log를 읽은 경우에만 채우며, 예외 항목이
   없으면 키를 쓰지 않는다(부재 = 관측이 거기까지 가지 않았거나 해당 없음, 기존
   관용구와 동일).
 - 도달 가능성 검사는 비-exempt 후보에만 수행한다. exempt oid만 있고 base가 움직인
@@ -153,6 +168,8 @@ UI-1xcd §4.1의 불변식 "모든 줄이 거부 여부와 무관하게 기록�
 | 5 | `docs/…/x.md` + `server/x.js` 한 커밋 | 거부, 둘째 줄 `paths (server/x.js)` |
 | 6 | `server/x.js`만 | 거부 `paths` |
 | 7 | 루트 `README.md`만 | 거부 `paths` — 확장자 기준이 아님을 고정 |
+| 7b | `server/x.js`를 `docs/x.js`로 `git mv`한 1커밋 (유사도 100% rename) | 거부 `paths (server/x.js)` — `--no-renames` 없이는 통과하는 반례 |
+| 7c | 코드 변경이 든 커밋 C를 `git replace`로 docs-only 커밋 C'에 치환한 뒤 C push | 거부 `paths` — `--no-replace-objects` 없이는 통과하는 반례; 테스트는 `refs/replace/<C>`를 만들고 push 후 원격 tree에 코드 변경이 없음을 함께 확인 |
 | 8 | base 삭제 push | 거부 `deletion` (기존 케이스 유지 + 사유 줄) |
 | 9 | 원격에 없는 base 이름으로 신규 ref 생성 | 거부 `new_ref` |
 | 10 | 원격 tip이 앞서간 뒤 구 tip 위 docs 커밋 push (non-ff) | git이 hook 전에 거부, 원격 불변, log 항목 없음 — hook 입력에 오지 않음을 고정 |
@@ -176,6 +193,9 @@ UI-1xcd §4.1의 불변식 "모든 줄이 거부 여부와 무관하게 기록�
 | 3 | `exempt: 'something_else'` | 종전대로 착지 후보 → 도달 가능하면 위반 |
 | 4 | exempt 항목만 있고 도달 가능성 seam 호출 없음 | `git` fake가 `merge-base`를 호출받지 않음 |
 
+**`queue-store.test.js`** — `base_drift.artifact_pushed`를 실은 attempt가 save→reload
+왕복에서 배열 그대로 보존되는지(기존 legacy 정규화 왕복 테스트와 같은 형태).
+
 ## 5. 완료 조건
 
 1. §4 신규 케이스 전부와 기존 guard/base-drift/session 관련 테스트 통과(`npm test`),
@@ -196,5 +216,5 @@ UI-1xcd §4.1의 불변식 "모든 줄이 거부 여부와 무관하게 기록�
 ## 구현 unit 후보
 
 단일 unit — `guard:server/worker/guard-hook.js+guard-hook.test.js+guard-hook.integration.test.js`
-+ `drift:server/worker/base-drift.js+base-drift.test.js`. 파일 비중복이지만 `exempt`
++ `drift:server/worker/base-drift.js+base-drift.test.js+queue-store.js+queue-store.test.js`. 파일 비중복이지만 `exempt`
 값 문자열을 양쪽이 공유하므로 한 위임으로 묶는다.
