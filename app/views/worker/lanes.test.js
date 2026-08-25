@@ -1415,6 +1415,38 @@ describe('worker templates are unchanged without the monitor options', () => {
 });
 
 describe('worker templates with the monitor options (UI-eey2)', () => {
+  /**
+   * @param {Record<string, any>} [options]
+   */
+  function depCard(options = {}) {
+    return shape(
+      candidateCard(
+        /** @type {any} */ ({
+          id: 'UI-b0',
+          title: '의존',
+          lane: 'candidate',
+          draggable: true
+        }),
+        null,
+        options
+      )
+    );
+  }
+
+  test('keeps the foot unfolded when it carries the dependency button', () => {
+    const card = depCard({ dep_action: true });
+
+    expect(card).toContain('worker-card__dep');
+    expect(card).not.toContain('worker-card__foot--actions-only');
+  });
+
+  test('folds the foot of a card that has no dependency button', () => {
+    const card = depCard();
+
+    expect(card).not.toContain('worker-card__dep');
+    expect(card).toContain('worker-card__foot--actions-only');
+  });
+
   test('marks exec chips as an issue pin in pinned_only mode', () => {
     const card = shape(
       candidateCard(
@@ -1437,7 +1469,7 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
     expect(card).toContain('이슈 핀 — 레포 기본값과 다름');
   });
 
-  test('names the direction of each dependency chip', () => {
+  test('draws the blocked chip and the warning line', () => {
     const row = shape(
       miniRow(
         /** @type {any} */ ({
@@ -1447,14 +1479,7 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           draggable: true,
           dependency_chips: {
             predecessors: [
-              { id: 'UI-p', label: '🔒 선행 UI-p (실행중)', title: 'pred' }
-            ],
-            successors: [
-              {
-                id: 'UI-s',
-                label: '→ 후속 UI-s (repo · 병렬 #2)',
-                title: 'succ'
-              }
+              { id: 'UI-p', label: '⛓ blocked: UI-p', title: 'pred' }
             ],
             warnings: ['⚠ 선행 UI-z가 어느 레인에도 없음']
           }
@@ -1462,11 +1487,10 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
       )
     );
 
-    expect(row).toContain('🔒 선행 UI-p (실행중)');
-    expect(row).toContain('→ 후속 UI-s (repo · 병렬 #2)');
+    expect(row).toContain('⛓ blocked: UI-p');
     expect(row).toContain('⚠ 선행 UI-z가 어느 레인에도 없음');
-    // 후속은 역방향 간선이라 해제 ✕가 없다 — 해제는 후속 쪽 카드의 선행 칩이다.
-    expect(row.match(/worker-dep__remove/g)).toHaveLength(1);
+    // 칩에는 해제 ✕가 없다 — 끊는 일은 의존성 패널이 확인을 받고 처리한다.
+    expect(row).not.toContain('worker-dep__remove');
   });
 
   test('gives the done row its own title line in three_line layout', () => {
@@ -1503,7 +1527,6 @@ describe('worker templates with the monitor options (UI-eey2)', () => {
           draggable: true,
           dependency_chips: {
             predecessors: [],
-            successors: [],
             warnings: []
           }
         })
@@ -1675,16 +1698,15 @@ describe('겹침 칩 (UI-qm12 §5.3)', () => {
     return /** @type {HTMLElement} */ (mount.querySelector('.worker-deps'));
   }
 
-  test('orders the chips 선행 → 겹침 → 후속', () => {
+  test('orders the chips blocked → 겹침', () => {
     const deps = renderDeps({
-      predecessors: [{ id: 'UI-p', label: '🔒 선행 UI-p (실행중)' }],
-      overlaps: overlaps(1),
-      successors: [{ id: 'UI-s', label: '→ 후속 UI-s (#2)' }]
+      predecessors: [{ id: 'UI-p', label: '⛓ blocked: UI-p' }],
+      overlaps: overlaps(1)
     });
 
     expect(
       Array.from(deps.children).map((chip) => chip.className.split(' ')[1])
-    ).toEqual(['worker-dep--pred', 'worker-dep--overlap', 'worker-dep--succ']);
+    ).toEqual(['worker-dep--pred', 'worker-dep--overlap']);
   });
 
   test('names only the counterpart id on the overlap chip', () => {

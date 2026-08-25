@@ -6380,7 +6380,9 @@ html[data-theme='dark'] {
 
 /* 이유 배지가 없는 카드의 푸터에는 [대기로 ↴]만 남는데, 그 버튼은 coarse
    pointer/좁은 화면 전용이다 — 데스크톱에서는 푸터째 접어 빈 줄을 남기지
-   않는다. */
+   않는다. [⛓ 의존성]이 함께 선 푸터에는 이 클래스가 붙지 않는다 (템플릿이
+   판정): 접기가 pointer와 무관한 그 버튼까지 삼켜, 실행가능 카드에서만
+   의존성 진입점이 통째로 사라졌었다 (UI-j92s §6.1). */
 .worker-card__foot--actions-only {
   display: none;
 }
@@ -7303,6 +7305,13 @@ html[data-theme='dark'] {
   font-size: var(--fs-chip);
 }
 
+/* 패널이 묻는 한 문장 (§6.1): 방향 세그먼트를 걷어낸 자리에 무엇을 고르는지가
+   글자로 선다. */
+.mon-deppanel__title {
+  color: var(--text-muted);
+  font-size: var(--fs-caption);
+}
+
 .mon-deppanel__now {
   display: flex;
   flex-wrap: wrap;
@@ -7320,13 +7329,8 @@ html[data-theme='dark'] {
 }
 
 .mon-deppanel__chip--pred {
-  border-color: var(--border-warn);
-  color: var(--chip-blocked);
-}
-
-.mon-deppanel__chip--succ {
-  border-color: var(--stage-plan-dim);
-  color: var(--stage-plan-on);
+  border-color: var(--border-blocked-dep);
+  color: var(--chip-blocked-dep);
 }
 
 .mon-deppanel__unlink {
@@ -7341,28 +7345,6 @@ html[data-theme='dark'] {
 
 .mon-deppanel__unlink:hover {
   opacity: 1;
-}
-
-.mon-deppanel__dir {
-  display: flex;
-  gap: var(--sp-3);
-}
-
-.mon-deppanel__seg {
-  flex: 1 1 0;
-  padding: var(--sp-2) var(--sp-5);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-5);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: var(--fs-caption);
-  cursor: pointer;
-}
-
-.mon-deppanel__seg.is-active {
-  border-color: var(--stage-plan-dim);
-  color: var(--stage-plan-on);
 }
 
 .mon-deppanel__search {
@@ -7463,14 +7445,11 @@ html[data-theme='dark'] {
   font-size: var(--fs-caption);
 }
 
+/* blocked 칩은 Board 카드(`.ctl-chip--blocked-dep`)와 같은 토큰을 쓴다 — 같은
+   사실을 두 화면이 다른 색으로 말하면 어휘가 갈라진다. */
 .worker-dep--pred {
-  border-color: var(--border-warn);
-  color: var(--chip-blocked);
-}
-
-.worker-dep--succ {
-  border-color: var(--stage-plan-dim);
-  color: var(--stage-plan-on);
+  border-color: var(--border-blocked-dep);
+  color: var(--chip-blocked-dep);
 }
 
 .worker-dep--warn {
@@ -7487,11 +7466,6 @@ html[data-theme='dark'] {
   font: inherit;
   padding: 0;
   cursor: pointer;
-}
-
-.worker-dep__badge {
-  color: var(--text-dim);
-  font-size: var(--fs-caption);
 }
 
 /* 소속 칩 (§5.2a): 숨기지 않는 저장 레인 멤버가 자기 레인을 가리킨다. */
@@ -7629,20 +7603,6 @@ html[data-theme='dark'] {
     max-width: none;
     margin-top: var(--sp-6);
   }
-}
-
-.worker-dep__remove {
-  border: none;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0.7;
-}
-
-.worker-dep__remove:hover {
-  opacity: 1;
 }
 
 /* 이슈 핀이 레포 기본값과 다를 때만 그리는 실행 설정 칩 (§5). */

@@ -650,8 +650,6 @@ export function execChipsTemplate(chips, options = {}) {
  * @property {string} label - Full chip text. The projection composes it because
  * only the projection knows the 위치 vocabulary; the template never invents it.
  * @property {string} [title] - Tooltip sentence.
- * @property {string} [badge] - 상대가 다른 레포일 때의 레포 배지 (UI-j92s §6.2).
- * 레포 간 관계는 모니터에만 있는 축이므로 Worker 행에는 이 값이 실리지 않는다.
  */
 
 /**
@@ -685,9 +683,8 @@ export function execChipsTemplate(chips, options = {}) {
 
 /**
  * @typedef {Object} DependencyChips
- * @property {DependencyChip[]} [predecessors] - `🔒 선행 …` — releasable (✕).
- * @property {DependencyChip[]} [successors] - `→ 후속 …` — reverse edges, so
- * they carry no ✕: releasing one belongs to the successor's own 선행 chip.
+ * @property {DependencyChip[]} [predecessors] - `⛓ blocked: …`. 칩에 해제
+ * 버튼은 없다: 끊는 일은 의존성 패널이 확인을 받고 처리한다.
  * @property {string[]} [warnings] - Lines about a predecessor that is nowhere.
  * @property {OverlapChip[]} [overlaps] - `⧉ 겹침 …` (UI-qm12 §5.3).
  * @property {boolean} [scope_missing] - 선언 원천은 읽혔는데 scope 선언이
@@ -741,10 +738,9 @@ function overlapPopoverTemplate(popover) {
 }
 
 /**
- * The 선행/후속 의존 칩 (UI-eey2 §5.1)과 겹침 칩 (UI-qm12 §5.3). Two named chips
- * rather than one coloured one, because "내가 막혔나 / 내가 막고 있나"는 색이
- * 아니라 이름으로 읽힌다. Drawn only when a projection supplies them, so Worker
- * rows are unchanged.
+ * The blocked 칩 (UI-eey2 §5.1)과 겹침 칩 (UI-qm12 §5.3). 카드는 "내가 막혔나"
+ * 하나만 말한다 — 역방향(후속) 칩은 걷어냈고, 그 관계는 의존성 패널이 그린다.
+ * Drawn only when a projection supplies them, so Worker rows are unchanged.
  *
  * `lane`은 `scope 없음` 칩 하나를 위해서만 쓴다: 실행 중 행에는 붙이지 않는다
  * (§5.3) — 이미 출발한 이슈에게 선언을 요구하는 문장이기 때문이다.
@@ -760,7 +756,6 @@ export function dependencyChipsTemplate(chips, options = {}) {
   const predecessors = Array.isArray(chips.predecessors)
     ? chips.predecessors
     : [];
-  const successors = Array.isArray(chips.successors) ? chips.successors : [];
   const warnings = Array.isArray(chips.warnings) ? chips.warnings : [];
   const overlaps = Array.isArray(chips.overlaps) ? chips.overlaps : [];
   const scope_missing =
@@ -769,7 +764,6 @@ export function dependencyChipsTemplate(chips, options = {}) {
   const cross_lane = chips.cross_lane || null;
   if (
     predecessors.length === 0 &&
-    successors.length === 0 &&
     warnings.length === 0 &&
     overlaps.length === 0 &&
     !scope_missing &&
@@ -791,23 +785,12 @@ export function dependencyChipsTemplate(chips, options = {}) {
     ${predecessors.map(
       (chip) =>
         html`<span class="worker-dep worker-dep--pred" title=${chip.title || ''}
-          >${chip.badge
-            ? html`<span class="worker-dep__badge">${chip.badge}</span>`
-            : ''}<button
+          ><button
             type="button"
             class="worker-dep__label worker-dep__open"
             data-dep-id=${chip.id}
-            data-dep-direction="predecessor"
           >
-            ${chip.label}</button
-          ><button
-            type="button"
-            class="worker-dep__remove"
-            data-blocker-id=${chip.id}
-            aria-label=${`선행 ${chip.id} 연결 해제`}
-            title="선행 연결 해제"
-          >
-            ✕
+            ${chip.label}
           </button></span
         >`
     )}${overlaps.map(
@@ -830,21 +813,7 @@ export function dependencyChipsTemplate(chips, options = {}) {
           title="겹침 판정 불가 — 아티팩트가 있으면 스펙/플랜 front-matter, 없으면 description \`## scope\`에 선언 필요"
           >scope 없음</span
         >`
-      : ''}${successors.map(
-      (chip) =>
-        html`<span class="worker-dep worker-dep--succ" title=${chip.title || ''}
-          >${chip.badge
-            ? html`<span class="worker-dep__badge">${chip.badge}</span>`
-            : ''}<button
-            type="button"
-            class="worker-dep__label worker-dep__open"
-            data-dep-id=${chip.id}
-            data-dep-direction="successor"
-          >
-            ${chip.label}
-          </button></span
-        >`
-    )}${warnings.map(
+      : ''}${warnings.map(
       (warning) =>
         html`<span class="worker-dep worker-dep--warn">${warning}</span>`
     )}${popover ? overlapPopoverTemplate(popover) : ''}
@@ -1546,7 +1515,9 @@ function placeMenuList(entries, bead_id) {
  *
  * `dep_action` (UI-j92s §6.1) adds the `⛓ 의존성` button next to `대기로 ↴`.
  * 조작 버튼 묶음은 카드가 소유하므로 여기서만 그릴 수 있고, Worker 콘솔은 이
- * 옵션을 넘기지 않으므로 렌더가 그대로다.
+ * 옵션을 넘기지 않으므로 렌더가 그대로다. 그 버튼이 서는 푸터는 접지 않는다:
+ * 접기는 coarse pointer 전용 버튼 하나만 보고 만든 규칙이라, 상시 조작인
+ * 의존성 버튼까지 데스크톱에서 함께 삼켰다.
  *
  * @param {MiniItem} item
  * @param {PlaceMenu|null} [place_menu]
@@ -1613,7 +1584,7 @@ export function candidateCard(item, place_menu = null, options = {}) {
         </div>`
       : ''}
     <div
-      class="worker-card__foot${item.reason
+      class="worker-card__foot${item.reason || options.dep_action === true
         ? ''
         : ' worker-card__foot--actions-only'}"
     >
