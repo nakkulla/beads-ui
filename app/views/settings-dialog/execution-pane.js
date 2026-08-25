@@ -58,6 +58,9 @@ const UNSET = '';
 /** The three coupled implementation keys one runtime change re-narrows. */
 const IMPL_TARGET_KEYS = ['impl_runtime', 'impl_model', 'impl_effort'];
 
+/** The two repo-scoped account keys the `실행 계정` section edits. */
+const ACCOUNT_ROW_KEYS = ['claude_account', 'codex_account'];
+
 /**
  * Upper bound on a repo's serial lane count, mirroring the Worker console's own
  * bound (`app/views/worker/index.js`). The server rejects an out-of-range value
@@ -127,6 +130,19 @@ export function createExecutionPane(mount_element, binding) {
   /** The user's account edits — kept as-is when a save fails. */
   /** @type {Record<string, string>} */
   let account_draft = {};
+  /** What the server last confirmed; the draft is diffed against this. */
+  /** @type {Record<string, string>} */
+  let account_baseline = {};
+  /**
+   * Account writes run one at a time. `bd kv` has no CAS, so the handler's
+   * read-merge-write narrows the clobber window but does not close it: two
+   * concurrent single-key writes can each merge onto the pre-write object and
+   * drop the other's key. Serializing also keeps a late response from adopting
+   * over an edit the user made after that request left.
+   *
+   * @type {Promise<void>}
+   */
+  let account_save_chain = Promise.resolve();
   /**
    * Accounts are MACHINE-local, so this list is independent of `root_dir` and
    * is read once per mounted pane rather than once per bound repo.
@@ -297,13 +313,18 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Adopt one `get`/`set` account response as the new baseline AND draft. A
-   * null response means the pane is detached or has no transport, which must
-   * not be read as "the repo has no defaults".
+   * Adopt one `get`/`set` account response as the new baseline. A null response
+   * means the pane is detached or has no transport, which must not be read as
+   * "the repo has no defaults".
+   *
+   * Only a READ resets the draft. A write response must not, because the user
+   * may have moved a select while it was in flight, and §6.1 keeps their edit
+   * state; the next save simply diffs that edit against the new baseline.
    *
    * @param {any} res
+   * @param {boolean} reset_draft
    */
-  function adoptAccountResponse(res) {
+  function adoptAccountResponse(res, reset_draft) {
     if (!isRecord(res)) {
       return;
     }
@@ -316,7 +337,10 @@ export function createExecutionPane(mount_element, binding) {
       values: isRecord(res.values) ? { ...res.values } : {},
       warnings: Array.isArray(res.warnings) ? res.warnings : []
     };
-    account_draft = { ...account_layer.values };
+    account_baseline = { ...account_layer.values };
+    if (reset_draft) {
+      account_draft = { ...account_baseline };
+    }
   }
 
   /** Read the repo's exec account defaults. */
@@ -325,7 +349,8 @@ export function createExecutionPane(mount_element, binding) {
       adoptAccountResponse(
         await send('get-workspace-accounts', {
           ...rootPayload()
-        })
+        }),
+        true
       );
     } catch (err) {
       account_layer = {
@@ -333,6 +358,7 @@ export function createExecutionPane(mount_element, binding) {
         values: {},
         warnings: ['kv_read_failed']
       };
+      account_baseline = {};
       account_draft = {};
       notify(
         `실행 계정 기본값을 읽지 못했습니다: ${err instanceof Error ? err.message : String(err)}`
@@ -392,19 +418,45 @@ export function createExecutionPane(mount_element, binding) {
   }
 
   /**
-   * Save ONE account key immediately, the way every other row on this pane
-   * saves. On failure the draft is KEPT so a retry costs no re-entry (§6.1).
+   * The account edits the server has not confirmed yet. Built at save time,
+   * not at change time, so a key whose own write was still queued when a later
+   * change arrived travels in the same request instead of racing it.
    *
-   * @param {string} key
+   * @returns {Record<string, string|null>}
    */
-  async function saveWorkspaceAccounts(key) {
-    const next = Object.hasOwn(account_draft, key) ? account_draft[key] : null;
+  function accountPatch() {
+    /** @type {Record<string, string|null>} */
+    const patch = {};
+    for (const key of ACCOUNT_ROW_KEYS) {
+      const next = Object.hasOwn(account_draft, key)
+        ? account_draft[key]
+        : null;
+      const previous = Object.hasOwn(account_baseline, key)
+        ? account_baseline[key]
+        : null;
+      if (next !== previous) {
+        patch[key] = next;
+      }
+    }
+    return patch;
+  }
+
+  /**
+   * Save the account-section diff, the way the session tab saves its own. On
+   * failure the draft is KEPT so a retry costs no re-entry (§6.1).
+   */
+  async function saveWorkspaceAccounts() {
+    const patch = accountPatch();
+    if (Object.keys(patch).length === 0) {
+      return;
+    }
     try {
       adoptAccountResponse(
         await send('set-workspace-accounts', {
-          values: { [key]: next },
+          values: patch,
           ...rootPayload()
-        })
+        }),
+        false
       );
     } catch (err) {
       notify(
@@ -425,7 +477,7 @@ export function createExecutionPane(mount_element, binding) {
       account_draft[key] = value;
     }
     doRender();
-    void saveWorkspaceAccounts(key);
+    account_save_chain = account_save_chain.then(() => saveWorkspaceAccounts());
   }
 
   /**

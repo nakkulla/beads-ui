@@ -722,4 +722,79 @@ describe('createExecutionPane exec accounts (UI-d3cb §6.1)', () => {
       'repo@example.com'
     );
   });
+
+  test('sends the second change only after the first write answers', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    /** @type {Array<() => void>} */
+    const pending = [];
+    const { root, pane, calls } = mount({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'set-workspace-accounts') {
+          return { state: 'absent', values: {}, warnings: [] };
+        }
+        await new Promise((resolve) => pending.push(() => resolve(undefined)));
+        return {
+          state: 'usable',
+          values: { claude_account: 'repo@example.com' },
+          warnings: []
+        };
+      }
+    });
+    await pane.load();
+
+    const claude = accountSelect(root, 'claude_account');
+    claude.value = 'repo@example.com';
+    claude.dispatchEvent(new Event('change'));
+    await settle();
+    const codex = accountSelect(root, 'codex_account');
+    codex.value = 'codex-key';
+    codex.dispatchEvent(new Event('change'));
+    await settle();
+
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { claude_account: 'repo@example.com' } }
+    ]);
+
+    pending.shift()?.();
+    await settle();
+    await settle();
+
+    expect(payloadsOf(calls, 'set-workspace-accounts')).toEqual([
+      { values: { claude_account: 'repo@example.com' } },
+      { values: { codex_account: 'codex-key' } }
+    ]);
+  });
+
+  test('keeps an edit made while an earlier write was in flight', async () => {
+    stubAccountFetch({ claude: CLAUDE_ROWS, codex: CODEX_ROWS });
+    /** @type {Array<() => void>} */
+    const pending = [];
+    const { root, pane } = mount({
+      transport: async (/** @type {string} */ type) => {
+        if (type !== 'set-workspace-accounts') {
+          return { state: 'absent', values: {}, warnings: [] };
+        }
+        await new Promise((resolve) => pending.push(() => resolve(undefined)));
+        return {
+          state: 'usable',
+          values: { claude_account: 'repo@example.com' },
+          warnings: []
+        };
+      }
+    });
+    await pane.load();
+
+    const claude = accountSelect(root, 'claude_account');
+    claude.value = 'repo@example.com';
+    claude.dispatchEvent(new Event('change'));
+    await settle();
+    const codex = accountSelect(root, 'codex_account');
+    codex.value = 'codex-key';
+    codex.dispatchEvent(new Event('change'));
+    pending.shift()?.();
+    await settle();
+    await settle();
+
+    expect(accountSelect(root, 'codex_account').value).toBe('codex-key');
+  });
 });
