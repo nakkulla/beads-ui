@@ -12,7 +12,8 @@ import {
   parseImplEntry,
   parsePlanReceipt,
   parsePlannedExecution,
-  parseReceipt
+  parseReceipt,
+  parseResolverReceipt
 } from './workflow-enrich.js';
 
 /** @type {string[]} */
@@ -321,6 +322,60 @@ describe('execution metadata display projection', () => {
     expect(workflow.impl_entry).toBeNull();
     expect(workflow.chips.exec_receipt).toBeNull();
     expect(workflow.chips.impl_entry).toBeNull();
+  });
+
+  test('parses a resolver self-review receipt into its two heads', () => {
+    const prior = 'd'.repeat(40);
+    const result = 'e'.repeat(40);
+
+    expect(
+      parseResolverReceipt(`resolver-self:UI-1-1787-1:${prior}@${result}`)
+    ).toEqual({ attempt: 'UI-1-1787-1', prior_sha: prior, sha: result });
+  });
+
+  test('rejects an ordinary review receipt as a resolver receipt', () => {
+    expect(parseResolverReceipt(`codex@${'a'.repeat(40)}`)).toBeNull();
+    expect(
+      parseResolverReceipt(`resolver-self:UI-1:${'a'.repeat(40)}`)
+    ).toBeNull();
+    expect(parseResolverReceipt(null)).toBeNull();
+  });
+
+  test('surfaces the resolver chip for a closed conflict-resolved bead', () => {
+    const prior = 'd'.repeat(40);
+    const result = 'e'.repeat(40);
+
+    const workflow = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'closed',
+        metadata: {
+          impl_review: `resolver-self:UI-1-1787-1:${prior}@${result}`
+        }
+      },
+      null,
+      null
+    );
+
+    expect(workflow.chips.resolver).toEqual({
+      attempt: 'UI-1-1787-1',
+      prior_sha: prior,
+      sha: result
+    });
+  });
+
+  test('leaves the resolver chip empty for an ordinary impl review', () => {
+    const workflow = enrichIssueWorkflow(
+      {
+        id: 'UI-1',
+        status: 'closed',
+        metadata: { impl_review: `codex@${'a'.repeat(40)}` }
+      },
+      null,
+      null
+    );
+
+    expect(workflow.chips.resolver).toBeNull();
   });
 });
 

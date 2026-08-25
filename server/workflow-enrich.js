@@ -43,6 +43,18 @@ const EXEC_RECEIPT_RE = /^(delegated|main):([^@\n]+)@([0-9a-fA-F]{40})$/;
 const IMPL_ENTRY_RE = /^(user)@([0-9a-fA-F]{40})$/;
 
 /**
+ * The contract's resolver self-review receipt, written into `impl_review` when
+ * a queue-owned conflict-resolution session re-vouched for the head it pushed
+ * (`resolver-self:<attempt>:<prior-head>@<result-head>`). The merge gate's own
+ * parser (`server/worker/head-review.js`) owns the fail-closed judgment; this
+ * one exists only so display can tell that form apart from an ordinary
+ * `<reviewer>@<sha>` receipt, which {@link RECEIPT_RE} would otherwise swallow
+ * whole into its reviewer token.
+ */
+const RESOLVER_RECEIPT_RE =
+  /^resolver-self:([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{40})@([0-9a-f]{40})$/i;
+
+/**
  * Effort tokens a delegated `exec_receipt` may carry as its last `:` segment
  * (`docs/contracts/workflow.md` exec_receipt format, whose vocabulary is the
  * union of `docs/contracts/harness.yaml` `implementation.effort_catalog` plus
@@ -166,6 +178,13 @@ export function parseExecReceipt(value) {
  */
 
 /**
+ * @typedef {Object} ResolverReceipt
+ * @property {string} attempt - The head-review attempt id that resolved.
+ * @property {string} prior_sha - Head the carried approval was bound to.
+ * @property {string} sha - Head the resolution produced and self-reviewed.
+ */
+
+/**
  * Parse approved-plan execution ownership for display only. The two metadata
  * fields form one value, so any invalid combination omits the whole display.
  *
@@ -195,6 +214,29 @@ export function parseImplEntry(value) {
   }
   const match = IMPL_ENTRY_RE.exec(value.trim());
   return match ? { actor: match[1], sha: match[2].toLowerCase() } : null;
+}
+
+/**
+ * Parse a resolver self-review receipt for display. Anything else — absent
+ * metadata, an ordinary receipt, a malformed resolver form — is `null`, so the
+ * chip appears only on a head a resolution session actually produced.
+ *
+ * @param {unknown} value
+ * @returns {{ attempt: string, prior_sha: string, sha: string } | null}
+ */
+export function parseResolverReceipt(value) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = RESOLVER_RECEIPT_RE.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  return {
+    attempt: match[1],
+    prior_sha: match[2].toLowerCase(),
+    sha: match[3].toLowerCase()
+  };
 }
 
 /**
@@ -950,7 +992,7 @@ function mergeStage(md, status) {
  * pinned metadata or the deriveRoute fallback (display distinguishes the
  * two — a derived value must not read as a settled pin).
  * @property {{ spec: WorkflowStage, plan?: WorkflowStage, impl: WorkflowStage, pr: WorkflowStage, merge: WorkflowStage, close?: WorkflowStage }} stages
- * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null }} chips
+ * @property {{ route: 'quick_fix'|'spec_backed'|'full_plan', route_source: 'explicit'|'derived', fast_track: boolean, pr: { number: number | null } | null, planned_execution: PlannedExecution|null, exec_receipt: ExecReceipt|null, impl_entry: { actor: string, sha: string }|null, resolver: ResolverReceipt|null }} chips
  * @property {PlannedExecution|null} planned_execution
  * @property {ExecReceipt|null} exec_receipt
  * @property {{ actor: string, sha: string }|null} impl_entry
@@ -988,6 +1030,10 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
   );
   const exec_receipt = parseExecReceipt(md.exec_receipt);
   const impl_entry = parseImplEntry(md.impl_entry);
+  // A conflict-resolution session is the only writer of this receipt form, so
+  // its presence is the whole fact the chip reports: this head did not reach
+  // the merge gate on the reviewed delta alone.
+  const resolver = parseResolverReceipt(md.impl_review);
   // Explicit only when the metadata pin itself is a valid enum value — any
   // fallback (absence, invalid value, plan_path inference) is 'derived'.
   const route_source =
@@ -1031,7 +1077,8 @@ export function enrichIssueWorkflow(issue, workspace_root, head = undefined) {
       pr: md.pr_url ? { number: parsePrNumber(md.pr_url) } : null,
       planned_execution,
       exec_receipt,
-      impl_entry
+      impl_entry,
+      resolver
     }
   };
 }

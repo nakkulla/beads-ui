@@ -85,6 +85,10 @@ var If=Object.create;var Ta=Object.defineProperty;var Pf=Object.getOwnPropertyDe
         class="ctl-chip ctl-chip--impl-entry"
         title=${`impl_entry ${i.actor}@${i.sha}`}
         >${`impl ${i.actor} \xB7 ${i.sha.slice(0,7)}`}</span
+      >`)}if(r.resolver){let i=r.resolver;s.push(l`<span
+        class="ctl-chip ctl-chip--resolver"
+        title=${`impl_review resolver-self:${i.attempt} \xB7 ${i.prior_sha.slice(0,7)} \u2192 ${i.sha.slice(0,7)}`}
+        >⚑ 충돌 해소</span
       >`)}for(let i of Sc(e.labels,n))s.push(l`<span class="ctl-chip ctl-chip--label">${i}</span>`);return e.from_id&&Kn(n,"from")&&s.push(l`<button
         type="button"
         class="ctl-chip ctl-chip--from"
