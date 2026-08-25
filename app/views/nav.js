@@ -17,14 +17,19 @@ export function createTopNav(mounts, store, router) {
   let unsubscribe = null;
 
   /**
+   * Clicking the already-active Monitor tab toggles back to the selected
+   * repo's Worker tab, so the global tab doubles as a return path.
+   *
    * @param {'board'|'worker'|'monitor'} view
    * @returns {(ev: MouseEvent) => void}
    */
   function onClick(view) {
     return (ev) => {
       ev.preventDefault();
-      log('click tab %s', view);
-      router.gotoView(view);
+      const target =
+        view === 'monitor' && activeView() === 'monitor' ? 'worker' : view;
+      log('click tab %s', target);
+      router.gotoView(target);
     };
   }
 

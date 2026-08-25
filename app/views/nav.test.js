@@ -80,6 +80,21 @@ describe('views/nav', () => {
     expect(repo_mount.querySelectorAll('a.ctl-tab.is-active').length).toBe(0);
   });
 
+  test('routes back to Worker when the active Monitor tab is clicked again', async () => {
+    const { global_mount, repo_mount, store, router } = setup();
+    store.set({ view: 'monitor' });
+
+    createTopNav(
+      { global_element: global_mount, repo_element: repo_mount },
+      /** @type {any} */ (store),
+      /** @type {any} */ (router)
+    );
+    const monitor_link = global_mount.querySelectorAll('a.ctl-tab')[0];
+    monitor_link.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(router.gotoView).toHaveBeenCalledWith('worker');
+  });
+
   test('marks only the Board tab active on the board view', async () => {
     const { global_mount, repo_mount, store, router } = setup();
 
