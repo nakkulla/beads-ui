@@ -1365,3 +1365,89 @@ describe('transcript drawer subagent folding (UI-2mpn §6.4)', () => {
     ).toBe('5');
   });
 });
+
+describe('transcript drawer 바깥 클릭 닫기', () => {
+  /**
+   * @param {Element} target
+   */
+  function mousedownOn(target) {
+    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+  }
+
+  test('closes on a mousedown outside the mount', () => {
+    store.set('session-log:att-oc1', [TEXT_EVENT]);
+    const outside = document.createElement('div');
+    document.body.appendChild(outside);
+    const onClose = vi.fn();
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store,
+      onClose
+    });
+    drawer.open({ attempt_id: 'att-oc1' });
+
+    mousedownOn(outside);
+
+    expect(drawer.isOpen()).toBe(false);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(
+      sends.some(
+        (s) =>
+          s.type === 'unsubscribe-session-log' &&
+          s.payload.id === 'session-log:att-oc1'
+      )
+    ).toBe(true);
+    drawer.destroy();
+  });
+
+  test('stays open on a mousedown inside the drawer', () => {
+    store.set('session-log:att-oc2', [TEXT_EVENT]);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-oc2' });
+
+    mousedownOn(/** @type {Element} */ (mount.querySelector('.sv__body')));
+
+    expect(drawer.isOpen()).toBe(true);
+    drawer.destroy();
+  });
+
+  test('stays open on a mousedown inside a dialog above it', () => {
+    store.set('session-log:att-oc3', [TEXT_EVENT]);
+    const dialog = document.createElement('dialog');
+    const dialog_button = document.createElement('button');
+    dialog.appendChild(dialog_button);
+    document.body.appendChild(dialog);
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store
+    });
+    drawer.open({ attempt_id: 'att-oc3' });
+
+    mousedownOn(dialog_button);
+
+    expect(drawer.isOpen()).toBe(true);
+    drawer.destroy();
+  });
+
+  test('stops listening once the drawer is closed', () => {
+    store.set('session-log:att-oc4', [TEXT_EVENT]);
+    const outside = document.createElement('div');
+    document.body.appendChild(outside);
+    const onClose = vi.fn();
+    const drawer = createTranscriptDrawer(mount, {
+      transport: mockTransport(),
+      sessionLogStore: store,
+      onClose
+    });
+    drawer.open({ attempt_id: 'att-oc4' });
+    drawer.close();
+
+    mousedownOn(outside);
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+    drawer.destroy();
+  });
+});

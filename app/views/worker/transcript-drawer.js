@@ -1072,6 +1072,50 @@ export function createTranscriptDrawer(mount_element, options = {}) {
   mount_element.addEventListener('scroll', onScroll, true);
 
   /**
+   * Close on an outside mousedown — the contract the other popovers already use
+   * (workspace picker, usage meter, board label menu). `mousedown` rather than
+   * `click`: the hosts open the drawer from a delegated click handler, so a
+   * document-level click listener would close the drawer the same gesture just
+   * opened.
+   *
+   * Two surfaces sit ABOVE an open drawer and must not close what they sit on:
+   * a native `dialog` and the body-level md viewer.
+   *
+   * @param {MouseEvent} ev
+   */
+  function onDocMousedown(ev) {
+    const target = /** @type {HTMLElement|null} */ (ev.target);
+    if (!target || typeof target.closest !== 'function') {
+      return;
+    }
+    if (mount_element.contains(target)) {
+      return;
+    }
+    if (target.closest('dialog') || target.closest('.md-viewer-root')) {
+      return;
+    }
+    close();
+  }
+
+  let outside_close_bound = false;
+
+  function bindOutsideClose() {
+    if (outside_close_bound) {
+      return;
+    }
+    document.addEventListener('mousedown', onDocMousedown);
+    outside_close_bound = true;
+  }
+
+  function unbindOutsideClose() {
+    if (!outside_close_bound) {
+      return;
+    }
+    document.removeEventListener('mousedown', onDocMousedown);
+    outside_close_bound = false;
+  }
+
+  /**
    * @param {{ attempt_id: string, launch_id?: string, root_dir?: string, meta?: DrawerMeta, hide_prompt?: boolean }} input
    */
   function open(input) {
@@ -1123,11 +1167,13 @@ export function createTranscriptDrawer(mount_element, options = {}) {
         })
       ).catch(() => {});
     }
+    bindOutsideClose();
     doRender();
   }
 
   function close() {
     const id = subscription_id;
+    unbindOutsideClose();
     attempt_id = null;
     launch_id = null;
     subscription_id = null;
@@ -1157,6 +1203,7 @@ export function createTranscriptDrawer(mount_element, options = {}) {
     },
     destroy() {
       stopHeartbeat();
+      unbindOutsideClose();
       if (storeOff) {
         storeOff();
         storeOff = null;
