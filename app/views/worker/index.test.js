@@ -11408,7 +11408,7 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     const row = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini[data-bead-id="GONE-1"]')
     );
-    expect(row.querySelector('.worker-mini__exec')).toBeNull();
+    expect(row.querySelector('.worker-chips .exec-chip')).toBeNull();
   });
 
   test('gives a serial-lane ghost row no exec chips', async () => {
@@ -11438,7 +11438,7 @@ describe('worker 실행 설정 칩 · child rollup (worker-card-exec-chips)', ()
     const ghost = /** @type {HTMLElement} */ (
       mount.querySelector('.worker-mini--ghost[data-bead-id="RD-1"]')
     );
-    expect(ghost.querySelector('.worker-mini__exec')).toBeNull();
+    expect(ghost.querySelector('.worker-chips .exec-chip')).toBeNull();
   });
 
   test('counts resolved children in the running tile rollup', () => {

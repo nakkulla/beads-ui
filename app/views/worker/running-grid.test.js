@@ -534,7 +534,7 @@ describe('running tile is unchanged without the monitor overlay (UI-eey2 §7)', 
     expect(tile).not.toContain('rtile__legs');
     expect(tile).not.toContain('stepper');
     expect(tile).toMatchInlineSnapshot(
-      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>       <div aria-hidden="true" class="rtile__accent"></div> </div>"`
+      `"<div class="rtile" data-attempt-id="a1" data-bead-id="UI-t1"> <div class="rtile__hd"> <span aria-hidden="true" class="rtile__dot"></span> <span class="rtile__id" title="클릭하면 ID 복사">UI-t1</span>  <div class="rtile__hd-actions"> <span class="rtile__elapsed">4s</span> <button aria-label="라이브 세션 열기" class="rtile__session" title="라이브 세션 열기" type="button"> ▤ 세션 </button> <button aria-label="일시정지" class="rtile__pause" title="일시정지 (같은 세션으로 재개 가능)" type="button"> ⏸ </button>  </div> </div> <div class="rtile__title">실행 중</div>        <div aria-hidden="true" class="rtile__accent"></div> </div>"`
     );
   });
 
@@ -582,16 +582,25 @@ describe('running tile with the monitor overlay (UI-eey2 §7)', () => {
     }
   };
 
-  test('adds the repo badge and serial lane chip to the header', () => {
-    const tile = shape(
+  test('adds the repo badge and serial lane chip to the meta row', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    render(
       runningTile(tileInput(), 5000, null, {
         monitor: /** @type {any} */ (monitor)
-      })
+      }),
+      mount
     );
+    const tile = /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
 
-    expect(tile).toContain('rtile__repo');
-    expect(tile).toContain('repo-a');
-    expect(tile).toContain('rtile__lane');
+    expect(tile.querySelector('.rtile__meta .rtile__repo')?.textContent).toBe(
+      'repo-a'
+    );
+    expect(tile.querySelector('.rtile__meta .rtile__lane')?.textContent).toBe(
+      's1'
+    );
+    expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
+    expect(tile.querySelector('.rtile__hd .rtile__lane')).toBeNull();
   });
 
   test('adds the last activity and its age without a stepper', () => {
@@ -827,10 +836,21 @@ describe('session tile (UI-yrzu §6)', () => {
     expect(tile.querySelector('.rtile__meta .ctl-chip--route')).not.toBeNull();
   });
 
-  test('omits the meta row when the tile carries no workflow', () => {
-    const tile = renderSession();
+  test('omits the meta row when the tile carries no slot 5 material', () => {
+    const tile = renderSession({}, null);
 
     expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  // 좌표 칩(레포 · 레인)도 슬롯 5다 (UI-251y §3.1): 오버레이가 그것만 실어도
+  // 줄은 선다.
+  test('keeps the meta row for the monitor coordinate chip alone', () => {
+    const tile = renderSession();
+
+    expect(tile.querySelector('.rtile__meta .rtile__repo')?.textContent).toBe(
+      'repo-a'
+    );
+    expect(tile.querySelector('.rtile__hd .rtile__repo')).toBeNull();
   });
 
   test('renders neither delegation chips nor a token line', () => {
@@ -880,6 +900,205 @@ describe('worker running tile header actions', () => {
     expect(actions.querySelector('.rtile__elapsed')).not.toBeNull();
     expect(actions.querySelector('.rtile__session')).not.toBeNull();
     expect(actions.querySelector('.rtile__pause')).not.toBeNull();
+  });
+});
+
+/**
+ * 실행중 타일 배치 문법 (UI-251y §3.1): 정체성 줄은 ID·상태 뱃지·조작만
+ * 상대하고, 좌표 칩·route·exec·usage는 제목 아래 `.rtile__meta` 하나에 모인다.
+ */
+describe('실행중 타일 배치 문법 (UI-251y §3.1)', () => {
+  const MONITOR = {
+    repo: 'repo-a',
+    root_dir: '/tmp/repo-a',
+    serial_lane_id: /** @type {const} */ ('s2')
+  };
+
+  /**
+   * @param {Partial<import('./running-grid.js').RunningTile>} [patch]
+   * @param {any} [monitor]
+   * @returns {HTMLElement}
+   */
+  function renderTile(patch = {}, monitor = null) {
+    document.body.innerHTML = '<div id="m"></div>';
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    render(runningTile(tileInput(patch), 5000, null, { monitor }), mount);
+    return /** @type {HTMLElement} */ (mount.querySelector('.rtile'));
+  }
+
+  test('orders the meta row repo, lane, route, exec then usage', () => {
+    const tile = renderTile(
+      {
+        workflow: /** @type {any} */ ({
+          chips: { route: 'spec_backed', route_source: 'explicit' }
+        }),
+        exec_chips: /** @type {any} */ ({
+          orchestration: { text: 'o', title: 'ot' },
+          worker: { text: 'w', title: 'wt' }
+        }),
+        usage: /** @type {any} */ ({
+          input_tokens: 1000,
+          output_tokens: 500,
+          total_tokens: 1500,
+          cost_usd: 0.42
+        })
+      },
+      MONITOR
+    );
+    const meta = /** @type {HTMLElement} */ (
+      tile.querySelector('.rtile__meta')
+    );
+
+    expect(Array.from(meta.children, (child) => child.className)).toEqual([
+      'worker-card__repo rtile__repo',
+      'rtile__lane',
+      'ctl-chip ctl-chip--route',
+      'exec-chip exec-chip--orch',
+      'exec-chip exec-chip--worker',
+      'worker-usage'
+    ]);
+  });
+
+  // 빈 줄 판정은 좌표·exec만 세지 않는다 (§3.5): usage만 있는 타일에서 지금
+  // 보이는 정보가 사라지면 안 된다.
+  test('keeps the meta row for usage alone', () => {
+    const tile = renderTile({
+      usage: /** @type {any} */ ({
+        input_tokens: 1000,
+        output_tokens: 500,
+        total_tokens: 1500,
+        cost_usd: 0.42
+      })
+    });
+
+    expect(tile.querySelector('.rtile__meta')).not.toBeNull();
+    expect(tile.querySelector('.rtile__meta .worker-usage')).not.toBeNull();
+  });
+
+  test('draws the 충돌 해소 badge in the header, not the meta row', () => {
+    const tile = renderTile(
+      { conflict_resolution: true, exec_chips: null },
+      MONITOR
+    );
+
+    expect(
+      tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
+    ).toBe('충돌 해소');
+    expect(tile.querySelector('.rtile__meta .worker-mini__badge')).toBeNull();
+  });
+
+  test('draws the paused resolution badge in the header too', () => {
+    const tile = renderTile({ conflict_resolution: true, paused: true });
+
+    expect(
+      tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
+    ).toBe('충돌 해소 일시정지');
+  });
+
+  test('draws the base exception badge in the header, not the meta row', () => {
+    const tile = renderTile({ base_exception: 'base: release-1' });
+
+    expect(
+      tile.querySelector('.rtile__hd .worker-mini__badge')?.textContent
+    ).toBe('base: release-1');
+    expect(tile.querySelector('.rtile__meta')).toBeNull();
+  });
+
+  // 슬롯 3(진행)은 활동·위임 줄 하나가 아니다 — 자식 롤업과 landing 진행도
+  // 같은 슬롯이므로 의존 칩은 그 셋 모두의 뒤에 선다 (§2).
+  test('draws the dependency chips after every progress line', () => {
+    const tile = renderTile(
+      {
+        rollup: /** @type {any} */ ({
+          total: 2,
+          count: 1,
+          current: { id: 'UI-t1.2', title: 'T2' },
+          children: [
+            { id: 'UI-t1.1', title: 'T1', status: 'closed' },
+            { id: 'UI-t1.2', title: 'T2', status: 'in_progress' }
+          ]
+        }),
+        landing: /** @type {any} */ ({
+          step: 'deploy',
+          label: '배포 중',
+          index: 4,
+          total: 7,
+          percent: 57,
+          active: true,
+          failed: false
+        })
+      },
+      {
+        ...MONITOR,
+        last_activity: { text: '파일 편집 중', at: 4000 },
+        dependency_chips: {
+          predecessors: [],
+          overlaps: [
+            {
+              id: 'UI-t9',
+              location_label: '대기',
+              prefixes: ['app/views/worker/']
+            }
+          ]
+        }
+      }
+    );
+    const order = Array.from(tile.children, (child) => child.className);
+
+    expect(order.indexOf('worker-deps')).toBeGreaterThan(
+      order.indexOf('rtile__activity')
+    );
+    expect(order.indexOf('worker-deps')).toBeGreaterThan(
+      order.indexOf('board-card__roll')
+    );
+    expect(order.indexOf('worker-deps')).toBeGreaterThan(
+      order.indexOf('rtile__landing')
+    );
+    expect(order.indexOf('worker-deps')).toBeLessThan(
+      order.indexOf('rtile__meta')
+    );
+  });
+
+  // 폐기 영수증은 슬롯 6(액션 foot)이고 생성·수정 시각은 슬롯 7이다 (§5.1).
+  test('draws the discard receipt before the times meta line', () => {
+    const tile = renderTile({
+      created_at: 1000,
+      updated_at: 4000,
+      discard: /** @type {any} */ ({
+        progress: '폐기 진행 중',
+        error: null,
+        operation: {
+          kind: 'discard',
+          operation_id: 'op-1',
+          backup: null,
+          original_pr: null,
+          revert_pr: null
+        }
+      })
+    });
+    const order = Array.from(tile.children, (child) => child.className);
+
+    expect(order.indexOf('worker-discard-receipt')).toBeGreaterThan(-1);
+    expect(order.indexOf('worker-discard-receipt')).toBeLessThan(
+      order.indexOf('worker-mini__meta')
+    );
+  });
+
+  test('keeps every coordinate chip out of the header', () => {
+    const tile = renderTile(
+      {
+        workflow: /** @type {any} */ ({
+          chips: { route: 'spec_backed', route_source: 'explicit' }
+        })
+      },
+      MONITOR
+    );
+    const head = /** @type {HTMLElement} */ (tile.querySelector('.rtile__hd'));
+
+    expect(head.querySelector('.rtile__repo')).toBeNull();
+    expect(head.querySelector('.rtile__lane')).toBeNull();
+    expect(head.querySelector('.ctl-chip--route')).toBeNull();
+    expect(head.querySelector('.worker-usage')).toBeNull();
   });
 });
 
