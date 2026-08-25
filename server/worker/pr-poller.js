@@ -76,6 +76,29 @@ function prNumberFromUrl(url) {
 }
 
 /**
+ * PR numbers the bead's `done` rows already record as merged and cleaned up.
+ *
+ * @param {Queue} queue
+ * @param {string} bead_id
+ * @returns {Set<number>}
+ */
+function retiredPrNumbers(queue, bead_id) {
+  /** @type {Set<number>} */
+  const retired = new Set();
+  const done = Array.isArray(queue?.done) ? queue.done : [];
+  for (const entry of done) {
+    if (!entry || entry.bead_id !== bead_id) {
+      continue;
+    }
+    const number = prNumberFromUrl(/** @type {any} */ (entry).pr_url);
+    if (number !== null) {
+      retired.add(number);
+    }
+  }
+  return retired;
+}
+
+/**
  * Resolve which PR a `pr_wait` bead is waiting on, from the durable attempt
  * records (the verifier stored the observed url+number in `verify_result` when
  * it moved the bead into the lane). A PURE read of the queue snapshot, so it
@@ -86,7 +109,15 @@ function prNumberFromUrl(url) {
  * state after the bead closes and leaves the resolved-only registry. That row
  * is the restart-safe fallback after attempts and before `external`, the row
  * the registry derived from bd's own `metadata.pr_url`. Attempts still win:
- * when both exist the worker's own record is the more specific one.
+ * when both exist the worker's own record is the more specific one — unless
+ * that record's PR is already retired. A bead can ship more than one PR over
+ * its life (a full_plan lands Phase 1, then the same bead comes back with the
+ * next Phases), and the attempt that produced the FIRST PR outlives that PR's
+ * merge and cleanup. Reading it again would observe a merged PR and hand the
+ * bead to post-merge cleanup a second time, deleting the head branch the new
+ * PR is built on (UI-6g7v). A `done` row for the bead is the durable record
+ * that its PR was merged and cleaned up, so any attempt pointing at a PR a
+ * `done` row already names is skipped in favour of the later sources.
  *
  * @param {Queue} queue
  * @param {string} bead_id
@@ -106,6 +137,7 @@ export function resolvePrRef(queue, bead_id, external = null) {
     return { number: revert_pr.number, url: revert_pr.url };
   }
   const attempts = queue && queue.attempts ? Object.values(queue.attempts) : [];
+  const retired = retiredPrNumbers(queue, bead_id);
   /** @type {{ number: number, url: string, at: number }|null} */
   let best = null;
   for (const a of attempts) {
@@ -120,6 +152,9 @@ export function resolvePrRef(queue, bead_id, external = null) {
     const number =
       typeof vr.pr_number === 'number' ? vr.pr_number : prNumberFromUrl(url);
     if (number === null || !Number.isFinite(number)) {
+      continue;
+    }
+    if (retired.has(number)) {
       continue;
     }
     const at = typeof a.finished_at === 'number' ? a.finished_at : 0;

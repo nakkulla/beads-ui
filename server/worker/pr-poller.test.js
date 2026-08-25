@@ -802,6 +802,41 @@ describe('worker/pr-poller — pure helpers', () => {
   test('resolvePrRef returns null for a bead with no PR record', () => {
     expect(resolvePrRef(/** @type {any} */ (queueOf()), 'UI-9')).toBe(null);
   });
+
+  test('resolvePrRef skips an attempt whose PR a done row already retired', () => {
+    const q = /** @type {any} */ (queueOf());
+    q.done.push({
+      bead_id: 'UI-1',
+      added_at: 2,
+      merge_sha: SHA,
+      pr_url: PR_URL,
+      external: true
+    });
+
+    const ref = resolvePrRef(q, 'UI-1', {
+      pr_url: 'https://github.com/o/r/pull/777',
+      pr_number: 777
+    });
+
+    expect(ref).toEqual({
+      number: 777,
+      url: 'https://github.com/o/r/pull/777'
+    });
+  });
+
+  test('resolvePrRef returns null when the only attempt PR is retired', () => {
+    const q = /** @type {any} */ (queueOf());
+    q.done.push({ bead_id: 'UI-1', added_at: 2, pr_url: PR_URL });
+
+    expect(resolvePrRef(q, 'UI-1')).toBe(null);
+  });
+
+  test('resolvePrRef ignores done rows of other beads', () => {
+    const q = /** @type {any} */ (queueOf());
+    q.done.push({ bead_id: 'UI-2', added_at: 2, pr_url: PR_URL });
+
+    expect(resolvePrRef(q, 'UI-1')?.number).toBe(304);
+  });
 });
 
 describe('worker/pr-poller — activity reporting (UI-raqh §3)', () => {
