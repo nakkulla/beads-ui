@@ -9220,49 +9220,145 @@ button.detail-session__leg:focus-visible {
   border-color: var(--border-ft);
 }
 
+/* --- issue detail: the gate stepper ---------------------------------------
+   Equal-width segments, the same vocabulary the board card's `.stp` stepper
+   already speaks, so one workflow does not get drawn two different ways. The
+   detail header's own addition is the receipt: where a review was stamped, a
+   short nail drops off the rail and hangs the commit under it. */
 .detail-summary__gates {
-  display: flex;
-  gap: var(--sp-8);
-  align-items: center;
-  margin-top: var(--sp-10);
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(56px, 1fr);
+  gap: var(--sp-2);
+  margin-top: var(--sp-14);
   overflow-x: auto;
 }
 
+/* Label, rail, and receipt are reserved on EVERY gate. A gate without a
+   receipt still occupies that third row, which is what keeps the labels on one
+   line — the old centred flex column let a receipt push its own pill up. */
 .detail-summary__gate {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  align-items: center;
-  min-width: 72px;
+  display: grid;
+  grid-template-rows: auto 4px 14px;
+  gap: var(--sp-4);
+  align-content: start;
+  min-width: 0;
+  text-align: center;
+  text-decoration: none;
 }
 
-.detail-summary__gate-pill {
-  padding: var(--sp-3) var(--sp-10);
-  border: 1px solid var(--border-chip);
-  border-radius: var(--r-9);
-  color: var(--text-muted);
-  font-size: var(--fs-chip);
+.detail-summary__gate[data-hue='spec'] {
+  --gate-on: var(--stage-spec-on);
+  --gate-dim: var(--stage-spec-dim);
+}
+
+.detail-summary__gate[data-hue='plan'] {
+  --gate-on: var(--stage-plan-on);
+  --gate-dim: var(--stage-plan-dim);
+}
+
+.detail-summary__gate[data-hue='impl'] {
+  --gate-on: var(--stage-impl-on);
+  --gate-dim: var(--stage-impl-dim);
+}
+
+.detail-summary__gate[data-hue='pr'] {
+  --gate-on: var(--stage-pr-on);
+  --gate-dim: var(--stage-pr-dim);
+}
+
+.detail-summary__gate-label {
+  color: var(--text-dim);
+  font-size: var(--fs-label-tiny);
+  letter-spacing: 0.05em;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.detail-summary__gate--on .detail-summary__gate-pill {
-  border-color: currentcolor;
-  color: var(--stage-spec-on);
-}
-
-.detail-summary__gate--stale .detail-summary__gate-pill {
-  color: var(--accent-warn);
-}
-
-.detail-summary__gate--current .detail-summary__gate-pill {
-  border-color: var(--stage-plan-dim);
-  color: var(--text-secondary);
+.detail-summary__gate-rail {
+  border-radius: var(--r-3);
+  background: var(--border-empty-fill);
 }
 
 .detail-summary__gate-sha {
+  position: relative;
   color: var(--text-dim);
   font-family: var(--font-mono, monospace);
   font-size: var(--fs-label-tiny);
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The nail. Only a gate that actually carries a receipt grows one. */
+.detail-summary__gate--receipt .detail-summary__gate-sha::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  width: 1px;
+  height: 4px;
+  background: var(--border-chip);
+}
+
+.detail-summary__gate--on .detail-summary__gate-rail {
+  background: var(--gate-on);
+}
+
+.detail-summary__gate--on .detail-summary__gate-label {
+  color: var(--gate-on);
+}
+
+.detail-summary__gate--on .detail-summary__gate-sha {
+  color: var(--text-muted);
+}
+
+.detail-summary__gate--current .detail-summary__gate-rail {
+  background: var(--gate-dim);
+  animation: detail-gate-breathe 1.8s ease-in-out infinite;
+}
+
+.detail-summary__gate--current .detail-summary__gate-label {
+  color: var(--text-secondary);
+}
+
+/* stale: the server already downgraded the fill, so the rail keeps its faded
+   stage color and the amber underline carries the freshness axis — the same
+   split the board stepper uses. */
+.detail-summary__gate--stale .detail-summary__gate-rail {
+  background: var(--gate-dim);
+  box-shadow: inset 0 -2px 0 var(--accent-warn);
+  animation: none;
+}
+
+.detail-summary__gate--stale .detail-summary__gate-label,
+.detail-summary__gate--stale .detail-summary__gate-sha {
+  color: var(--accent-warn);
+}
+
+a.detail-summary__gate:hover .detail-summary__gate-label,
+a.detail-summary__gate:focus-visible .detail-summary__gate-label {
+  color: var(--gate-on);
+  text-decoration: underline;
+}
+
+@keyframes detail-gate-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* Stopping the animation alone would erase the only marker of the current
+   gate, so reduced motion falls back to a static glow. */
+@media (prefers-reduced-motion: reduce) {
+  .detail-summary__gate--current .detail-summary__gate-rail {
+    animation: none;
+    box-shadow: 0 0 6px var(--gate-dim);
+  }
 }
 
 .detail-effective {
