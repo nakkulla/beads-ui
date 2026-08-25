@@ -668,41 +668,6 @@ describe('views/board/card display policy', () => {
     ]);
   });
 
-  test('renders the conflict-resolution chip with both heads in its tooltip', () => {
-    const m = mountCard(
-      {
-        id: 'UI-1',
-        workflow: {
-          chips: {
-            resolver: {
-              attempt: 'UI-1-1787-1',
-              prior_sha: 'd'.repeat(40),
-              sha: 'e'.repeat(40)
-            }
-          }
-        }
-      },
-      makeCtx({ policy: makePolicy() })
-    );
-
-    const chip = /** @type {HTMLElement} */ (
-      m.querySelector('.ctl-chip--resolver')
-    );
-    expect(chip.textContent?.trim()).toBe('⚑ 충돌 해소');
-    expect(chip.title).toBe(
-      'impl_review resolver-self:UI-1-1787-1 · ddddddd → eeeeeee'
-    );
-  });
-
-  test('renders no conflict-resolution chip without a resolver receipt', () => {
-    const m = mountCard(
-      { id: 'UI-1', workflow: { chips: { resolver: null } } },
-      makeCtx({ policy: makePolicy() })
-    );
-
-    expect(m.querySelector('.ctl-chip--resolver')).toBeNull();
-  });
-
   test('keeps the delegated effort in the execution chip and tooltip', () => {
     const m = mountCard(
       {

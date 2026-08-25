@@ -97,12 +97,6 @@ body {
   font-size: var(--fs-chip-lg);
   cursor: pointer;
 }
-/* 충돌 해소 칩: 머지 경로가 매끄럽지 않았다는 주의 신호라서 blocked 계열의 경고
-   색을 그대로 쓴다 — 새 토큰을 만들면 같은 의미의 색이 둘로 갈린다. */
-.ctl-chip--resolver {
-  color: var(--chip-blocked);
-  border-color: var(--border-blocked);
-}
 .ctl-chip--blocked {
   color: var(--chip-blocked);
   border-color: var(--border-blocked);
@@ -1367,6 +1361,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 충돌 해소 파생 행: 머지 경로가 매끄럽지 않았다는 주의 신호라서 blocked 계열의
+   경고 색을 그대로 쓴다 — 새 토큰을 만들면 같은 의미의 색이 둘로 갈린다. */
+.detail-kv__v--resolver {
+  color: var(--chip-blocked);
+  border-color: var(--border-blocked);
 }
 
 /* derived (unpinned) route value — inferred, not a settled pin (§6) */

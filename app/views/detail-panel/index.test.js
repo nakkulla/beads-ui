@@ -555,6 +555,68 @@ describe('views/detail-panel', () => {
     quiet_panel.destroy();
   });
 
+  test('renders the conflict-resolution row beside a resolver impl_review', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const prior = 'd'.repeat(40);
+    const result = 'e'.repeat(40);
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {
+          route: 'spec_backed',
+          impl_review: `resolver-self:UI-1-1787-1:${prior}@${result}`
+        },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          stages: { spec: {}, impl: {} },
+          resolver: { attempt: 'UI-1-1787-1', prior_sha: prior, sha: result }
+        }
+      },
+      vi.fn()
+    );
+
+    const rows = Array.from(mount.querySelectorAll('.detail-kv')).map(
+      (row) => ({
+        key: row.querySelector('.detail-kv__k')?.textContent?.trim(),
+        value: row.querySelector('.detail-kv__v')?.textContent?.trim()
+      })
+    );
+    expect(rows).toContainEqual({
+      key: '↳ 충돌 해소',
+      value: 'ddddddd → eeeeeee'
+    });
+    panel.destroy();
+  });
+
+  test('omits the conflict-resolution row for an ordinary impl_review', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const { panel } = seedPanel(
+      mount,
+      {
+        ...baseIssue,
+        metadata: {
+          route: 'spec_backed',
+          impl_review: `codex@${'a'.repeat(40)}`
+        },
+        workflow: {
+          route: 'spec_backed',
+          route_source: 'explicit',
+          stages: { spec: {}, impl: {} },
+          resolver: null
+        }
+      },
+      vi.fn()
+    );
+
+    const keys = Array.from(mount.querySelectorAll('.detail-kv__k')).map(
+      (node) => node.textContent?.trim()
+    );
+    expect(keys).not.toContain('↳ 충돌 해소');
+    panel.destroy();
+  });
+
   test('omits the planned reason row for delegated execution', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seedPanel(

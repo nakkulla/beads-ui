@@ -523,6 +523,42 @@ export function emitMonitorPipelineSnapshot(
 }
 
 /**
+ * Push a snapshot frame to one subscriber unless it already holds this exact
+ * body (UI-d509). The queue and monitor channels re-push whole snapshots on
+ * every refresh tick, and consecutive bodies are almost always byte-identical —
+ * only the envelope `id` (`evt-<ts>`) differed, so the client kept parsing
+ * megabytes that changed nothing.
+ *
+ * `body_json` is the serialized push body WITHOUT the `type`/`id` addressing
+ * fields (e.g. `{"root_dir":…,"queue":…}`): the caller serializes it once per
+ * push and every subscriber shares the string, and the frame is assembled by
+ * splicing the addressing head in front of it. The memory lives on the
+ * subscriber entry, so a fresh subscribe (new entry) always receives its first
+ * frame, and a failed send leaves it unset so the next push retries.
+ *
+ * @param {{ ws: WebSocket, client_id: string, last_body?: string }} sub
+ * @param {MessageType} type
+ * @param {string} body_json - Non-empty JSON object text.
+ * @returns {boolean} Whether a frame was sent.
+ */
+export function pushSnapshotIfChanged(sub, type, body_json) {
+  if (sub.last_body === body_json) {
+    return false;
+  }
+  const head = JSON.stringify({ type, id: sub.client_id });
+  const payload = `${head.slice(0, -1)},${body_json.slice(1)}`;
+  const msg = `{"id":"evt-${Date.now()}","ok":true,"type":${JSON.stringify(type)},"payload":${payload}}`;
+  try {
+    sub.ws.send(msg);
+  } catch (err) {
+    log('push %s send failed id=%s: %o', type, sub.client_id, err);
+    return false;
+  }
+  sub.last_body = body_json;
+  return true;
+}
+
+/**
  * Emit a manual UI-order snapshot to a specific client id on a socket.
  *
  * Reuses the same id/ok/type/payload push envelope as the queue/issue snapshots

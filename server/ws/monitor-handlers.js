@@ -44,11 +44,7 @@ import { onQueueChanged } from '../worker/queue-events.js';
 import { runtimeCatalog } from '../worker/runner/index.js';
 import { getWorkerRuntime } from '../worker/runtime.js';
 import { scopeCache } from '../worker/scope-cache.js';
-import {
-  emitMonitorPipelineSnapshot,
-  kvGetJsonAtRoot,
-  log
-} from './context.js';
+import { kvGetJsonAtRoot, log, pushSnapshotIfChanged } from './context.js';
 import {
   doneAtByBead,
   lanedBeadIds,
@@ -84,7 +80,7 @@ const FOREIGN_STATUS_RETRY_MS = 60_000;
  * Server-global subscriber set. No workspace key: a monitor subscription is one
  * per connection for the whole server.
  *
- * @type {Set<{ ws: WebSocket, client_id: string }>}
+ * @type {Set<{ ws: WebSocket, client_id: string, last_body?: string }>}
  */
 const SUBSCRIBERS = new Set();
 
@@ -925,16 +921,13 @@ function pushNow() {
     log('monitor: pipeline build failed: %o', err);
     return;
   }
-  const workspaces_state = safeWorkspacesState();
-  const cross_lanes = safeCrossLanes();
+  const body_json = JSON.stringify({
+    workspaces,
+    workspaces_state: safeWorkspacesState(),
+    cross_lanes: safeCrossLanes()
+  });
   for (const sub of SUBSCRIBERS) {
-    emitMonitorPipelineSnapshot(
-      sub.ws,
-      sub.client_id,
-      workspaces,
-      workspaces_state,
-      cross_lanes
-    );
+    pushSnapshotIfChanged(sub, 'monitor-pipeline-snapshot', body_json);
   }
 }
 
@@ -1443,7 +1436,8 @@ export function handleSubscribeMonitorPipeline(ws, req) {
       SUBSCRIBERS.delete(sub);
     }
   }
-  SUBSCRIBERS.add({ ws, client_id });
+  const sub = { ws, client_id };
+  SUBSCRIBERS.add(sub);
   ensureRefreshWired();
   ensureDriverStarted();
   log('subscribe-monitor-pipeline %s', client_id);
@@ -1457,12 +1451,14 @@ export function handleSubscribeMonitorPipeline(ws, req) {
   } catch (err) {
     log('monitor: initial pipeline build failed: %o', err);
   }
-  emitMonitorPipelineSnapshot(
-    ws,
-    client_id,
-    workspaces,
-    safeWorkspacesState(),
-    safeCrossLanes()
+  pushSnapshotIfChanged(
+    sub,
+    'monitor-pipeline-snapshot',
+    JSON.stringify({
+      workspaces,
+      workspaces_state: safeWorkspacesState(),
+      cross_lanes: safeCrossLanes()
+    })
   );
   refreshExternalPrsForVisible();
   // One immediate fill per visible workspace (spec §4): the first tick is a

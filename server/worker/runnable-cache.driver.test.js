@@ -24,6 +24,8 @@ let hidden = [];
 let runnable_refreshes = [];
 /** @type {number} */
 let poll_interval_seconds = 30;
+/** Revision the mocked queue store reports; bump it to make a push differ. */
+let queue_revision = 1;
 
 vi.mock('../ws/worker-handlers.js', () => ({
   /**
@@ -59,7 +61,12 @@ vi.mock('../config.js', () => ({
 vi.mock('./runtime.js', () => ({
   getWorkerRuntime: () => ({
     queueStore: {
-      snapshot: () => ({ queue: [], pr_wait: [], done: [], revision: 1 })
+      snapshot: () => ({
+        queue: [],
+        pr_wait: [],
+        done: [],
+        revision: queue_revision
+      })
     },
     runnableCache: {
       /** @param {string} key */
@@ -120,6 +127,7 @@ beforeEach(() => {
   hidden = [];
   runnable_refreshes = [];
   poll_interval_seconds = 30;
+  queue_revision = 1;
   __resetMonitorPipelineForTest();
 });
 
@@ -144,6 +152,8 @@ describe('monitor runnable refresh driver (UI-qrfo §4)', () => {
     handleSubscribeMonitorPipeline(/** @type {any} */ (ws), subscribeReq('m1'));
     const before = ws.snapshots().length;
 
+    // Something moved between ticks; an identical body would be deduplicated.
+    queue_revision = 2;
     vi.advanceTimersByTime(30_000);
     vi.advanceTimersByTime(250);
 

@@ -1483,6 +1483,16 @@ export function createDetailPanel(mount_element, options) {
             >
           </div>`
         : ''}
+      ${wf.resolver
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">↳ 충돌 해소</span>
+            <span
+              class="detail-kv__v detail-kv__v--resolver detail-kv__v--wrap"
+              title=${`resolver-self:${wf.resolver.attempt} · ${wf.resolver.prior_sha} → ${wf.resolver.sha}`}
+              >${`${wf.resolver.prior_sha.slice(0, 7)} → ${wf.resolver.sha.slice(0, 7)}`}</span
+            >
+          </div>`
+        : ''}
       ${wf.route === 'quick_fix' || Object.hasOwn(md, 'quick_fix_review')
         ? html`<div class="detail-kv">
             <span class="detail-kv__k">quick_fix_review</span>
