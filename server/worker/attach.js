@@ -279,6 +279,16 @@ export function createLiveBd(config) {
       const last_checked_sha = Object.hasOwn(md, 'last_checked_sha')
         ? md.last_checked_sha
         : undefined;
+      // The quick_fix self-review judgement inputs (UI-r7or §6.3). Same presence
+      // rule: `issue_type` decides whether `baseline_red` is required and
+      // `quick_fix_review` is the receipt itself, so a malformed value has to
+      // reach the judge as present-and-invalid.
+      const issue_type = Object.hasOwn(issue, 'issue_type')
+        ? issue.issue_type
+        : undefined;
+      const quick_fix_review = Object.hasOwn(md, 'quick_fix_review')
+        ? md.quick_fix_review
+        : undefined;
 
       const resolved = await config.resolveBase();
 
@@ -360,6 +370,8 @@ export function createLiveBd(config) {
         plan_path,
         plan_approval,
         last_checked_sha,
+        issue_type,
+        quick_fix_review,
         deps: blocks_blockers,
         blocked_by: blocks_blockers
       };

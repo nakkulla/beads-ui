@@ -847,6 +847,43 @@ export function routeChipTemplate(workflow) {
 }
 
 /**
+ * The quick_fix self-review 칩 하나 (UI-r7or §5.1). 규칙은 하나다 — 영수증이
+ * 있으면 칩이 있고, 칩의 상태가 그 영수증이 지금 본문과 맞는지를 말한다.
+ * 부정(`리뷰 없음`)을 그리지 않는 이유는 실패 방향이다: 부정을 그리면 칩의
+ * 부재가 "괜찮다"로 읽혀 판정 불가(`unknown`)가 그 안에 조용히 섞인다.
+ * {@link routeChipTemplate}과 같이 카드마다 복제하지 않고 여기 하나를 부르므로
+ * Worker 콘솔 후보와 모니터 실행가능이 같은 문장을 낸다. 근거는 `title`이
+ * 말하되 상태 문장 하나와 `missing` 목록뿐이다 — 영수증 문자열은 모니터 행이
+ * 싣지 않으므로 넣으면 두 레인이 갈린다 (§5.4). 판정이 없거나 표시 대상이
+ * 아니면 빈 문자열이다 (fail-quiet).
+ *
+ * @param {MiniItem['workflow']} workflow
+ * @returns {import('lit-html').TemplateResult|''}
+ */
+export function quickFixReviewChipTemplate(workflow) {
+  const review = workflow ? workflow.quick_fix_review : null;
+  if (!review) {
+    return '';
+  }
+  const state = review.state;
+  if (state !== 'reviewed' && state !== 'stale') {
+    return '';
+  }
+  const missing = Array.isArray(review.missing) ? review.missing : [];
+  const title = [
+    state === 'reviewed'
+      ? 'quick_fix self-review 영수증이 지금 본문과 일치합니다'
+      : 'quick_fix self-review 영수증이 지금 본문과 다릅니다',
+    ...missing
+  ].join('\n');
+  return html`<span
+    class="ctl-chip worker-card__qfr worker-card__qfr--${state}"
+    title=${title}
+    >${state === 'reviewed' ? '리뷰 ✓' : '리뷰 stale'}</span
+  >`;
+}
+
+/**
  * The 출처 칩 하나 — `discovered-from` 간선의 원본 bead. Board 카드가 이미 같은
  * 문장(`↩ from <id>`)을 쓰므로 두 탭에서 같은 사실이 같은 모양으로 읽힌다.
  * {@link routeChipTemplate}과 같은 이유로 카드마다 복제하지 않고 여기 하나를
@@ -959,9 +996,10 @@ export function priorityBadgeTemplate(priority) {
  * The merge's current step, when one is running (UI-raqh §4).
  * @property {string} [merge_title] - Tooltip: what the click is based on, or
  * why it is refused.
- * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../board/card.js').ExecReceipt|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
- * 칩을, 대기·PR 대기 행은 route 칩을 여기서 얻는다 (UI-yrzu §7.2). 완료 행은
- * 싣지 않는다.
+ * @property {(import('../board/stepper.js').WorkflowSummary & { route_source?: string, chips?: { route?: string, route_source?: string, exec_receipt?: import('../board/card.js').ExecReceipt|null }, quick_fix_review?: { state: 'reviewed'|'stale'|'unreviewed'|'unknown', missing: string[], digest: string|null } }) | null} [workflow] - Server-enriched workflow. 실행가능 카드는 stepper와 route
+ * 칩을, 대기·PR 대기 행은 route 칩을 여기서 얻는다 (UI-yrzu §7.2).
+ * `quick_fix_review`는 서버가 route pin이 `quick_fix`일 때만 붙이는 판정이며
+ * (UI-r7or §4) 클라이언트는 읽어 그리기만 한다. 완료 행은 싣지 않는다.
  * @property {string} [status] - Issue status, for the stepper glow (candidate cards only).
  * @property {import('../../utils/token-usage.js').UsageRecord|import('../../utils/token-usage.js').UsageProjection|null} [usage] - Token usage
  * summed across the bead's attempts (UI-d7pw §1); absent/null renders nothing.
@@ -1560,13 +1598,18 @@ export function candidateCard(item, place_menu = null, options = {}) {
         : ''}
       <span class="worker-card__id" title="클릭하면 ID 복사">${item.id}</span
       >${priorityBadgeTemplate(item.priority)}${fromChipTemplate(item.from_id)}
-      ${routeChipTemplate(workflow)}${worker_ineligible
+      ${worker_ineligible
         ? html`<span
             class="ctl-chip ctl-chip--label worker-card__ineligible"
             title="worker-ineligible label이 붙어 워커 실행 대상이 아닙니다"
             >worker-ineligible</span
           >`
         : ''}
+      <span class="worker-card__wfchips"
+        >${routeChipTemplate(workflow)}${quickFixReviewChipTemplate(
+          workflow
+        )}</span
+      >
     </div>
     <div class="worker-card__title">${item.title}</div>
     ${workflow

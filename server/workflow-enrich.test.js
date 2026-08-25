@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1771,5 +1772,118 @@ describe('stage doc projection (UI-ajkn §2)', () => {
     expect(backed.stages.pr.doc).toBeUndefined();
     expect(backed.stages.merge.doc).toBeUndefined();
     expect(quick.stages.close?.doc).toBeUndefined();
+  });
+});
+
+describe('enrichIssueWorkflow — quick_fix self-review projection (UI-r7or §4)', () => {
+  /** A description that satisfies every pinned section, scope and label rule. */
+  const COMPLETE_BODY = [
+    '출처/배경 — 칩이 없다.',
+    '',
+    '기대 효과 — 칩이 생긴다.',
+    '',
+    '영향 surface와 경계 — server/workflow-enrich.js',
+    '',
+    '검증 bundle — npm test',
+    '',
+    '## scope',
+    '',
+    '- server/workflow-enrich.js',
+    ''
+  ].join('\n');
+
+  /**
+   * The contract's body digest: sha256 of the raw UTF-8 bytes, first 12 hex.
+   *
+   * @param {string} body
+   */
+  function bodyDigest(body) {
+    return createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12);
+  }
+
+  test('attaches a reviewed verdict when the receipt matches the body', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: COMPLETE_BODY,
+      metadata: {
+        route: 'quick_fix',
+        quick_fix_review: `self@${bodyDigest(COMPLETE_BODY)}`
+      }
+    });
+
+    expect(wf.quick_fix_review).toEqual({
+      state: 'reviewed',
+      missing: [],
+      digest: bodyDigest(COMPLETE_BODY)
+    });
+  });
+
+  test('attaches a stale verdict when the receipt names another body', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: COMPLETE_BODY,
+      metadata: {
+        route: 'quick_fix',
+        quick_fix_review: `self@${'0'.repeat(12)}`
+      }
+    });
+
+    expect(wf.quick_fix_review?.state).toBe('stale');
+  });
+
+  test('attaches an unreviewed verdict when no receipt exists', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: COMPLETE_BODY,
+      metadata: { route: 'quick_fix' }
+    });
+
+    expect(wf.quick_fix_review).toEqual({
+      state: 'unreviewed',
+      missing: [],
+      digest: bodyDigest(COMPLETE_BODY)
+    });
+  });
+
+  test('reports the missing sections independently of the state', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: '본문만 있고 섹션이 없다.',
+      metadata: { route: 'quick_fix' }
+    });
+
+    expect(wf.quick_fix_review?.missing).toContain('section:출처/배경');
+    expect(wf.quick_fix_review?.missing).toContain('scope:undeclared');
+  });
+
+  test('omits the key entirely on a spec_backed row', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: COMPLETE_BODY,
+      metadata: { route: 'spec_backed' }
+    });
+
+    expect(Object.hasOwn(wf, 'quick_fix_review')).toBe(false);
+  });
+
+  test('omits the key entirely on a full_plan row', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: COMPLETE_BODY,
+      metadata: { route: 'full_plan', plan_path: 'docs/plan.md' }
+    });
+
+    expect(Object.hasOwn(wf, 'quick_fix_review')).toBe(false);
+  });
+
+  test('omits the key when the route is derived rather than pinned', () => {
+    const wf = enrichIssueWorkflow({
+      issue_type: 'task',
+      description: COMPLETE_BODY,
+      metadata: {}
+    });
+
+    expect(wf.route_source).toBe('derived');
+    expect(Object.hasOwn(wf, 'quick_fix_review')).toBe(false);
   });
 });

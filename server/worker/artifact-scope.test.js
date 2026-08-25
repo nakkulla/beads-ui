@@ -54,7 +54,6 @@ describe('artifact scope front matter', () => {
       '  - server/*.js',
       '  - server/file?.js',
       '  - server/[ab].js',
-      '  - server/x].js',
       '  - :(exclude)server/',
       '  - valid/file.js',
       '---'
@@ -63,6 +62,14 @@ describe('artifact scope front matter', () => {
     const scope = parseArtifactScope(content);
 
     expect(scope).toEqual(['valid/file.js']);
+  });
+
+  test('accepts a closing bracket the contract does not reject', () => {
+    const content = ['---', 'scope:', '  - src/a]b/', '---'].join('\n');
+
+    const scope = parseArtifactScope(content);
+
+    expect(scope).toEqual(['src/a]b/']);
   });
 
   test('returns no declaration when scope is absent or has no valid entries', () => {
@@ -129,6 +136,38 @@ describe('description scope section (UI-f1qy §3)', () => {
     const scope = parseDescriptionScope(description);
 
     expect(scope).toEqual(['valid/file.js']);
+  });
+
+  test('accepts a closing bracket the contract does not reject', () => {
+    const description = ['## scope', '- src/a]b/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['src/a]b/']);
+  });
+
+  test('does not recognize a heading a non-ASCII blank precedes', () => {
+    const description = [' ## scope', '- server/worker/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toBeNull();
+  });
+
+  test('does not close the section on a heading a non-ASCII blank precedes', () => {
+    const description = ['## scope', ' # 산문', '- server/worker/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/worker/']);
+  });
+
+  test('collects an item carrying a non-newline line separator whole', () => {
+    const description = ['## scope', '- server/a b/'].join('\n');
+
+    const scope = parseDescriptionScope(description);
+
+    expect(scope).toEqual(['server/a b/']);
   });
 
   test('stops collecting at the next heading of any level', () => {

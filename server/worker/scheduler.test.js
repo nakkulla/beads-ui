@@ -12,7 +12,12 @@ import { claudeSpec } from './runner/claude.js';
 import { makeFixtureSpawn } from './runner/fixture-spawn.js';
 import { createRunner } from './runner/index.js';
 import { runSession } from './runner/session.js';
-import { activeLaneLineages, createScheduler } from './scheduler.js';
+import {
+  activeLaneLineages,
+  createScheduler,
+  quickFixSelfReviewBlock,
+  withQuickFixSelfReview
+} from './scheduler.js';
 import {
   delegationMonitorDir,
   guardHookDir,
@@ -486,6 +491,9 @@ function makeFakeBd(config) {
         plan_path: c.plan_path,
         plan_approval: c.plan_approval,
         last_checked_sha: c.last_checked_sha,
+        description: c.description ?? null,
+        issue_type: c.issue_type,
+        quick_fix_review: c.quick_fix_review,
         deps: c.deps ?? []
       };
     },
@@ -14144,6 +14152,292 @@ describe('scheduler receipt observation (UI-bu6d §2/§3/§5)', () => {
     expect(snap.attempts['S1-1000-1'].receipt_check?.probe_error).toBe(true);
     expect(snap.pr_wait.map((/** @type {any} */ e) => e.bead_id)).toContain(
       'S1'
+    );
+  });
+});
+
+describe('quick_fix self-review dispatch block (UI-r7or §6)', () => {
+  const RECEIPT = `self@${'3'.repeat(12)}`;
+
+  /** A quick_fix body that satisfies every pinned section and scope rule. */
+  const BODY = [
+    '출처/배경 — 칩이 없다.',
+    '',
+    '기대 효과 — 칩이 생긴다.',
+    '',
+    '영향 surface와 경계 — server/worker/scheduler.js',
+    '',
+    '검증 bundle — npm test',
+    '',
+    '## scope',
+    '',
+    '- server/worker/scheduler.js',
+    ''
+  ].join('\n');
+
+  /** The contract digest of {@link BODY}, so a `reviewed` receipt can be built. */
+  const BODY_DIGEST = '7b4ced2b10bf';
+
+  /**
+   * A quick_fix bead config whose snapshot carries the judgement inputs.
+   *
+   * @param {{ quick_fix_review?: unknown, description?: string, issue_type?: string }} [patch]
+   */
+  function quickFixBead(patch = {}) {
+    return {
+      route: 'quick_fix',
+      issue_type: 'task',
+      description: BODY,
+      ...patch
+    };
+  }
+
+  test('builds a stale observation block from the receipt and digest', () => {
+    const block = quickFixSelfReviewBlock(
+      { state: 'stale', missing: [], digest: '8c1d40ffab52' },
+      RECEIPT
+    );
+
+    expect(block).toBe(
+      [
+        '[quick_fix self-review]',
+        `stale quick_fix_review 관측 — 영수증 \`${RECEIPT}\`, 현재 본문 digest \`8c1d40ffab52\`.`,
+        '누락: (없음)',
+        '',
+        '구현에 들어가기 전에 workflow 계약의 quick_fix delta self-review 레인을 먼저 수행하라.'
+      ].join('\n')
+    );
+  });
+
+  test('writes (없음) for an unreviewed bead that carries no receipt', () => {
+    const block = quickFixSelfReviewBlock(
+      { state: 'unreviewed', missing: [], digest: '8c1d40ffab52' },
+      undefined
+    );
+
+    expect(block).toContain('unreviewed quick_fix_review 관측 — 영수증 (없음)');
+  });
+
+  test('joins the missing tokens with a comma', () => {
+    const block = quickFixSelfReviewBlock(
+      {
+        state: 'unreviewed',
+        missing: ['section:기대 효과', 'scope:undeclared'],
+        digest: null
+      },
+      null
+    );
+
+    expect(block).toContain('누락: section:기대 효과, scope:undeclared');
+    expect(block).toContain('현재 본문 digest (없음)');
+  });
+
+  test('builds no block for a reviewed judgement', () => {
+    expect(
+      quickFixSelfReviewBlock(
+        { state: 'reviewed', missing: [], digest: '8c1d40ffab52' },
+        RECEIPT
+      )
+    ).toBeNull();
+  });
+
+  test('builds no block for an unknown judgement', () => {
+    expect(
+      quickFixSelfReviewBlock(
+        { state: 'unknown', missing: [], digest: null },
+        RECEIPT
+      )
+    ).toBeNull();
+  });
+
+  test('builds no block when the issue is not a judgement subject', () => {
+    expect(quickFixSelfReviewBlock(null, RECEIPT)).toBeNull();
+  });
+
+  test('appends the block after the selected base prompt', () => {
+    const composed = withQuickFixSelfReview(
+      '기본 프롬프트',
+      '[quick_fix self-review]\n관측'
+    );
+
+    expect(composed).toBe('기본 프롬프트\n\n[quick_fix self-review]\n관측');
+  });
+
+  test('returns the base prompt untouched when there is no block', () => {
+    expect(withQuickFixSelfReview('기본 프롬프트', null)).toBe('기본 프롬프트');
+  });
+
+  test('creates a default task prompt for the branch that otherwise has none', async () => {
+    const env = setup({
+      config: { S1: quickFixBead() },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain('Bead S1 작업을 계약 네이티브 흐름으로 완료하라.');
+    expect(prompt).toContain('unreviewed quick_fix_review 관측');
+    expect(prompt.indexOf('Bead S1')).toBeLessThan(
+      prompt.indexOf('[quick_fix self-review]')
+    );
+  });
+
+  test('leaves a reviewed quick_fix on the adapter default prompt', async () => {
+    const env = setup({
+      config: {
+        S1: quickFixBead({ quick_fix_review: `self@${BODY_DIGEST}` })
+      },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnedBead('S1').prompt).toBeUndefined();
+  });
+
+  test('reports the stale receipt when the body moved past it', async () => {
+    const env = setup({
+      config: { S1: quickFixBead({ quick_fix_review: RECEIPT }) },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain(
+      `stale quick_fix_review 관측 — 영수증 \`${RECEIPT}\``
+    );
+    expect(prompt).toContain(BODY_DIGEST);
+  });
+
+  test('adds no block to a spec_backed bead that carries the receipt key', async () => {
+    const env = setup({
+      config: {
+        S1: {
+          route: 'spec_backed',
+          description: BODY,
+          quick_fix_review: RECEIPT
+        }
+      },
+      slots: 1,
+      admission: { validate: vi.fn(async () => ({ ok: true })) }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    expect(env.runner.spawnedBead('S1').prompt).toBeUndefined();
+  });
+
+  test('appends the block after the stale-artifact prompt', async () => {
+    // Admission cannot pair these in production — quick_fix never yields a
+    // `stale` payload (§6.4) — so this pins the ASSEMBLY: the block must ride
+    // behind whichever base prompt the branch chose.
+    const env = setup({
+      config: { S1: quickFixBead({ quick_fix_review: RECEIPT }) },
+      slots: 1,
+      admission: {
+        validate: vi.fn(async () => ({
+          ok: true,
+          stale: {
+            receipt_sha: 'a'.repeat(40),
+            delta_shas: ['b'.repeat(40)]
+          }
+        }))
+      }
+    });
+    seedQueue(env.store, ['S1']);
+
+    await env.scheduler.tick(WS);
+
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain('[spec]');
+    expect(prompt).toContain('워커 재리뷰 레인');
+    expect(prompt.indexOf('워커 재리뷰 레인')).toBeLessThan(
+      prompt.indexOf('[quick_fix self-review]')
+    );
+  });
+
+  test('appends the block after the stale-worktree continue prompt', async () => {
+    const env = setup({
+      config: { S1: quickFixBead({ quick_fix_review: RECEIPT }) },
+      slots: 1,
+      resolveBase: vi.fn(async () => ({
+        ok: true,
+        base: 'main',
+        base_oid: 'b'.repeat(40)
+      }))
+    });
+    seedQueue(env.store, ['S1']);
+    env.store.recordAdmission(WS, {
+      bead_id: 'S1',
+      reason: 'worktree_stale_work',
+      stale_work: {
+        schema: 1,
+        state: 'unique',
+        cause: 'dirty_unique',
+        summary: {
+          staged_count: 1,
+          unstaged_count: 1,
+          untracked_count: 1,
+          branch_ahead: 0,
+          head_ahead: 0
+        },
+        identity_digest: 'identity-1',
+        action_id: 'action-1',
+        can_resume: false,
+        can_continue: true,
+        can_backup_fresh: true,
+        can_recheck: false,
+        identity: {
+          worktree_realpath: '/wt/S1',
+          branch: 'S1',
+          head_sha: 'a'.repeat(40),
+          base_oid: 'b'.repeat(40),
+          status_digest: 'c'.repeat(64)
+        }
+      }
+    });
+    env.worktree.removeIfDiscardable = vi.fn(async () => ({
+      ok: false,
+      state: 'unique',
+      removed: false,
+      cause: 'dirty_unique',
+      owned: true,
+      identity: {
+        worktree_realpath: '/wt/S1',
+        branch: 'S1',
+        head_sha: 'a'.repeat(40),
+        base_oid: 'b'.repeat(40),
+        status_digest: 'c'.repeat(64)
+      },
+      summary: {
+        staged_count: 1,
+        unstaged_count: 1,
+        untracked_count: 1,
+        branch_ahead: 0,
+        head_ahead: 0
+      }
+    }));
+
+    const result = await env.scheduler.staleWorkContinue(WS, {
+      bead_id: 'S1',
+      action_id: 'action-1',
+      expected_revision: env.store.snapshot(WS).revision
+    });
+
+    expect(result.ok).toBe(true);
+    const prompt = env.runner.spawnedBead('S1').prompt;
+    expect(prompt).toContain('기존 worktree를 의도적으로 채택');
+    expect(prompt.indexOf('기존 worktree를 의도적으로 채택')).toBeLessThan(
+      prompt.indexOf('[quick_fix self-review]')
     );
   });
 });
