@@ -2,13 +2,24 @@
 scope:
   - generated/contracts/
   - server/worker/quick-fix-handoff.js
+  - server/worker/quick-fix-handoff.test.js
+  - server/worker/quick-fix-handoff.cross-runtime.test.js
+  - server/worker/__fixtures__/quick-fix-handoff-cases.json
   - server/worker/artifact-scope.js
+  - server/worker/artifact-scope.test.js
   - server/worker/attach.js
+  - server/worker/attach.test.js
   - server/worker/scheduler.js
+  - server/worker/scheduler.test.js
   - server/workflow-enrich.js
+  - server/workflow-enrich.test.js
   - app/views/worker/lanes.js
+  - app/views/worker/lanes.test.js
   - app/views/detail-panel/index.js
+  - app/views/detail-panel/index.test.js
   - app/styles.css
+  - app/main.bundle.js
+  - app/main.bundle.js.map
 ---
 
 # UI-r7or — quick_fix self-review 투영 소비
@@ -243,11 +254,19 @@ Worker 콘솔 "후보"와 모니터 "실행가능"은 같은 `candidateCard`
 
 ### 5.4 툴팁
 
-칩은 상태만 말하고 근거는 `title`이 말한다.
+칩은 상태만 말하고 근거는 `title`이 말한다. 내용은 **상태 문장 하나와
+`missing` 목록**이다.
 
-- `reviewed` — `quick_fix self-review 영수증이 지금 본문과 일치합니다` + 영수증 원문
-- `stale` — 영수증 원문과 현재 본문 digest를 나란히
+- `reviewed` — `quick_fix self-review 영수증이 지금 본문과 일치합니다`
+- `stale` — `quick_fix self-review 영수증이 지금 본문과 다릅니다`
 - 어느 쪽이든 `missing`이 비어 있지 않으면 그 목록을 이어 붙인다
+
+영수증 문자열 자체는 툴팁에 넣지 않는다. `workflow.quick_fix_review`는
+`{state, missing, digest}`만 실어 나르고 모니터 실행가능 행은 원본 metadata를
+갖지 않으므로(§4의 `exec_pins`만 있는 투영), 영수증을 툴팁에 넣으면 같은 칩이
+두 레인에서 다른 내용을 말하게 된다. 영수증 원문의 자리는 상세 패널이다
+(§5.5). 12자리 hex 두 개를 hover에서 눈으로 비교하는 것은 어차피 행동으로
+이어지지 않는다.
 
 ### 5.5 보드 상세 패널
 
@@ -265,7 +284,7 @@ Object.hasOwn(md, 'spec_review')`로 쓰는 규칙을 route만 뒤집은 것이�
 없으면 `없음`.
 
 접미는 `wf.quick_fix_review.state`가 정한다: `stale`이면 `· stale`, 그 밖에는
-접미 없음. `unknown`에 접미를 붙이지 않는 이유는 §6.1과 같다 — 판정 근거가
+접미 없음. `unknown`에 접미를 붙이지 않는 이유는 §6.2와 같다 — 판정 근거가
 없을 때는 아무 주장도 하지 않는다.
 
 ## 6. 첫 dispatch 프롬프트
@@ -275,7 +294,7 @@ Object.hasOwn(md, 'spec_review')`로 쓰는 규칙을 route만 뒤집은 것이�
 형태이며, **관측 사실과 계약 포인터만** 싣는다 — 절차 본문은 계약이 소유한다.
 
 ```
-<기본 task 프롬프트>
+<선택된 기본 프롬프트 — §6.1의 세 갈래 중 하나>
 
 [quick_fix self-review]
 stale quick_fix_review 관측 — 영수증 `self@3f9a21c4b0e7`, 현재 본문 digest `8c1d40ffab52`.
@@ -284,14 +303,35 @@ stale quick_fix_review 관측 — 영수증 `self@3f9a21c4b0e7`, 현재 본문 d
 구현에 들어가기 전에 workflow 계약의 quick_fix delta self-review 레인을 먼저 수행하라.
 ```
 
-### 6.1 `unknown`은 프롬프트를 붙이지 않는다
+### 6.1 블록은 선택된 기본 프롬프트에 **덧붙는다**
+
+`scheduler.js`의 `spawnBead.prompt`는 세 갈래 중 하나를 고른다.
+
+| 조건 | 기본 프롬프트 |
+| --- | --- |
+| `stale_context` (기존 워크트리 채택) | `staleWorkContinuePrompt(...)` |
+| `adm.stale` | `staleDispatchPrompt(...)` |
+| 그 밖 | 없음 — 어댑터가 `defaultTaskPrompt`를 만든다 |
+
+quick_fix 관측 블록은 이 선택을 **대체하지 않고 뒤에 덧붙는다.** 세 갈래
+어디에서도 블록이 사라지지 않아야 하기 때문이다. 특히 `stale_context`는
+route와 무관하게 걸리므로, 블록을 마지막 갈래에만 두면 워크트리를 채택한
+quick_fix에서 관측이 통째로 없어진다.
+
+세 번째 갈래에는 기본 프롬프트가 없다는 점이 중요하다. 블록을 붙이는 순간
+어댑터의 기본 생성 경로가 쓰이지 않으므로, 그 갈래에서는
+`defaultTaskPrompt(bead_id)`를 직접 만들어 앞에 두어야 한다. 그러지 않으면
+세션이 task 프롬프트 없이 관측 블록만 받는다.
+
+### 6.2 `unknown`은 프롬프트를 붙이지 않는다
 
 Bead 본문은 조건을 `state !== reviewed`로 적었으나 이 설계는 **`stale`과
-`unreviewed`로 좁힌다.** `unknown`은 투영을 못 읽었다는 뜻이고, 그 상태에서
-세션에게 "self-review를 먼저 하라"고 지시하면 근거 없이 지시하는 것이 된다.
-투영 부재·손상은 표시에서도 프롬프트에서도 fail-quiet다.
+`unreviewed`로 좁힌다.** 이 좁힘은 현재 사용자가 spec 승인 시 명시적으로
+승인한 변경이다. `unknown`은 투영을 못 읽었다는 뜻이고, 그 상태에서 세션에게
+"self-review를 먼저 하라"고 지시하면 근거 없이 지시하는 것이 된다. 투영
+부재·손상은 표시에서도 프롬프트에서도 fail-quiet다.
 
-### 6.2 스냅샷에 두 필드를 더한다
+### 6.3 스냅샷에 두 필드를 더한다
 
 `BeadSnapshot`은 `description`은 싣고 있지만 `issue_type`과
 `quick_fix_review`는 싣고 있지 않다. `attach.js`의 `snapshotBead`가 둘을
@@ -300,13 +340,16 @@ Bead 본문은 조건을 `state !== reviewed`로 적었으나 이 설계는 **`s
 따른다: **키 부재는 `undefined`, 값이 잘못된 경우는 present-and-invalid로
 판정기에 도달한다**(부재로 뭉개지 않는다).
 
-### 6.3 spec/plan stale 블록과 겹치지 않는다
+### 6.4 어느 기본 프롬프트와 만나는가
 
-quick_fix는 admission §3에서 description 검사 후 즉시 `{ ok: true }`로
-끝나며, 앵커 spec이 없으므로 **`stale` payload를 만들 수 없다**. 따라서 이
-블록이 `staleDispatchPrompt`의 spec/plan 블록과 같은 dispatch에 함께 붙는
-경우는 없다. 두 프롬프트 조립 경로는 route로 갈리며, 하나의 `spawnBead.prompt`
-분기에서 서로 배타적으로 선택된다.
+`staleDispatchPrompt`(spec/plan stale)와는 만나지 않는다. quick_fix는
+admission §3에서 description 검사 후 즉시 `{ ok: true }`로 끝나며 앵커 spec이
+없으므로 **`stale` payload를 만들 수 없다**.
+
+`staleWorkContinuePrompt`와는 만난다. 그 갈래는 admission이 아니라
+워크트리 상태로 갈리므로 route를 가리지 않는다. 이 조합에서는 이어쓰기 지시와
+self-review 관측이 함께 서며, 순서는 이어쓰기 프롬프트가 먼저다 — 세션이
+무엇을 이어받는지 먼저 알아야 그 위에서 무엇을 먼저 할지 판단할 수 있다.
 
 ## 7. 파서 경계와 픽스처
 
@@ -396,6 +439,12 @@ quick_fix는 admission §3에서 description 검사 후 즉시 `{ ok: true }`로
     부재는 `undefined`로 잘못된 값은 present-and-invalid로 도달한다
   - dispatch 프롬프트: `stale`·`unreviewed`에만 블록이 붙고 `unknown`·
     `reviewed`에는 붙지 않는다
+  - dispatch 프롬프트 합성: 세 갈래 각각에 블록이 덧붙는다 —
+    `staleWorkContinuePrompt` 뒤, `staleDispatchPrompt` 뒤(도달 불가이나
+    조립 함수 수준에서 확인), 그리고 기본 프롬프트가 없는 갈래에서
+    `defaultTaskPrompt`가 앞에 만들어진다
+  - 툴팁: 두 레인이 같은 내용을 낸다 — 상태 문장과 `missing`만 쓰고 영수증
+    문자열을 요구하지 않는다
 - 성공 판정: vitest 전건 통과 + PR 병합 + beads-ui `[deploy]` readback
   (`projectmgr status beads-ui` running)
 
