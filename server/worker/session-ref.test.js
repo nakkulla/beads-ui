@@ -77,6 +77,28 @@ describe('parseSessionRef', () => {
       { index: 2, provider: 'claude', session_id: 'c', host: 'box' }
     ]);
   });
+
+  test('does not accept a space-less ";" as an item separator', () => {
+    const value = 'claude:a@box;codex:b@box';
+
+    const result = parseSessionRef(value);
+
+    expect(result).toEqual([
+      { index: 0, provider: 'claude', session_id: 'a', host: 'box;codex:b@box' }
+    ]);
+  });
+
+  test('gives a space-less tail no item of its own to authorize', () => {
+    const value = 'claude:a@box;codex:b@box';
+
+    const result = parseSessionRef(value);
+
+    expect(
+      result.some(
+        (entry) => entry.provider === 'codex' && entry.session_id === 'b'
+      )
+    ).toBe(false);
+  });
 });
 
 describe('resolveSessionFile host comparison', () => {

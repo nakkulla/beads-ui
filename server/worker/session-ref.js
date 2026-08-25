@@ -107,7 +107,12 @@ export function parseSessionRef(value) {
   }
   /** @type {SessionRefEntry[]} */
   const entries = [];
-  const items = value.split(';');
+  // EXACTLY the contract separator `'; '`. Splitting on a bare `;` would be
+  // beads-ui redefining the grammar it only consumes: a value written without
+  // the space is malformed, and admitting it would promote its tail to a valid
+  // item — which then becomes `current` and gains transcript authorization
+  // (§4.3) on the strength of a separator the contract never wrote.
+  const items = value.split('; ');
   for (let index = 0; index < items.length; index += 1) {
     const match = ITEM_RE.exec(items[index].trim());
     if (match === null) {

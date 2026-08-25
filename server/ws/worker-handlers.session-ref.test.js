@@ -497,6 +497,123 @@ describe('subscribe-session-log session_ref snapshot and follow', () => {
   });
 });
 
+describe('subscribe-session-log session_ref cancellation while resolving', () => {
+  const record = JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text: 'one' }] }
+  });
+
+  /**
+   * A `bd show` that stays pending until the returned release is called, so a
+   * cancel can land inside the authorization await.
+   *
+   * @param {Record<string, unknown>} metadata
+   * @returns {() => void}
+   */
+  function deferredBdShow(metadata) {
+    /** @type {(value: unknown) => void} */
+    let release = () => {};
+    bd.runBdJsonProjectedInWorkspace.mockReturnValueOnce(
+      new Promise((resolve) => {
+        release = resolve;
+      })
+    );
+    return () =>
+      release({
+        ok: true,
+        protocol: { format: 'bare', schema_version: null },
+        data: { id: 'UI-1', metadata }
+      });
+  }
+
+  /**
+   * @param {string} client_id
+   */
+  function openFor(client_id) {
+    return subscribeRequest({
+      id: client_id,
+      attempt_id: ATTEMPT_SLOT,
+      session_ref: {
+        bead_id: 'UI-1',
+        provider: 'claude',
+        session_id: SESSION_ID
+      }
+    });
+  }
+
+  /**
+   * @param {any} socket
+   */
+  function unsubscribe(socket) {
+    handleUnsubscribeSessionLog(
+      socket,
+      /** @type {any} */ ({
+        id: 'req-2',
+        type: 'unsubscribe-session-log',
+        payload: { id: 'c1' }
+      })
+    );
+  }
+
+  test('unsubscribing during the bd read leaves no tail reader', async () => {
+    const socket = fakeSocket();
+    writeClaudeSessionFile(`${record}\n`);
+    const release = deferredBdShow({
+      session_ref: `claude:${SESSION_ID}@${HOST}`
+    });
+    const pending = handleSubscribeSessionLog(socket, openFor('c1'));
+
+    unsubscribe(socket);
+    release();
+    await pending;
+
+    expect(tail.readers).toHaveLength(0);
+    expect(pushOf(socket, 'session-log-snapshot')).toBeUndefined();
+  });
+
+  test('closing the connection during the bd read leaves no tail reader', async () => {
+    const socket = fakeSocket();
+    writeClaudeSessionFile(`${record}\n`);
+    const release = deferredBdShow({
+      session_ref: `claude:${SESSION_ID}@${HOST}`
+    });
+    const pending = handleSubscribeSessionLog(socket, openFor('c1'));
+
+    detachSessionLog(socket);
+    release();
+    await pending;
+
+    expect(tail.readers).toHaveLength(0);
+  });
+
+  test('re-subscribing during the bd read leaves exactly one tail reader', async () => {
+    const socket = fakeSocket();
+    writeClaudeSessionFile(`${record}\n`);
+    const release = deferredBdShow({
+      session_ref: `claude:${SESSION_ID}@${HOST}`
+    });
+    const first = handleSubscribeSessionLog(socket, openFor('c1'));
+
+    bdShows({ session_ref: `claude:${SESSION_ID}@${HOST}` });
+    await handleSubscribeSessionLog(socket, openFor('c1'));
+    release();
+    await first;
+
+    expect(tail.readers).toHaveLength(1);
+    expect(tail.readers[0].start).toHaveBeenCalledTimes(1);
+  });
+
+  test('registers nothing when the bead does not name the session', async () => {
+    const socket = fakeSocket();
+    bdShows({ session_ref: `claude:someone-else@${HOST}` });
+
+    await handleSubscribeSessionLog(socket, openFor('c1'));
+    unsubscribe(socket);
+
+    expect(messages(socket).at(-1).payload.unsubscribed).toBe(false);
+  });
+});
+
 describe('get-session-refs', () => {
   /**
    * @param {Record<string, unknown>} payload

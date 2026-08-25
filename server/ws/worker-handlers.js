@@ -2442,24 +2442,54 @@ function normalizeSessionRefRequest(raw, attempt_id, has_launch_id) {
  */
 async function followSessionRefLog(ws, input) {
   const { attempt_id, client_id, key, session_ref } = input;
+  // Unlike every other branch of this handler, authorization here needs a `bd`
+  // process, so the subscription only becomes real after an await. Unsubscribe,
+  // connection close and same-client re-subscribe all cancel by walking the
+  // REGISTERED entries, so a placeholder goes in first: without it those three
+  // find nothing, and the reader created afterwards would never be stopped —
+  // one leaked tail reader per cancelled open, and duplicate appends when the
+  // same client reopens during the window.
+  let cancelled = false;
+  /** @type {{ ws: WebSocket, client_id: string, attempt_id: string, off: () => void }} */
+  const sub = {
+    ws,
+    client_id,
+    attempt_id,
+    off: () => {
+      cancelled = true;
+    }
+  };
+  SESSION_LOG_SUBS.add(sub);
   const metadata = await beadMetadataOf(ws, key, session_ref.bead_id);
+  if (cancelled || !SESSION_LOG_SUBS.has(sub)) {
+    return;
+  }
+  /**
+   * Every fail-quiet exit registers nothing, so the placeholder goes with it —
+   * a leftover entry would answer a later `unsubscribe-session-log` with
+   * `unsubscribed: true` for a subscription that never existed.
+   */
+  const giveUp = () => {
+    SESSION_LOG_SUBS.delete(sub);
+    emitSessionLogSnapshot(ws, client_id, attempt_id, [], null);
+  };
   const entry = parseSessionRef(metadata?.session_ref).find(
     (item) =>
       item.provider === session_ref.provider &&
       item.session_id === session_ref.session_id
   );
   if (entry === undefined) {
-    emitSessionLogSnapshot(ws, client_id, attempt_id, [], null);
+    giveUp();
     return;
   }
   const located = resolveSessionFile(entry);
   if (located.locality !== 'local' || located.file === null) {
-    emitSessionLogSnapshot(ws, client_id, attempt_id, [], null);
+    giveUp();
     return;
   }
   const snapshot = readSessionSnapshot(located.file);
   if (snapshot === null) {
-    emitSessionLogSnapshot(ws, client_id, attempt_id, [], null);
+    giveUp();
     return;
   }
   // ONE adapter for the whole subscription: a codex tool call below the
@@ -2487,8 +2517,8 @@ async function followSessionRefLog(ws, input) {
       }
     }
   });
+  sub.off = reader.stop;
   reader.start();
-  SESSION_LOG_SUBS.add({ ws, client_id, attempt_id, off: reader.stop });
   log(
     'subscribe-session-log %s attempt=%s mode=session_ref',
     client_id,
