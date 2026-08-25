@@ -349,6 +349,127 @@ describe('views/detail-panel', () => {
     panel.destroy();
   });
 
+  /**
+   * Seed one workflow-detail issue and read its `detail-kv` rows back as a map.
+   *
+   * @param {HTMLElement} mount
+   * @param {any} metadata
+   * @param {any} workflow
+   */
+  function seedWorkflowRows(mount, metadata, workflow) {
+    const { panel } = seedPanel(
+      mount,
+      { ...baseIssue, metadata, workflow },
+      vi.fn()
+    );
+    const rows = Object.fromEntries(
+      Array.from(mount.querySelectorAll('.detail-kv')).map((row) => [
+        row.querySelector('.detail-kv__k')?.textContent?.trim(),
+        row.querySelector('.detail-kv__v')?.textContent?.trim()
+      ])
+    );
+    panel.destroy();
+    return rows;
+  }
+
+  const QUICK_FIX_STAGES = {
+    impl: { stale: false },
+    close: { fill: 'none', stale: false }
+  };
+
+  test('renders the quick_fix_review row on a quick_fix route', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const receipt = 'self@' + '3f9a21c4b0e7';
+
+    const rows = seedWorkflowRows(
+      mount,
+      { route: 'quick_fix', quick_fix_review: receipt },
+      {
+        route: 'quick_fix',
+        route_source: 'explicit',
+        stages: QUICK_FIX_STAGES,
+        quick_fix_review: {
+          state: 'reviewed',
+          missing: [],
+          digest: '3f9a21c4b0e7'
+        }
+      }
+    );
+
+    expect(rows.quick_fix_review).toBe(receipt);
+  });
+
+  test('renders the quick_fix_review row on another route carrying the key', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const receipt = 'self@' + 'a1b2c3d4e5f6';
+
+    const rows = seedWorkflowRows(
+      mount,
+      { route: 'spec_backed', quick_fix_review: receipt },
+      {
+        route: 'spec_backed',
+        route_source: 'explicit',
+        stages: { spec: { stale: false }, impl: { stale: false } }
+      }
+    );
+
+    expect(rows.quick_fix_review).toBe(receipt);
+  });
+
+  test('omits the quick_fix_review row on another route without the key', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const rows = seedWorkflowRows(
+      mount,
+      { route: 'spec_backed' },
+      {
+        route: 'spec_backed',
+        route_source: 'explicit',
+        stages: { spec: { stale: false }, impl: { stale: false } }
+      }
+    );
+
+    expect(Object.hasOwn(rows, 'quick_fix_review')).toBe(false);
+  });
+
+  test('says 없음 when the quick_fix route carries no receipt', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+
+    const rows = seedWorkflowRows(
+      mount,
+      { route: 'quick_fix' },
+      {
+        route: 'quick_fix',
+        route_source: 'explicit',
+        stages: QUICK_FIX_STAGES,
+        quick_fix_review: { state: 'unreviewed', missing: [], digest: null }
+      }
+    );
+
+    expect(rows.quick_fix_review).toBe('없음');
+  });
+
+  test('suffixes the quick_fix_review row with stale only on a stale judgement', () => {
+    const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
+    const receipt = 'self@' + '3f9a21c4b0e7';
+
+    const suffixes = ['reviewed', 'stale', 'unreviewed', 'unknown'].map(
+      (state) =>
+        seedWorkflowRows(
+          mount,
+          { route: 'quick_fix', quick_fix_review: receipt },
+          {
+            route: 'quick_fix',
+            route_source: 'explicit',
+            stages: QUICK_FIX_STAGES,
+            quick_fix_review: { state, missing: [], digest: null }
+          }
+        ).quick_fix_review
+    );
+
+    expect(suffixes).toEqual([receipt, `${receipt} · stale`, receipt, receipt]);
+  });
+
   test('renders parsed planned and actual execution metadata rows', () => {
     const mount = /** @type {HTMLElement} */ (document.getElementById('m'));
     const { panel } = seedPanel(

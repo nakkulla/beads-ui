@@ -1432,6 +1432,9 @@ export function createDetailPanel(mount_element, options) {
     const stages = wf.stages || {};
     const specStale = stages.spec && stages.spec.stale;
     const implStale = stages.impl && stages.impl.stale;
+    // 접미는 판정이 `stale`이라고 말할 때만 붙는다. `unknown`은 투영을 못 읽어
+    // 판정 자체가 없다는 뜻이므로 아무 주장도 하지 않는다 (UI-r7or §5.5).
+    const quick_fix_stale = wf.quick_fix_review?.state === 'stale';
     const plan = stages.plan || null;
     // Derived route remains available for workflow layout, but display names
     // the missing metadata pin instead of exposing the fallback value.
@@ -1477,6 +1480,16 @@ export function createDetailPanel(mount_element, options) {
             <span class="detail-kv__k">impl_review</span>
             <span class="detail-kv__v"
               >${md.impl_review || '없음'}${implStale ? ' · stale' : ''}</span
+            >
+          </div>`
+        : ''}
+      ${wf.route === 'quick_fix' || Object.hasOwn(md, 'quick_fix_review')
+        ? html`<div class="detail-kv">
+            <span class="detail-kv__k">quick_fix_review</span>
+            <span class="detail-kv__v"
+              >${md.quick_fix_review || '없음'}${quick_fix_stale
+                ? ' · stale'
+                : ''}</span
             >
           </div>`
         : ''}
